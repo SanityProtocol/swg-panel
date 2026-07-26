@@ -176,12 +176,15 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # deps and verify `modprobe` before declaring success.
   local cmd="$1"
   if [ "$cmd" = wg ]; then
-    have wg || { info "installing WireGuard tools via apt — this can take a minute…"; run apt-get update -qq || true; run apt-get install -y wireguard || true; }
+    have wg || { if $DRYRUN || have apt-get; then info "installing WireGuard tools via apt — this can take a minute…"; run apt-get update -qq || true; run apt-get install -y wireguard || true; else warn "WireGuard tools not found and no apt-get on this system — install 'wireguard' with your package manager, then re-run"; fi; }
     $DRYRUN && return 0
     have wg && { modprobe wireguard 2>/dev/null || true; return 0; }
     return 1
   fi
   if have awg && modprobe amneziawg 2>/dev/null; then return 0; fi
+  # graceful degrade on a non-apt distro (Fedora/RHEL/Arch/Alpine): don't silently limp — tell the operator exactly
+  # what to install with their own package manager. apt paths below stay for Debian/Ubuntu.
+  $DRYRUN || have apt-get || { warn "AmneziaWG not installed — no apt-get on this system; install dkms, linux-headers-$(uname -r) and amneziawg-dkms with your package manager, then re-run"; return 1; }
   info "installing AmneziaWG (tools + DKMS kernel module) via apt — this can take a minute…"
   run apt-get update -qq || true
   run apt-get install -y software-properties-common || true
@@ -195,11 +198,14 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   have awg && warn "AmneziaWG tools installed, but its kernel module didn't build/load on kernel $(uname -r) — this box is missing matching linux-headers (dkms couldn't compile it). 'awg' interfaces can't come up until that's fixed; install linux-headers-$(uname -r) + reboot and re-run, or use a plain WireGuard interface."
   return 1
 }
-build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the running kernel — `apt install amneziawg` is
+build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the RUNNING kernel — `apt install amneziawg` is
   # a NO-OP when the package is already present (tool on disk) yet its module never built (headers missing then).
-  run dkms autoinstall 2>/dev/null || true
+  # `-k $(uname -r)` targets the running kernel: a box on an OLD kernel with newer headers would otherwise build
+  # for the wrong one and modprobe would still fail.
+  run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
   modprobe amneziawg 2>/dev/null && return 0
   run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
+  run dkms autoinstall -k "$(uname -r)" 2>/dev/null || true
   run modprobe amneziawg 2>/dev/null || true
 }
 ensure_smart_tools(){ # nftables (smart-routing marking) + dnsmasq (domain-tier set filling) — idempotent, non-fatal
@@ -561,7 +567,10 @@ turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }   # turn_latest_tag <
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
 install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags>
   local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst fdir sbin
-  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch="";; esac
+  # detect-and-REFUSE: the forks publish server-linux-amd64/arm64 only. Never fall back to amd64 on an unknown arch —
+  # that fetched a wrong x86-64 binary → 404 / "Exec format error". Skip the turn-proxy with a clear message instead.
+  [ -n "$arch" ] || { warn "no turn-proxy build for $(uname -m) — forks publish amd64/arm64 only; skipping this turn-proxy"; return 0; }
   # key each instance by <fork>-<port> so one fork can run many times (different ports + wrap keys)
   port="${listen##*:}"; inst="$fork-$port"; svc="vk-turn-proxy-$inst"
   fdir="$TURN_DIR/.bin/$fork"; sbin="$fdir/server"   # ONE binary per fork — shared by every instance
@@ -748,6 +757,12 @@ choose_turn_proxy(){   # one looped step: list installed (if any) + available br
 }
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
+# Fail early on a too-old interpreter: swg-noded/swg-agent use 3.7 syntax, so a too-old python3 would otherwise
+# surface as an opaque SyntaxError only when the daemon starts. (Bash guard — an in-file check can't catch a
+# parse-time failure.) Node floor is 3.7 (the panel needs 3.8; a pure node doesn't).
+$DRYRUN || { have python3 || die "python3 (>= 3.7) is required — install it with your package manager, then re-run"; \
+  python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 7) else 1)' \
+    || die "this box's python3 ($(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo '?')) is too old — swg-noded needs Python >= 3.7; install a newer python3 and re-run"; }
 $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; rm -rf "$PREFIX"; }
 
 # convert.sh (docker→bare) re-enters here AFTER migrating the existing turn-proxies, to offer the same

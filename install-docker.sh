@@ -430,6 +430,9 @@ case "$ROLE" in ""|master|host) ;; *) die "role must be master|host";; esac
 $DRYRUN && { info "DRY RUN — .env renders under ./dryrun, no Docker commands run."; rm -rf "$PREFIX"; }
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, turn_repo_owner, dl_turn_bin
+# A docker PANEL runs in a container but uses HOST memory — a low-RAM/zero-swap host OOM-kills it on a resolve spike
+# just like bare-metal. Provision swap on the HOST (never inside the container). Panel roles only; a node never resolves.
+if [ "$PROFILE" != node ]; then ensure_swap; fi
 # docker re-install can be a node (POST to its panel), a host (host_proc file), or a master (BOTH) → one
 # emit backend that fans out to whichever LC_* vars are set.
 lc_emit_docker(){

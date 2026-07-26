@@ -1071,9 +1071,20 @@ function copyQrImage(text, what) {
 }
 
 // ───────────────────────── api ─────────────────────────
+// Every request has a ceiling so a wedged/overloaded panel rejects instead of hanging a modal open forever (a save
+// modal used to await a dead request with no exit). 90s is generous — a save's HTTP round-trip returns once state is
+// written; the node reconcile that "takes a minute" happens asynchronously on the node, not in this request.
+const REQ_TIMEOUT = 90000;
+async function _fetch(u, opts) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), REQ_TIMEOUT);
+  try { return await fetch(u, { ...(opts || {}), signal: ac.signal }); }
+  catch (e) { if (e && e.name === "AbortError") throw new Error("the panel didn't respond in time"); throw e; }
+  finally { clearTimeout(t); }
+}
 const api = {
-  async get(p) { const r = await fetch(url(p)); if (r.status === 401) return require401(); return r.json(); },
-  async post(p, b) { const r = await fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }); if (r.status === 401 && !/\/api\/login$/.test(p)) return require401(); return r.json(); },
+  async get(p) { const r = await _fetch(url(p)); if (r.status === 401) return require401(); return r.json(); },
+  async post(p, b) { const r = await _fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }); if (r.status === 401 && !/\/api\/login$/.test(p)) return require401(); return r.json(); },
   login(b) { return this.post("/api/login", b); },
   logout() { return this.post("/api/logout", {}); },
   state() { return this.get("/api/state"); },
@@ -1085,6 +1096,7 @@ const api = {
   categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
   turnHistory(range) { return this.get("/api/turn-history?range=" + encodeURIComponent(range)); },
   peerHistory(range) { return this.get("/api/peer-history?range=" + encodeURIComponent(range)); },
+  blockStats(range) { return this.get("/api/block-stats?range=" + encodeURIComponent(range)); },
   // DISTINCT peers/users seen online over a range — set-union of per-bucket presence bitmaps, never a mean
   // and never a traffic proxy (so an idle-but-connected peer counts). One call feeds the bars, the node
   // cards and the doughnuts' "online" figure, so they can no longer disagree.
@@ -1100,6 +1112,8 @@ const api = {
   catalog(search, page) { return this.get("/api/catalog?search=" + encodeURIComponent(search || "") + "&page=" + (page || 0)); },
   catalogIndex() { return this.get("/api/catalog/index"); },
   catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
+  blockCatalog() { return this.get("/api/block-catalog"); },                       // block-list categories + providers + pickable lists (Routing & Blocking → Blocking tab)
+  blockCatalogSave(body) { return this.post("/api/block-catalog/save", body || {}); },   // staged commit: category deltas + provider toggles
   listInfo(cat) { return this.get("/api/list-info?cat=" + encodeURIComponent(cat)); },
   geoUpdate() { return this.post("/api/geo/update", {}); },
   geoProviderRetry(provider) { return this.post("/api/geo/provider-retry", { provider }); },
@@ -1239,6 +1253,7 @@ const Store = {
     this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
     this.panelServices = d.panel_services || {};   // THIS host's own swg units (active/enabled/present) → service-health needs-attention. {} on docker/older panels
+    this.datapath = d.datapath || {};              // THIS host's kernel datapath health (awg module loadable?) → healable "Fix" issue
     this.turnCatalog = d.turn_catalog || this.turnCatalog || null;   // single-source turn fork/client catalog (server-owned); turnForks() falls back to TURN_FORKS_FALLBACK when absent (mixed-version safe)
     this.panelPublicUrl = d.panel_public_url || this.panelPublicUrl || "";   // CONFIRMED canonical address → flag a tab on an old panel address
     this.panelMigrateRevertable = !!d.panel_migrate_revertable;   // a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move" (server auto-clears at grace end)
@@ -1255,6 +1270,8 @@ const Store = {
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
+    if ("latest_remote_date" in d) this.latestRemoteDate = d.latest_remote_date || "";   // update-bubble: release date + changelog notes
+    if ("latest_remote_notes" in d) this.latestRemoteNotes = d.latest_remote_notes || [];
     if (s && s.ok) { this.hostProc = d.host_proc || null; this.hostProcErr = d.host_proc_err || null; }   // only on a clean poll → the tag HOLDS through the panel's own re-install downtime
     if (ev && Array.isArray(ev.data)) this.events = ev.data;
     this.apply();
@@ -1478,6 +1495,10 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   }));
   if (iface && !cards.length) return null;               // interface view: nothing forwards here → no block
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
+  // arch gate: grey out "Setup proxy" ONLY when the node explicitly reports no build for its CPU arch (turn_arch_ok===false).
+  // Unknown/absent never blocks — the node's own download is the real gate, so a valid box is never wrongly refused.
+  const archNo = nrec.turn_arch_ok === false;
+  const archTip = "No turn-proxy build for this node's architecture" + (nrec.arch ? " (" + nrec.arch + ")" : "") + " — only amd64 and arm64 are supported.";
   // client-optimistic installs: a FULL card with the entered data, dimmed + "installing", shown the instant
   // Install is clicked — until the node reports the real proxy (in `all`) or it goes stale. Keyed by service.
   const _tpfx = node + "|";
@@ -1493,7 +1514,7 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
         <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
       </div></div>`; };
   return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length}
-      actions=${nrec.turn_manage ? html`<${Fragment}><button class="btn btn-mini ico" title="Turn-proxy settings in Settings → Turn proxies" onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> Setup new proxy</button><//>` : null}>
+      actions=${nrec.turn_manage ? html`<${Fragment}><button class="btn btn-mini ico" title="Turn-proxy settings in Settings → Turn proxies" onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? "Unavailable while the node is down / converting" : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> Setup new proxy</button><//>` : null}>
     ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>Turn-proxy management is <b>off</b> on this node — no Docker socket was mounted at install (<b>TURN_MANAGE=manual</b>), so these are read-only here. Add, edit or restart them on the box directly.</span></div>` : null}
     <div class="ifgrid" ...${iface ? {} : tReorder.container()}>${cards.map(tp => html`<${TurnCard} key=${tp.service} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface} reorder=${iface ? null : tReorder}/>`)}
     ${optTurns.map(o => optCard(o.svc, o.d))}
@@ -1610,7 +1631,7 @@ function anySessionConf(pubkey) {
 }
 
 // ───────────────────────── toasts (imperative; outside the Preact tree) ─────────────────────────
-function toast(msg, kind = "info", ms = 3600) {
+function toast(msg, kind = "info", ms = 5500) {
   const host = $("#toasts"); if (!host) return;
   const t = document.createElement("div");
   t.className = "toast " + kind;
@@ -2032,7 +2053,6 @@ function DepBadge({ others }) {
     </div>` : null}
   </span>`;
 }
-function peerLabel(p) { return p.unassigned ? "" : (p.name || ""); }
 
 // Minimal portal — renders children into a body-level node. A position:fixed popover that lives inside a
 // card paints BEHIND a later sibling once its own card forms a stacking context (turn cards lift with a
@@ -2052,8 +2072,8 @@ function Portal({ children }) {
 // <body> so it floats above sibling cards regardless of their stacking contexts.
 // hoverOnly: no click-to-pin — clicks fall through to whatever the trigger sits inside (e.g. a card link),
 // so a badge can show a hover bubble AND still navigate on click.
-function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly }) {
-  const [open, setOpen] = useState(false), [pinned, setPinned] = useState(false), [pos, setPos] = useState(null);
+function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly, autoOpen, flipFit, clickOnly }) {
+  const [open, setOpen] = useState(false), [pinned, setPinned] = useState(!!autoOpen), [pos, setPos] = useState(null);
   const ref = useRef(null), popRef = useRef(null), closeT = useRef(null);
   const show = open || pinned;
   const cancelClose = () => clearTimeout(closeT.current);
@@ -2061,7 +2081,13 @@ function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly }) {
   // alignRight: anchor the popover's left to the trigger's RIGHT edge, then translateX(-100%) so its own right
   // edge lines up there (under the value, not the label) — scrollbar-proof, no width guessing.
   const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
-    setPos({ left: Math.round(alignRight ? r.right + 3 : r.left), top: Math.round(r.bottom + 6) }); };   // alignRight: +3px so the bubble's right edge sits a touch past where the value ends
+    // flip ABOVE the trigger when there's little room below and more room above (bounded popovers scroll internally)
+    const ph = (popRef.current && popRef.current.offsetHeight) || 340;
+    const pw = (popRef.current && popRef.current.offsetWidth) || 300;
+    const below = window.innerHeight - r.bottom, above = r.top, flip = !!flipFit && below < ph + 12 && above > below;
+    // left-anchored popovers can run off the RIGHT edge (a trigger near the viewport edge) — clamp into view (8px margin).
+    let left = alignRight ? r.right + 3 : Math.max(8, Math.min(r.left, window.innerWidth - pw - 8));
+    setPos({ left: Math.round(left), top: Math.round(flip ? r.top - 6 : r.bottom + 6), flip }); };   // alignRight: +3px so the bubble's right edge sits a touch past where the value ends
   useEffect(() => {
     if (!show) return; place();
     const onMove = () => place();
@@ -2073,8 +2099,8 @@ function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly }) {
   useEffect(() => () => clearTimeout(closeT.current), []);
   return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
     onClick=${hoverOnly ? null : (e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
-    onMouseEnter=${() => { cancelClose(); setOpen(true); }} onMouseLeave=${scheduleClose}>${trigger}
-    ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px" + (alignRight ? ";transform:translateX(-100%)" : "")}
+    onMouseEnter=${clickOnly ? null : () => { cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
+    ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "") + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;transform:" + (alignRight ? "translateX(-100%)" : "") + (pos.flip ? " translateY(-100%)" : "")}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${children}</div><//>` : null}
   </span>`;
 }
@@ -2637,31 +2663,6 @@ function confirmReassign(peer, userId, back) {
 
 // Owner controls: assigned peers can only be Unassigned (revokes the holder); unassigned
 // peers offer Assign-to (fresh key) and Delete. Deletion is gated to unassigned peers.
-function PeerOwnerControls({ peer, showDelete }) {
-  const key = "peer:" + peer.id;
-  const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  if (!peer.unassigned) {
-    return html`<${Fragment}>
-      <${DangerButton} label="Unassign" confirm="Unassign — revoke access?" onConfirm=${() => mutate({
-        key, patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = null; },   // optimistic: greys instantly
-        call: () => api.peerUnassign({ peer_id: peer.id }),
-        onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.configEpoch++; },
-      })}/>
-      <${RowError} k=${key}/>
-    <//>`;
-  }
-  return html`<span class="ownerctl">
-    <select class="selwrap mini" onChange=${e => { const uid = e.target.value; e.target.value = ""; if (uid) assignPeer(peer, uid); }}>
-      <option value="">Assign to…</option>
-      ${users.map(u => html`<option value=${u.id}>${u.name}${u.tag ? " · " + u.tag : ""}</option>`)}
-    </select>
-    ${showDelete ? html`<${DangerButton} label="Delete" confirm="Delete peer?" onConfirm=${() => mutate({
-      key, patch: s => { delete s.roster.peers[peer.id]; },                                  // optimistic: row leaves
-      call: () => api.peerDelete({ peer_id: peer.id }),
-    })}/>` : null}
-    <${RowError} k=${key}/>
-  </span>`;
-}
 
 // pinned, explained failure for a row's last action; dismissable
 function RowError({ k }) {
@@ -2806,7 +2807,7 @@ function goSettings(section) { pendingSettingsSection = section; closeAllModals(
 const DASH_RANGES = [["live", "Live"], ["hour", "Hour"], ["day", "Day"], ["week", "Week"], ["month", "Month"]];
 const RANGE_ICON = { hour: "hour2", day: "daycal", week: "weekcal", month: "monthcal" };   // side-rail renders range as icons (live = glowing dot)
 // side-rail section jump-nav: [label, section-title h2 substring to scroll to, icon]
-const DASH_NAV = [["Fleet", "Fleet", "server"], ["Distribution", "Distribution", "donut"], ["Traffic flow", "Traffic flow", "flow"], ["Top charts", "Top nodes", "bars"], ["Activity log", "Recent activity", "excl"]];
+const DASH_NAV = [["Fleet", "Fleet", "server"], ["Distribution", "Distribution", "donut"], ["Traffic flow", "Traffic flow", "flow"], ["Top charts", "Protection|Top nodes", "bars"], ["Activity log", "Recent activity", "excl"]];
 // nodes: null = whole fleet, else a Set of node ids. peers/mesh = which traffic COMPONENTS the figures count
 // (the toolbar badges): peers = client traffic (total−mesh), mesh = node↔node relay traffic. `ov` = per-widget
 // overrides keyed by widget id, each {peers?,mesh?} where a set field pins that pill and null inherits the global.
@@ -2973,7 +2974,8 @@ function NodesRailPanel({ nav, active }) {
 function DashRail() {
   const fleet = Store.fleet || [];
   const range = dashState.range;
-  const findSection = find => [...document.querySelectorAll(".section-title")].find(x => { const h = x.querySelector("h2"); return h && h.textContent.indexOf(find) !== -1; });
+  // find a section by its h2 text; `find` may be "A|B" alternatives (first present wins — e.g. Protection, else Top nodes)
+  const findSection = find => { for (const a of String(find).split("|")) { const el = [...document.querySelectorAll(".section-title")].find(x => { const h = x.querySelector("h2"); return h && h.textContent.indexOf(a) !== -1; }); if (el) return el; } return null; };
   const jump = find => { const s = findSection(find); if (s) s.scrollIntoView({ behavior: "smooth", block: "start" }); };
   const menuIc = ic => /^[a-z0-9_-]+$/.test(ic) ? html`<${Ic} i=${ic}/>` : html`<span class="railmenu-emoji">${ic}</span>`;   // registry key → svg icon · anything else (emoji) → text
   // scroll-spy: highlight the jump icon of the section currently in view (first one at the top, one at a time as you scroll)
@@ -2981,8 +2983,8 @@ function DashRail() {
   useEffect(() => {
     let raf = 0;
     const compute = () => { raf = 0;
-      const titles = [...document.querySelectorAll(".section-title")]; let idx = 0;
-      DASH_NAV.forEach(([label, find], i) => { const el = titles.find(x => { const h = x.querySelector("h2"); return h && h.textContent.indexOf(find) !== -1; });
+      let idx = 0;
+      DASH_NAV.forEach(([label, find], i) => { const el = findSection(find);   // supports "A|B" fallback (Protection, else Top nodes)
         if (el && el.getBoundingClientRect().top <= 130) idx = i; });   // last section whose title has reached the top band
       setActive(idx); };
     const onScroll = () => { if (!raf) raf = requestAnimationFrame(compute); };
@@ -3487,12 +3489,13 @@ function FlowMap2({ selIds, range, hist }) {
   fleet.forEach(n => { const P = spos[n.id], m = nmeta(n.id); vx0 = Math.min(vx0, P.x - m.hw); vx1 = Math.max(vx1, P.x + m.hw); vy0 = Math.min(vy0, P.y - m.hh); vy1 = Math.max(vy1, P.y + m.hh); });
   sats.forEach(s => { const P = satpos[s.id]; if (!P) return; const r = satR(s.id); vx0 = Math.min(vx0, P.x - r); vx1 = Math.max(vx1, P.x + r); vy0 = Math.min(vy0, P.y - r); vy1 = Math.max(vy1, P.y + r); });
   const PAD = 22; vx0 -= PAD; vy0 -= PAD; vx1 += PAD; vy1 += PAD;
-  // ADAPTIVE frame — the aspect FOLLOWS the content's own shape (clamped to a band) instead of a fixed ratio, so sparse
-  // selections tighten toward the cluster (no dead band) while dense webs keep their taller spread. A gentle min-width keeps
-  // a lone node from being blown up. Content is then centred in whatever frame we land on.
-  const AR_MIN = 1.4, AR_MAX = 1.75, FRAME_W = 480;
+  // FIXED frame aspect — the section must NEVER change height (its resizing scrolled the page out from under the
+  // reader). The content is centred + scaled into a constant-aspect frame; sparse diagrams sit a touch looser, but the
+  // card height is rock-stable across polls/range changes. (Was adaptive AR 1.4–1.75 → ~25% height swings → scroll jumps.)
+  // aspect from FLEET SIZE (N), not content shape → STABLE per poll (N doesn't change every 5s, so no height jump) while
+  // still giving denser fleets more vertical room: 2 nodes ≈ 1.7 (wide) … 12 nodes ≈ 1.25 (taller). Content scales to fit.
+  const AR = Math.max(1.25, Math.min(1.7, 1.7 - Math.max(0, N - 2) * 0.05)), FRAME_W = 480;
   const cw = vx1 - vx0, ch = vy1 - vy0, ccx = (vx0 + vx1) / 2, ccy = (vy0 + vy1) / 2;
-  const AR = Math.max(AR_MIN, Math.min(AR_MAX, cw / ch));   // frame width:height, clamped to the band
   const vbW = Math.max(cw, ch * AR, FRAME_W), vbH = vbW / AR;   // frame always contains the content (vbW≥cw, vbH≥ch)
   vx0 = ccx - vbW / 2; vy0 = ccy - vbH / 2;
   // ── Geometry: each flow is a STROKED curve (never a filled ribbon → it can't hourglass/twist). On EVERY endpoint
@@ -3648,8 +3651,8 @@ function FlowMap2({ selIds, range, hist }) {
 // only when you change settings or press Update, so they stay warnings. That keeps the modal meaningful
 // instead of training people to Silence it. The panel host is one box, so these show regardless of the
 // node filter. Purely additive: an older/docker panel reports {} → serviceIssues() returns [].
-const SVC_LABEL = { sub: "Subscription server", netctl: "Network & TLS helper", update: "One-click self-update", panel: "Panel server" };
-const SVC_UNIT  = { sub: "swg-sub", netctl: "swg-netctl", update: "swg-update", panel: "swg-panel-server" };
+const SVC_LABEL = { sub: "Subscription server", netctl: "Network & TLS helper", update: "One-click self-update", panel: "Panel server", awg: "AmneziaWG datapath" };
+const SVC_UNIT  = { sub: "swg-sub", netctl: "swg-netctl", update: "swg-update", panel: "swg-panel-server", awg: "" };
 const SVC_KINDWORD = { missing: "not installed", down: "not running", disabled: "won’t survive a reboot" };
 function serviceIssues() {
   const ps = Store.panelServices || {};
@@ -3673,6 +3676,8 @@ function serviceIssues() {
   else if (down(up)) add("update", "warn", "down", "the one-click Update button won’t work right now");
   else if (unen(up)) add("update", "warn", "disabled", "one-click self-update won’t arm again after a reboot");
   if (unen(ps.panel)) add("panel", "warn", "disabled", "the panel won’t start again after a reboot");   // it's answering → it's up; only reboot-survival matters
+  const dp = (Store.datapath || {}).awg;               // local node's AmneziaWG kernel module — a broken DKMS build is what Update rebuilds
+  if (dp && dp.needed && !dp.ok) add("awg", "critical", "module", "the AmneziaWG kernel module isn’t built or loaded — awg interfaces can’t come up; running Update rebuilds it");
   out.sort((a, b) => (b.sev === "critical") - (a.sev === "critical"));
   return out;
 }
@@ -3720,9 +3725,180 @@ function ServiceIssueSheet({ issues }) {
         <div class="svc-head"><span class=${"svc-dot " + i.sev}></span><b>${i.label}</b>
           <span class=${"svc-tag " + i.sev}>${i.sev === "critical" ? "Critical" : "Warning"}</span></div>
         <div class="svc-msg">${i.msg}.</div>
-        <div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>journalctl -u ${i.unit} -e</code></div>
+        ${i.unit ? html`<div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>journalctl -u ${i.unit} -e</code></div>`
+          : html`<div class="svc-cmd"><code>dkms status</code> · <code>modprobe amneziawg</code></div>`}
       </div>`)}
       <div class="svc-foot">“Run update” reinstalls anything missing and re-enables the service — the same repair the Update button runs. A service that keeps crashing needs the logs above.</div>
+    </div>
+  <//>`;
+}
+
+// Overview "Protection" card feed. One light fetch keyed on the shared dashboard range (block-stats supports
+// live too, unlike useRangeHistory). Node stays a dumb reporter; the panel owns every range. Read-only.
+function useBlockStats(range) {
+  const [bs, setBs] = useState({ loading: true, data: null, range: null });
+  useEffect(() => {
+    let alive = true; setBs(s => ({ ...s, loading: true }));
+    const load = () => api.blockStats(range)
+      .then(r => { if (alive) setBs({ loading: false, data: (r && r.data) || null, range }); })
+      .catch(() => { if (alive) setBs(s => ({ ...s, loading: false })); });
+    load();
+    const t = setInterval(load, 15000);   // live-poll so the Blocked counter climbs without a reload (RRD buckets are ≥15s)
+    return () => { alive = false; clearInterval(t); };
+  }, [range]);
+  return bs;
+}
+
+// Interleave a separator between vnodes (Preact renders arrays fine, but needs the separators as real entries).
+const joinNodes = (nodes, sep) => nodes.flatMap((n, i) => i ? [sep, n] : [n]);
+
+// Minimal auto-scaling filled sparkline — trend shape only, no axes (distinct from Sparkline, which is a fixed
+// 0–100 % line for CPU load). `data` is oldest→newest; flat/short/all-zero series draw nothing.
+function TrendSpark({ data, w = 104, h = 24, color = "var(--brand)" }) {
+  const a = (data || []).filter(v => v != null);
+  if (a.length < 2) return null;
+  const max = Math.max.apply(null, a), min = Math.min.apply(null, a), span = (max - min) || 1, n = a.length;
+  const xy = a.map((v, i) => [(i / (n - 1)) * w, h - 1 - ((v - min) / span) * (h - 3)]);
+  const line = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+  if (max <= 0) return null;   // all-zero window → nothing worth drawing
+  return html`<svg class="spark" width=${w} height=${h} viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" aria-hidden="true">
+    <polygon points=${"0," + h + " " + line + " " + w + "," + h} fill=${color} opacity="0.12"/>
+    <polyline points=${line} fill="none" stroke=${color} stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>`;
+}
+
+// The blocking Protection card: what the fleet caught (torrents), flagged (scan sources), and dropped (distinct
+// destinations reached, forcedns/hybrid only) over the selected range, plus a static coverage line. All FREE
+// signals harvested from existing datapath state — nothing here changes blocking. Honest verbs: caught/flagged/dropped.
+// The "who" bubble content for a Protection tile — which user / which peers triggered this metric. Rendered inside a
+// Popover portal (.deppop.onlpop shell — fixed-position, escapes the card, JS hover with a grace period). rows =
+// [{user, peers:[], count}]. ≤15 rows show as-is; 16–50 scroll the list; >50 paginate 50/page (Next → top, Prev → bottom).
+const WHO_PER_PAGE = 50, WHO_VISIBLE = 15;
+function WhoBubble({ rows, color }) {
+  // Flatten user→peers into ONE row per peer ("user · peer  ·  when"), newest first — reads at a glance, no nesting.
+  const flat = [];
+  for (const g of rows) for (const q of (g.peers || [])) flat.push({ user: g.user, name: q.name, ago: q.ago, dur: q.dur });
+  flat.sort((a, b) => a.ago - b.ago);
+  const [page, setPage] = useState(0);
+  const listRef = useRef(null), dir = useRef(0);
+  const pages = Math.max(1, Math.ceil(flat.length / WHO_PER_PAGE));
+  const p = Math.min(page, pages - 1);
+  useEffect(() => { const el = listRef.current; if (el) el.scrollTop = dir.current < 0 ? el.scrollHeight : 0; }, [p]);
+  const paged = pages > 1 ? flat.slice(p * WHO_PER_PAGE, p * WHO_PER_PAGE + WHO_PER_PAGE) : flat;
+  const go = d => { dir.current = d; setPage(x => Math.max(0, Math.min(pages - 1, x + d))); };
+  const scroll = flat.length > WHO_VISIBLE || pages > 1;
+  const agoS = s => (s == null ? "" : s < 5 ? "now" : seen(s) + " ago");   // relative last-seen from panel-sent seconds
+  return html`<div class="prot-who">
+    <div class="prot-who-h">Who<span class="prot-who-sub">latest first</span>${flat.length > 1 ? html`<span class="prot-who-tot">${fmtCount(flat.length)}</span>` : ""}</div>
+    <div class=${"prot-who-list" + (scroll ? " scroll" : "")} ref=${listRef}>
+      ${paged.map((q, i) => html`<div class="prot-who-r" key=${p + "-" + i}>
+        <span class="prot-who-id">${q.user ? html`<span class="prot-who-nm">${q.user}</span>` : html`<span class="prot-who-un">unassigned</span>`}<span class="prot-who-sep">·</span><span class="prot-who-pn">${q.name}</span></span>
+        <span class="prot-who-ago" style=${"color:" + color}>${agoS(q.ago)}</span>
+      </div>`)}
+    </div>
+    ${pages > 1 ? html`<div class="prot-who-pg">
+      <span class="prot-who-pglbl">${p * WHO_PER_PAGE + 1}–${Math.min(flat.length, p * WHO_PER_PAGE + WHO_PER_PAGE)} of ${fmtCount(flat.length)}</span>
+      <span class="prot-who-pgbtns">
+        <button class="prot-who-pgb" disabled=${p === 0} onClick=${() => go(-1)}>Prev</button>
+        <button class="prot-who-pgb" disabled=${p >= pages - 1} onClick=${() => go(1)}>Next</button>
+      </span>
+    </div>` : null}
+  </div>`;
+}
+function CatsBubble({ cats, color, counts }) {
+  // Blocked drill-down. Two shapes, biggest first:
+  //   counts=true  → per-category blocked COUNTS (SNI mode): which categories are actually catching traffic. Approximate
+  //                  (swg-sni sees each blocked site ~once per learn-cycle) → a distribution, not an exact hit count.
+  //   counts=false → COMPOSITION: what's loaded, by list size (the datapath merges feeds into one union → no per-cat
+  //                  counter, so this is the only signal in Force-DNS / non-SNI modes).
+  const kmb = n => { n = n || 0; return n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M"
+    : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, "") + "k" : String(n); };
+  const scroll = cats.length > WHO_VISIBLE;
+  return html`<div class="prot-who">
+    <div class="prot-who-h">${counts ? "Blocked" : "Filtering"}<span class="prot-who-sub">${counts ? "sites caught" : "by list size"}</span><span class="prot-who-tot">${fmtCount(cats.length)}</span></div>
+    <div class=${"prot-who-list" + (scroll ? " scroll" : "")}>
+      ${cats.map((c, i) => html`<div class="prot-who-r prot-cat-row" key=${i}>
+        <span class="prot-cat-nm">${c.label}</span>
+        <span class="prot-who-ago prot-cat-n" style=${"color:" + color}>${counts ? kmb(c.count) + " site" + (c.count === 1 ? "" : "s") : (c.threat_ips ? kmb(c.threat_ips) + " IPs" : kmb(c.domains) + " dom")}</span>
+      </div>`)}
+    </div>
+  </div>`;
+}
+function Protection({ range, bs }) {
+  const d = bs.data;
+  const cov = (d && d.coverage) || {};
+  const mech = cov.mechanisms || {};
+  const mechKeys = Object.keys(mech);
+  const hasCov = (cov.domains || 0) + (cov.threat_ips || 0) + (cov.categories || 0) + mechKeys.length > 0;
+  const torrents = (d && d.torrents) || 0, scan = (d && d.scan) || 0, reach = (d && d.reach) || 0, blocked = (d && d.blocked) || 0;
+  const who = (d && d.who) || {};   // per-metric attribution {scan:[{user,peers,count}], …} → the hover "who" bubble
+  const bcats = (d && d.blocked_cats) || [];   // [{label,count}] per-category blocked counts (SNI mode) → Blocked bubble
+  // Nothing configured and nothing seen → don't show an empty card on installs that don't use blocking.
+  if (!d || (!hasCov && !torrents && !scan && !reach && !blocked)) return null;
+  const rw = (DASH_RANGES.find(r => r[0] === (bs.range || range)) || ["", "the window"])[1].toLowerCase();
+  const kmb = n => { n = n || 0; return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M"
+    : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, "") + "k" : String(n); };
+  const MECH_LABEL = { torrents: "Torrents", smtp: "Spam / SMTP", portscan: "Port scans", quic: "QUIC", doh: "DoH", mining: "Mining" };
+  const tiles = [];
+  // Blocked — cumulative packets dropped to content-filter sets over the range (GROWS as you browse). The distinct
+  // destinations currently blocked (reach) ride along as context. Shown whenever content filtering is in play.
+  if (cov.domains || blocked || reach) {
+    // the tile's "sites" is the SAME distinct-domain total the bubble breaks down (so they reconcile: 12 = 6+3+3),
+    // not reach (distinct IPs — a CDN domain is many IPs). Fall back to reach only when there's no per-category data.
+    const bsites = bcats.reduce((a, c) => a + (c.count || 0), 0);
+    const bsub = bcats.length ? (kmb(bsites) + " sites") : (reach ? (kmb(reach) + " sites") : "");
+    tiles.push({ k: "Blocked", v: kmb(blocked), n: blocked,
+      sub: bsub ? ("packets · " + bsub + " · " + rw) : (blocked ? "packets · " + rw : "none " + rw),   // the big number is DROPPED PACKETS (inflated by retries); "sites" is what the bubble sums to
+      spark: (d && d.bseries) || null, color: "var(--brand)",
+      // Prefer per-category counts (SNI mode, what's actually catching traffic); fall back to composition (what's loaded).
+      bcats: bcats.length ? bcats : null, cats: (cov.cats && cov.cats.length) ? cov.cats : null });
+  }
+  tiles.push({ k: "Torrents caught", v: kmb(torrents), n: torrents, sub: torrents ? "connections · " + rw : "none " + rw, spark: (d && d.series) || null, color: "var(--dangling)", who: who.torrent });
+  tiles.push({ k: "Scanners flagged", v: kmb(scan), n: scan, sub: scan ? "source" + (scan === 1 ? "" : "s") + " · " + rw : "none flagged", color: "var(--partial)", who: who.scan });
+  // Coverage sentence — what the fleet is FILTERING (ads/malware/mining live here; they can be listed, not counted).
+  const covParts = [];
+  if (cov.domains) covParts.push(html`<b>${kmb(cov.domains)}</b> domains`);
+  if (cov.threat_ips) covParts.push(html`<b>${kmb(cov.threat_ips)}</b> threat-IPs`);
+  const acrossParts = [];
+  if (cov.categories) acrossParts.push(html`<b>${cov.categories}</b> categor${cov.categories === 1 ? "y" : "ies"}`);
+  if (cov.ifaces) acrossParts.push(html`<b>${cov.ifaces}</b> interface${cov.ifaces === 1 ? "" : "s"}`);
+  return html`<${Fragment}>
+    ${secTitle("Protection", html`${rw} · what blocking caught & is filtering`)}
+    <div class="protcard">
+      <div class="prot-metrics">
+        ${tiles.map(t => { const w = (t.who && t.who.length) ? t.who : null;
+          const inner = html`<${Fragment}>
+            <div class="prot-top">
+              <div class="prot-v" style=${"color:" + (t.n ? t.color : "var(--faint)")}>${t.v}</div>
+              <div class="prot-tc">
+                <div class="prot-k">${t.k}</div>
+                <div class="prot-sub">${t.sub}</div>
+              </div>
+            </div>
+            ${t.spark ? html`<div class="prot-spark"><${TrendSpark} data=${t.spark} color=${t.color}/></div>` : null}
+          <//>`;
+          // Tiles with a drill-down (offenders for torrent/scan, filter composition for blocked) put it in a Popover
+          // portal (fixed-position, escapes the card, hover with a grace period so moving into the bubble never drops
+          // it). Plain tiles render as a div.
+          const pop = w
+            ? html`<${WhoBubble} rows=${w} color=${t.color}/>`
+            : (t.bcats ? html`<${CatsBubble} cats=${t.bcats} color=${t.color} counts/>`
+              : (t.cats ? html`<${CatsBubble} cats=${t.cats} color=${t.color}/>` : null));
+          return pop
+            ? html`<${Popover} key=${t.k} hoverOnly flipFit cls="prot-tile haswho" popCls="prot-who-pop" trigger=${inner}>
+                ${pop}
+              <//>`
+            : html`<div class="prot-tile" key=${t.k}>${inner}</div>`;
+        })}
+      </div>
+      ${hasCov ? html`<div class="prot-cov">
+        <span class="prot-cov-ic"><${Ic} i="shield"/></span>
+        <span class="prot-cov-txt">
+          ${covParts.length ? html`Filtering ${joinNodes(covParts, " + ")}` : "Mechanism blocking"}
+          ${acrossParts.length ? html` across ${joinNodes(acrossParts, " · ")}` : ""}
+        </span>
+        ${mechKeys.length ? html`<span class="prot-mech">${mechKeys.map(m => html`<span class="prot-chip" key=${m}>${MECH_LABEL[m] || m}${mech[m] > 1 ? html` <i>×${mech[m]}</i>` : ""}</span>`)}</span>` : null}
+      </div>` : null}
     </div>
   <//>`;
 }
@@ -3735,6 +3911,7 @@ function Overview() {
   // it has at least one target on a selected node; its counts/traffic come only from selected nodes.
   const selIds = dashNodes(), sel = new Set(selIds);
   const rangeHist = useRangeHistory(dashState.range, selIds);   // one fetch, shared by the doughnuts + flow map
+  const blockStats = useBlockStats(dashState.range);            // Protection card feed (independent, supports live)
   // Fresh install (or every node removed) → there's no fleet to chart. Skip the whole dashboard and invite
   // the operator to add their first entry server. (After the two hooks above, so rules-of-hooks holds.)
   if (fleet.length === 0) return html`<div class="screen"><div class="nonodes">
@@ -3810,12 +3987,24 @@ function Overview() {
     const [lr, lt] = nodeRate(n.id); const v = dRanged ? nodeVol(n.id) : { rx: lr, tx: lt };
     return { id: n.id, name: n.name, color: Store.nodeColor(n.id), rx: v.rx, tx: v.tx, peers: sPeers.filter(p => p.targets.some(d => d.node === n.id)).length };
   });
-  const anyTraffic = nodeTraffic.some(x => x.rx + x.tx > 0);
-  const rankRows = nodeTraffic.slice()
-    .sort((a, b) => anyTraffic ? (b.rx + b.tx) - (a.rx + a.tx) : b.peers - a.peers)
+  // Top nodes by ONLINE peers — live = online right now; a range = DISTINCT peers seen online over the window
+  // (presence bitmaps, same source as the online-peers hero). If live and NOBODY is online, fall back to each
+  // node's total peer count so the chart still says something.
+  const onlineOf = n => dRanged ? (((rangeHist.presence || {}).nodes || {})[n.id] || {}).peers || 0
+                                 : sPeers.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
+  const nodeOnline = fleetSel.map(n => ({ id: n.id, name: n.name, color: Store.nodeColor(n.id),
+    online: onlineOf(n), total: sPeers.filter(p => p.targets.some(t => t.node === n.id)).length }));
+  const rnkTotal = !dRanged && !nodeOnline.some(x => x.online > 0);   // live + nobody online → show totals
+  const rankRows = nodeOnline.slice()
+    .sort((a, b) => rnkTotal ? b.total - a.total : (b.online - a.online) || (b.total - a.total))
     .slice(0, 6)
-    .map(x => ({ label: x.name, value: anyTraffic ? x.rx + x.tx : x.peers,
-      sub: anyTraffic ? (dRanged ? xferCell(...dlul(x.rx, x.tx)) : rateCell(x.rx, x.tx)) : x.peers + " peer" + (x.peers === 1 ? "" : "s"),
+    .map(x => ({ label: x.name, value: rnkTotal ? x.total : x.online,
+      sub: rnkTotal ? (x.total + " total") : (x.online + " online"),
+      color: x.color || "var(--brand)", href: "#/node/" + encodeURIComponent(x.id) }));
+  // Top nodes BY TRAFFIC — separate chart, shown alongside the by-peers one. Live = throughput now; a range = volume.
+  const anyTraffic = nodeTraffic.some(x => x.rx + x.tx > 0);
+  const rankRowsTraffic = nodeTraffic.slice().sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, 6)
+    .map(x => ({ label: x.name, value: x.rx + x.tx, sub: dRanged ? xferCell(...dlul(x.rx, x.tx)) : rateCell(x.rx, x.tx),
       color: x.color || "var(--brand)", href: "#/node/" + encodeURIComponent(x.id) }));
 
   // ── range-aware fleet hero series. Live = the 15s ring + online accumulator (no server hit); a range =
@@ -3878,7 +4067,9 @@ function Overview() {
   // total is the CLIENT traffic below). Live = per-node `cats` rates (panel-derived from the node's nft counters);
   // ranged = per-(node,cat) volume from /api/category-history.
   const catAgg = {};
-  const _cadd = (cat, up, dn) => { const a = catAgg[cat] = catAgg[cat] || { up: 0, dn: 0 }; a.up += up || 0; a.dn += dn || 0; };
+  // Block-list sets (blku_*) ride the smart-routing chain to get their drop verdict, so they surface a byte counter
+  // like a routing category — but a BLOCKED destination is not a "top destination" the client reached. Drop them.
+  const _cadd = (cat, up, dn) => { if (isBlockCat(cat)) return; const a = catAgg[cat] = catAgg[cat] || { up: 0, dn: 0 }; a.up += up || 0; a.dn += dn || 0; };
   if (dRanged) (rangeHist.cats || []).forEach(e => { if (sel.has(e.node)) _cadd(e.cat, e.up, e.dn); });
   else { const cById = Object.fromEntries((Store.nodes || []).map(n => [n.id, n.cats || {}]));   // Store.fleet is a slim {id,name,color} projection — the live `cats` field lives on the full Store.nodes objects
     fleetSel.forEach(n => { for (const [cat, v] of Object.entries(cById[n.id] || {})) _cadd(cat, v.up, v.dn); }); }
@@ -3897,7 +4088,7 @@ function Overview() {
       <a class="stat accent clk" href="#/connections" onClick=${openLiveTab("peers")}><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">Online now</div><div class="v">${online}<small> / ${sPeers.length}</small></div><div class="sub">live connections →</div></div></a>
       <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">Users</div><div class="v">${sUsers.length}</div><div class="sub">${sPeers.length} peers${scoped ? " here" : " total"}</div></div></a>
       <a class="stat clk" href="#/peers"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">Peers</div><div class="v" style="font-size:19px"><span style="color:var(--ink)">${pAssigned}</span> · <span style="color:var(--dim)">${pUnassigned}</span></div><div class="sub">assigned · unassigned</div>${orphans.length ? html`<div class="sub" style="color:#E8912D;font-weight:600">Orphan peers ${orphans.length}</div>` : ""}</div></a>
-      <a class="stat clk" href="#/nodes"><span class="stat-ic"><${Ic} i="server"/></span><div class="stat-c"><div class="k">Nodes</div><div class="v">${liveNodes}<small> / ${fleetSel.length}</small></div><div class="sub">${ifaceCount} interface${ifaceCount === 1 ? "" : "s"}${nodesAlerting ? html` · <span style="color:var(--dangling)">${nodesAlerting} alerting</span>` : ""}</div></div></a>
+      <a class="stat clk" href="#/nodes"><span class="stat-ic"><${Ic} i="server"/></span><div class="stat-c"><div class="k">Nodes</div><div class="v">${liveNodes}<small> / ${fleetSel.length}</small></div><div class="sub">${ifaceCount} interface${ifaceCount === 1 ? "" : "s"}</div>${nodesAlerting ? html`<div class="sub" style="color:var(--dangling)">${nodesAlerting} alerting</div>` : ""}</div></a>
       <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">Throughput</div><div class="v" style=${"font-size:19px;color:" + (rx + tx > 0 ? "var(--online)" : "var(--faint)")}>↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub"><span style=${"color:" + (rx + tx > 0 ? "var(--ready)" : "var(--faint)")}>↑ ${rate(dlul(rx, tx)[1])}</span>${scoped ? " selected" : " aggregate"}</div></div></div>
     </div>
 
@@ -3929,9 +4120,16 @@ function Overview() {
       <${FlowMap2} selIds=${selIds} range=${effRange} hist=${rangeHist}/>
     <//>` : null}
 
+    ${fleetSel.length ? html`<${Protection} range=${effRange} bs=${blockStats}/>` : null}
+
     ${fleetSel.length > 1 ? html`<${Fragment}>
-      ${secTitle(anyTraffic ? "Top nodes by traffic" : "Top nodes by peers", anyTraffic ? (DASH_RANGES.find(r => r[0] === effRange) || ["", "live"])[1].toLowerCase() : "")}
+      ${secTitle("Top nodes by peers", rnkTotal ? "total peers" : (dRanged ? "online · " + (DASH_RANGES.find(r => r[0] === effRange) || ["", "live"])[1].toLowerCase() : "online now"))}
       <div class="rankcard"><${RankBars} rows=${rankRows}/></div>
+    <//>` : null}
+
+    ${fleetSel.length > 1 && anyTraffic ? html`<${Fragment}>
+      ${secTitle("Top nodes by traffic", dRanged ? (DASH_RANGES.find(r => r[0] === effRange) || ["", "live"])[1].toLowerCase() + " · by volume" : "by live throughput")}
+      <div class="rankcard"><${RankBars} rows=${rankRowsTraffic}/></div>
     <//>` : null}
 
     ${talkerRows.length ? html`<${Fragment}>
@@ -4057,9 +4255,10 @@ function NodeDetail({ node: rawName }) {
           : (nrec.proc_status && isUpdateState(nrec.proc_status)) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), nrec.proc_err)
           : (nrec.local && Store.panelOutdated) ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateHost()} title="Update this master (panel + co-located node) to the latest release">update to <b>${Store.latestRemote || "?"}</b></button>`
           : nrec.outdated ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateNode(nrec)} title=${blocked ? "Unavailable while the node is down / converting" : "Update this node"}>update node to <b>${nrec.latest || "?"}</b></button>`
+          : nrec.repairable ? html`<button class="livepill updpill fixpill" disabled=${blocked} onClick=${() => nrec.local ? updateHost() : updateNode(nrec)} title=${(nrec.kind === "docker" ? "A container or the datapath isn't running on this node — recreating it should fix it. " : "The AmneziaWG kernel module isn't built or loaded on this node — awg interfaces can't come up. ") + (nrec.local ? "Re-run the updater to repair." : "Update this node to repair.")}><${Ic} i="warn"/> repair node</button>`
           : (nrec.local ? (Store.updFlash && Date.now() < Store.updFlash) : (Store.nodeUpdFlash && Store.nodeUpdFlash.id === nrec.id && Date.now() < Store.nodeUpdFlash.until))
           ? html`<span class="livepill upd-uptodate" title=${nrec.local ? "This master is on the latest version" : "This node is on the latest version"}><${Ic} i="check"/> up to date</span>`
-          : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Check for updates"} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
+          : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Check status"} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
         <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Node settings"} onClick=${() => openNodeEdit(nrec)}><${Ic} i="gear"/></button>
         ${down ? null : html`<button class="iconbtn" title="Rotate token (re-enroll / re-install)" onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>`}
@@ -4111,7 +4310,7 @@ function NodeDetail({ node: rawName }) {
     <//>` : null}
 
     <${Panel} icon="globe" title="User interfaces" tone="ready" count=${userKeys.length}
-        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" title="Recreate this node's missing interfaces with their original identities — node-rebuild recovery" onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> Restore ${mr > 1 ? mr + " interfaces" : "interface"}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini ico" title="Interface defaults in Settings → Interfaces" onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
+        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" title="Recreate this node's missing interfaces with their original identities — node-rebuild recovery" onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> Restore ${mr > 1 ? mr + " interfaces" : "interface"}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked || nrec.turn_arch_ok === false} title=${blocked ? "Unavailable while the node is down / converting" : nrec.turn_arch_ok === false ? ("No turn-proxy build for this node's architecture" + (nrec.arch ? " (" + nrec.arch + ")" : "") + " — only amd64 and arm64 are supported.") : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini ico" title="Interface defaults in Settings → Interfaces" onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
@@ -4462,6 +4661,9 @@ const _CATALOG_LABEL_CACHE = {};
 // If a resolved label has NO capital letters (a bare list name like "timeweb"), capitalise its first letter —
 // but leave intentional casing alone ("iCloud", "YouTube" stay as-is).
 const capFirst = s => (typeof s === "string" && s && !/[A-Z]/.test(s)) ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+// A block-list category (the blku_* union or a blk:* source) — rides the smart chain for its drop verdict but is
+// NOT a routing destination, so it's excluded from the destination stats (Top destinations / flow map).
+const isBlockCat = c => /^blku?[_:]/i.test(String(c));
 function catLabelOf(c) {   // built-in label · custom-list title (keyed by the list's id AND name, so whichever the node emits resolves to the human title) · inline custom → "Custom" · else the id
   if (c === "uncat") return "Uncategorised";
   const lt = {};
@@ -4549,9 +4751,7 @@ function catListUrl(id, caps) {
 const customTargets = l => (typeof l === "string") ? l : (l && (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", "))) || "";
 function customCaps(l) { const raw = customTargets(l); const doms = domainTargets(raw), ips = splitTargets(raw).filter(isIpTarget);
   return { host: doms.length > 0, ip: ips.length > 0 }; }
-const customSize = l => { const raw = customTargets(l); return splitTargets(raw).filter(validTarget).length; };
 // Record count for a provider-catalog cat (Host+IP tiers), shipped by the panel in Store.catSizes {cat:{ip,host}}.
-const catSize = c => { const s = (Store.catSizes || {})[c] || {}; return (s.host || 0) + (s.ip || 0); };
 const fmtCount = n => n == null ? "…" : n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(n);
 // "142 hosts · 38 nets" style summary from per-tier counts (Host first). Empty string when nothing is known.
 function sizeSummary(host, ip) {
@@ -4641,12 +4841,15 @@ const MODE_META = {
     adds: "Just the always-on IP layer — no domain matching added",
     bene: ["Simplest & most robust · never touches DNS · carries all traffic (calls, UDP, QUIC)"],
     cost: "Can't separate services that share IPs (YouTube vs Google), no Host routing",
+    block: { s: "−", t: "Blocks by IP / threat-feed only — domain content filters can't apply" },
     exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it.",
     lists: ["GeoIP", "Custom IPs / ASNs"] },
   forcedns: { icon: "compass", label: "Force-DNS", short: "Host via DNS", tag: "host layer · via DNS",
     adds: "Adds domain matching by resolving your clients' DNS through the node",
     bene: ["Per-service precise · fills before the first connection (no first-hit miss)"],
     cost: "Intercepts & downgrades client DNS — blocks their DoH / DoT",
+    block: [{ s: "+", t: "Enforces domain content filters directly (best mode for content blocking)" },
+            { s: "−", t: "Long block lists cost CPU per DNS query — keep them small (≈100k domains)" }],
     exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past.",
     lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
   sni_kernel: { icon: "cpu", label: "Kernel SNI", short: "Host via SNI", tag: "host layer · SNI in-kernel",
@@ -4654,6 +4857,7 @@ const MODE_META = {
     bene: ["Daemonless & parallel per-CPU · lightest at high connection rates",
            "Wins stability and high-connection-rate CPU over Hybrid"],
     cost: "Substring match only (no regex) · needs xt_string + ipset on the node",
+    block: { s: "−", t: "Domain content filters inert — steer them to Force-DNS / Hybrid" },
     exp: "Scans the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Matches by substring only (no regex) and needs the node's kernel to provide xt_string + ipset. Names hidden by ECH, and QUIC / HTTP3, fall back to IP routing.",
     lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
   sni:      { icon: "eye", label: "Hybrid SNI", short: "Host via SNI", tag: "host layer · SNI in userspace",
@@ -4661,6 +4865,7 @@ const MODE_META = {
     bene: ["Precise parsed-SNI matching · regex-capable · unbothered by big lists",
            "Has fewer kernel deps, wins accuracy and large-list CPU cost over Kernel"],
     cost: "Runs a helper process (fails open — learning pauses — if it stops)",
+    block: { s: "+", t: "Enforces domain content filters — learns & drops, fine with big lists" },
     exp: "Routes by hostname by parsing the SNI from each TLS handshake in a small userspace helper, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Parses the real SNI field (precise, regex-capable, fine with very large lists). Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing.",
     lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
 };
@@ -4748,7 +4953,15 @@ function HostHealth({ node, mode, learn, onLearn }) {
   const label = eng === "dns" ? "DNS resolver" : eng === "sni_kernel" ? "SNI scanner" : "SNI parser";
   const ok = sr.engine_ok !== false;
   let extra = null, note = null;
-  if (eng.startsWith("sni") && sr.resets) extra = sr.resets + " new host" + (sr.resets === 1 ? "" : "s") + " rerouted";
+  // Destinations the engine has in its routing sets (geoip + SNI-learned), excluding block-list sets. Kernel-SNI keeps
+  // learned IPs in an ipset it doesn't surface, so this reads 0 there — shown only when the node reports set counts.
+  const routed = Object.entries(sr.sets || {}).reduce((n, [k, v]) => n + (String(k).includes("blku") ? 0 : (v || 0)), 0);
+  if (routed || (eng.startsWith("sni") && sr.resets)) {
+    const bits = [];
+    if (routed) bits.push(fmtCount(routed) + " destination" + (routed === 1 ? "" : "s") + " routed");
+    if (eng.startsWith("sni") && sr.resets) bits.push(sr.resets + " new host" + (sr.resets === 1 ? "" : "s") + " rerouted");
+    extra = bits.join(" · ");
+  }
   if (mode === "sni_kernel" && eng === "sni_user") note = "kernel SNI scanner unavailable — running userspace SNI parser";   // degraded-open
   return html`<div class=${"rmode-health " + (ok ? "ok" : "down")}>
     <span class="rmh-dot"></span><b>${label}</b> <span>${ok ? "healthy" : "down — host routing degraded"}</span>
@@ -4774,9 +4987,13 @@ function FleetAssign({ nodes, isOn, onToggle, disabledFor }) {
 // EVERY routing mode); host = matchable by domain via the node's dnsmasq (needs DNS → forcedns). A
 // host-ONLY category (youtube today) is dead weight in kernel mode, so the UI greys/hides it there.
 const catCap = id => (Store.smartCaps || {})[id] || { ip: false, host: false };
-const catHostOnly = id => { const c = catCap(id); return c.host && !c.ip; };
-const catUsableInMode = (id, mode) => mode === "kernel" ? catCap(id).ip : (catCap(id).ip || catCap(id).host);
-const catDoms = id => (Store.catDomains || {})[id] || [];   // curated domains for a host category (empty for geoip/fetched cats)
+// ── the ONE rule behind every ROUTING mode-gate (mirrors blockTierOk) ──
+// An IP list routes in every mode; a domain (host) list needs a host layer — any non-IP-only mode, INCLUDING
+// Kernel-SNI (it matches domains in-kernel, unlike blocking which can't hold a big domain set). So routing's rule
+// is looser than blocking's by exactly Kernel-SNI. Every routing usability gate derives from this — one place.
+const routeTierOk = (mode, tier) => tier === "ip" || mode !== "kernel";
+const routeCapsUsable = (mode, caps) => !!(caps && ((caps.ip && routeTierOk(mode, "ip")) || (caps.host && routeTierOk(mode, "host"))));
+const catUsableInMode = (id, mode) => routeCapsUsable(mode, catCap(id));
 // hover bubble listing a list's domains/IPs (only when there are some); `note` = a faint footer caption
 let _ruleSeq = 0;
 const newRid = () => "rr" + (++_ruleSeq);
@@ -4795,6 +5012,138 @@ function loadCatalogIndex() {
   }).catch(() => []);
 }
 
+// Block-list catalog (Blocking tab): categories + providers + pickable lists. Loaded on demand and cached, then
+// mirrored onto Store.blockCatalog so screens can read it synchronously; pass force=true to refetch after a save.
+let _BLOCK_CATALOG = null;
+function loadBlockCatalog(force) {
+  if (_BLOCK_CATALOG && !force) return Promise.resolve(_BLOCK_CATALOG);
+  return api.blockCatalog().then(r => {
+    if (r && r.ok) { _BLOCK_CATALOG = r.data; Store.blockCatalog = r.data; bus.emit(); }
+    return _BLOCK_CATALOG || null;
+  }).catch(() => null);
+}
+
+// Concise, user-facing tooltips for the built-in traffic/abuse mechanisms shown in the interface's Block-traffic section.
+// ── the ONE rule behind every block-UI mode-gate ──
+// A domain (host) list enforces only where the node fills domain sets from DNS (Force-DNS / Hybrid-SNI); an IP list
+// matches in every mode. IP-only can't match domains at all; Kernel-SNI can't hold a domain blocklist. Every gate
+// below (source availability, category disable, picker badge) derives from this — one place, no drift.
+const blockTierOk = (mode, tier) => tier === "ip" || (mode !== "kernel" && mode !== "sni_kernel");
+const blockHostBlind = mode => !blockTierOk(mode, "host");                                  // this node can't enforce ANY domain list
+const blockProvTier = (providers, p) => ((providers || []).find(x => x.id === p) || {}).tier || "host";
+const blockSrcOk = (mode, providers, s) => blockTierOk(mode, blockProvTier(providers, s.provider));   // a single list/source enforces here?
+const blockCatHasIp = (providers, c) => (c.sources || []).some(s => blockProvTier(providers, s.provider) === "ip");
+const blockCatDisabled = (mode, providers, c) => blockHostBlind(mode) && !blockCatHasIp(providers, c);   // no enforceable list → dead on this node
+const MECH_HINT = {
+  torrents:     "Drop BitTorrent / P2P — protects this exit IP's reputation. Free port-hint by default; signature scan where the node supports it.",
+  smtp:         "Drop outbound mail on TCP :25 — stops spam being relayed through this exit.",
+  portscan:     "Rate-limit outbound port-scans, brute-force and SYN-floods leaving this interface.",
+  cryptomining: "Drop known cryptomining / Stratum-pool traffic.",
+  quic:         "Drop QUIC / HTTP-3 (UDP :443) so connections fall back to TCP and stay inspectable.",
+  doh:          "Drop DoH / DoT / DoQ so DNS can't slip past the tunnel's filtering.",
+  webrtc:       "Block WebRTC / STUN — prevents the client's real IP leaking around the tunnel.",
+};
+
+// The default block set for a NEW interface on `node`: every default-on category available here — mechanisms are
+// built-in (always available), content/IP categories must be enabled on this node (Settings ▸ Routing & Blocking).
+function defaultBlockFor(node) {
+  const bc = Store.blockCatalog; if (!bc) return [];
+  return Object.values(bc.categories || {}).filter(c => c && c.default_on && c.enabled !== false &&
+    (c.kind === "mechanism" || (c.enabled_nodes || []).includes(node))).map(c => c.id);
+}
+
+// Per-interface "Block traffic" (screen ③) — the daily policy surface. Content/IP categories the operator enabled on
+// THIS node plus the built-in traffic/abuse mechanisms; a chip toggles the category id in the interface's block[], and
+// the node drops matching traffic on its next sync. Domain (content) categories are inert on an IP-only (kernel) node
+// — shown greyed with a reason, the choice kept for when the mode changes.
+function BlockTraffic({ node, value, onChange }) {
+  useStore(); useEffect(() => { loadBlockCatalog(); }, []);
+  const bc = Store.blockCatalog;
+  const mode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";
+  const active = id => (value || []).includes(id);
+  const toggle = id => { const s = new Set(value || []); s.has(id) ? s.delete(id) : s.add(id); onChange([...s]); };
+  if (!bc) return html`<div class="blk-field"><div class="hint">Loading block catalog…</div></div>`;
+  const cats = bc.categories || {};
+  const list = [...new Set([...(bc.cat_order || []), ...Object.keys(cats)])].map(id => cats[id]).filter(c => c && c.enabled !== false);
+  const availOn = c => (c.enabled_nodes || []).includes(node);
+  const content = list.filter(c => (c.kind === "content" || c.kind === "ip") && availOn(c));
+  const mech = list.filter(c => c.kind === "mechanism");
+  const chip = c => { const dis = blockCatDisabled(mode, bc.providers, c); return html`<button type="button" key=${c.id} disabled=${dis}
+      class=${"blkchip" + (active(c.id) && !dis ? " on" : "") + (dis ? " inert" : "")}
+      title=${dis ? "No IP list in this category — domain lists can't match in " + ((MODE_META[mode] || {}).label || mode) + ". Use Force-DNS / Hybrid-SNI, or add an IP list."
+                 : (c.kind === "ip" ? "Matched by IP address — works in every mode." : "Matched by domain name.")}
+      onClick=${() => { if (!dis) toggle(c.id); }}><span class="blkchip-g">⊘</span>${c.label}${!c.predefined ? html`<span class="blkchip-tag">custom</span>` : null}</button>`; };
+  const mchip = c => html`<button type="button" key=${c.id} class=${"blkchip mech" + (active(c.id) ? " on" : "")}
+      title=${MECH_HINT[c.id] || ""} onClick=${() => toggle(c.id)}><span class="blkchip-g">⊘</span>${c.label}</button>`;
+  return html`<div class="blk-field">
+    <div class="blk-grp"><div class="blk-gtitle">Content filtering</div>
+      ${content.length ? html`<div class="blk-chips">${content.map(chip)}</div>`
+        : html`<div class="hint blk-empty">No content-filter categories are enabled on this node yet — turn them on in <button type="button" class="linkbtn" onClick=${() => { closeAllModals(); goSettings("routing"); }}>Settings ▸ Routing & Blocking</button>.</div>`}</div>
+    <div class="blk-grp"><div class="blk-gtitle">Traffic & abuse <span class="faint" style="text-transform:none;letter-spacing:0">— built-in</span></div>
+      <div class="blk-chips">${mech.map(mchip)}</div></div>
+  </div>`;
+}
+
+// Reusable collapsible section (interface + turn-proxy modals): a full-width header (caret · title · right-aligned
+// summary) with the body shown only when open. Controlled — parent owns the `open` boolean + `onToggle`. `summary`
+// is optional JSX/text; `sumCls` ("on" → green count, "route" → rose count) tints a <b> inside it.
+function Disclosure({ title, summary, sumCls, open, onToggle, children }) {
+  return html`<${Fragment}>
+    <button type="button" class=${"disc" + (open ? " open" : "")} onClick=${onToggle}>
+      <span class="disc-car">▸</span><span class="disc-t">${title}</span>
+      ${summary != null ? html`<span class=${"disc-sum" + (sumCls ? " " + sumCls : "")}>${summary}</span>` : null}
+    </button>
+    ${open ? html`<div class="disc-body">${children}</div>` : null}
+  <//>`;
+}
+
+// Add-a-list picker for a block category (expanded row): a popover of every enabled provider's lists, grouped by
+// provider, minus the ones already in this category. Tapping one adds it; the popover stays open for multiple adds.
+function BlockListPicker({ providers, provLists, current, nodeMode, onAdd, autoOpen }) {
+  const [q, setQ] = useState("");
+  const has = (p, l) => (current || []).some(s => s.provider === p && s.list === l);
+  const ql = q.trim().toLowerCase();
+  // A domain (host) provider list can't enforce where domains aren't DNS-filled (IP-only, Kernel-SNI). IP lists work
+  // everywhere. Same shared rule (blockTierOk) as every other block gate. Badge it, still addable.
+  const naLabel = (MODE_META[nodeMode] || {}).label || nodeMode;
+  const naFor = p => blockSrcOk(nodeMode, providers, { provider: p }) ? null : naLabel;
+  return html`<${Popover} alignRight flipFit clickOnly cls="bk-addwrap" popCls="bk-pickpop" autoOpen=${autoOpen}
+      trigger=${html`<button class="btn btn-mini"><${Ic} i="plus"/> Add list</button>`}>
+    <div class="bk-pick" onClick=${e => e.stopPropagation()}>
+      <input class="bk-picksearch" ref=${el => { if (el && !el._foc) { el._foc = 1; requestAnimationFrame(() => el.focus()); } }} placeholder="Search lists…" value=${q} onInput=${e => setQ(e.target.value)}/>
+      <div class="bk-picklist">
+        ${(providers || []).filter(p => p.enabled !== false).map(p => {
+          const items = (provLists[p.id] || []).filter(it => !has(p.id, it.id) && (!ql || (it.label + " " + (it.desc || "") + " " + p.label).toLowerCase().includes(ql)));
+          if (!items.length) return null;
+          const na = naFor(p.id);
+          return html`<div class="bk-pickgrp" key=${p.id}><div class="bk-pickprov" style=${p.color ? "--pc:" + p.color : ""}>${p.label}</div>
+            ${items.map(it => html`<button class=${"bk-pickitem" + (na ? " na" : "")} key=${it.id} onClick=${() => onAdd(p.id, it.id)}><span class="bk-pilabel">${it.label}${na ? html`<span class="bk-nabadge">Not available with ${na}</span>` : null}</span>${it.desc ? html`<span class="bk-pidesc">${it.desc}</span>` : null}</button>`)}</div>`;
+        })}
+        ${(providers || []).every(p => p.enabled === false || !(provLists[p.id] || []).some(it => !has(p.id, it.id) && (!ql || (it.label + " " + p.label).toLowerCase().includes(ql))))
+          ? html`<div class="bk-pickempty">${ql ? "No lists match." : "Every available list is already added."}</div>` : null}
+      </div>
+    </div>
+  <//>`;
+}
+
+// Create a custom block category — just a name. It matches by whatever the lists you add are (domains and/or IPs).
+function NewBlockCatSheet({ existingIds, onCreate }) {
+  const [name, setName] = useState("");
+  const nm = name.trim();
+  const id = "cl_" + nm.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const dup = (existingIds || []).includes(id);
+  const bad = !nm || id === "cl_" || dup;
+  const create = () => { if (bad) return; onCreate({ id, label: nm }); closeModal(); };
+  return html`<${Sheet} title="New block category" onClose=${closeModal}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${bad} onClick=${create}>Create</button></>`}>
+    <div class="field"><label>Name</label>
+      <input type="text" autofocus spellcheck="false" value=${name} placeholder="e.g. Corporate block"
+        onInput=${e => setName(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") create(); }}/>
+      <div class="hint">Add lists next — the category matches by domain or IP depending on the lists you pick.</div></div>
+    ${dup ? html`<div class="hint"><b class="warntext">A category with that name already exists.</b></div>` : null}
+  <//>`;
+}
+
 // Searchable provider-catalog category picker — replaces the native <select> for routing rules. The
 // catalog holds ~3.5k categories (far too many for a dropdown), so this is a combobox: a button showing
 // the current label, opening a portal'd popover with a search box (filters the full index locally, by title/
@@ -4809,12 +5158,12 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   const [page, setPage] = useState(0);
   const [cidx, setCidx] = useState(addMode ? _CATALOG_INDEX : null);   // the full catalog index (addMode only), loaded once
   const [pos, setPos] = useState(null);
-  const ref = useRef(null), popRef = useRef(null), inRef = useRef(null);
+  const ref = useRef(null), popRef = useRef(null), inRef = useRef(null), listRef = useRef(null);
   const selSet = new Set(selected || []);
   const curLabel = addMode ? (triggerLabel || "Add from catalog")
     : value === "custom" ? "Custom IPs / domains…"
     : (SMART_CAT_LABEL[value] || (listTitle || {})[value] || (Store.catLabels || {})[value] || value || "Choose a category…");
-  const usable = caps => mode === "kernel" ? !!(caps && caps.ip) : !!(caps && (caps.ip || caps.host));
+  const usable = caps => routeCapsUsable(mode, caps);   // shared routing rule: IP everywhere, domain needs a host layer (non-IP-only)
   const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
     const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
     if (addMode) {   // the catalog browser spans the FULL card width (grid-wide), anchored under its header row
@@ -4858,7 +5207,8 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   const pick = id => { if (addMode) sessionPicked.current = true; onChange(id); if (addMode) return; setOpen(false); setQ(""); setPage(0); };   // addMode stays open for multi-add
   const capBadge = capBadges;   // shared Host-first renderer (defined near catLabelOf)
   // addMode: filter the full index by title/id/description, sort by readable title, paginate 40/page locally.
-  const per = 40;
+  const per = 50;
+  const goPage = (np, toTop) => { setPage(np); requestAnimationFrame(() => { const el = listRef.current; if (el) el.scrollTop = toTop ? 0 : el.scrollHeight; }); };
   const _aq = q.trim().toLowerCase();
   // Curated "Recommended presets" — pinned above the provider catalog, always shown in full (only ~26).
   const _curatedAll = addMode ? SMART_CATEGORIES.filter(([id]) => id !== "all")
@@ -4904,7 +5254,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
             setOpen(false);
           } /* any other case (0 or many results): Enter does nothing */ }}/>
       </div>
-      <div class="catpick-list">
+      <div class="catpick-list" ref=${listRef}>
         ${!addMode ? html`
           ${!_ql ? html`<button type="button" class=${"catpick-row" + (value === "custom" ? " sel" : "")} onClick=${() => pick("custom")}>
             <span class="catpick-rlbl"><${Ic} i="pencil"/> Custom IPs / domains…</span></button>` : null}
@@ -4926,14 +5276,17 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
           ${total ? html`<div class="catpick-grp">Provider catalog</div>
             ${items.map(it => html`<${CatalogRow} key=${it.id} it=${it} added=${selSet.has(it.id)} onPick=${pick}/>`)}` : null}
           ${cidx == null && !curatedFiltered.length ? html`<div class="catpick-empty">Loading catalog…</div>`
-            : _matchTotal === 0 ? html`<div class="catpick-empty">No list matches “${q}”.${cidx && cidx.length === 0 ? html`<br/><span class="faint">Enable a provider in Settings → Geo data to search its catalog.</span>` : ""}</div>` : null}
+            : _matchTotal === 0 ? html`<div class="catpick-empty">No list matches “${q}”.${cidx && cidx.length === 0 ? html`<br/><span class="faint">Enable a provider in Settings → Geo data providers to search its catalog.</span>` : ""}</div>` : null}
         `}
       </div>
       ${mode === "kernel" ? html`<div class="catpick-note">Greyed lists match by <b>domain</b> only — this node is <b>IP-only</b> (no host layer). Switch it to Force-DNS or SNI to use them.</div>` : null}
       ${addMode && total > per ? html`<div class="catpick-foot">
-        <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => setPage(p => Math.max(0, p - 1))}>‹ Prev</button>
         <span class="catpick-count">${page * per + 1}–${Math.min(total, (page + 1) * per)} of ${total}</span>
-        <button type="button" class="btn btn-mini" disabled=${page >= pages - 1} onClick=${() => setPage(p => Math.min(pages - 1, p + 1))}>Next ›</button>
+        <span class="grow"></span>
+        <div class="catpick-nav">
+          <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => goPage(Math.max(0, page - 1), false)}>‹ Prev</button>
+          <button type="button" class="btn btn-mini" disabled=${page >= pages - 1} onClick=${() => goPage(Math.min(pages - 1, page + 1), true)}>Next ›</button>
+        </div>
       </div>` : null}
     </div><//>` : null}
   </div>`;
@@ -5013,7 +5366,7 @@ function RoutingRules({ node, rules, onChange }) {
   </div>`;
 }
 
-function EgressPicker({ node, value, onChange }) {
+function EgressPicker({ node, value, onChange, noRules }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const ipIfaces = nrec.ip_ifaces || [];
   const nics = [...new Set(ipIfaces.map(p => p.iface))];
@@ -5039,7 +5392,7 @@ function EgressPicker({ node, value, onChange }) {
       </select>
       <div class="hint">Exit directly out a NIC, channel everything through another node, or route per-destination (smart).</div></div>
     ${value.mode === "smart"
-      ? html`<${RoutingRules} node=${node} rules=${value.rules || []} onChange=${rs => onChange({ ...value, rules: rs })}/>`
+      ? (noRules ? null : html`<${RoutingRules} node=${node} rules=${value.rules || []} onChange=${rs => onChange({ ...value, rules: rs })}/>`)
       : value.mode !== "auto" ? html`<div class="field"><label>Outbound (egress) IP</label>
       <${NodeIpPick} ips=${ipOpts} value=${value.ip || ""} onChange=${ip => onChange({ ...value, ip })} auto=${value.mode === "forward" ? "Auto (target node default)" : "Auto"}/>
       <div class="hint">${value.mode === "forward" ? "Source IP on the target node that clients egress from." : "Source IP clients egress from."}</div></div>` : null}
@@ -5121,6 +5474,11 @@ function LoadIfaceSheet({ node, pre, ghost, back }) {
   const [dns, setDns] = useState((_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String(_idf.mtu || 1280)); const [ka, setKa] = useState(String(_idf.keepalive || 25));
   const [conf, setConf] = useState("");
   const ips = nrec.ips || []; const [eg, setEg] = useState(() => egressInit({}));
+  const [blk, setBlk] = useState(() => defaultBlockFor(node));   // Filters & abuse — seeded from each category's default_on once the catalog loads
+  const blkSeeded = useRef(false);
+  useEffect(() => { loadBlockCatalog().then(() => { if (blkSeeded.current) return; blkSeeded.current = true; setBlk(defaultBlockFor(node)); }); }, []);
+  const [disc, setDisc] = useState({ routing: true, filters: false, advanced: false });   // collapsible sections; Routing opens by default (only shown in Smart mode)
+  const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   // endpoint host: dropdown of the node's known IPs (default the first), last entry = a free-text "Custom IP / Host…"
   const _preEp = pre && pre.endpoint;
   const [hostSel, setHostSel] = useState(_preEp ? (ips.includes(_preEp) ? _preEp : "__custom__") : (ips[0] || "__custom__"));
@@ -5161,7 +5519,7 @@ function LoadIfaceSheet({ node, pre, ghost, back }) {
       const ee = egressError(eg, nrec.routing_mode || "kernel"); if (ee) return fail(ee);
       const hostVal = ipPickerVal(hostSel, hostCustom);
       r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: hostVal,
-        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), ...egressBody(eg) });
+        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, ...egressBody(eg) });
     }
     if (!r.ok) return fail(r.error || "Request failed.");
     // optimistic: show the card — WITH the details just entered — the instant Create is clicked (use the
@@ -5205,12 +5563,25 @@ function LoadIfaceSheet({ node, pre, ghost, back }) {
         <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/></div>
       </div>
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This docker node uses <span class="mono">bridge</span> networking — after creating you must publish this port in the node's <span class="mono">docker-compose.yml</span> (<span class="mono">ports: "${port || "PORT"}:${port || "PORT"}/udp"</span>) and <span class="mono">up -d</span>, or clients can't reach it. (A host-networking node needs none of this.)</span></div>` : null}
-      <div class="row2">
-        <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Blank = 1280</div></div>
-        <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25</div></div>
-      </div>
-      <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/><div class="hint">Comma-separated</div></div>
-      <${EgressPicker} node=${node} value=${eg} onChange=${setEg}/>
+      <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
+      ${eg.mode === "smart" ? html`<${Disclosure} title="Routing rules" sumCls="route"
+        summary=${(eg.rules || []).length ? html`<b>${(eg.rules || []).length}</b> ${(eg.rules || []).length === 1 ? "rule" : "rules"} · first match wins` : "no rules yet"}
+        open=${disc.routing} onToggle=${() => tog("routing")}>
+        <${RoutingRules} node=${node} rules=${eg.rules || []} onChange=${rs => setEg({ ...eg, rules: rs })}/>
+      <//>` : null}
+      <${Disclosure} title="Filters & abuse" sumCls="on"
+        summary=${blk.length ? html`<b>${blk.length}</b> active` : html`<span class="faint">none</span>`}
+        open=${disc.filters} onToggle=${() => tog("filters")}>
+        <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
+      <//>
+      <${Disclosure} title="Advanced settings" summary="MTU · keepalive · DNS"
+        open=${disc.advanced} onToggle=${() => tog("advanced")}>
+        <div class="row2">
+          <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Blank = 1280</div></div>
+          <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25</div></div>
+        </div>
+        <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/><div class="hint">Comma-separated</div></div>
+      <//>
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -5372,10 +5743,12 @@ function EditIfaceSheet({ node, iface }) {
   const [dns, setDns] = useState((meta.dns || []).join(", "));
   const [mtu, setMtu] = useState(String(meta.mtu || 1280));
   const [ka, setKa] = useState(String(meta.keepalive || 25));
-  const [adv, setAdv] = useState(false);     // MTU / keepalive / DNS / AmneziaWG live under "Show advanced"
+  const [disc, setDisc] = useState({ routing: true, filters: false, advanced: false });   // collapsible sections; Routing opens by default (only shown in Smart mode)
+  const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const [driftDone, setDriftDone] = useState(null);   // after resolving a server-key drift: "adopted" | "restoring" — the warning becomes a terminal confirmation (no buttons) until the drift clears on a later sync
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const [eg, setEg] = useState(() => egressInit(meta));
+  const [blk, setBlk] = useState(() => [...(meta.block || [])]);   // active block-category ids (Block-traffic section)
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
   const [awg, setAwg] = useState(() => Object.assign({}, meta.awg_params || {}));
   const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
@@ -5385,7 +5758,7 @@ function EditIfaceSheet({ node, iface }) {
   const notup = !!idown || istopped;         // either way: Save brings it up; footer offers Start
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async () => {
-    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), ...egressBody(eg) };
+    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, ...egressBody(eg) };
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
     // down → "start" (real bring-up); up → "apply" live (no restart). Optimistic: flip the lifecycle +
     // close the modal(s) NOW so the detail page shows starting/applying the instant Save is pressed.
@@ -5397,6 +5770,7 @@ function EditIfaceSheet({ node, iface }) {
     if (!r.ok) return fail(r.error || "save failed");
     if (notup) { const r2 = await api.ifaceStart({ node, iface }); if (!r2.ok) return fail(r2.error || "start failed"); }
     await Store.poll();   // trackIfaceOps drives busy → done
+    toast(notup ? "Interface saved — starting…" : "Interface saved.", "ok");
   };
   const save = () => {
     const ee = egressError(eg, emode); if (ee) return toast(ee, "err");
@@ -5418,6 +5792,7 @@ function EditIfaceSheet({ node, iface }) {
   const _awgTrim = src => AWG_ORDER.reduce((o, k) => { const v = String((src || {})[k] == null ? "" : (src || {})[k]).trim(); if (v) o[k] = v; return o; }, {});
   const ifaceDirty = notup
     || JSON.stringify(_ifBody) !== JSON.stringify(_ifOrig)
+    || JSON.stringify([...blk].sort()) !== JSON.stringify([...(meta.block || [])].sort())
     || (isAwg && JSON.stringify(_awgTrim(awg)) !== JSON.stringify(_awgTrim(meta.awg_params)));
   return html`<${Sheet} title=${"Edit interface · " + iface} width=${720}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete</button>
@@ -5425,7 +5800,7 @@ function EditIfaceSheet({ node, iface }) {
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> Start service</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> Stop service</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> Restart service</button><//>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg, emode) || !ifaceDirty} title=${egressError(eg, emode) || (!ifaceDirty ? "No changes to save" : "")} onClick=${save}>Save</button></>`}>
-    <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div><${SubAutoNote}/></div>
+    <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${((meta.drift && meta.drift.public_key) || driftDone) ? (() => {
       // Once the operator acts, this area becomes a terminal confirmation (no buttons), kept for the life of the
@@ -5475,9 +5850,19 @@ function EditIfaceSheet({ node, iface }) {
         <div class="hint">What clients dial — config-facing only</div></div>
       <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"})</div></div>
     </div>
-    <${EgressPicker} node=${node} value=${eg} onChange=${setEg}/>
-    <button type="button" class="advtoggle" onClick=${() => setAdv(a => !a)}><span class="advcaret">${adv ? "▾" : "▸"}</span> Advanced settings</button>
-    ${adv ? html`<${Fragment}>
+    <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
+    ${eg.mode === "smart" ? html`<${Disclosure} title="Routing rules" sumCls="route"
+      summary=${(eg.rules || []).length ? html`<b>${(eg.rules || []).length}</b> ${(eg.rules || []).length === 1 ? "rule" : "rules"} · first match wins` : "no rules yet"}
+      open=${disc.routing} onToggle=${() => tog("routing")}>
+      <${RoutingRules} node=${node} rules=${eg.rules || []} onChange=${rs => setEg({ ...eg, rules: rs })}/>
+    <//>` : null}
+    <${Disclosure} title="Filters & abuse" sumCls="on"
+      summary=${blk.length ? html`<b>${blk.length}</b> active` : html`<span class="faint">none</span>`}
+      open=${disc.filters} onToggle=${() => tog("filters")}>
+      <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
+    <//>
+    <${Disclosure} title="Advanced settings" summary=${"MTU · keepalive · DNS" + (isAwg ? " · AWG" : "")}
+      open=${disc.advanced} onToggle=${() => tog("advanced")}>
       <div class="row2">
         <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Default for new peers</div></div>
         <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25</div></div>
@@ -5486,7 +5871,7 @@ function EditIfaceSheet({ node, iface }) {
       ${isAwg ? html`<div class="field"><label>AmneziaWG parameters</label>
         <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>
         <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div></div>` : null}
-    <//>` : null}
+    <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -5626,7 +6011,6 @@ function TurnManageSheet({ node, tp }) {
     <div class="iface-intro" style="margin-top:8px">
       <div>Changing any field rewrites the unit's ExecStart on the node and restarts it.</div>
       <div>The parameters below are placed verbatim after <span class="mono">-connect</span> — wrap key, wrap mode, any flags the fork supports.</div>
-      <${SubAutoNote}/>
     </div>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${turnFork(svc)} autocomplete="off"/></div>
     <div class="row2">
@@ -5649,14 +6033,13 @@ function TurnManageSheet({ node, tp }) {
       <div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This forwards to a port with no managed interface behind it. Make sure a wg/awg interface is really listening there, or clients reach the proxy but get no tunnel.</span></div>
     <//>` : null}
     <${TurnAppsPicker} ctl=${clientsCtl} offered=${true}/>
-    <div class="secbar">
-      <button type="button" class=${"secbar-item" + (openSec === "server" ? " on" : "")} onClick=${() => setOpenSec(s => s === "server" ? null : "server")}><span>Server parameters</span><span class="secbar-car">${openSec === "server" ? "▾" : "▸"}</span></button>
-      <button type="button" class=${"secbar-item" + (openSec === "client" ? " on" : "")} onClick=${() => setOpenSec(s => s === "client" ? null : "client")}><span>Client parameters</span><span class="secbar-car">${openSec === "client" ? "▾" : "▸"}</span></button>
-      <button type="button" class=${"secbar-item" + (openSec === "version" ? " on" : "")} onClick=${() => setOpenSec(s => s === "version" ? null : "version")}><span>Version & rollback</span>${vers && vers.held ? html`<span class="secbar-dot" title=${"held at " + vers.held}></span>` : null}<span class="secbar-car">${openSec === "version" ? "▾" : "▸"}</span></button>
-    </div>
-    ${openSec === "server" ? html`<div class="secpanel"><${TurnParamsEditor} fork=${fork} node=${node} value=${params} onChange=${setParams} listen=${(lhost || "server_ip") + ":" + (lport || "port")} connect=${isCustom ? (custom || "interface_ip:port") : ("127.0.0.1:" + (((ifaces.find(i => i.name === fwd)) || {}).port || "port"))}/></div>` : null}
-    ${openSec === "client" ? html`<div class="secpanel"><${TurnClientParams} ctl=${clientsCtl} embedded=${true}/></div>` : null}
-    ${openSec === "version" ? html`<div class="secpanel">
+    <${Disclosure} title="Server parameters" open=${openSec === "server"} onToggle=${() => setOpenSec(s => s === "server" ? null : "server")}>
+      <${TurnParamsEditor} fork=${fork} node=${node} value=${params} onChange=${setParams} listen=${(lhost || "server_ip") + ":" + (lport || "port")} connect=${isCustom ? (custom || "interface_ip:port") : ("127.0.0.1:" + (((ifaces.find(i => i.name === fwd)) || {}).port || "port"))}/>
+    <//>
+    <${Disclosure} title="Client parameters" open=${openSec === "client"} onToggle=${() => setOpenSec(s => s === "client" ? null : "client")}>
+      <${TurnClientParams} ctl=${clientsCtl} embedded=${true}/>
+    <//>
+    <${Disclosure} title="Version & rollback" sumCls="route" summary=${vers && vers.held ? html`held · <b>${vers.held}</b>` : null} open=${openSec === "version"} onToggle=${() => setOpenSec(s => s === "version" ? null : "version")}>
       <div class="hint">Installed: <span class="mono">${installed || "—"}</span>${vers && vers.held ? html` · <b>held at <span class="mono">${vers.held}</span></b> — the auto-updater won't move it (Reinstall to release the hold).` : ""}</div>
       ${vers == null
         ? html`<div class="hint">Loading available versions…</div>`
@@ -5672,7 +6055,7 @@ function TurnManageSheet({ node, tp }) {
             <div class="hint" style="margin-top:6px">The panel keeps the last few versions it has installed (checksum-verified); the node re-downloads the chosen one from the panel and restarts. A rollback <b>holds</b> that version until you Reinstall/Update.</div>
           <//>`
         : html`<div class="hint" style="margin-top:6px">No earlier versions in the rollback cache yet — the panel keeps the last few it has installed for each fork.</div>`}
-    </div>` : null}
+    <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -6022,9 +6405,6 @@ function turnOptions(d) {
 }
 // ANY parameter with exactly two states renders as a switch: a bool, or an enum/flagenum with exactly 2 values.
 // 3+ values → dropdown. The switch shows the selected value's LABEL so a 2-mode enum (e.g. WRAP/SRTP) is unambiguous.
-function turnIsToggle(d) {
-  return d.type === "bool" || ((d.type === "enum" || d.type === "flagenum") && (d.values || []).length === 2);
-}
 function serializeTurnSettings(schema, values) {   // typed values → ExecStart params tail (schema order; skips hidden + empty)
   const parts = [];
   for (const d of schema) {
@@ -6079,27 +6459,6 @@ function discoveredToDescriptor(df) {   // a discovered flag with no curated ent
   const bool = df.type === "" || df.type === "bool";
   return { key: df.name.replace(/[^A-Za-z0-9]+/g, "_"), flag: "-" + df.name, type: bool ? "bool" : "string",
            default: bool ? false : (df.default || ""), label: df.name, help: df.usage || "" };
-}
-function mergedTurnSchema(forkId, node) {
-  const curated = forkSettings(forkId);
-  const discovered = (((Store.stats && Store.stats[node]) || {}).turn_flags || {})[forkId] || [];
-  if (!discovered.length) return curated;       // no discovery data (older node / fork not installed yet / -h failed) → pure curated (today's UX)
-  // discovered flag → its curated descriptor. A flagenum (e.g. srtp_mode) has NO top-level flag — its flags live
-  // in values[].flag — so index those too, else the discovered -srtp/-wrap-srtp lose their combined dropdown (and
-  // a curated field whose showIf targets the flagenum then hides). Dedup by key so a multi-flag flagenum is added once.
-  const byFlag = {};
-  for (const d of curated) {
-    if (d.flag) byFlag[d.flag] = d;
-    else if (d.type === "flagenum") (d.values || []).forEach(o => { if (o.flag) byFlag[o.flag] = d; });
-  }
-  const out = [], added = new Set();
-  for (const df of discovered) {                // discovery is authoritative for WHICH flags exist; curated enriches
-    if (turnFlagHidden(forkId, df.name)) continue;
-    const cur = byFlag["-" + df.name];
-    if (cur) { if (!added.has(cur.key)) { out.push(cur); added.add(cur.key); } }
-    else out.push(discoveredToDescriptor(df));
-  }
-  return out;
 }
 // Shared server-config form — used by the panel-settings DEFAULTS sheet AND the per-proxy create/edit editor.
 // An obfuscation control (+ Generate key, shown only for keyed modes with a live "Not generated yet"), a read-only
@@ -6748,12 +7107,12 @@ function SetupTurnSheet({ node, forwardIface }) {
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
       <${TurnAppsPicker} ctl=${clientsCtl} offered=${true}/>
-      <div class="secbar">
-        <button type="button" class=${"secbar-item" + (openSec === "server" ? " on" : "")} onClick=${() => setOpenSec(s => s === "server" ? null : "server")}><span>Server parameters${forkSettings(fork).length ? "" : " (none)"}</span><span class="secbar-car">${openSec === "server" ? "▾" : "▸"}</span></button>
-        <button type="button" class=${"secbar-item" + (openSec === "client" ? " on" : "")} onClick=${() => setOpenSec(s => s === "client" ? null : "client")}><span>Client parameters</span><span class="secbar-car">${openSec === "client" ? "▾" : "▸"}</span></button>
-      </div>
-      ${openSec === "server" ? html`<div class="secpanel"><${TurnParamsEditor} fork=${fork} node=${node} value=${params} onChange=${setParams} listen=${(lhost || "server_ip") + ":" + (lport || "port")} connect=${isCustom ? (custom || "interface_ip:port") : ("127.0.0.1:" + (((ifaces.find(i => i.name === fwd)) || {}).port || "port"))}/></div>` : null}
-      ${openSec === "client" ? html`<div class="secpanel"><${TurnClientParams} ctl=${clientsCtl} embedded=${true}/></div>` : null}
+      <${Disclosure} title="Server parameters" summary=${forkSettings(fork).length ? null : html`<span class="faint">none</span>`} open=${openSec === "server"} onToggle=${() => setOpenSec(s => s === "server" ? null : "server")}>
+        <${TurnParamsEditor} fork=${fork} node=${node} value=${params} onChange=${setParams} listen=${(lhost || "server_ip") + ":" + (lport || "port")} connect=${isCustom ? (custom || "interface_ip:port") : ("127.0.0.1:" + (((ifaces.find(i => i.name === fwd)) || {}).port || "port"))}/>
+      <//>
+      <${Disclosure} title="Client parameters" open=${openSec === "client"} onToggle=${() => setOpenSec(s => s === "client" ? null : "client")}>
+        <${TurnClientParams} ctl=${clientsCtl} embedded=${true}/>
+      <//>
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -7884,32 +8243,6 @@ function VaultPromptSheet({ opts, onDone }) {
     </div>
   <//>`;
 }
-function VaultUnlockBar() {
-  const [exists, setExists] = useState(false);
-  const [ready, setReady] = useState(!!subSKCached());
-  const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
-  const [keep, setKeep] = useState(subPersistOn());
-  useEffect(() => { if (subSKCached()) { setReady(true); return; }
-    let ok = true; api.subVault().then(r => { if (ok) setExists(!!(r && r.ok && r.data && r.data.exists)); }).catch(() => {});
-    return () => { ok = false; }; }, []);
-  if (ready || subSKCached() || !exists) return null;
-  const unlock = async () => {
-    if (!pw) return; setBusy(true);
-    try { await subUnlock(pw); subSetPersist(keep); setPw(""); setReady(true); Store.configEpoch++; bus.emit(); }
-    catch (e) { toast((e && e.message) || "Unlock failed", "err"); }
-    setBusy(false);
-  };
-  return html`<div class="notice" style="margin-bottom:12px;align-items:center;gap:8px;flex-wrap:wrap">
-    <${Ic} i="lock"/><span style="min-width:120px;flex:1">Unlock your Encryption Vault to show stored QRs.</span>
-    <input class="subpw" type="password" style="max-width:200px" value=${pw} autocomplete="off" placeholder="Panel password"
-      onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
-    <button class="btn btn-primary btn-mini" disabled=${busy || !pw} onClick=${unlock}>${busy ? "Unlocking…" : "Unlock"}</button>
-    <div style="flex-basis:100%">
-      <label class="vp-keep-row"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/> <span>Keep this device unlocked</span></label>
-      <div class="hint">Survives a browser restart; the key stays on this device, never sent to the server.</div>
-    </div>
-  </div>`;
-}
 function SubUrlBar({ url }) {
   const [copied, setCopied] = useState(false);
   if (!url) return null;
@@ -7924,95 +8257,11 @@ function SubUrlBar({ url }) {
 // The owning user's subscription link, shown under the title in the peer QR modal. Only appears when the
 // peer is assigned to a subscription-enabled user; if the Subscription Key isn't unlocked this session it
 // points the operator to the user's QR view (where unlocking lives), rather than a dead control here.
-function SubPeerUrl({ peer }) {
-  useStore();                          // re-render when the store loads (panel settings arrive after mount)
-  const on = subFeatureOn();
-  const [url, setUrl] = useState(null);
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => { let ok = true;
-    (async () => {
-      if (!on || !peer.user_id) return;
-      const rec = (await subUsersMap())[peer.user_id];
-      if (!rec || !rec.enabled) return;
-      if (ok) setEnabled(true);
-      if (subSKCached()) { try { const u = await subUrlFor(rec); if (ok) setUrl(u); } catch (_) {} }
-    })();
-    return () => { ok = false; }; }, [peer.id, peer.user_id, on]);
-  if (!on || !peer.user_id || !enabled) return null;
-  return url ? html`<${SubUrlBar} url=${url}/>`
-    : html`<div class="hint suburl-hint">Subscription active — open this user's QR view to copy the shareable link.</div>`;
-}
 
 // Per-user subscription control: enable/create the shareable link, show + copy it, rotate (kill the old
 // link), or disable. All the crypto is client-side — enabling needs the Subscription Key, which is
 // unlocked once per session with the panel password (the convenience cache). Off entirely unless the
 // subscriptions feature is enabled in Settings.
-function SubUserPanel({ user }) {
-  useStore();                          // re-render when the store loads (panel settings arrive after mount)
-  const on = subFeatureOn();
-  const [rec, setRec] = useState(undefined);   // undefined=loading · null=none · object=record
-  const [url, setUrl] = useState(null);
-  const [pw, setPw] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const [warn, setWarn] = useState("");
-  const [vault, setVault] = useState(null);    // null=loading · bool
-  const [skReady, setSkReady] = useState(!!subSKCached());
-  const base = subBaseUrl();
-  const load = async () => {
-    const r = await api.subUsers();
-    setVault(!!(r && r.ok && r.data && r.data.vault));
-    setRec((r && r.ok && r.data && r.data.users && r.data.users[user.id]) || null);
-  };
-  useEffect(() => { if (on) load(); }, [user.id, on]);
-  useEffect(() => { let ok = true;
-    (async () => { if (rec && rec.enabled && subSKCached()) { try { const u = await subUrlFor(rec); if (ok) setUrl(u); } catch (_) { if (ok) setUrl(null); } } else if (ok) setUrl(null); })();
-    return () => { ok = false; }; }, [rec, skReady]);
-  if (!subFeatureOn()) return null;
-  const settingsLink = html`<a href="#/panel/settings" onClick=${() => closeAllModals()}>Settings → Subscriptions</a>`;
-  const run = fn => async () => { setBusy(true); setErr(""); setWarn(""); try { await fn(); } catch (e) { setErr(e.message || String(e)); } setBusy(false); };
-  const unlock = async () => { await subUnlock(pw); setPw(""); setSkReady(true); };
-  const doEnable = run(async () => {
-    if (!subSKCached()) await unlock();
-    await subEnableUser(user.id); subUsersForget(); await load();
-    // publish the user's EXISTING peers now (subMaybePublish only covers newly-created ones)
-    const rec2 = (await subUsersMap(true))[user.id];
-    if (rec2 && rec2.enabled && rec2.unlock_by_sk) {
-      const { unlockKey } = await subRecover(rec2);
-      const res = await subBackfillUser(user.id, unlockKey);
-      if (res.missing) setWarn(`${res.missing} of ${res.total} peer${res.total === 1 ? "" : "s"} ${res.missing === 1 ? "has" : "have"} no stored config, so ${res.missing === 1 ? "its QR won't" : "their QRs won't"} appear on the page. Re-issue ${res.missing === 1 ? "that peer" : "those peers"}${Store.storeConfigs ? "" : ", or enable “Keep configs” in Settings,"} to publish ${res.missing === 1 ? "it" : "them"}.`);
-    }
-  });
-  const doRotate = run(async () => { if (!subSKCached()) await unlock(); await subRotateUser(user.id); subUsersForget(); await load(); });
-  const doUnlock = run(unlock);
-  const doDisable = run(async () => { await api.subUserDisable({ user_id: user.id }); subUsersForget(); setUrl(null); await load(); });
-  const pwField = html`<input class="subpw" type="password" autocomplete="off" placeholder="Panel password (unlocks the Subscription Key)"
-    value=${pw} onInput=${e => setPw(e.target.value)} onKeyDown=${e => { if (e.key === "Enter" && pw && !busy) doUnlock(); }}/>`;
-  let bodyEl;
-  if (vault === null || rec === undefined) bodyEl = html`<div class="hint">Loading…</div>`;
-  else if (vault === false) bodyEl = html`<div class="hint">Set up subscription encryption in ${settingsLink} first.</div>`;
-  else if (!rec || !rec.enabled) bodyEl = html`
-    <div class="hint">A shareable, mobile-friendly page of this user's QRs. New peers appear automatically; the unlock secret rides in the link and never reaches the server.</div>
-    ${!subSKCached() ? pwField : null}
-    <button class="btn" disabled=${busy || (!subSKCached() && !pw)} onClick=${doEnable}>Create subscription link</button>`;
-  else bodyEl = html`
-    ${url ? html`<${SubUrlBar} url=${url}/>` : !base
-      ? html`<div class="hint warn">Set a public base URL in ${settingsLink} to build the shareable link.</div>`
-      : subSKCached() ? html`<div class="hint">Building link…</div>`
-      : html`<div class="hint">Unlock the Subscription Key to view this user's link.</div>${pwField}
-             <button class="btn" disabled=${busy || !pw} onClick=${doUnlock}>Unlock</button>`}
-    <div class="subpanel-actions">
-      <button class="btn ghost" disabled=${busy} onClick=${doRotate} title="Issue a new link and invalidate the old one">New link</button>
-      <button class="btn ghost danger" disabled=${busy} onClick=${doDisable}>Disable</button>
-    </div>
-    <div class="hint">Replacing or disabling the link stops serving new configs — but a config already scanned keeps working until you rekey or remove the peer.</div>`;
-  return html`<div class="subpanel">
-    <div class="subpanel-hd"><${Ic} i="link"/> Subscription${rec && rec.enabled ? html`<span class="subpanel-on">active</span>` : null}</div>
-    ${err ? html`<div class="hint err">${err}</div>` : null}
-    ${warn ? html`<div class="hint warn"><${Ic} i="warn"/> ${warn}</div>` : null}
-    ${bodyEl}
-  </div>`;
-}
 
 function openUserConfigs(user, back) {
   const peers = Store.peersOfUser(user.id);
@@ -8255,21 +8504,6 @@ function UsersScreen() {
 // ═════════════════════════ SCREEN: USER DETAIL ═════════════════════════
 
 // Inline-editable peer title (optimistic). The operator's label to tell a user's devices apart.
-function PeerTitle({ peer }) {
-  const [editing, setEditing] = useState(false);
-  const [val, setVal] = useState(peer.title || "");
-  const save = () => {
-    setEditing(false);
-    mutate({ key: "peer:" + peer.id,
-      patch: s => { const p = s.roster.peers[peer.id]; if (p) p.title = val.trim(); },
-      call: () => api.peerUpdate({ peer_id: peer.id, title: val.trim() }) });
-  };
-  if (editing) return html`<span class="ptitle-edit"><input autofocus value=${val} maxlength="64" placeholder="title"
-      onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}/>
-    <button class="btn btn-mini" onClick=${save}><${Ic} i="check"/></button></span>`;
-  return html`<span class="ptitle">${peer.title ? html`<b>${peer.title}</b>` : html`<span class="faint">Untitled</span>`}
-    <button class="editname" title="Rename peer" onClick=${() => { setVal(peer.title || ""); setEditing(true); }}><${Ic} i="pencil"/></button></span>`;
-}
 
 function UserEditCard({ user, done }) {
   const [name, setName] = useState(user.name || "");
@@ -8471,7 +8705,6 @@ function Sparkline({ points, color, w, h }) {
     <circle cx=${(w - 1).toFixed(1)} cy=${(h - 1 - Math.min(max, Math.max(0, last)) / max * (h - 2)).toFixed(1)} r="1.6" fill=${color || "var(--online)"}/>
   </svg>`;
 }
-const toneColor = t => t === "hot" ? "var(--dangling)" : t === "warn" ? "var(--fault)" : "var(--online)";
 // Gradient area chart for a history series (0–100). Stretches to its container width;
 // the stroke stays crisp via non-scaling-stroke. Used for the CPU-load history.
 // format a chart point's timestamp for the hover tooltip — time of day, + date for week/month ranges
@@ -8693,7 +8926,7 @@ function RingLegend({ items, cols, active, onActive }) {
     const on = active && active.key === k, rowDim = active && active.key !== k, hasDU = it.down != null;
     return html`<div class=${"mrl-row" + (rowDim ? " dim" : "") + (on ? " on" : "")} key=${k}
         onMouseEnter=${() => set({ key: k, dir: null })} onMouseLeave=${() => set(null)}>
-      <span class="mrl-sw" style=${"background:" + it.color}></span>
+      <span class="mrl-sw" style=${"--sw:" + it.color}></span>
       <span class="mrl-nm">${it.name}</span>
       <span class="grow"></span>
       ${hasDU
@@ -8941,6 +9174,7 @@ function NodeHealth({ health, node, compact, history, range, nodeHist }) {
 }
 
 let hostUpdating = false;                 // once Update is clicked, lock the header pill into "updating"
+let hostUpdRepairing = false;             // that update was a REPAIR (triggered while up to date) → pill says "repairing…"
 let pendingUpdateDone = null;             // [from,to] of a panel version bump, held until the WHOLE host update finishes (a master's panel restarts mid-update, before the node phase — don't pop the "updated" dialog yet)
 // the circular-arrow glyph (same as the check icon), spun in yellow while an update runs
 const UPD_SPIN_SVG = `<svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg>`;
@@ -8950,9 +9184,10 @@ const CHECK_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" s
 const INFO_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`;
 function setHostUpdating() {
   hostUpdating = true;
+  hostUpdRepairing = !Store.panelOutdated;   // up to date when triggered ⇒ it's a repair (Fix / re-run), not a version update
   const slot = $("#updslot");
-  if (slot) slot.innerHTML = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
-  Store.apply();   // re-render the whole SPA so a co-located (local) node tile flips to "updating…" at the SAME instant, not on the next poll
+  if (slot) slot.innerHTML = `<span class="livepill upd-busy">${hostUpdRepairing ? "repairing…" : "updating…"} ${UPD_SPIN_SVG}</span>`;
+  Store.apply();   // re-render the whole SPA so a co-located (local) node tile flips at the SAME instant, not on the next poll
 }
 let seenPanelVer = null;   // detect the panel coming back on a new version (after an update), to prompt a hard reload
 function openUpdateDone(from, to) {
@@ -8997,6 +9232,7 @@ function updateHost() {
 async function checkForUpdate(e, nodeId) {
   const btn = e && e.currentTarget;                  // spin + cyan it while we poll, so it reads as "searching"
   if (btn) btn.classList.add("checking");
+  if (!nodeId) { Store.hostChecking = true; Store.apply(); }   // panel-header check → show a "checking…" pill
   try {
     const r = await api.checkUpdate();
     await Store.poll();
@@ -9007,8 +9243,42 @@ async function checkForUpdate(e, nodeId) {
       if (!(n && n.outdated)) { Store.nodeUpdFlash = { id: nodeId, until: Date.now() + 5000 }; Store.apply(); setTimeout(() => Store.apply(), 5100); }
     }
     else if (r.data && r.data.panel_outdated) toast("Update available — v" + r.data.latest_remote, "ok");
-    else { Store.updFlash = Date.now() + 15000; Store.apply(); setTimeout(() => Store.apply(), 15100); }   // panel up to date → "up to date" pill (clickable to re-run/repair) for 15s
-  } finally { if (btn) btn.classList.remove("checking"); }
+    else if (serviceIssues().length) toast(serviceIssues().length + " issue" + (serviceIssues().length > 1 ? "s" : "") + " can be repaired — click “Fix”", "ok");   // up to date, but self-heals are pending
+    else { Store.updFlash = Date.now() + 15000; Store.apply(); setTimeout(() => Store.apply(), 15100); }   // panel up to date + healthy → "up to date" pill (clickable to re-run/repair) for 15s
+  } finally { if (btn) btn.classList.remove("checking"); if (!nodeId) { Store.hostChecking = false; Store.apply(); } }
+}
+// Rich hover bubble for the innerHTML header update widget (no Preact there) — right-aligned under the anchor;
+// contentFn() returns HTML (empty string → no bubble). Replaces the plain title= tooltip.
+function hostHoverBubble(anchor, contentFn) {
+  let bub = null, t = null;
+  const hide = () => { clearTimeout(t); if (bub) { bub.remove(); bub = null; } };
+  const show = () => {
+    hide();
+    const inner = contentFn(); if (!inner) return;
+    bub = document.createElement("div");
+    bub.className = "deppop hostupd-bub";
+    bub.innerHTML = inner;
+    document.body.appendChild(bub);
+    const r = anchor.getBoundingClientRect();
+    bub.style.top = Math.round(r.bottom + 7) + "px";
+    bub.style.left = Math.round(r.right) + "px";
+    bub.style.transform = "translateX(-100%)";   // right edge aligns under the button
+  };
+  anchor.addEventListener("mouseenter", show);
+  anchor.addEventListener("mouseleave", () => { t = setTimeout(hide, 60); });
+}
+function updBubbleHtml() {
+  const notes = Store.latestRemoteNotes || [];
+  const head = `<div class="hub-h">update to <b>${esc(Store.latestRemote || "?")}</b>${Store.latestRemoteDate ? ` <span class="hub-date">${esc(Store.latestRemoteDate)}</span>` : ""}</div>`;
+  const body = notes.length ? notes.map(n => `<div class="hub-row"><span class="hub-bul">•</span><span>${esc(n)}</span></div>`).join("")
+    : `<div class="hub-row faint">See the changelog for what's new.</div>`;
+  return head + body + `<div class="hub-foot">Click to update this server.</div>`;
+}
+function fixBubbleHtml() {
+  const iss = serviceIssues(); if (!iss.length) return "";
+  const head = `<div class="hub-h">${iss.length} issue${iss.length > 1 ? "s" : ""} to fix</div>`;
+  const body = iss.map(i => `<div class="hub-row"><span class="hub-dot ${i.sev}"></span><span><b>${esc(i.label)}</b> — ${esc(i.msg)}</span></div>`).join("");
+  return head + body + `<div class="hub-foot">Click to review &amp; run the repair.</div>`;
 }
 function NodeCard({ n, reorder }) {
   const it = reorder ? reorder.item(n.id) : null;
@@ -10011,9 +10281,21 @@ function PanelSettingsScreen() {
   // ---- themed colour pickers ({dark,light} each) — Interfaces / Display / Turn sections ----
   const asThemed = (v, dd, dl) => (v && typeof v === "object") ? { dark: v.dark || dd, light: v.light || dl } : { dark: v || dd, light: v || dl };
   const sameThemed = (a, dd, dl) => (a.dark || "").toLowerCase() === dd.toLowerCase() && (a.light || "").toLowerCase() === dl.toLowerCase();
-  const _provColDefault = p => { const d = CAT_PROVIDER_DEFAULTS[p] || (p === "custom" ? { color: "#8A94A6", colorL: "#5E6875" } : { color: "#8FA8C0", colorL: "#5E7085" }); return { dark: d.color, light: d.colorL }; };
-  const _provColKeys = [..._provReg.map(p => p.id), "custom"];
-  const [provColors, setProvColors] = useState(() => Object.fromEntries(_provColKeys.map(k => [k, asThemed((ps.provider_colors || {})[k], _provColDefault(k).dark, _provColDefault(k).light)])));
+  const _bprovs = (Store.blockCatalog || {}).providers || [];   // content-filter feeds share the provider_colors map (ids never collide with catalog ids)
+  const _provColDefault = p => {
+    const c = CAT_PROVIDER_DEFAULTS[p];
+    if (c) return { dark: c.color, light: c.colorL };
+    const bp = _bprovs.find(x => x.id === p);
+    if (bp && bp.color) return { dark: bp.color, light: bp.color_l || bp.color };   // block feeds ship a dark + light default hex
+    if (p === "custom") return { dark: "#8A94A6", light: "#5E6875" };
+    return { dark: "#8FA8C0", light: "#5E7085" };
+  };
+  const _provColKeys = [..._provReg.map(p => p.id), ..._bprovs.map(p => p.id), "custom"];
+  const [provColors, setProvColors] = useState(() => Object.fromEntries([..._provReg.map(p => p.id), "custom"].map(k => [k, asThemed((ps.provider_colors || {})[k], _provColDefault(k).dark, _provColDefault(k).light)])));
+  useEffect(() => {   // block catalog loads async — seed its providers' default colours once present (only keys not already set)
+    if (!_bprovs.length) return;
+    setProvColors(c => { let ch = false; const n = { ...c }; for (const p of _bprovs) if (n[p.id] === undefined) { n[p.id] = asThemed((ps.provider_colors || {})[p.id], p.color, p.color_l || p.color); ch = true; } return ch ? n : c; });
+  }, [Store.blockCatalog]);
   const provColorOverrides = () => { const o = {}; for (const k of _provColKeys) { const d = _provColDefault(k); const t = asThemed(provColors[k], d.dark, d.light); if (!sameThemed(t, d.dark, d.light)) o[k] = t; } return o; };
   const [customEnabled, setCustomEnabled] = useState(ps.custom_lists_enabled !== false);
   const [forkColors, setForkColors] = useState(() => Object.fromEntries(turnForkList().map(f => [f.id, asThemed((ps.turn_fork_colors || {})[f.id], f.color, f.colorL)])));
@@ -10106,6 +10388,24 @@ function PanelSettingsScreen() {
   };
   const [section, setSection] = useState(pendingSettingsSection || "display");   // active left-rail section (a Settings activity click can deep-link here)
   useEffect(() => { pendingSettingsSection = null; _setSettingsSection = setSection; return () => { _setSettingsSection = () => {}; }; }, []);   // one-shot section pin + expose setSection so a modal can switch the rail (confirm modal → Access & TLS)
+  const [routeTab, setRouteTab] = useState("routing");   // "Routing & Blocking" section: Routing (route→exit) | Blocking (drop) — both gated by the node's mode above
+  useEffect(() => { if (routeTab === "blocking" || section === "geo") loadBlockCatalog(); }, [routeTab, section]);   // lazy-load the block catalog for the Blocking tab and the Geo-data Filters-providers list
+  const _bkCountTries = useRef(0);
+  useEffect(() => {   // list counts resolve in the background on the panel — refetch a few times until they land (or give up)
+    if (routeTab !== "blocking") return;
+    const bc = Store.blockCatalog; if (!bc) return;
+    const pending = Object.values(bc.categories || {}).some(c => (c.sources || []).length && !c.size);
+    if (!pending) { _bkCountTries.current = 0; return; }
+    if (_bkCountTries.current >= 6) return;
+    const t = setTimeout(() => { _bkCountTries.current++; loadBlockCatalog(true); }, 4000);
+    return () => clearTimeout(t);
+  }, [routeTab, Store.blockCatalog]);
+  const [blockProvEdits, setBlockProvEdits] = useState({});   // staged Filters-providers toggle deltas {prov_id:bool} → panelSettings.block_providers (committed by the shared Save)
+  const [geoTab, setGeoTab] = useState("routing");   // Geo-data providers card: Routing (list providers) | Blocking (content-filter feeds)
+  const [blockEdits, setBlockEdits] = useState({});   // staged block-category deltas {id:{enabled_nodes?,default_on?,sources?,…}} → api.blockCatalogSave (committed by the shared Save)
+  const [bkOpen, setBkOpen] = useState({});   // expanded block-category rows (id→bool) — the expand shows/edits the category's lists
+  const [blockRemoved, setBlockRemoved] = useState([]);   // custom block-category ids staged for deletion → api.blockCatalogSave removed[]
+  const [bkAutoAdd, setBkAutoAdd] = useState(null);   // a just-created category id → auto-open its Add-list picker
   const rsv = ps.reserved || {};
   const [rsvSubnet, setRsvSubnet] = useState(rsv.mesh_subnet || "10.255.0.0/16");
   const [rsvPort, setRsvPort] = useState(String(rsv.mesh_port_base || 9999));
@@ -10154,7 +10454,10 @@ function PanelSettingsScreen() {
     setAccessSig(prev => prev === sig ? prev : sig);
   }, []);
   const save = async () => {
-    setMsg({ ok: true, t: "Saving…" });
+    // Progress lives on the confirm-modal button ("Saving…" spinner) — it stays open until save() resolves. The
+    // header shows the green "All settings saved" flash on success. A thrown request (dead/wedged panel, timeout)
+    // surfaces here instead of leaving the modal stuck.
+    try {
     if (SECTIONS.some(([s]) => glDirty(s))) {   // only rewrite panel_settings when a GLOBAL setting actually changed (nodes go via nodeUpdate below)
       const dirtySecs = SECTIONS.filter(([s]) => glDirty(s)), secLabel = Object.fromEntries(SECTIONS);   // for the activity one-liner + deep-link
       const r = await api.panelSettings({
@@ -10162,6 +10465,7 @@ function PanelSettingsScreen() {
         interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25 },
         mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
         providers: provEnabled,
+        block_providers: blockProvEdits,
         provider_colors: provColorOverrides(),
         custom_lists_enabled: customEnabled,
         geo_update: { every_days: Math.max(0, Math.min(30, parseInt(guEvery) || 0)), at: guAt },
@@ -10213,6 +10517,12 @@ function PanelSettingsScreen() {
       if (!nr.ok) nerr = nr.error || ("Couldn't save " + n.name);
     }
     if (nerr) return setMsg({ ok: false, t: nerr });
+    if (Object.keys(blockEdits).length || blockRemoved.length) {   // block-list category edits (availability/defaults/sources/custom) → panel_settings.block_catalog
+      const br = await api.blockCatalogSave({ categories: blockEdits, removed: blockRemoved });
+      if (!br.ok) return setMsg({ ok: false, t: br.error || "Couldn't save block lists." });
+      await loadBlockCatalog(true); setBlockEdits({}); setBlockRemoved([]);
+    }
+    if (Object.keys(blockProvEdits).length) { await loadBlockCatalog(true); setBlockProvEdits({}); }   // Filters-providers toggles committed via panelSettings above → refresh catalog + clear deltas
     // credentials (if changed) — last, since a username/password change re-auths and forces a reload
     if (secChanged()) {
       const ar = await api.accountSave({ username: secUser.trim(), current_password: secCur, new_password: secNp });
@@ -10225,15 +10535,19 @@ function PanelSettingsScreen() {
     await Store.poll();
     const fresh = Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)]));
     setNodeEdits(fresh); setOrig(fresh);
+    } catch (e) {
+      setMsg({ ok: false, t: "Couldn't save — " + ((e && e.message) || "the panel didn't respond. Nothing was lost; try again.") });
+    }
   };
   // Save click → confirm modal listing the modified values + a reprovisioning warning, then commit.
   const REPROV_WARN = "Heads up: changing a node's mesh subnet, interface prefix, or AWG params re-provisions its mesh links — it briefly drops off the mesh while every peer pulls the new config and reconnects.";
   const diffList = () => {
     const out = [];
-    if (glDirty("routing")) out.push("Routing lists — presets / custom");
+    if ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) out.push("Routing lists — presets / custom");
+    if (Object.keys(blockEdits).length || blockRemoved.length) out.push("Content filters — categories / lists");
     if (secChanged()) out.push("Authentication — panel credentials");
     if (glDirty("turn")) out.push("Turn proxies — forks / colours / VK link");
-    if (glDirty("geo")) out.push("Geo data");
+    if (glDirty("geo")) out.push("Geo data providers");
     if (glDirty("defaults")) out.push("Interfaces — colours / defaults");
     if (glDirty("configs")) out.push("Client configs → " + (sc === "off" ? "off" : "encrypted"));
     if (glDirty("subs")) out.push("Subscriptions — enable / languages");
@@ -10261,8 +10575,9 @@ function PanelSettingsScreen() {
     const ch = diffList();
     if (!ch.length) { toast("No changes to save.", "ok"); return; }
     const rp = needsReprov();
-    openConfirm({ title: "Save settings", confirmLabel: "Save", warn: rp, onConfirm: save,
-      body: html`<div class="savediff"><div class="savediff-h">${ch.length} change${ch.length === 1 ? "" : "s"} to apply:</div><ul>${ch.map(c => html`<li>${c}</li>`)}</ul>${rp ? html`<div class="savediff-w">${REPROV_WARN}</div>` : null}</div>` });
+    openConfirm({ title: "Save settings", confirmLabel: "Save", busyLabel: "Saving…", warn: rp, onConfirm: save,
+      body: html`<div class="savediff"><div class="savediff-h">${ch.length} change${ch.length === 1 ? "" : "s"} to apply:</div><ul>${ch.map(c => html`<li>${c}</li>`)}</ul>${rp ? html`<div class="savediff-w">${REPROV_WARN}</div>` : null}</div>`,
+      note: html`<div class="savediff-note">Applying can take up to a minute — the nodes reconfigure and re-pull their lists. This stays open until it finishes.</div>` });
   };
   const refreshGeo = async () => { const r = await api.refreshGeo(); toast(r.ok ? "Geo lists will refresh on each node's next sync." : (r.error || "Failed"), r.ok ? "ok" : "err"); };
     // Custom lists AUTOSAVE on add/edit/delete — they persist on their own (POST just custom_lists), no global Save needed.
@@ -10280,7 +10595,7 @@ function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: "Delete custom list", confirmLabel: "Delete", danger: true,
     body: html`Delete <b>${l.title || "Untitled list"}</b>? It's removed from <b>every node</b> it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.`,
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Access & TLS"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"], ["integrations", "Integrations"]];
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Access & TLS"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
   const entryPreview = t => {   // as many WHOLE entries as fit ~one line, then a "(N more)" tail — never cuts an entry
@@ -10318,7 +10633,7 @@ function PanelSettingsScreen() {
   const fleetToggleCat = (id, nid, on) => { setCatOnNode(id, nid, on); if (!on) setGridKeep(g => g.includes(id) ? g : [...g, id]); };   // fleet popover toggle: keep the row visible at 0/N
   const removeCatFleet = id => { fleetNodes.forEach(n => { if (ccOf(n.id).includes(id)) setCatOnNode(id, n.id, false); }); setGridKeep(g => g.filter(x => x !== id)); };   // × drops it everywhere + hides the row
   const provFleetCats = [...new Set([...fleetNodes.flatMap(n => ccOf(n.id)), ...gridKeep])].sort((a, b) => catLabelOf(a).toLowerCase().localeCompare(catLabelOf(b).toLowerCase()));
-  const compatCats = () => provFleetCats.filter(id => nodeMode !== "kernel" || catCap(id).ip);   // usable on selNode in its mode
+  const compatCats = () => provFleetCats.filter(id => catUsableInMode(id, nodeMode));   // usable on selNode in its mode (shared rule)
   const allCompatOn = () => compatCats().length > 0 && compatCats().every(id => catOnNode(id, selNode));
   const toggleAllCompat = () => { const off = allCompatOn();
     if (off) setGridKeep(g => [...new Set([...g, ...compatCats()])]);              // Disable all: keep the rows visible (0/N)
@@ -10326,6 +10641,8 @@ function PanelSettingsScreen() {
   const confirmRemoveCat = id => openConfirm({ title: "Remove list from the fleet", confirmLabel: "Remove", danger: true,
     body: html`Remove <b>${catLabelOf(id)}</b> <span class="faint">(${provLabelOf(id)})</span> from <b>every node</b>? Interface rules that use it stop matching, and each node drops its records on the next sync. You can add it back from the catalog any time.`,
     onConfirm: () => removeCatFleet(id) });
+  const catSaved = id => fleetNodes.some(n => ((orig[n.id] || {}).catalog_cats || []).includes(id));   // present in the last-SAVED fleet state → removing it is a real change (confirm); a draft-only add this session isn't
+  const removeCatRow = id => catSaved(id) ? confirmRemoveCat(id) : removeCatFleet(id);   // × removes a just-added (unsaved) list with no prompt; only saved lists confirm
   const customOnNode = (l, nid) => !(l.disabled_nodes || []).includes(nid);
   const setCustomOnNode = (l, nid, on) => persistLists(lists.map(x => x._rid === l._rid ? { ...x, disabled_nodes: on ? (x.disabled_nodes || []).filter(z => z !== nid) : [...new Set([...(x.disabled_nodes || []), nid])] } : x));
   // dirty tracking — per global section + per node-per-section, drives the rail dots and badge glow
@@ -10333,10 +10650,10 @@ function PanelSettingsScreen() {
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
-    sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
+    sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || []) || Object.keys(blockEdits).length > 0 || blockRemoved.length > 0) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
     sec === "security" ? secChanged() :
-    sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
+    sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
     sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
@@ -10368,7 +10685,10 @@ function PanelSettingsScreen() {
         ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card rcard">
           ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel;
-            const resetBtn = html`<button class="rmode-reset" title="Wipe or refresh this node's smart routing — learned IPs and/or the full rebuild" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/> Reset routing</button>`;
+            const resetBtn = html`<${Popover} hoverOnly cls="rmode-resetwrap" popCls="rmode-reset-pop"
+                  trigger=${html`<button class="rmode-reset-ic" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/></button>`}>
+                  <div class="rmode-reset-pop-body">Reset this node's smart routing — clear just the learned IPs, or wipe + rebuild + re-pull every list. Use it to recover a stuck node.</div>
+                <//>`;
             const mmRun = MODE_META[savedMode] || MODE_META.kernel;   // runbar reflects the SAVED/running mode, not the draft
             const caption = html`<div class="rmr-title"><b class="rmr-node">${nodeRec ? nodeRec.name : "Node"}</b> currently runs on <b class="rmr-mode">${mmRun.label}</b></div>`;
             const infoPop = html`<${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
@@ -10378,17 +10698,15 @@ function PanelSettingsScreen() {
               ? html`<div class="rmode-runbar">
                   ${caption}
                   <span class="grow"></span>
-                  <div class="rmr-actions">${resetBtn}${infoPop}</div>
+                  <div class="rmr-actions">${infoPop}${resetBtn}</div>
                 </div>`
               : html`<div class="rmode-runbar">
                   <div class="rmr-left">
                     <${HostHealth} node=${selNode} mode=${savedMode} learn=${ipLearn} onLearn=${setIpLearn}/>
-                    ${!hostDegraded ? resetBtn : null}
                   </div>
                   <span class="grow"></span>
                   <div class="rmr-right">
-                    <div class="rmr-rtop">${caption}${infoPop}</div>
-                    ${hostDegraded ? resetBtn : null}
+                    <div class="rmr-rtop">${caption}${infoPop}${resetBtn}</div>
                   </div>
                 </div>`;
             return html`
@@ -10403,16 +10721,31 @@ function PanelSettingsScreen() {
                 </div>
                 <div class="rd-adds">${mm.adds}</div>
               </div>
-              <${ModeTabs} value=${nodeMode} onChange=${setMode}/>
+              <div class="rd-headside">
+                <${ModeTabs} value=${nodeMode} onChange=${setMode}/>
+                ${mm.lists ? html`<div class="rmode-lists">${mm.lists.map((l, i) => html`${i ? " + " : ""}<b>${l}</b>`)}</div>` : null}
+              </div>
             </div>
             <div class="rd-lines">
               ${(mm.bene || []).map(b => html`<div class="rmc-bene"><b>+</b><span>${b}</span></div>`)}
+              ${(Array.isArray(mm.block) ? mm.block : mm.block ? [mm.block] : []).filter(x => x.s === "+").map(x => html`<div class="rmc-bene"><b>+</b><span>${x.t}</span></div>`)}
               <div class="rmc-cost"><b>−</b><span>${mm.cost}</span></div>
+              ${(Array.isArray(mm.block) ? mm.block : mm.block ? [mm.block] : []).filter(x => x.s === "−").map(x => html`<div class="rmc-cost"><b>−</b><span>${x.t}</span></div>`)}
             </div>
             <div class="rmode-desc">${mm.exp}</div>
-            ${mm.lists ? html`<div class="rmode-lists">${mm.lists.map((l, i) => html`${i ? " + " : ""}<b>${l}</b>`)}</div>` : null}
           </div>`; })()}
 
+          <div class="rltabs">
+            <div class="rltab-cap">${routeTab === "blocking" ? "Content filters" : "Routing lists"} for <b style=${"color:" + (Store.nodeColor(selNode) || "var(--ink)")}>${nodeRec ? nodeRec.name : "this node"}</b></div>
+            <div class="rltab-group" role="tablist">
+              <button role="tab" aria-selected=${routeTab === "routing"} class=${"rltab" + (routeTab === "routing" ? " on" : "")} onClick=${() => setRouteTab("routing")}><${Ic} i="cascade"/> Routing</button>
+              <button role="tab" aria-selected=${routeTab === "blocking"} class=${"rltab" + (routeTab === "blocking" ? " on" : "")} onClick=${() => setRouteTab("blocking")}><${Ic} i="shield"/> Blocking</button>
+            </div>
+          </div>
+          <div class="hint rltab-note"><${Ic} i="info"/><span>${routeTab === "blocking" ? "Filtering runs on the entry node — where a client's tunnel lands. Enable it on each entry node; exit and relay hops in a multi-hop path never see the client, so there's nothing there for them to filter." : "Routing runs on the entry node — where a client's tunnel lands. Enable it on each entry node; exit and relay hops in a multi-hop path just forward what's already been steered."}</span></div>
+          ${routeTab === "blocking" ? html`<div class="hint rltab-warn"><${Ic} i="warn"/><span>Large lists are memory-hungry — every enabled list is loaded into RAM on <b>each</b> entry node that uses it, roughly <b>130 MB per 1M domains</b>. Keep your smallest node's memory in mind before turning on big lists.</span></div>` : null}
+
+          ${routeTab === "routing" ? html`
           <div class="lgrid-head">
             <div class="lg-htitle"><span class="seclabel" style="margin:0">Provider lists</span><span class="lg-count">${provFleetCats.length}</span><span class="faint lg-sub">provider-maintained · read-only</span></div>
             <span class="grow"></span>
@@ -10420,15 +10753,15 @@ function PanelSettingsScreen() {
             <${CatPicker} addMode=${true} primary=${true} mode=${nodeMode} triggerLabel="Add preset list" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)} onAdd=${id => { if (!ccOf(selNode).includes(id)) addCatalogCat(id); }}/>
           </div>
           ${provFleetCats.length ? html`<div class="lgrid">
-            ${provFleetCats.map(id => { const cap = catCap(id); const usable = nodeMode !== "kernel" || cap.ip; const sz = (Store.catSizes || {})[id] || {};
+            ${provFleetCats.map(id => { const cap = catCap(id); const usable = catUsableInMode(id, nodeMode); const sz = (Store.catSizes || {})[id] || {};
               return html`<div class=${"lgrow" + (usable ? "" : " lg-lock")} key=${id}>
                 <div class="lg-pull"><${Switch} on=${catOnNode(id, selNode)} disabled=${!usable} title=${usable ? "Pull this list on " + (nodeRec ? nodeRec.name : "this node") : "Host-only — needs Force-DNS or SNI on this node"} onChange=${v => pullCatOnNode(id, v)}/></div>
-                <div class="lg-cat"><span class="lg-title">${catLabelOf(id)}</span><span class="lg-id">${catRawId(id)}</span>${provLabelOf(id) ? html`<${ProvTag} id=${id}/>` : null}</div>
+                <div class="lg-cat"><div class="lg-catmain"><span class="lg-title">${catLabelOf(id)}</span>${provLabelOf(id) ? html`<${ProvTag} id=${id}/>` : null}</div>${catRawId(id) ? html`<span class="lg-id">${catRawId(id)}</span>` : null}</div>
                 <div class="lg-size">${sizeSummary(sz.host || 0, sz.ip || 0) || html`<span class="faint">—</span>`}</div>
                 <div class="lg-fleet"><${FleetAssign} nodes=${fleetNodes} isOn=${nid => catOnNode(id, nid)} onToggle=${(nid, on) => fleetToggleCat(id, nid, on)} disabledFor=${nid => (nv(nid, "routing_mode") || "kernel") === "kernel" && !cap.ip ? "Host-only — this node is IP-only" : null}/></div>
                 <div class="lg-caps">${capBadges(cap)}</div>
                 <div class="lg-act">${catListUrl(id, cap) ? html`<a class="ccchip-info" href=${catListUrl(id, cap)} target="_blank" rel="noopener" title="View this list on GitHub"><${Ic} i="info"/></a>`
-                  : catDescOf(id) ? html`<${DescInfo} text=${catDescOf(id)}/>` : null}<button class="ccchip-x" title="Remove from the fleet" onClick=${() => confirmRemoveCat(id)}><${Ic} i="x"/></button></div>
+                  : catDescOf(id) ? html`<${DescInfo} text=${catDescOf(id)}/>` : null}<button class="ccchip-x" title="Remove from the fleet" onClick=${() => removeCatRow(id)}><${Ic} i="x"/></button></div>
               </div>`; })}
           </div>` : html`<div class="hint" style="margin:2px 0 0">No preset lists yet — use <b>Add preset list</b> to pull from the catalog.</div>`}
 
@@ -10442,7 +10775,7 @@ function PanelSettingsScreen() {
             ${[...lists].sort((a, b) => (a.title || "").toLowerCase().localeCompare((b.title || "").toLowerCase())).map(l => { const cap = customCaps(l);
               return html`<div class="lgrow" key=${l._rid}>
                 <div class="lg-pull"><${Switch} on=${customOnNode(l, selNode)} title=${"Enable on " + (nodeRec ? nodeRec.name : "this node")} onChange=${v => setCustomOnNode(l, selNode, v)}/></div>
-                <div class="lg-cat"><button class="lg-title asbtn" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button><button class="lg-id asbtn" onClick=${() => openList(l)}>edit</button><span class="catpick-src" style=${"--pc:" + providerColor("custom")}>Custom</span></div>
+                <div class="lg-cat"><div class="lg-catmain"><button class="lg-title asbtn" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button><span class="catpick-src" style=${"--pc:" + providerColor("custom")}>Custom</span></div><button class="lg-id asbtn" onClick=${() => openList(l)}>edit</button></div>
                 <div class="lg-size"><${ListInfo} list=${l}/></div>
                 <div class="lg-fleet"><${FleetAssign} nodes=${fleetNodes} isOn=${nid => customOnNode(l, nid)} onToggle=${(nid, on) => setCustomOnNode(l, nid, on)}/></div>
                 <div class="lg-caps">${capBadges(cap)}</div>
@@ -10453,8 +10786,101 @@ function PanelSettingsScreen() {
           <div class="lg-legend">
             <div class="lg-leg-row"><span class="capb ip">IP</span> matched by address range (GeoIP / ASN) — works in every mode.</div>
             <div class="lg-leg-row"><span class="capb host">Host</span> matched by domain name — needs Force-DNS or SNI mode.</div>
-            ${provFleetCats.some(id => nodeMode === "kernel" && !catCap(id).ip) ? html`<div class="lg-leg-row faint">Greyed rows are Host-only — this node is IP-only, so they can't match here. The pull stays remembered; switch to Force-DNS or SNI to activate them.</div>` : null}
-          </div>
+            ${provFleetCats.some(id => !catUsableInMode(id, nodeMode)) ? html`<div class="lg-leg-row faint">Greyed rows are Host-only — this node is IP-only, so they can't match here. The pull stays remembered; switch to Force-DNS or SNI to activate them.</div>` : null}
+          </div>` : null}
+
+          ${routeTab === "blocking" ? (() => {
+            const bc = Store.blockCatalog;
+            if (!bc) return html`<div class="hint" style="margin:8px 0 0">Loading block lists…</div>`;
+            const provList = bc.provider_lists || {};
+            const provLabel = p => ((bc.providers || []).find(x => x.id === p) || {}).label || p;
+            const provTier = p => ((bc.providers || []).find(x => x.id === p) || {}).tier || "host";
+            const provColor = p => { const bp = (bc.providers || []).find(x => x.id === p) || {}; return pickThemed(provColors[p] || asThemed((ps.provider_colors || {})[p], bp.color, bp.color_l || bp.color), _provColDefault(p).dark, _provColDefault(p).light); };
+            const srcLabel = s => { const L = (provList[s.provider] || []).find(x => x.id === (s.list || "")); return (L && L.label) || s.list || provLabel(s.provider); };
+            const bcat = id => { const b = (bc.categories || {})[id] || {}; return { id, ...b, ...(blockEdits[id] || {}) }; };
+            const allIds = [...new Set([...(bc.cat_order || []), ...Object.keys(bc.categories || {}), ...Object.keys(blockEdits)])];
+            const cats = allIds.map(bcat).filter(c => c.kind !== "mechanism" && !blockRemoved.includes(c.id));
+            const caps = c => { const s = c.sources || []; return { host: s.some(x => provTier(x.provider) === "host"), ip: s.some(x => provTier(x.provider) === "ip") }; };
+            const fmtN = n => n == null ? null : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M" : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, "") + "k" : String(n);
+            const catTotal = c => { const sz = c.size; if (!sz) return null; const t = (sz.host || 0) + (sz.ip || 0); return t ? fmtN(t) : null; };
+            const createCat = ({ id, label }) => { setBlockEdits(e => ({ ...e, [id]: { label, sources: [], enabled_nodes: [] } })); setBkOpen(o => ({ ...o, [id]: true })); setBkAutoAdd(id);
+              requestAnimationFrame(() => requestAnimationFrame(() => {   // scroll fully to the bottom so the just-added category (+ its auto-opened picker) is in view
+                const items = document.querySelectorAll(".bkitem"); const el = items[items.length - 1]; if (!el) return;
+                let p = el.parentElement;
+                while (p) { const st = getComputedStyle(p).overflowY; if ((st === "auto" || st === "scroll") && p.scrollHeight > p.clientHeight + 4) { p.scrollTo({ top: p.scrollHeight, behavior: "smooth" }); break; } p = p.parentElement; }
+                window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+              })); };
+            const doRemoveCat = c => { setBkOpen(o => ({ ...o, [c.id]: false })); if ((bc.categories || {})[c.id]) setBlockRemoved(r => r.includes(c.id) ? r : [...r, c.id]); setBlockEdits(e => { const n = { ...e }; delete n[c.id]; return n; }); };
+            const removeCat = c => { if ((bc.categories || {})[c.id])   // a SAVED custom category → confirm; an unsaved draft removes with no prompt
+                openConfirm({ title: "Delete category · " + c.label, confirmLabel: "Delete category", danger: true,
+                  body: "Removes this custom category and its lists. It's deleted from the panel when you Save, and nodes stop filtering it on their next sync. You'd have to recreate it to bring it back.",
+                  onConfirm: () => doRemoveCat(c) });
+              else doRemoveCat(c); };
+            const availOn = c => (c.enabled_nodes || []).includes(selNode);
+            const modeLabel = (MODE_META[nodeMode] || {}).label || "this mode";
+            const srcAvail = s => blockSrcOk(nodeMode, bc.providers, s);   // shared rule: IP everywhere, domain needs Force-DNS/Hybrid
+            // A category with NO IP list can't enforce anything in Default (IP-only) or Kernel-SNI — every list shows "not
+            // available". Then the whole category is dead here: show it disabled and don't let it be enabled on this node.
+            const catDis = c => blockCatDisabled(nodeMode, bc.providers, c);
+            const srcHost = s => provTier(s.provider) !== "ip";
+            const setAvail = (c, on) => { const en = new Set(c.enabled_nodes || []); on ? en.add(selNode) : en.delete(selNode);
+              setBlockEdits(e => ({ ...e, [c.id]: { ...(e[c.id] || {}), enabled_nodes: [...en] } })); };
+            const setDefault = (c, on) => setBlockEdits(e => ({ ...e, [c.id]: { ...(e[c.id] || {}), default_on: on } }));
+            const setSources = (c, sources) => setBlockEdits(e => ({ ...e, [c.id]: { ...(e[c.id] || {}), sources } }));
+            const addSource = (c, p, l) => { if ((c.sources || []).some(s => s.provider === p && s.list === l)) return; setSources(c, [...(c.sources || []), { provider: p, list: l }]); };
+            const removeSource = (c, i) => setSources(c, (c.sources || []).filter((_, j) => j !== i));
+            const srcDesc = s => { const L = (provList[s.provider] || []).find(x => x.id === (s.list || "")); return (L && L.desc) || ""; };
+            const srcUrl = s => { const L = (provList[s.provider] || []).find(x => x.id === (s.list || "")); return (L && L.src) || ""; };
+            const setAvailNode = (c, nid, on) => { const en = new Set(c.enabled_nodes || []); on ? en.add(nid) : en.delete(nid);
+              setBlockEdits(e => ({ ...e, [c.id]: { ...(e[c.id] || {}), enabled_nodes: [...en] } })); };
+            const bkRow = c => { const src = c.sources || []; const nL = src.length; const open = !!bkOpen[c.id]; const dis = catDis(c);
+              return html`<div class=${"bkitem" + (open ? " open" : "") + (dis ? " bk-dis" : "")} key=${c.id}>
+                <div class=${"bkrow" + (open ? " open" : "")} onClick=${() => setBkOpen(o => ({ ...o, [c.id]: !open }))}>
+                  <div class="lg-pull" onClick=${e => e.stopPropagation()}><${Switch} on=${availOn(c) && !dis} disabled=${dis} title=${dis ? "No IP list here — can't enforce in " + modeLabel + ". Add an IP list, or use Force-DNS / Hybrid-SNI." : "Filter on " + (nodeRec ? nodeRec.name : "this node")} onChange=${v => { if (!dis) setAvail(c, v); }}/></div>
+                  <div class="bk-cat">
+                    <div class="bk-catline"><span class="lg-title">${c.label}</span><span class="bk-chev">▾</span></div>
+                    <div class="bk-lists">${nL ? src.map(srcLabel).join(", ") : html`<span class="faint">no lists yet — add one →</span>`}</div>
+                  </div>
+                  <div class="bk-kind">${!c.predefined ? html`<span class="capb custom" title="A category you created">Custom</span>` : null}</div>
+                  <div class="bk-size">${(() => { const t = catTotal(c); return t ? html`<span class="bk-count" title="Total entries across this category’s lists">${t}</span>` : null; })()}</div>
+                  <div class="bk-fleet" onClick=${e => e.stopPropagation()}><${FleetAssign} nodes=${fleetNodes} isOn=${nid => (c.enabled_nodes || []).includes(nid)} onToggle=${(nid, on) => setAvailNode(c, nid, on)}/></div>
+                  <div class="bk-cap">${(() => { const cp = caps(c); return cp.host || cp.ip
+                    ? html`<${Fragment}>${cp.host ? html`<span class="capb host" title="Matched by domain — needs Force-DNS or Hybrid-SNI mode">Host</span>` : null}${cp.ip ? html`<span class="capb ip" title="Matched by IP — works in every mode">IP</span>` : null}<//>`
+                    : html`<span class="bk-nocap" title="No lists yet">—</span>`; })()}</div>
+                  <button class=${"bk-defchip" + (c.default_on ? " on" : "")} onClick=${e => { e.stopPropagation(); setDefault(c, !c.default_on); }} title="Turn this category on automatically for every new interface (still toggled per interface)">Default ${c.default_on ? "ON" : "OFF"}</button>
+                  <${BlockListPicker} providers=${bc.providers} provLists=${provList} current=${src} nodeMode=${nodeMode} onAdd=${(p, l) => addSource(c, p, l)} autoOpen=${bkAutoAdd === c.id}/>
+                </div>
+                ${open ? html`<div class="bk-expand">
+                  ${src.length ? src.map((s, i) => html`<div class=${"bk-lrow" + (srcAvail(s) ? "" : " bk-ldis")} key=${i}>
+                      <div class="bk-linfo">
+                        <div class="bk-ltop"><span class="bk-llabel">${srcLabel(s)}</span><span class="bk-lprov" style=${provColor(s.provider) ? "--pc:" + provColor(s.provider) : ""}>${provLabel(s.provider)}</span></div>
+                        ${srcDesc(s) ? html`<span class="bk-ldesc">${srcDesc(s)}</span>` : null}
+                      </div>
+                      <span class="grow"></span>
+                      ${!srcAvail(s) ? html`<span class="bk-nabadge">Not available with ${modeLabel}</span>` : null}
+                      ${s.n != null ? html`<span class="bk-count" title=${(srcHost(s) ? "domains" : "IP ranges") + " in this list"}>${fmtN(s.n)}</span>` : null}
+                      <span class=${"capb " + (srcHost(s) ? "host" : "ip")} title=${srcHost(s) ? "Domain list — needs Force-DNS or Hybrid-SNI mode" : "IP list — works in every mode"}>${srcHost(s) ? "Host" : "IP"}</span>
+                      ${srcUrl(s) ? html`<a class="catrow-info" href=${srcUrl(s)} target="_blank" rel="noopener" title="See what's in this list" onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>` : null}
+                      <button class="bk-lremove" title="Remove this list from the category" onClick=${e => { e.stopPropagation(); removeSource(c, i); }}><${Ic} i="x"/></button>
+                    </div>`)
+                    : html`<div class="bk-empty">No lists yet — use <b>+ Add list</b> above to add one.</div>`}
+                  ${!c.predefined ? html`<div class="bk-catfoot"><span class="grow"></span><button class="bk-delcat" title="Delete this custom category" onClick=${e => { e.stopPropagation(); removeCat(c); }}><${Ic} i="trash"/> Delete category</button></div>` : null}
+                </div>` : null}
+              </div>`; };
+            return html`<${Fragment}>
+              <div class="lgrid-head" style="margin-top:16px">
+                <div class="lg-htitle"><span class="seclabel" style="margin:0">Block categories</span><span class="lg-count">${cats.length}</span><span class="faint lg-sub">drop ads, malware, adult, threat IPs — by domain or IP</span></div>
+                <span class="grow"></span>
+                <button class="btn btn-add" onClick=${() => openModal(html`<${NewBlockCatSheet} existingIds=${allIds} onCreate=${createCat}/>`)}><${Ic} i="plus"/> New category</button>
+              </div>
+              <div class="lgrid">${cats.map(bkRow)}</div>
+              <div class="lg-legend">
+                <div class="lg-leg-row"><span class="capb ip">IP</span> matched by IP address — works in every mode.</div>
+                <div class="lg-leg-row"><span class="capb host">Host</span> matched by domain name — needs <b>Force-DNS</b> or <b>Hybrid-SNI</b> mode (they fill the block set from DNS). IP-only and Kernel-SNI can't match domains.</div>
+                <div class="lg-leg-row"><span class="bk-nabadge">Not available</span> a domain list can't enforce on an IP-only or Kernel-SNI node — it's skipped, never pushed. Switch that node to Force-DNS / Hybrid-SNI, or add an IP list.</div>
+              </div>
+            <//>`;
+          })() : null}
         </div>` : null}
         ${section === "turn" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Turn proxies<span class="grow"></span>
@@ -10528,20 +10954,29 @@ function PanelSettingsScreen() {
           ${turnEnabledS ? html`<${TurnCollectedIps}/>` : null}
         </div>` : null}
         ${section === "geo" ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">List providers</div>
+          <div class="rltabs" style="margin-top:0">
+            <div class="rltab-cap">${geoTab === "blocking" ? "Content filters providers" : "Routing lists providers"}</div>
+            <div class="rltab-group" role="tablist">
+              <button role="tab" aria-selected=${geoTab === "routing"} class=${"rltab" + (geoTab === "routing" ? " on" : "")} onClick=${() => setGeoTab("routing")}><${Ic} i="cascade"/> Routing</button>
+              <button role="tab" aria-selected=${geoTab === "blocking"} class=${"rltab" + (geoTab === "blocking" ? " on" : "")} onClick=${() => setGeoTab("blocking")}><${Ic} i="shield"/> Blocking</button>
+            </div>
+          </div>
+          ${geoTab === "routing" ? html`
           <p class="hint" style="margin:0 0 12px"><b>Curated</b> presets are on by default — recommended, ready-to-route lists maintained by the panel. Turn on any public <b>provider</b> below to also search its raw catalog; the panel fetches it (<b>Downloading…</b>) so its lists appear in the picker. Disabling a provider hides its lists and <b>deactivates</b> anything already routed from it until you re-enable it.</p>
-          <div class="provlist">${(_provReg.length ? _provReg : []).map(p => { const on = provEnabled[p.id] !== false; return html`<div class=${"provrow" + (on ? "" : " off") + (p.builtin ? " builtin" : "")} key=${p.id}>
+          <div class="provlist">${(_provReg.length ? _provReg : []).map(p => { const on = provEnabled[p.id] !== false; return html`<div class=${"provrow bprow" + (on ? "" : " off") + (p.builtin ? " builtin" : "")} key=${p.id}>
             <${Switch} on=${on} title=${on ? (p.builtin ? "On — presets are selectable" : "Enabled — its lists are selectable") : "Off — its lists are hidden and deactivated on nodes"} onChange=${v => setProvEnabled(m => ({ ...m, [p.id]: v }))}/>
             <${ThemedSwatch} val=${provColors[p.id]} title=${p.label + " tag colour"} onChange=${nv => setProvColors(c => ({ ...c, [p.id]: nv }))}
               sample=${(c) => html`<span class="sw-sample" style=${"--pc:" + c}>${p.label}</span>`}/>
-            <div class="prov-meta">
-              <span class="prov-name" style=${"color:" + pickThemed(provColors[p.id], _provColDefault(p.id).dark, _provColDefault(p.id).light)}>${p.label}</span>
-              <span class="prov-tiers">${capBadges({ host: (p.tiers || []).includes("host"), ip: (p.tiers || []).includes("ip") })}</span>
-              ${p.builtin || p.enabled === false ? null : html`<span class=${"prov-upd" + (p.last_updated ? "" : " never")} title=${p.last_updated ? "When this provider's data was last pulled to the panel" : "No list from this provider has been routed yet — nothing pulled"}>${p.last_updated ? html`updated ${ago(p.last_updated)}` : "never updated"}</span>`}
+            <div class="bprov-meta">
+              <div class="bprov-top">
+                <span class="prov-name" style=${"color:" + pickThemed(provColors[p.id], _provColDefault(p.id).dark, _provColDefault(p.id).light)}>${p.label}</span>
+                <span class="prov-tiers">${capBadges({ host: (p.tiers || []).includes("host"), ip: (p.tiers || []).includes("ip") })}</span>
+                ${p.builtin || p.enabled === false ? null : html`<span class=${"prov-upd" + (p.last_updated ? "" : " never")} title=${p.last_updated ? "When this provider's data was last pulled to the panel" : "No list from this provider has been routed yet — nothing pulled"}>${p.last_updated ? html`updated ${ago(p.last_updated)}` : "never updated"}</span>`}
+              </div>
+              ${p.desc ? html`<span class="bprov-note">${p.desc}</span>` : null}
             </div>
             <span class="grow"></span>
-            ${p.builtin ? html`<span class="prov-desc">${p.desc || "Built-in recommended presets for common services"}</span>`
-              : p.enabled === false ? null
+            ${p.builtin || p.enabled === false ? null
               : (() => { const s = p.status, flashing = provFlash[p.id] > Date.now();
               if (s === "downloading") return html`<span class="prov-st upd"><span class="tf-arrow"><${Ic} i="refresh"/></span> Downloading…</span>`;
               if (s === "updating") return html`<span class="prov-st upd"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;
@@ -10551,17 +10986,33 @@ function PanelSettingsScreen() {
               return null; })()}
             ${p.builtin ? null : html`<a class="prov-repo" href=${p.url} target="_blank" rel="noopener" title=${"Open " + p.label + " on GitHub"}>${(p.url || "").replace(/^https?:\/\/github\.com\//, "")}</a>`}
           </div>`; })}${!_provReg.length ? html`<div class="hint">Loading providers…</div>` : null}
-            <div class=${"provrow" + (customEnabled ? "" : " off")}>
+            <div class=${"provrow bprow" + (customEnabled ? "" : " off")}>
               <${Switch} on=${customEnabled} title=${customEnabled ? "On — you can create custom lists" : "Off — the Custom lists section is hidden"} onChange=${v => setCustomEnabled(v)}/>
               <${ThemedSwatch} val=${provColors.custom} title="Custom-list tag colour" onChange=${nv => setProvColors(c => ({ ...c, custom: nv }))}
                 sample=${(c) => html`<span class="sw-sample" style=${"--pc:" + c}>Custom</span>`}/>
-              <div class="prov-meta"><span class="prov-name" style="color:var(--ink)">Custom lists</span></div>
-              <span class="grow"></span>
-              <span class="prov-desc">Your own IP / domain lists — turn off to hide the Custom lists section in routing</span>
+              <div class="bprov-meta">
+                <div class="bprov-top"><span class="prov-name" style="color:var(--ink)">Custom lists</span></div>
+                <span class="bprov-note">Your own IP / domain lists — turn off to hide the Custom lists section in routing.</span>
+              </div>
             </div>
-          </div>
+          </div>` : null}
+          ${geoTab === "blocking" ? html`
+          <p class="hint" style="margin:0 0 12px">The block-list feeds that fill the <b>Blocking</b> tab's content categories (ads, malware, adult, and so on). Core feeds are on by default; turn on any extra feed to add its lists to the Blocking picker. Turning one off hides its lists and <b>deactivates</b> anything already filtering from it until you re-enable it. Each feed keeps its own tag colour.</p>
+          ${(() => { const bcp = (Store.blockCatalog || {}).providers || [];
+            const bpOn = p => blockProvEdits[p.id] !== undefined ? blockProvEdits[p.id] : (p.enabled !== false);
+            return bcp.length ? html`<div class="provlist">${bcp.map(p => { const on = bpOn(p); const pcv = provColors[p.id] || asThemed((ps.provider_colors || {})[p.id], p.color, p.color_l || p.color); return html`<div class=${"provrow bprow" + (on ? "" : " off")} key=${p.id}>
+              <${Switch} on=${on} title=${on ? "On — its lists are selectable in Blocking" : "Off — its lists are hidden and deactivated on nodes"} onChange=${v => setBlockProvEdits(m => ({ ...m, [p.id]: v }))}/>
+              <${ThemedSwatch} val=${pcv} title=${p.label + " tag colour"} onChange=${nv => setProvColors(c => ({ ...c, [p.id]: nv }))}
+                sample=${(c) => html`<span class="sw-sample" style=${"--pc:" + c}>${p.label}</span>`}/>
+              <div class="bprov-meta">
+                <div class="bprov-top"><span class="prov-name" style=${"color:" + pickThemed(pcv, _provColDefault(p.id).dark, _provColDefault(p.id).light)}>${p.label}</span><span class="prov-tiers">${capBadges({ host: p.tier === "host", ip: p.tier === "ip" })}</span></div>
+                ${p.note ? html`<span class="bprov-note">${p.note}</span>` : null}
+              </div>
+              <span class="grow"></span>
+              ${p.url ? html`<a class="prov-repo" href=${p.url} target="_blank" rel="noopener" title=${"Open " + p.label}>${(p.url || "").replace(/^https?:\/\/(github\.com|raw\.githubusercontent\.com)\//, "").replace(/^www\./, "")}</a>` : null}
+            </div>`; })}</div>` : html`<div class="hint">Loading providers…</div>`; })()}` : null}
 
-          <div class="seclabel">Update schedule</div>
+          <div class="seclabel" style="margin-top:20px">Update schedule</div>
           <p class="hint" style="margin:0 0 10px">When each node re-fetches its lists. Refreshing briefly reloads the node's match sets, which clients can feel — so schedule it for a <b>quiet hour</b>. (A failed fetch retries on the next sync; existing lists keep working meanwhile.)</p>
           <div class="schedrow">
             <div class="field" style="margin:0"><label>How often</label>
@@ -10760,34 +11211,6 @@ function NodeEgressForm({ node, vals, set }) {
 }
 
 // Account form as a modal (opened from the header user icon).
-function AccountSheet() {
-  const [user, setUser] = useState("");
-  const [cur, setCur] = useState(""); const [np, setNp] = useState(""); const [np2, setNp2] = useState("");
-  const [msg, setMsg] = useState(null); const [enabled, setEnabled] = useState(true);
-  useEffect(() => { api.account().then(r => { if (r && r.ok) { if (r.data.username) setUser(r.data.username); if (!r.data.auth_enabled) { setEnabled(false); setMsg({ ok: false, t: "This panel has no login configured — changes are disabled." }); } } }); }, []);
-  const save = async () => {
-    if (!user.trim()) return setMsg({ ok: false, t: "Username can't be empty." });
-    if (user.includes(":")) return setMsg({ ok: false, t: "Username can't contain a colon." });
-    if (!cur) return setMsg({ ok: false, t: "Enter your current password to confirm." });
-    if (np && np !== np2) return setMsg({ ok: false, t: "New passwords don't match." });
-    if (np && np.length < 8) return setMsg({ ok: false, t: "New password must be at least 8 characters." });
-    setMsg({ ok: true, t: "Saving…" });
-    const r = await api.accountSave({ username: user.trim(), current_password: cur, new_password: np });
-    if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to update." });
-    if (np) await subRewrap(np);   // keep the config-encryption convenience cache unlockable with the new password
-    setMsg({ ok: true, t: "Updated. Reloading — sign in with your new credentials…" });
-    setTimeout(() => location.reload(), 1400);
-  };
-  return html`<${Sheet} title="Account"
-    foot=${footRow({ cancelLabel: "Close", onCancel: closeModal, disabled: !enabled, onAction: save, action: "Save changes" })}>
-    <p class="hint" style="margin:0 0 16px">Change the panel username and password. Takes effect immediately — you'll be asked to sign in again.</p>
-    ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
-    <div class="field"><label>Username</label><input autofocus value=${user} onInput=${e => setUser(e.target.value)} autocomplete="username"/></div>
-    <div class="field"><label>Current password</label><input type="password" value=${cur} onInput=${e => setCur(e.target.value)} autocomplete="current-password" placeholder="required to confirm changes"/></div>
-    <div class="field"><label>New password</label><input type="password" value=${np} onInput=${e => setNp(e.target.value)} autocomplete="new-password" placeholder="leave blank to keep current"/></div>
-    <div class="field"><label>Confirm new password</label><input type="password" value=${np2} onInput=${e => setNp2(e.target.value)} autocomplete="new-password"/></div>
-  <//>`;
-}
 
 // ═════════════════════════ MODALS / SHEETS ═════════════════════════
 // Universal dialog behaviours live here so every sheet gets them for free (no per-sheet code):
@@ -10931,7 +11354,7 @@ function SubAutoNote() {
   if (!subFeatureOn()) return null;
   return html`<div class="sub-auto"><${Ic} i="check"/><span><b>Subscribed users need nothing</b> — their subscription page serves the corrected config automatically; only manually-shared QR codes / configs need re-distributing.</span></div>`;
 }
-function ConfirmSheet({ title, body, note, log, confirmLabel, cancelLabel, danger, warn, onConfirm, back, requireType }) {
+function ConfirmSheet({ title, body, note, log, confirmLabel, busyLabel, cancelLabel, danger, warn, onConfirm, back, requireType }) {
   back = back || closeModal;
   const [busy, setBusy] = useState(false);
   const [raw, setRaw] = useState(false);
@@ -10947,7 +11370,7 @@ function ConfirmSheet({ title, body, note, log, confirmLabel, cancelLabel, dange
       ${canToggle ? html`<button class="btn btn-ghost logtoggle" onClick=${() => setRaw(r => !r)}>${raw ? "Display rendered" : "Display raw"}</button>` : null}
       <span class="grow"></span>
       <button class=${"btn " + (onConfirm ? "btn-ghost" : "btn-primary")} onClick=${back}>${onConfirm ? (cancelLabel || "Cancel") : (confirmLabel || "Close")}</button>
-      ${onConfirm ? html`<button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy || !typeOk} onClick=${go}>${confirmLabel || "Confirm"}</button>` : null}</>`}>
+      ${onConfirm ? html`<button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy || !typeOk} onClick=${go}>${busy ? html`<span class="spin sm"></span>${busyLabel || "Working…"}` : (confirmLabel || "Confirm")}</button>` : null}</>`}>
     ${isLog
       ? html`<${LogBody} text=${log} raw=${raw}/>`
       : html`<${Fragment}>
@@ -11646,7 +12069,6 @@ function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`);
 // RFC1918 / loopback / link-local / CGNAT — kept selectable (valid behind cloud 1:1 NAT or on a private
 // interconnect) but tagged "(private)" so an operator knows it isn't a public address.
 const isPrivIp = ip => /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip || "");
-const ipLabel = ip => isPrivIp(ip) ? ip + " (private)" : ip;
 // dropdown of the node's internet IPs (already excludes wg/awg/swg/docker) + an Auto option; keeps a
 // current custom value (e.g. a hostname ingress) selectable even if it isn't in the reported IP list.
 // IP picker: only the node's PUBLIC (internet-routable) IPs are listed; internal/private IPs are hidden.
@@ -11984,18 +12406,24 @@ function App() {
       // (success ~5s auto-clears, aborted/failed until ×) — so it never shows alongside the update-check
       // "up to date"/button. With no lifecycle status, the slot is the normal update widget.
       let body;
-      const _hl = esc(PROC_LABEL[Store.hostProc] || Store.hostProc || "");
+      const _hl = esc((hostUpdRepairing && ({ updating: "repairing", updated: "repaired", "update-failed": "repair failed" }[Store.hostProc]))
+                      || PROC_LABEL[Store.hostProc] || Store.hostProc || "");   // a Fix/re-run reads as "repairing…" / "repaired", not "updating"
+      const _healN = serviceIssues().length;   // self-healable issues (missing/broken swg units + AmneziaWG datapath) → the updater repairs them
       if (inProc(Store.hostProc)) body = `<span class="hostproc-tag ${procInClass(Store.hostProc)}">${UPD_SPIN_SVG} ${_hl}</span>`;
       else if (procSuccess(Store.hostProc)) body = `<span class="hostproc-tag ok">${CHECK_SVG} ${_hl}</span>`;   // green, auto-clears (no ×)
       else if (procAborted(Store.hostProc)) body = `<span class="hostproc-tag aborted">${INFO_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>`;
       else if (procFailed(Store.hostProc)) body = `<span class="hostproc-tag fail${Store.hostProcErr ? ' tg-click' : ''}" id="hostproc-tag">${WARN_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>`;   // whole tag clickable → error popup
-      else if (hostUpdating) body = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
-      else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
+      else if (hostUpdating) body = `<span class="livepill upd-busy">${hostUpdRepairing ? "repairing…" : "updating…"} ${UPD_SPIN_SVG}</span>`;
+      else if (Store.hostChecking) body = `<span class="livepill upd-busy">checking… ${UPD_SPIN_SVG}</span>`;   // Check status click → brief "checking…" pill (updates + issues)
+      // Priority: a real upgrade first (updating heals too, so no "Fix" then) → else self-healable issues → else up-to-date / check.
+      else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
+      else if (_healN > 0) body = `<button class="livepill updpill fixpill" id="host-fix">${WARN_SVG} fix <b>${_healN}</b> issue${_healN > 1 ? "s" : ""}</button>`;
       else if (Store.updFlash && Date.now() < Store.updFlash) body = `<button class="livepill upd-uptodate" id="host-repair" title="On the latest version — click to re-run the updater anyway (repairs this box: reinstalls missing pieces, re-enables services, rebuilds the datapath / AmneziaWG kernel module)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> up to date</button>`;
-      else body = `<button class="iconbtn lg" id="upd-check" title="Check for updates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
+      else body = `<button class="iconbtn lg" id="upd-check" title="Check status"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
       slot.innerHTML = body;
-      const b = $("#host-upd"); if (b) b.onclick = updateHost;
+      const b = $("#host-upd"); if (b) { b.onclick = updateHost; hostHoverBubble(b, updBubbleHtml); }   // version + date + changelog on hover
       const rp = $("#host-repair"); if (rp) rp.onclick = updateHost;   // up-to-date → still allow a re-run/repair (heals the datapath even with no new version)
+      const fx = $("#host-fix"); if (fx) { fx.onclick = () => openModal(html`<${ServiceIssueSheet} issues=${serviceIssues()}/>`); hostHoverBubble(fx, fixBubbleHtml); }   // the issue(s) on hover; click = review + run the repair
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
       const hx = $("#hostproc-x"); if (hx) hx.onclick = e => { e.stopPropagation(); dismissHostProc(); };
       const htg = $("#hostproc-tag"); if (htg && Store.hostProcErr) htg.onclick = () => openConfirm({ title: PROC_LABEL[Store.hostProc] || Store.hostProc, log: Store.hostProcErr, confirmLabel: "Close" });

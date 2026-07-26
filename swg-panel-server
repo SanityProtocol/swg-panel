@@ -23,6 +23,7 @@ import base64
 import contextlib
 import fcntl
 import hashlib
+import heapq
 import hmac
 import ipaddress
 import json
@@ -200,6 +201,47 @@ def panel_service_health(ttl=20):
     return out
 
 
+_DATAPATH_SVC = {"at": 0.0, "data": {}}
+def host_datapath_health(ttl=20):
+    """This host's kernel-datapath health for the self-heal check — right now: is the AmneziaWG kernel module
+    LOADABLE when a local node actually uses awg? A broken/absent DKMS module (the "Unknown device type" class)
+    is exactly what `swg-update`'s ensure_awg_module rebuilds, so the SPA surfaces it as a healable issue with a
+    'Fix' action. Unprivileged read-only probe (no modprobe): loaded (/proc/modules) OR the .ko is on disk for
+    the running kernel. Only reported when awg is in use ({} otherwise, e.g. a wg-only or host-only box)."""
+    if IN_DOCKER:
+        return {}                                        # container uses userspace amneziawg-go — no kernel module
+    now = time.time()
+    if _DATAPATH_SVC["data"] and now - _DATAPATH_SVC["at"] < ttl:
+        return _DATAPATH_SVC["data"]
+    out = {}
+    try:
+        # "awg used on this host" = the AmneziaWG CLI is installed. The panel is unprivileged and CAN'T read the
+        # root-only /etc/amnezia confs, but /usr/bin/awg is world-visible — and this is also exactly the broken
+        # shape (tool present, kernel module gone). A host-only or wg-only box has no awg → {} (no issue).
+        awg_used = any(os.path.exists(p) for p in ("/usr/bin/awg", "/usr/local/bin/awg", "/sbin/awg", "/usr/sbin/awg"))
+        if awg_used:
+            loaded = False
+            try:
+                with open("/proc/modules") as f:
+                    loaded = any(ln.startswith("amneziawg ") for ln in f)
+            except Exception:
+                pass
+            built = False
+            if not loaded:
+                kr = os.uname().release
+                for d in ("/lib/modules/%s/updates/dkms" % kr, "/lib/modules/%s/updates" % kr, "/lib/modules/%s/kernel/drivers/net" % kr):
+                    try:
+                        if any(f.startswith("amneziawg.ko") for f in os.listdir(d)):
+                            built = True; break
+                    except Exception:
+                        continue
+            out["awg"] = {"needed": True, "ok": bool(loaded or built)}
+    except Exception:
+        return _DATAPATH_SVC["data"]                     # probe failed → keep last good; never break /api/state
+    _DATAPATH_SVC["at"] = now; _DATAPATH_SVC["data"] = out
+    return out
+
+
 VERSIONS = _detect_versions()
 
 def _vtuple(v):
@@ -222,7 +264,35 @@ def _ver_ahead(have, ref):
 # (works for any bare-metal/docker install; just an outbound HTTPS GET). Refreshed in a daemon thread.
 REMOTE_VERSION_URL = os.environ.get(
     "SWG_LATEST_URL", "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/VERSION")
-LATEST_REMOTE = {"version": None, "checked": 0}
+REMOTE_CHANGELOG_URL = REMOTE_VERSION_URL.rsplit("/", 1)[0] + "/CHANGELOG.md"   # sibling of VERSION on the same ref
+LATEST_REMOTE = {"version": None, "checked": 0, "date": "", "notes": []}
+
+def _fetch_latest_changelog():
+    """Fetch the remote CHANGELOG.md TOP entry → (date, [bullet notes]) for the 'update to …' hover bubble.
+    Best-effort — ('', []) on any failure; markdown emphasis/code marks stripped from the bullets."""
+    try:
+        url = REMOTE_CHANGELOG_URL + (("&" if "?" in REMOTE_CHANGELOG_URL else "?") + "cb=" + str(int(time.time())))
+        req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            text = r.read(24000).decode("utf-8", "replace")
+    except Exception:
+        return "", []
+    date, notes, started = "", [], False
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("## ["):
+            if started:
+                break                                    # reached the NEXT version → stop
+            started = True
+            m = re.search(r"—\s*(.+)$", s)               # "## [1.4.2-beta] — 2026-07-24"
+            if m:
+                date = m.group(1).strip()
+            continue
+        if started and s.startswith("- "):
+            b = re.sub(r"[*`]", "", s[2:]).strip()       # drop **bold** / `code` marks
+            if b:
+                notes.append(b)
+    return date, notes[:8]
 # In-place updater — swg programs only (--no-components leaves wg/awg/turn-proxies alone), unattended.
 UPDATE_CMD = os.environ.get(
     "SWG_UPDATE_CMD",
@@ -245,6 +315,7 @@ def _check_latest_remote():
             v = _short_ver(r.read(64).decode("utf-8", "replace").strip())
             if v:
                 LATEST_REMOTE["version"] = v
+                LATEST_REMOTE["date"], LATEST_REMOTE["notes"] = _fetch_latest_changelog()   # for the update-bubble
                 ok = True
     except Exception:
         pass
@@ -2610,6 +2681,9 @@ def _node_issues(c, snap):
             issues.append((tp.get("service") or "turn-proxy") + ": not running")
     for ifn in _missing_ifaces(c, snap):
         issues.append(ifn + ": interface missing on the node (restore available)")
+    _dp = (snap.get("datapath") or {}).get("awg")   # bare-metal node's AmneziaWG kernel module — a broken DKMS build the updater rebuilds
+    if _dp and _dp.get("needed") and not _dp.get("ok"):
+        issues.append("AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it")
     return issues
 
 def _missing_ifaces(c, snap):
@@ -2761,6 +2835,7 @@ def apply_iface_meta(node_cfg, interfaces):
         ifc["egress_mode"] = ov.get("egress_mode") or "direct"   # direct = SNAT a NIC | forward = whole-iface cascade (P2) | smart = per-dest rules (P3)
         ifc["egress_node"] = ov.get("egress_node") or ""         # forward target node id
         ifc["routing"] = ov.get("routing") or []                 # smart-routing rule list (P3): [{category,action,node}]
+        ifc["block"] = ov.get("block") or []                     # active block-category ids (content-filter + traffic/abuse); drives the Block-traffic modal section
         ifc["system"] = bool(ov.get("system"))         # panel-managed mesh link interface (a node↔node connection)
         ifc["link_node"] = ov.get("link_node") or ""   # the peer node this link connects to (SPA resolves the name)
         _lr = ((node_cfg.get("links") or {}).get(ifc["link_node"]) or {}) if ifc["link_node"] else {}
@@ -3191,30 +3266,189 @@ CATALOG_PROVIDERS = {
                      ("ip",   "https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta:geo/geoip")],
            "raw_host": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/{id}.list",
            "raw_ip":   "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/{id}.list",
-           "fmt_host": "plain"},
+           "fmt_host": "plain",
+           "note": "The broadest GeoSite + GeoIP set — per-service domain and country IP rules, tracking upstream Clash data."},
     "v2": {"label": "v2fly", "url": "https://github.com/v2fly/domain-list-community", "strip": "",
            "trees": [("host", "https://api.github.com/repos/v2fly/domain-list-community/git/trees/master:data")],
            "raw_host": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/{id}",
-           "fmt_host": "v2fly"},
+           "fmt_host": "v2fly",
+           "note": "Community-curated per-service domain sets — well-maintained, the source many routing rules build on."},
     "ls": {"label": "Loyalsoldier", "url": "https://github.com/Loyalsoldier/geoip", "strip": ".txt",
            "trees": [("ip", "https://api.github.com/repos/Loyalsoldier/geoip/git/trees/release:text")],
-           "raw_ip": "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/{id}.txt"},
+           "raw_ip": "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/{id}.txt",
+           "note": "Release-built GeoIP — country and service IP ranges in clean CIDR text, a solid IP-tier companion."},
     "rf": {"label": "Re-filter", "url": "https://github.com/1andrevich/Re-filter-lists", "strip": ".lst",
            "trees": [("auto", "https://api.github.com/repos/1andrevich/Re-filter-lists/git/trees/main")],
            "raw_host": "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/{id}.lst",
            "raw_ip":   "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/{id}.lst",
-           "fmt_host": "plain"},
+           "fmt_host": "plain",
+           "note": "Russia-focused domain and IP lists for anti-censorship routing — blocked services and their networks."},
     # blackmatrix7: 668 per-app folders under rule/Clash/<Name>/. Each <Name>.list is Clash "classical" format
     # (DOMAIN,/DOMAIN-SUFFIX,/IP-CIDR, prefixes) carrying domains AND ips; only a few ship a dedicated <Name>_IP.txt.
     # Indexed recursively (one call): host cap for every folder (the .list has domains), ip cap only where _IP.txt exists.
     "bm": {"label": "blackmatrix7", "url": "https://github.com/blackmatrix7/ios_rule_script",
            "recursive_clash": "https://api.github.com/repos/blackmatrix7/ios_rule_script/git/trees/master:rule/Clash?recursive=1",
            "raw_host": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/{id}/{id}.list", "fmt_host": "classical",
-           "raw_ip":   "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/{id}/{id}_IP.txt", "fmt_ip": "classical"},
+           "raw_ip":   "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/{id}/{id}_IP.txt", "fmt_ip": "classical",
+           "note": "600+ per-app rule sets — a dedicated list for almost any single service, some with IP variants."},
 }
 CATALOG_PROVIDER_ORDER = ["mc", "v2", "ls", "rf", "bm"]
 CATALOG_TTL = 86400
 CATALOG_PATH = "/var/lib/swg-panel/catalog-index.json"          # overridden from the state dir in main()
+
+# ── Block-list catalog (content/abuse BLOCKING — parallel to the routing catalog above) ──────────────────────
+# The routing catalog (CATALOG_PROVIDERS) answers WHERE traffic goes; this answers WHAT to DROP. A block category
+# is the same primitive as a routing category — a set filled from feeds — but its rule action is `block` (a real
+# drop), applied PER-INTERFACE (see docs/PROTOCOL-ROUTING-PLAN.md). Two flavours:
+#   • list-backed  (BLOCK_CATEGORIES) — domain/IP feeds fetched from a provider; the operator can extend/replace
+#     the default feeds or add custom lists on the Block-lists screen. Enforced via the existing dnsmasq/SNI host
+#     tier (domain) or a static ipset (ip) + the `drop` verdict that already exists in _ensure_smart_nft.
+#   • mechanism-backed (MECH_CATEGORIES) — NO feed; built-in detectors (port / signature / rate-limit). Enforced
+#     via nft L4 + the bounded xt_string path. Capability-gated, mode-independent.
+# Feed URLs/ids below are the shipped DEFAULTS (verified on first fetch); the operator owns them thereafter.
+BLOCK_PROVIDERS = {   # tier host|ip = domains (needs Force-DNS/SNI) or IPs (every mode). color = tag colour. default_on=False → off until enabled. URLs verified on first fetch.
+    "hagezi":  {"label": "HaGeZi", "tier": "host", "color": "#2fb886", "color_l": "#1a9e6e", "url": "https://github.com/hagezi/dns-blocklists",
+                "raw": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/{id}-onlydomains.txt", "fmt": "plain",
+                "note": "The reference DNS blocklist — ads, tracking, malware and phishing, refreshed several times a day (GPL-3.0)."},
+    "blp":     {"label": "The Block List Project", "tier": "host", "color": "#3b82f6", "color_l": "#2563eb", "url": "https://github.com/blocklistproject/Lists",
+                "raw": "https://blocklistproject.github.io/Lists/alt-version/{id}-nl.txt", "fmt": "plain",
+                "note": "Public-domain, per-category domain lists — one clean file each for ads, malware, gambling and more (Unlicense)."},
+    "ut1":     {"label": "UT1 · Toulouse", "tier": "host", "color": "#d99a2b", "color_l": "#b8791a", "url": "https://github.com/olbat/ut1-blacklists",
+                "raw": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/{id}/domains", "fmt": "plain",
+                "note": "Academic categorised lists — the only maintained source with a Gaming category (CC BY-SA, attribute)."},
+    "oisd":    {"label": "OISD", "tier": "host", "color": "#8b5cf6", "color_l": "#7c3aed", "default_on": True, "url": "https://oisd.nl",
+                "raw": "https://{id}.oisd.nl/abp", "fmt": "abp",
+                "note": "One heavily-curated all-in-one list tuned for very few false positives — NOT split by category. Pick Big (ads + malware + phishing + tracking, in one) or the separate NSFW list."},
+    "firehol": {"label": "FireHOL", "tier": "ip", "color": "#e0714a", "color_l": "#c2552f", "url": "https://github.com/firehol/blocklist-ipsets",
+                "raw": "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/{id}.netset", "fmt": "ip",
+                "note": "Curated threat-IP feeds — attackers, C2 and abuse sources, rebuilt daily. Level 1 is the low-false-positive safe default."},
+    "tor":     {"label": "Tor Project", "tier": "ip", "color": "#7d4698", "color_l": "#6b3a86", "url": "https://check.torproject.org",
+                "raw": "https://check.torproject.org/torbulkexitlist", "fmt": "ip", "single": True,
+                "note": "Every Tor network exit relay — the official bulk list, refreshed hourly."},
+    "stevenblack": {"label": "StevenBlack", "tier": "host", "color": "#64748b", "color_l": "#475569", "default_on": False, "url": "https://github.com/StevenBlack/hosts",
+                "raw": "https://raw.githubusercontent.com/StevenBlack/hosts/master/{id}", "fmt": "hosts",
+                "note": "The most popular unified hosts list (ads + malware) plus a few bolt-on category variants."},
+    "peterlowe": {"label": "Peter Lowe", "tier": "host", "color": "#0ea5e9", "color_l": "#0284c7", "default_on": False, "url": "https://pgl.yoyo.org/adservers/",
+                "raw": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=nohtml&showintro=0", "fmt": "plain", "single": True,
+                "note": "A long-running, hand-curated ads + trackers list — small but very low false-positive."},
+    "1hosts":  {"label": "1Hosts", "tier": "host", "color": "#ec4899", "color_l": "#db2777", "default_on": False, "url": "https://github.com/badmojr/1Hosts",
+                "raw": "https://raw.githubusercontent.com/badmojr/1Hosts/master/{id}/wildcards.txt", "fmt": "plain",
+                "note": "A well-made combined ads + tracking + malware list in three strengths (Lite / Pro / Xtra)."},
+    "phisharmy": {"label": "Phishing Army", "tier": "host", "color": "#dc2626", "color_l": "#b91c1c", "default_on": False, "url": "https://phishing.army",
+                "raw": "https://phishing.army/download/phishing_army_blocklist.txt", "fmt": "plain", "single": True,
+                "note": "Fresh phishing domains from PhishTank / OpenPhish. Licensed CC BY-NC — non-commercial use only."},
+}
+BLOCK_PROVIDER_ORDER = ["hagezi", "blp", "ut1", "oisd", "firehol", "tor", "stevenblack", "peterlowe", "1hosts", "phisharmy"]
+
+# Pickable lists per provider (id → label) — a small CURATED registry (unlike the routing catalog's dynamic
+# ~1800-id index, block providers ship a handful of named lists we can enumerate). The Block-lists screen searches
+# this to add a list into a category. id is substituted into the provider's `raw` template ("" = single-list).
+BLOCK_PROVIDER_LISTS = {   # id → (label, description). description is the "what providers say" blurb shown per list.
+    "hagezi":  {"pro": ("Pro", "Balanced ads + tracking blocklist"), "light": ("Light", "Smaller ads list, fewer false positives"),
+                "tif": ("Threat Intelligence Feed", "Malware, phishing & C2 domains"), "nsfw": ("NSFW", "Adult / pornographic domains"),
+                "gambling": ("Gambling", "Gambling & betting sites"), "doh": ("DoH resolvers", "Public DNS-over-HTTPS endpoints")},
+    "blp":     {"ads": ("Ads", "Advertising domains"), "tracking": ("Tracking", "Analytics & tracking domains"),
+                "malware": ("Malware", "Known malware hosts"), "phishing": ("Phishing", "Phishing sites"),
+                "scam": ("Scam", "Scam sites"), "fraud": ("Fraud", "Fraudulent sites"), "abuse": ("Abuse", "Abuse & spam sources"),
+                "ransomware": ("Ransomware", "Ransomware infrastructure"), "porn": ("Porn", "Adult / pornographic sites"),
+                "gambling": ("Gambling", "Gambling sites"), "social-media": ("Social media", "Social-media platforms"),
+                "crypto": ("Cryptomining", "Crypto-mining & crypto-scam domains"), "drugs": ("Drugs", "Drug-related sites"),
+                "redirect": ("Redirect / shorteners", "URL shorteners & redirectors"), "smart-tv": ("Smart-TV telemetry", "Smart-TV tracking & telemetry"),
+                "tiktok": ("TikTok", "TikTok domains"), "facebook": ("Facebook", "Facebook / Meta domains"), "youtube": ("YouTube", "YouTube domains")},
+    "oisd":    {"big": ("Big", "All-in-one: ads, malware, phishing & tracking — low false positives"),
+                "small": ("Small", "Lighter all-in-one — the essentials only"), "nsfw": ("NSFW", "Adult / pornographic domains")},
+    "firehol": {"firehol_level1": ("Level 1", "High-confidence hostile IPs — safe default"), "firehol_level2": ("Level 2", "Active attackers (recent)"),
+                "firehol_level3": ("Level 3", "Broader attack sources"), "dshield": ("DShield", "Top attacking subnets (SANS)"), "spamhaus_drop": ("Spamhaus DROP", "Hijacked / criminal netblocks")},
+    "tor":     {"": ("Exit nodes", "Tor network exit-node IPs")},
+    "ut1":     {"games": ("Gaming", "Game platforms & services"), "social_networks": ("Social networks", "Social-media platforms"),
+                "adult": ("Adult", "Adult / pornographic domains"), "gambling": ("Gambling", "Gambling & betting sites"),
+                "cryptojacking": ("Cryptojacking", "In-browser crypto-mining"), "malware": ("Malware", "Malware hosts"),
+                "phishing": ("Phishing", "Phishing sites"), "drugs": ("Drugs", "Drug-related sites")},
+    "stevenblack": {"hosts": ("Unified", "Ads + malware (the base list)"), "alternates/porn/hosts": ("Adult", "+ adult / pornography"),
+                "alternates/gambling/hosts": ("Gambling", "+ gambling"), "alternates/social/hosts": ("Social", "+ social media"),
+                "alternates/fakenews/hosts": ("Fake news", "+ fake-news sites")},
+    "peterlowe": {"": ("Ad servers", "Hand-curated ads + trackers")},
+    "1hosts":  {"Lite": ("Lite", "Balanced — fewest false positives"), "Pro": ("Pro", "Stronger — more coverage"), "Xtra": ("Xtra", "Aggressive — maximum coverage")},
+    "phisharmy": {"": ("Phishing", "Fresh phishing domains (non-commercial)")},
+}
+
+# Predefined LIST-backed block categories. Each: (label, kind[content|ip], default_on, [(provider, list_id)…]).
+# default_on drives the new-interface default (operator toggles it per-category on the Block-lists screen).
+BLOCK_CATEGORIES = {
+    # id            label                          kind        def   default feeds
+    # DEFAULTS are the small (<~110k domains) variants so they work in EVERY mode incl. Force-DNS/Hybrid, where dnsmasq
+    # scans all nftset domains per query (O(N)) — a multi-million-domain list melts CPU there (~17ns/domain/query, measured).
+    # The big lists stay AVAILABLE in BLOCK_PROVIDER_LISTS for the operator to add on Kernel-SNI/IP nodes. Measured sizes:
+    # hagezi light 43k · oisd small 56k (all-in-one: ads+malware+phishing+tracking) · hagezi nsfw 110k · ut1 gambling 32k ·
+    # ut1 social_networks 0.7k · ut1 games 34k. So a default install (ads+malware on) ≈ 90k domains → ~1.5ms/query, safe.
+    "ads":       ("Ads & Trackers",               "content", True,  [("hagezi", "light")]),
+    "malware":   ("Malware, Phishing & C2",       "content", True,  [("oisd", "small")]),
+    "adult":     ("Adult",                         "content", False, [("hagezi", "nsfw")]),
+    "gambling":  ("Gambling",                      "content", False, [("ut1", "gambling")]),
+    "social":    ("Social media",                  "content", False, [("ut1", "social_networks")]),
+    "gaming":    ("Gaming",                        "content", False, [("ut1", "games")]),
+    "tor_exit":  ("Tor exit nodes",                "ip",      False, [("tor", "")]),
+    "malware_ip":("Malware / C2 IPs",              "ip",      False, [("firehol", "firehol_level1")]),
+}
+# Predefined MECHANISM block categories (built-in, no feed). Each: (label, default_on, detect, modes).
+# The 7 traffic-&-abuse defaults (confirmed 2026-07-24): torrents/smtp/portscan ON, the rest available-off.
+MECH_CATEGORIES = {
+    # id             label                          def    detect         modes (host-engine capability; "all" = mode-independent)
+    "torrents":    ("Torrents / P2P",              True,  "sig+port",    "all"),
+    "smtp":        ("SMTP :25 (outbound mail)",    True,  "port",        "all"),
+    "portscan":    ("Port-scan / Brute-force",     True,  "ratelimit",   "all"),
+    "cryptomining":("Cryptomining",                False, "sig",         "all"),
+    "quic":        ("QUIC / HTTP-3",               False, "port",        "all"),
+    "doh":         ("DoH / DoT / DoQ",             False, "ipset+port",  "all"),   # auto-engages under DNS-filtering
+    "webrtc":      ("WebRTC / STUN",               False, "sig+port",    "all"),
+}
+BLOCK_CAT_ORDER = list(BLOCK_CATEGORIES.keys()) + list(MECH_CATEGORIES.keys())
+
+
+def _block_list_src(pid, lid):
+    """A human-viewable URL for a block list — where the operator can see exactly what it contains. Resolves the
+    provider's raw template with the list id, then rewrites raw.githubusercontent.com → the GitHub blob page (nicer
+    to read); non-GitHub feeds (oisd, phishing.army, pgl.yoyo) render their plaintext fine as-is."""
+    cfg = BLOCK_PROVIDERS.get(pid) or {}
+    raw = (cfg.get("raw") or "").replace("{id}", lid or "")
+    m = re.match(r"^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$", raw)
+    if m:
+        return "https://github.com/%s/%s/blob/%s/%s" % m.groups()
+    return raw
+
+def block_providers_enabled(panel_settings):
+    """Which block-feed providers are enabled fleet-wide. Default per provider = its default_on (core = on, optional = off);
+    the operator's panel_settings.block_catalog.providers overrides. Mirrors the geo-provider enable toggle."""
+    en = ((panel_settings or {}).get("block_catalog") or {}).get("providers") or {}
+    return {p: bool(en.get(p, BLOCK_PROVIDERS[p].get("default_on", True))) for p in BLOCK_PROVIDER_ORDER}
+
+
+def block_catalog(panel_settings):
+    """Effective block-category catalog = predefined (BLOCK_CATEGORIES + MECH_CATEGORIES) overlaid with the
+    operator's panel_settings.block_catalog.categories deltas (sources / default_on / enabled / enabled_nodes)
+    plus any custom categories. Predefined feed lists are a DEFAULT the operator may extend, replace, or disable.
+    Returns {id: {id,label,kind,predefined,default_on,enabled, sources?|detect?, enabled_nodes?}} in stable order."""
+    over = ((panel_settings or {}).get("block_catalog") or {}).get("categories") or {}
+    out = {}
+    for cid, (label, kind, don, srcs) in BLOCK_CATEGORIES.items():
+        out[cid] = {"id": cid, "label": label, "kind": kind, "predefined": True, "default_on": don,
+                    "enabled": True, "enabled_nodes": [],
+                    "sources": [{"provider": p, "list": l} for (p, l) in srcs]}
+    for cid, (label, don, detect, modes) in MECH_CATEGORIES.items():
+        out[cid] = {"id": cid, "label": label, "kind": "mechanism", "predefined": True, "default_on": don,
+                    "enabled": True, "detect": detect, "modes": modes}
+    for cid, ov in over.items():                                # operator overrides + custom categories
+        if not isinstance(ov, dict):
+            continue
+        base = out.get(cid)
+        if base is None:                                        # a custom (user-created) category
+            base = {"id": cid, "label": ov.get("label") or cid, "kind": ov.get("kind") or "content",
+                    "predefined": False, "default_on": False, "enabled": True, "sources": [], "enabled_nodes": []}
+            out[cid] = base
+        for k in ("label", "default_on", "enabled", "sources", "enabled_nodes"):
+            if k in ov:
+                base[k] = ov[k]
+    return out
 
 # ── Turn-proxy catalog — the SINGLE source of truth ──────────────────────────────────────────────────────
 # Unifies what used to be triplicated: the SPA's TURN_FORKS + TURN_WG_ONLY, this server's turn_fork* helpers,
@@ -4004,127 +4238,6 @@ def _py_type_name(v):
         return "dict"
     return None
 
-def _proto_fieldinfo(text, message=None):
-    if message:                                        # scope to one message block (a proto may hold the whole app config)
-        text = _proto_message_block(text, message)
-        if text is None:
-            return None
-    info, pending = {}, ""
-    for line in (text or "").splitlines():
-        st = line.strip()
-        m = re.match(r'(?:repeated\s+|optional\s+)?(map<[^>]+>|[\w.]+)\s+(\w+)\s*=\s*\d+\s*;\s*(?://+\s*(.*))?$', st)
-        if m:
-            nm, inline = m.group(2), (m.group(3) or "").strip()
-            info[nm] = {"type": _norm_proto_type(m.group(1)), "label": inline or pending or _label_from_name(nm)}
-            pending = ""
-            continue
-        c = re.match(r'//+\s?(.*)$', st)               # a standalone comment line becomes the next field's label
-        pending = ((pending + " " + c.group(1)).strip() if pending else c.group(1).strip()) if c else ""
-    return info or None
-
-def _python_config_fieldinfo(text):
-    try:
-        tree = ast.parse(text or "")
-    except Exception:
-        return None
-    src = (text or "").splitlines()
-    target, fallback = None, None
-    for node in getattr(tree, "body", []):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict) \
-           and any(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in node.value.keys):
-            if any(isinstance(t, ast.Name) and t.id == "CONFIG" for t in node.targets):
-                target = node.value
-                break
-            if fallback is None:
-                fallback = node.value
-    d = target or fallback
-    if d is None:
-        return None
-    info = {}
-    for k, v in zip(d.keys, d.values):
-        if not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
-            continue
-        nm = k.value
-        try:
-            default = ast.literal_eval(v)             # literal defaults only — the CONFIG dict actually carries them
-        except Exception:
-            default = None
-        rec = {}
-        ln = getattr(k, "lineno", 0)
-        cm = re.search(r'#\s*(.+)$', src[ln - 1]) if 0 < ln <= len(src) else None
-        rec["label"] = (cm.group(1).strip() if cm else "") or _label_from_name(nm)
-        typ = _py_type_name(default)
-        if typ:
-            rec["type"] = typ
-        if isinstance(default, (str, int, float, bool)):
-            rec["default"] = default
-        info[nm] = rec
-    return info or None
-
-def _go_struct_fieldinfo(text):
-    info = {}
-    for block in re.finditer(r'struct\s*\{([^{}]*)\}', text or "", re.S):
-        pending = ""
-        for line in block.group(1).splitlines():
-            st = line.strip()
-            fm = re.match(r'([A-Z]\w*)\s+([\w\*\[\]\.]+)(?:\s+`([^`]*)`)?\s*(?://+\s*(.*))?$', st)
-            if fm:
-                tag = fm.group(3) or ""
-                tm = re.search(r'\b(?:json|yaml|toml|mapstructure):"([^",]+)', tag)
-                nm = tm.group(1) if (tm and tm.group(1) != "-") else fm.group(1)
-                inline = (fm.group(4) or "").strip()
-                info[nm] = {"type": _norm_go_type(fm.group(2)), "label": inline or pending or _label_from_name(nm)}
-                pending = ""
-                continue
-            c = re.match(r'//+\s?(.*)$', st)
-            pending = ((pending + " " + c.group(1)).strip() if pending else c.group(1).strip()) if c else ""
-    return info or None
-
-def _norm_kotlin_type(t):
-    t = (t or "").strip().rstrip("?").rstrip(",").strip()
-    if t.startswith(("List<", "Array<", "Set<")):
-        return "list"
-    return {"Int": "int", "Long": "int", "Short": "int", "Float": "float", "Double": "float",
-            "Boolean": "bool", "String": "string"}.get(t, t)
-
-def _kotlin_fieldinfo(text):
-    info, pending = {}, ""
-    for line in (text or "").splitlines():
-        st = line.strip()
-        m = re.match(r'(?:@\w+\s+)*(?:override\s+|private\s+|public\s+|internal\s+|protected\s+|const\s+)*(?:val|var)\s+(\w+)\s*:\s*([\w<>?.\[\]* ]+?)\s*(?:=\s*(.+?))?\s*,?\s*(?://+\s*(.*))?$', st)
-        if m:
-            nm, inline = m.group(1), (m.group(4) or "").strip()
-            rec = {"type": _norm_kotlin_type(m.group(2)), "label": inline or pending or _label_from_name(nm)}
-            dv = (m.group(3) or "").strip().rstrip(",").strip()
-            if dv and dv not in ('""', "null"):
-                if (dv.startswith('"') and dv.endswith('"')):
-                    rec["default"] = dv[1:-1]
-                elif dv in ("true", "false"):
-                    rec["default"] = (dv == "true")
-                elif re.fullmatch(r'-?\d+', dv):
-                    rec["default"] = int(dv)
-            info[nm] = rec
-            pending = ""
-            continue
-        c = re.match(r'//+\s?(.*)$', st)
-        pending = ((pending + " " + c.group(1)).strip() if pending else c.group(1).strip()) if c else ""
-    return info or None
-
-def _parse_source_fieldinfo(path, text, message=None):
-    """{name: {type?, default?, label}} proposed metadata for each field; None for commit-only types. The label always
-    falls back to a Title-cased name so every field has one. Defaults only where the source literally carries them.
-    `message` scopes a proto to one message block (P4c consumers must pass the source's `message`, as the diff does)."""
-    p = (path or "").lower()
-    if p.endswith(".proto"):
-        return _proto_fieldinfo(text, message)
-    if p.endswith(".py"):
-        return _python_config_fieldinfo(text)
-    if p.endswith(".go"):
-        return _go_struct_fieldinfo(text)
-    if p.endswith(".kt"):
-        return _kotlin_fieldinfo(text)
-    return None
-
 # ── VALUE extraction (P4a value-diff): a field's allowed enum values, pulled from wherever the app ENUMERATES them —
 #    usually a different file than the schema-source (a UI options array / doc table / validation code). Each returns a
 #    sorted unique list or None. Fail-safe: None → no `+y/−z` for that field. See `_CLIENT_VALUE_SOURCES`.
@@ -4353,6 +4466,7 @@ def catalog_providers_view(enabled, nodes=None):
         st = _PROV_STATUS.get(pid) or {}
         out.append({"id": pid, "label": cfg["label"], "url": cfg.get("url", ""),
                     "tiers": tiers, "enabled": bool((enabled or {}).get(pid, False)),   # providers default OFF (operator opts in)
+                    "desc": cfg.get("note", ""),
                     "error": (_CATALOG.get("perr") or {}).get(pid, "") or st.get("error", ""),
                     "status": st.get("status", "idle"),          # idle|updating|updated|uptodate|failed
                     "last_updated": max(pulled.get(pid, 0), int(st.get("last_updated", 0) or 0))})   # newest pull, else 0 = never
@@ -4561,7 +4675,41 @@ _LIST_INFLIGHT = set(); _LIST_LOCK = threading.Lock()
 # Cap concurrent list resolves so a burst (enable-all-providers + route many cats at once) can't peg a 1-core panel:
 # each resolve fetches + normalizes a list (collapsing a 100k-CIDR geoip is CPU-heavy), so run at most a few at a time.
 # Excess resolves queue on the semaphore (blocked threads are free); the _LIST_INFLIGHT set still dedupes per cat/tier.
-_RESOLVE_SEM = threading.BoundedSemaphore(3)
+def _mem_total_mb():
+    """Memory budget in MB. Uses the MIN of host RAM (/proc/meminfo) and any cgroup limit (v2 memory.max /
+    v1 memory.limit_in_bytes) so a memory-capped Docker container is sized by its OWN limit, not the host's RAM
+    (inside a container /proc/meminfo reports the host total). Returns None if nothing is readable."""
+    vals = []
+    try:
+        for ln in open("/proc/meminfo"):
+            if ln.startswith("MemTotal:"):
+                vals.append(int(ln.split()[1]) / 1024.0)      # kB → MB
+                break
+    except Exception:
+        pass
+    for path in ("/sys/fs/cgroup/memory.max",                 # cgroup v2
+                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):  # cgroup v1
+        try:
+            raw = open(path).read().strip()
+            if raw and raw != "max":
+                lim = int(raw)
+                if 0 < lim < (1 << 62):                        # v1 "unlimited" is a huge sentinel → ignore
+                    vals.append(lim / 1024.0 / 1024.0)
+        except Exception:
+            pass
+    return min(vals) if vals else None
+
+def _resolve_conc():
+    """List resolution peaks at ~tens–hundreds of MB per list (a big domain set / IP-object list). On a small box
+    (bare-metal OR a memory-capped container) it must stay SERIAL so a couple of concurrent resolves can't OOM the
+    panel (a zero-swap 1 GB VM was killed at ~600 MB). Scale concurrency to the memory budget: ≤1.5 GB → 1, ≤3 GB
+    → 2, else 3 (the old default, for roomy hosts)."""
+    mb = _mem_total_mb()
+    if mb is None:
+        return 2
+    return 1 if mb < 1536 else (2 if mb < 3072 else 3)
+_RESOLVE_SEM = threading.BoundedSemaphore(_resolve_conc())
+_LIST_FETCH_CAP = 128 * 1024 * 1024   # hard ceiling on a single list download — no legit blocklist is near this; bounds RAM
 _PDOM_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
 
 def _list_key(cat, tier): return re.sub(r"[^a-z0-9]", "_", cat.lower()) + "__" + tier
@@ -4572,8 +4720,13 @@ def _list_fetch_text(url):
     def _do():
         req = urllib.request.Request(url, headers={"User-Agent": "swg-panel"})
         with urllib.request.urlopen(req, timeout=40) as r:
-            return r.read().decode("utf-8", "replace")
+            data = r.read(_LIST_FETCH_CAP + 1)            # read one past the cap so we can detect an over-size feed
+            if len(data) > _LIST_FETCH_CAP:
+                raise ValueError("list exceeds %d MB cap" % (_LIST_FETCH_CAP // 1024 // 1024))
+            return data.decode("utf-8", "replace")
     return _http_retry(_do)
+
+_IP_NET_CAP = 1_000_000   # backstop: an IP list must collapse_addresses() in memory (~200 B/net); real geo/threat feeds are <100k CIDRs, so past this the feed is pathological → reject (keep last-good) rather than risk a >1 GB balloon
 
 def _norm_ip(text):
     nets = []
@@ -4585,20 +4738,66 @@ def _norm_ip(text):
             n = ipaddress.ip_network(s, strict=False)
             if n.version == 4:
                 nets.append(n)
+                if len(nets) > _IP_NET_CAP:
+                    return None                                    # pathological/oversize IP feed → keep last-good, bound RAM
         except Exception:
             continue
     return [str(n) for n in ipaddress.collapse_addresses(nets)]   # collapse overlaps/adjacency (nft interval sets need it)
 
-def _norm_host_plain(text):
+# Per-line HOST normalizers (one raw line → a bare domain or None). The single source of truth shared by the
+# in-memory set builders below AND the streaming resolver (_stream_host_store) — so both emit byte-identical output.
+def _line_host_plain(raw):
+    ln = raw.split("#", 1)[0].strip().lower()
+    if ln.startswith("+.") or ln.startswith("*."):              # MetaCubeX "+." / 1Hosts "*." wildcard → bare domain (dnsmasq suffix-matches)
+        ln = ln[2:]
+    ln = ln.lstrip(".")
+    return ln if _PDOM_RE.match(ln) else None
+
+def _line_hosts(raw):
+    ln = raw.split("#", 1)[0].strip().lower()
+    if not ln:
+        return None
+    parts = ln.split()
+    d = parts[1] if len(parts) >= 2 and parts[0] in ("0.0.0.0", "127.0.0.1", "::", "::1") else parts[0]
+    d = d.lstrip(".")
+    return d if (d not in ("localhost", "localhost.localdomain", "broadcasthost") and _PDOM_RE.match(d)) else None
+
+def _line_abp(raw):
+    ln = raw.strip().lower()
+    if not ln or ln[0] in "!#" or ln.startswith("@@") or "##" in ln or "/" in ln or "*" in ln:
+        return None
+    if ln.startswith("||"):
+        ln = ln[2:]
+    ln = ln.split("^", 1)[0].split("$", 1)[0].lstrip(".")
+    return ln if _PDOM_RE.match(ln) else None
+
+def _line_classical_host(raw):
+    ln = raw.split("#", 1)[0].strip()
+    parts = ln.split(",")
+    if len(parts) < 2 or parts[0].strip().upper() not in ("DOMAIN", "DOMAIN-SUFFIX"):
+        return None
+    d = parts[1].strip().lower().lstrip(".")
+    return d if _PDOM_RE.match(d) else None
+
+def _norm_set(text, line_fn):
     out = set()
     for raw in text.splitlines():
-        ln = raw.split("#", 1)[0].strip().lower()
-        if ln.startswith("+."):                                 # MetaCubeX/clash suffix form → bare domain (dnsmasq already suffix-matches)
-            ln = ln[2:]
-        ln = ln.lstrip(".")
-        if _PDOM_RE.match(ln):
-            out.add(ln)
+        d = line_fn(raw)
+        if d:
+            out.add(d)
     return sorted(out)
+
+def _norm_host_plain(text):
+    """Plain domain list (one host/line; MetaCubeX '+.' / 1Hosts '*.' wildcard prefixes → bare)."""
+    return _norm_set(text, _line_host_plain)
+
+def _norm_hosts(text):
+    """Hosts-file blocklist (`0.0.0.0 domain` …, StevenBlack/blocklistproject/URLhaus) → bare domains; superset of plain."""
+    return _norm_set(text, _line_hosts)
+
+def _norm_abp(text):
+    """Adblock-Plus / AdGuard syntax (`||domain^`) → bare domains; element-hiding/regex/option/exception rules dropped."""
+    return _norm_set(text, _line_abp)
 
 def _norm_classical(text, tier):
     """Clash 'classical' rule text (blackmatrix7) → the requested tier. Lines are `TYPE,value[,opts]`:
@@ -4615,22 +4814,12 @@ def _norm_classical(text, tier):
                 n = ipaddress.ip_network(val, strict=False)
                 if n.version == 4:
                     nets.append(n)
+                    if len(nets) > _IP_NET_CAP:
+                        return None                            # pathological/oversize IP feed → keep last-good, bound RAM
             except Exception:
                 continue
         return [str(n) for n in ipaddress.collapse_addresses(nets)]
-    out = set()
-    for raw in text.splitlines():
-        ln = raw.split("#", 1)[0].strip()
-        parts = ln.split(",")
-        if len(parts) < 2:
-            continue
-        kind = parts[0].strip().upper()
-        if kind not in ("DOMAIN", "DOMAIN-SUFFIX"):
-            continue
-        d = parts[1].strip().lower().lstrip(".")
-        if _PDOM_RE.match(d):
-            out.add(d)
-    return sorted(out)
+    return _norm_set(text, _line_classical_host)
 
 def _norm_host_v2(rid, seen, prov="v2"):
     """v2fly data/<rid> → domains; resolves include: recursively (cycle-guarded, bounded). Fail-closed: any fetch
@@ -4704,9 +4893,53 @@ def _curated_resolve(cat, tier):
         return None                                            # total failure → keep last-good
     return _norm_ip("\n".join(acc)) if tier == "ip" else sorted(acc)
 
+def _block_source_resolve(cat, tier):
+    """Resolve one block feed keyed `blk:<provider>:<lid>` at its tier. A block source has exactly ONE tier (the
+    provider's host|ip), so the wrong tier yields [] and the right one fetches + normalizes per the provider's fmt.
+    None on fetch failure → the collapse-guard keeps last-good."""
+    try:
+        _, provider, lid = cat.split(":", 2)
+    except ValueError:
+        return None
+    cfg = BLOCK_PROVIDERS.get(provider)
+    if not cfg:
+        return None
+    ptier = cfg.get("tier", "host")
+    if tier != ptier:
+        return []                                              # this feed only carries its own tier
+    tmpl = cfg.get("raw") or ""
+    if not tmpl:
+        return None
+    try:
+        txt = _list_fetch_text(tmpl.replace("{id}", lid or ""))
+    except Exception:
+        return None
+    if ptier == "ip":
+        return _norm_ip(txt)
+    fmt = cfg.get("fmt", "plain")
+    if fmt == "abp":
+        return _norm_abp(txt)
+    if fmt == "hosts":
+        return _norm_hosts(txt)
+    return _norm_host_plain(txt)
+
+def block_source_size(provider, lid):
+    """(tier, n|None) for a block feed — cached record count, kicking off a background resolve when it's missing.
+    n is None until the first resolve lands (a few seconds later); the UI shows the count once it appears."""
+    cfg = BLOCK_PROVIDERS.get(provider)
+    if not cfg:
+        return None, None
+    tier = cfg.get("tier", "host")
+    m = list_ensure("blk:%s:%s" % (provider, lid or ""), tier)
+    return tier, (int(m["n"]) if m and m.get("n") is not None else None)
+
 def list_resolve(cat, tier):
     """Fetch + normalize one <prov>:<id> category (or a bare curated preset) at a tier → plain list (CIDRs for ip,
     domains for host). None on any failure so the caller keeps last-good."""
+    if cat.startswith("blku:"):
+        return None                                           # unions are built by _blku_store (streaming, memory-bounded) via list_store — never resolved as an in-memory list
+    if cat.startswith("blk:"):
+        return _block_source_resolve(cat, tier)
     if ":" not in cat:
         if cat in CURATED_PRESETS:
             return _curated_resolve(cat, tier)                 # curated preset → resolved here, shipped via list_manifest
@@ -4731,34 +4964,148 @@ def list_resolve(cat, tier):
     except Exception: return None
     return _norm_classical(txt, "host") if cfg.get("fmt_host") == "classical" else _norm_host_plain(txt)
 
-def _list_write(cat, tier, items):
+_LIST_SUSPECT = {}   # "<cat>|<tier>" -> reason, for a resolve that was REJECTED to protect last-good (surfaced in the UI)
+
+# ── the ONE list-store path, shared by every resolver (streaming host / union merge / in-memory ip+curated) ──
+# A resolved list is a SORTED FILE + meta {v,n,at}. Whatever built it, it commits the same way: collapse-guard →
+# atomic install → meta + cache. This is the single place temp handling, the guard, hashing and the last-good
+# contract live, so the three resolvers can't drift.
+def _hash_count_file(path):
+    """(version-hash, line-count) of an already-built list file, STREAMED (a 40MB union costs no RAM). The hash is
+    sha1 of the raw bytes — byte-identical to sha1 of `"\\n".join(items)+"\\n"` for the same sorted-unique lines."""
+    h = hashlib.sha1(); n = 0
+    with open(path, "rb") as f:
+        for line in f:
+            h.update(line); n += 1
+    return h.hexdigest()[:12], n
+
+def _list_commit(cat, tier, ver, n, install, tmp=None):
+    """Commit a resolved list. Runs the collapse-guard (a previously-healthy list — ≥20 entries — that suddenly drops
+    below half its size is distrusted and last-good is kept), then install()s the body atomically + writes meta +
+    updates the cache. install() puts the body in place (os.replace of a prebuilt sorted tmp, or atomic_write of a
+    small body). `tmp` (if given) is removed on any reject/failure. Returns (meta, status ∈ ok|collapsed|fetch-failed);
+    keeps last-good on anything but ok."""
+    key = cat + "|" + tier
+    prev = list_meta(cat, tier); prev_n = int((prev or {}).get("n") or 0)
+    def _drop():
+        if tmp:
+            with contextlib.suppress(Exception):
+                os.remove(tmp)
+    if prev_n >= 20 and n < prev_n * 0.5:
+        _drop()
+        _LIST_SUSPECT[key] = "resolved to %d, was %d — kept the previous list" % (n, prev_n)
+        return prev, "collapsed"
+    meta = {"v": ver, "n": n, "at": int(time.time())}
+    try:
+        os.makedirs(LIST_DIR, exist_ok=True)
+        install()
+        atomic_write(_list_metapath(cat, tier), json.dumps(meta))
+        _LIST_META[key] = meta
+    except Exception:
+        _drop()
+        return prev, "fetch-failed"
+    _LIST_SUSPECT.pop(key, None)
+    return meta, "ok"
+
+def _list_commit_items(cat, tier, items):
+    """Commit an IN-MEMORY resolved list (ip / curated / v2fly — all small) through the shared commit path."""
     body = "\n".join(items) + ("\n" if items else "")
     ver = hashlib.sha1(body.encode()).hexdigest()[:12]         # content hash = the version a node compares against
-    meta = {"v": ver, "n": len(items), "at": int(time.time())}
-    with contextlib.suppress(Exception):
-        os.makedirs(LIST_DIR, exist_ok=True)
-        atomic_write(_list_path(cat, tier), body)
-        atomic_write(_list_metapath(cat, tier), json.dumps(meta))
-        _LIST_META[cat + "|" + tier] = meta
-    return meta
+    return _list_commit(cat, tier, ver, len(items), lambda: atomic_write(_list_path(cat, tier), body))
 
-_LIST_SUSPECT = {}   # "<cat>|<tier>" -> reason, for a resolve that was REJECTED to protect last-good (surfaced in the UI)
+_HAVE_SORT = None
+def _have_sort():
+    """True if a GNU-style `sort -u -S -o` is available (for the memory-bounded streaming resolver). Cached. On a box
+    without it (e.g. busybox sort), the caller falls back to the in-memory resolve."""
+    global _HAVE_SORT
+    if _HAVE_SORT is None:
+        try:
+            _HAVE_SORT = subprocess.run(["sort", "-u", "-S", "16M", "-o", "/dev/null", "/dev/null"],
+                                        capture_output=True).returncode == 0
+        except Exception:
+            _HAVE_SORT = False
+    return _HAVE_SORT
+
+def _host_stream_spec(cat, tier):
+    """(url, line_fn) for a HOST list that can be resolved by streaming per-line normalization, else None (ip tier,
+    v2fly include-expansion, curated, union, unknown). Lets list_store bound memory for big domain lists via an
+    external `sort -u` instead of a multi-million-entry Python set."""
+    if tier != "host":
+        return None
+    if cat.startswith("blk:"):
+        try:
+            _, provider, lid = cat.split(":", 2)
+        except ValueError:
+            return None
+        cfg = BLOCK_PROVIDERS.get(provider)
+        if not cfg or cfg.get("tier", "host") != "host" or not cfg.get("raw"):
+            return None
+        line_fn = {"abp": _line_abp, "hosts": _line_hosts}.get(cfg.get("fmt", "plain"), _line_host_plain)
+        return cfg["raw"].replace("{id}", lid or ""), line_fn
+    if ":" in cat and not cat.startswith("blku:"):
+        prov, rid = cat.split(":", 1)
+        cfg = CATALOG_PROVIDERS.get(prov)
+        if not cfg or cfg.get("fmt_host") == "v2fly" or not cfg.get("raw_host"):
+            return None                                        # v2fly needs recursive include expansion → not streamable
+        line_fn = _line_classical_host if cfg.get("fmt_host") == "classical" else _line_host_plain
+        return cfg["raw_host"].format(id=rid), line_fn
+    return None
+
+def _stream_host_store(cat, tier, url, line_fn):
+    """Resolve a HOST list with BOUNDED memory: stream the response line-by-line → normalize → a temp file (no set),
+    then `LC_ALL=C sort -u` (external, spills to disk) to dedup+sort byte-identically to sorted(set(...)). Hash + count
+    come from the sorted file; collapse-guard + atomic write; keep last-good on ANY failure. Returns (meta, status).
+    This is what keeps a 2M-domain feed (~250MB as a Python set) down to a few MB of resolver RSS."""
+    prev = list_meta(cat, tier)                               # for the keep-last-good returns on a fetch/sort failure
+    _u = uuid.uuid4().hex[:8]                                  # UNIQUE per call — two threads resolving the same cat (e.g. provider_update_all + a node-sync list_ensure) must not share a temp
+    raw_tmp = _list_path(cat, tier) + ".raw." + _u + ".tmp"
+    srt_tmp = _list_path(cat, tier) + ".srt." + _u + ".tmp"
+    def _cleanup():
+        for f in (raw_tmp, srt_tmp):
+            with contextlib.suppress(Exception):
+                os.remove(f)
+    def _fetch():
+        req = urllib.request.Request(url, headers={"User-Agent": "swg-panel"})
+        total = 0
+        with urllib.request.urlopen(req, timeout=40) as r, open(raw_tmp, "w", encoding="utf-8") as out:
+            for rawb in r:                                     # streamed line iteration → the whole body is never in RAM
+                total += len(rawb)
+                if total > _LIST_FETCH_CAP:
+                    raise ValueError("list exceeds %d MB cap" % (_LIST_FETCH_CAP // 1024 // 1024))
+                d = line_fn(rawb.decode("utf-8", "replace"))
+                if d:
+                    out.write(d + "\n")
+    try:
+        os.makedirs(LIST_DIR, exist_ok=True)
+        _http_retry(_fetch)                                    # retries re-truncate raw_tmp (opened "w")
+        env = dict(os.environ, LC_ALL="C")                    # byte-order sort → matches Python sorted() on ASCII/punycode domains
+        # -T LIST_DIR: force sort's spill files onto the same (disk-backed) fs as the lists, never a tmpfs /tmp that
+        # would put the memory right back in RAM. -S 64M caps its in-core buffer; beyond that it spills to disk.
+        r = subprocess.run(["sort", "-u", "-S", "64M", "-T", LIST_DIR, "-o", srt_tmp, raw_tmp], env=env, capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError("sort rc=%d %s" % (r.returncode, (r.stderr or b"").decode("utf-8", "replace")[:80]))
+        with contextlib.suppress(Exception):
+            os.remove(raw_tmp)
+        ver, n = _hash_count_file(srt_tmp)                     # streamed hash + count of the sorted file
+    except Exception:
+        _cleanup()
+        return prev, "fetch-failed"                           # network/parse/tool error → keep last-good, retry later
+    return _list_commit(cat, tier, ver, n, lambda: os.replace(srt_tmp, _list_path(cat, tier)), tmp=srt_tmp)
 
 def list_store(cat, tier):
     """Resolve + validate + store one list, returning (meta, status). GUARD: a fetch failure keeps last-good; a
     resolve that COLLAPSES a previously-healthy list (drops to 0, or below half its prior count) is rejected — a
     partial fetch or an upstream format change must never silently shrink a list the nodes then load. status ∈
     ok | fetch-failed | collapsed."""
-    items = list_resolve(cat, tier)
-    key = cat + "|" + tier
+    if cat.startswith("blku:"):
+        return _blku_store(cat, tier)                         # per-interface block UNION → memory-bounded streaming build
+    spec = _host_stream_spec(cat, tier)
+    if spec and _have_sort():
+        return _stream_host_store(cat, tier, spec[0], spec[1])   # host lists → streaming resolve (bounded RSS; big domain feeds no longer OOM)
+    items = list_resolve(cat, tier)                           # ip / v2fly / curated (all small) → in-memory
     if items is None:
         return list_meta(cat, tier), "fetch-failed"           # network/parse error → keep last-good, retry later
-    prev = list_meta(cat, tier); prev_n = int((prev or {}).get("n") or 0)
-    if prev_n >= 20 and len(items) < prev_n * 0.5:            # healthy list suddenly halved/emptied → distrust this pull
-        _LIST_SUSPECT[key] = "resolved to %d, was %d — kept the previous list" % (len(items), prev_n)
-        return prev, "collapsed"
-    _LIST_SUSPECT.pop(key, None)
-    return _list_write(cat, tier, items), "ok"
+    return _list_commit_items(cat, tier, items)
 
 def list_meta(cat, tier):
     m = _LIST_META.get(cat + "|" + tier)
@@ -4859,6 +5206,28 @@ def _clean_targets(raw):
     return domains, cidrs
 
 
+_TLD_RE = re.compile(r"^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$")   # a single-label TLD (alphabetic or punycode); a bare number / hyphen-only is not a TLD
+
+def _clean_tlds(raw):
+    """A TLD-rule input → validated single-label top-level domains (ru, io, com, info, xn--p1ai). Accepts a
+    comma/space/newline string OR a list; strips a leading dot; IDN→punycode. Multi-label values (co.uk) are
+    NOT TLDs — those are a `suffix` rule. Deduped, order kept. See docs/PROTOCOL-ROUTING-PLAN.md §3.1/§5."""
+    items = raw if isinstance(raw, (list, tuple)) else re.split(r"[,\s]+", str(raw or ""))
+    out = []
+    for t in items:
+        t = str(t).strip().lower().lstrip(".")
+        if not t:
+            continue
+        if any(ord(c) > 127 for c in t):
+            try:
+                t = t.encode("idna").decode("ascii")
+            except Exception:
+                continue
+        if _TLD_RE.match(t) and t not in out:
+            out.append(t)
+    return out
+
+
 def custom_cat_id(domains, cidrs=()):
     """Stable nft category id for a custom rule (same target set → same id/set)."""
     key = ",".join(sorted(domains)) + "|" + ",".join(sorted(cidrs))
@@ -4957,8 +5326,10 @@ def load_panel_settings(path):
 
 def _validate_routing(routing, nodes, nid, custom_list_ids=()):
     """Validate + normalize a smart-routing rule list. Returns (clean_rules, error). Each rule:
-    {enabled:bool, category:<in SMART_CATEGORIES | a custom_list id | "custom">, action:"exit"|"direct"|"block",
-    node:<exit nid if exit>}. The implicit 'everything else → direct' default is NOT stored (appended at compile time)."""
+    {enabled:bool, category:<in SMART_CATEGORIES | a custom_list id | "custom" | "tld">, action:"exit"|"direct"|"block",
+    node:<exit nid if exit>}. A "tld" rule additionally carries match:"tld" + tlds:[label…] (route/block a whole
+    top-level domain; see docs/PROTOCOL-ROUTING-PLAN.md §3.1). The implicit 'everything else → direct' default is
+    NOT stored (appended at compile time)."""
     if not isinstance(routing, list):
         return None, "routing must be a list of rules"
     clean = []
@@ -4967,7 +5338,19 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=()):
             return None, "each routing rule must be an object"
         cat = (r.get("category") or "").strip()
         tgt = None
-        if cat == "custom":
+        tlds = None
+        if cat == "tld":
+            # Whole-TLD rule. Only Force-DNS / Hybrid-SNI can anchor a TLD; kernel-SNI's substring engine and the
+            # IP-only tier cannot (§5.1) → reject up front with a plain reason rather than ship an inert rule.
+            tlds = _clean_tlds(r.get("value") if r.get("value") is not None else r.get("tlds"))
+            if not tlds:
+                return None, "a TLD rule needs at least one valid top-level domain (e.g. ru, io, com)"
+            mode = (nodes.get(nid) or {}).get("routing_mode") or "kernel"
+            if mode in ("kernel", "sni_kernel"):
+                return None, ("TLD matching needs Force-DNS or Hybrid-SNI — this node is on "
+                              + ("IP-only (kernel)" if mode == "kernel" else "kernel-SNI")
+                              + ", which can't anchor a whole TLD; switch the node's host engine or route these elsewhere")
+        elif cat == "custom":
             # re-split from targets (fresh edit) OR the stored domains+cidrs (a re-save carries no `targets`) — read
             # BOTH halves so a CIDR-only / mixed custom rule keeps its IPs (else cascade_plan would drop them).
             doms, cidrs = _clean_targets(r.get("targets") if r.get("targets") is not None
@@ -4993,6 +5376,8 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=()):
         out = {"enabled": r.get("enabled", True) is not False, "category": cat, "action": act}
         if tgt is not None:
             out["domains"], out["cidrs"] = tgt
+        if tlds is not None:
+            out["match"], out["tlds"] = "tld", tlds
         if act == "exit":
             en = (r.get("node") or "").strip()
             if en not in nodes or en == nid:
@@ -5000,6 +5385,235 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=()):
             out["node"] = en
         clean.append(out)
     return clean, None
+
+
+def _validate_block(block, panel_settings):
+    """Clean an interface's active block-category list → known block-category ids only, in order, deduped.
+    Unknown/removed ids are DROPPED (never an error) so a category deleted on the Block-lists screen can't lock
+    an interface out. The ids reference the effective block_catalog (predefined + operator customs)."""
+    cat = block_catalog(panel_settings)
+    out = []
+    for b in (block or []):
+        b = str(b).strip()
+        if b in cat and b not in out:
+            out.append(b)
+    return out
+
+
+# ── Per-interface block UNION ─────────────────────────────────────────────────────────────────────────────────
+# CPU: each drop rule is one O(1) `ip daddr @set` test per packet, so N per-feed rules cost ~N× (measured: 12 feeds
+# ≈ −43% fwd pps on a worst-case 1-core software-forward; 1 set ≈ −9%, the physical floor). So we UNION every feed an
+# interface blocks into ONE set per tier → ONE drop rule (one lookup) instead of one per feed. A `blku:<tier>:<hash>`
+# synthetic category is registered at serve time (hash of its sorted source ids → identical block sets across
+# interfaces SHARE one set) and resolved by unioning the members; the node treats it like any provider category, so
+# this stays ZERO NODE CHANGES.
+_BLKU_REG = {}   # "blku:<tier>:<hash>" -> [blk source ids]  (serve-time registry, read by the background resolver — same process)
+
+def _blku_key(tier, src_ids):
+    return "blku:" + tier + ":" + hashlib.sha1((";".join(sorted(set(src_ids)))).encode()).hexdigest()[:12]
+
+def _blku_store(cat, tier):
+    """Build a per-interface block UNION with BOUNDED memory, returning (meta, status) like list_store. Members
+    (`blk:<prov>:<list>`) are each already resolved + stored as a SORTED file by the normal resolver, so the union is
+    produced by a STREAMING k-way merge of those files straight to disk — O(members) memory, never the whole domain
+    set in RAM (a big union costs ~0 MB extra vs ~0.5 GB for an in-memory `set`, which OOM-killed a 1 GB node). ip
+    unions are small (threat-IP feeds) and need overlap-collapse for nft interval sets, so those stay in-memory. A
+    member not yet resolved is scheduled + skipped this pass (a partial union still blocks; it converges next cycle).
+    Any failure keeps last-good — a bad build must never wipe a node's block set."""
+    srcs = _BLKU_REG.get(cat)
+    if srcs is None or tier != (cat.split(":", 2)[1] if cat.count(":") >= 2 else ""):
+        return list_meta(cat, tier), "fetch-failed"          # not registered this serve / wrong tier → keep last-good
+    paths = []
+    for sid in srcs:
+        if list_meta(sid, tier) is None:
+            list_ensure(sid, tier)                            # member not resolved yet → schedule (non-blocking), skip
+            continue
+        p = _list_path(sid, tier)
+        if os.path.exists(p):
+            paths.append(p)
+    if not paths:
+        return list_meta(cat, tier), "fetch-failed"          # no member ready yet → keep last-good, retry next cycle
+    if tier == "ip":
+        nets = []
+        for p in paths:
+            try:
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    for ln in f:
+                        s = ln.strip()
+                        if not s:
+                            continue
+                        try:
+                            n = ipaddress.ip_network(s, strict=False)
+                            if n.version == 4:
+                                nets.append(n)
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+        items = [str(n) for n in ipaddress.collapse_addresses(nets)]
+        return _list_commit_items(cat, tier, items)          # ip union is small (threat feeds) → in-memory collapse, shared commit
+    return _blku_merge_write(cat, tier, paths)
+
+def _blku_merge_write(cat, tier, paths):
+    """Stream a k-way merge of the SORTED member files → the union file, deduping adjacent domains. Holds only one
+    line per open file (bounded), never the whole union in RAM. The content hash is computed incrementally so the
+    version is byte-identical to `sorted(set(union))` — nodes never needlessly re-pull. Commits (guard + last-good)
+    through the shared _list_commit."""
+    prev = list_meta(cat, tier)                               # for the keep-last-good returns on a merge/open failure
+    files = []
+    try:
+        for p in paths:
+            files.append(open(p, "r", encoding="utf-8", errors="replace"))
+    except Exception:
+        for f in files:
+            with contextlib.suppress(Exception):
+                f.close()
+        return prev, "fetch-failed"
+    tmp = _list_path(cat, tier) + ".merge." + uuid.uuid4().hex[:8] + ".tmp"   # UNIQUE per call (avoid a same-cat concurrent-resolve temp clash)
+    h = hashlib.sha1(); n = 0; last = None
+    try:
+        os.makedirs(LIST_DIR, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as out:
+            gens = ((ln.rstrip("\n") for ln in f) for f in files)
+            for dom in heapq.merge(*gens):                    # each input file is sorted → merged stream is globally sorted
+                if not dom or dom == last:
+                    continue                                  # dedup: in a sorted stream the dups are adjacent
+                last = dom
+                line = dom + "\n"
+                out.write(line); h.update(line.encode()); n += 1
+    except Exception:
+        with contextlib.suppress(Exception):
+            os.remove(tmp)
+        return prev, "fetch-failed"
+    finally:
+        for f in files:
+            with contextlib.suppress(Exception):
+                f.close()
+    return _list_commit(cat, tier, h.hexdigest()[:12], n, lambda: os.replace(tmp, _list_path(cat, tier)), tmp=tmp)
+
+
+def _blk_file_has(path, target):
+    """Bytewise binary search for an exact line in a C-sorted, newline-delimited list file. O(log n) seeks, never
+    loads the file into RAM (block lists run to millions of lines — the whole point of the streaming union)."""
+    tb = target.encode("utf-8", "ignore")
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2); hi = f.tell(); lo = 0
+            while lo < hi:
+                mid = (lo + hi) // 2
+                f.seek(mid)
+                if mid:
+                    f.readline()                     # drop the partial line straddling mid (unless we're at BOF)
+                line = f.readline()
+                if not line:                         # mid fell in the final line → search the lower half
+                    hi = mid; continue
+                val = line.rstrip(b"\n")
+                if val == tb:
+                    return True
+                if val < tb:
+                    lo = f.tell()                    # strictly past mid → terminates
+                else:
+                    hi = mid
+    except OSError:
+        return False
+    return False
+
+
+def _blk_cat_srcpaths(deps):
+    """[(cid, [host-tier source list paths])] for the ENABLED content block categories — the corpus a blocked
+    hostname is bucketed against. Deterministic BLOCK_CAT_ORDER (first match wins for a domain on several lists)."""
+    cat = block_catalog(deps.get("panel_settings"))
+    enabled = set()
+    for n in (deps.get("nodes") or {}).values():
+        if not isinstance(n, dict):
+            continue
+        for ov in (n.get("ifaces") or {}).values():
+            for cid in (ov.get("block") or []):
+                c = cat.get(cid) or {}
+                if c.get("kind") != "mechanism" and c.get("enabled", True):
+                    enabled.add(cid)
+    out = []
+    for cid in BLOCK_CAT_ORDER:
+        if cid not in enabled:
+            continue
+        paths = []
+        for s in ((cat.get(cid) or {}).get("sources") or []):
+            prov = (s.get("provider") or "").strip(); lst = (s.get("list") or "").strip()
+            if not prov or (BLOCK_PROVIDERS.get(prov) or {}).get("tier", "host") == "ip":
+                continue                             # domains bucket against host-tier lists only
+            paths.append(_list_path("blk:%s:%s" % (prov, lst), "host"))
+        if paths:
+            out.append((cid, paths))
+    return out
+
+
+def _blk_bucket(cache, srcpaths, host):
+    """Blocked hostname → content-category id, by longest-suffix membership against the enabled block lists (bisect).
+    Result cached (bounded) so the steady-state top-K costs ~nothing; "" caches a no-category host to skip re-testing."""
+    if host in cache:
+        return cache[host] or None
+    labels = host.split(".")
+    suffixes = [".".join(labels[k:]) for k in range(max(0, len(labels) - 1))]   # www.x.com → x.com (swg-sni's _match order)
+    hit = ""
+    for cid, paths in srcpaths:
+        if any(_blk_file_has(p, suf) for p in paths for suf in suffixes):
+            hit = cid; break
+    if len(cache) > 6000:
+        cache.clear()                                # bounded; steady-state top-K is far smaller
+    cache[host] = hit
+    return hit or None
+
+
+def _resolve_iface_blocks(node, snap, panel_settings, mode):
+    """Per-interface content/IP `block[]` → smart DROP entries, INDEPENDENT of egress_mode (a direct/forward
+    interface can still filter). To keep the datapath cheap, every feed an interface blocks is UNIONED into ONE set
+    per tier (`blku:<tier>:<hash>`) → ONE `ip saddr <subnet> ip daddr @cat_<union> drop` rule (one O(1) lookup),
+    not one rule per feed. The node treats the union like any provider category (pulls it via list_manifest, fills
+    the set, drops) → ZERO NODE CHANGES. Content (host/domain) unions only on a DNS/SNI-mode node (kernel matches by
+    IP only → inert, matching the UI); IP unions enforce in every mode. Mechanism categories are handled by the node's
+    swg_mech L4/rate rules, not here. Content (host/domain) unions only on a DNS-fill mode (Force-DNS/Hybrid); IP-only
+    and Kernel-SNI can't hold a domain block set (the datapath can't match domains cheaply), so host blocks are skipped
+    there — the UI steers them to Force-DNS/Hybrid. IP unions enforce in every mode. Returns (entries,
+    srcs={union_id: tier}, mech={subnet:[mechanism ids]})."""
+    cat = block_catalog(panel_settings)
+    bpe = block_providers_enabled(panel_settings)
+    ifaces = (snap or {}).get("interfaces") or {}
+    entries = []; srcs = {}; mech = {}
+    for ifn, ov in (node.get("ifaces") or {}).items():
+        if ov.get("system"):
+            continue
+        blk_ids = _validate_block(ov.get("block"), panel_settings)
+        if not blk_ids:
+            continue
+        subnet = (((ifaces.get(ifn) or {}).get("meta") or {}).get("subnet")) or ""
+        if not subnet:                                # subnet not reported yet → skip (pause, never error)
+            continue
+        tier_srcs = {"host": [], "ip": []}            # gather this interface's feeds per tier, then union each into ONE set
+        for cid in blk_ids:
+            c = cat.get(cid) or {}
+            if not c.get("enabled", True):
+                continue                              # a disabled category never enforces
+            if c.get("kind") == "mechanism":          # torrents/smtp/portscan/quic/doh/… → per-subnet flags (node builds L4 rules)
+                mech.setdefault(subnet, set()).add(cid)
+                continue
+            tier = "ip" if c.get("kind") == "ip" else "host"
+            if tier == "host" and mode in ("kernel", "sni_kernel"):
+                continue                              # domain blocking needs a DNS fill (Force-DNS/Hybrid) — inert on IP-only / Kernel-SNI
+            for s in (c.get("sources") or []):
+                prov = (s.get("provider") or "").strip(); lst = (s.get("list") or "").strip()
+                if not prov or not bpe.get(prov, True):
+                    continue                          # custom-paste (no provider) or a disabled feed → omit
+                sid = "blk:" + prov + ":" + lst
+                if sid not in tier_srcs[tier]:
+                    tier_srcs[tier].append(sid)
+        for tier in ("host", "ip"):                   # ONE union set → ONE drop rule per non-empty tier
+            if not tier_srcs[tier]:
+                continue
+            key = _blku_key(tier, tier_srcs[tier])
+            _BLKU_REG[key] = sorted(tier_srcs[tier])
+            srcs[key] = tier
+            entries.append({"subnet": subnet, "category": key, "action": "block"})
+    return entries, srcs, {s: sorted(v) for s, v in mech.items()}
 
 
 def _iface_subnet_from_snap(snaps, nid, iface):
@@ -5206,6 +5820,8 @@ def mesh_rrd_path(stats_dir, a, b):   # canonical per-pair file (a<b); rx slot =
     return os.path.join(stats_dir, f"mesh-{x}-{y}.rrd")
 def cat_rrd_path(stats_dir, nid, cat):   # per-(node,category) destination-traffic ring (up slot = rx, dn slot = tx)
     return os.path.join(stats_dir, "cat-" + nid + "-" + re.sub(r"[^a-z0-9_]", "_", str(cat).lower()) + ".rrd")
+def blkcat_rrd_path(stats_dir, nid, cat):   # per-(node, content-block-category) blocked-count ring (rate in the rx slot)
+    return os.path.join(stats_dir, "blkc-" + nid + "-" + re.sub(r"[^a-z0-9_]", "_", str(cat).lower()) + ".rrd")
 def turn_fork(service):   # fork id baked into a service name (vk-turn-proxy-<fork>-<port>) — mirrors app.js turnFork
     s = re.sub(r"^vk-turn-proxy-?", "", service or "turn-proxy") or "turn"
     s = re.sub(r"-\d+$", "", s) or "turn"
@@ -5222,6 +5838,8 @@ def turn_rrd_path(stats_dir, nid, fork):   # per-(node,fork) turn-proxy ring (rx
     return os.path.join(stats_dir, "turn-" + nid + "-" + re.sub(r"[^A-Za-z0-9_]", "_", str(fork)) + ".rrd")
 def iface_rrd_path(stats_dir, nid, ifn):   # per-(node,interface) throughput ring (rx/tx slots) — drives the interface-detail graph. node+iface passed explicitly, so the filename is never split.
     return os.path.join(stats_dir, "iface-" + nid + "-" + re.sub(r"[^A-Za-z0-9_.-]", "_", str(ifn)) + ".rrd")
+def block_rrd_path(stats_dir, nid):   # per-node blocking-activity ring — REUSES: rx slot = torrents/hr (mean), pon = scan sources (peak), ptot = blocked dsts reached (peak)
+    return os.path.join(stats_dir, "block-" + nid + ".rrd")
 def _turn_ips_path(deps):   # unique turn-proxy source-IP store {nid:{ip:{first,last,by:[svc]}}} — client IPs seen connecting to each proxy
     return os.path.join(os.path.dirname((deps or {}).get("nodes_path") or ".") or ".", "turn-ips.json")
 
@@ -5242,6 +5860,14 @@ def peer_rrd_path(stats_dir, nid, pubkey):   # per-(node,peer) throughput ring f
 # so a lazily-written ring can never contribute buckets from outside the range the operator asked for.
 RANGE_SPEC = {"live": (0, 200, 200 * 15), "hour": (0, 250, 3600), "day": (1, 300, 86400),
               "week": (2, 350, 7 * 86400), "month": (3, 400, 30 * 86400)}
+
+# OFFENDER TRACKING — panel-derived, ranged "who" for the Protection bubbles. The node ships the CURRENT set of
+# offending source IPs each sync (presence, self-expiring: torrent_ips, scan_ips); the panel stamps first/last-seen
+# per IP so the bubble can range ("who offended in the past hour/day/week") and sort by recency — with NO datapath
+# per-source counter (ipset element counters don't accumulate; see swg-noded torsig7). Bounded + mirrored to disk.
+OFFENDER_TTL = 30 * 86400 + 3600      # drop an offender once unseen longer than the widest range (month) + slack
+OFFENDER_MAX = 4000                   # per metric — offenders are few, but cap memory hard regardless
+OFFENDER_METRICS = ("torrent", "scan")   # metrics with genuine per-source presence (blocked drops by dst → no source)
 
 HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, ring0_step, ring0_slots
 # One slot's metrics live as a flat vector M (below), plus a bucket id + write-time sample count. All extra
@@ -5893,6 +6519,8 @@ def api(method, path, qs, body, deps):
                         "health_live": hl,                # raw per-sync samples for the LIVE view (5s)
                         "kind": snap.get("kind") or c.get("kind"),   # "docker" | "baremetal" — fall back to the last-reported kind so a DOWN node still knows its method (Recover)
                         "net_mode": snap.get("net_mode") or "host",   # docker net mode: host | bridge (bridge → created-iface ports need publishing)
+                        "arch": snap.get("arch"),                     # the node's canonical CPU arch (amd64 / arm64 / raw uname -m) — for the turn-proxy capability tooltip
+                        "turn_arch_ok": (snap.get("turn_capable") is not False),   # grey out "Setup proxy" ONLY on an explicit "no build for this arch" from the node; absent/unknown → allow (never false-block; the node's own download is the real gate)
                         "turn_manage": bool(snap.get("turn_manage")),  # can the panel edit/restart this node's turn-proxies?
                         "ips": snap.get("node_ips") or [],             # the node's own IPs — candidates for a per-interface egress IP
                         "wan_ifaces": [w for w in (snap.get("node_ifaces") or []) if not _is_sysif(w)],   # the node's NICs — candidates for the egress WAN interface (no mesh links)
@@ -5917,6 +6545,14 @@ def api(method, path, qs, body, deps):
                         "cmd_errors": (snap.get("cmd_errors") or {}),               # request key -> last host->node command error
                         "cmd_progress": (snap.get("cmd_progress") or {}),           # request key -> transient "what's happening now" (yellow card note)
                         "issues": _node_issues(c, snap),                            # health-check roll-up: drift / missing egress / turn down
+                        "datapath_broken": bool((((snap.get("datapath") or {}).get("awg")) or {}).get("needed") and not (((snap.get("datapath") or {}).get("awg")) or {}).get("ok")),   # awg kernel module unloadable → offer "repair node" (node self-update rebuilds it) even when up-to-date
+                        # a node self-update can REPAIR: bare-metal → rebuild the awg DKMS module; docker → `compose pull && up`
+                        # recreates a crashed container / userspace datapath. True when there's such an issue AND the node is up.
+                        "repairable": bool(
+                            (((snap.get("datapath") or {}).get("awg")) or {}).get("needed") and not (((snap.get("datapath") or {}).get("awg")) or {}).get("ok")
+                            or ((snap.get("kind") or c.get("kind")) == "docker"
+                                and (any((e or {}).get("down") for e in (snap.get("interfaces") or {}).values())
+                                     or any(tp.get("running") is False for tp in (snap.get("turn_proxies") or []))))),
                         "interfaces": list((snap.get("interfaces") or {}).keys()),
                         "missing_ifaces": _missing_ifaces(c, snap),                  # user ifaces expected but gone (restore signal + last-known config)
                         "ghost_ifaces": _ghost_ifaces(c, snap, _refmap.get(nid), online)})   # lost KEYLESS ifaces (no _lastcfg) → recreate-fresh + rekey, not restore (online-gated)
@@ -6015,10 +6651,13 @@ def api(method, path, qs, body, deps):
                            **_cat_labels_extra},         # + catalog cats in use → their provider label
 
             "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
+            "latest_remote_date": LATEST_REMOTE.get("date") or "",   # its changelog date + notes → the "update to …" hover bubble
+            "latest_remote_notes": LATEST_REMOTE.get("notes") or [],
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
             "tls": dict(TLS_STATUS),                                  # cert expiry watch — surface a stalled renewal before it goes dark
             "panel_services": panel_service_health(),                # THIS host's own swg units (active/enabled/present) → SPA "needs attention" (bare-metal only)
+            "datapath": host_datapath_health(),                      # THIS host's kernel datapath health (awg module loadable?) → healable "Fix" issue when a local node uses awg
         }}
 
     if method == "POST" and path == "/api/panel/settings":   # Panel settings: validate + persist + hot-reload in deps
@@ -6273,8 +6912,8 @@ def api(method, path, qs, body, deps):
         pc = incoming.get("provider_colors")            # per-provider source-tag colour overrides {prov_id: {dark,light}}; "custom" allowed too
         if isinstance(pc, dict):
             out_pc = {}
-            for k, v in list(pc.items())[:16]:
-                if k in CATALOG_PROVIDERS or k in ("custom", "curated"):
+            for k, v in list(pc.items())[:32]:
+                if k in CATALOG_PROVIDERS or k in BLOCK_PROVIDERS or k in ("custom", "curated"):
                     tc = _themed_color(v)
                     if tc: out_pc[k] = tc
             cur["provider_colors"] = out_pc
@@ -6338,6 +6977,13 @@ def api(method, path, qs, body, deps):
                              "error": "an address change is still waiting to be confirmed — confirm it on the new "
                                       "address, cancel it, or wait for it to revert before changing these settings."}
             cur["access"] = _acc_clean
+        bpe = incoming.get("block_providers")                   # {prov_id: bool} — the Filters-providers toggles (block feeds)
+        if isinstance(bpe, dict):
+            _bc = dict(cur.get("block_catalog") or {})
+            _bstore = dict(_bc.get("providers") or {})
+            _bstore.update({p: bool(bpe[p]) for p in bpe if p in BLOCK_PROVIDERS})
+            _bc["providers"] = _bstore
+            cur["block_catalog"] = _bc
         deps["panel_settings"] = cur
         # NB: a public-URL change is NOT adopted as the node dial URL here — the browser always follows a URL save
         # with /api/access/apply, which verifies (confirm) the new URL reaches this panel before adopting it. So
@@ -7091,6 +7737,87 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {"total": len(idx), "providers": CATALOG_PROVIDER_ORDER,
                                           "perr": _CATALOG.get("perr") or {}, "error": _CATALOG.get("err") or ""}}
 
+    if method == "GET" and path == "/api/block-catalog":        # Block-lists screen: effective categories + providers + pickable lists
+        ps = deps.get("panel_settings")
+        en = block_providers_enabled(ps)
+        _bcats = block_catalog(ps)
+        for _c in _bcats.values():                              # attach resolved record counts: per-source `n` + a per-category {host,ip} total
+            th = ti = 0; known = False
+            for _s in _c.get("sources", []):
+                _tier, _n = block_source_size(_s.get("provider"), _s.get("list", ""))
+                _s["n"] = _n
+                if _n is not None:
+                    known = True
+                    if _tier == "ip": ti += _n
+                    else: th += _n
+            _c["size"] = ({"host": th, "ip": ti} if known else None)
+        return 200, {"ok": True, "data": {
+            "categories": _bcats,
+            "cat_order": BLOCK_CAT_ORDER,
+            "providers": [{"id": p, "label": BLOCK_PROVIDERS[p]["label"], "tier": BLOCK_PROVIDERS[p].get("tier", "host"),
+                           "color": BLOCK_PROVIDERS[p].get("color", ""), "color_l": BLOCK_PROVIDERS[p].get("color_l", BLOCK_PROVIDERS[p].get("color", "")),
+                           "url": BLOCK_PROVIDERS[p].get("url", ""),
+                           "note": BLOCK_PROVIDERS[p].get("note", ""), "enabled": en.get(p, True)} for p in BLOCK_PROVIDER_ORDER],
+            "provider_lists": {p: [{"id": lid, "label": v[0], "desc": v[1], "src": _block_list_src(p, lid)} for lid, v in BLOCK_PROVIDER_LISTS.get(p, {}).items()]
+                               for p in BLOCK_PROVIDER_ORDER}}}
+
+    if method == "POST" and path == "/api/block-catalog/save":  # staged commit from the Block-lists screen (category deltas + provider toggles)
+        node_ids = set(nodes_load(deps["nodes_path"]) or {})
+        cats_in, provs_in, removed = body.get("categories") or {}, body.get("providers") or {}, body.get("removed") or []
+        if not isinstance(cats_in, dict) or not isinstance(provs_in, dict) or not isinstance(removed, list):
+            return 400, {"ok": False, "error": "categories/providers must be objects, removed a list", "code": "bad_request"}
+        clean_cats = {}
+        for cid, ov in cats_in.items():
+            cid = str(cid).strip()
+            if not cid or not isinstance(ov, dict):
+                continue
+            predefined = cid in BLOCK_CATEGORIES or cid in MECH_CATEGORIES
+            d = {}
+            if "label" in ov:
+                d["label"] = str(ov.get("label") or "").strip()[:80]
+            if ov.get("kind") in ("content", "ip"):
+                d["kind"] = ov["kind"]
+            if "default_on" in ov:
+                d["default_on"] = bool(ov["default_on"])
+            if "enabled" in ov:
+                d["enabled"] = bool(ov["enabled"])
+            if isinstance(ov.get("enabled_nodes"), list):
+                d["enabled_nodes"] = [n for n in ov["enabled_nodes"] if n in node_ids]
+            if isinstance(ov.get("sources"), list):
+                srcs = []
+                for s in ov["sources"]:
+                    if not isinstance(s, dict):
+                        continue
+                    p = str(s.get("provider") or "").strip()
+                    lid = str(s.get("list") or "").strip()
+                    if p in BLOCK_PROVIDERS and (not lid or lid in BLOCK_PROVIDER_LISTS.get(p, {})) \
+                            and {"provider": p, "list": lid} not in srcs:
+                        srcs.append({"provider": p, "list": lid})
+                d["sources"] = srcs
+            if not predefined:                              # a custom category needs a label + kind
+                d.setdefault("label", cid); d.setdefault("kind", "content")
+            if d:
+                clean_cats[cid] = d
+        cur = dict(deps.get("panel_settings") or {})
+        bc = dict(cur.get("block_catalog") or {})
+        cats_store = dict(bc.get("categories") or {})
+        for cid, d in clean_cats.items():                   # MERGE each delta into the stored override — the screen sends only
+            cats_store[cid] = {**(cats_store.get(cid) or {}), **d}   # the fields it touched this session, so a sources-only save must
+            #                                                          NOT wipe enabled_nodes (and an enable-only save must keep sources)
+        for cid in removed:                                 # remove a CUSTOM category's override entirely; predefined can only be disabled
+            cid = str(cid).strip()
+            if cid not in BLOCK_CATEGORIES and cid not in MECH_CATEGORIES:
+                cats_store.pop(cid, None)
+        bc["categories"] = cats_store
+        provs_store = dict(bc.get("providers") or {}); provs_store.update({p: bool(provs_in[p]) for p in provs_in if p in BLOCK_PROVIDERS})
+        bc["providers"] = provs_store
+        cur["block_catalog"] = bc
+        deps["panel_settings"] = cur
+        with contextlib.suppress(Exception):
+            save_critical(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
+        ev_append(roster_path, "panel", "routing", "Updated block lists", "")
+        return 200, {"ok": True, "data": {"categories": block_catalog(cur), "cat_order": BLOCK_CAT_ORDER}}
+
     if method == "POST" and path == "/api/geo/update":          # "Update all lists now": re-fetch every routed list on the panel (host bucket)
         provider_update_all(deps["nodes_path"])
         return 200, {"ok": True, "data": {"updating": True}}
@@ -7782,6 +8509,148 @@ def api(method, path, qs, body, deps):
             if d:
                 out.append({"node": nid, "cat": cat, "up": vol(d.get("rx")), "dn": vol(d.get("tx"))})   # total bytes over the window
         return 200, {"ok": True, "data": {"range": rng, "cats": out}}
+
+    if method == "GET" and path == "/api/block-stats":
+        # Overview "Protection" card. ACTIVITY over a range from the per-node block-<nid>.rrd (rx slot = torrents/hr
+        # RATE → total; pon = scan sources, ptot = blocked dsts reached → PEAK, never meaned: a headcount averaged
+        # over idle buckets rounds to 0). Torrents SUM across nodes; scan/reach SUM the per-node peaks (each node's
+        # subnets are its own). COVERAGE is static — enabled block cats + cached list sizes across the fleet.
+        rng = (qs.get("range") or ["day"])[0]
+        spec = RANGE_SPEC.get(rng)
+        if not spec:
+            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
+        ring, want, win = spec
+        step = HRRD_RINGS[ring][0]
+        torrents = scan = reach = blocked = 0
+        tser = {}; bser = {}                                          # bucket epoch → Σ torrents/hr and Σ blocked/hr across nodes (sparklines)
+        try:
+            files = os.listdir(stats_dir) if stats_dir else []
+        except OSError:
+            files = []
+        for fn in files:
+            if not (fn.startswith("block-") and fn.endswith(".rrd")):
+                continue
+            nid = fn[6:-4]
+            if nid not in nodes:
+                continue
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=time.time() - win)
+            if not d:
+                continue
+            torrents += int(sum(d.get("rx") or []) * step / 3600)     # torrents/hr rate → total connections over the window
+            blocked += int(sum(d.get("tx") or []) * step / 3600)      # blocked/hr rate → total packets dropped to block sets over the window
+            scan += int(max((d.get("pon") or [0])))                   # gauges → PEAK per node (max over in-window buckets), summed
+            reach += int(max((d.get("ptot") or [0])))
+            for t, r in zip(d.get("t") or [], d.get("rx") or []):     # buckets align across nodes (shared ring step) → sum by epoch
+                tser[t] = tser.get(t, 0) + (r or 0)
+            for t, b in zip(d.get("t") or [], d.get("tx") or []):
+                bser[t] = bser.get(t, 0) + (b or 0)
+        series = [tser[t] for t in sorted(tser)]                      # torrents/hr per bucket, oldest→newest; sparkline shape only
+        bseries = [bser[t] for t in sorted(bser)]                     # blocked/hr per bucket — the "blocked" tile's sparkline
+        # coverage (static, side-effect-free — cached list_meta only): how much the fleet is filtering
+        cat = block_catalog(Handler.deps.get("panel_settings"))
+        enabled = set(); n_ifaces = 0; mech = {}
+        for n in (nodes or {}).values():
+            if not isinstance(n, dict):
+                continue
+            for ov in (n.get("ifaces") or {}).values():
+                b = ov.get("block") or []
+                if not b:
+                    continue
+                n_ifaces += 1
+                for cid in b:
+                    c = cat.get(cid) or {}
+                    if c.get("kind") == "mechanism":
+                        mech[cid] = mech.get(cid, 0) + 1
+                    elif c.get("enabled", True):
+                        enabled.add(cid)
+        dom = ips = 0; seen = set(); catcov = {}
+        for cid in enabled:
+            c = cat.get(cid) or {}; cd = ci = 0
+            for s in (c.get("sources") or []):
+                prov = (s.get("provider") or "").strip(); lst = (s.get("list") or "").strip()
+                if not prov:
+                    continue
+                tier = (BLOCK_PROVIDERS.get(prov) or {}).get("tier", "host")
+                m = list_meta("blk:%s:%s" % (prov, lst), tier)
+                n = int(m["n"]) if (m and m.get("n")) else 0
+                if tier == "ip": ci += n
+                else: cd += n
+                if (prov, lst) not in seen:              # fleet TOTAL de-dups a list shared by two categories; per-category size doesn't
+                    seen.add((prov, lst)); ips += n if tier == "ip" else 0; dom += n if tier != "ip" else 0
+            if cd or ci:
+                catcov[cid] = {"label": c.get("label") or c.get("name") or cid, "domains": cd, "threat_ips": ci}
+        # Per-category composition for the Blocked bubble — blocking merges every feed into ONE union set per tier (one
+        # drop rule, one counter) for O(1) lookup, so per-category BLOCK COUNTS don't exist. What IS meaningful + free is
+        # WHAT each category is filtering (list size); ranked biggest-first, it answers "what's protecting me".
+        cats = sorted(catcov.values(), key=lambda x: -(x["domains"] + x["threat_ips"]))
+        cov = {"domains": dom, "threat_ips": ips, "categories": len(enabled), "ifaces": n_ifaces, "mechanisms": mech, "cats": cats}
+        # Per-category BLOCKED COUNTS (SNI mode) — sum each content category's blkc ring over the window. Filename
+        # blkc-<nid>-<sanitised cat>.rrd; nid is hex + cat is sanitised → exactly one '-'. Ranged like the other tiles.
+        blkcat_tot = {}
+        for fn in files:
+            if not (fn.startswith("blkc-") and fn.endswith(".rrd")):
+                continue
+            rest = fn[5:-4]
+            if "-" not in rest:
+                continue
+            bnid, bsan = rest.split("-", 1)
+            if bnid not in nodes:
+                continue
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=time.time() - win)
+            if not d:
+                continue
+            t = int(max((d.get("pon") or [0])))                    # distinct sites → PEAK per node over the window (gauge, never meaned)
+            if t > 0:
+                blkcat_tot[bsan] = blkcat_tot.get(bsan, 0) + t     # sum peaks across nodes (each node's own sites)
+        blocked_cats = []
+        if blkcat_tot:
+            _san2lab = {re.sub(r"[^a-z0-9_]", "_", str(k).lower()): ((v or {}).get("label") or k) for k, v in cat.items()}
+            blocked_cats = sorted(({"label": _san2lab.get(s, s), "count": c} for s, c in blkcat_tot.items()),
+                                  key=lambda x: -x["count"])
+        # WHO — attribute offending source IPs → peers → users for the hover bubble, RANGED + recency-sorted. The panel
+        # stamps first/last-seen per offender each sync (see _node_sync); here we take the offenders whose last-seen
+        # falls inside the selected range, group them by user, and order newest-first. There is no per-source COUNT
+        # (presence only: ipset element counters don't accumulate, and block drops match by DESTINATION), so the bubble
+        # answers WHO + WHEN, not how-many — the tile above owns the count. `blocked` has no per-source signal → no bubble.
+        who = {}; _now = int(time.time())
+        _win = RANGE_SPEC.get(rng, (0, 0, 3600))[2]           # the SAME window the tiles read over → the bubble and the tile always agree
+        _t0 = _now - _win
+        with contextlib.suppress(Exception):
+            _r = roster_load(roster_path); _users = _r.get("users") or {}
+            ip2peer = {}
+            for _pid, _p in (_r.get("peers") or {}).items():
+                for _t in (_p.get("targets") or []):
+                    if _t.get("ip"):
+                        ip2peer[str(_t["ip"]).split("/")[0]] = _p
+            _off = Handler.deps.get("_offenders") or {}
+            for _mtr in OFFENDER_METRICS:
+                grp = {}
+                for _ip, _e in (_off.get(_mtr) or {}).items():
+                    first, last = int(_e[0]), int(_e[1])
+                    if last < _t0:                            # last-seen outside the window → not an offender in this range
+                        continue
+                    p = ip2peer.get(_ip); uid = (p or {}).get("user_id"); pid = (p or {}).get("id")
+                    key = ("u:" + uid) if uid else (("p:" + pid) if pid else ("ip:" + _ip))
+                    g = grp.setdefault(key, {"user": (_users.get(uid) or {}).get("name") if uid else None,
+                                             "user_id": uid, "peers": {}, "last": 0})
+                    nm = (p.get("title") if p else None) or (("Peer ." + _ip.split(".")[-1]) if p else _ip)
+                    pk = pid or ("ip:" + _ip)
+                    pe = g["peers"].get(pk)
+                    if pe:                                    # a peer with several target IPs → merge to its newest window
+                        pe["last"] = max(pe["last"], last); pe["first"] = min(pe["first"], first)
+                    else:
+                        g["peers"][pk] = {"name": nm, "last": last, "first": first}
+                    g["last"] = max(g["last"], last)
+                rows = []
+                for g in grp.values():
+                    peers = sorted(g["peers"].values(), key=lambda x: -x["last"])   # newest peer first within a user
+                    rows.append({"user": g["user"], "user_id": g["user_id"], "n": len(peers), "last_ago": _now - g["last"],
+                                 "peers": [{"name": q["name"], "ago": _now - q["last"], "dur": max(0, q["last"] - q["first"])} for q in peers]})
+                if rows:
+                    who[_mtr] = sorted(rows, key=lambda x: x["last_ago"])           # most-recent offender first
+            scan = sum(1 for _e in (_off.get("scan") or {}).values() if int(_e[1]) >= _t0)   # tile = DISTINCT scanners in the window (from the SAME offender data the bubble uses), not peak-concurrent → tile == bubble
+        return 200, {"ok": True, "data": {"range": rng, "torrents": torrents, "blocked": blocked, "scan": scan, "reach": reach,
+                                          "series": series, "bseries": bseries, "who": who, "coverage": cov, "blocked_cats": blocked_cats}}
 
     if method == "GET" and path == "/api/turn-history":
         # Per-(node,fork) turn-proxy stats over a range — drives the "by turn-proxy" doughnuts. Reads each
@@ -8662,6 +9531,12 @@ def api(method, path, qs, body, deps):
             if err:
                 return 400, {"ok": False, "error": err, "code": "bad_request"}
             ov["routing"] = rules
+        if "block" in body:                          # active block-category ids on this interface (content filtering + traffic/abuse); independent of egress_mode
+            b = _validate_block(body.get("block"), deps.get("panel_settings"))
+            if b:
+                ov["block"] = b
+            else:
+                ov.pop("block", None)
         for k in ("listen_port", "awg_params"):     # a user-set value re-asserts: drop its drift + synced so it re-pushes
             if k in body:
                 (ov.get("_synced") or {}).pop(k, None); (ov.get("_drift") or {}).pop(k, None)
@@ -8750,6 +9625,9 @@ def api(method, path, qs, body, deps):
             if err:
                 return 400, {"ok": False, "error": err, "code": "bad_request"}
             ov["egress_mode"] = "smart"; ov["routing"] = rules
+        _blk = _validate_block(body.get("block"), deps.get("panel_settings"))   # active block-category ids (default-on set applied by the UI at create; validated here)
+        if _blk:
+            ov["block"] = _blk
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Creating interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
@@ -8909,6 +9787,12 @@ def api(method, path, qs, body, deps):
         wrap_flags = (body.get("wrap_flags") or "").strip()
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        # Defence-in-depth: refuse a turn-proxy for a node whose arch has NO server-linux-<arch> build — but ONLY
+        # on an EXPLICIT signal from the node (turn_capable is False). Absent/unknown → let it through (the node's
+        # own download is the real gate, and refusing on uncertainty could false-block a perfectly installable box).
+        _snap = ((deps.get("node_snaps") or {}).get(nid) or {})
+        if _snap.get("turn_capable") is False:
+            return 400, {"ok": False, "error": "no turn-proxy build for this node's architecture (" + (_snap.get("arch") or "unknown") + ") — forks publish amd64/arm64 only", "code": "bad_request"}
         # STRICT validation — these values become a systemd unit + subprocess args on the node; a shell/heredoc
         # metacharacter here would be RCE. Legit forks/owners/ip:port/params all pass; injection payloads don't.
         if not re.match(r"^[A-Za-z0-9._-]+$", fork) or not _OWNER_RE.match(owner):
@@ -9132,6 +10016,8 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {
             "checked": reached,                      # did we actually reach the repo this time?
             "latest_remote": LATEST_REMOTE.get("version"),
+            "latest_remote_date": LATEST_REMOTE.get("date") or "",
+            "latest_remote_notes": LATEST_REMOTE.get("notes") or [],
             # strictly-newer remote only (same rule as the data bundle) — never flag a dev build that's
             # AHEAD of main as "outdated", which would offer a downgrade and leave the header with no pill.
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version"))}}
@@ -10088,6 +10974,72 @@ class Handler(BaseHTTPRequestHandler):
                     with contextlib.suppress(Exception):
                         hrrd_update(cat_rrd_path(stats_dir, nid, cat), now_i, cM)
                     clast_w[(nid, cat)] = now_i
+            # BLOCKING ACTIVITY (panel-derived, NO node change / NO node calc): the node ships raw current numbers each
+            # sync — cumulative torrent count + current scan-meter + cat_blku_* set sizes (reach). The PANEL owns the
+            # ranges: torrent is cumulative → convert to a per-interval RATE here (Δ/Δt, reset-safe) so the mean-
+            # consolidated ring stays correct; scan + reach are gauges → the peak slots. One ring/node → ranged card.
+            _sr = snap.get("smartroute") or {}
+            _blk = _sr.get("block") or {}
+            # Reach = distinct blocked dsts currently in the block set. In SNI/Hybrid the blocked IPs are LEARNED into
+            # catl_blku_* (the timeout set), not the static cat_blku_* (which Force-DNS fills but the fill-guard may skip);
+            # count BOTH prefixes so reach is non-zero whichever engine populated the set.
+            _reach = sum(int(c or 0) for nm, c in (_sr.get("sets") or {}).items()
+                         if str(nm).startswith("cat_blku_") or str(nm).startswith("catl_blku_"))
+            if _blk or _reach:                                    # node is doing blocking → keep its line continuous
+                _torc = sum(int((v or {}).get("torrent") or 0) for v in _blk.values())
+                _scan = sum(int((v or {}).get("scan") or 0) for v in _blk.values())
+                _blkd = sum(int((v or {}).get("blocked") or 0) for v in _blk.values())   # cumulative pkts dropped to content-block sets
+                _bl = Handler.deps.setdefault("_blk_last", {}); _pt = _bl.get(nid); _trate = _brate = 0
+                if _pt and now_i > _pt[-1]:                       # both torrents + blocked are cumulative → per-interval RATE (mean-consolidatable), reset-safe
+                    _dt = now_i - _pt[-1]
+                    _trate = int(max(0, _torc - _pt[0]) * 3600 / _dt)      # torrents/HOUR
+                    _brate = int(max(0, _blkd - (_pt[1] if len(_pt) >= 3 else _blkd)) * 3600 / _dt)   # blocked/HOUR (len<3 = pre-upgrade tuple → 0 this once)
+                _bl[nid] = (_torc, _blkd, now_i)
+                bM = [0] * HRRD_NM; bM[3] = min(_trate, HRRD_U32); bM[4] = min(_brate, HRRD_U32); bM[11] = min(_scan, HRRD_U16); bM[12] = min(_reach, HRRD_U16)
+                with contextlib.suppress(Exception):
+                    hrrd_update(block_rrd_path(stats_dir, nid), now_i, bM)
+                # OFFENDER STAMPS: record first/last-seen per offending source IP, per metric → ranged "who" bubble
+                # sorted by recency, with no datapath counter. Presence sets self-expire, so a peer that stops
+                # offending simply stops refreshing and ages out of the ranges. Tiny (only real offenders), pruned
+                # to the widest range + capped, and mirrored to disk (survives a panel restart/update).
+                _off = Handler.deps.setdefault("_offenders", {})
+                _touched = False
+                for _v in _blk.values():
+                    for _mtr, _key in (("torrent", "torrent_ips"), ("scan", "scan_ips")):
+                        for _ip in ((_v or {}).get(_key) or []):
+                            _m = _off.setdefault(_mtr, {}); _e = _m.get(_ip)
+                            if _e: _e[1] = now_i; _e[2] = nid
+                            else:  _m[_ip] = [now_i, now_i, nid]
+                            _touched = True
+                if _touched:
+                    _cut = now_i - OFFENDER_TTL
+                    for _m in _off.values():                       # prune the aged-out, then hard-cap to the most-recent
+                        for _ip in [i for i, e in _m.items() if e[1] < _cut]: _m.pop(_ip, None)
+                        if len(_m) > OFFENDER_MAX:
+                            for _ip, _ in sorted(_m.items(), key=lambda kv: kv[1][1])[:len(_m) - OFFENDER_MAX]: _m.pop(_ip, None)
+                    _olast = Handler.deps.get("_off_last_w", 0)     # mirror throttled (≤1/30s) — negligible, restart-safe
+                    if now_i - _olast >= 30:
+                        Handler.deps["_off_last_w"] = now_i
+                        with contextlib.suppress(Exception):
+                            atomic_write(os.path.join(stats_dir, "offenders.json"), json.dumps(_off), mode=0o644)
+            # PER-CATEGORY BLOCKED SITES (SNI mode): the node ships a bounded top-K of blocked HOSTNAMES (swg-sni saw the
+            # SNI at block time); the PANEL buckets each into its content category (bisecting the sorted source lists it
+            # already owns — no list in RAM, no node/datapath change). We ring the DISTINCT SITE COUNT per category as a
+            # GAUGE (peak over range, like reach) — NOT a hit-sum: swg-sni sees each site ~once (the drop runs before its
+            # queue), so distinct sites is the honest, ranged unit, and the per-category peaks sum ≈ the tile's reach.
+            _bd = _sr.get("blk_domains") or {}
+            if _bd:
+                _srcp = _blk_cat_srcpaths(Handler.deps)
+                _cache = Handler.deps.setdefault("_blk_d2c", {})
+                _percat = {}
+                for _host in _bd:                                    # top-K keys are distinct hostnames → count = distinct sites/category
+                    _cc = _blk_bucket(_cache, _srcp, str(_host))
+                    if _cc:
+                        _percat[_cc] = _percat.get(_cc, 0) + 1
+                for _cc, _nsites in _percat.items():
+                    _cM = [0] * HRRD_NM; _cM[11] = min(_nsites, HRRD_U16)   # distinct sites → GAUGE (pon slot), peak-consolidated over the range
+                    with contextlib.suppress(Exception):
+                        hrrd_update(blkcat_rrd_path(stats_dir, nid, _cc), now_i, _cM)
             # TURN-PROXY STATS (panel-derived, no node change): attribute each turn-routed peer to its proxy's FORK
             # (a peer whose wg endpoint is a proxy's connect IP; the proxy forwarding to that peer's iface listen
             # port claims it — mirrors reconcile.js). Aggregate rx/tx + online/total per fork → per-(node,fork) ring
@@ -10467,14 +11419,29 @@ class Handler(BaseHTTPRequestHandler):
         _gu = _ps.get("geo_update") or {}
         _cadence = max(1, int(_gu.get("every_days") or 1)) * 86400   # panel re-resolve cadence (0/continuous → daily fetch is fine)
         _cix = catalog_index()
+        # Content/IP block enforcement: fold each interface's block[] into the smart plan as DROP entries, PREPENDED
+        # so a block wins over a routing exit for the same destination. Rides the existing smart @cat-drop +
+        # list_manifest path (blk:<prov>:<list> sources use the SAME resolver) → zero node datapath change.
+        _blk_entries, _blk_srcs, _blk_mech = _resolve_iface_blocks(node, snap, _ps, _node_mode)
+        if _blk_entries:
+            my_plan["smart"] = _blk_entries + (my_plan.get("smart") or [])
         _list_manifest = {}
         for _c in {e["category"] for e in (my_plan.get("smart") or [])}:
-            _curated = ":" not in _c and _c in SMART_CATEGORIES and _c != "all"   # built-in → panel-resolved + panel-pulled (Phase 2)
-            if ":" not in _c and not _curated:                     # custom_<hash> / "all" → not panel-served (ship inline)
+            _isblku = _c.startswith("blku:")                       # per-interface block UNION → its own tier, no provider gate (feeds pre-filtered)
+            _isblk = _isblku or _c.startswith("blk:")              # block feed (blk:<provider>:<list>) → block-provider gate + its own tier
+            _curated = (not _isblk) and ":" not in _c and _c in SMART_CATEGORIES and _c != "all"   # built-in → panel-resolved + panel-pulled
+            if not _isblk and ":" not in _c and not _curated:      # custom_<hash> / "all" → not panel-served (ship inline)
                 continue
-            if not _curated and not _enabled_prov.get(_c.split(":", 1)[0], False):   # provider not enabled → omit (node deletes the set)
+            if _isblk:
+                if not _isblku:                                    # a bare block feed is gated by its block provider; a union isn't
+                    _bprov = _c.split(":", 2)[1] if _c.count(":") >= 2 else ""
+                    if not block_providers_enabled(_ps).get(_bprov, True):   # block feed's provider disabled → omit (node deletes the set)
+                        continue
+                _caps = {(_blk_srcs.get(_c) or "host"): True}
+            elif not _curated and not _enabled_prov.get(_c.split(":", 1)[0], False):   # routing provider not enabled → omit (node deletes the set)
                 continue
-            _caps = SMART_CAPS.get(_c, {}) if _curated else (_cix.get(_c) or {})
+            else:
+                _caps = SMART_CAPS.get(_c, {}) if _curated else (_cix.get(_c) or {})
             _ent = {}
             for _tier in ("ip", "host"):
                 if not _caps.get(_tier):
@@ -10527,7 +11494,8 @@ class Handler(BaseHTTPRequestHandler):
                                           "cat_caps": {**{c: SMART_CAPS[c] for c in {e["category"] for e in (my_plan.get("smart") or [])}
                                                           if c in SMART_CAPS},
                                                        **{c: catalog_index().get(c) for c in {e["category"] for e in (my_plan.get("smart") or [])}
-                                                          if c in catalog_index() and c not in SMART_CATEGORIES}},
+                                                          if c in catalog_index() and c not in SMART_CATEGORIES},
+                                                       **{c: {t: True} for c, t in _blk_srcs.items()}},   # block feeds: their single tier drives the node's .txt/.doms fill
                                           # domain tier: active bundles + custom-rule domain lists → node fills these via dnsmasq. ONLY for a
                                           # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
                                           "domains": ({**{c: DOMAIN_BUNDLES.get(c, []) for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in HOST_CATEGORIES},
@@ -10538,6 +11506,7 @@ class Handler(BaseHTTPRequestHandler):
                                           # domain fill. Only in forcedns mode — kernel needs no DNS, and sni reads the TLS handshake so it
                                           # leaves the client's DNS (incl. DoH) untouched by design.
                                           "block_doh": (node.get("routing_mode") or "kernel") == "forcedns",
+                                          "mech": _blk_mech,   # {subnet: [mechanism ids]} → node builds the FREE L4/rate drops (smtp/quic/torrents-porthint/portscan) + doh
                                           "ip_learning": node.get("ip_learning", True),   # keep learned SNI IPs (True) vs stay fresh with a short TTL (False)
                                           "routing_reset": int(node.get("routing_reset") or 0),   # per-node 'Reset all routing' counter → node wipes+rebuilds+re-pulls when it changes
                                           "routing_reset_learned": int(node.get("routing_reset_learned") or 0)},   # 'Reset learned IPs' counter → node clears only its learned-IP sets
@@ -10646,10 +11615,16 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         cat = (q.get("cat") or [""])[0].strip()
         tier = (q.get("tier") or [""])[0].strip()
-        _curated = ":" not in cat and cat in SMART_CATEGORIES and cat != "all"   # built-in → panel-resolved, always served
-        if tier not in ("ip", "host") or (":" not in cat and not _curated):
+        _isblku = cat.startswith("blku:")                                        # per-interface block UNION — always served (feeds pre-filtered)
+        _isblk = _isblku or cat.startswith("blk:")                                # block feed (blk:<provider>:<list>) → block-provider gate
+        _curated = (not _isblk) and ":" not in cat and cat in SMART_CATEGORIES and cat != "all"   # built-in → panel-resolved, always served
+        if tier not in ("ip", "host") or (not _isblk and ":" not in cat and not _curated):
             return self._send(400, {"error": "bad cat/tier"})
-        if not _curated and not ((Handler.deps.get("panel_settings") or {}).get("providers") or {}).get(cat.split(":", 1)[0], False):
+        if _isblk and not _isblku:
+            _bprov = cat.split(":", 2)[1] if cat.count(":") >= 2 else ""
+            if not block_providers_enabled(Handler.deps.get("panel_settings")).get(_bprov, True):
+                return self._send(403, {"error": "provider disabled"})           # never serve a disabled block feed
+        elif not _isblk and not _curated and not ((Handler.deps.get("panel_settings") or {}).get("providers") or {}).get(cat.split(":", 1)[0], False):
             return self._send(403, {"error": "provider disabled"})   # never serve a not-enabled provider's list
         meta = list_meta(cat, tier)
         try:
@@ -11932,6 +12907,12 @@ def main():
         _lb = load_json(os.path.join(Handler.deps["stats_dir"], f"live-{_nid}.json"), None)
         if isinstance(_lb, list) and _lb:
             Handler.deps["live_samples"][_nid] = [tuple(s) for s in _lb if isinstance(s, (list, tuple)) and len(s) >= 6][-LIVE_MAX:]
+    # restore the offender first/last-seen map so ranged "who" bubbles survive a restart/update (mirrors offenders.json)
+    _ofm = load_json(os.path.join(Handler.deps["stats_dir"], "offenders.json"), None)
+    if isinstance(_ofm, dict):
+        Handler.deps["_offenders"] = {m: {ip: list(e) for ip, e in (d or {}).items()
+                                          if isinstance(e, (list, tuple)) and len(e) >= 3}
+                                      for m, d in _ofm.items() if isinstance(d, dict)}
     # Boot self-heal: NEVER come up unreachable. A rapid domain-change churn can leave the saved canonical URL
     # ahead of the live cert (saved domain not on the cert → CF 526 → operator + nodes locked out). If so, fall
     # the saved URL's domain back to the cert's primary domain (keep scheme + port) and persist it, so the panel

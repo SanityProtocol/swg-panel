@@ -73,7 +73,9 @@ turn_install_host(){
   inst="${svc#vk-turn-proxy-}"; fork="${inst%-*}"
   fdir="/opt/vk-turn-proxy/.bin/$fork"; sbin="$fdir/server"   # ONE binary per fork — shared by every instance
   dir="/opt/vk-turn-proxy/$inst"; bin="$dir/server"          # this instance: turn.env + a 'server' symlink → the shared binary
-  case "$(uname -m)" in aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch="";; esac
+  # detect-and-REFUSE: forks publish server-linux-amd64/arm64 only — skip rather than fetch a wrong-arch binary
+  [ -n "$arch" ] || { warn "  $(b "$svc") — no turn-proxy build for $(uname -m) (amd64/arm64 only); skipping"; return 0; }
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
   mkdir -p "$fdir" "$dir"
   mk="/var/lib/swg-noded/turn-pending/$svc"; mkdir -p /var/lib/swg-noded/turn-pending 2>/dev/null || true
@@ -123,7 +125,8 @@ turn_predownload(){
   local rec="$DOCKER_DIR/data/node/turn-proxy.json" list svc owner lis con params arch fork fdir sbin n=0
   command -v python3 >/dev/null 2>&1 || return 0
   [ -f "$rec" ] || return 0
-  case "$(uname -m)" in aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch="";; esac
+  [ -n "$arch" ] || return 0   # no turn-proxy build for this arch → nothing to pre-download
   list="$(python3 - "$rec" <<'PY' 2>/dev/null
 import json, sys
 try: d = json.load(open(sys.argv[1])); tps = d.get("turn_proxies") or []

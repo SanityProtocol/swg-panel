@@ -199,6 +199,8 @@ def parse_sni(p):
 FLUSH_INTERVAL = 0.025      # s — max time a learned IP waits before it's in the set
 MAX_BATCH      = 128        # flush early once this many IPs are pending (bounds latency + argv length)
 PRUNE_EVERY    = 30.0       # s — how often the in-memory seen cache is swept of expired entries
+BLK_TOPK       = 500        # blocked-domain attribution: keep at most this many hottest hostnames (bounded memory)
+BLK_WRITE_EVERY = 10.0      # s — how often the blocked-domain top-K is mirrored to disk for swg-noded to harvest
 
 
 def _learnsetname(cat):
@@ -216,6 +218,9 @@ class Classifier:
         self.refresh_age = learn_ttl / 2.0         # re-add (refresh the set timeout) once a seen entry is this old → active dsts never expire
         self.mtime = 0
         self.dom2cat = {}                              # exact domain → category
+        self.blk_path = os.path.join(os.path.dirname(map_path) or ".", "sni-blk-hits.json")
+        self._blk_hits = {}                            # blocked hostname → cumulative hit count (bounded top-K, panel buckets → category)
+        self._blk_last_w = 0.0                         # last time _blk_hits was mirrored to disk
         self.seen = {}                                 # (ip, cat) → last time we (re)added it → sliding refresh + expiry
         self._pending = []                             # [(cat, ip)] buffered for the next batched nft add
         self._lock = threading.Lock()                  # guards _pending + seen (touched by packet loop + flusher)
@@ -268,6 +273,11 @@ class Classifier:
         cat = self._match(host)
         if not cat:
             return
+        if str(cat).startswith("blku"):               # a BLOCK match — count the hostname (bounded) so the panel can
+            with self._lock:                           # bucket it into its content category. Once per ClientHello (the only
+                self._blk_hits[host] = self._blk_hits.get(host, 0) + 1   # packet carrying an SNI) → ≈ per blocked connection.
+                if len(self._blk_hits) > BLK_TOPK:     # evict the coldest host so memory stays hard-bounded
+                    self._blk_hits.pop(min(self._blk_hits, key=self._blk_hits.get), None)
         key = (dst, cat)
         with self._lock:
             ts = self.seen.get(key)
@@ -287,6 +297,16 @@ class Classifier:
             #                                                 the retry's SYN matches catl_ (added by the flusher) and routes.
         return None                                         # refresh only → the dst already routes, don't disturb the flow
 
+    def _write_blk(self, hits):
+        """Atomically mirror the blocked-domain top-K to disk for swg-noded to harvest. Best-effort, never raises."""
+        try:
+            tmp = self.blk_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(hits, f)
+            os.replace(tmp, self.blk_path)
+        except Exception:
+            pass
+
     def _flush_loop(self):
         """Background: drain the pending buffer into batched `nft add element` calls (one per category), and sweep the
         seen cache of expired entries. Adds go to catl_ (the self-expiring learned set); re-adding refreshes the timeout."""
@@ -298,9 +318,16 @@ class Classifier:
                 if now - self._last_prune > PRUNE_EVERY:   # drop entries older than the TTL so the cache tracks the live set
                     self._last_prune = now
                     self.seen = {k: v for k, v in self.seen.items() if now - v < self.learn_ttl}
+                blk_snap = None
+                if self._blk_hits and now - self._blk_last_w > BLK_WRITE_EVERY:   # mirror the blocked-domain top-K for swg-noded
+                    self._blk_last_w = now; blk_snap = dict(self._blk_hits)
                 if not self._pending:
+                    if blk_snap is not None:
+                        self._write_blk(blk_snap)
                     continue
                 batch, self._pending = self._pending, []
+            if blk_snap is not None:
+                self._write_blk(blk_snap)
             bycat = {}
             for cat, ip in batch:
                 bycat.setdefault(cat, []).append(ip)

@@ -1,12 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.4.2-beta</code></p>
+<p align="center"><code>1.5.0-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.4.2-beta** — [full changelog](CHANGELOG.md)
-> - **Reliable AmneziaWG install** — the installer now builds and verifies the AmneziaWG kernel module (DKMS + kernel headers), so interfaces come up on a fresh box instead of failing with "Unknown device type".
-> - **Self-healing datapath** — the panel's **Update** rebuilds a missing or stale kernel module (e.g. after a kernel upgrade) and repairs a node even when there's no new version.
-> - **Clearer install** — the one-liner asks the method (bare-metal / Docker) and role instead of silently installing a panel with no node.
+> **What's new in 1.5.0-beta** — [full changelog](CHANGELOG.md)
+> - **Content filtering** — block ads, trackers, malware, adult content, gambling and more, per server, from curated lists. Enforced on the entry node; a streaming resolver keeps even multi-million-domain lists from running a small box out of memory.
+> - **Protection dashboard** — a live Overview card showing what filtering is catching (blocked sites per category, torrents, port-scanners), with a hover "who" bubble that ties torrents and scanners back to the user behind them.
+> - **Steadier Overview** — the flow map no longer resizes on every refresh, and you can see top nodes by both online users and traffic.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -62,6 +62,9 @@ subscription and no one else sitting in the middle of your traffic.
 - **Panel here or apart.** Run the panel on the same server as a VPN node, or on a separate box that only manages your nodes — either works.
 - **Hard to block.** Uses **AmneziaWG** (a stealthier WireGuard) and can route traffic cleverly by
   destination, so it keeps working where plain VPNs get blocked.
+- **Filter out the junk.** Block ads, trackers, malware, adult content, gambling and more — per server, from
+  curated category lists — and watch a live **Protection** panel show what's being caught, per category, plus
+  which user is behind the torrents and port-scans it flags.
 - **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
   apps — wrap traffic through VK/Yandex TURN relays to slip past even the toughest blocks, all from the panel.
 - **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
@@ -76,6 +79,9 @@ subscription and no one else sitting in the middle of your traffic.
 | **Smart routing** — send chosen sites out through a chosen server | ![Smart routing](screenshots/smart-routing.png) |
 | **Routing lists** — pick a routing mode and manage lists per server | ![Routing lists](screenshots/settings-routing.png) |
 | **List providers** — curated + community geo/domain lists | ![Geo data](screenshots/settings-geo-data.png) |
+| **Content filters** — block ads, trackers, malware & adult per server | ![Content filters](screenshots/content-filters.png) |
+| **Filter providers** — the curated block-list feeds behind the filters | ![Filter providers](screenshots/geo-data-filters.png) |
+| **Protection dashboard** — a live view of what filtering catches, per category | ![Protection dashboard](screenshots/dashboard-protection.png) |
 | **Turn-proxy** — wrap traffic through relays to beat blocks | ![Turn proxy](screenshots/turn-proxy.png) |
 | **Turn-proxy catalog** — which relay forks are offered, and auto-updates | ![Turn proxies](screenshots/settings-turn-proxies.png) |
 

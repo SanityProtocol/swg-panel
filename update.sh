@@ -149,6 +149,9 @@ _hasnode=no;  { [ "$HAVE_BNODE" = yes ] || { [ "$HAVE_DOCK" = yes ] && [ "$DOCK_
 echo; info "$TITLE"
 if $DRYRUN; then info "DRY RUN — nothing will change."; fi
 echo
+# Panel-host heal: a low-RAM / zero-swap box OOM-kills the panel on a list-resolve spike. Ensure swap exists (host-level
+# — a bare-metal panel and a docker panel both use host memory). Only where a panel lives; a node never resolves.
+if [ "$_haspanel" = yes ]; then ensure_swap; fi
 # current installed version per component (bare-metal reads its VERSION file; docker falls back to the staged
 # $DOCKER_DIR/VERSION, '?' when unknown → just shows the latest)
 _pcur="?"; if [ "$HAVE_BPAN" = yes ]; then _pcur="$(oldver "$PANEL_DIR")"; elif [ "$HAVE_DOCK" = yes ]; then _pcur="$(docker_ver swg-panel /opt/swg-panel/VERSION)"; fi
@@ -436,11 +439,12 @@ ensure_awg_module(){   # HEAL (rebuild-if-missing) the AmneziaWG kernel module o
   run apt-get update -qq 2>/dev/null || true
   run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
   run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
-  # FORCE the DKMS module to COMPILE for THIS kernel — `apt install amneziawg` is a NO-OP when the package is
-  # already installed (tool present) but its module never built (headers were missing then), so nothing rebuilds
-  # it. dkms autoinstall builds every registered module for the running kernel; --reinstall re-runs the postinst.
-  run dkms autoinstall 2>/dev/null || true
-  modprobe amneziawg 2>/dev/null || run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
+  # FORCE the DKMS module to COMPILE for the RUNNING kernel — `apt install amneziawg` is a NO-OP when the package
+  # is already installed (tool present) but its module never built (headers were missing then), so nothing
+  # rebuilds it. `-k $(uname -r)` targets the running kernel explicitly: a box on an OLD kernel with newer headers
+  # installed would otherwise build for the wrong kernel and modprobe would still fail. --reinstall re-runs the postinst.
+  run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
+  modprobe amneziawg 2>/dev/null || { run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null; run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true
   run modprobe amneziawg 2>/dev/null || true
   if $DRYRUN || modprobe amneziawg 2>/dev/null; then
     DID_UPDATE=yes; ok "AmneziaWG kernel module healed — awg interfaces can come up now"; note "awg kernel module: rebuilt for $(uname -r)"
@@ -721,7 +725,9 @@ turn_check_one(){   # <key> <dir/ holding server+version.txt+repo.txt> <fork|ins
   echo
   if confirm "Upgrade $(col_l "turn-proxy $key") ($owner) $(col_v "$cur → $latest")?"; then
     DID_UPDATE=yes
-    case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
+    case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch="";; esac
+    # detect-and-REFUSE: forks publish server-linux-amd64/arm64 only — never grab a wrong-arch binary on unknown arch
+    [ -n "$arch" ] || { warn "no turn-proxy build for $(uname -m) — forks publish amd64/arm64 only; skipping"; return; }
     url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
     info "updating turn-proxy $key ($owner)"
     if run curl -fsSL "$url" -o "${d}server.new" && run chmod +x "${d}server.new" && run mv "${d}server.new" "${d}server"; then

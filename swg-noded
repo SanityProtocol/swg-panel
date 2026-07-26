@@ -1390,7 +1390,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     allr = [e for e in smart_e if e["category"] == "all"]
     want = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) for e in spec + allr]
     v6f = sorted(set(v6_ifaces))                                # smart routing is IPv4-only → drop forwarded v6 on these ifaces (fail-closed, no leak)
-    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s6").encode()).hexdigest()[:16]   # s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
+    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]   # s9: reverted the per-source blkd meter (its duplicate name killed the catl_blku drop rule → hybrid blocking broke); s7: +counter on the blku content-block drop; s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
     _sigf = os.path.join(GEO_DIR, ".smart-sig")
     try:
         stored = open(_sigf).read().strip()
@@ -1450,7 +1450,11 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 elif act == "direct":
                     _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "return")   # explicit direct exception (wins over a later catch-all exit)
                 elif act == "block":
-                    _add("ip", "saddr", S, "ip", "daddr", "@" + snm, "drop")
+                    if str(cat).startswith("blku"):    # content-block union → aggregate COUNTER (growing "blocked" metric); zero
+                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, "counter", "drop")   # CPU (only ticks on dropped pkts). Emitted
+                        #                                                                       for BOTH cat_ and catl_ (Hybrid learned) sets
+                    else:
+                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, "drop")
         if pin and queue:                                       # feed each connection's first packets to swg-sni (userspace SNI); kernel-SNI reads them via xt_string instead → no queue
             for S in subnets:
                 _add("ip", "saddr", S, "tcp", "dport", "443", "ct", "state", "established", "ct", "packets", "lt", "12", "queue", "num", str(SNI_NFQUEUE), "bypass")
@@ -1702,6 +1706,24 @@ def _panel_list_refresh(manifest, sched, panel, res):
             if not (not have or not cur_v) and not in_window:  # a CHANGED existing list waits for the quiet hour
                 continue
             _bg_pull(cat, tier, want_v, base, panel, dest, pv)
+    # GC orphaned pulled files — a cat that LEFT the manifest (a removed/steered list) leaves its <cat>.doms/.txt +
+    # .pver behind forever. Prune them, but ONLY when the manifest is NON-EMPTY: an empty manifest could be a
+    # transient, and a still-needed list that got pruned re-pulls on the next sync anyway (self-healing, never a
+    # lasting loss). Touches only files matching the pulled-list naming — control markers (.xtstring-sig, .nft…) stay.
+    if manifest:
+        keep = set()
+        for cat, tiers in manifest.items():
+            for tier in (tiers or {}):
+                if tier in ("ip", "host"):
+                    keep.add(cat + (".txt" if tier == "ip" else ".doms"))
+                    keep.add("." + cat.replace(":", "_") + "." + tier + ".pver")
+        with contextlib.suppress(OSError):
+            for fn in os.listdir(GEO_DIR):
+                is_list = (fn.endswith(".doms") or fn.endswith(".txt")) and not fn.startswith(".")
+                is_pver = fn.startswith(".") and fn.endswith(".pver")
+                if (is_list or is_pver) and fn not in keep:
+                    with contextlib.suppress(OSError):
+                        os.remove(os.path.join(GEO_DIR, fn))
 
 
 def _nft_load_set(setname, cidrs):
@@ -1829,6 +1851,80 @@ _DOM_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]
 _DOM_CACHE = {}   # cat -> ((mtime,size), parsed-domain-list): reuse the parsed list while the .doms file is unchanged
 _DOMTIER_CACHE = {}   # {"v": (input-signature, fully-enriched {cat:[domain]})}: skip the union+sort when inputs are unchanged
 _DNSMASQ_BUILD = {"n": 0}   # cycles since the domain tier went active — drives the periodic self-heal rebuild
+
+# ── Force-DNS fill admission control ──────────────────────────────────────────────────────────────────────
+# Loading a domain category into dnsmasq's per-domain map costs memory the box may not have. A big content list
+# (ads/malware/adult can union to MILLIONS of domains) balloons BOTH the noded's build and dnsmasq's resident set,
+# thrashing a small box into swap until its sync loop starves and the panel marks the node offline (observed:
+# noded → 665 MB / folio_wait on a 961 MB box). So before Force-DNS loads any list we size it cheaply (on-disk
+# .doms bytes, no read) and admit only what fits a memory budget; over-budget categories are SKIPPED and reported
+# rather than loaded. The node degrades honestly and stays online. This is a node-side safety net — it holds no
+# matter what the panel ships, so a mis-sized policy can never take a node down.
+_FORCEDNS_DOM_BYTES = 400        # est. PEAK bytes/domain for the whole load: dnsmasq resident (~80) + the noded's
+                                 # transient build copies (dom_sets/groups/conf/body, ~300). Conservative on purpose
+                                 # so the gate is safe WITHOUT streaming the build.
+_FILL_HEADROOM = 96 * 1024 * 1024   # never spend the last 96 MB of available memory on a domain fill
+
+
+def _cgroup_mem_available():
+    """Bytes still allocatable inside our cgroup (a docker memory cap), or None if unlimited/unreadable. Mirrors the
+    panel's _mem_total_mb cgroup-awareness so a memory-capped container budgets by ITS limit, not the host's RAM."""
+    for lim, cur in (("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),                       # v2
+                     ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes")):  # v1
+        try:
+            raw = open(lim).read().strip()
+            if raw == "max":
+                return None
+            L = int(raw)
+            if L <= 0 or L >= (1 << 62):                  # v1 "unlimited" sentinel
+                return None
+            return max(0, L - int(open(cur).read().strip() or 0))
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _fill_budget_bytes():
+    """Memory a domain fill may consume without thrashing: min(host MemAvailable, cgroup headroom) less a fixed
+    reserve. Read fresh each cycle so a box under load admits less."""
+    avail = read_meminfo().get("available", 0)
+    cg = _cgroup_mem_available()
+    if cg is not None:
+        avail = min(avail, cg)
+    return max(0, avail - _FILL_HEADROOM)
+
+
+def _doms_est_count(cat):
+    """Cheap domain-count estimate for a category from its on-disk .doms size — a stat, never a read (~18 B/line)."""
+    try:
+        return max(0, os.stat(os.path.join(GEO_DIR, cat + ".doms")).st_size // 18)
+    except OSError:
+        return 0
+
+
+def _forcedns_admit(cats, res):
+    """Admit as many domain categories to the Force-DNS fill as fit the memory budget; skip the rest (largest first,
+    so the most categories stay enforced) and report the skip for the panel to surface. Returns the admitted cats.
+    Never raises."""
+    budget = _fill_budget_bytes()
+    sized = sorted(((c, _doms_est_count(c)) for c in cats), key=lambda x: x[1])   # smallest first → fit the cheap ones
+    admitted, dropped, spent = [], [], 0
+    for cat, n in sized:
+        if n and spent + n * _FORCEDNS_DOM_BYTES > budget:
+            dropped.append((cat, n)); continue
+        admitted.append(cat); spent += n * _FORCEDNS_DOM_BYTES
+    if dropped:
+        tot = sum(n for _, n in dropped)
+        res["errors"].append(
+            "Force-DNS fill over memory budget (~%d MB free): skipped %d categor%s (~%s domains) — %s. "
+            "Use kernel-SNI for large content lists, or a smaller list." % (
+                budget // (1024 * 1024), len(dropped), "y" if len(dropped) == 1 else "ies",
+                format(tot, ","), ", ".join(c for c, _ in sorted(dropped, key=lambda x: -x[1]))))
+        _SMART_MODE["fill_gate"] = {"skipped": [c for c, _ in dropped], "skipped_domains": tot,
+                                    "budget_mb": budget // (1024 * 1024)}
+    else:
+        _SMART_MODE.pop("fill_gate", None)
+    return admitted
 
 
 def _smart_domain_refresh(cats, res):
@@ -2100,6 +2196,138 @@ def _ensure_doh_block(subnets, enable, res):
         res["errors"].append("doh block: " + str(e)[:120])
 
 
+MECH_NFT_TABLE = "swg_mech"     # per-interface FREE traffic/abuse mechanism drops (SMTP/QUIC/torrent-port-hint/port-scan)
+
+def _mech_meter(subnet):
+    return "psc_" + re.sub(r"[^0-9a-z]", "_", subnet.lower())   # valid nft id for the per-subnet port-scan rate meter
+def _mech_flagged(subnet):
+    return "pscf_" + re.sub(r"[^0-9a-z]", "_", subnet.lower())  # per-subnet FLAGGED-scanner set: only over-rate src IPs land here (self-expiring)
+def _mech_ports(subnet):
+    return "mps_" + re.sub(r"[^0-9a-z]", "_", subnet.lower())   # valid nft id for the per-subnet (proto.port) drop set
+
+def _ensure_mech_block(mech, res):
+    """Per-interface FREE traffic/abuse mechanism drops in the `swg_mech` table (forward hook, mirrors _ensure_doh_block).
+    mech = {subnet: [mechanism ids]}. EVERY rule is O(1) / offload-safe. To keep the datapath cheap the deterministic
+    port drops (SMTP :25, QUIC udp/443, BitTorrent PORT-HINT 6881-6889) are COLLAPSED into ONE concatenated (proto.port)
+    set → one lookup, not one rule per port. Plus a per-SOURCE new-connection rate meter for port-scan / brute-force
+    (a token bucket touched ONLY at connection setup, `ct state new`; established packets skip it). The bounded
+    L7-SIGNATURE mechanisms (torrent handshake, WebRTC, cryptomining) are NOT built here — deferred + measurement-gated.
+    Signature-gated so steady state is a no-op; atomic `nft -f`; never raises; never-wipe (nothing wanted → delete ONLY
+    our table). Unknown/sig mechanisms are ignored (fail-open, never a silent CPU cost)."""
+    try:
+        have = run(["nft", "list", "table", "inet", MECH_NFT_TABLE])
+        portsets = {}   # subnet -> sorted [(proto.port) element strings]   (smtp/quic/torrents → ONE set → ONE rule)
+        meters = []     # subnets running the port-scan rate meter
+        for S in sorted(mech or {}):
+            cats = set(mech.get(S) or [])
+            els = []
+            if "smtp" in cats:     els.append("tcp . 25")
+            if "quic" in cats:     els.append("udp . 443")
+            if "torrents" in cats: els += ["udp . 6881-6889", "tcp . 6881-6889"]   # FREE port-hint; the sig scan is a later measured tier
+            if els:                portsets[S] = sorted(els)
+            if "portscan" in cats: meters.append(S)
+        if not portsets and not meters:                           # nothing wanted → tear down ONLY our table (never touches others)
+            if have.returncode == 0:
+                run(["nft", "delete", "table", "inet", MECH_NFT_TABLE]); res["changed"] += 1
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(GEO_DIR, ".mech.sig"))
+            return
+        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "v": 2}, sort_keys=True).encode()).hexdigest()   # v2: +pscf flagged-scanner set
+        sigf = os.path.join(GEO_DIR, ".mech.sig")
+        cur = ""
+        with contextlib.suppress(OSError):
+            cur = open(sigf).read().strip()
+        if have.returncode == 0 and cur == sig:                   # table present + same wants → converged, no-op
+            return
+        lines = ["delete table inet " + MECH_NFT_TABLE] if have.returncode == 0 else []
+        lines.append("table inet " + MECH_NFT_TABLE + " {")
+        for S, els in sorted(portsets.items()):
+            lines.append("  set " + _mech_ports(S) + " { type inet_proto . inet_service; flags interval; elements = { " + ", ".join(els) + " } }")
+        for S in sorted(meters):                                  # FLAGGED-scanner set — only over-rate src IPs are added, timeout-expiring
+            lines.append("  set " + _mech_flagged(S) + " { type ipv4_addr; flags timeout; }")
+        lines.append("  chain forward { type filter hook forward priority filter; policy accept;")
+        for S in sorted(portsets):                                # ONE port-drop rule per subnet (all its port mechanisms)
+            lines.append("    ip saddr " + S + " meta l4proto . th dport @" + _mech_ports(S) + " drop")
+        for S in sorted(meters):                                  # per-SOURCE new-connection rate limit (scans / brute-force). Over-rate
+            lines.append("    ip saddr " + S + " ct state new meter " + _mech_meter(S) +   # sources are recorded in the flagged set (→ real
+                         " { ip saddr limit rate over 200/second } add @" + _mech_flagged(S) + " { ip saddr timeout 600s } drop")   # scanner attribution, self-decaying)
+        lines += ["  }", "}"]
+        with contextlib.suppress(OSError):
+            os.makedirs(GEO_DIR, exist_ok=True)
+        path = os.path.join(GEO_DIR, ".mech.nft")
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        rc = run(["nft", "-f", path]).returncode
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        if rc == 0:
+            with contextlib.suppress(OSError):
+                open(sigf, "w").write(sig)
+            res["changed"] += 1
+        else:
+            res["errors"].append("mech block nft load failed")
+    except Exception as e:
+        res["errors"].append("mech block: " + str(e)[:120])
+
+
+TORRENT_MARK = 0x7770     # connmark for a detected BitTorrent flow (outside the 7000-7099 fwmark band + SNI reset 0x9999)
+
+def _ensure_torrent_sig(subnets, res):
+    """Phase 3 of the torrents mechanism — the PROPER, port-independent BitTorrent block by protocol SIGNATURE
+    (iptables `-m string`, xt_string). For each subnet: scan ONLY the first packets of a NEW tcp flow
+    (`-m connbytes 0:12 original packets`) for the `\\x13BitTorrent protocol` handshake; on a hit, pin the flow's
+    connmark and DROP it. A `connmark → DROP` rule placed FIRST means a classified flow drops O(1) and NEVER
+    re-scans, so scanning is confined to a tiny bounded window at connection setup (near-zero amortized). SUPPLEMENTS
+    the free port-hint (swg_mech) — catches BitTorrent on any port. Capability-gated (needs `iptables -m string`);
+    where absent, the port-hint still applies. Sig-gated (rebuild only on change), never raises. Mirrors
+    _ensure_smart_xtstring's SWGP chain lifecycle exactly (mangle PREROUTING)."""
+    CHAIN = "SWGP"
+    subs = sorted(set(subnets or []))
+    sig = hashlib.sha1(("torsig7|" + ";".join(subs)).encode()).hexdigest()[:16]   # torsig7: presence-only swgp_src (element counters proven non-accumulating; reverted count rules)
+    sigf = os.path.join(GEO_DIR, ".torsig-sig")
+    try:
+        stored = open(sigf).read().strip()
+    except OSError:
+        stored = ""
+    hooked = run(["iptables", "-t", "mangle", "-C", "PREROUTING", "-p", "tcp", "-j", CHAIN]).returncode == 0
+    if stored == sig and (hooked or not subs):                # steady state → no-op
+        return
+    if subs and not _kernel_sni_ok():                         # no xt_string on this box → port-hint (swg_mech) only, skip the scan
+        return
+    run(["iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "-j", CHAIN])   # unhook + rebuild fresh
+    run(["iptables", "-t", "mangle", "-F", CHAIN]); run(["iptables", "-t", "mangle", "-X", CHAIN])
+    if not subs:                                              # teardown (torrents off / no subnets)
+        with contextlib.suppress(OSError):
+            os.remove(sigf)
+        return
+    _ok = [True]
+    def _ipt(*a):
+        r = run(["iptables", "-t", "mangle", *a])
+        if r.returncode != 0:
+            res["errors"].append("torrent-sig: " + (r.stderr or "").strip()[:120]); _ok[0] = False
+    _ipt("-N", CHAIN)
+    # torrent source IPs (who tried torrents), self-expiring PRESENCE set (attribution: which peers offended).
+    run(["ipset", "create", "swgp_src", "hash:ip", "timeout", "600", "-exist"])
+    for S in subs:
+        # Phase 1 (FIRST): a flow already classified BitTorrent → record the source (attribution: who tried torrents) then
+        # drop O(1), never re-scan. swgp_src is a self-expiring PRESENCE set — membership tells us which peers offended;
+        # ipset element counters don't accumulate (SET overwrites to the last packet), so we keep presence, not counts.
+        _ipt("-A", CHAIN, "-s", S, "-m", "connmark", "--mark", hex(TORRENT_MARK), "-j", "SET", "--add-set", "swgp_src", "src", "--exist")
+        _ipt("-A", CHAIN, "-s", S, "-m", "connmark", "--mark", hex(TORRENT_MARK), "-j", "DROP")
+        # Phase 2 (BOUNDED scan): only the first packets of a NEW tcp flow — on the handshake, pin the connmark…
+        _ipt("-A", CHAIN, "-s", S, "-p", "tcp",
+             "-m", "connbytes", "--connbytes", "0:12", "--connbytes-dir", "original", "--connbytes-mode", "packets",
+             "-m", "string", "--algo", "bm", "--hex-string", "|13|BitTorrent protocol",
+             "-j", "CONNMARK", "--set-mark", hex(TORRENT_MARK))
+        # …and drop the packet that just matched (subsequent packets hit the Phase-1 rule).
+        _ipt("-A", CHAIN, "-s", S, "-m", "connmark", "--mark", hex(TORRENT_MARK), "-j", "DROP")
+    _ipt("-A", "PREROUTING", "-p", "tcp", "-j", CHAIN)        # hook once, last
+    if _ok[0]:
+        res["changed"] += 1
+        with contextlib.suppress(OSError):
+            os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
+
+
 def reconcile_dial_src(desired_by_iface, res):
     """Pin the OUTBOUND source IP for each mesh link that set a dial_src — a /32 route to the peer endpoint
     with `src <dial_src>` in the main table (the encrypted tunnel UDP leaves the WAN, so this never touches
@@ -2346,7 +2574,16 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # + each fetched cat's geo-file (mtime,size) — never touching the big lists. Unchanged inputs reuse the enriched
     # dict AND tell _ensure_smart_dnsmasq to skip its (equally expensive) config rebuild. This keeps domains[cat]
     # populated either way, so the geoip↔domain split below (skip=...) stays correct.
-    _fetched = _smart_domain_refresh([c for c in domains if _CAT_CAPS.get(c, {}).get("host")], res)
+    _host_cats = [c for c in domains if _CAT_CAPS.get(c, {}).get("host")]
+    if host_engine == "dns":                                   # Force-DNS loads full lists into the per-domain dnsmasq
+        _admit = set(_forcedns_admit(_host_cats, res))         # map → memory-gate it; over-budget cats stay off (reported)
+        for c in _host_cats:
+            if c not in _admit:
+                domains.pop(c, None)                           # not loaded → not filled: honest degrade, node stays online
+        _host_cats = [c for c in _host_cats if c in _admit]
+    else:
+        _SMART_MODE.pop("fill_gate", None)                     # gate only governs the dnsmasq fill; clear when not in it
+    _fetched = _smart_domain_refresh(_host_cats, res)
     dom_sig = (tuple(sorted({e["subnet"] for e in smart_e})), json.dumps(domains, sort_keys=True),
                tuple(sorted((c, _DOM_CACHE.get(c, (None,))[0]) for c in _fetched)))
     _dt = _DOMTIER_CACHE.get("v")
@@ -2364,28 +2601,35 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         _smart_geo_refresh(smart_cats, set_counts or {}, res, skip={c for c, v in domains.items() if v})
     _smart_load_cidrs((smart or {}).get("cidrs") or {}, set_counts or {}, res)   # custom-rule raw IPs/CIDRs → into the set
     _subs = sorted({e["subnet"] for e in smart_e})
+    _mech = (smart or {}).get("mech") or {}                   # {subnet: [mechanism ids]} → FREE L4/rate drops (mode-independent)
+    _doh_mech = {s for s, cats in _mech.items() if "doh" in (cats or [])}   # explicit per-interface DoH-block mechanism
     if host_engine == "sni_user":                             # userspace swg-sni fills the domain cats from the TLS
         _ensure_sni_router(domains, _subs, res, learn_ttl)    # handshake (client DNS untouched); enriched lists OK here
         _ensure_smart_xtstring([], {}, 0, res, active=False)  # ensure the kernel engine is torn down
         reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain
         if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq({}, [], res, unchanged=False)
-        _ensure_doh_block(_subs, False, res)                  # never block the client's encrypted DNS in SNI mode
     elif host_engine == "sni_kernel":                         # in-kernel xt_string reader — no userspace daemon at all
         _ensure_sni_router(None, [], res)                     # stop swg-sni
         _ensure_smart_xtstring(smart_exit, domains, SNI_RESET_MARK, res, ttl=learn_ttl)   # enriched domains, capped per-cat inside (256)
         reconcile_catk_chain(sorted({e["category"] for e in smart_exit if domains.get(e["category"])}))   # per-category dest byte counters (swgk sets)
         if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq({}, [], res, unchanged=False)
-        _ensure_doh_block(_subs, False, res)
     else:                                                     # forcedns (dnsmasq oracle) or kernel/IP-only (nothing)
         _ensure_sni_router(None, [], res)                     # not SNI → stop the classifier + drop its map
         _ensure_smart_xtstring([], {}, 0, res, active=False)  # ensure the kernel engine is torn down
         reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain
         if smart_e or domains or _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=dom_unchanged)
-        # Force-DNS guard: block encrypted DNS (DoH/DoT) so the domain fill can't be bypassed (forcedns mode only)
-        _ensure_doh_block(_subs, bool((smart or {}).get("block_doh")), res)
+    # Encrypted-DNS (DoH/DoT) guard: forcedns AUTO-blocks every smart subnet (so the dnsmasq domain fill can't be
+    # bypassed); SNI modes leave the client's DNS untouched by default — but an explicit per-interface DoH-block
+    # mechanism blocks it in ANY mode. Union the two; empty → the swg_doh table is torn down (never-wipe, our table only).
+    _doh_subs = set(_doh_mech)
+    if host_engine not in ("sni_user", "sni_kernel") and (smart or {}).get("block_doh"):
+        _doh_subs |= set(_subs)
+    _ensure_doh_block(sorted(_doh_subs), bool(_doh_subs), res)
+    _ensure_mech_block(_mech, res)                            # FREE traffic/abuse L4/rate drops (smtp/quic/torrents-porthint/portscan)
+    _ensure_torrent_sig(sorted({s for s, cats in _mech.items() if "torrents" in (cats or [])}), res)   # Phase 3: bounded signature drop (any-port), where xt_string is capable
     return res
 
 
@@ -2522,6 +2766,64 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600):
             res["errors"].append("sni launch: " + str(e)[:120])
 
 
+def _block_activity():
+    """Per-subnet blocking ACTIVITY, harvested from EXISTING datapath state — NO new counters, no per-packet cost:
+      torrent = iptables SWGP signature chain: the CONNMARK-set rule's per-subnet count (≈ torrent connections caught)
+      scan    = the port-scan meter's live element count (hosts currently rate-limited for scanning/flooding)
+    Reach (distinct blocked destinations) is already in smart_status.sets (the cat_blku_* set element counts), so it
+    needs nothing here. Best-effort — any read that fails just omits that signal (never raises). Returns {subnet:{…}}."""
+    out = {}
+    IP = r"\d+\.\d+\.\d+\.\d+/\d+"
+    with contextlib.suppress(Exception):                          # torrent: iptables always counts; sum the signature-match rule per source subnet
+        for ln in (run(["iptables", "-t", "mangle", "-nvL", "SWGP", "-x"]).stdout or "").splitlines():
+            f = ln.split()
+            if "CONNMARK" in ln and f and f[0].isdigit():
+                subs = [x for x in f if re.match("^" + IP + "$", x)]
+                if subs:
+                    out.setdefault(subs[0], {})["torrent"] = int(f[0])
+    with contextlib.suppress(Exception):                          # scan: the FLAGGED-scanner set per subnet — only over-rate src IPs
+        mech = run(["nft", "list", "table", "inet", "swg_mech"]).stdout or ""   # land there, so it's the REAL scanners (not every active
+        for sub, fset in re.findall(r"ip saddr (" + IP + r")[^\n]*?add @(pscf_\S+)", mech):   # source) + their IPs → per-user attribution
+            with contextlib.suppress(Exception):
+                sm = re.search(r"set " + re.escape(fset) + r" \{.*?elements = \{([^}]*)\}", mech, re.S)
+                ips = re.findall(r"\d+\.\d+\.\d+\.\d+", sm.group(1)) if sm else []
+                out.setdefault(sub, {})["scan"] = len(ips)
+                if ips:
+                    out[sub]["scan_ips"] = ips                    # source IPs the panel maps → peer → user for the "who" bubble
+    with contextlib.suppress(Exception):                          # blocked: cumulative packets dropped to a content-block set,
+        pre = run(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "prerouting"]).stdout or ""   # summed per source subnet
+        for ln in pre.splitlines():                               # rule: ip saddr <sub> ip daddr @cat_blku_… counter packets N … drop
+            if "blku" not in ln or "drop" not in ln:
+                continue
+            sub = re.search(r"ip saddr (" + IP + r")", ln)
+            pk = re.search(r"counter packets (\d+)", ln)
+            if sub and pk:                                        # cat_ AND catl_ (Hybrid) drop rules both count → sum per subnet
+                out.setdefault(sub.group(1), {})
+                out[sub.group(1)]["blocked"] = out[sub.group(1)].get("blocked", 0) + int(pk.group(1))
+    with contextlib.suppress(Exception):                          # torrent SOURCE IPs (who tried torrents) from the swgp_src
+        il = run(["ipset", "list", "swgp_src"]).stdout or ""      # presence set, matched into the subnet they belong to
+        tips = re.findall(r"\d+\.\d+\.\d+\.\d+", il.split("Members:", 1)[-1]) if "Members:" in il else []
+        for ip in tips:
+            with contextlib.suppress(Exception):
+                a = ipaddress.ip_address(ip)
+                for sub in list(out):
+                    if a in ipaddress.ip_network(sub, strict=False):
+                        out[sub].setdefault("torrent_ips", []).append(ip); break
+    return out
+
+
+def _blk_domains_read():
+    """swg-sni's bounded top-K of blocked hostnames (host → cumulative hit count). The PANEL buckets these into content
+    categories (it owns the per-category source lists), so no per-category datapath is needed. Userspace-SNI mode only;
+    best-effort, empty if the file is absent (other engines / SNI off)."""
+    with contextlib.suppress(Exception):
+        with open(os.path.join(os.path.dirname(SNI_MAP_PATH), "sni-blk-hits.json")) as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            return {str(k): int(v) for k, v in d.items() if isinstance(v, (int, float)) and int(v) > 0}
+    return {}
+
+
 def smart_status():
     """Phase 3 smart-routing health for the panel UI: whether our nft table is up, per-category element counts
     (a populated set = data loaded), active mark-rule count, and HOST-LAYER health — the configured mode, whether
@@ -2538,12 +2840,16 @@ def smart_status():
     else:                        engine_ok = True               # IP-only → no host engine to be down
     base = {"mode": mode, "engine": engine, "engine_ok": engine_ok, "sni_alive": sni_alive,
             "dnsmasq": dns_alive, "route_localnet": _route_localnet_ok()}   # false in dns mode ⇒ client DNS blackholed (container)
+    if _SMART_MODE.get("fill_gate"):                           # Force-DNS fill skipped over-budget categories → tell the panel
+        base["fill_gate"] = _SMART_MODE["fill_gate"]
     if t["rc"] != 0:
         return {**base, "active": False, "sets": {}, "rules": 0, "resets": 0}
     rules = len(re.findall(r"ip saddr \S+ ip daddr @\S+ meta mark set", t["out"]))
     resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\d+)", t["out"]))   # SNI first-hit RSTs
     return {**base, "active": rules > 0, "sets": dict(t["counts"]), "rules": rules,
-            "bytes": dict(t["bytes"]), "resets": resets}   # bytes: {cat:{up,dn}} cumulative destination stats
+            "bytes": dict(t["bytes"]), "resets": resets,   # bytes: {cat:{up,dn}} cumulative destination stats
+            "block": _block_activity(),                    # {subnet:{torrent,scan}} blocking activity from existing state (reach is in `sets`)
+            "blk_domains": _blk_domains_read()}            # {host:count} blocked-domain top-K (SNI mode) → panel buckets into categories
 
 
 _CATS = {"t": 0.0, "cum": {}, "rate": {}}
@@ -2564,6 +2870,8 @@ def sample_cats():
         dt = now - pt
         r = {}
         for cat, v in cum.items():
+            if str(cat).startswith("blku"):      # block-list set — a drop target, not a destination category; keep it
+                continue                          # out of the "top destinations" throughput (its reach lives in `sets`)
             p = prev.get(cat) or {}
             r[cat] = {"up": max(0.0, v.get("up", 0) - p.get("up", 0)) / dt,   # counter reset (rebuild/reboot) → drop → 0
                       "dn": max(0.0, v.get("dn", 0) - p.get("dn", 0)) / dt}
@@ -2748,6 +3056,38 @@ def sample_catk():
     return dict(_CATK["rate"])
 
 
+def node_datapath_health():
+    """This node's kernel-datapath health for the panel's self-heal check: is the AmneziaWG kernel module loadable
+    when the node uses awg? Bare-metal only — a docker node runs the userspace amneziawg-go datapath (no kernel
+    module, so the "Unknown device type" DKMS class can't happen) → {}. Mirrors the panel's host_datapath_health."""
+    if NODE_KIND == "docker":
+        return {}
+    out = {}
+    try:
+        awg_used = any(os.path.exists(p) for p in ("/usr/bin/awg", "/usr/local/bin/awg", "/sbin/awg", "/usr/sbin/awg"))
+        if awg_used:
+            loaded = False
+            try:
+                with open("/proc/modules") as f:
+                    loaded = any(ln.startswith("amneziawg ") for ln in f)
+            except Exception:
+                pass
+            built = False
+            if not loaded:
+                kr = os.uname().release
+                for d in ("/lib/modules/%s/updates/dkms" % kr, "/lib/modules/%s/updates" % kr, "/lib/modules/%s/kernel/drivers/net" % kr):
+                    try:
+                        if any(f.startswith("amneziawg.ko") for f in os.listdir(d)):
+                            built = True
+                            break
+                    except Exception:
+                        continue
+            out["awg"] = {"needed": True, "ok": bool(loaded or built)}
+    except Exception:
+        return {}
+    return out
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -2805,11 +3145,13 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": _tps, "turn_flags": _tflags,
             "arch": _turn_arch(),   # so the panel mirrors/pins ONLY this node's arch for a turn install (not both → no slow/failed cross-arch fetch)
+            "turn_capable": _turn_arch_ok(),   # false ONLY when this box's arch has no server-linux-<arch> build → panel greys out "Setup proxy" (never blocks on uncertainty)
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
             "quarantined": op_quarantined(),   # ops in repeated-failure backoff — visible, not silently churning
             "node_ips": list_node_ips(_addrs), "node_ifaces": list_node_ifaces(_addrs),
             "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status(),
+            "datapath": node_datapath_health(),          # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal)
             "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
             "transport_pub": transport_pub(),            # node re-seal target — the browser seals a restored key to this
             "iface_key_sealed": dict(_IVK_SEALED)}       # {iface: {pub, eph, ct, mac}} interface keys sealed to the vault, pending upload
@@ -3656,7 +3998,19 @@ def _dturn_args(tp):
     return args
 
 def _turn_arch():
-    return "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+    # Canonical arch for the turn-proxy binary name (server-linux-<arch>). Report the TRUE arch for anything we
+    # have no build for (raw uname -m) so the panel can tell an armv7l / i686 / riscv64 box apart from amd64 —
+    # NEVER collapse the unknown to amd64 (that silently fetched a wrong x86-64 binary → 404 / "Exec format error").
+    # Recognise every alias of a supported arch so a valid 64-bit box is never misread as unsupported.
+    m = os.uname().machine
+    if m in ("x86_64", "amd64"):   return "amd64"
+    if m in ("aarch64", "arm64"):  return "arm64"
+    return m or "amd64"            # unknown/empty → its own name (blank falls back to amd64: when unsure, allow)
+
+def _turn_arch_ok():
+    # The forks publish server-linux-amd64 + server-linux-arm64 ONLY — this is the single source of truth for
+    # "can this box run a turn-proxy". If a fork ever ships more arches, widen this set (and TURN_ARCHES on the panel).
+    return _turn_arch() in ("amd64", "arm64")
 
 def _turn_dl_urls(owner, arch, tag=None):
     """GitHub release assets are single-origin (objects.githubusercontent.com). Try GitHub direct first, then
@@ -3735,6 +4089,8 @@ def _turn_panel_fetch(owner, tag, arch, dest, want):
 
 def _dturn_download(svc, owner, pin=None):
     arch = _turn_arch()
+    if not _turn_arch_ok():                               # no server-linux-<arch> build exists → refuse cleanly (never fetch a wrong-arch binary)
+        return "no turn-proxy build for this architecture (" + os.uname().machine + ") — forks publish amd64/arm64 only"
     tag, want = _turn_pin(pin)                            # panel checksum gate: pin the tag + expected sha256 (both '' → unverified)
     binp = _turn_bin_local(svc)   # shared per-fork slot
     if os.path.exists(binp):       # already have this fork's binary (another instance, or a prior install) → REUSE,
@@ -3768,6 +4124,8 @@ def _dturn_force_download(svc, owner, pin=None):
     shared file. A container bind-mounts this path (…:/turn-server); if it's momentarily missing when docker
     (re)creates a container, docker creates a *directory* there and everything breaks. So: temp + os.replace only."""
     arch = _turn_arch()
+    if not _turn_arch_ok():                               # reinstall/update on an unrunnable arch → refuse cleanly
+        return "no turn-proxy build for this architecture (" + os.uname().machine + ") — forks publish amd64/arm64 only"
     pin_tag, want = _turn_pin(pin)                        # panel checksum gate: pin tag + expected sha (both '' → unverified)
     binp = _turn_bin_local(svc)
     try: os.makedirs(os.path.dirname(binp), exist_ok=True)
@@ -3946,7 +4304,7 @@ def _turn_resolve_tag(owner):
     """Latest release tag, read from the 302 of releases/latest/download (no API → no rate limit)."""
     if not owner:
         return ""
-    arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+    arch = _turn_arch()
     url = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
     r = run(["curl", "-4", "-fsS", "-o", "/dev/null", "-w", "%{redirect_url}",
              "--connect-timeout", "15", "--max-time", "30", url], timeout=40)
@@ -4202,7 +4560,7 @@ def _turn_install(svc, req):
     sbin = fdir + "/server"
     d = "/opt/vk-turn-proxy/" + inst           # per-instance: turn.env + a 'server' symlink → the shared binary
     binp = d + "/server"
-    arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+    arch = _turn_arch()
     extra = ""
     if "params" in req:   # explicit ExecStart tail from the create form (verbatim, including its wrap key)
         extra = (req.get("params") or "").strip()

@@ -553,3 +553,31 @@ ensure_docker_mask_files(){
   done
   return 0
 }
+
+ensure_swap(){ # PANEL-HOST: a low-RAM box with NO active swap OOM-kills the panel on a transient list-resolve spike (a
+  # big domain feed peaks a few hundred MB). Add a right-sized swapfile so spikes go to disk, not the OOM-killer.
+  # Idempotent, best-effort (never aborts — set-e safe via if-guards), dry-run aware. Self-contained (plain echo +
+  # the $DRYRUN global) so install-host and update can both call it. Nodes pull lists (never resolve) → they don't.
+  local active memmb freemb sizemb
+  active=$(awk 'NR>1{s+=$3} END{print s+0}' /proc/swaps 2>/dev/null || echo 0)
+  if [ "${active:-0}" -gt 0 ] 2>/dev/null; then echo "  ✓ swap already active — skipping"; return 0; fi
+  memmb=$(( $(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1024 ))
+  if [ "$memmb" -ge 2048 ]; then echo "  · RAM ${memmb}MB — swap not needed"; return 0; fi
+  if [ -e /swapfile ]; then echo "  ! /swapfile exists but no active swap — leaving it alone"; return 0; fi
+  freemb=$(( $(df -Pk / 2>/dev/null | awk 'NR==2{print $4}' || echo 0) / 1024 ))
+  if   [ "$freemb" -gt 4096 ]; then sizemb=2048
+  elif [ "$freemb" -gt 2560 ]; then sizemb=1024
+  else echo "  ! only ${freemb}MB free on / — not adding swap (this ${memmb}MB box stays OOM-prone; add swap manually)"; return 0; fi
+  if [ "${DRYRUN:-false}" = true ]; then echo "    [skip] create ${sizemb}MB /swapfile + swapon + fstab + vm.swappiness=10"; return 0; fi
+  echo "  ✓ adding ${sizemb}MB swap (${memmb}MB RAM, none active) — bounds panel list-resolve spikes"
+  if { fallocate -l "${sizemb}M" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count="$sizemb" status=none; } \
+       && chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile 2>/dev/null; then
+    grep -qs '/swapfile' /etc/fstab || printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab
+    sysctl -qw vm.swappiness=10 >/dev/null 2>&1 || true
+    grep -qs 'vm.swappiness' /etc/sysctl.conf || printf '%s\n' 'vm.swappiness=10' >> /etc/sysctl.conf
+    echo "  ✓ swap active ($(free -m 2>/dev/null | awk '/Swap/{print $2}')MB, swappiness 10)"
+  else
+    echo "  ! swap setup failed — continuing (box remains OOM-prone until swap is added)"; rm -f /swapfile 2>/dev/null || true
+  fi
+  return 0
+}

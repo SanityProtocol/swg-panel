@@ -397,7 +397,10 @@ turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }   # turn_latest_tag <
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
 install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags>
   local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst fdir sbin
-  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch="";; esac
+  # detect-and-REFUSE: the forks publish server-linux-amd64/arm64 only. Never fall back to amd64 on an unknown arch —
+  # that fetched a wrong x86-64 binary → 404 / "Exec format error". Skip the turn-proxy with a clear message instead.
+  [ -n "$arch" ] || { warn "no turn-proxy build for $(uname -m) — forks publish amd64/arm64 only; skipping this turn-proxy"; return 0; }
   # key each instance by <fork>-<port> so one fork can run many times (different ports + wrap keys)
   port="${listen##*:}"; inst="$fork-$port"; svc="vk-turn-proxy-$inst"
   fdir="$TURN_DIR/.bin/$fork"; sbin="$fdir/server"   # ONE binary per fork — shared by every instance
@@ -529,13 +532,16 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # dies with "Unknown device type". So we install the build deps and verify `modprobe` before declaring success.
   local cmd="$1"
   if [ "$cmd" = wg ]; then
-    have wg || { info "installing WireGuard tools via apt — this can take a minute…"; run apt-get update -qq || true; run apt-get install -y wireguard || true; }
+    have wg || { if $DRYRUN || have apt-get; then info "installing WireGuard tools via apt — this can take a minute…"; run apt-get update -qq || true; run apt-get install -y wireguard || true; else warn "WireGuard tools not found and no apt-get on this system — install 'wireguard' with your package manager, then re-run"; fi; }
     $DRYRUN && return 0
     have wg && { modprobe wireguard 2>/dev/null || true; return 0; }   # wireguard is in-tree on modern kernels
     return 1
   fi
   # awg
   if have awg && modprobe amneziawg 2>/dev/null; then return 0; fi     # already fully working (tool + loadable module)
+  # graceful degrade on a non-apt distro (Fedora/RHEL/Arch/Alpine): tell the operator what to install by hand rather
+  # than silently limp on with no datapath. The apt paths below stay for Debian/Ubuntu.
+  $DRYRUN || have apt-get || { warn "AmneziaWG not installed — no apt-get on this system; install dkms, linux-headers-$(uname -r) and amneziawg-dkms with your package manager, then re-run"; return 1; }
   info "installing AmneziaWG (tools + DKMS kernel module) via apt — this can take a minute…"
   run apt-get update -qq || true
   run apt-get install -y software-properties-common || true
@@ -550,13 +556,15 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   have awg && warn "AmneziaWG tools installed, but its kernel module didn't build/load on kernel $(uname -r) — this box is missing matching linux-headers (dkms couldn't compile it). 'awg' interfaces can't come up until that's fixed; you can create a plain WireGuard interface instead, or install linux-headers-$(uname -r) + reboot and re-run."
   return 1
 }
-build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the running kernel. Critical: `apt install
+build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the RUNNING kernel. Critical: `apt install
   # amneziawg` is a NO-OP when the package is already present (the tool is on disk) but its module never built
-  # (headers were missing at first install), so nothing rebuilds it. dkms autoinstall builds every registered
-  # module for THIS kernel; a --reinstall of the dkms package re-runs its build postinst as a fallback.
-  run dkms autoinstall 2>/dev/null || true
+  # (headers were missing at first install), so nothing rebuilds it. `-k $(uname -r)` targets the running kernel
+  # explicitly — a box on an OLD kernel with newer headers installed would otherwise build for the wrong one and
+  # `modprobe` would still fail. A --reinstall of the dkms package re-runs its build postinst as a fallback.
+  run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
   modprobe amneziawg 2>/dev/null && return 0
   run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
+  run dkms autoinstall -k "$(uname -r)" 2>/dev/null || true
   run modprobe amneziawg 2>/dev/null || true
 }
 ensure_smart_tools(){ # nftables (smart-routing marking, every mode) + dnsmasq (Force-DNS host tier) — idempotent, non-fatal
@@ -682,10 +690,17 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
 
 # ───────────────────────── prompts ─────────────────────────
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
+# Fail early on a too-old interpreter: the panel uses 3.8 syntax, so it would otherwise die with an opaque
+# SyntaxError only when the service first starts. (Guard lives here in bash — an in-file check can't help, the
+# whole module fails to PARSE before any line runs.)
+$DRYRUN || { have python3 || die "python3 (>= 3.8) is required — install it with your package manager, then re-run"; \
+  python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' \
+    || die "this box's python3 ($(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo '?')) is too old — the panel needs Python >= 3.8; install a newer python3 and re-run"; }
 $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; rm -rf "$PREFIX"; }
 
 # ═══════════════ I. PANEL SETUP ═══════════════
 echo; info "BARE-METAL SWG PANEL SETUP"
+ensure_swap   # low-RAM/zero-swap boxes OOM the panel on list-resolve spikes — add swap before anything heavy
 
 # Idempotent re-install: detect an existing panel UP FRONT and offer its saved answers as the
 # defaults for every step (mirrors the docker installer's .env reuse). To start fresh, uninstall first.

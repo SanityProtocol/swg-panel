@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.4.2-beta</code></p>
+<p align="center"><code>1.5.0-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.4.2-beta** — [full changelog](CHANGELOG.md)
-> - **Reliable AmneziaWG install** — the installer now builds and verifies the AmneziaWG kernel module (DKMS + kernel headers), so interfaces come up on a fresh box instead of failing with "Unknown device type".
-> - **Self-healing datapath** — the panel's **Update** rebuilds a missing or stale kernel module (e.g. after a kernel upgrade) and repairs a node even when there's no new version.
-> - **Clearer install** — the one-liner asks the method (bare-metal / Docker) and role instead of silently installing a panel with no node.
+> **What's new in 1.5.0-beta** — [full changelog](CHANGELOG.md)
+> - **Content filtering** — per-interface blocking of ads/trackers/malware/adult/gambling from curated category lists. Every feed unions into **one set per node** (O(1) match); domain filters enforce in Force-DNS / Hybrid-SNI, IP-tier in every mode. The panel resolves the union with a **streaming external-sort** so a multi-million-domain list can't OOM the box, and the node **memory-gates** the Force-DNS fill.
+> - **Protection dashboard** — an Overview card driven by `/api/block-stats`: blocked packets + distinct sites per category, torrents caught, port-scanners flagged (ranged, from per-node RRDs), with a panel-attributed "who" bubble (source IP → peer → user).
+> - **Overview** — flow-map card height is now fixed (no per-poll resize), Top nodes by peers *and* traffic.
 <!-- WHATS-NEW:END -->
 
 ---

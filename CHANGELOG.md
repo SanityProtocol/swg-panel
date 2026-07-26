@@ -3,6 +3,41 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.5.0-beta] — 2026-07-26
+
+The big one: **content filtering** and a live **Protection** dashboard on the Overview.
+
+### Added
+- **Content filtering (blocking).** Block **ads, trackers, malware, adult content, gambling** and more —
+  per interface, from curated category lists. Filtering runs on the **entry node** (where the client's tunnel
+  lands); domain filters enforce in **Force-DNS** and **Hybrid-SNI** modes, and IP / threat-IP lists enforce in
+  **every** mode. Every enabled feed merges into **one set per node** for an O(1) match, and the panel builds
+  those lists with a **streaming resolver** so even multi-million-domain lists won't run a small box out of
+  memory. Each category ships a small, Force-DNS-safe **default** list — add bigger ones when the server has the RAM.
+- **Overview "Protection" card.** A live, range-aware view of what filtering is doing: **Blocked** (packets
+  dropped, plus distinct sites broken down **per category**), **Torrents caught**, and **Scanners flagged** — each
+  with a hover **"who"** bubble that attributes torrents and scanners to the **user · peer** behind them, newest first.
+- **Memory-aware filtering.** The node gates the Force-DNS list fill against available RAM so a large list can
+  never thrash a small node offline (it degrades honestly and reports it), and the panel **warns** — with a rough
+  "≈130 MB per 1M domains" estimate — before you turn on a big list.
+
+### Changed
+- **The flow map's card height is now rock-stable** — it no longer resizes on every poll (which used to scroll
+  the page out from under you). Denser fleets get a little more vertical room.
+- **The Overview now shows both** *Top nodes by peers* (online, range-aware) **and** *Top nodes by traffic*.
+- **Routing / Blocking mode card** tidied up — the lists line sits under the four mode buttons, the info popover
+  is clamped to the screen, and **Reset routing** is a compact red icon.
+- **Toasts last a little longer (5.5 s), and saving an interface now confirms with a toast.**
+
+### Fixed
+- **Panel out-of-memory when resolving large block lists.** The block-union builder now **streams and
+  external-sorts** to disk instead of holding the whole union in RAM — a multi-million-domain list no longer
+  OOM-kills a 1 GB panel.
+- **Hybrid content-blocking could stop dropping learned destinations** after a brief per-source-counter
+  experiment; reverted to the known-good path, enforcement verified.
+- **Kernel-SNI** now steers domain blocks to the DNS/SNI path (they can't match by destination IP), and block
+  sets no longer leak into **Top destinations**.
+
 ## [1.4.2-beta] — 2026-07-24
 
 A follow-up to 1.4.1: the AmneziaWG datapath now **actually rebuilds** on repair, and you can trigger a
