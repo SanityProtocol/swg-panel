@@ -6,7 +6,7 @@
 # locally). Needs NET_ADMIN + /dev/net/tun. For best throughput, prefer a
 # bare-metal node (install-node.sh) with the kernel module.
 
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm AS build
+FROM public.ecr.aws/docker/library/golang:1.25-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends git make build-essential \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src

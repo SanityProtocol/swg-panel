@@ -1,8 +1,14 @@
 name: docker
 
-# Build the panel + node images and publish them to GHCR (ghcr.io/<owner>/swg-panel,
-# ghcr.io/<owner>/swg-node) so users can PULL prebuilt multi-arch images instead of
-# building locally — no Docker Hub account and no Docker Hub pull-rate limit.
+# Build the panel + node images and publish MULTI-ARCH manifests to GHCR
+# (ghcr.io/<owner>/swg-panel, ghcr.io/<owner>/swg-node) so users can PULL prebuilt
+# images instead of building locally — no Docker Hub account, no pull-rate limit.
+#
+# Each arch is built on its OWN NATIVE runner (amd64 + the free public-repo arm64) and
+# the two are merged into one manifest list — NO QEMU. The panel is pure Python so it
+# would emulate fine, but the node COMPILES amneziawg-go/-tools, and native (not emulated)
+# is what makes an arm64 node image build reliably — so both use the same native pattern.
+#
 # After the first run, make the two packages public once (repo → Packages → Settings).
 
 on:
@@ -15,46 +21,112 @@ permissions:
   contents: read
   packages: write
 
+env:
+  REGISTRY: ghcr.io
+
 jobs:
-  images:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: false        # one image failing must not cancel the other's build/push
+      fail-fast: false        # one image/arch failing must not cancel the others
       matrix:
         include:
-          - image: swg-panel
-            dockerfile: Dockerfile
-            platforms: linux/amd64,linux/arm64   # pure Python — multi-arch is free
-          - image: swg-node
-            dockerfile: Dockerfile.node
-            platforms: linux/amd64               # compiles amneziawg-go/-tools; arm64 under QEMU is unreliable
+          - { image: swg-panel, dockerfile: Dockerfile,      arch: amd64, runner: ubuntu-24.04 }
+          - { image: swg-panel, dockerfile: Dockerfile,      arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: swg-node,  dockerfile: Dockerfile.node, arch: amd64, runner: ubuntu-24.04 }
+          - { image: swg-node,  dockerfile: Dockerfile.node, arch: arm64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # GHCR refs must be lowercase but the owner (SanityProtocol) is mixed-case — lowercase it once.
+      - id: ref
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "image=${REGISTRY}/${OWNER,,}/${{ matrix.image }}" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          images: ${{ steps.ref.outputs.image }}
+      # Build this single arch NATIVELY and push it by DIGEST only (no tag) — the merge job
+      # below assembles the tagged multi-arch manifest list from all arches' digests.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ steps.ref.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          # cache scoped per image+arch so the four builds never share/clobber a cache; ignore-error
+          # so a flaky gha cache ('error writing layer blob') can't fail the publish.
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }},ignore-error=true
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"   # bare hex — the merge prepends @sha256:
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [swg-panel, swg-node]
+    steps:
+      # Collect this image's per-arch digests (both amd64 + arm64) into one dir.
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-${{ matrix.image }}-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: ref
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "image=${REGISTRY}/${OWNER,,}/${{ matrix.image }}" >> "$GITHUB_OUTPUT"
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.ref.outputs.image }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
             type=sha,format=short
-      - uses: docker/build-push-action@v6
+      - name: Create + push the multi-arch manifest list
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ steps.ref.outputs.image }}@sha256:%s ' *)
+      - name: Inspect
+        run: docker buildx imagetools inspect ${{ steps.ref.outputs.image }}:${{ steps.meta.outputs.version }}
+      # Retention: keep only the 3 newest tagged releases of this package (+ their per-arch child
+      # blobs) and prune older. Multi-arch-aware — never deletes a child a kept tag still points to,
+      # so `latest` can't break. Runs every publish → the package self-maintains. Never fails the push.
+      - name: Prune old GHCR versions (keep newest 3)
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        continue-on-error: true
         with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platforms }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # scope per image so the two matrix builds don't share/clobber one cache, and
-          # ignore-error so a flaky gha cache ('error writing layer blob: not_found') can't
-          # fail the publish — the image still builds + pushes.
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }},ignore-error=true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          owner: ${{ github.repository_owner }}
+          packages: ${{ matrix.image }}
+          keep-n-tagged: 3
+          delete-untagged: true
+          delete-partial-images: true
