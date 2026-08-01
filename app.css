@@ -832,6 +832,12 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 /* carousel WDTT card: body fills between header and the (bottom-pinned) actions, link vertically centred — so Copy/
    Alternatives line up with the QR cards' Config/Copy row and the short link sits mid-card */
 .qrrow .deploy-wdtt .deploy-body{flex:1;align-items:center}
+/* link instead of a QR: STACK. The body is a flex row (a QR beside its meta), and there a sibling — the
+   "no VK call link" hint, or the meta table — keeps its intrinsic width while the link's flex:1;min-width:0
+   lets it collapse to zero, so break-all sets the wdtt:// link one character per line. The first selector
+   is not redundant: `.deploy-body-stack` alone loses to the align-items:center on the line above. */
+.qrrow .deploy-wdtt .deploy-body-stack, .deploy-body-stack{flex-direction:column;align-items:stretch;gap:8px}
+.deploy-body-stack .wdtt-link{flex:0 0 auto;align-self:stretch}
 .deploy-body{padding:15px;display:flex;gap:15px;position:relative}
 .deploy .qr{background:#fff;border-radius:var(--r-sm);padding:8px;line-height:0;flex:none;cursor:zoom-in}
 .deploy .qr .qrimg{display:block;width:min(300px,72vw);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}

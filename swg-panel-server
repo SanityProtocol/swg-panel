@@ -2117,9 +2117,22 @@ def _infer_tls_mode(deps):
     """Best-guess a direct-TLS mode when the live socket is HTTPS but NEITHER the saved nor the blessed mode names
     one — a partial reverse-proxy flip that blessed reverse-proxy ("") yet never flipped the cert env off, so the
     panel boots serving its own TLS with a reverse-proxy config. Pick a mode the config can actually drive so
-    settings never sit inconsistent with the live cert: a CF DNS token → cloudflare; an ACME email → letsencrypt;
-    else self-signed."""
+    settings never sit inconsistent with the live cert.
+
+    ASK THE CERTIFICATE FIRST. It is evidence, not a guess: whoever signed it says what issued it. The old order
+    fell straight through to "selfsigned" whenever the settings happened to be empty — which is exactly the state
+    at a fresh install's first boot — and wrote that over a perfectly good Let's Encrypt certificate. The value
+    then STICKS: the installers' healing pass is deliberately fill-if-empty, so it can never correct a non-empty
+    wrong one, and Settings → Access reads "self-signed" for the rest of the box's life while install.conf says
+    letsencrypt. Only when the cert can't settle it (self-signed placeholder mid-issuance, or unreadable) do we
+    fall back to what the config can drive: a CF DNS token → cloudflare; an ACME email → letsencrypt."""
     tls = ((deps.get("panel_settings") or {}).get("access") or {}).get("tls") or {}
+    if TLS_CERT and os.path.exists(TLS_CERT) and not _cert_selfsigned(TLS_CERT):
+        if _cert_is_cf_origin(TLS_CERT):
+            return "cf15"                                  # Cloudflare Origin CA — only `cf15` produces one
+        # a public CA issued it: `cloudflare` is Let's Encrypt via the CF DNS-01 challenge, so the stored token
+        # is what tells the two LE paths apart — the issuer alone can't.
+        return "cloudflare" if str(tls.get("cf_token") or "").strip() else "letsencrypt"
     if str(tls.get("cf_token") or "").strip():
         return "cloudflare"
     if str(tls.get("email") or "").strip():
@@ -2137,6 +2150,7 @@ def _reconcile_saved_ahead(deps, blessed_url):
         ps = deps.get("panel_settings") or {}
         pnl = (ps.get("access") or {}).get("panel") or {}
         changed = False
+        healed = ""      # the self-signed→real-CA TLS heal below — saved with the rest, but its own message
         # access.panel.port/host mean "where this panel is reached ON THIS HOST": the process bind on bare-metal,
         # the PUBLISHED port on docker. Only bare-metal's live socket IS that value, so only there is it ground
         # truth — in a container the bind is a fixed image constant (compose maps "${PANEL_PORT}:8443") and the
@@ -2181,6 +2195,22 @@ def _reconcile_saved_ahead(deps, blessed_url):
                 newmode = ""   # the socket is plain HTTP → reverse-proxy (no cert), regardless of a stale TLS mode
             if str(newmode) != saved_mode:
                 tls["mode"] = newmode; ps.setdefault("access", {})["tls"] = tls; changed = True
+        # …and the narrower case the scheme test above cannot see: the mode says SELF-SIGNED while the certificate
+        # actually on the socket was issued by a real CA. Both are HTTPS, so that test is satisfied and the wrong
+        # value sits there for ever — the installers' healing pass is fill-if-empty by design, so it never corrects
+        # a non-empty one, and Settings → Access goes on reading "self-signed" over a working Let's Encrypt cert
+        # while install.conf says letsencrypt. The certificate is evidence, so heal to whatever issued it.
+        # ONE DIRECTION ONLY — never the reverse. A real-CA mode serving a self-signed cert is the NORMAL state
+        # mid-issuance (the placeholder cert is up before acme finishes), so "correcting" that would overwrite the
+        # operator's actual choice on every fresh install, which is the very bug this is here to undo.
+        if (str(tls.get("mode") or "") == "selfsigned" and TLS_CERT and os.path.exists(TLS_CERT)
+                and not _cert_selfsigned(TLS_CERT)):
+            _real = _infer_tls_mode(deps)
+            if _real != "selfsigned":
+                # tracked apart from `changed`: this is not the "saved settings ran ahead of the live address"
+                # reconcile and must not print its message — a wrong line in the log is what makes a fault like
+                # this take an hour to trace back.
+                tls["mode"] = _real; ps.setdefault("access", {})["tls"] = tls; healed = _real
         # DIRECT TLS: the host port and the url's port are ONE socket, so the url owns the port. Runs LAST, after
         # the url/base/mode reconciles above settle, and reads the ADVERTISED url from _compute_public_url — never
         # the raw saved one. For a portless url that folds the CURRENT stored port back in, so an origin on :8443
@@ -2193,11 +2223,15 @@ def _reconcile_saved_ahead(deps, blessed_url):
                     _dp = _pu.port or (443 if (_pu.scheme or "https") == "https" else 80)
                     if int(pnl.get("port") or 0) != int(_dp):
                         pnl["port"] = int(_dp); changed = True
-        if changed:
+        if changed or healed:
             ps.setdefault("access", {})["panel"] = pnl
             deps["panel_settings"] = ps
             save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
-            print("access: boot reconcile — rolled saved-but-unconfirmed panel settings back to the live address", flush=True)
+            if healed:
+                print("access: boot heal — TLS type said self-signed, but the live certificate was issued by a real "
+                      "CA; corrected to '%s'" % healed, flush=True)
+            if changed:
+                print("access: boot reconcile — rolled saved-but-unconfirmed panel settings back to the live address", flush=True)
 
 
 def _reconcile_sub_listen_at_boot(deps):
@@ -3882,7 +3916,7 @@ TURN_CLIENTS = {
     "pwdttilg":    {"name": "PWDTT", "author": "ildarmaga", "encoder": "wdtt",  "scheme": "wdtt://", "qr": False, "platforms": {   # ildarmaga's modified PWDTT build, bundled in ildarmaga/wdtt releases (imports via sub-URL/base64, also reads colon)
                        "windows": {"github": "https://github.com/ildarmaga/wdtt/releases"},
                        "linux":   {"github": "https://github.com/ildarmaga/wdtt/releases"}}},
-    "wdttplus":    {"name": "WDTT-Plus",     "author": "Ivan4537", "encoder": "wdttplus", "scheme": "wdtt://", "qr": True, "platforms": {"android": {"github": "https://github.com/Ivan4537/WDTT-Plus/releases", "autostart": True}}},   # Ivan4537 fork: in-app admin + WARP alternate-exit. CLICKABLE via wdtt://connect?… (valid URI); the colon form the OS rejects as "unsupported link" — the app still reads both
+    "wdttplus":    {"name": "WDTT-Plus",     "author": "Ivan4537", "encoder": "wdttplus", "scheme": "wdtt://", "qr": False, "platforms": {"android": {"github": "https://github.com/Ivan4537/WDTT-Plus/releases", "autostart": True}}},   # Ivan4537 fork: in-app admin + WARP alternate-exit. CLICKABLE via wdtt://connect?… (valid URI); the colon form the OS rejects as "unsupported link" — the app still reads both
     "xxcipher":    {"name": "WDTT",          "author": "XXcipherX", "encoder": "vkturnproxy", "scheme": "vkturnproxy://", "qr": False, "platforms": {"android": {"github": "https://github.com/XXcipherX/proxy-turn-vk-android/releases", "autostart": True}}},   # XXcipherX fork: video-masquerade + no-captcha. CLICKABLE via vkturnproxy://import?data= (valid URI it also registers) — its colon wdtt:// the OS rejects as "unsupported link"
 }
 # The plain WG/AWG client apps (NOT turn forks) — Amnezia VPN / AmneziaWG / WireGuard. Same `platforms[os]` shape as

@@ -6555,6 +6555,14 @@ def reconcile_wdtt(want, remove=None):
             # TODO-LATER (remove ~2 weeks after this ships): drop the `inst.get("password")` term — the panel no
             # longer sends the owner password, so once every instance has re-synced it is always empty (dead path).
             pw = (prev.get("password") or inst.get("password") or "").strip()
+            # Has the PANEL ever owned a password on this instance? Latched on the first sync that carries one and
+            # kept for ever after. It is what tells an EMPTY desired set apart from "the operator deleted the last
+            # peer": until the panel has held a password here, an empty set means it doesn't KNOW the users yet —
+            # and writing it reaps every one of them (our builds drop the wg peer + device for a password that is
+            # gone). Read before _wdtt_serve_adopted, which unions the hand-off into inst["passwords"].
+            _pw_seen = bool(prev.get("pw_seen") or (inst.get("passwords") or {}))
+            if _pw_seen:
+                inst["pw_seen"] = True
             # Carry the recovered foreign users across reconciles (the panel's `want` never contains them) until
             # the panel has actually taken them: once its roster-derived password set covers them, or 15 min pass,
             # the hand-off is over and the record is dropped so nothing keeps re-offering deleted peers.
@@ -6577,7 +6585,15 @@ def reconcile_wdtt(want, remove=None):
                 inst["await_restore"] = True; inst["adopt_failed"] = prev["adopt_failed"]; have[iface] = inst
                 res.setdefault("await", []).append(iface); continue
             provisioned = os.path.exists(_wdtt_keyfile(iface))
-            if unit_missing and not provisioned and inst.pop("adopt_foreign", None):
+            # An ADOPT is honoured whenever THIS NODE has no record of the instance — not only when the box looks
+            # untouched. A server this box ran BEFORE (a reinstall, a panel restored from an older nodes.json)
+            # leaves OUR config-dir and OUR unit name behind, so `unit_missing`/`provisioned` both read "already
+            # ours" and the seed was skipped in silence: the take-over never captured the users, the panel's empty
+            # desired set reached the server, and it deleted every one of them. That is the single most common
+            # thing an operator adopts (it is what "adopt what a box already runs" means), so it cannot be the one
+            # case that no-ops. The seed is safe on a populated config-dir — it skips a self-copy and reads the
+            # store that is already there.
+            if not prev and inst.pop("adopt_foreign", None):
                 # ADOPT a foreign WDTT server (panel-unmanaged, unpatched build): seeded create — copy its identity
                 # + password store + owner password into OUR config-dir, stop it, then install OUR build below with
                 # that same data. Clients keep working (same server pubkey + passwords). Refuses if the identity
@@ -6597,6 +6613,20 @@ def reconcile_wdtt(want, remove=None):
                 pw = (inst.get("password") or "").strip() or pw
                 _wdtt_serve_adopted(inst)   # serve the recovered users from the FIRST start, not one sync later
                 provisioned = os.path.exists(_wdtt_keyfile(iface))   # identity now seeded → don't mint/await below
+            # SAFETY NET — an empty desired set must never REAP users the panel has never seen. Taking over a
+            # config-dir that already holds users happens well outside adoption: a create landing on an earlier
+            # install's directory, a node whose record was wiped while /opt/swg-wdtt survived, a refused adopt that
+            # fell through. In every one of those the panel's roster-derived set is empty for one reason only — it
+            # doesn't know these users yet — and writing it deletes them irrecoverably. Hand them UP instead (the
+            # panel recreates each as a roster peer) and serve them meanwhile. The instance's own `remove` list
+            # already works this way; this is the same rule one level down, at the password: a wipe needs positive
+            # intent — the operator deleting a peer the panel HOLDS — never the mere absence of one.
+            if not _pw_seen and not inst.get("adopt_users"):
+                _pre = _wdtt_adopted_users(_wdtt_dir(iface))
+                if _pre:
+                    inst["adopt_users"] = _pre
+                    inst["adopt_users_at"] = int(time.time())
+                    _wdtt_serve_adopted(inst)
             if unit_missing and not provisioned:
                 # Fresh, or a post-wipe re-provision. If the operator vaulted this instance, DON'T mint a new
                 # server key (that would break every GETCONF'd client) — restore the ORIGINAL identity when the
@@ -6628,7 +6658,11 @@ def reconcile_wdtt(want, remove=None):
                         res["errors"].append(iface + ": " + err); continue
                     res["changed"] += 1
                 if _wdtt_params_changed(prev, inst):        # listen/wg-addr/wg-port/max changed → rewrite unit + restart (identity kept)
-                    if (prev.get("wg_addr") or "") != (inst.get("wg_addr") or ""):   # subnet moved → drop stale device-IP bindings first
+                    # subnet MOVED → drop stale device-IP bindings first. Requires a previous subnet to have moved
+                    # FROM: with no prior record (the first sync after an adopt, or a lost node record) every param
+                    # reads as "changed", and resetting there threw away the device bindings — client IPs and the
+                    # server-held keys behind them — of a server whose subnet had not moved at all.
+                    if prev.get("wg_addr") and prev["wg_addr"] != (inst.get("wg_addr") or ""):
                         _wdtt_reset_devices(iface, _wdtt_fork(inst))
                     err = _wdtt_reconfigure(inst)
                     if err:

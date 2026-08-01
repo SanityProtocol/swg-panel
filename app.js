@@ -9648,8 +9648,13 @@ function userVkLinks(user) {
 }
 // Is any of these deployments behind a turn-proxy? (turn feature on AND a proxy forwards to the interface.) Gates
 // the per-user VK field + the sub's VK warning — no turn-proxy on a user's interfaces ⇒ they never use a VK link.
-function targetsBehindTurn(targets) {
-  return turnEnabled() && (targets || []).some(t => turnProxiesFor(t.node, t.iface).length > 0);
+// Does this peer ride a VK call — i.e. does it need the user's VK link? Two ways in: fronted by a turn-proxy,
+// or ON a WDTT server. WDTT carries its own vk_hash per user but FRONTS nothing, so turnProxiesFor() finds
+// nothing for it — which left a WDTT-only user with no VK field at all, and no way to set the link their
+// config needs.
+function targetsWantVk(targets) {
+  if (turnEnabled() && (targets || []).some(t => turnProxiesFor(t.node, t.iface).length > 0)) return true;
+  return (targets || []).some(t => t.type === "wdtt" || isWdttIface(t.iface));
 }
 const _VK_CALL_RE = /^https:\/\/(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)\/call\/join\/[\w-]+/i;
 // let the operator paste a VK link with or without the scheme — add https:// when it's missing
@@ -9690,7 +9695,7 @@ function VkLinkField({ user }) {
     Store.poll(); Store.configEpoch++; bus.emit();   // turn configs re-render with the updated links
   };
   return html`<div class=${"field vkfield" + (invalid ? " warn" : set ? " set" : " warn")} style="margin-bottom:14px">
-    <label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's turn-proxy configs</span></label>
+    <label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's configs that ride a VK call</span></label>
     <div class="vkfield-row">
       <div class="vkbox">
         <${Ic} i="link"/>
@@ -9782,7 +9787,7 @@ function openPeerConfigs(peer, opts) {
     subject=${{ kind: "peer", id: peer.id }} foot=${html`<${QRPeerFoot} pid=${peer.id}/>`}>
     ${vkUser ? html`<${PeerStatusLine} peer=${peer} pos="bar"/>` : null}
     <${VaultUnlockPanel} need=${(peer.targets || []).some(t => targetType(t) !== "wdtt")}/>
-    ${!hideVk && vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
+    ${!hideVk && vkUser && targetsWantVk(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${orderedTargets(peer.targets).map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && isPrimaryTarget(peer.targets, t)}/>`)}/>
   <//>`);
 }
@@ -9935,7 +9940,7 @@ function openUserConfigs(user, back) {
   const cols = Math.min(peers.length || 1, 3);
   const wcols = Math.max(cols, 2);                        // hold 2 cards wide even for a single peer (roomier layout)
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
-  const anyTurn = peers.some(p => targetsBehindTurn(p.targets));
+  const anyTurn = peers.some(p => targetsWantVk(p.targets));
   const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}</span>`;
   const headExtra = html`<${SubStatusLine} user=${user} pos="hr"/>`;   // subscription status, right-aligned (the count now sits by the name)
   openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${back || closeModal}
@@ -10182,7 +10187,7 @@ function UserEditCard({ user, done }) {
   const [tag, setTag] = useState(user.tag || "");
   const [note, setNote] = useState(user.note || "");
   const [expDate, setExpDate] = useState(expiryInputVal(user.expiry || 0));   // subscription expiry (blank = never)
-  const showVk = Store.peersOfUser(user.id).some(p => targetsBehindTurn(p.targets));   // only when they have a peer behind a turn-proxy
+  const showVk = Store.peersOfUser(user.id).some(p => targetsWantVk(p.targets));   // a peer behind a turn-proxy, or on a WDTT server
   const dirty = name !== (user.name || "") || tag !== (user.tag || "") || note !== (user.note || "") || expDate !== expiryInputVal(user.expiry || 0);   // VK links save on their own (VkLinkField) → not part of this
   const save = async () => {
     if (!name.trim()) { toast("Name can't be empty.", "err"); return; }
@@ -10283,7 +10288,7 @@ function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
     + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-wdtt">${esc(t.iface)}</span>`;
   return html`<div class="deploy deploy-wdtt">
     ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind="wdtt" label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
-    <div class="deploy-body">
+    <div class=${"deploy-body" + (uri && !dc.qr ? " deploy-body-stack" : "")   /* a QR sits BESIDE its meta (the body's default row); a LINK has to stack — see .deploy-body-stack */}>
       ${primary ? html`<span class="qr-primary">Primary</span>` : null}
       ${!uri ? html`<div class="qr-none">WDTT link unavailable — the server isn't reporting yet.</div>`
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`

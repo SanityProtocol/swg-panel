@@ -1,6 +1,6 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.6.0-beta</code></p>
+<p align="center"><code>1.6.1-beta</code></p>
 
 <!-- WHATS-NEW:START -->
 > **What's new in 1.6.0-beta** — [full changelog](CHANGELOG.md)
