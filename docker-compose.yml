@@ -46,6 +46,10 @@ services:
       CF_TOKEN: "${CF_TOKEN:-}"           # cloudflare DNS-01: token with Zone:DNS:Edit + Zone:Read
       CF_ORIGIN_TOKEN: "${CF_ORIGIN_TOKEN:-}"  # cf15: token with Zone:SSL and Certificates:Edit
       SWG_PANEL_BASE: "${PANEL_BASE:-}"   # optional subpath mount, e.g. /swg (blank = root)
+      # The HOST's bindable addresses, "ip|iface" space-separated — written by the installer, which runs on the
+      # host. A bridged panel container can only see the compose network's 172.x, so without this the Access &
+      # TLS "Listen IP" picker has nothing real to offer and shows only 0.0.0.0 / 127.0.0.1.
+      SWG_HOST_IPS: "${HOST_IPS:-}"
       SWG_PANEL_LOCAL_PORT: "${PANEL_LOCAL_PORT:-8088}"   # the panel binds a dedicated 0.0.0.0:<this> plain-HTTP listener → reached ONLY via the 127.0.0.1:<this> publish above; the STABLE loopback endpoint a co-located node dials
       SWG_UPDATE_TRIGGER: "${SWG_UPDATE_TRIGGER:-}"   # set by install-docker when it wires the host one-click updater (swg-update.path watches data/lib/.update-request); blank = manual update only
       SWG_HOST_HOSTNAME: "${SWG_HOST_HOSTNAME:-}"     # the HOST's hostname (install-docker sets it) — lets the panel recognise a master's co-located node, which reports the host hostname via host-networking (the panel container's own hostname is a random id)
@@ -156,6 +160,11 @@ services:
       # bootstrap interface's keypair — survive a container recreate. Without this they'd be
       # regenerated/lost on every `up`.
       - ./data/node-confs:/etc/amnezia/amneziawg
+      # Host UAPI sockets for userspace wireguard-go. Without this the wg CLI in here cannot see a FOREIGN
+      # userspace interface — a WDTT server's, say — so the adoption scan listed every kernel wg/awg device and
+      # silently omitted the one thing it was added for. /var/run is a symlink to /run in this image, so both
+      # of swg-noded's WG_SOCK_DIRS scan paths resolve to the same mount.
+      - /run/wireguard:/run/wireguard
       # Full AmneziaWG server conf(s) with your own obfuscation params. Every file
       # mounted under /etc/swg-node/*.conf becomes a managed interface:
       # - ./awg0.conf:/etc/swg-node/awg0.conf:ro

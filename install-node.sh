@@ -55,7 +55,12 @@ iface_row(){ local n="$1" conf proto ep lp addr _c   # set -e safe; prefer a jus
   [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
   case "${proto:-?}" in ''|'?') case "$n" in awg*) proto=awg;; wg*) proto=wg;; esac;; esac   # unknown proto → infer from the name (awg0 ⇒ AmneziaWG)
   printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$BOLD" "$(proto_label "${proto:-?}")" "$RESET" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
-fwd_ifaces(){ local cp="${1##*:}" n lp out=""; for n in "${!IF_CONF[@]}"; do lp="$(conf_get "${IF_CONF[$n]}" ListenPort)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && out="${out:+$out }$n"; done; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by ListenPort)
+# WDTT instances this node runs, from its own record. Their interfaces are brought up by the WDTT server itself and
+# have NO .conf, so detect_wg (a conf-dir scan) can never see them — list them explicitly or they look absent.
+# Emits "<iface>\t<listen>\t<subnet>" per line.
+# Every interface this node ALREADY manages (wg/awg from config.json + its WDTT instances) — the "local" set, as
+# opposed to anything else on the box, which is an adoption candidate for the panel.
+local_ifaces(){ { node_ifaces; wdtt_local | cut -f1; } 2>/dev/null | awk 'NF' | sort -u; }
 # add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
 # conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions.
 iface_onboarded(){ local c="${IF_CONF[$1]:-}"; [ -n "$c" ] && grep -q '^#swg:onboarded' "$c" 2>/dev/null; }
@@ -100,7 +105,6 @@ v_freeport(){ v_port "$1" && port_free "$1"; }
 # smart default ports: first install offers the base; later ones offer (highest used OF THAT KIND)+1, then the
 # next host-free port. turn = TP_LISTEN units; wg/awg = highest ListenPort across confs, never below 51820+queued.
 turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 0 ]; then for lis in "${TP_LISTEN[@]}"; do p="${lis##*:}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 56000; }
-iface_default_port(){ local cnt="${1:-0}" hi=0 p f n base; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$f" ] || continue; p="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$f" | head -1)"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; for n in ${SPEC_ORDER[@]+"${SPEC_ORDER[@]}"}; do p="${SPEC_PORT[$n]:-}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; base=$((51820 + cnt)); { [ "$hi" -ge 51820 ] && [ $((hi+1)) -gt "$base" ]; } && base=$((hi+1)); next_free_port "$base"; }
 v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }
 v_token(){   [ -n "$1" ] && [ "${#1}" -ge 8 ]; }   # v_iface/v_subnet/v_hostport now in lib/common.sh
 
@@ -161,13 +165,18 @@ detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*
 
 declare -A IF_CMD IF_CONF IF_ENDPOINT; declare -a SELECTED CREATED   # IF_ENDPOINT: per-interface public IP clients dial; CREATED: ifaces made this run
 declare -A SPEC_CMD SPEC_PROTO SPEC_PORT SPEC_SUBNET SPEC_ADDR SPEC_WAN SPEC_EP SPEC_DIR; declare -a SPEC_ORDER=()   # queued interfaces (prompted now, installed at the end by apply_specs)
-detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc/wireguard for wg
-  IF_CMD=(); IF_CONF=(); local f n
-  if [ -d /etc/amnezia ]; then
+detect_wg(){ # every CONVENTIONAL wg/awg location, not just the ones we install into — a box configured by a
+  # distro package, an upstream installer or by hand is exactly what adoption exists for, and it used to be invisible.
+  IF_CMD=(); IF_CONF=(); local f n d
+  for d in /etc/amnezia /etc/amneziawg /usr/local/etc/amneziawg; do
+    [ -d "$d" ] || continue
     while IFS= read -r f; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=awg; IF_CONF[$n]="$f"
-    done < <(find /etc/amnezia -maxdepth 3 -type f -name '*.conf' 2>/dev/null)
-  fi
-  for f in /etc/wireguard/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
+    done < <(find "$d" -maxdepth 3 -type f -name '*.conf' 2>/dev/null)
+  done
+  for d in /etc/wireguard /usr/local/etc/wireguard; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
+  done
 }
 ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent, non-fatal -> 0/1).
   # Success = the CLI is present AND its kernel module LOADS. `apt install amneziawg` installs the `awg` tool but the
@@ -251,51 +260,11 @@ next_free_subnet(){ local hi=7 n a o
   o=$((hi+1)); while [ "$o" -lt 255 ] && subnet_used "10.$o.0.0/24"; do o=$((o+1)); done; echo "10.$o.0.0/24"; }
 v_subnet_free(){ v_subnet "$1" || return 1; subnet_used "$1" && return 1; return 0; }
 # default interface index = (highest numeric suffix across existing + queued names)+1 (awg3,wg4 → 5).
-iface_next_index(){ local hi=-1 n s; for n in "${!IF_CMD[@]}" ${SPEC_ORDER[@]+"${SPEC_ORDER[@]}"}; do s="${n##*[!0-9]}"; case "$s" in ''|*[!0-9]*) :;; *) [ "$s" -gt "$hi" ] && hi="$s";; esac; done; echo $((hi+1)); }
 # warn if any two managed interfaces share a tunnel subnet — only ONE can be up at a time (the rest fail to
 # start), so the node will report some interfaces down until the operator edits one to a free subnet.
-warn_dup_subnets(){ local n a key; declare -A _seen=()
-  for n in "${!IF_CONF[@]}"; do a="$(conf_get "${IF_CONF[$n]}" Address || true)"; [ -n "$a" ] || continue; key="$(_net24 "$a")"
-    if [ -n "${_seen[$key]:-}" ]; then warn "interfaces $(col "$C_GREEN" "$n") and $(col "$C_GREEN" "${_seen[$key]}") share subnet $(b "$key") — only one can be up at a time; edit one to a free subnet, then restart it."
-    else _seen[$key]="$n"; fi
-  done; }
 # Two-phase interface creation: spec_iface() only PROMPTS and queues a spec, so the user can add
 # every interface up front; apply_specs() then installs tools + writes confs + brings them all up
 # once, at the end. Queued names show in 'mine' (via CREATED) and block name collisions immediately.
-spec_iface(){ # prompt for one interface and queue it (no install yet)
-  local _proto proto name port subnet addr cmd dir wan ep idx defname defport defsub
-  detect_wg   # refresh IF_CMD/IF_CONF from disk first, so the name/port/subnet defaults always see every existing interface
-  idx=$(( ${#IF_CMD[@]} + ${#SPEC_ORDER[@]} ))   # offset defaults past existing + already-queued ifaces
-  menu "$(col "$C_BLUE" '[1]') $(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the host's AmneziaWG kernel module."
-  menu "$(col "$C_BLUE" '[2]') $(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Runs on the host's WireGuard kernel module."
-  ask_choice "Select the protocol you want to create (number, letter or name)" "a" _proto "a w awg wg amneziawg wireguard"
-  case "$_proto" in w|wg|wireguard) proto=wg; cmd=wg;  dir=/etc/wireguard;;
-                                 *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
-  local nidx; nidx=$(iface_next_index)   # name = highest-suffix+1, bumped past any exact collision
-  defname="$([ "$cmd" = awg ] && echo "awg$nidx" || echo "wg$nidx")"
-  while [ -n "${IF_CMD[$defname]:-}" ] || [ -n "${SPEC_CMD[$defname]:-}" ] || [ -e "/etc/amnezia/amneziawg/$defname.conf" ] || [ -e "/etc/wireguard/$defname.conf" ]; do
-    nidx=$((nidx+1)); defname="$([ "$cmd" = awg ] && echo "awg$nidx" || echo "wg$nidx")"; done
-  while :; do
-    ask_valid "Interface name" "$defname" name v_iface "1–15 chars: letters, digits, - or _"
-    if [ -n "${IF_CMD[$name]:-}" ] || [ -n "${SPEC_CMD[$name]:-}" ] || [ -e "/etc/amnezia/amneziawg/$name.conf" ] || [ -e "/etc/wireguard/$name.conf" ]; then
-      warn "interface '$name' already exists — pick another name"; name=""; continue
-    fi
-    break
-  done
-  defport=$(iface_default_port "$idx"); defsub="$(next_free_subnet)"
-  ask_valid "Listen port" "$defport" port v_freeport "port 1–65535 and free (not already in use)"
-  ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$defsub" subnet v_subnet_free "a CIDR not already used, e.g. 10.8.0.0/24"
-  addr="$(server_addr "$subnet")"
-  echo "    server address $(col "$C_GREEN" "$addr") — peers get the rest of $subnet"
-  wan="$(detect_wan)"; [ -n "$wan" ] || wan=eth0             # auto WAN egress NIC — clients NAT out this (change it later in the panel)
-  echo "    Used $(bb "$wan") egress interface for $(col "$C_GREEN" "$name")"
-  ep="$(detect_public_ip)"                                   # auto endpoint clients dial — public IP/host (change it later in the panel)
-  echo "    Used $(bb "$ep") endpoint IP for $(col "$C_GREEN" "$name")"
-  SPEC_CMD[$name]="$cmd"; SPEC_PROTO[$name]="$proto"; SPEC_PORT[$name]="$port"; SPEC_SUBNET[$name]="$subnet"
-  SPEC_ADDR[$name]="$addr"; SPEC_WAN[$name]="$wan"; SPEC_EP[$name]="$ep"; SPEC_DIR[$name]="$dir"
-  SPEC_ORDER+=("$name"); CREATED+=("$name")                  # CREATED makes it show in 'mine' on the next pass
-  ok "queued interface $(col "$C_GREEN" "$name") ($proto, :$port) — installed once you finish adding interfaces"
-}
 apply_specs(){ # install tools + write confs + bring up every queued interface, then prune failures
   [ "${#SPEC_ORDER[@]}" -gt 0 ] || return 0
   local name proto port subnet addr conf cmd priv dir wan up down upok ep failed=""
@@ -347,32 +316,6 @@ for n, ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or
     if isinstance(ic, dict) and os.path.exists(ic.get("conf", "")): print(n)' 2>/dev/null | drop_sys_ifaces || true
 }
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
-docker_node_ifaces(){   # interfaces managed by a co-located DOCKER node (its ./data/node-confs)
-  local d c n; for d in "${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"; do
-    [ -d "$d/data/node-confs" ] || continue
-    for c in "$d"/data/node-confs/*.conf; do [ -f "$c" ] && { n="$(basename "$c" .conf)"; is_sys_iface "$n" || echo "$n"; }; done
-  done
-}
-transfer_from_docker(){ # import a docker node-conf to bare-metal: copy out, ADD host NAT, drop the source
-  local n="$1" d="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}" src dest addr subnet wan up down
-  src="$d/data/node-confs/$n.conf"; [ -f "$src" ] || return 0
-  if grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I1)[[:space:]]*=' "$src"; then dest="/etc/amnezia/amneziawg/$n.conf"; else dest="/etc/wireguard/$n.conf"; fi
-  run mkdir -p "$(dirname "$dest")"
-  # docker confs carry NO PostUp (the container does its own NAT) — inject host NAT so the bare iface routes
-  addr="$(sed -n 's/^[[:space:]]*[Aa]ddress[[:space:]]*=//p' "$src" | head -1 | sed 's/,.*//; s/[[:space:]]//g')"
-  subnet="$(python3 -c 'import ipaddress,sys;print(ipaddress.ip_network(sys.argv[1],strict=False))' "$addr" 2>/dev/null || echo "$addr")"
-  wan="$(detect_wan)"; [ -n "$wan" ] || wan=eth0
-  up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
-  down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
-  if $DRYRUN; then echo "    [skip] import $src → $dest (+ host NAT)"
-  else awk -v up="$up" -v down="$down" '
-    /^[[:space:]]*[Pp]ost(Up|Down)[[:space:]]*=/ {next}
-    {print}
-    /^\[Interface\][[:space:]]*$/ && !d {print "PostUp = " up; print "PostDown = " down; d=1}
-  ' "$src" > "$dest"; chmod 600 "$dest"; fi
-  run rm -f "$src"
-  ok "imported $(col "$C_GREEN" "$n") from the docker node-confs (host NAT added)"
-}
 # A LIVE wg/awg interface with NO conf on disk is invisible to the conf-based scan below (e.g. a removed docker
 # node ran on the host netns and left its interface behind). Rebuild its conf from the live state — key, port,
 # Amnezia params, peers (awg/wg showconf) + Address (ip addr) + host NAT — so it's DETECTED and adopted (peers
@@ -380,7 +323,15 @@ transfer_from_docker(){ # import a docker node-conf to bare-metal: copy out, ADD
 reconstruct_live_orphans(){
   $DRYRUN && return 0
   command -v ip >/dev/null 2>&1 || return 0
-  local tool dir n sc addr sub wan up down
+  local tool dir n sc addr sub wan up down _allow=""
+  # SCOPE IT. During a CONVERT we know exactly which interfaces are ours — convert.sh passes them in
+  # ADOPTED_IFACES — so reconstruct only those. Anything else running on this box is the operator's, and
+  # Approach B is explicit that an unmanaged interface is REPORTED as an adoption candidate, never taken over.
+  # Unscoped, a plain `ip link add wg0 type wireguard` on the host was rebuilt into /etc/wireguard/wg0.conf,
+  # marked #swg:onboarded, listed in the summary as "managed", and would then be deleted by a later uninstall
+  # (which removes /etc/wireguard/*.conf). The bare->docker direction had ALREADY reported that same interface
+  # correctly as an adoption candidate, so only this path was claiming it.
+  [ "${SWG_CONVERT:-}" = 1 ] && _allow=" $(printf '%s' "${ADOPTED_IFACES:-}" | tr ', ' '  ') "
   wan="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true)"; [ -n "$wan" ] || wan=eth0
   for tool in awg wg; do
     command -v "$tool" >/dev/null 2>&1 || continue
@@ -388,6 +339,7 @@ reconstruct_live_orphans(){
     for n in $("$tool" show interfaces 2>/dev/null || true); do
       [ -n "$n" ] || continue
       if [ -f "/etc/amnezia/amneziawg/$n.conf" ] || [ -f "/etc/wireguard/$n.conf" ]; then continue; fi   # already managed
+      [ -n "$_allow" ] && ! _in "$n" "$_allow" && continue   # not one of the interfaces THIS convert is migrating → leave it for the panel to offer as a candidate
       sc="$("$tool" showconf "$n" 2>/dev/null || true)"; [ -n "$sc" ] || continue
       addr="$(ip -o -4 addr show "$n" 2>/dev/null | awk '{print $4; exit}' || true)"; [ -n "$addr" ] || continue
       sub="$(printf '%s' "${addr%/*}" | awk -F. '{print $1"."$2"."$3".0"}' || true)/${addr#*/}"
@@ -406,73 +358,37 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
   detect_wg
   if [ -n "$MANAGE_IFACES" ]; then
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
-  else
-    info "Checking for wg / awg on this host…"
-    # only nothing-to-do if there are NEITHER /etc confs NOR leftover docker node-confs (a removed
-    # docker node whose peers were kept) — the latter are offered for import in the loop below.
-    if [ "${#IF_CMD[@]}" -eq 0 ] && [ -z "$(docker_node_ifaces)" ]; then
-      info "No wg / awg interfaces yet — press Enter below to manage this node entirely from the panel, or create one now."
-      # zero interfaces is fine: the daemon still reports in, and the panel can push interfaces later (wg/awg tools are pre-installed below)
-    elif [ "${#IF_CMD[@]}" -eq 0 ]; then
-      info "Found leftover docker node-confs to import: $(col "$C_GREEN" "$(echo $(docker_node_ifaces))")"
-    fi
-    local names pick n dk avail mine xfer bad yn; local -a sel=()
-    while :; do
-      detect_wg; names="${!IF_CMD[*]}"
-      dk=""; for n in $(docker_node_ifaces); do _in "$n" "${ADOPTED_IFACES:-}" || dk="$dk $n"; done; dk="$(echo $dk)"   # the iface(s) we're converting away from docker are ours now, not "docker" ones
-      mine=""; for n in $(node_ifaces) ${ADOPTED_IFACES:-} ${CREATED[@]+"${CREATED[@]}"}; do _in "$n" "$mine" || mine="$mine $n"; done; mine="$(echo $mine)"
-      avail=""; for n in $names; do _in "$n" "$mine" && continue; _in "$n" "$dk" && continue; is_sys_iface "$n" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
-      echo
-      [ -n "$mine" ] && { echo "  Interfaces already on this node:"; echo; for n in $mine; do iface_row "$n"; done; echo; }
-      if [ -n "$avail" ]; then echo "  Available orphan interfaces:"; echo; for n in $avail; do iface_row "$n"; done; echo
-      else echo "  Available orphan interfaces: (none)"; fi
-      [ -n "$dk" ] && { printf "  Interfaces from a docker node on this server (import to this node):"; for n in $dk; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
-      warn_dup_subnets   # flag any interfaces that share a subnet (only one of them can be up)
-      echo
-      if [ -z "$avail" ] && [ -z "$mine" ] && [ -n "$dk" ]; then   # only docker-node interfaces → transfer or create
-        printf "  Enter a name to %s it from the docker node, or %s to create one: " "$(col "$C_BLUE" transfer)" "$(col "$C_BLUE" new)"
-      elif [ -n "$avail" ]; then                                   # orphans present → manage all / some / none
-        echo "  Press $(b Enter) to manage $(col "$C_BLUE" 'all orphans above') and continue"
-        echo "  Enter interface $(b names) (space-separated) to manage or migrate specific ones"
-        [ -n "$mine" ] && echo "  Enter $(col "$C_BLUE" done) to keep only this node's interfaces (leave the orphans)"
-        printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
-      else                                                        # no orphans → finish/skip or add more
-        if [ -n "$mine" ]; then echo "  Press $(b Enter) to finish with this node's interfaces"
-        else echo "  Press $(b Enter) to skip — manage this node from the panel (Interfaces → Load new interface)"; fi
-        [ -n "$dk" ] && echo "  Enter interface $(b names) to migrate one from the docker node"
-        printf "  Enter %s to create an interface: " "$(col "$C_BLUE" '[n]ew')"
-      fi
-      if ! read -r pick 2>/dev/null </dev/tty; then echo; warn "no interactive input — keeping this node's interfaces"; sel=($mine $avail); break; fi
-      pick="$(echo $pick)"
-      if [ -z "$pick" ]; then                                     # Enter → keep mine + onboard all orphans (zero is fine: panel-managed node)
-        sel=($mine $avail)
-        break
-      fi
-      if [ "$pick" = done ]; then                                 # keep only this node's interfaces (leave orphans)
-        [ -n "$mine" ] || { warn "this node has no interfaces yet — manage one or type 'new'"; continue; }
-        sel=($mine); break
-      fi
-      { [ "$pick" = new ] || [ "$pick" = n ]; } && { spec_iface; continue; }
-      xfer=""; bad=""
-      for n in $pick; do _in "$n" "$mine" && continue; _in "$n" "$avail" && continue; _in "$n" "$dk" && { xfer="$xfer $n"; continue; }; bad="$bad $n"; done
-      [ -n "$bad" ] && { warn "not found:$bad — pick from the lists, or 'new'"; continue; }
-      if [ -n "$xfer" ]; then
-        printf "  Are you sure you want to transfer %s to this node? (y/N): " "$(col "$C_RED" "$(echo $xfer)")"
-        read -r yn 2>/dev/null </dev/tty || yn=n
-        case "$yn" in [Yy]*) for n in $xfer; do transfer_from_docker "$n" || true; done; detect_wg;; *) continue;; esac
-      fi
-      sel=($mine); for n in $pick; do _in "$n" "$mine" || sel+=("$n"); done; break   # keep mine + the chosen ones
-    done
-    # an interface we just ADOPTED (an orphan we didn't create, not arriving via a conversion import)
-    # is add-only — tag its conf so swg-noded keeps its existing peers instead of wiping them.
-    _nodeifs="$(node_ifaces | tr '\n' ' ')"
-    for n in ${sel[@]+"${sel[@]}"}; do n="${n// /}"; [ -z "$n" ] && continue
-      _in "$n" "$_nodeifs" && continue                       # already managed before → keep its current marker
-      _in "$n" "${CREATED[*]:-}" && continue                 # we created it this run → authoritative
-      _in "$n" "${ADOPTED_IFACES:-}" && continue             # conversion import → its conf already carries the right marker
+  elif [ -n "${ADOPTED_IFACES:-}" ]; then
+    # convert: carry the interfaces the convert migrated (the already-MANAGED set) — no re-decision.
+    IFS=', ' read -ra SELECTED <<< "$ADOPTED_IFACES"
+    # add-only mark for any that arrived without a marker (keep their peers)
+    local n _nodeifs; _nodeifs="$(node_ifaces | tr '\n' ' ')"
+    for n in ${SELECTED[@]+"${SELECTED[@]}"}; do n="${n// /}"; [ -z "$n" ] && continue
+      _in "$n" "$_nodeifs" && continue
+      _in "$n" "${CREATED[*]:-}" && continue
       onboard_mark "$n"
     done
-    SELECTED=("${sel[@]}")
+  else
+    # Approach B (record-only): no picker, no auto-adopt. Detect the wg/awg interfaces already on this box and just
+    # DISPLAY them — the node reports them to the panel, where they appear as adoption candidates for the operator to
+    # classify (WG / AWG / WDTT) or ignore. Nothing is touched here; new interfaces are created from the panel.
+    local n _mine; local -a cand=()
+    _mine=" $(local_ifaces | tr '\n' ' ') "
+    for n in "${!IF_CMD[@]}"; do
+      is_sys_iface "$n" && continue
+      case "$_mine" in *" $n "*) continue;; esac   # already managed by this node → local, not a candidate
+      cand+=("$n")
+    done
+    if [ "${#cand[@]}" -gt 0 ]; then
+      echo; info "Found ${#cand[@]} wg/awg/wdtt interface(s) NOT managed by the panel — adopt them from the panel (Node → Interfaces → adoption candidates):"; echo
+      for n in "${cand[@]}"; do iface_row "$n"; done; echo
+    else
+      info "No unmanaged wg/awg/wdtt interfaces found on this box — nothing to adopt."
+    fi
+    # Record-only means DON'T ADOPT STRANGERS — not "forget what this node already manages". Emptying SELECTED
+    # here made config.json's "interfaces" {} on every re-install: the interfaces stayed up on the kernel but
+    # unmanaged, so every peer on the node went dangling until each one was re-adopted from the panel by hand.
+    SELECTED=(); while IFS= read -r n; do [ -n "$n" ] && SELECTED+=("$n"); done < <(node_ifaces)
   fi
   # the CUTOVER + bringing every interface up is DEFERRED for a docker→bare convert: the turn-proxy step
   # (Step 2) still has to run while the docker node serves, so the convert path calls apply_node_switch
@@ -504,8 +420,21 @@ apply_node_switch(){
     if [ "$_c" = awg ]; then bringup awg-quick "$n" && { run systemctl enable --quiet "awg-quick@$n" || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"
     else                     bringup wg-quick  "$n" && { run systemctl enable --quiet "wg-quick@$n"  || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"; fi
   done
-  if [ "${#SELECTED[@]}" -gt 0 ]; then ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
+  # The LOCAL set — what this node manages after this run: wg/awg from config.json + its WDTT instances (whose
+  # interfaces have no .conf, so they'd otherwise look absent). Listed, not re-asked: a re-install keeps them.
+  local _l _li _lls _lsub; local -a _loc=()
+  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <(local_ifaces)
+  if [ "${#_loc[@]}" -gt 0 ]; then
+    echo; info "Found ${#_loc[@]} wg/awg/wdtt local interface(s) on this box:"; echo
+    detect_wg
+    for _l in "${_loc[@]}"; do
+      if [ -n "${IF_CMD[$_l]:-}" ]; then iface_row "$_l"; else
+        IFS="$(printf '\t')" read -r _li _lls _lsub < <(wdtt_local | awk -F'\t' -v i="$_l" '$1==i') || true   # EOF => rc 1; set -e would abort the whole install
+        [ -n "$_li" ] && wdtt_row "$_li" "$_lls" "$_lsub"
+      fi
+    done; echo
   else info "No local interfaces yet — this node is managed from the panel (Interfaces → Load new interface)."; fi
+  [ "${#SELECTED[@]}" -gt 0 ] && ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")" || true
 }
 
 # ───────────────────────── turn-proxy (vk-turn-proxy) ─────────────────────────
@@ -645,8 +574,7 @@ PY
 $list
 EOF
   echo
-  ask_yn "Transfer these turn-proxies into the bare-metal node?" y _yn
-  [ "$_yn" = yes ] || { info "  left on docker — they stop at the switch; add fresh ones below if you want"; return 0; }
+  # Approach B: auto-carry — always migrate the existing turn-proxies (no prompt). New ones are created from the panel.
   while IFS="$(printf '\t')" read -r svc owner lis con params; do
     [ -n "$svc" ] && [ -n "$owner" ] || continue
     fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"
@@ -670,40 +598,11 @@ migrate_docker_ifaces(){
     addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$c" | head -1)"
     printf '    %s%-10s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${_mep:-?}" "${lp:-?}" "${addr:-?}"; done
   echo
-  ask_yn "Transfer these interfaces into the bare-metal node?" y _yn
-  if [ "$_yn" != yes ]; then
-    info "  left on docker — they come down at the switch; create fresh ones below if you want"
-    for n in $ifs; do rm -f "/etc/amnezia/amneziawg/$n.conf" "/etc/wireguard/$n.conf" 2>/dev/null; done
-  fi
+  # Approach B: auto-carry — always keep the migrated interface confs (no prompt). They're adopted below and
+  # surface in the panel; new interfaces are created there.
   echo
 }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
-v_fwd(){ local names; names=" $(turn_wg_ports | cut -d: -f1 | tr '\n' ' ')"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
-fwd_resolve(){ local n p; while IFS=: read -r n p; do [ -n "$n" ] && [ "$n" = "$1" ] && { echo "127.0.0.1:$p"; return; }; done <<< "$(turn_wg_ports)"; echo "$1"; }
-install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
-  local sel="$1" owner pub port connect; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
-  ask_valid "Public IP this turn-proxy is reached at" "$(detect_public_ip)" pub v_host "an IP or hostname"
-  ask_valid "Turn-proxy listen port" "$(turn_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
-  detect_turn; local _n; for _n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$_n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$_n' — pick another port (enter 'new' again)"; return 0; }; done
-  local ports defport=51820 defname="127.0.0.1:51820" n p proto label clabel pad; ports="$(turn_wg_ports)"
-  echo
-  if [ -n "$ports" ]; then
-    defname="$(printf '%s\n' "$ports" | head -1 | cut -d: -f1)"   # first interface NAME
-    echo "  Available wg/awg interfaces:"
-    while IFS=: read -r n p; do proto="${IF_CMD[$n]:-wg}"
-      label="[$n] on $proto"; clabel="$(col "$C_GREEN" "[$n]") on $(b "$proto")"
-      pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
-      printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$p")"
-    done <<< "$ports"
-  fi
-  ask_valid "WireGuard/AmneziaWG address it forwards to - interface name or custom ip:port" "$defname" connect v_fwd "an interface name (e.g. awg0) or ip:port"
-  connect="$(fwd_resolve "$connect")"
-  echo
-  local wrap; wrap="$(turn_wrap_flags "$sel")"
-  [ -n "$wrap" ] && info "Obfuscation: a 64-hex wrap key is generated, baked into the unit, and recorded for the panel / client configs." \
-                 || warn "$sel has no wrap/srtp obfuscation flags — installing plain (-listen/-connect only)."
-  install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$wrap"
-}
 write_turn_record(){   # record detected turn-proxies for the panel (Phase 2: direct-vs-turn + wrap key for client configs)
   detect_turn; local json="" sep="" n
   for n in "${!TP_LISTEN[@]}"; do
@@ -716,44 +615,6 @@ $json
   ]
 }
 EOF
-}
-choose_turn_proxy(){   # one looped step: list installed (if any) + available branches; a branch installs, Enter proceeds
-  info "Checking for turn-proxy servers on this host…"
-  local sel names n
-  while :; do
-    detect_turn; names=("${!TP_LISTEN[@]}")
-    echo
-    if [ "${#names[@]}" -gt 0 ]; then
-      echo "  Installed turn-proxy servers:"; echo
-      for n in "${names[@]}"; do _fw="$(fwd_ifaces "${TP_CONNECT[$n]}")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$n" "$RESET" "${TP_LISTEN[$n]}" "${TP_CONNECT[$n]}" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"; done
-    else
-      warn "No turn-proxy servers found on this box."
-    fi
-    echo
-    echo "  Here is a list of turn-proxy branches available for installation:"
-    echo
-    menu "$(col "$C_BLUE" '[0] [c]acggghp')"     "The original project - https://github.com/cacggghp/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[1] [W]INGS-N')"      "Fork by WINGS-N - https://github.com/WINGS-N/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[2] [s]amosvalishe')" "free-turn-proxy by samosvalishe - https://github.com/samosvalishe/free-turn-proxy"
-    menu "$(col "$C_BLUE" '[3] [k]iper292')"     "Fork by kiper292 - https://github.com/kiper292/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[4] [M]oroka8')"      "Fork by Moroka8 - https://github.com/Moroka8/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[5] [a]nton48')"      "Fork by anton48 - https://github.com/anton48/vk-turn-proxy"
-    printf '  Enter a number, letter or name to install, or just press %s to skip and proceed with the setup: ' "$(b Enter)"
-    if ! read -r sel 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
-    sel="${sel//[[:space:]]/}"
-    [ -z "$sel" ] && break
-    sel="$(printf '%s' "$sel" | tr '[:upper:]' '[:lower:]')"   # case-insensitive (W/w, M/m, …)
-    case "$sel" in
-      0|c|cacggghp|original|main)  install_turn_proxy cacggghp; continue;;
-      1|w|wings|wings-n)           install_turn_proxy WINGS-N; continue;;
-      2|s|samosvalishe)            install_turn_proxy samosvalishe; continue;;
-      3|k|kiper|kiper292)          install_turn_proxy kiper292; continue;;
-      4|m|moroka|moroka8)          install_turn_proxy Moroka8; continue;;
-      5|a|anton|anton48)           install_turn_proxy anton48; continue;;
-      *) warn "enter 0–5, a letter (c/w/s/k/m/a) or a name (or press Enter to skip)";;
-    esac
-  done
-  write_turn_record
 }
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
@@ -770,13 +631,10 @@ $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; 
 # in convert.sh. choose_turn_proxy lists what's already installed (incl. the just-migrated units), lets
 # you add more, and (re)writes the turn record; restart swg-noded so any additions reach the panel.
 if [ "${SWG_TURN_ADD:-}" = 1 ]; then
-  echo; info "TURN-PROXY setup — add more, or press $(b Enter) to keep the migrated ones."
-  echo
-  # choose_ifaces didn't run in this turn-only re-entry, so seed SELECTED from the node's on-disk
-  # interfaces — otherwise turn_wg_ports is empty and the "forwards to" prompt can't suggest an interface.
-  detect_wg; SELECTED=("${!IF_CMD[@]}")
-  choose_turn_proxy
-  run systemctl restart swg-noded || warn "couldn't restart swg-noded — added turn-proxies reach the panel on its next start"
+  # Approach B: turn-proxies are managed from the PANEL — no "add more" menu here. convert.sh has already carried the
+  # existing turn-proxies; just (re)write the record and restart the daemon so the panel sees the carried set.
+  write_turn_record
+  run systemctl restart swg-noded || warn "couldn't restart swg-noded — carried turn-proxies reach the panel on its next start"
   exit 0
 fi
 
@@ -808,7 +666,7 @@ if [ -n "$NODE_TOKEN" ]; then :                                                #
 elif [ "$EXISTING" = yes ] && [ -n "$EXIST_TOKEN" ]; then NODE_TOKEN="$EXIST_TOKEN"
 elif $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN
 else ask_secret "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
-case "$PANEL_URL" in https://*) ;; http://*) warn "panel URL is http:// — the key would travel in clear. Continue only if you know why.";; *) PANEL_URL="https://$PANEL_URL";; esac   # no scheme → default https://
+case "$PANEL_URL" in https://*) ;; http://*) _url_is_loopback "$PANEL_URL" || warn "panel URL is http:// — the key would travel in clear. Continue only if you know why.";; *) PANEL_URL="https://$PANEL_URL";; esac   # no scheme → default https://
 # if the operator re-pointed the node at a different panel, the lc terminal should reach the NEW one
 [ "$EXISTING" = yes ] && [ -n "${LC_TOKEN:-}" ] && [ -n "$PANEL_URL" ] && LC_URL="$PANEL_URL"
 
@@ -873,17 +731,18 @@ if { [ "$EXISTING" = yes ] || [ "${SWG_CONVERT:-}" = 1 ]; } && ! $DRYRUN && [ -n
     --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
 fi
 
-step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"
+step "Datapath tooling"
 echo
-choose_ifaces
-
-# Step 2: TURN-PROXY setup. Runs for a fresh install AND a docker→bare convert. For a convert it migrates the
-# docker node's turn-proxies FIRST (deferred units), then the fork menu shows them as "installed" + lets you add
-# more — all WHILE the docker node still serves. choose_turn_proxy (re)writes the turn record incl. the migrated.
-step "TURN-PROXY setup"
-echo
-migrate_docker_turns
-choose_turn_proxy
+# Approach B: no create prompts. Interfaces / turn-proxies / WDTT are created FROM THE PANEL. Install the datapath
+# tooling, then auto-adopt any interfaces already on this box (choose_ifaces, add-only) + carry any turn-proxies a
+# convert migrated (auto). The panel's Orphans screen classifies each interface (WG / AWG / WDTT) or leaves it
+# unmanaged; new ones are created there.
+ensure_smart_tools || true            # nftables (smart routing) + dnsmasq (Force-DNS host tier)
+ensure_wg_tools awg || true           # AmneziaWG tools + DKMS kernel module (default interface type)
+ensure_wg_tools wg  || true           # plain WireGuard tools too — either type works when created later
+choose_ifaces                         # detect + display + auto-adopt everything found (convert: incl. migrated confs)
+migrate_docker_turns                  # docker→bare convert: carry existing turn-proxies (auto, no prompt)
+write_turn_record                     # record carried turns for the panel (fresh install: writes an empty set)
 
 # CONVERT: the turn-proxy step is done → NOW do the deferred cutover as the very last step (mirror bare→docker):
 # stop the docker datapath (+ its turn containers) → bring the bare interfaces up → start the migrated turn

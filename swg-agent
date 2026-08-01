@@ -662,6 +662,16 @@ def op_create_iface(cfg, req):
                              f"on this node (kernel {kr}) — its DKMS module needs matching linux-headers. Run on the "
                              f"node:  {how}  — then the interface creates automatically on the next sync. "
                              f"(Re-running the node installer, or swg-update, does this for you.)")
+        # "already exists" == a DEVICE of that name is already on the box — nothing to do with the port or the
+        # subnet, which is what the generic message below blames and what sends the operator hunting the wrong
+        # thing. It happens when an interface outlived the config that owned it (a convert, a manual `ip link
+        # add`, a half-removed install): the device is still up, usually still holding its ORIGINAL key, so
+        # adopting it keeps every existing client working while creating over it cannot.
+        if "already exists" in msg.lower():
+            raise AgentError("name_taken",
+                             f"an interface named {iface} already exists on this node, so it can't be created. "
+                             f"It isn't managed here — adopt it instead (that keeps its current key, so its "
+                             f"peers keep working), or remove the device first if you really want a new one.")
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed (port/subnet may be in use): {e}")
     with contextlib.suppress(Exception):
         run(["systemctl", "enable", f"{tool}-quick@{iface}"], check=False)

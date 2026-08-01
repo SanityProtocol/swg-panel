@@ -9,9 +9,11 @@ Run on the PANEL host as root:
 Prompts (each skippable with Enter) for a new username and a new password, writes the pbkdf2 hash to the
 panel's auth file (SWG_PANEL_AUTH, default /etc/swg-panel/auth) and restarts the panel so it takes effect now.
 
-Changing the PASSWORD also resets the Encryption Vault (the browser-held key that protects stored configs,
-subscription links and interface-key escrow): its old password wrap is gone, so the wrap is dropped and the
-vault re-connects to the new password automatically at the next successful sign-in.
+Changing the PASSWORD leaves the Encryption Vault (the browser-held key that protects stored configs,
+subscription links and interface-key escrow) COMPLETELY UNTOUCHED — this tool has no way to re-wrap it (the key
+only ever exists in the admin browser), and destroying it here would take every stored config and escrowed
+interface key with it. It only drops a marker, so the panel asks at the next sign-in for the OLD panel password
+or the encryption key shown when encryption was set up, and re-connects the vault to the new password from there.
 """
 import sys, os, hashlib, base64, getpass, subprocess, contextlib
 
@@ -57,15 +59,16 @@ def _write_auth(user, hashval):
         sys.exit(f"swg-passwd: cannot write {AUTH}: {e}")
 
 
-def _reset_vault():
-    """Drop the Encryption Vault wrap (its old-password key is unrecoverable) and leave a marker so the panel
-    re-creates it under the new password at the next successful sign-in. Best-effort — a box with no vault set
-    up just has nothing to remove."""
+def _flag_vault():
+    """Leave a marker saying the panel password was changed OUT OF BAND, so the SPA can ask to re-connect the
+    Encryption Vault at the next sign-in.
+
+    Deliberately destroys NOTHING. This tool cannot re-wrap the vault, because the key it would need lives only
+    in the admin browser — but the operator holds that key (shown once at setup, revealable from Settings), so the
+    vault is recoverable from the browser alone. Removing vault.json/escrow.json here would permanently orphan
+    every stored config, subscription link and escrowed interface key; the marker costs nothing and keeps them."""
     with contextlib.suppress(Exception):
         os.makedirs(SUBS, exist_ok=True)
-    for fn in ("vault.json", "escrow.json"):
-        with contextlib.suppress(OSError):
-            os.remove(os.path.join(SUBS, fn))
     with contextlib.suppress(OSError):
         with open(os.path.join(SUBS, "vault.reset"), "w") as f:
             f.write("reset\n")
@@ -86,16 +89,34 @@ def _restart_panel():
     return "docker compose restart swg-panel"
 
 
+def _docker_panel_dir():
+    """This box runs the panel in a CONTAINER (its auth lives inside it, not at $AUTH)."""
+    for d in ("/opt/swg-panel-docker", os.environ.get("SWG_DOCKER_DIR") or ""):
+        if d and os.path.isfile(os.path.join(d, "docker-compose.yml")):
+            return d
+    return ""
+
+
 def main():
     etc = os.path.dirname(AUTH) or "/"
+    # A missing auth DIRECTORY is not a permission problem, and saying "need root" to a user who is already root
+    # sends them chasing sudo. The usual cause is a docker install: /etc/swg-panel exists only inside the
+    # container, so this host copy (left behind by an earlier bare-metal install) has nothing to reset.
+    if not os.path.isdir(etc):
+        d = _docker_panel_dir()
+        if d:
+            sys.exit("swg-passwd: this panel runs in " + B("docker") + " — reset the login inside the container:\n"
+                     "    " + B("docker exec -it swg-panel swg-passwd"))
+        sys.exit(f"swg-passwd: no panel install found here ({AUTH} is missing).\n"
+                 "    On a docker panel run: " + B("docker exec -it swg-panel swg-passwd"))
     if not os.access(etc, os.W_OK):
         sys.exit(f"swg-passwd: need root to write {AUTH}  (try: sudo swg-passwd)")
 
     cur_user, cur_hash = _read_auth()
     cur_user = cur_user or "admin"
 
-    print("This tool lets you reset your swgPanel admin " + B("username") + " / " + B("password") +
-          " and the " + BBLUE("Encryption Vault") + " " + B("password") + ".")
+    print("This tool lets you reset your swgPanel admin " + B("username") + " / " + B("password") + ".")
+    print("Your " + BBLUE("Encryption Vault") + " is left intact — reconnect it at the next sign-in.")
     print()
 
     try:
@@ -123,7 +144,7 @@ def main():
     new_hash = _hash(pw) if pw else (cur_hash or _hash(""))   # keep the existing hash when only the username changes
     _write_auth(user, new_hash)
     if pw:
-        _reset_vault()
+        _flag_vault()
     applied = _restart_panel()
 
     # ── summary ──
@@ -135,8 +156,10 @@ def main():
     if pw:
         print("  • Password:  updated")
         print("  • Sign in with:  " + B(user) + " / " + B(pw))
-        print("  • " + BBLUE("Encryption Vault") + B(" seal") + " has been reset. It will be re-connected with your "
-              + B("swgPanel admin password") + " the next time you sign in with the new credentials.")
+        print("  • " + BBLUE("Encryption Vault") + ":  left intact — no config, subscription link or escrowed")
+        print("    interface key was touched. Signing in with the new password will ask you to re-connect it")
+        print("    with your " + B("old panel password") + " or your " + B("encryption key") + " (shown when this panel")
+        print("    set up config encryption, and revealable in Settings while the vault is unlocked).")
     else:
         print("  • Password:  unchanged")
 

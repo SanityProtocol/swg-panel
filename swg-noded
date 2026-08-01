@@ -25,12 +25,15 @@ import hashlib
 import hmac
 import ipaddress
 import http.client
+import io
 import json
 import os
 import re
 import secrets
 import shlex
 import shutil
+import tarfile
+import signal
 import socket
 import ssl
 import subprocess
@@ -1037,11 +1040,25 @@ def _snat_reconcile_rule(tag, subnet, des, rules):
     Shared by reconcile_egress (local-iface SNAT) and reconcile_cascade (exit forwarded-subnet SNAT)."""
     _re = _comment_re(tag)
     existing = [ln for ln in rules if _re.search(ln)]
+    # The MATCHED SOURCE is part of the rule's identity, not just its action: an interface can keep its name and
+    # WAN while its SUBNET changes (a WDTT instance's wg_addr is editable, and _wdtt_params_changed supports it).
+    # Comparing only action/-o/--to-source declared such a rule "already correct" and left it matching the OLD
+    # subnet forever — clients on the new one then connect fine but get NO internet, because nothing NATs them.
+    def _norm(c):
+        c = (c or "").strip()
+        if not c:
+            return ""
+        with contextlib.suppress(Exception):
+            return str(ipaddress.ip_network(c, strict=False))
+        return c
     cur = None
     if existing:
         o = re.search(r"-o (\S+)", existing[0]); src = re.search(r"--to-source (\S+)", existing[0])
-        cur = ("SNAT" if "SNAT" in existing[0] else "MASQUERADE", o.group(1) if o else "", src.group(1) if src else "")
-    if cur == des:
+        s = re.search(r"-s (\S+)", existing[0])
+        cur = ("SNAT" if "SNAT" in existing[0] else "MASQUERADE", o.group(1) if o else "",
+               src.group(1) if src else "", _norm(s.group(1) if s else ""))
+    want = (des[0], des[1], des[2], _norm(subnet)) if des else None
+    if cur == want:
         return (False, None)
     for ln in existing:                                   # drop stale rule(s)
         run(["sh", "-c", "iptables -t nat " + ln.replace("-A POSTROUTING", "-D POSTROUTING", 1)])
@@ -1138,6 +1155,20 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
             res["errors"].append("egress " + iface + ": " + err); continue
         if changed:
             res["changed"] += 1
+    # WDTT instances own their (built-in userspace-WG) interface and run with -no-nat → the node owns their
+    # egress MASQUERADE + FORWARD/MSS, exactly like a client interface. Their subnet comes from the WDTT record
+    # (wg_addr), not a wg-quick .conf, so they're reconciled here separately (never mesh; heal only genuine gaps).
+    for _wif, _winst in _wdtt_load().items():
+        _wsub = _wdtt_subnet(_winst.get("wg_addr") or "")
+        if not _wsub:
+            continue
+        _wdes = ("MASQUERADE", default_wan, "") if not _has_foreign_egress(_wsub, rules) else None
+        changed, err = _snat_reconcile_rule("swg-egress:" + _wif, _wsub, _wdes, rules)
+        if err:
+            res["errors"].append("egress " + _wif + ": " + err); continue
+        if changed:
+            res["changed"] += 1
+        client_devs.append(_wif)
     # FORWARD-accept (belt-and-suspenders — harmless under the usual ACCEPT policy, load-bearing under DROP) and — the
     # real value — a TCP-MSS clamp TOWARD each client tunnel, so a website's return packets can't exceed the 1280 tunnel
     # MTU and silently blackhole ("connects but pages time out"). Applied to ALL client tunnels (PostUp never wrote an
@@ -2661,6 +2692,11 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
     active=False (or no host entries) → full teardown."""
     CHAIN = "SWGK"
     entries = [e for e in host_entries if domains.get(e["category"])] if active else []
+    # Remember WHY the chain may be absent. "No entries" is the normal, correct state for an all-direct/all-block
+    # ruleset, or for the window right after a node restart before the domain lists have been pulled — but the
+    # health probe below only sees "the SWGK hook isn't there" and reported the engine DOWN, which is a red badge
+    # on a node with nothing wrong with it.
+    _SMART_MODE["xts_idle"] = not entries
     want_cats = sorted({e["category"] for e in entries})
     sig_src = (json.dumps([[e["subnet"], e["category"], e.get("table")] for e in entries], sort_keys=True)
                + "|" + json.dumps({c: sorted((domains.get(c) or [])[:256]) for c in want_cats}, sort_keys=True) + "|rm:" + str(reset_mark) + "|ttl:" + str(ttl))
@@ -2835,7 +2871,9 @@ def smart_status():
     sni_alive = bool(_SNI_PROC.get("p") and _SNI_PROC["p"].poll() is None)
     dns_alive = bool(_dnsmasq_running())
     if engine == "sni_user":     engine_ok = sni_alive          # is the mode's fill engine actually up?
-    elif engine == "sni_kernel": engine_ok = run(["iptables", "-t", "mangle", "-C", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", "SWGK"]).returncode == 0
+    elif engine == "sni_kernel":                                # the hook is torn down on purpose when there is nothing to route
+        engine_ok = bool(_SMART_MODE.get("xts_idle")) or run(
+            ["iptables", "-w", "2", "-t", "mangle", "-C", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", "SWGK"]).returncode == 0
     elif engine == "dns":        engine_ok = dns_alive and _route_localnet_ok()   # dnsmasq up AND loopback-DNAT possible
     else:                        engine_ok = True               # IP-only → no host engine to be down
     base = {"mode": mode, "engine": engine, "engine_ok": engine_ok, "sni_alive": sni_alive,
@@ -2910,7 +2948,10 @@ def reconcile_inet_chain(node_cfg):
     providers/NIC names. Rebuilt only when the iface-set/WAN signature changes, so counters keep accruing.
     Best-effort (a node without iptables just no-ops)."""
     T = SWG_INET_TABLE
-    managed = sorted((node_cfg.get("interfaces") or {}).keys())
+    managed = set((node_cfg.get("interfaces") or {}).keys())
+    with contextlib.suppress(Exception):
+        managed |= set(_wdtt_load().keys())   # WDTT owns its TUN + MASQUERADEs directly → count its internet egress too (feeds the flow-map internet lane)
+    managed = sorted(managed)
     if not managed:
         return
     wan = _detect_wan()
@@ -3088,6 +3129,675 @@ def node_datapath_health():
     return out
 
 
+def _uapi_lines(iface):
+    """Raw UAPI `get=1` response lines from a userspace wireguard-go/amneziawg-go socket, or [] if there is none.
+
+    ONE reader for the two callers that each carried their own copy of the connect / send / read-until-errno
+    loop — and the copies had drifted: this one searches every directory discovery accepts, the other hardcoded
+    /var/run/wireguard, so an interface whose socket lives in /run/wireguard was invisible to it.
+    """
+    sock = next((p for p in (os.path.join(d, iface + ".sock") for d in WG_SOCK_DIRS) if os.path.exists(p)), "")
+    if not sock:
+        return []
+    with contextlib.suppress(Exception):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(2)
+        s.connect(sock)
+        s.sendall(b"get=1\n\n")
+        data = b""
+        while b"errno=" not in data:
+            c = s.recv(8192)
+            if not c:
+                break
+            data += c
+        s.close()
+        return data.decode("utf-8", "replace").splitlines()
+    return []
+
+
+def _uapi_probe(iface):
+    """(listen_port, peer_count) for an adoption candidate — works when the CLI can't read the socket."""
+    port = 0; peers = 0
+    for line in _uapi_lines(iface):
+        if line.startswith("listen_port="):
+            with contextlib.suppress(ValueError):
+                port = int(line.split("=", 1)[1] or "0")
+        elif line.startswith("public_key="):
+            peers += 1
+    return port, peers
+
+# Where wg / awg / WDTT actually live on a box we did NOT set up. Discovery used to look only where WE install,
+# so an interface configured by a distro package, by hand, or by an upstream installer was invisible — and an
+# adoption flow that can't see the thing it exists to adopt is useless. Keep these lists as the single source of
+# truth for every scan (conf lookup, candidate enumeration, WDTT probing).
+WG_CONF_DIRS  = ("/etc/wireguard", "/usr/local/etc/wireguard")
+AWG_CONF_DIRS = ("/etc/amnezia/amneziawg", "/etc/amneziawg", "/usr/local/etc/amneziawg", "/etc/amnezia")
+WG_SOCK_DIRS  = ("/var/run/wireguard", "/run/wireguard")   # wireguard-go/amneziawg-go UAPI sockets
+# Every fork's -config-dir default, plus the usual hand-install spots. wg-keys.dat here == a WDTT identity.
+WDTT_CFG_DIRS = ("/etc/wdtt", "/opt/wdtt", "/var/lib/wdtt", "/usr/local/etc/wdtt")
+# The interface an UNPATCHED upstream build serves. OUR builds take -iface; the authors' do not register the flag
+# at all (ildarmaga compiles wgIfaceName = "wdtt0", alongside a hardcoded 10.66.66.1/24 and :2860 admin surface),
+# which is also why only one upstream server can run per host.
+WDTT_DEFAULT_IFACE = "wdtt0"
+_WDTT_HOSTPROC = {"at": 0.0, "rows": []}    # docker: cached HOST /proc walk (see _wdtt_host_procs)
+_WDTT_CFGPROBE = {}                          # docker: cfgdir -> (ts, {...}) cached host-side file probe
+_WDTT_HOST_TTL = 45                          # each host probe is a privileged one-shot container — never per-5s
+
+
+def _awg_conf_dirs():
+    """AWG_CONF_DIRS plus every subdirectory of /etc/amnezia (the Amnezia installers use one per product)."""
+    dirs = list(AWG_CONF_DIRS)
+    with contextlib.suppress(Exception):
+        for sub in os.listdir("/etc/amnezia"):
+            d = "/etc/amnezia/" + sub
+            if os.path.isdir(d) and d not in dirs:
+                dirs.append(d)
+    return dirs
+
+
+def _cand_conf(name):
+    """Path to an on-disk conf for this interface, searched across every conventional location. '' if none."""
+    for d in _awg_conf_dirs() + list(WG_CONF_DIRS):
+        p = os.path.join(d, name + ".conf")
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def _conf_has_awg(path):
+    """Does this conf carry AmneziaWG obfuscation knobs? Near-definitive — plain wg-quick rejects these keys."""
+    with contextlib.suppress(Exception):
+        for ln in open(path):
+            if re.match(r"\s*(Jc|Jmin|Jmax|S[1-4]|H[1-4]|I[1-5])\s*=\s*\S", ln):
+                return True
+    return False
+
+
+def _conf_is_awg(path):
+    """Does this conf path sit in an AmneziaWG location? (drives proto, and awg confs also carry Jc/S1 knobs)"""
+    return any(os.path.dirname(path) == d for d in _awg_conf_dirs())
+
+
+def _wdtt_is_server(flags):
+    """Is this argv a WDTT server AT ALL? _wdtt_procs deliberately casts a wide net (argv[0] containing "server"
+    or "wdtt") because the forks name their binaries inconsistently — but the turn-proxies are literally called
+    `turn-server`. Without this check every one of them looked like a WDTT server that simply hadn't been given
+    -iface, and _wdtt_iface_of then attributed it to the DEFAULT interface: the foreign lookup for wdtt0 returned
+    a TURN-PROXY, the panel offered its port as "currently" the one to adopt, and the adopt would have signalled
+    it. A turn-proxy carries -connect/-obf-*/-wrap-*; none of the flags below, and no "wdtt" in its path."""
+    if "wdtt" in (flags.get("_exe") or "").lower():
+        return True
+    return any((flags.get(k) or "").strip() for k in ("iface", "config-dir", "wg-port", "wg-addr", "desired"))
+
+
+def _wdtt_iface_of(flags):
+    """The interface a WDTT server owns. OUR builds pass -iface; the AUTHORS' upstream builds hardcode it and
+    register no such flag, so a genuinely foreign server has no -iface at all. Matching on the flag alone meant the
+    foreign lookup could only ever find WDTT we had deployed ourselves — i.e. never the case it exists for."""
+    return (flags.get("iface") or "").strip() or WDTT_DEFAULT_IFACE
+
+
+def _wdtt_foreign_proc(iface):
+    """(pid, flags) of a WDTT server on this interface that we do NOT supervise — ({}/None when there is none.
+    Returns the FLAGS too: on a docker node they come from the host's pid namespace, so the caller must not try to
+    re-read /proc/<pid> itself (that pid does not exist in this container)."""
+    ours = set()
+    with contextlib.suppress(Exception):
+        ours = {p.pid for p in _WDTT_PROCS.values() if p is not None}
+    for pid, flags in _wdtt_procs():
+        if pid not in ours and _wdtt_iface_of(flags) == iface:
+            return pid, flags
+    return None, {}
+
+
+def _wdtt_flags_from_argv(parts):
+    """{flag: value} from an argv list (`-flag value` pairs) + argv[0]. Shared by the local /proc reader and the
+    docker host-namespace walk, so both understand a cmdline identically."""
+    out = {"_exe": parts[0] if parts else ""}
+    i = 1
+    while i < len(parts):
+        if parts[i].startswith("-"):
+            key = parts[i].lstrip("-")
+            if i + 1 < len(parts) and not parts[i + 1].startswith("-"):
+                out[key] = parts[i + 1]; i += 2; continue
+            out[key] = "true"
+        i += 1
+    return out
+
+
+def _wdtt_cmdline_flags(pid):
+    """{flag: value} from a LOCAL process cmdline + argv[0]."""
+    out = {"_exe": ""}
+    with contextlib.suppress(Exception):
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            parts = [p.decode("utf-8", "replace") for p in f.read().split(b"\x00") if p]
+        out = _wdtt_flags_from_argv(parts)
+    with contextlib.suppress(Exception):
+        out["_exe"] = os.readlink("/proc/%d/exe" % pid) or out["_exe"]
+        out["_cwd"] = os.readlink("/proc/%d/cwd" % pid) or ""
+    return out
+
+
+def _wdtt_unit_of_pid(pid, host_ns=False):
+    """The service unit a process belongs to, '' when it isn't service-managed. Read from its cgroup line, on the
+    HOST when the pid lives there (docker). Adoption needs this because a foreign WDTT server is normally a
+    SERVICE: killing the process alone leaves its manager to restart it."""
+    txt = ""
+    if host_ns or NODE_KIND == "docker":
+        txt = (host_sh("cat /proc/%d/cgroup 2>/dev/null; :" % int(pid), timeout=20).stdout or "")
+    else:
+        with contextlib.suppress(Exception):
+            with open("/proc/%d/cgroup" % int(pid)) as f:
+                txt = f.read()
+    for ln in txt.splitlines():
+        seg = ln.strip().rsplit("/", 1)[-1]
+        if seg.endswith(".service"):
+            return seg
+    return ""
+
+
+def _wdtt_flags_host(pid):
+    """Flags for ONE pid in the HOST's pid namespace (docker) — the same base64 hand-off as _wdtt_host_procs,
+    but never cached: this backs the re-verify taken immediately before we signal, where a stale answer is the
+    difference between stopping the foreign server and killing whatever inherited its pid."""
+    out = {}
+    with contextlib.suppress(Exception):
+        b64 = (host_sh("base64 -w0 < /proc/%d/cmdline 2>/dev/null" % int(pid), timeout=20).stdout or "").strip()
+        if b64:
+            parts = [x.decode("utf-8", "replace") for x in base64.b64decode(b64).split(b"\x00") if x]
+            if parts:
+                out = _wdtt_flags_from_argv(parts)
+    return out
+
+
+def _wdtt_host_procs():
+    """WDTT servers in the HOST's pid namespace — docker only. This container has no pid:host, so a foreign server
+    running on the host is invisible to a local /proc walk and could never be adopted. host_sh reaches it, but each
+    call spawns a privileged one-shot container, so the result is cached: the foreign lookup runs per candidate per
+    5s snapshot, and paying a container for each of those would be ruinous.
+    cmdline goes over as base64 — an argv with spaces or newlines must survive the trip intact."""
+    now = time.time()
+    if now - _WDTT_HOSTPROC["at"] < _WDTT_HOST_TTL:
+        return _WDTT_HOSTPROC["rows"]
+    rows = []
+    with contextlib.suppress(Exception):
+        cmd = ("for p in /proc/[0-9]*; do c=$p/cmdline; [ -r \"$c\" ] || continue; "
+               "case \"$(head -c 200 \"$c\" | tr '\\0' ' ')\" in *wdtt*|*server*) "
+               "printf '%s ' \"${p#/proc/}\"; base64 -w0 < \"$c\"; echo ;; esac; done")
+        for ln in (host_sh(cmd, timeout=30).stdout or "").splitlines():
+            pid, _, b64 = ln.strip().partition(" ")
+            if not pid.isdigit() or not b64:
+                continue
+            with contextlib.suppress(Exception):
+                parts = [x.decode("utf-8", "replace") for x in base64.b64decode(b64).split(b"\x00") if x]
+                if parts and ("wdtt" in parts[0] or "server" in parts[0]):
+                    rows.append((int(pid), _wdtt_flags_from_argv(parts)))
+    _WDTT_HOSTPROC["at"] = now
+    _WDTT_HOSTPROC["rows"] = rows
+    return rows
+
+
+def _wdtt_unit_ports(execstart):
+    """(listen, wg_port) parsed out of a unit's ExecStart. A STOPPED server has no argv to read, but the unit
+    that starts it is right there on disk and is authoritative about the ports its clients already dial."""
+    with contextlib.suppress(Exception):
+        parts = [p for p in shlex.split(execstart or "") if p]
+        f = _wdtt_flags_from_argv(parts)
+        return (f.get("listen") or "").strip(), str(f.get("wg-port") or "").strip()
+    return "", ""
+
+
+def _wdtt_inbound_ports_local(cfgdir):
+    """(dtls, wg) from ildarmaga's own panel.db `wdtt_inbound` row — the fork records what it listens on, which
+    survives a stop. amurcanov keeps nothing equivalent, hence the unit fallback."""
+    dbp = os.path.join(cfgdir, "panel.db")
+    if not os.path.isfile(dbp):
+        return "", ""
+    with contextlib.suppress(Exception):
+        import sqlite3
+        c = sqlite3.connect(dbp, timeout=5)
+        try:
+            for d, w in c.execute("SELECT dtls_port, wg_port FROM wdtt_inbound LIMIT 1"):
+                return (str(d or "").strip(), str(w or "").strip())
+        finally:
+            c.close()
+    return "", ""
+
+
+def _wdtt_users_local(cfgdir):
+    """The users a WDTT config-dir holds, as NON-SECRET rows for the adoption UI — never the password itself
+    (the panel stays blind to credentials until the operator actually adopts). Both store layouts, same shape:
+    a user that has never connected still gets a row, because "3 issued, 1 ever connected" is exactly what an
+    operator needs before taking a server over — and the interface can only ever show the connected one."""
+    out = []
+    dbp = os.path.join(cfgdir, "panel.db")
+    if os.path.isfile(dbp):
+        with contextlib.suppress(Exception):
+            import sqlite3
+            c = sqlite3.connect(dbp, timeout=5)
+            try:
+                for lbl, did, exp, deact, dn, up, vkh, seen, ports in c.execute(
+                        "SELECT comment, device_id, expires_at, is_deactivated, down_bytes, up_bytes,"
+                        " vk_hash, last_seen_at, ports FROM wdtt_users"):
+                    out.append({"label": (lbl or "").strip()[:60], "bound": bool((did or "").strip()),
+                                "last_seen": int(seen or 0), "expires_at": int(exp or 0),
+                                "disabled": bool(deact), "vk": bool((vkh or "").strip()),
+                                "down_bytes": int(dn or 0), "up_bytes": int(up or 0), "ports": str(ports or "")})
+            finally:
+                c.close()
+        return out
+    pj = os.path.join(cfgdir, "passwords.json")
+    if os.path.isfile(pj):
+        with contextlib.suppress(Exception):
+            with open(pj) as f:
+                raw = json.load(f) or {}
+            devs = raw.get("devices") or {}
+            for _pw, e in (raw.get("passwords") or {}).items():
+                e = e if isinstance(e, dict) else {}
+                _did = str(e.get("device_id") or "").strip()
+                out.append({"label": "", "bound": bool(_did), "last_seen": int(e.get("last_seen_at") or 0),
+                            "expires_at": int(e.get("expires_at") or 0),
+                            "disabled": bool(e.get("is_deactivated")), "vk": bool(str(e.get("vk_hash") or "").strip()),
+                            "down_bytes": int(e.get("down_bytes") or 0), "up_bytes": int(e.get("up_bytes") or 0),
+                            "ports": str(e.get("ports") or ""),
+                            "ip": str(((devs.get(_did) or {}) if _did else {}).get("ip") or "")})
+    return out
+
+
+def _wdtt_cfg_probe(cfg):
+    """{'id': bool, 'store': str, 'users': [...]} for a config-dir — does it hold an identity (wg-keys.dat),
+    which store, and the NON-SECRET rows of that store (never the passwords).
+    A FOREIGN server's config-dir lives on the HOST, so on a docker node os.path.isfile() here always says no and
+    every foreign WDTT reported adoptable=False. One batched host probe, cached like the proc walk."""
+    now = time.time()
+    hit = _WDTT_CFGPROBE.get(cfg)
+    if hit and now - hit[0] < _WDTT_HOST_TTL:
+        return hit[1]
+    if NODE_KIND != "docker":
+        res = {"id": os.path.isfile(os.path.join(cfg, "wg-keys.dat")),
+               "store": ("panel.db" if os.path.isfile(os.path.join(cfg, "panel.db")) else
+                         ("passwords.json" if os.path.isfile(os.path.join(cfg, "passwords.json")) else "")),
+               "users": _wdtt_users_local(cfg), "inbound_ports": _wdtt_inbound_ports_local(cfg),
+               "unit_listen": "", "unit_wg_port": ""}
+        with contextlib.suppress(Exception):
+            _udir = "/etc/systemd/system"
+            for _un in sorted(x for x in os.listdir(_udir) if x.endswith(".service")):
+                _u = os.path.join(_udir, _un)
+                _txt = open(_u, errors="replace").read()
+                if ("config-dir " + cfg) not in _txt:
+                    continue
+                for _l in _txt.splitlines():
+                    if _l.startswith("ExecStart="):
+                        res["unit_listen"], res["unit_wg_port"] = _wdtt_unit_ports(_l.split("=", 1)[1])
+                        break
+                break
+    else:
+        res = {"id": False, "store": "", "users": [], "inbound_ports": ("", ""), "unit_listen": "", "unit_wg_port": ""}
+        with contextlib.suppress(Exception):
+            # The trailing `; :` keeps the probe's exit status at 0 whatever happens. It is a QUESTION, not an
+            # assertion: "no passwords.json" exited 1 and "the dir is gone" exited 2, so a probe that had
+            # answered perfectly logged `rc=1`/`rc=2` every single cycle — burying the real WDTT log lines.
+            # It must sit OUTSIDE the `&&` to also cover the failing `cd`.
+            # The store rides back base64'd in the SAME batched call — one privileged container per 45s, not
+            # one per question. Size-capped: this is a probe, not a backup, and a store big enough to matter is
+            # better answered after adoption than by shipping it through a shell.
+            _cmd = (("cd %s 2>/dev/null && { [ -f wg-keys.dat ] && echo id; [ -f panel.db ] && echo panel.db; "
+                     "[ -f passwords.json ] && echo passwords.json; "
+                     "for f in passwords.json panel.db panel.db-wal; do [ -f \"$f\" ] || continue; "
+                     "[ $(stat -c %%s \"$f\") -gt 8388608 ] && continue; "
+                     "printf 'B64:%%s ' \"$f\"; base64 -w0 < \"$f\"; echo; done; }; "
+                     # the unit that STARTS this config dir carries the ports a stopped server can't tell us
+                     "for u in /etc/systemd/system/*.service; do [ -f \"$u\" ] || continue; "
+                     "grep -q -- %s \"$u\" 2>/dev/null || continue; "
+                     "printf 'EXEC:'; grep -h '^ExecStart=' \"$u\" | head -1; done; :")
+                    % (shlex.quote(cfg), shlex.quote("config-dir " + cfg)))
+            raw = (host_sh(_cmd, timeout=40).stdout or "")
+            flags = [ln for ln in raw.split() if not ln.startswith("B64:") and not ln.startswith("EXEC:")]
+            for _ln in raw.splitlines():
+                if _ln.startswith("EXEC:"):
+                    res["unit_listen"], res["unit_wg_port"] = _wdtt_unit_ports(_ln[5:].split("=", 1)[-1])
+                    break
+            res["id"] = "id" in flags
+            res["store"] = "panel.db" if "panel.db" in flags else ("passwords.json" if "passwords.json" in flags else "")
+            _blobs = {}
+            for _ln in raw.splitlines():
+                if not _ln.startswith("B64:"):
+                    continue
+                _name, _, _b64 = _ln[4:].partition(" ")
+                if _name and _b64:
+                    with contextlib.suppress(Exception):
+                        _blobs[_name] = base64.b64decode(_b64)
+            if _blobs:
+                _tmp = "/tmp/swg-wdtt-probe-" + hashlib.sha1(cfg.encode()).hexdigest()[:8]
+                shutil.rmtree(_tmp, ignore_errors=True)
+                os.makedirs(_tmp, mode=0o700, exist_ok=True)
+                try:
+                    for _n, _b in _blobs.items():
+                        with open(os.path.join(_tmp, _n), "wb") as _fh:
+                            _fh.write(_b)
+                    res["users"] = _wdtt_users_local(_tmp)
+                    res["inbound_ports"] = _wdtt_inbound_ports_local(_tmp)
+                finally:
+                    shutil.rmtree(_tmp, ignore_errors=True)
+    _WDTT_CFGPROBE[cfg] = (now, res)
+    return res
+
+def _wdtt_guess_fork(exe, cfgdir):
+    """Best-effort fork id for a FOREIGN WDTT: our own binary path → exact; else the config-dir layout
+    (panel.db = ildarmaga, passwords.json = amurcanov-family); else the binary's own -h flag signature.
+    Never authoritative — the panel's adopt modal always lets the operator confirm/override it."""
+    for fk in WDTT_FORK_OWNER:
+        if ("/" + fk + "/") in (exe or ""):
+            return fk
+    # Host-aware: a FOREIGN server's config-dir is on the HOST, so os.path.isfile() from inside a container always
+    # said no. The layout check then fell through, the -h probe below tried to exec a host path that doesn't exist
+    # in here, and the fork came back "" — which the panel renders as its DEFAULT, amurcanov. An upstream ildarmaga
+    # server was therefore adopted and labelled as a different author's fork.
+    _store = _wdtt_cfg_probe(cfgdir)["store"] if cfgdir else ""
+    if _store == "panel.db":
+        return "ildarmaga"
+    # ONE exec, not two: this runs per unmanaged candidate on every 5s snapshot, and `run` blocks — two hung
+    # execs of a foreign binary stalled the sync loop for up to 12s before the snapshot was even posted. Skip it
+    # entirely when there's no executable to ask (the dormant scan passes exe="").
+    # Nothing to exec (dormant scan), or a docker node where `exe` is a HOST path that does not resolve in here —
+    # asking it for -h would just burn the 6s timeout per candidate, per snapshot.
+    if not exe or NODE_KIND == "docker":
+        return "amurcanov" if _store == "passwords.json" else ""
+    h = ""
+    with contextlib.suppress(Exception):
+        _r = run([exe, "-h"], timeout=6)
+        h = (_r.stderr or "") + (_r.stdout or "")
+    if "-admin-addr" in h:
+        return "ildarmaga"
+    if "-no-panel" in h:
+        return "wdttplus"
+    return "amurcanov" if _store == "passwords.json" else ""
+
+def _wdtt_procs():
+    """Every WDTT server process on this box → [(pid, argv-flags)]. ONE /proc walk shared by the callers that
+    used to each do their own — the foreign-server lookup (per candidate, per 5s snapshot) and the dormant scan."""
+    out = []
+    with contextlib.suppress(Exception):
+        for ent in os.listdir("/proc"):
+            if not ent.isdigit():
+                continue
+            with contextlib.suppress(Exception):
+                with open("/proc/%s/cmdline" % ent, "rb") as f:
+                    parts = f.read().split(b"\x00")
+                if not parts or not parts[0] or not (b"server" in parts[0] or b"wdtt" in parts[0]):
+                    continue
+                out.append((int(ent), _wdtt_cmdline_flags(int(ent))))
+    # DOCKER: the walk above only sees THIS container's pid namespace — our own supervised children. A foreign
+    # server runs on the host and would be invisible, so merge the (cached) host-namespace walk. Host pids can't
+    # collide with container-local ones here because the local set is only ever our own _WDTT_PROCS children.
+    if NODE_KIND == "docker":
+        _seen = {p for p, _ in out}
+        out.extend((p, f) for p, f in _wdtt_host_procs() if p not in _seen)
+    # One choke point for "is this actually WDTT": the argv[0] net above is deliberately wide, and everything
+    # downstream (foreign lookup, dormant scan, live config-dirs) treats what it returns as a WDTT server.
+    return [(p, f) for p, f in out if _wdtt_is_server(f)]
+
+
+def _wdtt_live_cfgdirs():
+    """Config directories of every WDTT server currently RUNNING here — ours and foreign alike."""
+    dirs = set()
+    with contextlib.suppress(Exception):
+        for ifn in (_wdtt_load() or {}):
+            dirs.add(os.path.realpath(_wdtt_dir(ifn)))
+    for _pid, flags in _wdtt_procs():
+        cd = (flags.get("config-dir") or "").strip()
+        if cd:
+            with contextlib.suppress(Exception):
+                dirs.add(os.path.realpath(cd))
+    return dirs
+
+
+def wdtt_dormant():
+    """WDTT installs sitting on disk with NOTHING running — the one real server we'd otherwise miss entirely.
+
+    A WDTT server owns its TUN, so when it's stopped there is no interface, no UAPI socket and no process: it
+    can't appear as an adoption candidate, and the operator sees nothing at all where a real server lives. But a
+    wg-keys.dat in one of the fork config directories is unambiguous evidence of an install. Report those (with
+    the fork guessed from the store layout) so the panel can say "start it, then adopt" instead of staying silent.
+    Report-only — nothing is started, moved or touched."""
+    live = _wdtt_live_cfgdirs()
+    out = []
+    for d in WDTT_CFG_DIRS:
+        with contextlib.suppress(Exception):
+            # Host-aware, like every other foreign lookup: a foreign install lives on the HOST, so on a docker
+            # node os.path.isfile() here answered "no" for every one of them. A RUNNING foreign server was still
+            # found (the proc walk crosses the namespace), but a STOPPED one — the exact case this function
+            # exists for — was invisible and unadoptable. _wdtt_cfg_probe already crosses it, and is cached.
+            probe = _wdtt_cfg_probe(d)
+            if not probe["id"] or os.path.realpath(d) in live:
+                continue
+            store = probe["store"]
+            # Ports ARE recoverable from a stopped install: the password store records the ports each password
+            # was issued for ("<dtls>,<wg>,…"), so a server with at least one user tells us what it was listening
+            # on. The SUBNET is not — client addresses are derived at runtime and never written — and the public
+            # endpoint never lived here at all (the server binds 0.0.0.0; what clients dial is a property of the
+            # network). So prefill what the files actually know and ask for the rest.
+            # Ports for a STOPPED server, best source first. They are runtime flags, so they are not in the
+            # config dir — but "we can't know them" was too quick: the unit that starts it spells them out, and
+            # ildarmaga records them in its own store. Only ask the operator once all three come up empty; a
+            # wrong port here means every existing client dials a server that is no longer listening.
+            lp = wp = 0
+            with contextlib.suppress(Exception):                       # 1) the service unit's ExecStart
+                _ul = str(probe.get("unit_listen") or "").rsplit(":", 1)[-1]
+                if _ul.isdigit():
+                    lp = int(_ul)
+                if str(probe.get("unit_wg_port") or "").isdigit():
+                    wp = int(probe["unit_wg_port"])
+            with contextlib.suppress(Exception):                       # 2) the fork's own inbound record
+                if not (lp and wp):
+                    _d, _w = probe.get("inbound_ports") or ("", "")
+                    if not lp and str(_d).isdigit(): lp = int(_d)
+                    if not wp and str(_w).isdigit(): wp = int(_w)
+            with contextlib.suppress(Exception):                       # 3) the ports a password was issued for
+                if not (lp and wp):
+                    for _e in (probe.get("users") or []):
+                        _ports = [p for p in str((_e or {}).get("ports") or "").split(",") if p.strip().isdigit()]
+                        if len(_ports) >= 2:
+                            lp, wp = lp or int(_ports[0]), wp or int(_ports[1]); break
+            _at = 0
+            with contextlib.suppress(Exception):
+                _at = int(os.path.getmtime(os.path.join(d, "wg-keys.dat")))   # local only; 0 on docker (host path)
+            out.append({"config_dir": d, "store": store,
+                        "fork": _wdtt_guess_fork("", d),
+                        "listen_port": lp, "wg_port": wp,
+                        "users": probe.get("users") or [],    # non-secret rows, so the adopt UI can show WHO is on it
+                        "at": _at})
+    return out
+
+
+def wdtt_foreign_probe(iface):
+    """Can this FOREIGN (panel-unmanaged) WDTT interface be adopted? Locates its running server, its config-dir
+    (explicit -config-dir → the fork default /etc/wdtt → the process cwd) and its identity file, and guesses the
+    fork. Returns NON-SECRET metadata only — never the owner password or key material (the panel stays blind; the
+    node re-reads those locally at adopt time). None when it isn't a locatable WDTT server.
+    `adoptable` is False when the identity (wg-keys.dat) can't be found: adopting would mint a FRESH server key and
+    break every existing client, so the panel offers Ignore instead."""
+    # Take the flags the lookup already resolved — on docker they come from the HOST's pid namespace, so
+    # re-reading /proc/<pid> from inside this container would find nothing and blank every field.
+    pid, f = _wdtt_foreign_proc(iface)
+    if not pid:
+        return None
+    # An explicit -config-dir is AUTHORITATIVE, even when it holds no identity — that just means this server
+    # isn't adoptable. Searching on past it would attribute another server's wg-keys.dat to this one, report it
+    # as adoptable, and then seed the adoption with the wrong identity: every client of BOTH servers breaks.
+    # Only guess when the process didn't say (an upstream run with no flag lands in one of the defaults).
+    cfg = (f.get("config-dir") or "").strip()
+    if not cfg:
+        for cand in list(WDTT_CFG_DIRS) + [f.get("_cwd") or ""]:
+            if cand and _wdtt_cfg_probe(cand)["id"]:
+                cfg = cand; break
+        else:
+            cfg = WDTT_CFG_DIRS[0]
+    probe = _wdtt_cfg_probe(cfg)          # host-aware: a foreign config-dir lives on the HOST, not in this container
+    # -wg-addr, like -iface, is OUR flag: the authors' builds compile the subnet in (ildarmaga hardcodes
+    # 10.66.66.1/24) and register nothing to read it from. argv therefore yields "" for a genuinely foreign
+    # server and adoption refused it — "this server's tunnel subnet isn't an IPv4 CIDR: (none)" — for a value
+    # sitting on the live interface all along. The running device is the authority; argv is only a hint.
+    _wa = (f.get("wg-addr") or "").strip()
+    if not _wa:
+        with contextlib.suppress(Exception):
+            for ln in (run(["ip", "-4", "-o", "addr", "show", iface]).stdout or "").splitlines():
+                _p = ln.split()
+                if len(_p) >= 4 and _p[2] == "inet":
+                    _wa = _p[3]; break
+    return {"pid": pid, "fork": _wdtt_guess_fork(f.get("_exe") or "", cfg), "config_dir": cfg,
+            "listen": f.get("listen") or "", "wg_port": f.get("wg-port") or "", "wg_addr": _wa,
+            "max_passwords": f.get("max-passwords") or "", "has_identity": probe["id"], "adoptable": bool(probe["id"]),
+            # Non-secret rows from its own store, so the adoption UI can list EVERY issued user — the interface
+            # only knows the ones that have connected, which undercounts what the operator is taking on.
+            "users": probe.get("users") or [],
+            "store": probe["store"]}
+
+def iface_candidates(node_cfg):
+    """wg/awg interfaces present on this box that this node does NOT manage — Approach-B adoption candidates for the
+    panel to classify (WG / AWG / WDTT) or ignore. REPORT ONLY — nothing is touched (a kernel interface stays on the
+    kernel until the operator adopts it). Each: name, proto (wg|awg), datapath (kernel|userspace), listen_port,
+    address, peers, up, wdtt_hint (an unmanaged userspace wg iface is most likely a WDTT server's)."""
+    managed = set((node_cfg.get("interfaces") or {}).keys())
+    local_wdtt = {}
+    with contextlib.suppress(Exception):
+        local_wdtt = _wdtt_load() or {}
+    # Only WDTT the PANEL manages is "ours". One carried over by a convert onto a panel that has never seen it is
+    # exactly an adoption candidate — and since reconcile_wdtt now preserves those instead of deleting them, this
+    # is what makes them visible; otherwise they'd survive on disk and appear nowhere.
+    managed |= set(k for k, v in local_wdtt.items() if (v or {}).get("panel_managed"))
+    names_wdtt = set(k for k in local_wdtt if k not in managed)
+    names = set(names_wdtt)                                  # unadopted local WDTT instances are candidates too
+    for tool in (["wg"], ["awg"]):                           # kernel + any userspace socket the CLI can read
+        with contextlib.suppress(Exception):
+            r = run(_wgcmd(tool) + ["show", "interfaces"])
+            if r.returncode == 0:
+                names.update((r.stdout or "").split())
+    for _d in WG_SOCK_DIRS:                                  # userspace wireguard-go the CLI can't read
+        with contextlib.suppress(Exception):
+            for f in os.listdir(_d):
+                if f.endswith(".sock"):
+                    names.add(f[:-5])
+    # A FOREIGN WDTT server's interface is invisible to every source above: it writes no .conf, and on a docker node
+    # the wg CLI can't see it either (the host's UAPI socket dir isn't mounted) — so an adoption flow that exists to
+    # surface it listed everything EXCEPT it. The running process is the authority on which interface it owns.
+    for _pid, _fl in _wdtt_procs():
+        with contextlib.suppress(Exception):
+            names.add(_wdtt_iface_of(_fl))
+    for _d in _awg_conf_dirs() + list(WG_CONF_DIRS):         # confs on disk (a down interface is adoptable too)
+        with contextlib.suppress(Exception):
+            for f in os.listdir(_d):
+                if f.endswith(".conf"):
+                    names.add(f[:-5])                        # ".conf" is 5 chars — [:-4] leaves a trailing dot
+    ipmap = {}
+    with contextlib.suppress(Exception):
+        for ln in (run(["ip", "-4", "-o", "addr", "show"]).stdout or "").splitlines():
+            p = ln.split()
+            if len(p) >= 4 and p[2] == "inet":
+                ipmap.setdefault(p[1], p[3])
+    out = []
+    for name in sorted(names):
+        if not name or name in managed or name.startswith("swg_"):
+            continue
+        userspace = any(os.path.exists(os.path.join(_d, name + ".sock")) for _d in WG_SOCK_DIRS)
+        conf = _cand_conf(name)
+        proto = "awg" if (conf and _conf_is_awg(conf)) else "wg"
+        if not conf:
+            with contextlib.suppress(Exception):
+                if "amneziawg" in (run(["ip", "-d", "-o", "link", "show", name]).stdout or ""):
+                    proto = "awg"
+        port = 0; peers = 0; up = False; ent_peers = []; awg_live = False
+        # Try BOTH tools, preferred one first. `wg` and `awg` each only speak to their own datapath, and the proto
+        # guess above is just a guess: a confless interface reports "tun type tun" when it is userspace, so an
+        # AmneziaWG device would be dumped with `wg`, fail, and be reported as an empty interface with no peers.
+        # Whichever tool answers is also the authoritative proto.
+        for _tool in (["awg"], ["wg"]) if proto == "awg" else (["wg"], ["awg"]):
+            with contextlib.suppress(Exception):
+                r = run(_wgcmd(_tool) + ["show", name, "dump"])
+                if r.returncode == 0 and (r.stdout or "").strip():
+                    lines = r.stdout.strip().splitlines(); f0 = lines[0].split("\t")
+                    if len(f0) >= 3:
+                        with contextlib.suppress(ValueError):
+                            port = int(f0[2])
+                    # Obfuscation knobs, straight from the live device — the ONE signal that cannot be a false
+                    # positive: a plain WireGuard interface has no Jc/S1/H* to report. A `wg` dump is exactly
+                    # [priv, pub, port, fwmark], so anything longer means the tool emitted awg fields; fwmark is
+                    # the last one and is excluded, or a plain interface with a fwmark set would read as AWG.
+                    if len(f0) > 4:
+                        for _v in f0[3:-1]:
+                            if _v and _v not in ("0", "off") and (_v[0].isdigit() or _v[0] == "-"):
+                                awg_live = True; break
+                    peers = max(0, len(lines) - 1); up = True
+                    # The operator is deciding whether to adopt this thing, so show them WHAT is on it, not just a
+                    # count. Non-secret fields only — the PSK parse_dump keeps for adoption is dropped here, since
+                    # this rides to the browser in /api/state. Capped: a peer list is unbounded and this is a
+                    # preview, not the roster it becomes after adoption.
+                    with contextlib.suppress(Exception):
+                        _, _pl = parse_dump(r.stdout)
+                        ent_peers = [{"public_key": p["public_key"], "allowed_ips": p["allowed_ips"],
+                                      "endpoint": p["endpoint"], "last_handshake": p["last_handshake"],
+                                      "rx_bytes": p["rx_bytes"], "tx_bytes": p["tx_bytes"]} for p in _pl[:200]]
+                    if not conf:                            # no conf to trust — believe the tool that answered
+                        proto = "awg" if _wgcmd(_tool) == ["awg"] else "wg"
+                    break
+        if not up and userspace:                            # userspace socket the CLI can't read → UAPI
+            port, peers = _uapi_probe(name); up = True
+        addr = ipmap.get(name, "")
+        if name in names_wdtt:                              # fill from OUR record — a stopped WDTT has no live iface
+            _lw = local_wdtt.get(name) or {}
+            if not port:
+                with contextlib.suppress(Exception):
+                    port = int(str(_lw.get("listen") or "").rsplit(":", 1)[-1] or 0)
+            if not addr:
+                addr = _lw.get("wg_addr") or ""
+        if conf and (port == 0 or not addr):                # fill from the on-disk conf (down interface still counts)
+            with contextlib.suppress(Exception):
+                for ln in open(conf):
+                    m = re.match(r"\s*ListenPort\s*=\s*(\d+)", ln)
+                    if m and not port:
+                        port = int(m.group(1))
+                    m = re.match(r"\s*Address\s*=\s*([0-9./,]+)", ln)
+                    if m and not addr:
+                        addr = m.group(1).split(",")[0].strip()
+        ent = {"name": name, "proto": proto, "datapath": "userspace" if userspace else "kernel",
+               "listen_port": port, "address": addr, "peers": peers, "up": bool(up),
+               "wdtt_hint": bool(userspace or name in names_wdtt),
+               "peer_list": ent_peers,
+               "conf": conf}
+        # Which type should the adopt sheet PRESELECT? Rank by how badly a wrong guess hurts, and only ever
+        # preselect on evidence that cannot be coincidence. Deliberately NOT used: "the awg tool answered the
+        # dump" — on a box where the amneziawg module backs everything it answers for plain WireGuard interfaces
+        # too, which is precisely the false positive to avoid.
+        _why = ""
+        if awg_live:
+            _hint, _why = "awg", "obfuscation parameters are set on the interface"
+        elif conf and _conf_has_awg(conf):
+            _hint, _why = "awg", "its config carries AmneziaWG parameters"
+        elif conf and _conf_is_awg(conf):
+            _hint, _why = "awg", "its config is in an AmneziaWG directory (" + os.path.dirname(conf) + ")"
+        else:
+            _hint = "wg"
+        ent["type_hint"], ent["type_why"] = _hint, _why   # abs conf path (if any) — the panel passes it back to /api/iface/onboard to adopt
+        # ALWAYS probe — a running server bound to `-iface <name>` is the authoritative signal, and the socket is
+        # not. Gating this on `userspace` missed a WDTT server on a kernel interface, one whose fork writes no UAPI
+        # socket, and one whose socket sits outside the node's mount namespace — and the interface was then offered
+        # as plain WireGuard, which is worse than missing it: adopting it that way fights the live WDTT server for
+        # the same device. The probe is a /proc scan, so it costs nothing when there is no such process.
+        with contextlib.suppress(Exception):
+            fp = wdtt_foreign_probe(name)
+            if fp:
+                ent["wdtt"] = {k: fp[k] for k in ("fork", "config_dir", "listen", "wg_port", "wg_addr",
+                                                  "max_passwords", "has_identity", "adoptable", "store")}
+                ent["wdtt_hint"] = True
+                ent["type_hint"] = "wdtt"
+                ent["type_why"] = "a WDTT server (" + (fp.get("fork") or "unknown fork") + ") is running on it"
+                if not ent["listen_port"]:                  # a stopped/kernel iface still knows its ports from argv
+                    with contextlib.suppress(Exception):
+                        ent["listen_port"] = int(str(fp.get("listen") or "").rsplit(":", 1)[-1] or 0)
+                if not ent["address"]:
+                    ent["address"] = fp.get("wg_addr") or ""
+        out.append(ent)
+    return out
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -3148,13 +3858,20 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "turn_capable": _turn_arch_ok(),   # false ONLY when this box's arch has no server-linux-<arch> build → panel greys out "Setup proxy" (never blocks on uncertainty)
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
+            # Informational, NOT failures: an adoption that succeeded but not from the source the operator named.
+            # cmd_errors is the wrong channel for it (it renders as a failure and is cleared on success).
+            "onboard_notes": dict(NODE_NOTES),
             "quarantined": op_quarantined(),   # ops in repeated-failure backoff — visible, not silently churning
             "node_ips": list_node_ips(_addrs), "node_ifaces": list_node_ifaces(_addrs),
             "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status(),
             "datapath": node_datapath_health(),          # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal)
             "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
             "transport_pub": transport_pub(),            # node re-seal target — the browser seals a restored key to this
-            "iface_key_sealed": dict(_IVK_SEALED)}       # {iface: {pub, eph, ct, mac}} interface keys sealed to the vault, pending upload
+            "iface_key_sealed": dict(_IVK_SEALED),       # {iface: {pub, eph, ct, mac}} interface keys sealed to the vault, pending upload
+            "wdtt_key_sealed": dict(_WDTT_SEALED)}        # {iface: {pub(server_pub), ...}} WDTT server identities sealed to the vault, pending upload
+    snap["wdtt"] = wdtt_snapshot()                    # WDTT instances: active + server pubkey + per-password device/traffic (read-back for the panel; no privkeys)
+    snap["iface_candidates"] = iface_candidates(node_cfg)   # unmanaged wg/awg interfaces on the box → panel adoption candidates (report-only, untouched)
+    snap["wdtt_dormant"] = wdtt_dormant()                   # WDTT installs on disk with nothing running (no iface to be a candidate)
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     snap["inet"] = sample_inet(node_cfg, now)   # measured internet up/down (B/s); cached, refreshed off the 5s path
@@ -3421,6 +4138,55 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
     return res
 
 
+def _reconstruct_conf(iface, cmd):
+    """Rebuild an interface's .conf from the LIVE device and return its path ('' if that isn't possible).
+
+    A docker node mounts its own dir over /etc/amnezia/amneziawg, so a pre-existing HOST interface's .conf is
+    invisible in here and the candidate is reported with conf="" — adoption then failed for every wg/awg device on
+    the box. `wg/awg showconf` reads the running device over netlink, which works fine from the container (host
+    networking) and yields the server key plus every peer — exactly what adoption promises to keep, and fresher
+    than any file. showconf omits the interface ADDRESS (it is not kernel state the tool reports), so that comes
+    from `ip addr`.
+
+    Written into the node's own persisted conf dir, never the host's: we are adopting the interface, not editing
+    somebody else's file, and on docker that dir is the bind-mount that survives a recreate."""
+    dst_dir = _awg_conf_dirs()[0] if cmd == ["awg"] else (AWG_CONF_DIRS[0] if NODE_KIND == "docker" else WG_CONF_DIRS[0])
+    with contextlib.suppress(Exception):
+        r = run(cmd + ["showconf", iface])
+        body = (r.stdout or "").strip()
+        if not body or "[Interface]" not in body:
+            return ""
+        addr = ""
+        with contextlib.suppress(Exception):
+            for ln in (run(["ip", "-4", "-o", "addr", "show", iface]).stdout or "").splitlines():
+                p = ln.split()
+                if len(p) >= 4 and p[2] == "inet":
+                    addr = p[3]; break
+        if addr and "Address" not in body.split("[Peer]")[0]:
+            body = body.replace("[Interface]", "[Interface]\nAddress = " + addr, 1)
+        # MTU is a wg-quick directive, so showconf omits it — but it IS on the live link, and dropping it
+        # silently re-created the interface with a different MTU than the one that was serving. (DNS, Table and
+        # the PostUp/PostDown hooks live ONLY in the file; when that file is unreadable they are genuinely lost,
+        # which is what the caller warns about rather than papering over.)
+        mtu = ""
+        with contextlib.suppress(Exception):
+            _lk = (run(["ip", "-o", "link", "show", iface]).stdout or "")
+            _m = re.search(r"\bmtu (\d+)\b", _lk)
+            if _m:
+                mtu = _m.group(1)
+        if mtu and "MTU" not in body.split("[Peer]")[0]:
+            body = body.replace("[Interface]", "[Interface]\nMTU = " + mtu, 1)
+        os.makedirs(dst_dir, exist_ok=True)
+        path = os.path.join(dst_dir, iface + ".conf")
+        if os.path.exists(path):          # never clobber a conf we already manage
+            return path
+        with open(path, "w") as f:
+            f.write("#swg:onboarded\n" + body + "\n")
+        os.chmod(path, 0o600)
+        return path
+    return ""
+
+
 def onboard_ifaces(node_cfg, onboard):
     """Add panel-requested interfaces to this node's managed set (config.json) when they exist
     locally — for a wg/awg interface the panel didn't auto-detect. Once added, build_snapshot
@@ -3436,8 +4202,22 @@ def onboard_ifaces(node_cfg, onboard):
         cmd = want.get("cmd") or ["awg"]
         conf = want.get("conf") or ""
         try:
+            _asked = conf
             if not conf or not os.path.exists(conf):
-                res["errors"].append(f"{iface}: conf not found ({conf})"); continue
+                # No readable .conf (a docker node cannot see the host's) — rebuild it from the live device.
+                conf = _reconstruct_conf(iface, cmd if cmd != ["auto"] else ["awg"]) or \
+                       (_reconstruct_conf(iface, ["wg"]) if cmd == ["auto"] else "")
+                if not conf:
+                    res["errors"].append(f"{iface}: no config on disk and the live interface couldn't be read"); continue
+                # Which source won is not a detail: adopting from the device keeps the keys, peers, ports and
+                # AWG params, but any DNS / Table / PostUp the operator had in that file is NOT on the device
+                # and does not survive. Saying so beats a silent substitution — the operator supplied a path
+                # and is entitled to know it was not the one used.
+                if _asked:
+                    res.setdefault("notes", []).append(
+                        f"{iface}: couldn't read {_asked} — adopted from the live interface instead "
+                        f"(keys, peers and ports kept; any DNS/Table/PostUp lines in that file are not)")
+                    print(f"onboard: {iface}: {_asked} unreadable — rebuilt from the live device", flush=True)
             if cmd == ["auto"]:                     # "Existing" gave no protocol — detect it from the conf
                 info = parse_interface_section(open(conf).read())
                 cmd = ["awg"] if any(k in info for k in AWG_KEYS) else ["wg"]
@@ -3896,6 +4676,8 @@ NODE_PROGRESS = {} # request key (iface name / turn service) -> transient "what'
                    # (e.g. a slow GitHub download retrying) → cmd_progress on the snapshot → yellow card note.
 NODE_ERRORS = {}   # request key (iface name / turn service / .service path) -> last apply error, reported
                    # in the snapshot ("cmd_errors") so the panel can show WHY a host->node command failed
+NODE_NOTES = {}    # iface -> one-line note about HOW it was adopted (succeeded, but not from the named source);
+                   # reported as "onboard_notes" and written to the activity log once by the panel
 
 def host_sh(cmd, timeout=90):
     """Run a shell command on the HOST. Bare-metal: directly. Docker: via a one-shot privileged
@@ -4854,6 +5636,1191 @@ def apply_turn(turn, turn_onboard):
     return res
 
 
+# ───────── WDTT (amurcanov/proxy-turn-vk-android): self-contained key-owning VPN as a node service ─────────
+# Unlike the -connect turn forks, a WDTT instance OWNS its own userspace-WG interface (built-in). So the panel
+# manages it declaratively (like desired_ifaces, NOT request/ack): each sync ships the desired WDTT instance set
+# incl. the panel-owned generated-password set; the node installs missing instances, writes a panel-owned
+# desired.json + SIGHUPs (WDTT reconciles it with no restart / no tunnel drop — see wdtt/README.md), and removes
+# instances no longer desired. WDTT stays the sole writer of its runtime passwords.json (device bindings +
+# traffic), which the node reads back into the snapshot. Runs with -no-nat; the node owns the wdtt-subnet
+# MASQUERADE via reconcile_egress. Bare-metal only (a container can't reach the userspace-wg UAPI). The unit is
+# right-sized for a WG server (CAP_NET_ADMIN + /dev/net/tun), NOT the tight turn-proxy sandbox.
+# On docker /opt/... is the container's EPHEMERAL layer — a recreate would lose wg-keys.dat (the server identity) →
+# every GETCONF'd client breaks. Root WDTT state under the PERSISTED node volume (/var/lib/swg-noded → ./data/node)
+# so identity + the install record survive a container recreate, exactly like bare-metal's on-disk /opt.
+WDTT_RECORD = os.environ.get("SWG_WDTT_RECORD") or ("/var/lib/swg-noded/wdtt.json" if NODE_KIND == "docker" else "/etc/swg-agent/wdtt.json")
+WDTT_ROOT = "/var/lib/swg-noded/wdtt" if NODE_KIND == "docker" else "/opt/swg-wdtt"   # per-instance: <root>/<iface>/{server, wdtt.env, desired.json, passwords.json, wg-keys.dat}
+WDTT_BIN_DIR = WDTT_ROOT + "/.bin"               # per-fork/arch binary slot; our patched build
+WDTT_OWNER = "amurcanov/proxy-turn-vk-android"   # default fork's panel-mirror key
+# WDTT fork family: fork id -> panel-mirror owner key. The node pulls each fork's binary from the panel
+# mirror keyed on this owner + the "wdtt" tag; the panel maps that to our release (WDTT_BUILDS).
+WDTT_FORK_OWNER = {"amurcanov": "amurcanov/proxy-turn-vk-android", "ildarmaga": "ildarmaga/wdtt",
+                   "wdttplus": "Ivan4537/WDTT-Plus", "xxcipherx": "XXcipherX/proxy-turn-vk-android"}
+def _wdtt_fork(inst):
+    f = (inst.get("fork") or "amurcanov").strip()
+    return f if f in WDTT_FORK_OWNER else "amurcanov"   # unknown → default (also blocks path injection via the fork string)
+# An ADOPTED server keeps the name it already had — we don't get to choose it. The name is used as a unit suffix
+# and a directory component, so "safe as a path component" is the actual requirement. Keeping the narrow wdtt<N>
+# rule here refused a perfectly good adoption AFTER the seed had already stopped the foreign server.
+_WDTT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$")
+_WDTT_CIDR_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
+
+def _wdtt_svc(iface): return "swg-wdtt-" + iface
+def _wdtt_dir(iface): return WDTT_ROOT + "/" + iface
+def _wdtt_unit_path(iface): return TURN_UNIT_DIR + "/" + _wdtt_svc(iface) + ".service"
+def _wdtt_bin_shared(fork): return WDTT_BIN_DIR + "/" + fork + "/" + _turn_arch() + "/wdtt-server"
+def _wdtt_keyfile(iface): return _wdtt_dir(iface) + "/wg-keys.dat"
+
+_WDTT_PW_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"   # WDTT's own unambiguous alphabet
+def _gen_wdtt_password():
+    """The owner/bootstrap -password. NODE-OWNED (the panel never holds it): minted here on first install,
+    persisted in the node record + wdtt.env, and sealed to the operator vault so it survives a full wipe."""
+    return "".join(secrets.choice(_WDTT_PW_CHARS) for _ in range(16))
+
+def _wdtt_load():
+    try:
+        with open(WDTT_RECORD) as f:
+            d = json.load(f)
+        w = d.get("wdtt") if isinstance(d, dict) else None
+        return {i["iface"]: i for i in (w or []) if isinstance(i, dict) and i.get("iface")}
+    except Exception:
+        return {}
+
+def _wdtt_save(instances):
+    with contextlib.suppress(Exception):
+        os.makedirs(os.path.dirname(WDTT_RECORD), exist_ok=True)
+        tmp = WDTT_RECORD + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"wdtt": list(instances.values())}, f)
+        os.replace(tmp, WDTT_RECORD)
+    return os.path.isfile(WDTT_RECORD)   # the caller reports a failed write: adopt_failed / await_restore /
+                                         # panel_managed all live in this file, and losing it silently reverts
+                                         # an acknowledged instance to "never acknowledged"
+
+def _wdtt_subnet(cidr):
+    """10.66.79.1/24 → 10.66.79.0/24 (the -s match for the egress MASQUERADE)."""
+    try:
+        return str(ipaddress.ip_network(cidr, strict=False))
+    except Exception:
+        return ""
+
+def _wdtt_valid(inst):
+    """Defence-in-depth: refuse control chars (interpolated into a root heredoc) + basic shape. The panel
+    validates too — this is the belt on the node against a compromised/MITM panel."""
+    if not _WDTT_NAME_RE.match(inst.get("iface") or ""):
+        return False
+    if not _WDTT_CIDR_RE.match(inst.get("wg_addr") or ""):
+        return False
+    if ":" not in (inst.get("listen") or ""):
+        return False
+    strs = [inst.get("iface"), inst.get("wg_addr"), inst.get("listen"), str(inst.get("wg_port") or ""),
+            inst.get("password") or "", inst.get("params") or ""]
+    for pw, e in (inst.get("passwords") or {}).items():
+        strs.append(pw)
+        if isinstance(e, dict):
+            strs += [e.get("vk_hash") or "", e.get("ports") or ""]
+    return _turn_input_safe(*strs)
+
+def _wdtt_desired_body(passwords):
+    """The panel-owned desired.json body — only the four panel-owned fields per password (never runtime state)."""
+    out = {}
+    for pw, e in (passwords or {}).items():
+        e = e or {}
+        out[pw] = {"expires_at": int(e.get("expires_at") or 0), "vk_hash": str(e.get("vk_hash") or ""),
+                   "ports": str(e.get("ports") or ""), "is_deactivated": bool(e.get("is_deactivated"))}
+    return json.dumps({"passwords": out})
+
+def _wdtt_serve_adopted(inst):
+    """Union the users recovered from a taken-over server into the set this instance SERVES, for as long as the
+    hand-off to the panel is open. Without it the take-over starts our server with only the roster's pre-existing
+    peers, so every client the foreign server already had is refused ("wrong connection password") until the
+    import lands a sync or two later — a visible outage in the one flow whose whole promise is that existing
+    clients keep working. Union, never replace: a password the panel already sends wins, and the extra entries
+    evaporate the moment the hand-off closes."""
+    au = inst.get("adopt_users") or {}
+    if not au:
+        return
+    dtls = (str(inst.get("listen") or "").rsplit(":", 1)[-1]) or "56000"
+    ports = dtls + "," + str(inst.get("wg_port") or 56001) + ",9000"   # same shape the panel composes
+    pwds = dict(inst.get("passwords") or {})
+    for pw, m in au.items():
+        if pw in pwds:
+            continue
+        m = m if isinstance(m, dict) else {}
+        pwds[pw] = {"expires_at": int(m.get("expires_at") or 0), "vk_hash": str(m.get("vk_hash") or ""),
+                    "ports": ports, "is_deactivated": bool(m.get("is_deactivated"))}
+    inst["passwords"] = pwds
+
+
+def _wdtt_env_text(inst):
+    cfgdir = _wdtt_dir(inst["iface"])
+    return ("SWG_IFACE=%s\nSWG_WGADDR=%s\nSWG_LISTEN=%s\nSWG_WGPORT=%s\nSWG_CFGDIR=%s\nSWG_DESIRED=%s\n"
+            "SWG_PASSWORD=%s\nSWG_MAXPW=%s\nSWG_PARAMS=%s\n" % (
+                inst["iface"], inst["wg_addr"], inst["listen"], inst.get("wg_port") or 56001, cfgdir,
+                cfgdir + "/desired.json", inst.get("password") or "",
+                inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or ""),
+                (inst.get("params") or "").strip()))   # operator extra ExecStart flags (systemd splits on whitespace → argv, never a shell)
+
+def _wdtt_unit_text(iface, binp, cfgdir, fork):
+    # Right-sized for a WireGuard server (validated live): NET_ADMIN + /dev/net/tun, config-dir the only
+    # writable path. NOT the turn sandbox (CAP_NET_BIND_SERVICE-only would block TUN creation).
+    # Per-fork tail: both forks share -config-dir/-desired/-no-nat/-password (unified desired.json+SIGHUP
+    # contract). ildarmaga uses -max-users (not -max-passwords), -fixed-config (device-agnostic, wg parity),
+    # and a per-instance localhost admin port (reuses SWG_WGPORT — TCP:port ≠ the WG UDP:port).
+    if fork == "ildarmaga":
+        # The current ildarmaga build registers NO -no-panel flag (the panel is gated internally + its DB is already
+        # redirected to the config-dir, so nothing writes /etc/wdtt); passing -no-panel crashes it with
+        # "flag provided but not defined". It DOES run a localhost admin endpoint (default 127.0.0.1:2861), so give
+        # each instance its own port (reuse the WG port number — TCP ≠ the WG UDP socket) to avoid a multi-instance clash.
+        forkflags = " -password ${SWG_PASSWORD} -max-users ${SWG_MAXPW} -fixed-config -admin-addr 127.0.0.1:${SWG_WGPORT}"
+    elif fork == "wdttplus":
+        # wdttplus has an in-app admin socket + Telegram bot (unused under -desired) → -no-panel, like ildarmaga.
+        forkflags = " -password ${SWG_PASSWORD} -max-passwords ${SWG_MAXPW} -fixed-config -no-panel"
+    else:
+        forkflags = " -password ${SWG_PASSWORD} -max-passwords ${SWG_MAXPW} -fixed-config"
+    return ("[Unit]\nDescription=swg-wdtt (" + WDTT_FORK_OWNER.get(fork, WDTT_OWNER) + ") — " + iface + "\n"
+            "After=network-online.target\nWants=network-online.target\n\n"
+            "[Service]\nType=simple\nEnvironmentFile=-" + cfgdir + "/wdtt.env\n"
+            "ExecStart=" + binp + " -iface ${SWG_IFACE} -wg-addr ${SWG_WGADDR} -listen ${SWG_LISTEN}"
+            " -wg-port ${SWG_WGPORT} -config-dir ${SWG_CFGDIR} -desired ${SWG_DESIRED} -no-nat"
+            # Operator extra flags. MUST be $SWG_PARAMS, never ${SWG_PARAMS}: systemd treats the braced form as a
+            # SINGLE argument (no word-splitting), so an empty value passes one EMPTY argument — the WDTT server
+            # then reports "неожиданные аргументы" (unexpected positional) and exits 1, crash-looping forever on
+            # the default no-extra-flags case. The unbraced form splits on whitespace and empty contributes nothing
+            # (this is also what the turn-proxy units use).
+            + forkflags + " $SWG_PARAMS\n"
+            "Restart=on-failure\nRestartSec=3\n"
+            "NoNewPrivileges=yes\nAmbientCapabilities=CAP_NET_ADMIN\nCapabilityBoundingSet=CAP_NET_ADMIN\n"
+            "DeviceAllow=/dev/net/tun rw\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths=" + cfgdir + "\n"
+            "ProtectControlGroups=yes\nProtectKernelModules=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n"
+            "SystemCallFilter=@system-service\nSystemCallErrorNumber=EPERM\n\n"
+            "[Install]\nWantedBy=multi-user.target\n")
+
+# ── Docker run-model ─────────────────────────────────────────────────────────────────────────────────────────
+# A container has no systemd, so on a docker node swg-noded runs each WDTT server as a SUPERVISED CHILD PROCESS in
+# THIS container. With host networking the server's interface lands in the right netns automatically — exactly like
+# the node's own userspace amneziawg-go. reconcile_wdtt relaunches a died server on its next pass (the equivalent of
+# systemd Restart=on-failure); SIGHUP reloads desired.json live; SIGTERM runs the server's clean teardown. The
+# config-dir (binary symlink + desired.json + wg-keys.dat) lives where noded runs, so nothing goes through host_sh.
+_WDTT_PROCS = {}    # iface -> subprocess.Popen (this noded lifetime)
+
+def _wdtt_pidfile(iface): return _wdtt_dir(iface) + "/server.pid"
+
+def _wdtt_argv(inst, binp):
+    """The exact server invocation (mirror of _wdtt_unit_text's ExecStart) as an argv list, for a direct Popen."""
+    iface = inst["iface"]; cfgdir = _wdtt_dir(iface); fork = _wdtt_fork(inst)
+    a = [binp, "-iface", iface, "-wg-addr", inst["wg_addr"], "-listen", inst["listen"],
+         "-wg-port", str(inst.get("wg_port") or 56001), "-config-dir", cfgdir,
+         "-desired", cfgdir + "/desired.json", "-no-nat", "-password", inst.get("password") or ""]
+    # Password-pool size. Prefer what is configured (adoption carries the foreign server's own value across, so
+    # its store stays consistent); otherwise size it to the tunnel subnet, which is the real ceiling — every
+    # client needs an address as well as a slot, so a flat 200 under-serves a /23 and over-promises on a /25.
+    maxpw = str(inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or ""))
+    if fork == "ildarmaga":
+        a += ["-max-users", maxpw, "-fixed-config", "-admin-addr", "127.0.0.1:" + str(inst.get("wg_port") or 56001)]
+    elif fork == "wdttplus":
+        a += ["-max-passwords", maxpw, "-fixed-config", "-no-panel"]
+    else:
+        a += ["-max-passwords", maxpw, "-fixed-config"]
+    params = (inst.get("params") or "").strip()
+    if params:
+        with contextlib.suppress(Exception):
+            a += shlex.split(params)
+    return a
+
+def _wdtt_docker_pid(iface):
+    """The live server pid for iface (tracked Popen, else the pidfile verified against /proc cmdline), or None."""
+    p = _WDTT_PROCS.get(iface)
+    if p is not None and p.poll() is None:
+        return p.pid
+    with contextlib.suppress(Exception):
+        with open(_wdtt_pidfile(iface)) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            if ("-iface\x00" + iface + "\x00").encode() in f.read():
+                return pid
+    return None
+
+def _wdtt_docker_alive(iface): return _wdtt_docker_pid(iface) is not None
+
+def _wdtt_write_cfgdir(inst, binshared, binp, cfgdir):
+    """Lay down the config-dir the server reads — binary symlink + wdtt.env + desired.json + optional vault-restore
+    key — with pure os calls. Works for BOTH run-models: the docker subprocess (in-container) and bare-metal (where
+    swg-noded runs as root, so /opt/swg-wdtt is writable). Writing NATIVELY, not through a host_sh heredoc, means a
+    partial failure RAISES before the caller writes/enables the unit — so there's never a half-installed instance to
+    wedge the reconcile. (host_sh is unusable for docker anyway: it nsenters the HOST, but these files + the child
+    process must live in the node container.)"""
+    os.makedirs(cfgdir, exist_ok=True); os.makedirs(os.path.dirname(binshared), exist_ok=True)
+    with contextlib.suppress(Exception): os.chmod(binshared, 0o755)
+    with contextlib.suppress(Exception):
+        if os.path.islink(binp) or os.path.exists(binp): os.remove(binp)
+        os.symlink(binshared, binp)
+    with open(cfgdir + "/wdtt.env", "w") as f: f.write(_wdtt_env_text(inst))
+    with open(cfgdir + "/desired.json", "w") as f: f.write(_wdtt_desired_body(inst.get("passwords")) + "\n")
+    restore_b64 = (inst.get("_restore_wg_keys") or "").strip()
+    if restore_b64:
+        # NOT best-effort. A swallowed failure here (bad base64, ENOSPC, read-only mount) left no wg-keys.dat and
+        # the server then minted a fresh identity on start — the restore reported success while every client that
+        # had a config broke. Let it raise: the caller turns an exception into an error string, and validate=True
+        # means a corrupted blob raises instead of decoding to garbage the server would reject the same way.
+        _kf = _wdtt_keyfile(inst["iface"])
+        with open(_kf, "wb") as f: f.write(base64.b64decode(restore_b64, validate=True))
+        os.chmod(_kf, 0o600)
+        if not _wdtt_identity_ok(_kf):
+            raise ValueError("restored identity is not a usable WDTT key file — refusing to start with a fresh key")
+
+def _wdtt_docker_start(inst):
+    """(Re)launch the WDTT server for this instance as a supervised child. '' on success (alive after a beat) else error."""
+    iface = inst["iface"]; cfgdir = _wdtt_dir(iface); binp = cfgdir + "/server"
+    _wdtt_docker_stop(iface)
+    if not os.path.exists(binp):
+        return "WDTT binary missing at " + binp
+    try:
+        lf = open(cfgdir + "/server.log", "ab", buffering=0)
+        p = subprocess.Popen(_wdtt_argv(inst, binp), stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, close_fds=True)
+    except Exception as e:
+        return ("spawn failed: " + str(e))[:160]
+    _WDTT_PROCS[iface] = p
+    with contextlib.suppress(Exception):
+        with open(_wdtt_pidfile(iface), "w") as f: f.write(str(p.pid))
+    time.sleep(1.5)
+    if p.poll() is not None:                       # died immediately → surface the log tail
+        tail = ""
+        with contextlib.suppress(Exception):
+            with open(cfgdir + "/server.log", "rb") as f: tail = f.read()[-240:].decode("utf-8", "replace").replace("\n", " ")
+        return ("wdtt exited rc=%s: %s" % (p.returncode, tail.strip()))[:180]
+    return ""
+
+def _wdtt_docker_stop(iface):
+    """SIGTERM (clean teardown removes the interface + rules), SIGKILL if it lingers; reap the child; drop the pidfile."""
+    p = _WDTT_PROCS.pop(iface, None)
+    pid = p.pid if p is not None else _wdtt_docker_pid(iface)
+    if pid:
+        with contextlib.suppress(Exception): os.kill(pid, signal.SIGTERM)
+        for _ in range(20):
+            try:
+                os.kill(pid, 0); time.sleep(0.15)
+            except Exception:
+                break
+        else:
+            # for/else — SIGKILL only if the loop never broke, i.e. it is STILL alive. Firing it unconditionally
+            # after a clean exit is a real risk here: a pid taken from the pidfile (after a noded restart) is not
+            # our child, so it is reaped the instant it exits and the number can already belong to something else.
+            with contextlib.suppress(Exception): os.kill(pid, signal.SIGKILL)
+    if p is not None:
+        with contextlib.suppress(Exception): p.wait(timeout=2)
+    with contextlib.suppress(Exception): os.remove(_wdtt_pidfile(iface))
+
+def _wdtt_docker_sighup(iface):
+    pid = _wdtt_docker_pid(iface)
+    if pid:
+        with contextlib.suppress(Exception): os.kill(pid, signal.SIGHUP)
+        return True
+    return False
+
+def _wdtt_present(iface):
+    """Is this instance set up on THIS node? systemd: its unit file exists. docker: its binary symlink is laid down."""
+    if NODE_KIND == "docker":
+        return os.path.exists(_wdtt_dir(iface) + "/server")
+    # bare-metal: the unit file AND a WORKING binary symlink must BOTH be laid down. A unit whose `server`
+    # symlink is missing or dangling (a partial install, or a docker→bare convert that carried only identity)
+    # is NOT "present" — treating it as installed would wedge the reconcile into the update branch forever,
+    # never re-laying the symlink, leaving the unit in a 203/EXEC crash-loop. os.path.exists follows the link,
+    # so a dangling one (binary not fetched yet) also re-installs.
+    return os.path.exists(_wdtt_unit_path(iface)) and os.path.exists(_wdtt_dir(iface) + "/server")
+
+def _hex_to_b64(h):
+    h = (h or "").strip()
+    with contextlib.suppress(Exception):
+        if len(h) == 64:
+            return base64.b64encode(bytes.fromhex(h)).decode()
+    return ""
+
+def _wdtt_uapi(iface):
+    """(interface_private_key_hex, {peer_pubkey_b64: last_handshake_sec}) straight from the UAPI socket. The
+    container ships only `awg`, which can't read a plain wireguard-go socket — but the socket speaks the standard
+    protocol, so we ask it directly. Drives online-status on docker."""
+    priv = ""; hs = {}; cur = None
+    for line in _uapi_lines(iface):
+        if line.startswith("private_key="):
+            priv = line.split("=", 1)[1]
+        elif line.startswith("public_key="):
+            cur = _hex_to_b64(line.split("=", 1)[1])
+        elif line.startswith("last_handshake_time_sec=") and cur:
+            with contextlib.suppress(ValueError):
+                hs[cur] = int(line.split("=", 1)[1] or "0")
+    return priv, hs
+
+def _wdtt_server_pub(iface):
+    """The WDTT server's WG public key. Bare-metal: `wg show` over the host-netns interface. Docker: derive it from
+    the UAPI private key via `wg pubkey` (pure key math — works even though `awg show` can't read the socket)."""
+    if NODE_KIND == "docker":
+        priv, _ = _wdtt_uapi(iface)
+        pb = _hex_to_b64(priv)
+        if pb:
+            with contextlib.suppress(Exception):
+                return (run(_wgcmd(["wg"]) + ["pubkey"], input_text=pb + "\n").stdout or "").strip()   # _wgcmd(["wg"]) → ["awg"] on docker
+        return ""
+    return (host_sh("wg show " + shlex.quote(iface) + " public-key 2>/dev/null").stdout or "").strip()
+
+def _wdtt_panel_fetch(fork, dest, want_sha, tag="wdtt"):
+    """Fetch a fork's patched WDTT binary from the panel mirror (reuses the turn-binary endpoint keyed by the fork's
+    owner + a version tag; the panel maps it to our release). `tag` is the author version we published (or "wdtt" =
+    the current build, back-compat). Returns True on a verified write."""
+    return _turn_panel_fetch(WDTT_FORK_OWNER.get(fork, WDTT_OWNER), tag or "wdtt", _turn_arch(), dest, want_sha)
+
+def _wdtt_ver_path(fork):   # the installed build version, alongside the shared per-fork binary
+    return os.path.dirname(_wdtt_bin_shared(fork)) + "/version.txt"
+def _wdtt_installed_ver(fork):
+    try:
+        with open(_wdtt_ver_path(fork)) as f:
+            return f.read().strip()[:40]
+    except Exception:
+        return ""
+def _wdtt_write_ver(fork, ver):
+    with contextlib.suppress(Exception):
+        p = _wdtt_ver_path(fork); os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            f.write((ver or "").strip())
+        os.replace(tmp, p)
+
+def _wdtt_fork_ifaces(fork, want):   # every desired iface running THIS fork (a version swap restarts them all — shared binary)
+    return [i for i, inst in (want or {}).items() if _wdtt_fork(inst) == fork]
+
+def _wdtt_update_binary(inst, ver, ifaces):
+    """Swap the shared per-fork binary to a different published VERSION (same fork → same password-store format, so
+    it's safe, unlike a fork swap). Re-fetch from the mirror (atomic replace — the running process keeps the old
+    inode), stamp the version file, then restart every instance of the fork so they exec the new inode. '' on
+    success else an error string."""
+    fork = _wdtt_fork(inst); binshared = _wdtt_bin_shared(fork)
+    if not _wdtt_panel_fetch(fork, binshared, (inst.get("sha256") or "").strip(), tag=ver) or not os.path.exists(binshared):
+        return "WDTT binary unavailable for " + fork + " " + ver + " (panel mirror)"
+    _wdtt_write_ver(fork, ver)
+    if NODE_KIND == "docker":                                  # container: restart each of the fork's supervised procs so they exec the new binary
+        with contextlib.suppress(Exception): os.chmod(binshared, 0o755)
+        insts = _wdtt_load(); err = ""
+        for i in (ifaces or [inst["iface"]]):
+            it = dict(insts.get(i) or {}); it["iface"] = i
+            if it.get("password") and not it.get("stopped"):
+                e = _wdtt_docker_start(it)
+                if e: err = i + ": " + e
+        return err
+    host_sh("chmod 755 " + shlex.quote(binshared))
+    for i in (ifaces or [inst["iface"]]):
+        host_sh("systemctl restart " + shlex.quote(_wdtt_svc(i)) + " >/dev/null 2>&1")
+    return _wdtt_verify(_wdtt_svc(inst["iface"]))
+
+def _wdtt_verify(svc):
+    v = host_sh("sleep 1.5; systemctl is-active " + shlex.quote(svc) + " 2>/dev/null; "
+                "journalctl -u " + shlex.quote(svc) + " -n 6 --no-pager -o cat 2>/dev/null | "
+                "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")
+    lines = (v.stdout or "").strip().splitlines()
+    if lines and lines[0] == "active":
+        return ""
+    return "wdtt service didn't stay up: " + (lines[-1] if len(lines) > 1 else "check journal")[:150]
+
+def _wdtt_maxpw_for(wg_addr, cap=4000):
+    """Usable hosts in the tunnel subnet, as the password-pool default. Falls back to 200 when there's nothing
+    to read; capped so a wide prefix can't ask a server to preallocate an absurd pool."""
+    with contextlib.suppress(Exception):
+        pfx = int(str(wg_addr).split("/")[1])
+        if 0 < pfx <= 32:
+            return max(1, min(cap, (1 << (32 - pfx)) - 2))
+    return 200
+
+
+def _wdtt_stage_foreign(cfgdir):
+    """DOCKER only: copy a FOREIGN WDTT config-dir off the HOST into a container-local staging dir and return that
+    path ('' when there is nothing to stage, or on bare-metal where the dir is already reachable).
+
+    The adopt path validates and copy2's the identity with ordinary local file I/O. A foreign server's dir is on the
+    host, so inside the container those reads all failed and adoption refused with "no usable server identity" —
+    guarding keys that were sitting right there. Staging once here keeps every downstream check byte-identical
+    across both install methods instead of teaching each one to speak host_sh.
+
+    Read-only by construction: tar reads the original and nothing writes back, so an aborted adopt still leaves the
+    foreign server serving — the property the copy-first ordering exists to preserve."""
+    if NODE_KIND != "docker" or not cfgdir:
+        return ""
+    dst = "/tmp/swg-wdtt-adopt"
+    with contextlib.suppress(Exception):
+        shutil.rmtree(dst, ignore_errors=True)
+        os.makedirs(dst, mode=0o700, exist_ok=True)
+        # Only the files adoption actually consumes — never the whole directory, which can hold anything.
+        # panel.db-wal / -shm come too: a WAL-mode SQLite store is NOT one file. ildarmaga keeps its users in
+        # panel.db, and staging the base file alone captured a stale snapshot whose wdtt_users table had not been
+        # checkpointed yet — the adopted server started with an EMPTY user set and rejected every existing client.
+        b64 = (host_sh("tar -C %s -cf - wg-keys.dat passwords.json panel.db panel.db-wal panel.db-shm "
+                       "dtls-cert.pem dtls-key.pem 2>/dev/null | base64 -w0" % shlex.quote(cfgdir), timeout=60).stdout or "").strip()
+        if b64:
+            with tarfile.open(fileobj=io.BytesIO(base64.b64decode(b64))) as _t:
+                for _m in _t.getmembers():          # flatten + refuse anything that isn't a plain file we asked for
+                    if _m.isfile() and "/" not in _m.name and not _m.name.startswith("."):
+                        _f = _t.extractfile(_m)
+                        if _f:
+                            with open(os.path.join(dst, _m.name), "wb") as _o:
+                                _o.write(_f.read())
+                            os.chmod(os.path.join(dst, _m.name), 0o600)
+            if os.listdir(dst):
+                return dst
+    return ""
+
+
+def _wdtt_identity_ok(path):
+    """Does this look like a real wg-keys.dat? The forks write FOUR base64 keys (server + client pair), and a
+    server handed a file it can't parse silently GENERATES a fresh identity — which is precisely the outcome
+    adoption exists to prevent, arriving with no error anywhere. Checked before anything is copied or stopped."""
+    with contextlib.suppress(Exception):
+        lines = [l.strip() for l in open(path, "rb").read().decode("utf-8", "replace").splitlines() if l.strip()]
+        if len(lines) < 4:
+            return False
+        for l in lines[:4]:
+            if len(base64.b64decode(l + "=" * (-len(l) % 4), validate=False)) != 32:
+                return False
+        return True
+    return False
+
+
+def _wdtt_adopt_seed(inst):
+    """ADOPT a foreign (panel-unmanaged) WDTT server: SEEDED CREATE. We never reuse the foreign SERVICE (it's an
+    unpatched build we don't control) — we create one of OUR instances that REUSES its DATA, so every GETCONF'd
+    client keeps working: the server identity (wg-keys.dat → same pubkey), the password store (passwords.json /
+    panel.db), and the owner password (read LOCALLY from the running process — the panel never sees it).
+    Copy-FIRST, then stop the foreign process, so an abort leaves the original serving. Returns '' on success
+    (inst is mutated with the recovered password/params, ready for _wdtt_install) else an error string."""
+    iface = inst["iface"]
+    # The name arrives as a raw key from the panel reply and immediately becomes a directory path below, so it is
+    # checked FIRST — before makedirs/copy2 could be pointed somewhere like ../../root/.ssh. _wdtt_valid runs
+    # later and only on the install path, which several early returns skip.
+    if not _WDTT_NAME_RE.match(iface or ""):
+        return "refused: unsafe interface name"
+    probe = wdtt_foreign_probe(iface)
+    # A DORMANT install has no process and no interface — the operator supplied its config dir instead, and the
+    # runtime parameters (ports, subnet) with it. Everything below is the same seeded create; there is simply
+    # nothing to read from argv and nothing to stop.
+    dormant_src = (inst.pop("adopt_config_dir", "") or "").strip()
+    if not probe and not dormant_src:
+        return "no foreign WDTT server found for " + iface + " (already gone?)"
+    # The operator can point at the identity when we couldn't find it (a fork with an unusual layout, or a server
+    # started from somewhere we don't guess). Verify it HERE, before anything is stopped or copied: an unreadable
+    # or empty file is refused outright and the foreign server carries on serving, exactly as if we'd never tried.
+    idpath = (inst.pop("identity_path", "") or "").strip()
+    # DOCKER: everything below reads and copies the foreign config-dir with ordinary local file I/O, but a foreign
+    # server's dir lives on the HOST — so os.path.isfile() said no and adoption refused with "no usable server
+    # identity", protecting keys that were in fact right there. The scan (host-aware) said adoptable, the executor
+    # disagreed. Stage the dir into the container ONCE here, then every check and copy2 below works unchanged on
+    # both install methods. Read-only: the foreign original is never touched, so an abort still leaves it serving.
+    _stage = _wdtt_stage_foreign(os.path.dirname(idpath) if idpath else
+                                 (dormant_src or ((probe or {}).get("config_dir") or "")))
+    if _stage:
+        if idpath:
+            idpath = os.path.join(_stage, os.path.basename(idpath))
+        elif dormant_src:
+            dormant_src = _stage
+        else:
+            probe = dict(probe or {}); probe["config_dir"] = _stage
+    if idpath:
+        if not os.path.isfile(idpath):
+            return "refused: no key file at " + idpath + " — nothing was changed"
+        if not _wdtt_identity_ok(idpath):
+            return "refused: " + idpath + " doesn't look like a WDTT key file (four base64 keys) — nothing was changed"
+        try:
+            with open(idpath, "rb") as _f: _f.read(1)
+        except OSError as e:
+            return ("refused: can't read " + idpath + " (" + str(e) + ") — nothing was changed")[:200]
+    elif probe and not probe.get("has_identity"):
+        # (a DORMANT adopt has no probe at all — its identity is checked against `src` just below)
+        return "refused: the foreign server's identity (wg-keys.dat) can't be found — adopting would mint a new key and break every existing client"
+    src = os.path.dirname(idpath) if idpath else (dormant_src or probe["config_dir"])
+    if not _wdtt_identity_ok(os.path.join(src, "wg-keys.dat")):
+        return "refused: no usable server identity (wg-keys.dat) in " + src + " — adopting would mint a new key and break every client; nothing was changed"
+    # Everything that can refuse must refuse BEFORE the first write. These checks used to sit after the copy, so a
+    # refusal ("no build available yet" is the normal state on a node that hasn't pulled the fork) left wg-keys.dat
+    # in our config-dir with the foreign server still running — and the next pass then saw a "provisioned" instance,
+    # skipped the adopt branch entirely, and installed our unit on the same iface and ports as the live original.
+    if not _wdtt_valid(dict(inst, iface=iface)):
+        return "refused: bad/unsafe WDTT instance parameters — the foreign server was left running"
+    _want_fork = (inst.get("fork") or "").strip()
+    if _want_fork and _want_fork not in WDTT_FORK_OWNER:
+        return "refused: unknown WDTT fork '" + _want_fork + "' — the foreign server was left running"
+    _fk = _wdtt_fork(inst); _bs = _wdtt_bin_shared(_fk)
+    if not os.path.exists(_bs):
+        with contextlib.suppress(Exception):
+            _wdtt_panel_fetch(_fk, _bs, (inst.get("sha256") or "").strip(), tag=(inst.get("ver") or "").strip() or "wdtt")
+        if not os.path.exists(_bs):
+            return "refused: no " + _fk + " build available for this node yet — the foreign server was left running"
+    dst = _wdtt_dir(iface)
+    # 1) copy-first: identity + password store + DTLS material into OUR config-dir (the foreign one keeps serving)
+    try:
+        os.makedirs(dst, exist_ok=True)
+        if idpath and os.path.basename(idpath) != "wg-keys.dat":
+            shutil.copy2(idpath, os.path.join(dst, "wg-keys.dat"))
+            with contextlib.suppress(Exception): os.chmod(os.path.join(dst, "wg-keys.dat"), 0o600)
+        for fn in ("wg-keys.dat", "passwords.json", "panel.db", "dtls-cert.pem", "dtls-key.pem"):
+            s = os.path.join(src, fn)
+            if os.path.isfile(s) and os.path.abspath(s) != os.path.abspath(os.path.join(dst, fn)):
+                shutil.copy2(s, os.path.join(dst, fn))
+                with contextlib.suppress(Exception): os.chmod(os.path.join(dst, fn), 0o600)
+    except Exception as e:
+        return ("couldn't copy the foreign server's data: " + str(e))[:160]
+    if not os.path.isfile(_wdtt_keyfile(iface)):
+        return "refused: the server identity didn't copy across — not adopting (clients would break)"
+    # panel.db is SQLite in WAL MODE: it is not one file. Copying the base alone captured whatever had been
+    # checkpointed and silently dropped the rest — for ildarmaga that was the entire wdtt_users table, so the
+    # adopted server came up with an empty user set and rejected every existing client with "wrong password".
+    # Re-take it through SQLite (on a scratch copy, so the foreign original is never opened for writing) and the
+    # result is one consistent, checkpointed file.
+    _srcdb = os.path.join(src, "panel.db")
+    if os.path.isfile(_srcdb):
+        _stage = os.path.join(dst, ".dbstage")
+        try:
+            os.makedirs(_stage, exist_ok=True)
+            for _f in ("panel.db", "panel.db-wal", "panel.db-shm"):
+                _p = os.path.join(src, _f)
+                if os.path.isfile(_p):
+                    shutil.copy2(_p, os.path.join(_stage, _f))
+            import sqlite3
+            _s = sqlite3.connect(os.path.join(_stage, "panel.db"), timeout=10)   # writable COPY → the WAL replays
+            _d = sqlite3.connect(os.path.join(dst, "panel.db"))
+            try:
+                with _d:
+                    _s.backup(_d)
+            finally:
+                _s.close(); _d.close()
+            with contextlib.suppress(Exception): os.chmod(os.path.join(dst, "panel.db"), 0o600)
+        except Exception as e:
+            return ("couldn't capture the foreign server's user store: " + str(e))[:160]
+        finally:
+            shutil.rmtree(_stage, ignore_errors=True)
+    # The users themselves have to be handed UP to the panel: WDTT passwords are roster-owned (each one IS a
+    # peer), and _wdtt_reply overwrites whatever the node holds with the roster-derived set on the very next
+    # sync — so a node-local copy alone is erased seconds after the take-over. Capture them here, at the one
+    # moment they are known, and report them until the panel has them (wdtt_snapshot → panel import).
+    _found = _wdtt_adopted_users(dst)
+    if _found:
+        inst["adopt_users"] = _found
+        inst["adopt_users_at"] = int(time.time())
+    # 2) recover the owner password + transport params from the RUNNING process (node-local; never panel-side).
+    #    A dormant install has no process: its parameters came from the operator, and the owner password is minted
+    #    below like any fresh instance (there is no running server whose password we'd have to match).
+    if not probe:
+        return ""
+    # Same namespace rule as the stop below: on a docker node this pid lives on the HOST, so the local read
+    # returned nothing and the owner password was silently NOT carried over — the adopted server came up with a
+    # freshly minted one, which is exactly what this step exists to prevent. Reading it host-side keeps it
+    # node-local; the panel still never sees it.
+    flags = _wdtt_cmdline_flags(probe["pid"])
+    if not _wdtt_is_server(flags) and NODE_KIND == "docker":
+        flags = _wdtt_flags_host(probe["pid"])
+    pw = (flags.get("password") or "").strip()
+    if pw:
+        inst["password"] = pw                      # keep the SAME owner password → existing clients still authenticate
+    for k, fk in (("listen", "listen"), ("wg_addr", "wg-addr")):
+        if not (inst.get(k) or "").strip() and (flags.get(fk) or "").strip():
+            inst[k] = flags[fk].strip()
+    if not str(inst.get("wg_port") or "").strip() and str(flags.get("wg-port") or "").strip():
+        inst["wg_port"] = flags["wg-port"].strip()
+    # 3) stop the FOREIGN process — it holds the interface + ports our instance is about to bind
+    # Re-verify before signalling: the pid was read before a file copy and possibly a full binary download, so it
+    # could have exited and had its number recycled onto something unrelated — which we run as root.
+    # On a DOCKER node the foreign server runs on the HOST, and wdtt_foreign_probe found it through
+    # _wdtt_host_procs — so its pid belongs to the host's namespace, not ours. Reading /proc/<pid> locally
+    # therefore described a DIFFERENT process (usually none at all) and os.kill signalled our own namespace:
+    # the foreign server was never stopped, our instance could not bind its port or interface, and the card sat
+    # on "starting" for ever. Verify and signal through the same host helper that found it. Local first, so
+    # bare-metal and our own supervised children keep the cheap path and no privileged container is spawned.
+    # _wdtt_iface_of, NOT flags["iface"]: a genuinely foreign server has no -iface at all (the authors' builds
+    # hardcode it), so comparing the raw flag could never confirm one — the re-verify refused every real
+    # adoption, after the copy had already happened, and the next pass then saw a "provisioned" instance and
+    # started ours on the port the original still held.
+    # The fallback is decided on "did the LOCAL read describe a server at all", never on the interface name:
+    # a wrong-namespace read comes back empty, and _wdtt_iface_of() answers the DEFAULT name for empty flags —
+    # which for wdtt0 equals the name we are adopting, so an iface-based test silently accepted the empty read
+    # and never consulted the host.
+    _flags_now = _wdtt_cmdline_flags(probe["pid"]); _host_pid = False
+    if not _wdtt_is_server(_flags_now) and NODE_KIND == "docker":
+        _flags_now = _wdtt_flags_host(probe["pid"]); _host_pid = True
+    # _wdtt_is_server first: an exited pid reads back as empty flags, and _wdtt_iface_of would then hand us the
+    # DEFAULT interface name — confirming "yes, that's the server on wdtt0" about a process that is gone.
+    if not _wdtt_is_server(_flags_now) or _wdtt_iface_of(_flags_now) != iface:
+        return "the foreign server exited while we were preparing — nothing was changed, re-try the adoption"
+    # Stop the SERVICE if there is one. A foreign WDTT server is normally a systemd unit with Restart=on-failure,
+    # so killing only the process left its manager to bring it straight back: it then crash-looped against the
+    # port our instance had taken (NRestarts climbing, "address already in use") — and would have won the port
+    # outright the moment ours stopped, handing clients back to the server we just replaced.
+    _unit = _wdtt_unit_of_pid(probe["pid"], _host_pid)
+    if _unit and not _unit.startswith("swg-wdtt-"):        # never our own supervisor
+        host_sh("systemctl disable --now " + shlex.quote(_unit) + " >/dev/null 2>&1; :")
+    if _host_pid:
+        # TERM, wait up to ~4.5s, then KILL — the same escalation as the local branch, run host-side in one hop.
+        _p = int(probe["pid"])
+        host_sh("kill -TERM %d 2>/dev/null; i=0; while [ $i -lt 30 ] && kill -0 %d 2>/dev/null; do sleep 0.15; "
+                "i=$((i+1)); done; kill -0 %d 2>/dev/null && kill -KILL %d 2>/dev/null; :" % (_p, _p, _p, _p))
+    else:
+        with contextlib.suppress(Exception):
+            os.kill(probe["pid"], signal.SIGTERM)
+            for _ in range(30):
+                try:
+                    os.kill(probe["pid"], 0); time.sleep(0.15)
+                except Exception:
+                    break
+            else:
+                os.kill(probe["pid"], signal.SIGKILL)
+    with contextlib.suppress(Exception):           # the interface may linger after the process dies
+        run(["ip", "link", "delete", "dev", iface])
+    if _host_pid:                                  # a bridge-mode node does not share the host netns
+        host_sh("ip link delete dev %s 2>/dev/null; :" % shlex.quote(iface))
+    # the walk that found it is cached (45s) and now describes a process we just killed — the very next
+    # snapshot would still report the foreign server as running, and adoption as unfinished.
+    _WDTT_HOSTPROC["at"] = 0.0
+    return ""
+
+def _wdtt_install(inst):
+    """Install a WDTT instance: place the binary (panel mirror, shared per-arch), lay down the config-dir (binary
+    symlink + wdtt.env + desired.json + optional vault-restore key), then start it — bare-metal via a systemd unit,
+    docker via a supervised child process. '' on success else error. The config-dir is written natively in both
+    cases (_wdtt_write_cfgdir), so a partial failure raises BEFORE the unit is written/started — no half-installed
+    instance can wedge the reconcile into treating a broken unit as 'present'."""
+    if not _wdtt_valid(inst):
+        return "refused: bad/unsafe WDTT instance parameters"
+    if not _turn_arch_ok():
+        return "no WDTT build for this architecture (" + os.uname().machine + ")"
+    iface = inst["iface"]; cfgdir = _wdtt_dir(iface); svc = _wdtt_svc(iface)
+    fork = _wdtt_fork(inst)
+    binshared = _wdtt_bin_shared(fork); binp = cfgdir + "/server"
+    _want_ver = (inst.get("ver") or "").strip()
+    if not os.path.exists(binshared):
+        _wdtt_panel_fetch(fork, binshared, (inst.get("sha256") or "").strip(), tag=_want_ver or "wdtt")
+        if not os.path.exists(binshared):
+            return "WDTT binary unavailable (panel mirror has no build yet)"
+        _wdtt_write_ver(fork, _want_ver)                       # stamp the build version for the version board + rollback
+    # Config-dir (symlink + env + desired.json + optional vault-restore key) — native os writes, both run-models.
+    # A vault restore lays down the ORIGINAL server keypair BEFORE first start so the instance comes back with its
+    # blessed identity (WDTT reuses an existing wg-keys.dat rather than minting) — GETCONF'd clients keep working.
+    try:
+        _wdtt_write_cfgdir(inst, binshared, binp, cfgdir)
+    except Exception as e:
+        return ("config-dir write failed: " + str(e))[:160]
+    if NODE_KIND == "docker":                                  # container: no systemd → supervised child process
+        return _wdtt_docker_start(inst)
+    # bare-metal: write the systemd unit natively, then the one step that genuinely needs systemd (reload + enable).
+    try:
+        with open(_wdtt_unit_path(iface), "w") as f: f.write(_wdtt_unit_text(iface, binp, cfgdir, fork))
+    except Exception as e:
+        return ("unit write failed: " + str(e))[:160]
+    w = host_sh("systemctl daemon-reload && systemctl enable --now " + shlex.quote(svc) + " >/dev/null 2>&1", timeout=120)
+    if w.returncode != 0:
+        return (w.stderr or w.stdout or "install failed").strip()[:160]
+    return _wdtt_verify(svc)
+
+def _wdtt_params_changed(prev, inst):
+    """True if a TRANSPORT param changed on a RUNNING instance — listen (endpoint:dtls-port) / internal wg-port /
+    max-passwords. These live in the unit ExecStart + wdtt.env, so applying them needs a rewrite + restart
+    (passwords/stopped are handled live, separately). endpoint is folded into `listen`. FORK is deliberately NOT
+    here: it's a create-time choice (read-only in the edit UI) — hot-swapping the binary would also migrate the
+    password store between the two forks' formats (passwords.json ↔ panel.db), which we don't risk on a live
+    server. So a same-fork config change only ever restarts the SAME binary."""
+    return ((prev.get("listen") or "") != (inst.get("listen") or "")
+            or (prev.get("wg_addr") or "") != (inst.get("wg_addr") or "")   # subnet change → rewrite unit + restart (server reassigns client IPs on reconnect)
+            or str(prev.get("wg_port") or 56001) != str(inst.get("wg_port") or 56001)
+            or (str(prev.get("max_passwords") or _wdtt_maxpw_for(prev.get("wg_addr") or ""))
+                != str(inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or "")))
+            or (prev.get("params") or "").strip() != (inst.get("params") or "").strip())   # extra ExecStart flags → rewrite unit + restart
+
+def _wdtt_reconfigure(inst):
+    """Apply a transport-param change (listen / wg-port / max) to a RUNNING WDTT instance: rewrite wdtt.env + the
+    unit and restart the SAME fork's binary, verify. PRESERVES wg-keys.dat (server identity → pubkey stable, no
+    GETCONF break) and desired.json (passwords). '' on success else an error. Clients re-import only if
+    listen/wg-port changed (those are in the wdtt:// link). The binary fetch-if-missing is a same-fork self-heal,
+    never a fork swap (see _wdtt_params_changed)."""
+    if not _wdtt_valid(inst):
+        return "refused: bad/unsafe WDTT instance parameters"
+    iface = inst["iface"]; cfgdir = _wdtt_dir(iface); svc = _wdtt_svc(iface)
+    fork = _wdtt_fork(inst)
+    binshared = _wdtt_bin_shared(fork); binp = cfgdir + "/server"
+    if not os.path.exists(binshared):                       # fork swap → fetch the new fork's binary from the mirror
+        _wdtt_panel_fetch(fork, binshared, (inst.get("sha256") or "").strip())
+        if not os.path.exists(binshared):
+            return "WDTT binary unavailable for fork " + fork + " (panel mirror has no build yet)"
+    # Rewrite the config-dir (symlink/env/desired) natively — wg-keys.dat is untouched (identity → pubkey stable), and
+    # desired.json is rewritten with the SAME current password set (idempotent; matches the docker path). Partial write
+    # raises before the restart, so a failed reconfigure never leaves a mismatched unit running.
+    try:
+        _wdtt_write_cfgdir(inst, binshared, binp, cfgdir)
+    except Exception as e:
+        return ("reconfigure failed: " + str(e))[:160]
+    if NODE_KIND == "docker":                               # container: restart the supervised proc (no unit to rewrite)
+        return _wdtt_docker_start(inst)
+    try:
+        with open(_wdtt_unit_path(iface), "w") as f: f.write(_wdtt_unit_text(iface, binp, cfgdir, fork))
+    except Exception as e:
+        return ("unit write failed: " + str(e))[:160]
+    w = host_sh("systemctl daemon-reload && systemctl restart " + shlex.quote(svc) + " >/dev/null 2>&1", timeout=120)
+    if w.returncode != 0:
+        return (w.stderr or w.stdout or "reconfigure failed").strip()[:160]
+    return _wdtt_verify(svc)
+
+def _wdtt_reset_devices(iface, fork):
+    """A wg_addr (subnet) change invalidates every cached client-IP binding — each fork pins its devices to
+    addresses in the OLD subnet, so a reconnecting client would be handed an IP outside the new interface and get
+    no route (online but no internet). Stop the server, clear its device cache, and drop the interface so it comes
+    back fresh; clients re-register into the new subnet on their next connect. Credentials (the password set) and
+    the server identity (wg-keys.dat) are left intact. Paired with the _wdtt_reconfigure that restarts the server
+    immediately after — the server recreates the tun (new subnet, no stale peers) on start."""
+    cfgdir = _wdtt_dir(iface)
+    if NODE_KIND == "docker":
+        _wdtt_docker_stop(iface)                         # SIGTERM → the server removes its interface on the way out
+    else:
+        host_sh("systemctl stop " + shlex.quote(_wdtt_svc(iface)) + " >/dev/null 2>&1")
+    if fork == "ildarmaga":                              # SQLite panel.db → wipe the device bindings (users/passwords kept)
+        with contextlib.suppress(Exception):
+            import sqlite3
+            dbp = cfgdir + "/panel.db"
+            if os.path.exists(dbp):
+                c = sqlite3.connect(dbp, timeout=2)
+                try: c.execute("DELETE FROM wdtt_devices"); c.commit()
+                finally: c.close()
+    else:                                                # amurcanov & wire-compatible forks: passwords.json devices{}
+        p = cfgdir + "/passwords.json"
+        with contextlib.suppress(Exception):
+            with open(p) as f: d = json.load(f)
+            if d.get("devices"):
+                d["devices"] = {}
+                tmp = p + ".tmp"
+                with open(tmp, "w") as f: json.dump(d, f)
+                os.replace(tmp, p)
+    if NODE_KIND == "docker":
+        with contextlib.suppress(Exception): run(["ip", "link", "del", iface])   # in the container netns; usually already gone from the SIGTERM teardown
+    else:
+        host_sh("ip link del " + shlex.quote(iface) + " 2>/dev/null || true")   # gone → server recreates it fresh on restart
+
+def _wdtt_desired_changed(iface, passwords):
+    """True if the panel's desired password set differs from what's on disk (so we only rewrite+SIGHUP on change)."""
+    try:
+        with open(_wdtt_dir(iface) + "/desired.json") as f:
+            cur = (json.load(f) or {}).get("passwords") or {}
+    except Exception:
+        return True
+    return cur != (json.loads(_wdtt_desired_body(passwords)).get("passwords") or {})
+
+def _wdtt_reconcile_desired(iface, passwords):
+    """Write the panel's desired password set + SIGHUP the server → applied with no restart / no tunnel drop."""
+    cfgdir = _wdtt_dir(iface)
+    try:                                                 # desired.json is a plain node-local write in both run-models
+        with open(cfgdir + "/desired.json", "w") as f: f.write(_wdtt_desired_body(passwords) + "\n")
+    except Exception as e:
+        return ("desired write failed: " + str(e))[:160]
+    if NODE_KIND == "docker":
+        _wdtt_docker_sighup(iface)                       # server reloads desired.json on HUP (mtime watch is the fallback)
+        return ""
+    w = host_sh("systemctl kill -s HUP " + shlex.quote(_wdtt_svc(iface)) + " 2>/dev/null || true")
+    return "" if w.returncode == 0 else (w.stderr or w.stdout or "reconcile failed").strip()[:160]
+
+def _wdtt_apply_stopped(iface, stopped, inst=None):
+    """Start/stop one WDTT server. `inst` is the caller's in-scope record — pass it: re-reading the whole record
+    file to find an entry the caller is already holding both costs a read per instance and races the caller
+    (reconcile mutates `have` in memory and saves it once at the end, so a re-read here saw the PREVIOUS state)."""
+    if NODE_KIND == "docker":
+        if stopped:
+            _wdtt_docker_stop(iface)
+        else:
+            if inst is None:
+                inst = _wdtt_load().get(iface)
+            if inst:
+                inst = dict(inst); inst["iface"] = iface; _wdtt_docker_start(inst)
+        return
+    svc = _wdtt_svc(iface)
+    if stopped:
+        host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1")
+    else:
+        host_sh("systemctl enable --now " + shlex.quote(svc) + " >/dev/null 2>&1")
+
+def _wdtt_del_iptables_comment(table, chain, tag):
+    """Delete every rule in <table>/<chain> whose comment is EXACTLY `tag` (the trailing quote in the rendered
+    `--comment "tag"` prevents a swg-egress:wdtt7 tag from matching swg-egress:wdtt77)."""
+    needle = '--comment "' + tag + '"'
+    with contextlib.suppress(Exception):
+        for ln in (run(["iptables", "-t", table, "-S", chain]).stdout or "").splitlines():
+            if ln.startswith("-A ") and needle in ln:
+                run(["sh", "-c", "iptables -t " + table + " " + ln.replace("-A ", "-D ", 1)])
+
+def _wdtt_remove(iface):
+    if not _WDTT_NAME_RE.match(iface or ""):   # never rm -rf a path built from an unvalidated name
+        return
+    if NODE_KIND == "docker":
+        _wdtt_docker_stop(iface)                         # SIGTERM → clean interface + firewall teardown
+        with contextlib.suppress(Exception): run(["ip", "link", "del", iface])
+        with contextlib.suppress(Exception): shutil.rmtree(_wdtt_dir(iface))
+    else:
+        svc = _wdtt_svc(iface)
+        host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "
+                "rm -f " + shlex.quote(_wdtt_unit_path(iface)) + "; systemctl daemon-reload; "
+                "ip link del " + shlex.quote(iface) + " 2>/dev/null; "
+                "rm -rf " + shlex.quote(_wdtt_dir(iface)))
+    # We just changed exactly what these caches describe, so serving the pre-teardown view back is not a saving,
+    # it is a wrong answer: iface_candidates() reads the host proc walk, so a deleted server kept being reported
+    # as an unmanaged interface — i.e. offered for ADOPTION — for the rest of the 45s TTL. The TTL exists to stop
+    # a privileged one-shot container per candidate per 5s snapshot; it is not meant to outlive our own writes.
+    _WDTT_HOSTPROC["at"] = 0.0
+    _WDTT_CFGPROBE.pop(_wdtt_dir(iface), None)
+    # Drop the node-owned egress rules for this iface — reconcile_egress won't, since the iface is already gone
+    # from the WDTT record by the time it next runs (the POSTROUTING MASQUERADE would otherwise orphan).
+    _wdtt_del_iptables_comment("nat", "POSTROUTING", "swg-egress:" + iface)
+    _wdtt_del_iptables_comment("filter", "FORWARD", "swg-egress-acl:" + iface)
+    _wdtt_del_iptables_comment("mangle", "FORWARD", "swg-egress-mss:" + iface)
+
+_WDTT_SEALED = {}   # iface -> sealed {pub(server_pub), eph, ct, mac} of a WDTT server identity, pending upload
+def wdtt_vault_process(vault_pub, want):
+    """Seal each wanted WDTT instance's SERVER IDENTITY — the owner password + wg-keys.dat — to the operator
+    vault (the analogue of ivk_process for interface keys). The blob rides the NEXT snapshot; the panel escrows
+    only ciphertext. `pub` = the instance's WG server public key, so the panel re-requests if it ever rotates.
+    No-op without a vault pub, or before the instance has been provisioned (no wg-keys.dat / not up yet).
+
+    NOTE: this DELIBERATELY parallels ivk_process (two want lists, two _SEALED dicts, two snapshot fields, two
+    panel escrow slots) rather than sharing a generic `vault_process([{kind,id}])`. With only two key-owning
+    kinds the parallel is readable, and unifying now would mean refactoring the (separately, less-fully-tested)
+    interface-key vault path to serve WDTT. GENERALIZE when a THIRD key-owning consumer appears — collapse both
+    into one `vault_want:[{kind,id}]` + one `_SEALED` keyed by kind:id + a per-kind seal-source dispatch."""
+    global _IVK_VAULT_PUB
+    if vault_pub: _IVK_VAULT_PUB = vault_pub
+    want = set(want or [])
+    for ifn in list(_WDTT_SEALED):
+        if ifn not in want: _WDTT_SEALED.pop(ifn, None)   # panel now holds it → stop sending
+    if not (_IVK_VAULT_PUB and want): return
+    insts = _wdtt_load()
+    for ifn in want:
+        with contextlib.suppress(Exception):
+            inst = insts.get(ifn) or {}
+            pw = (inst.get("password") or "").strip()
+            keypath = _wdtt_keyfile(ifn)
+            if not (pw and os.path.exists(keypath)):
+                continue                                          # nothing provisioned to seal yet
+            srvpub = _wdtt_server_pub(ifn)
+            if not srvpub:
+                continue
+            cur = _WDTT_SEALED.get(ifn)
+            if cur and cur.get("pub") == srvpub:
+                continue                                          # already sealed THIS identity
+            with open(keypath, "rb") as f:
+                raw = f.read()
+            payload = json.dumps({"password": pw, "wg_keys": base64.b64encode(raw).decode()}).encode()
+            blob = ivk_seal(_IVK_VAULT_PUB, payload); blob["pub"] = srvpub
+            _WDTT_SEALED[ifn] = blob
+
+def _wdtt_unseal_identity(sealed):
+    """Open a WDTT identity blob the browser re-sealed to THIS node's transport key at restore → {password, wg_keys}."""
+    with contextlib.suppress(Exception):
+        d = json.loads(ivk_unseal(transport_priv(), sealed).decode())
+        if isinstance(d, dict) and d.get("wg_keys"):
+            return d
+    return None
+
+def reconcile_wdtt(want, remove=None):
+    """Declarative WDTT reconcile (continuous, like desired_ifaces). want = {iface: inst}. Installs missing,
+    writes desired.json + SIGHUPs on password change, applies stop/start, and removes ONLY the instances the panel
+    explicitly listed in `remove` — never one that is merely missing from `want`."""
+    res = {"changed": 0, "errors": []}
+    want = want or {}
+    if not isinstance(want, dict):
+        # The removal loop below runs FIRST and `iface in want` happily walks a list (or substring-matches a
+        # string), so a malformed reply used to delete instances and only then raise on want.items(). Same guard
+        # the sync loop already applies to `desired`.
+        res["errors"].append("panel sent a malformed wdtt set (%s) — ignored" % type(want).__name__)
+        return res
+    have = _wdtt_load()
+    if not want and not have:
+        return res
+    # Remove ONLY what the panel EXPLICITLY listed — the same shape interfaces and peers already use (`delete` /
+    # `remove` lists). WDTT used to delete on absence, which conflates "the operator deleted it" with "this panel
+    # has never heard of it": a freshly-enrolled node, or one syncing to a panel restored from an older
+    # nodes.json, read as "delete everything" and took non-recreatable key material with it. panel_managed stays
+    # as a second belt, so an instance the panel never acknowledged is never removed even if it appears in a list.
+    for iface in [i for i in (remove or []) if isinstance(i, str)]:
+        if iface not in have:
+            continue
+        if not (have.get(iface) or {}).get("panel_managed"):
+            continue                                          # never acknowledged by the panel → not ours to delete
+        _wdtt_remove(iface); have.pop(iface, None); res["changed"] += 1
+    for iface, req in want.items():
+        try:
+            inst = dict(req or {}); inst["iface"] = iface
+            prev = have.get(iface) or {}
+            inst["panel_managed"] = True                      # the panel knows this one → a later absence IS a delete
+            sealed_id = inst.pop("sealed_identity", None)   # a browser-resealed identity to restore (one-shot)
+            key_blob = inst.pop("key_blob", None)           # escrowed ciphertext relayed by the panel — presence = restore possible
+            # The owner -password is NODE-OWNED (the panel is blind): reuse the stored one, adopt a legacy
+            # panel-supplied one (one-time migration), else it's minted below.
+            # TODO-LATER (remove ~2 weeks after this ships): drop the `inst.get("password")` term — the panel no
+            # longer sends the owner password, so once every instance has re-synced it is always empty (dead path).
+            pw = (prev.get("password") or inst.get("password") or "").strip()
+            # Carry the recovered foreign users across reconciles (the panel's `want` never contains them) until
+            # the panel has actually taken them: once its roster-derived password set covers them, or 15 min pass,
+            # the hand-off is over and the record is dropped so nothing keeps re-offering deleted peers.
+            _au = prev.get("adopt_users") or {}
+            if _au:
+                _have = set((inst.get("passwords") or {}).keys())
+                if _have and not (set(_au) - _have):
+                    _au = {}
+                elif int(time.time()) - int(prev.get("adopt_users_at") or 0) > 900:
+                    _au = {}
+            if _au:
+                inst["adopt_users"] = _au
+                inst["adopt_users_at"] = prev.get("adopt_users_at") or int(time.time())
+                _wdtt_serve_adopted(inst)   # …and SERVE them while it is open (see the helper)
+            unit_missing = not _wdtt_present(iface)          # systemd unit (bare-metal) / binary symlink (docker) absent → fresh install
+            if (prev.get("adopt_failed") and not os.path.exists(_wdtt_keyfile(iface))
+                    and not inst.get("adopt_foreign") and not sealed_id):
+                # a take-over that was refused stays refused until the operator resolves it (retry with a path,
+                # or Recreate fresh, which clears the adopt intent) — never silently becomes a fresh server
+                inst["await_restore"] = True; inst["adopt_failed"] = prev["adopt_failed"]; have[iface] = inst
+                res.setdefault("await", []).append(iface); continue
+            provisioned = os.path.exists(_wdtt_keyfile(iface))
+            if unit_missing and not provisioned and inst.pop("adopt_foreign", None):
+                # ADOPT a foreign WDTT server (panel-unmanaged, unpatched build): seeded create — copy its identity
+                # + password store + owner password into OUR config-dir, stop it, then install OUR build below with
+                # that same data. Clients keep working (same server pubkey + passwords). Refuses if the identity
+                # can't be recovered rather than minting a fresh key and breaking every client.
+                aerr = _wdtt_adopt_seed(inst)
+                if aerr:
+                    # HOLD, don't fall through. The refusal is only meaningful if it STICKS: the panel clears
+                    # adopt_foreign once it has acked this instance, so the next sync would see an ordinary
+                    # unprovisioned instance, mint a fresh key and start it — quietly turning "refused, nothing
+                    # was changed" into exactly the fresh server we refused to make, minutes later, under the
+                    # name the operator asked to ADOPT. Record the instance as awaiting a decision instead.
+                    inst["await_restore"] = True; inst["adopt_failed"] = aerr[:200]
+                    inst.pop("_restore_wg_keys", None); have[iface] = inst
+                    res["errors"].append(iface + ": " + aerr)
+                    res.setdefault("await", []).append(iface)
+                    continue
+                pw = (inst.get("password") or "").strip() or pw
+                _wdtt_serve_adopted(inst)   # serve the recovered users from the FIRST start, not one sync later
+                provisioned = os.path.exists(_wdtt_keyfile(iface))   # identity now seeded → don't mint/await below
+            if unit_missing and not provisioned:
+                # Fresh, or a post-wipe re-provision. If the operator vaulted this instance, DON'T mint a new
+                # server key (that would break every GETCONF'd client) — restore the ORIGINAL identity when the
+                # sealed blob arrives, and HOLD until the operator unlocks it.
+                ident = _wdtt_unseal_identity(sealed_id) if sealed_id else None
+                if ident:
+                    pw = (ident.get("password") or "").strip() or pw
+                    inst["_restore_wg_keys"] = ident.get("wg_keys")
+                elif isinstance(key_blob, dict) and key_blob.get("ct"):
+                    inst["password"] = pw; inst["await_restore"] = True
+                    inst.pop("_restore_wg_keys", None); have[iface] = inst
+                    res.setdefault("await", []).append(iface); continue
+            if not pw:
+                pw = _gen_wdtt_password()
+            inst["password"] = pw; inst.pop("await_restore", None)
+            if not _wdtt_present(iface):
+                err = _wdtt_install(inst)
+                if err:
+                    res["errors"].append(iface + ": " + err); continue
+                res["changed"] += 1
+            else:
+                _want_ver = (inst.get("ver") or "").strip()   # panel-published build version → swap the shared binary if it moved
+                _fk = _wdtt_fork(inst); _inst_ver = _wdtt_installed_ver(_fk)
+                if _want_ver and not _inst_ver and os.path.exists(_wdtt_bin_shared(_fk)):
+                    _wdtt_write_ver(_fk, _want_ver)           # first sync after upgrade: the running (unversioned) binary IS the current build → just stamp it, no re-fetch/restart
+                elif _want_ver and _want_ver != _inst_ver:
+                    err = _wdtt_update_binary(inst, _want_ver, _wdtt_fork_ifaces(_fk, want))
+                    if err:
+                        res["errors"].append(iface + ": " + err); continue
+                    res["changed"] += 1
+                if _wdtt_params_changed(prev, inst):        # listen/wg-addr/wg-port/max changed → rewrite unit + restart (identity kept)
+                    if (prev.get("wg_addr") or "") != (inst.get("wg_addr") or ""):   # subnet moved → drop stale device-IP bindings first
+                        _wdtt_reset_devices(iface, _wdtt_fork(inst))
+                    err = _wdtt_reconfigure(inst)
+                    if err:
+                        res["errors"].append(iface + ": " + err); continue
+                    res["changed"] += 1
+                if _wdtt_desired_changed(iface, inst.get("passwords")):   # password set changed → desired.json + SIGHUP (no restart)
+                    err = _wdtt_reconcile_desired(iface, inst.get("passwords"))
+                    if err:
+                        res["errors"].append(iface + ": " + err); continue
+                    res["changed"] += 1
+            if bool(inst.get("stopped")) != bool(prev.get("stopped")):
+                _wdtt_apply_stopped(iface, bool(inst.get("stopped")), inst); res["changed"] += 1
+            if inst.get("restart") and inst.get("restart") != prev.get("restart") and not inst.get("stopped"):
+                if NODE_KIND == "docker":
+                    _wdtt_docker_start(inst)
+                else:
+                    host_sh("systemctl restart " + shlex.quote(_wdtt_svc(iface)) + " >/dev/null 2>&1")   # operator-requested bounce (nonce acted on once)
+                res["changed"] += 1
+            # docker: supervise — relaunch a server that died (crash / prior noded exit), the equivalent of systemd Restart=on-failure
+            if NODE_KIND == "docker" and _wdtt_present(iface) and not bool(inst.get("stopped")) and not _wdtt_docker_alive(iface):
+                serr = _wdtt_docker_start(inst)
+                if serr:
+                    res["errors"].append(iface + ": " + serr)
+                else:
+                    res["changed"] += 1
+            inst.pop("_restore_wg_keys", None)   # transient — never persist the restored key material to the record
+            have[iface] = inst
+        except Exception as e:
+            res["errors"].append(iface + ": " + str(e))
+    if not _wdtt_save(have):
+        res["errors"].append("couldn't write the WDTT record (" + WDTT_RECORD + ") — adoption/hold state may not survive a restart")
+    return res
+
+def _wdtt_adopted_users(cfgdir):
+    """The users a FOREIGN server was serving, as {password: {vk_hash, expires_at, is_deactivated, comment}} —
+    everything the panel needs to recreate each one as a roster peer, and nothing else (no device/traffic rows).
+    Reads whichever store the fork keeps: SQLite panel.db (ildarmaga) or passwords.json (amurcanov family)."""
+    out = {}
+    dbp = os.path.join(cfgdir, "panel.db")
+    if os.path.isfile(dbp):
+        with contextlib.suppress(Exception):
+            import sqlite3
+            c = sqlite3.connect(dbp, timeout=5)
+            try:
+                for pw, vkh, exp, deact, comment in c.execute(
+                        "SELECT password, vk_hash, expires_at, is_deactivated, comment FROM wdtt_users"):
+                    if pw:
+                        out[pw] = {"vk_hash": (vkh or "").strip(), "expires_at": int(exp or 0),
+                                   "is_deactivated": bool(deact), "comment": (comment or "").strip()[:80]}
+            finally:
+                c.close()
+    pj = os.path.join(cfgdir, "passwords.json")
+    if os.path.isfile(pj):
+        with contextlib.suppress(Exception):
+            with open(pj) as f:
+                raw = json.load(f)
+            src = raw.get("passwords") if isinstance(raw, dict) and isinstance(raw.get("passwords"), dict) else raw
+            if isinstance(src, dict):
+                for pw, meta in src.items():
+                    if not pw or pw in out:
+                        continue
+                    meta = meta if isinstance(meta, dict) else {}
+                    out[pw] = {"vk_hash": str(meta.get("vk_hash") or "").strip(),
+                               "expires_at": int(meta.get("expires_at") or 0),
+                               "is_deactivated": bool(meta.get("is_deactivated")), "comment": ""}
+    return out
+
+
+def _wdtt_read_paneldb(cfgdir):
+    """ildarmaga's runtime store is SQLite panel.db (wdtt_users + wdtt_devices) — the analogue of amurcanov's
+    passwords.json. Read it back for the snapshot in the SAME shape (pwds, devs). Never returns a private key.
+    Under -fixed-config the single device is keyed 'pw:<password>' (getconfDeviceKey), which the caller resolves."""
+    pwds, devs = {}, {}
+    dbp = cfgdir + "/panel.db"
+    if not os.path.exists(dbp):
+        return pwds, devs
+    with contextlib.suppress(Exception):
+        import sqlite3
+        c = sqlite3.connect(dbp, timeout=2)
+        try:
+            for pw, did, deact, exp, down, up in c.execute(
+                    "SELECT password, device_id, is_deactivated, expires_at, down_bytes, up_bytes FROM wdtt_users"):
+                pwds[pw] = {"device_id": did or "", "up_bytes": up or 0, "down_bytes": down or 0,
+                            "is_deactivated": bool(deact), "expires_at": exp or 0}
+            for did, ip, pub in c.execute("SELECT device_id, ip, pub_key FROM wdtt_devices"):
+                devs[did] = {"ip": ip or "", "pub_key": pub or ""}
+        finally:
+            c.close()
+    return pwds, devs
+
+_WDTT_IFTRAF = {}   # iface -> (rx_bytes, tx_bytes, ts) — for per-second speed deltas between snapshots
+def _wdtt_iface_traffic(iface):
+    """The WDTT interface's cumulative rx/tx from /proc/net/dev (it's a real TUN device) + the per-second speed
+    since the last read → (rx_bytes, tx_bytes, rx_speed, tx_speed). Lets the panel graph a WDTT interface exactly
+    like a wg/awg one (its peers' traffic isn't in `wg show`, so this is the aggregate source)."""
+    rxb = txb = 0
+    try:
+        with open("/proc/net/dev") as f:
+            for line in f:
+                if ":" not in line:
+                    continue
+                name, rest = line.split(":", 1)
+                if name.strip() != iface:
+                    continue
+                p = rest.split()
+                rxb, txb = int(p[0]), int(p[8]); break
+    except Exception:
+        return (0, 0, 0, 0)
+    now = time.time(); prev = _WDTT_IFTRAF.get(iface); rs = ts = 0
+    if prev and now - prev[2] > 0:
+        dt = now - prev[2]
+        rs = max(0, rxb - prev[0]) / dt
+        ts = max(0, txb - prev[1]) / dt
+    _WDTT_IFTRAF[iface] = (rxb, txb, now)
+    return (rxb, txb, int(rs), int(ts))
+
+def wdtt_snapshot():
+    """Read each WDTT instance's runtime state back for the panel: service active, server pubkey + endpoint
+    (for client links), and per-password observed device binding + traffic. Never returns any private key."""
+    out = []
+    insts = _wdtt_load()
+    if not insts:
+        return out
+    for iface, inst in insts.items():
+        svc = _wdtt_svc(iface)
+        if inst.get("await_restore"):
+            # Held after a wipe: a vaulted identity exists but the operator hasn't unlocked it, so nothing is
+            # installed yet. Report it so the panel can offer the one-click restore instead of showing "dangling".
+            out.append({"iface": iface, "service": svc, "active": "inactive", "listen": inst.get("listen", ""),
+                        "wg_addr": inst.get("wg_addr", ""), "wg_port": inst.get("wg_port", ""),
+                        "server_pub": "", "stopped": bool(inst.get("stopped")), "await_restore": True, "fork": inst.get("fork", "amurcanov"),
+                        "passwords": {}, "devices": {}})
+            continue
+        if NODE_KIND == "docker":
+            active = "active" if _wdtt_docker_alive(iface) else "inactive"
+        else:
+            active = (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null").stdout or "").strip()
+        if inst.get("fork", "amurcanov") == "ildarmaga":
+            pwds, devs = _wdtt_read_paneldb(_wdtt_dir(iface))   # ildarmaga: SQLite panel.db, not passwords.json
+        else:
+            pj = {}
+            try:
+                with open(_wdtt_dir(iface) + "/passwords.json") as f:
+                    pj = json.load(f) or {}
+            except Exception:
+                pass
+            pwds = {}
+            for pw, e in (pj.get("passwords") or {}).items():
+                e = e or {}
+                pwds[pw] = {"device_id": e.get("device_id", ""), "up_bytes": e.get("up_bytes", 0),
+                            "down_bytes": e.get("down_bytes", 0), "is_deactivated": bool(e.get("is_deactivated")),
+                            "expires_at": e.get("expires_at", 0)}
+            devs = {}
+            for did, d in (pj.get("devices") or {}).items():
+                d = d or {}
+                devs[did] = {"ip": d.get("ip", ""), "pub_key": d.get("pub_key", "")}   # NO priv_key
+        # per-password online = the bound device's pubkey has a RECENT WG handshake. Docker: read the UAPI socket
+        # directly ({pubkey_b64: last_handshake_sec}) since `awg show dump` can't read a plain wireguard-go socket.
+        hs = {}
+        if NODE_KIND == "docker":
+            _, hs = _wdtt_uapi(iface)
+        else:
+            _wgdump = (host_sh("wg show " + shlex.quote(iface) + " dump 2>/dev/null").stdout or "")
+            for _ln in _wgdump.splitlines()[1:]:
+                _f = _ln.split("\t")
+                if len(_f) >= 5:
+                    try: hs[_f[0]] = int(_f[4])
+                    except ValueError: pass
+        _nowt = int(time.time())
+        for _pw, _pe in pwds.items():
+            # device lookup: stock binds by device_id; -fixed-config keys the (single) device by "pw:<password>"
+            # (device-agnostic → device_id stays empty), so fall back to that or online/IP would never resolve.
+            _dev = devs.get(_pe.get("device_id") or "") or devs.get("pw:" + _pw) or {}
+            _pub = _dev.get("pub_key") or ""
+            _hsv = hs.get(_pub, 0)
+            _pe["online"] = bool(_pub and _hsv and (_nowt - _hsv) < 180)
+            _pe["ip"] = _dev.get("ip", "")   # the peer's assigned WDTT IP (readback/UI)
+        srvpub = _wdtt_server_pub(iface)
+        _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # interface aggregate throughput → panel graphs it like a wg iface
+        out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
+                    "wg_addr": inst.get("wg_addr", ""), "wg_port": inst.get("wg_port", ""),
+                    "server_pub": srvpub, "stopped": bool(inst.get("stopped")), "fork": inst.get("fork", "amurcanov"),
+                    "version": _wdtt_installed_ver(inst.get("fork", "amurcanov")),   # installed build version (version board + rollback)
+                    "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
+                    # Users recovered from a foreign server at take-over, for the panel to adopt into the roster.
+                    # Reported until it has them (reconcile_wdtt drops the record once they appear in `desired`),
+                    # NOT every cycle from the live store — that would resurrect a peer the operator deleted.
+                    "adopt_users": inst.get("adopt_users") or {},
+                    "passwords": pwds, "devices": devs})
+    return out
+
+
 # node self-update is NODE-ONLY: on a master box (panel + node together) it must NOT restart the
 # co-located panel, or the panel restart breaks the very sync that would clear the update request.
 DEFAULT_UPDATE_CMD = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
@@ -4996,6 +6963,7 @@ def main():
                 if _newurl:
                     url = _newurl                                     # dial the new address from the next sync on
                 ivk_process(reply.get("iface_vault_pub"), reply.get("iface_vault_want"))   # seal interface keys the panel wants for the operator vault (blob rides the next snapshot)
+                wdtt_vault_process(reply.get("iface_vault_pub"), reply.get("wdtt_vault_want"))   # seal WDTT server identities (owner pw + wg-keys.dat) to the same vault
                 _upd0 = reply.get("update")
                 if _upd0 and not update_started:   # already fired THIS exact request (a recreate restarted us)? then DON'T re-fire — else the update loops forever (recreate → restart → re-trigger → recreate …)
                     _at = str((_upd0 or {}).get("at") or "")
@@ -5031,6 +6999,7 @@ def main():
                 apply_panel_settings(reply.get("panel"))      # Panel settings → mirrors / geo TTL / geo refetch
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
+                wd = reconcile_wdtt(reply.get("wdtt"), reply.get("wdtt_remove"))   # install/desired.json+SIGHUP; removals ONLY from the explicit list
                 r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
                 reconcile_dial_src(reply["desired"], r)        # Part 3: pin per-link outbound source IPs (folds into r)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)   # set-iface: write the new listen-port to the conf FIRST
@@ -5044,7 +7013,7 @@ def main():
                 _route_sig = json.dumps([reply.get("desired_ifaces"), reply.get("cascade"),
                                          reply.get("smart"), _def_egress], sort_keys=True, default=str)
                 _iface_churn = bool(cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
-                                    or sp["stopped"] or sa["started"] or ri["changed"])
+                                    or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"])   # a WDTT install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
                 if (_route_sig != last_route_sig or _iface_churn
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):
                     eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
@@ -5058,10 +7027,13 @@ def main():
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name — INCLUDING
                 # keypair restore/rebaseline (ik): a failed Restore (e.g. awg-quick up failed) is reported so the
                 # panel can show "restore failed" + the reason instead of hanging on "restoring".
-                for blk in (cr, dl, ob, rs, sp, sa, ik):
+                for blk in (cr, dl, ob, rs, sp, sa, ik, wd):
                     for e in blk["errors"]:
                         k, _, m = e.partition(": ")
                         NODE_ERRORS[k] = m or e
+                for _n in ob.get("notes", []):                 # kept until the panel stops asking (pruned below)
+                    _k, _, _m = _n.partition(": ")
+                    NODE_NOTES[_k] = _m or _n
                 for k in (cr.get("created", []) + dl.get("deleted", []) + ob.get("added", [])
                           + rs.get("restarted", []) + sp.get("stopped", []) + sa.get("started", [])
                           + ik.get("done", [])):
@@ -5071,10 +7043,13 @@ def main():
                           | set(reply.get("delete") or []) | set(reply.get("restart") or []) | set(reply.get("turn") or {})
                           | set(reply.get("iface_stop") or []) | set(reply.get("iface_start") or [])
                           | set(reply.get("iface_key") or {})
-                          | set(reply.get("turn_onboard") or []))
+                          | set(reply.get("turn_onboard") or []) | set(reply.get("wdtt") or {}))
                 for k in list(NODE_ERRORS):
                     if k not in active:
                         NODE_ERRORS.pop(k, None)
+                for k in list(NODE_NOTES):
+                    if k not in active:
+                        NODE_NOTES.pop(k, None)
                 for e in eg["errors"] + cas["errors"]:
                     print("egress: " + e, flush=True)
                 if (r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]

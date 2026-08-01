@@ -66,10 +66,11 @@ summary_end(){ echo; }
 # commands. <baremetal|docker> [docker_install_dir]. b()/COMPOSE come from the sourcing script (installers/convert).
 node_reconfig_block(){
   local method="$1" dir="${2:-/opt/swg-panel-docker}" prof="${3:-node}" C="${COMPOSE:-docker compose}"
-  echo "  Interfaces and turn-proxies can be re-configured in the web panel, or directly on the server:"; echo
+  echo "  Interfaces, turn-proxies and WDTT servers can be re-configured in the web panel, or directly on the server:"; echo
   if [ "$method" = docker ]; then
     printf '    %-13s %s\n' "Interfaces"   "$(b "ls $dir/data/node-confs/*.conf")"
     printf '    %-13s %s\n' "Turn-proxies" "$(b 'docker ps --filter name=swg-turn')"
+    printf '    %-13s %s\n' "WDTT"         "$(b "cat $dir/data/node/wdtt.json")   (servers + their interfaces)"
     echo
     printf '    %-13s %s\n' "Directory"    "$(b "cd $dir")"
     printf '    %-13s %s\n' "Restart"      "$(b "cd $dir && $C restart swg-node")"
@@ -79,6 +80,7 @@ node_reconfig_block(){
     printf '    %-13s %s\n' "AmneziaWG"    "$(b 'ls /etc/amnezia/amneziawg/*.conf')"
     printf '    %-13s %s\n' "WireGuard"    "$(b 'ls /etc/wireguard/*.conf')"
     printf '    %-13s %s\n' "Turn-proxies" "$(b 'ls /etc/systemd/system/vk-turn-proxy*.service')"
+    printf '    %-13s %s\n' "WDTT"         "$(b 'ls /etc/systemd/system/swg-wdtt-*.service')   (servers + their interfaces)"
     echo
     printf '    %-13s %s\n' "SWG Agent"    "$(b 'nano /etc/swg-agent/config.json')"
     printf '    %-13s %s\n' "Restart"      "$(b 'systemctl restart swg-noded')"
@@ -114,6 +116,49 @@ _sum_detect(){ local hm="" nm=""   # echoes "<host_method> <node_method>", each 
   printf '%s %s' "$hm" "$nm"; }
 _sum_note(){ case "$1" in docker) echo "$(b 'newly converted') (was bare-metal)";; *) echo "$(b 'newly converted') (was docker)";; esac; }
 
+# Subscription surface for the summary — the per-user QR page (swg-sub). Emits three TAB-separated fields:
+#   <enabled|disabled|unset>  <auto|manual>  <public url>
+# Read straight from panel-settings.json (the panel owns it) rather than from install.conf/.env, which only
+# carry the BIND — the public URL and the on/off switch are panel state and can be changed after install.
+_sum_sub_state(){   # <baremetal|docker>
+  local ps; if [ "$1" = docker ]; then ps="$_SUM_DDIR/data/lib/panel-settings.json"; else ps=/var/lib/swg-panel/panel-settings.json; fi
+  [ -f "$ps" ] || { printf 'unset\t\t'; return 0; }
+  have python3 || { printf 'unset\t\t'; return 0; }
+  python3 - "$ps" <<'PYSUB' 2>/dev/null || printf 'unset\t\t'
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: print("unset\t\t"); raise SystemExit
+sub = d.get("subscriptions") or {}
+url = (((d.get("access") or {}).get("sub") or {}).get("url") or "").rstrip("/")
+state = "enabled" if sub.get("enabled") else ("disabled" if "enabled" in sub else "unset")
+print("%s\t%s\t%s" % (state, "auto" if sub.get("auto_generate") else "manual", url))
+PYSUB
+}
+summary_sub_block(){   # <method>
+  local st auto url
+  IFS="$(printf '\t')" read -r st auto url <<EOS
+$(_sum_sub_state "$1")
+EOS
+  echo
+  case "$st" in
+    enabled)
+      local _how="manually"; [ "$auto" = auto ] && _how="automatically"
+      echo "  $(b 'Subscriptions') (per-user links created $(b "$_how")):"
+      echo
+      if [ -n "$url" ]; then printf '    %-9s%s\n' "URL" "$(bb "$url/")$(b '<user-link>')"
+      else                   printf '    %-9s%s\n' "URL" "not set yet — set the subscription address in the panel"; fi
+      echo
+      if [ "$auto" = auto ]; then echo "    A link is minted for every new user automatically."
+      else                        echo "    Links are minted per user, on demand — open a user and create theirs."; fi
+      ;;
+    disabled) echo "  $(b 'Subscriptions') (off):"; echo
+              echo "    Every subscription URL returns 404. Nobody can load a config from a link." ;;
+    *)        echo "  $(b 'Subscriptions') (not configured yet):"; echo
+              echo "    Off until you turn them on — the per-user QR page is not being served." ;;
+  esac
+  echo
+  echo "    Configure in the panel: $(b 'Settings → Subscriptions')"
+}
 summary_host_block(){   # <method> <converted?yes|no>
   local m="$1" conv="$2" url login tls ver mlabel note="" e dom port base sch ps reset
   if [ "$m" = docker ]; then e="$_SUM_DDIR/.env"; mlabel=Docker
@@ -126,11 +171,22 @@ summary_host_block(){   # <method> <converted?yes|no>
   sch=https; [ "$tls" = none ] && sch=http; ps=":$port"; case "$port" in 443|80|"") ps="";; esac; url="${sch}://${dom}${ps}${base}/"
   [ "$conv" = yes ] && note="  ·  $(_sum_note "$m")"
   echo "${C_BLUE:-}▸${RESET:-} $(b "$mlabel SWG Host")${ver:+ $(b "v$ver")}$note"
-  echo; echo "  $(b 'Panel') (login + the $(b "${tls:-?}") cert preserved):"; echo
+  echo
+  # A fresh install MINTS the login, and the auth file only ever holds the pbkdf2 hash — so this summary is the one
+  # and only place the plaintext password is ever shown. The installer hands it over in SWG_SUMMARY_PASS; without it
+  # (re-install / convert) the existing login is untouched and there's no password to show.
+  if [ -n "${SWG_SUMMARY_PASS:-}" ]; then echo "  $(b 'Panel') (new login — $(b 'save the password now'), it is not shown again):"
+  else                                    echo "  $(b 'Panel') (login + the $(b "${tls:-?}") cert preserved):"; fi
+  echo
   printf '    %-9s%s\n' "URL"     "$(bb "$url")"
   if [ "$m" = docker ]; then reset="docker exec -it swg-panel swg-passwd"
   else reset="sudo swg-passwd"; fi
-  printf '    %-9s%s\n' "Login"   "$(b "${login:-admin}")  (to reset the password run: $(b "$reset"))"
+  if [ -n "${SWG_SUMMARY_PASS:-}" ]; then
+    printf '    %-9s%s\n' "Login"    "$(b "${login:-admin}")"
+    printf '    %-9s%s\n' "Password" "$(b "$SWG_SUMMARY_PASS")  (change it in the panel: Account · or reset with $(b "$reset"))"
+  else
+    printf '    %-9s%s\n' "Login"   "$(b "${login:-admin}")  (to reset the password run: $(b "$reset"))"
+  fi
   printf '    %-9s%s\n' "TLS"     "$(b "${tls:-?}")"
   if [ "$m" = docker ]; then
     printf '    %-9s%s\n' "Config"  "$(b "nano $_SUM_DDIR/.env")"
@@ -141,6 +197,31 @@ summary_host_block(){   # <method> <converted?yes|no>
     printf '    %-9s%s\n' "Restart" "$(b 'systemctl restart swg-panel-server')"
     printf '    %-9s%s\n' "Logs"    "$(b 'journalctl -u swg-panel-server -f')"
   fi
+  summary_sub_block "$m"    # the subscription surface is part of what a panel install delivers — say where it stands
+}
+# WDTT servers on this node, from the record swg-noded keeps (bare-metal /etc/swg-agent, docker the mounted
+# data dir). They own their interface (created by the server, so it has no .conf the interface scan could find)
+# AND act as a turn-family proxy — so the summary gives them their own section instead of splitting them.
+_sum_wdtt_rows(){   # <baremetal|docker>
+  local rec; if [ "$1" = docker ]; then rec="$_SUM_DDIR/data/node/wdtt.json"; else rec=/etc/swg-agent/wdtt.json; fi
+  [ -f "$rec" ] || return 0
+  have python3 || return 0
+  python3 -c 'import json,sys
+try: w=(json.load(open(sys.argv[1])).get("wdtt") or [])
+except Exception: w=[]
+for i in w:
+    if isinstance(i,dict) and i.get("iface"):
+        print("\t".join([i["iface"], i.get("fork") or "?", i.get("listen") or ("127.0.0.1:%s" % (i.get("wg_port") or "?")), i.get("wg_addr") or "?"]))' "$rec" 2>/dev/null
+}
+_sum_wdtt_row(){ printf '    %s%-10s%s  %s%-10s%s  %s  %s\n' "${C_GREEN:-}" "$1" "${RESET:-}" "${BOLD:-}" "$2" "${RESET:-}" "${3:-?}" "${4:-?}"; }
+
+_sum_wdtt_block(){   # <baremetal|docker> — the "WDTT interfaces & proxies" section, printed only when any exist
+  local rows _i _f _l _a
+  rows="$(_sum_wdtt_rows "$1")"; [ -n "$rows" ] || return 0
+  echo; echo "  $(b 'WDTT interfaces & proxies') (own their interface — managed from the panel):"; echo
+  while IFS="$(printf '\t')" read -r _i _f _l _a; do [ -n "$_i" ] && _sum_wdtt_row "$_i" "$_f" "$_l" "$_a"; done <<EOS
+$rows
+EOS
 }
 summary_node_block(){   # <method> <converted?yes|no>
   local m="$1" conv="$2" ver mlabel note="" nep purl conf n proto units svc inst lis con u _trec _meshif
@@ -150,7 +231,13 @@ summary_node_block(){   # <method> <converted?yes|no>
   [ "$conv" = yes ] && note="  ·  $(_sum_note "$m")"
   echo "${C_BLUE:-}▸${RESET:-} $(b "$mlabel SWG Node")${ver:+ $(b "v$ver")}${purl:+  ·  syncs to $(bb "$purl")}$note"
   if [ "$m" = docker ]; then
-    echo; echo "  $(b 'Interfaces') (in the swg-node container):"; echo
+    # Header only when there is something under it. Installers no longer create interfaces — the panel does —
+    # so a fresh install used to print the heading over an empty list, announcing a section that had no content.
+    _ifn=0; for conf in "$_SUM_DDIR"/data/node-confs/*.conf; do [ -f "$conf" ] && _ifn=$((_ifn+1)); done
+    echo
+    if [ "$_ifn" -eq 0 ]; then echo "  $(b 'Interfaces'):  none yet — add them in the web panel"
+    else echo "  $(b 'Interfaces') (in the swg-node container):"; fi
+    echo
     _meshif=""
     for conf in "$_SUM_DDIR"/data/node-confs/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
       is_sys_iface "$n" && { _meshif="$_meshif $n"; continue; }   # panel-managed mesh link — never listed as a user interface
@@ -167,8 +254,13 @@ for t in tps:
           | while IFS="$(printf '\t')" read -r svc lis con; do [ -n "$svc" ] && _sum_turn_row "$svc" "$lis" "$con"; done
       else for svc in $units; do _sum_turn_row "$svc" "" ""; done; fi
     fi
+    _sum_wdtt_block docker
   else
-    echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
+    _ifn=0; for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] && _ifn=$((_ifn+1)); done
+    echo
+    if [ "$_ifn" -eq 0 ]; then echo "  $(b 'Interfaces'):  none yet — add them in the web panel"
+    else echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; fi
+    echo
     _meshif=""
     for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
       is_sys_iface "$n" && { _meshif="$_meshif $n"; continue; }   # panel-managed mesh link — never listed as a user interface
@@ -180,6 +272,7 @@ for t in tps:
         lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
         con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
         _sum_turn_row "$svc" "$lis" "$con"; done; fi
+    _sum_wdtt_block baremetal
   fi
   echo; node_reconfig_block "$([ "$m" = docker ] && echo docker || echo baremetal)" "$_SUM_DDIR"
 }
@@ -194,6 +287,11 @@ print_summary(){   # <OP> [converted-parts: host|node|both]
   [ -n "$nm" ] && { [ -n "$printed" ] && echo; summary_node_block "$nm" "$nc"; }
   summary_end
 }
+
+# A co-located node dials the panel over LOOPBACK (http://127.0.0.1:<local-port>) — plain HTTP there is the
+# design, not a mistake: the request never leaves the box, so there is no wire to intercept. Warning about it
+# on every master install/convert taught operators to ignore a message that is real for a REMOTE node.
+_url_is_loopback(){ case "${1#*://}" in 127.0.0.1|127.0.0.1:*|localhost|localhost:*|\[::1\]|\[::1\]:*|::1|::1:*) return 0;; *) return 1;; esac; }
 
 # ── validators ──
 v_iface(){   case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 15 ]; }
@@ -263,12 +361,18 @@ lc_emit_post(){ [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ] || return 0
   #     FALSE "<op> failed". (The panel also self-heals "updating" once the node reports the target version, so
   #     this is belt-and-suspenders.)
   local _tries; case "$1" in updating|reinstalling|converting-bare|converting-docker|uninstalling) _tries=4;; *) _tries=25;; esac
+  # SAY SO while waiting. This runs from the EXIT trap, i.e. AFTER the completion summary has printed, so a
+  # silent 25-retry loop looks exactly like a hang at the very moment the operator has been told it's done —
+  # and the run then exits fine, which is more baffling still. One line on the first failure, one on give-up.
   _i=0
   while [ "$_i" -lt "$_tries" ]; do
     auth_curl "$LC_TOKEN" -fsS $ins --max-time 6 -X POST -H "Content-Type: application/json" \
-      --data "$data" "${LC_URL%/}/api/node/proc-status" >/dev/null 2>&1 && return 0
+      --data "$data" "${LC_URL%/}/api/node/proc-status" >/dev/null 2>&1 && {
+        [ "$_i" -gt 0 ] && echo "    panel reached — status recorded." || true; return 0; }
+    [ "$_i" -eq 0 ] && echo "    telling the panel this finished (it may still be restarting) — up to ${_tries}s…"
     _i=$((_i + 1)); sleep 1
   done
+  echo "    couldn't reach the panel to record the status — the conversion itself is done; the panel corrects the tag on the node's next sync."
   return 0; }
 lc_emit_file(){ local f="${LC_FILE:-}"; [ -n "$f" ] || return 0; mkdir -p "$(dirname "$f")" 2>/dev/null || true
   if [ -n "${2:-}" ]; then printf '%s\n%s\n' "$1" "$2" > "$f" 2>/dev/null || true
@@ -283,9 +387,14 @@ _lc_exit(){ local rc=$?                                        # MUST preserve r
   elif [ -n "$LC_ABORT" ];   then lc_emit "$(_lc_prefix "$LC_OP")-aborted"
   elif [ "$rc" -ne 0 ];      then lc_emit "$(_lc_prefix "$LC_OP")-failed" "$(tail -n 20 "$LC_LOG" 2>/dev/null)"
   else local s; s="${LC_SUCCESS:-$(_lc_success "$LC_OP")}"; [ -n "$s" ] && lc_emit "$s"; fi   # LC_SUCCESS lets a script override (e.g. "reinstalled-updated")
+  # The capture holds the WHOLE run transcript, and print_summary prints the minted panel login in
+  # plaintext — the one place it is ever shown. Leaving that in /tmp until the next reboot is a real
+  # credential leak on a shared box. The only consumer is the failure tail just above, so drop it here.
+  [ -n "${LC_LOG:-}" ] && rm -f "$LC_LOG" 2>/dev/null || true
   return $rc; }
 lc_init(){ LC_OP="$1"; LC_EMIT="$2"; LC_ABORT=""; LC_HANDOFF=""; LC_DONE=""; LC_SUCCESS=""
   LC_LOG="$(mktemp 2>/dev/null || echo "/tmp/swg-lc.$$")"; : > "$LC_LOG" 2>/dev/null || true
+  chmod 600 "$LC_LOG" 2>/dev/null || true                      # the fallback path (no mktemp) isn't 0600 by itself
   # mirror output to the log AND the terminal; remember the tee pid so _lc_exit can flush it. Prompts read
   # /dev/tty, so interactivity is unaffected. If the fd plumbing isn't supported, fall back to no capture.
   if exec {LC_OUT}>&1 && exec {LC_TEEFD}> >(tee -a "$LC_LOG" >&${LC_OUT}) 2>/dev/null; then
@@ -318,13 +427,34 @@ lc_teardown_baremetal(){
   rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent; }
 # teardown_bare_panel — stop + remove the bare-metal panel (units + proxy vhost + binary), then move its STATE
 # dirs aside (already staged into data/) so the box no longer reads as a bare panel and a later convert-back
+# Remove the DOCKER address helper (swg-netctl-docker.*) — the mirror of what teardown_bare_panel does to the
+# bare units. Used by the docker→bare convert: the bare panel installs its own swg-netctl, and leaving the docker
+# pair behind arms a SECOND drainer on the same request queue. Its .timer then wakes every couple of seconds on a
+# box with no compose install, hits systemd's start-limit, and races the real helper for the panel's address
+# changes. Existence-guarded, so calling it on a box that never had docker is a no-op.
+remove_docker_netctl(){
+  for _u in swg-netctl-docker.timer swg-netctl-docker.service; do
+    systemctl disable --now "$_u" >/dev/null 2>&1 || systemctl stop "$_u" >/dev/null 2>&1 || true
+  done
+  rm -f /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+  systemctl daemon-reload >/dev/null 2>&1 || true; }
+
 # restages cleanly. Used by the bare→docker host/master convert (install-docker.sh, at the atomic switch).
 teardown_bare_panel(){
   systemctl disable --now swg-panel-server >/dev/null 2>&1 || true
   systemctl disable --now swg-update.path  >/dev/null 2>&1 || true
   # swg-sub + swg-netctl are PANEL components — stop them too, or the bare swg-sub keeps port 8444 (the docker
   # swg-sub then can't bind it) and swg-netctl.path lingers. (The node datapath is handled separately.)
-  systemctl disable --now swg-sub swg-netctl.path swg-netctl.service swg-netctl.timer swg-netctl-docker.timer swg-netctl-docker.service >/dev/null 2>&1 || true
+  # ONE AT A TIME. `systemctl disable --now a b c` ABORTS THE WHOLE OPERATION if any unit is missing — and
+  # swg-netctl-docker.* never exist on a bare-metal box, so the single call below used to fail before stopping
+  # anything, leaving the bare swg-sub running and holding its port (exactly what the comment above says it is
+  # here to prevent). `|| true` then hid it. Proven: `disable --now probe missing.service` leaves probe ACTIVE
+  # and returns 1; the same call without the missing unit stops it and returns 0.
+  # The `stop` fallback covers a unit whose FILE is already gone while the process is still alive — `disable`
+  # refuses that outright, and it is how the orphan survived a second teardown.
+  for _u in swg-sub swg-netctl.path swg-netctl.service swg-netctl.timer swg-netctl-docker.timer swg-netctl-docker.service; do
+    systemctl disable --now "$_u" >/dev/null 2>&1 || systemctl stop "$_u" >/dev/null 2>&1 || true
+  done
   rm -f /etc/systemd/system/swg-sub.service /etc/systemd/system/swg-netctl.service /etc/systemd/system/swg-netctl.path /etc/systemd/system/swg-netctl.timer /usr/local/bin/swg-netctl \
         /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
   rm -rf /opt/swg-sub
@@ -369,6 +499,52 @@ lc_clear_convert_leftover(){
     [ -n "$cleared" ] && info "removed stale bare-metal conf leftovers — no swg-noded service present (likely a cancelled docker→bare convert); your live install is untouched"
   fi
   return 0; }   # always succeed — best-effort cleanup; "nothing to clear" must not return non-zero and trip set -e in callers
+
+# migrate_wdtt <to-docker|to-baremetal> [docker_dir] — carry the WDTT server state between the two path conventions
+# during a convert. SINGLE SOURCE OF TRUTH for both directions (this logic used to be duplicated in install-docker.sh
+# + convert.sh ×2, where the copy/strip stayed in sync but the GATING drifted → a WDTT-only master silently re-minted).
+# Paths:
+#     bare-metal : /opt/swg-wdtt/<iface>/…               record /etc/swg-agent/wdtt.json
+#     docker     : <docker_dir>/data/node/wdtt/<iface>/…  record …/data/node/wdtt.json  (→ container /var/lib/swg-noded)
+# Each instance's wg-keys.dat is the server IDENTITY; carrying it (+ the record's node-owned owner passwords, and
+# passwords.json / panel.db) is what keeps every GETCONF'd client working — a re-mint changes the server pubkey and
+# forces every client to reconnect. Copy-first (the source's units are stopped / the container torn down separately,
+# at the atomic switch) so a mid-convert abort never drops WDTT; the destination's reconcile then converges.
+#
+# STRIP (to-baremetal only): a full copy also carries the source run-model's runtime files — the `server` symlink +
+# server.pid / server.log / wdtt.env / desired.json, all pointing at the source's paths. The systemd (bare) unit would
+# crash-loop on that stale, container-pathed symlink before the reconcile rewrites it, so strip them here (KEEP
+# wg-keys.dat / passwords.json / panel.db + the .bin binary cache). to-docker does NOT strip: the docker subprocess
+# run-model reads the carried symlink as dangling (paths differ) and rewrites all of it on install — a full copy is
+# both safe and simpler. Caller stops/tears down the source datapath separately (see lc_teardown_*).
+migrate_wdtt(){
+  local dir="$1" dd="${2:-/opt/swg-panel-docker}" src dst srec drec strip=no
+  case "$dir" in
+    to-docker)    src=/opt/swg-wdtt;        dst="$dd/data/node/wdtt"; srec=/etc/swg-agent/wdtt.json;  drec="$dd/data/node/wdtt.json";;
+    to-baremetal) src="$dd/data/node/wdtt"; dst=/opt/swg-wdtt;        srec="$dd/data/node/wdtt.json"; drec=/etc/swg-agent/wdtt.json; strip=yes;;
+    *) return 0;;
+  esac
+  [ -d "$src" ] || return 0
+  # A silent `|| true` here was the worst possible failure mode: what is being carried is the server IDENTITY, and
+  # a copy that quietly did nothing looks EXACTLY like a successful convert until the operator's clients stop
+  # connecting to a re-minted server. Still non-fatal (a half-converted box is worse than a warned one), but loud.
+  local _bad=""
+  mkdir -p "$dst" || _bad="couldn't create $dst"
+  [ -n "$_bad" ] || cp -a "$src/." "$dst/" || _bad="couldn't copy $src → $dst"
+  if [ "$strip" = yes ] && [ -z "$_bad" ]; then
+    find "$dst/." -mindepth 2 -maxdepth 2 \( -type l -name server -o -type f \( -name server.pid -o -name server.log -o -name wdtt.env -o -name desired.json \) \) -delete 2>/dev/null || true
+  fi
+  if [ -z "$_bad" ] && [ -f "$srec" ]; then
+    mkdir -p "$(dirname "$drec")" && cp -a "$srec" "$drec" || _bad="couldn't copy the WDTT record $srec → $drec"
+  fi
+  if [ -n "$_bad" ]; then
+    warn "WDTT state was NOT carried over: $_bad"
+    warn "  the WDTT servers will come up with FRESH identities and existing clients will stop connecting."
+    warn "  the originals are untouched in $src — copy them to $dst by hand and restart the node to recover."
+    return 0
+  fi
+  echo "    WDTT server state (identity + config) → $dst"
+  return 0; }
 
 # ── turn-proxy: the curated forks + their owner/repo, and the binary download (GitHub direct, then opt-in mirrors) ──
 turn_repo_owner(){ case "$1" in
@@ -426,7 +602,7 @@ server {                                     # admin panel
     client_max_body_size 4m;
     location ${loc} {
         proxy_pass http://${pt};
-        proxy_set_header Host \$host;
+        proxy_set_header Host \$http_host;   # \$http_host keeps the PORT; \$host strips it, and the address-change confirm compares Host against host:port
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
@@ -441,7 +617,7 @@ server {                                     # subscription page (public, read-o
     client_max_body_size 2m;
     location / {
         proxy_pass http://${st};
-        proxy_set_header Host \$host;
+        proxy_set_header Host \$http_host;   # \$http_host keeps the PORT; \$host strips it, and the address-change confirm compares Host against host:port
         proxy_set_header X-Forwarded-For \$remote_addr;   # swg-sub trusts this only with SWG_SUB_TRUST_XFF=1 (set in reverse-proxy installs)
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
@@ -580,4 +756,256 @@ ensure_swap(){ # PANEL-HOST: a low-RAM box with NO active swap OOM-kills the pan
     echo "  ! swap setup failed — continuing (box remains OOM-prone until swap is added)"; rm -f /swapfile 2>/dev/null || true
   fi
   return 0
+}
+
+# seed_access_settings <panel-settings.json path> — merge this run's Access & TLS answers into the panel's own
+# settings file. panel-settings.json lives in the STATE dir, which an uninstall KEEPS by default, so a fresh
+# install onto a kept state dir would otherwise show the PREVIOUS install's address/TLS in Settings → Access (or
+# blanks on a first install), contradicting what is actually running. The panel is the source of truth once the
+# operator edits it there (it writes install.conf / .env back via swg-netctl); this just makes the two agree from
+# the start. MERGE, never rewrite. Caller exports PANEL_DOMAIN / PANEL_BASE / PORT / TLS_MODE / ACME_EMAIL /
+# CF_TOKEN / CF_ORIGIN_TOKEN. Was copy-pasted into install-host.sh and install-docker.sh, identical but for the path.
+seed_access_settings(){
+  have python3 || { warn "couldn't seed Access settings (no python3) — set them in Settings → Access & TLS"; return 0; }
+  mkdir -p "$(dirname "$1")" 2>/dev/null || true
+  python3 - "$1" <<'PYACC' || warn "couldn't seed Access settings — set them in Settings → Access & TLS"
+import json, os, sys
+p = sys.argv[1]
+try:
+    with open(p) as f: d = json.load(f)
+except Exception:
+    d = {}
+if not isinstance(d, dict): d = {}
+dom  = (os.environ.get("PANEL_DOMAIN") or "").strip()
+base = (os.environ.get("PANEL_BASE") or "").strip().rstrip("/")
+port = (os.environ.get("PORT") or "").strip()
+acc  = d.setdefault("access", {})
+pan  = acc.setdefault("panel", {}); tls = acc.setdefault("tls", {})
+if dom:
+    host = dom if "://" in dom else "https://" + dom            # the operator may have typed a scheme
+    if port and port not in ("443", "80") and ":" not in host.split("://", 1)[1]:
+        host += ":" + port
+    pan["url"] = host + (base or "")
+if port.isdigit(): pan["port"] = int(port)
+pan["base"] = (base or "/")
+tls["mode"]  = (os.environ.get("TLS_MODE") or tls.get("mode") or "").strip()
+tls["email"] = (os.environ.get("ACME_EMAIL") or tls.get("email") or "").strip()
+for k, e in (("cf_token", "CF_TOKEN"), ("cf_origin_token", "CF_ORIGIN_TOKEN")):
+    v = (os.environ.get(e) or "").strip()
+    if v: tls[k] = v                                            # keep an existing token when this run didn't supply one
+tmp = p + ".tmp"
+with open(tmp, "w") as f: json.dump(d, f, indent=2)
+os.replace(tmp, p)
+PYACC
+  return 0; }
+
+# migrate_node_state <to-docker|to-baremetal> [docker_dir] — carry the node's HOST-LOCAL derived state between the
+# two path conventions during a convert: the per-interface keypair backups (the server-key revert baseline) and the
+# routing lists pulled from the panel (geo/<cat>.doms + the geoip sets).
+#
+# The lists are why this exists. The panel ships almost no inline domains — the real per-category list is PULLED into
+# the node's geo dir and read back from there. Kernel-SNI builds its xt_string chain ONLY from categories that have
+# a non-empty domain list, so a converted node started with an empty geo dir, found nothing to hook, tore the SWGK
+# chain down, and reported "SNI scanner down — host routing degraded" until the background pull happened to land —
+# indefinitely if the panel's manifest didn't re-offer the category. Carrying the files makes the converted node
+# come up already routing, exactly as it was before the move.
+migrate_node_state(){
+  local dir="$1" dd="${2:-/opt/swg-panel-docker}" src dst d
+  case "$dir" in
+    to-docker)    src=/var/lib/swg-noded;      dst="$dd/data/node";;
+    to-baremetal) src="$dd/data/node";         dst=/var/lib/swg-noded;;
+    *) return 0;;
+  esac
+  for d in iface-keys geo; do
+    [ -d "$src/$d" ] || continue
+    mkdir -p "$dst/$d" && cp -a "$src/$d/." "$dst/$d/" \
+      || { warn "couldn't carry the node's $d over — $([ "$d" = geo ] && echo "host routing re-fills itself from the panel within a minute" || echo "server-key revert loses its baseline")"; continue; }
+    case "$d" in
+      iface-keys) sub "carried interface keypair backups → $dst/iface-keys";;
+      geo)        sub "carried the pulled routing lists → $dst/geo";;
+    esac
+  done
+  return 0; }
+
+# wdtt_local [record…] — one TAB-separated row per WDTT instance this node manages: iface, listen, wg_addr.
+# Reads the FIRST record path that exists (docker installs pass their own before the bare-metal default).
+# Was three near-copies across install-host / install-node / install-docker, differing only in that lookup.
+wdtt_local(){
+  local r="" p
+  for p in "$@" /etc/swg-agent/wdtt.json; do [ -f "$p" ] && { r="$p"; break; }; done
+  [ -n "$r" ] || return 0
+  python3 - "$r" <<'PYWL' 2>/dev/null || true
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: raise SystemExit
+for i in (d.get("wdtt") or []):
+    if isinstance(i, dict) and i.get("iface"):
+        print("%s\t%s\t%s" % (i["iface"], i.get("listen") or ("127.0.0.1:%s" % (i.get("wg_port") or "?")), i.get("wg_addr") or "?"))
+PYWL
+}
+wdtt_row(){ printf '    %s%-10s%s  %s%-10s%s  %s  %s\n' "${C_GREEN:-}" "$1" "${RESET:-}" "${BOLD:-}" "WDTT" "${RESET:-}" "${2:-?}" "${3:-?}"; }
+
+# ── nginx after a convert ────────────────────────────────────────────────────────────────────────
+# A convert MOVES the panel's cert dir (/etc/swg-panel → /etc/swg-panel.converted-<ts>, or the other
+# way into <docker>/data/etc) and CHANGES the upstream ports. A reverse-proxied install therefore comes
+# out the far side with a vhost pointing at a path that no longer exists and a port nothing listens on.
+# nginx keeps serving its stale in-memory config, so nothing looks wrong until someone reloads — at which
+# point `nginx -t` fails and the site is down. Observed live: subscriptions 502'd after a bare→docker
+# convert because the vhost still proxied to the bare :8888 while the container published :8444.
+#
+# Ownership rule: we only REWRITE the vhost swg itself wrote (sites-available/swg-panel.conf). Everything
+# else on the box is the operator's, so for those we DETECT and report the exact old→new values and let
+# them make the edit. Silently rewriting a config we didn't author is how you lose someone's tuning.
+#
+#   nginx_convert_fixup <new_tls_dir> <new_panel_upstream> [<new_sub_upstream>]
+#     new_tls_dir       dir now holding fullchain.pem/key.pem, e.g. /opt/swg-panel-docker/data/etc/tls
+#     new_panel_upstream  e.g. http://127.0.0.1:8088
+#     new_sub_upstream    e.g. https://127.0.0.1:8444   (optional; blank = don't mention the sub)
+NGINX_DIR="${NGINX_DIR:-/etc/nginx}"   # overridable so this is testable and dry-runnable against a fake tree
+_ngx_enabled_files(){        # list every config file nginx will read (can't use `nginx -T`: it fails when broken)
+  local d; for d in "$NGINX_DIR/sites-enabled" "$NGINX_DIR/conf.d"; do
+    [ -d "$d" ] || continue
+    find "$d" -maxdepth 1 -type f -o -maxdepth 1 -type l 2>/dev/null
+  done | sort -u; }
+_ngx_port_dead(){ have ss || return 1; [ -z "$(ss -lntH "sport = :$1" 2>/dev/null)" ]; }
+# ngx_upstream <port> — "https://127.0.0.1:<port>" or "http://…", decided by ASKING the listener rather than
+# assuming. Whether swg-sub terminates its own TLS depends on subscriptions.serve.tls_mode, and the panel's
+# loopback listener is plain HTTP while its public one is not — guessing here writes a vhost that 502s.
+ngx_upstream(){
+  local p="$1"
+  curl -sk -o /dev/null --max-time 3 "https://127.0.0.1:$p/" 2>/dev/null && { printf 'https://127.0.0.1:%s' "$p"; return 0; }
+  printf 'http://127.0.0.1:%s' "$p"; }
+nginx_convert_fixup(){
+  local tlsdir="$1" up_panel="$2" up_sub="${3:-}"
+  have nginx || return 0
+  _ngx_enabled_files | grep -q . || return 0
+  local swgvh="" f
+  for f in "$NGINX_DIR/sites-enabled/swg-panel.conf" "$NGINX_DIR/conf.d/swg-panel.conf"; do [ -e "$f" ] && swgvh="$f" && break; done
+  [ -n "$swgvh" ] && [ -L "$swgvh" ] && swgvh="$(readlink -f "$swgvh" 2>/dev/null || echo "$swgvh")"
+
+  # 1) repair OUR vhost in place — only the two things a convert invalidates, so operator edits survive
+  local swgbak=""
+  if [ -n "$swgvh" ] && [ -f "$swgvh" ] && [ -f "$tlsdir/fullchain.pem" ]; then
+    # NOT beside the vhost: nginx `include sites-enabled/*` would load the backup as a duplicate server
+    # block, and it would also show up in the operator-config scan below as a file we don't own.
+    swgbak="$(mktemp 2>/dev/null || echo "/tmp/swg-vhost.$$")"; cp -a "$swgvh" "$swgbak" 2>/dev/null || true
+    local live_ports; live_ports="$(ss -lntH 2>/dev/null | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u | tr '\n' ',')"
+    python3 - "$swgvh" "$tlsdir" "$up_panel" "$live_ports" <<'PYNGX' 2>/dev/null && sub "repointed the panel vhost ($swgvh) at $tlsdir and $up_panel"
+import os, re, sys
+p, tls, up = sys.argv[1], sys.argv[2].rstrip("/"), sys.argv[3]
+live = {x for x in (sys.argv[4] if len(sys.argv) > 4 else "").split(",") if x}
+s = open(p).read()
+# only rewrite a cert path that is actually GONE — never touch one the operator repointed themselves
+def cert(m):
+    key, path = m.group(1), m.group(2)
+    return m.group(0) if os.path.exists(path) else "%s %s/%s;" % (key, tls, os.path.basename(path))
+s = re.sub(r"(ssl_certificate|ssl_certificate_key)\s+(\S+);", cert, s)
+# We wrote this file, and what we write is the PANEL vhost only — one upstream. If it now names more than one
+# distinct loopback port, it has been extended beyond what we generate (a sub vhost bolted into the same file,
+# say), and "point every upstream at the panel" would silently redirect the other one. Leave ports alone then;
+# the reporting pass below still tells the operator exactly what moved. Also never touch a port that is LIVE:
+# a listening upstream is by definition not what this convert broke.
+ports = set(re.findall(r"proxy_pass\s+https?://127\.0\.0\.1:(\d+);", s))
+if len(ports) <= 1:
+    s = re.sub(r"proxy_pass\s+https?://127\.0\.0\.1:(\d+);",
+               lambda m: m.group(0) if m.group(1) in live else "proxy_pass %s;" % up, s)
+open(p, "w").write(s)
+PYNGX
+  fi
+
+  # 2) report what we must NOT touch: dangling certs / dead upstreams in the operator's own vhosts
+  local bad=0 pf
+  while IFS= read -r pf; do
+    [ -f "$pf" ] || continue
+    [ "$pf" = "$swgvh" ] && continue
+    local c
+    while IFS= read -r c; do
+      [ -n "$c" ] && [ ! -e "$c" ] && { [ "$bad" = 0 ] && warn "nginx configs you maintain still point at things this convert moved:"; bad=1
+        warn "  $(basename "$pf"): certificate $c is gone → use $tlsdir/$(basename "$c")"; }
+    done <<EOC
+$(grep -hoE '^[[:space:]]*ssl_certificate(_key)?[[:space:]]+[^;]+;' "$pf" 2>/dev/null | sed -E 's/^[[:space:]]*ssl_certificate(_key)?[[:space:]]+//; s/;$//')
+EOC
+    local prt
+    while IFS= read -r prt; do
+      [ -n "$prt" ] && _ngx_port_dead "$prt" && { [ "$bad" = 0 ] && warn "nginx configs you maintain still point at things this convert moved:"; bad=1
+        warn "  $(basename "$pf"): nothing listens on 127.0.0.1:$prt → panel is now $up_panel${up_sub:+, subscriptions $up_sub}"; }
+    done <<EOP
+$(grep -hoE 'proxy_pass[[:space:]]+https?://127\.0\.0\.1:[0-9]+' "$pf" 2>/dev/null | grep -oE '[0-9]+$' | sort -u)
+EOP
+  done <<EOF
+$(_ngx_enabled_files)
+EOF
+
+  # 3) validate + reload. A convert must never leave nginx un-reloadable: if our own edit is what broke
+  #    it, put the original back so the operator is no worse off than before.
+  if nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx >/dev/null 2>&1 || true
+    [ "$bad" = 0 ] && sub "nginx config validates and was reloaded"
+  else
+    [ -n "$swgbak" ] && [ -f "$swgbak" ] && { cp -a "$swgbak" "$swgvh"; warn "our vhost edit didn't validate — restored the original"; }
+    warn "nginx -t FAILS, so nginx cannot reload (it is still serving its old in-memory config until something restarts it):"
+    nginx -t 2>&1 | sed 's/^/    /' | head -4
+  fi
+  [ -n "$swgbak" ] && rm -f "$swgbak" 2>/dev/null || true
+  return 0; }
+
+# ── Cloudflare credential validation ─────────────────────────────────────────────────────────────
+# Both prompts (DNS-01 for `cloudflare`, Origin CA for `cf15`) want a SCOPED API TOKEN: 40 characters of
+# [A-Za-z0-9_-]. That is the only form the code wires — acme.sh gets CF_Token, mk_cf_origin sends a Bearer
+# header; nothing ever sets CF_Key/CF_Email, so a Global API Key would fail later at issue time. Reject it
+# HERE, where the message can say why, instead of after the install has moved on.
+#
+# The old checks were "non-empty" (docker) and "at least 10 chars" (host), so an email address sailed through
+# both and the install proceeded to a certificate that could never issue.
+# Deliberately SHAPE-only, not a length equality. The classic scoped token is 40 chars, but Cloudflare also
+# issues prefixed ones (cfut_… , ~52 chars), and pinning to 40 would reject a perfectly good credential — a
+# worse failure than the one this is fixing, because the operator would have no way past it but --force.
+# So: reject what CANNOT be a token (an email, whitespace, quotes, anything far too short) and let the rest
+# through to fail loudly at issue time if the scope is wrong.
+v_cftoken(){
+  case "$1" in *[!A-Za-z0-9_-]*) return 1;; esac      # '@' and '.' land here → an email can never pass
+  # 37 lowercase hex is the Global API Key. It is a real Cloudflare credential, which is exactly why it needs
+  # rejecting HERE: acme.sh would want CF_Key + CF_Email for it and we only ever set CF_Token, so it would fail
+  # at issue time with a generic auth error instead of "you pasted the wrong one of your two credentials".
+  case "${#1}" in 37) case "$1" in *[!0-9a-f]*) ;; *) return 1;; esac;; esac
+  [ "${#1}" -ge 30 ]
+}
+v_cforigin(){ v_cftoken "$1"; }                        # same credential type, different scope
+# Why a value was rejected — ask_valid shows this instead of a generic hint, so the operator is told what they
+# actually pasted rather than being re-prompted with the same sentence.
+v_cftoken_why(){
+  case "$1" in
+    "")        echo "the API token can't be empty";                                                       return;;
+    *@*.*)     echo "that looks like an EMAIL address, not an API token";                                 return;;
+  esac
+  case "${#1}" in
+    37) case "$1" in *[!0-9a-f]*) ;; *) echo "that looks like your Global API Key — this needs a scoped API Token (My Profile → API Tokens → Create Token)"; return;; esac;;
+  esac
+  case "$1" in *[!A-Za-z0-9_-]*) echo "an API token is only letters, digits, '_' and '-' — that value has other characters"; return;; esac
+  echo "that is only ${#1} characters — a Cloudflare API token is 40 or more"
+}
+v_cforigin_why(){ v_cftoken_why "$1"; }
+
+# ── host addresses for a DOCKER panel ────────────────────────────────────────────────────────────
+# host_bindable_ips — the HOST's bindable, public-servable addresses as "ip|iface" (comma-separated).
+# The panel's own _bindable_ips() cannot produce these in docker: the container is BRIDGED, so it sees
+# only the compose network's 172.x — and `ip` isn't even in the panel image. The installer runs on the
+# host, so it captures them here and passes them in via .env (SWG_HOST_IPS). Without it the Access & TLS
+# "Listen IP" picker offers nothing but 0.0.0.0 / 127.0.0.1 on every docker install.
+# The interface filter MIRRORS swg-panel-server's _IFACE_SKIP_RE — keep the two in step.
+# Excludes by DEVICE TYPE as well as name: the name filter only catches wgN/awgN, so any tunnel the operator
+# named otherwise (an adopted `foreign0`, a WDTT server's `wdtt0`) was offered as a bindable public address —
+# binding the panel to a VPN tunnel's own IP is never right. Type is read once from `ip -d link`, where the kind
+# (wireguard / amneziawg / tun) is the first token of a detail line. Bridges/veth stay NAME-filtered on purpose:
+# a host `br0` carrying real traffic is perfectly bindable, while docker's br-*/veth* are not.
+host_bindable_ips(){
+  command -v ip >/dev/null 2>&1 || return 0
+  local tun; tun="$(ip -d link show 2>/dev/null | awk '
+      /^[0-9]+: / { name=$2; sub(/:$/,"",name); sub(/@.*/,"",name); next }
+      { if (name != "" && ($1=="wireguard" || $1=="amneziawg" || $1=="tun" || $1=="tap")) { print name; name="" } }')"
+  ip -o addr show scope global 2>/dev/null | awk -v skip="$tun" '
+    BEGIN { n=split(skip, s, "\n"); for (i=1; i<=n; i++) if (s[i] != "") X[s[i]]=1 }
+    ($3=="inet" || $3=="inet6") && !($2 in X) &&
+    $2 !~ /^(wg[0-9]|awg[0-9]|swg_|docker|br-|veth|virbr|tun[0-9]|tap[0-9]|cni|flannel|kube|cali|nerdctl)/ {
+      split($4, a, "/"); printf "%s%s|%s", (m++ ? "," : ""), a[1], $2 }'
 }

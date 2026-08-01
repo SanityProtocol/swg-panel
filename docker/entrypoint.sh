@@ -44,6 +44,23 @@ issue_sub_cert(){ set +e
        && cert_covers_host "$SC" "$SUB_DOMAIN"; then
     log "swg-sub: reusing present cert for $SUB_DOMAIN"
   else case "${TLS:-selfsigned}" in
+    letsencrypt|letsencrypt-ip)
+      # The sub never even ATTEMPTED Let's Encrypt: the case below had branches only for cloudflare and cf15, so
+      # TLS=letsencrypt fell through to *) and self-signed. The panel got a real cert from its own branch while the
+      # subscription page silently did not — and a validating proxy (Cloudflare Full-strict) then answers 526 on
+      # every subscription link. HTTP-01 standalone, exactly as the panel does it: same mechanism, no extra
+      # credential. Needs :80 reachable FOR THE SUB HOST, which is the same requirement the panel branch carries.
+      [ -n "${ACME_EMAIL:-}" ] && acme --register-account -m "$ACME_EMAIL" --server letsencrypt >/dev/null 2>&1 || true
+      if _sout="$(acme --issue -d "$SUB_DOMAIN" --standalone --server letsencrypt --keylength ec-256 2>&1)" \
+           || [ -s "$ACME_CFG/${SUB_DOMAIN}_ecc/${SUB_DOMAIN}.cer" ]; then
+        if acme --install-cert -d "$SUB_DOMAIN" --ecc --key-file "$SK" --fullchain-file "$SC" --reloadcmd 'true' >/dev/null 2>&1; then
+          log "swg-sub: Let's Encrypt cert for $SUB_DOMAIN installed (HTTP-01)"
+        else log "WARNING: swg-sub cert issued but could not be installed — falling back to self-signed"; sub_selfsigned; fi
+      else
+        printf '%s\n' "$_sout" | sed 's/^/[acme-sub] /'
+        log "WARNING: swg-sub Let's Encrypt for $SUB_DOMAIN FAILED (see [acme-sub] above) — needs :80 reachable for THAT hostname. Falling back to self-signed."
+        sub_selfsigned
+      fi ;;
     cloudflare)
       if [ -n "${CF_TOKEN:-}" ] \
          && { CF_Token="$CF_TOKEN" acme --issue -d "$SUB_DOMAIN" --dns dns_cf --server letsencrypt --keylength ec-256 >/dev/null 2>&1 \
@@ -52,6 +69,7 @@ issue_sub_cert(){ set +e
         log "swg-sub: Cloudflare DNS-01 cert for $SUB_DOMAIN installed"
       else log "WARNING: swg-sub Cloudflare cert for $SUB_DOMAIN failed — falling back to self-signed (set the sub hostname to CF Flexible, or check the token)"; sub_selfsigned; fi ;;
     cf15)
+      _scferr="$(mktemp 2>/dev/null || echo /tmp/cf15sub.err)"
       key="$(openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null)"
       csr="$(printf '%s\n' "$key" | openssl req -new -key /dev/stdin -subj "/CN=$SUB_DOMAIN" 2>/dev/null)"
       cert="$(CF_ORIGIN_TOKEN="${CF_ORIGIN_TOKEN:-}" PANEL_DOMAIN="$SUB_DOMAIN" CSR="$csr" python3 - <<'PY'
@@ -63,10 +81,21 @@ try:
     with urllib.request.urlopen(req,timeout=30) as r: d=json.load(r)
 except urllib.error.HTTPError as e: d=json.load(e)
 except Exception as e: sys.stderr.write(str(e)); sys.exit(1)
-sys.stdout.write(d["result"]["certificate"]) if d.get("success") else sys.exit(1)
+if d.get("success"):
+    sys.stdout.write(d["result"]["certificate"])
+else:
+    # Say WHAT Cloudflare objected to. Exiting mute left "cf15 request failed" and three things to guess
+    # between (wrong token, wrong scope, zone not on this account); the bare-metal path has always printed
+    # this, so the container was strictly worse at the same job.
+    for _e in (d.get("errors") or [{"message": "unknown error"}]):
+        sys.stderr.write("%s (code %s)\n" % (_e.get("message", "?"), _e.get("code", "?")))
+    sys.exit(1)
 PY
-)" && [ -n "$cert" ] && { mkdir -p "$SUB_TLS_DIR"; printf '%s\n' "$cert" > "$SC"; printf '%s\n' "$key" > "$SK"; log "swg-sub: Cloudflare Origin cert for $SUB_DOMAIN installed (15y)"; } \
-        || { log "WARNING: swg-sub cf15 cert for $SUB_DOMAIN failed — self-signed fallback"; sub_selfsigned; } ;;
+)" 2>"$_scferr" && [ -n "$cert" ] && { mkdir -p "$SUB_TLS_DIR"; printf '%s\n' "$cert" > "$SC"; printf '%s\n' "$key" > "$SK"; log "swg-sub: Cloudflare Origin cert for $SUB_DOMAIN installed (15y)"; } \
+        || { log "WARNING: swg-sub cf15 cert for $SUB_DOMAIN failed — Cloudflare's response:"
+             while IFS= read -r _l; do [ -n "$_l" ] && log "  [cf] $_l"; done < "$_scferr"
+             sub_selfsigned; }
+      rm -f "$_scferr" 2>/dev/null || true ;;
     *) sub_selfsigned ;;
   esac; fi
   [ -f "$SK" ] && chmod 600 "$SK" 2>/dev/null || true
@@ -82,8 +111,12 @@ PANEL_USER="${PANEL_USER:-admin}"
 PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
 STATS_DIR="${STATS_DIR:-/var/www/wgstats}"
 
-# 1) Login: a mounted auth file wins; else generate from PANEL_PASSWORD; else no auth.
-if [ -n "${SWG_PANEL_AUTH:-}" ] && [ ! -f "$SWG_PANEL_AUTH" ]; then
+# 1) Login: a mounted (non-empty) auth file wins; else generate from PANEL_PASSWORD; else no auth.
+# NOTE: -s (not -f) is deliberate — the swg-sub service's `/dev/null:/etc/swg-panel/auth` bind mount makes docker
+# create an EMPTY ./data/etc/auth on the host as its mount target, BEFORE this entrypoint runs. With -f that empty
+# file would be mistaken for "auth already set" and we'd skip generation → the panel would run with NO login. -s
+# regenerates from PANEL_PASSWORD whenever the file is missing OR empty, while a real mounted auth still wins.
+if [ -n "${SWG_PANEL_AUTH:-}" ] && [ ! -s "$SWG_PANEL_AUTH" ]; then
   if [ -n "${PANEL_PASSWORD:-}" ]; then
     mkdir -p "$(dirname "$SWG_PANEL_AUTH")"
     python3 - "$PANEL_USER" "$PANEL_PASSWORD" > "$SWG_PANEL_AUTH" <<'PY'
@@ -217,6 +250,7 @@ elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
       [ -n "${CF_ORIGIN_TOKEN:-}" ] || { log "WARNING: TLS=cf15 but CF_ORIGIN_TOKEN unset — falling back to self-signed"; selfsigned; }
       if [ -n "${CF_ORIGIN_TOKEN:-}" ]; then
         log "requesting a 15-year Cloudflare Origin certificate for $PANEL_DOMAIN…"
+        _cferr="$(mktemp 2>/dev/null || echo /tmp/cf15.err)"
         key="$(openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null)"
         csr="$(printf '%s\n' "$key" | openssl req -new -key /dev/stdin -subj "/CN=$PANEL_DOMAIN" 2>/dev/null)"
         cert="$(CF_ORIGIN_TOKEN="$CF_ORIGIN_TOKEN" PANEL_DOMAIN="$PANEL_DOMAIN" CSR="$csr" python3 - <<'PY'
@@ -228,10 +262,22 @@ try:
     with urllib.request.urlopen(req,timeout=30) as r: d=json.load(r)
 except urllib.error.HTTPError as e: d=json.load(e)
 except Exception as e: sys.stderr.write(str(e)); sys.exit(1)
-sys.stdout.write(d["result"]["certificate"]) if d.get("success") else sys.exit(1)
+if d.get("success"):
+    sys.stdout.write(d["result"]["certificate"])
+else:
+    # Say WHAT Cloudflare objected to. Exiting mute left "cf15 request failed" and three things to guess
+    # between (wrong token, wrong scope, zone not on this account); the bare-metal path has always printed
+    # this, so the container was strictly worse at the same job.
+    for _e in (d.get("errors") or [{"message": "unknown error"}]):
+        sys.stderr.write("%s (code %s)\n" % (_e.get("message", "?"), _e.get("code", "?")))
+    sys.exit(1)
 PY
-)" && [ -n "$cert" ] && { printf '%s\n' "$cert" > "$SWG_PANEL_TLS_CERT"; printf '%s\n' "$key" > "$SWG_PANEL_TLS_KEY"; log "Cloudflare Origin cert installed (15y) — valid only behind Cloudflare's proxy"; } \
-          || { log "WARNING: cf15 request failed (check CF_ORIGIN_TOKEN / that $PANEL_DOMAIN is on this account) — falling back to self-signed"; selfsigned; }
+)" 2>"$_cferr" && [ -n "$cert" ] && { printf '%s\n' "$cert" > "$SWG_PANEL_TLS_CERT"; printf '%s\n' "$key" > "$SWG_PANEL_TLS_KEY"; log "Cloudflare Origin cert installed (15y) — valid only behind Cloudflare's proxy"; } \
+          || { log "WARNING: cf15 request failed — Cloudflare's response:"
+               while IFS= read -r _l; do [ -n "$_l" ] && log "  [cf] $_l"; done < "$_cferr"
+               log "  the token needs Zone → SSL and Certificates → Edit, and $PANEL_DOMAIN must be on that account"
+               log "  falling back to self-signed"; selfsigned; }
+        rm -f "$_cferr" 2>/dev/null || true
       fi ;;
     *) log "unknown TLS='$TLS' — using self-signed"; selfsigned ;;
   esac

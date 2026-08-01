@@ -41,14 +41,17 @@
       cmdCopied: "Command copied", vkCopied: "VK link copied — paste it in the app",
       pasteStep1: "1. Open ", pasteStep2: "2. Paste the copied connection link", pasteStep3: "3. Click ",
       pasteConnect: "Connect", pasteDownload: "Download the app here", amneziaDownloads: "AmneziaVPN downloads",
-      mzGetConfig: "Download the config here", cliGetClient: "Download the client here", cliDownBy: "Download the binary by {author}", cliNative: "native",
+      mzGetConfig: "Download the config here", cliGetClient: "Download the client here", cliDownBy: "Download the binary by {author}", cliNative: "native", copyCmd: "Copy the command",
       cliSteps: { linux:   ["1. Download the client", "2. Make it executable (chmod +x)", "3. Open a *terminal* in that directory", "4. Paste and run the command", "5. Wait for success and start *WG*"],
                   macos:   ["1. Download the client", "2. Make it executable (chmod +x)", "3. If blocked, right-click → *Open*", "4. Open *Terminal* in that directory", "5. Paste and run the command", "6. Wait for success and start *WG*"],
                   windows: ["1. Download the client", "2. Open *PowerShell* in that directory", "3. Paste and run the command", "4. Wait for success and start *WG*"],
                   android: ["1. Install *Termux* from *F-Droid*", "2. Run termux-setup-storage", "3. Download the client", "4. Make it executable (chmod +x)", "5. Paste and run the command", "6. Wait for success and start *WG*"] },
-      linkCopied: "Connection link copied",
+      linkCopied: "Connection link copied", copyLink: "Copy the link again", copyCfg: "Copy the config", cfgCopied: "Config copied",
       wtDownloaded: "Config file downloaded", wtStep1: "1. Open the WG Turn app", wtStep2a: "2. Click on the ", wtStep2b: " button",
       wtStep3: "3. Select “Import from file or archive”", wtStep4: "4. Locate the downloaded .conf file", wtStep5: "5. Flip the connection toggle",
+      liWings1: "1. Open *WINGS V DeX*", liWings2: "2. Click *Paste from Clipboard*", liWings3: "3. Connect",
+      liGen1: "1. Open *{app}*", liGen2: "2. Open the *Add profile* / import screen",
+      liGen3: "3. *Paste* the copied link (or use the app's from-clipboard button)", liGen4: "4. Confirm, then connect",
       mzBtn1: "Download the GUI app", mzBtn2: "Install TURN Proxy core", mzBtn3: "Assemble and connect", mzBtn3Sub: "Follow the instructions",
       mzCopied: "Config string copied", mzGetCore: "Don't forget to download the core",
       mzStep1: "1. Open the *TURN Proxy* app", mzStep2: "2. Go to *Settings*", mzStep3: "3. Click on *Core (Binary)*", mzStep4: "4. Press *Import*",
@@ -95,14 +98,17 @@
       cmdCopied: "Команда скопирована", vkCopied: "Ссылка VK скопирована — вставьте её в приложении",
       pasteStep1: "1. Откройте ", pasteStep2: "2. Вставьте скопированную ссылку", pasteStep3: "3. Нажмите ",
       pasteConnect: "Подключиться", pasteDownload: "Скачать приложение здесь", amneziaDownloads: "Загрузки AmneziaVPN",
-      mzGetConfig: "Скачать конфиг здесь", cliGetClient: "Скачать клиент здесь", cliDownBy: "Скачать бинарник от {author}", cliNative: "родной",
+      mzGetConfig: "Скачать конфиг здесь", cliGetClient: "Скачать клиент здесь", cliDownBy: "Скачать бинарник от {author}", cliNative: "родной", copyCmd: "Скопировать команду",
       cliSteps: { linux:   ["1. Скачайте клиент", "2. Сделайте его исполняемым (chmod +x)", "3. Откройте *терминал* в этой папке", "4. Вставьте и запустите команду", "5. Дождитесь подключения и запустите *WG*"],
                   macos:   ["1. Скачайте клиент", "2. Сделайте его исполняемым (chmod +x)", "3. Если заблокировано — ПКМ → *«Открыть»*", "4. Откройте *Терминал* в этой папке", "5. Вставьте и запустите команду", "6. Дождитесь подключения и запустите *WG*"],
                   windows: ["1. Скачайте клиент", "2. Откройте *PowerShell* в этой папке", "3. Вставьте и запустите команду", "4. Дождитесь подключения и запустите *WG*"],
                   android: ["1. Установите *Termux* из *F-Droid*", "2. Выполните termux-setup-storage", "3. Скачайте клиент", "4. Сделайте его исполняемым (chmod +x)", "5. Вставьте и запустите команду", "6. Дождитесь подключения и запустите *WG*"] },
-      linkCopied: "Ссылка для подключения скопирована",
+      linkCopied: "Ссылка для подключения скопирована", copyLink: "Скопировать ссылку ещё раз", copyCfg: "Скопировать конфиг", cfgCopied: "Конфиг скопирован",
       wtDownloaded: "Файл конфигурации загружен", wtStep1: "1. Откройте приложение WG Turn", wtStep2a: "2. Нажмите кнопку ", wtStep2b: "",
       wtStep3: "3. Выберите «Импорт из файла или архива»", wtStep4: "4. Найдите загруженный файл .conf", wtStep5: "5. Включите переключатель подключения",
+      liWings1: "1. Откройте *WINGS V DeX*", liWings2: "2. Нажмите *Добавить из буфера*", liWings3: "3. Подключайтесь",
+      liGen1: "1. Откройте *{app}*", liGen2: "2. Откройте экран *добавления профиля* / импорта",
+      liGen3: "3. *Вставьте* скопированную ссылку (или кнопкой из буфера)", liGen4: "4. Подтвердите и подключитесь",
       mzBtn1: "Скачать приложение (GUI)", mzBtn2: "Установить ядро TURN Proxy", mzBtn3: "Собрать и подключиться", mzBtn3Sub: "Следуйте инструкциям",
       mzCopied: "Строка конфигурации скопирована", mzGetCore: "Не забудьте скачать ядро",
       mzStep1: "1. Откройте приложение *TURN Proxy*", mzStep2: "2. Перейдите в *«Настройки»*", mzStep3: "3. Нажмите *«Ядро (Binary)»*", mzStep4: "4. Нажмите *«Импорт»*",
@@ -211,13 +217,16 @@
     function build(cid) {
       var cl = clients[cid], links = cl && cl.platforms && cl.platforms[os];   // this OS only — no cross-OS fallback
       if (!has(links)) return null;
-      // The app you actually download for this OS (desktop "WINGS DeX" vs Android "WINGS V"); attribute it to the
-      // publishing fork (native_fork) so it's clear it's the same source as the fork chip.
+      // Attribute the download to the app's REAL author — the explicit `author` field wins over `native_fork` (which
+      // only pins the client to a server fork for schema resolution, e.g. pwdtt→ildarmaga even though it's luminescq's).
+      // Mirrors the panel's turnClientAuthor rule so Settings and the sub page agree.
       var store = links.play || links.appstore;                      // store / TestFlight install link
       var page = links.page || links.github || store || links.url;   // downloads PAGE (bubble header / "manually")
       var file = links.url || store || page;                         // DIRECT installer (button); store when no file
-      return { app: links.name || cl.name || cid, cid: cid, enc: cl.encoder || cid, author: cl.native_fork || "", platform: os, store: store || "",
+      return { app: links.name || cl.name || cid, cid: cid, enc: cl.encoder || cid, author: cl.author || cl.native_fork || "", platform: os, store: store || "",
                productName: links.name || "",   // OS-specific product name (desktop "WINGS DeX") — differs from the encoder's app name
+               autostart: !!links.autostart,    // per-app-per-OS: Start opens the app via its URL scheme (else copy-link + import steps)
+               instructions: links.instructions || "",   // optional per-app-per-OS import text (overrides the generic hint)
                file: file, fileName: urlFileName(file), page: page,
                tag: links.tag || "", assets: links.assets || [] };   // assets = LATEST release's files → the bubble
     }
@@ -242,9 +251,16 @@
       return cl === "native" ? (cli ? 3 : 1)
         : (cl === "friendly" || cl === "friendly_core") ? (cli ? 4 : 2)
         : cl === "plain" ? (cli ? 6 : 5) : 9; };
+    var autostartOf = function (id) { return !!(((clients[id] || {}).platforms || {})[os] || {}).autostart; };   // opens one-tap (registers a URL scheme)
     var ranked = [];
     for (var id in clients) if (compat[id] && has(clients[id].platforms && clients[id].platforms[os])) ranked.push(id);
-    ranked.sort(function (a, b) { return rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0); });
+    // compat band first, then the one-tap (autostart) apps ahead of paste/QR-only ones, then alphabetical — mirrors the panel picker.
+    ranked.sort(function (a, b) { return rank(a) - rank(b) || ((autostartOf(b) ? 1 : 0) - (autostartOf(a) ? 1 : 0)) || (a < b ? -1 : a > b ? 1 : 0); });
+    // WDTT family system default = a ONE-TAP app. If the top pick can't open one-tap (e.g. amurcanov's wdttapp),
+    // substitute xxcipher (the fleet-standard clickable WDTT client) where offered; a fork's own clickable app (Ivan4537) stays.
+    if (srv && srv.kind === "wdtt" && ranked.length && !autostartOf(ranked[0]) && ranked.indexOf("xxcipher") >= 0) {
+      var xcd = build("xxcipher"); if (xcd) return xcd;
+    }
     for (var k = 0; k < ranked.length; k++) { var r2 = build(ranked[k]); if (r2) return withCli(r2, cliAuthors[0]); }
     // 3) legacy fallback: the fork's own clients list order — ONLY when there's no compat map (serve.json predating
     //    `compat`). With a compat map present, step 2 already decided; never resurrect a client the compat map omits.
@@ -441,16 +457,12 @@
       ? t("getAppBy").replace("{app}", ga.app).replace("{author}", ga.author)
       : (files.length ? t("getAppManual").replace("{app}", ga.app)   // opens a bubble → "Get <app> manually"
                       : t("getApp").replace("{app}", ga.app) + (platLbl(ga.platform) ? " · " + platLbl(ga.platform) : ""));
-    if (files.length) {
-      var btn = el("button", "scell-getapp-a scell-getapp-btn"); btn.type = "button";
-      btn.textContent = label + " ▾";
-      btn.onclick = function (e) { e.stopPropagation(); openDlBubble(btn, ga, files); };
-      wrap.appendChild(btn);
-    } else {
-      var a = el("a", "scell-getapp-a"); a.href = ga.page; a.target = "_blank"; a.rel = "noopener";
-      a.textContent = label + " ↗";
-      wrap.appendChild(a);
-    }
+    // ALWAYS a dropdown (▾) for consistency — even a page-only app (no direct installer, e.g. the Sidecar CLI) opens
+    // a bubble whose header links its releases page, instead of a bare ↗ URL.
+    var btn = el("button", "scell-getapp-a scell-getapp-btn"); btn.type = "button";
+    btn.textContent = label + " ▾";
+    btn.onclick = function (e) { e.stopPropagation(); openDlBubble(btn, ga, files); };
+    wrap.appendChild(btn);
     return wrap;
   }
   // Device/browser BACK while an instructions popover/overlay is open should just CLOSE it, not navigate away. Opening
@@ -458,7 +470,7 @@
   // OTHER means (×/Esc/backdrop/outside) pops that entry itself (disarmOverlayBack) so history stays balanced. Only one
   // hint is open at a time, and a transition (choice → walkthrough) REUSES the one entry (arm is idempotent) — no churn.
   var _ovArmed = false;
-  function closeAllHints() { closeImportHint(); closePasteHint(); closeWgTurnHint(); closeVktgzChoice(); closeVktgzHint(); closeCliHint(); }
+  function closeAllHints() { clearFit(); closeImportHint(); closePasteHint(); closeWgTurnHint(); closeLinkImportHint(); closeVktgzChoice(); closeVktgzHint(); closeCliHint(); }
   function _ovOnPop() { _ovArmed = false; window.removeEventListener("popstate", _ovOnPop); closeAllHints(); }
   function armOverlayBack() {
     if (_ovArmed) return;
@@ -473,6 +485,33 @@
   // The single user-initiated dismiss for every hint: close whichever is open + drop the Back entry. (A transition
   // between hints uses the raw close* instead, so the entry carries over.) Only one is ever open, so closing all is safe.
   function dismissHints() { closeAllHints(); disarmOverlayBack(); }
+  // FIT-TO-SCREEN — every instruction card opens centered and is scaled AS A WHOLE to fill a comfortable share of the
+  // viewport: bigger on large screens, smaller on phones so it never scrolls or clips. Capped by CEIL so a huge monitor
+  // can't blow the text up, floored so it stays readable. Scaling the whole card (not per-element font tweaks) keeps ONE
+  // consistent type scale across all six overlays. A ResizeObserver re-fits when the natural size changes (an image
+  // loads, a download panel expands — transform never affects the observed box, so there's no feedback loop); window
+  // resize re-fits on rotation.
+  var _fitInner = null, _fitRO = null;
+  function fitOverlay(inner) {
+    if (!inner || !document.body.contains(inner)) return;
+    inner.style.transform = "none";                                          // measure natural (unscaled) size
+    var nw = inner.scrollWidth, nh = inner.scrollHeight;
+    if (!nw || !nh) return;
+    var availW = window.innerWidth - 28, availH = window.innerHeight - 36;    // safe margins (the × sits in the corner)
+    var CEIL = 1.3, FLOOR = 0.4;                                             // ceiling: never gigantic · floor: readable, only the rare landscape-phone + 11-step case reaches it
+    var k = Math.min(availW / nw, availH / nh, CEIL);
+    if (k < FLOOR) k = FLOOR;
+    inner.style.transformOrigin = "center center";
+    inner.style.transform = (k > 0.995 && k < 1.005) ? "none" : "scale(" + k.toFixed(3) + ")";
+  }
+  function clearFit() { if (_fitRO) { try { _fitRO.disconnect(); } catch (_) {} _fitRO = null; } _fitInner = null; }
+  function openFit(inner) {
+    clearFit(); _fitInner = inner;
+    fitOverlay(inner);
+    requestAnimationFrame(function () { fitOverlay(inner); });                // re-fit once fonts/layout settle
+    if (window.ResizeObserver) { _fitRO = new ResizeObserver(function () { fitOverlay(inner); }); try { _fitRO.observe(inner); } catch (_) {} }
+  }
+  window.addEventListener("resize", function () { if (_fitInner) fitOverlay(_fitInner); });
   // Swipe DOWN on a full-screen hint closes it (a natural "dismiss sheet" gesture). Tracks a mostly-vertical drag past a
   // threshold; horizontal drags (pager swipes) and taps are ignored.
   function attachSwipeDown(ov, onClose) {
@@ -635,7 +674,7 @@
     x.onclick = dismissHints; ov.appendChild(x);
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };   // only the dark backdrop closes — no auto-dismiss
     document.body.appendChild(ov);
-    _importHint = ov;
+    _importHint = ov; openFit(inner);
     attachSwipeDown(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _ihKey, true); }, 0);
     armOverlayBack();
@@ -668,7 +707,7 @@
     it.appendChild(col); list.appendChild(it); b.appendChild(list);
     return b;
   }
-  function showPasteHint() {
+  function showPasteHint(c) {
     closePasteHint(); closeImportHint();
     var ov = el("div", "ih-overlay ph-overlay");
     var inner = el("div", "ih-inner ph-inner");
@@ -691,12 +730,13 @@
       panel = amneziaDlPanel(); inner.appendChild(panel); dl.classList.add("open");
     };
     inner.appendChild(dl);
+    if (c && c.openUri) inner.appendChild(copyRow("copyLink", function () { return c.openUri; }, "linkCopied"));
     ov.appendChild(inner);
     var x = el("button", "ih-close"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.textContent = "×";
     x.onclick = dismissHints; ov.appendChild(x);
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };   // only the dark backdrop closes — no auto-dismiss
     document.body.appendChild(ov);
-    _pasteHint = ov;
+    _pasteHint = ov; openFit(inner);
     attachSwipeDown(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _phKey, true); }, 0);
     armOverlayBack();
@@ -749,14 +789,67 @@
       panel = appDlPanelFor((c && c.dlAppName) || "WG Turn", c && c.dlAppUrl, c && c.dlAppPage); inner.appendChild(panel); dl.classList.add("open");
     };
     inner.appendChild(dl);
+    if (c && c.payload) inner.appendChild(copyRow("copyCfg", function () { return c.payload; }, "cfgCopied"));
     ov.appendChild(inner);
     var x = el("button", "ih-close"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.textContent = "×";
     x.onclick = dismissHints; ov.appendChild(x);
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };
     document.body.appendChild(ov);
-    _wgTurnHint = ov;
+    _wgTurnHint = ov; openFit(inner);
     attachSwipeDown(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _wtKey, true); }, 0);
+    armOverlayBack();
+  }
+
+  // DESKTOP deep-link forks (WINGS V DeX `wingsv://`, and any future desktop GUI scheme): a browser can't hand a
+  // custom scheme to an app that hasn't registered it (macOS/Windows/Linux all dead-end silently), so firing it just
+  // errors or does nothing. Instead COPY the connection link + show the app's import steps — the DeX flow is literally
+  // "Add profile → From clipboard", which reads exactly what we just copied. Same full-screen card as the paste/WG-Turn
+  // hints: green "copied ✓✓", the app title, the steps, and a "download the app" toggle for this OS. Esc / × / backdrop closes.
+  var _linkHint = null;
+  function closeLinkImportHint() {
+    if (!_linkHint) return;
+    _linkHint.remove(); _linkHint = null;
+    document.removeEventListener("keydown", _liKey, true);
+  }
+  function _liKey(e) { if (e.key === "Escape") dismissHints(); }
+  function showLinkImportHint(c) {
+    closeLinkImportHint(); closeWgTurnHint(); closePasteHint(); closeImportHint();
+    var app = (c && c.app) || (c && c.dlAppName) || t("theApp");
+    var ov = el("div", "ih-overlay ph-overlay");
+    var inner = el("div", "ih-inner ph-inner");
+    var done = el("div", "ph-copied"); done.appendChild(iconEl("checks")); done.appendChild(el("span", null, t("linkCopied")));
+    inner.appendChild(done);   // green "Connection link copied" ✓✓
+    var head = el("div", "ph-head"); head.appendChild(el("span", "ph-title", app)); inner.appendChild(head);
+    var steps = el("div", "ph-steps");
+    if (c && c.instructions) {   // per-app-per-OS override from the catalog (each newline = one step) — no code change to retune
+      String(c.instructions).split("\n").forEach(function (ln) { if (ln.trim()) steps.appendChild(stepEl(ln.replace("{app}", app))); });
+    } else {
+      // WINGS V DeX gets its exact button labels (Добавить профиль → Из буфера); anything else → a generic import flow.
+      var isWings = /^wingsv:/i.test((c && c.openUri) || "");
+      var keys = isWings ? ["liWings1", "liWings2", "liWings3"] : ["liGen1", "liGen2", "liGen3", "liGen4"];
+      keys.forEach(function (k) { steps.appendChild(stepEl(t(k).replace("{app}", app))); });   // stepEl bolds *…*-wrapped labels
+    }
+    inner.appendChild(steps);
+    if (c && (c.dlAppUrl || c.dlAppPage)) {
+      var dl = el("a", "ph-dl"); dl.href = "#"; dl.textContent = t("pasteDownload");
+      var panel = null;
+      dl.onclick = function (e) {
+        e.preventDefault();
+        if (panel) { panel.remove(); panel = null; dl.classList.remove("open"); return; }   // toggle
+        panel = appDlPanelFor(c.dlAppName || app, c.dlAppUrl, c.dlAppPage); inner.appendChild(panel); dl.classList.add("open");
+      };
+      inner.appendChild(dl);
+    }
+    if (c && c.openUri) inner.appendChild(copyRow("copyLink", function () { return c.openUri; }, "linkCopied"));
+    ov.appendChild(inner);
+    var x = el("button", "ih-close"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.textContent = "×";
+    x.onclick = dismissHints; ov.appendChild(x);
+    ov.onclick = function (e) { if (e.target === ov) dismissHints(); };   // only the dark backdrop closes — no auto-dismiss
+    document.body.appendChild(ov);
+    _linkHint = ov; openFit(inner);
+    attachSwipeDown(ov, dismissHints);
+    setTimeout(function () { document.addEventListener("keydown", _liKey, true); }, 0);
     armOverlayBack();
   }
 
@@ -775,6 +868,19 @@
   function _mzKey(e) { if (e.key === "Escape") dismissHints(); }
   function _mzOutside(e) { if (_vktgzChoice && !_vktgzChoice.contains(e.target)) dismissHints(); }
   function _openUrl(url) { if (!url) return; if (urlFileName(url)) triggerDownload(url); else window.open(url, "_blank", "noopener"); }
+  // Re-copy control for the instruction cards. The payload was already copied on the button press that opened
+  // the card, but the clipboard is easy to lose (a stray copy, a denied permission, an app that ate the focus) —
+  // and if it's gone the steps below are unfollowable, with no way back except closing and starting over.
+  function copyRow(label, get, toast) {
+    var a = el("a", "ph-dl"); a.href = "#"; a.textContent = t(label);
+    a.onclick = function (e) {
+      e.preventDefault();
+      var v = (typeof get === "function" ? get() : get) || "";
+      if (v && navigator.clipboard) navigator.clipboard.writeText(v).catch(function () {});
+      showToast(t(toast));
+    };
+    return a;
+  }
   function stepEl(text) {   // a .ph-step that bolds *…*-wrapped names (app / screen / menu / button labels)
     var d = el("div", "ph-step"), parts = String(text).split("*");
     for (var i = 0; i < parts.length; i++) { if (i % 2) d.appendChild(el("b", null, parts[i])); else if (parts[i]) d.appendChild(document.createTextNode(parts[i])); }
@@ -822,7 +928,7 @@
   }
   function showVktgzHint(c) {
     closeVktgzHint(); closeVktgzChoice();
-    var ov = el("div", "ih-overlay ph-overlay mz-ov");
+    var ov = el("div", "ih-overlay ph-overlay");
     var inner = el("div", "ih-inner ph-inner");
     var done = el("div", "ph-copied"); done.appendChild(iconEl("checks")); done.appendChild(el("span", null, t("mzCopied")));
     inner.appendChild(done);
@@ -834,11 +940,12 @@
     var la = el("a", "ph-dl"); la.href = "#"; la.textContent = t("pasteDownload"); la.onclick = function (e) { e.preventDefault(); _openUrl(c.dlAppUrl); }; links.appendChild(la);
     var lc = el("a", "ph-dl"); lc.href = "#"; lc.textContent = t("mzGetCore"); lc.onclick = function (e) { e.preventDefault(); _openUrl(coreUrlFor(c.forkId)); }; links.appendChild(lc);
     var lg = el("a", "ph-dl"); lg.href = "#"; lg.textContent = t("mzGetConfig"); lg.onclick = function (e) { e.preventDefault(); if (c.wgConf) download(c.wgConf, c.base, "conf"); }; links.appendChild(lg);
+    links.appendChild(copyRow("copyCfg", function () { return c.payload; }, "mzCopied"));   // what step 7 pastes ("Import -> From clipboard")
     inner.appendChild(links);
     ov.appendChild(inner);
     var x = el("button", "ih-close"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.textContent = "×"; x.onclick = dismissHints; ov.appendChild(x);
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };
-    document.body.appendChild(ov); _vktgzHint = ov;
+    document.body.appendChild(ov); _vktgzHint = ov; openFit(inner);
     attachSwipeDown(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _mzKey, true); }, 0);
     armOverlayBack();
@@ -857,7 +964,7 @@
   function cliCommand(c) { return cliCmdStr(c.cmd, c.dlAppFile); }   // the native/preferred author's command (what Start copies)
   function showCliHint(c) {
     closeCliHint();
-    var ov = el("div", "ih-overlay ph-overlay mz-ov");
+    var ov = el("div", "ih-overlay ph-overlay");
     var inner = el("div", "ih-inner ph-inner");
     var done = el("div", "ph-copied"); done.appendChild(iconEl("checks")); done.appendChild(el("span", null, t("cmdCopied")));
     inner.appendChild(done);
@@ -867,33 +974,37 @@
     var steps = el("div", "ph-steps"), arr = ((t("cliSteps") || {})[subOs()]) || ((t("cliSteps") || {}).linux) || [];
     for (var i = 0; i < arr.length; i++) steps.appendChild(stepEl(arr[i]));
     inner.appendChild(steps);
-    // one block per compatible CLI build (NATIVE first): "Download the binary by <author>" (fork-coloured) + its own command
+    // Action links grouped together (binary + config side by side, was: config stranded below the command box), NATIVE
+    // build first, plus a Copy-the-command link. The runnable command(s) render below so the two downloads stay paired.
     var authors = (c.cliAuthors && c.cliAuthors.length) ? c.cliAuthors : [{ fork: "samosvalishe", cmd: c.cmd, native: false }];
-    var alist = el("div", "cli-authors");
+    var links = el("div", "mz-links cli-links");
     authors.forEach(function (a) {
       var col = forkColor(a.fork), owner = ((turnServer(a.fork) || {}).owner) || "";
       var dl = (a.fork === "samosvalishe" && c.dlAppUrl) ? c.dlAppUrl : ("https://github.com/" + owner + "/releases");
-      var row = el("div", "cli-author");
-      var hd = el("div", "cli-auth-hd");
       var lnk = el("a", "ph-dl cli-auth-dl"); lnk.href = dl; lnk.style.color = col;
       lnk.textContent = t("cliDownBy").replace("{author}", a.fork);
       lnk.onclick = function (e) { e.preventDefault(); _openUrl(dl); };
-      hd.appendChild(lnk);
-      row.appendChild(hd);
+      links.appendChild(lnk);
+    });
+    var lg = el("a", "ph-dl"); lg.href = "#"; lg.textContent = t("mzGetConfig");
+    lg.onclick = function (e) { e.preventDefault(); if (c.payload) download(c.payload, c.base, c.ext || "conf"); };
+    links.appendChild(lg);
+    var lc = el("a", "ph-dl"); lc.href = "#"; lc.textContent = t("copyCmd");
+    lc.onclick = function (e) { e.preventDefault(); var cmd = cliCommand(c); if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(function () {}); showToast(t("cmdCopied")); };
+    links.appendChild(lc);
+    inner.appendChild(links);
+    var alist = el("div", "cli-authors");   // the runnable command(s), tap-to-copy — below the links, native first (matches the link order)
+    authors.forEach(function (a) {
       var cmdS = cliCmdStr(a.cmd, "client");
       var cbox = el("pre", "cfgtext cmdtext cli-auth-cmd", cmdS); cbox.title = t("tapCopy");
       cbox.onclick = function () { if (navigator.clipboard) navigator.clipboard.writeText(cmdS).catch(function () {}); showToast(t("cmdCopied")); };
-      row.appendChild(cbox);
-      alist.appendChild(row);
+      alist.appendChild(cbox);
     });
     inner.appendChild(alist);
-    var links = el("div", "mz-links");
-    var lg = el("a", "ph-dl"); lg.href = "#"; lg.textContent = t("mzGetConfig"); lg.onclick = function (e) { e.preventDefault(); if (c.payload) download(c.payload, c.base, c.ext || "conf"); }; links.appendChild(lg);
-    inner.appendChild(links);
     ov.appendChild(inner);
     var x = el("button", "ih-close"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.textContent = "×"; x.onclick = dismissHints; ov.appendChild(x);
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };
-    document.body.appendChild(ov); _cliHint = ov;
+    document.body.appendChild(ov); _cliHint = ov; openFit(inner);
     attachSwipeDown(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _cliKey, true); }, 0);
     armOverlayBack();
@@ -1080,8 +1191,9 @@
   var FORK_COLORS_FALLBACK = {
     "cacggghp": { dark: "#5FB0E0", light: "#2C7EC0" }, "WINGS-N": { dark: "#C98BE0", light: "#9B4FC7" },
     "samosvalishe": { dark: "#E0A85F", light: "#C07A1E" }, "Moroka8": { dark: "#E07A9A", light: "#C24468" },
-    "kiper292": { dark: "#6FD9A8", light: "#12A46B" }, "anton48": { dark: "#D9CF5F", light: "#8E8420" } };
-  var IFACE_COLORS = { wg: { dark: "#3FD89A", light: "#0E9E63" }, awg: { dark: "#1FC8D6", light: "#0E9BB0" } };
+    "kiper292": { dark: "#6FD9A8", light: "#12A46B" }, "anton48": { dark: "#D9CF5F", light: "#8E8420" },
+    "WDTT": { dark: "#A78BFA", light: "#7C3AED" } };   // WDTT (amurcanov) — a turn-family server; violet, kin to the Turn group accent
+  var IFACE_COLORS = { wg: { dark: "#3FD89A", light: "#0E9E63" }, awg: { dark: "#1FC8D6", light: "#0E9BB0" }, wdtt: { dark: "#81B512", light: "#5EAF0E" } };
   var THEME = { color: "", light: "", forkOv: {}, ifaceOv: {}, nodeOv: {} };   // set from the served subscription data
   function isLight() {
     var d = document.documentElement.getAttribute("data-theme");   // manual override wins; else the OS preference
@@ -1101,7 +1213,7 @@
     return light ? defLight : defDark;
   }
   function forkColor(fork) { var s = turnServer(fork), d = (s && s.color) || FORK_COLORS_FALLBACK[fork] || { dark: "#8FA8C0", light: "#5E7085" }; return pickThemed(THEME.forkOv[fork], d.dark, d.light); }
-  function ifaceColor(type) { var k = (type || "").toLowerCase() === "awg" ? "awg" : "wg"; return pickThemed(THEME.ifaceOv[k], IFACE_COLORS[k].dark, IFACE_COLORS[k].light); }
+  function ifaceColor(type) { var k = (type || "").toLowerCase(); if (k !== "awg" && k !== "wdtt") k = "wg"; return pickThemed(THEME.ifaceOv[k], IFACE_COLORS[k].dark, IFACE_COLORS[k].light); }
   function nodeColor(nodeId, fallback) { var c = THEME.nodeOv[nodeId]; return (c && (c.dark || c.light)) ? pickThemed(c, fallback, fallback) : fallback; }   // server name in its panel colour
   function modeColor(m) { return m === "turn" ? "#7C5CFF" : ifaceColor(m); }   // Turn = the panel's turn-proxy accent (violet)
   function applyFavicon(accent, light) {
@@ -1264,6 +1376,7 @@
     var node = tgt.node_name || tgt.node || "node";
     var port = (mode === "turn" && tp)
       ? ((String(tp.listen || "").split(":").pop()) || (String(tp.service || "").match(/(\d+)\D*$/) || [])[1] || "")   // turn-proxy listen port
+      : (tgt.type === "wdtt" && tgt.wdtt) ? (tgt.wdtt.dtls_port || "")                                                  // WDTT DTLS port
       : (String(tgt.endpoint || "").split(":").pop() || "");                                                            // iface listen port (from Endpoint)
     var ipLast = (String(tgt.ip || "").split("/")[0].split(".").pop()) || "";   // last octet of the peer's tunnel IP
     var s = node + "_" + port + "_" + ipLast;
@@ -1460,6 +1573,57 @@
     ctrl.redraw = draw;
 
     if (mode === "turn") {
+      if (it.wdtt) {
+        // A WDTT peer, rendered as a cell IN the Turn group (WDTT is a VK-TURN-family server). It's keyless: the
+        // server owns its WireGuard + mints the client keypair via GETCONF, so the link carries only the WRAP
+        // password + VK link + endpoint. Per-OS client: iOS → anton48 VK TURN Proxy (WRAP-A), else → WDTT app / PWDTT.
+        var wd = it.wdtt, wfork = wd.fork || "amurcanov", wfc = forkColor(wfork);
+        var wclients = ((_lastData && _lastData.turn_catalog) || {}).clients || {};
+        var wga = turnGetApp(wfork);   // the operator's per-OS default client for THIS fork → encoder + app name + download
+        var wasClient = (wga && wga.enc) ? wga.enc : ((subOs() === "ios") ? "anton48" : "wdtt");
+        var wclientQR = !!(wga && wclients[wga.cid] && wclients[wga.cid].qr);   // only some clients scan a QR; the rest import a pasted link
+        var wart = SWGTurn.wdttArtifact({ password: wd.password, endpoint_host: wd.endpoint_host, dtls_port: wd.dtls_port,
+          wg_port: wd.wg_port, tun_port: wd.tun_port, vk_hash: wd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, wasClient);
+        var wAppName = (wga && (wga.productName || wga.app)) || wart.app;
+        // Badge "<fork> · <app>", collapsing to just the fork when the app name echoes it — same rule the turn cells use.
+        var wHasApp = wAppName && wAppName !== wfork;
+        var wtag = el("span", "scell-tag");
+        var wsrv = el("span", null, wfork); wsrv.style.color = wfc; wtag.appendChild(wsrv);
+        // Colour the app chip by the fork its client is NATIVE to (not the server fork) — same rule the turn cells use,
+        // so "AMURCANOV · PWDTT" shows PWDTT in its home fork's colour, not amurcanov's.
+        var wAppFork = (wga && wclients[wga.cid] && wclients[wga.cid].native_fork) || wfork;
+        var wAppColor = forkColor(wAppFork);
+        if (wHasApp) { wtag.appendChild(el("span", "scell-tag-sep", " · ")); var wapp = el("span", null, wAppName); wapp.style.color = wAppColor; wtag.appendChild(wapp);
+          if (wga && wga.author && wga.author !== wfork) wtag.appendChild(el("span", "scell-tag-by", " by " + wga.author)); }   // app author (e.g. luminescq)
+        srvRow.appendChild(wtag);
+        var wBackup = multi && !tgt.primary;                                    // WDTT is its own protocol family in the panel → the "WDTT" role chip (not the built-in WG), in the WDTT type colour
+        var wrole = el("span", "scell-role" + (wBackup ? " scell-backup" : ""), (multi ? (tgt.primary ? t("primary") : t("backup")) + " " : "") + "WDTT");
+        if (!wBackup) wrole.style.color = ifaceColor("wdtt");
+        srvRow.appendChild(wrole);
+        ctrl.forkId = wfork; ctrl.app = wAppName; ctrl.zoomTail = wHasApp ? wAppName : wfork;
+        if (wart.vkMissing) {                                                   // no VK link yet → the same warning the turn cells show
+          var wvkw = el("div", "scell-vk scell-vkwarn");
+          wvkw.appendChild(el("div", "scell-vkwarn-t", t("vkMissingT")));
+          wvkw.appendChild(el("div", "scell-vkwarn-d", t("vkMissing").replace("{app}", t("theApp"))));
+          cell.appendChild(wvkw);
+        }
+        // "Get the app" direct-download row + Start-button installer — SAME as the turn cells (line ~1633). WDTT is a
+        // turn-family fork, so it gets the identical get-app dropdown (logo/name → releases page · ⬇ → direct file for
+        // this OS) and Start-button behaviour (open the app via the deep-link below, or fetch its installer).
+        if (wga) { ctrl.dlAppUrl = wga.file; ctrl.dlAppFile = wga.fileName; ctrl.dlAppName = wga.app; ctrl.dlAppPage = wga.page; node.appendChild(getAppRow(wga)); }
+        ctrl.cliApp = false; ctrl.vktgz = false; ctrl.wgTurn = false;   // WDTT clients are apps, never a CLI/VKTGZ/wgTurn flow
+        // The VK link is embedded IN the WDTT link (wrapAPassword+vkLink / wdtt://…:vkHash), so no separate "add this
+        // link" prompt is needed. Wire the payload straight into the shared config/QR + Start-button machinery.
+        ctrl.payload = wart.text; ctrl.ready = true; ctrl.ext = wart.ext || "txt";
+        ctrl.isLink = !!wart.uri; ctrl.hasQR = !!(wart.qr && wclientQR); ctrl.cmd = null;   // QR only when the resolved client actually scans one
+        ctrl.wrapCfg = !!wart.uri;
+        // Start opens the app ONLY when this app+OS declares `autostart` in the catalog (registers a BROWSABLE URL
+        // scheme: wdttplus / xxcipher / VK TURN Proxy iOS). No autostart (amurcanov / qWDTT / PWDTT) → noAutoFire: Start
+        // COPIES the link + shows the import steps (like the other turn cells), never a dead-scheme fire or a bare download.
+        if (wart.uri) { ctrl.openUri = wart.text; ctrl.noAutoFire = !(wga && wga.autostart); ctrl.instructions = (wga && wga.instructions) || ""; }
+        ctrl.view = (wart.qr && wclientQR) ? "qr" : "text";
+        draw();
+      } else {
       var tp = it.tp, forkId = SWGTurn.fork(tp.service);
       var fc = forkColor(forkId);                                               // the panel's colour for this fork
       var ga = turnGetApp(forkId);   // resolves the client for the VISITOR'S OS (also drives the get-app row / Start button below)
@@ -1493,6 +1657,7 @@
       if (hasAppName) {
         tag.appendChild(el("span", "scell-tag-sep", " · "));
         var appChip = el("span", null, appName); appChip.style.color = appColor; tag.appendChild(appChip);
+        if (ga && ga.author && ga.author !== forkId) tag.appendChild(el("span", "scell-tag-by", " by " + ga.author));   // app author (e.g. luminescq / SpaceNeuroX)
       }
       srvRow.appendChild(tag);
       // role + interface next to the badge: multi → "Primary/Backup WG"; single → "WG". Primary/single = iface colour, backup = grey.
@@ -1550,12 +1715,15 @@
         // wrap a long single-line payload (a scheme URI OR a paste-token like VKTGZ:) so config view reads across
         // lines instead of shrinking to one tiny line; a multi-line .conf (kiper292/sidecar) stays unwrapped.
         ctrl.wrapCfg = !!(art.uri || art.wrap);
-        if (art.uri) ctrl.openUri = text;   // Axis-3: a scheme fork's config IS the tappable open-in-app URI (ctrl.app already = art.app)
+        // Axis-3: a scheme fork's config IS the tappable open-in-app URI (ctrl.app already = art.app). Start fires it
+        // ONLY when this app+OS declares `autostart`; otherwise noAutoFire → copy the link + show the import steps.
+        if (art.uri) { ctrl.openUri = text; ctrl.noAutoFire = !(ga && ga.autostart); ctrl.instructions = (ga && ga.instructions) || ""; }
         ctrl.view = art.qr ? "qr" : "text";   // anything scannable (incl. dual config + command) opens on the QR
         draw();
       };
       if (art.text != null) apply(art.text);
       else { draw(); Promise.resolve().then(art.buildAsync).then(apply).catch(function (e) { ctrl.ready = false; stage.innerHTML = ""; stage.appendChild(el("div", "cfg-fail", (e && e.message) || t("cantGen"))); if (ctrl.notify) ctrl.notify(); }); }
+      }
     } else {
       if (wga) { ctrl.dlAppUrl = wga.file; ctrl.dlAppFile = wga.fileName; ctrl.dlAppName = wga.app; }   // Start-button download-fallback (WG/AWG client app)
       if (conf) { ctrl.payload = conf; ctrl.ready = true; ctrl.hasQR = true; ctrl.ext = "conf"; ctrl.view = "qr"; }
@@ -1604,6 +1772,7 @@
     var peer = row.peer, secret = row.secret, items = [];
     if (mode === "turn") {
       orderedTargets(peer.targets).forEach(function (tt) {
+        if (tt.type === "wdtt") { items.push({ tgt: tt, wdtt: tt.wdtt || {} }); return; }   // WDTT peer → a cell in the Turn group (a client ships for every OS: anton48/iOS, WDTT app/Android, PWDTT/desktop)
         var seen = {}, tps = [], isAwg = (tt.type === "awg");
         (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return;
           if (isAwg && turnWgOnly(f)) return;   // a WireGuard-only fork can't front this AmneziaWG interface
@@ -1613,7 +1782,7 @@
         tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp }); });
       });
     } else {
-      orderedTargets(peer.targets).forEach(function (tt) { if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // primary connection first
+      orderedTargets(peer.targets).forEach(function (tt) { if (tt.type === "wdtt") return; if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // WDTT belongs to the Turn group only — never the wg/awg lists; primary connection first
     }
     if (!items.length) return null;
     var reason = row.bad ? t("outOfDate") : (!peer.sec ? t("notReady") : null);
@@ -1912,7 +2081,7 @@
       if (navigator.clipboard) navigator.clipboard.writeText(c.openUri).catch(function () {});   // initiate copy in the gesture
       var os = subOs();
       if (os === "ios" || os === "macos") { showToast(t("vpnCopied")); if (c.dlAppUrl) setTimeout(function () { window.location.href = c.dlAppUrl; }, 1400); return; }   // copy → "Copied" → open the App Store (install / open, then paste the link)
-      showPasteHint();                                                                            // Windows/Linux (+ anything else): the link is copied → "paste it into AmneziaVPN" steps + downloads
+      showPasteHint(c);                                                                           // Windows/Linux (+ anything else): the link is copied → "paste it into AmneziaVPN" steps + downloads
     }
     startB.onclick = function () {
       var c = cur(); if (!c.ready) return;
@@ -1924,7 +2093,17 @@
         if (c.cmd) { if (navigator.clipboard) navigator.clipboard.writeText(c.cmd).catch(function () {}); showToast(t("cmdCopied")); return; }
         startDownload(c); return;                                                          // no scheme, no command → get the app
       }
+      if (c.noAutoFire) { if (navigator.clipboard) navigator.clipboard.writeText(c.openUri).catch(function () {}); showLinkImportHint(c); return; }   // WDTT app with no URL scheme (amurcanov/qWDTT/PWDTT) → copy the link + import steps, never fire a dead scheme
       if (/^vpn:/i.test(c.openUri) && subOs() !== "android") { startCopyOpen(c); return; }   // Amnezia VPN off Android → copy the link + get the app
+      // DESKTOP (macOS/Windows/Linux): firing a custom app scheme dead-ends — the browser can't hand `wingsv://` etc. to
+      // an app that hasn't registered the scheme, so the auto-fire below would silently fail (or error) and drop the
+      // link. Instead COPY the connection link + show the app's import steps (WINGS V DeX: Add profile → From clipboard,
+      // which reads exactly this). Mobile keeps the deep-link auto-fire.
+      var _dos = subOs();
+      if (_dos === "macos" || _dos === "windows" || _dos === "linux") {
+        if (navigator.clipboard) navigator.clipboard.writeText(c.openUri).catch(function () {});
+        showLinkImportHint(c); return;
+      }
       // freeturn/samosvalishe: the app imports the config via its scheme but CAN'T auto-receive the VK call link →
       // copy the primary VK link so the user can paste it, THEN fire the scheme (below) as usual.
       if (c.vkPrimary) { if (navigator.clipboard) navigator.clipboard.writeText(c.vkPrimary).catch(function () {}); showToast(t("vkCopied")); }
@@ -2024,6 +2203,7 @@
       // ≥1 deployment has a proxy forwarding to it (same gate as the admin view).
       var has = { wg: false, awg: false, turn: false };
       liveRows.forEach(function (r) { (r.peer.targets || []).forEach(function (t) {
+        if (t.type === "wdtt") { if (data.turn_enabled) has.turn = true; return; }   // WDTT is a turn-family server → the Turn group (not a WG/AWG deployment)
         has[t.type === "awg" ? "awg" : "wg"] = true;
         if (data.turn_enabled && (t.turn || []).length) has.turn = true;
       }); });
@@ -2035,7 +2215,9 @@
       // in view is highlighted and its button disabled (you're already there).
       var bar = el("div", "modebar"), pager = el("div", "pager"), btns = {}, firstOf = {};
       var pinMode = null, pinTimer = 0;
-      function highlight(cur) { groups.forEach(function (m) { var on = (m === cur); btns[m].className = "modetab" + (on ? " on" : ""); btns[m].disabled = on; }); }
+      // keep the per-protocol mtab-* modifier: it carries each icon's size/baseline tweak, and rebuilding
+      // className without it flattened the wg/awg glyphs the first time a tab was clicked
+      function highlight(cur) { groups.forEach(function (m) { var on = (m === cur); btns[m].className = "modetab mtab-" + m + (on ? " on" : ""); btns[m].disabled = on; }); }
       groups.forEach(function (mode) {
         var b = el("button", "modetab mtab-" + mode); b.type = "button"; b.title = t(mode); b.setAttribute("aria-label", t(mode));
         b.appendChild(protoIcon(mode));

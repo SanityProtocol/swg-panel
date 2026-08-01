@@ -29,6 +29,17 @@
 set -euo pipefail
 
 # ───────────────────────── config (env or flags) ─────────────────────────
+# Snapshot which of these the CALLER actually provided, BEFORE any default is applied. The .env import below
+# skips a key that is already set ("an explicit flag/env wins over the stored value") — but a non-empty DEFAULT
+# assigned here is indistinguishable from an explicit one, so every defaulted key was silently un-importable and
+# reverted to its default on a re-install or on the node stage of a master convert. PANEL_PORT only escaped
+# because its default is empty. Observed: the panel stage wrote SUB_PORT=2087, the node stage rewrote it 8444.
+for _k in PANEL_URL NODE_TOKEN NODE_ENDPOINT PANEL_USER PANEL_PASSWORD PANEL_DOMAIN PANEL_PORT PANEL_BASE \
+          PANEL_LOCAL_PORT SUB_PORT SUB_DOMAIN PANEL_BIND SUB_BIND SUB_TRUST_XFF \
+          NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET TURN_MANAGE DNS TLS_VERIFY \
+          ACME_EMAIL CF_TOKEN CF_ORIGIN_TOKEN; do
+  eval "_GIVEN_$_k=\"\${$_k:-}\""
+done
 PROFILE="${PROFILE:-host}"
 ROLE="${ROLE:-}"                        # master | host — asked in Step 1 when the entry is `host`.
                                         # master ⇒ master compose profile (panel + a co-located,
@@ -135,10 +146,7 @@ v_freeport(){ v_port "$1" && port_free "$1"; }
 # smart default ports: first install offers the base; later ones offer (highest used OF THAT KIND)+1, then
 # the next host-free port. turn = TP_LISTEN record; wg/awg = ListenPort across persisted confs + this session's spec.
 turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 0 ]; then for lis in "${TP_LISTEN[@]}"; do p="${lis##*:}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 56000; }
-iface_default_port(){ local hi=0 p f e _ifs; for f in "$INSTALL_DIR"/data/node-confs/*.conf; do [ -f "$f" ] || continue; p="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$f" | head -1)"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; if [ -n "${NODE_IFACES:-}" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"; for e in "${_ifs[@]}"; do p="$(printf '%s' "$e" | cut -d: -f2)"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 51820; }
 v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
-v_cftoken(){ [ -n "$1" ]; }
-v_cforigin(){ [ -n "$1" ]; }
 v_cfport(){  case "$1" in 443|2053|2083|2087|2096|8443) return 0;; *) return 1;; esac; }  # ports Cloudflare's proxy forwards (HTTPS)
 # 0 iff $1 is a public, routable IPv4 literal (excludes RFC1918 / loopback / link-local / CGNAT) — gates letsencrypt-ip
 ip_public(){ case "$1" in *[!0-9.]*|*.*.*.*.*|*..*) return 1;; *.*.*.*) ;; *) return 1;; esac
@@ -192,7 +200,8 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
     [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; _pnl; return; }
     [ $rc -ne 0 ] && die "no valid value for ‘$p’"
-    warn "$hint"; echo "  re-enter, or append ' --force' to use it anyway"
+    if declare -F "${fn}_why" >/dev/null 2>&1; then warn "$("${fn}_why" "$v")"; else warn "$hint"; fi
+    echo "  re-enter, or append ' --force' to use it anyway"
   done; }
 
 # ── turn-proxy (vk-turn-proxy) — host systemd service forwarding to the published wg port ──
@@ -295,71 +304,8 @@ iface_row(){ local n="$1" conf spec proto="" ep="" lp="" addr=""   # set -e safe
   [ -n "$ep" ] || ep="${NODE_ENDPOINT:-}"; case "$ep" in 127.*|"") ep="$(detect_public_ip 2>/dev/null || true)";; esac   # never show loopback as the public endpoint
   printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$BOLD" "$(proto_label "$proto")" "$RESET" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
-v_fwd(){ local names; names=" $(node_iface_rows | cut -d' ' -f1 | tr '\n' ' ')${NODE_IFACE:+$NODE_IFACE }"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
 fwd_resolve(){ local n p x; while read -r n p x; do [ -n "$n" ] && [ "$n" = "$1" ] && { echo "127.0.0.1:$p"; return; }; done <<< "$(node_iface_rows)"
   [ -n "${NODE_IFACE:-}" ] && [ "$1" = "$NODE_IFACE" ] && { echo "127.0.0.1:${NODE_LISTEN_PORT:-51820}"; return; }; echo "$1"; }
-install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
-  local sel="$1" owner pub port connect; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
-  ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
-  ask_valid "Turn-proxy listen port" "$(turn_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
-  detect_turn; local n; for n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$n' — pick another port (enter 'new' again)"; return 0; }; done
-  local defport="${NODE_LISTEN_PORT:-51820}" defname _nm _pt _pr label clabel pad rows
-  rows="$(node_iface_rows)"
-  echo
-  echo "  Available wg/awg interfaces:"
-  if [ -n "$rows" ]; then
-    defname="$(printf '%s\n' "$rows" | head -1)"; defname="${defname%% *}"   # first interface NAME
-    while read -r _nm _pt _pr; do [ -n "$_nm" ] || continue
-      [ "$_pr" = wg ] && _pr=wg || _pr=awg
-      label="[$_nm] on $_pr"; clabel="$(col "$C_GREEN" "[$_nm]") on $(b "$_pr")"
-      pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
-      printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$_pt")"
-    done <<< "$rows"
-  elif [ -n "$NODE_IFACE" ]; then                        # a bootstrap interface is configured but not on disk yet (fresh install)
-    _pr=awg; [ "${NODE_PLAIN_WG:-}" = yes ] && _pr=wg
-    label="[$NODE_IFACE] on $_pr"; clabel="$(col "$C_GREEN" "[$NODE_IFACE]") on $(b "$_pr")"
-    pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
-    printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$defport")"
-    defname="$NODE_IFACE"
-  else                                                   # zero interfaces (panel-managed) — no default; make the operator type a real target
-    echo "    (none yet — enter a custom $(b ip:port) to forward to, or add an interface from the panel first)"
-    defname=""
-  fi
-  ask_valid "WireGuard/AmneziaWG address it forwards to - interface name or custom ip:port" "$defname" connect v_fwd "an interface name (e.g. awg0) or ip:port"
-  connect="$(fwd_resolve "$connect")"
-  echo
-  local wrap; wrap="$(turn_wrap_flags "$sel")"
-  [ -n "$wrap" ] && info "Obfuscation: a 64-hex wrap key is generated, baked into the unit, and recorded for the panel / client configs." \
-                 || warn "$sel has no wrap/srtp obfuscation flags — installing plain (-listen/-connect only)."
-  install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$wrap"; }
-choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; local sel names n
-  while :; do
-    detect_turn; names=("${!TP_LISTEN[@]}")
-    echo
-    if [ "${#names[@]}" -gt 0 ]; then echo "  Installed turn-proxy servers:"; echo
-      for n in "${names[@]}"; do _fw="$(fwd_iface_for "${TP_CONNECT[$n]}")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$n" "$RESET" "${TP_LISTEN[$n]}" "${TP_CONNECT[$n]}" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"; done
-    else warn "No turn-proxy servers found on this box."; fi
-    echo
-    echo "  Here is a list of turn-proxy branches available for installation:"; echo
-    menu "$(col "$C_BLUE" '[0] [c]acggghp')"     "The original project - https://github.com/cacggghp/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[1] [W]INGS-N')"      "Fork by WINGS-N - https://github.com/WINGS-N/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[2] [s]amosvalishe')" "Fork by samosvalishe - https://github.com/samosvalishe/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[3] [k]iper292')"     "Fork by kiper292 - https://github.com/kiper292/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[4] [M]oroka8')"      "Fork by Moroka8 - https://github.com/Moroka8/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[5] [a]nton48')"      "Fork by anton48 - https://github.com/anton48/vk-turn-proxy"
-    printf '  Enter a number, letter or name to install, or just press %s to skip and proceed with the setup: ' "$(b Enter)"
-    if ! read -r sel 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
-    sel="${sel//[[:space:]]/}"; [ -z "$sel" ] && break
-    sel="$(printf '%s' "$sel" | tr '[:upper:]' '[:lower:]')"   # case-insensitive (W/w, M/m, …)
-    case "$sel" in
-      0|c|cacggghp|original|main)  install_turn_proxy cacggghp; continue;;
-      1|w|wings|wings-n)           install_turn_proxy WINGS-N; continue;;
-      2|s|samosvalishe)            install_turn_proxy samosvalishe; continue;;
-      3|k|kiper|kiper292)          install_turn_proxy kiper292; continue;;
-      4|m|moroka|moroka8)          install_turn_proxy Moroka8; continue;;
-      5|a|anton|anton48)           install_turn_proxy anton48; continue;;
-      *) warn "enter 0–5, a letter (c/w/s/k/m/a) or a name (or press Enter to skip)";; esac
-  done; }
 # bare→docker convert: migrate THIS box's host turn-proxy systemd units → the docker turn RECORD (swg-noded
 # materialises them as sibling containers). The exact mirror of install-node's migrate_docker_turns: runs in the
 # turn step (node stage), lists them, asks "Transfer? (Y/n)", and copy-firsts — the bare units keep serving until
@@ -374,7 +320,7 @@ migrate_baremetal_turns(){
     lis=""; con=""; [ -f "$envf" ] && { lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | head -1)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | head -1)"; }
     printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "${lis:-?}" "${con:-?}"; done
   echo
-  [ "$(ask_yn_tty "Transfer these turn-proxies into the docker node?" y)" = yes ] || { info "  left on bare-metal — they stop at the switch; add fresh ones below if you want"; return 0; }
+  # Approach B: auto-carry — always migrate the existing turn-proxies (no prompt). New ones are created from the panel.
   for u in $units; do
     svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"
     if [ -f "$envf" ]; then
@@ -449,9 +395,12 @@ if [ -f "$INSTALL_DIR/.env" ]; then
             SUB_PORT SUB_DOMAIN PANEL_BIND SUB_BIND SUB_TRUST_XFF \
             NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET TURN_MANAGE DNS TLS_VERIFY \
             ACME_EMAIL CF_TOKEN CF_ORIGIN_TOKEN; do
-    [ -n "${!_k:-}" ] && continue                       # an explicit flag/env wins over the stored value
+    _g="_GIVEN_$_k"; [ -n "${!_g:-}" ] && continue      # an explicit flag/env wins — checked against the PRE-DEFAULT snapshot
     _v="$(sed -n "s/^${_k}=//p" "$INSTALL_DIR/.env" 2>/dev/null | head -1)"
     _v="${_v%\"}"; _v="${_v#\"}"                        # strip surrounding quotes
+    # The CF creds land in *_SAVED (a prompt DEFAULT) instead of the live var — see install-host.sh: loading
+    # them live made the prompt self-skip on a re-install, so a broken token was reused without a word.
+    case "$_k" in CF_TOKEN|CF_ORIGIN_TOKEN) [ -n "$_v" ] && printf -v "${_k}_SAVED" '%s' "$_v"; continue;; esac
     [ -n "$_v" ] && printf -v "$_k" '%s' "$_v"
   done
   EXIST_TLS="$(sed -n 's/^TLS=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1)"   # for the 'reuse' TLS option (not auto-applied)
@@ -625,18 +574,18 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
   if [ "$TLS" = reuse ]; then REUSE_TLS=yes; TLS="${EXIST_TLS:-selfsigned}"; ok "reusing the existing certificate (TLS mode: $(b "$TLS"))"; return 0; fi
   case "$TLS" in
     letsencrypt) ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com"
-                 warn "letsencrypt validates over HTTP-01 — publish port 80 to the panel container (compose maps 80:80)";;
+                 sub "letsencrypt validates over HTTP-01 — the installer publishes host port $(b 80) to the panel container for you (compose override, written below)";;
     letsencrypt-ip) warn "letsencrypt-ip issues a $(b 'short-lived (~6 day)') cert for the IP $(b "$PANEL_DOMAIN") — the container renews it every 12h; if renewal is down ~6 days the cert expires."
-                 warn "Needs host port 80 published (the installer maps 80:80) and the IP reachable directly (grey-cloud / no proxy)."
+                 sub "Host port $(b 80) is published for you (compose override, written below); the IP must be reachable directly (grey-cloud / no proxy)."
                  ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
-    cloudflare)  ask_valid "Cloudflare API token (needs Zone:DNS:Edit + Zone:Read)" "$CF_TOKEN" CF_TOKEN v_cftoken "the API token can't be empty"
+    cloudflare)  ask_valid "Cloudflare API token (needs Zone:DNS:Edit + Zone:Read)" "${CF_TOKEN_SAVED:-}" CF_TOKEN v_cftoken "paste a scoped API token (40 chars)"
                  ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
     cf15)        warn "cf15 issues a Cloudflare Origin cert — it is ONLY trusted behind Cloudflare's proxy (orange cloud)."
                  if ! v_cfport "$PANEL_PORT"; then
                    warn "port $(col "$C_YEL" "$PANEL_PORT") is NOT one Cloudflare's proxy forwards (only 443, 2053, 2083, 2087, 2096, 8443) —"
                    warn "the panel would be unreachable through the orange cloud. Use one of those ports (or Cloudflare Spectrum), or grey-cloud the record and accept an untrusted direct cert."
                  fi
-                 ask_valid "Cloudflare API token (Zone → SSL and Certificates → Edit)" "$CF_ORIGIN_TOKEN" CF_ORIGIN_TOKEN v_cforigin "paste an API token — the legacy Origin CA Key is deprecated (sunset 2026-09-30)";;
+                 ask_valid "Cloudflare API token (Zone → SSL and Certificates → Edit)" "${CF_ORIGIN_TOKEN_SAVED:-}" CF_ORIGIN_TOKEN v_cforigin "paste a scoped API token — the legacy Origin CA Key is deprecated (sunset 2026-09-30)";;
     none)        # reverse proxy: keep the containers on loopback so ONLY the operator's own nginx/Caddy reaches them
                  PANEL_BIND=127.0.0.1; SUB_BIND=127.0.0.1; SUB_TRUST_XFF=1
                  { [ "${PANEL_PORT_EXPLICIT:-no}" != yes ] && [ "${PANEL_PORT:-443}" = 443 ]; } && PANEL_PORT=8088   # don't grab host :443 — your proxy needs it
@@ -667,7 +616,7 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
   if [ "$EXISTING_DOCKER" = yes ]; then
     local _exurl="$PANEL_URL" _extls="$TLS_VERIFY"; PANEL_URL=""; TLS_VERIFY=""
     ask_valid "Panel URL (https://host[/subpath])" "$_exurl" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
-    case "$PANEL_URL" in https://*) ;; http://*) warn "panel URL is http:// — the key would travel in clear. Continue only if you know why.";; *) PANEL_URL="https://$PANEL_URL";; esac   # no scheme → default https://
+    case "$PANEL_URL" in https://*) ;; http://*) _url_is_loopback "$PANEL_URL" || warn "panel URL is http:// — the key would travel in clear. Continue only if you know why.";; *) PANEL_URL="https://$PANEL_URL";; esac   # no scheme → default https://
     TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" "$([ "$_extls" = yes ] && echo y || echo n)")"
     # offer to change the box name shown in the panel (default = its current name); push via /api/node/rename
     local _ins=""; [ "$TLS_VERIFY" = yes ] || _ins="-k"; local _cur
@@ -677,7 +626,7 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
   fi
   ask_valid "Panel URL (https://host[/subpath])" "$PANEL_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
   ask_secret "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"
-  case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
+  case "$PANEL_URL" in https://*) ;; *) _url_is_loopback "$PANEL_URL" || warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
   if [ -z "$TLS_VERIFY" ] && [ -z "${TLS_FINGERPRINT:-}" ]; then
     # Verify by DEFAULT (secure); auto-detect a self-signed panel so a fresh node never fails its first sync.
     local _tls_def=y _rc
@@ -721,8 +670,6 @@ next_free_subnet(){ local hi=7 s o; while read -r s; do [ -n "$s" ] || continue;
   o=$((hi+1)); while [ "$o" -lt 255 ] && subnet_used "10.$o.0.0/24"; do o=$((o+1)); done; echo "10.$o.0.0/24"; }
 v_subnet_free(){ v_subnet "$1" || return 1; subnet_used "$1" && return 1; return 0; }
 # default interface index = (highest numeric suffix across existing names)+1 — so a new iface increments past the highest (awg3,wg4 → 5).
-iface_next_index(){ local hi=-1 n s; while read -r n; do [ -n "$n" ] || continue; s="${n##*[!0-9]}"; case "$s" in ''|*[!0-9]*) :;; *) [ "$s" -gt "$hi" ] && hi="$s";; esac; done <<< "$(taken_iface_names)"; echo $((hi+1)); }
-fwd_ifaces(){ local cp="${1##*:}" nm pt pr out=""; while read -r nm pt pr; do [ -n "$nm" ] && [ "$pt" = "$cp" ] && out="${out:+$out }$nm"; done <<< "$(node_iface_rows)"; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by REAL listen port across node-confs + this session)
 ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirrors bare-metal
   step "WireGuard / AmneziaWG setup" "(this interface has its own endpoint IP)"
   echo
@@ -773,28 +720,6 @@ taken_iface_names(){
 v_iface_free(){ v_iface "$1" || return 1; if taken_iface_names | grep -qx "$1"; then return 1; fi; return 0; }   # valid name AND not already taken
 # add one interface to NODE_IFACES (seeding the single bootstrap into the list first, so the entrypoint
 # — which ignores NODE_IFACE once NODE_IFACES is set — doesn't drop it).
-add_node_iface(){
-  local _proto plain base i name port addr ep nx taken
-  if [ "$EXISTING_DOCKER" = yes ] && [ -z "$NODE_IFACES" ] && [ -n "$NODE_IFACE" ] && ! ls "$INSTALL_DIR/data/node-confs/"*.conf >/dev/null 2>&1; then   # promote an existing single bootstrap into the list — but only if there are NO migrated confs (else NODE_IFACE is just the default → a ghost)
-    local pr=""; [ "${NODE_PLAIN_WG:-}" = yes ] && pr=wg
-    NODE_IFACES="${NODE_IFACE}:${NODE_LISTEN_PORT:-51820}:${NODE_ADDRESS:-10.8.0.1/24}:${pr}:${NODE_ENDPOINT}"
-  fi
-  nx=$(current_node_ifaces | grep -c . || true)                 # offset defaults so a 2nd/3rd iface doesn't collide (grep -c exits 1 on empty → guard set -e)
-  menu "$(col "$C_BLUE" '[1]') $(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the userspace amneziawg-go datapath built into the swg-node container."
-  menu "$(col "$C_BLUE" '[2]') $(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off)."
-  ask_choice "Select the protocol you want to create (number, letter or name)" "a" _proto "a w awg wg amneziawg wireguard"
-  case "$_proto" in w|wg|wireguard) plain=wg;; *) plain="";; esac
-  taken="$(taken_iface_names)"   # all names already on the box (computed once)
-  [ "$plain" = wg ] && base=wg || base=awg; i=$(iface_next_index); while printf '%s\n' "$taken" | grep -qx "$base$i"; do i=$((i+1)); done
-  ask_valid "Interface name" "$base$i" name v_iface_free "1–15 chars (letters, digits, - or _) and not already used"
-  ask_valid "Listen port" "$(iface_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
-  local _sub=""; ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$(next_free_subnet)" _sub v_subnet_free "a CIDR not already used, e.g. 10.8.0.0/24"; addr="$(server_addr "$_sub")"
-  ep="${NODE_ENDPOINT:-$(detect_public_ip)}"       # auto endpoint clients dial — public IP/host (change it later in the panel)
-  echo "    Used $(bb "$ep") endpoint IP for $(col "$C_GREEN" "$name")"
-  [ -n "$NODE_ENDPOINT" ] || NODE_ENDPOINT="$ep"   # the node-level endpoint (required by compose) — seed from the first interface
-  NODE_IFACES="${NODE_IFACES:+$NODE_IFACES,}${name}:${port}:${addr}:${plain}:${ep}"
-  ok "queued interface $(col "$C_GREEN" "$name") — created on the node's next start"
-}
 # ── interface picker helpers ──────────────────────────────────────────────
 host_wg_ifaces(){   # live wg/awg interface NAMES on the host (any owner) — excludes panel-managed mesh links
   ip -o link show 2>/dev/null | sed -n 's/^[0-9]\{1,\}: \([^:@]*\).*/\1/p' | while read -r d; do
@@ -815,18 +740,6 @@ find_iface_conf(){  # echo the .conf path for an interface (docker data dir + th
   p="$(etc_wg_conf "$n")";  [ -n "$p" ] && { echo "$p"; return 0; }
   return 0   # no conf found → empty output + success (the trailing test would otherwise return non-zero)
 }
-is_kernel_iface(){  # true if backed by a kernel/host unit or an /etc conf (NOT just a docker-data conf) —
-  [ -n "$(etc_awg_conf "$1")" ] && return 0   # i.e. it runs on the kernel here, not in a container
-  [ -n "$(etc_wg_conf "$1")" ] && return 0
-  systemctl is-enabled "awg-quick@$1" >/dev/null 2>&1 && return 0
-  systemctl is-enabled "wg-quick@$1"  >/dev/null 2>&1 && return 0
-  return 1
-}
-kern_label(){       # human label of the kernel service an interface currently runs as
-  if   [ -n "$(etc_awg_conf "$1")" ]; then echo "kernel AmneziaWG (awg-quick@$1)"
-  elif [ -n "$(etc_wg_conf "$1")" ];  then echo "kernel WireGuard (wg-quick@$1)"
-  else echo "the kernel datapath"; fi
-}
 bm_node_ifaces(){   # interfaces a co-located BARE-METAL node manages (from its agent config) — excludes mesh links
   [ -f /etc/swg-agent/config.json ] || return 0
   python3 - <<'PY' 2>/dev/null | drop_sys_ifaces || true
@@ -837,49 +750,17 @@ except Exception: pass
 PY
 }
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
-onboard_iface(){    # bring an interface under this docker node: import its .conf into ./data/node-confs
-  local n="$1" src kconf="" dest                       # NB: don't reference $n in the same `local` (set -u)
-  is_sys_iface "$n" && { warn "'$n' is a panel-managed mesh link — not a user interface; skipping"; return 0; }
-  dest="$INSTALL_DIR/data/node-confs/$n.conf"
-  # prefer a kernel/host conf as the source — so a migration also tears the kernel side down
-  kconf="$(etc_awg_conf "$n")"; [ -n "$kconf" ] || kconf="$(etc_wg_conf "$n")"
-  src="${kconf:-$(find_iface_conf "$n")}"
-  [ -n "$src" ] || { warn "no .conf found for '$n' (orphan interface — no keys to adopt); skipping"; return 1; }
-  run mkdir -p "$INSTALL_DIR/data/node-confs"
-  # copy the conf WITHOUT the host PostUp/PostDown NAT hooks — inside the swg-node container those
-  # iptables rules (bound to the host's WAN) fail and break `awg-quick up`, leaving the iface DOWN.
-  # The container sets up its own NAT (node-entrypoint). Keys + Amnezia params are preserved.
-  if [ "$src" != "$dest" ]; then
-    if $DRYRUN; then echo "    [skip] import $src → $dest (strip host NAT hooks)"
-    else grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$src" > "$dest"; chmod 600 "$dest"; fi
-  fi
-  $DRYRUN || { grep -q '^#swg:onboarded' "$dest" 2>/dev/null || sed -i '1i #swg:onboarded' "$dest" 2>/dev/null || true; }   # add-only: swg-noded keeps the orphan's existing peers
-  if [ -n "$kconf" ]; then          # MIGRATION: take the interface OFF the kernel/host side so its name
-    run awg-quick down "$n" 2>/dev/null || true   # doesn't collide with the container (host networking)
-    run wg-quick  down "$n" 2>/dev/null || true
-    run systemctl disable --now "awg-quick@$n" 2>/dev/null || true
-    run systemctl disable --now "wg-quick@$n"  2>/dev/null || true
-    if _in "$n" "$(bm_node_ifaces)"; then          # also detach from a co-located bare-metal swg node
-      $DRYRUN || python3 - "$n" <<'PY' 2>/dev/null || true
-import json,sys
-p="/etc/swg-agent/config.json"
-try:
-    d=json.load(open(p)); d.get("interfaces",{}).pop(sys.argv[1],None); json.dump(d,open(p,"w"),indent=2)
-except Exception: pass
-PY
-    fi
-    # move the kernel conf aside (not delete) so the unit can't re-create it on boot — recoverable
-    if $DRYRUN; then echo "    [skip] mv $kconf $kconf.bak (off the kernel)"
-    else mv -f "$kconf" "$kconf.bak" 2>/dev/null || true; fi
-  fi
-  ok "onboarded $(col "$C_GREEN" "$n")"
-}
 # bare→docker CONVERT: migrate THIS box's bare interfaces (kernel awg/wg) into the docker node's conf dir, in the
 # NODE STAGE — the mirror of migrate_baremetal_turns. Lists them, asks "Transfer? (Y/n)", copy-firsts (strips host
 # NAT — the container does its own; keys preserved). The bare interfaces keep serving until the atomic switch
 # (lc_teardown_baremetal) brings them down. Decline ⇒ left on bare-metal (start empty / add fresh in the loop).
 migrate_baremetal_ifaces(){
   [ "${SWG_CONVERT_DIR:-}" = convert-docker ] || return 0
+  # WDTT servers migrate INDEPENDENTLY of regular wg/awg interfaces — a master may run ONLY WDTT instances (no plain
+  # interfaces), and the interface transfer below returns early when there are none / the operator declines. So carry
+  # WDTT FIRST, unconditionally. (Path map + copy/strip rationale live in migrate_wdtt, lib/common.sh; the bare
+  # swg-wdtt UNITS are stopped at the atomic switch, not here — a mid-convert abort must not drop WDTT early.)
+  migrate_wdtt to-docker "$INSTALL_DIR"
   # a CONVERT's docker conf dir must hold ONLY this run's migrated set — wipe stale confs a previous convert
   # left in a reused dir, else current_node_ifaces resurrects them as a ghost "already on this node" entry.
   [ -d "$INSTALL_DIR/data/node-confs" ] && rm -f "$INSTALL_DIR/data/node-confs/"*.conf 2>/dev/null || true
@@ -895,7 +776,8 @@ migrate_baremetal_ifaces(){
     printf '    %s%-10s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${_mep:-?}" "${lp:-?}" "${addr:-?}"
   done
   echo
-  [ "$(ask_yn_tty "Transfer these interfaces into the docker node?" y)" = yes ] || { info "  left on bare-metal — they come down at the switch; create fresh ones below if you want"; echo; return 0; }
+  # Approach B: auto-carry — always migrate the bare node's managed interfaces (no prompt). New ones / adoption of
+  # anything else on the box are handled from the panel.
   mkdir -p "$INSTALL_DIR/data/node-confs"
   for n in $ifs; do
     src="/etc/amnezia/amneziawg/$n.conf"; [ -f "$src" ] || src="/etc/wireguard/$n.conf"; [ -f "$src" ] || continue
@@ -903,94 +785,48 @@ migrate_baremetal_ifaces(){
     grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$src" > "$dest" 2>/dev/null && chmod 600 "$dest"   # strip host NAT (container NATs); keys preserved
     echo "    $(b "$n") → data/node-confs (key preserved; bare interface comes down at the switch)"
   done
-  if [ -d /var/lib/swg-noded/iface-keys ]; then mkdir -p "$INSTALL_DIR/data/node/iface-keys"; cp -a /var/lib/swg-noded/iface-keys/. "$INSTALL_DIR/data/node/iface-keys/" 2>/dev/null || true; fi
+  migrate_node_state to-docker "$INSTALL_DIR"
   echo
 }
 # wg/awg step: pick from the host's interfaces (available / used-by-another-node) or create new
+# WDTT instances this node runs, from the record the container writes into the mounted data dir. Their interfaces
+# are created by the WDTT server itself (no .conf), so the conf scan can never see them — list them explicitly.
+# Emits "<iface>\t<listen>\t<subnet>" per line.
 manage_node_ifaces(){
-  step "WireGuard / AmneziaWG setup"
+  step "Datapath tooling"
   echo
-  echo "      Interfaces run inside the swg-node container; add as many as you need now, or add more"
-  echo "      later from the panel (Interfaces → Load new interface). Existing ones are KEPT."
+  echo "      Interfaces run inside the swg-node container. No create prompts (Approach B) — interfaces are"
+  echo "      created from the panel, and anything already on this box appears there as an adoption candidate."
   echo
-  migrate_baremetal_ifaces   # convert: Transfer? + copy-first the bare interfaces, then the loop shows them + adds more
-  local mine bm cand dock kern n pick xfer kpick dpick bad yn doit
-  while :; do
-    mine="$(current_node_ifaces | tr '\n' ' ')" || true   # under set -euo pipefail these subs can exit non-zero
-    # interfaces a co-located bare node still lists, MINUS any already on this docker node (those aren't
-    # migration candidates — showing them in both "already on this node" and "bare-metal node" is confusing)
-    bm="$(for n in $(bm_node_ifaces); do _in "$n" "$mine" || printf '%s ' "$n"; done)" || true
-    # candidates from EVERY source: live ifaces, our docker source-of-truth dir, AND the default
-    # wg/awg dirs (any /etc/amnezia subdir + /etc/wireguard) so a pre-existing user install is found.
-    cand="$( { host_wg_ifaces        # live iface NAMES (already bare)
-      { [ -d /etc/amnezia ] && find /etc/amnezia -maxdepth 3 -type f -name '*.conf' 2>/dev/null
-        printf '%s\n' /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf
-      } | while read -r c; do [ -f "$c" ] && basename "$c" .conf; done    # conf PATHS -> bare names
-      } | sort -u | drop_sys_ifaces )" || true   # never surface the panel-managed mesh links (swg_*)
-    # split the free interfaces: docker ORPHANS (left by a previous container) vs KERNEL interfaces
-    # (running on the host's kernel datapath — onboarding one MOVES it off the kernel).
-    dock=""; kern=""
-    for n in $cand; do
-      _in "$n" "$mine" && continue
-      _in "$n" "$bm" && continue
-      is_sys_iface "$n" && continue            # belt-and-suspenders: mesh links are never orphans/candidates
-      if is_kernel_iface "$n"; then kern="$kern $n"; else dock="$dock $n"; fi
-    done
-    dock="$(echo $dock)"; kern="$(echo $kern)"
-    [ -n "$mine" ] && { echo "  Interfaces already on this node:"; echo; for n in $mine; do iface_row "$n"; done; echo; }
-    [ -n "$dock" ] && { echo "  Available orphan interfaces:"; echo; for n in $dock; do iface_row "$n"; done; echo; }
-    [ -n "$kern" ] && { printf "  Existing %s interfaces:" "$(col "$C_RED" kernel)"; for n in $kern; do printf ' %s' "$(col "$C_RED" "$n")"; done; printf " %s\n" "$(col "$C_RED" '— picking one MOVES it off the kernel into this node')"; }
-    [ -n "$bm" ] && { printf "  Interfaces used by the bare-metal node on this server:"; for n in $bm; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
+  migrate_baremetal_ifaces   # convert: auto-carry the bare node's managed interfaces → data/node-confs (no prompt)
+  # record-only: detect what else is on the box and just DISPLAY it. The node reports these to the panel, where they
+  # show as adoption candidates (classify WG / AWG / WDTT, or ignore). Nothing is onboarded/moved here — a kernel
+  # interface stays on the kernel until the operator adopts it from the panel.
+  local mine cand n other=""
+  mine="$(current_node_ifaces | tr '\n' ' ')" || true
+  cand="$( { host_wg_ifaces
+    { [ -d /etc/amnezia ] && find /etc/amnezia -maxdepth 3 -type f -name '*.conf' 2>/dev/null
+      printf '%s\n' /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf
+    } | while read -r c; do [ -f "$c" ] && basename "$c" .conf; done
+    } | sort -u | drop_sys_ifaces )" || true
+  for n in $cand; do _in "$n" "$mine" && continue; is_sys_iface "$n" && continue; other="$other $n"; done; other="$(echo $other)"
+  local _wl _wi _wls _wsub _wcount=0
+  # candidates first (only what the panel does NOT manage), then the local set — same shape as the bare-metal installer
+  if [ -n "$other" ]; then
+    echo; info "Found $(echo $other | wc -w) wg/awg/wdtt interface(s) NOT managed by the panel — adopt them from the panel (Node → Interfaces → adoption candidates):"; echo
+    for n in $other; do iface_row "$n" || echo "    $n"; done; echo
+  else
+    info "No unmanaged wg/awg/wdtt interfaces found on this box — nothing to adopt."
+  fi
+  _wcount=$(( $(echo $mine | wc -w) + $(wdtt_local "$INSTALL_DIR/data/node/wdtt.json" | awk 'NF' | wc -l) ))
+  if [ "$_wcount" -gt 0 ]; then
+    echo; info "Found $_wcount wg/awg/wdtt local interface(s) on this box:"; echo
+    for n in $mine; do iface_row "$n" || echo "    $n"; done
+    while IFS="$(printf '\t')" read -r _wi _wls _wsub; do [ -n "$_wi" ] && wdtt_row "$_wi" "$_wls" "$_wsub"; done < <(wdtt_local "$INSTALL_DIR/data/node/wdtt.json")
     echo
-    if [ -z "$dock$kern$mine$bm" ]; then            # truly nothing on this box → skip by default (panel-managed) or create one
-      info "No wg / awg interfaces yet — this node can be managed entirely from the panel (Interfaces → Load new interface)."; echo
-      doit="$(ask_yn_tty "Create a bootstrap interface now instead? (default: skip — add them from the panel later)" n)"
-      if [ "$doit" = yes ]; then echo; add_node_iface; echo; continue; fi
-      info "No bootstrap interface — this node will be managed from the panel."; break
-    elif [ -n "$dock" ]; then                       # docker orphans present → onboard all / some / none
-      echo "  Press $(b Enter) to onboard $(col "$C_BLUE" 'all available orphans above') and continue"
-      echo "  Enter interface $(b names) (space-separated) to onboard or migrate specific ones"
-      [ -n "$mine" ] && echo "  Enter $(col "$C_BLUE" done) to keep only this node's interfaces (leave the orphans)"
-      printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
-    else                                            # no orphans (maybe kernel/bm/own) → finish or migrate
-      echo "  Press $(b Enter) to finish with this node's interfaces"
-      { [ -n "$kern" ] || [ -n "$bm" ]; } && echo "  Enter interface $(b names) to migrate one onto this node"
-      printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
-    fi
-    if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping current interfaces"; break; fi
-    if [ -z "$(echo $pick)" ]; then                # Enter → onboard all docker orphans + proceed (kernel needs explicit confirm)
-      for n in $dock; do onboard_iface "$n" || true; done
-      [ -n "$(current_node_ifaces)" ] || { warn "no interfaces yet — type 'new' or name a kernel interface to migrate"; echo; continue; }
-      break
-    fi
-    if [ "$pick" = done ]; then                     # keep only what's on the node → leave the rest alone
-      [ -n "$(current_node_ifaces)" ] || { warn "this node has no interfaces yet — onboard one or type 'new'"; echo; continue; }
-      break
-    fi
-    if [ "$pick" = new ] || [ "$pick" = n ]; then echo; add_node_iface; echo; continue; fi
-    xfer=""; kpick=""; dpick=""; bad=""
-    for n in $pick; do
-      _in "$n" "$mine" && continue
-      _in "$n" "$dock" && { dpick="$dpick $n"; continue; }
-      _in "$n" "$kern" && { kpick="$kpick $n"; continue; }
-      _in "$n" "$bm" && { xfer="$xfer $n"; continue; }
-      bad="$bad $n"
-    done
-    [ -n "$bad" ] && { warn "not found:$bad — pick from the lists above, or 'new'"; echo; continue; }
-    for n in $dpick; do onboard_iface "$n" || true; done           # docker orphans → straight onboard
-    for n in $kpick; do                                            # kernel → per-interface migration confirm
-      echo
-      echo "  You are about to move $(col "$C_RED" "$n") from $(kern_label "$n") to this docker-managed node."
-      echo "  It will no longer run on the kernel here ($(b 'its peers are preserved'); the conf is kept as a .bak)."
-      if [ "$(ask_yn_tty "Move $n into docker?" y)" = yes ]; then onboard_iface "$n" || true; else warn "kept $n on the kernel"; fi
-    done
-    if [ -n "$xfer" ]; then                                        # bare-metal swg node → transfer confirm
-      printf "  Are you sure you want to transfer %s to this node? (y/N): " "$(col "$C_RED" "$(echo $xfer)")"
-      read -r yn </dev/tty || yn=n
-      case "$yn" in [Yy]*) for n in $xfer; do onboard_iface "$n" || true; done;; *) echo; continue;; esac
-    fi
-    break
-  done
+  else
+    info "No local interfaces yet — this node is managed from the panel (Interfaces → Load new interface)."
+  fi
 }
 ask_role(){          # role (panel entry) — master (panel + local node) or host (panel only); mirrors bare-metal
   step "Server role"
@@ -1040,6 +876,11 @@ case "$PROFILE" in
     PANEL_PASSWORD="${PANEL_PASSWORD:-unused-on-node-only}"; PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
     ;;
 esac
+# A node run never prompts for TLS, but it rewrites the .env that the PANEL shares in a master/converted
+# project — so defaulting straight to "selfsigned" silently downgraded a letsencrypt panel's recorded mode and
+# (below) deleted its :80 publish, breaking the next ACME renewal and reporting the wrong cert in the summary.
+# Inherit whatever the existing .env already says; only a genuinely fresh install falls back to selfsigned.
+[ -n "${TLS:-}" ] || [ ! -f "$INSTALL_DIR/.env" ] || TLS="$(sed -n 's/^TLS=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1)"
 TLS="${TLS:-selfsigned}"         # concrete value for .env (node profile never prompts for it)
 TLS_VERIFY="${TLS_VERIFY:-no}"   # concrete value for .env (host profile leaves it unset)
 
@@ -1058,6 +899,22 @@ fi
 if have docker && docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"
 elif have docker-compose; then COMPOSE="docker-compose"
 else COMPOSE="docker compose"; $DRYRUN || warn "docker compose plugin not detected — install it if 'up' fails"; fi
+# The client binary existing says NOTHING about the daemon being up — `docker compose version` answers from the
+# plugin alone, and `docker pull` failing is treated as "offline, use the local image". So a stopped daemon used
+# to sail all the way to the bare→docker switch, which tears the bare-metal install down BEFORE starting the
+# containers: the box ended up with neither, and a panel that was serving fine a moment earlier was gone.
+# Prove the daemon answers HERE, while nothing has been touched, and start it if the unit is merely stopped.
+if ! $DRYRUN; then
+  if ! docker info >/dev/null 2>&1; then
+    info "the Docker daemon isn't responding — starting it"
+    systemctl start docker >/dev/null 2>&1 || true
+    for _dwait in 1 2 3 4 5 6 7 8 9 10; do docker info >/dev/null 2>&1 && break; sleep 1; done
+  fi
+  docker info >/dev/null 2>&1 || die "the Docker daemon isn't running (docker info failed). Start it with $(b 'systemctl start docker') and re-run — nothing has been changed${SWG_CONVERT_DIR:+, and your bare-metal install is still serving}."
+  # Docker installed-but-disabled is easy to miss (an earlier uninstall leaves it that way) and the panel would
+  # simply not come back after a reboot.
+  systemctl is-enabled docker >/dev/null 2>&1 || { systemctl enable docker >/dev/null 2>&1 && sub "enabled docker.service (it was disabled — the panel must survive a reboot)"; }
+fi
 
 # ───────────────────────── stage project ─────────────────────────
 # Default pulls prebuilt images from GHCR, so only the compose file is needed on the host
@@ -1132,16 +989,9 @@ PYHOST
   fi
 
   # ── turn-proxy management — how this node's host turn-proxy services are managed ──
-  if [ -z "$TURN_MANAGE" ]; then
-    step "Turn proxies management"; echo
-    menu "$(col "$C_BLUE" '[1]') $(keyd p 'anel (default)')" "Manage turn-proxies (edit listen/connect/keys, restart) from the panel — they run as
-      sibling CONTAINERS (swg-turn-*), not host services. Mounts the Docker socket into the node container, which gives it
-      ROOT-EQUIVALENT host access (it manages sibling containers). Only enable if you trust the panel and this box."
-    menu "$(col "$C_BLUE" '[2]') $(key m 'anual')"           "Turn-proxies are managed on this server by hand — no socket is mounted."
-    ask_choice "Select turn-proxy management (number, letter or name)" "p" TURN_MANAGE "panel manual p m"
-    case "$TURN_MANAGE" in p) TURN_MANAGE=panel;; m) TURN_MANAGE=manual;; esac
-  fi
-  case "$TURN_MANAGE" in panel|manual) ;; *) TURN_MANAGE=panel;; esac
+  # Approach B: turn-proxies are managed from the PANEL (they run as sibling swg-turn-* containers). No prompt —
+  # mount the Docker socket so swg-noded can drive them. An explicit TURN_MANAGE=manual env still opts out.
+  case "$TURN_MANAGE" in manual) ;; *) TURN_MANAGE=panel;; esac
   if [ "$TURN_MANAGE" = panel ] && ! $DRYRUN; then     # mount the Docker socket so swg-noded can drive host turn-proxy units (B1)
     python3 - "$PREFIX$INSTALL_DIR/docker-compose.yml" <<'PYSOCK'
 import sys, re
@@ -1158,8 +1008,9 @@ PYSOCK
   else
     [ "$TURN_MANAGE" = manual ] && ok "turn-proxy management: manual (managed on this server)"
   fi
-  migrate_baremetal_turns   # convert: bring the bare-metal turn-proxies into the record FIRST, then the fork menu adds more
-  choose_turn_proxy   # install/onboard host turn-proxy servers as part of this step (unit retries until compose publishes the wg port)
+  # Approach B: turn-proxies are managed from the PANEL (they run as sibling swg-turn-* containers) — no create menu.
+  # A convert just carries the bare-metal turn-proxies into the record (auto, no prompt).
+  migrate_baremetal_turns
 fi
 NODE_NET="${NODE_NET:-host}"; TURN_MANAGE="${TURN_MANAGE:-manual}"   # concrete values for .env
 
@@ -1192,6 +1043,7 @@ SUB_DOMAIN=${SUB_DOMAIN:-}
 SWG_UPDATE_TRIGGER=$_UPD_TRIG
 NODE_UPDATE_TRIGGER=$_NODE_UPD_TRIG
 SWG_HOST_HOSTNAME=$(hostname 2>/dev/null)   # host hostname → lets the panel recognise a master's co-located node (which reports the host hostname via host-networking)
+HOST_IPS=$(host_bindable_ips)   # the HOST's bindable addresses → Access & TLS "Listen IP" picker; a bridged panel container can only see the compose network's 172.x (and has no `ip` binary at all)
 
 # ───────── Node (profiles: node, master) ─────────
 PANEL_URL=$PANEL_URL
@@ -1213,10 +1065,20 @@ EOF
 chmod 600 "$PREFIX$INSTALL_DIR/.env" 2>/dev/null || true
 ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
 
+# Seed the panel's OWN Access & TLS settings from the answers just given — the docker mirror of install-host.sh.
+# ./data/lib is the panel's state volume and SURVIVES an uninstall/re-create — see seed_access_settings, lib/common.sh.
+if ! $DRYRUN && [ "$PROFILE" != node ] && have python3; then
+  PANEL_DOMAIN="$PANEL_DOMAIN" PANEL_BASE="${PANEL_BASE:-}" PORT="${PANEL_PORT:-}" TLS_MODE="${TLS:-}" \
+  ACME_EMAIL="${ACME_EMAIL:-}" CF_TOKEN="${CF_TOKEN:-}" CF_ORIGIN_TOKEN="${CF_ORIGIN_TOKEN:-}" \
+  seed_access_settings "$INSTALL_DIR/data/lib/panel-settings.json"
+  chmod 600 "$INSTALL_DIR/data/lib/panel-settings.json" 2>/dev/null || true
+fi
+
 # Let's Encrypt HTTP-01 needs host port 80 — publish it via an override ONLY for letsencrypt(-ip), so the
 # other TLS methods (cloudflare/cf15/selfsigned/none) leave :80 free for an existing nginx/apache.
 OVERRIDE="$PREFIX$INSTALL_DIR/docker-compose.override.yml"
-if [ "$TLS" = letsencrypt ] || [ "$TLS" = letsencrypt-ip ]; then
+if [ "$PROFILE" = node ]; then :   # the override publishes :80 on the PANEL container — not this run's business
+elif [ "$TLS" = letsencrypt ] || [ "$TLS" = letsencrypt-ip ]; then
   if $DRYRUN; then echo "    [skip] write $INSTALL_DIR/docker-compose.override.yml (publish :80 for HTTP-01)"
   else
     cat > "$OVERRIDE" <<'YAML'
@@ -1241,6 +1103,10 @@ fi
 # Drop both and --force-recreate so the entrypoint re-applies the freshly-chosen login + TLS mode.
 # (acme state in data/etc/acme is kept, so letsencrypt/cloudflare reuse their cached cert.)
 RECREATE=""
+# NEW_LOGIN tracks the one case where PANEL_PASSWORD is actually APPLIED: auth is deleted here and the entrypoint
+# writes the freshly-chosen login. Only then may the summary print it — with a reused or staged login the generated
+# string is not the real password, and showing it would be worse than showing nothing.
+NEW_LOGIN=no
 if [ "$PROFILE" != node ]; then
   if [ "${REUSE_TLS:-no}" = yes ]; then
     : # reuse: keep the existing login + certificate (entrypoint serves them as-is)
@@ -1249,6 +1115,7 @@ if [ "$PROFILE" != node ]; then
   else
     $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth" \
                      "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"
+    NEW_LOGIN=yes
   fi
 fi
 # always recreate (incl. node): a plain `up -d` just (re)starts the EXISTING container on its OLD .env,
@@ -1325,11 +1192,29 @@ fi
 # CONVERT bare→docker: the bare node stayed UP through every prompt + the image pull above. NOW — the last
 # moment before the container binds its ports — stop+remove it. This is the atomic switch (old down → new up).
 if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
+  docker info >/dev/null 2>&1 \
+    || die "the Docker daemon went away — refusing to tear the bare-metal install down. It is still serving; nothing was changed."
+  # A live daemon is not a present IMAGE. The pull above is deliberately non-fatal (offline → use the local copy),
+  # so on a first-ever convert with GHCR unreachable there is no local copy either: we would tear the bare-metal
+  # panel down and then fail on "image not found", leaving the box with neither. Check before the point of no return.
+  if ! $BUILD; then
+    for _img in $(sed -n 's@^ *image: *\(ghcr.io/[^ ]*\)@\1@p' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null | sort -u); do
+      case "$PROFILE:$_img" in host:*swg-node*|node:*swg-panel*) continue ;; esac   # other profile's image
+      docker image inspect "$_img" >/dev/null 2>&1 \
+        || die "$_img isn't available locally and couldn't be pulled — refusing to tear the bare-metal install down. It is still serving; nothing was changed. Fix connectivity (or re-run with --build) and try again."
+    done
+  fi
   info "Switching over — stopping the bare-metal services, then starting the container(s)…"
   [ "${SWG_CONVERT_KILL_PANEL:-}" = 1 ] && teardown_bare_panel   # host/master convert: stop+remove the bare panel (and move its state aside)
   # ONLY tear the bare NODE down when its datapath is actually being converted (master/node). A HOST-only
   # convert moves just the panel → docker; the co-located bare node must stay UP + keep serving its peers.
   [ "$PROFILE" != host ] && lc_teardown_baremetal ${MIGRATED_TURNS:-${SWG_CONVERT_TURNS:-}}
+  # WDTT servers are their own systemd units (not covered by lc_teardown_baremetal's interface/turn teardown) — stop
+  # them at the switch so their DTLS/WG ports free up for the container's WDTT, and only NOW (past the point of no
+  # return) so a mid-convert abort never drops WDTT while the bare node is still the live install.
+  if [ "$PROFILE" != host ]; then
+    for _wu in $(systemctl list-unit-files --no-legend 2>/dev/null | grep -oE 'swg-wdtt-[^ ]+\.service'); do systemctl disable --now "$_wu" >/dev/null 2>&1 || true; done
+  fi
 fi
 # swg-sub masks the panel's secret state with /dev/null (files) + tmpfs (dirs). A bind/tmpfs mount can only CREATE
 # its mountpoint if the target already exists on the (read-only) ./data volumes — otherwise the container dies with
@@ -1437,6 +1322,16 @@ EOF
 }
 wire_docker_netctl
 
+# ── a convert invalidates a reverse proxy's vhost ──────────────────────────────────────────────────────────
+# The cert dir just moved (/etc/swg-panel → the container's data/etc) and the upstream ports changed. nginx keeps
+# serving its STALE in-memory config, so a broken vhost is invisible until something reloads — at which point
+# `nginx -t` fails and the site is simply down. Repoint the vhost we wrote; report the operator's own. Convert
+# only: a fresh install has nothing to repoint. (nginx_convert_fixup / ngx_upstream, lib/common.sh)
+if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && [ "$PROFILE" != node ] && ! $DRYRUN; then
+  nginx_convert_fixup "$INSTALL_DIR/data/etc/tls" \
+    "$(ngx_upstream "$PANEL_LOCAL_PORT")" "$(ngx_upstream "$SUB_PORT")"
+fi
+
 # ───────────────────────── SUMMARY ─────────────────────────
 # TLS=none → the operator fronts the panel + swg-sub with their OWN reverse proxy: print ready nginx/Caddy
 # configs (both on :443, different subdomains → the two containers on loopback). Installs nothing.
@@ -1450,6 +1345,12 @@ fi
 if [ "${SWG_LC_PARENT:-}" = 1 ]; then echo; ok "$PROFILE → docker done — continuing the master convert…"
 else
 echo; ok "Docker install complete (profile: $PROFILE)."
+# We MINTED this login → hand the plaintext to the summary, the only place it is ever shown (the auth file keeps
+# just the pbkdf2 hash, so afterwards it can only be reset, never recovered). install-host has always done this;
+# the docker path never did, so a fresh docker install generated a password and showed nobody — the operator was
+# left with a brand-new panel and no way in short of resetting a login they had never seen.
+[ "${NEW_LOGIN:-no}" = yes ] && export SWG_SUMMARY_PASS="$PANEL_PASSWORD"
 print_summary "$([ -n "${SWG_CONVERT_DIR:-}" ] && echo CONVERSION || { [ "$EXISTING_DOCKER" = yes ] && echo RE-INSTALL || echo INSTALL; })" "$([ -n "${SWG_CONVERT_DIR:-}" ] && { [ "$PROFILE" = node ] && echo node || echo host; } || true)"
+unset SWG_SUMMARY_PASS
 fi   # end of the full summary (suppressed for a master sub-step)
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun$INSTALL_DIR/.env"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command

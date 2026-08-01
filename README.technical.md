@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.5.1-beta</code></p>
+<p align="center"><code>1.6.0-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.5.1-beta** — [full changelog](CHANGELOG.md)
-> - **Content filtering** (1.5.0) — per-interface blocking of ads/trackers/malware/adult/gambling from curated category lists. Every feed unions into **one set per node** (O(1) match); domain filters enforce in Force-DNS / Hybrid-SNI, IP-tier in every mode. The panel resolves the union with a **streaming external-sort** so a multi-million-domain list can't OOM the box, and the node **memory-gates** the Force-DNS fill.
-> - **Protection dashboard** (1.5.0) — an Overview card driven by `/api/block-stats`: blocked packets + distinct sites per category, torrents caught, port-scanners flagged (ranged, from per-node RRDs), with a panel-attributed "who" bubble (source IP → peer → user).
-> - **1.5.1 fix** — the header's "update to …" changelog popover was orphaned by the per-poll header re-render (never closed, stacked a growing glow) and truncated wrapped bullets; now a self-hiding singleton, wider, with full bullets.
+> **What's new in 1.6.0-beta** — [full changelog](CHANGELOG.md)
+> - **WDTT servers** — a self-contained, key-owning VPN server (DTLS + password-HKDF obfuscation over its own userspace WireGuard) modelled as an interface: four forks, panel-owned passwords reconciled without a restart, and full routing/filter/egress parity with wg/awg.
+> - **Adoption** — the node reports every wg/awg interface and WDTT install it did not create (running *or* dormant); the panel takes them over in place, importing existing peers and WDTT password stores.
+> - **Installers create nothing** — no interface/turn/WDTT prompts; they install the datapath tooling, stand `swg-noded` up, and let the panel own configuration.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -22,6 +22,8 @@ Multi-hop in mind (edge entry → distant exit), and built to scale — from a c
 - **Panel** (control plane) — serves the web UI, its own TLS + login, and a node-sync API. It owns the roster (your peers) and the node store. Pure Python, no database.
 - **Node** (entry server) — runs `swg-noded`, which every few seconds posts a snapshot of its interface to the panel, receives the peers it *should* have, and reconciles locally through `swg-agent` (adding/removing peers on the live wg/awg interface). Outbound HTTPS only.
 - **Declarative** — you change peers in the panel; nodes converge. A node that misses a beat self-heals on the next sync, and a transient panel outage never wipes a node's peers (a node only reconciles on a valid reply).
+- **WDTT** — a third server type, run by the node as a supervised process per interface: it owns its own tunnel (so it is *not* a front for a wg/awg interface the way a turn-proxy is) and authenticates users by **password** rather than a keypair. The panel owns the password set and writes it declaratively; the server reconciles on SIGHUP/mtime **without dropping live tunnels**. Binaries are our own patched builds of four upstream forks, versioned and rollback-able per instance.
+- **Adoption** — anything the node finds that the panel didn't create (a wg/awg interface, a running or stopped WDTT install) is reported as a **candidate**, not touched. You adopt it in place — same keys, port, subnet and peers, WDTT password store included — or ignore it, and ignored ones are remembered.
 - **Keys are generated in your browser** — peer keypairs are always minted client-side. **By default** (`store_configs`, on) the panel then keeps a copy of each generated config — private key included — so its QR/download stays available any time. Prefer no secrets at rest? Set `store_configs` off (Settings → Client configs) and the panel keeps only the public key, the assigned IP, and the preshared key; the private key is shown **once** at creation and never stored. The PSK is always panel-owned, so every node a peer lives on stays consistent.
 
 ## Contents
@@ -64,6 +66,7 @@ Mix freely: a Docker panel with bare-metal nodes, a bare-metal `master` plus ext
 | `swg-panel-server` | host | UI + node-sync API + roster/node store; serves its own TLS + login and the status board |
 | `swg-noded` | each node | posts snapshots, pulls the desired peer set, reconciles locally — outbound HTTPS only |
 | `swg-agent` | each node | applies a single peer add/remove to the live interface and its `.conf` |
+| WDTT server | each node | our patched build of the operator's chosen fork — one supervised process per WDTT interface, driven by a panel-written `desired.json` |
 | `users.json` | host | the **roster** — your peers (public key, IP, PSK, and which nodes each lives on) |
 | `nodes.json` | host | the **node store** — node names, endpoints, and enrollment-token hashes |
 
@@ -123,9 +126,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 | Panel · 4 | **Serve mode** | `internal` (default, self-contained) · `nginx` · `caddy` · `skip` |
 | Panel | **Port / admin** | port (default **443** for `internal`; the unit adds the bind capability for ports < 1024) and the web login — suggests `admin` + 3 digits; changeable later under **Account** |
 | Node · 1 | **Node name** | *(master)* this box's node name (default: hostname) |
-| Node · 2 | **Endpoint IP** | *(master)* public IP clients dial for this box (default: detected) |
-| Node · 3 | **Interfaces** | *(master)* manages **every** wg/awg interface found (scanning all of `/etc/amnezia` and `/etc/wireguard`); offers to **create** one if none exist; press **Enter** to proceed or **`new`** to add another. New interfaces get a server key, tunnel subnet, and an automatic forward + masquerade (`PostUp`/`PostDown`) so clients reach the internet. |
-| Node · 4 | **Turn-proxy** | *(master)* optional [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — tunnels wg/awg through VK TURN servers. Detects any installed proxy (by its `-listen`/`-connect` unit) and lists it; **Enter** to skip or pick a fork by **number** to install one (`WINGS-N`/`samosvalishe`/`kiper292`/`Moroka8` for Android, `anton48` for iOS). It fetches the release binary, **auto-derives** the `-connect` port from the wg/awg interface you just set up (lists all of them), **generates a 64-hex wrap key** with the fork's flags (`-wrap-srtp`/`-wrap`/`-wrap-mode`; `kiper292` has none), and records `listen`/`connect`/`wrap_key` for the panel + client configs. On **bare-metal** each proxy is a systemd service whose target lives in an `EnvironmentFile`, so a panel edit just rewrites it + restarts (no `daemon-reload`); on **Docker** it's a sibling **container** (`swg-turn-*`, managed over the mounted Docker socket — no `--privileged`/`--pid=host`). |
+| Node · 2 | **Datapath tooling** | *(master)* no prompt. Installs nftables + dnsmasq (smart routing / Force-DNS), the AmneziaWG tools **and** the DKMS kernel module, and plain WireGuard — so the panel can create either type immediately — then detects the interfaces already on the box and hands them to the panel as adoption candidates. |
 
 **TLS:**
 - **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
@@ -134,7 +135,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 - **selfsigned** — instant; browsers warn once. Good for getting going or behind a tunnel.
 - **skip** — bring your own cert (set `CERT_FULLCHAIN`/`CERT_KEY`), or terminate TLS elsewhere. With no cert the panel/proxy serves plain HTTP.
 
-**Serve modes:** `internal` self-contained (own TLS + login); `nginx` / `caddy` reverse-proxy on loopback (TLS terminated by the proxy, with a `location`/`handle` block honoring any subpath); `skip` leaves the panel on a loopback port for you to front yourself. Every mode uses the panel's own pbkdf2 login, so the **Account** tab works throughout.
+**Serve modes:** `internal` self-contained (own TLS + login); `nginx` / `caddy` reverse-proxy on loopback (TLS terminated by the proxy, with a `location`/`handle` block honoring any subpath); `skip` leaves the panel on a loopback port for you to front yourself. Every mode uses the panel's own pbkdf2 login, so the **Authentication** tab works throughout.
 
 Unattended example (config via env):
 
@@ -154,8 +155,14 @@ Nodes are managed entirely from the UI — the installer no longer asks about th
    curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
      | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
    ```
-   It runs **Node setup** — interfaces (each with its own endpoint IP) and an optional turn-proxy — and starts `swg-noded`. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
+   It installs the datapath tooling and starts `swg-noded` — it does **not** ask you to configure anything. Interfaces, turn-proxies and WDTT servers are created from the panel. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
 3. Within a few seconds the node turns **online** in the Nodes screen.
+
+**Adopting what the box already runs.** The node scans where wg/awg and WDTT normally live — not only where *we* install them — and reports each interface or WDTT install the panel did not create. They appear on the node's page as **candidate** cards with **Adopt** / **Ignore**:
+
+- **wg/awg** — adopting reads the live device (keys, peers, port, subnet, MTU) and takes it over **add-only**: existing peers are imported, never wiped. On Docker, a `.conf` that only ever existed inside the container is reconstructed from the live device so it can be adopted at all.
+- **WDTT** — the fork is identified from the running server process (not a UAPI socket), its subnet read off the live interface, and its **password store imported** as roster peers, so links already in circulation keep working. A **dormant** (stopped) install is discovered too, with whatever it can tell about itself, and **Adopt existing** takes a directory path directly for an install that was moved or renamed.
+- Ignored candidates are recorded and listed under **Settings → Interfaces**; one that later becomes managed drops off by itself.
 
 Against a **self-signed** panel the installer **auto-pins the cert on first contact** (trust-on-first-use): the node stores its sha256 and checks it on every handshake, before the token is sent — so a man-in-the-middle can't impersonate the panel even without a CA. A **real-CA** panel is verified against the system trust store instead. Override with `TLS_VERIFY=yes|no` or an explicit `TLS_FINGERPRINT=<sha256-hex>`. If the panel later moves (host/port), a node **auto-re-points** to the new address — but only when it still presents the pinned/trusted cert.
 
@@ -172,11 +179,13 @@ A **peer** is one identity (a keypair + IP + PSK) that can be deployed to severa
 
 Live status (online, partial, dangling, …) is computed every refresh from the nodes' snapshots — a peer stays "online" while one replica is briefly unreachable. Each deployment also shows its **transport** — **direct** or **via turn-proxy** (inferred when the client's observed endpoint matches a node's turn-proxy) — and, where a turn-proxy is present, the proxy endpoint + **wrap key** to set up the vk-turn-proxy client app.
 
-**Account** — change the panel username/password under the **Account** tab; it takes effect immediately (you're asked to sign in again).
+**WDTT peers** — a peer on a WDTT interface holds a **password** instead of a keypair (the panel owns it; the server never mints its own). Everything else is the same object: assign, block, expire, rotate and delete work identically, and **Rotate all keys** on a user re-keys their wg/awg peers and re-issues their WDTT passwords in one action.
+
+**Authentication** — change the panel username/password under the **Authentication** tab; it takes effect immediately (you're asked to sign in again). Resetting it leaves the encryption vault intact — the recovery key is what restores access to escrowed keys.
 
 ## Subscriptions & access control
 
-**Subscriptions (`swg-sub`)** — a separate, public-facing, **read-only** surface that serves each user a personal page at `https://sub.<domain>/<token>#<unlock-key>` with their config + QR for **every** node they're on: **WireGuard**, **AmneziaWG**, and each **TURN-PROXY fork** they're assigned (WINGS-N, samosvalishe, Moroka8, cacggghp, …), plus a FreeTurn VK-call-link field, protocol/relay badges, light/dark, RU/EN, and copy / download / share. **Off by default** — enable it in **Settings → Subscriptions**.
+**Subscriptions (`swg-sub`)** — a separate, public-facing, **read-only** surface that serves each user a personal page at `https://sub.<domain>/<token>#<unlock-key>` with their config + QR for **every** node they're on: **WireGuard**, **AmneziaWG**, and each **TURN-PROXY fork** they're assigned (WINGS-N, samosvalishe, Moroka8, cacggghp, …), plus a FreeTurn VK-call-link field, protocol/relay badges, light/dark, RU/EN, and copy / download / share. **WDTT** peers appear in the same turn group with their import link (or QR, for the apps that scan one) and a per-OS **get the app** row resolved from the client you set as that fork's default. **Off by default** — enable it in **Settings → Subscriptions**.
 
 - **Key custody.** The per-user **unlock key rides in the URL `#fragment`** — never sent to the server. The panel stores only **ciphertext** (encrypted config blobs) plus a public token map (`subs/users.json` = `{token_sha}`); the SK-wrapped unlock keys sit in a separate `subs/escrow.json` the sub surface can't read. A compromise of the internet-facing page yields only ciphertext, never a private key (this is why plaintext `store_configs` was dropped).
 - **Isolation.** `swg-sub` is its own process/container running as a dedicated low-privilege user: it mounts panel state `:ro` and **masks** every secret it must never open (`auth`, `panel-settings.json`, `subs/vault.json`, `subs/escrow.json`, the TLS key) with `/dev/null` + `tmpfs`. No login, write, or node code.
@@ -426,7 +435,16 @@ swgPanel integrates several excellent open-source projects — huge thanks to th
 - [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
 - [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)
-- [kiper292](https://github.com/kiper292/vk-turn-proxy)
+
+**WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
+
+- [amurcanov](https://github.com/amurcanov/proxy-turn-vk-android) — the original
+- [ildarmaga](https://github.com/ildarmaga/wdtt)
+- [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
+- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)
+- [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
+- [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
+- [luminescq](https://github.com/luminescq/PWDTT)
 
 **Routing / geo-data lists** — the domain & IP lists behind smart routing:
 

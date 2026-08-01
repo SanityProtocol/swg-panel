@@ -453,6 +453,25 @@ ensure_awg_module(){   # HEAL (rebuild-if-missing) the AmneziaWG kernel module o
   fi
 }
 
+ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-metal panel whose TLS needs it.
+  # The cert and its renewal STATE live in /root/.acme.sh, but the PROGRAM is separate — and a docker→bare-metal
+  # convert brings the state across without it, because in docker acme.sh lives inside the image. The result is a
+  # /root/.acme.sh full of live cert directories and no acme.sh: renewals stop silently and the first address
+  # change fails with "acme.sh not found" pointing at a directory that plainly exists. Only for modes that
+  # actually use it; never fatal — an update that otherwise succeeded must not abort over the renewer.
+  local conf="${ETC_DIR:-/etc/swg-panel}/install.conf" mode=""
+  [ -f "$conf" ] && mode="$(sed -n 's/^TLS_MODE=//p' "$conf" | head -1)"
+  case "$mode" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 0;; esac
+  local a; for a in /root/.acme.sh/acme.sh "${HOME:-/root}/.acme.sh/acme.sh" "$(command -v acme.sh 2>/dev/null || true)"; do
+    [ -n "$a" ] && [ -x "$a" ] && return 0
+  done
+  local email; email="$(sed -n 's/^ACME_EMAIL=//p' "$conf" 2>/dev/null | head -1)"
+  info "Installing acme.sh (TLS mode $mode needs it; renewals and address changes were failing without it)"
+  sh -c "curl -fsSL https://get.acme.sh | sh -s email=${email:-admin@localhost}" >/dev/null 2>&1 || true
+  [ -x /root/.acme.sh/acme.sh ] && ok "acme.sh installed" \
+    || warn "couldn't install acme.sh — renewals and address changes will keep failing until it is"
+  return 0; }
+
 ensure_update_unit(){   # HEAL (install-if-missing) the one-click self-update wiring on a bare-metal panel.
   # install_update_unit (below) is called during an actual version update to REFRESH this wiring, but on an
   # up-to-date box with the units missing (a partial install / older host) nothing re-wires them, so the
@@ -467,6 +486,63 @@ ensure_update_unit(){   # HEAL (install-if-missing) the one-click self-update wi
   info "healing the one-click self-update wiring (missing — the panel's Update button would do nothing)"
   install_update_unit
   $DRYRUN || ok "one-click self-update wiring healed"
+}
+
+ensure_access_seed(){   # HEAL (fill-if-empty) the panel's Access & TLS settings from install.conf / .env.
+  # panel-settings.json lives in the STATE dir, which an uninstall KEEPS — so a box installed before the installer
+  # started seeding this (or re-installed onto a kept state dir) shows a BLANK public URL and the wrong TLS type in
+  # Settings → Access, contradicting what is actually running. Fill ONLY empty fields: once the operator sets an
+  # address in the panel it is the source of truth (it writes install.conf back via swg-netctl), so a non-empty
+  # value is never touched. Covers bare-metal and docker; a node-only box has no panel settings and is skipped.
+  local ps="" conf="" env_f=""
+  if [ -f "$PANEL_DIR/swg-panel-server" ] && [ -f /etc/swg-panel/install.conf ]; then
+    ps=/var/lib/swg-panel/panel-settings.json; conf=/etc/swg-panel/install.conf
+  elif [ -f "$DOCKER_DIR/.env" ] && [ -d "$DOCKER_DIR/data/lib" ]; then
+    ps="$DOCKER_DIR/data/lib/panel-settings.json"; env_f="$DOCKER_DIR/.env"
+  else return 0; fi
+  have python3 || return 0
+  $DRYRUN && { sub "[dry] would fill any EMPTY Access & TLS settings from ${conf:-$env_f}"; return 0; }
+  local _dom _base _port _tls _mail
+  if [ -n "$conf" ]; then
+    _dom="$(sed -n 's/^PANEL_DOMAIN=//p' "$conf" | head -1)"; _base="$(sed -n 's/^PANEL_BASE=//p' "$conf" | head -1)"
+    _port="$(sed -n 's/^PORT=//p' "$conf" | head -1)";        _tls="$(sed -n 's/^TLS_MODE=//p' "$conf" | head -1)"
+    _mail="$(sed -n 's/^ACME_EMAIL=//p' "$conf" | head -1)"
+  else
+    _dom="$(sed -n 's/^PANEL_DOMAIN=//p' "$env_f" | head -1)"; _base="$(sed -n 's/^PANEL_BASE=//p' "$env_f" | head -1)"
+    _port="$(sed -n 's/^PANEL_PORT=//p' "$env_f" | head -1)";  _tls="$(sed -n 's/^TLS=//p' "$env_f" | head -1)"
+    _mail="$(sed -n 's/^ACME_EMAIL=//p' "$env_f" | head -1)"
+  fi
+  _dom="${_dom%\"}"; _dom="${_dom#\"}"; _tls="${_tls%\"}"; _tls="${_tls#\"}"   # .env values may be quoted
+  PANEL_DOMAIN="$_dom" PANEL_BASE="$_base" PORT="$_port" TLS_MODE="$_tls" ACME_EMAIL="$_mail" \
+  python3 - "$ps" <<'PYACC' || true
+import json, os, sys
+p = sys.argv[1]
+try:
+    with open(p) as f: d = json.load(f)
+except Exception:
+    d = {}
+if not isinstance(d, dict): d = {}
+dom  = (os.environ.get("PANEL_DOMAIN") or "").strip()
+base = (os.environ.get("PANEL_BASE") or "").strip().rstrip("/")
+port = (os.environ.get("PORT") or "").strip()
+acc  = d.setdefault("access", {}); pan = acc.setdefault("panel", {}); tls = acc.setdefault("tls", {})
+changed = []
+if not (pan.get("url") or "").strip() and dom:          # ONLY when empty — never override the operator's value
+    host = dom if "://" in dom else "https://" + dom
+    if port and port not in ("443", "80") and ":" not in host.split("://", 1)[1]:
+        host += ":" + port
+    pan["url"] = host + (base or ""); changed.append("public URL")
+if not (tls.get("mode") or "").strip() and (os.environ.get("TLS_MODE") or "").strip():
+    tls["mode"] = os.environ["TLS_MODE"].strip(); changed.append("TLS type")
+if not (tls.get("email") or "").strip() and (os.environ.get("ACME_EMAIL") or "").strip():
+    tls["email"] = os.environ["ACME_EMAIL"].strip(); changed.append("ACME email")
+if not changed:
+    raise SystemExit(0)
+tmp = p + ".tmp"
+with open(tmp, "w") as f: json.dump(d, f, indent=2)
+os.replace(tmp, p)
+print(", ".join(changed))
+PYACC
 }
 
 ensure_panel_unit_warn(){   # DETECT + WARN only — never recreate. The panel unit bakes in the operator's
@@ -602,7 +678,9 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   # NEW SERVICE? add its ensure_<svc> here (and a matching writer in the installer) so update heals it too.
   ensure_netctl_helper   # swg-netctl privileged helper (+ queue dirs + trigger units)
   ensure_sub_server      # swg-sub subscription surface (user + binary + tls dir + unit)
+  ensure_acme_client     # HEAL: the ACME client itself, when TLS_MODE needs it (a convert leaves the state, not the program)
   ensure_update_unit     # one-click self-update wiring (wrappers + service/timer + trigger drop-in)
+  ensure_access_seed     # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from install.conf
   ensure_panel_unit_warn # swg-panel-server.service — detect + warn only (carries TLS/port/login)
 fi
 
@@ -657,8 +735,32 @@ open(f,"w").write("\n".join(o))
 PYHN
     fi ;;
   esac
+  # Same shape for the host's bindable addresses: a BRIDGED panel container cannot enumerate them (no `ip` in the
+  # image, and it would only see the compose 172.x anyway), so the Access & TLS "Listen IP" picker was empty on
+  # every docker install. Refresh on each update, not just when absent — a host's address can change.
+  case "$prof" in host|master|host-node)
+    if ! $DRYRUN; then
+      _hips="$(host_bindable_ips)"
+      if [ -n "$_hips" ]; then
+        if grep -q '^HOST_IPS=' "$DOCKER_DIR/.env" 2>/dev/null; then
+          sed -i "s|^HOST_IPS=.*|HOST_IPS=$_hips|" "$DOCKER_DIR/.env"
+        else printf 'HOST_IPS=%s\n' "$_hips" >> "$DOCKER_DIR/.env"; fi
+      fi
+    fi
+    if ! $DRYRUN && ! grep -q 'SWG_HOST_IPS' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
+      python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYHI' && note "docker-compose.yml: added SWG_HOST_IPS (Listen IP picker)"
+import sys
+f=sys.argv[1]; o=[]
+for l in open(f).read().split("\n"):
+    o.append(l)
+    if "SWG_PANEL_BASE:" in l and "${PANEL_BASE" in l: o.append('      SWG_HOST_IPS: "${HOST_IPS:-}"')
+open(f,"w").write("\n".join(o))
+PYHI
+    fi ;;
+  esac
   ensure_netctl_docker "$prof"   # HEAL: install the docker address helper if a panel-bearing host lacks it
   ensure_update_unit_docker "$prof"   # HEAL: install the docker one-click self-update wiring if a panel-bearing host lacks it
+  ensure_access_seed                  # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from .env
   $DRYRUN || ensure_docker_mask_files "$DOCKER_DIR"   # HEAL: pre-create the files swg-sub /dev/null-masks (a pre-fix install may lack them → recreate would fail)
   if grep -qE '^[[:space:]]*build:' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
     # build-from-source deployment → restage the source and rebuild (don't touch the user's compose/.env)

@@ -3,6 +3,91 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.6.0-beta] — 2026-08-01
+
+The **WDTT** release: a third kind of server you can run from the panel, and the ability to **adopt
+servers you already have** instead of rebuilding them.
+
+### Added
+- **WDTT servers — a self-contained, disguised VPN server, run from the panel.** WDTT carries a
+  WireGuard tunnel inside a stream shaped like a VK video call, so to a network watching the wire it
+  doesn't look like a VPN at all. Unlike a turn-proxy (which fronts an interface you already have), a
+  WDTT server *is* the interface — it owns its own tunnel — so you create it exactly like a WireGuard
+  or AmneziaWG interface, on its own name, subnet and ports, several per server if you like.
+- **Four WDTT server forks to choose from** — **amurcanov** (the original), **ildarmaga**,
+  **Ivan4537** and **XXcipherX** — each with its own client apps. Pick the fork when you
+  create the server; all four are offered by default.
+- **WDTT users work like everyone else.** A WDTT user is an ordinary peer in the panel with a
+  password instead of a key: add, block, expire, rotate and delete them the same way, on the same
+  screens, and the server picks the change up **without dropping anyone's tunnel**.
+- **WDTT on subscription pages and in the QR modal.** Each user's page shows their WDTT server
+  alongside their WireGuard / AmneziaWG configs, with a one-tap **import link** for the client apps
+  that support it, a QR for the ones that scan, and a **download row** for getting the app itself —
+  picked per operating system from the client you set as the default for that fork.
+- **Routing, content filters and egress apply to WDTT too** — the same per-interface controls as
+  wg/awg, and its traffic is counted everywhere: the flow map (as its own relay), per-node totals,
+  the protocol and turn-proxy breakdowns, and the interface tags on the nodes list.
+- **WDTT builds are versioned, and roll back.** The panel tracks which build each server runs, ships
+  new ones as they're published, and lets you pin an older build per server if a new one misbehaves.
+- **Adopt the interfaces a server already has.** The node reports every WireGuard / AmneziaWG
+  interface and WDTT install it finds that the panel didn't create, and each one shows up on the node
+  page as a card you can **Adopt** or **Ignore**. Adopting takes it over **as it is** — same keys,
+  same port, same subnet, and its existing peers come across — so nobody re-imports anything and
+  nothing goes down. This is how you move an existing hand-rolled server onto the panel.
+- **Stopped installs are found too.** A WDTT install that isn't running still shows up (with what it
+  knows about itself — fork, ports, subnet, and its users), so you can adopt a server that's been
+  switched off, and **Adopt existing** takes a path directly for an install that was moved or renamed.
+- **Adopted WDTT users are imported.** Their passwords come across into the roster as peers, so the
+  links people already have **keep working** — and the server keeps serving throughout the take-over.
+- **Ignored interfaces are remembered**, listed under Settings, and can be un-ignored later; one that
+  later becomes managed drops off the list on its own.
+- **Rotate every key a user has, in one action.** New in the user editor: re-key all their WireGuard
+  peers *and* re-issue their WDTT passwords at once, with each config re-rendering as it flips over.
+- **The subscription page tells you when its certificate is wrong** — missing, expired, or issued for
+  a different address — as a proper alert, re-issues it when you save the address (even if nothing
+  changed), and re-checks it as part of the ongoing self-heal. Only for direct HTTPS: behind a reverse
+  proxy the certificate stays the administrator's business.
+- **A native arm64 Docker node image.** Both images are now built natively for amd64 *and* arm64, so
+  ARM boxes (Ampere, Graviton, Pi-class hardware) run the node image without emulation.
+
+### Changed
+- **The installers no longer ask about VPN configuration.** They install the software, stand the
+  service up, and stop there — interfaces, turn-proxies and WDTT servers are created in the panel,
+  where you can see what you're doing. Anything the box already had is offered for adoption instead
+  of being asked about at a prompt. WireGuard and AmneziaWG are always installed, so a fresh panel is
+  ready to create an interface the moment you log in.
+- **Client apps are chosen per operating system.** Turn-proxy and WDTT settings now show a per-OS
+  matrix of the apps that work with each fork — named by their author, coloured, and marked by how
+  well they fit — and the default you pick there is what users get offered on their subscription page.
+- **Uninstall says exactly what it will remove**, including Docker turn-proxies and WDTT servers on a
+  node, and labels interfaces plainly as "AmneziaWG/WireGuard interfaces".
+- **One panel password, plus a recovery key.** Resetting the login no longer destroys the encryption
+  vault; the recovery key is what restores access to escrowed keys.
+
+### Fixed
+- **Converting between bare-metal and Docker no longer loses things.** A convert used to leave behind
+  the WireGuard configs that only existed inside the container, the node's pulled routing lists
+  (which showed up afterwards as "SNI scanner down"), the subscription service's port and bind (every
+  subscription link silently pointed at a dead port), the reverse proxy (left un-reloadable), and — on
+  docker→bare — the panel's own roster. Each of those is carried across now, and the conversion never
+  tears the old side down before proving the new one starts.
+- **Adoption on Docker nodes.** An interface whose config file lives only inside the container is
+  rebuilt from the live device (keys, peers, port, MTU) so it can be adopted at all; a foreign WDTT
+  server is now identified by its own process — including which fork it is, and its real subnet read
+  off the live interface — instead of being guessed at and mislabelled.
+- **A Docker node restart no longer un-manages plain-WireGuard interfaces.**
+- **Deleting a WDTT server removes its users** from the roster, so a server created afterwards on the
+  same name can't inherit the previous one's peers.
+- **An uninstall on a box with a WDTT server used to die mid-run**, leaving the install half-removed.
+- **The panel could come up with no login at all** on Docker when the subscription service's auth
+  mount pre-created an empty file.
+- **A WDTT link with an empty password**, a WDTT subnet change that left clients online but without
+  internet, and WDTT servers that vanished from the panel while being created, deleted or adopted —
+  an operation in flight now shows as a card with its state, not as an empty space.
+- **Certificates on Docker** are no longer issued for a domain the panel isn't advertising, and the
+  subscription page can now get a Let's Encrypt certificate there at all.
+- **Typing in turn-proxy settings is no longer wiped** by the background poll mid-edit.
+
 ## [1.5.1-beta] — 2026-07-26
 
 The big one: **content filtering** and a live **Protection** dashboard on the Overview.

@@ -1,12 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.5.1-beta</code></p>
+<p align="center"><code>1.6.0-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.5.1-beta** — [full changelog](CHANGELOG.md)
-> - **Content filtering** (new in 1.5.0) — block ads, trackers, malware, adult content, gambling and more, per server, from curated lists. Enforced on the entry node; a streaming resolver keeps even multi-million-domain lists from running a small box out of memory.
-> - **Protection dashboard** (new in 1.5.0) — a live Overview card showing what filtering is catching (blocked sites per category, torrents, port-scanners), with a hover "who" bubble that ties torrents and scanners back to the user behind them.
-> - **1.5.1 fix** — the "update available" changelog popover no longer sticks on screen or piles up; it's also wider and reads in full.
+> **What's new in 1.6.0-beta** — [full changelog](CHANGELOG.md)
+> - **WDTT servers** — a third kind of server, run from the panel: it carries a WireGuard tunnel inside a stream shaped like a VK video call, so it doesn't look like a VPN on the wire. Four forks to choose from, users managed exactly like everyone else, and its config on each user's subscription page.
+> - **Adopt servers you already have** — the panel spots WireGuard, AmneziaWG and WDTT servers a box was already running (even stopped ones) and takes them over as they are: same keys, same peers, nobody re-imports anything.
+> - **Installers stopped asking about VPN configuration** — they stand the service up and stop; interfaces, turn-proxies and WDTT servers are created in the panel, where you can see what you're doing.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -67,6 +67,13 @@ subscription and no one else sitting in the middle of your traffic.
   which user is behind the torrents and port-scans it flags.
 - **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
   apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
+- **WDTT servers.** A whole VPN server that hides inside a VK-video-call-shaped stream. Where a
+  turn-proxy fronts a tunnel you already have, a **WDTT** server *is* the tunnel — create it like any
+  other interface, pick one of four forks, and hand people a password instead of a key. Its config
+  lands on their subscription page next to everything else, app download included.
+- **Bring what you already have.** Already running WireGuard, AmneziaWG or WDTT on a box by hand? The
+  panel finds those servers and offers to **adopt** them — keys, port, subnet and existing users
+  intact, nothing to re-issue and no downtime.
 - **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
 
 <details>
@@ -166,7 +173,12 @@ If you chose **Master** above, you already have your first VPN server — you ca
    ```
 
 2. Run that command on the new server. It asks for your panel’s address and the key (both pre-filled if
-   you copied the panel’s command), then connects itself back to the panel.
+   you copied the panel’s command), then connects itself back to the panel. It doesn’t ask you to
+   configure any VPN — you do that in the panel, where you can see what you’re doing.
+
+If that server was **already running** WireGuard, AmneziaWG or WDTT, those show up on its page in the
+panel as cards offering **Adopt** or **Ignore**. Adopting takes a server over exactly as it is — same
+keys, same port, same users — so everyone’s existing configs keep working and nothing goes down.
 
 The new server reaches out to the panel on its own — **you never have to open special access to it**,
 no inbound ports, no SSH keys shared around. Within a few seconds it shows up in your Nodes list.
@@ -179,6 +191,9 @@ no inbound ports, no SSH keys shared around. Within a few seconds it shows up in
    app on their phone/computer, scans the QR (or imports the file), and they’re online.
 3. Using a **turn-proxy** on that server? Getting its config is just as easy — the panel shows the proxy’s
    address and a **wrap key** to drop into the vk-turn-proxy client app, right alongside the QR.
+4. On a **WDTT** server there’s no key to scan: the person gets a link that opens straight in the WDTT
+   app (or a QR, for the apps that scan one), and the panel points them at the right app for their
+   phone or computer.
 
 That’s the whole flow. The secret half of their key is created in your browser and shown **once** — so
 save/hand over the config there and then. Need to give the same person a second device? Just make another
@@ -190,9 +205,9 @@ peer.
   traffic is going — all live.
 - **Add or remove users anytime.** Changes reach your servers within seconds. Remove someone and their
   access stops on the next check-in.
-- **Change the panel’s login** under **⚙︎ → Account** — it takes effect immediately. While you’re there, switch on **two-factor authentication** (Google Authenticator) for stronger sign-in security.
+- **Change the panel’s login** under **Settings → Authentication** — it takes effect immediately. While you’re there, switch on **two-factor authentication** (Google Authenticator) for stronger sign-in security.
 - **Route certain sites through a certain country (optional).** For example, send streaming out through a
-  server abroad and keep everything else local. Set it per server under **Settings → Routing lists**.
+  server abroad and keep everything else local. Set it per server under **Settings → Routing & Blocking**.
 - **Get past tougher blocks (optional).** If plain VPN traffic is blocked on a network, swgPanel can wrap
   it through a **turn-proxy** — set up under a server’s details and in **Settings → Turn proxies**.
 - **Feed other tools (optional).** The panel can share live status with dashboards like **Grafana** or
@@ -283,7 +298,16 @@ swgPanel integrates several excellent open-source projects — huge thanks to th
 - [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
 - [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)
-- [kiper292](https://github.com/kiper292/vk-turn-proxy)
+
+**WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
+
+- [amurcanov](https://github.com/amurcanov/proxy-turn-vk-android) — the original
+- [ildarmaga](https://github.com/ildarmaga/wdtt)
+- [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
+- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)
+- [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
+- [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
+- [luminescq](https://github.com/luminescq/PWDTT)
 
 **Routing / geo-data lists** — the domain & IP lists behind smart routing:
 

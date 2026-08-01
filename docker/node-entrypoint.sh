@@ -45,10 +45,17 @@ iface_seeded(){ grep -qxF "$1" "$SEEDED" 2>/dev/null; }
 mark_seeded(){ iface_seeded "$1" || echo "$1" >> "$SEEDED"; }
 MANAGED=""                                  # space-separated interface names
 IFJSON=""; IFSEP=""                          # swg-agent interfaces map (built per-interface, with its endpoint)
-add_iface(){ # add_iface <name> <endpoint>  — record an interface + its own endpoint for the config
+# A CONVERTED node keeps its plain-WireGuard confs in WG_DIR — that is where bare-metal wrote them, and the
+# convert carries them over as-is. Every place that turns an interface NAME into a conf path has to know that,
+# or the interface silently drops out of the managed set on the next container start.
+iface_conf(){ [ -f "$AWG_DIR/$1.conf" ] && { printf '%s\n' "$AWG_DIR/$1.conf"; return; }; printf '%s\n' "${WG_DIR:-/etc/wireguard}/$1.conf"; }
+add_iface(){ # add_iface <name> <endpoint> [conf]  — record an interface + its own endpoint for the config
   MANAGED="$MANAGED $1"
-  _onb=""; grep -q '^#swg:onboarded' "$AWG_DIR/$1.conf" 2>/dev/null && _onb=', "onboarded": true'   # add-only adopted iface (keep its peers)
-  IFJSON="$IFJSON$IFSEP    \"$1\": { \"cmd\": [\"awg\"], \"conf\": \"$AWG_DIR/$1.conf\", \"endpoint_host\": \"${2:-$NODE_ENDPOINT}\"${_onb} }"
+  # Confs under WG_DIR are plain-WireGuard kernel devices, driven with `wg`, not `awg`.
+  _cf="${3:-$(iface_conf "$1")}"
+  _cmd="awg"; case "$_cf" in "${WG_DIR:-/etc/wireguard}"/*) _cmd="wg";; esac
+  _onb=""; grep -q '^#swg:onboarded' "$_cf" 2>/dev/null && _onb=', "onboarded": true'   # add-only adopted iface (keep its peers)
+  IFJSON="$IFJSON$IFSEP    \"$1\": { \"cmd\": [\"$_cmd\"], \"conf\": \"$_cf\", \"endpoint_host\": \"${2:-$NODE_ENDPOINT}\"${_onb} }"
   IFSEP=",
 "
 }
@@ -129,10 +136,10 @@ fi
 # also re-manage any interfaces created from the panel and persisted in the conf dir (survives a
 # container recreate when /etc/amnezia/amneziawg is a mounted volume) — they're not in the bootstrap
 # set above. config.json is rebuilt every start, so listing them here is what keeps them after re-up.
-for _c in "$AWG_DIR"/*.conf; do
+for _c in "$AWG_DIR"/*.conf "${WG_DIR:-/etc/wireguard}"/*.conf; do
   [ -f "$_c" ] || continue
   _n="$(basename "$_c" .conf)"
-  case " $MANAGED " in *" $_n "*) : ;; *) add_iface "$_n" "$NODE_ENDPOINT"; log "interface $_n from persisted conf (panel-created)";; esac
+  case " $MANAGED " in *" $_n "*) : ;; *) add_iface "$_n" "$NODE_ENDPOINT" "$_c"; log "interface $_n from persisted conf (panel-created)";; esac
 done
 
 [ -n "$MANAGED" ] || log "no interfaces yet — syncing anyway so the node still reports (add one from the panel: Interfaces → Load new interface)"   # do NOT exit: exiting makes the container restart-loop whenever the panel has removed every interface
@@ -142,24 +149,48 @@ export WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
 WAN="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1)"; WAN="${WAN:-eth0}"
 NATTED=""                                   # subnets already masqueraded (dedupe)
 
-# Clear ORPHANS: with host networking our wg/awg devices live in the HOST netns and survive a container
-# recreate. Any wg/awg device NOT in our managed set is a leftover from a previous run and can hold one
-# of our ListenPorts (→ "Address already in use"). The container owns the host netns here, so drop them.
+# Clear our OWN leftovers: with host networking our wg/awg devices live in the HOST netns and survive a
+# container recreate, where they can still hold one of our ListenPorts (→ "Address already in use").
+#
+# Only ever delete a device that is actually IN THE WAY. "Not in the managed set" is not the same as "ours":
+# it also matches every pre-existing WireGuard/AmneziaWG interface on the box — the ones adoption exists to
+# discover and take over — and deleting those destroyed a working setup the first time the container started.
+# So: take a device only when it occupies a port one of our managed interfaces is about to bind.
+_wants=""                                   # ports our managed confs are going to listen on
+for _c in $MANAGED; do
+  _p="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]\+\).*/\1/p' "$(iface_conf "$_c")" 2>/dev/null | head -n1)"
+  [ -n "$_p" ] && _wants="${_wants:+$_wants }$_p"     # NO leading space: " $_wants " would then hold a DOUBLE
+done                                                  # space, which an empty $_lp matches — deleting everything
 for _i in $(ip -o link show 2>/dev/null | sed -n 's/^[0-9]\+: \([^:@]*\).*/\1/p'); do
   case " $MANAGED " in *" $_i "*) continue ;; esac
-  if ip -d link show "$_i" 2>/dev/null | grep -qE 'amneziawg|wireguard'; then
-    log "clearing orphan interface $_i (not in managed set)"; ip link delete "$_i" 2>/dev/null || true
+  ip -d link show "$_i" 2>/dev/null | grep -qE 'amneziawg|wireguard' || continue
+  _lp="$( { awg show "$_i" dump 2>/dev/null || wg show "$_i" dump 2>/dev/null; } | head -n1 | cut -f3 )"
+  # A USERSPACE interface (wireguard-go, amneziawg-go, every WDTT server) answers over its UAPI socket in
+  # /var/run/wireguard, which is not mounted into this container — so we read nothing. Unknown port means we
+  # cannot claim it is in our way, and this is the exact class of interface adoption exists to take over.
+  if [ -z "$_lp" ]; then
+    log "leaving unmanaged interface $_i alone (couldn't read its listen port — likely userspace)"
+    continue
   fi
+  case " $_wants " in
+    *" $_lp "*) log "removing stale interface $_i — it holds port $_lp, which a managed interface needs"
+                ip link delete "$_i" 2>/dev/null || true ;;
+    *)          log "leaving unmanaged interface $_i alone (adoption candidate)" ;;
+  esac
 done
 
 for IFACE in $MANAGED; do
-  dest="$AWG_DIR/$IFACE.conf"
-  log "bringing up $IFACE via userspace amneziawg-go"
+  dest="$(iface_conf "$IFACE")"
+  # A plain-WireGuard conf is brought up with wg-quick; awg-quick would look for it under ITS OWN dir and fail
+  # ("does not exist"), leaving an interface listed as managed but down. Pass the PATH, not the name, so
+  # neither tool re-resolves it against the wrong directory.
+  _q=awg-quick; case "$dest" in "${WG_DIR:-/etc/wireguard}"/*) _q=wg-quick;; esac
+  log "bringing up $IFACE via $_q"
   # clear any leftover SAME-NAMED device first (host netns survives a container stop → plain `up` = "File exists").
-  awg-quick down "$IFACE" 2>/dev/null || ip link del "$IFACE" 2>/dev/null || true
+  $_q down "$dest" 2>/dev/null || ip link del "$IFACE" 2>/dev/null || true
   # one interface failing (e.g. a port still held by something) must NOT crash-loop the whole node — log
   # it and keep going so the rest + swg-noded still come up and the panel can see the node + the gap.
-  awg-quick up "$IFACE" || { log "WARNING: awg-quick up $IFACE failed (port in use / NET_ADMIN?) — skipping it"; continue; }
+  $_q up "$dest" || { log "WARNING: $_q up $IFACE failed (port in use / NET_ADMIN?) — skipping it"; continue; }
   addr_line="$(awk -F= 'tolower($1) ~ /^[[:space:]]*address[[:space:]]*$/ {print $2; exit}' "$dest" | tr -d ' ' | cut -d, -f1)"
   SUBNET="$(python3 -c "import ipaddress,sys;print(ipaddress.ip_network(sys.argv[1],strict=False))" "$addr_line" 2>/dev/null || echo "")"
   [ -n "$SUBNET" ] || { log "WARNING: could not read subnet for $IFACE — skipping its NAT"; continue; }

@@ -39,6 +39,7 @@ EVERY request, so toggling it in the panel takes effect immediately — off ⇒ 
 import contextlib
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -143,6 +144,23 @@ def node_describe(snapshot):
     return interfaces
 
 
+def node_public_host(snap):
+    """First reported PUBLIC IPv4 of a node (skip private/loopback/link-local) — the host a client dials when the
+    operator hasn't set an explicit endpoint_host. Byte-for-byte the same rule as swg-panel-server's
+    node_public_ip: this used to be a hand-rolled prefix regex that claimed to mirror it and didn't, so the same
+    node could be advertised differently by the panel and by this page. It accepted any public IPv6 (the panel is
+    IPv4-only here) and, worse, anything that wasn't an IP at all — a malformed node_ips entry became the endpoint
+    handed to clients."""
+    for ip in ((snap or {}).get("node_ips") or []):
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if a.version == 4 and not (a.is_private or a.is_loopback or a.is_link_local):
+            return str(ip)
+    return ""
+
+
 def apply_iface_meta(node_cfg, interfaces):
     """Overlay the panel-side per-interface overrides (public endpoint host/port, DNS,
     MTU, AmneziaWG obfuscation) onto node-reported metadata — exactly what the panel emits
@@ -223,7 +241,8 @@ class State:
             if not isinstance(snap, dict) or not snap:
                 continue
             out[nid] = {"ifaces": apply_iface_meta(cfg, node_describe(snap)),
-                        "turn": snap.get("turn_proxies") or []}
+                        "turn": snap.get("turn_proxies") or [],
+                        "pub_host": node_public_host(snap)}   # reported public IP → WDTT link host when endpoint_host is unset
         return out
 
 
@@ -368,6 +387,25 @@ def read_data(state, token):
         tgts = []
         for i, t in enumerate(tgts_in):
             if not isinstance(t, dict):
+                continue
+            if (t.get("type") or "") == "wdtt":
+                # WDTT peer: keyless. Its client link carries only the WRAP password (roster) + the node's public
+                # host + the instance's DTLS/WG ports (from the node store, NOT a snapshot). No WG meta / no `sec`.
+                node_cfg = nodes.get(t.get("node")) or {}
+                inst = ((node_cfg.get("wdtt")) or {}).get(t.get("iface")) or {}
+                dtls = ((inst.get("listen") or "").rsplit(":", 1)[-1]) or "56000"
+                tgts.append({
+                    "node": t.get("node"), "iface": t.get("iface"),
+                    "node_name": node_cfg.get("name") or t.get("node"),
+                    "type": "wdtt",
+                    "wdtt": {"password": p.get("wdtt_password") or "",
+                             "fork": inst.get("fork") or "amurcanov",   # which WDTT fork → resolve the right per-OS client + encoder
+
+                             "endpoint_host": node_cfg.get("endpoint_host") or (describe.get(t.get("node")) or {}).get("pub_host") or "",
+                             "dtls_port": dtls, "wg_port": str(inst.get("wg_port") or 56001), "tun_port": "9000",
+                             "vk_hash": (p.get("vk_hash") or "").strip()},
+                    "primary": (n_t > 1 and i == 0),
+                })
                 continue
             nd = describe.get(t.get("node")) or {}
             meta = (nd.get("ifaces") or {}).get(t.get("iface")) or {}

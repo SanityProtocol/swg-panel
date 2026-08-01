@@ -108,7 +108,24 @@ function reconcile(roster, stats, now, cfg) {
     const createdMs = (p.created_at || 0) * 1000;
     const targetsIn = Array.isArray(p.targets) ? p.targets : [];
 
+    const wpass = p.wdtt_password || "";
     const targets = targetsIn.map(function (t) {
+      // WDTT target (authoritative: the roster's own target `type`): a keyless peer whose status comes from the
+      // WDTT read-back (stats[node].wdtt), NOT WG observed peers. The panel-owned password is shipped to the server
+      // (present in the read-back once synced) and binds to a device once the client GETCONFs; `online` reflects a
+      // recent WG handshake on the built-in interface.
+      if (t.type === "wdtt") {
+        const inst = ((stats[t.node] || {}).wdtt || []).filter(Boolean).find(w => w.iface === t.iface) || null;
+        const dev = inst ? (inst.passwords || {})[wpass] : null;   // the password's read-back entry (online + server-minted IP)
+        let st;
+        if (nodeStatus[t.node] !== "live") st = "unknown";
+        else if (!inst) st = ((now - createdMs) <= cfg.graceMs) ? "creating" : "dangling";   // the WDTT server is gone
+        else st = !dev ? (((now - createdMs) <= cfg.graceMs) ? "creating" : "ready")   // password not shipped yet
+                       : (dev.online ? "online" : "ready");                            // shipped/provisioned = ready; recent handshake = online
+        return { node: t.node, iface: t.iface, ip: (dev && dev.ip) || "", type: "wdtt", primary: !!t.primary,
+                 status: st, online: st === "online", observed: null, via: null, viaTurn: null,
+                 restorable: false, correctable: false, problemMs: 0, down: null };
+      }
       const key = t.node + "|" + t.iface + "|" + pubkey;
       managed[key] = true;
       const obs = observed[key] || null;
@@ -175,7 +192,9 @@ function reconcile(roster, stats, now, cfg) {
     });
 
     const live = targets.filter(d => nodeStatus[d.node] === "live");
-    const present = live.filter(d => d.observed);
+    // "present" = the peer is realised on that server. A WG target proves it by being observed on the wire; a WDTT
+    // target has no WG peer to observe, so its own read-back status (provisioned → online/ready) stands in for it.
+    const present = live.filter(d => d.type === "wdtt" ? (d.status === "online" || d.status === "ready") : d.observed);
     const onlineAny = targets.some(d => d.online);
     let status;
     if (p._creating) status = "creating";          // optimistic: the create POST is still in flight
@@ -251,6 +270,7 @@ function reconcile(roster, stats, now, cfg) {
 
     return {
       id: pid, pubkey: pubkey, psk: p.psk || "", title: p.title || "",
+      wdtt_password: p.wdtt_password || "", vk_hash: p.vk_hash || "",   // WDTT credential (panel-owned) + optional VK hash — needed to build the wdtt:// link (else the password field is blank)
       user_id: (p.user_id != null) ? p.user_id : null,
       name: user ? (user.name || "") : "", tag: user ? (user.tag || "") : "",
       unassigned: !user,

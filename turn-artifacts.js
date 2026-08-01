@@ -489,5 +489,78 @@
       text: sidecar };
   }
 
-  root.SWGTurn = { artifact: artifact, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink };
+  // ── WDTT (amurcanov/proxy-turn-vk-android) client artifact ───────────────────────────────────────────────
+  // A WDTT server owns its WireGuard interface and MINTS the client keypair via GETCONF, so the client link carries
+  // NO WG keys — only the WRAP password + VK link + the server's DTLS endpoint (unlike every -connect fork above,
+  // which carries the panel's WG config). Two client forms, selected by `asClient`:
+  //   • "anton48" (iOS, default) → VK TURN Proxy in WRAP-A mode. vkturnproxy://import?data=<b64url(JSON)>, where
+  //     the app's REQUIRED_WRAPA set is exactly {wrapAPassword, vkLink, peerAddress} + useWrapA:true (byte-format
+  //     matches quick_link.py build_link: version/type envelope, sort_keys, compact, url-safe base64 no padding).
+  //   • "wdtt" (Android/desktop) → the native WDTT app / qWDTT / PWDTT deep-link, verbatim db.go:
+  //     wdtt://<ip>:<dtlsPort>:<wgPort>:<tunPort>:<password>:<vkHash>.
+  // w = { password, endpoint_host, dtls_port, wg_port, tun_port?, vk_links[], vk_hash? }.
+  function stripVkUrl(u) {   // full VK call link → bare hash (mirrors the WDTT server's stripVkUrl)
+    u = String(u || "").trim();
+    if (u.indexOf("/") >= 0) u = u.slice(u.lastIndexOf("/") + 1);
+    if (u.indexOf("?") >= 0) u = u.slice(0, u.indexOf("?"));
+    return u.trim();
+  }
+  // Per-CLIENT link encoders for the WDTT family. The servers are wire-identical; the CLIENTS diverge in link
+  // format, so `asClient` (the chosen client's `encoder`, from the catalog) selects the scheme:
+  //   "qwdtt"                        → qwdtt://config?…&pass=<pw last>   (qWDTT / PWDTT — password can't be misread)
+  //   "anton48" | "vkturnproxy"      → vkturnproxy://import?data=<b64url> (anton48 iOS, WRAP-A)
+  //   else ("wdtt"/app/pwdtt/…)       → colon wdtt://ip:dtls:wg:tun:pw:hash  (amurcanov app, PWDTT/luminescq, iOS colon mode)
+  // 6-FIELD RULE: the colon form ALWAYS emits 6 colon fields with a NON-EMPTY hash slot — qWDTT & iOS hard-require
+  // parts.size>=6 with a hash at index 5, and a 5-field link (no hash) silently loses the password on those clients
+  // ("Пароль не указан"). When there's no VK hash we still keep the 6th field present (empty) AND, more importantly,
+  // route qWDTT to its native qwdtt:// scheme where the password lives in `pass=`, so it's never misread.
+  function wdttArtifact(w, asClient) {
+    w = w || {};
+    var vkList = (Array.isArray(w.vk_links) ? w.vk_links : (w.vk_links ? [w.vk_links] : [])).map(function (s) { return (s || "").trim(); }).filter(Boolean);
+    var vkHashes = vkList.map(stripVkUrl).filter(Boolean);
+    if (!vkHashes.length && w.vk_hash) vkHashes = [String(w.vk_hash).trim()];
+    var vkMissing = vkHashes.length === 0;
+    var host = (w.endpoint_host || "").trim();
+    var dtls = String(w.dtls_port || 56000), wg = String(w.wg_port || 56001), tun = String(w.tun_port || 9000);
+    var pass = (w.password || "");
+    var enc = asClient || "anton48";
+    if (enc === "wdttplus") {
+      // WDTT-Plus clickable link: a VALID URI (authority="connect" + query string), NOT the colon form. The colon
+      // `wdtt://ip:dtls:wg:tun:pass:hash` has five colons in its authority, which the OS rejects as an "unsupported
+      // link" before it can reach the app — so a click does nothing. WDTT-Plus's parser reads v/host/dtls/wg/local/
+      // password/hashes from the query (and still accepts the colon form on paste), so the query form both clicks AND pastes.
+      var wp = ["v=1", "host=" + encodeURIComponent(host), "dtls=" + encodeURIComponent(dtls),
+                "wg=" + encodeURIComponent(wg), "local=" + encodeURIComponent(tun),
+                "password=" + encodeURIComponent(pass)];
+      if (vkHashes.length) wp.push("hashes=" + encodeURIComponent(vkHashes.join(",")));
+      if (w.name) wp.push("name=" + encodeURIComponent(w.name));
+      var uriW = "wdtt://connect?" + wp.join("&");
+      return { fork: "WDTT", app: "WDTT-Plus", label: "WDTT via WDTT-Plus (Android · wdtt://connect)", ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
+        hint: "Scan the QR or open the wdtt:// link in WDTT-Plus.", text: uriW };
+    }
+    if (enc === "qwdtt") {
+      // qWDTT native: query params, password appended LAST and unencoded (so & / @ in a password survive). peer=host:dtls.
+      var q = ["peer=" + encodeURIComponent(host + ":" + dtls)];
+      if (w.name) q.push("name=" + encodeURIComponent(w.name));
+      if (vkHashes.length) q.push("hashes=" + encodeURIComponent(vkHashes.join(",")));
+      if (w.workers) q.push("workers=" + encodeURIComponent(w.workers));
+      q.push("port=" + encodeURIComponent(tun));
+      var uriq = "qwdtt://config?" + q.join("&") + "&pass=" + pass;
+      return { fork: "WDTT", app: "qWDTT", label: "WDTT via qWDTT (Android · qwdtt://)", ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
+        hint: "Scan the QR or open the qwdtt:// link in the qWDTT app (Android) or PWDTT (desktop).", text: uriq };
+    }
+    if (enc === "anton48" || enc === "vkturnproxy") {
+      var s = { useWrapA: true, wrapAPassword: pass, peerAddress: host + ":" + dtls, vkLink: vkList.join("\n") };
+      var uri2 = "vkturnproxy://import?data=" + b64urlUtf8(jsonSortedCompact({ version: 1, type: "connection", settings: s }));
+      return { fork: "WDTT", app: "VK TURN Proxy", label: "WDTT via VK TURN Proxy (iOS · WRAP-A) by anton48", ext: "txt", uri: true, qr: false, vkMissing: vkMissing, enc: enc,
+        hint: "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in WRAP-A mode.", text: uri2 };
+    }
+    // colon wdtt:// — ALWAYS 6 fields (host:dtls:wg:tun:password:hash). Multiple hashes join with a comma at index 5.
+    var vkh = vkHashes.join(",");
+    var uri = "wdtt://" + host + ":" + dtls + ":" + wg + ":" + tun + ":" + pass + ":" + vkh;
+    return { fork: "WDTT", app: "WDTT", label: "WDTT via WDTT app (Android · WRAP)", ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
+      hint: "Scan the QR or open the wdtt:// link in the WDTT app (Android) or PWDTT (desktop).", text: uri };
+  }
+
+  root.SWGTurn = { artifact: artifact, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, stripVkUrl: stripVkUrl };
 })(typeof window !== "undefined" ? window : this);

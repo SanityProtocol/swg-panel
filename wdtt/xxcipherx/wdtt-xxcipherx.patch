@@ -1,0 +1,426 @@
+diff --git a/app/src/main/assets/linux-server/db.go b/app/src/main/assets/linux-server/db.go
+index 655b169..d4f5a02 100644
+--- a/app/src/main/assets/linux-server/db.go
++++ b/app/src/main/assets/linux-server/db.go
+@@ -1006,7 +1006,7 @@ func getNextIP() string {
+ 		used[dev.IP] = true
+ 	}
+ 	for i := 2; i <= 250; i++ {
+-		ip := fmt.Sprintf("10.66.66.%d", i)
++		ip := fmt.Sprintf("%s.%d", wgPoolPrefix, i)
+ 		if !used[ip] {
+ 			return ip
+ 		}
+@@ -1014,6 +1014,120 @@ func getNextIP() string {
+ 	return ""
+ }
+ 
++// ── Panel-owned desired-state input (see types.go desiredFile) ───────────────
++
++// DesiredPassword is the panel-owned subset of a generated password's config.
++// Runtime fields (DeviceID, UpBytes, DownBytes) are NOT here — WDTT owns those.
++type DesiredPassword struct {
++	ExpiresAt     int64  `json:"expires_at,omitempty"`
++	VkHash        string `json:"vk_hash,omitempty"`
++	Ports         string `json:"ports,omitempty"`
++	IsDeactivated bool   `json:"is_deactivated,omitempty"`
++}
++
++type DesiredFile struct {
++	Passwords map[string]*DesiredPassword `json:"passwords"`
++}
++
++// reconcileDesired merges the panel's desired generated-password set into the
++// live DB: add new passwords, update panel-owned fields, and remove passwords no
++// longer desired (dropping their bound device + wg peer). Runtime fields
++// (DeviceID/UpBytes/DownBytes) are preserved for surviving passwords, then WRAP
++// keys and wg peers are re-synced — so a panel edit takes effect with no restart
++// and no tunnel drop for unaffected devices. The owner (main) password is never
++// touched here (it is a flag / server identity). No-op if -desired is unset.
++func reconcileDesired(wgDev *device.Device) {
++	if desiredFile == "" {
++		return
++	}
++	data, err := os.ReadFile(desiredFile)
++	if err != nil {
++		if !os.IsNotExist(err) {
++			log.Printf("[DESIRED] Чтение %s: %v", desiredFile, err)
++		}
++		return
++	}
++	var want DesiredFile
++	if err := json.Unmarshal(data, &want); err != nil {
++		log.Printf("[DESIRED] Разбор %s: %v", desiredFile, err)
++		return
++	}
++	if want.Passwords == nil {
++		want.Passwords = map[string]*DesiredPassword{}
++	}
++
++	dbMutex.Lock()
++	changed := false
++
++	// Add / update desired passwords, preserving runtime fields.
++	for p, d := range want.Passwords {
++		if p == "" || d == nil {
++			continue
++		}
++		e, ok := db.Passwords[p]
++		if !ok {
++			e = &PasswordEntry{}
++			db.Passwords[p] = e
++			changed = true
++			log.Printf("[DESIRED] + пароль %s", maskPassword(p))
++		}
++		if e.ExpiresAt != d.ExpiresAt || e.VkHash != d.VkHash || e.Ports != d.Ports || e.IsDeactivated != d.IsDeactivated {
++			// Newly deactivated → drop the live peer immediately.
++			if d.IsDeactivated && !e.IsDeactivated && e.DeviceID != "" {
++				removePeerFromWG(wgDev, db.Devices[e.DeviceID])
++			}
++			e.ExpiresAt = d.ExpiresAt
++			e.VkHash = d.VkHash
++			e.Ports = d.Ports
++			e.IsDeactivated = d.IsDeactivated
++			changed = true
++		}
++	}
++
++	// Remove passwords no longer desired (+ their device + wg peer).
++	for p, e := range db.Passwords {
++		if _, ok := want.Passwords[p]; ok {
++			continue
++		}
++		if e != nil && e.DeviceID != "" {
++			removePeerFromWG(wgDev, db.Devices[e.DeviceID])
++			delete(db.Devices, e.DeviceID)
++		}
++		delete(db.Passwords, p)
++		changed = true
++		log.Printf("[DESIRED] - пароль %s", maskPassword(p))
++	}
++
++	// Load-bearing disconnect: drop the wg peer + device for any password that's now GONE or DEACTIVATED. Fixed-config
++	// binds the device under "pw:<password>" and leaves PasswordEntry.DeviceID EMPTY, so the per-branch removals above
++	// can't find it — resolve by the key here. Also reaps orphans (devices whose password was rotated away earlier).
++	// Without this, rotate/block only deny NEW connections; the ACTIVE tunnel lingers until its handshake expires.
++	for dkey, dev := range db.Devices {
++		pw := dkey
++		if len(pw) > 3 && pw[:3] == "pw:" {
++			pw = pw[3:]
++		}
++		e, ok := db.Passwords[pw]
++		if !ok || e == nil || e.IsDeactivated {
++			removePeerFromWG(wgDev, dev)
++			delete(db.Devices, dkey)
++			changed = true
++			log.Printf("[DESIRED] × device %s (пароль gone/deactivated)", maskPassword(pw))
++		}
++	}
++
++	if changed {
++		saveDBLazy()
++	}
++	if err := refreshWrapKeysFromDBLocked(); err != nil {
++		log.Printf("[DESIRED] Обновление WRAP-ключей: %v", err)
++	}
++	dbMutex.Unlock()
++
++	// Re-add surviving devices' peers (idempotent; takes the lock itself).
++	syncPersistedPeersToWG(wgDev)
++}
++
+ type telegramUpdate struct {
+ 	UpdateID int `json:"update_id"`
+ 	Message  *struct {
+diff --git a/app/src/main/assets/linux-server/fixedconfig_test.go b/app/src/main/assets/linux-server/fixedconfig_test.go
+new file mode 100644
+index 0000000..5514bda
+--- /dev/null
++++ b/app/src/main/assets/linux-server/fixedconfig_test.go
+@@ -0,0 +1,48 @@
++package main
++
++import "testing"
++
++// -fixed-config: a GENERATED password owns ONE keypair+IP returned to ANY deviceID (wg/awg parity;
++// device-agnostic). Mirrors the ildarmaga fork's fixedconfig test (byte-identical wire).
++func TestFixedConfigDeviceAgnostic(t *testing.T) {
++	old := fixedConfig
++	defer func() { fixedConfig = old }()
++
++	fixedConfig = true
++	db = &Database{
++		Passwords: map[string]*PasswordEntry{"pwA": {}, "pwB": {}},
++		Devices:   map[string]*ClientDevice{},
++	}
++	mint := func(deviceID, password string) *ClientDevice {
++		dkey := getconfDeviceKey(true, deviceID, password)
++		if d, ok := db.Devices[dkey]; ok {
++			return d
++		}
++		priv, pub, err := generateKeyPair()
++		if err != nil {
++			t.Fatalf("keygen: %v", err)
++		}
++		d := &ClientDevice{DeviceID: dkey, IP: getNextIP(), PrivKey: priv, PubKey: pub}
++		db.Devices[dkey] = d
++		return d
++	}
++	// same password, two DIFFERENT physical devices -> identical config
++	d1 := mint("iphone-A", "pwA")
++	d2 := mint("macbook-B", "pwA")
++	if d1.PrivKey != d2.PrivKey || d1.IP != d2.IP {
++		t.Fatalf("not device-agnostic: %s@%s vs %s@%s", d1.PrivKey[:6], d1.IP, d2.PrivKey[:6], d2.IP)
++	}
++	// different password -> different config
++	d3 := mint("iphone-A", "pwB")
++	if d3.PrivKey == d1.PrivKey || d3.IP == d1.IP {
++		t.Fatalf("distinct passwords must get distinct configs")
++	}
++	if getconfDeviceKey(true, "x", "pwA") != getconfDeviceKey(true, "y", "pwA") {
++		t.Fatalf("fixed-config: same password must map to one key regardless of deviceID")
++	}
++	// stock mode keys by deviceID
++	fixedConfig = false
++	if getconfDeviceKey(true, "x", "pwA") == getconfDeviceKey(true, "y", "pwA") {
++		t.Fatalf("stock mode must key by deviceID")
++	}
++}
+diff --git a/app/src/main/assets/linux-server/main.go b/app/src/main/assets/linux-server/main.go
+index fd5216a..8c390bf 100644
+--- a/app/src/main/assets/linux-server/main.go
++++ b/app/src/main/assets/linux-server/main.go
+@@ -1,5 +1,3 @@
+-
+-
+ package main
+ 
+ import (
+@@ -15,11 +13,64 @@ import (
+ 	"sync"
+ 	"sync/atomic"
+ 	"syscall"
++	"time"
+ 
+ 	"github.com/pion/dtls/v3"
+ 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
++	"golang.zx2c4.com/wireguard/device"
+ )
+ 
++// applyWgAddr parses -wg-addr ("10.66.66.1/24" or bare "10.66.66.1") into the
++// interface's server address, CIDR and host-pool prefix.
++func applyWgAddr(cidr string) {
++	cidr = strings.TrimSpace(cidr)
++	ipStr := cidr
++	if i := strings.Index(cidr, "/"); i >= 0 {
++		ipStr = cidr[:i]
++	} else {
++		cidr = cidr + "/24"
++	}
++	ip := net.ParseIP(strings.TrimSpace(ipStr))
++	if ip == nil || ip.To4() == nil {
++		log.Fatalf("[CFG] неверный -wg-addr %q (ожидается IPv4 CIDR, напр. 10.66.66.1/24)", cidr)
++	}
++	v4 := ip.To4().String()
++	octs := strings.Split(v4, ".")
++	wgServerAddr = v4
++	wgServerCIDR = cidr
++	wgPoolPrefix = strings.Join(octs[:3], ".")
++}
++
++// desiredWatcher reconciles the panel-owned desired file whenever its mtime
++// changes — a dependency-free fallback to SIGHUP so a panel write always lands.
++func desiredWatcher(ctx context.Context, wgDev *device.Device) {
++	if desiredFile == "" {
++		return
++	}
++	var last int64
++	if fi, err := os.Stat(desiredFile); err == nil {
++		last = fi.ModTime().UnixNano()
++	}
++	ticker := time.NewTicker(3 * time.Second)
++	defer ticker.Stop()
++	for {
++		select {
++		case <-ctx.Done():
++			return
++		case <-ticker.C:
++			fi, err := os.Stat(desiredFile)
++			if err != nil {
++				continue
++			}
++			if m := fi.ModTime().UnixNano(); m != last {
++				last = m
++				log.Println("[DESIRED] Изменение файла — сверка")
++				reconcileDesired(wgDev)
++			}
++		}
++	}
++}
++
+ func resolveServerListenAddress(value string) (*net.UDPAddr, error) {
+ 	value = strings.TrimSpace(value)
+ 	if value == "" {
+@@ -101,7 +152,24 @@ func main() {
+ 	publicHost := flag.String("public-host", os.Getenv("WDTT_PUBLIC_HOST"), "публичный IPv4 или DNS-имя для wdtt:// ссылок")
+ 	maxConnections := flag.Int("max-connections", 512, "максимум одновременных DTLS-соединений")
+ 	handshakeRate := flag.Int("handshake-rate", 64, "максимум новых DTLS handshakes в секунду")
++	// swg-panel: multi-instance identity + declarative management (defaults preserve stock single-instance behavior).
++	ifaceFlag := flag.String("iface", wgIfaceName, "имя userspace-WG интерфейса")
++	wgAddrFlag := flag.String("wg-addr", wgServerCIDR, "адрес/подсеть интерфейса, IPv4 CIDR")
++	mtuFlag := flag.Int("mtu", wgMTU, "MTU интерфейса")
++	maxPwFlag := flag.Int("max-passwords", maxGeneratedPasswords, "лимит сгенерированных паролей")
++	desiredFlag := flag.String("desired", "", "путь к panel-owned desired.json (декларативное управление; пусто = режим бота)")
++	noNatFlag := flag.Bool("no-nat", false, "не трогать NAT/forward/sysctl хоста (узел управляет ими)")
++	fixedFlag := flag.Bool("fixed-config", false, "один сгенерированный пароль = один keypair+IP для любого устройства")
+ 	flag.Parse()
++	wgIfaceName = strings.TrimSpace(*ifaceFlag)
++	applyWgAddr(*wgAddrFlag)
++	wgMTU = *mtuFlag
++	if *maxPwFlag > 0 {
++		maxGeneratedPasswords = *maxPwFlag
++	}
++	desiredFile = strings.TrimSpace(*desiredFlag)
++	noNat = *noNatFlag
++	fixedConfig = *fixedFlag
+ 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+ 	if flag.NArg() != 0 {
+ 		log.Fatalf("[CONFIG] неожиданные аргументы: %s", strings.Join(flag.Args(), " "))
+@@ -183,6 +251,19 @@ func main() {
+ 	if err := syncPersistedPeersToWG(wgDev); err != nil {
+ 		log.Fatalf("[WG] Восстановление peer: %v", err)
+ 	}
++	// swg-panel: seed the panel-owned desired password set + reap gone/deactivated on boot, then SIGHUP + mtime watch.
++	if desiredFile != "" {
++		reconcileDesired(wgDev)
++		hup := make(chan os.Signal, 1)
++		signal.Notify(hup, syscall.SIGHUP)
++		go func() {
++			for range hup {
++				log.Println("[DESIRED] SIGHUP — сверка desired")
++				reconcileDesired(wgDev)
++			}
++		}()
++		go desiredWatcher(ctx, wgDev)
++	}
+ 	defer func() {
+ 		wgDev.Close()
+ 		runCmdSilent("ip", "link", "del", wgIfaceName)
+@@ -196,7 +277,9 @@ func main() {
+ 	}()
+ 	go func() {
+ 		defer workers.Done()
+-		expiredPasswordJanitor(ctx, wgDev)
++		if desiredFile == "" { // swg-panel: with -desired the panel owns expiry (reconcile reaps) → skip the fork janitor
++			expiredPasswordJanitor(ctx, wgDev)
++		}
+ 	}()
+ 	go func() {
+ 		defer workers.Done()
+diff --git a/app/src/main/assets/linux-server/net.go b/app/src/main/assets/linux-server/net.go
+index 2a0ef73..4a0c875 100644
+--- a/app/src/main/assets/linux-server/net.go
++++ b/app/src/main/assets/linux-server/net.go
+@@ -175,6 +175,18 @@ func b64ToHex(s string) (string, error) {
+ 	return hex.EncodeToString(b), nil
+ }
+ 
++// fixedConfig (-fixed-config): a GENERATED password owns ONE keypair+IP returned to ANY deviceID (wg/awg
++// parity — a portable config, one connection, any device, one at a time; WireGuard enforces one-at-a-time).
++// Keyed by the password, not the deviceID → no per-device binding, no device_mismatch, mint-once.
++var fixedConfig bool
++
++func getconfDeviceKey(isGenPass bool, deviceID, password string) string {
++	if fixedConfig && isGenPass {
++		return "pw:" + password
++	}
++	return deviceID
++}
++
+ func generateKeyPair() (privB64, pubB64 string, err error) {
+ 	var priv [32]byte
+ 	if _, err := rand.Read(priv[:]); err != nil {
+@@ -263,6 +275,24 @@ func writeWGKeysAtomic(dir, path string, keys *wgKeys) error {
+ 	return nil
+ }
+ 
++// removeManagedFirewall reverses this instance's WDTT_MANAGED NAT+forward rules
++// on clean stop (iptables path; nft is best-effort). Scoped to this instance's
++// CIDR + iface so sibling instances are untouched. No-op under -no-nat (the node
++// owns the rules) — but harmless to call.
++func removeManagedFirewall() {
++	if noNat {
++		return
++	}
++	extIface, _ := getDefaultInterface()
++	if commandExists("iptables") {
++		for i := 0; i < 5; i++ {
++			exec.Command("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", wgServerCIDR, "-o", extIface, "-m", "comment", "--comment", "WDTT_MANAGED", "-j", "MASQUERADE").Run()
++			exec.Command("iptables", "-D", "FORWARD", "-i", wgIfaceName, "-m", "comment", "--comment", "WDTT_MANAGED", "-j", "ACCEPT").Run()
++			exec.Command("iptables", "-D", "FORWARD", "-o", wgIfaceName, "-m", "comment", "--comment", "WDTT_MANAGED", "-j", "ACCEPT").Run()
++		}
++	}
++}
++
+ func loadOrGenerateKeys(dir string) (*wgKeys, error) {
+ 	f := filepath.Join(dir, "wg-keys.dat")
+ 	data, err := os.ReadFile(f)
+@@ -531,7 +561,10 @@ func startUserspaceWG(keys *wgKeys, wgPort int) (*device.Device, error) {
+ 		return nil, err
+ 	}
+ 
+-	if err := setupFullConeNAT(ifaceName); err != nil {
++	if noNat {
++		natType = "отключён (-no-nat: NAT/forward/sysctl управляется узлом)"
++		log.Printf("[NAT] %s", natType)
++	} else if err := setupFullConeNAT(ifaceName); err != nil {
+ 		dev.Close()
+ 		return nil, err
+ 	}
+diff --git a/app/src/main/assets/linux-server/types.go b/app/src/main/assets/linux-server/types.go
+index edb0e7d..08b170e 100644
+--- a/app/src/main/assets/linux-server/types.go
++++ b/app/src/main/assets/linux-server/types.go
+@@ -5,17 +5,23 @@ import (
+ 	"time"
+ )
+ 
++var (
++	wgIfaceName  = "wdtt0"
++	wgServerAddr = "10.66.66.1"
++	wgServerCIDR = "10.66.66.1/24"
++	wgPoolPrefix = "10.66.66"
++	wgMTU        = 1280
++)
++
+ const (
+-	wgIfaceName           = "wdtt0"
+-	wgServerAddr          = "10.66.66.1"
+-	wgServerCIDR          = wgServerAddr + "/24"
+ 	defaultInternalWGPort = 56001
+-	wgMTU                 = 1280
+ 	keepalive             = 25
+ 	dtlsHandshakeTimeout  = 15 * time.Second
+ )
+ 
+ var dns = "1.1.1.1"
++var noNat bool
++var desiredFile string
+ 
+ type ClientDevice struct {
+ 	DeviceID string `json:"device_id"`
+@@ -50,8 +56,11 @@ var (
+ 
+ var serverWrapKeys = newWrapKeyStore()
+ 
++// maxGeneratedPasswords is a var so the panel build can raise the stock 10-cap
++// via -max-passwords (we build the binary ourselves for fleet-appropriate scale).
++var maxGeneratedPasswords = 10
++
+ const (
+-	passChars             = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
+-	generatedPasswordLen  = 16
+-	maxGeneratedPasswords = 10
++	passChars            = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
++	generatedPasswordLen = 16
+ )

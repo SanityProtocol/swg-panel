@@ -1,0 +1,517 @@
+diff --git a/cmd/wdtt/main.go b/cmd/wdtt/main.go
+index e3fc46d..6de4721 100644
+--- a/cmd/wdtt/main.go
++++ b/cmd/wdtt/main.go
+@@ -25,11 +25,13 @@ func main() {
+ 	}
+ 	os.Args = filtered
+ 
+-	if err := panel.BootstrapDB(); err != nil {
+-		log.Fatalf("[PANEL] bootstrap: %v", err)
+-	}
+-
+ 	if !noPanel {
++		// swg-panel: the web panel/xray/subscription are unused under -desired management (and BootstrapDB writes
++		// /etc/wdtt, which the hardened unit makes read-only). Gate ALL of it behind -no-panel — the server's own
++		// user store (config-dir/panel.db via ensurePanelDB) is separate and still set up in RunManaged.
++		if err := panel.BootstrapDB(); err != nil {
++			log.Fatalf("[PANEL] bootstrap: %v", err)
++		}
+ 		panel.InitUnifiedLogSink()
+ 		go func() {
+ 			if err := panel.Run(); err != nil {
+diff --git a/server/config.go b/server/config.go
+index 89ee8a4..5867c5a 100644
+--- a/server/config.go
++++ b/server/config.go
+@@ -4,6 +4,7 @@ import (
+ 	"flag"
+ 	"fmt"
+ 	"log"
++	"path/filepath"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -46,7 +47,36 @@ func initServerFlags() {
+ 		flagHandshake = flag.Duration("handshake-timeout", 30*time.Second, "таймаут DTLS handshake")
+ 		flagAdminAddr = flag.String("admin-addr", "127.0.0.1:2861", "HTTP admin (localhost): /health, POST /admin/reload")
+ 		flagMaxDTLSDev = flag.Int("max-dtls-per-device", 0, "макс. параллельных GETCONF на device_id (0 = без лимита)")
++		flagIface := flag.String("iface", wgIfaceName, "WG interface name (multi-instance per node)")
++		flagWgAddr := flag.String("wg-addr", wgServerCIDR, "WG server address CIDR, e.g. 10.66.70.1/24")
++		flagMTU := flag.Int("mtu", wgMTU, "WG MTU")
++		flagNoNat := flag.Bool("no-nat", false, "skip NAT/forward/BBR — the node owns NAT for wdtt subnets")
++		flagMaxUsers := flag.Int("max-users", 0, "max active passwords/users for this instance (0 = stock default; effective ceiling is the subnet size)")
++		flagFixed := flag.Bool("fixed-config", false, "a generated password serves ONE keypair+IP to any device (wg/awg parity; device-agnostic)")
++		flagDesired := flag.String("desired", "", "path to the node's desired.json (panel-owned password set; ingested + SIGHUP-reloaded)")
+ 		flag.Parse()
++		desiredPath = strings.TrimSpace(*flagDesired)
++		if cd := strings.TrimSpace(*flagConfigDir); cd != "" {
++			panelDBPath = filepath.Join(cd, "panel.db") // per-instance DB (stock hard-codes /etc/wdtt/panel.db → multi-instance collision)
++		}
++		wgIfaceName = *flagIface
++		if a := strings.TrimSpace(*flagWgAddr); a != "" {
++			wgServerCIDR = a
++			addr := a
++			if i := strings.IndexByte(a, '/'); i > 0 {
++				addr = a[:i]
++			}
++			wgServerAddr = addr
++			if p := strings.Split(addr, "."); len(p) == 4 {
++				wgPoolPrefix = p[0] + "." + p[1] + "." + p[2]
++			}
++		}
++		wgMTU = *flagMTU
++		noNat = *flagNoNat
++		fixedConfig = *flagFixed
++		if *flagMaxUsers > 0 {
++			maxGeneratedPasswords = *flagMaxUsers // per-INSTANCE cap; a panel.db MaxUsers still overrides on top when present
++		}
+ 	})
+ }
+ 
+diff --git a/server/desired_ingest.go b/server/desired_ingest.go
+new file mode 100644
+index 0000000..0f433b0
+--- /dev/null
++++ b/server/desired_ingest.go
+@@ -0,0 +1,206 @@
++package server
++
++// swg-panel integration: the node pushes the panel-owned password SET as a desired.json file (the SAME
++// format the amurcanov fork consumes) and SIGHUPs. We ingest it into wdtt_users — the server's own SQLite
++// store — so the node's WDTT driver stays fork-agnostic: NO node-side SQLite, NO web panel, NO schema work.
++// Only the four panel-owned fields per password are authoritative; runtime state (devices/traffic) is the
++// server's. Users present in the DB but absent from the file are revoked (the owner/main password is never
++// touched). ingest writes SQLite; reloadDBFromDisk() applies it to memory + the live WG device.
++
++import (
++	"database/sql"
++	"encoding/json"
++	"log"
++	"os"
++	"path/filepath"
++
++	"github.com/ildarmaga/wdtt/pkg/paneldb"
++)
++
++var desiredPath string // set from -desired
++
++// ensurePanelDB creates panel.db + schema when it's missing. Stock ildarmaga relies on its web panel to
++// create the DB; in swg-panel's server-only mode there is no panel, and paneldb.Open() refuses a missing
++// file (os.Stat guard). Must run BEFORE the first openServerPanelDB (which is memoized by a sync.Once, so a
++// first-run failure would stick). SQLite creates the file on first Ping; EnsureWDTTSchema builds the tables.
++func ensurePanelDB() error {
++	if panelDBPath == "" {
++		return nil
++	}
++	if _, err := os.Stat(panelDBPath); err == nil {
++		return nil // already exists
++	}
++	if dir := filepath.Dir(panelDBPath); dir != "" {
++		if err := os.MkdirAll(dir, 0700); err != nil {
++			return err
++		}
++	}
++	d, err := sql.Open("sqlite", paneldb.DSN(panelDBPath))
++	if err != nil {
++		return err
++	}
++	defer d.Close()
++	if err := d.Ping(); err != nil {
++		return err
++	}
++	if _, err := d.Exec(baseWDTTSchema); err != nil {
++		return err
++	}
++	return paneldb.EnsureWDTTSchema(d) // idempotent ALTER migrations (sub_id, last_seen_at, …)
++}
++
++// baseWDTTSchema — the wdtt_* base tables (verbatim from the web panel's normalizer, which the server-only
++// build doesn't include). CREATE IF NOT EXISTS so it's safe to re-run. Empty wdtt_inbound → the server falls
++// back to the CLI inbound flags (-listen/-wg-port/-admin-addr), which is exactly what we want.
++const baseWDTTSchema = `
++CREATE TABLE IF NOT EXISTS wdtt_global (
++	id INTEGER PRIMARY KEY CHECK (id = 1),
++	main_password TEXT NOT NULL DEFAULT '',
++	admin_id TEXT NOT NULL DEFAULT '',
++	bot_token TEXT NOT NULL DEFAULT '',
++	users_rev INTEGER NOT NULL DEFAULT 0
++);
++CREATE TABLE IF NOT EXISTS wdtt_users (
++	password TEXT PRIMARY KEY,
++	device_id TEXT NOT NULL DEFAULT '',
++	max_devices INTEGER NOT NULL DEFAULT 0,
++	expires_at INTEGER NOT NULL DEFAULT 0,
++	down_bytes INTEGER NOT NULL DEFAULT 0,
++	up_bytes INTEGER NOT NULL DEFAULT 0,
++	total_bytes INTEGER NOT NULL DEFAULT 0,
++	max_down_mbps REAL NOT NULL DEFAULT 0,
++	max_up_mbps REAL NOT NULL DEFAULT 0,
++	is_deactivated INTEGER NOT NULL DEFAULT 0,
++	comment TEXT NOT NULL DEFAULT '',
++	ports TEXT NOT NULL DEFAULT '',
++	vk_hash TEXT NOT NULL DEFAULT ''
++);
++CREATE TABLE IF NOT EXISTS wdtt_user_devices (
++	password TEXT NOT NULL,
++	device_id TEXT NOT NULL,
++	sort_order INTEGER NOT NULL DEFAULT 0,
++	PRIMARY KEY (password, device_id),
++	FOREIGN KEY (password) REFERENCES wdtt_users(password) ON DELETE CASCADE
++);
++CREATE TABLE IF NOT EXISTS wdtt_devices (
++	device_id TEXT PRIMARY KEY,
++	ip TEXT NOT NULL DEFAULT '',
++	priv_key TEXT NOT NULL DEFAULT '',
++	pub_key TEXT NOT NULL DEFAULT ''
++);
++CREATE TABLE IF NOT EXISTS wdtt_inbound (
++	id INTEGER PRIMARY KEY CHECK (id = 1),
++	tag TEXT NOT NULL DEFAULT 'wdtt-in',
++	remark TEXT NOT NULL DEFAULT 'WDTT',
++	enable INTEGER NOT NULL DEFAULT 1,
++	listen_host TEXT NOT NULL DEFAULT '0.0.0.0',
++	server_host TEXT NOT NULL DEFAULT '',
++	dtls_port INTEGER NOT NULL DEFAULT 56000,
++	wg_port INTEGER NOT NULL DEFAULT 56001,
++	client_port INTEGER NOT NULL DEFAULT 9000,
++	dns TEXT NOT NULL DEFAULT '1.1.1.1',
++	mtu INTEGER NOT NULL DEFAULT 1280,
++	max_users INTEGER NOT NULL DEFAULT 10,
++	handshake_timeout_sec INTEGER NOT NULL DEFAULT 30,
++	max_dtls_per_device INTEGER NOT NULL DEFAULT 0,
++	online_timeout_sec INTEGER NOT NULL DEFAULT 15,
++	admin_addr TEXT NOT NULL DEFAULT '127.0.0.1:2861'
++);`
++
++type desiredFile struct {
++	Passwords map[string]struct {
++		ExpiresAt     int64  `json:"expires_at"`
++		VkHash        string `json:"vk_hash"`
++		Ports         string `json:"ports"`
++		IsDeactivated bool   `json:"is_deactivated"`
++	} `json:"passwords"`
++}
++
++// ingestDesiredFile upserts the desired password set into wdtt_users and revokes DB users no longer
++// desired. SQLite-only; the caller reloads memory. No-op without -desired or before the DB is open.
++func ingestDesiredFile() error {
++	if desiredPath == "" || !serverPanelDBReady() {
++		return nil
++	}
++	raw, err := os.ReadFile(desiredPath)
++	if err != nil {
++		if os.IsNotExist(err) {
++			return nil // not written yet (or removed) — leave the store as-is
++		}
++		return err
++	}
++	var d desiredFile
++	if err := json.Unmarshal(raw, &d); err != nil {
++		return err
++	}
++	sdb := serverPanelDB
++
++	dbMutex.Lock()
++	main := db.MainPassword
++	dbMutex.Unlock()
++
++	want := make(map[string]bool, len(d.Passwords))
++	for pw, e := range d.Passwords {
++		if pw == "" {
++			continue
++		}
++		want[pw] = true
++		u := &paneldb.User{
++			MaxDevices:    1, // one logical config per password (device-agnostic under -fixed-config)
++			ExpiresAt:     e.ExpiresAt,
++			IsDeactivated: e.IsDeactivated,
++			Ports:         e.Ports,
++			VkHash:        e.VkHash,
++		}
++		if err := paneldb.UpsertUser(sdb, main, pw, u); err != nil {
++			return err
++		}
++	}
++
++	stale, err := staleUserPasswords(sdb, main, want)
++	if err != nil {
++		return err
++	}
++	for _, pw := range stale {
++		if err := paneldb.DeleteUser(sdb, pw, nil); err != nil {
++			log.Printf("[DESIRED] revoke %s: %v", maskPassword(pw), err)
++		}
++	}
++	return nil
++}
++
++// staleUserPasswords = DB user passwords absent from `want` (never the owner/main password).
++func staleUserPasswords(sdb *sql.DB, main string, want map[string]bool) ([]string, error) {
++	rows, err := sdb.Query(`SELECT password FROM wdtt_users`)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	var stale []string
++	for rows.Next() {
++		var pw string
++		if err := rows.Scan(&pw); err != nil {
++			return nil, err
++		}
++		if pw != "" && pw != main && !want[pw] {
++			stale = append(stale, pw)
++		}
++	}
++	return stale, rows.Err()
++}
++
++// reloadDesired ingests the file then applies it to memory + the live WG device (nil-safe at startup).
++func reloadDesired() {
++	if err := ingestDesiredFile(); err != nil {
++		log.Printf("[DESIRED] ingest %s: %v", desiredPath, err)
++		return
++	}
++	serverWGDevMu.RLock()
++	dev := serverWGDev
++	serverWGDevMu.RUnlock()
++	if err := reloadDBFromDisk(dev); err != nil {
++		log.Printf("[DESIRED] reload: %v", err)
++		return
++	}
++	log.Printf("[DESIRED] password set reloaded from %s", desiredPath)
++}
+diff --git a/server/fixedconfig_test.go b/server/fixedconfig_test.go
+new file mode 100644
+index 0000000..272cd25
+--- /dev/null
++++ b/server/fixedconfig_test.go
+@@ -0,0 +1,48 @@
++package server
++
++import "testing"
++
++// R3: -fixed-config makes a generated password device-agnostic — one keypair+IP for ANY deviceID.
++func TestFixedConfigDeviceAgnostic(t *testing.T) {
++	old := fixedConfig
++	defer func() { fixedConfig = old }()
++
++	fixedConfig = true
++	db = &Database{
++		Passwords: map[string]*PasswordEntry{"pwA": {}, "pwB": {}},
++		Devices:   map[string]*ClientDevice{},
++	}
++	mint := func(deviceID, password string) *ClientDevice {
++		dkey := getconfDeviceKey(true, deviceID, password)
++		if d, ok := db.Devices[dkey]; ok {
++			return d
++		}
++		priv, pub, err := generateKeyPair()
++		if err != nil {
++			t.Fatalf("keygen: %v", err)
++		}
++		d := &ClientDevice{DeviceID: dkey, IP: getNextIP(), PrivKey: priv, PubKey: pub}
++		db.Devices[dkey] = d
++		return d
++	}
++	// same password, two DIFFERENT physical devices -> identical config
++	d1 := mint("iphone-A", "pwA")
++	d2 := mint("macbook-B", "pwA")
++	if d1.PrivKey != d2.PrivKey || d1.IP != d2.IP {
++		t.Fatalf("not device-agnostic: %s@%s vs %s@%s", d1.PrivKey[:6], d1.IP, d2.PrivKey[:6], d2.IP)
++	}
++	// different password -> different config
++	d3 := mint("iphone-A", "pwB")
++	if d3.PrivKey == d1.PrivKey || d3.IP == d1.IP {
++		t.Fatalf("distinct passwords must get distinct configs")
++	}
++	// key collapses to one per password
++	if getconfDeviceKey(true, "x", "pwA") != getconfDeviceKey(true, "y", "pwA") {
++		t.Fatalf("fixed-config: same password must map to one key regardless of deviceID")
++	}
++	// stock mode keys by deviceID
++	fixedConfig = false
++	if getconfDeviceKey(true, "x", "pwA") == getconfDeviceKey(true, "y", "pwA") {
++		t.Fatalf("stock mode must key by deviceID")
++	}
++}
+diff --git a/server/server.go b/server/server.go
+index 28d68a1..2c98d13 100644
+--- a/server/server.go
++++ b/server/server.go
+@@ -23,10 +23,32 @@ import (
+ 	"golang.zx2c4.com/wireguard/device"
+ )
+ 
++// Interface/subnet identity — vars (set from flags in config.go) so ONE binary hosts
++// many independent instances per node; defaults preserve stock wdtt0/10.66.66.1/24.
++var (
++	wgIfaceName  = "wdtt0"
++	wgServerAddr = "10.66.66.1"
++	wgServerCIDR = "10.66.66.1/24"
++	wgPoolPrefix = "10.66.66" // host pool = <prefix>.2 .. .250
++)
++
++// noNat (-no-nat): the node owns NAT/sysctls for wdtt subnets → skip WDTT's own
++// ip_forward + iptables/nft NAT/forward. Clean stop = TUN close self-removes the iface.
++var noNat bool
++
++// fixedConfig (-fixed-config): a GENERATED password owns ONE keypair+IP returned to ANY
++// deviceID (wg/awg parity — a portable config, one connection, any device, one at a time). Keyed by
++// the password, not the deviceID → no per-device binding, no device_mismatch, mint-once.
++var fixedConfig bool
++
++func getconfDeviceKey(isGenPass bool, deviceID, password string) string {
++	if fixedConfig && isGenPass {
++		return "pw:" + password
++	}
++	return deviceID
++}
++
+ const (
+-	wgIfaceName           = "wdtt0"
+-	wgServerAddr          = "10.66.66.1"
+-	wgServerCIDR          = wgServerAddr + "/24"
+ 	defaultInternalWGPort = 56001
+ 	defaultClientDNS      = "1.1.1.1"
+ 	defaultMaxUsers       = 10
+@@ -455,7 +477,7 @@ func getNextIP() string {
+ 		used[dev.IP] = true
+ 	}
+ 	for i := 2; i <= 250; i++ {
+-		ip := fmt.Sprintf("10.66.66.%d", i)
++		ip := fmt.Sprintf("%s.%d", wgPoolPrefix, i)
+ 		if !used[ip] {
+ 			return ip
+ 		}
+@@ -477,11 +499,24 @@ func RunManaged() {
+ 	log.Println("══════════════════════════════════════════")
+ 
+ 	cfg := baseServerConfigFromFlags()
++	if err := ensurePanelDB(); err != nil { // swg-panel: server-only first run — create panel.db+schema (stock relies on the web panel)
++		log.Printf("[DESIRED] ensure panel.db: %v", err)
++	}
+ 	cfg.mergeFromPanelDB()
+ 
+ 	sig := make(chan os.Signal, 1)
+ 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+ 
++	// swg-panel: SIGHUP re-ingests the node's desired.json (panel-owned password set) + hot-reloads —
++	// no restart, no tunnel drop. Mirrors the amurcanov fork's SIGHUP contract so the node driver is shared.
++	hup := make(chan os.Signal, 1)
++	signal.Notify(hup, syscall.SIGHUP)
++	go func() {
++		for range hup {
++			reloadDesired()
++		}
++	}()
++
+ 	for {
+ 		ctx, cancel := context.WithCancel(context.Background())
+ 		restartCh := make(chan struct{}, 1)
+@@ -520,6 +555,7 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
+ 	cfg.applyGlobals()
+ 
+ 	initDB(cfg.MainPass, cfg.AdminID, cfg.BotToken)
++	reloadDesired() // swg-panel: seed the panel-owned password set from -desired before WRAP keys are counted
+ 	log.Printf("[CFG] Admin HTTP: %s (hot-reload /health, restart /admin/restart)", adminListenAddr)
+ 
+ 	if disabled {
+diff --git a/server/server_conn.go b/server/server_conn.go
+index a05498e..63ebbad 100644
+--- a/server/server_conn.go
++++ b/server/server_conn.go
+@@ -115,7 +115,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 			dbMutex.Unlock()
+ 			return
+ 		}
+-		if valid && isGenPass && !isMainPass && !entryCanAcceptDevice(entry, deviceID) {
++		if valid && isGenPass && !isMainPass && !fixedConfig && !entryCanAcceptDevice(entry, deviceID) {
+ 			clientConn.Write([]byte("DENIED:device_mismatch"))
+ 			log.Printf("[WG] Отказ: пароль %s — лимит устройств %d/%d, запрос от %s",
+ 				maskPassword(password), len(allEntryDeviceIDs(entry)), entryMaxDevices(entry), deviceID)
+@@ -125,13 +125,14 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 		if valid {
+ 			connPassword = password
+ 			connIsMainPass = isMainPass
++			dkey := getconfDeviceKey(isGenPass, deviceID, password)
+ 
+ 			persistFail := func() {
+ 				clientConn.Write([]byte("NOCONF"))
+ 				dbMutex.Unlock()
+ 			}
+ 
+-			if isGenPass && !isMainPass && !entryHasDevice(entry, deviceID) {
++			if isGenPass && !isMainPass && !fixedConfig && !entryHasDevice(entry, deviceID) {
+ 				if bindDeviceToEntry(entry, deviceID) {
+ 					if err := persistUserBindingsSQLiteLocked(password, entry); err != nil {
+ 						log.Printf("[DB] bind device save: %v", err)
+@@ -149,16 +150,16 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 				ensureMainPasswordEntryLocked()
+ 			}
+ 
+-			dev, exists := db.Devices[deviceID]
++			dev, exists := db.Devices[dkey]
+ 			if !exists {
+-				dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP()}
++				dev = &ClientDevice{DeviceID: dkey, IP: getNextIP()}
+ 				privB64, pubB64, keyErr := generateKeyPair()
+ 				if keyErr == nil && dev.IP != "" {
+ 					dev.PrivKey = privB64
+ 					dev.PubKey = pubB64
+-					db.Devices[deviceID] = dev
++					db.Devices[dkey] = dev
+ 					if err := persistDeviceSQLiteLocked(dev); err != nil {
+-						delete(db.Devices, deviceID)
++						delete(db.Devices, dkey)
+ 						log.Printf("[DB] new device save: %v", err)
+ 						persistFail()
+ 						return
+@@ -175,7 +176,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 					if dev.IP == "" {
+ 						dev.IP = getNextIP()
+ 					}
+-					db.Devices[deviceID] = dev
++					db.Devices[dkey] = dev
+ 					if err := persistDeviceSQLiteLocked(dev); err != nil {
+ 						log.Printf("[DB] regen keys save: %v", err)
+ 						persistFail()
+diff --git a/server/server_util.go b/server/server_util.go
+index 45c39ae..ec18a9a 100644
+--- a/server/server_util.go
++++ b/server/server_util.go
+@@ -23,6 +23,9 @@ func putBuf(b *[]byte) { bufPool.Put(b) }
+ // ==================== Оптимизация ====================
+ 
+ func enableBBR() {
++	if noNat {
++		return // node owns host sysctls under -no-nat
++	}
+ 	log.Println("[SYS] Оптимизация TCP...")
+ 	out, _ := runCmd("bash", "-c", "sysctl net.ipv4.tcp_congestion_control")
+ 	if strings.Contains(out, "bbr") {
+diff --git a/server/server_wg.go b/server/server_wg.go
+index b2b9b2b..f637403 100644
+--- a/server/server_wg.go
++++ b/server/server_wg.go
+@@ -371,6 +371,10 @@ generate:
+ // ==================== NAT ====================
+ 
+ func setupFullConeNAT(wgIface string) error {
++	if noNat {
++		log.Println("[NAT] -no-nat: node owns NAT for this subnet — skipping ip_forward/MASQUERADE/forward")
++		return nil
++	}
+ 	log.Println("[NAT] ══════════════════════════════════════")
+ 
+ 	os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
+@@ -418,6 +422,9 @@ func panelServicePorts() []int {
+ }
+ 
+ func syncVPNLocalServices(wgIface string) {
++	if noNat {
++		return // node owns host firewall under -no-nat
++	}
+ 	ports := panelServicePorts()
+ 	vpnLocalPortsMu.Lock()
+ 	defer vpnLocalPortsMu.Unlock()

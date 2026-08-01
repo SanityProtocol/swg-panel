@@ -35,6 +35,44 @@ QUEUE = os.path.join(DIR, "data", "lib", "netctl", "queue")
 STATUS = os.path.join(DIR, "data", "lib", "netctl", "status")
 ENV = os.path.join(DIR, ".env")
 COMPOSE = ["docker", "compose", "-f", os.path.join(DIR, "docker-compose.yml")]
+# HTTP-01 needs the host's :80 published to the panel container. install-docker.sh writes this override at INSTALL
+# time from the chosen TLS mode — but nothing did when the mode was later changed FROM THE PANEL, so a UI switch to
+# letsencrypt recreated the container without :80: acme's standalone listener bound inside the container, where the
+# internet cannot reach it, and HTTP-01 could never succeed however correct the operator's DNS was. On docker,
+# Let's Encrypt was effectively installer-only. The flip verb now keeps this file in step with the target mode.
+OVERRIDE = os.path.join(DIR, "docker-compose.override.yml")
+OVERRIDE_TEXT = ("# Auto-generated — Let's Encrypt HTTP-01 needs host port 80.\n"
+                 "# Managed by the installer AND by an Access & TLS change; removed when the mode stops needing :80.\n"
+                 "services:\n  swg-panel:\n    ports:\n      - \"80:80\"\n")
+
+
+def _http01_override(enable):
+    """Publish (or stop publishing) host :80 for HTTP-01. Returns the PREVIOUS contents (None = file absent) so a
+    failed flip can put things back exactly as they were."""
+    prev = None
+    with contextlib.suppress(OSError):
+        with open(OVERRIDE) as f:
+            prev = f.read()
+    if enable:
+        if prev != OVERRIDE_TEXT:
+            with contextlib.suppress(OSError):
+                with open(OVERRIDE, "w") as f:
+                    f.write(OVERRIDE_TEXT)
+    elif prev is not None:
+        with contextlib.suppress(OSError):
+            os.remove(OVERRIDE)
+    return prev
+
+
+def _http01_restore(prev):
+    """Undo _http01_override — part of the same rollback that restores .env and the blessed url."""
+    if prev is None:
+        with contextlib.suppress(OSError):
+            os.remove(OVERRIDE)
+        return
+    with contextlib.suppress(OSError):
+        with open(OVERRIDE, "w") as f:
+            f.write(prev)
 SVC = {"sub": "swg-sub", "panel": "swg-panel"}
 
 
@@ -81,6 +119,18 @@ def _set_env(keys):
     with open(tmp, "w") as f:
         f.write("\n".join(lines) + "\n")
     os.replace(tmp, ENV)
+
+
+def _clip(s, n):
+    """Collapse whitespace and cut to <=n chars on a WORD boundary. A blind s[:n] sliced mid-token and turned a
+    domain into a plausible-looking lie — 'no valid certificate for panel2.example.n' reads like a malformed
+    hostname the operator typed, not like a truncated message."""
+    s = " ".join((s or "").split())
+    if len(s) <= n:
+        return s
+    cut = s[:n]
+    sp = cut.rfind(" ")
+    return (cut[:sp] if sp > n * 0.6 else cut).rstrip(" ,.;:") + "…"
 
 
 def _read_env(keys):
@@ -265,6 +315,19 @@ def _handle(verb, args):
                                   capture_output=True).returncode == 0
             if busy and str(port) != str(_read_env(["PANEL_PORT"]).get("PANEL_PORT", "")):
                 return False, "port %s is already in use on this host — choose a free port" % port
+        # HTTP-01 CANNOT be dry-run in Docker, and failing the change over that is wrong. `compose run` publishes no
+        # ports (no --service-ports), so the throwaway container's :80 is unreachable from outside — while the LIVE
+        # panel container is the one holding :80. Let's Encrypt therefore fetches the challenge from the live
+        # container, which has never heard of the token, and acme falls back to self-signed. The entrypoint then
+        # blames the most common cause it knows ("behind Cloudflare's proxy"), which is a plausible-but-wrong guess:
+        # an orange-clouded record proxies :80 and forwards ACME challenges perfectly well. Publishing :80 on the
+        # throwaway isn't an option either — the live panel already holds it.
+        # So: verify the PORT (done above, the check that actually catches lock-outs) and skip the issuance test,
+        # saying plainly that the cert is issued on restart. The auto-revert marker is the net if it doesn't.
+        if tls in ("letsencrypt", "letsencrypt-ip"):
+            return True, ("port %s is free; HTTP-01 can't be verified up front in Docker (the throwaway container "
+                          "can't hold :80 — the live panel does), so the certificate is issued during the restart. "
+                          "If it fails, the panel rolls back to the current address automatically." % (port or "?"))
         env = ["-e", "DRY_RUN=1", "-e", "TLS=%s" % (tls or "none")]
         if domain:
             env += ["-e", "PANEL_DOMAIN=%s" % domain]
@@ -277,8 +340,15 @@ def _handle(verb, args):
             return True, "dry-run passed — the new address has a valid certificate; safe to switch"
         clean = re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or r.stderr or ""))   # strip the entrypoint log's ANSI colours
         clean = clean.replace("[entrypoint]", "").strip()
-        tail = " ".join(clean.splitlines()[-3:])[:280]
-        return False, "dry-run failed — the new address wouldn't get a valid certificate. %s" % tail
+        # Pick the ACTIONABLE line, don't just take the last three. The entrypoint prints a "↳" hint next to every
+        # known acme failure ("HTTP-01 couldn't reach this box on :80 … use cloudflare/cf15, or grey-cloud"), which
+        # is the only part an operator can act on. Blind last-3 spliced in acme's own chatter ("generated
+        # self-signed certificate (CN=…, 10y)") and pushed the hint out of the 280-char budget.
+        lines = [l.strip() for l in clean.splitlines() if l.strip()]
+        hint = next((l for l in reversed(lines) if "↳" in l), "")
+        verdict = next((l for l in reversed(lines) if l.lower().startswith("dry-run failed")), "")
+        picked = [x for x in (hint, verdict) if x] or lines[-2:]
+        return False, "dry-run failed — the new address wouldn't get a valid certificate. %s" % _clip(" ".join(picked), 280)
     if verb == "flip":
         # docker reverse-proxy↔direct-TLS SCHEME FLIP. The container can't live-rebind (fixed port map; in
         # reverse-proxy mode there's no cert on disk to bind HTTPS with — the entrypoint issues/clears the cert from
@@ -301,6 +371,19 @@ def _handle(verb, args):
         _u = urlparse(target_url if "://" in target_url else "https://" + target_url) if target_url else None
         dom = (_u.hostname or "") if _u else ""
         base = ((_u.path or "").strip("/")) if _u else ""
+        # A TLS-MODE-ONLY change carries no target url, so `dom` is empty and PANEL_DOMAIN was left at whatever an
+        # EARLIER attempt happened to write. The entrypoint then re-issues the certificate for that stale hostname
+        # while the panel keeps advertising the current one — Cloudflare dials the advertised name, gets a cert that
+        # doesn't cover it, and returns 526 with the origin looking perfectly healthy locally. Observed exactly that:
+        # a cert issued for panel2.example.net while the panel advertised panel.example.net. The blessed file IS
+        # the address the panel advertises, so fall back to it: PANEL_DOMAIN must never disagree with it.
+        if not dom:
+            with contextlib.suppress(Exception):
+                _bu = (json.loads(_bless_snapshot() or "{}") or {}).get("url") or ""
+                if _bu:
+                    _bp = urlparse(_bu if "://" in _bu else "https://" + _bu)
+                    dom = _bp.hostname or ""
+                    base = (_bp.path or "").strip("/")
         # Snapshot the current scheme + DOMAIN/BASE + the blessed dial address, so a failed CA flip restores them all.
         old_env = _read_env(["TLS", "PANEL_PORT", "PANEL_BIND", "PANEL_LOCAL_PORT", "PANEL_DOMAIN", "PANEL_BASE"])
         old_bless = _bless_snapshot()
@@ -319,16 +402,19 @@ def _handle(verb, args):
         if ca:
             env.update(_tls_creds(tls))       # carry the cert credential so the entrypoint can issue a REAL cert
         _set_env(env)
+        # Keep the :80 publish in step with the TARGET mode, BEFORE the recreate — it changes the container's port
+        # map, so it only takes effect on this same `up -d`. Rolled back with .env and blessed if anything fails.
+        _ovr_prev = _http01_override(tls in ("letsencrypt", "letsencrypt-ip"))
         ok, msg = _compose("up", "-d", "--no-deps", "swg-panel")
         if not ok:                            # the recreate itself failed → restore the previous scheme + address
-            _set_env(old_env); _bless_restore(old_bless); _compose("up", "-d", "--no-deps", "swg-panel")
+            _http01_restore(_ovr_prev); _set_env(old_env); _bless_restore(old_bless); _compose("up", "-d", "--no-deps", "swg-panel")
             return False, "flip recreate failed (%s) — rolled back to the previous address" % msg
         if ca and _served_cert_real(port, dom, host) is False:
             # The cert must be a REAL CA cert that COVERS this domain. A self-signed fallback (missing/blocked token,
             # unreachable :80, rate limit) OR a stale cert for a DIFFERENT domain would be rejected by a validating
             # proxy (Cloudflare 526) and strand nodes. Roll BOTH the scheme and the blessed address back, so the panel
             # comes up on the still-working old address and never advertises the broken one.
-            _set_env(old_env); _bless_restore(old_bless); _compose("up", "-d", "--no-deps", "swg-panel")
+            _http01_restore(_ovr_prev); _set_env(old_env); _bless_restore(old_bless); _compose("up", "-d", "--no-deps", "swg-panel")
             return False, ("the %s certificate could not be issued for %s (served a self-signed or wrong-domain cert)"
                            " — rolled back to the previous address. Check the TLS credential / DNS, then try again."
                            % (tls, dom or "the panel"))

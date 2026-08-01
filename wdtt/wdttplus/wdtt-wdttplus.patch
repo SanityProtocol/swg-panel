@@ -1,0 +1,278 @@
+diff --git a/server.go b/server.go
+index da7b686..06d12a6 100644
+--- a/server.go
++++ b/server.go
+@@ -42,14 +42,25 @@ import (
+ 	dtlsnet "github.com/pion/dtls/v3/pkg/net"
+ )
+ 
++// swg-panel: iface/subnet/mtu are vars (multi-instance, set from flags); defaults preserve stock behavior.
++var (
++	wgIfaceName  = "wdtt0"
++	wgServerAddr = "10.66.66.1"
++	wgServerCIDR = "10.66.66.1/24"
++	wgPoolPrefix = "10.66.66"
++	wgMTU        = 1280
++)
++var (
++	noNat       bool   // -no-nat: node owns NAT/sysctls
++	desiredFile string // -desired: panel-owned declarative password set
++	fixedConfig bool   // -fixed-config: one keypair+IP per password (device-agnostic)
++	noPanel     bool   // -no-panel: skip the admin socket + bot (unused under -desired)
++)
++
+ const (
+ 	wdttServerVersion     = "13"
+-	wgIfaceName           = "wdtt0"
+-	wgServerAddr          = "10.66.66.1"
+-	wgServerCIDR          = wgServerAddr + "/24"
+ 	defaultInternalWGPort = 56001
+ 	defaultDNS            = "1.1.1.1"
+-	wgMTU                 = 1280
+ 	keepalive             = 25
+ 	dtlsKeepaliveByte     = 0xFF
+ 	dtlsClientIdleTimeout = 90 * time.Second
+@@ -623,7 +634,7 @@ func getNextIP() string {
+ 		used[dev.IP] = true
+ 	}
+ 	for i := 2; i <= 250; i++ {
+-		ip := fmt.Sprintf("10.66.66.%d", i)
++		ip := fmt.Sprintf("%s.%d", wgPoolPrefix, i)
+ 		if !used[ip] {
+ 			return ip
+ 		}
+@@ -1197,6 +1208,9 @@ generate:
+ // ==================== NAT ====================
+ 
+ func setupFullConeNAT(wgIface string) error {
++	if noNat { // swg-panel: the node owns NAT/forward/sysctls for wdtt subnets
++		return nil
++	}
+ 	log.Println("[NAT] ══════════════════════════════════════")
+ 
+ 	os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
+@@ -1374,7 +1388,23 @@ func main() {
+ 	handshakeRateFlag := flag.Float64("handshake-rate", defaultHandshakeRate, "допустимые DTLS-рукопожатия в секунду")
+ 	clientMbpsFlag := flag.Float64("max-client-mbps", defaultClientMbps, "общий лимит Мбит/с на один доступ; 0 отключает")
+ 	wgBackendFlag := flag.String("wg-backend", "auto", "WireGuard backend: auto, kernel или userspace")
++	// swg-panel: multi-instance identity + declarative management (defaults preserve stock behavior).
++	ifaceFlag := flag.String("iface", wgIfaceName, "имя userspace-WG интерфейса")
++	wgAddrFlag := flag.String("wg-addr", wgServerCIDR, "адрес/подсеть интерфейса, IPv4 CIDR")
++	mtuFlag := flag.Int("mtu", wgMTU, "MTU интерфейса")
++	desiredFlag := flag.String("desired", "", "путь к panel-owned desired.json (пусто = режим бота)")
++	noNatFlag := flag.Bool("no-nat", false, "не трогать NAT/forward/sysctl хоста")
++	fixedFlag := flag.Bool("fixed-config", false, "один пароль = один keypair+IP для любого устройства")
++	noPanelFlag := flag.Bool("no-panel", false, "не запускать admin-сокет и бота (не нужны под -desired)")
+ 	flag.Parse()
++	wgIfaceName = strings.TrimSpace(*ifaceFlag)
++	applyWgAddr(*wgAddrFlag)
++	wgMTU = *mtuFlag
++	if *maxPasswordsFlag > 0 { maxGeneratedPasswords = *maxPasswordsFlag }
++	desiredFile = strings.TrimSpace(*desiredFlag)
++	noNat = *noNatFlag
++	fixedConfig = *fixedFlag
++	noPanel = *noPanelFlag
+ 
+ 	if *maxPasswordsFlag < 1 {
+ 		log.Printf("[DB] -max-passwords=%d некорректен, использую 1", *maxPasswordsFlag)
+@@ -1428,7 +1458,9 @@ func main() {
+ 		log.Fatalf("[WG] Ключи: %v", err)
+ 	}
+ 
+-	enableBBR()
++	if !noNat {
++		enableBBR()
++	}
+ 
+ 	wgDev, err := startWGBackend(*wgBackendFlag, keys, *wgPort, *configDir)
+ 	if err != nil {
+@@ -1438,8 +1470,23 @@ func main() {
+ 		log.Printf("[DB] Удалено истёкших паролей при старте: %d", removed)
+ 	}
+ 	syncPersistedPeersToWG(wgDev)
+-	if err := startAdminSocket(ctx, *configDir, wgDev); err != nil {
+-		log.Fatalf("[ADMIN] Локальное управление: %v", err)
++	// swg-panel: seed the panel-owned desired set + reap gone/deactivated on boot, then SIGHUP + mtime watch.
++	if desiredFile != "" {
++		reconcileDesired(wgDev)
++		hup := make(chan os.Signal, 1)
++		signal.Notify(hup, syscall.SIGHUP)
++		go func() {
++			for range hup {
++				log.Println("[DESIRED] SIGHUP — сверка desired")
++				reconcileDesired(wgDev)
++			}
++		}()
++		go desiredWatcher(ctx, wgDev)
++	}
++	if !noPanel {
++		if err := startAdminSocket(ctx, *configDir, wgDev); err != nil {
++			log.Fatalf("[ADMIN] Локальное управление: %v", err)
++		}
+ 	}
+ 	defer func() {
+ 		wgDev.Close()
+@@ -1448,8 +1495,12 @@ func main() {
+ 
+ 	go statsLoop(ctx, *configDir)
+ 	go systemMetricsLoop(ctx)
+-	go expiredPasswordJanitor(ctx, wgDev)
+-	go botLoop(*botToken, *adminID, wgDev)
++	if desiredFile == "" { // swg-panel: with -desired the panel owns expiry (reconcile reaps)
++		go expiredPasswordJanitor(ctx, wgDev)
++	}
++	if !noPanel {
++		go botLoop(*botToken, *adminID, wgDev)
++	}
+ 
+ 	addr, _ := net.ResolveUDPAddr("udp", *listen)
+ 	cert, _ := selfsign.GenerateSelfSigned()
+@@ -1646,6 +1697,9 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 		isMainPass := password != "" && password == db.MainPassword
+ 		entry, isGenPass := db.Passwords[password]
+ 		valid := isMainPass || (isGenPass && !isPasswordExpired(entry))
++			if fixedConfig && isGenPass {
++				deviceID = "pw:" + password
++			}
+ 
+ 		if valid && isGenPass && entry.IsDeactivated {
+ 			clientConn.Write([]byte("DENIED:deactivated"))
+@@ -2352,3 +2406,138 @@ func (c *wrapPacketConn) LocalAddr() net.Addr                { return c.inner.Lo
+ func (c *wrapPacketConn) SetDeadline(t time.Time) error      { return c.inner.SetDeadline(t) }
+ func (c *wrapPacketConn) SetReadDeadline(t time.Time) error  { return c.inner.SetReadDeadline(t) }
+ func (c *wrapPacketConn) SetWriteDeadline(t time.Time) error { return c.inner.SetWriteDeadline(t) }
++
++
++// ── swg-panel integration ───────────────────────────────────────────────────
++func applyWgAddr(cidr string) {
++	cidr = strings.TrimSpace(cidr)
++	ipStr := cidr
++	if i := strings.Index(cidr, "/"); i >= 0 {
++		ipStr = cidr[:i]
++	}
++	ip := net.ParseIP(strings.TrimSpace(ipStr))
++	if ip == nil || ip.To4() == nil {
++		return
++	}
++	v4 := ip.To4().String()
++	wgServerAddr = v4
++	if strings.Contains(cidr, "/") {
++		wgServerCIDR = cidr
++	} else {
++		wgServerCIDR = v4 + "/24"
++	}
++	octs := strings.Split(v4, ".")
++	if len(octs) == 4 {
++		wgPoolPrefix = strings.Join(octs[:3], ".")
++	}
++}
++
++type desiredEntry struct {
++	ExpiresAt     int64  `json:"expires_at"`
++	VkHash        string `json:"vk_hash"`
++	Ports         string `json:"ports"`
++	IsDeactivated bool   `json:"is_deactivated"`
++}
++type desiredFileT struct {
++	Passwords map[string]*desiredEntry `json:"passwords"`
++}
++
++// reconcileDesired merges the panel-owned desired password set into the live DB and — the load-bearing part —
++// REAPS the wg peer + device for any password now gone (rotate) or deactivated (block). Fixed-config binds the
++// device under "pw:<password>", so resolve by that key; also reaps orphans. Runs on boot, SIGHUP, and mtime change.
++func reconcileDesired(wgDev wgDevice) {          // wgDevice (v13+): works with BOTH the userspace and kernel backends
++	if desiredFile == "" {
++		return
++	}
++	data, err := os.ReadFile(desiredFile)
++	if err != nil {
++		if !os.IsNotExist(err) {
++			log.Printf("[DESIRED] read %s: %v", desiredFile, err)
++		}
++		return
++	}
++	var want desiredFileT
++	if err := json.Unmarshal(data, &want); err != nil {
++		log.Printf("[DESIRED] parse: %v", err)
++		return
++	}
++	dbMutex.Lock()
++	changed := false
++	for pw, d := range want.Passwords {
++		if pw == "" || d == nil {
++			continue
++		}
++		e, ok := db.Passwords[pw]
++		if !ok {
++			e = &PasswordEntry{}
++			db.Passwords[pw] = e
++			changed = true
++			log.Printf("[DESIRED] + пароль %s", maskPassword(pw))
++		}
++		if e.ExpiresAt != d.ExpiresAt || e.VkHash != d.VkHash || e.Ports != d.Ports || e.IsDeactivated != d.IsDeactivated {
++			e.ExpiresAt = d.ExpiresAt
++			e.VkHash = d.VkHash
++			e.Ports = d.Ports
++			e.IsDeactivated = d.IsDeactivated
++			changed = true
++		}
++	}
++	for pw := range db.Passwords {
++		if pw == db.MainPassword {
++			continue
++		}
++		if _, ok := want.Passwords[pw]; !ok {
++			delete(db.Passwords, pw)
++			changed = true
++			log.Printf("[DESIRED] - пароль %s", maskPassword(pw))
++		}
++	}
++	for dkey, dev := range db.Devices {
++		pw := dkey
++		if len(pw) > 3 && pw[:3] == "pw:" {
++			pw = pw[3:]
++		}
++		e, ok := db.Passwords[pw]
++		if !ok || e == nil || e.IsDeactivated {
++			removePeerFromWG(wgDev, dev)
++			delete(db.Devices, dkey)
++			changed = true
++		}
++	}
++	if changed {
++		saveDB()
++	}
++	if err := refreshWrapKeysFromDBLocked(); err != nil {
++		log.Printf("[DESIRED] wrap keys: %v", err)
++	}
++	dbMutex.Unlock()
++	syncPersistedPeersToWG(wgDev)
++}
++
++// desiredWatcher reconciles when the desired file's mtime changes (belt-and-suspenders alongside SIGHUP).
++func desiredWatcher(ctx context.Context, wgDev wgDevice) {
++	if desiredFile == "" {
++		return
++	}
++	var last int64
++	if fi, err := os.Stat(desiredFile); err == nil {
++		last = fi.ModTime().UnixNano()
++	}
++	ticker := time.NewTicker(3 * time.Second)
++	defer ticker.Stop()
++	for {
++		select {
++		case <-ctx.Done():
++			return
++		case <-ticker.C:
++			fi, err := os.Stat(desiredFile)
++			if err != nil {
++				continue
++			}
++			if m := fi.ModTime().UnixNano(); m != last {
++				last = m
++				reconcileDesired(wgDev)
++			}
++		}
++	}
++}

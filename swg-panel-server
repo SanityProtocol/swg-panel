@@ -303,6 +303,50 @@ def _fetch_latest_changelog():
             cur.append(s)
     _flush()
     return date, notes[:8]
+
+_CHANGELOG_CACHE = {"at": 0, "entries": []}
+def _changelog_entries():
+    """Parse the FULL remote CHANGELOG.md → [{version, date, notes[]}] newest-first, for the version changelog browser
+    (prev/next). Cached ~1h; keeps the last good result on a transient fetch failure. Best-effort → [] if never fetched."""
+    now = int(time.time())
+    if _CHANGELOG_CACHE["entries"] and now - _CHANGELOG_CACHE["at"] < 3600:
+        return _CHANGELOG_CACHE["entries"]
+    try:
+        url = REMOTE_CHANGELOG_URL + (("&" if "?" in REMOTE_CHANGELOG_URL else "?") + "cb=" + str(now))
+        req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            text = r.read(200000).decode("utf-8", "replace")
+    except Exception:
+        return _CHANGELOG_CACHE["entries"]
+    entries, cur_entry, cur = [], None, []
+    def _flush():
+        if cur_entry is not None and cur:
+            b = re.sub(r"[*`]", "", " ".join(cur)).strip()
+            if b:
+                cur_entry["notes"].append(b)
+    for ln in text.splitlines():
+        s = ln.strip()
+        m = re.match(r"^##\s*\[([^\]]+)\]\s*(?:—\s*(.+))?$", s)   # "## [1.4.2-beta] — 2026-07-24"
+        if m:
+            _flush(); cur = []
+            cur_entry = {"version": m.group(1).strip(), "date": (m.group(2) or "").strip(), "notes": []}
+            entries.append(cur_entry)
+            continue
+        if cur_entry is None:
+            continue
+        if s.startswith("- "):
+            _flush(); cur = [s[2:]]
+        elif s.startswith("### ") or not s:
+            _flush(); cur = []
+        elif cur:
+            cur.append(s)
+    _flush()
+    for e in entries:
+        e["notes"] = e["notes"][:20]
+    entries = entries[:80]
+    if entries:
+        _CHANGELOG_CACHE["at"] = now; _CHANGELOG_CACHE["entries"] = entries
+    return entries
 # In-place updater — swg programs only (--no-components leaves wg/awg/turn-proxies alone), unattended.
 UPDATE_CMD = os.environ.get(
     "SWG_UPDATE_CMD",
@@ -369,6 +413,7 @@ TURN_BINS_KEEP = 5                    # per fork, keep the newest N tags' binari
 TURN_ARCHES = ("amd64", "arm64")
 _TURN_SUMS = {}                       # "owner|tag|arch" -> sha256 hex (only successful hashes cached; a failed fetch retries)
 _TURN_SUMS_LOCK = threading.Lock()
+_TURN_SUM_STAT = {}          # key -> ((mtime_ns, size, ino), sha) — skip re-hashing an unchanged mirrored binary
 _TURN_SUM_SEM = threading.BoundedSemaphore(2)   # cap concurrent multi-MB asset fetches so a warm burst can't swamp a 1-core panel
 _TURN_PIN_CACHE = {}                  # owner -> {"pin": {...}, "at": ts} — re-resolve the tag/sums at most every TTL
 _TURN_PIN_TTL = 900
@@ -387,7 +432,55 @@ def _turn_safe(s):
 def _turn_store_path(owner, tag, arch):   # the mirrored binary on disk (P2 store)
     return os.path.join(TURN_BINS_DIR, _turn_safe(owner), _turn_safe(tag), "server-linux-" + arch)
 
-def _turn_asset_url(owner, tag, arch):    # the immutable per-tag GitHub release asset
+# WDTT forks ship NO upstream release of OUR patched build — we compile it and publish under our own repo, tagging
+# each release with the AUTHOR's version we built from. WDTT_BUILDS is the source of truth, per fork, NEWEST FIRST:
+# (author version, our release tag). The current build maps to the legacy unversioned tag `wdtt-<fork>` (already
+# published — no republish needed); shipping a NEW build = prepend ("X.Y.Z", "wdtt-<fork>-X.Y.Z") here + publish that
+# release. The mirror-key `tag` used everywhere downstream (store path, sha-pin, /api/node/turn-binary) is the AUTHOR
+# VERSION now (a bare "wdtt" still resolves to the current build for back-compat with already-installed nodes).
+WDTT_BUILD_REPO = "SanityProtocol/swg-panel"
+WDTT_BUILDS = {                               # fork id -> [(author_version, our_release_tag)], newest first
+    # One entry per fork, every tag `wdtt-<fork>-<author version>`. The earlier unversioned `wdtt-<fork>` releases
+    # were retired, so there is no rollback target until a SECOND build of a fork is published — which is the honest
+    # state: an entry here must resolve to a distinct binary that still exists, or rollback reports success while the
+    # node keeps running what it had.
+    # "1.2.4-2" is OUR second build of upstream 1.2.4: same upstream source, but build 1 predated the reconcile fix
+    # that drops a blocked/rotated user's LIVE tunnel (it only denied new connections). The author version alone
+    # can't express that, and the node only re-fetches when the version string changes.
+    "amurcanov": [("1.2.4-2",  "wdtt-amurcanov-1.2.4-2")],
+    "ildarmaga": [("1.4.63",   "wdtt-ildarmaga-1.4.63")],
+    "wdttplus":  [("13",       "wdtt-wdttplus-13")],
+    "xxcipherx": [("2.0.0.61", "wdtt-xxcipherx-2.0.0.61")],
+}
+_WDTT_OWNER_FORK = {                          # catalog owner -> fork id (for owner-keyed callers like _turn_asset_url)
+    "amurcanov/proxy-turn-vk-android": "amurcanov",
+    "ildarmaga/wdtt":                  "ildarmaga",
+    "Ivan4537/WDTT-Plus":              "wdttplus",
+    "XXcipherX/proxy-turn-vk-android": "xxcipherx",
+}
+# legacy (owner, "wdtt") -> release tag, kept so an already-installed node pinning the "wdtt" pseudo-tag still resolves
+
+def _wdtt_versions(fork):                     # [(ver, tag)] newest first, "" fork -> []
+    return WDTT_BUILDS.get(fork) or []
+def _wdtt_current_version(fork):
+    vs = _wdtt_versions(fork); return vs[0][0] if vs else ""
+def _wdtt_tag_for(fork, ver):                 # our release tag for a specific author version ("" / "wdtt" -> current)
+    vs = _wdtt_versions(fork)
+    if not vs:
+        return ""
+    if not ver or ver == "wdtt":
+        return vs[0][1]
+    for v, tag in vs:
+        if v == ver:
+            return tag
+    return ""
+
+def _turn_asset_url(owner, tag, arch):    # the immutable per-tag release asset (OUR repo for kind:wdtt, else the fork's)
+    fork = _WDTT_OWNER_FORK.get(owner)
+    if fork:
+        rtag = _wdtt_tag_for(fork, tag)   # `tag` is an author version now (or "wdtt" -> current build)
+        if rtag:
+            return "https://github.com/" + WDTT_BUILD_REPO + "/releases/download/" + rtag + "/server-linux-" + arch
     return "https://github.com/" + owner + "/releases/download/" + tag + "/server-linux-" + arch
 
 def _turn_sha256_file(path):
@@ -409,21 +502,47 @@ def _turn_bins_prune(owner):
 
 def turn_sum(owner, tag, arch):
     """sha256 of a fork's release binary at a PINNED tag — fetched once, the BYTES KEPT in the mirror store, the
-    hash cached + persisted. Reuses a mirrored file after a restart (hash from disk, no re-download). "" if the
-    panel can't fetch/hash it (only successes are cached, so a transient failure retries)."""
+    hash cached + persisted. "" if the panel can't fetch/hash it (only successes are cached, so a transient failure
+    retries). The on-disk mirrored file is the SOURCE OF TRUTH: it is exactly what the node pulls (_node_turn_binary
+    streams it), so whenever it's present we hash IT and refresh the cache to match. A cached sum could otherwise
+    drift from the file (a racing re-fetch overwrote the bytes) — and a drifted pin makes the node reject the CORRECT
+    binary with a checksum mismatch, silently breaking rollback/update."""
     if not owner or "/" not in owner or not tag or arch not in TURN_ARCHES:
         return ""
     key = owner + "|" + tag + "|" + arch
-    with _TURN_SUMS_LOCK:
+    dest = _turn_store_path(owner, tag, arch)
+    _st = None
+    with contextlib.suppress(OSError):
+        _st = os.stat(dest)
+    if _st is not None and _st.st_size > 0:                   # mirrored → hash the FILE (authoritative), reconcile cache
+        # ...but only when it actually changed. This runs on every /api/state build, once per fork×arch, and the
+        # binaries are multi-MB — re-hashing them every 5s per open tab was pure CPU for an answer that is the same
+        # until someone rewrites the file. (stat, size) is enough: the mirror writes atomically, so any new bytes
+        # come with a new inode/mtime.
+        _stamp = (_st.st_mtime_ns, _st.st_size, _st.st_ino)
+        with _TURN_SUMS_LOCK:
+            _hot = _TURN_SUM_STAT.get(key)
+        if _hot and _hot[0] == _stamp:
+            return _hot[1]
+        with contextlib.suppress(OSError):
+            _fsha = _turn_sha256_file(dest)
+            if _fsha:
+                with _TURN_SUMS_LOCK:
+                    _TURN_SUM_STAT[key] = (_stamp, _fsha)
+                    if _TURN_SUMS.get(key) != _fsha:
+                        _TURN_SUMS[key] = _fsha
+                        with contextlib.suppress(Exception):
+                            atomic_write(TURN_SUMS_PATH, json.dumps(_TURN_SUMS) + "\n", mode=0o600)
+                return _fsha
+    with _TURN_SUMS_LOCK:                 # file pruned but the sum is remembered → still lets a pin build (node re-fetches, mirror re-hashes on serve)
         if key in _TURN_SUMS:
             return _TURN_SUMS[key]
-    dest = _turn_store_path(owner, tag, arch)
     with _TURN_SUM_SEM:
         with _TURN_SUMS_LOCK:             # re-check: a peer may have filled it while we queued on the semaphore
             if key in _TURN_SUMS:
                 return _TURN_SUMS[key]
         sha = ""
-        if os.path.isfile(dest) and os.path.getsize(dest) > 0:   # already mirrored (survives a sums-cache loss) → hash from disk
+        if os.path.isfile(dest) and os.path.getsize(dest) > 0:   # a peer just mirrored it → hash from disk
             with contextlib.suppress(OSError):
                 sha = _turn_sha256_file(dest)
         else:
@@ -521,6 +640,37 @@ def _turn_hold_clear(nid, svc):
 def _turn_hold_get(nid, svc):
     return (_turn_holds_load().get(str(nid) + "|" + str(svc)) or {}).get("tag") or ""
 
+def _turn_holds_migrate():
+    """One-time: legacy per-SERVICE rollback holds → per (node, fork). Before the shared-binary fix a hold was keyed
+    '<nid>|<service>'; now it's '<nid>|fork:<fork>' (a fork shares one binary per node). Convert legacy keys so an
+    existing hold keeps holding instead of silently releasing. Runs at startup; a no-op once migrated."""
+    d = _turn_holds_load()
+    changed = False
+    for k in list(d.keys()):
+        nid, sep, rest = str(k).partition("|")
+        if not sep or rest.startswith("fork:") or rest.startswith("wdtt:"):
+            continue                                  # already per-fork/wdtt, or malformed
+        fork = turn_fork(rest)                         # rest = the legacy service name → its fork
+        if fork:
+            d.setdefault(nid + "|fork:" + fork, d[k])  # keep the first if two same-fork services were both held
+        del d[k]; changed = True
+    if changed:
+        with _TURN_HOLDS_LOCK:
+            with contextlib.suppress(Exception):
+                atomic_write(TURN_HOLDS_PATH, json.dumps(d) + "\n", mode=0o600)
+
+def _turn_holds_view():
+    """Per (node, fork) rollback holds for the UI (the fork-row 'held' flag). Keys are '<nid>|fork:<fork>' (-connect)
+    or '<nid>|wdtt:<fork>' (WDTT); both collapse to {nid: {fork: held_version}}. Legacy per-svc keys are ignored."""
+    out = {}
+    for k, v in (_turn_holds_load() or {}).items():
+        nid, _, rest = str(k).partition("|")
+        fork = rest[5:] if (rest.startswith("fork:") or rest.startswith("wdtt:")) else ""
+        tag = (v or {}).get("tag") or ""
+        if nid and fork and tag:
+            out.setdefault(nid, {})[fork] = tag
+    return out
+
 def turn_pin(owner, arches=None, wait=25, force=False):
     """{tag, sums:{arch:sha}} for a fork's latest release, attached to an install/reinstall request so the node
     pins + verifies. Fetches ONLY the target arch(es) (an install targets ONE node → one arch — no wasted/failing
@@ -614,7 +764,7 @@ def _turn_autoupdate_tick():
             # The operator recreates it as a free-turn-proxy proxy; one already on -obf-profile updates normally.
             if fork == "samosvalishe" and "-wrap" in (tp.get("params") or "") and "-obf" not in (tp.get("params") or ""):
                 continue
-            if _turn_hold_get(nid, svc):                 # operator rolled this proxy back to a specific version → don't auto-roll it forward
+            if _turn_hold_get(nid, "fork:" + fork):      # operator rolled this fork back to a specific version → don't auto-roll it forward (per node+fork: the binary is shared)
                 continue
             if fork not in latest:
                 latest[fork] = _resolve_turn_tag(owner)
@@ -641,6 +791,31 @@ def _turn_update_loop():
         with contextlib.suppress(Exception):
             _turn_autoupdate_tick()
         time.sleep(15 * 60)                              # re-evaluate the schedule window every 15 min
+
+# Cache-bust key for a buildless SPA asset: "<panel version>.<8-hex content hash>", computed once per file.
+# The VERSION alone is NOT enough. Two builds of the SAME version — a dev rebuild, a hot-fix redeploy, anything
+# between releases — produce an identical ?v=, so a browser (and any CDN in front) keeps serving the OLD app.js
+# against the NEW backend: every UI fix ships invisibly until the version string happens to change. Observed:
+# an Access & TLS fix was live in the image and the page still rendered the previous build. The hash is over the
+# file we are STAMPING (app.js, app.css, …), not the file being served, so each asset gets its own key.
+_ASSET_Q = {}
+
+
+def _asset_q(fname):
+    """b"?v=<version>.<hash>" for fname — cached; falls back to the bare version if the file can't be read."""
+    q = _ASSET_Q.get(fname)
+    if q is not None:
+        return q
+    base = (VERSIONS.get("panel") or "").strip()
+    h = ""
+    with contextlib.suppress(Exception):
+        with open(os.path.join(WEB_DIR, fname), "rb") as f:
+            h = hashlib.sha1(f.read()).hexdigest()[:8]
+    tag = base + ("." + h if h else "")
+    q = (("?v=" + quote(tag, safe="")) if tag else "").encode()
+    _ASSET_Q[fname] = q
+    return q
+
 
 STATIC = {
     "/": "index.html", "/index.html": "index.html",
@@ -1091,6 +1266,24 @@ def gen_psk():
     return base64.b64encode(os.urandom(32)).decode()
 
 
+_WDTT_PW_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"   # WDTT's own unambiguous alphabet
+def gen_wdtt_password():
+    """A WDTT WRAP/access password: 16 chars, panel-owned like the PSK. A WDTT peer's `wdtt_password` IS its
+    identity (WDTT has no browser keypair — the server mints the WG keypair via GETCONF keyed on this password)."""
+    return "".join(secrets.choice(_WDTT_PW_CHARS) for _ in range(16))
+
+
+def _wdtt_vk_hash(vk_link):
+    """Strip a VK call link to its bare hash (the WDTT `wdtt://…:<vkHash>` credential). Last path segment,
+    query dropped — mirrors the WDTT server's stripVkUrl."""
+    s = (vk_link or "").strip()
+    if "/" in s:
+        s = s.rsplit("/", 1)[-1]
+    if "?" in s:
+        s = s.split("?", 1)[0]
+    return s.strip()
+
+
 def peer_label(roster, p):
     """Best display label for a peer in the activity log: title → owner name → unassigned."""
     if p.get("title"):
@@ -1150,21 +1343,6 @@ def clean_overrides(raw):
     return ov
 
 
-def effective_client_params(peer, meta):
-    """Resolve a peer's client-config render params: the peer's stored overrides where set, else the
-    interface's live defaults. `meta` is the target interface's describe meta (dns/mtu/awg/endpoint/
-    public_key). Used by every render that starts from the encrypted {k,p} blob (panel Show-QR + the
-    subscription page) so a peer with no override tracks fleet-wide defaults automatically."""
-    ov = (peer.get("overrides") if isinstance(peer, dict) else None) or {}
-    meta = meta or {}
-    return {
-        "dns": ov["dns"] if "dns" in ov else (meta.get("dns") or []),
-        "mtu": ov.get("mtu") or meta.get("mtu") or 1280,
-        "allowed": ov.get("allowed") or "0.0.0.0/0, ::/0",
-        "keepalive": ov["keepalive"] if "keepalive" in ov else 25,
-    }
-
-
 def find_peer_by_pubkey(roster, pubkey):
     for p in roster.get("peers", {}).values():
         if isinstance(p, dict) and p.get("pubkey") == pubkey:
@@ -1187,6 +1365,23 @@ def valid_addr(s):
 # injection payloads — every legitimate value (IPs, ports, hex keys, repo slugs, NIC names) passes.
 # Cheap: compiled regex / one ipaddress parse. Defence-in-depth pairs with argv writes on the node.
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+def unignore_iface(node_cfg, iface):
+    """Drop `iface` from a node's ignore list, removing the key entirely once empty. True if anything changed.
+
+    An ignore entry is only meaningful while the interface is an ADOPTION CANDIDATE. Once it is managed the node
+    stops offering it, so the entry can never render again — it just sits in nodes.json forever, and (observed) a
+    later convert that hands the interface back as a candidate would resurrect a dismissal the operator made about
+    a different situation entirely. Both adopt paths call this; so does the sync pass, for the interfaces that
+    became managed WITHOUT going through adopt (a re-install or a convert rebuilding the node's config)."""
+    ig = node_cfg.get("ignore_ifaces") or []
+    if iface not in ig:
+        return False
+    ig = [x for x in ig if x != iface]
+    if ig: node_cfg["ignore_ifaces"] = ig
+    else: node_cfg.pop("ignore_ifaces", None)
+    return True
+
+
 def no_ctrl(s):                                   # no newline/control chars (heredoc + config-line injection)
     return not _CTRL_RE.search(s or "")
 def strip_ctrl(s):                                # drop control chars from a cosmetic free-text field (title/name)
@@ -1206,6 +1401,27 @@ def valid_hostport(s):
         return bool(re.match(r"^[A-Za-z0-9._-]+$", h))
 _OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")   # GitHub owner/repo slug
 _TURN_SVC_RE = re.compile(r"^vk-turn-proxy-[A-Za-z0-9._-]+-\d{1,5}$")                 # node writes this as a path/unit component
+_WDTT_IFACE_RE = re.compile(r"^wdtt[0-9]{1,3}$")                                      # WDTT instance iface (node writes it as a unit/path component)
+# ADOPTION can't dictate the name — the foreign server already chose it. The node only uses it as a unit suffix
+# and a directory name, so "safe as a path component" is the real constraint; requiring wdtt<N> refused perfectly
+# adoptable servers and offered "create a new instance instead", which throws away the identity adoption exists
+# to keep. Creating a NEW instance still uses the canonical wdtt<N> shape.
+_WDTT_ADOPT_IFACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$")
+_WDTT_CIDR_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")                      # WDTT instance subnet (IPv4 CIDR)
+def _is_wdtt_target(t):
+    """The ONE predicate for 'does this roster target land on a WDTT instance?' — authoritative `type`, with the
+    iface-name regex as a fallback for any target written before `type` was set. WDTT owns its own interface and
+    key custody, so such a target is never a WG ghost / missing / dangling concern; keep every enumeration site
+    keyed off this rather than re-deriving."""
+    return (t.get("type") == "wdtt") or bool(_WDTT_IFACE_RE.match(str(t.get("iface") or "")))
+
+def _wdtt_net(cidr):
+    """A WDTT instance's wg_addr (e.g. 10.66.73.1/24) → its network (10.66.73.0/24) — the source subnet that the
+    datapath rules (smart routing / block DROP) match with `ip saddr <net>`. "" if the CIDR is unparseable."""
+    try:
+        return str(ipaddress.ip_network(cidr, strict=False))
+    except Exception:
+        return ""
 _WANIF_RE = re.compile(r"^[A-Za-z0-9._-]{1,15}$")                                     # Linux NIC name (IFNAMSIZ 16); blocks ; ` $ | & etc.
 _VK_CALL_RE = re.compile(r"^https://(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)/call/join/[\w-]+/?(?:\?\S*)?$", re.I)   # a VK call-room link
 
@@ -1344,7 +1560,10 @@ def peer_set(roster, pid, fields, now):
     # Block state (declarative access revoke) + expiry (timed revoke) are preserved across every other mutation —
     # an update-target or rekey must not silently un-block or un-expire a peer. Only the block/unblock endpoints
     # and /api/peers/update (expiry) change these. An explicit falsy value (e.g. expiry=0) clears the key.
-    for k in ("disabled", "disabled_at", "unblock_at", "expiry"):
+    # wdtt_password / vk_hash: a WDTT peer has no browser keypair — its panel-owned `wdtt_password` (custody like
+    # the PSK) IS its credential, and `vk_hash` overrides the user's VK link for its TURN cred. Preserved here so
+    # block/expire/update-target never drop them.
+    for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "vk_hash"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
@@ -1363,9 +1582,12 @@ def unassign_peer(p, store_configs, config_dir, now):
     """
     p["user_id"] = None
     p["psk"] = gen_psk()
+    if p.get("wdtt_password"):
+        p["wdtt_password"] = gen_wdtt_password()   # WDTT peer has no keypair — rotate its WRAP password so the old link dies
     p["modified_at"] = now
     for t in p.get("targets", []):
-        del_config(store_configs, config_dir, p.get("pubkey", ""), t["node"], t["iface"])
+        if p.get("pubkey"):                        # WG only; a keyless WDTT peer has no stored .conf
+            del_config(store_configs, config_dir, p.get("pubkey", ""), t["node"], t["iface"])
 
 
 def retire_pubkey(nodes, nodes_path, targets, old_pubkey):
@@ -1457,8 +1679,10 @@ def save_2fa(path, data):
 # The panel NEVER holds a usable key here. Every secret is encrypted/wrapped in the ADMIN BROWSER
 # (WebCrypto) and the panel stores only opaque blobs it cannot read:
 #   vault.json   {salt, sk_by_pw, sk_check}   the panel-wide Subscription Key wrapped by the admin
-#                                             password (convenience cache). SK plaintext is shown once
-#                                             and never stored here.
+#                                             password, re-wrapped whenever that changes. The SK itself is
+#                                             shown to the operator once (and revealable while unlocked)
+#                                             but never stored here — holding it IS the recovery path when
+#                                             the password is reset out of band, so nothing else has to be.
 #   users.json   {user_id: {token_sha, token_hash, unlock_by_sk, enabled, created, rotated}}
 #                                             per-user: the URL token (hashed like a node token) + the
 #                                             user's unlock-key wrapped by the SK.
@@ -1621,10 +1845,6 @@ def normalize_sub_perms(deps):
             os.chmod(p, 0o600)   # belt-and-suspenders: the SK vault + the wrapped-key escrow stay owner-only
 
 
-def subs_enabled(deps):
-    return bool(((deps.get("panel_settings") or {}).get("subscriptions") or {}).get("enabled"))
-
-
 # ── Access & TLS validation (shared by the settings save +, later, the live-apply path) ──────────────
 # Cloudflare's proxy only connects back to origin HTTPS on this fixed set of ports (everything else is
 # unreachable behind the orange cloud). cf15 certs are ONLY valid behind CF, so a non-CF port is a hard
@@ -1670,25 +1890,6 @@ def _url_host(url):
     if s.startswith("[") and "]" in s:                     # [v6]:port
         return s[1:s.index("]")]
     return s.rsplit(":", 1)[0] if s.count(":") == 1 else s  # host:port (v4/name) → host
-
-
-def _strip_url_port(url):
-    """Drop an explicit :port from a URL's authority, keeping scheme + host + path. With direct TLS the service
-    terminates its own TLS and IS the public endpoint, so the address's port and the listen port are one socket —
-    the listen Port field owns it and the URL stays portless (a URL :2096 with a Port of 2053 would advertise a
-    port nothing listens on). Behind a reverse proxy the URL's external port is legitimate and is left alone."""
-    s = (str(url or "")).strip()
-    if not s:
-        return s
-    m = re.match(r"^(https?://)", s, re.I)
-    scheme, s = (m.group(1), s[m.end():]) if m else ("", s)
-    slash = s.find("/")
-    authority, rest = (s[:slash], s[slash:]) if slash >= 0 else (s, "")
-    if authority.startswith("[") and "]" in authority:    # [v6](:port) → keep through the bracket
-        authority = authority[:authority.index("]") + 1]
-    elif authority.count(":") == 1:                       # host:port → host
-        authority = authority.rsplit(":", 1)[0]
-    return scheme + authority + rest
 
 
 def _url_authority(url):
@@ -1936,10 +2137,15 @@ def _reconcile_saved_ahead(deps, blessed_url):
         ps = deps.get("panel_settings") or {}
         pnl = (ps.get("access") or {}).get("panel") or {}
         changed = False
-        if int(pnl.get("port") or 0) != BIND_PORT:                 # internal bind must match the live (env) port
-            pnl["port"] = BIND_PORT; changed = True
-        if BIND_HOST and str(pnl.get("host") or "") not in ("", "0.0.0.0", BIND_HOST):
-            pnl["host"] = BIND_HOST; changed = True
+        # access.panel.port/host mean "where this panel is reached ON THIS HOST": the process bind on bare-metal,
+        # the PUBLISHED port on docker. Only bare-metal's live socket IS that value, so only there is it ground
+        # truth — in a container the bind is a fixed image constant (compose maps "${PANEL_PORT}:8443") and the
+        # published port is unobservable from inside (.env isn't mounted), so the stored value stands.
+        if not IN_DOCKER:
+            if int(pnl.get("port") or 0) != BIND_PORT:             # internal bind must match the live (env) port
+                pnl["port"] = BIND_PORT; changed = True
+            if BIND_HOST and str(pnl.get("host") or "") not in ("", "0.0.0.0", BIND_HOST):
+                pnl["host"] = BIND_HOST; changed = True
         saved_url = str(pnl.get("url") or "").strip()
         if blessed_url:                                            # have a blessed url → the saved one must equal it
             if _compute_public_url(deps) != blessed_url:
@@ -1975,11 +2181,62 @@ def _reconcile_saved_ahead(deps, blessed_url):
                 newmode = ""   # the socket is plain HTTP → reverse-proxy (no cert), regardless of a stale TLS mode
             if str(newmode) != saved_mode:
                 tls["mode"] = newmode; ps.setdefault("access", {})["tls"] = tls; changed = True
+        # DIRECT TLS: the host port and the url's port are ONE socket, so the url owns the port. Runs LAST, after
+        # the url/base/mode reconciles above settle, and reads the ADVERTISED url from _compute_public_url — never
+        # the raw saved one. For a portless url that folds the CURRENT stored port back in, so an origin on :8443
+        # keeps 8443 instead of dropping to 443. Behind a proxy the two are independent — must not touch that case.
+        if str((tls.get("mode") or "")) not in ("", "skip"):
+            _pub = _compute_public_url(deps)
+            if _pub:
+                with contextlib.suppress(Exception):
+                    _pu = urlparse(_pub if "://" in _pub else "https://" + _pub)
+                    _dp = _pu.port or (443 if (_pu.scheme or "https") == "https" else 80)
+                    if int(pnl.get("port") or 0) != int(_dp):
+                        pnl["port"] = int(_dp); changed = True
         if changed:
             ps.setdefault("access", {})["panel"] = pnl
             deps["panel_settings"] = ps
             save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
             print("access: boot reconcile — rolled saved-but-unconfirmed panel settings back to the live address", flush=True)
+
+
+def _reconcile_sub_listen_at_boot(deps):
+    """Re-assert the sub's bind from panel-settings if the systemd drop-in that carries it has gone missing or drifted.
+
+    convert.sh deletes /etc/systemd/system/swg-sub.service.d/*.conf (a stale bind from a PRIOR bare-metal install
+    would shadow the fresh unit), with a comment promising the panel re-writes it via apply-sub after the switch —
+    which nothing ever did. swg-sub then fell back to the base unit's default port while the panel kept advertising
+    the configured one, so every subscription link pointed at a port nothing listened on. Nothing reported a fault:
+    the service is active, healthy and serving, just not where the links say. Healing it here rather than in the
+    converter covers every way the drop-in can go missing (hand-removed, a re-install, a restored image), and the
+    panel is the source of truth for the address either way.
+
+    Bare-metal only: in docker the published port is compose's, not a systemd drop-in's."""
+    if IN_DOCKER:
+        return
+    ps = deps.get("panel_settings") or {}
+    sub = ((ps.get("access") or {}).get("sub") or {})
+    want_port = str(sub.get("port") or "").strip()
+    want_host = str(sub.get("host") or "0.0.0.0").strip() or "0.0.0.0"
+    if not want_port.isdigit():
+        return                                        # nothing configured → leave the unit's own default alone
+    if not (panel_service_health().get("sub") or {}).get("present"):
+        return                                        # swg-sub isn't installed on this host
+    have_host = have_port = ""
+    with contextlib.suppress(OSError):
+        for ln in open("/etc/systemd/system/swg-sub.service.d/10-access.conf"):
+            # the line is `Environment=SWG_SUB_PORT=2087` — splitting on the FIRST "=" yields "Environment",
+            # so match the var name inside the line instead. (Got this wrong first: the compare never hit, and
+            # the heal re-enqueued a swg-sub restart on every single panel boot.)
+            ln = ln.strip()
+            if "SWG_SUB_HOST=" in ln: have_host = ln.split("SWG_SUB_HOST=", 1)[1].strip()
+            elif "SWG_SUB_PORT=" in ln: have_port = ln.split("SWG_SUB_PORT=", 1)[1].strip()
+    if have_port == want_port and have_host == want_host:
+        return                                        # already correct — never enqueue a needless restart
+    _netctl_enqueue(deps, "set-listen", ["sub", want_host, want_port])
+    _netctl_enqueue(deps, "restart", ["sub"])         # set-listen only persists; the bind moves on restart
+    print("access: boot reconcile — re-applied the subscription bind %s:%s (drop-in was %s)"
+          % (want_host, want_port, "missing" if not have_port else "%s:%s" % (have_host, have_port)), flush=True)
 
 
 def _seed_confirmed_url_at_boot(deps):
@@ -2063,6 +2320,19 @@ def _bindable_ips():
     swg-managed/virtual interfaces above). Behind NAT the public IP may differ, so each is annotated with
     its interface. The UI prepends the synthetic 0.0.0.0/127.0.0.1 rows itself."""
     out, seen = [], set()
+    # DOCKER: the panel is a BRIDGED container. `ip` is not even in the image, and if it were it would report the
+    # compose network's 172.x — never the host addresses the published port actually binds to. So there is nothing
+    # local worth enumerating: the installer runs on the host and passes them in (SWG_HOST_IPS="ip|iface ...").
+    # Without this the dropdown silently offered only 0.0.0.0/127.0.0.1 on every docker install, because the
+    # missing binary raised inside the blanket suppress below and the empty list looked like "this box has no IPs".
+    if IN_DOCKER:
+        for tok in re.split(r"[,\s]+", os.environ.get("SWG_HOST_IPS") or ""):
+            ip, _, ifn = tok.strip().partition("|")
+            ip = ip.strip()
+            if ip and ip not in seen:
+                seen.add(ip)
+                out.append({"ip": ip, "iface": (ifn.strip() or "host"), "family": 6 if ":" in ip else 4})
+        return out
     with contextlib.suppress(Exception):
         r = subprocess.run(["ip", "-o", "addr", "show", "scope", "global"],
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
@@ -2241,15 +2511,6 @@ def _access_public_view(deps):
                     "has_cf_token": bool(tls.get("cf_token")),
                     "has_cf_origin_token": bool(tls.get("cf_origin_token"))}}
 
-def sub_token_lookup(deps, token):
-    """Raw token → user_id via constant-time sha256 match; None if not found or that user is disabled."""
-    if not token:
-        return None
-    sha = hashlib.sha256(token.encode()).hexdigest()
-    for uid, rec in load_sub_users(deps).items():
-        if rec.get("enabled") and hmac.compare_digest(str(rec.get("token_sha", "")), sha):
-            return uid
-    return None
 
 # Reserved bucket for UNASSIGNED peers: they hold no user, so their encrypted config can't live under a real
 # uid. The orphan bucket is escrowed under its own SK-wrapped unlock-key (like a user with no subscription) and
@@ -2299,45 +2560,6 @@ def sub_gc_orphan(deps, roster):
         else:
             drop_sub_blobs(deps, SUB_ORPHAN)
     return keep
-
-def sub_read_data(deps, roster, describe, token):
-    """The public page's data for a token: the user's CURRENT peers, each target's NON-SECRET params +
-    the encrypted secret blob. Never returns a plaintext key. None if subscriptions are off or the token
-    is invalid. This is what `swg-sub` will serve (it reads the same files)."""
-    if not subs_enabled(deps):
-        return None
-    uid = sub_token_lookup(deps, token)
-    if uid is None:
-        return None
-    user = (roster.get("users") or {}).get(uid) or {}
-    nowv = int(time.time())
-    # EXPIRED subscription: the token still resolves (the sub record stays enabled — expiry is a live date test,
-    # not a suspend), but serve no peers or secrets. The page renders the centered "Subscription expired" screen.
-    if is_expired(user, nowv):
-        return {"expired": True, "user": {"id": uid, "name": user.get("name") or ""}}
-    live = sub_live_peers(roster, uid)
-    blobs = sub_gc_user(deps, uid, roster)            # read-time reconcile against the roster
-    peers_out = []
-    for pid, p in live.items():
-        sec = (blobs.get(pid) or {}).get("sec")       # None until the admin browser provisions it
-        n_t = len(p.get("targets") or [])
-        tgts = []
-        for i, t in enumerate(p.get("targets") or []):
-            meta = ((describe or {}).get(t.get("node")) or {}).get(t.get("iface")) or {}
-            eff = effective_client_params(p, meta)    # peer overrides over the interface's live defaults
-            tgts.append({
-                "node": t.get("node"), "iface": t.get("iface"), "type": t.get("type") or "wg",
-                "ip": t.get("ip"),
-                "endpoint": meta.get("endpoint"), "server_pubkey": meta.get("public_key"),
-                "dns": eff["dns"], "subnet": meta.get("subnet"),
-                "mtu": eff["mtu"], "allowed": eff["allowed"], "keepalive": eff["keepalive"],
-                "awg": meta.get("awg_params") or {},
-                "primary": (n_t > 1 and i == 0),      # the default deployment, tagged first
-            })
-        peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts,
-                          "disabled": bool(p.get("disabled")), "expired": is_expired(p, nowv),
-                          "expiry": int(p.get("expiry") or 0)})
-    return {"user": {"id": uid, "name": user.get("name") or "", "expiry": int(user.get("expiry") or 0)}, "peers": peers_out}
 
 
 def nodes_load(path):
@@ -2652,6 +2874,8 @@ def desired_for_node(roster, node_id):
         for t in p.get("targets", []):
             if t.get("node") != node_id:
                 continue
+            if _is_wdtt_target(t):
+                continue   # WDTT peers are keyless — never emit a WG desired-peer for a wdtt* iface (desired_wdtt_for_node owns them)
             iface = t.get("iface") or ""
             if not iface:
                 continue
@@ -2662,6 +2886,79 @@ def desired_for_node(roster, node_id):
                 "preshared_key": p.get("psk") or "none",
                 "name": name,
             })
+    return out
+
+
+def desired_wdtt_for_node(roster, nodes, node_id):
+    """The WDTT PASSWORD set the roster assigns to each wdtt* instance on one node — the analogue of
+    desired_for_node, keyed by the panel-owned per-peer password. Divergence from the WG path: a BLOCKED/EXPIRED
+    WDTT peer is KEPT (with is_deactivated / expires_at set), not dropped — the WDTT server needs the password
+    present to deny GETCONF cleanly, and keeping it makes unblock instant (no re-provisioning). Returns
+    { iface: { password: {expires_at, vk_hash, ports, is_deactivated} } }."""
+    insts = ((nodes.get(node_id) or {}).get("wdtt")) or {}
+    if not insts:
+        return {}
+    users = roster.get("users") or {}
+    nowv = int(time.time())
+    out = {}
+    for p in (roster.get("peers") or {}).values():
+        if not isinstance(p, dict) or not p.get("wdtt_password"):
+            continue
+        u = users.get(p.get("user_id")) or {}
+        deact = bool(p.get("disabled") or u.get("disabled"))
+        exp = int(p.get("expiry") or 0) or int(u.get("expiry") or 0)
+        vkh = (p.get("vk_hash") or "").strip() or _wdtt_vk_hash(u.get("vk_link") or "")
+        for t in p.get("targets", []):
+            if t.get("node") != node_id:
+                continue
+            iface = t.get("iface") or ""
+            inst = insts.get(iface)
+            if not inst:
+                continue
+            dtls = ((inst.get("listen") or "").rsplit(":", 1)[-1]) or "56000"
+            ports = dtls + "," + str(inst.get("wg_port") or 56001) + ",9000"
+            out.setdefault(iface, {})[p["wdtt_password"]] = {
+                "expires_at": exp, "vk_hash": vkh, "ports": ports, "is_deactivated": deact}
+    return out
+
+
+def _wdtt_reply(roster, nodes, node_id):
+    """The reply["wdtt"] for one node: each instance's config FROM THE NODE STORE + its password set DERIVED
+    FROM THE ROSTER (never the node store — passwords are roster-owned)."""
+    insts = ((nodes.get(node_id) or {}).get("wdtt")) or {}
+    if not insts:
+        return {}
+    derived = desired_wdtt_for_node(roster, nodes, node_id)
+    restore = (nodes.get(node_id) or {}).get("wdtt_restore") or {}
+    recreate = (nodes.get(node_id) or {}).get("wdtt_recreate") or {}
+    out = {}
+    for iface, inst in insts.items():
+        merged = dict(inst or {}); merged["iface"] = iface
+        merged.pop("password", None)   # the owner password is node-owned — never ship it
+        merged.pop("key_blob", None)   # the escrow blob lives in the store (dict(inst) copied it) — ship it ONLY as the HOLD signal below, so a fresh-recreate can actually suppress it
+        merged["passwords"] = derived.get(iface) or {}   # authoritative: roster-derived, overriding any stale node-store copy
+        # Desired build VERSION: a rollback hold for this (node, iface) pins an older version; otherwise the fork's
+        # current published build. The node swaps its shared per-fork binary to match + stamps/reports it.
+        _wfork = (inst.get("fork") or "amurcanov")
+        if _wfork in WDTT_BUILDS:
+            # The binary is shared per fork on a node, so the version/hold is per (node, fork) — every instance of the
+            # fork moves together (a per-iface hold would make two same-fork instances flap the shared binary).
+            _wver = _turn_hold_get(node_id, "wdtt:" + _wfork) or _wdtt_current_version(_wfork)
+            if _wver:
+                merged["ver"] = _wver
+        fresh = iface in recreate                         # operator chose to abandon the vaulted identity → don't hold
+        if fresh:
+            # "Recreate fresh" means: stop trying to take over an existing identity, mint a new one. Leaving the
+            # adopt request on the instance made that impossible — the node re-ran the seed on every reconcile,
+            # refused (that identity is unusable, which is WHY the operator pressed Recreate), and the escape
+            # hatch became a loop. Drop the adopt intent with the hold.
+            for _k in ("adopt_foreign", "adopt_config_dir", "identity_path"):
+                merged.pop(_k, None)
+        if inst.get("key_blob") and not fresh:
+            merged["key_blob"] = inst["key_blob"]         # escrowed ciphertext → a wiped node HOLDS (awaits restore) instead of minting a fresh key
+        if restore.get(iface) and not fresh:
+            merged["sealed_identity"] = restore[iface]    # operator-resealed identity → restore the ORIGINAL server key (one-shot, cleared on ack)
+        out[iface] = merged
     return out
 
 
@@ -2729,6 +3026,8 @@ def _ghost_refs(roster):
     for pid, p in (roster.get("peers") or {}).items():
         for t in (p.get("targets") or []):
             n, i = t.get("node"), t.get("iface")
+            if _is_wdtt_target(t):   # WDTT owns its own interface (snap.wdtt, not snap.interfaces) + has its own
+                continue             # lifecycle + vault restore — never a WG ghost/missing interface
             if n and i:
                 refs.setdefault(n, {}).setdefault(i, []).append(pid)
     return refs
@@ -2981,6 +3280,44 @@ def reserved_conflict(deps, nodes, node, subnet=None, port=None, name=None):
     return None
 
 
+def _fleet_user_networks(deps, nodes, skip_node=None, skip_iface=None):
+    """Every USER interface subnet in use across the fleet — wg/awg (from each node's reported describe) + WDTT
+    (wg_addr) — as (node_id, iface, ip_network), excluding a (skip_node, skip_iface) being created/edited and
+    system/mesh links. Interface subnets must be UNIQUE fleet-wide: two nodes sharing a subnet make the mesh's
+    per-subnet return routing ambiguous (a cascaded client's return traffic can't be told from the other node's
+    identical subnet), which black-holes it — see the wdtt0/wdtt0 10.66.66.0/24 collision."""
+    snaps = deps.get("node_snaps") or {}
+    out = []
+    for nid, node in (nodes or {}).items():
+        snap = snaps.get(nid)
+        if snap:
+            with contextlib.suppress(Exception):
+                for ifn, m in ((node_describe(snap).get("data") or {}).get("interfaces") or {}).items():
+                    if (m or {}).get("system") or (nid == skip_node and ifn == skip_iface):
+                        continue
+                    with contextlib.suppress(Exception):
+                        out.append((nid, ifn, ipaddress.ip_network((m or {}).get("subnet") or "", strict=False)))
+        for ifn, w in (node.get("wdtt") or {}).items():
+            if nid == skip_node and ifn == skip_iface:
+                continue
+            with contextlib.suppress(Exception):
+                out.append((nid, ifn, ipaddress.ip_network((w or {}).get("wg_addr") or "", strict=False)))
+    return out
+
+
+def subnet_fleet_conflict(deps, nodes, subnet, skip_node=None, skip_iface=None):
+    """Error string if `subnet` overlaps another user interface's subnet anywhere in the fleet, else None."""
+    try:
+        net = ipaddress.ip_network(subnet, strict=False)
+    except Exception:
+        return None
+    for nid, ifn, on in _fleet_user_networks(deps, nodes, skip_node, skip_iface):
+        if net.version == on.version and net.overlaps(on):
+            nm = ((nodes.get(nid) or {}).get("name") or nid)
+            return "subnet overlaps %s on %s (%s) — interface subnets must be unique across the fleet" % (ifn, nm, on)
+    return None
+
+
 def gen_awg_params():
     """Panel-generated AmneziaWG obfuscation params (dict form). The panel owns each LINK's params and
     pushes the SAME dict to both ends, because AmneziaWG only handshakes when both peers share identical
@@ -3044,6 +3381,50 @@ def _used_ports(nodes, snaps, nid):
         if str(lr.get("listen_port")).isdigit():
             used.add(int(lr["listen_port"]))
     return used
+
+
+def _node_ports(deps, nodes, nid):
+    """Every UDP port CLAIMED on a node → {port: holder-label}: wg/awg interfaces, turn-proxies, WDTT (DTLS listen +
+    internal WG port) and mesh links, from BOTH the live snapshot AND the desired store (so a just-created but
+    not-yet-reported one still counts). The single source of truth for port-collision checks on create/edit."""
+    snap = (deps.get("node_snaps") or {}).get(nid) or {}
+    node = nodes.get(nid) or {}
+    out = {}
+    def add(p, label):
+        try:
+            p = int(str(p).strip())
+        except (TypeError, ValueError):
+            return
+        out.setdefault(p, label)
+    def tail(v):
+        m = re.search(r":(\d+)$", str(v or ""))
+        return m.group(1) if m else None
+    for ifn, blk in (snap.get("interfaces") or {}).items():
+        add((blk.get("meta") or {}).get("listen_port"), ifn)
+    for ifn, ov in (node.get("ifaces") or {}).items():
+        add(ov.get("desired_port") or ov.get("listen_port"), ifn)
+    for tp in (snap.get("turn_proxies") or []):
+        add(tail(tp.get("listen")), tp.get("service") or "a turn-proxy")
+    for svc, req in (node.get("turn") or {}).items():
+        add(tail(req.get("listen")), svc)
+    for ifn, w in (node.get("wdtt") or {}).items():
+        add(tail(w.get("listen")), ifn + " (WDTT)"); add(w.get("wg_port"), ifn + " (WDTT internal WG)")
+    for w in (snap.get("wdtt") or []):
+        add(tail(w.get("listen")), (w.get("iface") or "") + " (WDTT)"); add(w.get("wg_port"), (w.get("iface") or "") + " (WDTT internal WG)")
+    for lr in (node.get("links") or {}).values():
+        add(lr.get("listen_port"), "a mesh link")
+    return out
+
+def _port_conflict(deps, nodes, nid, port, own=()):
+    """Label of whoever already binds `port` on the node, or None. `own` = the port(s) the edited entity already holds
+    (excluded, so keeping the same port isn't a false conflict)."""
+    try:
+        port = int(str(port).strip())
+    except (TypeError, ValueError):
+        return None
+    if port in {int(str(p)) for p in own if str(p).strip().isdigit()}:
+        return None
+    return _node_ports(deps, nodes, nid).get(port)
 
 
 def _alloc_port(used, base):
@@ -3474,18 +3855,35 @@ def block_catalog(panel_settings):
 # per-knob schema, Axis 1) and client `platforms` store/APK URLs (Axis 3) are stubs now — the SHAPE is fixed,
 # the values fill in later. `encoder` ids correspond to the turn-artifacts.js branches.
 TURN_CLIENTS = {
-    "wingsv":      {"name": "WINGS V",        "encoder": "wingsv",   "scheme": "wingsv://",      "platforms": {"android": {"github": "https://github.com/WINGS-N/WINGSV/releases"},
+    "wingsv":      {"name": "WINGS V",        "encoder": "wingsv",   "scheme": "wingsv://",      "platforms": {"android": {"github": "https://github.com/WINGS-N/WINGSV/releases", "autostart": True},
                                                                                                    "windows": {"name": "WINGS DeX", "github": "https://github.com/WINGS-N/WINGSV_DeX/releases"},
                                                                                                    "linux":   {"name": "WINGS DeX", "github": "https://github.com/WINGS-N/WINGSV_DeX/releases"}}},
-    "vkturnproxy": {"name": "VK TURN Proxy",  "encoder": "anton48",  "scheme": "vkturnproxy://", "platforms": {"ios": {"github": "https://github.com/anton48/vk-turn-proxy-ios/releases", "appstore": "https://testflight.apple.com/join/ANm6cmDv"}}},   # iOS has no App Store listing; the app installs via TestFlight (the .ipa in Releases needs self-signing → advanced only)
+    "vkturnproxy": {"name": "VK TURN Proxy",  "encoder": "anton48",  "scheme": "vkturnproxy://", "qr": False, "platforms": {"ios": {"github": "https://github.com/anton48/vk-turn-proxy-ios/releases", "appstore": "https://testflight.apple.com/join/ANm6cmDv", "autostart": True}}},   # iOS has no App Store listing; the app installs via TestFlight (the .ipa in Releases needs self-signing → advanced only)
     "wgturn":      {"name": "WireGuard-TURN", "encoder": "kiper292", "scheme": None,             "platforms": {"android": {"github": "https://github.com/kiper292/wireguard-turn-android/releases"}}},
-    "freeturn":    {"name": "FreeTurn",       "encoder": "freeturn", "scheme": "freeturn://",    "platforms": {"android": {"github": "https://github.com/samosvalishe/turn-proxy-android/releases"}}},
+    "freeturn":    {"name": "FreeTurn",       "encoder": "freeturn", "scheme": "freeturn://",    "platforms": {"android": {"github": "https://github.com/samosvalishe/turn-proxy-android/releases", "autostart": True}}},
     "mysorez":     {"name": "VK TURN Proxy",  "encoder": "vktgz",    "scheme": None,             "platforms": {"android": {"github": "https://github.com/MYSOREZ/vk-turn-proxy-android/releases"}}},
     "sidecar":     {"name": "Sidecar",         "encoder": "sidecar",  "scheme": None,             "platforms": {   # the Go CLI ("sidecar" = a helper binary run beside WireGuard): samosvalishe/free-turn-proxy ships client-<os>-<arch>; flags match the shared vk-turn-proxy family, so it drives cacggghp/Moroka8 relays too (per-author builds offered)
                        "linux":   {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"},
                        "windows": {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"},
                        "macos":   {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"},
                        "android": {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"}}},   # client-android-arm64 → run it under Termux (the sub shows Termux steps)
+    # ── WDTT-family clients (kind:"wdtt" forks). The SERVERS (amurcanov/ildarmaga) are wire-identical; the DIVERGENCE
+    # lives in the CLIENTS' link schemes, so each carries its own `encoder` (turn-artifacts.js wdttArtifact branch):
+    #   colon `wdtt://ip:dtls:wg:tun:password:vkhash` (6-field — amurcanov app, PWDTT/luminescq, iOS WDTT mode)
+    #   `qwdtt://config?…&pass=<pw last>`             (qWDTT / PWDTT native — password can't be misread)
+    #   `vkturnproxy://import?data=<b64url>`           (anton48 iOS native, WRAP-A)  ← the existing "vkturnproxy" entry
+    "wdttapp":     {"name": "WDTT",  "author": "amurcanov",  "encoder": "wdtt",  "scheme": "wdtt://", "qr": False,  "platforms": {"android": {"github": "https://github.com/amurcanov/proxy-turn-vk-android/releases"}}},   # amurcanov's canonical Android app (colon wdtt://)
+    "qwdtt":       {"name": "qWDTT", "author": "SpaceNeuroX", "color": {"dark": "#22C3E6", "light": "#0E8FB0"}, "encoder": "qwdtt", "scheme": "qwdtt://", "qr": True, "platforms": {"android": {"github": "https://github.com/SpaceNeuroX/proxy-turn-vk-android/releases"}}},
+    "qwdttleg":    {"name": "qWDTT Legacy", "author": "lebrit", "color": {"dark": "#A8C93A", "light": "#6E8C1E"}, "encoder": "qwdtt", "scheme": "qwdtt://", "qr": True, "platforms": {"android": {"github": "https://github.com/lebrit/qwdtt-legacy-android/releases"}}},   # Android 5-8 compat backport of qWDTT (same qwdtt:// scheme) for old phones   # enhanced Android client fork (native qwdtt:// query scheme; also reads 6-field colon)
+    "pwdtt":       {"name": "PWDTT", "author": "luminescq", "color": {"dark": "#43C46E", "light": "#2E9E52"}, "encoder": "wdtt",  "scheme": "wdtt://", "qr": False, "platforms": {   # desktop (Go+Wails). luminescq = upstream (colon/qwdtt); ildarmaga ships a modified build in its WDTT releases (sub-URL/base64) — offered as a per-author choice (_TURN_CLI_AUTHORS)
+                       "windows": {"github": "https://github.com/luminescq/PWDTT/releases"},
+                       "linux":   {"github": "https://github.com/luminescq/PWDTT/releases"},
+                       "macos":   {"github": "https://github.com/luminescq/PWDTT/releases"}}},
+    "pwdttilg":    {"name": "PWDTT", "author": "ildarmaga", "encoder": "wdtt",  "scheme": "wdtt://", "qr": False, "platforms": {   # ildarmaga's modified PWDTT build, bundled in ildarmaga/wdtt releases (imports via sub-URL/base64, also reads colon)
+                       "windows": {"github": "https://github.com/ildarmaga/wdtt/releases"},
+                       "linux":   {"github": "https://github.com/ildarmaga/wdtt/releases"}}},
+    "wdttplus":    {"name": "WDTT-Plus",     "author": "Ivan4537", "encoder": "wdttplus", "scheme": "wdtt://", "qr": True, "platforms": {"android": {"github": "https://github.com/Ivan4537/WDTT-Plus/releases", "autostart": True}}},   # Ivan4537 fork: in-app admin + WARP alternate-exit. CLICKABLE via wdtt://connect?… (valid URI); the colon form the OS rejects as "unsupported link" — the app still reads both
+    "xxcipher":    {"name": "WDTT",          "author": "XXcipherX", "encoder": "vkturnproxy", "scheme": "vkturnproxy://", "qr": False, "platforms": {"android": {"github": "https://github.com/XXcipherX/proxy-turn-vk-android/releases", "autostart": True}}},   # XXcipherX fork: video-masquerade + no-captcha. CLICKABLE via vkturnproxy://import?data= (valid URI it also registers) — its colon wdtt:// the OS rejects as "unsupported link"
 }
 # The plain WG/AWG client apps (NOT turn forks) — Amnezia VPN / AmneziaWG / WireGuard. Same `platforms[os]` shape as
 # TURN_CLIENTS so they ride the SAME latest-release resolver (_turn_warm_assets → _client_platforms_resolved): where an
@@ -3544,6 +3942,12 @@ _MYSOREZ_CORE_CS = [_CC_THREADS,
 # An rtpopus CORE (Moroka8 / free-turn) loaded into the app as a universal launcher: the obf key rides from the SERVER
 # and those cores auto-solve the captcha, so only the common knobs apply.
 _RTPOPUS_CORE_CS = [_CC_THREADS, _CC_RAWFLAGS]
+# Shared client knobs for the WDTT-family apps. The password + VK hashes come from the peer/server (custody is
+# inverted — the panel owns them), so the tunable client-side knobs are the worker/stream count and DNS.
+_WDTT_CLIENT_CS = [
+    {"key": "workers", "type": "int", "default": "", "label": "Workers per hash", "help": "TURN worker streams the client opens per VK hash. Blank = the app's default (≈16)."},
+    {"key": "dns", "type": "text", "default": "", "label": "Custom DNS", "help": "Comma-separated DNS resolvers the client uses. Blank = the peer's config DNS."},
+]
 TURN_SERVERS = {
     "cacggghp":     {"label": "cacggghp",     "owner": "cacggghp/vk-turn-proxy",        "wrap": "",                     "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#5FB0E0", "light": "#2C7EC0"}, "clients": ["mysorez", "vkturnproxy", "sidecar"],    "reload": "restart",
                      "settings": [], "client_settings": _CACGGGHP_CORE_CS},
@@ -3590,6 +3994,25 @@ TURN_SERVERS = {
                                          {"key": "turnServerOverride", "type": "text", "default": "", "label": "TURN relay override", "help": "Pin fresh connections to a specific TURN relay (ip:port). Blank = the VK-returned relay."},
                                          {"key": "vkAuth", "type": "bool", "default": False, "label": "VK cookie auth", "help": "Use the VK cookie-auth path instead of anonymous proof-of-work."},
                                          {"key": "obfProfile", "type": "enum", "values": ["auto", "rtpopus", "rtpopus2", "rtpopus3"], "default": "auto", "label": "Obfuscation profile", "help": "For rtpopus (WRAP-S) servers: which RTP/Opus profile the app mimics (Turn.obfProfile) — must match the server. auto = the app's default (rtpopus)."}]},
+    # ── WDTT family (kind:"wdtt") — SELF-CONTAINED, key-owning VK-TURN servers. Each owns its OWN userspace-WireGuard
+    # interface (not a -connect fork) and mints the client keypair via GETCONF, so kind:"wdtt" makes the SPA branch
+    # (built-in interface instead of a Forwards-to iface; keyless peers whose credential is the panel-owned WRAP
+    # password) and render a WDTT badge instead of wg/awg. The four servers are WIRE-COMPATIBLE (same wdtt-server /
+    # WRAP-A obfuscation) — the divergence is server FEATURES + which client app. `owner` keys the panel's per-fork
+    # binary mirror (WDTT_BUILDS → our patched linux-server release). ALL FOUR forks patched + built + published
+    # (wdtt-<fork> releases on WDTT_BUILD_REPO): amurcanov, ildarmaga, wdttplus (Ivan4537, server.go @ b3aad32),
+    # xxcipherx (XXcipherX, assets/linux-server @ bc1ba26). Build tooling in wdtt/<fork>/build.sh.
+    "amurcanov":    {"label": "amurcanov",  "owner": "amurcanov/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#A78BFA", "light": "#7C3AED"}, "clients": ["wdttapp", "qwdtt", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
+    "ildarmaga":    {"label": "ildarmaga",  "owner": "ildarmaga/wdtt",                  "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#5B8DEF", "light": "#2563EB"}, "clients": ["pwdtt", "wdttapp", "qwdtt", "wdttplus", "xxcipher", "vkturnproxy"], "reload": "sighup",
+                     # richer server: multi-user panel + subscription + Xray + Telegram bot; its native desktop client is the ildarmaga PWDTT build (sub-URL / base64)
+                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
+    "wdttplus":     {"label": "Ivan4537",   "owner": "Ivan4537/WDTT-Plus",              "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#F0705E", "light": "#D9432E"}, "clients": ["wdttplus", "wdttapp", "qwdtt", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+                     # Ivan4537 fork: in-app admin + WARP alternate-exit IP; wire-compatible with amurcanov
+                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
+    "xxcipherx":    {"label": "XXcipherX",  "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+                     # XXcipherX fork: video-masquerade obfuscation + no-captcha; audio mode is amurcanov-compatible
+                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
 }
 # client_settings = the app-DEDICATED knobs (per SETTINGS SPLIT): admin-chosen VALUES fed into the client
 # config/QR/link, stored per-fork in panel_settings.turn_client_settings. Server + coupled settings live in
@@ -3597,12 +4020,20 @@ TURN_SERVERS = {
 # Display order: cacggghp + WINGS-N pinned first; the rest by combined (server + client-app) GitHub stars,
 # descending — snapshot fetched 2026-07-16 (static, intentionally not live): MYSOREZ 17+443, samosvalishe
 # 141+314, kiper292 123+267, anton48 29+165, Moroka8 75+0.
-TURN_SERVER_ORDER = ["cacggghp", "WINGS-N", "MYSOREZ", "samosvalishe", "kiper292", "anton48", "Moroka8"]
+TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
+                     "samosvalishe", "xxcipherx", "cacggghp", "kiper292"]   # operator order; hidden forks (cacggghp/kiper292) last
+# Forks kept in the catalog (so a deployed instance still resolves its label/colour) but HIDDEN from the operator
+# UI — the settings toggle list, the install/enable picker, the interface Setup-proxy dropdown, and the fork
+# colour pickers all skip these. Purely cosmetic gating; nothing about a running proxy changes.
+TURN_HIDDEN_FORKS = {"cacggghp", "kiper292"}
 
 # A client APP's knob schema is defined once (on its NATIVE server's client_settings) and shared wherever that app
 # is offered — so the Clients tab edits it in ONE place. Maps each client id → the server that natively runs it.
 _CLIENT_NATIVE_FORK = {"wingsv": "WINGS-N", "vkturnproxy": "anton48", "wgturn": "kiper292",
-                       "freeturn": "samosvalishe", "mysorez": "MYSOREZ", "sidecar": None}
+                       "freeturn": "samosvalishe", "mysorez": "MYSOREZ", "sidecar": None,
+                       # WDTT-family clients all share _WDTT_CLIENT_CS (set on every WDTT fork) → any WDTT fork resolves it
+                       "wdttapp": "amurcanov", "qwdtt": "amurcanov", "qwdttleg": "amurcanov", "pwdtt": "ildarmaga", "pwdttilg": "ildarmaga",
+                       "wdttplus": "wdttplus", "xxcipher": "xxcipherx"}
 # Per-(server fork, client id) compatibility class for the app picker, from the wire-compat matrix (docs/compat).
 #   native        = the fork's own app/CLI in its intended mode (obfuscated, or plain for a plain fork).
 #   friendly      = a cross-fork client that still connects WITH obfuscation (the shared rtpopus wire).
@@ -3617,6 +4048,14 @@ _TURN_CLIENT_COMPAT = {
     "samosvalishe": {"freeturn": "native", "sidecar": "native", "vkturnproxy": "friendly", "mysorez": "friendly_core"},
     "anton48":      {"vkturnproxy": "native", "sidecar": "friendly", "freeturn": "friendly"},
     "WINGS-N":      {"wingsv": "native",   "sidecar": "plain", "vkturnproxy": "plain", "wgturn": "plain", "freeturn": "plain"},   # NO mysorez: core-launcher with no WINGS core to load
+    # WDTT family — servers are wire-identical (WRAP-A), so EVERY WDTT client connects fully OBFUSCATED (never plain).
+    # `native` = the fork's OWN author's app; every other WDTT app (incl. anton48's iOS vkturnproxy — a different
+    # author) is `friendly` (crossplatform, still WRAP-A). Each fork offers the whole family so an operator can hand
+    # out whichever app fits the user's device.
+    "amurcanov":    {"wdttapp": "native",  "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
+    "ildarmaga":    {"pwdttilg": "native", "pwdtt": "friendly", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "vkturnproxy": "friendly"},
+    "wdttplus":     {"wdttplus": "native", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
+    "xxcipherx":    {"xxcipher": "native", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
 }
 # The sidecar CLI has no native GUI app, so its schema lives here: just a raw-flags text area (mirrors a server
 # ExecStart's extra-flags box) appended to the client command.
@@ -3895,7 +4334,9 @@ def _gh_owner_repo(url):
 def _turn_warm_assets():
     """Pre-resolve, for every catalog client, the LATEST release's full asset list (→ _RELEASE_INFO, the bubble source)
     and the single best per-OS installer (→ _PLATFORM_ASSET, the button). Non-blocking readers merge from these caches;
-    best-effort — any repo/OS that fails just keeps its /releases dir link."""
+    best-effort — any repo/OS that fails just keeps its /releases dir link. Returns the number of releases resolved
+    this pass, so the loop can tell a total wash (network not ready at boot) from a normal run and retry sooner."""
+    resolved = 0
     for _cat in (TURN_CLIENTS, WG_APPS):              # turn forks AND the plain WG/AWG apps share the resolver
       for cid, c in _cat.items():
         for oskind, links in (c.get("platforms") or {}).items():
@@ -3910,9 +4351,11 @@ def _turn_warm_assets():
                 continue
             assets = [{"name": a.get("name"), "url": a.get("url")} for a in (rel.get("assets") or []) if a.get("url")]
             _RELEASE_INFO[(owner, repo)] = {"tag": rel.get("tag"), "page": rel.get("html_url"), "assets": assets}
+            resolved += 1
             u = _match_os_asset(assets, oskind)       # None for ios (no format prefs) → button falls back to store/page
             if u:
                 _PLATFORM_ASSET[(owner, repo, oskind)] = u
+    return resolved
 
 def _client_platforms_resolved(c):
     """A client's `platforms` with, per OS, the resolved best installer (`url`), the latest-release page (`page`), its
@@ -3934,10 +4377,41 @@ def _client_platforms_resolved(c):
         out[oskind] = links
     return out
 
+def _release_cache_path(deps):
+    return os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "release-cache.json")
+
+def _release_cache_save(deps):
+    """Persist the resolved release/asset caches so a panel RESTART serves the last-known download assets IMMEDIATELY
+    (before the background warm re-resolves). Without this, every restart starts cold → serve.json gets written with
+    empty assets → the sub's download bubbles show only the GitHub page until the next successful warm. Tuple keys
+    (owner,repo[,os]) → 'owner/repo[/os]' strings for JSON."""
+    with contextlib.suppress(Exception):
+        data = {"release_info": {o + "/" + r: v for (o, r), v in _RELEASE_INFO.items()},
+                "platform_asset": {o + "/" + r + "/" + osk: u for (o, r, osk), u in _PLATFORM_ASSET.items()}}
+        p = _release_cache_path(deps); tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, p)
+
+def _release_cache_load(deps):
+    """Seed the in-memory release/asset caches from disk at startup (best-effort) so serve.json is written with real
+    download assets before the first warm completes — makes the sub's download bubbles survive restarts / GitHub blips."""
+    with contextlib.suppress(Exception):
+        data = json.load(open(_release_cache_path(deps)))
+        for k, v in (data.get("release_info") or {}).items():
+            o, r = k.split("/", 1)
+            _RELEASE_INFO[(o, r)] = v
+        for k, u in (data.get("platform_asset") or {}).items():
+            o, r, osk = k.rsplit("/", 2)
+            _PLATFORM_ASSET[(o, r, osk)] = u
+
 def _turn_warm_assets_loop(deps):
     while True:
+        resolved = 0
         try:
-            _turn_warm_assets()
+            resolved = _turn_warm_assets()
+            if resolved:
+                _release_cache_save(deps)   # persist so the NEXT restart serves these assets immediately (no cold-start empty bubbles)
             # flush the freshly-resolved asset URLs into subs/serve.json so swg-sub serves them (the boot write ran
             # before the warm finished). Preserve any active dual-base grace (base_alt) rather than clearing it.
             ba = ""
@@ -3946,7 +4420,10 @@ def _turn_warm_assets_loop(deps):
             write_sub_serve(deps, base_alt=ba)
         except Exception:
             pass
-        time.sleep(3600)
+        # A pass that resolved NOTHING = GitHub was unreachable (network not up yet at boot, or a blip). Retry in a
+        # couple of minutes instead of leaving the sub's download bubbles empty for a full hour; once anything
+        # resolves, settle into the hourly refresh.
+        time.sleep(3600 if resolved else 120)
 
 def _turn_p4_refresh(cid, roster):
     """NETWORK. Snapshot-on-change across BOTH the parseable schema-sources (→ field inventory) and the value-sources
@@ -4214,39 +4691,7 @@ def _parse_source_fields(path, text, message=None):
 #    Feeds P4's "provisional stub" so an adopted field arrives ~pre-filled for review instead of name-only.
 #    Still best-effort: proto3 declares no runtime defaults, Go struct decls carry none either — only the Python
 #    CONFIG dict is a literal with real values. Nothing here decides how a field SERIALISES (that's the encoder = code).
-def _label_from_name(name):
-    s = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', name or "").replace('_', ' ').replace('-', ' ')
-    s = re.sub(r'\s+', ' ', s).strip()
-    return (s[:1].upper() + s[1:]) if s else (name or "")
 
-def _norm_proto_type(t):
-    t = (t or "").strip()
-    if t.startswith("map<"):
-        return "map"
-    return {"int32": "int", "int64": "int", "uint32": "int", "uint64": "int", "sint32": "int", "sint64": "int",
-            "float": "float", "double": "float", "bool": "bool", "string": "string", "bytes": "bytes"}.get(t, t)
-
-def _norm_go_type(t):
-    t = (t or "").lstrip("*")
-    if t.startswith("[]"):
-        return "list"
-    return {"int": "int", "int32": "int", "int64": "int", "uint": "int", "uint32": "int", "uint64": "int",
-            "float32": "float", "float64": "float", "bool": "bool", "string": "string"}.get(t, t)
-
-def _py_type_name(v):
-    if isinstance(v, bool):
-        return "bool"
-    if isinstance(v, int):
-        return "int"
-    if isinstance(v, float):
-        return "float"
-    if isinstance(v, str):
-        return "string"
-    if isinstance(v, list):
-        return "list"
-    if isinstance(v, dict):
-        return "dict"
-    return None
 
 # ── VALUE extraction (P4a value-diff): a field's allowed enum values, pulled from wherever the app ENUMERATES them —
 #    usually a different file than the schema-source (a UI options array / doc table / validation code). Each returns a
@@ -4402,7 +4847,11 @@ def turn_catalog_view():
     return {"servers": [{"id": sid, "compat": _TURN_CLIENT_COMPAT.get(sid, {}),
                          # per (this fork, client) schema — the mysorez app's knobs depend on which core THIS fork loads
                          "client_schemas": {cid: _client_schema_for(sid, cid) for cid in _TURN_CLIENT_COMPAT.get(sid, {})},
-                         "cli_authors": _TURN_CLI_AUTHORS.get(sid, ["samosvalishe"]),   # per-author CLI builds (native first) for the picker
+                         # per-author CLI builds (native first) for the picker — N/A for a self-contained kind (its clients are fixed, not catalog-driven), so no dead default
+                         "cli_authors": ([] if TURN_SERVERS[sid].get("kind") == "wdtt" else _TURN_CLI_AUTHORS.get(sid, ["samosvalishe"])),
+                         # WDTT forks are OUR versioned builds — ship the published versions (newest first) so the SPA shows current + rollback targets
+                         "wdtt_versions": [v for v, _ in _wdtt_versions(sid)],
+                         "hidden": sid in TURN_HIDDEN_FORKS,   # in the catalog (deployed instances still resolve label/colour) but skipped by every operator-facing fork list
                          **TURN_SERVERS[sid]} for sid in TURN_SERVER_ORDER],
             "clients": {cid: {**c, "platforms": _client_platforms_resolved(c),
                               "settings": _client_schema(cid), "native_fork": _CLIENT_NATIVE_FORK.get(cid)}
@@ -5270,7 +5719,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "turn_enabled": True,
     # which turn-proxy forks are offered in the "install a fork" dropdown (by fork id; the fork set itself lives
     # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
-    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8"],
+    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8", "amurcanov", "ildarmaga", "wdttplus", "xxcipherx"],   # all 4 WDTT server forks built + published (wdtt-<fork> releases)
     "turn_fork_colors": {},   # per-fork colour overrides {fork_id: "#rrggbb"} (else the SPA's TURN_FORKS default)
     "turn_client_settings": {},   # SETTINGS SPLIT: per-fork client (app) setting VALUES {fork: {key: value}} fed into config/QR/link generation (schema = catalog client_settings)
     "turn_client_default": {},    # per (fork, OS) END-USER default app {fork: {os: client_id}} — which app the sub page hands out
@@ -5589,16 +6038,10 @@ def _resolve_iface_blocks(node, snap, panel_settings, mode):
     bpe = block_providers_enabled(panel_settings)
     ifaces = (snap or {}).get("interfaces") or {}
     entries = []; srcs = {}; mech = {}
-    for ifn, ov in (node.get("ifaces") or {}).items():
-        if ov.get("system"):
-            continue
-        blk_ids = _validate_block(ov.get("block"), panel_settings)
-        if not blk_ids:
-            continue
-        subnet = (((ifaces.get(ifn) or {}).get("meta") or {}).get("subnet")) or ""
-        if not subnet:                                # subnet not reported yet → skip (pause, never error)
-            continue
-        tier_srcs = {"host": [], "ip": []}            # gather this interface's feeds per tier, then union each into ONE set
+    def _add(subnet, blk_ids):                        # build the union DROP entries for ONE subnet's block[] filters
+        if not subnet or not blk_ids:                 # subnet not reported yet / nothing to block → skip (pause, never error)
+            return
+        tier_srcs = {"host": [], "ip": []}            # gather this subnet's feeds per tier, then union each into ONE set
         for cid in blk_ids:
             c = cat.get(cid) or {}
             if not c.get("enabled", True):
@@ -5623,6 +6066,14 @@ def _resolve_iface_blocks(node, snap, panel_settings, mode):
             _BLKU_REG[key] = sorted(tier_srcs[tier])
             srcs[key] = tier
             entries.append({"subnet": subnet, "category": key, "action": "block"})
+    for ifn, ov in (node.get("ifaces") or {}).items():
+        if ov.get("system"):
+            continue
+        _add((((ifaces.get(ifn) or {}).get("meta") or {}).get("subnet")) or "", _validate_block(ov.get("block"), panel_settings))
+    # WDTT instances carry the SAME block[] filters; their subnet is wg_addr's network (WDTT lives in snap.wdtt,
+    # NOT snap.interfaces). The datapath is subnet-based, so a WDTT subnet drops exactly like an interface's.
+    for _wov in (node.get("wdtt") or {}).values():
+        _add(_wdtt_net((_wov or {}).get("wg_addr") or ""), _validate_block((_wov or {}).get("block"), panel_settings))
     return entries, srcs, {s: sorted(v) for s, v in mech.items()}
 
 
@@ -5673,68 +6124,79 @@ def cascade_plan(nodes, snaps, custom_lists=None):
 
     # 1) collect forward + smart items; per-node target order (UNION) → stable table ids shared by both modes
     fwd_items, smart_items = [], []
-    for nid, node in nodes.items():
-        targets = []
-        for iface, ov in (node.get("ifaces") or {}).items():
-            if ov.get("system"):
-                continue
-            mode = ov.get("egress_mode")
-            if mode == "forward":
-                P = ov.get("egress_node")
-                if not P or P not in nodes:
+
+    def _collect_egress(nid, ov, S, targets):
+        # Given a source SUBNET S (an interface's or a WDTT instance's wg subnet) and its egress override `ov`,
+        # append forward/smart items for the fleet plan. Datapath is subnet-based, so a WDTT wg_addr subnet is
+        # routed identically to a normal interface subnet — the node never learns which kind it came from.
+        mode = ov.get("egress_mode")
+        if mode == "forward":
+            P = ov.get("egress_node")
+            if not P or P not in nodes:
+                return
+            dev_n, dev_p, base_p = _link_devs(nodes, nid, P)
+            if not (dev_n and dev_p and base_p):
+                return
+            if P not in targets:
+                targets.append(P)
+            fwd_items.append((nid, P, S, dev_n, dev_p, base_p,
+                              (ov.get("egress_ip") or "").strip(), (ov.get("wan_iface") or "").strip()))
+        elif mode == "smart":
+            for r in (ov.get("routing") or []):
+                if r.get("enabled", True) is False:
                     continue
-                S = _iface_subnet_from_snap(snaps, nid, iface)
-                if not S:
+                action = r.get("action")
+                if action not in ("exit", "direct", "block"):
+                    continue                       # unknown action → ignore
+                cat = r.get("category")
+                if not cat:
+                    continue
+                extra = None
+                if cat == "custom":                        # inline custom rule → its own synthetic set id + targets
+                    doms, cidrs = _clean_targets(r.get("targets") if r.get("targets") is not None
+                                                 else [*(r.get("domains") or []), *(r.get("cidrs") or [])])
+                    if not doms and not cidrs:
+                        continue
+                    cat = custom_cat_id(doms, cidrs)
+                    extra = (doms, cidrs)
+                elif custom_lists and cat in custom_lists:  # a reusable custom list referenced by id → its targets
+                    cl = custom_lists[cat]
+                    if cl.get("enabled", True) is False or nid in (cl.get("disabled_nodes") or []):
+                        continue                           # list toggled off globally, or disabled on THIS node → don't route it
+                    doms, cidrs = list(cl.get("domains") or []), list(cl.get("cidrs") or [])
+                    if not doms and not cidrs:
+                        continue
+                    cat = custom_cat_id(doms, cidrs)
+                    extra = (doms, cidrs)
+                if action != "exit":               # direct / block are LOCAL (no mesh exit) — carry them for first-match + kill-switch
+                    smart_items.append((nid, None, S, cat, action, None, None, None, extra))
+                    continue
+                P = r.get("node")
+                if not P or P not in nodes:
                     continue
                 dev_n, dev_p, base_p = _link_devs(nodes, nid, P)
                 if not (dev_n and dev_p and base_p):
                     continue
                 if P not in targets:
                     targets.append(P)
-                fwd_items.append((nid, P, S, dev_n, dev_p, base_p,
-                                  (ov.get("egress_ip") or "").strip(), (ov.get("wan_iface") or "").strip()))
-            elif mode == "smart":
-                S = _iface_subnet_from_snap(snaps, nid, iface)
-                if not S:
-                    continue
-                for r in (ov.get("routing") or []):
-                    if r.get("enabled", True) is False:
-                        continue
-                    action = r.get("action")
-                    if action not in ("exit", "direct", "block"):
-                        continue                       # unknown action → ignore
-                    cat = r.get("category")
-                    if not cat:
-                        continue
-                    extra = None
-                    if cat == "custom":                        # inline custom rule → its own synthetic set id + targets
-                        doms, cidrs = _clean_targets(r.get("targets") if r.get("targets") is not None
-                                                     else [*(r.get("domains") or []), *(r.get("cidrs") or [])])
-                        if not doms and not cidrs:
-                            continue
-                        cat = custom_cat_id(doms, cidrs)
-                        extra = (doms, cidrs)
-                    elif custom_lists and cat in custom_lists:  # a reusable custom list referenced by id → its targets
-                        cl = custom_lists[cat]
-                        if cl.get("enabled", True) is False or nid in (cl.get("disabled_nodes") or []):
-                            continue                           # list toggled off globally, or disabled on THIS node → don't route it
-                        doms, cidrs = list(cl.get("domains") or []), list(cl.get("cidrs") or [])
-                        if not doms and not cidrs:
-                            continue
-                        cat = custom_cat_id(doms, cidrs)
-                        extra = (doms, cidrs)
-                    if action != "exit":               # direct / block are LOCAL (no mesh exit) — carry them for first-match + kill-switch
-                        smart_items.append((nid, None, S, cat, action, None, None, None, extra))
-                        continue
-                    P = r.get("node")
-                    if not P or P not in nodes:
-                        continue
-                    dev_n, dev_p, base_p = _link_devs(nodes, nid, P)
-                    if not (dev_n and dev_p and base_p):
-                        continue
-                    if P not in targets:
-                        targets.append(P)
-                    smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra))
+                smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra))
+
+    for nid, node in nodes.items():
+        targets = []
+        for iface, ov in (node.get("ifaces") or {}).items():
+            if ov.get("system"):
+                continue
+            S = _iface_subnet_from_snap(snaps, nid, iface)
+            if not S:
+                continue
+            _collect_egress(nid, ov, S, targets)
+        for _wov in (node.get("wdtt") or {}).values():   # WDTT instances egress like interfaces (subnet from wg_addr)
+            if not _wov:
+                continue
+            S = _wdtt_net((_wov or {}).get("wg_addr") or "")
+            if not S:
+                continue
+            _collect_egress(nid, _wov, S, targets)
         if targets:
             slot(nid)["_targets"] = {p: SWG_RT_BASE + i for i, p in enumerate(sorted(targets))}
 
@@ -5935,6 +6397,17 @@ def snap_aggregates(snap, node_cfg):
             a["pon"] += on; a["ptot"] += tot
             if is_awg:
                 a["arx"] += irx; a["atx"] += itx; a["paon"] += on; a["patot"] += tot
+    # WDTT interfaces own their TUN (aggregate rx/tx, not per-peer), so they're absent from `interfaces`. Fold their
+    # throughput into the client total (rx/tx) so ranged history/flow-map/by-node include WDTT instead of dropping it.
+    # (A dedicated by-interface-type WDTT slice in ranged would need a new RRD slot; live already splits it out.)
+    for w in ((snap or {}).get("wdtt") or []):
+        if not w:
+            continue
+        wr = int(w.get("rx_speed", 0) or 0); wt = int(w.get("tx_speed", 0) or 0)
+        a["rx"] += wr; a["tx"] += wt
+        devs = (w.get("passwords") or {})
+        on = sum(1 for e in devs.values() if (e or {}).get("online"))
+        a["pon"] += on; a["ptot"] += len(devs)
     return a
 
 
@@ -6499,6 +6972,16 @@ def api(method, path, qs, body, deps):
             _link_ifs = {(lk or {}).get("iface") for lk in (c.get("links") or {}).values()}
             _mpfx = node_mesh_cfg(deps, c).get("iface_prefix") or "swg_"
             _is_sysif = lambda ifn: bool(ifn) and (ifn in _link_ifs or str(ifn).startswith(_mpfx) or str(ifn).startswith("swg_"))
+            # config dirs some instance has taken over — used both to drop them from the dormant list and to show
+            # "adopting" on a card while the take-over is still in flight
+            # Hoisted: this loop runs for every node on every /api/state build, and these were rebuilt 3-5x each
+            # inside the dict literal below. `_ign` is a SET because it was being scanned linearly once per
+            # candidate (O(candidates x ignored) per node per poll) — /api/state is already this panel's dominant
+            # CPU cost on a 1-core VM.
+            _w = c.get("wdtt") or {}
+            _ign = set(c.get("ignore_ifaces") or [])
+            _claimed_wdtt_dirs = {(v or {}).get("adopt_config_dir") for v in _w.values() if (v or {}).get("adopt_config_dir")}
+            _cands = [x for x in (snap.get("iface_candidates") or []) if isinstance(x, dict) and x.get("name")]
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https", "mesh_awg": _mawg, "mesh_awg_set": c.get("mesh_awg") or {},   # actual (live) vs the per-node override the UI edits
                         "mesh_peers": _mesh_peers,
@@ -6535,6 +7018,24 @@ def api(method, path, qs, body, deps):
                         "ips": snap.get("node_ips") or [],             # the node's own IPs — candidates for a per-interface egress IP
                         "wan_ifaces": [w for w in (snap.get("node_ifaces") or []) if not _is_sysif(w)],   # the node's NICs — candidates for the egress WAN interface (no mesh links)
                         "ip_ifaces": [p for p in (snap.get("node_ip_ifaces") or []) if not _is_sysif((p or {}).get("iface"))], # (ip, iface) pairs — egress picker (no mesh links)
+                        # unmanaged wg/awg interfaces the node found on the box (Approach B) → adoption candidates.
+                        # Split: active (offered for adopt/ignore) vs ignored (operator dismissed → Settings → Interfaces).
+                        "iface_candidates": [x for x in _cands if x["name"] not in _ign],
+                        # WDTT installs on disk with nothing running — no interface exists, so they can never be
+                        # interface candidates, and without this the operator sees nothing where a real server lives.
+                        # Adoption COPIES the identity, so the source directory still holds a wg-keys.dat and the
+                        # node keeps reporting it as dormant forever. Once an instance has taken a directory over
+                        # it is not an orphan any more — drop it, or the card sits there permanently claiming to
+                        # be adopting something that finished long ago.
+                        "wdtt_dormant": [x for x in (snap.get("wdtt_dormant") or [])
+                                         if isinstance(x, dict) and x.get("config_dir")
+                                         and x["config_dir"] not in _ign and x["config_dir"] not in _claimed_wdtt_dirs],
+                        "ignored_candidates": [x for x in _cands if x["name"] in _ign],
+                        # …and the dormant equivalent. An ignored install is filtered out of wdtt_dormant above,
+                        # so without this it vanished with no way back — Settings lists it, but its own page
+                        # (where Un-ignore lives) could no longer find it.
+                        "ignored_dormant": [x for x in (snap.get("wdtt_dormant") or [])
+                                            if isinstance(x, dict) and x.get("config_dir") in _ign],
                         "version": snap.get("noded_version"),   # swg-noded version this node reports
                         "latest": LATEST_REMOTE.get("version") or VERSIONS.get("panel"),   # track the LATEST release, not the panel — a node shows its real upgrade even when the panel itself is still behind (falls back to the panel's version until the remote check has run)
                         "outdated": _ver_behind(snap.get("noded_version"), LATEST_REMOTE.get("version") or VERSIONS.get("panel")),   # strictly older only — never offer a downgrade
@@ -6565,6 +7066,22 @@ def api(method, path, qs, body, deps):
                                      or any(tp.get("running") is False for tp in (snap.get("turn_proxies") or []))))),
                         "interfaces": list((snap.get("interfaces") or {}).keys()),
                         "missing_ifaces": _missing_ifaces(c, snap),                  # user ifaces expected but gone (restore signal + last-known config)
+                        # WDTT instances whose server identity is escrowed in the operator vault → the SPA can offer a
+                        # one-click identity restore (unseal + re-seal to the node) after a wipe. Ciphertext only.
+                        "wdtt_vault": {ifn: (ov.get("key_blob") or {}) for ifn, ov in _w.items() if (ov.get("key_blob") or {}).get("ct")},
+                        # DESIRED WDTT config (node store, not the readback) so the SPA edit modal can prefill egress /
+                        # routing / filters. Config fields only — never the owner password / sealed key material.
+                        "wdtt_cfg": {ifn: {k: ov.get(k) for k in ("wg_addr", "listen", "fork", "wg_port", "max_passwords",
+                                                                   "stopped", "block", "egress_mode", "egress_node",
+                                                                   "egress_ip", "wan_iface", "routing", "title", "params") if k in ov}
+                                     for ifn, ov in _w.items()},
+                        "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
+                        "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
+                        "wdtt_adopting": sorted(k for k, v in _w.items() if (v or {}).get("adopt_foreign")),   # foreign-server take-overs in flight (cleared once the node reports the instance)
+                        # Config dirs already CLAIMED by an instance. adopt_foreign clears after a single sync, so
+                        # it can't tell the operator that the dormant install they just adopted is being taken
+                        # over — this can, and it stays true until the dir stops being reported as dormant at all.
+                        "wdtt_claimed_dirs": sorted(_claimed_wdtt_dirs),
                         "ghost_ifaces": _ghost_ifaces(c, snap, _refmap.get(nid), online)})   # lost KEYLESS ifaces (no _lastcfg) → recreate-fresh + rekey, not restore (online-gated)
         return out
 
@@ -6652,6 +7169,7 @@ def api(method, path, qs, body, deps):
                                 if _mstat.get("state") == "docker-awaiting" and _mstat.get("nonce") else None),
 
             "turn_catalog": turn_catalog_view(),         # single-source turn fork/client catalog (SPA reads this instead of a hardcoded TURN_FORKS)
+            "turn_holds": _turn_holds_view(),            # {node: {fork: held_version}} → fork-row "held" flag (per node+fork rollback holds)
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
             "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)
@@ -6667,6 +7185,7 @@ def api(method, path, qs, body, deps):
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
             "tls": dict(TLS_STATUS),                                  # cert expiry watch — surface a stalled renewal before it goes dark
             "panel_services": panel_service_health(),                # THIS host's own swg units (active/enabled/present) → SPA "needs attention" (bare-metal only)
+            "sub_cert": sub_cert_health(),                           # subscription TLS: present + covers the domain (direct-TLS only; {} behind a proxy)
             "datapath": host_datapath_health(),                      # THIS host's kernel datapath health (awg module loadable?) → healable "Fix" issue when a local node uses awg
         }}
 
@@ -6915,7 +7434,7 @@ def api(method, path, qs, body, deps):
         ic = incoming.get("iface_colors")               # per-protocol interface colour overrides {wg,awg: {dark,light}}
         if isinstance(ic, dict):
             out_ic = {}
-            for k in ("wg", "awg"):
+            for k in ("wg", "awg", "wdtt"):
                 tc = _themed_color(ic.get(k))
                 if tc: out_ic[k] = tc
             cur["iface_colors"] = out_ic
@@ -7065,7 +7584,34 @@ def api(method, path, qs, body, deps):
         # a cert is needed only when we currently HAVE TLS and either the domain changed (current cert doesn't
         # cover it) or a real-CA mode is still serving a self-signed placeholder — for a mode that issues certs.
         need_cert = bool(cur.get("cert")) and _cert_needs_issue(cur.get("cert"), d_domain, mode)
-        same_bind = (d_host, d_port) == (cur["host"], cur["port"])
+        # Compare against the last-known HOST address, not the live socket. Identical on bare-metal; in a container
+        # the live socket is the fixed 8443 while the submitted value is the published port, so the socket would
+        # make every save look like a bind change and arm a recreate. The stored value is the only record of the
+        # published port, and the boot reconcile above is what keeps that record truthful.
+        if IN_DOCKER:
+            _sp = (((deps.get("panel_settings") or {}).get("access") or {}).get("panel") or {})
+            # The reference must be the CONFIRMED LIVE address, and `stored` is not it once a save-ahead has run:
+            # the first save writes the TARGET into access.panel, so a second save compared the new value against
+            # itself, concluded "the bind didn't change", and refused a legitimate flip with flip_needs_bind —
+            # telling the operator to change an address they had already changed, with no way forward.
+            # panel-confirmed.json records the address actually being served (it is what the flip/cert paths trust),
+            # so take the port from there and fall back to stored only when there is no blessed url yet.
+            _ref = None
+            with contextlib.suppress(Exception):
+                _bl = load_json(_bless_path(deps), None)
+                _bu = (_bl or {}).get("url") if isinstance(_bl, dict) else None
+                if _bu:
+                    _bp = urlparse(_bu if "://" in _bu else "https://" + _bu)
+                    _bport = _bp.port or (443 if (_bp.scheme or "https") == "https" else 80)
+                    _ref = (str(_sp.get("host") or "0.0.0.0"), int(_bport))
+            if _ref is None:
+                try:
+                    _ref = (str(_sp.get("host") or "0.0.0.0"), int(_sp.get("port") or 0))
+                except (TypeError, ValueError):
+                    _ref = (cur["host"], cur["port"])
+        else:
+            _ref = (cur["host"], cur["port"])
+        same_bind = (d_host, d_port) == _ref
         # SOCKET FLIP: is the panel switching between reverse-proxy (plain HTTP) and direct TLS (its own HTTPS)?
         # A new listener's scheme follows the SAVED mode (nl_cert), not the current primary — that's what actually
         # changes the socket. A flip re-architects the ingress (proxy vs panel terminates TLS), so it MUST move the
@@ -7077,7 +7623,7 @@ def api(method, path, qs, body, deps):
         scheme_flip = target_https != cur_https
         if scheme_flip and same_bind:
             return 409, {"ok": False, "code": "flip_needs_bind",
-                         "error": "switching between a reverse proxy and direct TLS also needs a Listen IP/port change — direct TLS binds a public address (e.g. 0.0.0.0:443); behind a proxy the panel stays on 127.0.0.1:<internal>. Set the Listen IP/port to match the new mode, then save."}
+                         "error": "switching between a reverse proxy and direct TLS also needs the address to change — direct TLS binds a public address (e.g. 0.0.0.0:443, the port taken from the Public URL); behind a proxy the panel stays on 127.0.0.1:<internal port>. Set the Public URL (and, behind a proxy, the Listen IP/port) to match the new mode, then save."}
         docker_recreate = IN_DOCKER and (scheme_flip or not same_bind or (target_https and need_cert))
         if docker_recreate:
             # DOCKER restart-safe address change. A single container can't live-rebind or dual-serve two schemes/ports,
@@ -7944,18 +8490,27 @@ def api(method, path, qs, body, deps):
         save_sub_vault(deps, v)
         return 200, {"ok": True, "data": {"enabled": enabled, "ivk_pub": v.get("ivk_pub")}}
 
-    if method == "POST" and path == "/api/sub/vault":                # set on first enable / re-wrap on password change
+    if method == "POST" and path == "/api/sub/vault":                # set on first create / re-wrap on a password change
+        # MERGE, never replace. The record also carries the interface-key escrow keypair (ivk_*), and rebuilding
+        # it from the request would drop ivk_priv_by_sk — permanently orphaning every escrowed node identity in
+        # escrow.json (see the "vault" key_source restore path). A re-wrap replaces the password wrap and nothing else.
+        # fresh=true means the browser minted a NEW SK: ivk_* is dropped, because ivk_priv_by_sk is wrapped under
+        # the OLD SK and would be undecryptable garbage.
         salt, sk, chk = body.get("salt"), body.get("sk_by_pw"), body.get("sk_check")
-        if not (isinstance(salt, str) and isinstance(sk, str) and isinstance(chk, str)):
+        if not (isinstance(salt, str) and isinstance(sk, str) and isinstance(chk, str) and salt and sk and chk):
             return 400, {"ok": False, "error": "salt, sk_by_pw and sk_check are required", "code": "bad_request"}
-        rec = {"salt": salt, "sk_by_pw": sk, "sk_check": chk, "at": now()}
-        # sk_verify: preserve an existing one on a password re-wrap (the SK is unchanged), set it on first create.
         _prev = load_sub_vault(deps)
-        _sv = body.get("sk_verify") if isinstance(body.get("sk_verify"), str) else _prev.get("sk_verify")
+        fresh = bool(body.get("fresh"))
+        rec = {} if fresh else dict(_prev)
+        rec["salt"], rec["sk_by_pw"], rec["sk_check"] = salt, sk, chk
+        rec["at"] = now()
+        # sk_verify: preserve an existing one on a password re-wrap (the SK is unchanged), set it on first create.
+        # It also validates a PASTED encryption key against this vault — the operator's recovery path.
+        _sv = body.get("sk_verify") if isinstance(body.get("sk_verify"), str) else (None if fresh else _prev.get("sk_verify"))
         if _sv:
             rec["sk_verify"] = _sv
         save_sub_vault(deps, rec)
-        try:   # a fresh vault (re)created → clear the swg-passwd reset marker so we don't re-prompt the SPA
+        try:   # the vault is reachable under the current password again → stop prompting about the swg-passwd reset
             os.remove(os.path.join(_sub_dir(deps), "vault.reset"))
         except OSError:
             pass
@@ -8277,7 +8832,9 @@ def api(method, path, qs, body, deps):
             owner = turn_fork_owner(turn_fork(svc))          # derive from the fork if the caller didn't pass one
         if not owner or "/" not in owner:
             return 400, {"ok": False, "error": "owner or service required", "code": "bad_request"}
-        held = _turn_hold_get(node, svc) if (node and svc) else ""
+        # held is per (node, fork) now — a fork's instances share one binary, so they share the version + hold
+        fork = (qs.get("fork") or [""])[0].strip() or (turn_fork(svc) if svc else "")
+        held = _turn_hold_get(node, "fork:" + fork) if (node and fork) else ""
         return 200, {"ok": True, "data": {"owner": owner, "tags": turn_available_tags(owner), "held": held}}
 
     if method == "GET" and path == "/api/mesh-series":
@@ -8872,6 +9429,8 @@ def api(method, path, qs, body, deps):
                 return 400, {"ok": False, "error": f"unknown node {t['node']!r}", "code": "bad_request"}
             if is_system_iface(deps, nodes, t["node"], t["iface"]):
                 return 400, {"ok": False, "error": f"{t['iface']} is a system mesh link — not a peer interface", "code": "system_iface"}
+            if _WDTT_IFACE_RE.match(t["iface"] or "") or (t["iface"] or "") in ((nodes.get(t["node"]) or {}).get("wdtt") or {}):
+                return 400, {"ok": False, "error": f"{t['iface']} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", "code": "wdtt_iface"}
         seen = set()
         for t in targets:
             k = (t["node"], t["iface"])
@@ -8919,6 +9478,8 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": f"unknown node {target['node']!r}", "code": "bad_request"}
         if is_system_iface(deps, nodes, target["node"], target["iface"]):
             return 400, {"ok": False, "error": f"{target['iface']} is a system mesh link — not a peer interface", "code": "system_iface"}
+        if _WDTT_IFACE_RE.match(target["iface"] or ""):
+            return 400, {"ok": False, "error": f"{target['iface']} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", "code": "wdtt_iface"}
         if not valid_addr(target["ip"]):
             return 400, {"ok": False, "error": f"invalid address {target['ip']!r}", "code": "bad_request"}
         roster = roster_load(roster_path)
@@ -9065,9 +9626,10 @@ def api(method, path, qs, body, deps):
                          "code": "assigned"}
         label = peer_label(roster, p)
         ntargets = len(p.get("targets") or [])
-        for t in p["targets"]:
-            del_config(store_configs, config_dir, p["pubkey"], t["node"], t["iface"])
-        retire_pubkey(nodes, deps["nodes_path"], p.get("targets", []), p["pubkey"])   # drop it even on add-only ifaces
+        if p.get("pubkey"):                          # WG only; a keyless WDTT peer has no stored .conf and its
+            for t in p["targets"]:                   # password just drops from the derived desired set on next sync
+                del_config(store_configs, config_dir, p["pubkey"], t["node"], t["iface"])
+        retire_pubkey(nodes, deps["nodes_path"], p.get("targets", []), p["pubkey"])   # drop it even on add-only ifaces (no-op for empty pubkey)
         _tgts = [{"node": t.get("node"), "iface": t.get("iface"), "address": t.get("ip")} for t in (p.get("targets") or [])]
         del roster["peers"][pid]
         roster_save(roster_path, roster)
@@ -9139,6 +9701,8 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": f"unknown node {target['node']!r}", "code": "bad_request"}
         if is_system_iface(deps, nodes, target["node"], target["iface"]):
             return 400, {"ok": False, "error": f"{target['iface']} is a system mesh link — not a peer interface", "code": "system_iface"}
+        if _WDTT_IFACE_RE.match(target["iface"] or ""):
+            return 400, {"ok": False, "error": f"{target['iface']} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", "code": "wdtt_iface"}
         if not valid_addr(target["ip"]):
             return 400, {"ok": False, "error": f"invalid address {target['ip']!r}", "code": "bad_request"}
         roster = roster_load(roster_path)
@@ -9468,6 +10032,10 @@ def api(method, path, qs, body, deps):
                 rc = reserved_conflict(deps, nodes, nodes[nid], port=p)
                 if rc:
                     return 400, {"ok": False, "error": rc, "code": "bad_request"}
+                _own = [(((((deps.get("node_snaps") or {}).get(nid) or {}).get("interfaces") or {}).get(iface) or {}).get("meta") or {}).get("listen_port"), ov.get("desired_port")]
+                _pc = _port_conflict(deps, nodes, nid, p, own=_own)   # not already bound by another interface / turn-proxy / WDTT / mesh link on this node
+                if _pc:
+                    return 400, {"ok": False, "error": "port " + str(p) + " is already used by " + _pc + " on this node — pick another port", "code": "bad_request"}
                 ov["listen_port"] = p
         if "dns" in body:
             dns = body.get("dns")
@@ -9571,7 +10139,12 @@ def api(method, path, qs, body, deps):
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
         if not iface or " " in iface or "/" in iface:
             return 400, {"ok": False, "error": "interface name is required (no spaces or /)", "code": "bad_request"}
-        if not conf or " " in conf or not conf.startswith("/"):
+        # An EMPTY conf is legitimate: a docker node mounts its own dir over /etc/amnezia/amneziawg, so a pre-existing
+        # HOST interface has its .conf somewhere the container cannot see and the candidate is reported with conf="".
+        # Rejecting that made every adoption on docker impossible ("an absolute config path is required") for an
+        # interface the node had just told us about. The node rebuilds the config from the LIVE device instead —
+        # which is also the only source that is guaranteed current. A non-empty path must still be absolute.
+        if conf and (" " in conf or not conf.startswith("/")):
             return 400, {"ok": False, "error": "an absolute config path is required", "code": "bad_request"}
         proto = (body.get("protocol") or "awg").lower()
         cmd = ["wg"] if proto == "wg" else (["auto"] if proto == "auto" else ["awg"])
@@ -9579,8 +10152,42 @@ def api(method, path, qs, body, deps):
         eh = (body.get("endpoint_host") or "").strip()
         if eh:
             nodes[nid].setdefault("ifaces", {}).setdefault(iface, {})["endpoint_host"] = eh
+        unignore_iface(nodes[nid], iface)   # adopting a previously-ignored candidate clears the ignore
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Onboarding interface", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
+    if method == "POST" and path in ("/api/iface/ignore", "/api/iface/unignore"):
+        # Approach B: dismiss an adoption candidate (or bring it back). Ignored candidates stop showing on the node
+        # and move to Settings → Interfaces. Purely a panel-side list — the node still reports the interface, it's
+        # just filtered out of the offered set. Nothing on the node is touched.
+        nid = body.get("node") or ""; iface = (body.get("iface") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not iface:
+            return 400, {"ok": False, "error": "interface name is required", "code": "bad_request"}
+        # Persisted to nodes.json, written to the activity log and echoed to every browser — hold it to the same
+        # bar as the neighbouring adopt/onboard handlers instead of "non-empty".
+        # A DORMANT WDTT install has no interface NAME — it is identified by its config dir, and that is the key
+        # the dormant filter matches on. So an absolute path is a legitimate subject here, held to its own bar
+        # (no traversal, no doubled separators) rather than smuggled past the name check.
+        _isdir = iface.startswith("/")
+        if (not no_ctrl(iface) or len(iface) > (200 if _isdir else 64)
+                or (not _isdir and "/" in iface)
+                or (_isdir and (".." in iface or "//" in iface or iface.endswith("/")))):
+            return 400, {"ok": False, "error": "bad interface name", "code": "bad_request"}
+        ig = nodes[nid].setdefault("ignore_ifaces", [])
+        if len(ig) > 500:
+            return 400, {"ok": False, "error": "too many ignored interfaces on this node", "code": "bad_request"}
+        if path.endswith("/ignore"):
+            if iface not in ig: ig.append(iface)
+            verb = "Ignoring adoption candidate"
+        else:
+            if iface in ig: ig.remove(iface)
+            verb = "Restoring adoption candidate"
+        if not ig: nodes[nid].pop("ignore_ifaces", None)
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, verb, iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
 
     if method == "POST" and path == "/api/iface/create":
@@ -9600,10 +10207,17 @@ def api(method, path, qs, body, deps):
         rc = reserved_conflict(deps, nodes, nodes[nid], subnet=subnet, port=body.get("listen_port"), name=iface)
         if rc:
             return 400, {"ok": False, "error": rc, "code": "bad_request"}
+        fc = subnet_fleet_conflict(deps, nodes, subnet, skip_node=nid, skip_iface=iface)   # subnets must be unique across the fleet (mesh routes by subnet)
+        if fc:
+            return 400, {"ok": False, "error": fc, "code": "bad_request"}
         cmd = ["wg"] if (body.get("protocol") or "awg").lower() == "wg" else ["awg"]
         req = {"cmd": cmd, "subnet": subnet}
         if str(body.get("listen_port") or "").isdigit():
-            req["listen_port"] = int(body["listen_port"])
+            _cp = int(body["listen_port"])
+            _pc = _port_conflict(deps, nodes, nid, _cp)   # port free of every other interface / turn-proxy / WDTT / mesh link on this node
+            if _pc:
+                return 400, {"ok": False, "error": "port " + str(_cp) + " is already used by " + _pc + " on this node — pick another port", "code": "bad_request"}
+            req["listen_port"] = _cp
         if str(body.get("mtu") or "").strip():
             req["mtu"] = str(body["mtu"]).strip()
         nodes[nid].setdefault("create", {})[iface] = req
@@ -9746,9 +10360,16 @@ def api(method, path, qs, body, deps):
         for f in forks[:32]:
             fid = re.sub(r"[^A-Za-z0-9_-]", "", str((f or {}).get("id") or ""))[:48]
             owner = str((f or {}).get("owner") or "").strip()
-            if fid and "/" in owner:
+            if not fid:
+                continue
+            if fid in WDTT_BUILDS:                       # WDTT: our published build version, NOT the upstream Android tag
+                latest[fid] = _wdtt_current_version(fid)
+            elif "/" in owner:
                 latest[fid] = _resolve_turn_tag(owner)
         return 200, {"ok": True, "data": {"latest": latest}}
+    if method == "GET" and path == "/api/changelog":
+        # Full panel changelog (newest-first) for the version info bubble's prev/next browser.
+        return 200, {"ok": True, "data": {"current": VERSIONS.get("panel") or "", "entries": _changelog_entries()}}
     if method == "GET" and path == "/api/turn/roster-check":
         # Client-app schema drift: each curated source file's latest GitHub commit vs the last-acknowledged one.
         return 200, {"ok": True, "data": _turn_roster_check()}
@@ -9814,6 +10435,9 @@ def api(method, path, qs, body, deps):
         rc = reserved_conflict(deps, nodes, nodes[nid], port=listen.rsplit(":", 1)[1])
         if rc:
             return 400, {"ok": False, "error": rc, "code": "bad_request"}
+        _lc = _port_conflict(deps, nodes, nid, listen.rsplit(":", 1)[1])   # not already bound by an interface / proxy / WDTT / mesh link on this node
+        if _lc:
+            return 400, {"ok": False, "error": "listen port " + listen.rsplit(":", 1)[1] + " is already used by " + _lc + " on this node — pick another port", "code": "bad_request"}
         svc = "vk-turn-proxy-" + fork + "-" + listen.rsplit(":", 1)[1]
         if svc in (nodes[nid].get("turn") or {}):
             return 409, {"ok": False, "error": "an install for this fork+port is already pending", "code": "conflict"}
@@ -9841,6 +10465,12 @@ def api(method, path, qs, body, deps):
                 if (body.get(k) or "").strip():
                     if not valid_hostport(body[k].strip()):
                         return 400, {"ok": False, "error": k + " must be ip:port", "code": "bad_request"}
+                    if k == "listen":   # a moved listen port must not land on another interface / proxy / WDTT / mesh link
+                        _np = body["listen"].strip().rsplit(":", 1)[1]
+                        _cp = svc.rsplit("-", 1)[-1]   # this proxy's current port (from its service name)
+                        _lc = _port_conflict(deps, nodes, nid, _np, own=[_cp] if _cp.isdigit() else [])
+                        if _lc:
+                            return 400, {"ok": False, "error": "listen port " + _np + " is already used by " + _lc + " on this node — pick another port", "code": "bad_request"}
                     req[k] = body[k].strip()
             if "params" in body:                        # free-text ExecStart tail after -connect (node uses it verbatim)
                 if not no_ctrl(body.get("params") or ""):
@@ -9873,17 +10503,401 @@ def api(method, path, qs, body, deps):
                 req["pin"] = turn_pin_tag(_owner, _tag, _node_arch(deps, nid))
                 if not (req["pin"].get("sums") or {}):   # not in the rollback cache (pruned / never mirrored) → can't verify, refuse
                     return 409, {"ok": False, "error": "that version isn't in the rollback cache — the panel has no verified binary for it", "code": "no_mirror"}
-                _turn_hold_set(nid, svc, _tag)       # pin the choice so the auto-updater doesn't roll it forward
+                _turn_hold_set(nid, "fork:" + turn_fork(svc), _tag)   # pin the choice so the auto-updater doesn't roll it forward (per node+fork — shared binary)
                 verb = "Rolling back turn-proxy"
             else:                                    # normal reinstall / update-to-latest → release any rollback hold
                 req["pin"] = turn_pin(_owner, _node_arch(deps, nid))   # checksum gate (owner from the request, else the fork's catalog owner; this node's arch)
-                _turn_hold_clear(nid, svc)
+                _turn_hold_clear(nid, "fork:" + turn_fork(svc))
+                # Archive the OUTGOING deployed version into the rollback cache (best-effort, background). The mirror
+                # only ever kept versions installed THROUGH it, so the version running before this update — installed
+                # at node setup or before the mirror existed — was never captured, leaving nothing to roll back to.
+                # Fetch it now (upstream forks publish server-linux for old tags; WDTT builds live in our own repo).
+                _cur = ""
+                for _tp in (((deps.get("node_snaps") or {}).get(nid) or {}).get("turn_proxies") or []):
+                    if _tp.get("service") == svc:
+                        _cur = (_tp.get("version") or "").strip(); break
+                _newtag = (req["pin"] or {}).get("tag") or ""
+                if _cur and _cur != _newtag and _TAG_RE.match(_cur):
+                    threading.Thread(target=turn_pin_tag, args=(_owner, _cur, _node_arch(deps, nid)), daemon=True).start()
         else:
             req = {"action": "delete", "at": now()}; verb = "Deleting turn-proxy"
         nodes[nid].setdefault("turn", {})[svc] = req
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, verb, svc)
         return 200, {"ok": True, "data": {"node": nid, "service": svc}}
+
+    if method == "POST" and path == "/api/wdtt/set":
+        # Declarative: set (create or update) a WDTT instance's DESIRED config on a node. Persisted in
+        # node["wdtt"][iface] and shipped every sync; the node reconciles (install / desired.json+SIGHUP /
+        # remove). No ack/clear — it IS the desired state (like desired peers), not a one-shot request.
+        nid = body.get("node") or ""
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        iface = (body.get("iface") or "").strip()
+        if not _WDTT_IFACE_RE.match(iface):
+            return 400, {"ok": False, "error": "invalid iface (wdtt0..wdtt999)", "code": "bad_request"}
+        inst = dict((nodes[nid].get("wdtt") or {}).get(iface) or {}); inst["iface"] = iface
+        # NOT sha256/tag: `tag` is never read by the node (version selection goes through `ver`, which the panel
+        # computes), and a pinned `sha256` is copied forward against a MOVING desired version — so once set it
+        # makes the node reject every correct binary. Neither is ever sent by the SPA.
+        for k in ("wg_addr", "listen", "fork", "title", "params"):
+            if k in body:
+                v = (body.get(k) or "").strip()
+                if not no_ctrl(v):
+                    return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
+                inst[k] = v
+        if "wg_port" in body:
+            try: inst["wg_port"] = int(body.get("wg_port") or 0) or inst.get("wg_port") or 56001
+            except (TypeError, ValueError): return 400, {"ok": False, "error": "wg_port must be an integer", "code": "bad_request"}
+        if "max_passwords" in body:
+            try: inst["max_passwords"] = int(body.get("max_passwords") or 0) or 200
+            except (TypeError, ValueError): return 400, {"ok": False, "error": "max_passwords must be an integer", "code": "bad_request"}
+        # WDTT binds TWO ports (DTLS listen + internal WG) — neither may collide with any other interface / proxy /
+        # WDTT / mesh link on the node, and the two must differ from each other.
+        _cur = (nodes[nid].get("wdtt") or {}).get(iface) or {}
+        _own = []
+        if ":" in str(_cur.get("listen") or ""):
+            _own.append(str(_cur["listen"]).rsplit(":", 1)[1])
+        if _cur.get("wg_port"):
+            _own.append(_cur["wg_port"])
+        _wl = (inst.get("listen") or "").strip()
+        _dtls = _wl.rsplit(":", 1)[1] if (":" in _wl) else None
+        _wgp = inst.get("wg_port")
+        if _dtls and _wgp and str(_dtls) == str(_wgp):
+            return 400, {"ok": False, "error": "the DTLS listen port and the internal WG port must be different", "code": "bad_request"}
+        for _p, _lbl in ((_dtls, "listen port"), (_wgp, "internal WG port")):
+            if _p:
+                _lc = _port_conflict(deps, nodes, nid, _p, own=_own)
+                if _lc:
+                    return 400, {"ok": False, "error": _lbl + " " + str(_p) + " is already used by " + _lc + " on this node — pick another port", "code": "bad_request"}
+        if "stopped" in body:
+            inst["stopped"] = bool(body.get("stopped"))
+        if body.get("restart"):   # operator-requested restart: a monotonic nonce the node acts on once (systemctl restart)
+            try: inst["restart"] = int(body.get("restart"))
+            except (TypeError, ValueError): pass
+        if "block" in body:   # content/abuse filters (same catalog as interfaces); applied to the WDTT subnet by the plan builder
+            inst["block"] = _validate_block(body.get("block"), deps.get("panel_settings"))
+        if "egress_ip" in body:                          # per-instance source/egress IP ("" = clear → MASQUERADE)
+            e = (body.get("egress_ip") or "").strip()
+            if e:
+                try:
+                    if ipaddress.ip_address(e).version != 4:
+                        raise ValueError
+                except ValueError:
+                    return 400, {"ok": False, "error": "egress IP must be an IPv4 address", "code": "bad_request"}
+                inst["egress_ip"] = e
+            else:
+                inst.pop("egress_ip", None)
+        if "wan_iface" in body:                          # per-instance egress WAN NIC ("" = clear → auto-detect)
+            w = (body.get("wan_iface") or "").strip()
+            if w and not _WANIF_RE.match(w):
+                return 400, {"ok": False, "error": "WAN interface must be a bare device name", "code": "bad_request"}
+            if w: inst["wan_iface"] = w
+            else: inst.pop("wan_iface", None)
+        if "egress_mode" in body:                        # direct = SNAT a NIC | forward = whole-subnet cascade | smart = per-destination rules
+            mode = (body.get("egress_mode") or "direct").strip()   # WDTT's wg_addr subnet is fed into cascade_plan exactly like an interface subnet
+            if mode not in ("direct", "forward", "smart"):
+                return 400, {"ok": False, "error": "egress_mode must be direct|forward|smart", "code": "bad_request"}
+            if mode == "forward":
+                en = (body.get("egress_node") or "").strip()
+                if en not in nodes or en == nid:
+                    return 400, {"ok": False, "error": "egress_node must be another known node", "code": "bad_request"}
+                inst["egress_mode"] = "forward"; inst["egress_node"] = en; inst.pop("routing", None)
+            elif mode == "smart":
+                rules, err = _validate_routing(body.get("routing"), nodes, nid, [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")])
+                if err:
+                    return 400, {"ok": False, "error": err, "code": "bad_request"}
+                inst["egress_mode"] = "smart"; inst["routing"] = rules; inst.pop("egress_node", None)
+            else:
+                inst["egress_mode"] = "direct"; inst.pop("egress_node", None); inst.pop("routing", None)
+        elif "routing" in body and inst.get("egress_mode") == "smart":   # rule-only edit (mode already smart)
+            rules, err = _validate_routing(body.get("routing"), nodes, nid, [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")])
+            if err:
+                return 400, {"ok": False, "error": err, "code": "bad_request"}
+            inst["routing"] = rules
+        # NOTE: per-peer `passwords` are NOT accepted here — they are derived from the roster's WDTT peers
+        # (desired_wdtt_for_node) and merged into the reply by _wdtt_reply. This endpoint owns only the INSTANCE.
+        inst.pop("passwords", None)
+        inst.pop("password", None)   # the owner/bootstrap -password is NODE-OWNED — the node mints it, keeps it, and seals
+                                     # it (with wg-keys.dat) to the operator vault. The panel never holds it in cleartext.
+        inst.setdefault("wg_port", 56001); inst.setdefault("max_passwords", 200)
+        inst.setdefault("fork", "amurcanov")   # WDTT server fork (amurcanov | ildarmaga); node maps fork→binary
+        if not _WDTT_CIDR_RE.match(inst.get("wg_addr") or ""):
+            return 400, {"ok": False, "error": "wg_addr must be an IPv4 CIDR (e.g. 10.66.70.1/24)", "code": "bad_request"}
+        if not valid_hostport(inst.get("listen") or ""):
+            return 400, {"ok": False, "error": "listen must be ip:port", "code": "bad_request"}
+        fc = subnet_fleet_conflict(deps, nodes, inst["wg_addr"], skip_node=nid, skip_iface=iface)   # subnets must be unique across the fleet (mesh routes by subnet)
+        if fc:
+            return 400, {"ok": False, "error": fc, "code": "bad_request"}
+        nodes[nid].setdefault("wdtt", {})[iface] = inst
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Set WDTT instance", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
+    if method == "POST" and path == "/api/wdtt/adopt":
+        # ADOPT a FOREIGN WDTT server the node found (Approach B). Declarative, like /api/wdtt/set: we write the
+        # instance into the node store with `adopt_foreign`, and the node does a SEEDED CREATE on its next sync —
+        # it copies the foreign server's identity + password store + owner password into its own config-dir, stops
+        # the foreign (unpatched) process, and runs OUR build with that data. The server pubkey and passwords are
+        # preserved, so every existing client keeps working. The panel never sees the key or the owner password:
+        # the fork/params here come from the node's own probe (snap.iface_candidates[].wdtt), which carries no
+        # secrets. Refusal to adopt an identity-less server happens NODE-SIDE (it would break every client).
+        nid = body.get("node") or ""
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        iface = (body.get("iface") or "").strip()
+        if not _WDTT_ADOPT_IFACE_RE.match(iface):
+            return 400, {"ok": False, "error": "'" + iface + "' isn't a usable interface name — letters, digits, _ and -, up to 15 characters", "code": "bad_request"}
+        if iface in ((nodes[nid].get("wdtt")) or {}):
+            return 400, {"ok": False, "error": "this node already manages a WDTT instance on " + iface, "code": "bad_request"}
+        # The NODE is the source of truth for what's actually running: only adopt an interface it currently reports
+        # as an ADOPTABLE WDTT candidate. Without this, a stale/hand-made request would install an instance the node
+        # can never seed (no foreign server / no identity) and it would fail on every 5s reconcile, forever.
+        _snap = ((deps.get("node_snaps") or {}).get(nid) or {})
+        _cd = next((c for c in (_snap.get("iface_candidates") or []) if (c or {}).get("name") == iface), None)
+        _cw = (_cd or {}).get("wdtt") or {}
+        # A DORMANT install has no interface to be a candidate — the caller names its config directory instead.
+        # Same rule as above: only ever act on something the NODE reports, so a hand-made request can't point us
+        # at an arbitrary path on the box.
+        _dorm_dir = (body.get("adopt_config_dir") or "").strip()
+        _dorm = next((d for d in (_snap.get("wdtt_dormant") or []) if (d or {}).get("config_dir") == _dorm_dir), None) if _dorm_dir else None
+        if not _dorm and (not _cd or not _cw):
+            return 400, {"ok": False, "error": "this node doesn't report a WDTT server on " + iface + " — refresh and try again", "code": "bad_request"}
+        # The operator may know where the identity actually lives (a fork with an unusual layout, a server started
+        # from a different directory). Accept a path and let the NODE verify it — it copies first and refuses if
+        # the file isn't there, so a wrong path costs nothing and the foreign server keeps serving.
+        idpath = (body.get("identity_path") or "").strip()
+        if idpath and (not no_ctrl(idpath) or not idpath.startswith("/") or ".." in idpath.split("/")):
+            return 400, {"ok": False, "error": "identity path must be an absolute path with no '..' segments", "code": "bad_request"}
+        if not _cw.get("adoptable") and not idpath and not _dorm:
+            return 400, {"ok": False, "error": "that server's identity (wg-keys.dat) can't be found on the node, so adopting it would break every existing client — point at its key file, or ignore it instead", "code": "bad_request"}
+        fork = (body.get("fork") or "").strip() or "amurcanov"
+        if fork not in WDTT_BUILDS:
+            return 400, {"ok": False, "error": "unknown WDTT fork: " + fork, "code": "bad_request"}
+        inst = {"iface": iface, "fork": fork, "adopt_foreign": True}
+        if idpath:
+            inst["identity_path"] = idpath
+        if _dorm:
+            inst["adopt_config_dir"] = _dorm["config_dir"]
+        for k in ("wg_addr", "listen", "title"):
+            v = (body.get(k) or "").strip()
+            if v:
+                if not no_ctrl(v):
+                    return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
+                inst[k] = v
+        try:
+            if body.get("wg_port"): inst["wg_port"] = int(body["wg_port"])
+            if body.get("max_passwords"): inst["max_passwords"] = int(body["max_passwords"])
+        except (TypeError, ValueError):
+            return 400, {"ok": False, "error": "wg_port / max_passwords must be integers", "code": "bad_request"}
+        # Both reach the WDTT server's command line. The node caps its own DERIVED default at 4000 so a wide
+        # prefix can't ask for an absurd preallocation — a caller-supplied value has to respect the same ceiling.
+        if "wg_port" in inst and not (1 <= inst["wg_port"] <= 65535):
+            return 400, {"ok": False, "error": "wg_port must be 1-65535", "code": "bad_request"}
+        if "max_passwords" in inst:
+            inst["max_passwords"] = max(1, min(4000, inst["max_passwords"]))
+        # Adopt KEEPS the server's current transport params: seed anything the caller didn't pass from the node's
+        # probe. This must be stored panel-side, not left to the node — the desired record IS the comparison
+        # baseline, so an empty listen/wg_addr/wg_port here would read as drift against the running server on the
+        # very next reconcile and bounce it (reconfigure/reset) in a loop.
+        if not inst.get("wg_addr") and _cw.get("wg_addr"): inst["wg_addr"] = _cw["wg_addr"]
+        if not inst.get("wg_port"):
+            with contextlib.suppress(TypeError, ValueError): inst["wg_port"] = int(_cw.get("wg_port") or 0) or None
+            if not inst.get("wg_port"): inst.pop("wg_port", None)
+        if not inst.get("max_passwords"):
+            with contextlib.suppress(TypeError, ValueError): inst["max_passwords"] = int(_cw.get("max_passwords") or 0) or None
+            if not inst.get("max_passwords"): inst.pop("max_passwords", None)
+        # `listen` is what CLIENTS dial, so it must be a reachable host:port. Normalise whatever we ended up with
+        # (caller-supplied or probed): a wildcard bind (0.0.0.0 / ::) is what the server listens ON, but tells a
+        # client nothing — advertise the node's endpoint instead. Done for EVERY source, not just the probe
+        # fallback, so a UI that passes the raw probed value through can't store an undialable 0.0.0.0 endpoint.
+        _lv = (inst.get("listen") or _cw.get("listen") or "").strip()
+        if ":" in _lv:
+            _hs, _dt = _lv.rsplit(":", 1)
+            if _dt.isdigit():
+                if _hs.strip("[]") in ("", "0.0.0.0", "::", "*"):
+                    _hs = (nodes[nid].get("endpoint_host") or "").strip() or (_snap.get("node_ips") or [""])[0]
+                if _hs:
+                    inst["listen"] = _hs + ":" + _dt
+        # Same shape + conflict bar as /api/wdtt/set. Adoption is the ONE path where these values come from a
+        # server the operator didn't configure, so it is the most likely source of a bad CIDR or a subnet that
+        # collides with an existing interface — and an instance the node's own validator rejects just fails on
+        # every 5s reconcile with nothing shown at the API level.
+        if not _WDTT_CIDR_RE.match(inst.get("wg_addr") or ""):
+            return 400, {"ok": False, "error": "this server's tunnel subnet isn't an IPv4 CIDR: " + (inst.get("wg_addr") or "(none)"), "code": "bad_request"}
+        if not valid_hostport(inst.get("listen") or ""):
+            return 400, {"ok": False, "error": "this server's listen address isn't host:port: " + (inst.get("listen") or "(none)"), "code": "bad_request"}
+        if inst.get("wg_port") is not None and not (1 <= int(inst["wg_port"]) <= 65535):
+            return 400, {"ok": False, "error": "wg_port must be 1-65535", "code": "bad_request"}
+        _clash = subnet_fleet_conflict(deps, nodes, inst["wg_addr"], skip_node=nid, skip_iface=iface)
+        if _clash:
+            return 409, {"ok": False, "error": "its subnet " + inst["wg_addr"] + " is already used elsewhere in the fleet (" + str(_clash) + ") — adopting it would black-hole one of them", "code": "subnet_conflict"}
+        nodes[nid].setdefault("wdtt", {})[iface] = inst
+        unignore_iface(nodes[nid], iface)   # adopting a previously-ignored candidate clears the ignore
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Adopting WDTT server", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "fork": fork}}
+
+    if method == "POST" and path == "/api/wdtt/delete":
+        nid = body.get("node") or ""; iface = (body.get("iface") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        w = nodes[nid].get("wdtt") or {}
+        if iface in w:
+            w.pop(iface, None)
+            if w: nodes[nid]["wdtt"] = w
+            else: nodes[nid].pop("wdtt", None)
+            # Record the removal EXPLICITLY, the way interfaces do (nodes[nid]["delete"]). WDTT used to be the one
+            # subsystem the node tore down by absence — so a panel restored from an older nodes.json, or a node
+            # re-enrolling against a panel that had never seen its instances, read as "delete everything" and took
+            # non-recreatable key material with it. Absence is not an instruction.
+            nodes[nid].setdefault("wdtt_delete", {})[iface] = {"at": int(time.time())}
+            nodes_save(deps["nodes_path"], nodes)
+            # …and purge this instance's peers, exactly as /api/iface/delete does. A WDTT peer's credential IS a
+            # password on THIS server, so it means nothing once the server is gone — and the roster addresses a
+            # deployment by interface NAME, so leaving them behind silently re-attached them to whatever took the
+            # name next: a freshly adopted foreign server came up already serving the deleted server's users.
+            roster = roster_load(roster_path); changed = False
+            for pid in list(roster["peers"].keys()):
+                p = roster["peers"][pid]
+                kept = [t for t in p.get("targets", []) if not (t.get("node") == nid and t.get("iface") == iface)]
+                if len(kept) != len(p.get("targets", [])):
+                    changed = True
+                    if kept:
+                        p["targets"] = kept; p["modified_at"] = int(time.time())
+                    else:
+                        del roster["peers"][pid]
+            if changed:
+                roster_save(roster_path, roster)
+            ev_append(roster_path, "node", nid, "Removed WDTT instance", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
+    if method == "POST" and path == "/api/wdtt/restore":
+        # The operator unlocked the vault and RE-SEALED the escrowed WDTT identity (owner pw + wg-keys.dat) to the
+        # node's transport key. Stash it as a one-shot for _wdtt_reply → the node restores the ORIGINAL server key
+        # so GETCONF'd clients keep working. Cleared automatically once the node reports the blessed server pubkey.
+        nid = body.get("node") or ""; iface = (body.get("iface") or "").strip()
+        sealed = body.get("sealed_identity")
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if iface not in ((nodes[nid].get("wdtt")) or {}):
+            return 404, {"ok": False, "error": "unknown WDTT instance", "code": "not_found"}
+        if not isinstance(sealed, dict) or not (sealed.get("eph") and sealed.get("ct") and sealed.get("mac")):
+            return 400, {"ok": False, "error": "a sealed identity is required", "code": "bad_request"}
+        # Project the three fields we use — the WG restore path does the same. Persisting the request verbatim put
+        # arbitrary caller keys (up to MAX_BODY) into nodes.json AND re-shipped them on every 5s sync until the node
+        # reported the blessed pubkey.
+        if not all(isinstance(sealed.get(k), str) and 0 < len(sealed[k]) <= 8192 for k in ("eph", "ct", "mac")):
+            return 400, {"ok": False, "error": "sealed_identity fields must be strings", "code": "bad_request"}
+        nodes[nid].setdefault("wdtt_restore", {})[iface] = {k: sealed[k] for k in ("eph", "ct", "mac")}
+        nodes[nid].get("wdtt_recreate", {}).pop(iface, None)   # a restore supersedes a pending recreate-fresh
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Restore WDTT identity", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
+    if method == "POST" and path == "/api/wdtt/recreate-fresh":
+        # Escape hatch for a lost/unavailable vault: ABANDON the escrowed identity and let the node mint a FRESH
+        # server keypair (panel omits the key_blob so the node stops holding). Every existing user must re-import
+        # — their cached server key changes. One-shot; cleared once the node reports the instance back up.
+        nid = body.get("node") or ""; iface = (body.get("iface") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if iface not in ((nodes[nid].get("wdtt")) or {}):
+            return 404, {"ok": False, "error": "unknown WDTT instance", "code": "not_found"}
+        nodes[nid].get("wdtt_restore", {}).pop(iface, None)   # supersede any pending restore
+        nodes[nid].setdefault("wdtt_recreate", {})[iface] = int(time.time())
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Recreate WDTT server (fresh identity)", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
+    if method == "GET" and path == "/api/wdtt/versions":
+        # WDTT rollback picker: OUR published builds for the fork (newest first) + this instance's hold, if any.
+        # WDTT builds live in our own repo, so every published version is installable on demand (no "must be pre-mirrored").
+        nid = (qs.get("node") or [""])[0]; iface = (qs.get("iface") or [""])[0].strip()
+        fork = (qs.get("fork") or [""])[0].strip()
+        if not fork or fork not in WDTT_BUILDS:
+            fork = ((nodes.get(nid) or {}).get("wdtt") or {}).get(iface, {}).get("fork") or ""
+        if fork not in WDTT_BUILDS:
+            return 400, {"ok": False, "error": "unknown WDTT fork", "code": "bad_request"}
+        held = _turn_hold_get(nid, "wdtt:" + fork) if nid else ""   # per (node, fork): the binary is shared across the fork's ifaces
+        return 200, {"ok": True, "data": {"fork": fork, "current": _wdtt_current_version(fork),
+                                          "versions": [v for v, _ in _wdtt_versions(fork)], "held": held}}
+
+    if method == "POST" and path == "/api/wdtt/version":
+        # Roll a WDTT instance to a specific published build (holds it — the auto-updater won't move it), or release
+        # the hold back to the current build (ver blank). The desired version rides the next sync via _wdtt_reply.
+        nid = body.get("node") or ""; iface = (body.get("iface") or "").strip()
+        ver = (body.get("ver") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        inst = ((nodes[nid].get("wdtt")) or {}).get(iface)
+        if not inst:
+            return 404, {"ok": False, "error": "unknown WDTT instance", "code": "not_found"}
+        fork = inst.get("fork") or "amurcanov"
+        if ver:                                              # ROLLBACK / pin to a specific published build (per node+fork — shared binary)
+            if not _wdtt_tag_for(fork, ver):
+                return 400, {"ok": False, "error": "that version isn't a published build for this fork", "code": "bad_request"}
+            _turn_hold_set(nid, "wdtt:" + fork, ver)
+            verb = "Rolling back WDTT" if ver != _wdtt_current_version(fork) else "Reinstalling WDTT"
+        else:                                                # release the hold → back to the current build + resume auto-updates
+            _turn_hold_clear(nid, "wdtt:" + fork); verb = "Updating WDTT to latest"
+        ev_append(roster_path, "node", nid, verb, iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "ver": ver or _wdtt_current_version(fork)}}
+
+    if method == "POST" and path == "/api/wdtt-peer/create":
+        # A keyless WDTT peer: the panel mints ONE per-peer WRAP password (its identity — WDTT mints the WG keypair
+        # via GETCONF). Targets are one OR MORE wdtt* instances (multi-server failover, like a WG peer's targets — the
+        # SAME password provisions the device independently on each server). Shipped to each node by _wdtt_reply;
+        # block/unblock/expiry/delete/unassign are the SHARED endpoints, rotate is /api/wdtt-peer/rotate.
+        # Accepts `targets:[{node,iface}]` (preferred) or a single {node,iface}. A peer is all-WDTT (never mixed WG).
+        raw = body.get("targets")
+        if not isinstance(raw, list) or not raw:
+            raw = [{"node": (body.get("node") or "").strip(), "iface": (body.get("iface") or "").strip()}]
+        tgts = []
+        for t in raw:
+            tn = (t.get("node") or "").strip() if isinstance(t, dict) else ""
+            ti = (t.get("iface") or "").strip() if isinstance(t, dict) else ""
+            if tn not in nodes:
+                return 400, {"ok": False, "error": "unknown node", "code": "bad_request"}
+            if ti not in ((nodes[tn].get("wdtt")) or {}):
+                return 400, {"ok": False, "error": "no WDTT instance '" + ti + "' on node " + tn, "code": "bad_request"}
+            tgts.append({"node": tn, "iface": ti, "ip": "", "type": "wdtt"})
+        if not tgts:
+            return 400, {"ok": False, "error": "at least one WDTT target is required", "code": "bad_request"}
+        title = strip_ctrl(body.get("title", ""))
+        vk_hash = _wdtt_vk_hash(body.get("vk_hash") or body.get("vk_link") or "")
+        if not no_ctrl(vk_hash) or not no_ctrl(title):
+            return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
+        roster = roster_load(roster_path)
+        uid = body.get("user_id")
+        if uid and uid not in roster["users"]:
+            return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
+        pid = gen_id()
+        while pid in roster["peers"]:
+            pid = gen_id()
+        fields = {"user_id": uid or None, "title": title, "pubkey": "", "psk": "",
+                  "targets": tgts, "wdtt_password": gen_wdtt_password()}
+        if vk_hash:
+            fields["vk_hash"] = vk_hash
+        p = peer_set(roster, pid, fields, now())
+        roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Created WDTT peer", peer_label(roster, p), ", ".join(t["node"] + "/" + t["iface"] for t in tgts))
+        return 200, {"ok": True, "data": p}
+
+    if method == "POST" and path == "/api/wdtt-peer/rotate":
+        # Rotate a WDTT peer's WRAP password → revokes the old link instantly (the old password drops from the
+        # derived desired set on the node's next sync, removing its device). The client must re-import the new link.
+        pid = body.get("peer_id") or ""
+        roster = roster_load(roster_path)
+        p = roster["peers"].get(pid)
+        if not p:
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        if not p.get("wdtt_password"):
+            return 400, {"ok": False, "error": "not a WDTT peer", "code": "bad_request"}
+        p2 = peer_set(roster, pid, {"wdtt_password": gen_wdtt_password()}, now())
+        roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Rotated WDTT password", peer_label(roster, p2))
+        return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/turn/title":
         # Set ONLY the display title — the node updates its turn record but does NOT restart the proxy
@@ -10673,14 +11687,12 @@ class Handler(BaseHTTPRequestHandler):
         # URL-ENCODE the version for the query: a "+sha" dev build (e.g. 1.3.12-beta+0e1fdcc) would otherwise put a
         # literal "+" in the asset URL, which a CDN/WAF in front (Cloudflare) rejects outright — %2B keeps each
         # version a distinct, VALID cache-bust key.
-        _av = quote((VERSIONS.get("panel") or "").strip(), safe="")
-        if _av and STATIC[key] == "index.html":
-            q = ("?v=" + _av).encode()
-            data = (data.replace(b'href="app.css"', b'href="app.css' + q + b'"')
-                        .replace(b'src="app.js"', b'src="app.js' + q + b'"')
-                        .replace(b'src="turn-artifacts.js"', b'src="turn-artifacts.js' + q + b'"'))
-        elif _av and STATIC[key] == "app.js":
-            data = data.replace(b'"./reconcile.js"', b'"./reconcile.js' + ("?v=" + _av).encode() + b'"')
+        if STATIC[key] == "index.html":
+            data = (data.replace(b'href="app.css"', b'href="app.css' + _asset_q("app.css") + b'"')
+                        .replace(b'src="app.js"', b'src="app.js' + _asset_q("app.js") + b'"')
+                        .replace(b'src="turn-artifacts.js"', b'src="turn-artifacts.js' + _asset_q("turn-artifacts.js") + b'"'))
+        elif STATIC[key] == "app.js":
+            data = data.replace(b'"./reconcile.js"', b'"./reconcile.js' + _asset_q("reconcile.js") + b'"')
         _, ext = os.path.splitext(full)
         # The SPA is buildless (no content-hashed filenames), so a stale app.js/app.css served
         # against a freshly-updated backend silently breaks the UI (e.g. a schema change). Force
@@ -10895,6 +11907,27 @@ class Handler(BaseHTTPRequestHandler):
                     nodes_save(Handler.deps["nodes_path"], nodes)
         if node.pop("uninstalled", None) is not None:   # node is back (re-installed with the same token) → clear the grey "Uninstalled" tag
             nodes_save(Handler.deps["nodes_path"], nodes)
+        # ACK the explicit WDTT removals: once the node stops reporting an instance it has done the delete, so the
+        # entry comes off the list. Without this the reply would carry every removal ever made, forever.
+        _wdel = node.get("wdtt_delete") or {}
+        if _wdel:
+            _live = {(w or {}).get("iface") for w in (snap.get("wdtt") or [])}
+            _done = [i for i in list(_wdel) if i not in _live]
+            if _done:
+                for i in _done:
+                    _wdel.pop(i, None)
+                if _wdel: node["wdtt_delete"] = _wdel
+                else: node.pop("wdtt_delete", None)
+                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # An interface can become managed WITHOUT an adopt: a re-install or a bare<->docker convert rebuilds the
+        # node's config.json from what is on disk. The ignore entry then outlives the thing it was about. Use the
+        # node's OWN managed set as the signal — never mere absence from the candidate list, which also happens
+        # when a node is briefly not reporting, and pruning on that would silently re-offer a dismissed interface.
+        if isinstance(snap.get("interfaces"), dict) and (node.get("ignore_ifaces") or []):
+            # list(), NOT any(): any() short-circuits on the first True, so a second stale entry would be left
+            # for the next sync to find.
+            if [1 for _mi in list(snap["interfaces"].keys()) if unignore_iface(node, _mi)]:
+                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
         if snap.get("kind") and node.get("kind") != snap["kind"]:   # remember the method persistently, so a DOWN node (no live snapshot) still knows it (Recover shows the right command)
             node["kind"] = snap["kind"]
             with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
@@ -11156,6 +12189,15 @@ class Handler(BaseHTTPRequestHandler):
                 iM = [0] * HRRD_NM; iM[3] = int(irx); iM[4] = int(itx)
                 with contextlib.suppress(Exception):
                     hrrd_update(iface_rrd_path(stats_dir, nid, ifn), now_i, iM)
+            # WDTT interfaces live in snap.wdtt (own their TUN device) → ring their reported aggregate rx/tx the same
+            # way, so the interface-detail graph works identically to a wg/awg one.
+            for w in (snap.get("wdtt") or []):
+                wifn = (w or {}).get("iface")
+                if not wifn:
+                    continue
+                iM = [0] * HRRD_NM; iM[3] = int(w.get("rx_speed", 0) or 0); iM[4] = int(w.get("tx_speed", 0) or 0)
+                with contextlib.suppress(Exception):
+                    hrrd_update(iface_rrd_path(stats_dir, nid, wifn), now_i, iM)
         # self-heal the full mesh BEFORE computing desired, so a node that entered the store outside
         # /api/nodes/create (auto-enrolled master/local node) or lost a link conf (convert/re-install)
         # gets its links (re)staged on its very next sync.
@@ -11266,6 +12308,119 @@ class Handler(BaseHTTPRequestHandler):
         if ifaces_dirty:
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
+        # WDTT server-identity vault: escrow each instance's sealed identity (owner pw + wg-keys.dat) as
+        # CIPHERTEXT keyed by its server pubkey (re-sealed when it rotates); scrub any legacy cleartext owner
+        # password from the node store (it is node-owned now); and clear a pending restore once the node reports
+        # the blessed identity back. Ciphertext only — the panel can't open it.
+        # An adoption that succeeded from a DIFFERENT source than the operator named (a conf path the node could
+        # not read, so it rebuilt from the live interface) is worth saying out loud exactly once — the
+        # substitution is otherwise silent, and it does not carry DNS/Table/PostUp across. cmd_errors is the
+        # wrong channel: it renders as a failure and is cleared the moment the onboard succeeds.
+        _notes = snap.get("onboard_notes") or {}
+        _seen = node.get("onboard_noted") or {}
+        if isinstance(_notes, dict) and (_notes or _seen):
+            _noted_dirty = False
+            for _ifn, _msg in _notes.items():
+                if not _ifn or not isinstance(_msg, str) or _seen.get(_ifn) == _msg:
+                    continue
+                _seen[_ifn] = _msg; _noted_dirty = True
+                ev_append(roster_path, "node", nid, "Adopted from the live interface", _ifn, _msg[:200])
+            for _ifn in list(_seen):                      # forget once the node stops reporting it
+                if _ifn not in _notes:
+                    _seen.pop(_ifn, None); _noted_dirty = True
+            if _noted_dirty:
+                if _seen:
+                    node["onboard_noted"] = _seen
+                else:
+                    node.pop("onboard_noted", None)
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
+
+        _wstore = node.get("wdtt") or {}
+        if _wstore:
+            _wsealed = snap.get("wdtt_key_sealed") or {}
+            _wsnap = {w.get("iface"): w for w in (snap.get("wdtt") or []) if isinstance(w, dict)}
+            _wdtt_dirty = False
+            # ADOPTED USERS → roster peers. A taken-over server's users live in ITS store, but a WDTT password is
+            # roster-owned (each one is a peer) and _wdtt_reply overwrites the node's set with the roster-derived
+            # one — so without this the take-over kept the server key and dropped every user, and each existing
+            # client was rejected with "wrong password". The node reports them only while the hand-off is open,
+            # so this never resurrects a peer the operator has since deleted.
+            # Guarded: this is an OPTIONAL enrichment step, and a fault in it must never take down the sync
+            # every node depends on. An unguarded bug here 500'd /api/node/sync for the whole fleet — nodes then
+            # skipped reconciling (the invariant held, nothing was wiped) but nothing converged either.
+            _imported = 0
+            try:
+                for _wifn, _wsn in _wsnap.items():
+                    _au = _wsn.get("adopt_users")
+                    if not isinstance(_au, dict) or not _au or _wifn not in _wstore:
+                        continue
+                    _known = {p.get("wdtt_password") for p in (roster.get("peers") or {}).values()
+                              if isinstance(p, dict) and p.get("wdtt_password")
+                              and any((t or {}).get("node") == nid and (t or {}).get("iface") == _wifn
+                                      for t in (p.get("targets") or []))}
+                    for _pw, _meta in _au.items():
+                        if not _pw or _pw in _known or not no_ctrl(str(_pw)):
+                            continue
+                        _meta = _meta if isinstance(_meta, dict) else {}
+                        _pid = gen_id()
+                        while _pid in roster["peers"]:
+                            _pid = gen_id()
+                        # type:"wdtt" is what makes reconcile read this target from the WDTT read-back instead of
+                        # hunting for a WireGuard pubkey on the interface — without it every imported user showed
+                        # as DANGLING beside a healthy panel-created peer on the same server.
+                        _f = {"user_id": None, "title": (str(_meta.get("comment") or "").strip() or "adopted")[:60],
+                              "pubkey": "", "psk": "",
+                              "targets": [{"node": nid, "iface": _wifn, "ip": "", "type": "wdtt"}],
+                              "wdtt_password": _pw}
+                        _vk = str(_meta.get("vk_hash") or "").strip()
+                        if _vk and no_ctrl(_vk):
+                            _f["vk_hash"] = _vk
+                        if _meta.get("is_deactivated"):
+                            _f["disabled"] = True
+                        with contextlib.suppress(Exception):
+                            _f["expiry"] = int(_meta.get("expires_at") or 0)
+                        _p = peer_set(roster, _pid, _f, int(time.time()))
+                        _imported += 1
+                        ev_append(Handler.deps["roster_path"], "peer", _pid,
+                                  "Imported WDTT user from adopted server", peer_label(roster, _p),
+                                  nid + "/" + _wifn)
+                if _imported:
+                    roster_save(Handler.deps["roster_path"], roster)
+            except Exception as _e:
+                print("wdtt adopt-import failed: " + str(_e)[:200], flush=True)
+            for _wifn, _wov in _wstore.items():
+                if _wov.pop("password", None) is not None:   # migration: stop holding the owner password in cleartext
+                    _wdtt_dirty = True
+                _wsb = _wsealed.get(_wifn)
+                if isinstance(_wsb, dict) and _wsb.get("pub") and _wsb.get("ct") and _wov.get("key_blob") != _wsb:
+                    _wov["key_blob"] = _wsb; _wdtt_dirty = True
+            _wrestore = node.get("wdtt_restore")
+            if isinstance(_wrestore, dict) and _wrestore:
+                for _wifn in list(_wrestore.keys()):
+                    _snappub = (_wsnap.get(_wifn) or {}).get("server_pub") or ""
+                    _blobpub = ((_wstore.get(_wifn) or {}).get("key_blob") or {}).get("pub") or ""
+                    if _snappub and _snappub == _blobpub:    # instance is back with its blessed identity → restore landed
+                        _wrestore.pop(_wifn, None); _wdtt_dirty = True
+                if not _wrestore:
+                    node.pop("wdtt_restore", None)
+            _wrecreate = node.get("wdtt_recreate")
+            if isinstance(_wrecreate, dict) and _wrecreate:
+                for _wifn in list(_wrecreate.keys()):
+                    if (_wsnap.get(_wifn) or {}).get("server_pub"):   # minted a fresh identity and came up → done
+                        _wrecreate.pop(_wifn, None); _wdtt_dirty = True
+                if not _wrecreate:
+                    node.pop("wdtt_recreate", None)
+            # `adopt_foreign` is a ONE-SHOT take-over marker: clear it as soon as the instance reports a server_pub
+            # (it's ours now). Leaving it set would re-arm the seeded-create if the instance were ever wiped later
+            # (node re-install / re-provision) — it would then hunt a foreign server that no longer exists and fail
+            # on every reconcile. The node's own guard makes this safe meanwhile; this keeps the store honest.
+            for _wifn, _wov in _wstore.items():
+                if _wov.get("adopt_foreign") and (_wsnap.get(_wifn) or {}).get("server_pub"):
+                    _wov.pop("adopt_foreign", None); _wdtt_dirty = True
+            if _wdtt_dirty:
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
         # clear a pending self-update once the node reports a version different from when it was requested
         # (robust to the node landing past a lagging docker-panel image version). DON'T clear docker nodes
         # early any more: they DO self-update now via the host updater (swg-noded writes a trigger → the host
@@ -11471,14 +12626,21 @@ class Handler(BaseHTTPRequestHandler):
         _vault = load_sub_vault(Handler.deps) or {}
         _ivk_pub = (_vault.get("ivk_pub") or "") if _vault.get("ivk_enabled") else ""   # only hand nodes the key when escrow is ON
         _ivk_want = []
+        _wdtt_want = []
         if _ivk_pub:
             for _ifn, _pk in (snap.get("iface_key_backups") or {}).items():
                 _ov = (node.get("ifaces") or {}).get(_ifn) or {}
                 if _pk and not _ov.get("system") and (_ov.get("key_blob") or {}).get("pub") != _pk:
                     _ivk_want.append(_ifn)
+            _wstore2 = node.get("wdtt") or {}
+            for _w in (snap.get("wdtt") or []):   # a WDTT identity the panel doesn't hold a CURRENT sealed copy of
+                _wi = _w.get("iface"); _wp = _w.get("server_pub")
+                if _wi and _wp and ((_wstore2.get(_wi) or {}).get("key_blob") or {}).get("pub") != _wp:
+                    _wdtt_want.append(_wi)
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
                                 "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
                                 "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
+                                "wdtt_vault_want": _wdtt_want,   # WDTT instances the panel needs a current sealed server identity for
                                 # canonical panel dial address → lets an online node re-point itself when the
                                 # operator changes the panel host/port (the node verifies the new address with its
                                 # OWN trust anchor before switching). Additive: older nodes ignore it.
@@ -11493,6 +12655,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "iface_start": list((node.get("iface_start") or {}).keys()),  # interfaces to start (up + enable)
                                 "onboard": node.get("onboard") or {}, "create": node.get("create") or None,
                                 "turn": node.get("turn") or {}, "turn_onboard": node.get("turn_onboard") or [],
+                                "wdtt": _wdtt_reply(roster, nodes, nid),   # WDTT instances (node-store config) + roster-derived password set (declarative; node reconciles, no ack)
+                                "wdtt_remove": sorted((nodes.get(nid) or {}).get("wdtt_delete") or {}),   # EXPLICIT removals — the node never deletes an instance merely missing from `wdtt`
                                 "iface_key": node.get("iface_key") or {},   # per-iface {restore|rebaseline} keypair requests
                                 "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or []},   # Phase 2: policy-route forwards + exit SNAT
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
@@ -11565,7 +12729,11 @@ class Handler(BaseHTTPRequestHandler):
         # An installer/converter (its bearer token) flags that the node is about to go down for a
         # re-install or a method conversion, so the UI shows that instead of plain "offline". Cleared
         # when the node's next snapshot lands (it's back) — see _node_sync.
-        nid, node, _ = self._node_token()
+        # NB: bind `nodes` (not `_`) — the body below mutates and saves it. Discarding it raised NameError, which
+        # killed the handler mid-request: the connection dropped with no response, so the installer's status POST
+        # saw an empty reply, retried its full budget (~25 s of dead air after "COMPLETE"), and the panel never
+        # recorded the lifecycle state — no "re-installing"/"converting" tag ever appeared for a co-located node.
+        nid, node, nodes = self._node_token()
         if not nid:
             return
         length = self._body_len()
@@ -12082,6 +13250,29 @@ def _cert_is_cf_origin(cert_path):
         return False
 
 
+def sub_cert_health():
+    """Is the subscription server's certificate actually present and right? DIRECT TLS ONLY — under a reverse
+    proxy the proxy terminates TLS and the cert is the admin's to manage, so we report nothing rather than
+    nag about a file that is legitimately absent. Surfaced in "needs attention" because the failure is
+    otherwise invisible from the panel: swg-sub keeps serving plain HTTP on its port and only the SUBSCRIBER
+    sees it — as a TLS handshake failure (Cloudflare 525), from a service the panel reports as healthy."""
+    if IN_DOCKER:
+        return {}
+    try:
+        acc = (Handler.deps.get("panel_settings") or {}).get("access") or {}
+    except Exception:
+        return {}
+    mode = ((acc.get("tls") or {}).get("mode") or "").strip()
+    if mode in ("", "skip"):
+        return {}                                    # reverse proxy → not ours
+    dom = _url_host((acc.get("sub") or {}).get("url") or "")
+    if not dom:
+        return {}
+    present = os.path.isfile(SUB_CERT_PATH)
+    return {"mode": mode, "domain": dom, "present": present,
+            "needs_issue": bool((not present) or _cert_needs_issue(SUB_CERT_PATH, dom, mode))}
+
+
 def _cert_needs_issue(cert_path, domain, mode):
     """Should we (re)issue a cert before serving `domain` under `mode`? Yes when the current cert doesn't
     cover the domain, OR the mode expects a real CA cert (LE / Cloudflare Origin CA) but what's on disk is a
@@ -12246,14 +13437,20 @@ def _rollback_panel_url(deps, url, host, port):
 def _save_panel_access(deps, url, host, port):
     """Persist the SAVED panel url + bind (panel_settings.access.panel) — used by the migration CANCEL / revert to
     put the config back on the address it reverted to, so it matches the live listener/cert. The url field is kept
-    BARE (scheme://host) — the port lives in its own field, so a full 'host:port' (e.g. _CONFIRMED_URL) is never
-    written into the url field (that would duplicate the port and show https://host:8443 with port 8443 beside it)."""
+    BARE (scheme://host) ONLY behind a reverse proxy, where the public url's port is the PROXY's and is genuinely
+    independent of our bind — writing our port there would be wrong. In DIRECT mode the url carries the bind's own
+    port (the UI derives the port from it, there being no separate field), so baring it would destroy that port."""
     with contextlib.suppress(Exception):
         _bare = str(url or "").strip()
+        _behind = str((((deps.get("panel_settings") or {}).get("access") or {}).get("tls") or {}).get("mode") or "") in ("", "skip")
         with contextlib.suppress(Exception):
             _u = urlparse(_bare if re.match(r"^https?://", _bare, re.I) else "https://" + _bare)
             if _u.hostname:
-                _bare = "%s://%s" % (_u.scheme or "https", _u.hostname)
+                _sch = _u.scheme or "https"
+                _dflt = 443 if _sch == "https" else 80
+                _keep = (not _behind) and int(port or 0) and int(port) != _dflt
+                _hp = ("[%s]" % _u.hostname) if ":" in _u.hostname else _u.hostname
+                _bare = "%s://%s%s" % (_sch, _hp, (":%d" % int(port)) if _keep else "")
         ps = deps.get("panel_settings") or {}
         pnl = (ps.get("access") or {}).get("panel") or {}
         pnl["url"] = _bare; pnl["host"] = str(host or "0.0.0.0"); pnl["port"] = int(port)
@@ -12793,6 +13990,7 @@ def main():
     globals()["TURN_ROSTER_PATH"] = os.path.join(_statedir, "turn-roster.json")  # client-schema drift baseline (roster-check)
     _prov_status_load()
     _turn_sums_load()
+    _turn_holds_migrate()   # legacy per-service rollback holds → per (node, fork) (shared-binary fix)
     _lp = os.path.join(_statedir, ".panel.lock")
     def _other_panel_pid():
         # Any OTHER live swg-panel-server on this box? Scans /proc, matching PRECISELY (arg0 is the script, or python
@@ -12873,6 +14071,7 @@ def main():
                     "twofa_path": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "2fa.json"),
                     "sub_dir": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "subs"),
                     "now": lambda: int(time.time())}
+    _release_cache_load(Handler.deps)   # seed download-asset caches from disk BEFORE any serve.json write, so a restart never regresses the sub's download bubbles to "page only"
     Handler.deps["turn_ips"] = load_json(_turn_ips_path(Handler.deps), {}) or {}   # unique turn-proxy source-IP history (survives restart)
     write_sub_serve(Handler.deps)   # seed/refresh subs/serve.json so swg-sub has current enable/serve config from boot (even when subscriptions were never touched)
     globals()["_SUB_LIVE_BIND"] = {   # boot baseline for the sub self-heal — config == live at startup
@@ -12943,6 +14142,8 @@ def main():
                 save_critical(Handler.deps.get("panel_settings_path") or "", json.dumps(_ps, indent=2) + "\n")
                 print("access: boot self-heal — saved canonical '%s' not covered by the cert; reconciled to '%s'" % (_saved_dom, _cert_dom), flush=True)
     _seed_confirmed_url_at_boot(Handler.deps)   # seed _CONFIRMED_URL from the BLESSED confirmed-state file (not raw settings) + reconcile any saved-but-unconfirmed change back to what's live; bootstraps the blessed file on a never-confirmed install
+    with contextlib.suppress(Exception):
+        _reconcile_sub_listen_at_boot(Handler.deps)   # re-assert the sub's bind if its drop-in went missing (a convert deletes it) — never fatal
     if IN_DOCKER:
         _arm_docker_flip_marker(Handler.deps)   # did we just recreate for a docker restart-safe change? arm the reachability-confirm/auto-revert timer (or clear a rolled-back marker)
     # The primary listener goes into the live registry (so Access & TLS can add a second one on a new

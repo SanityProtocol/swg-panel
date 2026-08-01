@@ -232,8 +232,24 @@ PY
 }
 
 CHECK=no; [ "${1:-}" = --check ] && { CHECK=yes; shift; }
-FROM="${1:-}"; TO="${2:-}"; ROLE="${3:-}"
-[ -n "$FROM" ] && [ -n "$TO" ] && [ -n "$ROLE" ] || die "usage: convert.sh [--check] <docker|baremetal> <docker|baremetal> <node|host|master>"
+# Accept the spelling we PRINT. Every banner and sentence here says "bare-metal", so that is what people type —
+# and it used to fall through to the catch-all "unsupported conversion", which named the very spelling it had
+# just rejected and never said what it wanted instead. Normalise the obvious variants, and validate up front so
+# a typo is answered with the accepted values rather than a dead end.
+_norm_method(){ case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in
+  bare-metal|bare_metal|bare|baremetal|metal|bm|host-os|native) echo baremetal;;
+  docker|dockerized|dockerised|container|compose)               echo docker;;
+  *) printf '%s' "${1:-}";; esac; }
+_norm_role(){ case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in
+  master|host-node|hostnode) echo master;; host|panel) echo host;; node|entry) echo node;;
+  *) printf '%s' "${1:-}";; esac; }
+_USAGE="usage: convert.sh [--check] <docker|baremetal> <docker|baremetal> <node|host|master>"
+FROM="$(_norm_method "${1:-}")"; TO="$(_norm_method "${2:-}")"; ROLE="$(_norm_role "${3:-}")"
+[ -n "$FROM" ] && [ -n "$TO" ] && [ -n "$ROLE" ] || die "$_USAGE"
+for _a in "FROM:$FROM" "TO:$TO"; do case "${_a#*:}" in docker|baremetal) :;;
+  *) die "‘${_a#*:}’ isn't a method (${_a%%:*}). Use $(b docker) or $(b baremetal). $_USAGE";; esac; done
+case "$ROLE" in node|host|master) :;; *) die "‘$ROLE’ isn't a role. Use $(b node), $(b host) or $(b master). $_USAGE";; esac
+[ "$FROM" != "$TO" ] || die "nothing to convert: $FROM → $TO are the same. $_USAGE"
 
 # prominent title — same look as the installers / update.sh (only on the real run, not the --check pre-flight)
 if [ "$CHECK" != yes ]; then
@@ -297,6 +313,25 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = baremetal ] &&
   [ -n "$PDOM" ] || die "couldn't read the panel domain ($pconf missing and no recovery state)"
   case "$PTLS" in letsencrypt|letsencrypt-ip|cloudflare|cf15|selfsigned|none) :;; *) PTLS=selfsigned;; esac
   [ -n "$PPORT" ] || PPORT=443
+  # The co-located node dials the STABLE loopback, never the public port: a later address change never moves it,
+  # which is the whole reason PANEL_LOCAL_PORT exists. The convert used to hand it https://127.0.0.1:<public>,
+  # so the first address change after a convert would have stranded it — the exact failure that port prevents.
+  PLOCALPORT="$(gv LOCAL_PORT)"; [ -n "$PLOCALPORT" ] || PLOCALPORT=8088
+  # The sub's port: the PANEL is the source of truth, not install.conf. install.conf records the value from
+  # INSTALL time, but the operator changes the sub address later in Settings → Access & TLS, which writes
+  # panel-settings.json — install.conf is only refreshed for the PANEL url (persist-url), never for the sub. Read
+  # the live value first and fall back. (Observed: install.conf said 8444 while the panel had served 2087 for
+  # hours, so the convert published the sub on a port nothing advertised.)
+  # Heredoc body sits at column 0 — indenting a python program to match the shell block is an IndentationError,
+  # and `2>/dev/null` would hide it and silently fall back to install.conf's stale value.
+  PSUBPORT="$(python3 - <<'PY' 2>/dev/null | tr -dc '0-9'
+import json
+d = json.load(open("/var/lib/swg-panel/panel-settings.json"))
+print(((d.get("access") or {}).get("sub") or {}).get("port") or "")
+PY
+)"
+  [ -n "$PSUBPORT" ] || PSUBPORT="$(gv SUB_PORT)"
+  [ -n "$PSUBPORT" ] || PSUBPORT=8444
   docker_panel_present && die "a docker panel (swg-panel container) already exists — remove it first"
 
   # MASTER: also read the co-located node's identity (preserve its token so the panel keeps the same node) +
@@ -347,7 +382,7 @@ PY
   [ -d "$ETC" ]   && cp -a "$ETC/."   "$DOCKER_DIR/data/etc/"   2>/dev/null || true   # fleet.json, auth, tls/
   [ -d "$STATS" ] && cp -a "$STATS/." "$DOCKER_DIR/data/stats/" 2>/dev/null || true   # status snapshots + health-*.rrd graph history
   _rrd_src=$(find "$STATS" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' ' || true); _rrd_dst=$(find "$DOCKER_DIR/data/stats" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' ' || true)   # || true: $STATS may be absent (find exits nonzero); wc still prints 0
-  [ "${_rrd_src:-0}" -gt 0 ] && [ "${_rrd_dst:-0}" != "${_rrd_src:-0}" ] && warn "health graphs: staged ${_rrd_dst:-0}/${_rrd_src} rrd file(s) — some history may not have transferred"
+  [ "${_rrd_src:-0}" -gt 0 ] && [ "${_rrd_dst:-0}" -lt "${_rrd_src:-0}" ] && warn "health graphs: staged ${_rrd_dst:-0}/${_rrd_src} rrd file(s) — some history may not have transferred"
   # carry the acme.sh renewal state (bare keeps it in /root/.acme.sh; the container reads data/etc/acme) and
   # point its stored reload command at the container (kill -HUP 1) instead of the systemd unit, so renewals reload.
   for _ah in /root/.acme.sh "${HOME:-/root}/.acme.sh"; do [ -d "$_ah" ] && { mkdir -p "$DOCKER_DIR/data/etc/acme"; cp -a "$_ah/." "$DOCKER_DIR/data/etc/acme/" 2>/dev/null || true; break; }; done
@@ -399,11 +434,16 @@ EOF
   #    then as its LAST step does the atomic switch: stop the bare panel (SWG_CONVERT_KILL_PANEL) + bare node +
   #    migrated turn units, then compose up. KEEP_AUTH preserves the staged login. Mirrors the node convert.
   write_recovery "$mifaces"
+  # Do NOT pass TLS: ask_choice treats an already-set value as the answer, so ANY value here prints the whole
+  # certificate menu with no question under it and silently picks for the operator. install-docker already
+  # defaults to "reuse" whenever the staged data/etc/tls covers this URL — which is exactly the carry-over we
+  # want — so leaving it unset gives a real prompt with the right default preselected, and Enter keeps the cert.
+  # $_RVENV still sets TLS=none for a reverse-proxy convert: that one IS a deliberate non-interactive override.
   # ── HOST convert: exec install-docker host (panel only) — it owns the lifecycle terminal. ──
   if [ "$ROLE" = host ]; then
     info "Running install-docker.sh (host) — the panel setup; it switches over as the last step…"; echo
     lc_handoff
-    exec env ROLE=host $_RVENV SWG_CONVERT_DIR=convert-docker SWG_CONVERT_KILL_PANEL=1 TLS_VERIFY=no bash "$SRC/install-docker.sh" host
+    exec env ROLE=host ACME_EMAIL="$PEMAIL" $_RVENV SUB_PORT="$PSUBPORT" PANEL_LOCAL_PORT="$PLOCALPORT" SWG_CONVERT_DIR=convert-docker SWG_CONVERT_KILL_PANEL=1 TLS_VERIFY=no bash "$SRC/install-docker.sh" host
   fi
   # ── MASTER convert = the HOST converter + the NODE converter, run in sequence ───────────────────────────────
   # The master's host-part IS install-docker host and its node-part IS install-docker node — guaranteed identical
@@ -412,7 +452,7 @@ EOF
   # and migrates this box's interfaces + turn-proxies in its own node stage. convert.sh owns the lifecycle terminal
   # (SWG_LC_PARENT=1 ⇒ neither sub-step emits its own), writing 'converted-docker' with the final line below.
   echo; info "HOST → docker — converting the panel (the local node keeps serving until the node step below)…"; echo
-  env ROLE=host $_RVENV SWG_CONVERT_DIR=convert-docker SWG_CONVERT_KILL_PANEL=1 SWG_LC_PARENT=1 TLS_VERIFY=no \
+  env ROLE=host ACME_EMAIL="$PEMAIL" $_RVENV SUB_PORT="$PSUBPORT" PANEL_LOCAL_PORT="$PLOCALPORT" SWG_CONVERT_DIR=convert-docker SWG_CONVERT_KILL_PANEL=1 SWG_LC_PARENT=1 TLS_VERIFY=no \
       bash "$SRC/install-docker.sh" host \
     || die "the panel (host) convert failed — your state is safe in $DOCKER_DIR/data; check 'docker compose logs'"
   LC_FILE="$DOCKER_DIR/data/lib/host_proc"   # docker panel now owns host_proc → convert.sh's EXIT terminal lands there
@@ -426,7 +466,7 @@ EOF
   # port (host networking can't resolve the compose name swg-panel), and manage turns via the panel (socket) so the
   # migrated turn-proxies materialise as containers. NODE_TOKEN/ENDPOINT are the preserved local-node identity.
   env SWG_CONVERT_DIR=convert-docker NODE_TOKEN="${NTOK:-}" NODE_ENDPOINT="${NEP:-$PDOM}" \
-      PANEL_URL="https://127.0.0.1:$PPORT" TURN_MANAGE=panel SWG_LC_PARENT=1 TLS_VERIFY=no \
+      PANEL_URL="http://127.0.0.1:${PLOCALPORT:-8088}" TURN_MANAGE=panel SWG_LC_PARENT=1 TLS_VERIFY=no \
       bash "$SRC/install-docker.sh" node \
     || warn "the local node convert reported an error — check it on the panel."
   clear_recovery
@@ -507,7 +547,9 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   fi
   _rrd_dst=$(find "$STATS" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' ')
   sub "staged roster + nodes + login + cert + ${_rrd_dst:-0} health graph(s) → bare-metal"
-  [ "${_rrd_src:-0}" -gt 0 ] && [ "${_rrd_dst:-0}" != "${_rrd_src:-0}" ] && warn "health graphs: transferred ${_rrd_dst:-0}/${_rrd_src} rrd file(s) — some node-health history may be missing"
+  # only a SHORTFALL is a problem: the destination can legitimately hold more (graphs from an earlier install that
+  # the copy didn't overwrite), and "transferred 2/1" read like a bug in the counting rather than a note.
+  [ "${_rrd_src:-0}" -gt 0 ] && [ "${_rrd_dst:-0}" -lt "${_rrd_src:-0}" ] && warn "health graphs: transferred ${_rrd_dst:-0}/${_rrd_src} rrd file(s) — some node-health history may be missing"
   # GUARD: never proceed (and let install-host seed a blank panel) if the login + node store didn't come across.
   { [ -s "$ETC/auth" ] && [ -f "$STATE/nodes.json" ]; } || die "couldn't stage the panel state (login/nodes missing) — aborting to avoid data loss. The docker panel is untouched; check 'docker exec swg-panel ls -la /var/lib/swg-panel /etc/swg-panel'."
   # Stash the JUST-STAGED settings + blessed url NOW, while they're known-good — install-host's cert reloadcmd can
@@ -520,8 +562,12 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
     find /root/.acme.sh -name '*.conf' -exec sed -i "s#^Le_ReloadCmd=.*#Le_ReloadCmd='systemctl restart swg-panel-server'#" {} + 2>/dev/null || true
   fi
   # write the bare install.conf so install-host.sh's prompts DEFAULT to the preserved settings (Enter accepts)
+  # ROLE_SEL is what a LATER re-install defaults to, so it must be the deployment's real role. Hardcoding
+  # "host" made a re-install of a MASTER offer "host" as the default — i.e. quietly drop the co-located node —
+  # while the menu above it still showed master as the default. (The install-host invocation itself is
+  # ROLE=host on purpose: the node half is installed separately by install-node.sh right after.)
   cat > "$ETC/install.conf" <<EOF
-ROLE_SEL=host
+ROLE_SEL=$([ "$ROLE" = master ] && echo master || echo host)
 PANEL_DOMAIN=$PDOM
 PANEL_BASE=$PBASE
 PORT=$PPORT
@@ -539,14 +585,22 @@ EOF
   #    staged login (KEEP_AUTH); TLS defaults to reuse when the staged cert still covers the host (else it prompts).
   # Clear any STALE swg-sub drop-ins from a PRIOR bare-metal install (this box may have been bare→docker→bare): they're
   # swg-netctl-managed env overrides (SWG_SUB_HOST/PORT) that would shadow the fresh unit with a dead bind. The panel
-  # re-writes the correct one via apply-sub after the switch. (A no-op on a box that was never bare-metal.)
+  # re-asserts the correct one at boot (_reconcile_sub_listen_at_boot) from access.sub. (A no-op on a box that was
+  # never bare-metal.) That heal is what makes this delete safe: it used to claim an "apply-sub after the switch"
+  # that nothing ever called, so the sub silently fell back to the unit default while the panel kept advertising
+  # the configured port — links pointed at a port nothing listened on, with the service reporting perfectly healthy.
   rm -f /etc/systemd/system/swg-sub.service.d/*.conf 2>/dev/null || true
   info "Installing the bare-metal panel — the docker panel keeps serving until the switch…"
   # A MASTER has a co-located node coming in the LATER install-node step, but there's no agent config for install-host
   # to detect yet — flag it so the panel binds the dedicated loopback port (SWG_PANEL_LOCAL_PORT) that the node dials.
   _LNENV=""; [ "$ROLE" = master ] && _LNENV="SWG_HAS_LOCAL_NODE=1 LOCAL_PORT=$PLOCALPORT"
+  # Pass NEITHER TLS_MODE nor SERVE_MODE: ask_choice/ask_valid treat an already-set value as the answer, so both
+  # menus printed in full with no question under them and the installer picked for the operator — and the pick was
+  # "letsencrypt", which then tried to re-issue a certificate we had just staged and aborted on :80 (held by the
+  # docker panel that is deliberately still serving). install.conf above already carries both as the DEFAULTS, so
+  # dropping them here gives real prompts with "reuse" preselected: Enter keeps the cert and the web-server mode.
   env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" SUB_PORT="$PSUBPORT" $_LNENV \
-      CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare SWG_LC_PARENT=1 SWG_DEFER_START=1 \
+      CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SWG_CONVERT_DIR=convert-bare SWG_LC_PARENT=1 SWG_DEFER_START=1 \
       bash "$SRC/install-host.sh" \
     || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
 
@@ -557,6 +611,14 @@ EOF
   #     real cert). We stashed the good copies right after staging (below §1); put them back so the real start reads the
   #     preserved access + subs + blessed url intact. (Bare-metal only; the bare->docker block uses .env.)
   _owner="$(stat -c '%U:%G' "$STATE" 2>/dev/null || echo root:root)"
+  # The staged copy came out of the CONTAINER, where the panel runs as root — so every file it brought over is
+  # root-owned, while the bare-metal panel runs as an unprivileged service user. It then can't read its own roster
+  # and, because an unreadable file is indistinguishable from a corrupt one, refuses to start rather than come up
+  # empty: the UI showed "No nodes yet" while the journal repeated "users.json is corrupt". Only two files were
+  # being chowned individually; do the whole tree, now that install-host has created the user.
+  chown -R "$_owner" "$STATE" 2>/dev/null || true
+  chmod 600 "$STATE"/users.json "$STATE"/nodes.json 2>/dev/null || true      # roster + node tokens stay owner-only
+  [ -d "$STATE/configs" ] && chmod 700 "$STATE/configs" 2>/dev/null || true  # stored client configs
   [ -f "$STATE/.panel-settings.preconvert" ]  && { mv -f "$STATE/.panel-settings.preconvert"  "$STATE/panel-settings.json";  chown "$_owner" "$STATE/panel-settings.json"  2>/dev/null || true; }
   [ -f "$STATE/.panel-confirmed.preconvert" ] && { mv -f "$STATE/.panel-confirmed.preconvert" "$STATE/panel-confirmed.json"; chown "$_owner" "$STATE/panel-confirmed.json" 2>/dev/null || true; }
 
@@ -570,6 +632,7 @@ EOF
   else
     ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true; docker rm -f swg-panel >/dev/null 2>&1 || true
   fi
+  remove_docker_netctl   # the bare panel brings its own swg-netctl; the docker pair would drain the same queue
   # Wait for docker to FULLY release the panel port before starting the bare one. On a slow / 1-core box the
   # docker-proxy teardown lingers, so an immediate start binds into a busy port, crashes, and its Restart loop then
   # contends on the state-dir lock. Poll until the port is free (bounded), then start.
@@ -583,10 +646,19 @@ EOF
   # so the header would blank instead of flipping converting→converted the moment the bare panel is reachable.
   for _i in $(seq 1 30); do curl -sk -o /dev/null --max-time 2 "https://127.0.0.1:${PPORT}${PBASE}/" 2>/dev/null && break; sleep 1; done
 
+  # Same repair in reverse: the cert dir moved back out of the container and the ports are the bare ones now.
+  nginx_convert_fixup /etc/swg-panel/tls "$(ngx_upstream "$PPORT")" "$(ngx_upstream "$PSUBPORT")"
+
   # Bring the bare swg-sub up when subscriptions were ON: issue its cert (same acme state — reuses the panel cert for a
   # same-domain sub) and (re)start it so the public sub surface migrates too. The main unit already binds SWG_SUB_PORT
   # =$PSUBPORT and the stale drop-ins are gone, so a restart binds the right port. Best-effort: a missing sub host /
   # disabled subs just leaves swg-sub inert (its normal state until turned on in the panel).
+  # Start it UNCONDITIONALLY first: install-host ran under SWG_DEFER_START (so the new panel wouldn't fight docker
+  # for the port), which left swg-sub enabled-but-never-started, and the cert/host branch below only fires when subs
+  # were already on — so every converted box with subs OFF came up reporting "Subscription server isn't running".
+  # swg-sub is inert until subscriptions are enabled in the panel; what it must be is RUNNING, so the panel can
+  # rebind it the moment they are. Safe here: the docker sub container was removed just above, so the port is free.
+  systemctl start swg-sub 2>/dev/null || true
   if python3 -c 'import json,sys; sys.exit(0 if (json.load(open(sys.argv[1])).get("subscriptions") or {}).get("enabled") else 1)' "$STATE/panel-settings.json" 2>/dev/null; then
     _subhost="$(python3 -c 'import json,sys
 from urllib.parse import urlparse
@@ -611,6 +683,16 @@ print(urlparse(((( json.load(open(sys.argv[1])).get("access") or {}).get("sub") 
       mkdir -p "$DOCKER_DIR/data/node-confs" "$DOCKER_DIR/data/node"
       docker cp swg-node:/etc/amnezia/amneziawg/. "$DOCKER_DIR/data/node-confs/" 2>/dev/null || true
       docker cp swg-node:/var/lib/swg-noded/.      "$DOCKER_DIR/data/node/"       2>/dev/null || true
+      # …and the PLAIN-WireGuard dir. Only the AWG dir is a bind mount, so a wg conf can exist ONLY inside the
+      # container — and was destroyed with it: the panel then reported those interfaces as lost, and for the ones
+      # it had never issued keys for ("adopted"), as unrecoverable. Staged into the same dir; the loop below
+      # routes each conf to the right host dir by its contents. Never clobbers an AWG conf of the same name.
+      _wgtmp="$(mktemp -d)"
+      docker cp swg-node:/etc/wireguard/. "$_wgtmp/" 2>/dev/null || true
+      for _wf in "$_wgtmp"/*.conf; do [ -f "$_wf" ] || continue
+        [ -e "$DOCKER_DIR/data/node-confs/$(basename "$_wf")" ] || cp -a "$_wf" "$DOCKER_DIR/data/node-confs/"
+      done
+      rm -rf "$_wgtmp"
     fi
     for f in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] || continue
       nm="$(basename "$f" .conf)"
@@ -618,7 +700,10 @@ print(urlparse(((( json.load(open(sys.argv[1])).get("access") or {}).get("sub") 
       mkdir -p "$(dirname "$dest")"; import_bare_conf "$f" "$dest"
       sub "imported local-node interface $(b "$nm") → $dest (host NAT added)"; mnames="${mnames:+$mnames }$nm"
     done
-    if [ -d "$DOCKER_DIR/data/node/iface-keys" ]; then mkdir -p /var/lib/swg-noded/iface-keys; cp -a "$DOCKER_DIR/data/node/iface-keys/." /var/lib/swg-noded/iface-keys/ 2>/dev/null || true; fi
+    migrate_node_state to-baremetal "$DOCKER_DIR"
+    # WDTT server state → the bare-metal paths (carries each wg-keys.dat identity + owner passwords so clients keep
+    # working, no re-mint; strips the docker run-model's stale runtime files — see migrate_wdtt in lib/common.sh).
+    migrate_wdtt to-baremetal "$DOCKER_DIR"
     # ALWAYS run install-node for a master — even with NO interfaces to migrate. The co-located node still has to
     # become a bare swg-noded that syncs (ready for interfaces added later from the panel); gating on $mnames left a
     # 0-interface master's node orphaned as a docker container after the dir-move below. (install-node migrates the
@@ -702,7 +787,10 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   _sp=""; for s in $specs; do nm="${s%:*}"
     { [ -e "$confd/$nm.conf" ] || [ -e "/etc/amnezia/amneziawg/$nm.conf" ] || [ -e "/etc/wireguard/$nm.conf" ]; } && _sp="${_sp:+$_sp }$s"
   done; specs="$_sp"
-  [ -n "$specs" ] || die "no interfaces found (looked in $confd and the docker node's .env)"
+  # No wg/awg interfaces is FINE — an empty master/node (nothing added yet), or a WDTT-only node, converts as-is:
+  # interfaces are added later from the panel, and any WDTT servers carry over via migrate_wdtt. Just convert what's
+  # there — never refuse for "nothing yet" (mirrors the installer, which allows an interface-less install).
+  [ -n "$specs" ] || sub "no wg/awg interfaces to migrate — converting the node as-is (add interfaces from the panel later)"
 
   # pre-flight: a bare-metal conf of the same NAME already present is a real clash (the docker
   # node still holds the ports, but those free up the moment we stop its container below).
@@ -745,14 +833,17 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     sub "imported $(b "$nm") → $dest (host NAT added)"
     names="${names:+$names }$nm"
   done
-  [ -n "$names" ] || die "no interface confs copied (looked in $confd)"
+  # die only if we EXPECTED interfaces ($specs non-empty) but none copied — a real "confs vanished" error. An empty
+  # node (no specs) legitimately copies nothing and converts as-is; don't refuse it.
+  [ -n "$names" ] || [ -z "$specs" ] || die "no interface confs copied (looked in $confd)"
 
-  # carry the per-interface keypair backups across so the server-key revert baseline survives the move
-  if [ -d "$DOCKER_DIR/data/node/iface-keys" ]; then
-    mkdir -p /var/lib/swg-noded/iface-keys
-    cp -a "$DOCKER_DIR/data/node/iface-keys/." /var/lib/swg-noded/iface-keys/ 2>/dev/null || true
-    sub "carried interface keypair backups → /var/lib/swg-noded/iface-keys"
-  fi
+  # carry the node's host-local derived state (keypair backups + the pulled routing lists) — see lib/common.sh
+  migrate_node_state to-baremetal "$DOCKER_DIR"
+
+  # carry the WDTT server state to the bare-metal paths (each wg-keys.dat identity + the node-owned owner passwords,
+  # so clients keep working after the switch — no re-mint; strips the docker run-model's stale runtime files that the
+  # reconcile rewrites). Single source of truth: migrate_wdtt in lib/common.sh.
+  migrate_wdtt to-baremetal "$DOCKER_DIR"
 
   # 3) THE SWITCH — install-node.sh runs all its prompts WHILE docker still serves: Step 1 interfaces, then
   #    Step 2 migrates the docker turn-proxies (deferred) + adds more. Then, as its LAST step, the atomic cutover:
@@ -812,7 +903,9 @@ PY
     for f in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] && printf '%s\t%s\n' "$(basename "$f" .conf)" "$f"; done > /tmp/.swg_ifaces.$$ 2>/dev/null
     ifaces="$(cat /tmp/.swg_ifaces.$$ 2>/dev/null)"; rm -f /tmp/.swg_ifaces.$$
   fi
-  [ -n "$ifaces" ] || die "the bare-metal node has no interfaces in $cfg"
+  # No interfaces is FINE — an empty or WDTT-only bare node converts as-is (add interfaces later from the panel; any
+  # WDTT servers carry over in install-docker's node stage). Convert what's there — never refuse for "nothing yet".
+  [ -n "$ifaces" ] || info "no wg/awg interfaces on the bare-metal node — converting it as-is (manage from the panel)"
 
   # pre-flight: a LIVE docker node would be clobbered. A stale leftover $DOCKER_DIR (no container — e.g.
   # a previous convert that aborted before moving it aside) is NOT a conflict; the convert moves it aside.
@@ -841,8 +934,11 @@ PY
   # interfaces + turn-proxies are migrated in install-docker's NODE STAGE now — migrate_baremetal_ifaces +
   # migrate_baremetal_turns each ask "Transfer? (Y/n)" and copy-first (keys preserved, bare side comes down at the
   # switch). convert.sh no longer pre-stages node items before handing off. Just collect the names for recovery.
-  names="$(printf '%s\n' "$ifaces" | while IFS="$(printf '\t')" read -r nm _; do [ -n "$nm" ] && printf '%s ' "$nm"; done || true)"; names="$(echo $names)"
-  [ -n "$names" ] || die "the bare-metal node has no interfaces"
+  names="$(printf '%s\n' "$ifaces" | while IFS="$(printf '\t')" read -r nm _; do [ -n "$nm" ] && printf '%s ' "$nm"; done || true)"; names="$(echo $names)"   # empty is fine (interface-less node) — just collected for recovery
+
+  # NB: the WDTT server state (identity + owner passwords) is carried + the bare swg-wdtt units are stopped inside
+  # install-docker.sh's node stage (migrate_baremetal_ifaces copy-first + the atomic switch), which runs for BOTH a
+  # standalone node (exec below) and a master — so it isn't duplicated here.
 
   # 3) everything is staged; the BARE NODE IS STILL UP + serving the whole time. Persist the identity (so an
   #    interrupt during the final switch can resume), then hand off — install-docker.sh does the ATOMIC SWITCH:
@@ -859,4 +955,4 @@ PY
        SWG_CONVERT_TURNS="$MIGRATED_TURNS" bash "$SRC/install-docker.sh" node
 fi
 
-die "unsupported conversion: $FROM → $TO ($ROLE)"
+die "unsupported conversion: $FROM → $TO ($ROLE) — supported: baremetal→docker and docker→baremetal, for node, host or master."

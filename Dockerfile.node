@@ -27,8 +27,11 @@ FROM public.ecr.aws/docker/library/python:3.12-slim
 ARG TARGETARCH=amd64
 # util-linux = nsenter (host_sh helper), curl + the static docker CLI = drive host turn-proxy units
 # via the mounted docker.sock when TURN_MANAGE=panel (B1). The daemon is never installed — client only.
+# wireguard-tools ships `wg`: without it the only tool here is `awg`, which lists amneziawg-module
+# interfaces only — so a plain-WireGuard interface already on the box (the common case when adopting an
+# existing install) was invisible to iface_candidates and could never be offered for adoption.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      iproute2 iptables nftables ipset dnsmasq ca-certificates procps curl util-linux \
+      iproute2 iptables nftables ipset dnsmasq ca-certificates procps curl util-linux wireguard-tools \
  && case "$TARGETARCH" in amd64) A=x86_64;; arm64) A=aarch64;; *) A=x86_64;; esac \
  && curl -fsSL "https://download.docker.com/linux/static/stable/${A}/docker-27.3.1.tgz" -o /tmp/d.tgz \
  && tar -xzf /tmp/d.tgz -C /tmp && install /tmp/docker/docker /usr/bin/docker \

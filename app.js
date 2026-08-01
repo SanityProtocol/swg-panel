@@ -58,11 +58,29 @@ function useStableOrder(targets) {
 }
 // wg vs awg for an interface. A single peer/key can't span both protocols, so the target pickers hide the other
 // kind once one is chosen (enforced wherever peers get interfaces — peers module, users module, …).
-const iTypeOf = (node, iface) => { const m = (Store.describe[node] || {})[iface] || {}; return (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg"; };
-// wg/awg for a peer TARGET — from the LIVE interface (authoritative), falling back to the stored target.type only
-// when the node isn't reporting the interface. Use this everywhere a target's protocol tag/colour is shown so a
-// stale target.type can never mislabel/miscolour a row (peers · users · live · interface grids all share this).
-const targetType = t => { const m = t && (Store.describe[t.node] || {})[t.iface]; return m ? ((m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg") : (((t && t.type) || "wg").toLowerCase() === "awg" ? "awg" : "wg"); };
+const isWdttIface = (name) => /^wdtt\d{1,3}$/.test(String(name));   // classify a WDTT interface by NAME (when there's no roster target to read `type` from); mirrors the node's _WDTT_IFACE_RE
+// THE ONE interface/target-kind classifier — "wg" | "awg" | "wdtt". WDTT wins on the authoritative target `type`
+// or its iface NAME (a WDTT interface is never in `describe`). Otherwise the LIVE interface meta is authoritative
+// for awg-vs-wg, falling back to the stored target.type only when the node isn't reporting the interface. Every
+// badge/count/dispatch keys off this (via iTypeOf / targetType) so a WDTT target can never be mislabelled WG.
+// The node's ACTUAL WDTT interfaces: its live readback first, then the panel's own config so a node that is
+// down still classifies correctly. The name pattern below is only a last-resort fallback — adoption accepts an
+// operator-chosen name (wdttreal0), which the generated-name regex rejects, and such a target was then dropped
+// into the WG list and tagged "wg". Peer-create dispatches on this, so it minted the wrong kind of peer too.
+function wdttOn(node, iface) {
+  if (!node || !iface) return false;
+  if (((Store.stats[node] || {}).wdtt || []).some(w => w && w.iface === iface)) return true;
+  const n = (Store.nodes || []).find(x => x.id === node);
+  return !!(n && (n.wdtt_cfg || {})[iface]);
+}
+function kindOf(node, iface, type) {
+  if (type === "wdtt" || wdttOn(node, iface) || isWdttIface(iface)) return "wdtt";
+  const m = (Store.describe[node] || {})[iface];
+  if (m) return (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
+  return (String(type || "wg").toLowerCase() === "awg") ? "awg" : "wg";
+}
+const iTypeOf = (node, iface) => kindOf(node, iface, null);   // by (node, iface) — the TargetPicker's one-kind lock + peer-create dispatch key off it
+const targetType = t => t ? kindOf(t.node, t.iface, t.type) : "wg";   // by roster TARGET — every protocol tag/colour uses this
 function ipOf(hostport) { if (!hostport) return ""; const s = String(hostport); return s[0] === "[" ? s.slice(1, s.indexOf("]")) : s.split(":")[0]; }
 function portOf(hostport) { if (!hostport) return ""; const s = String(hostport); const i = s.lastIndexOf(":"); return i < 0 ? "" : s.slice(i + 1); }
 // turn-proxy display label: strip the vk-turn-proxy- prefix and render as name:port (a "-NNNN"
@@ -276,15 +294,22 @@ async function subEnc(key, bytes) {   // → base64( iv(12) ‖ ciphertext )
 async function subDec(key, b64s) {    // base64(iv‖ct) → bytes; throws on wrong key / tamper (GCM auth)
   const all = _b64ToBytes(b64s); return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: all.slice(0, 12) }, key, all.slice(12)));
 }
-// First-time setup: mint the Subscription Key, wrap it with the password (convenience cache), store the
-// wrapped form + a verifier. Returns the SK (base64) to SHOW ONCE — it is never sent to the server in the clear.
-async function subVaultCreate(password) {
+// Wrap the SK under a password → the request body for the vault's single keyslot.
+async function subSlotBody(password, skBytes) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const wk = await subWrapKey(password, salt);
+  return { salt: b64(salt), sk_by_pw: await subEnc(wk, skBytes),
+           sk_check: await subEnc(wk, new TextEncoder().encode(SUB_CHECK)) };
+}
+// First-time setup: mint the Subscription Key, wrap it with the password (convenience cache), store the
+// wrapped form + a verifier. Returns the SK (base64) to SHOW ONCE — it is never sent to the server in the clear.
+// That shown key is the ONLY way back in if the password is ever reset outside the panel (swg-passwd), so it is
+// surfaced on every path that creates a vault — and stays revealable from Settings while the vault is unlocked.
+async function subVaultCreate(password) {
   const sk = crypto.getRandomValues(new Uint8Array(32));
   const skKey = await _importAes(sk, ["encrypt", "decrypt"]);
-  const r = await api.subVaultSet({ salt: b64(salt), sk_by_pw: await subEnc(wk, sk),
-    sk_check: await subEnc(wk, new TextEncoder().encode(SUB_CHECK)),
+  const r = await api.subVaultSet({ ...await subSlotBody(password, sk),
+    fresh: true,   // a NEW SK → the server drops the now-undecryptable escrow keypair
     // SK self-verifier (encrypted UNDER the SK) so a cached SK can be validated against THIS vault on boot —
     // a stale cache left over from a previous (reset) vault is then detected + discarded, never trusted.
     sk_verify: await subEnc(skKey, new TextEncoder().encode(SUB_CHECK)) });
@@ -374,6 +399,15 @@ async function ivkResealForNode(node, mi) {
   if (!tpub) throw new Error("The node hasn't reported its transport key yet — try again in a few seconds.");
   return await ivkSeal(tpub, await ivkUnseal(await ivkVaultPriv(), mi.key_blob));
 }
+// A WDTT server's escrowed identity (owner pw + wg-keys.dat) → unseal with the vault key + re-seal to the node's
+// transport key, so a full-wipe restore relays only ciphertext. `keyBlob` is the node-view's wdtt_vault[iface].
+async function wdttResealForNode(node, keyBlob) {
+  if (!subSKCached()) throw new Error("Unlock the Encryption Vault first.");
+  if (!keyBlob || !keyBlob.ct) throw new Error("No escrowed identity is stored for this WDTT server.");
+  const tpub = ((Store.stats[node] || {}).transport_pub) || "";
+  if (!tpub) throw new Error("The node hasn't reported its transport key yet — try again in a few seconds.");
+  return await ivkSeal(tpub, await ivkUnseal(await ivkVaultPriv(), keyBlob));
+}
 
 let _subSK = null;                       // the unwrapped encryption key (CryptoKey), cached for this session
 const _SK_CACHE = "swg_ck";              // key-cache: sessionStorage always (tab-scoped); ALSO localStorage when the
@@ -422,7 +456,8 @@ async function subBootRestore() {
     _subSK = key;
   } catch (_) { subForget(); }
 }
-async function subUnlock(password) {      // unwrap the SK from the vault with the password → cache it
+// Unwrap the SK from the vault with the panel password → cache it.
+async function subUnlock(password) {
   const v = await api.subVault();
   if (!v || v.ok === false || !v.data || !v.data.exists) throw new Error("Config encryption isn't set up yet.");
   const wk = await subWrapKey(password, _b64ToBytes(v.data.salt));
@@ -436,28 +471,52 @@ async function subUnlock(password) {      // unwrap the SK from the vault with t
   // self-heal: give an older vault (pre-sk_verify) an SK self-verifier so a cached SK can be validated on boot.
   if (!v.data.sk_verify) {
     try { await api.subVaultSet({ salt: v.data.salt, sk_by_pw: v.data.sk_by_pw, sk_check: v.data.sk_check,
-      sk_verify: await subEnc(_subSK, new TextEncoder().encode(SUB_CHECK)) }); } catch (_) {}
+      sk_verify: await subEnc(_subSK, new TextEncoder().encode(SUB_CHECK)) }); } catch (_) {}   // the wrap is resent verbatim — the server merges, so the escrow keypair survives
   }
   try { subFlushPending(); } catch (_) {}   // save anything the operator skipped earlier this session (incl. overwriting a stale rotate blob)
   try { subAutoHeal(); } catch (_) {}   // key just became available → silently publish anything left unpublished while locked
   return _subSK;
 }
 // Re-wrap the vault under a NEW panel password so the convenience cache keeps auto-unlocking after a password
-// change (the SK itself is unchanged — every blob stays valid). Uses the raw SK from the session cache; returns
-// false if it isn't cached (then the operator unlocks with the old password or the shown-once key). Best-effort.
+// change. The SK itself is unchanged, so every stored config, subscription link and escrowed key stays valid.
+// Uses the raw SK from the session cache; returns false if it isn't cached (then the operator unlocks with the
+// old password or their encryption key first). Best-effort.
 async function subRewrap(newPassword) {
   let skB64 = null; try { skB64 = sessionStorage.getItem(_SK_CACHE); } catch (_) {}
   if (!skB64 || !newPassword) return false;
   try {
-    const skBytes = _b64ToBytes(skB64);
     const v = await api.subVault(); if (!v || !v.ok || !v.data || !v.data.exists) return false;
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    const wk = await subWrapKey(newPassword, salt);
-    const r = await api.subVaultSet({ salt: b64(salt), sk_by_pw: await subEnc(wk, skBytes),
-      sk_check: await subEnc(wk, new TextEncoder().encode(SUB_CHECK)) });
+    const r = await api.subVaultSet(await subSlotBody(newPassword, _b64ToBytes(skB64)));
     return !!(r && r.ok !== false);
   } catch (_) { return false; }
 }
+// The recovery path: unlock with the ENCRYPTION KEY itself (the value shown once at setup) instead of a password.
+// The key IS the SK, so there's nothing to unwrap — it's validated against sk_verify, which is encrypted UNDER the
+// SK, proving the pasted key belongs to THIS vault before anything trusts it. Used when the panel password was
+// reset out of band (swg-passwd) and no password opens the vault any more.
+async function subUnlockWithKey(keyB64) {
+  const raw = String(keyB64 || "").trim();
+  let bytes; try { bytes = _b64ToBytes(raw); } catch (_) { throw new Error("That doesn't look like an encryption key."); }
+  if (bytes.length !== 32) throw new Error("That doesn't look like an encryption key.");
+  const v = await api.subVault();
+  if (!v || v.ok === false || !v.data || !v.data.exists) throw new Error("Config encryption isn't set up yet.");
+  const key = await _importAes(bytes, ["encrypt", "decrypt"]);
+  if (v.data.sk_verify) {   // vaults created before sk_verify existed can't be checked — accept, subAutoHeal sorts it out
+    let ok = false;
+    try { ok = new TextDecoder().decode(await subDec(key, v.data.sk_verify)) === SUB_CHECK; } catch (_) {}
+    if (!ok) throw new Error("That key doesn't match this panel's Encryption Vault.");
+  }
+  _subSK = key;
+  try { sessionStorage.setItem(_SK_CACHE, b64(bytes)); if (subPersistOn()) localStorage.setItem(_SK_CACHE, b64(bytes)); } catch (_) {}
+  try { subFlushPending(); } catch (_) {}
+  try { subAutoHeal(); } catch (_) {}
+  return _subSK;
+}
+// Does this string look like an encryption key (base64 of 32 bytes) rather than a password? Used by the prompts
+// that accept either, so one field can take both without making the operator pick a mode.
+function looksLikeVaultKey(s) { return /^[A-Za-z0-9+/_-]{43}=?$/.test(String(s || "").trim()); }
+// The cached encryption key, base64 — for showing it to the operator. Null when the vault is locked.
+function subKeyB64() { try { return subSKCached() ? sessionStorage.getItem(_SK_CACHE) : null; } catch (_) { return null; } }
 
 // Enable a user's subscription: mint a fresh 256-bit URL token, and REUSE the user's existing unlock-key if
 // they already hold one (their encrypted-config blobs are encrypted under it — minting a fresh key would orphan
@@ -581,7 +640,7 @@ function nginxServerBlock(publicUrl, upstreamHost, upstreamPort) {
   L.push("");
   L.push("    location " + loc + " {");
   L.push("        proxy_pass http://" + up + ":" + upPort + ";   # the panel's internal listen address");
-  L.push("        proxy_set_header Host              $host;");
+  L.push("        proxy_set_header Host              $http_host;");   // $http_host keeps the PORT — $host strips it, and the address-change confirm compares Host against host:port
   L.push("        proxy_set_header X-Forwarded-For   $remote_addr;");
   L.push("        proxy_set_header X-Forwarded-Proto $scheme;");
   L.push("    }");
@@ -1177,6 +1236,8 @@ const api = {
   peerCorrect(b) { return this.post("/api/peers/correct", b); },   // broken: reassign an in-subnet IP
   ifaceUpdate(b) { return this.post("/api/iface/update", b); },
   ifaceOnboard(b) { return this.post("/api/iface/onboard", b); },
+  ifaceIgnore(b) { return this.post("/api/iface/ignore", b); },       // dismiss an adoption candidate
+  ifaceUnignore(b) { return this.post("/api/iface/unignore", b); },   // bring an ignored candidate back
   ifaceCreate(b) { return this.post("/api/iface/create", b); },
   ifaceCancel(b) { return this.post("/api/iface/cancel", b); },
   ifaceDelete(b) { return this.post("/api/iface/delete", b); },
@@ -1198,12 +1259,22 @@ const api = {
   turnOnboard(b) { return this.post("/api/turn/onboard", b); },       // adopt a host .service by path
   turnCancel(b) { return this.post("/api/turn/cancel", b); },
   turnCheckUpdates(b) { return this.post("/api/turn/check-updates", b); },   // resolve each fork's latest release tag
+  wdttSet(b) { return this.post("/api/wdtt/set", b); },                      // create/update a WDTT instance on a node (declarative)
+  wdttDelete(b) { return this.post("/api/wdtt/delete", b); },                // remove a WDTT instance
+  wdttAdopt(b) { return this.post("/api/wdtt/adopt", b); },                  // adopt a FOREIGN WDTT server (seeded create: reuses its identity + passwords)
+  wdttPeerCreate(b) { return this.post("/api/wdtt-peer/create", b); },       // keyless WDTT peer (mints the WRAP password)
+  wdttPeerRotate(b) { return this.post("/api/wdtt-peer/rotate", b); },       // rotate a WDTT peer's password (revoke the old link)
+  wdttRestore(b) { return this.post("/api/wdtt/restore", b); },              // restore a WDTT server's vaulted identity (owner pw + keypair)
+  wdttRecreateFresh(b) { return this.post("/api/wdtt/recreate-fresh", b); }, // abandon the vaulted identity → mint a fresh key (users re-import)
+  wdttVersions(q) { return this.get("/api/wdtt/versions?node=" + encodeURIComponent(q.node || "") + "&iface=" + encodeURIComponent(q.iface || "") + "&fork=" + encodeURIComponent(q.fork || "")); },   // our published builds (rollback targets) + any hold
+  wdttVersion(b) { return this.post("/api/wdtt/version", b); },              // roll a WDTT instance to a build (ver) or release the hold (ver="")
   rosterCheck() { return this.get("/api/turn/roster-check"); },              // client-app schema drift vs upstream GitHub (P1 ack-only clients)
   rosterAck(client) { return this.post("/api/turn/roster-ack", { client }); },   // acknowledge a client's current upstream as the baseline
   p4Report(refresh) { return this.get("/api/turn/p4/report" + (refresh ? "?refresh=1" : "")); },  // P4a versioned per-field roster (parseable forks)
   p4Adopt(client, body) { return this.post("/api/turn/p4/adopt", { client, ...(body || {}) }); },   // adopt {add,remove,vadd,vrem}
   p4SetVersion(client, index) { return this.post("/api/turn/p4/setversion", { client, index }); },     // rollback to an observed version (index=null → latest)
-  turnVersions(q) { return this.get("/api/turn/versions?owner=" + encodeURIComponent(q.owner || "") + "&node=" + encodeURIComponent(q.node || "") + "&service=" + encodeURIComponent(q.service || "")); },   // mirrored (rollback-able) versions + any hold
+  turnVersions(q) { return this.get("/api/turn/versions?owner=" + encodeURIComponent(q.owner || "") + "&node=" + encodeURIComponent(q.node || "") + "&service=" + encodeURIComponent(q.service || "") + "&fork=" + encodeURIComponent(q.fork || "")); },   // mirrored (rollback-able) versions + any per-(node,fork) hold
+  changelog() { return this.get("/api/changelog"); },   // full panel changelog (newest-first) for the version info bubble
   nodeSelfUpdate(b) { return this.post("/api/node/update", b); },   // flag a node to self-update (≠ nodeUpdate, which renames)
   hostUpdate() { return this.post("/api/host/update", {}); },
   checkUpdate() { return this.post("/api/update/check", {}); },
@@ -1225,6 +1296,7 @@ const Store = {
   rotating: {},              // peer id -> ts — key rotation in flight; grid shows "rotating" until the new key is live
   ifaceOp: {},               // "node|iface" -> { verb:start|restart, phase:busy|ok|fail, started, until, err }
   ifaceNew: {},              // "node|iface" -> { type } — optimistic "creating/onboarding" card shown the instant Create is clicked (until the server's own pending/meta picks it up)
+  ifaceGone: {},             // "node|iface" -> { at } — ifaceNew's mirror image: optimistic "deleting" card shown the instant Delete is confirmed (until the node stops reporting the interface)
   ghostRekey: {},            // "node|iface" -> { peers:[id], at } — a ghost recreate staged its peers; maybeRekeyGhosts() rekeys them once the fresh interface reports its new key (phase 2)
   turnNew: {},               // "node|service" -> { listen, connect, ... } — optimistic "installing" turn card (full entered data), shown until the node reports the real proxy
   pending: {},               // opId -> { apply(store), done }  — optimistic overlay (Model B)
@@ -1252,9 +1324,11 @@ const Store = {
     this.storeConfigs = this.storeMode !== "off";
     this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
+    this.subCert = d.sub_cert || {};              // subscription TLS health; {} behind a reverse proxy (admin's own)
     this.panelServices = d.panel_services || {};   // THIS host's own swg units (active/enabled/present) → service-health needs-attention. {} on docker/older panels
     this.datapath = d.datapath || {};              // THIS host's kernel datapath health (awg module loadable?) → healable "Fix" issue
     this.turnCatalog = d.turn_catalog || this.turnCatalog || null;   // single-source turn fork/client catalog (server-owned); turnForks() falls back to TURN_FORKS_FALLBACK when absent (mixed-version safe)
+    this.turnHolds = d.turn_holds || this.turnHolds || {};   // {node: {fork: held_version}} → fork-row "held" flag
     this.panelPublicUrl = d.panel_public_url || this.panelPublicUrl || "";   // CONFIRMED canonical address → flag a tab on an old panel address
     this.panelMigrateRevertable = !!d.panel_migrate_revertable;   // a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move" (server auto-clears at grace end)
     this.panelMigratePrev = d.panel_migrate_prev || null;         // the OLD address to cancel back to (only while revertable)
@@ -1332,7 +1406,9 @@ const Store = {
     // a rotation is "done" once the new key shows up live (or after a 45s safety cap) — drop the marker
     for (const id of Object.keys(this.rotating)) {
       const pr = this.recon.peers.find(p => p.id === id);
-      if ((pr && (pr.status === "online" || pr.status === "ready" || pr.status === "partial")) || (Date.now() - this.rotating[id] > 45000)) delete this.rotating[id];
+      // Keep the marker for ≥4s even if the peer still reads ready — an optimistic "Rotating" (set the instant you
+      // confirm) must survive the poll that lands before the rekey has actually taken the peer not-ready.
+      if ((pr && (pr.status === "online" || pr.status === "ready" || pr.status === "partial") && Date.now() - this.rotating[id] > 4000) || (Date.now() - this.rotating[id] > 45000)) delete this.rotating[id];
     }
     // auto-clear a peer's pinned action error once it's no longer true — no manual dismiss needed. A
     // "<node> hasn't reported <iface> yet" error resolves the instant that iface's meta arrives; a generic
@@ -1363,9 +1439,16 @@ const Store = {
     if (!iface) return false;
     const m = (this.describe[node] || {})[iface] || {};
     const pfx = (this.panelSettings || {}).reserved?.iface_prefix || "swg_";
+    // NB: wdtt* is NOT system — it IS a valid peer target (for keyless WDTT peers). Peer-create dispatches on the
+    // target's kind (iTypeOf → "wdtt"), so a wdtt* target mints a WDTT peer, not a broken WG one. Only the turn
+    // Forwards-to pickers exclude wdtt* (their own filter), since a -connect fork can't front a WDTT interface.
     return !!m.system || String(iface).startsWith(pfx) || String(iface).startsWith("swg_");
   },
-  userIfacesOf(node) { return this.ifacesOf(node).filter(i => !this.ifaceIsSystem(node, i)); },
+  userIfacesOf(node) {   // wg/awg from describe + WDTT ifaces (they own their iface, absent from describe → pulled from the readback)
+    const base = this.ifacesOf(node).filter(i => !this.ifaceIsSystem(node, i));
+    const wd = ((this.stats[node] || {}).wdtt || []).map(w => w && w.iface).filter(Boolean);
+    return Array.from(new Set([...base, ...wd]));
+  },
   peer(id) { return this.recon.peers.find(p => p.id === id); },
   user(id) { return this.recon.users.find(u => u.id === id); },
   peersOfUser(id) { return this.recon.peers.filter(p => p.user_id === id); },
@@ -1414,6 +1497,17 @@ function ifaceTurnBadges(node, fwdTurns, compact) {
   });
 }
 
+// Optimistic title: a title is a cosmetic panel-side label with no node round-trip, so show the new value on the
+// card the instant Save is clicked (pushOptTitle) instead of waiting for the next poll. Cleared once the server
+// reports it, or after 20s as a safety net.
+const _optTitle = {};   // "kind|node|id" -> { title, at }
+function pushOptTitle(key, title) { _optTitle[key] = { title: (title || "").trim(), at: Date.now() }; Store.apply(); }
+function shownTitle(key, real) {
+  const o = _optTitle[key];
+  if (!o) return real || "";
+  if ((real || "") === o.title || Date.now() - o.at > 20000) { delete _optTitle[key]; return real || ""; }
+  return o.title;
+}
 // One turn-proxy card — shared by the node detail (Forwards-to shown) and the interface detail
 // (showForwards=false, that view is already scoped to the fronted iface). Same data, status tags,
 // online/down dimming, click-to-manage. `metas` = the node's all-interface metas (Store.describe[node]).
@@ -1423,7 +1517,8 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
   const lp = portOf(tp.connect);
   const fronted = Object.keys(metas).find(i => String((metas[i] || {}).listen_port) === lp);
   const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
-  const pend = (nrec.turn_pending || {})[tp.service];
+  const _pendRaw = (nrec.turn_pending || {})[tp.service];
+  const pend = _pendRaw === "title" ? undefined : _pendRaw;   // a cosmetic title rename is not a disruptive pending — never dim / "creating" / busy the card for it
   const err = (nrec.cmd_errors || {})[tp.service];
   const prog = (nrec.cmd_progress || {})[tp.service];   // node "what's happening now" (slow GitHub download / retry) → yellow note
   const installing = !!tp.installing;   // actively being downloaded / (re)created right now
@@ -1461,7 +1556,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
   const conn = fronted ? turnConnRows(node, fronted, tp.service) : [];   // online peers via THIS specific proxy → header count
   const canOpen = nrec.turn_manage && !nblocked && !_busy && pend !== "delete";   // clickable only once it settles — NOT while creating/queued/deleting, and never while the node blocks edits (don't open a half-created proxy)
   return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} data-rid=${it ? it.rid : null}>
-    <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(tp.service)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}<span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
+    <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(tp.service)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}<span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${shownTitle("t|" + node + "|" + tp.service, tp.title) || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
       ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title="The node is converting between bare-metal and docker"/>`
       : pend === "delete"
       ? html`<${StatusTag} cls="tg-busy del" label="deleting…" msg=${err || prog} title=${err ? "Command failed on the node" : "Working on the node"}/><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
@@ -1487,9 +1582,19 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
 function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   snap = snap || Store.stats[node] || {}; metas = metas || Store.describe[node] || {}; nrec = nrec || {};
   const all = snap.turn_proxies || [];
+  // A turn-proxy fronts a USER wg/awg interface (exactly what SetupTurnSheet offers — never a mesh link, never a
+  // WDTT iface, which owns its own transport). With none on the node there is nothing to forward to, so hide the
+  // button rather than open a sheet with an empty target list. Inline, not isSysName(): that is a local of the
+  // node screen, and calling it here throws at render and takes the whole panel down.
+  const _canFrontTurn = Object.entries(metas).some(([n, b]) => (b || {}).listen_port && !((b || {}).system || String(n).startsWith("swg_") || isWdttIface(n)));
   const cards = iface ? turnProxiesFor(node, iface) : orderById(all, nrec.turn_order, tp => tp.service);
-  // drag-to-reorder turn-proxies (node view only; the per-interface view is a filtered subset)
-  const tReorder = useReorder(iface ? [] : cards.map(tp => tp.service), ids => mutate({
+  // WDTT forks are self-contained turn-family servers (own their interface) — rendered as cards in THIS section
+  // (node view only; a WDTT instance doesn't "forward to" an iface, so it never appears in the per-iface subset).
+  const wdttInsts = iface ? [] : (snap.wdtt || []).filter(w => w && w.iface);
+  // drag-to-reorder turn-proxies + WDTT instances together (node view only; per-interface view is a filtered
+  // subset with no WDTT). WDTT ids are namespaced 'wdtt:<iface>' so they never clash with a turn service.
+  const _turnOrder = orderById([...cards.map(tp => tp.service), ...wdttInsts.map(w => "wdtt:" + w.iface)], nrec.turn_order, x => x);
+  const tReorder = useReorder(iface ? [] : _turnOrder, ids => mutate({
     patch: s => { const nn = (s.nodes || []).find(x => x.id === node); if (nn) nn.turn_order = ids; },
     call: () => api.saveOrder({ kind: "turn", node, order: ids }),
   }));
@@ -1513,10 +1618,17 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
         <div class="ifrow"><span class="l">Listen</span><span class="r addr">${d.listen || "—"}</span></div>
         <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
       </div></div>`; };
-  return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length}
-      actions=${nrec.turn_manage ? html`<${Fragment}><button class="btn btn-mini ico" title="Turn-proxy settings in Settings → Turn proxies" onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? "Unavailable while the node is down / converting" : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> Setup new proxy</button><//>` : null}>
+  return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length + wdttInsts.length}
+      actions=${nrec.turn_manage ? html`<${Fragment}><button class="btn btn-mini ico" title="Turn-proxy settings in Settings → Turn proxies" onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button>${_canFrontTurn ? html`<button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? "Unavailable while the node is down / converting" : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> Setup new proxy</button>` : null}<//>` : null}>
     ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>Turn-proxy management is <b>off</b> on this node — no Docker socket was mounted at install (<b>TURN_MANAGE=manual</b>), so these are read-only here. Add, edit or restart them on the box directly.</span></div>` : null}
-    <div class="ifgrid" ...${iface ? {} : tReorder.container()}>${cards.map(tp => html`<${TurnCard} key=${tp.service} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface} reorder=${iface ? null : tReorder}/>`)}
+    <div class="ifgrid" ...${iface ? {} : tReorder.container()}>${iface
+      ? cards.map(tp => html`<${TurnCard} key=${tp.service} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${false} reorder=${null}/>`)
+      : _turnOrder.map(id => {
+          const w = id.indexOf("wdtt:") === 0 ? wdttInsts.find(x => "wdtt:" + x.iface === id) : null;
+          if (w) return html`<${WdttCard} key=${id} node=${node} w=${w} reorder=${tReorder}/>`;
+          const tp = cards.find(t => t.service === id);
+          return tp ? html`<${TurnCard} key=${tp.service} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${true} reorder=${tReorder}/>` : null;
+        })}
     ${optTurns.map(o => optCard(o.svc, o.d))}
     ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/>${act === "delete" ? html`<span class="tg-busy del">deleting…</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>pending</span>`}<button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
     ${!iface ? (nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg-busy">adopting…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`) : null}
@@ -1649,6 +1761,27 @@ function copy(text, what) { navigator.clipboard.writeText(text); toast((what || 
 // pinned to the row (rowErrors[key]) plus a toast. A safety timeout clears a stuck op and resyncs.
 // Verify-only actions (create / rekey / anything revealing a secret) simply pass no `patch`.
 let _mutSeq = 0;
+// Optimistically claim an observed-but-unclaimed peer: write the roster entry the server is about to create,
+// so apply() re-derives it out of the orphans table and into the peers grid on the click instead of a poll
+// later. The id is a placeholder — the server assigns the real one, and the next poll supersedes this whole
+// overlay — so nothing downstream may key off it.
+function adoptOrphanPatch(o) {
+  return s => {
+    const target = { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] };
+    const peers = (s.roster && s.roster.peers) || {};
+    const mine = Object.entries(peers).find(([, p]) => p && p.pubkey === o.pubkey);
+    if (mine) {                                   // known peer gaining a deployment → just add the target
+      const p = mine[1];
+      if (!(p.targets || []).some(t => t && t.node === target.node && t.iface === target.iface))
+        p.targets = (p.targets || []).concat([target]);
+      return;
+    }
+    peers["adopting:" + o.node + "|" + o.iface + "|" + o.pubkey] = {
+      user_id: null, title: "", pubkey: o.pubkey, psk: o.preshared_key || "",
+      targets: [target], created_at: Math.floor(Date.now() / 1000),
+    };
+  };
+}
 function mutate({ key, patch, call, onOk, timeout = 8000 }) {
   const id = "m" + (++_mutSeq);
   if (key) delete Store.rowErrors[key];
@@ -1829,9 +1962,22 @@ function rowDouble(e, fn) { if (_rowInteractive(e)) return; clearTimeout(_rowCli
 const rowNoSelect = e => { if (e.detail > 1) e.preventDefault(); };   // stop the 2nd click of a double-click from selecting the row text
 
 // ───────────────────────── shared bits ─────────────────────────
-const IFOP_BUSY = { start: "starting", stop: "stopping", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
-const IFOP_DONE = { start: "started", stop: "stopped", restart: "restarted", apply: "applied" };
-const IFOP_FAIL = { start: "failed to start", stop: "failed to stop", restart: "failed to restart", apply: "failed to apply" };
+const IFOP_BUSY = { start: "starting", stop: "stopping", restart: "restarting", apply: "applying", ignore: "ignoring", unignore: "restoring" };   // interface op lifecycle labels
+const IFOP_DONE = { start: "started", stop: "stopped", restart: "restarted", apply: "applied", ignore: "ignored", unignore: "restored" };
+const IFOP_FAIL = { start: "failed to start", stop: "failed to stop", restart: "failed to restart", apply: "failed to apply", ignore: "couldn\u2019t ignore", unignore: "couldn\u2019t restore" };
+// Verbs that resolve entirely IN THE PANEL (no node round-trip). trackIfaceOps judges an op by watching the
+// interface come up or go down on the node, and its final `else` branch would grab these too and call them
+// failed for never changing a datapath they never touch. Their click handler owns the whole lifecycle.
+const IFOP_PANEL = new Set(["ignore", "unignore"]);
+// The optimistic op badge for an interface/WDTT card (busy→ok→fail flash, driven by trackIfaceOps). Returns the
+// tag vnode or null so a card can show a live "applying/applied/failed" status like every other card.
+function opTag(key) {
+  const op = Store.ifaceOp[key]; if (!op) return null;
+  if (op.phase === "busy") return html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}</span>`;
+  if (op.phase === "ok") return html`<span class="tg tg-ready"><${Ic} i="check"/>${IFOP_DONE[op.verb] || "applied"}</span>`;
+  if (op.phase === "fail") return html`<${StatusTag} cls="tg-busy del" icon="warn" label=${IFOP_FAIL[op.verb] || "failed"} msg=${op.err || "the change failed on the node"} title="Save failed on the node"/>`;
+  return null;
+}
 const STATUS_RANK = { disabled: -1, expired: -1, blocking: -1, dangling: 0, broken: 0, blocked: 1, faulty: 1, partial: 1, pending: 2, creating: 2, rotating: 2, restoring: 2, expiring: 4, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
   blocked: "warn", faulty: "warn", dangling: "err", broken: "warn", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info",
@@ -2125,9 +2271,13 @@ function onlineUserRows(nodeId) {
   });
   return Object.values(m).sort(_byHandshake);
 }
-// online PEERS on an interface (or the whole node when iface == null), each with its owning user
+// The headline "online" number for the users tag: each assigned user counts ONCE (however many peers they have),
+// each unassigned peer counts individually — so 5 users + 3 loose peers reads as 8, not 6. Works on both the live
+// rows (onlineUserRows) and the ranged rows (presence.userRows), which share the same {unassigned,count} shape.
+function onlineUserCount(rows) { return (rows || []).reduce((a, r) => a + (r.unassigned ? (r.count || 0) : 1), 0); }
+// online PEERS on an interface (or the whole node when iface == null, or the whole fleet when nodeId == null)
 function onlinePeerRows(nodeId, iface) {
-  const onT = (t) => t.node === nodeId && (iface == null || t.iface === iface) && t.online;
+  const onT = (t) => (nodeId == null || t.node === nodeId) && (iface == null || t.iface === iface) && t.online;
   return (Store.recon.peers || []).filter(p => p.targets.some(onT))
     .map(p => { const t = p.targets.find(onT) || {};
       return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"),
@@ -2146,6 +2296,15 @@ function turnConnRows(nodeId, iface, service) {
       return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), ip: t.ip || "", unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })
     .sort(_byHandshake);
 }
+// Online users of a WDTT instance — the WDTT analogue of turnConnRows. A WDTT server owns its interface, so its
+// peers attach by (node, iface) with no viaTurn hop; reconcile.js sets `online` on the wdtt target directly.
+function wdttConnRows(nodeId, iface) {
+  const onT = (t) => t.node === nodeId && t.iface === iface && t.online;
+  return (Store.recon.peers || []).filter(p => p.targets.some(onT))
+    .map(p => { const t = p.targets.find(onT) || {};
+      return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), ip: t.ip || "", unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })
+    .sort(_byHandshake);
+}
 // shared online-breakdown bubble: a Live-linked header, top-10 rows (already handshake-sorted), an
 // optional "n orphan peers" line, and a "view all" link past 10. trigger: (count)=>vnode.
 // Open Live on the tab that matches the bubble that was clicked. `connView.mode` is module state that
@@ -2156,13 +2315,14 @@ const openLiveTab = mode => e => {
   connView.mode = mode; connView.page = 1;
   if (location.hash === "#/connections") bus.emit();     // already there: no hashchange to re-render us
 };
-function OnlPop({ title, rows, peer, orphans, orphHref, trigger, cls }) {
+function OnlPop({ title, rows, peer, orphans, orphHref, trigger, cls, count, hoverOnly }) {
   const tab = peer ? "peers" : "users";                  // this bubble lists peers, or users
+  const n = count != null ? count : rows.length;         // the headline number (users tag overrides it: users + loose peers, not row count)
   const renderRow = peer
     ? r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.iface ? " · " + r.iface : ""}${r.ip ? " · " + r.ip : ""}</span></div>`
     : r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.name}</span><span class="on-ct">${r.count} <span class="faint">peer${r.count > 1 ? "s" : ""}</span></span></div>`;
-  return html`<${Popover} cls=${"onlinetag " + (cls || "")} trigger=${trigger(rows.length)}>
-    <a class="onpop-h onpop-link" href="#/connections" onClick=${openLiveTab(tab)}>${title} · ${rows.length} →</a>
+  return html`<${Popover} cls=${"onlinetag " + (cls || "")} hoverOnly=${hoverOnly} trigger=${trigger(n)}>
+    <a class="onpop-h onpop-link" href="#/connections" onClick=${openLiveTab(tab)}>${title} · ${n} →</a>
     ${rows.length ? rows.slice(0, 10).map(renderRow) : html`<div class="onrow faint">${peer ? "no peers online" : "no one online"}</div>`}
     ${orphans ? html`<a class="onpop-orph" href=${orphHref || "#/connections"} onClick=${openLiveTab("peers")}>${orphans} unmanaged orphan peer${orphans > 1 ? "s" : ""}</a>` : null}
     ${rows.length > 10 ? html`<a class="onpop-viewall" href="#/connections" onClick=${openLiveTab(tab)}>view all ${rows.length} connections →</a>` : null}
@@ -2217,9 +2377,18 @@ function MeshStat({ nodeId, mode }) {
 // online during the selected range" — the question the range picker is actually asking. Without it the card
 // answered "nobody is connected this instant" while the Day doughnut reported peers online that day.
 function OnlineUsersTag({ nodeId, cls, trigger, presence, rangeLabel }) {
-  const rows = presence ? (presence.userRows || []).map(r => ({ ...r, lastAge: null })) : onlineUserRows(nodeId);
-  return html`<${OnlPop} title=${presence ? "Users online · " + (rangeLabel || "range") : "Online users"} rows=${rows} cls=${cls}
-    trigger=${trigger || (c => html`<span class="dot"></span><b class=${"oncount" + (c ? " on" : "")}>${c}</b> online`)}/>`;
+  const [mode, setMode] = useState("users");             // click the tag to flip the whole tag+bubble users ↔ peers
+  const isPeers = mode === "peers";
+  const userRows = presence ? (presence.userRows || []).map(r => ({ ...r, lastAge: null })) : onlineUserRows(nodeId);
+  const peerRows = onlinePeerRows(nodeId, null);          // live online peers on this node (or the fleet when nodeId==null)
+  const rows = isPeers ? peerRows : userRows;
+  const count = isPeers ? peerRows.length : onlineUserCount(userRows);
+  const title = isPeers ? "Online peers" : (presence ? "Users online · " + (rangeLabel || "range") : "Online users");
+  const word = isPeers ? "peer" : "user";
+  const dflt = (c, w) => html`<span class="dot"></span><b class=${"oncount" + (c ? " on" : "")}>${c}</b> ${w || "user"}${c === 1 ? "" : "s"}`;
+  // hoverOnly on the popover frees the click to TOGGLE the mode (rather than pin the bubble); the bubble updates live.
+  const trig = c => html`<span class="onl-toggle" title="Click to switch users / peers" onClick=${e => { e.stopPropagation(); e.preventDefault(); setMode(m => m === "users" ? "peers" : "users"); }}>${(trigger || dflt)(c, word)}</span>`;
+  return html`<${OnlPop} peer=${isPeers} title=${title} rows=${rows} count=${count} cls=${cls} hoverOnly=${true} trigger=${trig}/>`;
 }
 // "N online" peers bubble (device · user · ip). orphans: count to append. Used on interface cards/screens.
 function OnlinePeersTag({ nodeId, iface, total, cls, trigger, orphans, orphHref }) {
@@ -2280,6 +2449,34 @@ async function rotatePeerKeys(peer) {
     onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++;
       subPublishOrPrompt(peer.user_id, peer.id, keys.priv, psk); },
   });
+}
+
+// Rotate EVERY key a user holds — each WG/AWG peer gets a fresh keypair + PSK (rotatePeerKeys), each WDTT peer a
+// fresh WRAP password (wdttPeerRotate). All old configs/links die → every device must re-import. Confirmed once.
+function rotateAllUserKeys(user, after) {
+  const peers = Store.peersOfUser(user.id);
+  if (!peers.length) { toast("This user has no peers to rotate.", "err"); return; }
+  openConfirm({ title: "Rotate all keys · " + user.name, confirmLabel: "Rotate all keys", warn: true, back: after,
+    body: html`Rotate the keys for <b>all ${peers.length} peer${peers.length > 1 ? "s" : ""}</b> of ${user.name}. Every existing config, QR and link stops working — each device must re-import. This can't be undone.`,
+    onConfirm: () => {
+      // Optimistic + non-blocking: flip EVERY peer to "Rotating" the instant you confirm, close the dialog at once,
+      // and fire the rotations in parallel (was 19 sequential rekeys → "Working…" hung). Each card re-resolves the
+      // live peer and re-renders its new QR as it flips rotating→ready.
+      peers.forEach(p => { Store.rotating[p.id] = Date.now(); });
+      Store.apply();
+      (async () => {
+        const oks = await Promise.all(peers.map(async p => {
+          try {
+            if (p.wdtt_password) { Store.rotating[p.id] = Date.now(); await api.wdttPeerRotate({ peer_id: p.id }); }   // keyless WDTT peer → new WRAP password
+            else await rotatePeerKeys(p);                                                                              // WG/AWG peer → new keypair + PSK
+            return true;
+          } catch (_) { return false; }
+        }));
+        const n = oks.filter(Boolean).length;
+        await Store.poll();
+        toast("Rotated keys for " + n + " peer" + (n === 1 ? "" : "s") + " — every device must re-import.", n ? "ok" : "err");
+      })();
+    } });
 }
 
 // Confirmed unassign — revokes the holder (PSK rotates) and is irreversible (keys change).
@@ -2505,7 +2702,7 @@ function peerBlockBtn(peer, back) {
 }
 function userBlockBtn(user, back) {
   return user.disabled
-    ? html`<button class="btn btn-ghost" onClick=${() => confirmUnblockUser(user, back)}><${Ic} i="refresh"/> Unblock</button>`
+    ? html`<button class="btn btn-ok" onClick=${() => confirmUnblockUser(user, back)}><${Ic} i="refresh"/> Unblock</button>`
     : html`<button class="btn btn-danger" onClick=${() => confirmBlockUser(user, back)}><${Ic} i="off"/> Block</button>`;
 }
 
@@ -2671,19 +2868,6 @@ function RowError({ k }) {
   return html`<span class="rowerr" title=${e.msg}><${Ic} i="err"/> ${e.msg}<button class="rowerr-x" onClick=${() => dismissError(k)}>×</button></span>`;
 }
 
-// confirm-on-second-click button; shows a working state while its action is in flight
-function DangerButton({ label, confirm, onConfirm, className }) {
-  const [armed, setArmed] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const tref = useRef(null);
-  useEffect(() => () => clearTimeout(tref.current), []);
-  return html`<button class=${"btn btn-mini " + (className || "warn")} disabled=${busy} onClick=${async () => {
-    if (busy) return;
-    if (!armed) { setArmed(true); tref.current = setTimeout(() => setArmed(false), 2800); return; }
-    clearTimeout(tref.current); setArmed(false); setBusy(true);
-    try { await onConfirm(); } finally { setBusy(false); }
-  }}>${busy ? "…" : (armed ? (confirm || "Confirm?") : label)}</button>`;
-}
 
 // One fleet entry: main block (identity/traffic/sync) on the left, health block on the right.
 // `traffic` = this node's client (non-mesh) rx/tx for the SELECTED range — a live rate, or windowed volume
@@ -2695,18 +2879,19 @@ function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presence }) {
   const health = nrec.health || null;
   const tr = traffic || { rx: 0, tx: 0 };
   const trafCell = ranged ? xferCell(...dlul(tr.rx, tr.tx)) : rateCell(tr.rx, tr.tx);
-  let sync = "no data"; if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); sync = live ? "synced " + seen(a) + " ago" : "stale · " + seen(a); }
+  let sync = "no data"; if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); sync = live ? seen(a) + " ago" : "stale · " + seen(a); }
   const al = healthAlerts(health);
   // client interface-type badges — one per type present, "awg" / "awg ×5" (mesh/system ifaces excluded)
   const ifs = Store.describe[n.id] || {}; let wg = 0, awg = 0;
   for (const ifn in ifs) { const m = ifs[ifn]; if (!m || m.system) continue; if (m.awg_params && Object.keys(m.awg_params).length) awg++; else wg++; }
-  const ifBadges = []; if (awg) ifBadges.push(["awg", awg]); if (wg) ifBadges.push(["wg", wg]);
+  const wdtt = ((Store.stats[n.id] || {}).wdtt || []).filter(w => w && w.iface).length;   // WDTT interfaces (own their TUN; not in describe)
+  const ifBadges = []; if (awg) ifBadges.push(["awg", awg]); if (wg) ifBadges.push(["wg", wg]); if (wdtt) ifBadges.push(["wdtt", wdtt]);
   return html`<a class=${"fnode " + (live ? "" : "stale")} href=${"#/node/" + encodeURIComponent(n.id)}>
     <div class="fnode-main">
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
         <div><span class="fl">Traffic</span>${trafCell}</div>
-        <div><span class="fl">Online</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${histRange} trigger=${c => html`${c} <span class="faint">user${c === 1 ? "" : "s"}</span>`}/></span></div>
+        <div><span class="fl">Online</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${histRange} trigger=${(c, w) => html`${c} <span class="faint">${w || "user"}${c === 1 ? "" : "s"}</span>`}/></span></div>
         <div><span class="fl">Sync</span><span class="fv">${sync}</span></div>
         ${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c]) => html`<span key=${t} class=${"iftype " + t}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}
       </div>
@@ -2782,7 +2967,8 @@ function ifCountPhrase(g) {
   const parts = [];
   if (g.wg.size) parts.push(g.wg.size + " WireGuard");
   if (g.awg.size) parts.push(g.awg.size + " AmneziaWG");
-  const tot = g.wg.size + g.awg.size;
+  if (g.wdtt && g.wdtt.size) parts.push(g.wdtt.size + " WDTT");
+  const tot = g.wg.size + g.awg.size + (g.wdtt ? g.wdtt.size : 0);
   return (parts.join(" and ") || "0") + " interface" + (tot === 1 ? "" : "s");
 }
 function ifTypeLabel(node, iface) {
@@ -2962,12 +3148,13 @@ function NodesRailPanel({ nav, active }) {
       const down = Store.recon.nodeStatus[n.id] !== "live";
       const on = nav ? (n.id === active) : dashNodeOn(n.id);
       const cls = "railmenu-b node" + (on ? " on" : (nav ? "" : " off")) + (down ? " down" : "");
-      const inner = html`<span class="railmenu-ic"><span class="railnode-dot" style=${"--c:" + Store.nodeColor(n.id)}></span></span><span class="railmenu-t">${n.name}</span>`;
+      const styl = "--c:" + Store.nodeColor(n.id);   // on the button so BOTH the dot glow and the selected name can use the node colour
+      const inner = html`<span class="railmenu-ic"><span class="railnode-dot"></span></span><span class="railmenu-t">${n.name}</span>`;
       if (!nav)
-        return html`<button key=${n.id} class=${cls} onClick=${() => dashToggleNode(n.id)} title=${(on ? "Hide " : "Show ") + n.name + (down ? " · not reporting" : "")}>${inner}</button>`;
+        return html`<button key=${n.id} class=${cls} style=${styl} onClick=${() => dashToggleNode(n.id)} title=${(on ? "Hide " : "Show ") + n.name + (down ? " · not reporting" : "")}>${inner}</button>`;
       return on
-        ? html`<span key=${n.id} class=${cls} title=${n.name + (down ? " · not reporting" : "")}>${inner}</span>`
-        : html`<a key=${n.id} class=${cls} href=${"#/node/" + encodeURIComponent(n.id)} title=${(down ? "Down — " : "Go to ") + n.name}>${inner}</a>`;
+        ? html`<span key=${n.id} class=${cls} style=${styl} title=${n.name + (down ? " · not reporting" : "")}>${inner}</span>`
+        : html`<a key=${n.id} class=${cls} style=${styl} href=${"#/node/" + encodeURIComponent(n.id)} title=${(down ? "Down — " : "Go to ") + n.name}>${inner}</a>`;
     })}
   </div>`;
 }
@@ -3047,10 +3234,11 @@ function DashDoughnuts({ selIds, range, hist }) {
   const ranged = !live && hist.range === range;   // caller passes the EFFECTIVE (loaded) range, so this holds the old data through a fetch instead of flashing live
   const STEP = RANGE_STEP[range] || 1;
   const isSys = (nid, ifn) => !!(Store.describe[nid] && Store.describe[nid][ifn] && Store.describe[nid][ifn].system);
-  const ifType = (nid, ifn) => { const m = Store.describe[nid] && Store.describe[nid][ifn]; return (m && m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg"; };
+  const ifType = (nid, ifn) => {
+    if (((Store.stats[nid] || {}).wdtt || []).some(w => w && w.iface === ifn)) return "wdtt";   // WDTT owns its iface (snap.wdtt, not describe)
+    const m = Store.describe[nid] && Store.describe[nid][ifn]; return (m && m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg"; };
   const sPeers = Store.recon.peers.filter(p => p.targets.some(t => sel.has(t.node)));
   const _sum = a => (a || []).reduce((x, v) => x + (v || 0), 0);
-  const _mean = a => (a && a.length) ? _sum(a) / a.length : 0;
   // per-node history-derived aggregates (client volume, awg volume, mean peer counts)
   const clientVol = d => { let rx = 0, tx = 0; const R = (d && d.rx) || [], T = (d && d.tx) || [], MR = (d && d.mrx) || [], MT = (d && d.mtx) || [];
     for (let i = 0; i < R.length; i++) { rx += Math.max(0, (R[i] || 0) - (MR[i] || 0)); tx += Math.max(0, (T[i] || 0) - (MT[i] || 0)); } return { rx: rx * STEP, tx: tx * STEP }; };
@@ -3061,8 +3249,8 @@ function DashDoughnuts({ selIds, range, hist }) {
   //    FT = by interface): accumulate the raw client/mesh components once, then apply each filter at the end. ──
   const FN = trafFlags("dnode"), FT = trafFlags("dtype");
   const nodeRaw = {};   // per node: client (crx/ctx) and mesh (mrx/mtx) kept apart so either filter can pick them
-  const typeRaw = { wg: { rx: 0, tx: 0 }, awg: { rx: 0, tx: 0 }, mesh: { rx: 0, tx: 0 } };
-  const addType = (k, rx, tx) => { typeRaw[k].rx += rx; typeRaw[k].tx += tx; };
+  const typeRaw = { wg: { rx: 0, tx: 0 }, awg: { rx: 0, tx: 0 }, wdtt: { rx: 0, tx: 0 }, mesh: { rx: 0, tx: 0 } };
+  const addType = (k, rx, tx) => { (typeRaw[k] = typeRaw[k] || { rx: 0, tx: 0 }).rx += rx; typeRaw[k].tx += tx; };
   fleet.forEach(n => {
     if (ranged) {
       const d = hist.byNode[n.id]; const cv = clientVol(d), av = awgVol(d), mv = meshVol(d);
@@ -3076,6 +3264,9 @@ function DashDoughnuts({ selIds, range, hist }) {
         if (isSys(n.id, ifn)) { mrx += r; mtx += t; }                          // mesh link (swg_*)
         else { crx += r; ctx += t; addType(ifType(n.id, ifn), r, t); }
       }
+      if (snap) for (const w of (snap.wdtt || [])) {   // WDTT interfaces (own their TUN, report aggregate rx/tx) → client traffic, WDTT bucket
+        const r = w.rx_speed || 0, t = w.tx_speed || 0; crx += r; ctx += t; addType("wdtt", r, t);
+      }
       addType("mesh", mrx, mtx);
       nodeRaw[n.id] = { crx, ctx, mrx, mtx };
     }
@@ -3084,17 +3275,18 @@ function DashDoughnuts({ selIds, range, hist }) {
   const nodeTraf = {}; fleet.forEach(n => { const r = nodeRaw[n.id] || { crx: 0, ctx: 0, mrx: 0, mtx: 0 }; nodeTraf[n.id] = trafPick(r.crx + r.mrx, r.ctx + r.mtx, r.mrx, r.mtx, FN); });
   const typePick = k => k === "mesh" ? { rx: FT.mesh ? typeRaw.mesh.rx : 0, tx: FT.mesh ? typeRaw.mesh.tx : 0 }
                                      : { rx: FT.peers ? typeRaw[k].rx : 0, tx: FT.peers ? typeRaw[k].tx : 0 };
-  const typeTraf = { wg: typePick("wg"), awg: typePick("awg"), mesh: typePick("mesh") };
+  const typeTraf = { wg: typePick("wg"), awg: typePick("awg"), wdtt: typePick("wdtt"), mesh: typePick("mesh") };
   const trafFmt = ranged ? fmtBytes : rate;
 
   // ── peer deployments by node + by iface type. TOTAL = the roster count deployed to each node/iface (a real head-
   //    count, not a time-average). ONLINE = DISTINCT peers seen connected: live → online right now; a range → the
   //    distinct peers that were active at any point in the window (unioned from the per-peer RRD, so cycling peers
   //    all count once — not the peak or the mean). ──
-  const nodeCnt = {}, typeCnt = { wg: { tot: 0, on: 0 }, awg: { tot: 0, on: 0 } };
+  const nodeCnt = {}, typeCnt = { wg: { tot: 0, on: 0 }, awg: { tot: 0, on: 0 }, wdtt: { tot: 0, on: 0 } };
   fleet.forEach(n => nodeCnt[n.id] = { tot: 0, on: 0 });
   // live interface is authoritative; the stored target.type is only a fallback for interfaces the node isn't reporting.
-  const tyOf = t => { const m = Store.describe[t.node] && Store.describe[t.node][t.iface]; return m ? ifType(t.node, t.iface) : ((t.type === "awg") ? "awg" : "wg"); };
+  // (WDTT targets classify as "wdtt" → counted in their own bucket, never miscounted under WireGuard.)
+  const tyOf = targetType;
   sPeers.forEach(p => p.targets.forEach(t => {
     if (!sel.has(t.node)) return;
     const ty = tyOf(t);
@@ -3118,7 +3310,7 @@ function DashDoughnuts({ selIds, range, hist }) {
   }
 
   const nodeName = id => Store.nodeName(id), nodeColor = id => Store.nodeColor(id);
-  const TYPES = [["awg", "AmneziaWG"], ["wg", "WireGuard"], ["mesh", "Mesh"]];   // the Mesh slice only fills when the Mesh badge is on
+  const TYPES = [["awg", "AmneziaWG"], ["wg", "WireGuard"], ["wdtt", "WDTT"], ["mesh", "Mesh"]];   // the Mesh slice only fills when the Mesh badge is on
   const typeColor = t => t === "mesh" ? FLOW_MESH : ifaceColor(t);
   const segNodes = kind => fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: (nodeTraf[n.id] || {})[kind] || 0, color: nodeColor(n.id) }));
   const segTypes = kind => TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeTraf[t] || {})[kind] || 0, color: typeColor(t) }));
@@ -3140,9 +3332,9 @@ function DashDoughnuts({ selIds, range, hist }) {
     <span class="mrc-tot dn">${on}<small style="color:var(--faint)"> / ${tot}</small></span></div>`;
 
   const totDownN = sum(nodeTraf, "rx"), totUpN = sum(nodeTraf, "tx");
-  const totDownT = typeTraf.wg.rx + typeTraf.awg.rx + typeTraf.mesh.rx, totUpT = typeTraf.wg.tx + typeTraf.awg.tx + typeTraf.mesh.tx;
+  const totDownT = typeTraf.wg.rx + typeTraf.awg.rx + typeTraf.wdtt.rx + typeTraf.mesh.rx, totUpT = typeTraf.wg.tx + typeTraf.awg.tx + typeTraf.wdtt.tx + typeTraf.mesh.tx;
   const nodeOn = Object.values(nodeCnt).reduce((a, v) => a + v.on, 0), nodeTot = Object.values(nodeCnt).reduce((a, v) => a + v.tot, 0);
-  const typeOn = typeCnt.wg.on + typeCnt.awg.on, typeTot = typeCnt.wg.tot + typeCnt.awg.tot;
+  const typeOn = typeCnt.wg.on + typeCnt.awg.on + typeCnt.wdtt.on, typeTot = typeCnt.wg.tot + typeCnt.awg.tot + typeCnt.wdtt.tot;
 
   // traffic legends carry down/up SEPARATELY (perspective-adjusted) so each is independently hoverable —
   // hovering the ↓ value isolates the Download arc, the ↑ value the Upload arc.
@@ -3175,20 +3367,34 @@ function DashDoughnuts({ selIds, range, hist }) {
   const sanF = s => String(s).replace(/[^A-Za-z0-9_]/g, "_");
   const fLive = {};   // fork → { rx, tx, on, tot } aggregated across every node/instance of that fork
   if (turnOn) sPeers.forEach(p => p.targets.forEach(t => {
-    if (!sel.has(t.node) || !t.viaTurn) return;
-    const fk = turnFork(t.viaTurn); if (!enSet.has(fk)) return;
+    if (!sel.has(t.node)) return;
+    const isW = t.type === "wdtt" || isWdttIface(t.iface);   // WDTT clients are ON the WDTT server (no viaTurn) → fork = the instance's fork
+    let fk;
+    if (isW) { const w = ((Store.stats[t.node] || {}).wdtt || []).find(x => x && x.iface === t.iface); fk = (w && w.fork) || "amurcanov"; }
+    else if (t.viaTurn) fk = turnFork(t.viaTurn);
+    else return;
+    if (!enSet.has(fk)) return;
     const a = fLive[fk] = fLive[fk] || { rx: 0, tx: 0, on: 0, tot: 0 };
-    const o = t.observed; if (o) { a.rx += o.rx_speed || 0; a.tx += o.tx_speed || 0; }
+    if (!isW) { const o = t.observed; if (o) { a.rx += o.rx_speed || 0; a.tx += o.tx_speed || 0; } }   // WDTT per-peer speed n/a → the iface counter is added below
     a.tot++; if (t.online) a.on++;
   }));
+  // WDTT traffic is reported per-interface (own TUN), not per-peer → add each instance's aggregate rx/tx to its fork
+  if (turnOn) fleet.forEach(n => { if (!sel.has(n.id)) return;
+    for (const w of ((Store.stats[n.id] || {}).wdtt || [])) { const fk = (w && w.fork) || "amurcanov"; if (!enSet.has(fk)) continue;
+      const a = fLive[fk] = fLive[fk] || { rx: 0, tx: 0, on: 0, tot: 0 }; a.rx += w.rx_speed || 0; a.tx += w.tx_speed || 0;
+      const pw = w.passwords || {}; a.tot += Object.keys(pw).length; a.on += Object.values(pw).filter(e => e && e.online).length; } });   // WDTT deployment/online counts per fork (readback), so the fork shows even when idle
   const fRanged = {};   // sanitised fork → { rx, tx, pon, ptot } summed over selected nodes
   if (ranged) (hist.turn || []).forEach(e => { if (!sel.has(e.node)) return;
     const a = fRanged[e.fork] = fRanged[e.fork] || { rx: 0, tx: 0, pon: 0, ptot: 0 };
     a.rx += e.rx || 0; a.tx += e.tx || 0; a.pon += e.pon || 0; a.ptot += e.ptot || 0; });
   const turnRanged = ranged && Object.keys(fRanged).length > 0;   // ranged turn data present → use it; else live
-  const fTraf = fk => turnRanged ? (fRanged[sanF(fk)] || { rx: 0, tx: 0 }) : (fLive[fk] || { rx: 0, tx: 0 });
-  const fCnt = fk => turnRanged ? { on: Math.round((fRanged[sanF(fk)] || {}).pon || 0), tot: Math.round((fRanged[sanF(fk)] || {}).ptot || 0) }
-                                : { on: (fLive[fk] || {}).on || 0, tot: (fLive[fk] || {}).tot || 0 };
+  const _wdttFork = fk => (((typeof turnForkList === "function" && turnForkList().find(f => f.id === fk)) || {}).kind) === "wdtt";   // WDTT forks have NO per-fork turn RRD yet → always show their live traffic, even on a range (else they vanish)
+  const fTraf = fk => (turnRanged && !_wdttFork(fk)) ? (fRanged[sanF(fk)] || { rx: 0, tx: 0 }) : (fLive[fk] || { rx: 0, tx: 0 });
+  // TOTAL (2nd number) = a CURRENT headcount (peers deployed to each fork now) → live for EVERY fork, so an idle
+  // normal fork isn't hidden on a range. ONLINE (1st number) IS range-aware: on a range it's the DISTINCT deployments
+  // that were online during the window (per-fork RRD `pon`) for normal forks; WDTT has no ranged turn RRD yet → live.
+  const fCnt = fk => ({ on: (turnRanged && !_wdttFork(fk)) ? Math.round((fRanged[sanF(fk)] || {}).pon || 0) : ((fLive[fk] || {}).on || 0),
+                        tot: (fLive[fk] || {}).tot || 0 });
   const forks = [...enSet].filter(fk => { const t = fTraf(fk), c = fCnt(fk); return (t.rx + t.tx) > 0 || c.tot > 0; });
   const turnFmt = turnRanged ? fmtBytes : rate;
   const turnCenter = (rx, tx) => { const [d, u] = dlul(rx, tx); const ds = "↓ " + turnFmt(d), us = "↑ " + turnFmt(u);
@@ -3200,7 +3406,7 @@ function DashDoughnuts({ selIds, range, hist }) {
     const dn = povPeers ? txS : rxS, up = povPeers ? rxS : txS;
     return [{ label: "Download", fmt: turnFmt, unitColor: "var(--online)", segments: dn }, { label: "Upload", fmt: turnFmt, unitColor: "var(--rate-up)", segments: up }]; };
   const turnCntRings = () => [
-    { label: "Total peers", fmt: v => v, segments: forks.map(fk => ({ key: fk, name: fk, value: fCnt(fk).tot, color: turnColor(fk) })) },
+    { label: "Deployments", fmt: v => v, segments: forks.map(fk => ({ key: fk, name: fk, value: fCnt(fk).tot, color: turnColor(fk) })) },
     { label: "Online", fmt: v => v, segments: forks.map(fk => ({ key: fk, name: fk, value: fCnt(fk).on, color: turnColor(fk) })) }];
   const turnTrafLeg = forks.map(fk => ({ key: fk, name: fk, color: turnColor(fk), ...(() => { const t = fTraf(fk), [d, u] = dlul(t.rx, t.tx); return { down: turnFmt(d), up: turnFmt(u) }; })() }));
   const turnCntLeg = forks.map(fk => { const c = fCnt(fk); return { key: fk, name: fk, color: turnColor(fk), right: c.on + " / " + c.tot }; });
@@ -3220,16 +3426,16 @@ function DashDoughnuts({ selIds, range, hist }) {
     <${DoughCard} title="Traffic by node" badges=${trafBadgesFor("dnode", FN)} loading=${loading}
       rings=${trafRings(segNodes("rx"), segNodes("tx"))} center=${trafCenter(totDownN, totUpN)} legend=${trafLegNodes} note=${loadingNote || volNote}/>
 
-    <${DoughCard} title="Peers by node" loading=${loading}
-      rings=${[{ label: "Total peers", fmt: v => v, segments: fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: nodeCnt[n.id].tot, color: nodeColor(n.id) })) },
+    <${DoughCard} title="Deployments by node" loading=${loading}
+      rings=${[{ label: "Deployments", fmt: v => v, segments: fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: nodeCnt[n.id].tot, color: nodeColor(n.id) })) },
                { label: "Online", fmt: v => v, segments: fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: nodeCnt[n.id].on, color: nodeColor(n.id) })) }]}
       center=${cntCenter(nodeOn, nodeTot)} legend=${cntLegNodes} note=${loadingNote || avgNote}/>
 
     <${DoughCard} title="Traffic by interface" badges=${trafBadgesFor("dtype", FT)} loading=${loading}
       rings=${trafRings(segTypes("rx"), segTypes("tx"))} center=${trafCenter(totDownT, totUpT)} legend=${trafLegTypes} note=${loadingNote || volNote}/>
 
-    <${DoughCard} title="Peers by interface" loading=${loading}
-      rings=${[{ label: "Total peers", fmt: v => v, segments: TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeCnt[t] || {}).tot || 0, color: ifaceColor(t) })) },
+    <${DoughCard} title="Deployments by interface" loading=${loading}
+      rings=${[{ label: "Deployments", fmt: v => v, segments: TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeCnt[t] || {}).tot || 0, color: ifaceColor(t) })) },
                { label: "Online", fmt: v => v, segments: TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeCnt[t] || {}).on || 0, color: ifaceColor(t) })) }]}
       center=${cntCenter(typeOn, typeTot)} legend=${cntLegTypes} note=${loadingNote || avgNote}/>
 
@@ -3237,7 +3443,7 @@ function DashDoughnuts({ selIds, range, hist }) {
       <${DoughCard} title="Traffic by turn-proxy" loading=${loading}
         rings=${turnTrafRings()} center=${turnCenter(turnTot.rx, turnTot.tx)} legend=${turnTrafLeg} note=${loadingNote || turnNote}/>
 
-      <${DoughCard} title="Peers by turn-proxy" loading=${loading}
+      <${DoughCard} title="Deployments by turn-proxy" loading=${loading}
         rings=${turnCntRings()} center=${cntCenter(turnTot.on, turnTot.tot)} legend=${turnCntLeg} note=${loadingNote || turnAvgNote}/>
     <//>` : null}
   </div>`;
@@ -3281,8 +3487,13 @@ function flowGraph(selIds, range, hist) {
       if (iu || id) acc[n.id].inet = { out: iu * STEP, in: id * STEP }; });
     // split turn-proxy volume OUT of the client lane (turn rides the client iface) using the per-fork turn RRD, so the
     // ranged map shows the SAME turn satellites as live instead of folding them into "clients".
+    // hist.turn keys forks SANITISED (WINGS-N → WINGS_N in the RRD filename); reverse-map to the real catalog id so
+    // the satellite gets the right colour + label (turnColor/turnFork key on the real id — "WINGS_N" misses → grey).
+    const _sanF = s => String(s).replace(/[^A-Za-z0-9_]/g, "_");
+    const _realFork = {}; ((typeof turnForkList === "function" ? turnForkList() : []) || []).forEach(f => { _realFork[_sanF(f.id)] = f.id; });
     (hist.turn || []).forEach(e => { const a = acc[e.node]; if (!a) return; const rx = e.rx || 0, tx = e.tx || 0; if (!rx && !tx) return;
-      (a.turn[e.fork] = a.turn[e.fork] || { rx: 0, tx: 0 }); a.turn[e.fork].rx += rx; a.turn[e.fork].tx += tx;
+      const fk = _realFork[e.fork] || e.fork;
+      (a.turn[fk] = a.turn[fk] || { rx: 0, tx: 0 }); a.turn[fk].rx += rx; a.turn[fk].tx += tx;
       a.cl.rx = Math.max(0, a.cl.rx - rx); a.cl.tx = Math.max(0, a.cl.tx - tx); });
     // mesh/offmesh values are per-pair MEAN rates (B/s) over the window — convert to total bytes with the FULL window
     // duration (samples·step), NOT one step, so they're on the same scale as the client volume (Σ mean·step above). Using
@@ -3304,6 +3515,7 @@ function flowGraph(selIds, range, hist) {
     }));
     fleet.forEach(n => { const snap = Store.stats[n.id]; if (!snap) return;
       if (snap.inet) acc[n.id].inet = { out: snap.inet.up || 0, in: snap.inet.down || 0 };   // exact internet egress measured by the node (FORWARD counters) — replaces the client estimate
+      for (const w of (snap.wdtt || [])) { if (!w) continue; const fk = w.fork || "amurcanov"; const at = (acc[n.id].turn[fk] = acc[n.id].turn[fk] || { rx: 0, tx: 0 }); at.rx += w.rx_speed || 0; at.tx += w.tx_speed || 0; }   // WDTT = a turn-family fork → its OWN relay satellite (like other turn proxies), coloured by fork; feeds the internet lane via turnRx
       for (const [ifn, blk] of Object.entries(snap.interfaces || {})) {
         const meta = (Store.describe[n.id] || {})[ifn] || blk.meta || {};
         const peer = meta.link_node || meta.egress_node;   // a system mesh link identifies its peer via link_node (egress_node is the user-iface forward target, blank here)
@@ -3657,6 +3869,11 @@ const SVC_KINDWORD = { missing: "not installed", down: "not running", disabled: 
 function serviceIssues() {
   const ps = Store.panelServices || {};
   if (!ps || !Object.keys(ps).length) return [];
+  // Not while the host is mid-convert / re-install / update: services legitimately stop and restart during
+  // those, so the probe catches a real-but-transient gap and raises a CRITICAL modal for it — observed on a
+  // docker→bare-metal convert, where swg-sub was down for seconds and the alert then outlived the cause by
+  // hours. An operation in flight already has its own status surface; this one only adds noise to it.
+  if (inProc(Store.hostProc)) return [];
   const out = [], add = (id, sev, kind, msg) => out.push({ id, sev, kind, msg, label: SVC_LABEL[id], unit: SVC_UNIT[id] });
   const gone = u => u && !u.present;
   const down = u => u && u.present && u.active !== "active";
@@ -3666,6 +3883,18 @@ function serviceIssues() {
     if (gone(sub))      add("sub", "critical", "missing", "the subscription server isn’t installed — subscribers can’t load their configs");
     else if (down(sub)) add("sub", "critical", "down", "the subscription server isn’t running — subscribers can’t load their configs");
     else if (unen(sub)) add("sub", "warn", "disabled", "the subscription server won’t start again after a reboot");
+  }
+  // The subscription server's CERTIFICATE, direct-TLS only. swg-sub keeps serving on its port without one, so
+  // the panel reports it healthy while every subscriber gets a TLS handshake failure (Cloudflare 525) — the
+  // failure is invisible from here unless we say it. The server sends {} under a reverse proxy: there the proxy
+  // terminates TLS and the cert is the admin's to manage, so there is nothing for us to assert.
+  const sc = Store.subCert || {};
+  if (sc.needs_issue && subFeatureOn()) {
+    out.push({ id: "subcert", sev: "critical", kind: sc.present ? "wrong" : "missing",
+               label: "Subscription certificate", unit: SVC_UNIT.sub,
+               msg: sc.present
+                 ? "the subscription server's certificate doesn't match " + sc.domain + " — subscribers get a TLS error"
+                 : "the subscription server has no certificate for " + sc.domain + " — subscribers get a TLS error" });
   }
   const np = ps.netctl_path, nt = ps.netctl_timer;    // path OR timer covers the helper; collapse to one record
   if (gone(np) || gone(nt))       add("netctl", "warn", "missing", "Access & TLS and address changes can’t be applied until it’s restored");
@@ -3929,6 +4158,7 @@ function Overview() {
   // traffic isn't double-counted against a node's own client throughput.
   const nodeRate = id => { const snap = Store.stats[id]; let r = 0, t = 0;
     if (snap) for (const [ifn, blk] of Object.entries(snap.interfaces || {})) { if (isSys(id, ifn)) continue; for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; } }
+    if (snap) for (const w of (snap.wdtt || [])) { r += w.rx_speed || 0; t += w.tx_speed || 0; }   // WDTT owns its TUN (aggregate rx/tx)
     return [r, t]; };
 
   const online = sPeers.filter(p => p.targets.some(t => sel.has(t.node) && t.online)).length;
@@ -3940,7 +4170,7 @@ function Overview() {
   const pUnassigned = sPeers.length - pAssigned;
   const sUsers = users.filter(u => sPeers.some(p => p.user_id === u.id));
   const liveNodes = fleetSel.filter(n => ns[n.id] === "live").length;
-  const ifaceCount = selIds.reduce((a, id) => a + Object.keys(Store.describe[id] || {}).filter(ifn => !isSys(id, ifn)).length, 0);
+  const ifaceCount = selIds.reduce((a, id) => a + Object.keys(Store.describe[id] || {}).filter(ifn => !isSys(id, ifn)).length + ((Store.stats[id] || {}).wdtt || []).filter(w => w && w.iface).length, 0);   // + WDTT interfaces (own their TUN, not in describe)
   const nodesAlerting = fleetSel.filter(n => healthAlerts(((Store.nodes || []).find(x => x.id === n.id) || {}).health).length).length;
   let rx = 0, tx = 0;
   fleetSel.forEach(n => { const [r, t] = nodeRate(n.id); rx += r; tx += t; });
@@ -3959,8 +4189,8 @@ function Overview() {
   const unByNode = {};
   unassigned.forEach(p => p.targets.forEach(t => {
     if (!sel.has(t.node)) return;
-    const g = unByNode[t.node] || (unByNode[t.node] = { node: t.node, peers: new Set(), wg: new Set(), awg: new Set() });
-    g.peers.add(p.id); (targetType(t) === "awg" ? g.awg : g.wg).add(t.iface);
+    const g = unByNode[t.node] || (unByNode[t.node] = { node: t.node, peers: new Set(), wg: new Set(), awg: new Set(), wdtt: new Set() });
+    g.peers.add(p.id); (g[targetType(t)] || g.wg).add(t.iface);   // wg | awg | wdtt — each to its own bucket (never lump wdtt under wg)
   }));
   const unGroups = Object.values(unByNode);
   const orphByIf = {};
@@ -4217,9 +4447,15 @@ function NodeDetail({ node: rawName }) {
   const isSysName = k => k.startsWith(meshPfx) || k.startsWith("swg_");
   const isSysIface = k => (meta[k] && meta[k].system) || isSysName(k);
   const userKeys = meta ? Object.keys(meta).filter(k => !isSysIface(k)) : [];
-  const sysKeys = meta ? Object.keys(meta).filter(k => isSysIface(k)) : [];
-  // drag-to-reorder the (user) interface cards (saved order overlays the node's reported set)
-  const ifaceIds = orderById(userKeys, nrec.iface_order, x => x);
+  // drag-to-reorder the (user) interface cards (saved order overlays the node's reported set) — WDTT-owned
+  // interfaces reorder alongside the wg/awg ones (they live in the same "User interfaces" grid).
+  const _wdttNames = ((Store.stats[name] || {}).wdtt || []).filter(w => w && w.iface).map(w => w.iface);
+  // An interface being deleted stays in this list until the node stops reporting it, so its "deleting" card
+  // holds the SLOT the live card had. Without it the name left ifaceIds the moment its server died and the
+  // card was re-rendered outside the ordered grid — jumping to the front of the page mid-teardown.
+  const _gonePfx = name + "|";
+  const _goneOn = Object.keys(Store.ifaceGone).filter(k => k.startsWith(_gonePfx)).map(k => k.slice(_gonePfx.length));
+  const ifaceIds = orderById([...new Set([...userKeys, ..._wdttNames, ..._goneOn])], nrec.iface_order, x => x);
   const ifReorder = useReorder(ifaceIds, ids => mutate({
     patch: s => { const nn = (s.nodes || []).find(x => x.id === name); if (nn) nn.iface_order = ids; },
     call: () => api.saveOrder({ kind: "iface", node: name, order: ids }),
@@ -4237,11 +4473,16 @@ function NodeDetail({ node: rawName }) {
   // turn-proxies present (installed, a pending install, or onboarding) → show the Turn-proxies block;
   // none → hide that block and surface a "Setup turn-proxy" button in the Interfaces header instead.
   const hasTurns = !!((snap && (snap.turn_proxies || []).length) || Object.keys(nrec.turn_pending || {}).length || (nrec.turn_onboarding || []).length);
+  const wdttIfaces = (snap && snap.wdtt || []).filter(w => w && w.iface);   // WDTT-owned userspace-WG interfaces → shown (flagged) in the interfaces section too
+  const hasWdtt = wdttIfaces.length > 0;   // WDTT forks are self-contained turn-family servers → also shown in the Turn-proxies section
+  // nothing for a turn-proxy to forward to → do not offer to create one (see TurnProxiesBlock)
+  const canFrontTurn = userKeys.some(k => (meta[k] || {}).listen_port);
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === name));
   const onl = here.filter(p => p.targets.some(t => t.node === name && t.online)).length;
   let nrx = 0, ntx = 0; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { nrx += pp.rx_speed || 0; ntx += pp.tx_speed || 0; }
+  if (snap) for (const w of (snap.wdtt || [])) { nrx += w.rx_speed || 0; ntx += w.tx_speed || 0; }   // include WDTT interface throughput in the node-card total
   let syncTxt = "no snapshot yet";
-  if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); syncTxt = live ? "synced " + seen(a) + " ago" : "stale for " + seen(a); }
+  if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); syncTxt = live ? seen(a) + " ago" : "stale for " + seen(a); }
 
   return html`<div class="screen">
     <${NodeRail} active=${name}/>
@@ -4309,8 +4550,8 @@ function NodeDetail({ node: rawName }) {
       })}</div>
     <//>` : null}
 
-    <${Panel} icon="globe" title="User interfaces" tone="ready" count=${userKeys.length}
-        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" title="Recreate this node's missing interfaces with their original identities — node-rebuild recovery" onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> Restore ${mr > 1 ? mr + " interfaces" : "interface"}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked || nrec.turn_arch_ok === false} title=${blocked ? "Unavailable while the node is down / converting" : nrec.turn_arch_ok === false ? ("No turn-proxy build for this node's architecture" + (nrec.arch ? " (" + nrec.arch + ")" : "") + " — only amd64 and arm64 are supported.") : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini ico" title="Interface defaults in Settings → Interfaces" onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
+    <${Panel} icon="globe" title="User interfaces" tone="ready" count=${userKeys.length + wdttIfaces.length + Object.keys(nrec.wdtt_cfg || {}).filter(ifn => !wdttIfaces.some(w => w.iface === ifn)).length}
+        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" title="Recreate this node's missing interfaces with their original identities — node-rebuild recovery" onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> Restore ${mr > 1 ? mr + " interfaces" : "interface"}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns && !hasWdtt && canFrontTurn ? html`<button class="btn btn-mini" disabled=${blocked || nrec.turn_arch_ok === false} title=${blocked ? "Unavailable while the node is down / converting" : nrec.turn_arch_ok === false ? ("No turn-proxy build for this node's architecture" + (nrec.arch ? " (" + nrec.arch + ")" : "") + " — only amd64 and arm64 are supported.") : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini ico" title="Interface defaults in Settings → Interfaces" onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
@@ -4324,25 +4565,70 @@ function NodeDetail({ node: rawName }) {
             ${(e.endpoint || e.port) ? html`<div class="ifrow"><span class="l">Listen</span><span class="r addr">${(e.endpoint || "") + (e.port ? ":" + e.port : "") || "—"}</span></div>` : null}
             ${e.subnet ? html`<div class="ifrow"><span class="l">Subnet</span><span class="r addr">${e.subnet}</span></div>` : null}
             <${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
+        // DELETING card — the optimistic card for a teardown in flight. Same chrome as the live card it
+        // replaces (so the grid doesn't jump), but inert: no pencil, no drag grip, not a link, and no × —
+        // unlike a create, a delete already executing on the node isn't cancellable.
+        // Rows come from the marker captured at Delete, NOT from the live maps: a WDTT server leaves snap.wdtt
+        // the instant its process dies, so reading them here rendered the card as a green "wg" with empty rows
+        // for the rest of the teardown. Live data is only the fallback (e.g. a marker from an older tab).
+        const delCard = (ifn, g) => { const _m = (meta && meta[ifn]) || {};
+          const _w = wdttIfaces.find(w => w.iface === ifn);
+          const _t = g.type || (_w ? "wdtt" : (_m.awg_params && Object.keys(_m.awg_params).length) ? "awg" : "wg");
+          const _port = _w ? String(_w.listen || "").split(":").pop() : "";
+          return html`<div class=${"ifcard pending down"} key=${"del:" + ifn}>
+            <div class="ifcard-top"><span class=${"iftype " + _t}>${_t === "wdtt" ? "WDTT" : _t}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><${StatusTag} cls="tg-del" icon="clock" label="deleting" title="The node tears it down on its next sync"/></div>
+            <div class="ifcard-rows">
+              <div class="ifrow"><span class="l">Listen</span><span class="r addr">${g.listen || (_w
+                ? (_w.fork || "wdtt") + (_port ? ":" + _port : "")
+                : (_m.endpoint || ((_m.address || "").split("/")[0] + (_m.listen_port ? ":" + _m.listen_port : "")))) || "—"}</span></div>
+              <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${g.subnet || (_w ? _w.wg_addr : _m.subnet) || "—"}</span></div>
+              <div class="ifrow"><span class="l faint">the node is tearing it down…</span></div>
+            </div></div>`; };
         const _pfx = name + "|";
         // drop a client-optimistic entry only once the node REPORTS the iface (meta), or it's gone stale —
         // keep it through the whole "creating" phase so its details stay on the card AND the next form's
         // suggestions (name / subnet / port) account for it.
+        // A WDTT interface is REPORTED via stats.wdtt (it owns its own interface), not the wg/awg `meta` map — so
+        // its optimistic "creating" card must dedupe against the live WDTT set too, else it lingers as a ghost.
+        const _wLive = new Set(((Store.stats[name] || {}).wdtt || []).filter(w => w && w.iface).map(w => w.iface));
+        const _reported = i => (meta && meta[i]) || _wLive.has(i);
         for (const k of Object.keys(Store.ifaceNew)) {
           if (!k.startsWith(_pfx)) continue;
           const i = k.slice(_pfx.length);
-          if (meta && meta[i]) { ifaceReady[name + "|" + i] = Date.now() + 5000; delete Store.ifaceNew[k]; }   // just created/onboarded → flash green→blue "ready" for 5s
+          if (_reported(i)) { ifaceReady[name + "|" + i] = Date.now() + 5000; delete Store.ifaceNew[k]; }   // just created/onboarded → flash green→blue "ready" for 5s
           else if (Date.now() - (Store.ifaceNew[k].at || 0) > 900000) delete Store.ifaceNew[k];
         }
         const optNames = Object.keys(Store.ifaceNew).filter(k => k.startsWith(_pfx)).map(k => k.slice(_pfx.length));
+        // client-optimistic DELETE — ifaceNew inverted: it is set the instant Delete is confirmed and cleared
+        // once the node STOPS reporting the interface. Without it the card kept every action live on a doomed
+        // interface, and a WDTT one then flickered into an adoption CANDIDATE — the panel drops its record at
+        // once while the node still reports the device, and a WDTT iface isn't in `meta`, so `_known` said
+        // "not ours, adopt it?" about the very server being torn down.
+        // Cleared once OUR instance is gone — the live set plus the panel's own record. Deliberately NOT
+        // "until the node stops mentioning the name at all": a name can stay on the node under a DIFFERENT
+        // owner, and an unmanaged WDTT server is pinned to wdtt0 (upstream compiles the name in), so that
+        // reading left the card on "deleting" for ever after deleting the managed instance beside it. The
+        // orphan card this used to suppress is now prevented at the source, on the node (_wdtt_remove drops
+        // the cached proc walk it was being resurrected from).
+        const _stillOnNode = i => _reported(i) || !!(nrec.wdtt_cfg || {})[i];
+        for (const k of Object.keys(Store.ifaceGone)) {
+          if (!k.startsWith(_pfx)) continue;
+          const i = k.slice(_pfx.length);
+          if (!_stillOnNode(i)) delete Store.ifaceGone[k];                                     // really gone → the card goes with it
+          else if (Date.now() - (Store.ifaceGone[k].at || 0) > 900000) delete Store.ifaceGone[k];   // stale sweep, same window as ifaceNew
+        }
+        const goneNames = Object.keys(Store.ifaceGone).filter(k => k.startsWith(_pfx)).map(k => k.slice(_pfx.length));
         // system mesh-link ifaces (swg_*) are created/torn down by the panel during re-provision — they belong
         // to the Node-connections cards, NEVER the User-interfaces list, so exclude them from every pending lane.
-        const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn) && !isSysName(ifn));
+        const pendOn = (nrec.onboarding || []).filter(ifn => !_reported(ifn) && !optNames.includes(ifn) && !isSysName(ifn));
         const cr = nrec.creating || {};   // { iface: "wg" | "awg" } — server-side, deduped against the client cards
-        const pendCr = Object.keys(cr).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn) && !isSysName(ifn));
-        const optCards = optNames.filter(ifn => !(meta && meta[ifn])).map(ifn => optIfCard(ifn, Store.ifaceNew[_pfx + ifn]));
+        const pendCr = Object.keys(cr).filter(ifn => !_reported(ifn) && !optNames.includes(ifn) && !isSysName(ifn));
+        const optCards = optNames.filter(ifn => !_reported(ifn)).map(ifn => optIfCard(ifn, Store.ifaceNew[_pfx + ifn]));
         const pending = pendOn.concat(pendCr, optNames);
         pending.forEach(ifn => { ifaceWasBusy[name + "|" + ifn] = true; });   // any in-flight iface (create / onboard / server) → flash "ready" once it appears in meta
+        // a delete in flight suppresses the candidate / missing / ghost grids for that name too (that flicker
+        // IS the orphan card) — but after the ready-flash arming above: it is not coming back.
+        pending.push(...goneNames);
         const pcards = pendOn.map(ifn => pcard(ifn, "onboarding", null))
           .concat(pendCr.map(ifn => pcard(ifn, "creating", cr[ifn])))
           .concat(optCards);
@@ -4353,31 +4639,185 @@ function NodeDetail({ node: rawName }) {
             ? html`<span class="mi-ok">Its original server key is recoverable</span>, so Restore recreates it cleanly — no client changes.`
             : html`<span class="mi-bad">Its original server key can't be recovered</span>, so Restore recreates it with a new key — clients re-import.`}`;
           return html`<a class="ifcard missing" key=${"missing:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title="Open the interface (read-only) — peers, saved config, and Restore">
-            <div class="ifcard-top"><span class=${"iftype " + mtype}>${mtype}</span><span class="ifname">${ifn}</span>
-              <${StatusTag} cls="tg-del" icon="warn" label="missing" title="This interface is gone from the node"/>
-              <button class="mi-restore" disabled=${blocked || !mi.ripe} title=${mi.ripe ? "Recreate this interface with its original identity — recovers every peer on it" : "Confirming it's really gone (a couple of minutes) before Restore is offered"} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> Restore</button><span class="grow"></span></div>
+            <div class="ifcard-top"><span class=${"iftype " + mtype}>${mtype}</span><span class="ifname">${ifn}</span><span class="grow"></span>
+              <button class="mi-restore" disabled=${blocked || !mi.ripe} title=${mi.ripe ? "Recreate this interface with its original identity — recovers every peer on it" : "Confirming it's really gone (a couple of minutes) before Restore is offered"} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> Restore</button>
+              <${StatusTag} cls="tg-del" icon="warn" label="missing" title="This interface is gone from the node"/></div>
             <div class="ifcard-rows"><div class="mi-text">${sentence}</div></div></a>`; };
         // GHOST card — a lost interface with NO recoverable key (cold: no saved config; or a keyless missing
         // interface). Restore can't help, so it offers "Recreate" (fresh key + rekey every peer). Semi-
         // transparent until hover (it's a phantom), mirroring the .ifcard.down treatment.
         const gcard = (ifn, g) => { const gp = _ghostPeers(name, ifn);
           return html`<a class="ifcard ghost" key=${"ghost:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title="Open the interface (read-only) — recreate & rekey">
-            <div class="ifcard-top"><span class="iftype gh">gone</span><span class="ifname">${ifn}</span>
-              <${StatusTag} cls="tg-del" icon="warn" label="ghost" title="Gone with no recoverable key — recreate fresh + rekey"/>
-              <button class="mi-restore ghost" disabled=${blocked || !g.ripe} title=${g.ripe ? "Recreate this interface with a NEW key and rekey every peer on it (clients re-import)" : "Confirming it's really gone (a couple of minutes) before Recreate is offered"} onClick=${e => { e.preventDefault(); e.stopPropagation(); openRecreateRekey(name, ifn); }}><${Ic} i="refresh"/> Recreate</button><span class="grow"></span></div>
+            <div class="ifcard-top"><span class="iftype gh">gone</span><span class="ifname">${ifn}</span><span class="grow"></span>
+              <button class="mi-restore ghost" disabled=${blocked || !g.ripe} title=${g.ripe ? "Recreate this interface with a NEW key and rekey every peer on it (clients re-import)" : "Confirming it's really gone (a couple of minutes) before Recreate is offered"} onClick=${e => { e.preventDefault(); e.stopPropagation(); openRecreateRekey(name, ifn); }}><${Ic} i="refresh"/> Recreate</button>
+              <${StatusTag} cls="tg-del" icon="warn" label="ghost" title="Gone with no recoverable key — recreate fresh + rekey"/></div>
             <div class="ifcard-rows"><div class="mi-text">The node no longer reports ${ifn}, and <span class="mi-bad">its server key can't be recovered</span> — there's nothing to restore. Recreate it with a new key; its ${gp.length} peer${gp.length === 1 ? " gets" : "s get"} fresh configs to re-import.</div></div></a>`; };
+        // MISSING WDTT server: the panel still wants it (wdtt_cfg) but the node reports nothing for it in
+        // snap.wdtt — a rebuilt box, or a node running a build without WDTT support. The whole WDTT UI keys off
+        // the snapshot, so without this the server simply VANISHED: no card, no hint that its identity is safely
+        // escrowed, no way to restore it. Same orange treatment and inline action as a missing wg/awg interface.
+        const wmcard = (ifn, wc) => { const vaulted = !!((nrec.wdtt_vault || {})[ifn]);
+          const restoring = (nrec.wdtt_restoring || []).includes(ifn);
+          const fork = wc.fork || "amurcanov";
+          const dtls = String(wc.listen || "").split(":").pop() || "";
+          const sentence = vaulted
+            ? html`The node no longer reports WDTT server ${ifn} (subnet ${wc.wg_addr || "?"}). <span class="mi-ok">Its identity is escrowed in your Encryption Vault</span>, so Restore brings it back unchanged — no user re-imports.`
+            : html`The node no longer reports WDTT server ${ifn} (subnet ${wc.wg_addr || "?"}). <span class="mi-bad">No escrowed identity is stored</span>, so it can only come back with a new key — every user re-imports.`;
+          return html`<a class="ifcard missing" key=${"wdtt-missing:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title="Open the WDTT server (read-only) — details and Restore">
+            <div class="ifcard-top"><span class="iftype wdtt">WDTT</span><span class="ifname">${ifn}</span><span class="grow"></span>
+              <button class="mi-restore" disabled=${blocked || restoring} title=${vaulted ? "Bring this WDTT server back with its original identity — no user re-imports" : "Recreate this WDTT server with a NEW identity — every user re-imports"}
+                onClick=${e => { e.preventDefault(); e.stopPropagation(); vaulted ? wdttRestoreIdentity(name, ifn) : wdttRecreateFresh(name, ifn); }}><${Ic} i=${vaulted ? "shield" : "refresh"}/> ${restoring ? "Restoring…" : vaulted ? "Restore" : "Recreate"}</button>
+              <${StatusTag} cls="tg-del" icon="warn" label="missing" title="This WDTT server is gone from the node"/></div>
+            <div class="ifcard-rows"><div class="mi-text">${sentence}</div></div></a>`; };
+        // ADOPTING card — a take-over in flight, before the node has started the server. Same chrome as the
+        // card it becomes, inert: nothing to start, stop or restore yet.
+        const wacard = (ifn, wc) => { const fork = wc.fork || "amurcanov";
+          const dtls = String(wc.listen || "").split(":").pop() || "";
+          return html`<div class="ifcard down" key=${"wdtt-adopting:" + ifn}>
+            <div class="ifcard-top"><span class="iftype wdtt">WDTT</span><span class="ifname">${ifn}</span><span class="grow"></span>
+              <${ForkTag} fork=${fork}/><${StatusTag} cls="tg-busy" icon="clock" label="adopting" title="The node takes it over on its next sync"/></div>
+            <div class="ifcard-rows">
+              <div class="ifrow"><span class="l">Listen</span><span class="r addr">${fork}${dtls ? ":" + dtls : ""}</span></div>
+              <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${wc.wg_addr || "—"}</span></div>
+              <div class="ifrow"><span class="l faint">taking it over…</span></div>
+            </div></div>`; };
+        // An adoption in flight writes the instance into wdtt_cfg immediately, while the node may still report
+        // the ORPHAN it is taking over — that orphan card carries the state, so showing this one too would put
+        // two cards on screen for one server. But a DORMANT install has no orphan card: the panel drops it from
+        // wdtt_dormant the moment it is claimed, and the node hasn't started the server yet — so skipping it
+        // here left NO card at all and the server simply vanished until the take-over finished. Skip only when
+        // something else is already showing it; otherwise show the take-over itself.
+        const _wAdopting = new Set(nrec.wdtt_adopting || []);
+        const _wHasOrphanCard = ifn => (nrec.iface_candidates || []).some(c => c && c.name === ifn);
+        const wmcards = Object.entries(nrec.wdtt_cfg || {})
+          .filter(([ifn]) => !wdttIfaces.some(w => w.iface === ifn) && !pending.includes(ifn)
+                             && !(_wAdopting.has(ifn) && _wHasOrphanCard(ifn)))
+          .map(([ifn, wc]) => _wAdopting.has(ifn) ? wacard(ifn, wc || {}) : wmcard(ifn, wc || {}));
         const mcards = Object.entries(nrec.missing_ifaces || {})
           .filter(([ifn, mi]) => mi.key_source && !(meta && meta[ifn]) && !pending.includes(ifn) && !isSysName(ifn))   // RECOVERABLE only — keyless ones fall to gcard below; a recreate/restore in flight shows the "creating" card instead
           .map(([ifn, mi]) => mcard(ifn, mi));
+        // Approach-B adoption candidates: wg/awg interfaces the node found but the panel doesn't manage. Orange
+        // "found" cards in the same grid → open to Adopt or Ignore. (wdtt_hint → WDTT, not wg/awg-adoptable yet.)
+        const ccard = (cd, ig) => { const wd = !!cd.wdtt_hint; const ip0 = (cd.address || "").split("/")[0];
+          // wdtt_adopting is the SERVER's word for a WDTT take-over; Store.ifaceNew is the client's optimistic
+          // marker for a wg/awg adopt, set the instant Adopt is submitted. Either means "in flight".
+          const adopting = _wAdopting.has(cd.name) || !!Store.ifaceNew[name + "|" + cd.name];
+          // Ignore is decided on the DETAIL page but lands here — the operator is bounced to this grid the
+          // instant they click, so without this the card would sit unchanged until the next poll quietly
+          // removed it, and the click would read as having done nothing.
+          const _cop = opTag(name + "|" + cd.name);
+          // `blocked` = the node is converting / re-installing / down. Every managed card dims and disables for
+          // it; the candidate cards were the exception, still offering an Adopt that the node cannot act on.
+          return html`<a class=${"ifcard candidate" + (ig ? " ignored" : "") + ((adopting || blocked || _cop) ? " down" : "") + (blocked ? " locked" : "")} key=${(ig ? "ign:" : "cand:") + cd.name}
+            onClick=${blocked ? (e => e.preventDefault()) : null} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(cd.name)} title=${ig ? "Ignored — the panel isn't managing it. Open to Un-ignore or Adopt." : "Found on the node — not managed by the panel. Open to Adopt or Ignore."}>
+            <div class="ifcard-top"><span class=${"iftype " + (wd ? "wdtt" : (cd.type_hint === "awg" ? "awg" : "orph"))}
+                title=${wd ? "A WDTT server is running on it" : cd.type_why ? "Looks like " + String(cd.type_hint || "wg").toUpperCase() + " — " + cd.type_why : "Type not established — you choose it when adopting"}>${wd ? "wdtt" : cd.type_hint === "awg" ? "awg?" : "wg?"}</span><span class="ifname">${cd.name}</span>
+              <span class="grow"></span>
+              ${(ig || adopting || blocked || _cop) ? null : html`<button class="mi-restore" title="Adopt this interface — choose its type, keys and peers are kept"
+                onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptIfaceSheet} node=${name} iface=${cd.name} cand=${cd} nrec=${nrec}/>`); }}><${Ic} i="plus"/> Adopt</button>`}
+              ${_cop
+                ? _cop
+                : adopting
+                ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title="Taking it over — the node applies this on its next sync"/>`
+                : html`<span class=${"tg " + (ig ? "tg-ign" : "tg-cand")} title=${ig ? "Ignored candidate — Settings-style dismissed; open to Un-ignore" : "Found on the node — the panel doesn't manage it. Adopt to manage, or Ignore."}><${Ic} i="warn"/>${ig ? "ignored" : "orphan"}</span>`}</div>
+            <div class="ifcard-rows">
+              <div class="ifrow"><span class="l">Found at</span><span class="r addr">${(cd.conf ? cd.conf.replace(/\/[^/]*$/, "") : ((cd.wdtt || {}).config_dir || "")) || html`<span class="faint">—</span>`}</span></div>
+              <div class="ifrow"><span class="l">Listen</span><span class="r addr">${ip0}${cd.listen_port ? ":" + cd.listen_port : ""}</span></div>
+              <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${cd.address || "—"}</span></div>
+              <div class="ifrow"><span class="l">Peers</span><span class="r">${cd.peers ? html`<b>${cd.peers}</b>` : html`<span class="faint">None</span>`}</span></div>
+            </div></a>`; };
+        // A name the panel already has for THIS node is not an orphan — it is one of ours the node stopped
+        // reporting, which is the missing/ghost card right above. Showing both said "we manage it, it's gone"
+        // and "we don't manage it, adopt it?" about the same interface, in the same grid.
+        // …but NOT while it is being taken over: adopting writes the instance into wdtt_cfg immediately, so
+        // treating that as "known" hid the orphan card at the very moment it is meant to show "adopting" — and
+        // wmcards skips it too, leaving the interface with no card at all until the node finished.
+        const _known = ifn => !_wAdopting.has(ifn) && !!((meta && meta[ifn]) || (nrec.missing_ifaces || {})[ifn] || (nrec.ghost_ifaces || {})[ifn] || (nrec.wdtt_cfg || {})[ifn]);
+        // DORMANT WDTT: an install on disk with nothing running. It owns its TUN, so while stopped there is no
+        // interface, no socket and no process — it can't be an interface candidate, and staying silent about it
+        // is how a real server goes unnoticed. Adoption STARTS it: we have the binary, its identity and its
+        // password store, so "go start it yourself" would be pointless advice from the one thing that can.
+        const _claimed = new Set(nrec.wdtt_claimed_dirs || []);
+        const dcard = d => { const taking = _claimed.has(d.config_dir);   // an instance already points at this dir
+          return html`<div class=${"ifcard candidate" + ((taking || blocked) ? " down" : " clickable") + (blocked ? " locked" : "")} key=${"dormant:" + d.config_dir}
+            title=${taking ? "Being taken over — the node applies this on its next sync" : "Adopt this WDTT server — its key and passwords are kept"}
+            onClick=${() => { if (!taking && !blocked) go("#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(d.config_dir || "")); }}>
+          <div class="ifcard-top"><span class="iftype wdtt">wdtt</span><span class="ifname">${(d.config_dir || "").split("/").filter(Boolean).pop() || "wdtt"}</span><span class="grow"></span>
+            ${(taking || blocked) ? null : html`<button class="mi-restore" title="Adopt this WDTT server — its key and passwords are kept"
+              onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptDormantWdttSheet} node=${name} d=${d} nrec=${nrec}/>`); }}><${Ic} i="plus"/> Adopt</button>`}
+            ${taking
+              ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title="Taking it over — the node applies this on its next sync"/>`
+              : html`<span class="tg tg-cand" title="On the node, not managed by the panel"><${Ic} i="warn"/>orphan</span>`}</div>
+          <div class="ifcard-rows">
+            <div class="ifrow"><span class="l">Found at</span><span class="r addr">${d.config_dir}</span></div>
+            <div class="ifrow"><span class="l">Fork</span><span class="r">${d.fork || html`<span class="faint">unknown</span>`}</span></div>
+            <div class="ifrow"><span class="l">Ports</span><span class="r addr">${d.listen_port
+              ? html`${d.listen_port}${d.wg_port ? " · " + d.wg_port : ""}`
+              : html`<span class="faint">set on adopt</span>`}</span></div>
+            <div class="ifrow"><span class="l">Peers</span><span class="r">${(d.users || []).length
+              ? html`<b>${(d.users || []).length}</b>`
+              : html`<span class="faint">None</span>`}</span></div>
+          </div></div>`; };
+        const dcards = (nrec.wdtt_dormant || []).map(dcard);
+        const ccards = (nrec.iface_candidates || []).filter(cd => cd && cd.name && !_known(cd.name) && !pending.includes(cd.name) && !isSysName(cd.name)).map(cd => ccard(cd, false));
         const _gset = {};   // dedupe cold (ghost_ifaces) + keyless-missing into one gcard per iface; a recreate in flight (pending) drops the ghost card in favour of its "creating" card
         for (const ifn of Object.keys(nrec.ghost_ifaces || {})) if (!(meta && meta[ifn]) && !pending.includes(ifn) && !isSysName(ifn)) _gset[ifn] = 1;
         for (const [ifn, mi] of Object.entries(nrec.missing_ifaces || {})) if (!mi.key_source && !(meta && meta[ifn]) && !pending.includes(ifn) && !isSysName(ifn)) _gset[ifn] = 1;
         const gcards = Object.keys(_gset).map(ifn => [ifn, _ghostIface(name, ifn)]).filter(([, g]) => g).map(([ifn, g]) => gcard(ifn, g));
+        // WDTT-owned interfaces: a self-contained WDTT fork brings up its OWN userspace-WireGuard interface. Show it
+        // here (flagged) so the operator sees the datapath, but it's READ-ONLY for peer/key management — WDTT owns
+        // its keys + peers, so it's managed from the Turn-proxies card (click opens that). Routing/blocking applies.
+        // WDTT interface card — SAME chrome/behavior as the normal interface card (hover, edit-flash, dimming,
+        // status, click→detail), rows identical EXCEPT Listen shows the fork:port instead of the interface IP.
+        // The pencil opens the WDTT edit modal (endpoint/fork/ports + routing/filters/egress), like a normal iface.
+        const wcard = w => {
+          const active = w.active === "active"; const awaiting = !!w.await_restore;
+          const restoring = (nrec.wdtt_restoring || []).includes(w.iface);
+          const fork = w.fork || "amurcanov";
+          const wcfg = (nrec.wdtt_cfg || {})[w.iface] || {};   // desired egress/routing/filters (for the Traffic badge)
+          const dtls = String(w.listen || "").split(":").pop() || "";
+          const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === w.iface));
+          const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === w.iface && t.online)).length;
+          const _wop = Store.ifaceOp[name + "|" + w.iface];   // optimistic save lifecycle (applying/applied/failed), like a normal card
+          const _wopTag = opTag(name + "|" + w.iface);
+          const wconverting = (nrec.proc_status || "").startsWith("converting");   // node mid bare↔docker convert — same as the wg/awg + turn cards
+          const idim = wconverting || awaiting || restoring || !active || (_wop && _wop.phase === "busy");   // needs attention / in flight → dim
+          const href = "#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(w.iface);
+          const it = ifReorder.item(w.iface);
+          const badge = html`<span class="iftype wdtt">WDTT</span><span class="ifname">${w.iface}</span>`;
+          return html`<a key=${"wdtt-if:" + w.iface} class=${"ifcard" + (idim ? " down" : "") + (blocked ? " locked" : "") + it.cls} href=${href} draggable=${false} data-rid=${it.rid}>
+            <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(w.iface)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>${(blocked || (_wop && _wop.phase === "busy")) ? badge
+              : html`<button class="ifc-edit" title=${"Edit WDTT server · " + w.iface} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditWdtt(name, w.iface); }}>${badge}<span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span><${ForkTag} fork=${fork}/>${wconverting
+                ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title="The node is converting between bare-metal and docker"/>`
+                : _wopTag
+                ? _wopTag
+                : awaiting
+                ? html`<${StatusTag} cls="tg-busy del" icon="shield" label="Restore" title="Server wiped — its identity is escrowed; open to Restore or Recreate fresh"/>`
+                : restoring ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restoring</span>`
+                : active ? null
+                : html`<span class="tg tg-busy"><${Ic} i="clock"/>starting</span>`}</div>
+            <div class="ifcard-rows">
+              <div class="ifrow"><span class="l">Listen</span><span class="r addr">${fork}${dtls ? ":" + dtls : ""}</span></div>
+              <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${w.wg_addr || "—"}</span></div>
+              <div class="ifrow"><span class="l">Traffic</span><span class="r">${wcfg.egress_mode === "forward" && wcfg.egress_node
+                ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(wcfg.egress_node)} title=${"Exits via " + Store.nodeName(wcfg.egress_node) + (wcfg.egress_ip ? " (" + wcfg.egress_ip + ")" : "")}><${Ic} i="server"/>→ ${Store.nodeName(wcfg.egress_node)}</span>`
+                : wcfg.egress_mode === "smart"
+                ? html`<span class="egb egb-smart" title=${(wcfg.routing || []).filter(r => r.action === "exit").length + " destination rule(s)"}><${Ic} i="cascade"/>smart</span>`
+                : html`<span class="egb egb-direct" title="Exits directly from this node"><${Ic} i="globe"/>direct</span>`}</span></div>
+              <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length
+                ? html`<${OnlinePeersTag} nodeId=${name} iface=${w.iface} orphans=${0} orphHref=${href}
+                    trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
+                : html`<span class="faint">None</span>`}</span></div>
+            </div></a>`; };
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
-          : (!userKeys.length && !pending.length && !mcards.length && !gcards.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
-          : html`<div class="ifgrid" ...${ifReorder.container()}>${mcards}${gcards}${orderById(userKeys, nrec.iface_order, x => x).map(ifn => {
+          : (!userKeys.length && !pending.length && !mcards.length && !gcards.length && !wdttIfaces.length && !wmcards.length && !ccards.length && !dcards.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
+          : html`<div class="ifgrid" ...${ifReorder.container()}>${mcards}${wmcards}${gcards}${ifaceIds.map(ifn => {
+              if (Store.ifaceGone[_pfx + ifn]) return delCard(ifn, Store.ifaceGone[_pfx + ifn]);   // teardown in flight → the inert "deleting" card, in place
+              const _w = wdttIfaces.find(w => w.iface === ifn);   // WDTT interface → its card (reorders in the same grid); else a normal wg/awg card
+              if (_w) return wcard(_w);
               const m = meta[ifn];
+              if (!m) return null;   // ifaceIds is built before the ifaceGone sweep below, so a marker cleared THIS render can leave a name with nothing behind it — rendering it would read meta of undefined and blank the page
               const it = ifReorder.item(ifn);
               if (ifaceWasBusy[name + "|" + ifn]) { ifaceReady[name + "|" + ifn] = Date.now() + 5000; ifaceWasBusy[name + "|" + ifn] = false; }   // just came up after being pending/creating → "ready" 5s
               const type = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
@@ -4403,7 +4843,7 @@ function NodeDetail({ node: rawName }) {
               // of here into `blocked` for exactly that reason.
               const idim = deleting || idown || istopped || irestarting || iopBusy || !!iprog || !!(nrec.cmd_errors || {})[ifn];
               return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + (blocked ? " locked" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
-                <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>${blocked ? html`<span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>` : html`<button class="ifc-edit" title=${"Edit interface · " + type.toUpperCase()} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditIface(name, ifn); }}><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span>${ifaceTurnBadges(name, fwdTurns, tight)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
+                <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>${(blocked || iopBusy || deleting || irestarting) ? html`<span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>` : html`<button class="ifc-edit" title=${"Edit interface · " + type.toUpperCase()} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditIface(name, ifn); }}><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span>${ifaceTurnBadges(name, fwdTurns, tight)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -4417,14 +4857,405 @@ function NodeDetail({ node: rawName }) {
                         trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>${orph ? html` <span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>(${orph})</span>` : null}`}/>`
                     : (orph ? html`<span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>${orph}</span>` : html`<span class="faint">None</span>`)}</span></div>
                 </div></a>`;
-            })}${pcards}</div>`; })()}
+            })}${pcards}${ccards}${dcards}</div>`; })()}
     <//>
 
-    ${hasTurns && turnEnabled() ? html`<${TurnProxiesBlock} node=${name} nrec=${nrec} snap=${snap} metas=${meta} title="Turn proxies"/>` : null}
+    ${(hasTurns || hasWdtt) && turnEnabled() ? html`<${TurnProxiesBlock} node=${name} nrec=${nrec} snap=${snap} metas=${meta} title="Turn proxies"/>` : null}
     `}
   </div>`;
 }
 
+// The interface's egress/traffic mode as a header badge — shared by wg/awg + WDTT detail: direct | cascade
+// (whole-interface forward to a node) | smart cascade (per-destination routing).
+function ifTrafficBadge(mode, egNode) {
+  if (mode === "forward" && egNode) return html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(egNode)} title=${"Cascade — exits via " + Store.nodeName(egNode)}><${Ic} i="cascade"/>cascade → ${Store.nodeName(egNode)}</span>`;
+  if (mode === "smart") return html`<span class="egb egb-smart" title="Per-destination smart routing"><${Ic} i="cascade"/>smart cascade</span>`;
+  if (mode === "forward") return html`<span class="egb egb-cascade"><${Ic} i="cascade"/>cascade</span>`;
+  return html`<span class="egb egb-direct" title="Exits directly from this node"><${Ic} i="globe"/>direct</span>`;
+}
+// ═════════════════════════ SCREEN: ADOPTION CANDIDATE ═════════════════════════
+// A wg/awg interface the node reported but the panel doesn't manage (Approach B). Stripped detail: facts +
+// Adopt / Ignore only. wdtt_hint ones steer to WDTT (coming soon) / Ignore — never wg/awg-adopt (would break the server).
+// Every interface the operator has dismissed, fleet-wide. Ignoring one is a deliberate "the panel doesn't manage
+// this" decision, so it does NOT belong on the node's interface grid dimmed at the bottom — that put a permanent
+// piece of clutter on the screen the operator looks at most, for interfaces they had already dealt with. This is
+// the single place they exist: a plain list, one action, and it disappears again the moment the node stops
+// reporting the interface. Adopting is the only way back — that IS the un-ignore.
+function IgnoredIfacesCard() {
+  useStore();
+  const rows = [];
+  for (const n of (Store.nodes || [])) {
+    for (const cd of (n.ignored_candidates || []))
+      // Store.ifaceIsSystem, NOT isSysName: that one is a local of the node screen, and calling it from here
+      // threw a ReferenceError on every render of this section — which is exactly why this card appeared to do
+      // nothing no matter what was ignored. (Same trap the turn-button comment above warns about.)
+      if (cd && cd.name && !Store.ifaceIsSystem(n.id, cd.name) && !Store.ifaceMeta(n.id, cd.name))
+        rows.push({ n, id: cd.name, name: cd.name,
+                    info: (cd.wdtt_hint ? "WDTT" : (cd.address || "—")) + (cd.listen_port ? " · :" + cd.listen_port : ""),
+                    adopt: () => openModal(html`<${AdoptIfaceSheet} node=${n.id} iface=${cd.name} cand=${cd} nrec=${n}/>`) });
+    // A dismissed DORMANT WDTT install belongs here too — it is the same decision about the same kind of thing,
+    // and it is addressed by its config dir because a stopped server has no interface name to be listed under.
+    for (const d of (n.ignored_dormant || []))
+      if (d && d.config_dir)
+        rows.push({ n, id: d.config_dir, name: (d.config_dir.split("/").filter(Boolean).pop() || "wdtt"),
+                    info: "WDTT · not running" + (d.listen_port ? " · :" + d.listen_port : ""),
+                    adopt: () => openModal(html`<${AdoptDormantWdttSheet} node=${n.id} d=${d} nrec=${n}/>`) });
+  }
+  if (!rows.length) return null;
+  return html`<div class="card">
+    <div class="seclabel" style="margin-top:0">Ignored interfaces</div>
+    <p class="hint" style="margin:0 0 12px">Interfaces found on your nodes that you told the panel to leave alone. They keep running exactly as they are — nothing here is managed, and nothing is shown on the node's page. <b>Adopt</b> one to start managing it.</p>
+    <div class="ignlist">${rows.map(r => html`<div class="ignrow" key=${r.n.id + "/" + r.id}>
+      <a class="ignrow-n" href=${"#/node/" + encodeURIComponent(r.n.id) + "/" + encodeURIComponent(r.id)} title=${r.id}>${r.name}</a>
+      <span class="ignrow-node">on ${r.n.name || r.n.id}</span>
+      <span class="grow"></span>
+      <span class="ignrow-f">${r.info}</span>
+      <button class="iconbtn" title=${"Adopt " + r.name + " — start managing it from the panel"}
+        onClick=${r.adopt}><${Ic} i="plus"/></button>
+    </div>`)}</div>
+  </div>`;
+}
+function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm }) {
+  useStore();
+  const dname = nrec.name || node;
+  const wd = !!cand.wdtt_hint;
+  const title = dorm ? cand.name : iface;   // a dormant install is addressed by its config dir; show its folder
+  const ip0 = (cand.address || "").split("/")[0];
+  // Optimistic: the tag flips to "ignoring" on the click and we leave for the node page immediately, so the
+  // decision is visible where its result lands (the card) instead of the page sitting still through a round-trip
+  // and then vanishing. The request runs underneath; a failure puts the reason back on the card.
+  const panelOp = (verb, call, okMsg, leave) => {
+    const key = node + "|" + iface;
+    Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply();
+    if (leave) location.hash = "#/node/" + encodeURIComponent(node);
+    (async () => {
+      let r; try { r = await call(); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (!r || !r.ok) {
+        Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 10000, err: (r && r.error) || "request failed" };
+        Store.apply(); return toast((r && r.error) || "Failed", "err");
+      }
+      await Store.poll();
+      delete Store.ifaceOp[key]; Store.apply();   // the card has moved on its own — no "done" flash to leave behind
+      toast(okMsg, "ok");
+    })();
+  };
+  const doIgnore   = () => panelOp("ignore",   () => api.ifaceIgnore({ node, iface }),   "Interface ignored — listed in Settings \u2192 Interfaces.", true);
+  const doUnignore = () => panelOp("unignore", () => api.ifaceUnignore({ node, iface }), "Interface un-ignored — back as an adoption candidate.", false);
+  // Never disable Adopt: the sheet lets the operator pick a different type, and for WDTT it explains exactly why
+  // an identity-less server can't be taken over. A blocked action that says why beats a dead control.
+  // Same shape as a managed interface's page — head, "Interface details", "Peers on this interface" — so a
+  // candidate reads as the same kind of object, just not managed yet. Only those two sections: throughput,
+  // turn-proxies and peer management all describe things the panel doesn't run for it.
+  return html`<div class="screen">
+    <${NodeRail} active=${node}/>
+    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
+    <div class="detail-head">
+      <div class="title"><h1>${title}</h1><span class=${"iftype " + (wd ? "wdtt" : (cand.type_hint === "awg" ? "awg" : "orph"))}>${wd ? "wdtt" : cand.type_hint === "awg" ? "awg?" : "wg?"}</span>
+        ${dorm ? html`<${ForkTag} fork=${dorm.fork || "amurcanov"}/><span class="nstat stopped" title="Installed on disk, nothing running"><${Ic} i="stop"/> not running</span>` : null}
+        <span class=${"tg " + (ignored ? "tg-ign" : "tg-cand")} title=${ignored ? "Dismissed — the panel isn't managing it" : "On the node, not managed by the panel"}><${Ic} i="warn"/>${ignored ? "ignored" : "orphan"}</span></div>
+      <div class="grow"></div>
+    </div>
+    <div class="notice warn"><${Ic} i="warn"/><span>${Store.ifaceGone[node + "|" + iface]
+      ? html`This interface is being <b>deleted</b> — the node tears it down on its next sync. It still reports the device, which is the only reason this page is showing.`
+      : ignored
+      ? html`This interface is <b>ignored</b> — the panel isn't managing it and it's hidden from the node's page. It's listed in <b>Settings → Interfaces</b>. <b>Un-ignore</b> to bring it back as a candidate, or <b>Adopt</b> to start managing it now.`
+      : dorm
+      ? html`A WDTT server is <b>installed here but not running</b>. It owns its own tunnel device, so while it is stopped there is no interface, no socket and no process — this directory is its only trace. <b>Adopt</b> takes it over and starts it, keeping its server key and users, so existing clients keep working; <b>Ignore</b> leaves it alone.
+          ${!dorm.listen_port ? html`<div style="margin-top:8px"><b>Its ports couldn't be identified</b>, so adoption will offer defaults — replace them with the ports this server was actually listening on. Clients dial the port written into the config they already hold, so adopting on the wrong one leaves every existing user unable to connect until you re-issue and re-distribute their links.</div>` : null}`
+      : wd
+      ? html`This is a <b>WDTT</b> interface — a userspace tunnel owned by its own server. <b>Adopt</b> takes it over keeping its identity and passwords, so existing clients keep working; <b>Ignore</b> leaves it alone.`
+      : html`This interface is on the node but the panel doesn't manage it, so its type isn't established yet — <b>you choose it while adopting</b>. <b>Adopt</b> to start managing it (its existing peers are kept), or <b>Ignore</b> to dismiss it.`}</span></div>
+
+    <${Panel} icon="key" title="Interface details" tone="orphan"
+          actions=${Store.ifaceGone[node + "|" + iface]
+            // A teardown in flight lands HERE for a WDTT server: the panel drops its record at once, so this
+            // page (the candidate/orphan view) is what the router picks while the node still reports the
+            // device. Offering Adopt on the server being deleted is the detail-page half of the orphan flicker.
+            ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title="The node tears it down on its next sync"/>`
+            : Store.ifaceNew[node + "|" + iface]
+            // Adopt already submitted, node has not reported it yet. Offering the buttons again invites a
+            // SECOND onboard for the same interface; show what is happening instead.
+            ? html`<${StatusTag} cls="tg-busy" icon="clock" label="onboarding" title="The node takes it over on its next sync"/>`
+            : html`<${Fragment}>
+          ${ignored
+            ? html`<button class="btn btn-mini" onClick=${doUnignore}>Un-ignore</button>`
+            : html`<button class="btn btn-mini" onClick=${doIgnore}>Ignore</button>`}
+          <button class="btn btn-mini btn-primary"
+            title="Start managing this interface from the panel"
+            onClick=${() => openModal(dorm
+              ? html`<${AdoptDormantWdttSheet} node=${node} d=${dorm} nrec=${nrec}/>`
+              : html`<${AdoptIfaceSheet} node=${node} iface=${iface} cand=${cand} nrec=${nrec}/>`)}>Adopt</button>
+        <//>`}>
+      <div class="iface-grid">
+        <div class="ig-item"><span class="ig-l">Type</span><span class="ig-v">${wd
+          ? html`WDTT${(cand.wdtt && cand.wdtt.fork) ? " · " + cand.wdtt.fork : ""}`
+          : cand.type_why
+          ? html`looks like ${(cand.type_hint || "wg").toUpperCase()}`
+          : html`<span class="faint">chosen when you adopt</span>`}</span></div>
+        ${dorm
+          // A stopped install has no endpoint, address or datapath to report — those are properties of a RUNNING
+          // server. What it does have is on disk, and that is what decides whether it can be taken over.
+          ? html`<${Fragment}>
+              <div class="ig-item"><span class="ig-l">Found at</span><span class="ig-v">${dorm.config_dir}</span></div>
+              <div class="ig-item"><span class="ig-l">Ports</span><span class="ig-v">${dorm.listen_port
+                ? html`${dorm.listen_port}${dorm.wg_port ? " · " + dorm.wg_port : ""}`
+                : html`<span class="faint">set on adopt</span>`}</span></div>
+              <div class="ig-item"><span class="ig-l">Server identity</span><span class="ig-v"><span class="mi-ok">present</span></span></div>
+            <//>`
+          : html`<${Fragment}>
+              <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${ip0}${cand.listen_port ? ":" + cand.listen_port : ""}</span></div>
+              <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${cand.address || "—"}</span></div>
+              <div class="ig-item"><span class="ig-l">Found at</span><span class="ig-v">${cand.conf || ((cand.wdtt || {}).config_dir) || html`<span class="faint">—</span>`}</span></div>
+            <//>`}
+      </div>
+    <//>
+
+    ${wd && ((cand.wdtt || {}).users || []).length ? html`<${Panel} icon="users" title="Users on this server" count=${((cand.wdtt || {}).users || []).length} pad=${false}>
+      <table><thead><tr><th>USER</th><th>ADDRESS</th><th>LAST SEEN</th><th>EXPIRES</th><th>VK</th><th class="num">TRANSFER</th></tr></thead>
+        <tbody>${((cand.wdtt || {}).users || []).map((u, i) => html`<tr key=${"wu" + i}>
+          <td>${u.label || html`<span class="faint">Peer ${i + 1}</span>`}${u.disabled ? html` <span class="tg tg-ign">disabled</span>` : null}</td>
+          <td class="addr">${u.ip || html`<span class="faint">—</span>`}</td>
+          <td>${u.last_seen ? ago(u.last_seen) : u.bound ? html`<span class="faint">connected before</span>` : html`<span class="faint">never connected</span>`}</td>
+          <td>${u.expires_at ? html`<span class=${u.expires_at * 1000 < Date.now() ? "mi-bad" : ""}>${fmtDate(u.expires_at)}</span>` : html`<span class="faint">never</span>`}</td>
+          <td>${u.vk ? html`<${Ic} i="check"/>` : html`<span class="faint">—</span>`}</td>
+          <td class="num">${(u.down_bytes || u.up_bytes) ? html`↓${fmtBytes(u.down_bytes || 0)} ↑${fmtBytes(u.up_bytes || 0)}` : html`<span class="faint">—</span>`}</td>
+        </tr>`)}</tbody></table>
+    <//>` : null}
+
+    ${wd && ((cand.wdtt || {}).users || []).length ? null : html`<${Panel} icon="users" title="Peers on this interface" count=${cand.peers || 0} pad=${false}>
+      ${(cand.peer_list || []).length
+        ? html`<table><thead><tr><th>ADDRESS</th><th>PUBLIC KEY</th><th>ENDPOINT</th><th>LAST HANDSHAKE</th><th class="num">TRANSFER</th></tr></thead>
+            <tbody>${cand.peer_list.map(p => html`<tr key=${p.public_key}>
+              <td class="addr">${p.allowed_ips || "—"}</td>
+              <td class="mono faint" title=${p.public_key}>${String(p.public_key || "").slice(0, 16)}…</td>
+              <td class="addr">${p.endpoint || html`<span class="faint">never connected</span>`}</td>
+              <td>${p.last_handshake ? ago(p.last_handshake) : html`<span class="faint">never</span>`}</td>
+              <td class="num">${(p.rx_bytes || p.tx_bytes) ? html`↓${fmtBytes(p.rx_bytes || 0)} ↑${fmtBytes(p.tx_bytes || 0)}` : html`<span class="faint">—</span>`}</td>
+            </tr>`)}</tbody></table>
+            ${cand.peers > cand.peer_list.length ? html`<div class="hint" style="padding:8px 14px">Showing ${cand.peer_list.length} of ${cand.peers} — the rest come across on adopt.</div>` : null}`
+        : html`<div class="empty">${cand.peers
+            ? html`<b>${cand.peers} peer${cand.peers === 1 ? "" : "s"} on this interface</b>The node couldn't read their details — they still come across when you adopt.`
+            : html`<b>No peers here</b>Nothing is configured on this interface yet. Adopt it to add peers from the panel.`}</div>`}
+    <//>`}
+  </div>`;
+}
+// The adopt modal: confirm/override the type (wg/awg → shows/hides AWG params), optionally tweak endpoint/port, then
+// adopt. Subnet is fixed (like Edit). Onboard adds it to the managed set (peers kept); edits go via the normal update
+// path afterwards. Existing-peer warning when the port/endpoint would change.
+// Adopting a DORMANT install: the identity and password store are on disk, but the runtime parameters only ever
+// existed in the process that isn't running — so the operator supplies them and the panel STARTS the server with
+// its original key. (Telling them to start it by hand would be odd advice from the one thing that can do it.)
+function AdoptDormantWdttSheet({ node, d, nrec }) {
+  useStore();
+  const forks = enabledTurnForks().filter(f => f.kind === "wdtt");
+  const [fork, setFork] = useState(d.fork || (forks[0] || {}).id || "amurcanov");
+  const [iface, setIface] = useState(nextWdttName(node));
+  // Ports the node managed to recover (the unit's ExecStart, the fork's own store) are used as-is, so an
+  // adopted server comes back on the SAME ports its existing clients already dial.
+  // When NOTHING could be recovered, offer the WDTT DEFAULTS rather than the next free pair: this server was
+  // almost certainly on them, since every unpatched build compiles 56000/56001 in. That is the opposite of the
+  // CREATE form, which deliberately avoids the defaults — there a collision with an unmanaged server is the
+  // risk; here matching what its clients already dial is the whole point. If they are genuinely taken, the
+  // usual port validation says so and the operator picks.
+  const [host, setHost] = useState("");
+  const [dtls, setDtls] = useState(String(d.listen_port || WDTT_DEFAULT_DTLS));
+  const [wgPort, setWgPort] = useState(String(d.wg_port || WDTT_DEFAULT_WG));
+  const [subnet, setSubnet] = useState(suggestSubnet(node));
+  const [busy, setBusy] = useState(false);
+  // One error for two fields put the internal-WG conflict under the DTLS box, so changing the port it named
+  // could never clear it. Validate each field on its own and show each message where it belongs.
+  // portErrMsg's second argument is a SKIP list, so passing dtls there exempts the very collision we care about
+  // — every other WDTT form checks the two against each other explicitly first. And a blank port is deliberately
+  // not portErrMsg's business, so without a required-check Adopt stayed enabled and posted "host:".
+  const dtlsErr = !dtls.trim() ? "The DTLS port is required." : portErrMsg(node, dtls, []);
+  const wgErr = !wgPort.trim() ? "The internal WG port is required."
+    : (Number(wgPort) === Number(dtls)) ? "The DTLS port and internal WG port must differ."
+    : portErrMsg(node, wgPort, [Number(dtls) || 0]);
+  const iperr = dtlsErr || wgErr;
+  const nameErr = /^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$/.test(iface.trim()) ? "" : "Letters, digits, _ and -, up to 15 characters.";
+  const doAdopt = async () => {
+    setBusy(true);
+    const r = await api.wdttAdopt({ node, iface: iface.trim(), fork, adopt_config_dir: d.config_dir,
+                                    // .0/24 is the NETWORK — the server wants .1/24, same as the create path
+                                    wg_addr: subnetServerAddr(subnet.trim()),
+                                    listen: (host.trim() || "") + ":" + dtls.trim(),
+                                    wg_port: wgPort.trim() });
+    if (!r || !r.ok) { setBusy(false); return toast((r && r.error) || "Adopt failed", "err"); }
+    closeAllModals(); await Store.poll();
+    toast("Adopting — the node starts this server with its existing key on the next sync.", "ok");
+    location.hash = "#/node/" + encodeURIComponent(node);
+  };
+  return html`<${Sheet} title=${"Adopt WDTT install · " + d.config_dir} width=${640}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!iperr || !!nameErr || !forks.length} title=${nameErr || iperr || (forks.length ? "" : "No WDTT forks are enabled in Settings → Turn proxies")} onClick=${doAdopt}>Adopt</button></>`}>
+    <div class="notice ok"><${Ic} i="check"/><span>Its <b>server key and passwords are kept</b> — the panel installs our build over this config directory and starts it, so any client that already has a config keeps working.</span></div>
+    <div class="iface-grid" style="margin:0 0 16px">
+      <div class="ig-item"><span class="ig-l">Found at</span><span class="ig-v">${d.config_dir}</span></div>
+      <div class="ig-item"><span class="ig-l">Password store</span><span class="ig-v">${d.store || "—"}</span></div>
+      <div class="ig-item"><span class="ig-l">Server identity</span><span class="ig-v"><span class="mi-ok">present</span></span></div>
+      <div class="ig-item"><span class="ig-l">Users</span><span class="ig-v">${(d.users || []).length || html`<span class="faint">none found</span>`}</span></div>
+    </div>
+    ${(d.users || []).length ? html`<div class="hint" style="margin:-6px 0 14px">Its <b>${(d.users || []).length}</b> user${(d.users || []).length === 1 ? "" : "s"} come across on adopt — open the install from its card to see them.</div>` : null}
+    <div class="hint" style="margin:-6px 0 14px">${d.listen_port
+      ? html`Ports recovered from its password store — its clients already dial these. The <b>subnet</b> is never written to disk, so set that below.`
+      : "Not running, so its ports and subnet can't be read from the server — set them here."}</div>
+    <div class="row2">
+      <div class="field"><label>Server fork</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${f.label}</option>`)}</select><div class="hint">${d.fork ? html`Detected <b>${d.fork}</b> from its files` : "Pick the fork this install is"}</div></div>
+      <div class="field"><label>Interface name</label><input class=${nameErr ? "bad" : ""} value=${iface} onInput=${e => setIface(e.target.value)} placeholder="wdtt1"/>${nameErr ? html`<div class="hint err">${nameErr}</div>` : null}</div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Endpoint host / IP</label><${NodeIpPick} ips=${nrec.ips || []} value=${host} onChange=${setHost} auto="Auto (node's detected address)" customPlaceholder="IP or hostname"/><div class="hint">What clients dial</div></div>
+      <div class="field"><label>Tunnel subnet (CIDR)</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.66.0.1/24"/></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Listen port (DTLS)</label><input class=${dtlsErr ? "bad" : ""} value=${dtls} onInput=${e => setDtls(e.target.value)}/>${dtlsErr ? html`<div class="hint err">${dtlsErr}</div>` : html`<div class="hint">What clients dial</div>`}</div>
+      <div class="field"><label>Internal WG port</label><input class=${wgErr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)}/>${wgErr ? html`<div class="hint err">${wgErr}</div>` : html`<div class="hint">The server's own tunnel port</div>`}</div>
+    </div>
+  <//>`;
+}
+// First free wdtt<N> name on this node — a dormant install has no interface, so we pick the name.
+// Upstream WDTT compiles these in and registers no flag to change them (verified against ildarmaga and
+// amurcanov builds), so they are what a foreign server is listening on unless something says otherwise.
+const WDTT_DEFAULT_DTLS = 56000, WDTT_DEFAULT_WG = 56001;
+function nextWdttName(node) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  // every name space the node knows about — a WDTT instance shares the interface namespace with wg/awg, so
+  // checking only the WDTT ones could propose a name an existing interface already holds
+  const used = new Set([...Object.keys(nrec.wdtt_cfg || {}),
+                        ...((Store.stats[node] || {}).wdtt || []).map(w => w && w.iface),
+                        ...Object.keys(Store.describe[node] || {}),
+                        ...Object.keys(nrec.missing_ifaces || {}), ...Object.keys(nrec.ghost_ifaces || {}),
+                        ...(nrec.iface_candidates || []).map(c => c && c.name)].filter(Boolean));
+  // Numbering starts at 1, never 0 — matching suggestIface (wg1/awg1). wdtt0 in particular is the name every
+  // UNPATCHED upstream WDTT compiles in, so suggesting it walks straight into a collision with a foreign server
+  // the panel may not even be able to see yet. Only the SUGGESTION avoids it; the field stays free to type.
+  for (let i = 1; i < 1000; i++) if (!used.has("wdtt" + i)) return "wdtt" + i;
+  return "wdtt1";
+}
+// ONE adopt flow for every interface type. The backends differ — wg/awg is "start managing this conf"
+// (ifaceOnboard, add-only, keys untouched), WDTT is a seeded create that reuses the foreign server's identity —
+// but to the operator it is a single act: adopt this interface, as this type. So the type pills stay put and
+// only the type-specific fields swap underneath; dispatch happens at Adopt, not by swapping the whole sheet.
+function AdoptIfaceSheet({ node, iface, cand, nrec }) {
+  useStore();
+  const w = cand.wdtt || {};
+  const wd = !!cand.wdtt_hint;                                  // the node positively identified a WDTT server here
+  const forks = enabledTurnForks().filter(f => f.kind === "wdtt");
+  // Preselect from the node's EVIDENCE (live obfuscation params / a WDTT server process), never from which tool
+  // happened to answer a dump — that lies on a box where the amneziawg module backs plain WireGuard too.
+  const [type, setType] = useState(cand.type_hint === "wdtt" ? "wdtt" : cand.type_hint === "awg" ? "awg" : "wg");
+  const [fork, setFork] = useState(w.fork || (forks[0] || {}).id || "amurcanov");
+  const [host, setHost] = useState("");
+  // Prefilled from what the node found — the DTLS port for WDTT (what clients dial), the wg listen port otherwise.
+  const wdttDtls = String((w.listen || "").split(":").pop() || "");
+  const [port, setPort] = useState(String(cand.listen_port || ""));
+  const [dtls, setDtls] = useState(wdttDtls);
+  const [wgPort, setWgPort] = useState(String(w.wg_port || ""));
+  const iperr = portErrMsg(node, type === "wdtt" ? dtls : port, [cand.listen_port, Number(wdttDtls) || 0]);
+  // the internal WG port was never validated here — a clash was accepted and surfaced only when the node failed
+  const wgErr = type !== "wdtt" ? ""
+    : (Number(wgPort) === Number(dtls)) ? "The DTLS port and internal WG port must differ."
+    : portErrMsg(node, wgPort, [cand.listen_port, Number(wdttDtls) || 0, Number(dtls) || 0]);
+  const [awg, setAwg] = useState({});
+  const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
+  // Collapsed by default: adoption KEEPS the interface's existing parameters, so these 16 fields are an override
+  // nobody needs in the common case — and a wall of empty boxes reads as "fill me in" when blank is correct.
+  const [awgOpen, setAwgOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [idPath, setIdPath] = useState("");                     // operator-supplied wg-keys.dat, when we couldn't find it
+  // Two different questions: does this server need us to be TOLD where its identity is (drives the notice, which
+  // holds the input — so it must not vanish the moment they start typing), and is Adopt blocked right now.
+  const needsIdentity = !(w && w.adoptable);
+  const doAdopt = async () => {
+    setBusy(true);
+    if (type === "wdtt") {
+      const r = await api.wdttAdopt({ node, iface, fork, wg_addr: w.wg_addr || cand.address || "",
+                                      listen: (host.trim() || (w.listen || "").split(":")[0] || "") + ":" + dtls.trim(),
+                                      wg_port: wgPort.trim(), max_passwords: w.max_passwords || "",
+                                      identity_path: idPath.trim() });
+      if (!r || !r.ok) { setBusy(false); return toast((r && r.error) || "Adopt failed", "err"); }
+      closeAllModals(); await Store.poll();
+      toast("Adopting the WDTT server — the node takes it over on its next sync.", "ok");
+      location.hash = "#/node/" + encodeURIComponent(node); return;
+    }
+    const r = await api.ifaceOnboard({ node, iface, protocol: type, conf: cand.conf, endpoint_host: host.trim() });
+    if (!r || !r.ok) { setBusy(false); return toast((r && r.error) || "Adopt failed", "err"); }
+    const awgClean = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
+    const portChanged = port.trim() && port.trim() !== String(cand.listen_port || "");
+    if (portChanged || host.trim() || (type === "awg" && Object.keys(awgClean).length)) {   // apply edits via the normal reconfigure path
+      const ub = { node, iface, endpoint_host: host.trim(), listen_port: port.trim() };
+      if (type === "awg") ub.awg_params = awgClean;
+      await api.ifaceUpdate(ub);
+    }
+    Store.ifaceNew[node + "|" + iface] = { at: Date.now() };   // flash "ready" once it appears as managed
+    closeAllModals(); await Store.poll();
+    toast("Adopting interface — the node will start managing it.", "ok");
+      // Stay on the NODE page: the optimistic "onboarding" card (Store.ifaceNew, set just above) lives there, and
+      // this interface's own page is still the ORPHAN view until the node reports it — landing on a screen that
+      // still offers Adopt/Ignore reads as though the click did nothing. The WDTT branch already stayed put.
+      location.hash = "#/node/" + encodeURIComponent(node);
+  };
+  const blockMsg = (type === "wdtt" && needsIdentity)
+    ? (w.has_identity === false || w.fork
+        ? "The node found this server but not its identity (wg-keys.dat), so adopting would mint a new key and break every client. Ignore it instead, or restore its config directory first."
+        : "No WDTT server was found running on this interface, so there is no identity to take over. Start it and re-check, or adopt it as WireGuard/AmneziaWG.")
+    : "";
+  const adoptBlocked = type === "wdtt" && needsIdentity && !idPath.trim();
+  return html`<${Sheet} title=${"Adopt interface · " + iface} width=${640}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!iperr || !!wgErr || adoptBlocked || (type === "wdtt" && !forks.length)} title=${(adoptBlocked ? blockMsg : "") || iperr || wgErr || ((type === "wdtt" && !forks.length) ? "No WDTT forks are enabled in Settings → Turn proxies" : "")} onClick=${doAdopt}>Adopt</button></>`}>
+    <div class="iface-intro"><div>Start managing this interface on <b>${nrec.name || node}</b>. The panel doesn't know its type — <b>choose it below</b>${cand.type_why ? html`. Preselected <b>${(cand.type_hint || "wg").toUpperCase()}</b> because ${cand.type_why}` : null}.</div></div>
+    <div class="notice ok"><${Ic} i="check"/><span>${type === "wdtt"
+      ? html`Its <b>server key and passwords are kept</b> — a panel-managed instance is built that reuses them, then the old process is stopped. Every client that already has a config keeps working.`
+      : html`Its <b>server key and existing peers are kept</b> (add-only — the panel never removes peers it didn't create), so nothing needs re-distributing.`}</span></div>
+    ${cand.peers ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface has <b>${cand.peers}</b> existing peer${cand.peers === 1 ? "" : "s"}. Changing the <b>listen port</b> or <b>endpoint</b> will break their current configs — you'd re-distribute the QR codes.</span></div>` : null}
+    <div class="field"><label>Interface type</label>
+      <div class="typepick">${[["wg", "WireGuard", "var(--online)"], ["awg", "AmneziaWG", "var(--brand)"], ["wdtt", "WDTT", WDTT_COLOR]]
+        // WDTT is offered ONLY where the node positively identified one — a server process on this interface, or
+        // an install on disk. Both signals are unambiguous, so there is nothing to "maybe" adopt as WDTT: without
+        // either the node refuses it anyway, and the option only invites a wrong answer.
+        .filter(([id]) => id !== "wdtt" || wd).map(([id, label, col]) => html`
+        <button type="button" key=${id} class=${"tp-opt" + (type === id ? " on" : "")} style=${"--tpc:" + col} onClick=${() => setType(id)}>${label}</button>`)}</div>
+      ${(wd && type !== "wdtt") ? html`<div class="notice warn" style="margin:8px 0 0"><${Ic} i="warn"/><span>A <b>WDTT server owns this interface</b> and manages its own peers. Adopting it as ${type.toUpperCase()} leaves both the panel and that server writing the same peer list — it appears to work until they disagree. Adopt it as <b>WDTT</b> unless you know why you want this.</span></div>` : null}
+      <div class="hint">${type === "wdtt" ? "Managed as a WDTT server — the panel rebuilds it with our patched fork over its existing identity."
+        : type === "awg" ? "Managed as AmneziaWG (obfuscated) — set its parameters below, or leave blank to keep the interface's existing ones."
+        : "Managed as plain WireGuard."}</div>
+    </div>
+    <div class="iface-grid" style="margin:0 0 16px">
+      <div class="ig-item"><span class="ig-l">Datapath</span><span class="ig-v">${cand.datapath}${cand.up ? "" : " · down"}</span></div>
+      <div class="ig-item"><span class="ig-l">Tunnel subnet</span><span class="ig-v">${cand.address || w.wg_addr || "—"}</span></div>
+      <div class="ig-item"><span class="ig-l">Existing peers</span><span class="ig-v">${cand.peers || 0}</span></div>
+      ${cand.conf ? html`<div class="ig-item"><span class="ig-l">Config file</span><span class="ig-v">${cand.conf}</span></div>` : null}
+      ${type === "wdtt" ? html`<${Fragment}>
+        <div class="ig-item"><span class="ig-l">Config directory</span><span class="ig-v">${w.config_dir || "—"}</span></div>
+        <div class="ig-item"><span class="ig-l">Password store</span><span class="ig-v">${w.store || "—"}</span></div>
+        <div class="ig-item"><span class="ig-l">Server identity</span><span class="ig-v">${w.has_identity ? html`<span class="mi-ok">recoverable</span>` : html`<span class="mi-bad">not found</span>`}</span></div>
+      <//>` : null}
+    </div>
+    ${blockMsg ? html`<div class="notice warn"><div style="min-width:0">${blockMsg}
+      <div class="field" style="margin:10px 0 0"><label>Path to the server's key file</label>
+        <input value=${idPath} onInput=${e => setIdPath(e.target.value)} placeholder="/etc/wdtt/wg-keys.dat"/>
+        <div class="hint">If you know where it lives, point at it — the node checks the file first and adopts only if it can read it. Nothing is stopped or overwritten until that check passes, so a wrong path costs nothing.</div>
+      </div></div></div>` : null}
+    <div class="row2">
+      ${type === "wdtt" ? html`<div class="field"><label>Server fork</label>
+        <select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${f.label}</option>`)}</select>
+        <div class="hint">${w.fork ? html`Detected <b>${w.fork}</b>${w.store ? html` (${w.store})` : null} — change only if wrong` : "Pick the fork this server runs"}</div>
+      </div>` : null}
+      <div class="field"><label>Endpoint host / IP</label><${NodeIpPick} ips=${nrec.ips || []} value=${host} onChange=${setHost} auto="Auto (node's detected address)" customPlaceholder="IP or hostname"/><div class="hint">What clients dial</div></div>
+      ${type === "wdtt" ? null
+        : html`<div class="field"><label>Listen port</label><input class=${iperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(cand.listen_port || "")}/>${iperr ? html`<div class="hint err">${iperr}</div>` : html`<div class="hint">Currently ${cand.listen_port || "—"}</div>`}</div>`}
+    </div>
+    ${type === "wdtt" ? html`<div class="row2">
+      <div class="field"><label>Listen port (DTLS)</label><input class=${iperr ? "bad" : ""} value=${dtls} onInput=${e => setDtls(e.target.value)} placeholder=${wdttDtls}/>${iperr ? html`<div class="hint err">${iperr}</div>` : html`<div class="hint">What clients dial · currently ${wdttDtls || "—"}</div>`}</div>
+      <div class="field"><label>Internal WG port</label><input class=${wgErr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder=${String(w.wg_port || "")}/>${wgErr ? html`<div class="hint err">${wgErr}</div>` : html`<div class="hint">The server's own tunnel port — not dialled by clients</div>`}</div>
+    </div>` : null}
+    ${type === "awg" ? html`<div class="field" style="margin-top:4px">
+      <${Disclosure} title="AmneziaWG parameters" open=${awgOpen} onToggle=${() => setAwgOpen(o => !o)}
+          summary=${Object.values(awg).some(v => String(v || "").trim()) ? "overridden" : "keeping the interface's own"}>
+        <div class="hint" style="margin:0 0 8px">Rendered into configs/QRs. Leave blank to keep the interface's existing values.</div>
+        <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div>
+      <//></div>` : null}
+  <//>`;
+}
 // ═════════════════════════ SCREEN: INTERFACE DETAIL ═════════════════════════
 function IfaceDetail({ node: rawNode, iface: rawIface }) {
   useStore();
@@ -4434,8 +5265,40 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const nrec = (Store.nodes || []).find(n => n.id === node);   // FULL record (turn_manage/restarting/cmd_errors/ip_ifaces)
   if (!nrec) return html`<div class="screen"><div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>server</b></div>
     <div class="empty"><b>Unknown server</b>this server isn't in the fleet.</div></div>`;
+  // WDTT owns its interface (reported in snap.wdtt, not describe) → a dedicated detail (server info + users),
+  // not the wg/awg config view. Keyed off the read-back so it's never mistaken for a missing/ghost wg iface.
+  const _wInst = ((Store.stats[node] || {}).wdtt || []).find(w => w && w.iface === iface);
+  // A WDTT server the panel still WANTS but the node no longer reports (rebuilt box, or a node running a build
+  // without WDTT support) has no snapshot entry at all — without this it fell through to the wg/awg views and
+  // showed up as a ghost interface, or as nothing. Route it here on the desired config alone; WdttIfaceDetail
+  // already falls back to cfg for every field, and `missing` puts it in the restore-or-recreate state.
+  const _wCfg = !_wInst && ((nrec.wdtt_cfg || {})[iface] || null);
+  if (_wInst || _wCfg) return html`<${WdttIfaceDetail} node=${node} iface=${iface} w=${_wInst || { iface }} nrec=${nrec} missing=${!_wInst}/>`;
+  // A DORMANT WDTT install has no interface at all — no device, no socket, no process — so it has no interface
+  // NAME to be routed by. It is identified by its config dir, which url-encodes into this same slot (a path has
+  // no bare "/" once encoded). Its users can run to dozens, which is why they get a screen and not a modal.
+  if (iface.startsWith("/")) {
+    const _dorm = (nrec.wdtt_dormant || []).find(x => x && x.config_dir === iface)
+              || (nrec.ignored_dormant || []).find(x => x && x.config_dir === iface);
+    // Shaped as a CANDIDATE so it lands on the SAME screen: the head, the details panel, Ignore/Adopt and the
+    // user grid are already there and behave identically — a stopped install is the same decision as a running
+    // orphan, minus a running interface.
+    if (_dorm) return html`<${CandidateIfaceDetail} node=${node} iface=${iface} nrec=${nrec} dorm=${_dorm}
+      ignored=${(nrec.ignored_dormant || []).some(x => x && x.config_dir === iface)}
+      cand=${{ name: (_dorm.config_dir || "").split("/").filter(Boolean).pop() || "wdtt", wdtt_hint: true,
+               type_hint: "wdtt", datapath: "userspace", address: "", listen_port: _dorm.listen_port || 0,
+               peers: 0, peer_list: [], conf: _dorm.config_dir,
+               wdtt: { fork: _dorm.fork, config_dir: _dorm.config_dir, store: _dorm.store,
+                       has_identity: true, adoptable: true, users: _dorm.users || [] } }}/>`;
+    return html`<div class="screen"><div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${nrec.name || node}</a><span class="sep">/</span><b>${iface}</b></div>
+      <div class="empty"><b>Not found</b>the node no longer reports a WDTT install at this path — it may have been started (look for it as an interface) or removed.</div></div>`;
+  }
   const dname = nrec.name || node;
   const meta = Store.ifaceMeta(node, iface);
+  // Approach-B adoption candidate: found on the node, not managed by the panel → the stripped Adopt/Ignore view.
+  // (ignored candidates land here too — the detail then offers Un-ignore instead of Ignore.)
+  const _cand = !meta && ((nrec.iface_candidates || []).find(c => c && c.name === iface) || (nrec.ignored_candidates || []).find(c => c && c.name === iface));
+  if (_cand) return html`<${CandidateIfaceDetail} node=${node} iface=${iface} cand=${_cand} nrec=${nrec} ignored=${(nrec.ignored_candidates || []).some(c => c && c.name === iface)}/>`;
   const _rawMiss = (!meta && nrec.missing_ifaces && nrec.missing_ifaces[iface]) || null;
   const missIf = (_rawMiss && _rawMiss.key_source) ? _rawMiss : null;   // RECOVERABLE (key backup/vault) → read-only, only action Restore interface
   const ghostIf = (!meta && !missIf && _ghostIface(node, iface)) || null;   // lost + KEYLESS → read-only, only action Recreate and rekey interface
@@ -4503,13 +5366,17 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
         <//></>`
       : !meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
-          actions=${html`<${Fragment}>${op && op.phase === "busy" ? html`<span class="tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}…</span>` : op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<${StatusTag} cls="tg-del" icon="warn" label=${IFOP_FAIL[op.verb] || "failed"} msg=${op.err || "the action failed on the node"} title="Action failed on the node"/>` : null}${(op && op.phase === "busy") ? null : notup
+          actions=${Store.ifaceGone[node + "|" + iface]
+            // Delete already submitted, the node has not torn it down yet. Leaving Stop/Restart/Edit live
+            // invites commands against an interface that is going away; show what is happening instead.
+            ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title="The node tears it down on its next sync"/>`
+            : html`<${Fragment}>${op && op.phase === "busy" ? html`<span class="tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}…</span>` : op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<${StatusTag} cls="tg-del" icon="warn" label=${IFOP_FAIL[op.verb] || "failed"} msg=${op.err || "the action failed on the node"} title="Action failed on the node"/>` : null}${(op && op.phase === "busy") ? null : notup
               ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Bring this interface up on the node"} onClick=${() => startOrRestartIface(node, iface, "start")}><${Ic} i="play"/> Start service</button>`
-              : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Take this interface down on the node (stays down until started)"} onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> Stop service</button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Bounce this interface's service on the node"} onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> Restart service</button><//>`}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button><//>`}>
+              : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Take this interface down on the node (stays down until started)"} onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> Stop service</button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Bounce this interface's service on the node"} onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> Restart service</button><//>`}<button class="btn btn-mini" disabled=${blocked || (op && op.phase === "busy")} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button><//>`}>
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${meta.address || "—"}</span></div>
-          <div class="ig-item"><span class="ig-l">DNS</span><span class="ig-v">${(Array.isArray(meta.dns) ? meta.dns.join(", ") : (meta.dns || "")) || "—"}</span></div>
+          <div class="ig-item"><span class="ig-l">Traffic</span><span class="ig-v">${ifTrafficBadge(meta.egress_mode, meta.egress_node)}</span></div>
           <div class="ig-item"><span class="ig-l">MTU</span><span class="ig-v">${meta.mtu || 1280}</span></div>
         </div>
         ${type === "awg" ? html`<div class="iface-amnezia">
@@ -4526,13 +5393,15 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
         lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
-        actions=${html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> Add peer</button>`}>
+        actions=${Store.ifaceGone[node + "|" + iface] ? null   // teardown in flight → adding a peer to it is a dead end
+          : html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> Add peer</button>`}>
       <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>
     <//>
 
     ${orphans.length ? html`<div id="iface-orphans"><${Panel} icon="warn" title="Unmanaged on this interface" tone="warn" pad=${false}
         actions=${html`<button class="btn btn-mini" onClick=${() => orphans.forEach(o => mutate({
           key: "orphan:" + o.node + "|" + o.iface + "|" + o.pubkey,
+          patch: adoptOrphanPatch(o),
           call: () => api.peerAdopt({ pubkey: o.pubkey, psk: o.preshared_key || "", target: { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] } }),
         }))}><${Ic} i="link"/> Adopt all</button>`}>
       <table><tbody>
@@ -4542,14 +5411,89 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   </div>`;
 }
 
+// A WDTT interface's detail page: the self-contained server (info + lifecycle) + its users (the shared PeerGrid).
+// One record — the server's turn-half is edited from its Turn-proxies card; here we manage the interface + peers.
+function WdttIfaceDetail({ node, iface, w, nrec, missing }) {
+  useStore();
+  const [q, setQ] = useState("");
+  const dname = nrec.name || node;
+  const live = Store.recon.nodeStatus[node] === "live";
+  const blocked = !live || inProc(nrec.proc_status);
+  const cfg = (nrec.wdtt_cfg || {})[iface] || {};
+  const fork = w.fork || cfg.fork || "amurcanov";
+  const active = w.active === "active";
+  // `missing` = the node doesn't report this server at all. Treat it exactly like await_restore: the identity is
+  // escrowed, so offer Restore (or Recreate fresh) and keep every other control off — there is nothing running
+  // to start, stop or edit.
+  // A take-over in flight writes the instance into wdtt_cfg at once, while the node has not reported it yet —
+  // which reads exactly like "gone from the box". So this page offered Restore / Recreate fresh for a server
+  // being ADOPTED, and "Recreate fresh" there would mint a new key and break the very clients the adoption
+  // exists to keep. `adopting` therefore wins over `missing`, and stands down every lifecycle control until
+  // the node reports the result.
+  const adopting = (nrec.wdtt_adopting || []).includes(iface);
+  const awaiting = !adopting && (!!w.await_restore || !!missing);
+  const stopped = !!cfg.stopped;
+  const notup = !active && !awaiting;   // stopped / starting → offer Start; else Stop + Restart
+  const restoring = (nrec.wdtt_restoring || []).includes(iface);
+  const restorable = !!((nrec.wdtt_vault || {})[iface]);
+  const op = Store.ifaceOp[node + "|" + iface];   // start/stop/restart/apply lifecycle (busy/ok/fail flash)
+  const peers = Store.recon.peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface));
+  const rows = peers.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
+  const ifaceRows = rows.map(p => ({ p, t: p.targets.find(d => d.node === node && d.iface === iface) || {} }));
+  const ifaceShown = {}; for (const { p, t } of ifaceRows) (ifaceShown[p.id] = ifaceShown[p.id] || new Set()).add(tkey(t.node, t.iface));
+  const ql = q.trim().toLowerCase();
+  const ifaceFiltered = !ql ? ifaceRows : ifaceRows.filter(({ p, t }) => { const u = p.user_id ? Store.user(p.user_id) : null; return searchMatch((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + (u ? u.name : ""), ql); });
+  const opFlash = op && op.phase === "busy" ? html`<span class="tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}…</span>`
+    : op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>`
+    : op && op.phase === "fail" ? html`<${StatusTag} cls="tg-del" icon="warn" label=${IFOP_FAIL[op.verb] || "failed"} msg=${op.err || "the action failed on the node"} title="Action failed on the node"/>` : null;
+  return html`<div class="screen">
+    <${NodeRail} active=${node}/>
+    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
+    <div class="detail-head">
+      <div class="title"><h1>${iface}</h1><span class="iftype wdtt">WDTT</span><${ForkTag} fork=${fork}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>adopting</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? "missing" : "awaiting restore"}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}</span>` : stopped ? html`<span class="nstat stopped" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/> stopped</span>` : active ? html`<span class="reporting">running</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> starting</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/></span></div>
+      <div class="grow"></div>
+    </div>
+    ${adopting ? html`<div class="notice"><${Ic} i="clock"/><span>This server is being <b>taken over</b> — the node stops the existing one and brings it back up under the panel with its original identity and users. Its controls stay disabled until that finishes.</span></div>` : null}
+    ${awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${missing ? "This node isn't reporting this server — it's gone from the box (a rebuild, or a node running a build without WDTT support)." : "This server was wiped."} Its identity is escrowed in your Encryption Vault, so it's held offline rather than coming back with a fresh key that would break every user. <b>Restore</b> to bring it back with its original identity, or <b>Recreate fresh</b> (every user re-imports).
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" disabled=${restoring} onClick=${() => wdttRestoreIdentity(node, iface)}><${Ic} i="shield"/> ${restoring ? "Restoring…" : "Restore server identity"}</button><button class="btn btn-ghost" disabled=${restoring} onClick=${() => wdttRecreateFresh(node, iface)}>Recreate fresh</button></div></span></div>` : null}
+    <${Panel} icon="key" title="Interface details" tone="online"
+        actions=${Store.ifaceGone[node + "|" + iface]
+          // Delete already submitted, the node has not torn it down yet — same guard as the wg/awg page.
+          ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title="The node tears it down on its next sync"/>`
+          : adopting
+          // Take-over in flight: Stop/Restart/Edit/Delete would all act on a server that is being replaced.
+          ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title="The node applies the take-over on its next sync"/>`
+          : html`<${Fragment}>${opFlash}${(op && op.phase === "busy") ? null : notup
+          ? html`<button class="btn btn-mini" disabled=${blocked || awaiting} title=${blocked ? "Unavailable while the node is down" : "Bring this WDTT server up on the node"} onClick=${() => startOrRestartWdtt(node, iface, "start")}><${Ic} i="play"/> Start service</button>`
+          : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title="Take this WDTT server down (stays down until started)" onClick=${() => startOrRestartWdtt(node, iface, "stop")}><${Ic} i="stop"/> Stop service</button><button class="btn btn-mini" disabled=${blocked} title="Bounce this WDTT server on the node" onClick=${() => startOrRestartWdtt(node, iface, "restart")}><${Ic} i="refresh"/> Restart service</button><//>`}<button class="btn btn-mini" disabled=${blocked || awaiting || (op && op.phase === "busy")} title=${blocked ? "Unavailable while the node is down" : ""} onClick=${() => openEditWdtt(node, iface)}><${Ic} i="pencil"/> Edit interface</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title="Stop + remove this WDTT server and disconnect its users" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete</button><//>`}>
+      <div class="iface-grid">
+        <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${w.listen || cfg.listen || "—"}</span></div>
+        <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${w.wg_addr || "—"}</span></div>
+        <div class="ig-item"><span class="ig-l">Traffic</span><span class="ig-v">${ifTrafficBadge(cfg.egress_mode, cfg.egress_node)}</span></div>
+        <div class="ig-item"><span class="ig-l">Fork</span><span class="ig-v"><${ForkTag} fork=${fork}/></span></div>
+      </div>
+    <//>
+
+    <${IfaceThroughput} node=${node} iface=${iface}/>
+
+    <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
+        lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
+        actions=${Store.ifaceGone[node + "|" + iface] ? null   // teardown in flight → adding a peer to it is a dead end
+          : html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down" : ""} onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> Add peer</button>`}>
+      <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>
+    <//>
+  </div>`;
+}
+
 function OrphanRow({ o }) {
   return html`<tr>
     <td data-label="Status"><${Badge} s="orphan"/></td>
     <td data-label="Key" class="addr">${o.pubkey.slice(0, 22)}…</td>
     <td data-label="Address"><span class="addr">${o.iface} · ${o.allowed_ips || "—"}</span></td>
     <td data-label="" style="text-align:right" class="rowacts">
-      <button class="btn btn-mini" onClick=${() => mutate({   // verify-only: server assigns the id
+      <button class="btn btn-mini" onClick=${() => mutate({   // server assigns the real id; this is the overlay
         key: "orphan:" + o.node + "|" + o.iface + "|" + o.pubkey,
+        patch: adoptOrphanPatch(o),
         call: () => api.peerAdopt({ pubkey: o.pubkey, psk: o.preshared_key || "", target: { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] } }),
       })}>Adopt</button>
       <${RowError} k=${"orphan:" + o.node + "|" + o.iface + "|" + o.pubkey}/>
@@ -4585,17 +5529,79 @@ function pendingTurnPorts(node) {   // listen ports of turn-proxies still being 
   for (const k of Object.keys(Store.turnNew)) if (k.startsWith(pfx)) { const p = Number(portOf(Store.turnNew[k].listen)); if (p) out.push(p); }
   return out;
 }
-function suggestPort(node, kind) {
+// Ports claimed by WDTT instances the PANEL already wants but the node has not reported yet (wdtt_cfg = the desired
+// set, filled the instant a create/edit is accepted; snap.wdtt only appears once the server is actually running).
+// Each claims TWO: the DTLS listen port and the internal wg-port. Without these, a suggestion made moments after
+// creating one hands out a port that instance is about to take, and the save then fails on a collision.
+function pendingWdttPorts(node) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const out = [];
+  for (const w of Object.values(nrec.wdtt_cfg || {})) {
+    if (!w) continue;
+    const d = Number(String(w.listen || "").split(":").pop()); if (d) out.push(d);
+    const g = Number(w.wg_port); if (g) out.push(g);
+  }
+  return out;
+}
+function suggestPort(node, kind, extra) {
   const snap = Store.stats[node] || {};
   const ifacePorts = Object.values(snap.interfaces || {}).map(b => Number((b.meta || {}).listen_port)).filter(Boolean)
     .concat(pendingIf(node).map(p => Number(p.port)).filter(Boolean));   // include interfaces being created
   const turnPorts = ((snap.turn_proxies) || []).map(t => Number(portOf(t.listen))).filter(Boolean)
     .concat(pendingTurnPorts(node));   // include turn-proxies being installed
-  const used = new Set([...ifacePorts, ...turnPorts]);
+  // WDTT instances each claim TWO ports (DTLS listen + internal wg-port) and don't appear in snap.interfaces,
+  // so fold them into the used-set explicitly — else a suggestion could clash with a running WDTT server.
+  const wdttPorts = (snap.wdtt || []).flatMap(w => w ? [Number(String(w.listen || "").split(":").pop()), Number(w.wg_port)] : []).filter(Boolean);
+  const used = new Set([...ifacePorts, ...turnPorts, ...wdttPorts, ...pendingWdttPorts(node), ...(extra || []).map(Number).filter(Boolean)]);   // extra = ports picked in-modal, not yet applied
   const mine = kind === "turn" ? turnPorts : ifacePorts;
-  let p = mine.length ? Math.max(...mine) + 1 : (kind === "turn" ? 56000 : 51820);
-  while (used.has(p) && p < 65535) p++;
+  // Never hand out the UPSTREAM DEFAULTS. An unmanaged WDTT server binds 56000 (DTLS) + 56001 (internal WG) out
+  // of the box and a stock WireGuard 51820, so suggesting one walks straight into a collision with something the
+  // panel does not manage — and, in WDTT's case, may not even be able to see. Same rule as the name suggestion:
+  // the SUGGESTION avoids them, the field stays free to type.
+  const reserved = new Set([51820, 56000, 56001]);
+  let p = mine.length ? Math.max(...mine) + 1 : (kind === "turn" ? 56002 : 51821);
+  while ((used.has(p) || reserved.has(p)) && p < 65535) p++;
   return p;
+}
+// Client-side port-collision check (mirrors the server's _node_ports). Returns a human label of whatever
+// already occupies `port` on this node, or null if the port is free. `own` = ports this instance already
+// holds, so editing it doesn't flag its own port. Lets port fields validate live, before the optimistic
+// save closes the modal (else a clash only surfaces as a node-side "FAILED TO APPLY" after the fact).
+function portHolder(node, port, own) {
+  const p = Number(port); if (!p) return null;
+  const skip = new Set((own || []).map(Number).filter(Boolean));
+  if (skip.has(p)) return null;
+  const snap = Store.stats[node] || {};
+  for (const [ifn, b] of Object.entries(snap.interfaces || {})) if (Number((b.meta || {}).listen_port) === p) return ifn;
+  for (const t of ((snap.turn_proxies) || [])) if (Number(portOf(t.listen)) === p) return (t.service || "a turn-proxy");
+  for (const w of (snap.wdtt || [])) {
+    if (!w) continue;
+    if (Number(String(w.listen || "").split(":").pop()) === p) return (w.iface || "a WDTT proxy") + " (WDTT)";
+    if (Number(w.wg_port) === p) return (w.iface || "a WDTT proxy") + " (WDTT internal WG)";
+  }
+  for (const pt of pendingIf(node)) if (Number(pt.port) === p) return (pt.name || "a pending interface");
+  // WDTT instances the panel wants but the node has not started yet — named, so the inline error says which
+  // instance is taking the port instead of only failing server-side on save.
+  const _nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  for (const [ifn, w] of Object.entries(_nrec.wdtt_cfg || {})) {
+    if (!w) continue;
+    if ((snap.wdtt || []).some(x => x && x.iface === ifn)) continue;   // already reported → handled above
+    if (Number(String(w.listen || "").split(":").pop()) === p) return (ifn || "a WDTT proxy") + " (WDTT, starting)";
+    if (Number(w.wg_port) === p) return (ifn || "a WDTT proxy") + " (WDTT internal WG, starting)";
+  }
+  return null;
+}
+// Validate a port field LIVE (as typed): a human message if empty-but-required is NOT flagged (blank returns null so
+// the field isn't red before you type), a non-number, out-of-range, or a collision with another port on this node;
+// `own` = ports this iface/proxy already holds (so editing it doesn't flag its own). Drives the inline error + Save gate.
+function portErrMsg(node, port, own) {
+  const s = String(port == null ? "" : port).trim();
+  if (!s) return null;                                   // empty handled by the field's own required-check, not here
+  if (!/^\d+$/.test(s)) return "Port must be a number.";
+  const n = Number(s);
+  if (n < 1 || n > 65535) return "Port must be between 1 and 65535.";
+  const h = portHolder(node, n, own);
+  return h ? ("Port " + n + " is already used by " + h + " on this node.") : null;
 }
 // next free interface name (<base><n>): highest numeric suffix across ALL interfaces + 1, then skip any taken (mirrors install-node.sh iface_next_index)
 function suggestIface(node, proto) {
@@ -4608,17 +5614,53 @@ function suggestIface(node, proto) {
   return base + i;
 }
 // next free 10.X.0.0/24 tunnel subnet: highest used second octet + 1 (default 10.8) (mirrors install-node.sh next_free_subnet)
-function suggestSubnet(node) {
-  let hi = 7;   // → first suggestion 10.8.0.0/24
-  const pfx = (Store.panelSettings || {}).reserved?.iface_prefix || "swg_";
-  const isSys = ifn => ifn.startsWith(pfx) || ifn.startsWith("swg_");
-  const bump = s => { const m = /^10\.(\d{1,3})\./.exec(s || ""); if (m && Number(m[1]) < 255) hi = Math.max(hi, Number(m[1])); };   // skip 10.255.x (reserved mesh range)
-  for (const [ifn, b] of Object.entries((Store.stats[node] || {}).interfaces || {})) {
-    if (isSys(ifn)) continue;   // ignore system mesh links (10.255.x.x) — count only user wg/awg interfaces
-    bump((b.meta || {}).subnet || (b.meta || {}).address || "");
+// Interface subnets must be UNIQUE across the whole fleet — the mesh routes by subnet, so two nodes on the same
+// subnet make return routing ambiguous (a cascaded client's traffic can't be told from the other node's identical
+// subnet → black-holed). These helpers collect every user subnet (wg/awg from describe + WDTT wg_addr) so the
+// create form suggests a free one and rejects a duplicate. cidr math is done inline (no ipaddress in the browser).
+function cidrNet(cidr) {
+  const parts = String(cidr || "").split("/"); const pfx = parseInt(parts[1], 10);
+  const oct = String(parts[0]).split(".").map(n => parseInt(n, 10));
+  if (oct.length !== 4 || oct.some(n => isNaN(n) || n < 0 || n > 255) || isNaN(pfx) || pfx < 0 || pfx > 32) return null;
+  const ipInt = ((oct[0] << 24) >>> 0) + ((oct[1] << 16) >>> 0) + ((oct[2] << 8) >>> 0) + oct[3];
+  const mask = pfx === 0 ? 0 : (0xFFFFFFFF << (32 - pfx)) >>> 0;
+  return { net: (ipInt & mask) >>> 0, pfx };
+}
+function subnetsOverlap(a, b) {
+  const A = cidrNet(a), B = cidrNet(b); if (!A || !B) return false;
+  const m = Math.min(A.pfx, B.pfx); const mask = m === 0 ? 0 : (0xFFFFFFFF << (32 - m)) >>> 0;
+  return ((A.net & mask) >>> 0) === ((B.net & mask) >>> 0);
+}
+function fleetSubnets(skipNode, skipIface) {
+  const out = [];
+  for (const nid of Object.keys(Store.describe || {})) {
+    const meta = Store.describe[nid] || {};
+    for (const ifn in meta) { const m = meta[ifn]; if (!m || m.system || (nid === skipNode && ifn === skipIface)) continue; if (m.subnet) out.push({ node: nid, iface: ifn, subnet: m.subnet }); }
   }
-  for (const p of pendingIf(node)) bump(p.subnet);   // include the ones being created
-  return "10." + Math.min(hi + 1, 254) + ".0.0/24";
+  for (const nid of Object.keys(Store.stats || {})) {
+    for (const w of ((Store.stats[nid] || {}).wdtt || [])) { if (!w || !w.iface || (nid === skipNode && w.iface === skipIface)) continue; if (w.wg_addr) out.push({ node: nid, iface: w.iface, subnet: w.wg_addr }); }
+  }
+  return out;
+}
+function subnetFleetConflict(subnet, skipNode, skipIface) {
+  if (!subnet || !cidrNet(subnet)) return null;
+  for (const s of fleetSubnets(skipNode, skipIface)) if (subnetsOverlap(subnet, s.subnet)) return s;
+  return null;
+}
+// The server's own address inside a subnet = the first host (network + 1), keeping the prefix. Used for WDTT,
+// whose -wg-addr flag wants the SERVER address (10.8.0.1/24) while the form takes the SUBNET (10.8.0.0/24) — same
+// as wg/awg, where the node also puts the server on .1. Idempotent for a value already on .1.
+function subnetServerAddr(subnet) {
+  const c = cidrNet(subnet); if (!c) return subnet;
+  const ip = (c.net + 1) >>> 0;
+  return [(ip >>> 24) & 255, (ip >>> 16) & 255, (ip >>> 8) & 255, ip & 255].join(".") + "/" + c.pfx;
+}
+function suggestSubnet(node) {
+  const used = new Set();   // FLEET-wide 10.X already taken (any node's user iface / WDTT) → pick the first free one
+  for (const s of fleetSubnets(null, null)) { const m = /^10\.(\d{1,3})\./.exec(s.subnet || ""); if (m) used.add(Number(m[1])); }
+  for (const p of pendingIf(node)) { const m = /^10\.(\d{1,3})\./.exec(p.subnet || ""); if (m) used.add(Number(m[1])); }
+  for (let i = 8; i < 255; i++) if (i !== 255 && !used.has(i)) return "10." + i + ".0.0/24";
+  return "10.8.0.0/24";
 }
 // Two-dropdown egress: where an interface's traffic exits — Auto, Direct out a NIC, or Forward (cascade)
 // to another node — plus the source IP (this node's, or the TARGET node's for forward). value =
@@ -4848,7 +5890,7 @@ const MODE_META = {
     adds: "Adds domain matching by resolving your clients' DNS through the node",
     bene: ["Per-service precise · fills before the first connection (no first-hit miss)"],
     cost: "Intercepts & downgrades client DNS — blocks their DoH / DoT",
-    block: [{ s: "+", t: "Enforces domain content filters directly (best mode for content blocking)" },
+    block: [{ s: "+", t: "Enforces domain content filters directly" },
             { s: "−", t: "Long block lists cost CPU per DNS query — keep them small (≈100k domains)" }],
     exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past.",
     lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
@@ -4865,7 +5907,7 @@ const MODE_META = {
     bene: ["Precise parsed-SNI matching · regex-capable · unbothered by big lists",
            "Has fewer kernel deps, wins accuracy and large-list CPU cost over Kernel"],
     cost: "Runs a helper process (fails open — learning pauses — if it stops)",
-    block: { s: "+", t: "Enforces domain content filters — learns & drops, fine with big lists" },
+    block: { s: "+", t: "Enforces domain content filters — learns & drops; best for large block lists" },
     exp: "Routes by hostname by parsing the SNI from each TLS handshake in a small userspace helper, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Parses the real SNI field (precise, regex-capable, fine with very large lists). Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing.",
     lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
 };
@@ -5299,8 +6341,6 @@ function RoutingRules({ node, rules, onChange }) {
   const _ps = Store.panelSettings || {};
   const _nrec = (Store.nodes || []).find(n => n.id === node);   // built-in categories enabled for THIS node (null/[] = all)
   const _mode = (_nrec && _nrec.routing_mode) || "kernel";        // host-only cats are unusable in kernel mode → drop them from the dropdown
-  const _ec = _nrec && _nrec.enabled_categories && _nrec.enabled_categories.length ? new Set(_nrec.enabled_categories) : null;
-  const hiddenCats = { has: id => (_ec ? !_ec.has(id) : false) || !catUsableInMode(id, _mode) };   // node-scoped: hidden = not enabled, OR not matchable in this mode
   const customLists = (_ps.custom_lists || []).filter(l => !(l.disabled_nodes || []).includes(node));   // per-node: hide lists the operator disabled on THIS node
   const catalogCats = (_nrec && _nrec.catalog_cats || []).map(id => ({ id, title: catLabelOf(id) }));   // provider-catalog cats opted into this node → the Provider lists section
   const listTitle = Object.fromEntries([...(_ps.custom_lists || []).map(l => [l.id, l.title]), ...catalogCats.map(c => [c.id, c.title])]);
@@ -5369,7 +6409,8 @@ function RoutingRules({ node, rules, onChange }) {
 function EgressPicker({ node, value, onChange, noRules }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const ipIfaces = nrec.ip_ifaces || [];
-  const nics = [...new Set(ipIfaces.map(p => p.iface))];
+  // Egress = a PHYSICAL exit NIC. Drop panel-managed tunnels — WDTT servers + mesh links — they're inbound, never an egress.
+  const nics = [...new Set(ipIfaces.map(p => p.iface))].filter(n => !isWdttIface(n) && !n.startsWith("swg_"));
   const others = (Store.nodes || []).filter(n => n.id !== node);
   const ifSel = value.mode === "smart" ? "smart" : value.mode === "forward" ? "forward|" + (value.node || "") : value.mode === "direct" ? "direct|" + (value.nic || "") : "auto";
   let ipOpts = [];
@@ -5466,10 +6507,29 @@ function egressError(eg, mode) {
 function LoadIfaceSheet({ node, pre, ghost, back }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing
-  const [proto, setProto] = useState((pre && pre.proto) || "awg");   // awg | wg | existing
+  const _defProto = (pre && pre.proto) || "wg";   // WireGuard is the default base for a new interface
+  const [proto, setProto] = useState(_defProto);   // wg | awg | wdtt | existing
   const sugAwg = suggestIface(node, "awg"), sugWg = suggestIface(node, "wg");   // auto-suggested names (per base)
-  const [iface, setIface] = useState((pre && pre.iface) || sugAwg); const [subnet, setSubnet] = useState((pre && pre.subnet) || suggestSubnet(node));
-  const [host, setHost] = useState(""); const [port, setPort] = useState(String(suggestPort(node, "iface")));
+  // WDTT name + subnet suggestions (next free wdttN + a free 10.66.N.1/24, avoiding other WDTT instances).
+  // Ports use the SHARED suggestPort() — WDTT instances are now counted in usedPortsOn(), so a 2nd wdtt on the
+  // node never clashes on its DTLS listen or its internal wg-port (nor with any interface / turn-proxy).
+  // nextWdttName(), NOT a local scan of snap.wdtt: the readback only lists servers the node is already RUNNING,
+  // so while one is still being created this handed out its name a second time — and /api/wdtt/set is an upsert,
+  // so creating a second WDTT back-to-back silently overwrote the first ("the second one never appears"). The
+  // ports and subnet below never had the bug because they use the shared suggestPort/suggestSubnet, which
+  // already count the desired set and the in-flight ones; the name had a bespoke copy that did not.
+  const sugWdtt = nextWdttName(node);
+  const sugWdttNet = suggestSubnet(node);   // WDTT takes the SAME subnet form as wg/awg (10.X.0.0/24, fleet-unique); the server .1 is derived on save
+  const sugWdttListen = suggestPort(node, "turn");                        // external DTLS (turn-proxy family)
+  const sugWdttWg = suggestPort(node, "turn", [sugWdttListen]);           // internal userspace-WG port (≠ the listen)
+  const [iface, setIface] = useState((pre && pre.iface) || (_defProto === "wdtt" ? sugWdtt : _defProto === "awg" ? sugAwg : sugWg)); const [subnet, setSubnet] = useState((pre && pre.subnet) || ((pre && pre.proto) === "wdtt" ? sugWdttNet : suggestSubnet(node)));
+  const [host, setHost] = useState(""); const [port, setPort] = useState(String((pre && pre.proto) === "wdtt" ? sugWdttListen : suggestPort(node, "iface")));
+  const _wdttForks = enabledTurnForks().filter(f => f.kind === "wdtt");   // WDTT server forks the operator has enabled
+  const [wgPort, setWgPort] = useState(String(sugWdttWg)); const [fork, setFork] = useState((_wdttForks[0] || {}).id || "amurcanov");   // WDTT: internal userspace-WG port + which server fork (default = first enabled)
+  // WDTT is a turn-family fork → needs turn management on this node AND at least one WDTT fork enabled (else there's
+  // nothing to create) — if every WDTT fork is disabled in Settings, don't offer the WDTT protocol at all.
+  const wdttOk = turnEnabled() && nrec.turn_manage && nrec.turn_arch_ok !== false && enabledTurnForks().some(f => f.kind === "wdtt");
+  const isWdtt = proto === "wdtt";
   const _idf = (Store.panelSettings || {}).interface_defaults || {};   // panel-wide new-interface defaults
   const [dns, setDns] = useState((_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String(_idf.mtu || 1280)); const [ka, setKa] = useState(String(_idf.keepalive || 25));
   const [conf, setConf] = useState("");
@@ -5484,11 +6544,26 @@ function LoadIfaceSheet({ node, pre, ghost, back }) {
   const [hostSel, setHostSel] = useState(_preEp ? (ips.includes(_preEp) ? _preEp : "__custom__") : (ips[0] || "__custom__"));
   const [hostCustom, setHostCustom] = useState(_preEp && !ips.includes(_preEp) ? _preEp : "");
   const pickProto = p => {   // switching base re-suggests the name only if the field is still an untouched suggestion
-    if (p !== "existing" && (iface === sugAwg || iface === sugWg || !iface.trim())) setIface(p === "wg" ? sugWg : sugAwg);
+    const untouched = iface === sugAwg || iface === sugWg || iface === sugWdtt || !iface.trim();
+    if (p !== "existing" && untouched) setIface(p === "wg" ? sugWg : p === "wdtt" ? sugWdtt : sugAwg);
+    if (p === "wdtt") {   // WDTT: seed the subnet + collision-free DTLS listen + internal-WG ports
+      if (!subnet.trim() || subnet === suggestSubnet(node)) setSubnet(sugWdttNet);
+      if (!port.trim() || port === String(suggestPort(node, "iface"))) setPort(String(sugWdttListen));
+      setWgPort(String(sugWdttWg));
+    } else if (port === String(sugWdttListen)) {   // switching away from WDTT → restore the interface listen port
+      setPort(String(suggestPort(node, "iface")));
+    }
     setProto(p);
   };
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
-  const existing = proto === "existing";
+  // "Adopt existing" is a MODE, not a protocol: the same wg/awg/wdtt row above chooses the type either way.
+  // As a fourth chip it forced a second identical type row underneath — the same three names twice, in two
+  // different styles, one of them meaning something else.
+  const [adoptMode, setAdoptMode] = useState(false);
+  const existing = adoptMode;
+  // Adopting BY PATH — the same choice the adopt sheet offers, because it is the same decision: what is this
+  // interface? "auto" used to be inferred from the conf, which is fine for wg/awg but says nothing about WDTT.
+  const exWdtt = existing && proto === "wdtt";
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const save = async () => {
     setBusy(true); setMsg({ k: "work", t: "requesting…" });
@@ -5507,10 +6582,34 @@ function LoadIfaceSheet({ node, pre, ghost, back }) {
     }
     let r;
     if (existing) {
+      if (proto === "wdtt") {
+        // Hand the typed directory to the SAME sheet a discovered dormant install opens: it owns the fork,
+        // name, ports and subnet this adoption needs, and posts /api/wdtt/adopt (adopt_config_dir), which is
+        // the path that actually seeds a WDTT take-over. The old form posted ifaceOnboard — the wg/awg
+        // endpoint — so typing a WDTT directory here never completed an adoption in the first place.
+        const c = conf.trim();
+        if (!c.startsWith("/")) return fail("Enter the absolute path to the server's config directory (the one holding wg-keys.dat).");
+        setBusy(false); closeModal();
+        openModal(html`<${AdoptDormantWdttSheet} node=${node} nrec=${nrec}
+          d=${{ config_dir: c.replace(/\/+$/, ""), fork: "", store: "", users: [], listen_port: 0, wg_port: 0 }}/>`);
+        return;
+      }
       const c = conf.trim();
       if (!c.startsWith("/")) return fail("Enter the absolute path to the interface's .conf.");
       const base = (c.split("/").pop() || "").replace(/\.conf$/i, "");   // seed the name from the filename
-      r = await api.ifaceOnboard({ node, iface: base, protocol: "auto", conf: c, endpoint_host: host.trim() });
+      r = await api.ifaceOnboard({ node, iface: base, protocol: proto, conf: c, endpoint_host: host.trim() });
+    } else if (isWdtt) {
+      // WDTT interface: ONE record — this writes the same /api/wdtt/set the Turn-proxies card edits.
+      const nm = iface.trim();
+      if (!/^wdtt\d{1,3}$/.test(nm)) return fail("WDTT interface name must be wdtt0–wdtt999.");
+      if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail("Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24.");
+      if (wgPort.trim() && !/^\d+$/.test(wgPort.trim())) return fail("Internal WG port must be a number.");
+      // Endpoint host/IP + Listen port = the turn-proxy (DTLS) side → compose the WDTT server's -listen from them
+      // (blank host → 0.0.0.0, all interfaces). The interface side binds 127.0.0.1:<internal wg port>, not shown.
+      // The form takes the SUBNET (10.8.0.0/24) like wg/awg; the server lives on the first host (.1) — derive it here.
+      const _dtlsHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
+      r = await api.wdttSet({ node, iface: nm, wg_addr: subnetServerAddr(subnet.trim()), listen: _dtlsHost + ":" + (port.trim() || "56000"),
+        wg_port: wgPort.trim() || "56001", fork, block: blk, ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
     } else {
       const nm = iface.trim();
       if (!nm || /[\s/]/.test(nm)) return fail("Interface name is required (no spaces or /).");
@@ -5530,40 +6629,73 @@ function LoadIfaceSheet({ node, pre, ghost, back }) {
       : { type: proto, subnet: subnet.trim(), port: port.trim(), endpoint: ipPickerVal(hostSel, hostCustom), at: Date.now() };
     if (ghost && !existing) Store.ghostRekey[node + "|" + _newName] = { peers: ghost.peers || [], at: Date.now() };   // phase 2: rekey these once the fresh iface is live
     closeModal(); Store.apply(); await Store.poll();
-    if (!existing && isBridge) { openModal(html`<${BridgePortSheet} iface=${_newName} port=${port.trim()}/>`); return; }
+    if (!existing && !isWdtt && isBridge) { openModal(html`<${BridgePortSheet} iface=${_newName} port=${port.trim()}/>`); return; }
     toast(ghost ? ("Recreating " + _newName + " — keep this tab open and its " + (ghost.peers || []).length + " peer" + ((ghost.peers || []).length === 1 ? " is" : "s are") + " rekeyed automatically once it's back; otherwise rekey each from its peer view. Then hand out the fresh configs.")
                 : (existing ? "Onboarding requested — applies on the node's next sync." : "Interface creation requested — applies on the node's next sync."), "ok", ghost ? 6000 : 3600);
   };
+  // subnets must be UNIQUE across the fleet (the mesh routes by subnet) → warn + block Save on a duplicate. Skip
+  // for onboarding (the node reports its own subnet) and for a ghost recreate (same iface, its subnet is expected).
+  const _subConflict = (!existing && !ghost && subnet.trim()) ? subnetFleetConflict(subnet.trim(), null, null) : null;
+  // The NAME had no collision check at all — only the suggestion avoided taken names, so anything typed (or a
+  // name reused deliberately) went straight through. The costly case is an UNMANAGED server already holding it:
+  // upstream WDTT compiles in "wdtt0", so creating our own wdtt0 beside one leaves two servers fighting over the
+  // interface — ours bound to its port while the device carries the foreign subnet, and neither serving.
+  // Skipped for adopt (`existing`, keyed by conf path) and for a ghost recreate, which reuses its name by design.
+  const _nameTaken = (!existing && !ghost && iface.trim()) ? (() => { const nm = iface.trim();
+    if ((Store.describe[node] || {})[nm] || (nrec.wdtt_cfg || {})[nm]
+        || ((Store.stats[node] || {}).wdtt || []).some(w => w && w.iface === nm)) return "managed";
+    if ((nrec.iface_candidates || []).some(c => c && c.name === nm)) return "unmanaged";
+    return null; })() : null;
+  const nameErr = _nameTaken === "managed" ? "An interface named " + iface.trim() + " already exists on this node."
+    : _nameTaken === "unmanaged" ? iface.trim() + " is already on this node but isn't managed by the panel — Adopt it instead (its keys and users are kept)."
+    : null;
+  // live port-collision checks (new interface → no own ports). WDTT also needs its DTLS ≠ internal WG port.
+  const pperr = portErrMsg(node, port, []);
+  const wgperr = isWdtt ? ((port.trim() && wgPort.trim() && Number(port) === Number(wgPort)) ? "The DTLS port and internal WG port must differ." : portErrMsg(node, wgPort, [])) : null;
   return html`<${Sheet} title=${ghost ? "Recreate & rekey · " + ghost.iface : "Create new interface"} onBack=${back || null}
-    foot=${footRow({ onCancel: back || closeModal, disabled: busy || (!existing && !!egressError(eg, nrec.routing_mode || "kernel")), title: (!existing && egressError(eg, nrec.routing_mode || "kernel")) || "", onAction: save, action: ghost ? "Recreate & rekey" : (existing ? "Adopt" : "Create") })}>
+    foot=${footRow({ onCancel: back || closeModal, disabled: busy || !!nameErr || !!_subConflict || !!pperr || !!wgperr || (!existing && !!egressError(eg, nrec.routing_mode || "kernel")), title: (nameErr || pperr || wgperr || (_subConflict ? "This subnet is already in use in the fleet" : (!existing && egressError(eg, nrec.routing_mode || "kernel")))) || "", onAction: save, action: ghost ? "Recreate & rekey" : (existing ? "Adopt" : "Create") })}>
     ${ghost ? html`<div class="notice danger" style="margin-bottom:16px"><${Ic} i="warn"/><span>Interface <span class="mono">${ghost.iface}</span> is gone from ${Store.nodeName(node)} with <b>no recoverable key</b>, so it can't be restored — only recreated with a <b>new server key</b>. Its <b>${ghost.total}</b> peer${ghost.total === 1 ? "" : "s"} will be rekeyed once it's back, so <b>every client must re-import</b> a fresh QR / config. Review the settings below (inferred from the peers) and recreate.</span></div>` : null}
     <div class="field"><label>Protocol</label>
       <div class=${"chiprow" + (ghost ? "" : " proto3")}>
-        <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => pickProto("awg")}>AmneziaWG</button>
         <button class=${"chip c-wg" + (proto === "wg" ? " on" : "")} onClick=${() => pickProto("wg")}>WireGuard</button>
-        ${ghost ? null : html`<button class=${"chip c-ex" + (proto === "existing" ? " on" : "")} onClick=${() => pickProto("existing")}>Existing unbound interface</button>`}
-      </div></div>
-    ${existing ? html`<${Fragment}>
-      <div class="iface-intro big">
-        <div>Have the node start managing an existing wg/awg interface the panel didn't pick up.</div>
-        <div>The node only needs the tool and the interface's .conf path — it reads the rest (keys, subnet, AWG params) and its existing peers show up as adoptable.</div>
-        <div>It's applied on the node's next sync, then the interface appears here.</div>
+        <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => pickProto("awg")}>AmneziaWG</button>
+        ${ghost || !wdttOk ? null : html`<button class=${"chip c-wdtt" + (proto === "wdtt" ? " on" : "")} onClick=${() => pickProto("wdtt")}>WDTT</button>`}
+        ${ghost ? null : html`<button type="button" class=${"adoptsw" + (adoptMode ? " on" : "")} aria-pressed=${adoptMode}
+          title=${adoptMode ? "Taking over an interface already on the node" : "Create a new interface — switch on to take over one already on the node"}
+          onClick=${() => setAdoptMode(v => !v)}>Adopt existing</button>`}
       </div>
-      <div class="field"><label>Config path</label><input autofocus value=${conf} onInput=${e => setConf(e.target.value)} placeholder="/etc/wireguard/wg0.conf" autocomplete="off"/></div>
-      <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
+      ${adoptMode ? html`<div class="hint" style="margin-top:8px">Taking over an interface already on the node — its keys and peers are kept.</div>` : null}
+    </div>
+    ${existing ? html`<${Fragment}>
+      ${exWdtt ? html`<div class="notice"><${Ic} i="info"/><span>If the node has discovered this server it is quicker to adopt it from its <b>orphan card</b> on the node screen — the node has already read its fork, ports and identity. Point at the directory here when it hasn't: an install that was moved, renamed, or is stopped.</span></div>` : html`
+      <div class="row2">
+        <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
+      </div>`}
+      <div class="field"><label>${exWdtt ? "Config directory" : "Config path"}</label><input autofocus value=${conf} onInput=${e => setConf(e.target.value)} placeholder=${exWdtt ? "/etc/wdtt" : (proto === "awg" ? "/etc/amnezia/amneziawg/awg0.conf" : "/etc/wireguard/wg0.conf")} autocomplete="off"/>${exWdtt ? html`<div class="hint">The directory holding its <span class="mono">wg-keys.dat</span> — for an install the node hasn't discovered (moved, renamed, or stopped).</div>` : null}</div>
+      ${(!exWdtt && nrec.kind === "docker") ? html`<div class="notice"><${Ic} i="info"/><span>This node runs in a container, so it can only read paths inside it — a config elsewhere on the host is invisible from here. <b>The interface must be running</b>: the node then adopts it from the live device (keys, peers, ports and AmneziaWG parameters, all fresher than any file). A stopped interface whose config the node can't read cannot be adopted.</span></div>` : null}
     <//>` : html`<${Fragment}>
       <div class="row2">
-        <div class="field"><label>Interface name</label><input autofocus=${!ghost} value=${iface} onInput=${e => { if (!ghost) setIface(e.target.value); }} readOnly=${!!ghost} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/>${ghost ? html`<div class="hint">Fixed — must match the peers that reference it.</div>` : null}</div>
-        <div class="field"><label>Tunnel subnet (CIDR)</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.8.0.0/24" autocomplete="off"/><div class="hint">The server takes the first host (e.g. 10.8.0.1);</div></div>
+        <div class="field"><label>Interface name</label><input autofocus=${!ghost} class=${nameErr ? "bad" : ""} value=${iface} onInput=${e => { if (!ghost) setIface(e.target.value); }} readOnly=${!!ghost} placeholder=${proto === "wg" ? "wg1" : proto === "wdtt" ? "wdtt1" : "awg1"} autocomplete="off"/>${ghost ? html`<div class="hint">Fixed — must match the peers that reference it.</div>` : nameErr ? html`<div class="hint err">${nameErr}</div>` : null}</div>
+        <div class="field"><label>Tunnel subnet (CIDR)</label><input class=${_subConflict ? "bad" : ""} value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.8.0.0/24" autocomplete="off"/>${_subConflict ? html`<div class="hint err">Subnet already used by <b>${_subConflict.iface}</b> on <b>${Store.nodeName(_subConflict.node)}</b> — interface subnets must be unique across the fleet.</div>` : null}</div>
       </div>
-      <div class="row2">
+      ${!isWdtt ? html`<div class="row2">
         <div class="field"><label>Endpoint host / IP</label>
           <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder="vpn.xyz.com or 203.0.113.7"/>
           <div class="hint">What clients dial</div></div>
-        <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/></div>
-      </div>
+        <div class="field"><label>Listen port</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/>${pperr ? html`<div class="hint err">${pperr}</div>` : null}</div>
+      </div>` : null}
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This docker node uses <span class="mono">bridge</span> networking — after creating you must publish this port in the node's <span class="mono">docker-compose.yml</span> (<span class="mono">ports: "${port || "PORT"}:${port || "PORT"}/udp"</span>) and <span class="mono">up -d</span>, or clients can't reach it. (A host-networking node needs none of this.)</span></div>` : null}
-      <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
+      ${isWdtt ? html`<div class="row2">
+        <div class="field"><label>Server fork</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${_wdttForks.map(f => html`<option value=${f.id}>${f.label}</option>`)}</select><div class="hint">Which WDTT server implements this instance</div></div>
+        <div class="field"><label>Endpoint host / IP</label>
+          <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder="vpn.xyz.com or 203.0.113.7"/>
+          <div class="hint">What clients dial</div></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Listen port</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/>${pperr ? html`<div class="hint err">${pperr}</div>` : html`<div class="hint">DTLS listen (outside)</div>`}</div>
+        <div class="field"><label>Internal WG port</label><input class=${wgperr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder="56001"/>${wgperr ? html`<div class="hint err">${wgperr}</div>` : html`<div class="hint">Loopback userspace-WG port (server-internal)</div>`}</div>
+      </div>` : null}
+      <${Fragment}><${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
       ${eg.mode === "smart" ? html`<${Disclosure} title="Routing rules" sumCls="route"
         summary=${(eg.rules || []).length ? html`<b>${(eg.rules || []).length}</b> ${(eg.rules || []).length === 1 ? "rule" : "rules"} · first match wins` : "no rules yet"}
         open=${disc.routing} onToggle=${() => tog("routing")}>
@@ -5574,14 +6706,14 @@ function LoadIfaceSheet({ node, pre, ghost, back }) {
         open=${disc.filters} onToggle=${() => tog("filters")}>
         <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
       <//>
-      <${Disclosure} title="Advanced settings" summary="MTU · keepalive · DNS"
+      ${!isWdtt ? html`<${Disclosure} title="Advanced settings" summary="MTU · keepalive · DNS"
         open=${disc.advanced} onToggle=${() => tog("advanced")}>
         <div class="row2">
           <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Blank = 1280</div></div>
           <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25</div></div>
         </div>
         <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/><div class="hint">Comma-separated</div></div>
-      <//>
+      <//>` : null}<//>
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -5596,6 +6728,10 @@ function DeleteIfaceSheet({ node, iface }) {
     setBusy(true);
     const r = await api.ifaceDelete({ node, iface });
     if (!r.ok) { setBusy(false); return toast(r.error || "Failed to delete interface.", "err"); }
+    const _m = Store.ifaceMeta(node, iface) || {};   // capture type/rows now — see the WDTT delete above
+    Store.ifaceGone[node + "|" + iface] = { at: Date.now(),
+      type: (_m.awg_params && Object.keys(_m.awg_params).length) ? "awg" : "wg",
+      listen: _m.endpoint || ((_m.address || "").split("/")[0] + (_m.listen_port ? ":" + _m.listen_port : "")), subnet: _m.subnet || "" };
     closeAllModals(); await Store.poll();   // iface is gone → close this + the editor behind it
     toast("Interface deletion requested — the node tears it down on its next sync.", "ok");
     go("#/node/" + encodeURIComponent(node));   // this interface's page is going away
@@ -5619,14 +6755,35 @@ async function startOrRestartIface(node, iface, verb) {
   }
   await Store.poll();   // queued on the node; trackIfaceOps() watches for completion each poll
 }
+// WDTT lifecycle — same optimistic op badge as a normal interface. start/stop ride the `stopped` flag (the node
+// enable/disable-s the swg-wdtt service); restart is a nonce the node picks up (systemctl restart). trackIfaceOps
+// drives the badge, reading the WDTT snapshot's active state (not snap.interfaces).
+async function startOrRestartWdtt(node, iface, verb) {
+  const key = node + "|" + iface;
+  Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply();
+  const body = { node, iface };
+  if (verb === "stop") body.stopped = true;
+  else if (verb === "start") body.stopped = false;
+  else body.restart = Date.now();   // restart nonce → node systemctl restart
+  const r = await api.wdttSet(body);
+  if (!r.ok) {
+    Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 10000, err: r.error || "request failed" };
+    Store.apply(); setTimeout(() => Store.apply(), 10100); return;
+  }
+  await Store.poll();
+}
 function trackIfaceOps() {
   const now = Date.now();
   for (const key of Object.keys(Store.ifaceOp)) {
     const op = Store.ifaceOp[key];
     if (op.phase !== "busy") { if (op.until && now > op.until) delete Store.ifaceOp[key]; continue; }
+    if (IFOP_PANEL.has(op.verb)) continue;   // panel-side: settled by its own handler, not by watching the node
     const cut = key.indexOf("|"); const node = key.slice(0, cut), iface = key.slice(cut + 1);
     const nrec = (Store.nodes || []).find(n => n.id === node) || {};
-    const istate = (((Store.stats[node] || {}).interfaces || {})[iface] || {});
+    const _wSnap = ((Store.stats[node] || {}).wdtt || []).find(w => w && w.iface === iface);   // WDTT lives in snap.wdtt, not snap.interfaces
+    const istate = _wSnap
+      ? { down: _wSnap.active !== "active" && !_wSnap.stopped, stopped: !!_wSnap.stopped }   // active state from the WDTT readback
+      : (((Store.stats[node] || {}).interfaces || {})[iface] || {});
     const down = !!istate.down, stopped = !!istate.stopped, notup = down || stopped;   // a stopped iface reports `stopped`, not `down`
     const cerr = (nrec.cmd_errors || {})[iface];
     const starting = (nrec.starting || []).includes(iface);   // panel requests still queued (cleared once the snapshot reflects)
@@ -5740,6 +6897,7 @@ function EditIfaceSheet({ node, iface }) {
   const epHost = ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep;
   const [host, setHost] = useState(epHost);
   const [port, setPort] = useState(String(meta.desired_port || meta.listen_port || ""));
+  const iperr = portErrMsg(node, port, [meta.listen_port, meta.desired_port]);   // live port-collision check (this iface's own port doesn't count)
   const [dns, setDns] = useState((meta.dns || []).join(", "));
   const [mtu, setMtu] = useState(String(meta.mtu || 1280));
   const [ka, setKa] = useState(String(meta.keepalive || 25));
@@ -5794,12 +6952,12 @@ function EditIfaceSheet({ node, iface }) {
     || JSON.stringify(_ifBody) !== JSON.stringify(_ifOrig)
     || JSON.stringify([...blk].sort()) !== JSON.stringify([...(meta.block || [])].sort())
     || (isAwg && JSON.stringify(_awgTrim(awg)) !== JSON.stringify(_awgTrim(meta.awg_params)));
-  return html`<${Sheet} title=${"Edit interface · " + iface} width=${720}
+  return html`<${Sheet} title=${"Edit " + kindOf(node, iface).toUpperCase() + " interface · " + iface} width=${720}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete</button>
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> Start service</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> Stop service</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> Restart service</button><//>`}
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg, emode) || !ifaceDirty} title=${egressError(eg, emode) || (!ifaceDirty ? "No changes to save" : "")} onClick=${save}>Save</button></>`}>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg, emode) || !!iperr || !ifaceDirty} title=${iperr || egressError(eg, emode) || (!ifaceDirty ? "No changes to save" : "")} onClick=${save}>Save</button></>`}>
     <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${((meta.drift && meta.drift.public_key) || driftDone) ? (() => {
@@ -5848,7 +7006,7 @@ function EditIfaceSheet({ node, iface }) {
       <div class="field"><label>Endpoint host / IP</label>
         <${NodeIpPick} ips=${nrec.ips || []} value=${host} onChange=${setHost} auto="Auto (node's detected address)" customPlaceholder="IP or hostname — e.g. vpn.example.com"/>
         <div class="hint">What clients dial — config-facing only</div></div>
-      <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"})</div></div>
+      <div class="field"><label>Listen port</label><input class=${iperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/>${iperr ? html`<div class="hint err">${iperr}</div>` : html`<div class="hint">Applied to the node (currently ${meta.listen_port || "—"})</div>`}</div>
     </div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
     ${eg.mode === "smart" ? html`<${Disclosure} title="Routing rules" sumCls="route"
@@ -5896,8 +7054,9 @@ function TurnManageSheet({ node, tp }) {
   const [lsel, setLsel] = useState(lInit);
   const [lcustom, setLcustom] = useState(lInit === "__custom__" ? lh : "");
   const [lport, setLport] = useState(lp);
+  const tperr = portErrMsg(node, lport, [lp]);   // live listen-port collision check (this proxy's own port doesn't count)
   const allIfaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_"), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isWdttIface(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
   // this proxy's fork is fixed here; a WireGuard-only fork can't front an AmneziaWG interface → hide awg ones
   const fork = turnFork(svc);
@@ -5908,11 +7067,9 @@ function TurnManageSheet({ node, tp }) {
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
   const [custom, setCustom] = useState(con || "127.0.0.1:");
   const [params, setParams] = useState(tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : ""));
-  const [openSec, setOpenSec] = useState(null);   // the strip's open section — null | "server" | "client" | "version"
-  const clientsCommitRef = useRef(null);   // the inline Client picker registers its commit here; this sheet's Save calls it
-  const clientsCtl = useTurnClients(fork, clientsCommitRef, null);   // shared: the inline picker + the Client-parameters panel both read this
+  const [openSec, setOpenSec] = useState(null);   // the strip's open section — null | "server" | "version"
   const origParams = tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : "");
-  const [title, setTitle] = useState(tp.title || "");
+  const [title, setTitle] = useState(shownTitle("t|" + node + "|" + svc, tp.title));   // honour a just-saved optimistic title
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);   // node down / mid re-install / convert / update → disable every action here, same as the node-detail buttons
@@ -5926,19 +7083,6 @@ function TurnManageSheet({ node, tp }) {
   const stopped = !!tp.stopped;
   const down = tp.running === false;
   const owner = turnOwner(svc);
-  const [verChk, setVerChk] = useState(null);   // null | {checking} | {latest} | {err}
-  const updateAvail = verChk && verChk.latest && installed && verChk.latest !== installed;
-  const checkUpdate = async () => {
-    setVerChk({ checking: true });
-    try {
-      const r = await fetch("https://api.github.com/repos/" + owner + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } });
-      if (!r.ok) throw new Error("GitHub " + r.status);
-      const j = await r.json();
-      const latest = String(j.tag_name || "").trim();
-      setVerChk({ latest });
-      if (!(latest && installed && latest !== installed)) setTimeout(() => setVerChk(null), 5000);   // up to date → show the tag for 5s, then revert
-    } catch (e) { setVerChk({ err: String((e && e.message) || e) }); setTimeout(() => setVerChk(null), 5000); }   // no connection → 5s, then revert
-  };
   const doReinstall = async (verb, tag) => {
     setBusy(true); setMsg({ k: "work", t: verb.toLowerCase() + "…" });
     if (verb === "Update") turnUpdating[node + "|" + svc] = Date.now() + 120000;   // card shows "updating" (not "installing") while it applies
@@ -5947,11 +7091,6 @@ function TurnManageSheet({ node, tp }) {
     closeModal(); await Store.poll();
     toast("Turn-proxy " + verb.toLowerCase() + " requested — applies on the node's next sync.", "ok");
   };
-  // Rollback: the panel's mirrored versions for this fork (its rollback cache) + any active hold. Fetched once on open.
-  const [vers, setVers] = useState(null);   // null=loading · {tags:[{tag,arches,at}], held}
-  const [rollTag, setRollTag] = useState("");
-  useEffect(() => { let live = true; api.turnVersions({ owner, node, service: svc }).then(r => { if (live) setVers(r && r.ok ? r.data : { tags: [], held: "" }); }); return () => { live = false; }; }, [owner, node, svc]);
-  const rollTargets = (vers && vers.tags || []).filter(v => v.tag !== installed);   // can't "roll back" to the version already running
   const save = async () => {
     if (!lhost) return fail("Listen IP is required.");
     if (!/^\d+$/.test(lport.trim())) return fail("Listen port must be a number.");
@@ -5959,15 +7098,14 @@ function TurnManageSheet({ node, tp }) {
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forward-to must be host:port."); }
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
     const newListen = lhost + ":" + lport.trim();
-    let clientChanged = false;
-    if (clientsCommitRef.current) { try { clientChanged = await clientsCommitRef.current(); } catch (_) {} }   // commit the embedded Client-apps default/settings alongside this Save; true iff it changed anything
     // title-only change → OPTIMISTIC: a cosmetic panel-side label, so close immediately + save in the background
     // (no status, no node round-trip, the proxy keeps running). Other field changes go the proper pending route.
     const titleOnly = newListen === (tp.listen || "") && connect === (tp.connect || "") && params.trim() === origParams.trim();
     if (titleOnly) {
       const titleChanged = title.trim() !== (tp.title || "");
       closeModal();
-      if (!titleChanged) return toast(clientChanged ? "Client app saved." : "No changes.", "ok");   // the embedded picker may have committed the only change
+      if (!titleChanged) return toast("No changes.", "ok");
+      pushOptTitle("t|" + node + "|" + svc, title.trim());   // show the new title on the card immediately
       const r = await api.turnTitle({ node, service: svc, title: title.trim() });
       if (r.ok) { await Store.poll(); toast("Title saved — the proxy keeps running.", "ok"); }
       else toast(r.error || "Failed to save the title.", "err");
@@ -5989,9 +7127,8 @@ function TurnManageSheet({ node, tp }) {
   const turnDirty = (lhost + ":" + lport.trim()) !== (tp.listen || "")
     || _mConnect !== (tp.connect || "")
     || params.trim() !== origParams.trim()
-    || title.trim() !== (tp.title || "")
-    || !!(clientsCtl && clientsCtl.dirty);
-  return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}`} width=${660} headExtra=${html`<${TurnIpsHeader} node=${node} svc=${svc}/>`}
+    || title.trim() !== (tp.title || "");
+  return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}<button class="iconbtn sheet-verset" title=${"Version, rollback & server defaults for " + turnFork(svc)} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`} width=${664} headExtra=${html`<${TurnIpsHeader} node=${node} svc=${svc}/>`}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
       ${stopped
@@ -6005,7 +7142,7 @@ function TurnManageSheet({ node, tp }) {
           <//>`
         : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title="Re-download the binary and start the service on the node" onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
-      <button class="btn btn-primary" disabled=${dis || !turnDirty} title=${!turnDirty ? "No changes to save" : ""} onClick=${save}>Save</button></>`}>
+      <button class="btn btn-primary" disabled=${dis || !!tperr || !turnDirty} title=${tperr || (!turnDirty ? "No changes to save" : "")} onClick=${save}>Save</button></>`}>
     ${blocked ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>This node is busy or offline${nrec.proc_status ? html` (${PROC_LABEL[nrec.proc_status] || nrec.proc_status})` : ""} — turn-proxy actions are disabled until it's reporting again.</span></div>` : null}
     <${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.turnSeries(node, turnFork(svc), r).then(x => x && x.ok ? x.data : {})}/>
     <div class="iface-intro" style="margin-top:8px">
@@ -6016,7 +7153,7 @@ function TurnManageSheet({ node, tp }) {
     <div class="row2">
       <div class="field"><label>Listen IP</label>
         <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder="203.0.113.7"/></div>
-      <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="57000"/></div>
+      <div class="field"><label>Listen port</label><input class=${tperr ? "bad" : ""} value=${lport} onInput=${e => setLport(e.target.value)} placeholder="57000"/>${tperr ? html`<div class="hint err">${tperr}</div>` : null}</div>
     </div>
     ${lsel === "__custom__" && lhost && !ips.includes(lhost) ? (isBridge
       ? html`<div class="notice" style="margin:-6px 0 16px"><${Ic} i="info"/><span>Bridge node: the proxy binds <span class="mono">0.0.0.0</span> inside the container and this port is published, so enter the node's <b>public</b> IP/host (what clients dial) here.</span></div>`
@@ -6032,29 +7169,8 @@ function TurnManageSheet({ node, tp }) {
       <div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>
       <div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This forwards to a port with no managed interface behind it. Make sure a wg/awg interface is really listening there, or clients reach the proxy but get no tunnel.</span></div>
     <//>` : null}
-    <${TurnAppsPicker} ctl=${clientsCtl} offered=${true}/>
     <${Disclosure} title="Server parameters" open=${openSec === "server"} onToggle=${() => setOpenSec(s => s === "server" ? null : "server")}>
       <${TurnParamsEditor} fork=${fork} node=${node} value=${params} onChange=${setParams} listen=${(lhost || "server_ip") + ":" + (lport || "port")} connect=${isCustom ? (custom || "interface_ip:port") : ("127.0.0.1:" + (((ifaces.find(i => i.name === fwd)) || {}).port || "port"))}/>
-    <//>
-    <${Disclosure} title="Client parameters" open=${openSec === "client"} onToggle=${() => setOpenSec(s => s === "client" ? null : "client")}>
-      <${TurnClientParams} ctl=${clientsCtl} embedded=${true}/>
-    <//>
-    <${Disclosure} title="Version & rollback" sumCls="route" summary=${vers && vers.held ? html`held · <b>${vers.held}</b>` : null} open=${openSec === "version"} onToggle=${() => setOpenSec(s => s === "version" ? null : "version")}>
-      <div class="hint">Installed: <span class="mono">${installed || "—"}</span>${vers && vers.held ? html` · <b>held at <span class="mono">${vers.held}</span></b> — the auto-updater won't move it (Reinstall to release the hold).` : ""}</div>
-      ${vers == null
-        ? html`<div class="hint">Loading available versions…</div>`
-        : rollTargets.length
-        ? html`<${Fragment}>
-            <div class="row" style="gap:8px;align-items:center;margin-top:6px">
-              <select class="selwrap" style="max-width:220px" value=${rollTag} onChange=${e => setRollTag(e.target.value)}>
-                <option value="">Roll back to a previous version…</option>
-                ${rollTargets.map(v => html`<option value=${v.tag}>${v.tag}${v.tag === (vers && vers.held) ? " (held)" : ""}</option>`)}
-              </select>
-              <button class="btn btn-ghost" disabled=${dis || !rollTag} title="Re-install the selected version on the node and hold it there (the auto-updater won't move it)" onClick=${() => doReinstall("Roll back", rollTag)}><${Ic} i="refresh"/> Roll back</button>
-            </div>
-            <div class="hint" style="margin-top:6px">The panel keeps the last few versions it has installed (checksum-verified); the node re-downloads the chosen one from the panel and restarts. A rollback <b>holds</b> that version until you Reinstall/Update.</div>
-          <//>`
-        : html`<div class="hint" style="margin-top:6px">No earlier versions in the rollback cache yet — the panel keeps the last few it has installed for each fork.</div>`}
     <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -6090,11 +7206,11 @@ function DeleteTurnSheet({ node, service, label }) {
 // Order mirrors the panel's TURN_SERVER_ORDER (cacggghp + WINGS-N pinned, then by server+app stars). This is
 // only the boot/offline fallback; the served catalog is authoritative.
 const TURN_FORKS_FALLBACK = [
-  { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#5FB0E0", colorL: "#2C7EC0", protocols: ["wg", "awg"] },
+  { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#5FB0E0", colorL: "#2C7EC0", protocols: ["wg", "awg"], hidden: true },
   { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0", colorL: "#9B4FC7", protocols: ["wg", "awg"] },
   { id: "MYSOREZ", label: "MYSOREZ", owner: "MYSOREZ/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#4FC7B4", colorL: "#12897A", protocols: ["wg", "awg"] },
   { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/free-turn-proxy", wrap: "-obf-profile rtpopus", keyflag: "-obf-key", color: "#E0A85F", colorL: "#C07A1E", protocols: ["wg"] },
-  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#6FD9A8", colorL: "#12A46B", protocols: ["wg"] },
+  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#6FD9A8", colorL: "#12A46B", protocols: ["wg"], hidden: true },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F", colorL: "#8E8420", protocols: ["wg"] },
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A", colorL: "#C24468", protocols: ["wg", "awg"] },
 ];
@@ -6103,12 +7219,16 @@ const TURN_FORKS_FALLBACK = [
 function turnForkList() {
   const cat = Store.turnCatalog;
   if (cat && Array.isArray(cat.servers) && cat.servers.length)
-    return cat.servers.map(s => ({ id: s.id, label: s.label || s.id, owner: s.owner || "",
-      wrap: s.wrap || "", keyflag: s.keyflag, color: (s.color || {}).dark, colorL: (s.color || {}).light,
+    return cat.servers.map(s => ({ id: s.id, label: s.label || s.id, owner: s.owner || "", kind: s.kind || "turn",
+      wrap: s.wrap || "", keyflag: s.keyflag, color: (s.color || {}).dark, colorL: (s.color || {}).light, hidden: !!s.hidden,
       protocols: (Array.isArray(s.protocols) && s.protocols.length) ? s.protocols : ["wg", "awg"],
       settings: Array.isArray(s.settings) ? s.settings : [], client_settings: Array.isArray(s.client_settings) ? s.client_settings : [], clients: s.clients || [], compat: s.compat || {}, client_schemas: s.client_schemas || {}, cli_authors: Array.isArray(s.cli_authors) ? s.cli_authors : ["samosvalishe"] }));
   return TURN_FORKS_FALLBACK;
 }
+// Operator-facing fork list — the full catalog MINUS hidden/dead forks (cacggghp/kiper292). Lookups (turnColor/
+// turnFork label) use the FULL turnForkList() so a deployed hidden-fork instance still resolves; only the pickers/
+// toggles/dropdowns use this filtered view.
+function turnForksVisible() { return turnForkList().filter(f => !f.hidden); }
 function forkSupportsAwg(fork) {
   const f = turnForkList().find(x => x.id === fork);
   return f ? (f.protocols || ["wg", "awg"]).includes("awg") : true;   // unknown fork → assume awg-capable (permissive, matches prior default)
@@ -6124,12 +7244,20 @@ function turnColor(label) {
 // HOME server's colour). null for the generic CLI (no native fork) — callers fall back to the current fork's colour.
 function turnClientColor(clientId) {
   const c = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[clientId] || {};
+  if (c.color) return pickThemed(c.color, c.color.dark, c.color.light);   // explicit app colour (author isn't a fork, e.g. SpaceNeuroX/luminescq)
   return c.native_fork ? turnColor(c.native_fork) : null;
 }
 // The app's author = its NATIVE fork (who makes it). null for the generic CLI (no native fork). `owner` is that
 // fork's GitHub owner/repo, so callers can link "by <author>" to the source.
 function turnClientAuthor(clientId) {
   const c = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[clientId] || {};
+  // an explicit `author` (real app author — may not be a server fork, e.g. SpaceNeuroX/luminescq) wins over the
+  // native_fork (which is only for schema sharing). owner links "by <author>" to the app's own repo.
+  if (c.author) {
+    const p = ((c.platforms && Object.values(c.platforms)[0]) || {}).github || "";
+    const m = p.match(/github\.com\/([^/]+\/[^/]+)/);
+    return { fork: c.author, owner: m ? m[1] : "" };
+  }
   if (!c.native_fork) return null;
   const f = turnForkList().find(x => x.id === c.native_fork) || {};
   return { fork: c.native_fork, owner: f.owner || "" };
@@ -6225,7 +7353,7 @@ function applyForkColors() {
 // Every operator-tunable colour carries a value PER light/dark mode ({dark,light}); the active mode's value is
 // resolved by pickThemed(). Nothing is hardcoded at the render sites — the wg/awg CSS classes and the --brand
 // property are injected by applyThemeColors() after every poll, exactly like applyForkColors() does for the tags.
-const IFACE_COLOR_DEFAULTS = { wg: { dark: "#3FD89A", light: "#0E9E63" }, awg: { dark: "#1FC8D6", light: "#0E9BB0" } };
+const IFACE_COLOR_DEFAULTS = { wg: { dark: "#3FD89A", light: "#0E9E63" }, awg: { dark: "#1FC8D6", light: "#0E9BB0" }, wdtt: { dark: "#81B512", light: "#5EAF0E" } };
 const NODE_COLOR_DEFAULT = { dark: "#5f7569", light: "#4A5C52" };   // fallback node colour when unset (per mode)
 const NODE_CREATE_DEFAULT = { dark: "#34d399", light: "#12A46B" };  // a fresh node's starting colour
 // normalize a possibly-legacy colour ({dark,light} | string | null) into a {dark,light} pair.
@@ -6244,8 +7372,9 @@ function pickThemed(v, defDark, defLight) {
   return light ? defLight : defDark;
 }
 function ifaceColor(type) {
+  const t = (type || "").toLowerCase();
   const ov = (Store.panelSettings && Store.panelSettings.iface_colors) || {};
-  const k = (type || "").toLowerCase() === "awg" ? "awg" : "wg";
+  const k = t === "awg" ? "awg" : t === "wdtt" ? "wdtt" : "wg";   // WDTT (keyless proxy target) is operator-tunable too
   return pickThemed(ov[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light);
 }
 // perceived brightness (0–1) of a #rrggbb / #rgb colour — used to pick a contrasting ink for text on the brand.
@@ -6290,8 +7419,8 @@ function themeColor() {
 // faulty classes (they don't read a custom property, so like the turn tags they need an explicit rule).
 let _themeSig = null;
 function applyThemeColors() {
-  const theme = themeColor(), wg = ifaceColor("wg"), awg = ifaceColor("awg");
-  const sig = [resolvedTheme(), theme, wg, awg].join("|");
+  const theme = themeColor(), wg = ifaceColor("wg"), awg = ifaceColor("awg"), wdtt = ifaceColor("wdtt");
+  const sig = [resolvedTheme(), theme, wg, awg, wdtt].join("|");
   if (sig === _themeSig) return;   // nothing changed since last poll → skip the DOM write
   _themeSig = sig;
   const de = document.documentElement, cm = (c, p, m) => "color-mix(in srgb, " + c + " " + p + "%, " + m + ")";
@@ -6306,7 +7435,12 @@ function applyThemeColors() {
   if (!el) { el = document.createElement("style"); el.id = "theme-colors"; (document.head || document.documentElement).appendChild(el); }
   el.textContent =
     ".iftype.wg,.tg-wg{background:" + cm(wg, 14, "transparent") + ";color:" + wg + "}" +
-    ".iftype.awg,.tg-awg{background:" + cm(awg, 15, "transparent") + ";color:" + awg + "}";
+    ".iftype.awg,.tg-awg{background:" + cm(awg, 15, "transparent") + ";color:" + awg + "}" +
+    ".iftype.wdtt,.tg-wdtt{background:" + cm(wdtt, 15, "transparent") + ";color:" + wdtt + "}" +
+    // the create-interface Protocol chips track the SAME configured type colours (selected state only)
+    ".chip.c-wg.on{color:" + wg + ";border-color:" + wg + ";background:" + cm(wg, 15, "transparent") + "}" +
+    ".chip.c-awg.on{color:" + awg + ";border-color:" + awg + ";background:" + cm(awg, 15, "transparent") + "}" +
+    ".chip.c-wdtt.on{color:" + wdtt + ";border-color:" + wdtt + ";background:" + cm(wdtt, 15, "transparent") + "}";
   applyFavicon(theme);
 }
 // Rebuild the browser-tab favicon (the indicator-LED mark) in the ACTIVE mode's accent colour, with a
@@ -6368,10 +7502,18 @@ try { matchMedia("(prefers-color-scheme: light)").addEventListener("change", () 
 function turnEnabled() { return !(Store.panelSettings && Store.panelSettings.turn_enabled === false); }
 // the forks offered in the "install a fork" picker — toggled in Panel settings → Turn proxies. Disabling a fork
 // only hides it here; deployed proxies are untouched. Default (setting unset) = WINGS-N + anton48.
+// The forks offered in the install picker before settings load / on a panel with no stored list. MUST mirror
+// PANEL_SETTINGS_DEFAULTS["enabled_turn_forks"] server-side; it lived as three separate literals and two of them
+// had fallen behind, hiding wdttplus and xxcipherx — two of the four WDTT servers we build and publish.
+const TURN_FORKS_DEFAULT = ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8",
+                            "amurcanov", "ildarmaga", "wdttplus", "xxcipherx"];
 function enabledTurnForks() {
   const en = Store.panelSettings && Store.panelSettings.enabled_turn_forks;
-  const set = new Set(en || ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8"]);
-  return turnForkList().filter(f => set.has(f.id));
+  // Mirror of PANEL_SETTINGS_DEFAULTS["enabled_turn_forks"] server-side — used before settings load, and on a
+  // panel with no stored list. It was missing wdttplus and xxcipherx, so two of the four WDTT server forks we
+  // build and publish were hidden from every picker until the operator ticked them by hand.
+  const set = new Set(en || TURN_FORKS_DEFAULT);
+  return turnForkList().filter(f => set.has(f.id) && !f.hidden);   // hidden (dead) forks never appear in operator pickers
 }
 
 // ═══════════ Typed turn-proxy settings (Axis 1) ═══════════
@@ -6441,35 +7583,20 @@ function parseTurnSettings(schema, params) {   // params tail → {values, ok, l
   }
   return { values, ok: leftover.length === 0, leftover };
 }
-// ── Axis-1 dynamic: merge `-h`-discovered flags (node snapshot) with the curated overlay ──
-// Discovery (node snapshot `turn_flags[fork]` = [{name,type,default,usage}]) gives reliable STRUCTURE
-// (bool→toggle, else→textbox, defaults); the curated `settings` overlay supplies enum value-sets + secret/hexkey
-// + showIf for the flags we understand. We trust discovery for the flag SET, curated for enums — and HIDE
-// connection/management/transport flags (a stray -vless etc. would break the WG tunnel). See TURN-PROXY-OVERHAUL-PLAN.md.
-const TURN_FLAG_HIDE = new Set(["listen", "connect", "udp-connect", "tcp-connect", "tui"]);
-const TURN_FLAG_HIDE_PREFIX = ["gen-", "grpc-", "wg-", "panel-", "wb-", "node-"];
-const TURN_FLAG_TRANSPORT = new Set(["vless", "vless-bond", "mode"]);   // switch WG(UDP)→TCP/VLESS — footgun for our use
-function turnFlagHidden(forkId, name) {
-  const f = turnForkList().find(x => x.id === forkId);
-  if (f && Array.isArray(f.hide) && f.hide.includes(name)) return true;   // per-fork curated hide (optional)
-  if (TURN_FLAG_HIDE.has(name) || TURN_FLAG_TRANSPORT.has(name)) return true;
-  return TURN_FLAG_HIDE_PREFIX.some(p => name.startsWith(p));
-}
-function discoveredToDescriptor(df) {   // a discovered flag with no curated entry → synth: bool→toggle, else→textbox (NO enum guess)
-  const bool = df.type === "" || df.type === "bool";
-  return { key: df.name.replace(/[^A-Za-z0-9]+/g, "_"), flag: "-" + df.name, type: bool ? "bool" : "string",
-           default: bool ? false : (df.default || ""), label: df.name, help: df.usage || "" };
-}
 // Shared server-config form — used by the panel-settings DEFAULTS sheet AND the per-proxy create/edit editor.
 // An obfuscation control (+ Generate key, shown only for keyed modes with a live "Not generated yet"), a read-only
 // "-listen … -connect … <obf>" line, and a free-entry extra-flags textarea. `template`=true → the placeholder
 // (defaults) copy; false → a real proxy's actual listen/connect.
-function TurnServerFields({ schema, vals, setV, extra, setExtra, listen, connect, template }) {
+function TurnServerFields({ schema, vals, setV, extra, setExtra, listen, connect, template, wdtt, noHint }) {
   const keyField = schema.find(d => d.type === "hexkey");
   const obfFields = schema.filter(d => d.type !== "hexkey");
   const keyUsed = turnKeyUsed(schema, vals);
   const obfTail = serializeTurnSettings(schema, (keyUsed || !keyField) ? vals : { ...vals, [keyField.key]: "" });
-  const autoLine = "-listen " + (listen || "server_ip:port") + " -connect " + (connect || "interface_ip:port") + (obfTail ? " " + obfTail : "");
+  // WDTT is SELF-CONTAINED: it owns its WireGuard interface, so its command is nothing like a -connect fork's.
+  // Show the real WDTT ExecStart shape (read-only, per-instance values are placeholders) instead of -listen/-connect.
+  const autoLine = wdtt
+    ? "-iface wdttN -wg-addr 10.66.N.1/24 -listen server_ip:dtls_port -wg-port internal_port -no-nat -fixed-config -password <node-minted>" + (obfTail ? " " + obfTail : "")
+    : "-listen " + (listen || "server_ip:port") + " -connect " + (connect || "interface_ip:port") + (obfTail ? " " + obfTail : "");
   return html`<${Fragment}>
     ${obfFields.length ? html`<div class="field"><label>Obfuscation</label>
       <div class="obfrow">
@@ -6483,9 +7610,11 @@ function TurnServerFields({ schema, vals, setV, extra, setExtra, listen, connect
         <div class="execbox-auto" title=${template ? "Auto-filled for each real proxy — read-only" : "This proxy's command — read-only"}>${autoLine}</div>
         <textarea class="execbox-extra" value=${extra} onInput=${e => setExtra(e.target.value)} placeholder="extra flags — appended verbatim, e.g. -debug" spellcheck="false"></textarea>
       </div>
-      <div class="hint">${template
+      ${noHint ? null : html`<div class="hint">${wdtt
+        ? html`WDTT servers are <b>self-contained</b> — each owns its own WireGuard interface. The interface name, subnet, endpoint / DTLS port, internal WG port, egress, routing and filters are set <b>per interface</b> (in the interface's create / edit modal), and the WRAP password is minted on the node — everything on the top line is a placeholder. Only the extra flags below pre-fill a new WDTT instance.`
+        : template
         ? html`You're setting the <b>default</b> parameters for the actual turn-proxies you'll create on nodes later — nothing is deployed now. The top line is filled in per real proxy: the node's <b>listen</b> address (<span class="mono">server_ip:port</span>), the <b>interface</b> it forwards to (<span class="mono">interface_ip:port</span>), and the obfuscation you set above — those are placeholders here. Whatever you type below is appended to the command as-is.`
-        : html`The top line is this proxy's actual command — the <b>listen</b> address and <b>interface</b> you set above, plus the obfuscation here. Whatever you type below is appended verbatim.`}</div>
+        : html`The top line is this proxy's actual command — the <b>listen</b> address and <b>interface</b> you set above, plus the obfuscation here. Whatever you type below is appended verbatim.`}</div>`}
     </div>
   <//>`;
 }
@@ -6512,16 +7641,16 @@ function TurnDefaultsForm({ schema, values, onSet, busy }) {
     ${d.type === "bool"
       ? html`<div style="display:flex;align-items:center;gap:10px"><${Switch} on=${!!cur(d)} disabled=${busy} onChange=${v => onSet(d.key, v)}/> <span class="faint">${cur(d) ? "on" : "off"}</span></div>`
       : (d.type === "enum" || d.type === "flagenum")
-      ? html`<select class="selwrap" value=${cur(d)} disabled=${busy} onChange=${e => onSet(d.key, e.target.value)}>${turnOptions(d).map(o => html`<option value=${o.value}>${o.label}</option>`)}</select>`
+      ? html`<select class="selwrap" value=${cur(d)} disabled=${busy} onInput=${e => onSet(d.key, e.target.value)}>${turnOptions(d).map(o => html`<option value=${o.value}>${o.label}</option>`)}</select>`
       : d.type === "hexkey"
       ? html`<div style="display:flex;gap:8px;align-items:center">
-          <input class="mono" style="flex:1" value=${cur(d)} spellcheck="false" autocomplete="off" placeholder="64 hex chars — blank = a fresh key per proxy" disabled=${busy} onChange=${e => onSet(d.key, e.target.value.trim())}/>
+          <input class="mono" style="flex:1" value=${cur(d)} spellcheck="false" autocomplete="off" placeholder="64 hex chars — blank = a fresh key per proxy" disabled=${busy} onInput=${e => onSet(d.key, e.target.value.trim())}/>
           <button type="button" class="linkbtn" disabled=${busy} onClick=${() => onSet(d.key, randWrapKey())}>Generate</button></div>`
       : d.type === "int"
-      ? html`<input type="number" value=${cur(d)} min=${d.min != null ? d.min : undefined} max=${d.max != null ? d.max : undefined} disabled=${busy} placeholder=${d.default === "" ? "app default" : String(d.default)} onChange=${e => onSet(d.key, e.target.value)}/>`
+      ? html`<input type="number" value=${cur(d)} min=${d.min != null ? d.min : undefined} max=${d.max != null ? d.max : undefined} disabled=${busy} placeholder=${d.default === "" ? "app default" : String(d.default)} onInput=${e => onSet(d.key, e.target.value)}/>`
       : d.type === "textarea"
-      ? html`<textarea class="ta" rows="3" value=${cur(d) || ""} disabled=${busy} spellcheck="false" placeholder=${d.placeholder || ""} onChange=${e => onSet(d.key, e.target.value)}></textarea>`
-      : html`<input value=${cur(d)} disabled=${busy} onChange=${e => onSet(d.key, e.target.value)}/>`}
+      ? html`<textarea class="ta" rows="3" value=${cur(d) || ""} disabled=${busy} spellcheck="false" placeholder=${d.placeholder || ""} onInput=${e => onSet(d.key, e.target.value)}></textarea>`
+      : html`<input value=${cur(d)} disabled=${busy} onInput=${e => onSet(d.key, e.target.value)}/>`}
     ${d.help ? html`<div class="hint">${d.help}</div>` : null}
   </div>`)}</div>`;
 }
@@ -6545,10 +7674,31 @@ function OsDropdown({ value, options, onChange }) {
       <span class="osdd-ic"><${Ic} i=${_OS_ICON[o]}/></span><span class="osdd-lbl">${label}</span>${o === cur[0] ? html`<${Ic} i="check"/>` : null}</button>`)}</div>` : null}
   </div>`;
 }
+// Name colour by the client's relation to the fork: native (green), friendly (blue), plain (red), CLI (gold).
+const _APP_REL_COLOR = { native: "var(--online)", friendly: "#5FA8E0", friendly_core: "#5FA8E0", plain: "var(--dangling)" };
+function appNameColor(rel, isCli) { return isCli ? "#D9B84A" : (_APP_REL_COLOR[rel] || "#5FA8E0"); }
+// A client-app picker styled like OsDropdown. options: [{id, name, author, color, nameColor?, plain?}]. The label
+// reads "<app name> by <author>" — the name in its relation colour, the author in its own — with a red PLAIN badge
+// on an unobfuscated client (the exp note lives under the config, so it's not repeated here).
+function AppDropdown({ value, options, onChange }) {
+  const [open, setOpen] = useState(false);
+  const opts = options || [];
+  const cur = opts.find(o => o.id === value) || opts[0];
+  useEffect(() => { if (!open) return; const h = () => setOpen(false); document.addEventListener("click", h); return () => document.removeEventListener("click", h); }, [open]);
+  if (!cur) return null;
+  const lbl = o => html`<span class="osdd-lbl"><b style=${o.nameColor ? "color:" + o.nameColor : ""}>${o.name}</b><span class="app-by"> by </span><span style=${"color:" + o.color}>${o.author || "—"}</span>${o.plain ? html`<span class="app-plain">PLAIN</span>` : null}${autostartIcon(o.autostart)}</span>`;
+  return html`<div class="osdd appdd" onClick=${e => e.stopPropagation()}>
+    <button type="button" class=${"osdd-btn" + (open ? " open" : "")} onClick=${() => setOpen(o => !o)}>
+      ${lbl(cur)}<span class="osdd-car">${open ? "▴" : "▾"}</span></button>
+    ${open ? html`<div class="osdd-menu">${opts.map(o => html`<button key=${o.id} type="button"
+      class=${"osdd-opt" + (o.id === cur.id ? " on" : "")} onClick=${() => { onChange(o.id); setOpen(false); }}>
+      ${lbl(o)}${o.id === cur.id ? html`<${Ic} i="check"/>` : null}</button>`)}</div>` : null}
+  </div>`;
+}
 function openServerClients(fork, os) { pushModal(html`<${ServerClientsSheet} fork=${fork} initialOs=${os}/>`); }
 function ServerClientsSheet({ fork, initialOs }) {
   const f = turnForkList().find(x => x.id === fork) || {};
-  return html`<${Sheet} title=${html`Default client apps <span class="faint" style="text-transform:none;letter-spacing:0">— <b style=${"color:" + (turnColor(fork) || "var(--fg)") + ";font-weight:700"}>${f.label}</b></span>`} width=${640} noGuard=${true} onClose=${closeModal} onBack=${closeModal}>
+  return html`<${Sheet} title=${html`Default client apps <span class="faint" style="text-transform:none;letter-spacing:0">— <b style=${"color:" + (turnColor(fork) || "var(--fg)") + ";font-weight:700"}>${f.label}</b></span>`} width=${880} noGuard=${true} onClose=${closeModal} onBack=${closeModal}>
     <${ServerClientsBody} fork=${fork} initialOs=${initialOs}/>
   <//>`;
 }
@@ -6556,8 +7706,11 @@ function ServerClientsSheet({ fork, initialOs }) {
 // dropdown. GUI apps come from the compat map; the CLI is expanded into one entry PER author (native build first) so
 // the admin picks which binary end-users get. Three independent badge axes: relation (native vs cross), obfuscation
 // (the fork's wire, or plain), and kind (app vs CLI). `key` = the client id, or "sidecar@<author>" for a CLI build.
-const TURN_OBF_LABEL = { "Moroka8": "WRAP", "samosvalishe": "rtpopus", "anton48": "SRTP", "MYSOREZ": "WRAP", "WINGS-N": "WRAP" };
-const _FORK_GUI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1, "WINGS-N": 1 };   // a native/friendly GUI app rides the fork's obfuscation
+const TURN_OBF_LABEL = { "Moroka8": "WRAP", "samosvalishe": "rtpopus", "anton48": "SRTP", "MYSOREZ": "WRAP", "WINGS-N": "WRAP",
+                         // WDTT family: every client speaks WRAP-A (DTLS + RTP-AEAD). Never "plain".
+                         "amurcanov": "WRAP-A", "ildarmaga": "WRAP-A", "wdttplus": "WRAP-A", "xxcipherx": "WRAP-A" };
+const _FORK_GUI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1, "WINGS-N": 1,       // a native/friendly GUI app rides the fork's obfuscation
+                        "amurcanov": 1, "ildarmaga": 1, "wdttplus": 1, "xxcipherx": 1 };                 // WDTT apps always obfuscate (WRAP-A)
 const _FORK_CLI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1 };                 // a listed CLI author obfuscates (NOT WINGS — its wrap needs the app's SessionHello)
 function pickerEntries(f, os) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
@@ -6571,6 +7724,7 @@ function pickerEntries(f, os) {
     const isCore = rel === "friendly_core", native = rel === "native";
     const obf = ((native || rel === "friendly" || isCore) && _FORK_GUI_OBF[fork]) ? obfLabel : "";
     out.push({ key: cid, cid, isCli: false, native, obf,
+      autostart: !!(((cl.platforms || {})[os] || {}).autostart),   // per-app-per-OS: Start opens the app via its URL scheme
       coreFork: cid === "mysorez" ? fork : null,          // the VK TURN Proxy app is a core-launcher — always name the core it loads (this fork's)
       author: (turnClientAuthor(cid) || {}).fork || fork,
       name: ((cl.platforms || {})[os] || {}).name || cl.name || cid,
@@ -6578,12 +7732,25 @@ function pickerEntries(f, os) {
   });
   const sc = cmap.sidecar;
   if (sc && sc.platforms && sc.platforms[os]) (f.cli_authors || ["samosvalishe"]).forEach(author => {
-    out.push({ key: "sidecar@" + author, cid: "sidecar", isCli: true, native: author === fork,
+    out.push({ key: "sidecar@" + author, cid: "sidecar", isCli: true, native: author === fork, autostart: false,   // a CLI is a copy-and-run command, never a one-tap open
       obf: _FORK_CLI_OBF[fork] ? obfLabel : "", coreFork: null, author, name: sc.name || "Sidecar", color: turnColor(author) });
   });
   // order: native app · friendly app · native sidecar · friendly sidecar · plain app · plain sidecar (apps before sidecars in every band; obf before plain)
   const rank = e => e.obf ? (e.native ? (e.isCli ? 3 : 1) : (e.isCli ? 4 : 2)) : (e.isCli ? 6 : 5);
-  return out.sort((a, b) => rank(a) - rank(b) || ((b.native ? 1 : 0) - (a.native ? 1 : 0)) || String(a.name).localeCompare(String(b.name)));
+  // within a compat band, prefer the apps that OPEN one-tap (register a URL scheme = autostart) over paste/QR-only
+  // ones — so the sub hands out a clickable app by default wherever the band offers one. No per-app hardcoding.
+  return out.sort((a, b) => rank(a) - rank(b) || ((b.autostart ? 1 : 0) - (a.autostart ? 1 : 0)) || ((b.native ? 1 : 0) - (a.native ? 1 : 0)) || String(a.name).localeCompare(String(b.name)));
+}
+// The system default (before any operator choice) for a fork/OS: the WDTT family standardises on a ONE-TAP app.
+// Keep the top compat/autostart pick when it already opens one-tap (a fork's own clickable app — Ivan4537's WDTT-Plus,
+// XXcipherX's own), else substitute xxcipher (the fleet-standard clickable WDTT client) where it's offered (Android).
+// Returns an entry KEY, or null to fall back to the top-ranked entry. Only the WDTT family is standardised.
+function sysDefaultKey(f, entries) {
+  const es = entries || [];
+  if (!(f && f.kind === "wdtt") || !es.length) return null;
+  if (es[0].autostart) return es[0].key;                    // already one-tap (e.g. the fork's own app) → keep it
+  const xc = es.find(e => e.cid === "xxcipher");            // top pick can't one-tap (e.g. amurcanov's wdttapp) → xxcipher
+  return xc ? xc.key : null;
 }
 // The OS-picker order (matches the sub page). Each fork row shows one platform button per OS that has a client.
 const _TURN_OS = [["android", "Android"], ["ios", "iOS"], ["windows", "Windows"], ["macos", "macOS"], ["linux", "Linux"]];
@@ -6591,11 +7758,13 @@ const _TURN_OS = [["android", "Android"], ["ios", "iOS"], ["windows", "Windows"]
 // the flags that colour its platform button: fill = native/crossplatform · border = plain (unobfuscated) · icon =
 // sidecar (CLI). OSes with no connectable client are dropped.
 function turnForkPlatforms(f) {
+  const defs = ((Store.panelSettings || {}).turn_client_default || {})[f.id] || {};   // the admin's saved per-OS default clients
   return _TURN_OS.map(([os, label]) => {
     const es = pickerEntries(f, os);
     if (!es.length) return { os, label, disabled: true };   // no connectable client for this OS → greyed, unclickable (not hidden)
-    const e = es[0];   // e.obf is the obfuscation label ("WRAP"/"SRTP"/"rtpopus"…) or "" for plain
-    return { os, label, native: !!e.native, obf: !!e.obf, isCli: !!e.isCli, name: e.name, author: e.author, coreFork: e.coreFork || null, obfLabel: e.obf || "" };
+    const sd = defs[os], sk = sysDefaultKey(f, es);
+    const e = (sd && es.find(x => x.key === sd)) || (sk && es.find(x => x.key === sk)) || es[0];   // SAVED default (matches the settings picker) · else the WDTT system default · else the top-ranked. e.obf = obf label or "" for plain
+    return { os, label, native: !!e.native, obf: !!e.obf, isCli: !!e.isCli, name: e.name, author: e.author, color: e.color, coreFork: e.coreFork || null, obfLabel: e.obf || "" };
   });
 }
 // One styled dropdown row's label parts (used in the button + the open menu). Left: name · by author · [with <core> core].
@@ -6604,23 +7773,16 @@ function ClientEntryLabel({ e }) {
 }
 function ClientEntryBadges({ e }) {
   return html`<span class="ce-badges">
-    <span class=${"ce-tag " + (e.native ? "ce-native" : "ce-cross")}>${e.native ? "Native" : "crossplatform"}</span>
     <span class=${"ce-tag " + (e.obf ? "ce-obf" : "ce-plain")}>${e.obf || "plain"}</span>
+    <span class=${"ce-tag " + (e.native ? "ce-native" : "ce-cross")}>${e.native ? "Native" : "crossplatform"}</span>
     <span class=${"ce-tag " + (e.isCli ? "ce-cli" : "ce-app")}>${e.isCli ? "CLI" : "app"}</span>
+    ${autostartIcon(e.autostart)}
   </span>`;
 }
-function ClientPicker({ entries, value, onChange }) {
-  const [open, setOpen] = useState(false);
-  const sel = entries.find(e => e.key === value) || entries[0];
-  useEffect(() => { if (!open) return; const h = () => setOpen(false); document.addEventListener("click", h); return () => document.removeEventListener("click", h); }, [open]);
-  if (!sel) return null;
-  return html`<div class="cpick" onClick=${e => e.stopPropagation()}>
-    <button type="button" class=${"cpick-btn" + (open ? " open" : "")} onClick=${() => setOpen(o => !o)}>
-      <${ClientEntryLabel} e=${sel}/><${ClientEntryBadges} e=${sel}/><span class="cpick-car">${open ? "▴" : "▾"}</span></button>
-    ${open ? html`<div class="cpick-menu">${entries.map(e => html`<button key=${e.key} type="button"
-      class=${"cpick-opt" + (e.key === sel.key ? " on" : "")} onClick=${() => { onChange(e.key); setOpen(false); }}>
-      <${ClientEntryLabel} e=${e}/><${ClientEntryBadges} e=${e}/></button>`)}</div>` : null}
-  </div>`;
+// One trailing icon on every app row/option telling the operator how the end-user's Start button behaves:
+// ⚡ = opens the app automatically (registers a URL scheme) · ⧉ = manual import (copy the link, then paste/scan).
+function autostartIcon(on) {
+  return html`<span class=${"ce-auto " + (on ? "on" : "off")} title=${on ? "Opens the app automatically" : "Manual import — copy the link, then paste or scan it in the app"}><${Ic} i=${on ? "bolt" : "copy"}/></span>`;
 }
 // Reusable Clients body — OS segmented tabs + native-first app dropdown + per-(server,client,OS) config reference &
 // default-settings form. Used by the settings modal above AND inline (collapsible) in the create/edit-proxy sheets.
@@ -6641,7 +7803,8 @@ function useTurnClients(fork, commitRef, initialOs) {
   const entries = byOs[os] || [];
   // the admin's saved end-user default (an entry key) for this (fork, OS); falls back to the top-priority entry if unset / stale
   const savedDefault = (o) => (((Store.panelSettings || {}).turn_client_default || {})[fork] || {})[o];
-  const validDefault = (o) => { const sd = savedDefault(o), es = byOs[o] || []; return (sd && es.some(e => e.key === sd)) ? sd : ((es[0] || {}).key || null); };
+  const validDefault = (o) => { const sd = savedDefault(o), es = byOs[o] || []; if (sd && es.some(e => e.key === sd)) return sd; return sysDefaultKey(f, es) || ((es[0] || {}).key || null); };
+  const selEntry = (o) => { const es = byOs[o] || []; if (!es.length) return null; const k = sel[o] !== undefined ? sel[o] : validDefault(o); return es.find(x => x.key === k) || es[0]; };   // the chosen entry for ANY os (each OS button shows its own)
   const selKey = sel[os] !== undefined ? sel[os] : validDefault(os);
   const e = entries.find(x => x.key === selKey) || entries[0] || null;
   const cid = e ? e.cid : null; const c = cid ? cmap[cid] : null;
@@ -6658,7 +7821,7 @@ function useTurnClients(fork, commitRef, initialOs) {
   const isDefault = e && e.key === validDefault(os);                          // is the shown entry the current end-user default?
   const settingsDirty = drafts[draftKey] !== undefined && norm(drafts[draftKey]) !== norm(savedVals);
   const dirty = !!(e && (!isDefault || settingsDirty));                       // changed the default entry, or edited its settings
-  const save = async () => {
+  const save = async (close) => {
     setBusy(true);
     const def = { ...((Store.panelSettings || {}).turn_client_default || {}) };
     const dfo = { ...(def[fork] || {}) }; dfo[os] = e.key; def[fork] = dfo;    // record this ENTRY (app or CLI-author) as the (fork, OS) default
@@ -6666,12 +7829,17 @@ function useTurnClients(fork, commitRef, initialOs) {
     const fo = { ...(all[fork] || {}) }; const co = { ...(fo[cid] || {}) };
     co[os] = effVals; fo[cid] = co; all[fork] = fo;
     const r = await api.panelSettings({ turn_client_default: def, turn_client_settings: all });
-    setBusy(false);
-    if (r && r.ok) { setFlash("Saved · " + cName + " · " + osLabel); setTimeout(() => setFlash(null), 2400); setDrafts(m => { const n = { ...m }; delete n[draftKey]; return n; }); await Store.poll(); }
-    else setFlash((r && r.error) || "Save failed");
+    if (r && r.ok) {
+      setDrafts(m => { const n = { ...m }; delete n[draftKey]; return n; }); await Store.poll();
+      if (close) { closeModal(); return true; }   // standalone modal: close while STILL "Saving…" so the button never flashes back to "Save"
+      setBusy(false); setFlash("Saved · " + cName + " · " + osLabel); setTimeout(() => setFlash(null), 2400);
+      return true;
+    }
+    setBusy(false); setFlash((r && r.error) || "Save failed");
+    return false;
   };
   if (commitRef) commitRef.current = () => (dirty && !busy ? save().then(() => true) : Promise.resolve(false));   // the parent proxy-sheet's Save commits the staged client default/settings; resolves true iff it actually changed something
-  return { f, byOs, os, setOs, setSel, entries, e, cSchema, osLabel, cName, appColor, effVals, stageSetting, dirty, isDefault, settingsDirty, save, busy, flash };
+  return { f, byOs, os, setOs, setSel, selEntry, entries, e, cSchema, osLabel, cName, appColor, effVals, stageSetting, dirty, isDefault, settingsDirty, save, busy, flash };
 }
 // The app picker — OS tabs + the styled client dropdown (the app the fork's sub page hands out). Shown inline, right
 // under "Forwards to", so the choice is visible without opening a section.
@@ -6680,19 +7848,44 @@ function clientAppLabel(e) {
   if (!e) return "";
   return html`<b>${e.name}</b><span class="ce-by"> by </span><span style=${"color:" + e.color}>${e.author}</span>${e.coreFork ? html`<span class="ce-by"> with </span><span style=${"color:" + turnColor(e.coreFork)}>${e.coreFork}</span><span class="ce-by"> core</span>` : null}`;
 }
-function TurnAppsPicker({ ctl, offered }) {   // offered → show the "<app> will be offered to <OS> users" line under the dropdown (proxy sheets)
-  const { f, byOs, os, setOs, setSel, entries, e, osLabel } = ctl;
+// Per-OS app matrix — one button per OS showing its chosen app (icon · name · author in the author's colour). Hover
+// reveals the tags + "offered to <OS> users"; clicking a button makes that OS active (drives the Client-parameters
+// body) and expands its app list to pick from. `offered` → phrase the bubble as an end-user offer (proxy sheets).
+function TurnAppsPicker({ ctl, offered }) {
+  const { f, byOs, os, setOs, setSel, selEntry } = ctl;
+  const [openOs, setOpenOs] = useState(null);
+  useEffect(() => { if (!openOs) return; const h = () => setOpenOs(null); document.addEventListener("click", h); return () => document.removeEventListener("click", h); }, [openOs]);
+  const anyApp = _OS_TABS.some(([o]) => byOs[o].length);
+  const openEntries = openOs ? (byOs[openOs] || []) : [];
+  const openLabel = openOs ? (_OS_TABS.find(([o]) => o === openOs) || [])[1] : "";
+  const openCur = openOs ? selEntry(openOs) : null;
+  const pick = (o, key) => { setSel(m => ({ ...m, [o]: key })); setOs(o); setOpenOs(null); };
   return html`<${Fragment}>
-    <div style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:8px">Select an app for each OS</div>
-    <div class="osseg">
-      ${_OS_TABS.map(([o, label]) => { const has = byOs[o].length; return html`<button key=${o} type="button" disabled=${!has}
-        class=${"osseg-cell" + (o === os ? " on" : "") + (has ? "" : " off")}
-        title=${has ? label + " apps for " + f.label : "No " + f.label + " app for " + label + " yet"}
-        onClick=${() => has && setOs(o)}><span class="osseg-ic"><${Ic} i=${_OS_ICON[o]}/></span><span class="osseg-lbl">${label}</span></button>`; })}
+    <div class="osapp-hd">Select an app for each OS</div>
+    <div class=${"osapp" + (openOs ? " menuopen" : "")} onClick=${ev => ev.stopPropagation()}>
+      ${_OS_TABS.map(([o, label]) => {
+        const has = byOs[o].length, oe = selEntry(o), many = has > 1;
+        return html`<button key=${o} type="button" disabled=${!has}
+          class=${"osapp-cell" + (o === os ? " on" : "") + (has ? "" : " off") + (o === openOs ? " open" : "")}
+          title=${has ? "" : "No " + f.label + " app for " + label + " yet"}
+          onClick=${() => { if (!has) return; setOs(o); setOpenOs(c => c === o ? null : o); }}>
+          <span class="osapp-ic"><${Ic} i=${_OS_ICON[o]}/></span>
+          <span class="osapp-col">
+            ${oe ? html`<span class="osapp-name">${oe.name}</span><span class="osapp-auth"><span style=${"color:" + oe.color}>${oe.author}</span>${oe.coreFork && oe.coreFork !== oe.author ? html`<span class="ce-by"> · </span><span style=${"color:" + turnColor(oe.coreFork)}>${oe.coreFork}</span>` : null}</span>`
+                 : html`<span class="osapp-name osapp-dim">${label}</span><span class="osapp-auth osapp-dim">no client</span>`}
+          </span>
+          ${many ? html`<span class="osapp-car">▾</span>` : null}
+          ${oe ? html`<span class="osapp-bub"><span class="osapp-bub-txt"><b>${oe.name}</b>${oe.coreFork ? html`<span class="ce-by"> with </span><span style=${"color:" + turnColor(oe.coreFork)}>${oe.coreFork}</span><span class="ce-by"> core</span>` : html`<span class="ce-by"> by </span><span style=${"color:" + oe.color}>${oe.author}</span>`}${offered ? html`<span class="ce-by"> offered to ${label} users</span>` : null}</span><${ClientEntryBadges} e=${oe}/></span>` : null}
+        </button>`;
+      })}
     </div>
-    ${entries.length
-      ? html`<${Fragment}><div class="field" style="margin-top:12px"><${ClientPicker} entries=${entries} value=${e ? e.key : null} onChange=${k => setSel(m => ({ ...m, [os]: k }))}/></div>${offered && e ? html`<div style="margin-top:-6px;font-size:11px;text-align:right"><b>${e.name}</b><span class="ce-by"> by </span><b>${e.author}</b>${e.coreFork ? html`<span class="ce-by"> with </span><b>${e.coreFork}</b><span class="ce-by"> core</span>` : null}<span class="ce-by"> will be offered to ${osLabel} users</span></div>` : null}<//>`
-      : html`<div class="notice" style="margin-top:12px"><${Ic} i="info"/><span>No ${f.label} client app for ${osLabel} yet.</span></div>`}
+    ${openOs && openEntries.length ? html`<div class="osapp-menu" onClick=${ev => ev.stopPropagation()}>
+      <div class="osapp-menu-hd">Choose the ${openLabel} app</div>
+      ${openEntries.map(en => html`<button key=${en.key} type="button"
+        class=${"cpick-opt" + (openCur && en.key === openCur.key ? " on" : "")} onClick=${() => pick(openOs, en.key)}>
+        <${ClientEntryLabel} e=${en}/><${ClientEntryBadges} e=${en}/></button>`)}
+    </div>` : null}
+    ${!anyApp ? html`<div class="notice" style="margin-top:12px"><${Ic} i="info"/><span>No ${f.label} client app yet.</span></div>` : null}
   <//>`;
 }
 // The "Client parameters" body — the selected app's Default settings for this (server, OS). embedded → the parent
@@ -6705,10 +7898,10 @@ function TurnClientParams({ ctl, embedded }) {
       ? html`<${TurnDefaultsForm} schema=${cSchema} values=${effVals} onSet=${stageSetting} busy=${busy}/>`
       : html`<div class="hint">${cName} has no in-app settings to configure.</div>`}
     ${embedded ? null : html`<div style="display:flex;align-items:center;gap:12px;margin-top:16px">
-        <span class="faint" style="font-size:12px">${clientAppLabel(e)} will be the ${osLabel} default app</span>
+        <span class="faint" style="font-size:12px">${osLabel} users will be offered ${clientAppLabel(e)}</span>
         <span class="grow"></span>
         ${flash ? html`<span class="vk-status ok">${flash}</span>` : null}
-        <button class="btn btn-primary" disabled=${busy || !dirty} onClick=${save}>${busy ? "Saving…" : "Save"}</button>
+        <button class="btn btn-primary" disabled=${busy || !dirty} onClick=${() => save(true)}>${busy ? "Saving…" : "Save"}</button>
       </div>`}
   <//>`;
 }
@@ -6890,6 +8083,82 @@ function RosterReviewSheet({ cid, client, onAdopt }) {
   <//>`;
 }
 // Servers-tab gear → set a fork's SERVER-flag defaults (turn_server_defaults[fork]) — pre-fills new proxies of that fork.
+// Version & rollback for a whole fork, PER NODE. A fork shares ONE binary per node (both -connect and WDTT), so the
+// version + rollback hold live per (node, fork) — every instance of the fork on a node moves together. Lives in the
+// fork settings modal (not the per-instance sheet) because that's the granularity. -connect rolls back by reinstalling
+// each of the fork's services to the pinned tag; WDTT sets the per-fork hold (its reconcile swaps the shared binary).
+// Compare version-ish tags numerically (v2.0.1 > v1.8.0 > v11-vs-v2 by segment) → >0 when `a` is newer.
+function verCmp(a, b) {
+  const seg = s => String(s).replace(/^v/i, "").split(/[^0-9]+/).filter(x => x !== "").map(Number);
+  const pa = seg(a), pb = seg(b);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d; }
+  return 0;
+}
+function ForkVersionPanel({ f, commitRef, onDirty }) {
+  useStore();
+  const fork = f.id, kind = f.kind, owner = f.owner;
+  const wdtt = kind === "wdtt";
+  // nodes running this fork + the installed version (shared per fork on a node) + the service/iface list to act on
+  const running = {};
+  for (const [nid, snap] of Object.entries(Store.stats || {})) {
+    if (wdtt) { for (const w of (snap.wdtt || [])) if (w && w.fork === fork && w.iface) { const m = running[nid] = running[nid] || { version: "", ids: [] }; if (w.version) m.version = w.version; m.ids.push(w.iface); } }
+    else { for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fork) { const m = running[nid] = running[nid] || { version: "", ids: [] }; if (tp.version) m.version = tp.version; m.ids.push(tp.service); } }
+  }
+  const nids = Object.keys(running).sort((a, b) => Store.nodeName(a).localeCompare(Store.nodeName(b)));
+  const [vmap, setVmap] = useState({});   // nid -> versions[] (newest-first). ONLY the version list loads async.
+  const [sel, setSel] = useState({});     // nid -> user override; absent = the actual hold (heldOf) — so the dropdown shows the right value on open, no "latest" flash
+  const heldOf = nid => (Store.turnHolds[nid] || {})[fork] || "";   // sync, from /api/state → correct current selection immediately
+  const curSel = nid => (nid in sel ? sel[nid] : heldOf(nid));
+  const key = nids.join(",");
+  useEffect(() => { let live = true; (async () => {
+    const out = {};
+    for (const nid of nids) {
+      if (wdtt) { const r = await api.wdttVersions({ node: nid, iface: running[nid].ids[0] || "", fork }); if (r && r.ok) out[nid] = r.data.versions || []; }
+      else { const r = await api.turnVersions({ owner, node: nid, fork }); if (r && r.ok) out[nid] = (r.data.tags || []).map(t => t.tag); }
+    }
+    if (live) setVmap(out);
+  })(); return () => { live = false; }; }, [key, fork]);
+  const dirty = nids.some(nid => curSel(nid) !== heldOf(nid));
+  useEffect(() => { if (onDirty) onDirty(dirty); }, [dirty]);
+  // The sheet's Save calls this: apply each changed node — pin a version (hold) or "" = release the hold + take latest.
+  // Returns a list of human-readable errors (empty = ok) so Save can surface a failure instead of silently "succeeding".
+  if (commitRef) commitRef.current = async () => {
+    const errs = [];
+    for (const nid of nids) {
+      const want = curSel(nid), cur = heldOf(nid);
+      if (want === cur) continue;
+      if (wdtt) { const r = await api.wdttVersion({ node: nid, iface: running[nid].ids[0], ver: want }); if (r && !r.ok) errs.push(Store.nodeName(nid) + ": " + (r.error || "failed")); }
+      else { for (const svc of running[nid].ids) { const r = await api.turnReinstall({ node: nid, service: svc, owner, ...(want ? { tag: want } : {}) }); if (r && !r.ok) { errs.push(Store.nodeName(nid) + ": " + (r.error || "failed")); break; } } }
+    }
+    return errs;
+  };
+  if (!nids.length) return html`<div class="hint">Not deployed on any node yet — version & rollback appear once a ${f.label || fork} server is running.</div>`;
+  // A node whose running version doesn't match a pin it was told to install → the reinstall FAILED on the node
+  // (e.g. a checksum mismatch); surface it rather than pretend the pin took.
+  return html`<div class="fvp">${nids.map(nid => { const versions = vmap[nid] || []; const inst = running[nid].version || "—"; const held = heldOf(nid);
+    const sorted = versions.slice().sort((a, b) => verCmp(b, a));   // newest first
+    const latest = sorted[0] || "";
+    let opts = sorted.filter(x => x !== latest);   // the newest IS "Use latest" — don't list it as a pin too
+    if (held && !opts.includes(held)) opts = [held, ...opts].sort((a, b) => verCmp(b, a));   // but keep a held-at-latest pin selectable
+    const mismatch = held && inst !== "—" && inst !== held;   // held at X but running Y → the node rejected/failed the swap
+    return html`<div class="fvp-node" key=${nid}>
+      <div class="fvp-head">
+        <span class="fvp-dot" style=${"background:" + (Store.nodeColor(nid) || "var(--ink)")}></span>
+        <b class="fvp-nm">${Store.nodeName(nid)}</b>
+        <span class="fvp-ver">Installed <span class="mono">${inst}</span>${running[nid].ids.length > 1 ? html` · <span class="faint">${running[nid].ids.length} servers</span>` : ""}</span>
+        ${held ? html`<span class="tg" style=${"color:var(--" + (mismatch ? "dangling" : "warn") + ");background:color-mix(in srgb,var(--" + (mismatch ? "dangling" : "warn") + ") 16%,transparent)"}>held · ${held}</span>` : null}
+      </div>
+      <div class="fvp-act">
+        <select class="selwrap fvp-sel" value=${curSel(nid)} onChange=${e => setSel(m => ({ ...m, [nid]: e.target.value }))}>
+          <option value="">Use latest version</option>
+          ${opts.map(x => html`<option value=${x}>${x}</option>`)}
+        </select>
+        ${curSel(nid) !== heldOf(nid) ? html`<span class="fvp-pend"><${Ic} i="pencil"/> unsaved</span>` : null}
+      </div>
+      ${mismatch ? html`<div class="notice warn" style="margin:2px 0 0"><${Ic} i="warn"/><span>Pinned to <b>${held}</b> but the node is still running <b>${inst}</b> — the version swap failed on the node (often a checksum mismatch). Check the proxy's status, then re-try or pick a different version.</span></div>` : null}
+    </div>`; })}
+  </div>`;
+}
 function openServerDefaults(fork) { pushModal(html`<${ServerDefaultsSheet} fork=${fork}/>`); }
 function ServerDefaultsSheet({ fork }) {
   useStore();
@@ -6901,24 +8170,40 @@ function ServerDefaultsSheet({ fork }) {
   const [vals, setVals] = useState(baseTyped);
   const [extra, setExtra] = useState(stored._extra || "");
   const [busy, setBusy] = useState(false); const [flash, setFlash] = useState(null); const [savedOnce, setSavedOnce] = useState(false);
+  const [verOpen, setVerOpen] = useState(true);   // open the Version & rollback section by default (both WDTT and turn-proxies)
+  const verCommitRef = useRef(null); const [verDirty, setVerDirty] = useState(false);   // version dropdowns → applied on Save
   const setV = (k, v) => setVals(o => ({ ...o, [k]: v }));
-  const dirty = JSON.stringify({ ...vals, _extra: extra }) !== JSON.stringify({ ...baseTyped(), _extra: (stored._extra || "") });
+  const defaultsDirty = JSON.stringify({ ...vals, _extra: extra }) !== JSON.stringify({ ...baseTyped(), _extra: (stored._extra || "") });
+  const dirty = defaultsDirty || verDirty;
   const save = async () => {
-    setBusy(true);
-    const keyUsed = turnKeyUsed(schema, vals);
-    const all = { ...((Store.panelSettings || {}).turn_server_defaults || {}) };
-    const clean = {}; schema.forEach(d => { if (d === keyField && !keyUsed) return; const vv = vals[d.key]; if (vv !== undefined && vv !== null && vv !== "") clean[d.key] = vv; });
-    if (extra.trim()) clean._extra = extra.trim();
-    all[fork] = clean;
-    const r = await api.panelSettings({ turn_server_defaults: all });
-    setBusy(false);
-    if (r.ok) { setSavedOnce(true); setFlash("StartExec params are saved, and will be used as default values when creating new " + fork + " proxies"); setTimeout(() => setFlash(null), 10000); await Store.poll(); }
-    else setFlash(r.error || "Save failed");
+    setBusy(true); setFlash(null);
+    if (defaultsDirty) {
+      const keyUsed = turnKeyUsed(schema, vals);
+      const all = { ...((Store.panelSettings || {}).turn_server_defaults || {}) };
+      const clean = {}; schema.forEach(d => { if (d === keyField && !keyUsed) return; const vv = vals[d.key]; if (vv !== undefined && vv !== null && vv !== "") clean[d.key] = vv; });
+      if (extra.trim()) clean._extra = extra.trim();
+      all[fork] = clean;
+      const r = await api.panelSettings({ turn_server_defaults: all });
+      if (!r.ok) { setBusy(false); setFlash(r.error || "Save failed"); return false; }
+    }
+    if (verDirty && verCommitRef.current) {   // apply version pins/rollbacks; surface any per-node error instead of a silent success
+      const errs = await verCommitRef.current();
+      if (errs && errs.length) { setBusy(false); setFlash(errs.join(" · ")); return false; }
+    }
+    await Store.poll(); closeModal();
+    toast(verDirty ? "Version change requested — applies on each node's next sync." : "Server defaults saved — used when creating new " + (f.label || fork) + " proxies.", "ok");
+    return true;
   };
-  return html`<${Sheet} title=${html`Server defaults <span class="faint" style="text-transform:none;letter-spacing:0">— ${fork}</span>`} width=${620} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+  return html`<${Sheet} title=${html`Server defaults <span class="faint" style="text-transform:none;letter-spacing:0">— ${fork}</span>`} width=${680} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
       foot=${footRow({ left: flash ? html`<span class="vk-status ok savedmsg"><${Ic} i="check"/> ${flash}</span>` : null, cancelLabel: (savedOnce && !dirty) ? "Close" : "Cancel", onCancel: closeModal, disabled: busy || !dirty, onAction: save, action: busy ? "Saving…" : "Save" })}>
-    <p class="hint" style="margin:2px 0 14px">The ExecStart flags that <b>pre-fill</b> a new ${fork} proxy. Nothing here changes proxies you've already deployed.</p>
-    <${TurnServerFields} schema=${schema} vals=${vals} setV=${setV} extra=${extra} setExtra=${setExtra} listen="server_ip:port" connect="interface_ip:port" template=${true}/>
+    <p class="hint" style="margin:2px 0 14px">${f.kind === "wdtt"
+      ? html`Extra ExecStart flags that <b>pre-fill</b> a new ${f.label || fork} server. WDTT is self-contained — its real config lives per interface — so there's little to default here beyond advanced flags.`
+      : html`The ExecStart flags that <b>pre-fill</b> a new ${fork} proxy. Nothing here changes proxies you've already deployed.`}</p>
+    <${TurnServerFields} schema=${schema} vals=${vals} setV=${setV} extra=${extra} setExtra=${setExtra} listen="server_ip:port" connect="interface_ip:port" template=${true} wdtt=${f.kind === "wdtt"}/>
+    <${Disclosure} title="Version & rollback" sumCls="route" open=${verOpen} onToggle=${() => setVerOpen(o => !o)}>
+      <p class="hint" style="margin:0 0 10px">A ${f.label || fork} server shares one binary per node, so the version is per node — every ${f.label || fork} instance on a node moves together. Pinning an older version <b>holds</b> it (no auto-update); <b>Use latest</b> follows new releases.</p>
+      <${ForkVersionPanel} f=${f} commitRef=${verCommitRef} onDirty=${setVerDirty}/>
+    <//>
   <//>`;
 }
 const TURN_PEND = { install: "installing", manage: "applying", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting", reinstall: "installing", start: "starting", stop: "stopping" };
@@ -6983,13 +8268,13 @@ async function startTurn(node, service) {
 }
 function openSetupTurn(node, forwardIface) { openModal(html`<${SetupTurnSheet} node=${node} forwardIface=${forwardIface}/>`); }
 function SetupTurnSheet({ node, forwardIface }) {
-  const FORKS = enabledTurnForks();           // only the operator-enabled forks appear in the install picker
+  const FORKS = enabledTurnForks().filter(f => f.kind !== "wdtt");   // enabled forks that FRONT an interface; WDTT is self-contained (created as its own interface), never added to one
   const [mode, setMode] = useState("new");   // new (install) | existing (adopt)
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const snap = Store.stats[node] || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";
   const allIfaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_"), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isWdttIface(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
   // launched from an interface's page → pre-select it as the forwards-to (and, if it's AmneziaWG, start on a fork that can front it)
   const fwdPre = forwardIface ? allIfaces.find(i => i.name === forwardIface) : null;
@@ -7010,6 +8295,7 @@ function SetupTurnSheet({ node, forwardIface }) {
   const [lsel, setLsel] = useState(lInit);
   const [lcustom, setLcustom] = useState(lInit === "__custom__" ? epIp : "");
   const [lport, setLport] = useState(String(suggestPort(node, "turn")));
+  const tsperr = portErrMsg(node, lport, []);   // live listen-port collision check (new proxy → no own port)
   const [fwd, setFwd] = useState(fwdPre ? fwdPre.name : (ifaces[0] ? ifaces[0].name : "__custom__"));
   const [custom, setCustom] = useState("127.0.0.1:51820");
   const [title, setTitle] = useState("");
@@ -7020,15 +8306,22 @@ function SetupTurnSheet({ node, forwardIface }) {
     const base = serializeTurnSettings(sch, { ...defaultSettingValues(sch, { key: wrapKey }), ...sd });   // sd._extra isn't a schema key → serialize ignores it
     return base + (sd._extra ? (base ? " " : "") + sd._extra : ""); };
   const [params, setParams] = useState(dflParams(FORKS[0] || turnForkList()[0]));
-  const [openSec, setOpenSec] = useState(null);   // the strip's open section — null | "server" | "client"
-  const clientsCommitRef = useRef(null);   // the inline Client picker registers its commit here; this sheet's Save calls it
-  const clientsCtl = useTurnClients(fork, clientsCommitRef, null);   // shared: the inline picker + the Client-parameters panel both read this
+  const [openSec, setOpenSec] = useState(null);   // the strip's open section — null | "server"
   const [path, setPath] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
   const f = turnForkList().find(x => x.id === fork) || FORKS[0] || turnForkList()[0];
   const lhost = ipPickerVal(lsel, lcustom);
+  // WDTT (kind:"wdtt") owns its OWN built-in userspace-WG interface, so there's no Forwards-to. The internals
+  // (iface / subnet / internal WG port) are auto-assigned to avoid collisions with this node's existing wdtt
+  // instances + interfaces, and stay advanced-editable. Listen IP/port above are the PUBLIC DTLS endpoint.
+  // WDTT (kind:"wdtt") is a SELF-CONTAINED server — it owns its built-in userspace-WG interface, so its Setup body
+  // (interface/subnet/ports) + submit are entirely different from a -connect fork. Rather than branch turn-shaped
+  // code, its fields live in <WdttInstanceBody/> (dispatched in the body below); it registers its save() in
+  // wdttSaveRef, which this sheet's shared save() delegates to. Keeps this component turn-only.
+  const isWdtt = f.kind === "wdtt";
+  const wdttSaveRef = useRef(null);
   const pickFork = id => {   // re-default params for the new fork only if the field is still an untouched default
     const cf = turnForkList().find(x => x.id === fork) || turnForkList()[0];
     const nf = turnForkList().find(x => x.id === id) || turnForkList()[0];
@@ -7052,23 +8345,28 @@ function SetupTurnSheet({ node, forwardIface }) {
     }
     if (!lhost) return fail("Listen IP is required.");
     if (!/^\d+$/.test(lport.trim())) return fail("Listen port must be a number.");
+    if (isWdtt) return wdttSaveRef.current ? wdttSaveRef.current(lhost, lport.trim()) : fail("WDTT fields aren't ready yet.");
     let connect;
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forwards-to must be host:port."); }
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
-    if (clientsCommitRef.current) { try { await clientsCommitRef.current(); } catch (_) {} }   // commit the embedded Client-apps default/settings alongside this Save
-    setBusy(true); setMsg({ k: "work", t: "installing… (the node downloads the binary, up to ~2 min)" });
+    // OPTIMISTIC: seed the card and close NOW — the install takes as long as it takes on the node (binary
+    // download), and its progress belongs on the card, not behind a blocked modal. The service id is predictable
+    // (vk-turn-proxy-<fork>-<port>); if the panel returns a different one we re-key the placeholder, and if the
+    // request is rejected we drop it again and say so.
+    const svc = "vk-turn-proxy-" + f.id + "-" + lport.trim();
+    const _tkey = node + "|" + svc;
+    Store.turnNew[_tkey] = { listen: lhost + ":" + lport.trim(), connect, title: title.trim(), at: Date.now() };
+    closeModal(); Store.apply();
     const r = await api.turnInstall({ node, fork: f.id, owner: f.owner, wrap_flags: f.wrap,
       listen: lhost + ":" + lport.trim(), connect, title: title.trim(), params: params.trim() });
-    if (!r.ok) return fail(r.error || "Request failed.");
-    // optimistic: show the FULL card (entered data) dimmed + "installing" right away — keyed by the service
-    // the panel returns (vk-turn-proxy-<fork>-<port>), so it self-clears when the node reports the real proxy.
-    const svc = (r.data && r.data.service) || ("vk-turn-proxy-" + f.id + "-" + lport.trim());
-    Store.turnNew[node + "|" + svc] = { listen: lhost + ":" + lport.trim(), connect, title: title.trim(), at: Date.now() };
-    closeModal(); Store.apply(); await Store.poll();
+    if (!r || !r.ok) { delete Store.turnNew[_tkey]; Store.apply(); return toast((r && r.error) || "Turn-proxy install failed.", "err"); }
+    const _real = (r.data && r.data.service) || svc;
+    if (_real !== svc) { Store.turnNew[node + "|" + _real] = Store.turnNew[_tkey]; delete Store.turnNew[_tkey]; }
+    await Store.poll();
     toast("Turn-proxy install requested — the node downloads + starts it on its next sync.", "ok");
   };
-  return html`<${Sheet} title=${mode === "new" ? turnSheetTitle(f.label, title) : "Adopt turn-proxy"}
-    foot=${footRow({ onCancel: closeModal, disabled: busy || (mode === "new" && !FORKS.length), onAction: save, action: mode === "existing" ? "Adopt" : "Install" })}>
+  return html`<${Sheet} title=${mode === "new" ? turnSheetTitle(f.label, title) : "Adopt turn-proxy"} width=${880}
+    foot=${footRow({ onCancel: closeModal, disabled: busy || !!tsperr || (mode === "new" && !FORKS.length), title: tsperr || "", onAction: save, action: mode === "existing" ? "Adopt" : (isWdtt ? "Create" : "Install") })}>
     <div class="field"><label>Source</label>
       <div class="chiprow proto3">
         <button class=${"chip c-awg" + (mode === "new" ? " on" : "")} onClick=${() => setMode("new")}>Install a fork</button>
@@ -7093,11 +8391,12 @@ function SetupTurnSheet({ node, forwardIface }) {
         <div class="field"><label>Listen IP</label>
           <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder="203.0.113.7"/>
           <div class="hint">An address on this server — the proxy binds to it</div></div>
-        <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="56000"/></div>
+        <div class="field"><label>Listen port</label><input class=${tsperr ? "bad" : ""} value=${lport} onInput=${e => setLport(e.target.value)} placeholder="56000"/>${tsperr ? html`<div class="hint err">${tsperr}</div>` : null}</div>
       </div>
       ${lsel === "__custom__" && lhost && !ips.includes(lhost) ? (isBridge
         ? html`<div class="notice" style="margin:-6px 0 16px"><${Ic} i="info"/><span>Bridge node: the proxy binds <span class="mono">0.0.0.0</span> inside the container and this port is published, so enter the node's <b>public</b> IP/host (what clients dial) here.</span></div>`
         : html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't a detected address on the node. The proxy <b>binds</b> to it, so it must be a real IP on the server — otherwise it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>`) : null}
+      ${isWdtt ? html`<${WdttInstanceBody} node=${node} snap=${snap} saveRef=${wdttSaveRef} setBusy=${setBusy} setMsg=${setMsg} fail=${fail}/>` : html`<${Fragment}>
       <div class="field"><label>Forwards to</label>
         <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
           ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
@@ -7106,14 +8405,338 @@ function SetupTurnSheet({ node, forwardIface }) {
         ${hideAwg ? html`<div class="hint">${fork} is WireGuard-only — AmneziaWG interfaces are hidden (its client doesn't do AmneziaWG).</div>` : null}
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
-      <${TurnAppsPicker} ctl=${clientsCtl} offered=${true}/>
       <${Disclosure} title="Server parameters" summary=${forkSettings(fork).length ? null : html`<span class="faint">none</span>`} open=${openSec === "server"} onToggle=${() => setOpenSec(s => s === "server" ? null : "server")}>
         <${TurnParamsEditor} fork=${fork} node=${node} value=${params} onChange=${setParams} listen=${(lhost || "server_ip") + ":" + (lport || "port")} connect=${isCustom ? (custom || "interface_ip:port") : ("127.0.0.1:" + (((ifaces.find(i => i.name === fwd)) || {}).port || "port"))}/>
       <//>
-      <${Disclosure} title="Client parameters" open=${openSec === "client"} onToggle=${() => setOpenSec(s => s === "client" ? null : "client")}>
-        <${TurnClientParams} ctl=${clientsCtl} embedded=${true}/>
-      <//>
     <//>`}
+    <//>`}
+    ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  <//>`;
+}
+
+// WDTT (self-contained server) Setup body — the built-in interface/subnet/ports a -connect fork has no concept of.
+// Kept OUT of SetupTurnSheet so that sheet stays turn-shaped; it registers its save() in saveRef, which the sheet's
+// shared footer triggers. Auto-assigns a free iface + /24 subnet + internal WG port for this node, scanning its
+// interfaces, turn-proxies and existing WDTT instances so nothing collides.
+function WdttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail }) {
+  const used = (() => {
+    const ifaces = new Set(), subs = new Set(), ports = new Set();
+    Object.entries(snap.interfaces || {}).forEach(([n, b]) => {
+      if (isWdttIface(n)) ifaces.add(n);
+      const p = parseInt((b.meta || {}).listen_port, 10); if (p) ports.add(p);
+    });
+    (snap.turn_proxies || []).forEach(tp => { const p = parseInt(String(tp.listen || "").split(":").pop(), 10); if (p) ports.add(p); });
+    (snap.wdtt || []).forEach(w => { if (!w) return;
+      if (w.iface) ifaces.add(w.iface);
+      if (w.wg_addr) subs.add(String(w.wg_addr).split("/")[0].split(".").slice(0, 3).join("."));
+      const wp = parseInt(w.wg_port, 10); if (wp) ports.add(wp);
+      const lp = parseInt(String(w.listen || "").split(":").pop(), 10); if (lp) ports.add(lp);
+    });
+    return { ifaces, subs, ports };
+  })();
+  const nextIface = (() => { for (let i = 0; i < 100; i++) if (!used.ifaces.has("wdtt" + i)) return "wdtt" + i; return "wdtt0"; })();
+  const nextSubnet = (() => { for (let i = 66; i < 230; i++) { const b = "10.66." + i; if (!used.subs.has(b)) return b + ".1/24"; } return "10.66.66.1/24"; })();
+  const nextWgPort = (() => { for (let p = 56001; p < 56999; p++) if (!used.ports.has(p)) return String(p); return "56001"; })();
+  const [iface, setIface] = useState(nextIface);
+  const [subnet, setSubnet] = useState(nextSubnet);
+  const [wgPort, setWgPort] = useState(nextWgPort);
+  const [adv, setAdv] = useState(false);
+  const wgperr = portErrMsg(node, wgPort, []);   // live internal-WG-port collision check (new interface → no own port)
+  saveRef.current = async (lhost, lport) => {
+    if (!isWdttIface(iface.trim())) return fail("Interface must be wdtt0–wdtt999.");
+    if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail("Subnet must be an IPv4 CIDR (e.g. 10.66.66.1/24).");
+    if (!/^\d+$/.test(String(wgPort).trim())) return fail("Internal WG port must be a number.");
+    if (wgperr) return fail(wgperr);   // caught in the browser (never a node-side "FAILED TO APPLY")
+    if (lport && String(lport).trim() === String(wgPort).trim()) return fail("The DTLS listen port and internal WG port must differ.");
+    setBusy(true); setMsg({ k: "work", t: "creating WDTT server… (the node installs it on its next sync)" });
+    const r = await api.wdttSet({ node, iface: iface.trim(), wg_addr: subnet.trim(),
+      listen: lhost + ":" + lport, wg_port: parseInt(String(wgPort).trim(), 10), max_passwords: 200, stopped: false });
+    if (!r.ok) return fail(r.error || "Request failed.");
+    closeModal(); Store.apply(); await Store.poll();
+    toast("WDTT server requested — the node installs it on its next sync. Add users from Peers.", "ok");
+  };
+  return html`<${Fragment}>
+    <div class="field"><label>Serves</label>
+      <div class="selwrap" style="display:flex;align-items:center;justify-content:space-between;opacity:.9">
+        <span>Built-in userspace WireGuard</span>
+        <span class="mono faint">${iface} · ${subnet}</span>
+      </div>
+      <div class="hint">WDTT owns its own WireGuard interface — users attach to it directly (no forwards-to). WDTT mints each user's key + IP on connect; you add + manage users from Peers.</div>
+    </div>
+    <${Disclosure} title="Advanced — built-in interface" open=${adv} onToggle=${() => setAdv(a => !a)}>
+      <div class="row2">
+        <div class="field"><label>Interface</label><input value=${iface} onInput=${e => setIface(e.target.value)} placeholder="wdtt1" autocomplete="off"/></div>
+        <div class="field"><label>Internal WG port</label><input class=${wgperr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder="56001" autocomplete="off"/>${wgperr ? html`<div class="hint err">${wgperr}</div>` : null}</div>
+      </div>
+      <div class="field"><label>Internal subnet</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.66.66.1/24" autocomplete="off"/>
+        <div class="hint">Auto-assigned to avoid collisions with this node's other WDTT servers, interfaces, and ports.</div></div>
+    <//>
+  <//>`;
+}
+
+// ── WDTT is a self-contained, key-owning member of the TURN-PROXY fork family: its server card renders inside
+//    TurnProxiesBlock (folded there), its interface shows in the interfaces section, and its clients reuse the
+//    turn app flow. WDTT-specific bits (keyless peers, built-in interface, vault restore) are kind-dispatched. ──
+const WDTT_COLOR = "#A78BFA";
+function WdttCard({ node, w, reorder }) {
+  const active = w.active === "active";
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  // This card had NO node-state handling: while the node was converting (or offline, or re-installing) every
+  // other card on the page dimmed and said so, and the WDTT ones sat there bright and clickable, offering to
+  // open a manage sheet whose actions are all disabled. Mirror TurnCard exactly.
+  const converting = (nrec.proc_status || "").startsWith("converting");
+  const nblocked = nodeStale(node) || inProc(nrec.proc_status);
+  const restoring = (nrec.wdtt_restoring || []).includes(w.iface);
+  const awaiting = !!w.await_restore;
+  const rid = "wdtt:" + w.iface;   // reorder id, namespaced so it never clashes with a turn service
+  const it = reorder ? reorder.item(rid) : null;
+  const _wop = Store.ifaceOp[node + "|" + w.iface];   // optimistic save lifecycle (applying/applied/failed), like every card
+  const _wopTag = opTag(node + "|" + w.iface);
+  const deleting = !!Store.ifaceGone[node + "|" + w.iface];   // the SAME server is shown twice (interface card + here) — both must say it is going
+  const adopting = (nrec.wdtt_adopting || []).includes(w.iface);   // take-over in flight — same reason as the interface card
+  const tag = deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title="The node tears it down on its next sync"/>`
+    : adopting ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title="The node applies the take-over on its next sync"/>`
+    : converting ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title="The node is converting between bare-metal and docker"/>`
+    : _wopTag ? _wopTag
+    : restoring ? html`<${StatusTag} cls="tg tg-pending" icon="clock" label="restoring…" title="Restoring the vaulted server identity"/>`
+    : awaiting ? html`<${StatusTag} cls="tg-busy del" icon="shield" label="Restore" title="A vaulted identity exists — restore it to bring this server back with its original key"/>`
+    : active ? null   // healthy → no persistent tag (matches normal turn/interface cards; reuse the standard status vocabulary)
+    : html`<${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title="Installing / starting on the node"/>`;
+  const _wopBusy = _wop && _wop.phase === "busy";   // mid-save → don't let the card re-open the edit modal
+  // awaiting restore → the SAME treatment as the interface card for the same server: dimmed with the danger
+  // border (.ifcard.down), not a quiet amber pill on a full-brightness card. One server in one state should not
+  // look like two different severities depending on which section you happen to be reading.
+  // Same reason this covers `starting` (and converting/restoring): the SAME server shows as a dimmed interface
+  // card above and, until this, a full-brightness proxy card below — the two sections disagreed about whether
+  // anything was happening. This is the interface card's `idim`, term for term.
+  const wdim = deleting || adopting || converting || awaiting || restoring || !active || _wopBusy;
+  const wCanOpen = !_wopBusy && !nblocked && !deleting && !adopting;   // don't open a sheet whose every action is disabled
+  return html`<div class=${"ifcard tp" + (wCanOpen ? " clickable" : "") + (wdim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} data-rid=${it ? it.rid : null} onClick=${() => { if (!wCanOpen) return; openModal(html`<${WdttManageSheet} node=${node} w=${w}/>`); }}>
+    <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
+      <span class="iftype wdtt">WDTT</span>
+      <span class="ifname">${shownTitle("w|" + node + "|" + w.iface, (((nrec.wdtt_cfg || {})[w.iface] || {}).title || "").trim()) || w.iface}</span><span class="grow"></span>
+      ${(() => { const conn = wdttConnRows(node, w.iface); return conn.length ? html`<${OnlPop} peer title="Connected to this WDTT server" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null; })()}
+      ${tag}
+    </div>
+    <div class="ifcard-rows">
+      <div class="ifrow"><span class="l">WDTT fork</span><span class="r">${w.fork || "amurcanov"}</span></div>
+      <div class="ifrow"><span class="l">Listen</span><span class="r addr">${w.listen || "—"}</span></div>
+      <div class="ifrow"><span class="l">Forwards to</span><span class="r"><a class="tg tg-wdtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(w.iface)} onClick=${e => e.stopPropagation()}>${w.iface}</a></span></div>
+    </div></div>`;
+}
+// The turn-half management surface, reached from the WDTT turn-proxy card (the interface card goes to the
+// full interface detail instead). TODO Phase 2 (fork dimension): reshape this into the real turn modal —
+// fork switch + client-apps picker + server params — and let the interface detail own lifecycle/peers, so
+// the two views stop overlapping (see docs/WDTT-FORK-FAMILY-PLAN.md §"UI corrections").
+function WdttManageSheet({ node, w: w0 }) {
+  useStore();   // live status / config while open
+  const iface = w0.iface;
+  // openModal captures the vnode — and therefore this prop — at CLICK time, so `w` is a frozen snapshot of the
+  // server as it was when the modal opened. nrec below was already re-read live, but every status came from that
+  // stale object: after "Recreate fresh" the node reported a healthy new server and the sheet still showed
+  // "This server was wiped… Restore", because await_restore was true in a copy nothing ever updates.
+  // Re-read from the live snapshot each render; fall back to the prop until the node reports it.
+  const w = ((Store.stats[node] || {}).wdtt || []).find(x => x && x.iface === iface) || w0;
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const cfg = (nrec.wdtt_cfg || {})[iface] || {};
+  const fork = w.fork || cfg.fork || "amurcanov";
+  const forkLabel = (turnForkList().find(x => x.id === fork) || {}).label || fork;
+  const [title, setTitle] = useState(shownTitle("w|" + node + "|" + iface, (cfg.title || "").trim()));   // optional cosmetic label; honour a just-saved optimistic title
+  const [params, setParams] = useState((cfg.params || "").trim());   // extra ExecStart flags (advanced)
+  const [srvOpen, setSrvOpen] = useState(false);
+  const awaiting = !!w.await_restore;
+  const restoring = (nrec.wdtt_restoring || []).includes(iface);
+  const recreating = (nrec.wdtt_recreating || []).includes(iface);
+  const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
+  const notup = w.active !== "active" && !awaiting;   // stopped / starting → Start; else Stop + Restart
+  // Endpoint + DTLS listen port, EDITABLE — writes to the same place as the interface edit (api.wdttSet).
+  const ips = nrec.ips || [];
+  const oldListen = cfg.listen || w.listen || "";
+  const lhost = oldListen.includes(":") ? oldListen.slice(0, oldListen.lastIndexOf(":")) : oldListen;
+  const lport = oldListen.includes(":") ? oldListen.slice(oldListen.lastIndexOf(":") + 1) : "";
+  const initHost = (lhost && lhost !== "0.0.0.0") ? lhost : "";
+  const [hostSel, setHostSel] = useState(initHost ? (ips.includes(initHost) ? initHost : "__custom__") : (ips[0] || "__custom__"));
+  const [hostCustom, setHostCustom] = useState(initHost && !ips.includes(initHost) ? initHost : "");
+  const [port, setPort] = useState(lport || "");
+  const [msg, setMsg] = useState(null);
+  const wgPort = String(cfg.wg_port || w.wg_port || "56001");
+  const newListen = (ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0") + ":" + (port.trim() || "56000");
+  const endpointDirty = !!oldListen && newListen !== oldListen;
+  const titleDirty = title.trim() !== (cfg.title || "").trim();
+  const paramsDirty = params.trim() !== (cfg.params || "").trim();
+  const anyDirty = endpointDirty || titleDirty || paramsDirty;
+  // live DTLS-port check: must differ from this instance's own internal WG port, and not collide with any other
+  // port on the node (its own DTLS/WG ports don't count). Blocks Save so a clash never becomes a node "FAILED TO APPLY".
+  const wperr = (port.trim() && Number(port) === Number(wgPort)) ? "The DTLS port and the internal WG port must differ."
+    : portErrMsg(node, port, [lport, wgPort]);
+  const doSave = () => {
+    const key = node + "|" + iface, verb = "apply";
+    Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
+    const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
+    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
+      .then(r => { if (!r.ok) return fail(r.error || "save failed"); Store.poll(); })
+      .catch(e => fail((e && e.message) || "save failed"));
+  };
+  const save = () => {
+    if (port.trim() && !/^\d+$/.test(port.trim())) return setMsg({ k: "err", t: "Listen port must be a number." });
+    if (endpointDirty) {   // endpoint / DTLS port is baked into every user's link → confirm the re-issue
+      pushModal(html`<${ConfirmSheet} title="Change the endpoint or port?" confirmLabel="Apply change" warn=${true}
+        body=${"This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects."} onConfirm=${doSave}/>`);
+      return;
+    }
+    if (paramsDirty) { doSave(); return; }   // extra ExecStart flags → the node rewrites the unit + restarts
+    // title-only → a cosmetic panel-side label (no node restart, like a turn-proxy title): store + close immediately
+    closeModal();
+    pushOptTitle("w|" + node + "|" + iface, title.trim());   // reflect on the card instantly
+    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
+      .then(r => { if (r && r.ok) { Store.poll(); toast("Title saved.", "ok"); } else toast((r && r.error) || "Save failed.", "err"); });
+  };
+  const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting} title=${title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
+  return html`<${Sheet}
+    title=${html`WDTT-proxy · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${"Version, rollback & server defaults for " + fork} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`}
+    width=${664}
+    foot=${footRow({ left: html`<${Fragment}>
+        <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete</button>
+        ${notup ? control("start", "play", "Start service", "Bring this WDTT server up on the node")
+          : html`<${Fragment}>${control("stop", "stop", "Stop service", "Take this WDTT server down (stays down until started)")}${control("restart", "refresh", "Restart service", "Bounce this WDTT server on the node")}<//>`}
+      <//>`, onCancel: closeModal, disabled: !anyDirty || !!wperr, onAction: save, action: "Save" })}>
+    ${awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>This server was wiped. Its identity (server keypair + owner password) is <b>escrowed in your Encryption Vault</b>. <b>Restore</b> to bring it back with its original identity — no user re-imports.
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" disabled=${restoring || recreating} onClick=${() => wdttRestoreIdentity(node, iface)}><${Ic} i="shield"/> ${restoring ? "Restoring…" : "Restore server identity"}</button>
+        <button class="btn btn-ghost" disabled=${restoring || recreating} onClick=${() => wdttRecreateFresh(node, iface)}>${recreating ? "Recreating…" : "Recreate fresh"}</button>
+      </div></span></div>`
+    : html`<${Fragment}>
+      <${IfaceThroughput} node=${node} iface=${iface}/>
+      <div class="iface-intro" style="margin-top:10px"><div>Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.</div></div>
+      <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${iface} autocomplete="off"/></div>
+      <div class="row2">
+        <div class="field"><label>Endpoint host / IP</label><${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial</div></div>
+        <div class="field"><label>Listen port</label><input class=${wperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="56000"/>${wperr ? html`<div class="hint err">${wperr}</div>` : html`<div class="hint">DTLS listen (outside)</div>`}</div>
+      </div>
+      <div class="field"><label>Forwards to</label><div class="ro-field" style="display:flex;align-items:center;gap:8px"><span class="mono">${iface} · 127.0.0.1:${wgPort}</span> <span class="faint">— self-contained (its own userspace-WireGuard)</span><span class="grow"></span><button class="btn btn-mini" disabled=${blocked || awaiting} title="Egress, routing & filters" onClick=${() => pushModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> Edit interface</button></div></div>
+      <${Disclosure} title="Server parameters" summary=${html`<span class="faint">advanced</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
+        <p class="hint" style="margin:0 0 12px">Extra ExecStart flags for this ${forkLabel} server. WDTT is self-contained — its real config lives per interface — so there's little here beyond advanced flags.</p>
+        <${TurnServerFields} schema=${[]} vals=${{}} setV=${() => {}} extra=${params} setExtra=${setParams} template=${false} wdtt=${true} noHint=${true}/>
+      <//>
+      ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+    <//>`}
+  <//>`;
+}
+async function wdttRestoreIdentity(node, iface) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const kb = (nrec.wdtt_vault || {})[iface];
+  if (!kb) return toast("No escrowed identity is stored for this server.", "err");
+  try {
+    const sealed = await wdttResealForNode(node, kb);
+    const r = await api.wdttRestore({ node, iface, sealed_identity: sealed });
+    if (!r.ok) return toast(r.error || "Restore failed.", "err");
+    toast("Restoring the original server identity — the node applies it on its next sync.", "ok");
+    Store.poll();
+  } catch (e) { toast(e.message || "Restore failed.", "err"); }
+}
+// Escape hatch when the vault can't be unlocked: abandon the escrowed identity, mint a fresh key. Type-to-confirm
+// because every existing user has to re-import (their cached server key changes).
+function wdttRecreateFresh(node, iface) {
+  openConfirm({ title: "Recreate with a fresh identity?", danger: true, requireType: iface, confirmLabel: "Recreate fresh",
+    body: html`This <b>abandons the vaulted server identity</b> and generates a NEW server key for <span class="mono">${iface}</span>. Every existing user must <b>re-import</b> their link. Use this only if the Encryption Vault can't be unlocked. Type <b class="mono">${iface}</b> to confirm.`,
+    onConfirm: async () => { const r = await api.wdttRecreateFresh({ node, iface });
+      toast(r && r.ok ? "Recreating with a fresh identity — users must re-import." : ((r && r.error) || "Failed."), r && r.ok ? "ok" : "err");
+      await Store.poll(); } });
+}
+function WdttDeleteSheet({ node, iface }) {
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null);
+  const del = async () => {
+    setBusy(true); setMsg({ k: "work", t: "removing…" });
+    const r = await api.wdttDelete({ node, iface });
+    if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Request failed." }); }
+    // Card goes inert + "deleting" NOW. Capture the identity WITH it: the server process dies first, so by the
+    // next render it is gone from snap.wdtt and the card had nothing left to render itself from — it flipped to
+    // a green "wg" badge with empty rows. Same reason the optimistic CREATE card carries the entered values.
+    const _w = ((Store.stats[node] || {}).wdtt || []).find(x => x && x.iface === iface) || {};
+    const _c = (((Store.nodes || []).find(n => n.id === node) || {}).wdtt_cfg || {})[iface] || {};
+    const _port = String(_w.listen || _c.listen || "").split(":").pop();
+    Store.ifaceGone[node + "|" + iface] = { at: Date.now(), type: "wdtt",
+      listen: (_w.fork || _c.fork || "wdtt") + (_port ? ":" + _port : ""), subnet: _w.wg_addr || _c.wg_addr || "" };
+    closeModal(); Store.apply(); await Store.poll();
+    toast("WDTT server removed — the node tears it down on its next sync.", "ok");
+  };
+  return html`<${Sheet} title="Delete WDTT server" width=${480}
+    foot=${footRow({ onCancel: closeModal, disabled: busy || confirm.trim() !== iface, onAction: del, action: "Delete", danger: true })}>
+    <div class="notice warn"><${Ic} i="warn"/><span>This stops and removes the WDTT server <b>${iface}</b> on this node and disconnects its users. Each user's credential is a password on <b>this</b> server, so its peers go with it (a peer also deployed elsewhere keeps those deployments). Type <b class="mono">${iface}</b> to confirm.</span></div>
+    <div class="field"><input value=${confirm} onInput=${e => setConfirm(e.target.value)} placeholder=${iface} autocomplete="off"/></div>
+    ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  <//>`;
+}
+function openEditWdtt(node, iface) { openModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`); }
+// WDTT interface EDIT modal — the interface modal for a WDTT server: endpoint / fork / ports (the 2 extra WDTT
+// fields) PLUS the same egress picker + routing rules + Filters & abuse an ordinary interface has. Saves the
+// whole instance via /api/wdtt/set (an upsert); the routing/filters ride the SAME subnet-based node datapath.
+function EditWdttSheet({ node, iface }) {
+  useStore();   // re-render on each poll so live status / desired config stays current while open
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const cfg = (nrec.wdtt_cfg || {})[iface] || {};                                    // DESIRED config (node store)
+  const w = ((Store.stats[node] || {}).wdtt || []).filter(Boolean).find(x => x.iface === iface) || {};   // live readback
+  const wgAddr = cfg.wg_addr || w.wg_addr || "";
+  const oldListen = cfg.listen || w.listen || "";
+  const ips = nrec.ips || [];
+  const emode = nrec.routing_mode || "kernel";   // for smart-rule validation (kernel = IP-only)
+  // Take-over in flight: saving here would push a config at a server the node is still replacing.
+  const adopting = (nrec.wdtt_adopting || []).includes(iface);
+  const fork = cfg.fork || w.fork || "amurcanov";   // create-time choice — read-only here (no live binary/store swap)
+  const forkLabel = (turnForkList().find(x => x.id === fork) || {}).label || fork;
+  const [wgPort, setWgPort] = useState(String(cfg.wg_port || "56001"));   // endpoint + listen port are edited from the WDTT-proxy modal now
+  const _dtls = oldListen.includes(":") ? oldListen.slice(oldListen.lastIndexOf(":") + 1) : "";
+  const wgperr = portErrMsg(node, wgPort, [cfg.wg_port, w.wg_port, _dtls]);   // live collision check (this instance's own WG + DTLS ports don't count)
+  const [eg, setEg] = useState(() => egressInit(cfg));
+  const [blk, setBlk] = useState(() => [...(cfg.block || [])]);
+  const [disc, setDisc] = useState({ routing: true, filters: false });   // Routing opens by default (only shown in Smart mode)
+  const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
+  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+  const doSave = () => {
+    // Optimistic, like the interface edit sheet: flip the card to an "applying" badge + close the modal(s) NOW;
+    // the save + the node's reconcile run in the background. trackIfaceOps drives applying → applied / failed.
+    const key = node + "|" + iface, verb = "apply";
+    Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() };
+    Store.apply(); closeAllModals();
+    const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
+    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, ...egressBody(eg) })
+      .then(r => { if (!r.ok) return fail(r.error || "save failed"); Store.poll(); })   // busy → applied via trackIfaceOps
+      .catch(e => fail((e && e.message) || "save failed"));
+  };
+  const save = () => {
+    const ee = egressError(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
+    if (wgPort.trim() && !/^\d+$/.test(wgPort.trim())) return setMsg({ k: "err", t: "Internal WG port must be a number." });
+    // the internal WG port is baked into each wdtt:// link → a change re-issues it
+    if (!!oldListen && (wgPort.trim() || "56001") !== String(cfg.wg_port || "56001")) {
+      pushModal(html`<${ConfirmSheet} title="Change the internal WG port?" confirmLabel="Apply change" warn=${true}
+        body=${"This rewrites every user's link — the internal WG port is part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects."}
+        onConfirm=${doSave}/>`);
+      return;
+    }
+    doSave();
+  };
+  return html`<${Sheet} title=${"Edit WDTT interface · " + iface} width=${720}
+    foot=${footRow({ onCancel: closeModal, disabled: busy || adopting || !!wgperr || !!egressError(eg, emode), title: (adopting ? "This server is being adopted — wait for the node to finish" : wgperr || egressError(eg, emode)) || "", onAction: save, action: "Save" })}>
+    ${adopting ? html`<div class="notice"><${Ic} i="clock"/><span>This server is being <b>taken over</b> right now — its settings are read-only until the node reports the result.</span></div>` : null}
+    <div class="iface-intro"><div><b>WDTT</b> owns its own <b>WireGuard</b> interface <b>(<span class="mono">${iface}</span> · <span class="mono">${wgAddr || "—"}</span>)</b> and mints each user's key on connect.</div></div>
+    <div class="row2">
+      <div class="field"><label>WDTT server instance</label>
+        <div class="ro-field" style="display:flex;align-items:center;gap:10px"><span class="mono">${forkLabel}</span><span class="grow"></span><span class="mono">${oldListen || "—"}</span></div>
+        <div class="hint">Fork is set at create. Endpoint & listen port are edited from the WDTT-proxy modal.</div></div>
+      <div class="field"><label>Internal WG port</label><input class=${wgperr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder="56001"/>${wgperr ? html`<div class="hint err">${wgperr}</div>` : html`<div class="hint">Loopback userspace-WG port (server-internal)</div>`}</div>
+    </div>
+    <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
+    ${eg.mode === "smart" ? html`<${Disclosure} title="Routing rules" sumCls="route"
+      summary=${(eg.rules || []).length ? html`<b>${(eg.rules || []).length}</b> ${(eg.rules || []).length === 1 ? "rule" : "rules"} · first match wins` : "no rules yet"}
+      open=${disc.routing} onToggle=${() => tog("routing")}>
+      <${RoutingRules} node=${node} rules=${eg.rules || []} onChange=${rs => setEg({ ...eg, rules: rs })}/>
+    <//>` : null}
+    <${Disclosure} title="Filters & abuse" sumCls="on"
+      summary=${blk.length ? html`<b>${blk.length}</b> active` : html`<span class="faint">none</span>`}
+      open=${disc.filters} onToggle=${() => tog("filters")}>
+      <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
+    <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -7151,12 +8774,13 @@ function ifaceIsAwg(iface) {
   for (const n of Object.keys(Store.describe || {})) { const m = (Store.describe[n] || {})[iface]; if (m && Object.keys(m.awg_params || {}).length) return true; }
   return false;
 }
-// interface-filter dropdown values: "" / "*" = all · "*awg" / "*wg" = all of one type · else an exact iface name.
-const ifaceIsAll = v => !v || v === "*" || v === "*awg" || v === "*wg";   // an aggregate (multi-iface) filter value
+// interface-filter dropdown values: "" / "*" = all · "*awg" / "*wg" / "*wdtt" = all of one type · else an exact name.
+const ifaceIsAll = v => !v || v === "*" || v === "*awg" || v === "*wg" || v === "*wdtt";   // an aggregate (multi-iface) filter value
 function ifaceMatch(iface, filter) {                                       // does an interface name pass the filter value?
   if (!filter || filter === "*") return true;
-  if (filter === "*awg") return ifaceIsAwg(iface);
-  if (filter === "*wg") return !ifaceIsAwg(iface);
+  if (filter === "*wdtt") return isWdttIface(iface);
+  if (filter === "*awg") return ifaceIsAwg(iface) && !isWdttIface(iface);
+  if (filter === "*wg") return !ifaceIsAwg(iface) && !isWdttIface(iface);   // WDTT owns its own wg iface — never lump it under WireGuard
   return iface === filter;
 }
 // <option>s for an interface dropdown: "All AmneziaWG" / "All WireGuard" shortcuts, then AmneziaWG / WireGuard
@@ -7165,9 +8789,13 @@ function ifaceMatch(iface, filter) {                                       // do
 // or "All <type>" would just duplicate "All interfaces"). "All AmneziaWG" / "All WireGuard" appear only when both
 // kinds exist AND there's more than one of that kind (otherwise they'd equal "All interfaces" or the lone iface).
 function ifaceOptGroups(names) {
-  const awg = names.filter(ifaceIsAwg), wg = names.filter(n => !ifaceIsAwg(n));
-  if (!(awg.length && wg.length)) return html`${names.map(i => html`<option value=${i}>${i}</option>`)}`;
-  return html`${awg.length > 1 ? html`<option value="*awg">All AmneziaWG</option>` : null}${wg.length > 1 ? html`<option value="*wg">All WireGuard</option>` : null}<optgroup label="AmneziaWG">${awg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup><optgroup label="WireGuard">${wg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>`;
+  const wdtt = names.filter(isWdttIface);
+  const awg = names.filter(n => !isWdttIface(n) && ifaceIsAwg(n));
+  const wg = names.filter(n => !isWdttIface(n) && !ifaceIsAwg(n));
+  const groups = [["*awg", "AmneziaWG", awg], ["*wg", "WireGuard", wg], ["*wdtt", "WDTT", wdtt]].filter(g => g[2].length);
+  if (groups.length < 2) return html`${names.map(i => html`<option value=${i}>${i}</option>`)}`;   // one kind → flat list (an "All <type>" would just duplicate "All interfaces")
+  // "All <type>" shortcut per kind (only when that kind has >1 — else it equals the lone iface), then a group per kind.
+  return html`${groups.map(([val, label, arr]) => arr.length > 1 ? html`<option value=${val}>All ${label}</option>` : null)}${groups.map(([, label, arr]) => html`<optgroup label=${label}>${arr.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>`)}`;
 }
 // Shared node / interface FILTER <option> lists so the Peers / Users / Live toolbars behave identically:
 //   0 available → a single "No nodes/interfaces" item · exactly 1 → that one (labelled, value=allVal so the list
@@ -7293,7 +8921,12 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
             const addrCell = html`<td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
             const epCell = html`<td data-label="Endpoint">${endpointCell(t)}</td>`;
             const nodeCell = html`<td data-label="Node"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
-            const userCell = hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); revealUser(u.id); }) : (e => e.stopPropagation())}>
+            // The row's tooltip advertises "Double-click for QR / configs", but this cell is a SINGLE-click link to
+            // the user — so it carries its own title, overriding the row's. A cell whose tooltip describes a
+            // different action than the one it performs is worse than no tooltip.
+            const userCell = hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")}
+              title=${u ? "Click to open this user's details" : (live ? "" : "Assign this peer to a user")}
+              onClick=${u ? (e => { e.stopPropagation(); revealUser(u.id); }) : (e => e.stopPropagation())}>
               ${u ? html`<a class="namecell" href="#/users" onClick=${e => { e.preventDefault(); e.stopPropagation(); revealUser(u.id); }}><span>${u.name}</span><${Ic} i="user"/></a>`
                   : (live ? html`<span class="faint">Unassigned</span>` : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/></div>`)}</td>`;
             // embedded / live-peers: Status · [User] · Title · [Endpoint (live)] · Address · Node — iface badge sits by the status
@@ -7682,7 +9315,7 @@ function revealUser(userId, peerId) {
     usersView.page = userPageOf(userId);      // the page this user actually lands on (not always page 1)
     if (peerId) Store.recentlyCreated[peerId] = Date.now();   // 1.5s glow on the peer's row
     Store.apply();                            // re-render Users with the right page + expansion
-    requestAnimationFrame(() => { const el = document.getElementById("urow-" + userId); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); });
+    requestAnimationFrame(() => { const el = document.getElementById("urow-" + userId); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); });   // land the row near the top with breathing room (scroll-margin-top on .urow), not centered under its expanded peers
   }, 240);
 }
 // Clicking a PEER anywhere reveals its OWNER on the Users screen (row expanded, that peer's row glowing) — there
@@ -7889,7 +9522,7 @@ function useSubRec(userId) {
 }
 // The single unlock gate. One panel, one password — unlocking reveals BOTH the stored QRs and the subscription
 // link (one encryption key gates both). Renders nothing once unlocked, or when no vault is set up.
-function VaultUnlockPanel() {
+function VaultUnlockPanel({ need } = {}) {
   const [exists, setExists] = useState(null);
   const [ready, setReady] = useState(!!subSKCached());
   const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
@@ -7897,7 +9530,9 @@ function VaultUnlockPanel() {
   useEffect(() => { if (subSKCached()) { setReady(true); return; }
     let ok = true; api.subVault().then(r => { if (ok) setExists(!!(r && r.ok && r.data && r.data.exists)); }).catch(() => { if (ok) setExists(false); });
     return () => { ok = false; }; }, []);
-  if (ready || subSKCached() || !exists) return null;
+  // WDTT targets are keyless (server-minted key) — their QR needs no vault. When a modal has nothing that DOES
+  // (all-WDTT peer, no WG config / sub link), the caller passes need=false so we don't claim "unlock to see QR codes".
+  if (need === false || ready || subSKCached() || !exists) return null;
   const unlock = async () => {
     if (!pw || busy) return; setBusy(true);
     try { await subUnlock(pw); subSetPersist(keep); setPw(""); setReady(true); Store.configEpoch++; bus.emit(); }
@@ -8146,7 +9781,7 @@ function openPeerConfigs(peer, opts) {
   (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child ? closeModal : null}
     subject=${{ kind: "peer", id: peer.id }} foot=${html`<${QRPeerFoot} pid=${peer.id}/>`}>
     ${vkUser ? html`<${PeerStatusLine} peer=${peer} pos="bar"/>` : null}
-    <${VaultUnlockPanel}/>
+    <${VaultUnlockPanel} need=${(peer.targets || []).some(t => targetType(t) !== "wdtt")}/>
     ${!hideVk && vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${orderedTargets(peer.targets).map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && isPrimaryTarget(peer.targets, t)}/>`)}/>
   <//>`);
@@ -8198,7 +9833,7 @@ function QRUserFoot({ uid }) {
   const peers = Store.peersOfUser(uid);
   const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
   const count = peers.length + " peer" + (peers.length === 1 ? "" : "s") + (nCfg > 1 ? " (" + nCfg + " configs)" : "");
-  return html`<${Fragment}><span class="qrfoot-count">${count}</span><span class="grow"></span><button class=${"btn btn-exp" + (hasExp ? " on" : "")} onClick=${() => openSetExpiry("user", uid)}><${Ic} i="clock"/> ${hasExp ? "Reset expiry" : "Set expiry"}</button>${userBlockBtn(u)}<//>`;
+  return html`<${Fragment}><span class="qrfoot-count">${count}</span><span class="grow"></span><button class=${"btn btn-exp" + (hasExp ? " on" : "")} onClick=${() => openSetExpiry("user", uid)}><${Ic} i="clock"/> ${hasExp ? "Reset expiry" : "Set expiry"}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(u)} title="Rotate the keys of every peer this user holds — all configs/links must be re-imported"><${Ic} i="key"/> Rotate all keys</button>${userBlockBtn(u)}<//>`;
 }
 function openUserEdit(user) {
   openModal(html`<${Sheet} title=${"Edit · " + user.name} subject=${{ kind: "user", id: user.id }}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
@@ -8242,6 +9877,36 @@ function VaultPromptSheet({ opts, onDone }) {
       <div class="notice warn vp-skip"><${Ic} i="info"/><span><b>If you skip:</b> ${opts.consequence || "the action completes, but anything that needed the key won’t be saved."}</span></div>
     </div>
   <//>`;
+}
+// The one-time "save your encryption key" moment, shown right after a vault is created — including the automatic
+// setup at first sign-in, where the key used to be minted and silently discarded. It is the operator's only way
+// back into their configs if the panel password is ever reset from the server, so it is deliberately a modal with
+// an explicit acknowledgement rather than a toast. The key never leaves the browser; this reads the session cache.
+function VaultKeySheet() {
+  const k = subKeyB64();
+  if (!k) return null;
+  return html`<${Sheet} title="Save your encryption key" width=${560} onClose=${closeModal}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-primary" onClick=${closeModal}>I've saved it</button></>`}>
+    <div class="vaultprompt">
+      <p class="vp-reason">Config encryption is on. This key protects every stored client config and subscription link — the panel only ever stores it wrapped under your password, so <b>this is the only copy in the clear</b>.</p>
+      <div class="tokenbox" style="margin:8px 0;word-break:break-all">${k}</div>
+      <div class="chiprow">
+        <button class="btn btn-mini" onClick=${() => copy(k, "Encryption key copied")}><${Ic} i="copy"/> Copy</button>
+        <button class="btn btn-mini" onClick=${() => downloadConf(k, "swg-config-key")}><${Ic} i="download"/> Download</button>
+      </div>
+      <div class="notice warn vp-skip" style="margin-top:10px"><${Ic} i="info"/><span>Store it in a password manager. It's what gets you back to your configs if your panel password is ever reset from the server — and anyone who holds it can read them, so treat it like a password. You can see it again any time from <b>Settings → Client configs</b> while the vault is unlocked.</span></div>
+    </div>
+  <//>`;
+}
+// A WDTT fork chip: the fork's own colour, with the WDTT colour as the fallback until applyThemeColors has
+// injected the tunable one. The style string, the `turnColor(fork) || WDTT_COLOR` fallback and the label lookup
+// were written out at four separate sites, which is how they drifted (some showed the raw id, some the label).
+function ForkTag({ fork, suffix, title }) {
+  if (!fork) return null;
+  const col = turnColor(fork) || WDTT_COLOR;
+  const label = (turnForkList().find(x => x.id === fork) || {}).label || fork;
+  return html`<span class="tg" style=${"color:" + col + ";background:color-mix(in srgb," + col + " 16%,transparent)"}
+    title=${title || ("WDTT fork: " + label)}>${label}${suffix || ""}</span>`;
 }
 function SubUrlBar({ url }) {
   const [copied, setCopied] = useState(false);
@@ -8311,7 +9976,8 @@ function TurnConfigSheet({ peer, t, conf }) {
   const fi = Math.min(selFork, order.length - 1); const fork = order[fi];
   const list = byFork[fork]; const ii = Math.min(inst[fork] || 0, list.length - 1); const cur = list[ii];
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
-  const allClients = turnClientsFor(fork);
+  const _fcompat = (turnForkList().find(x => x.id === fork) || {}).compat || {};
+  const allClients = turnClientsFor(fork).filter(c => _fcompat[c.id]);   // only apps the compat matrix rates for THIS fork — drops dead pairings (e.g. anton48 has no core → no VK-TURN-by-MYSOREZ), matching Settings + the sub page
   const osOf = c => Object.keys((cmap[c.id] || {}).platforms || {});
   const osList = _OS_TABS.map(([o]) => o).filter(o => allClients.some(c => osOf(c).includes(o)));   // OSes this fork's apps cover
   const curOs = (selOs[fork] && osList.includes(selOs[fork])) ? selOs[fork] : (osList[0] || "");
@@ -8323,14 +9989,19 @@ function TurnConfigSheet({ peer, t, conf }) {
   return html`<div class="turncfg">
     ${order.length > 1 ? html`<div class="turntabs">${order.map((f, k) => html`<button key=${f}
       class=${"snbadge turntab" + (k === fi ? " on" : "")} style=${"--c:" + turnColor(f)} onClick=${() => setSelFork(k)}>${f}</button>`)}</div>` : null}
-    ${osList.length > 1 ? html`<div class="turncfg-os"><label>Device</label><${OsDropdown} value=${curOs} options=${osList} onChange=${o => setSelOs(m => ({ ...m, [fork]: o }))}/></div>` : null}
     ${list.length > 1 ? html`<div class="turninst">
       <label>Which ${fork} proxy</label>
       <select class="selwrap" value=${ii} onChange=${e => setInst(m => ({ ...m, [fork]: +e.target.value }))}>
         ${list.map((p, k) => html`<option value=${k}>${(p.listen || ("proxy " + (k + 1))) + (p.title ? " (" + p.title + ")" : "")}</option>`)}
       </select></div>` : null}
-    ${clients.length > 1 ? html`<div class="turntabs turnclients">${clients.map((c, k) => html`<button key=${c.id}
-      class=${"snbadge turntab" + (k === ci ? " on" : "")} style=${"--c:" + (turnClientColor(c.id) || turnColor(fork))} onClick=${() => setSelClient(m => ({ ...m, [okey]: k }))}>${clientOsName(c)}${c.experimental ? html`<span class="xtag" title=${EXP_WARN}>exp</span>` : null}</button>`)}</div>` : null}
+    ${(osList.length > 1 || clients.length > 1) ? html`<div class="turncfg-devrow">
+      ${osList.length > 1 ? html`<div class="turncfg-os"><label>Device</label><${OsDropdown} value=${curOs} options=${osList} onChange=${o => setSelOs(m => ({ ...m, [fork]: o }))}/></div>` : null}
+      ${clients.length > 1 ? html`<div class="turncfg-app"><label>App</label><${AppDropdown} value=${client ? client.id : null}
+        options=${clients.map(c => { const rel = ((turnForkList().find(x => x.id === fork) || {}).compat || {})[c.id]; const isCli = (c.encoder === "sidecar" || c.id === "sidecar");
+          return { id: c.id, name: clientOsName(c), author: (turnClientAuthor(c.id) || {}).fork || fork, color: turnClientColor(c.id) || turnColor(fork), nameColor: appNameColor(rel, isCli), plain: rel === "plain",
+            autostart: !!((((cmap[c.id] || {}).platforms || {})[curOs] || {}).autostart) }; })}
+        onChange=${id => setSelClient(m => ({ ...m, [okey]: Math.max(0, clients.findIndex(c => c.id === id)) }))}/></div>` : null}
+    </div>` : null}
     ${!vk ? html`<div class="notice warn"><${Ic} i="warn"/><span>No VK call link set — configs carry a placeholder. Set it in <a href="#/panel/settings" onClick=${() => closeAllModals()}>Panel settings → Turn proxies</a>.</span></div>` : null}
     <${TurnCfgItem} key=${cur.service + "|" + (client ? client.encoder : "") + "|" + curOs} conf=${conf} tp=${cur} vk=${vk} vkLinks=${vkLinks} base=${base} client=${client} os=${curOs}/>
   </div>`;
@@ -8359,11 +10030,12 @@ function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
   return html`<div class="turncfg-item">
     <div class="turncfg-head"><span class="tcf-label">${a.label}</span>${a.experimental ? html`<span class="xtag xtag-tip" tabindex="0"><span class="xtip-bubble">${EXP_WARN}</span>experimental</span>` : null}</div>
     ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${a.hint}</div>` : null}
-    ${a.cmd ? html`<div class="turncfg-cmd"><div class="tokenbox">${a.cmd}</div>
-      <button class="cmd-copy" title="Copy command" onClick=${() => copy(a.cmd, "Command copied")}><${Ic} i="copy"/></button></div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
       : qrView ? (ready ? html`<div class="turncfg-qr"><${QR} conf=${text} label=${a.label}/></div>` : html`<div class="turncfg-qr qr-pending">generating…</div>`)
-      : html`<textarea class="turncfg-ta" readonly spellcheck="false" ref=${taRef} onClick=${e => e.target.select()}>${ready ? text : "generating…"}</textarea>`}
+      : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => e.target.select()}>${ready ? text : "generating…"}</textarea>
+          <button class="cmd-copy" title="Copy" disabled=${!ready} onClick=${() => copy(text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/></button></div>`}
+    ${a.cmd ? html`<div class="turncfg-cmd"><div class="tokenbox">${a.cmd}</div>
+      <button class="cmd-copy" title="Copy command" onClick=${() => copy(a.cmd, "Command copied")}><${Ic} i="copy"/></button></div>` : null}
     <div class="turncfg-foot">
       ${a.qr ? html`<button class="btn btn-mini" onClick=${() => setView(v => v === "qr" ? "text" : "qr")}><${Ic} i=${qrView ? "doc" : "qr"}/> ${qrView ? "Show config" : "Show QR"}</button>` : null}
       <span class="grow"></span>
@@ -8509,24 +10181,21 @@ function UserEditCard({ user, done }) {
   const [name, setName] = useState(user.name || "");
   const [tag, setTag] = useState(user.tag || "");
   const [note, setNote] = useState(user.note || "");
-  const [vk, setVk] = useState(user.vk_link || "");
   const [expDate, setExpDate] = useState(expiryInputVal(user.expiry || 0));   // subscription expiry (blank = never)
   const showVk = Store.peersOfUser(user.id).some(p => targetsBehindTurn(p.targets));   // only when they have a peer behind a turn-proxy
-  const vkBad = vk.trim() && !_VK_CALL_RE.test(normVkLink(vk));
+  const dirty = name !== (user.name || "") || tag !== (user.tag || "") || note !== (user.note || "") || expDate !== expiryInputVal(user.expiry || 0);   // VK links save on their own (VkLinkField) → not part of this
   const save = async () => {
     if (!name.trim()) { toast("Name can't be empty.", "err"); return; }
-    if (vkBad) { toast("Not a valid VK call link — expected vk.ru/call/join/…", "err"); return; }
     const expSec = expiryFromInput(expDate);
     // A subscription can't expire before its longest-lived peer (the server enforces this too — check here for a
     // clean message instead of a rejected save).
     const maxPeer = Store.peersOfUser(user.id).reduce((m, p) => Math.max(m, +(p.ownExpiry || 0)), 0);
     if (expSec && maxPeer && expSec < maxPeer) { toast("Subscription expiry can't be earlier than a peer's expiry (" + fmtDate(maxPeer) + ").", "err"); return; }
-    const vkv = normVkLink(vk);
-    done();   // close the editor immediately; the row updates optimistically
+    done();   // close the editor immediately; the row updates optimistically  (VK links are owned by VkLinkField — saved on their own)
     mutate({
       key: "user:" + user.id,
-      patch: s => { const u = s.roster.users[user.id]; if (u) { u.name = name.trim(); u.tag = tag.trim(); u.note = note; u.expiry = expSec; if (showVk) u.vk_link = vkv; } },
-      call: () => api.userUpdate(Object.assign({ id: user.id, name: name.trim(), tag: tag.trim(), note, expiry: expSec }, showVk ? { vk_link: vkv } : {})),
+      patch: s => { const u = s.roster.users[user.id]; if (u) { u.name = name.trim(); u.tag = tag.trim(); u.note = note; u.expiry = expSec; } },
+      call: () => api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note, expiry: expSec }),
     });
   };
   const del = () => openConfirm({ title: "Delete user · " + user.name, confirmLabel: "Delete user", danger: true, back: done,
@@ -8534,7 +10203,7 @@ function UserEditCard({ user, done }) {
     onConfirm: () => mutate({ key: "user:" + user.id,
       patch: s => { delete s.roster.users[user.id]; for (const p of Object.values(s.roster.peers)) if (p.user_id === user.id) p.user_id = null; },
       call: () => api.userDelete({ id: user.id }) }) });
-  return html`<div class="card" style="max-width:560px">
+  return html`<div class="card" style="max-width:600px">
     <${SubStatusLine} user=${user} pos="center"/>
     <div class="field"><label>Name</label><input value=${name} onInput=${e => setName(e.target.value)} maxlength="64"/></div>
     <div class="field"><label>Tag</label><input value=${tag} onInput=${e => setTag(e.target.value)} placeholder="Friend, Family, Work…" maxlength="32"/></div>
@@ -8544,11 +10213,8 @@ function UserEditCard({ user, done }) {
       <div class="hint">On this date the subscription and all its peers stop working (they reappear if you extend it). A peer's own expiry can't be later than this.</div></div>
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
-    ${showVk ? html`<div class=${"field vkfield" + (vkBad ? " warn" : "")}><label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's turn-proxy configs</span></label>
-      <input value=${vk} onInput=${e => setVk(e.target.value)} placeholder="https://vk.ru/call/join/…" maxlength="512"/>
-      ${vkBad ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
-        : html`<div class="hint">Baked into this user's turn-proxy configs. Blank → the panel uses your test link and their subscription page shows no VK link until you set one.</div>`}</div>` : null}
-    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> Delete user</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></div>
+    ${showVk ? html`<${VkLinkField} user=${user}/>` : null}
+    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> Delete user</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title="Rotate the keys of every peer this user holds — all configs/links must be re-imported"><${Ic} i="key"/> Rotate all keys</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${!dirty} onClick=${save}>Save</button></div>
   </div>`;
 }
 
@@ -8568,8 +10234,134 @@ function PrimaryToggle({ peer, t, compact }) {
     title=${isP ? "Primary connection — the user's first choice" : "Make this the primary connection"} onClick=${set}>
     <span class="primstar">${isP ? "★" : "☆"}</span>${compact ? null : html`<span>${isP ? "Primary" : "Make primary"}</span>`}</button>`;
 }
-function TargetCard({ peer, t, bare, primary, head }) {
+// A peer deployment card. A WDTT deployment is keyless — it has no WG config/QR, so it dispatches to a dedicated
+// card that shows the wdtt:// client link instead of the (empty) WireGuard config. Everything else is WG/AWG.
+function TargetCard(props) {
+  return targetType(props.t) === "wdtt" ? html`<${TargetCardWdtt} ...${props}/>` : html`<${TargetCardWg} ...${props}/>`;
+}
+// The wdtt:// client artifact input for a peer's WDTT deployment, assembled from the node read-back (endpoint /
+// ports / iface) + the panel-owned per-peer password + the user's VK link. Mirrors what swg-sub builds server-side.
+function wdttArtInput(peer, t) {
+  const rb = ((Store.stats[t.node] || {}).wdtt || []).find(w => w && w.iface === t.iface) || {};
+  const nrec = (Store.nodes || []).find(n => n.id === t.node) || {};
+  const user = (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null;
+  // Host a client dials: operator endpoint_host → the WDTT listen host IF it's a real IP (0.0.0.0/blank means
+  // bound-to-all, not dialable) → the node's reported public IP. Never 0.0.0.0 — that would be a dead link.
+  const _lh = ipOf(rb.listen || "");
+  const _pub = (((Store.stats[t.node] || {}).node_ips) || []).find(ip => ip && !/^(0\.|10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(ip)) || "";
+  return { password: peer.wdtt_password || "",
+    endpoint_host: (nrec.endpoint_host || "").trim() || (_lh && _lh !== "0.0.0.0" ? _lh : "") || _pub,
+    dtls_port: String(rb.listen || "").split(":").pop() || "56000",
+    wg_port: rb.wg_port || 56001, tun_port: "9000",
+    vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) };
+}
+// The clients a WDTT fork can drive (catalog ids the SPA knows) + one client's encoded artifact.
+function wdttClientIds(fork) {
+  const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  return (((typeof turnForkList === "function" && turnForkList().find(f => f.id === fork)) || {}).clients || []).filter(cid => cmap[cid]);
+}
+function wdttClientCfg(w, cid) {
+  const cl = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[cid] || {};
+  const art = (typeof SWGTurn !== "undefined" && SWGTurn.wdttArtifact) ? SWGTurn.wdttArtifact(w, cl.encoder || "wdtt") : null;
+  return { cl, qr: !!cl.qr, art, uri: art && art.text };   // qr = the app scans a QR; else it imports a pasted link
+}
+function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
+  useStore();   // re-render on each poll so the status badge stays live
+  const peer = Store.recon.peers.find(p => p.id === peerProp.id) || peerProp;   // LIVE peer → its current wdtt_password; the frozen prop would keep a stale link after a rotate
+  const lt = (((Store.recon.peers.find(p => p.id === peer.id) || {}).targets) || []).find(d => d.node === t.node && d.iface === t.iface) || t;
+  const col = Store.nodeColor(t.node); const dnode = Store.nodeName(t.node);
+  const w = wdttArtInput(peer, t);
+  // Show the DEFAULT client's config (the fork's first/native app) — a QR where the app scans one, else the plain
+  // link. Every other app + per-OS build lives behind "Alternatives" (a child modal, like the turn-proxy config view).
+  const rb = ((Store.stats[t.node] || {}).wdtt || []).find(x => x && x.iface === t.iface) || {};
+  const fork = rb.fork || "amurcanov";
+  const clientIds = wdttClientIds(fork);
+  const dc = wdttClientCfg(w, clientIds[0] || "wdttapp");
+  const uri = dc.uri;
+  const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
+  const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
+    + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-wdtt">${esc(t.iface)}</span>`;
+  return html`<div class="deploy deploy-wdtt">
+    ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind="wdtt" label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
+    <div class="deploy-body">
+      ${primary ? html`<span class="qr-primary">Primary</span>` : null}
+      ${!uri ? html`<div class="qr-none">WDTT link unavailable — the server isn't reporting yet.</div>`
+        : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
+        : html`<div class="wdtt-link mono">${uri}</div>`}
+      ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">No VK call link on this user — the link won't authenticate until one is set.</div>` : null}
+      ${bare ? null : html`<div class="dmeta">
+        <div class="row"><span class="k">kind</span><span class="vv">WDTT · keyless (server-minted key)</span></div>
+        <div class="row"><span class="k">endpoint</span><span class="vv">${w.endpoint_host || "—"}:${w.dtls_port}</span></div>
+        <div class="row"><span class="k">address</span><span class="vv">${lt.ip || "—"}<span class="faint" style="text-transform:none;letter-spacing:0"> — assigned on first connect</span></span></div>
+        <div class="row"><span class="k">status</span><span class="vv"><${Badge} s=${lt.status}/></span></div>
+      </div>`}
+    </div>
+    ${uri ? html`<div class="acts">
+      <button class="btn btn-mini" onClick=${() => copy(uri, "WDTT link copied")}><${Ic} i="copy"/> Copy</button>
+      ${clientIds.length > 1 ? html`<button class="btn btn-mini" onClick=${() => pushModal(html`<${WdttConfigSheet} peer=${peer} t=${t}/>`)}><${Ic} i="dots"/> Alternatives</button>` : null}
+    </div>` : null}
+  </div>`;
+}
+// "Alternatives" — every app for this WDTT fork, by device: a Device dropdown + app chips ("app · by author", in the
+// author's colour) on one line, and the chosen app's config (QR where it scans one, else the link) underneath.
+function WdttConfigSheet({ peer, t }) {
+  useStore();
+  const w = wdttArtInput(peer, t);
+  const rb = ((Store.stats[t.node] || {}).wdtt || []).find(x => x && x.iface === t.iface) || {};
+  const fork = rb.fork || "amurcanov";
+  const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  const all = wdttClientIds(fork).map(id => ({ id, ...(cmap[id] || {}) }));
+  const osOf = c => Object.keys((cmap[c.id] || {}).platforms || {});
+  const osList = _OS_TABS.map(([o]) => o).filter(o => all.some(c => osOf(c).includes(o)));
+  const [os, setOs] = useState(osList[0] || "android");
+  const curOs = osList.includes(os) ? os : (osList[0] || "");
+  const clients = all.filter(c => osOf(c).includes(curOs));
+  const [ci, setCi] = useState(0);
+  const cidx = Math.min(ci, Math.max(0, clients.length - 1));
+  const client = clients[cidx] || null;
+  const authorOf = id => (turnClientAuthor(id) || {}).fork || (cmap[id] || {}).author || fork;
+  const clr = id => turnClientColor(id) || turnColor(authorOf(id));
+  const base = (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node);
+  return html`<${Sheet} title=${"WDTT client apps · " + (peer.title || peer.name || "peer")} width=${560} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+      headExtra=${html`<${PeerStatusLine} peer=${peer} pos="hr"/>`}>
+    <div class="turncfg">
+      <${PeerStatusLine} peer=${peer} pos="bar"/>
+      <div class="turncfg-devrow">
+        ${osList.length > 1 ? html`<div class="turncfg-os"><label>Device</label><${OsDropdown} value=${curOs} options=${osList} onChange=${o => { setOs(o); setCi(0); }}/></div>` : null}
+        ${clients.length > 1 ? html`<div class="turncfg-app"><label>App</label><${AppDropdown} value=${client ? client.id : null}
+          options=${clients.map(c => { const rel = ((turnForkList().find(f => f.id === fork) || {}).compat || {})[c.id];
+            return { id: c.id, name: c.name || c.id, author: authorOf(c.id), color: clr(c.id), nameColor: appNameColor(rel, false), plain: rel === "plain",
+              autostart: !!(((c.platforms || {})[curOs] || {}).autostart) }; })}
+          onChange=${id => setCi(Math.max(0, clients.findIndex(c => c.id === id)))}/></div>` : null}
+      </div>
+      ${client ? html`<${WdttCfgItem} key=${client.id + "|" + curOs} w=${w} cid=${client.id} base=${base}/>` : html`<div class="hint">No client app for this device.</div>`}
+    </div>
+  <//>`;
+}
+function WdttCfgItem({ w, cid, base }) {
+  const dc = wdttClientCfg(w, cid); const uri = dc.uri;
+  const [view, setView] = useState(dc.qr ? "qr" : "text");
+  const taRef = useRef(null);
+  useEffect(() => { setView(dc.qr ? "qr" : "text"); }, [cid]);
+  useEffect(() => { if (view === "text") autoGrow(taRef.current); }, [uri, view]);
+  const qrView = dc.qr && view === "qr";
+  return html`<div class="turncfg-item">
+    <div class="turncfg-head"><span class="tcf-label">${dc.cl.name || cid}${dc.qr ? "" : " — imports a pasted link"}</span></div>
+    ${!uri ? html`<div class="qr-none">WDTT link unavailable — the server isn't reporting yet.</div>`
+      : qrView ? html`<div class="turncfg-qr"><${QR} conf=${uri} label=${dc.cl.name || cid}/></div>`
+      : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => e.target.select()}>${uri}</textarea>
+          <button class="cmd-copy" title="Copy link" onClick=${() => copy(uri, "WDTT link copied")}><${Ic} i="copy"/></button></div>`}
+    <div class="turncfg-foot">
+      ${dc.qr ? html`<button class="btn btn-mini" onClick=${() => setView(v => v === "qr" ? "text" : "qr")}><${Ic} i=${qrView ? "doc" : "qr"}/> ${qrView ? "Show link" : "Show QR"}</button>` : null}
+      <span class="grow"></span>
+      <button class="btn btn-mini" disabled=${!uri} onClick=${() => qrView ? copyQrImage(uri, "QR image") : copy(uri, "WDTT link copied")}><${Ic} i="copy"/> Copy link</button>
+      <button class="btn btn-mini" disabled=${!uri} onClick=${() => downloadConf(uri, base + "-wdtt", "txt")}><${Ic} i="download"/> Download .txt</button>
+    </div>
+  </div>`;
+}
+function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
   useStore();   // re-render on each poll so the status badge stays live (t is a snapshot from open)
+  const peer = Store.recon.peers.find(p => p.id === peerProp.id) || peerProp;   // LIVE peer → its current pubkey; the modal's prop is frozen at open, so a rotation (new key) would otherwise keep the QR gone
   const [conf, setConf] = useState(null);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { let ok = true; getConfig(peer.pubkey, t.node, t.iface).then(c => { if (ok) { setConf(c); setLoaded(true); ensurePeerBlob(peer, c); } }); return () => { ok = false; }; }, [peer.pubkey, t.node, t.iface, Store.configEpoch]);
@@ -8984,13 +10776,18 @@ function TrendArea({ points, times, color, h, cap, fmt, range, label }) {
 function ifaceTags(node) {
   const meta = Store.describe[node] || {};
   const pfx = (Store.panelSettings || {}).reserved?.iface_prefix || "swg_";
-  return Object.keys(meta).filter(ifn => !meta[ifn].system && !ifn.startsWith(pfx) && !ifn.startsWith("swg_")).map(ifn => {
+  const tagFor = (ifn, type, muted) => {
     const op = Store.ifaceOp[node + "|" + ifn];   // start/stop/restart in flight → show it here too (optimistic, set on click)
     if (op && op.phase === "busy") return html`<a class="tg tg-busy" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}><${Ic} i="clock"/>${ifn} ${IFOP_BUSY[op.verb] || op.verb}</a>`;
-    const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
-    const muted = nodeStale(node) || ifaceNotUp(node, ifn);
     return html`<a class=${"tg tg-" + type + (muted ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}>${ifn}</a>`;
-  });
+  };
+  const tags = Object.keys(meta).filter(ifn => !meta[ifn].system && !ifn.startsWith(pfx) && !ifn.startsWith("swg_"))
+    .map(ifn => tagFor(ifn, (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg", nodeStale(node) || ifaceNotUp(node, ifn)));
+  // WDTT interfaces are self-contained (snap.wdtt, not describe) — show them in the same interface list, WDTT-coloured
+  for (const w of ((Store.stats[node] || {}).wdtt || [])) {
+    if (w && w.iface) tags.push(tagFor(w.iface, "wdtt", nodeStale(node) || (w.active !== "active" && !w.await_restore)));
+  }
+  return tags;
 }
 
 // A ranked horizontal-bar list. rows: [{label, value, sub, color, href}].
@@ -9278,6 +11075,49 @@ function hostHoverBubble(anchor, contentFn) {
   anchor.addEventListener("mouseenter", show);
   anchor.addEventListener("mouseleave", later);
 }
+// Panel-version changelog bubble — an EXACT copy of the update-to-version hover bubble (same .hub-* markup + the same
+// self-hiding, hover-safe singleton mechanism, so it stays open while the pointer is over it), plus ‹ older / › newer
+// buttons to browse releases. Changelog fetched once and cached.
+let _changelogCache = null;   // {entries:[{version,date,notes[]}], current}
+let _changelogIdx = 0;
+function versionHoverBubble(anchor) {
+  let bub = null, t = null;
+  const hide = () => { if (bub && bub.matches(":hover")) { later(); return; } clearTimeout(t); if (bub) { bub.remove(); bub = null; } };
+  const later = () => { clearTimeout(t); t = setTimeout(hide, 140); };
+  const paint = () => {
+    if (!bub) return;
+    if (!_changelogCache) { bub.innerHTML = `<div class="hub-list"><div class="hub-row faint"><span class="hub-txt">Loading changelog…</span></div></div>`; return; }
+    const es = _changelogCache.entries || [];
+    if (!es.length) { bub.innerHTML = `<div class="hub-h"><span class="hub-title">Changelog</span></div><div class="hub-list"><div class="hub-row faint"><span class="hub-txt">No changelog available.</span></div></div>`; return; }
+    _changelogIdx = Math.max(0, Math.min(_changelogIdx, es.length - 1));
+    const e = es[_changelogIdx], cur = _changelogCache.current || "";
+    bub.innerHTML = hubEntryHtml({
+      titleHtml: `<b>${esc(e.version)}</b>${e.version === cur ? ' <span class="hub-cur">installed</span>' : ""}`,
+      date: e.date, notes: e.notes, nav: { older: _changelogIdx < es.length - 1, newer: _changelogIdx > 0 } });
+    bub.querySelectorAll(".hub-nav").forEach(b => b.addEventListener("click", ev => { ev.stopPropagation(); if (b.disabled) return; _changelogIdx += (+b.dataset.nav); paint(); }));
+  };
+  const show = () => {
+    clearTimeout(t);
+    if (bub && bub.isConnected) return;
+    document.querySelectorAll(".hostupd-bub.verbub").forEach(x => x.remove());   // kill any orphan from a header re-render
+    bub = document.createElement("div"); bub.className = "deppop hostupd-bub verbub";
+    document.body.appendChild(bub);
+    const r = anchor.getBoundingClientRect();
+    bub.style.top = Math.round(r.bottom + 8) + "px";
+    bub.style.left = Math.round(r.left) + "px";
+    bub.addEventListener("mouseenter", () => clearTimeout(t));
+    bub.addEventListener("mouseleave", later);
+    paint();
+    if (!_changelogCache) api.changelog().then(res => {
+      _changelogCache = (res && res.ok) ? res.data : { entries: [] };
+      const i = (_changelogCache.entries || []).findIndex(x => x.version === (_changelogCache.current || ""));
+      _changelogIdx = i >= 0 ? i : 0;
+      if (bub) paint();
+    });
+  };
+  anchor.addEventListener("mouseenter", show);
+  anchor.addEventListener("mouseleave", later);
+}
 // Bold the "lead" of a changelog line — the phrase up to its first sentence period, colon, or em-dash (capped so a
 // long clause can't bold half the row); otherwise the first few words. Returns [lead, rest].
 function noteLead(n) {
@@ -9289,13 +11129,20 @@ function noteLead(n) {
   if (cut < 0) { const w = n.split(" "); return [w.slice(0, 3).join(" "), w.slice(3).join(" ")]; }
   return [n.slice(0, cut + keep).trim(), n.slice(cut + keep).replace(/^\s*[—–-]\s*/, "").trim()];
 }
-function updBubbleHtml() {
-  const notes = Store.latestRemoteNotes || [];
-  const head = `<div class="hub-h"><span class="hub-title">What's new in <b>${esc(Store.latestRemote || "?")}</b></span>${Store.latestRemoteDate ? `<span class="hub-date">${esc(Store.latestRemoteDate)}</span>` : ""}</div>`;
-  const body = notes.length ? notes.map(n => { const [lead, rest] = noteLead(n);
+// ONE renderer for the changelog hover bubbles — the update-to-version pill AND the panel-version bubble show the
+// SAME changelog, so they share this. opts.nav={older,newer} adds ‹ older / › newer; opts.footer adds a CTA row.
+function hubEntryHtml({ titleHtml, date, notes, emptyNote, footer, nav }) {
+  const rows = (notes && notes.length) ? notes.map(n => { const [lead, rest] = noteLead(n);
       return `<div class="hub-row"><span class="hub-bul"></span><span class="hub-txt"><b>${esc(lead)}</b>${rest ? " " + esc(rest) : ""}</span></div>`; }).join("")
-    : `<div class="hub-row faint"><span class="hub-txt">See the changelog for what's new.</span></div>`;
-  return head + `<div class="hub-list">${body}</div>` + `<div class="hub-foot">Click to update this server.</div>`;
+    : `<div class="hub-row faint"><span class="hub-txt">${esc(emptyNote || "No notes for this release.")}</span></div>`;
+  const navGroup = nav ? `<span class="hub-nav-group"><button class="hub-nav" data-nav="1"${nav.older ? "" : " disabled"} title="Older release">‹ Prev</button><button class="hub-nav" data-nav="-1"${nav.newer ? "" : " disabled"} title="Newer release">Next ›</button></span>` : "";
+  return `<div class="hub-h"><span class="hub-title">${titleHtml}</span>${navGroup}${date ? `<span class="hub-date">${esc(date)}</span>` : ""}</div>`
+    + `<div class="hub-list">${rows}</div>`
+    + (footer ? `<div class="hub-foot">${esc(footer)}</div>` : "");
+}
+function updBubbleHtml() {
+  return hubEntryHtml({ titleHtml: `What's new in <b>${esc(Store.latestRemote || "?")}</b>`, date: Store.latestRemoteDate,
+    notes: Store.latestRemoteNotes || [], emptyNote: "See the changelog for what's new.", footer: "Click to update this server." });
 }
 function fixBubbleHtml() {
   const iss = serviceIssues(); if (!iss.length) return "";
@@ -9319,7 +11166,6 @@ function NodeCard({ n, reorder }) {
   const cpctRaw = cpuUtil ? h.cpu_pct : l1 / ((h && h.ncpu) || 1) * 100, cpct = Math.min(100, cpctRaw);   // cpctRaw (uncapped) colours the bar+number green→red like the graph; cpct caps the bar width
   const cpuLabel = cpuUtil ? "CPU" : "CPU load", cpuText = cpuUtil ? Math.round(cpctRaw) + "%" : l1.toFixed(2);
   const removing = n.removing;
-  const ndown = st !== "online" && !inProc(n.proc_status);    // genuinely not reporting (recover state) → mirror the detail: disable card actions
   const nblocked = st !== "online" || inProc(n.proc_status);  // down OR mid convert/re-install
   // list-card update tag: a co-located node updates WITH the panel (its "updating" comes from hostUpdating, not
   // its own proc_status) — mirror the detail's dh-ver so the LIST shows "updating" too, while a terminal wins.
@@ -9370,9 +11216,21 @@ function AccountScreen() {
     if (np && np !== np2) return setMsg({ ok: false, t: "New passwords don't match." });
     if (np && np.length < 8) return setMsg({ ok: false, t: "New password must be at least 8 characters." });
     setMsg({ ok: true, t: "Saving…" });
+    // Re-wrap the vault BEFORE the credential change lands. /api/account rotates the session secret, so the
+    // moment it returns our cookie is dead and subRewrap's own API calls 401 — it swallows that and returns
+    // false, silently leaving the vault sealed under the OLD password. Do it while the session is still
+    // valid, and roll back if the credential change is then rejected, so a wrong current password leaves
+    // the vault exactly as it was. Same SK throughout — no blob is ever re-encrypted.
+    let reWrapped = false;
+    if (np) {
+      if (!subSKCached()) { try { await subUnlock(cur); } catch (_) {} }   // not unlocked this session — the current password is right here
+      if (subSKCached()) { try { reWrapped = await subRewrap(np); } catch (_) { reWrapped = false; } }
+    }
     const r = await api.accountSave({ username: user.trim(), current_password: cur, new_password: np });
-    if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to update." });
-    if (np) await subRewrap(np);   // keep the config-encryption convenience cache unlockable with the new password
+    if (!r.ok) {
+      if (reWrapped) { try { await subRewrap(cur); } catch (_) {} }   // undo — the password never actually changed
+      return setMsg({ ok: false, t: r.error || "Failed to update." });
+    }
     setMsg({ ok: true, t: "Updated. Reloading — sign in with your new credentials…" });
     setTimeout(() => location.reload(), 1400);
   };
@@ -9380,7 +11238,7 @@ function AccountScreen() {
     <div class="crumb"><b>Account</b></div>
     <div class="card" style="max-width:520px">
       <h3 style="margin:0 0 4px">Admin login</h3>
-      <p class="hint" style="margin:0 0 18px">Change the panel username and password. Takes effect immediately — you'll be asked to sign in again. Changing the password also re-keys your <b>Encryption Vault</b> here, so stored configs and subscription links keep working (no re-issue).</p>
+      <p class="hint" style="margin:0 0 18px">Change the panel username and password. Takes effect immediately — you'll be asked to sign in again. Changing the password also reconnects your <b>Encryption Vault</b> to it — the encryption key itself is unchanged, so stored configs and subscription links keep working (no re-issue).</p>
       ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
       <div class="field"><label>Username</label><input value=${user} onInput=${e => setUser(e.target.value)} autocomplete="username"/></div>
       <div class="field"><label>Current password</label><input type="password" value=${cur} onInput=${e => setCur(e.target.value)} autocomplete="current-password" placeholder="required to confirm changes"/></div>
@@ -9703,31 +11561,43 @@ function AccessTLSCard({ onChange }) {
     { value: "__custom", label: "Custom IP…" }];
   const cfMode = (mode === "cloudflare" || mode === "cf15");
   const behindProxy = (mode === "" || mode === "skip");   // plain HTTP → a reverse proxy fronts panel + sub; their listen host:port is internal (nginx upstream), not a public address
-  const pBad = cfMode && pPort && !CF_HTTPS_PORTS.includes(+pPort);
-  const sBad = subsOn && cfMode && sPort && !CF_HTTPS_PORTS.includes(+sPort);
+  // THE host port a service is reached at: the process bind on bare-metal, the published port on docker.
+  // Direct TLS makes the url's port and that socket one thing, so the url owns it and no Port field is shown;
+  // behind a proxy the two are independent (the proxy bridges them) and the field is authoritative. A url with no
+  // port means the scheme default, matching _compute_public_url server-side. The empty-url branch is load-bearing:
+  // a fresh install has access.sub.url = "" with port 8444, and deriving 443 from "" reports dirty on load.
+  const _hostPortN = (url, rawPort, dflt) => {
+    const stored = parseInt(rawPort) || dflt;
+    const t = (url || "").trim();
+    const n = (behindProxy || !t) ? stored : (parseInt(urlPortOf(t), 10) || (/^http:\/\//i.test(t) ? 80 : 443));
+    return Math.max(1, Math.min(65535, n));
+  };
+  const _pPortN = () => _hostPortN(pUrl, pPort, 443);
+  const _sPortN = () => _hostPortN(sUrl, sPort, 8444);
+  // Cloudflare only proxies a fixed set of HTTPS ports, and the port that must be in that set is the one CLIENTS
+  // reach — the derived host port, not the raw field. cf15 puts this into `blocked`, so it gates, not hints.
+  const pBad = cfMode && !CF_HTTPS_PORTS.includes(_pPortN());
+  const sBad = subsOn && cfMode && !CF_HTTPS_PORTS.includes(_sPortN());
   // A port outside 1–65535 is invalid on ANY mode. Block it here — otherwise the port silently clamps to 65535 on
   // save while the URL keeps the out-of-range :port, a url/bind desync the change then fails on. (Server rejects too.)
   const _portRangeBad = p => { const s = String(p == null ? "" : p).trim(); return !!s && (!/^\d+$/.test(s) || +s < 1 || +s > 65535); };
-  const pPortRangeBad = _portRangeBad(pPort);
-  const sPortRangeBad = subsOn && _portRangeBad(sPort);
+  // Behind a proxy the field is authoritative, so range-check what was typed. In direct mode the port comes from
+  // the url, so check the url's port text — an out-of-range :99999 must not clamp silently to 65535 on save.
+  const pPortRangeBad = behindProxy ? _portRangeBad(pPort) : _portRangeBad(urlPortOf(pUrl));
+  const sPortRangeBad = subsOn && (behindProxy ? _portRangeBad(sPort) : _portRangeBad(urlPortOf(sUrl)));
   const hard = mode === "cf15";                                   // cf15 origin certs ONLY work behind CF → block
   // Direct TLS (not behind a proxy) → this service terminates its own TLS and is reached DIRECTLY, so a loopback
   // listen IP isn't publicly reachable (Cloudflare/clients can't hit 127.0.0.1) → 521. Only valid behind a proxy.
   const _isLoopback = (h) => /^(127\.\d|::1|localhost)/i.test((h || "").trim());
   const pLoopbackDirect = !behindProxy && _isLoopback(pHost);
   const sLoopbackDirect = subsOn && !behindProxy && _isLoopback(sHost);
-  // Direct TLS: the Port field and the URL's port are ONE socket → keep them in sync as the operator types in
-  // either. Behind a reverse proxy they're independent (nginx's external port ≠ the panel's internal bind), so no link.
-  const setPUrlLinked = v => { setPUrl(v); if (!behindProxy) setPPort(urlPortOf(v) || "443"); };
-  const setPPortLinked = v => { setPPort(v); if (!behindProxy) setPUrl(withUrlPort(pUrl, v)); };
-  const setSUrlLinked = v => { setSUrl(v); if (!behindProxy) setSPort(urlPortOf(v) || "443"); };
-  const setSPortLinked = v => { setSPort(v); if (!behindProxy) setSUrl(withUrlPort(sUrl, v)); };
-  // Switching INTO a TLS mode: the URL now carries the port, so fold the current Port field into the URL right away
-  // (so it's linked even if the operator set the port earlier, while still in reverse-proxy mode). Leaving TLS keeps
-  // the URL as-is (behind a proxy the URL's external port is independent of the internal bind).
+  // Crossing proxy → direct TLS: fold the internal port into the url, so the address the operator was already
+  // serving carries over into direct mode (where the url owns the port — see _hostPortN). The url and the port
+  // are never mirrored otherwise; one writable copy of the number, per mode.
   const setModeLinked = m => {
+    const toDirect = !(m === "" || m === "skip"), wasProxy = behindProxy;
     setMode(m);
-    if (!(m === "" || m === "skip")) { setPUrl(withUrlPort(pUrl, pPort)); if (subsOn) setSUrl(withUrlPort(sUrl, sPort)); }
+    if (toDirect && wasProxy) { setPUrl(withUrlPort(pUrl, pPort)); if (subsOn) setSUrl(withUrlPort(sUrl, sPort)); }
   };
   const wasBehindProxy = (orig.mode === "" || orig.mode === "skip");
   const modeFlip = behindProxy !== wasBehindProxy;                      // the Type change crosses the reverse-proxy ↔ direct-TLS line (the panel's own socket flips HTTP↔HTTPS)
@@ -9746,7 +11616,7 @@ function AccessTLSCard({ onChange }) {
         options=${ipOpts(host, withLocal)}/></div>
       ${val === "__custom" ? html`<input class=${"mt8" + (bad ? " bad" : "")} type="text" placeholder="e.g. 203.0.113.5" value=${host} onInput=${e => setHost(e.target.value)}/>` : null}</div>`;
   };
-  const portField = (port, setPort, bad, badTitle) => html`<div class="field"><label>Port${bad ? html` <span class="ciw" title=${badTitle || "Cloudflare can't reach this port"}><${Ic} i="warn"/></span>` : null}</label>
+  const portField = (port, setPort, bad, badTitle) => html`<div class="field"><label>Internal port${bad ? html` <span class="ciw" title=${badTitle || "Cloudflare can't reach this port"}><${Ic} i="warn"/></span>` : null}</label>
     <input class=${bad ? "bad" : ""} type="text" value=${port} onInput=${e => setPort(e.target.value)}/></div>`;
   const loopNote = (which) => html`<div class="notice err"><${Ic} i="warn"/><span>
     <b>Loopback won't work with direct TLS.</b> The ${which} terminates its own TLS and is reached <b>directly</b> — Cloudflare / clients connect straight to this box — so a <span class="mono">127.0.0.1</span> Listen IP isn't reachable from outside and fails publicly (Cloudflare shows <b>521</b>). Set the Listen IP to <span class="mono">0.0.0.0</span> (a public interface). Loopback is only correct <b>behind a reverse proxy</b> (TLS mode “None”). Save is disabled until this is fixed.</span></div>`;
@@ -9754,8 +11624,8 @@ function AccessTLSCard({ onChange }) {
   // so one has to make way for the other. Spell out exactly what the operator must do around the Save.
   const flipNote = () => html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><div style="min-width:0">
     ${flipToTls
-      ? html`<b>Switching to direct TLS — a coordinated cutover.</b> The panel will terminate its <b>own</b> TLS on <span class="mono">${(pHost.trim() || "0.0.0.0")}:${_pPortN()}</span>, so set the Listen IP to a <b>public</b> address (<span class="mono">0.0.0.0</span>) and the port clients reach. Your reverse proxy currently owns that port — <b>free it first</b> (stop nginx/Caddy there); the panel and the proxy can't both hold it. On Save the panel binds the new HTTPS address <b>alongside</b> the current one and you confirm from it — nodes then reach the panel directly. Nothing is dropped until you confirm.`
-      : html`<b>Switching to a reverse proxy — a coordinated cutover.</b> The panel will serve <b>plain HTTP</b> on <span class="mono">${(pHost.trim() || "127.0.0.1")}:${_pPortN()}</span> for your proxy to front, so set the Listen IP to <span class="mono">127.0.0.1</span> and an internal port. Stand up nginx/Caddy to terminate TLS and <span class="mono">proxy_pass</span> to that address (sample below), then confirm — the panel keeps serving its current direct-TLS address until you do.`}
+      ? html`<b>Switching to direct TLS — a coordinated cutover.</b> The panel will terminate its <b>own</b> TLS on <span class="mono">${(pHost.trim() || "0.0.0.0")}:${_pPortN()}</span> — with direct TLS the port comes from the <b>Public URL</b> (there is no separate internal port), so put the port clients reach in the URL and set the Listen IP to a <b>public</b> address (<span class="mono">0.0.0.0</span>). Your reverse proxy currently owns that port — <b>free it first</b> (stop nginx/Caddy there); the panel and the proxy can't both hold it. On Save the panel binds the new HTTPS address <b>alongside</b> the current one and you confirm from it — nodes then reach the panel directly. Nothing is dropped until you confirm.`
+      : html`<b>Switching to a reverse proxy — a coordinated cutover.</b> The panel will serve <b>plain HTTP</b> on <span class="mono">${(pHost.trim() || "127.0.0.1")}:${_pPortN()}</span> for your proxy to front. Behind a proxy the listen address is its own setting — an <b>Internal port</b> field appears below; set it and the Listen IP to <span class="mono">127.0.0.1</span>, and leave the Public URL as the address your proxy serves. Stand up nginx/Caddy to terminate TLS and <span class="mono">proxy_pass</span> to that address (sample below), then confirm — the panel keeps serving its current direct-TLS address until you do.`}
     </div></div>`;
   const cfNote = html`<div class=${"notice " + (hard ? "err" : "warn")}><${Ic} i="warn"/><span>
     Cloudflare's proxy only reaches origin HTTPS on ${CF_HTTPS_PORTS.join(", ")}. ${hard ? "A cf15 origin certificate is only valid behind Cloudflare, so this port won't work — pick one of those." : "If this panel is behind Cloudflare, this port won't be reachable."}<br/>
@@ -9765,14 +11635,12 @@ function AccessTLSCard({ onChange }) {
   // ── ONE action. The operator never chooses "save" vs "apply" or an order: this saves the config, then runs
   //    exactly the live-applies the change requires, safely. A panel address/cert change is applied with the
   //    dual-listen + browser-confirm dance (a wrong value auto-reverts — it can never lock you out). ──
-  const _pPortN = () => Math.max(1, Math.min(65535, parseInt(pPort) || 443));
-  const _sPortN = () => Math.max(1, Math.min(65535, parseInt(sPort) || 8444));
   // canonical public URL for change-detection/save: behind a proxy the URL's external port stays; with direct TLS
   // it's stripped (the listen Port field owns the port), so a portless↔ported URL isn't seen as a spurious change.
   const _canonUrl = raw => normPublicUrl(raw);   // URLs always keep their port (normPublicUrl only hides the scheme-default 443/80)
-  const panelBindChanged = () => (pHost.trim() || "0.0.0.0") !== (orig.pHost || "0.0.0.0") || _pPortN() !== (+orig.pPort || 443);
+  const panelBindChanged = () => (pHost.trim() || "0.0.0.0") !== (orig.pHost || "0.0.0.0") || _pPortN() !== _origPPortN();
   const panelUrlChanged  = () => _canonUrl(pUrl) !== _canonUrl(orig.pUrl);   // the public address everyone dials — a change is verified (confirm) before it takes over
-  const subBindChanged   = () => (sHost.trim() || "0.0.0.0") !== (orig.sHost || "0.0.0.0") || _sPortN() !== (+orig.sPort || 8444);
+  const subBindChanged   = () => (sHost.trim() || "0.0.0.0") !== (orig.sHost || "0.0.0.0") || _sPortN() !== _origSPortN();
   const subUrlChanged    = () => _canonUrl(sUrl) !== _canonUrl(orig.sUrl);   // the sub public URL's path is swg-sub's mount base → a change must restart it
   const certChanged      = () => mode !== (orig.mode || "") || email.trim() !== (orig.email || "") || !!cfTok || !!cfOrig;
   const urlChanged       = () => pUrl.trim() !== (orig.pUrl || "") || sUrl.trim() !== (orig.sUrl || "");
@@ -9800,8 +11668,12 @@ function AccessTLSCard({ onChange }) {
   // port the other still holds — a single host can't do that atomically. Detect it and guide two saves instead
   // of attempting a doomed order (which is what produced the "Address already in use" + both-on-443 mess).
   const _overlap = (a, b) => { a = (a || "").trim() || "0.0.0.0"; b = (b || "").trim() || "0.0.0.0"; return a === b || a === "0.0.0.0" || b === "0.0.0.0"; };
-  const subWantsPanelLive = () => subsOn && subBindChanged() && _sPortN() === (+orig.pPort || 443) && _overlap(sHost, orig.pHost);   // sub's target is the panel's current port
-  const panelWantsSubLive = () => subsOn && panelBindChanged() && _pPortN() === (+orig.sPort || 8444) && _overlap(pHost, orig.sHost); // panel's target is the sub's current port
+  // Compare derived-against-derived: in direct mode `orig.pPort` is the stored value while the live figure comes
+  // from the url, so a raw stored number would mis-fire this guard in both directions.
+  const _origPPortN = () => _hostPortN(orig.pUrl, orig.pPort, 443);
+  const _origSPortN = () => _hostPortN(orig.sUrl, orig.sPort, 8444);
+  const subWantsPanelLive = () => subsOn && subBindChanged() && _sPortN() === _origPPortN() && _overlap(sHost, orig.pHost);   // sub's target is the panel's current port
+  const panelWantsSubLive = () => subsOn && panelBindChanged() && _pPortN() === _origSPortN() && _overlap(pHost, orig.sHost); // panel's target is the sub's current port
 
   // Wait for an in-flight subscription apply to reach a terminal state — so the panel apply below never binds
   // a port while the sub is still vacating it (the race that surfaced as "Address already in use").
@@ -9841,8 +11713,10 @@ function AccessTLSCard({ onChange }) {
     didPanelRef.current = needPanel; didSubRef.current = needSub;   // so the status poll reacts only to what THIS save changes (the shared status is stale for the other)
     cancelledRef.current = false;   // fresh apply — a later revert is a timeout unless the operator clicks Cancel
     setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
-    const npUrl = normPublicUrl(behindProxy ? pUrl : withUrlPort(pUrl, pPort)),   // TLS: the URL carries the Port field's port (one socket) — fold it in as a backstop;
-          nsUrl = normPublicUrl(behindProxy ? sUrl : withUrlPort(sUrl, sPort));    // reverse-proxy: the URL's external port is independent, left as typed.
+    // No fold: the url is what the operator typed, and in direct mode it already carries the port (it IS the port).
+    // Folding a separate Port field in was the backstop for the old two-copies design; with one source of truth it
+    // could only ever overwrite the url with a stale number.
+    const npUrl = normPublicUrl(pUrl), nsUrl = normPublicUrl(sUrl);
     setPUrl(npUrl); setSUrl(nsUrl);                                    // reflect it back in the fields
     const r = await api.panelSettings({ access: {
       panel: { url: npUrl, host: pHost.trim() || "0.0.0.0", port: _pPortN() },
@@ -9860,7 +11734,10 @@ function AccessTLSCard({ onChange }) {
     // subscription server first (a background restart — it can never lock you out of the panel). Don't start
     // polling yet: the panel apply below arms its pending, and we want the very first poll tick to already see
     // it (so the confirm-redirect fires immediately, not after a wasted interval).
-    if (needSub) {
+    // …or when its certificate is missing/wrong, even though the address is unchanged: apply-sub is what issues
+    // it, so without this a broken cert could only be repaired by editing the address to something else and back.
+    // Direct TLS only — Store.subCert is {} behind a reverse proxy, where the cert isn't ours to issue.
+    if (needSub || (Store.subCert || {}).needs_issue) {
       setMsg({ ok: true, t: "Updating the subscription server…" });
       await api.post("/api/access/apply-sub", {});
       const ss = await _awaitSub();               // let it settle before the panel apply — no bind race
@@ -9993,8 +11870,11 @@ function AccessTLSCard({ onChange }) {
         return setMsg({ ok: true, t: r.message || ("Restarting the panel container. Reconnect at " + (r.new_url || dockerRestart.new_url) + " once it's back.") });
       }
       setBusy(false);
-      setDockerRestart({ ...dockerRestart, error: (r && r.error) || "The dry-run failed — nothing was changed." });
-      return setMsg({ ok: false, t: (r && r.error) || "The dry-run failed — nothing was changed." });
+      // ONE rendering, in the confirm box — that is where Confirm/Revert live, so the failure belongs beside the
+      // actions it applies to. Setting the page banner to the SAME string as well showed the identical sentence
+      // twice on one screen (three times, with the box's own lead-in and trailing hint duplicating the server's).
+      setDockerRestart({ ...dockerRestart, error: (r && r.error) || "The panel couldn't verify the new address." });
+      return setMsg(null);
     } catch (_) { setBusy(false); setMsg({ ok: false, t: "Couldn't run the dry-run." }); }
   };
   // Revert step 1 before any recreate: drop the candidate the nodes were dual-connecting to and roll settings back.
@@ -10035,7 +11915,6 @@ function AccessTLSCard({ onChange }) {
             ? html`<a class="btn btn-primary" href=${(String(rpSwap.new_url || "").replace(/\/+$/, "")) + "/?__applyurl=" + encodeURIComponent(rpSwap.nonce || "")} target="_blank" rel="noopener" onClick=${() => { setPolling(true); setMsg({ ok: true, t: "Opening the new address to confirm your proxy routes it here — if it loads, the switch completes and nodes move over." }); }}>Confirm — open the new address ↗</a>`
             : html`<button class="btn btn-primary" disabled=${busy} onClick=${confirmRpSwapGuarded}>Confirm — drop the old port</button>`)}<button class="btn btn-ghost" disabled=${busy} onClick=${revertRpSwap}>Revert</button></div>
     </div></div>` : null}
-    <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. ${behindProxy ? html`Behind a reverse proxy the listen host/port are <b>internal</b> (your proxy's upstream, not a public address). Changing the port binds the new one <b>alongside</b> the old — both keep serving — so you can re-point your proxy and confirm to drop the old port without any downtime.` : "A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out."}</p>
     ${dockerRestart ? html`<div class="notice ${dockerRestart.error ? "warn" : ""}" style=${dockerRestart.error ? "margin:0 0 14px" : "margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"}><${Ic} i=${dockerRestart.error ? "warn" : "info"}/><div style="min-width:0">
       ${dockerRestart.port_move
         ? html`<b>Confirm the internal-port change.</b> The public address doesn't change, so the nodes aren't affected — but the panel will restart onto a new internal port, so your <b>reverse proxy must be re-pointed</b> to it. When you Confirm, the panel dry-runs the new port (checks it's free), restarts onto it, then waits for you to re-point the proxy. If it stays unreachable it <b>rolls back to the current port automatically</b>.`
@@ -10045,7 +11924,7 @@ function AccessTLSCard({ onChange }) {
         : dockerRestart.url_changed
         ? html`<ul style="margin:8px 0 2px;padding-left:18px"><li>New address <span class="mono" style="font-weight:700;color:var(--online)">${dockerRestart.new_url}</span> — make sure DNS / your firewall / Cloudflare route it to this panel.</li></ul>`
         : null}
-      ${dockerRestart.error ? html`<div class="notice warn" style="margin:8px 0 0"><${Ic} i="warn"/><div style="min-width:0"><b>Dry-run failed — nothing was changed.</b> ${dockerRestart.error} Fix it and try again, or revert.</div></div>` : null}
+      ${dockerRestart.error ? html`<div class="notice warn" style="margin:8px 0 0"><${Ic} i="warn"/><div style="min-width:0"><b>Dry-run failed.</b> ${dockerRestart.error}</div></div>` : null}
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">${drArmIn > 0
         ? html`<button class="btn btn-primary" disabled title="The nodes are still learning the new address">Confirm & restart in ${drArmIn}s…</button>`
         : html`<button class="btn btn-primary" disabled=${busy} onClick=${confirmDockerRestart}>${busy ? "Checking…" : "Confirm & restart"}</button>`}<button class="btn btn-ghost" disabled=${busy} onClick=${revertDockerRestart}>Revert</button></div>
@@ -10086,9 +11965,13 @@ function AccessTLSCard({ onChange }) {
     ${modeFlip ? flipNote() : null}
 
     <div class="seclabel">Panel address</div>
-    <p class="hint" style="margin:0 0 12px">Where the panel itself is reached. If it's directly reachable, the URL's host and this port should match; behind a reverse proxy / Cloudflare, the URL is the public address.</p>
-    <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com  or  https://example.com/swgpanel" value=${pUrl} onInput=${e => setPUrlLinked(e.target.value)}/></div>
-    <div class="fieldrow">${ipField(pHost, setPHost, true, pLoopbackDirect)}${portField(pPort, setPPortLinked, pBad || pPortRangeBad, pPortRangeBad ? "Port must be a number between 1 and 65535" : null)}</div>
+    <p class="hint" style="margin:0 0 12px">Where the panel itself is reached.${behindProxy
+      ? html` Your proxy fronts this URL and forwards to the internal address below — the two are independent.`
+      : html` The panel serves this address directly, so <b>the URL carries the port</b> (there is no separate internal port to set).`}</p>
+    <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com  or  https://example.com/swgpanel" value=${pUrl} onInput=${e => setPUrl(e.target.value)}/></div>
+    <div class="fieldrow">${ipField(pHost, setPHost, true, pLoopbackDirect)}${behindProxy
+      ? portField(pPort, setPPort, pBad || pPortRangeBad, pPortRangeBad ? "Port must be a number between 1 and 65535" : null)
+      : null}</div>
     ${pLoopbackDirect ? loopNote("panel") : (pBad ? cfNote : null)}
     ${localPort > 0 ? html`<div class="localnode-note">This box's own node reaches the panel on <b class="mono">127.0.0.1:${localPort}</b> — a dedicated plain-HTTP loopback port, served at the root. It's set at install and a public address, port, path, or certificate change never moves it, so the co-located node never loses the panel. To change it, re-run the installer.</div>` : null}
     ${(behindProxy && (panelBindChanged() || panelUrlChanged())) ? html`<div class="notice" style="margin:8px 0 12px"><${Ic} i="info"/><div style="min-width:0">
@@ -10106,9 +11989,12 @@ function AccessTLSCard({ onChange }) {
     </details>` : null}
 
     ${subsOn ? html`<div class="seclabel">Subscription address</div>
-      <p class="hint" style="margin:0 0 12px">Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).</p>
-      <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com  or  https://example.com/swgsub" value=${sUrl} onInput=${e => setSUrlLinked(e.target.value)}/></div>
-      <div class="fieldrow">${ipField(sHost, setSHost, true, sLoopbackDirect)}${portField(sPort, setSPortLinked, sBad || sPortRangeBad, sPortRangeBad ? "Port must be a number between 1 and 65535" : null)}</div>
+      <p class="hint" style="margin:0 0 12px">Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).${behindProxy
+        ? "" : html` As with the panel, <b>the URL carries the port</b>.`}</p>
+      <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com  or  https://example.com/swgsub" value=${sUrl} onInput=${e => setSUrl(e.target.value)}/></div>
+      <div class="fieldrow">${ipField(sHost, setSHost, true, sLoopbackDirect)}${behindProxy
+        ? portField(sPort, setSPort, sBad || sPortRangeBad, sPortRangeBad ? "Port must be a number between 1 and 65535" : null)
+        : null}</div>
       ${sLoopbackDirect ? loopNote("subscription server") : (sBad ? cfNote : null)}
       ${(behindProxy && (subBindChanged() || subUrlChanged())) ? html`<div class="notice" style="margin:8px 0 12px"><${Ic} i="info"/><div style="min-width:0">
         <b>Behind a reverse proxy.</b> Point your proxy at <span class="mono">${(sHost.trim() || "127.0.0.1")}:${_sPortN()}</span> and make sure it serves this URL's path. swg-sub picks it up on Save — a path or domain change reloads it live (no downtime; existing links keep working during a grace), a host/port change restarts it. If the panel has no root helper, it saves and asks you to run <span class="mono">systemctl reload swg-sub</span>.
@@ -10142,6 +12028,7 @@ function SubVaultCard() {
   const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
   const [sk, setSk] = useState(null);                    // the shown-once Subscription Key
   const [resetMode, setResetMode] = useState(false); const [confirm, setConfirm] = useState("");
+  const [shown, setShown] = useState(null);   // the encryption key, revealed on demand while the vault is unlocked
   const load = () => api.subVault().then(r => setState({ loading: false, exists: !!(r && r.ok && r.data && r.data.exists) })).catch(() => setState({ loading: false, exists: false }));
   useEffect(() => { load(); }, []);
   const create = async () => {
@@ -10173,12 +12060,25 @@ function SubVaultCard() {
     </div><//>`;
   return html`<${Fragment}>
     <div class="notice ok" style="margin-bottom:8px"><${Ic} i="check"/><span>Your <b>Encryption Vault</b> is configured — stored configs are wrapped automatically, and their QRs (and any subscription links) keep working across your password changes.</span></div>
+    <p class="hint" style="margin:0 0 8px">The vault opens with your <b>panel password</b>, which follows every change you make in the panel. Your <b>encryption key</b> opens it too — that's what gets you back in if the panel password is ever reset on the server with <b class="mono">swg-passwd</b>, so keep a copy somewhere safe.</p>
+    ${shown ? html`<div class="notice ok"><div style="min-width:0">
+        <b>Your encryption key.</b> Anyone holding this can read every stored config — treat it like a password and store it in a password manager.
+        <div class="tokenbox" style="margin:8px 0;word-break:break-all">${shown}</div>
+        <div class="chiprow">
+          <button class="btn btn-mini" onClick=${() => copy(shown, "Encryption key copied")}><${Ic} i="copy"/> Copy</button>
+          <button class="btn btn-mini" onClick=${() => downloadConf(shown, "swg-config-key")}><${Ic} i="download"/> Download</button>
+          <span class="grow"></span>
+          <button class="btn btn-ghost btn-mini" onClick=${() => setShown(null)}>Hide</button>
+        </div></div></div>` : null}
     ${resetMode
       ? html`<div class="notice warn"><div style="min-width:0"><b>Reset drops all stored encrypted configs and invalidates every subscription URL.</b> You'll set up a new encryption key afterwards, then re-issue affected peers. Type <b>RESET</b> to confirm.
           <div class="chiprow" style="margin-top:8px"><input type="text" placeholder="RESET" value=${confirm} onInput=${e => setConfirm(e.target.value)} style="max-width:120px"/>
             <button class="btn btn-danger btn-mini" disabled=${busy || confirm !== "RESET"} onClick=${doReset}>Reset encryption</button>
             <button class="btn btn-ghost btn-mini" onClick=${() => { setResetMode(false); setConfirm(""); }}>Cancel</button></div></div></div>`
-      : html`<div style="text-align:right"><button class="btn btn-ghost btn-mini danger" onClick=${() => setResetMode(true)}>Reset encryption…</button></div>`}
+      : html`<div class="chiprow">${shown ? null : html`<button class="btn btn-ghost btn-mini" disabled=${!subSKCached()}
+            title=${subSKCached() ? "Show the key again — it never leaves your browser" : "Unlock the vault first to reveal its key"}
+            onClick=${() => setShown(subKeyB64())}><${Ic} i="key"/> Show encryption key</button>`}<span class="grow"></span>
+          <button class="btn btn-ghost btn-mini danger" onClick=${() => setResetMode(true)}>Reset encryption…</button></div>`}
   <//>`;
 }
 // The one-time "Encrypt stored configs" migration prompt — shown in Client configs whenever LEGACY plaintext
@@ -10299,7 +12199,7 @@ function PanelSettingsScreen() {
   const [hidden, setHidden] = useState(new Set(ps.hidden_categories || []));   // built-in categories hidden from the routing dropdown
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: [...(l.domains || []), ...(l.cidrs || [])].join(", ") })));
   const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
-  const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8"]));   // forks offered in the install picker
+  const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || TURN_FORKS_DEFAULT));   // forks offered in the install picker
   const [vkLinkS, setVkLinkS] = useState(ps.vk_link || "");   // VK call link baked into generated turn-proxy client configs
   // ---- themed colour pickers ({dark,light} each) — Interfaces / Display / Turn sections ----
   const asThemed = (v, dd, dl) => (v && typeof v === "object") ? { dark: v.dark || dd, light: v.light || dl } : { dark: v || dd, light: v || dl };
@@ -10327,7 +12227,8 @@ function PanelSettingsScreen() {
   const [tuAt, setTuAt] = useState(_tu.at || "04:00");
   const [ifaceColors, setIfaceColors] = useState(() => ({
     wg: asThemed((ps.iface_colors || {}).wg, IFACE_COLOR_DEFAULTS.wg.dark, IFACE_COLOR_DEFAULTS.wg.light),
-    awg: asThemed((ps.iface_colors || {}).awg, IFACE_COLOR_DEFAULTS.awg.dark, IFACE_COLOR_DEFAULTS.awg.light) }));
+    awg: asThemed((ps.iface_colors || {}).awg, IFACE_COLOR_DEFAULTS.awg.dark, IFACE_COLOR_DEFAULTS.awg.light),
+    wdtt: asThemed((ps.iface_colors || {}).wdtt, IFACE_COLOR_DEFAULTS.wdtt.dark, IFACE_COLOR_DEFAULTS.wdtt.light) }));
   const [themeColorS, setThemeColorS] = useState(clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false));         // dark-mode accent (shown = applied)
   const [themeColorLightS, setThemeColorLightS] = useState(clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true));   // light-mode accent
   const themeVal = { dark: themeColorS, light: themeColorLightS };   // the theme accent as one themed swatch
@@ -10342,19 +12243,27 @@ function PanelSettingsScreen() {
   // overrides derived from a raw source (state OR the stored panel-settings), normalized identically so a legacy
   // single-colour value in panel-settings compares equal to its normalized {dark,light} form (no phantom "dirty").
   const forkOvFrom = src => { const o = {}; for (const f of turnForkList()) { const t = asThemed((src || {})[f.id], f.color, f.colorL); if (!sameThemed(t, f.color, f.colorL)) o[f.id] = t; } return o; };
-  const ifaceOvFrom = src => { const o = {}; for (const k of ["wg", "awg"]) { const t = asThemed((src || {})[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light); if (!sameThemed(t, IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light)) o[k] = t; } return o; };
+  const ifaceOvFrom = src => { const o = {}; for (const k of ["wg", "awg", "wdtt"]) { const t = asThemed((src || {})[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light); if (!sameThemed(t, IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light)) o[k] = t; } return o; };
   const forkColorOverrides = () => forkOvFrom(forkColors);
   const ifaceColorOverrides = () => ifaceOvFrom(ifaceColors);
   const statusCondsOut = () => ({ blocked: statusConds.blocked, faulty: statusConds.faulty });
   const themeColorOut = () => themeColorS.toLowerCase() === THEME_COLOR_DEFAULT.toLowerCase() ? "" : themeColorS;
   const themeColorLightOut = () => themeColorLightS.toLowerCase() === THEME_COLOR_LIGHT_DEFAULT.toLowerCase() ? "" : themeColorLightS;
   // deployed version(s) of a fork across the fleet (from snapshots) — "" if it's never been installed
-  const forkVersions = fid => { const v = new Set(); for (const snap of Object.values(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version); return [...v]; };
+  // deployed versions of a fork across the fleet. Classic forks come from snap.turn_proxies; WDTT forks own their
+  // interface so they live in snap.wdtt (keyed by the instance's `fork`), and don't report a binary version yet →
+  // show "installed" so a deployed WDTT fork reads as used, not "not yet used".
+  const forkVersions = fid => { const v = new Set();
+    for (const snap of Object.values(Store.stats || {})) {
+      for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version);
+      for (const w of (snap.wdtt || [])) if (w && w.fork === fid) v.add(w.version || "installed");
+    }
+    return [...v]; };
   // per-NODE view of a fork for the hover bubble: one row per node carrying its version + whether it's mid-update
   // (a shared per-fork binary → one version/node; updating if ANY of its instances is installing or Update-clicked).
   const forkNodeStates = fid => {
     const m = {};   // nodeId -> {version, installing (real, clears when done), updatePending (Update-clicked, 120s hint)}
-    for (const [nid, snap] of Object.entries(Store.stats || {}))
+    for (const [nid, snap] of Object.entries(Store.stats || {})) {
       for (const tp of (snap.turn_proxies || [])) {
         if (!tp.service || turnFork(tp.service) !== fid) continue;
         const cur = m[nid] || { version: "", installing: false, updatePending: false };
@@ -10364,6 +12273,14 @@ function PanelSettingsScreen() {
         if (turnUpdating[uk] && Date.now() < turnUpdating[uk]) cur.updatePending = true;
         m[nid] = cur;
       }
+      for (const w of (snap.wdtt || [])) {   // WDTT instances (self-contained; keyed by fork, no version string)
+        if (!w || w.fork !== fid) continue;
+        const cur = m[nid] || { version: "", installing: false, updatePending: false };
+        cur.version = w.version || cur.version || "installed";
+        if (w.active && w.active !== "active") cur.installing = true;   // starting / awaiting restore
+        m[nid] = cur;
+      }
+    }
     return Object.entries(m).map(([node, v]) => ({ node, ...v })).sort((a, b) => Store.nodeName(a.node).localeCompare(Store.nodeName(b.node)));
   };
   const [turnCheck, setTurnCheck] = useState({});   // {forkId: {status:'checking'|'uptodate'|'update', latest}}
@@ -10381,7 +12298,19 @@ function PanelSettingsScreen() {
   };
   // update every deployed instance of a fork to `latest` — reinstall (re-download binary) on each (node,service)
   const updateFork = async (fid, latest) => {
-    const owner = (turnForkList().find(x => x.id === fid) || {}).owner || "";
+    const fork = turnForkList().find(x => x.id === fid) || {};
+    if (fork.kind === "wdtt") {   // WDTT: release each instance's hold → the node swaps its shared binary to the current published build
+      const wt = [];
+      for (const [nid, snap] of Object.entries(Store.stats || {})) for (const w of (snap.wdtt || [])) if (w && w.fork === fid && w.iface) wt.push({ node: nid, iface: w.iface });
+      if (!wt.length) return;
+      setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest } }));
+      for (const t of wt) await api.wdttVersion({ node: t.node, iface: t.iface, ver: "" });
+      await Store.poll();
+      setTurnCheck(c => ({ ...c, [fid]: {} }));
+      toast("Update requested on " + wt.length + " WDTT server" + (wt.length > 1 ? "s" : "") + " — each node applies it on its next sync.", "ok");
+      return;
+    }
+    const owner = fork.owner || "";
     const targets = [];
     for (const [nid, snap] of Object.entries(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid) targets.push({ node: nid, service: tp.service });
     if (!targets.length) return;
@@ -10548,9 +12477,21 @@ function PanelSettingsScreen() {
     if (Object.keys(blockProvEdits).length) { await loadBlockCatalog(true); setBlockProvEdits({}); }   // Filters-providers toggles committed via panelSettings above → refresh catalog + clear deltas
     // credentials (if changed) — last, since a username/password change re-auths and forces a reload
     if (secChanged()) {
+      // Re-wrap the vault BEFORE the credential change lands. /api/account rotates the session secret, so the
+      // moment it returns our cookie is dead and subRewrap's own API calls 401 — it swallows that and returns
+      // false, silently leaving the vault sealed under the OLD password. Do it while the session is still
+      // valid, and roll back if the credential change is then rejected, so a wrong current password leaves
+      // the vault exactly as it was. Same SK throughout — no blob is ever re-encrypted.
+      let reWrapped = false;
+      if (secNp) {
+        if (!subSKCached()) { try { await subUnlock(secCur); } catch (_) {} }   // not unlocked this session — the current password is right here
+        if (subSKCached()) { try { reWrapped = await subRewrap(secNp); } catch (_) { reWrapped = false; } }
+      }
       const ar = await api.accountSave({ username: secUser.trim(), current_password: secCur, new_password: secNp });
-      if (!ar.ok) return setMsg({ ok: false, t: ar.error || "Couldn't update credentials." });
-      if (secNp) await subRewrap(secNp);   // keep the config-encryption convenience cache unlockable with the new password
+      if (!ar.ok) {
+        if (reWrapped) { try { await subRewrap(secCur); } catch (_) {} }   // undo — the password never actually changed
+        return setMsg({ ok: false, t: ar.error || "Couldn't update credentials." });
+      }
       setMsg({ ok: true, t: "Saved. Reloading — sign in with your new credentials…" });
       return setTimeout(() => location.reload(), 1400);
     }
@@ -10619,18 +12560,6 @@ function PanelSettingsScreen() {
     body: html`Delete <b>${l.title || "Untitled list"}</b>? It's removed from <b>every node</b> it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.`,
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
     const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Access & TLS"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"]];
-  const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
-  const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
-  const entryPreview = t => {   // as many WHOLE entries as fit ~one line, then a "(N more)" tail — never cuts an entry
-    const items = (t || "").split(/[\s,]+/).filter(Boolean);
-    const shown = []; let len = 0;
-    for (const it of items) {
-      const add = (shown.length ? 2 : 0) + it.length;   // ", " separator
-      if (shown.length && len + add > 52) break;         // always keep ≥1, then stop before overflow
-      shown.push(it); len += add;
-    }
-    return { text: shown.join(", "), more: items.length - shown.length };
-  };
   // per-node context: the node whose mode/lists/mesh/egress we're editing — defaults to the first node (no "default")
   const [selNode, setSelNode] = useState(() => ((Store.nodes || [])[0] || {}).id || "");
   const perNodeSection = section === "routing" || section === "mesh" || section === "nodesegress";
@@ -10640,9 +12569,6 @@ function PanelSettingsScreen() {
   const savedMode = (nodeRec && nodeRec.routing_mode) || "kernel"; // what the node is ACTUALLY running (drives the status runbar — only changes on Save)
   const ipLearn = nv(selNode, "ip_learning") !== false;           // per-node "remember learned IPs" toggle (default on)
   const setIpLearn = v => setNV(selNode, { ip_learning: v });
-  const hostDegraded = savedMode === "sni_kernel" && (((Store.stats[selNode] || {}).smartroute || {}).engine === "sni_user");   // → HostHealth shows a 2nd (note) line
-  const ecOf = nid => nv(nid, "enabled_categories");               // per-node enabled built-ins (null = all)
-  const catOn = id => { const ec = ecOf(selNode); return !ec || ec.includes(id); };
     // node-lens for the provider catalog: catalog_cats[] = the categories the operator opted THIS node into (staged; commits on Save)
   const ccOf = nid => nv(nid, "catalog_cats") || [];
   const addCatalogCat = id => { if (!id || id === "all" || (lists || []).some(l => l.id === id) || id === "custom") return; setNV(selNode, { catalog_cats: [...new Set([...ccOf(selNode), id])] }); };   // provider cats + curated presets (bare id) are both first-class opt-ins
@@ -10674,7 +12600,7 @@ function PanelSettingsScreen() {
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || []) || Object.keys(blockEdits).length > 0 || blockRemoved.length > 0) :
-    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
+    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
     sec === "security" ? secChanged() :
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
@@ -10798,7 +12724,7 @@ function PanelSettingsScreen() {
             ${[...lists].sort((a, b) => (a.title || "").toLowerCase().localeCompare((b.title || "").toLowerCase())).map(l => { const cap = customCaps(l);
               return html`<div class="lgrow" key=${l._rid}>
                 <div class="lg-pull"><${Switch} on=${customOnNode(l, selNode)} title=${"Enable on " + (nodeRec ? nodeRec.name : "this node")} onChange=${v => setCustomOnNode(l, selNode, v)}/></div>
-                <div class="lg-cat"><div class="lg-catmain"><button class="lg-title asbtn" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button><span class="catpick-src" style=${"--pc:" + providerColor("custom")}>Custom</span></div><button class="lg-id asbtn" onClick=${() => openList(l)}>edit</button></div>
+                <div class="lg-cat"><div class="lg-catmain"><button class="lg-title" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button><span class="catpick-src" style=${"--pc:" + providerColor("custom")}>Custom</span></div><button class="lg-id" onClick=${() => openList(l)}>edit</button></div>
                 <div class="lg-size"><${ListInfo} list=${l}/></div>
                 <div class="lg-fleet"><${FleetAssign} nodes=${fleetNodes} isOn=${nid => customOnNode(l, nid)} onToggle=${(nid, on) => setCustomOnNode(l, nid, on)}/></div>
                 <div class="lg-caps">${capBadges(cap)}</div>
@@ -10911,26 +12837,37 @@ function PanelSettingsScreen() {
           ${!turnEnabledS ? html`<p class="hint" style="margin:0 0 12px"><b class="warntext">Turn proxies are off.</b> Creation buttons and the turn-proxy sections are hidden across the panel. Deployed proxies keep running — they're just not shown here.</p>`
             : html`<p class="hint" style="margin:0 0 12px">Which forks appear in the <b>"Install a fork"</b> picker when you add a proxy to a node, and each fork's colour. Unticking one only <b>hides it from that list</b> — it never touches proxies you've already deployed. ${turnForks.size === 0 ? html`<b class="warntext">No forks are enabled — the install picker will be empty.</b>` : null}</p>`}
           ${html`<${Fragment}>
-          <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${turnForkList().map(f => { const fcol = pickThemed(forkColors[f.id], f.color, f.colorL); return html`<div class=${"cl-row" + (turnForks.has(f.id) ? "" : " off")} key=${f.id}>
+          <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${turnForksVisible().map(f => { const fcol = pickThemed(forkColors[f.id], f.color, f.colorL); return html`<div class=${"cl-row" + (turnForks.has(f.id) ? "" : " off")} key=${f.id}>
             <${Switch} on=${turnForks.has(f.id)} title=${"Offer " + f.label + " in the install picker"} onChange=${v => setTurnForks(s => { const n = new Set(s); v ? n.add(f.id) : n.delete(f.id); return n; })}/>
             <${ThemedSwatch} val=${forkColors[f.id]} title=${"Colour for " + f.label} onChange=${nv => setForkColors(c => ({ ...c, [f.id]: nv }))}
               sample=${(c) => html`<span class="tg tg-turn" style=${"--tfc:" + c}>${f.label}</span>`}/>
             <a class=${"tf-name tf-" + f.id} href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" style=${"color:" + fcol} title=${"github.com/" + f.owner}>${f.label}</a>
-            <span class="cl-caps" title=${forkSupportsAwg(f.id) ? "Works with WireGuard and AmneziaWG interfaces" : f.label + " is WireGuard-only — its client can't front an AmneziaWG interface"}>
-              <span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}
+            <span class="cl-caps" title=${f.kind === "wdtt" ? "Self-contained WDTT server — owns its own WireGuard interface (not a WG/AWG front)" : forkSupportsAwg(f.id) ? "Works with WireGuard and AmneziaWG interfaces" : f.label + " is WireGuard-only — its client can't front an AmneziaWG interface"}>
+              ${f.kind === "wdtt"
+                ? html`<span class="tg tg-wdtt">WDTT</span>`
+                : html`<${Fragment}><span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}<//>`}
             </span>
             ${(() => {
               const v = forkVersions(f.id); const col = fcol;
               if (!v.length) return html`<span class="tf-ver none">not yet used</span>`;
               const nodes = forkNodeStates(f.id); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
+              // per-node effective version: a hold shows "Held on <held>", else the running version. The row collapses
+              // to ONE label when every node agrees, or "N versions" (detail in the hover bubble) when they differ.
+              const perNode = nodes.map(n => { const held = (Store.turnHolds[n.node] || {})[f.id] || ""; return { ...n, held, eff: held || n.version || "" }; });
+              const distinct = [...new Set(perNode.map(p => p.eff).filter(Boolean))];
+              const allHeld = perNode.length > 0 && perNode.every(p => p.held);
               const bub = html`<span class="tf-verpop">
-                ${nodes.map(n => html`<span class="tf-vg-node">
+                ${perNode.map(n => html`<span class="tf-vg-node">
                   <span class="tf-vg-dot" style=${"background:" + (Store.nodeColor(n.node) || "var(--ink)")}></span>
                   <span class="tf-vg-nm">${Store.nodeName(n.node)}</span>
+                  <span class=${"tf-vg-ver" + (n.held ? " held" : "")}>${n.held ? html`<${Ic} i="off"/> Held on ${n.held}` : (n.version || "—")}</span>
                   ${n.installing ? html`<span class="tf-vg-st upd">updating…</span>` : (n.updatePending && latest && n.version === latest) ? html`<span class="tf-vg-st ok"><${Ic} i="check"/>updated</span>` : null}
                 </span>`)}
               </span>`;
-              return html`<span class="tf-verwrap" style=${"--tfc:" + col}><span class="tf-ver">${v.join(", ")}</span>${bub}</span>`;
+              if (distinct.length > 1) return html`<span class="tf-verwrap" style=${"--tfc:" + col}><span class="tf-ver">${distinct.length} versions</span>${bub}</span>`;
+              const ver = distinct[0] || v.join(", ");
+              if (allHeld) return html`<span class="tf-verwrap" style=${"--tfc:" + col}><span class="tf-ver held"><${Ic} i="off"/> Held on ${ver}</span>${bub}</span>`;
+              return html`<span class="tf-verwrap" style=${"--tfc:" + col}><span class="tf-ver">${ver}</span>${bub}</span>`;
             })()}
             <span class="grow"></span>
             ${(() => { const cs = turnCheck[f.id]; if (!cs || !cs.status) return null;   // update status — right-aligned, just before the repo URL (like Geo data)
@@ -10946,7 +12883,7 @@ function PanelSettingsScreen() {
                 ${p.disabled
                   ? html`<span class="tf-plbub-l"><span class="tf-plbub-app">No ${f.label} app for ${p.label} yet</span></span>`
                   : html`<${Fragment}><span class="tf-plbub-l">
-                      <span class="tf-plbub-app">${p.name}<span class="tf-plbub-by"> by </span><span style=${"color:" + turnColor(p.author)}>${p.author}</span></span>
+                      <span class="tf-plbub-app">${p.name}<span class="tf-plbub-by"> by </span><span style=${"color:" + (p.color || turnColor(p.author))}>${p.author}</span></span>
                       ${p.coreFork ? html`<span class="tf-plbub-core">with <span style=${"color:" + turnColor(p.coreFork)}>${p.coreFork}</span> core</span>` : null}
                     </span>
                     <span class=${"tf-plbub-obf" + (p.obfLabel ? "" : " plain")}>${p.obfLabel || "plain"}</span><//>`}
@@ -11052,13 +12989,15 @@ function PanelSettingsScreen() {
         ${section === "access" ? html`<${AccessTLSCard} onChange=${onAccess}/>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Interface colours<span class="grow"></span>
-            ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg } })}><${Ic} i="refresh"/> Reset</button>` : null}</div>
+            ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg }, wdtt: { ...IFACE_COLOR_DEFAULTS.wdtt } })}><${Ic} i="refresh"/> Reset</button>` : null}</div>
           <p class="hint" style="margin:0 0 12px">The colour each protocol's tags take everywhere — a value per theme. Hover a swatch to preview it.</p>
           <div class="palrow">
-            <span class="palcell"><span class="pallbl">WireGuard</span><${ThemedSwatch} val=${ifaceColors.wg} title="WireGuard" onChange=${nv => setIfaceColors(c => ({ ...c, wg: nv }))}
-              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>wg</span>`}/></span>
-            <span class="palcell"><span class="pallbl">AmneziaWG</span><${ThemedSwatch} val=${ifaceColors.awg} title="AmneziaWG" onChange=${nv => setIfaceColors(c => ({ ...c, awg: nv }))}
-              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wg} title="WireGuard" onChange=${nv => setIfaceColors(c => ({ ...c, wg: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>wg</span>`}/><span class="pallbl">WireGuard</span></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.awg} title="AmneziaWG" onChange=${nv => setIfaceColors(c => ({ ...c, awg: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/><span class="pallbl">AmneziaWG</span></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wdtt} title="WDTT" onChange=${nv => setIfaceColors(c => ({ ...c, wdtt: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>WDTT</span>`}/><span class="pallbl">WDTT</span></span>
           </div>
           <div class="seclabel">Peer health detection</div>
           <p class="hint" style="margin:0 0 10px">Which failure conditions the panel flags on a peer. All on by default — untick one to stop it showing that status (the peer just reads online / ready instead). Both appear in <span class="b-faulty" style="padding:1px 6px;border-radius:6px">orange</span>.</p>
@@ -11077,6 +13016,7 @@ function PanelSettingsScreen() {
           <p class="hint" style="margin:0 0 10px">Backup each server's interface key so a wiped / rebuilt node restores its interfaces with their original identities.</p>
           <${InterfaceKeyEscrow} value=${ivkEscrow} onChange=${setIvkEscrow} vaultExists=${ivkVaultExists}/>
         </div>` : null}
+        ${section === "defaults" ? html`<${IgnoredIfacesCard}/>` : null}
         ${section === "security" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Authentication</div>
           <p class="hint" style="margin:0 0 14px">Change the panel username and password — applied on <b>Save</b>. Changing either takes effect immediately and you'll be asked to sign in again. Changing the password also re-keys your <b>Encryption Vault</b> in place, so stored configs and subscription links keep working (no re-issue).</p>
@@ -11305,7 +13245,7 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
     root.addEventListener("change", onEdit, true);
     // fields can opt out of autofocus with [data-noautofocus] (e.g. the VK box); and a view modal (noGuard)
     // never grabs focus onto a button as a fallback
-    let first = root.querySelector("[autofocus]") || root.querySelector("input:not([data-noautofocus]),textarea,select,button.btn-primary");
+    let first = root.querySelector("[autofocus]") || root.querySelector("input:not([data-noautofocus]),textarea:not([data-noautofocus]),select,button.btn-primary");
     if (first && noGuardRef.current && first.tagName === "BUTTON") first = null;
     if (first) setTimeout(() => { try { first.focus(); } catch (_) {} }, 0);
     const tok = {}; _sheetStack.push(tok);   // only the TOP stacked Sheet reacts to Esc/Enter/Tab
@@ -11459,7 +13399,7 @@ function PeerBlockGrid({ peers, mode, act }) {
         <span class="pg2-c pg2-title">${i === 0
           ? html`<${Fragment}><span class="pg2-nm">${(p.title || "").trim() || html`<span class="faint">untitled</span>`}</span>${multi ? html`<span class="pg2-rel primary">Primary</span>` : null}<//>`
           : html`<span class="pg2-bk">Backup</span>`}</span>
-        <span class="pg2-c pg2-if">${t.node ? html`<${Tag} kind=${targetType(t)} label=${targetType(t)}/><span class="pg2-ifn">${t.iface}</span><span class="pg2-ip">${String(t.ip || "").split("/")[0] || "—"}</span>` : null}</span>
+        <span class="pg2-c pg2-if">${t.node ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/><${Tag} kind=${targetType(t)} label=${targetType(t)}/><span class="pg2-ifn">${t.iface}</span><span class="pg2-ip">${String(t.ip || "").split("/")[0] || "—"}</span>` : null}</span>
         <span class="pg2-c pg2-ctl">${i === 0 ? html`<${Fragment}>${mode === "mine" ? html`<button type="button" class="pg2-act add" title="Add or edit interface deployments" onClick=${() => openAddTarget(p)}><${Ic} i="plus"/></button>` : null}<button type="button" class=${"pg2-act " + mode} title=${mode === "mine" ? "Unassign from this user" : "Assign to this user (keeps its key)"} onClick=${() => act(p)}><${Ic} i=${mode === "mine" ? "link" : "plus"}/></button><//>` : null}</span>
       </div>`)}</div>`;
   })}</div>`;
@@ -11471,7 +13411,8 @@ function AddPeersSheet({ userId, userName }) {
   useStore();
   const rep = p => orderedTargets(p.targets || [])[0] || {};
   const orderPeers = list => [...list].sort((a, b) =>
-    String(a.title || "").localeCompare(String(b.title || "")) ||
+    (b.title ? 1 : 0) - (a.title ? 1 : 0) ||                              // named peers first (untitled sink to the bottom)
+    String(a.title || "").localeCompare(String(b.title || "")) ||        // then alphabetical by title
     (Store.nodeName(rep(a).node) || "").localeCompare(Store.nodeName(rep(b).node) || "") ||
     String(rep(a).ip || "").localeCompare(String(rep(b).ip || ""), undefined, { numeric: true }));
   const mine = orderPeers(userId ? Store.peersOfUser(userId) : []);
@@ -11489,7 +13430,7 @@ function AddPeersSheet({ userId, userName }) {
       onOk: () => { delete Store.sessionConfigs[p.pubkey]; Store.configEpoch++; } }); }}/>`);
   const createFresh = () => openCreatePeer({ user_id: userId, userName, lockUser: true }, true);
 
-  return html`<${Sheet} title=${"Add peers" + (userName ? " · " + userName : "")} width=${680}>
+  return html`<${Sheet} title=${"Add peers" + (userName ? " · " + userName : "")} width=${720}>
     <div class="pg2-sec">
       <div class="pg2-hdr"><label>This user's peers</label><span class="grow"></span>
         <button class="btn btn-mini pg2-fresh" onClick=${createFresh}><${Ic} i="plus"/> Create fresh peer</button></div>
@@ -11507,14 +13448,51 @@ function allTargets() {
   const out = [];
   for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {}))
     if (!Store.ifaceIsSystem(node, iface)) out.push({ node, iface });   // never offer a mesh link (swg_*) as a peer target
+  // WDTT servers own their interface, which isn't a panel-managed WG iface (so it's absent from `describe`) — add
+  // each from the node's WDTT readback so it's selectable as a (keyless) peer target.
+  for (const node of Object.keys(Store.stats || {})) for (const w of ((Store.stats[node] || {}).wdtt || []))
+    if (w && w.iface && !out.some(t => t.node === node && t.iface === w.iface)) out.push({ node, iface: w.iface });
   return out;
+}
+
+// What sits IN FRONT of a target interface, as one badge — so a targets grid says what a peer will actually
+// connect through, not just which interface it lands on. Two cases, never both:
+//   WDTT  — the server owns the interface: its operator title, else the fork name, in that fork's colour.
+//   turn  — one proxy: its title, else the fork name, in that fork's colour. SEVERAL: a neutral "turn" badge
+//           (naming one of several would be a lie), with the full list on hover.
+// Nothing in front → nothing rendered; a plain wg/awg interface keeps the grid quiet.
+function TargetFrontBadge({ node, iface }) {
+  if (!node || !iface) return null;
+  if (kindOf(node, iface, null) === "wdtt") {
+    const nrec = (Store.nodes || []).find(x => x.id === node) || {};
+    const cfg = (nrec.wdtt_cfg || {})[iface] || {};
+    const live = ((Store.stats[node] || {}).wdtt || []).find(w => w && w.iface === iface) || {};
+    const fork = cfg.fork || live.fork || "";
+    const label = shownTitle("w|" + node + "|" + iface, String(cfg.title || live.title || "").trim()) || fork;
+    if (!label) return null;
+    const col = turnColor(fork) || WDTT_COLOR;
+    return html`<span class="tg tgt-front" style=${"--tgc:" + col} title=${"WDTT server" + (fork ? " · " + fork : "")}>${label}</span>`;
+  }
+  const tps = turnProxiesFor(node, iface);
+  if (!tps.length) return null;
+  const one = t => shownTitle("t|" + node + "|" + t.service, t.title) || turnFork(t.service);
+  if (tps.length === 1) {
+    const f = turnFork(tps[0].service);
+    return html`<span class="tg tgt-front" style=${"--tgc:" + (turnColor(f) || "var(--turn)")} title=${"Turn-proxy" + (f ? " · " + f : "")}>${one(tps[0])}</span>`;
+  }
+  return html`<${Popover} hoverOnly cls="tgt-frontpop" popCls="tgt-frontbub"
+    trigger=${html`<span class="tg tgt-front tgt-front-many" title=${tps.length + " turn-proxies forward to this interface"}>turn <b>${tps.length}</b></span>`}>
+    <div class="tgt-frontlist"><span class="tgt-frontlbl">Turn-proxies on this interface</span>
+      ${tps.map(t => { const f = turnFork(t.service);
+        return html`<span class="tg tgt-front" key=${t.service} style=${"--tgc:" + (turnColor(f) || "var(--turn)")}>${one(t)}</span>`; })}</div>
+  <//>`;
 }
 
 // Reusable (node,iface) picker with per-target IP allocation. `exclude` is a Set of tkeys
 // to hide (interfaces a user is already on); `onChange` receives the chosen target list
 // [{node,iface,ip,ipHint}]. Used by the create-peer, create-user and add-peers flows.
 function TargetPicker({ prefill, exclude, onChange, initial }) {
-  const all = useMemo(allTargets, [Store.describe]);
+  const all = useMemo(allTargets, [Store.describe, Store.stats]);
   // locked: launched from one interface — show only that target, no toggling, just the IP.
   const locked = !!(prefill && prefill.lock && prefill.node && prefill.iface);
   const baseAll = locked ? all.filter(t => t.node === prefill.node && t.iface === prefill.iface)
@@ -11534,6 +13512,7 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
   const toggle = (node, iface) => {
     const k = tkey(node, iface);
     if (sel[k]) setSel(s => { const n = { ...s }; delete n[k]; return n; });
+    else if (iTypeOf(node, iface) === "wdtt") setSel(s => ({ ...s, [k]: { node, iface, ip: "", wdtt: true } }));   // WDTT mints the client IP on connect — no address to pick
     else allocIp(node, iface);
   };
   const setIp = (k, v) => setSel(s => s[k] ? { ...s, [k]: { ...s[k], ip: v } } : s);
@@ -11547,8 +13526,10 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
   }, [all, initial]);
   useEffect(() => {                                  // preselect from prefill once targets are known
     if (!targets.length || Object.keys(sel).length || (initial && initial.length)) return;
-    if (prefill && prefill.node && prefill.iface) allocIp(prefill.node, prefill.iface);
-    else if (prefill && prefill.node) targets.filter(t => t.node === prefill.node).slice(0, 1).forEach(t => allocIp(t.node, t.iface));
+    if (prefill && prefill.node && prefill.iface) {
+      if (iTypeOf(prefill.node, prefill.iface) === "wdtt") setSel({ [tkey(prefill.node, prefill.iface)]: { node: prefill.node, iface: prefill.iface, ip: "", wdtt: true } });   // WDTT: select without allocating an address
+      else allocIp(prefill.node, prefill.iface);
+    } else if (prefill && prefill.node) targets.filter(t => t.node === prefill.node).slice(0, 1).forEach(t => allocIp(t.node, t.iface));
   }, [all]);
   useEffect(() => { onChange(Object.values(sel)); }, [sel]);
 
@@ -11562,8 +13543,7 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
     || (a.iface || "").localeCompare(b.iface || ""));
   return html`<div class="targetpick">${ordered.map(t => {
     const k = tkey(t.node, t.iface); const s = sel[k];
-    const im = (Store.describe[t.node] || {})[t.iface] || {};
-    const ity = t.missing ? (t.type || "wg") : ((im.awg_params && Object.keys(im.awg_params).length) ? "awg" : "wg");
+    const ity = t.missing ? (t.type || "wg") : iTypeOf(t.node, t.iface);   // wg | awg | wdtt (a WDTT iface isn't in `describe`, so key off the name via iTypeOf)
     return html`<div class=${"targetopt " + (s ? "sel " : "") + (locked ? "locked" : "") + (t.missing ? " missing" : "")}>
       <label class="topt-main" onClick=${locked ? null : () => toggle(t.node, t.iface)}>
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
@@ -11571,7 +13551,13 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
         <span class="tp">${t.iface}</span>
         ${t.missing ? html`<span class="topt-missing" title="This interface is gone from the node — uncheck to remove this deployment from the peer">missing</span>` : null}</label>
       <${Tag} kind=${ity} label=${ity}/>
-      ${s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? "not a valid IPv4 address" : ""} onInput=${e => setIp(k, e.target.value)}/>` : null}
+      ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/>`}
+      ${(s && (s.wdtt || ity === "wdtt"))
+        // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
+        // target is seeded straight from the peer, so it never went through toggle and rendered an editable
+        // address box for a WDTT server — which mints the client IP itself at GETCONF and cannot be told one.
+        ? html`<span class="topt-ip faint" title="WDTT assigns the address on connect">auto</span>`
+        : (s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? "not a valid IPv4 address" : ""} onInput=${e => setIp(k, e.target.value)}/>` : null)}
     </div>`;
   })}</div>`;
 }
@@ -11632,8 +13618,11 @@ function CreatePeerSheet({ prefill }) {
     if (!cf.mtuTouched.current && m.mtu) cf.setMtu(String(m.mtu));
   }, [chosen]);
 
+  const wdttMode = chosen.some(t => t.wdtt);   // the TargetPicker locks a peer to one kind, so any wdtt target ⇒ all wdtt
+
   const validate = () => {
     if (!chosen.length) return "Pick at least one target.";
+    if (wdttMode) return null;   // WDTT targets carry no address (minted on connect) + no client-config fields
     const badIp = chosen.find(t => !V.ipv4(String(t.ip).trim()));
     if (badIp) return "Invalid address for " + Store.nodeName(badIp.node) + "/" + badIp.iface + ".";
     const ce = configErrors(cf); const k = Object.keys(ce)[0];
@@ -11643,6 +13632,16 @@ function CreatePeerSheet({ prefill }) {
 
   const create = async () => {
     const err = validate(); if (err) return setMsg({ k: "err", t: err });
+    if (wdttMode) {   // keyless WDTT peer — the panel mints the WRAP password; WDTT mints the WG key on connect. One roster peer, one link per targeted server.
+      setBusy(true); setMsg({ k: "work", t: "adding WDTT user…" });
+      const r = await api.wdttPeerCreate({ user_id: userId || null, title: title.trim(), targets: chosen.map(t => ({ node: t.node, iface: t.iface })) });
+      if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Request failed." }); }
+      closeModal();
+      if (prefill.lock && prefill.node && prefill.iface) go("#/node/" + encodeURIComponent(prefill.node) + "/" + encodeURIComponent(prefill.iface));
+      else if (userId) revealUser(userId, (r.data && r.data.id) || "");
+      Store.apply(); await Store.poll();
+      return toast("WDTT user added — their connect link is on the assigned subscription.", "ok");
+    }
     setBusy(true); setMsg({ k: "work", t: "generating key…" });
     let keys, pskV, tgts, configs, body;
     try {                                            // browser-side crypto/config build is the only awaited part
@@ -11680,7 +13679,7 @@ function CreatePeerSheet({ prefill }) {
     });
   };
 
-  return html`<${Sheet} title="New peer"
+  return html`<${Sheet} title="New peer" width=${620}
     foot=${footRow({ onCancel: closeModal, disabled: busy, onAction: create, action: "Create peer" })}>
     ${prefill.lockUser
       ? html`<div class="field"><label>User</label><div class="lockeduser">${prefill.userName || (Store.recon.users.find(u => u.id === userId) || {}).name || "—"}</div></div>`
@@ -11690,7 +13689,9 @@ function CreatePeerSheet({ prefill }) {
       <input value=${title} onInput=${e => setTitle(e.target.value)} maxlength="64" placeholder="iPhone, Router, Laptop…"/></div>
     <div class="field"><label>Targets <span class="faint" style="text-transform:none;letter-spacing:0">— one, or several for redundancy (same key)</span></label>
       <${TargetPicker} prefill=${prefill} onChange=${setChosen}/></div>
-    <${AdvancedFields} st=${cf}/>
+    ${wdttMode
+      ? html`<div class="hint">WDTT server — the panel mints this user's access password and WDTT mints their WireGuard key + IP on connect, so there's no key or client config to set here. The user's VK link (from their subscription) is the TURN credential.</div>`
+      : html`<${AdvancedFields} st=${cf}/>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -11788,7 +13789,7 @@ function AddTargetSheet({ peer, back, child }) {
     } else doSave().then(ok => { if (ok) back(); });
   };
 
-  return html`<${Sheet} title=${"Peer targets"} onClose=${back} onBack=${child ? back : null} subject=${{ kind: "peer", id: peer.id }}
+  return html`<${Sheet} title=${"Peer targets"} width=${620} onClose=${back} onBack=${child ? back : null} subject=${{ kind: "peer", id: peer.id }}
     foot=${footRow({ onCancel: back, actionCls: "btn " + (chosen.length === 0 ? "btn-danger" : "btn-primary"), disabled: busy || !confLoaded || nochange, onAction: save, action: chosen.length === 0 ? "Delete peer" : ((removed.length || ipChanged.length) ? "Save changes" : "Deploy") })}>
     ${!confLoaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : html`<${Fragment}>
@@ -11894,6 +13895,8 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
   const [userId, setUserId] = useState(peer.user_id || "");   // staged owner (applied on Save for an unassigned peer)
   const [expDate, setExpDate] = useState(expiryInputVal(peer.ownExpiry || 0));   // this peer's OWN expiry (blank = inherit the subscription's)
   const [msg, setMsg] = useState(flash || null); const [busy, setBusy] = useState(false);
+  const [orig, setOrig] = useState(null);          // the loaded config values — Save stays off until one differs
+  const [rotating, setRotating] = useState(false); // Rotate in flight → the button disables + says so
   // reopening THIS sheet with a new flash (e.g. rotate: orange "Rotating…" → green "Keys rotated")
   // reuses the instance, so the useState initial above is ignored — sync the prop into state.
   useEffect(() => { if (flash) setMsg(flash); }, [flash]);
@@ -11902,20 +13905,33 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
     let ok = true;
     (async () => {
       const found = {};
-      for (const t of peer.targets) { const c = await getConfig(peer.pubkey, t.node, t.iface); if (c) found[tkey(t.node, t.iface)] = c; }
+      // LIVE pubkey, not the `peer` prop's: a Rotate mints a new keypair and stores the config under the NEW
+      // pubkey while the prop stays the snapshot from when the sheet opened. Looking it up by the stale key found
+      // nothing, so the sheet kept saying "the client's private key isn't available" even after a good rotate.
+      const _pk = (live && live.pubkey) || peer.pubkey;
+      for (const t of (live.targets || peer.targets)) { const c = await getConfig(_pk, t.node, t.iface); if (c) found[tkey(t.node, t.iface)] = c; }
       if (!ok) return;
       setConfs(found); setLoaded(true);
       const first = found[tkey(focus && focus.node, focus && focus.iface)] || Object.values(found)[0];
-      if (first) { const s = parseFullConf(first); setDns((s.dns || []).join(", ")); setMtu(String(s.mtu)); setKeepalive(String(s.keepalive)); setAllowed(s.allowed); }
+      if (first) { const s = parseFullConf(first); const _d = (s.dns || []).join(", "), _m = String(s.mtu), _k = String(s.keepalive);
+        setDns(_d); setMtu(_m); setKeepalive(_k); setAllowed(s.allowed);
+        setOrig({ dns: _d, mtu: _m, keepalive: _k, allowed: s.allowed }); }   // baseline for the "anything changed?" Save gate
     })();
     return () => { ok = false; };
-  }, [peer.id, peer.pubkey, Store.configEpoch]);   // pubkey/epoch change (e.g. after Rotate) re-reads the now-available config
+  }, [peer.id, live && live.pubkey, Store.configEpoch]);   // LIVE pubkey / epoch change (e.g. after Rotate) re-reads the now-available config
 
   const editable = Object.keys(confs).length;
   const ipChangedFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && v !== (t.ip || "").split("/")[0]; };
   const ipBadFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && !V.ipv4(v.split("/")[0]); };
   const anyIpBad = peer.targets.some(ipBadFor);
   const errs = editable ? configErrors({ dns, mtu, keepalive, allowed }) : {};
+  // Save is only offered when something would actually change — otherwise it rewrites the peer with identical
+  // values (and, for a user change, walks the operator into a confirm for a no-op).
+  const _dirty = (title.trim() !== (peer.title || "").trim())
+    || ((userId || "") !== (peer.user_id || ""))
+    || (expDate !== expiryInputVal(peer.ownExpiry || 0))
+    || (live.targets || []).some(ipChangedFor)
+    || (editable && !!orig && (dns !== orig.dns || mtu !== orig.mtu || keepalive !== orig.keepalive || allowed !== orig.allowed));
   const ownerExp = userId ? +(((Store.recon.users || []).find(u => u.id === userId) || {}).expiry || 0) : 0;
   const save = async () => {
     if (anyIpBad) return setMsg({ k: "err", t: "Each address must be a valid IPv4." });
@@ -11977,16 +13993,27 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
     done(); await Store.poll();
   };
 
+  const isWdttPeer = !!peer.wdtt_password || (peer.targets || []).some(t => t.type === "wdtt");
   const rotate = () => {
+    if (isWdttPeer) {   // WDTT peer: no browser keypair — rotate the panel-owned WRAP password (revokes the old link)
+      openConfirm({ title: "Rotate link", confirmLabel: "Rotate link", warn: true,
+        body: "A fresh access password is generated. The current WDTT link stops working — send the user their new link (from the subscription page) to re-import.",
+        onConfirm: () => { setRotating(true); api.wdttPeerRotate({ peer_id: peer.id }).then(async r => { await Store.poll(); setRotating(false); toast(r && r.ok ? "Link rotated — the old one no longer works." : ((r && r.error) || "Rotate failed."), r && r.ok ? "ok" : "err"); }).catch(() => setRotating(false)); } });
+      return;
+    }
     openConfirm({ title: "Rotate keys", confirmLabel: "Rotate keys", warn: true,
       body: "A fresh keypair and preshared key are generated. The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.",
       onConfirm: () => {
-        // confirm pops back to the edit sheet (its parent); the rotate runs and reports via a toast.
+        // confirm pops back to the edit sheet (its parent); the rotate runs and reports via a toast. The button
+        // reads "Rotating keys…" meanwhile, and the poll refreshes the LIVE pubkey — which re-runs the config
+        // load, clearing the "private key isn't available" notice and filling in the real form fields.
+        setRotating(true);
         rotatePeerKeys(peer).then(async () => {
           await Store.poll();
+          setRotating(false);
           const re = Store.rowErrors["peer:" + peer.id];
           toast(re ? (re.msg || "Rotate failed.") : "Keys rotated — send the user the new QR / config; the old one no longer works.", re ? "err" : "ok");
-        });
+        }).catch(() => setRotating(false));
       } });
   };
 
@@ -12003,9 +14030,9 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
       ? html`<button class="btn btn-ghost restore" onClick=${() => confirmRestoreDeployment(_rp, _fixT)}><${Ic} i="refresh"/> Restore interface</button>`
       : (_fixT && _fixT.correctable)
         ? html`<button class="btn btn-ghost correct" onClick=${() => confirmCorrectDeployment(_rp, _fixT)}><${Ic} i="check"/> Fix address</button>`
-        : html`<button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`;
-  return html`<${Sheet} title=${"Edit peer"} width=${644} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
-    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> Targets</button>${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
+        : html`<button class="btn btn-ghost" disabled=${rotating} onClick=${rotate}><${Ic} i="key"/> ${rotating ? (isWdttPeer ? "Rotating link…" : "Rotating keys…") : (isWdttPeer ? "Rotate link" : "Rotate keys")}</button>`;
+  return html`<${Sheet} title=${"Edit peer"} width=${700} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
+    foot=${footRow({ left: html`${editable && !isWdttPeer ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}${isWdttPeer ? null : html`<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> Targets</button>`}${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : "No changes to save", onAction: save, action: "Save" })}>
     <${PeerStatusLine} peer=${peer} pos="bar"/>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
@@ -12019,6 +14046,14 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
     <div class="field"><label>Access expires <span class="faint" style="text-transform:none;letter-spacing:0">— this peer only; blank = ${ownerExp ? "follows the subscription" : "never"}</span></label>
       <div class="daterow"><input type="date" class="datein" max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>Clear</button>` : null}</div>
       <div class=${"hint"}>On this date the peer stops working (it reappears if you extend it).${ownerExp ? " Can't be later than the subscription's expiry (" + fmtDate(ownerExp) + ")." : ""}</div></div>
+    ${isWdttPeer ? html`<div class="field"><label>Servers</label>
+      <div class="targetpick">${targetsOrdered.map(t => html`<div class="targetopt sel locked" key=${tkey(t.node, t.iface)}>
+        <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
+        <${TargetFrontBadge} node=${t.node} iface=${t.iface}/>
+        <span class="topt-ip faint" title="WDTT assigns the address on connect">auto</span>
+      </div>`)}</div>
+      <div class="hint">WDTT servers this user reaches. WDTT assigns each server's address on connect; the user's link per server is on their subscription. No client config (key/DNS/MTU) — WDTT owns the datapath.</div>
+    </div>` : html`<${Fragment}>
     <div class="field"><label>Addresses</label>
       <div class="targetpick">${targetsOrdered.map(t => {
         const k = tkey(t.node, t.iface);
@@ -12028,6 +14063,7 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
           <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
           <${PrimaryToggle} peer=${peer} t=${t} compact=${true}/>
           <${Tag} kind=${ity} label=${ity}/>
+          <${TargetFrontBadge} node=${t.node} iface=${t.iface}/>
           <input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>
         </div>`;
       })}</div>
@@ -12043,6 +14079,7 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
           <div class="field"><label>Persistent keepalive (s)</label><input class=${errs.keepalive ? "bad" : ""} value=${keepalive} onInput=${e => setKeepalive(e.target.value)} placeholder="25"/><div class=${"hint" + (errs.keepalive ? " err" : "")}>${errs.keepalive || "0 disables · blank = 25."}</div></div>
         </div>
       <//>`}
+    <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -12149,8 +14186,6 @@ function NodeEditSheet({ node }) {
     doSave();
   };
   const [showAwg, setShowAwg] = useState(false);
-  const meshAwg = node.mesh_awg || {};
-  const hasAwg = AWG_KEYS.some(k => meshAwg[k] != null && meshAwg[k] !== "");
   return html`<${Sheet} title=${"Node settings · " + node.name}
     foot=${footRow({ left: html`<button class="btn btn-ghost" title="Rotate this node's enrollment token (re-enroll / re-install)" onClick=${() => openNodeRotate(node)}><${Ic} i="key"/> Rotate key</button>`, onCancel: closeModal, onAction: save, action: "Save" })}>
     <div class="field"><label>Name</label>
@@ -12413,8 +14448,9 @@ function App() {
     // firing on the version bump alone would show "updated" once now and again when host_proc lands its terminal —
     // i.e. twice on the header. Holding it until host_proc settles makes that a single "updated".
     if (pendingUpdateDone && !inProc(Store.hostProc)) { const _u = pendingUpdateDone; pendingUpdateDone = null; openUpdateDone(_u[0], _u[1]); }
-    if (el && v.panel) {        // panel version only — the host's awg/wg/docker versions aren't shown
-      el.innerHTML = `<b>${esc(v.panel)}</b>`;
+    if (el && v.panel) {        // panel version + info icon → the changelog hover bubble (reuses the update-bubble look)
+      el.innerHTML = `<span class="appver-wrap"><b>${esc(v.panel)}</b><span class="appver-info" title="Changelog">${INFO_SVG}</span></span>`;
+      if (!el._verWired) { el._verWired = true; versionHoverBubble(el); }   // wire once — #appver persists across polls
     }
     const ht = $("#host-tport");      // how the PANEL itself is deployed (docker / bare-metal)
     if (ht && Store.env && ("docker" in Store.env)) {
@@ -12557,9 +14593,49 @@ function TwoFactorCard({ enabled, disabled, onChange }) {
 }
 function require401() { showLogin(); throw new Error("unauthorized"); }
 function showLogin() { if (_loginShown) return; _loginShown = true; document.body.classList.add("loggedout"); try { render(h(LoginScreen), viewEl); } catch (_) {} }
+// Shown right after signing in when the panel password was reset with `swg-passwd` and the new password doesn't
+// open the vault. swg-passwd runs on the box, where the encryption key doesn't exist, so it can't re-wrap the
+// vault — but it destroys NOTHING: every stored config, QR, subscription link and escrowed server key is intact.
+// Either the OLD panel password or the encryption key gets us back in, and the vault is then re-wrapped under
+// `panelPw` — which only exists here, before the post-login reload, hence asking on this screen.
+// Skippable: the vault stays locked and the usual unlock prompt appears on the next action that needs it.
+function VaultRelinkCard({ panelPw, onDone }) {
+  const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
+  const ref = useRef(null);
+  useEffect(() => { ref.current && ref.current.focus(); }, []);
+  const submit = async e => {
+    if (e) e.preventDefault();
+    if (!pw || busy) return;
+    setBusy(true); setErr("");
+    try {
+      // One field takes both: an encryption key is recognisable on sight (base64 of 32 bytes), so try it that way
+      // first and fall back to treating the input as the old password (a password of that exact shape is possible,
+      // if unlikely). When both fail, report the error for whichever the input actually looked like — telling
+      // someone who pasted a key that their "password" was wrong sends them looking in the wrong place.
+      if (looksLikeVaultKey(pw)) {
+        try { await subUnlockWithKey(pw); }
+        catch (keyErr) { try { await subUnlock(pw); } catch (_) { throw keyErr; } }
+      } else await subUnlock(pw);
+      await subRewrap(panelPw);        // the vault now opens with the password just signed in with
+      onDone();
+    } catch (e2) { setErr((e2 && e2.message) || "That didn't unlock the Encryption Vault."); setBusy(false); }
+  };
+  return html`<div class="login-wrap"><form class="login-card" onSubmit=${submit}>
+    <div class="login-brand"><span class="brand-mark"></span><span class="brand-name">swg<span>Panel</span></span></div>
+    <h2>Reconnect your vault</h2>
+    <p class="muted" style="margin:-4px 0 12px">Your password was changed with <b class="mono">swg-passwd</b>, which runs on the server and can't reach your encryption key. Your stored configs, QR codes and subscription links are <b>untouched</b> — the vault just needs reconnecting.</p>
+    <div class="field"><label>Old panel password, or your encryption key</label>
+      <input ref=${ref} type="password" value=${pw} autocomplete="off" placeholder="Password or encryption key" onInput=${e => setPw(e.target.value)}/></div>
+    <p class="muted" style="margin:-4px 0 12px">The encryption key is the one shown when this panel set up encryption — you were asked to save it.</p>
+    ${err ? html`<div class="formmsg err">${err}</div>` : null}
+    <button class="btn btn-primary" type="submit" disabled=${busy || !pw} style="width:100%;justify-content:center;margin-top:4px">${busy ? "Reconnecting…" : "Reconnect vault"}</button>
+    <button class="btn btn-ghost" type="button" disabled=${busy} style="width:100%;justify-content:center;margin-top:8px" onClick=${onDone}>Skip for now</button>
+  </form></div>`;
+}
 function LoginScreen() {
   const [u, setU] = useState(""); const [p, setP] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const [twofa, setTwofa] = useState(false); const [code, setCode] = useState("");
+  const [relink, setRelink] = useState(null);   // set to the NEW panel password when the vault needs reconnecting first
   // The `autofocus` attribute is inert here: showLogin() renders this form long after page load, and a
   // browser only honours autofocus for elements present when the document flushes its autofocus candidates
   // (Preact doesn't special-case it either). Focus explicitly — on mount, and again when the 2FA step
@@ -12573,10 +14649,32 @@ function LoginScreen() {
     try {
       const r = await api.login({ username: u, password: p, code: twofa ? code.trim() : undefined });
       if (r && r.ok) {
-        if (r.data && r.data.vault_reset) {   // swg-passwd reset the Encryption Vault → re-create it under the password just entered (silent reconnect)
-          try { await subVaultCreate(p); sessionStorage.setItem("__vault_reconnected", "1"); } catch (_) {}
-        } else {
-          try { await subUnlock(p); } catch (_) {}   // convenience cache: auto-unlock config encryption with the login password (no-op if no vault); survives the reload via sessionStorage
+        // Convenience cache: auto-unlock config encryption with the login password (survives the reload via
+        // sessionStorage). If there is NO vault yet — a fresh install — create one under this same password, so encryption is
+        // simply on from the start: the operator never has to go and set it up by hand before their first peer,
+        // and signing in both creates AND unlocks it (subVaultCreate caches the key too). Strictly gated on "no
+        // vault exists": subUnlock also throws on a WRONG password, and creating there would mint a new key over
+        // an existing wrap and orphan every stored config.
+        let unlocked = true;
+        try { await subUnlock(p); } catch (_) {
+          unlocked = false;
+          try {
+            const v = await api.subVault();
+            if (!(v && v.ok && v.data && v.data.exists)) {
+              await subVaultCreate(p); unlocked = true;
+              // the key just minted here is the ONLY way back in after an out-of-band password reset — show it
+              // once the SPA is up (the raw key is already in the session cache subVaultCreate wrote).
+              try { sessionStorage.setItem("__vault_show_key", "1"); } catch (_) {}
+            }
+          } catch (_) {}
+        }
+        // swg-passwd changed the panel password on the box, where the vault key isn't reachable, so the vault
+        // could not follow it. Nothing was destroyed — if this password somehow still opens the vault just
+        // re-wrap and move on; otherwise hand the operator the
+        // re-connect prompt, where the OLD panel password or the encryption key gets us back in.
+        if (r.data && r.data.vault_reset) {
+          if (unlocked) { try { await subRewrap(p); sessionStorage.setItem("__vault_reconnected", "1"); } catch (_) {} }
+          else { setRelink(p); setBusy(false); return; }   // ask HERE — after the reload the new password is gone, and the re-wrap needs it
         }
         location.reload(); return;
       }
@@ -12592,6 +14690,7 @@ function LoginScreen() {
       setErr((r && r.error) || "Login failed."); setBusy(false);
     } catch (_) { setErr("Couldn't reach the panel."); setBusy(false); }
   };
+  if (relink) return html`<${VaultRelinkCard} panelPw=${relink} onDone=${() => location.reload()}/>`;
   return html`<div class="login-wrap"><form class="login-card" onSubmit=${submit}>
     <div class="login-brand"><span class="brand-mark"></span><span class="brand-name">swg<span>Panel</span></span></div>
     <h2>${twofa ? "Two-factor" : "Sign in"}</h2>
@@ -12653,4 +14752,5 @@ async function maybeConfirmApply() {
   try { if (sessionStorage.getItem("__apply_ok")) pendingSettingsSection = "access"; } catch (_) {}
   render(h(App), viewEl);
   try { if (sessionStorage.getItem("__vault_reconnected")) { sessionStorage.removeItem("__vault_reconnected"); setTimeout(() => toast("Encryption Vault reconnected.", "ok"), 400); } } catch (_) {}
+  try { if (sessionStorage.getItem("__vault_show_key")) { sessionStorage.removeItem("__vault_show_key"); setTimeout(() => openModal(html`<${VaultKeySheet}/>`), 500); } } catch (_) {}
 })();
