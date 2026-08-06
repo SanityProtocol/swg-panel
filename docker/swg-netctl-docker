@@ -311,6 +311,8 @@ def _handle(verb, args):
         tls, domain, port = (args + ["", "", "", ""])[:3]
         ca = tls in ("cloudflare", "cf15", "letsencrypt", "letsencrypt-ip")
         if port:
+            if not str(port).isdigit():
+                return False, "invalid port — must be numeric"
             busy = subprocess.run(["sh", "-c", "ss -lntH 'sport = :%s' 2>/dev/null | grep -q ." % port],
                                   capture_output=True).returncode == 0
             if busy and str(port) != str(_read_env(["PANEL_PORT"]).get("PANEL_PORT", "")):
