@@ -1493,6 +1493,13 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tsw:hover .tsw-bub,.tsw:focus-within .tsw-bub{display:inline-flex}
 .tsw:focus-within .tsw-bub{top:50%;left:auto;right:calc(100% + 5px);transform:translateY(-50%)}
 .tsw-bub::before{content:"";position:absolute;left:0;right:0;top:-9px;height:9px}
+/* Each preview sits on the REAL backdrop of the theme it previews, so you judge the colour against the
+   background it will actually be read on — hardcoded --bg/--ink per theme, NOT the variables, because the
+   light preview must stay light while you are in dark mode and vice versa.
+   ⚠ These class names are BUILT ("tsw-" + mode), so they appear nowhere as literals and read as unused to a
+   grep-based dead-CSS audit. Deleting them makes both bubbles transparent. Do not "clean up". */
+.tsw-dark{background:#0A0E15;color:#E7EEF6}
+.tsw-light{background:#EDF1F7;color:#101822}
 .tsw-cap{font-family:var(--mono);font-size:8px;text-transform:uppercase;letter-spacing:.14em;opacity:.5}
 /* theme-accent preview: an outline button + a filled control chip, both in the picked colour */
 .tsw-theme{display:inline-flex;align-items:center;gap:8px}

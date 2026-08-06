@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.6.1-beta</code></p>
+<p align="center"><code>1.6.2-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.6.0-beta** — [full changelog](CHANGELOG.md)
-> - **WDTT servers** — a self-contained, key-owning VPN server (DTLS + password-HKDF obfuscation over its own userspace WireGuard) modelled as an interface: four forks, panel-owned passwords reconciled without a restart, and full routing/filter/egress parity with wg/awg.
-> - **Adoption** — the node reports every wg/awg interface and WDTT install it did not create (running *or* dormant); the panel takes them over in place, importing existing peers and WDTT password stores.
-> - **Installers create nothing** — no interface/turn/WDTT prompts; they install the datapath tooling, stand `swg-noded` up, and let the panel own configuration.
+> **What's new in 1.6.2-beta** — [full changelog](CHANGELOG.md)
+> - **WDTT adoption is honoured whenever the node has no record of the instance** (1.6.1) — a leftover config-dir and unit name from a previous install read as "already ours", so the seeded create was skipped and the roster-derived (empty) password set reaped the store. A `pw_seen` latch now makes an empty desired set mean "not known yet" until the panel has actually held a password.
+> - **`_infer_tls_mode` asks the certificate** (1.6.1) — it fell through to `selfsigned` on a fresh install's first boot and stuck, because the installers' heal is fill-if-empty. Cloudflare Origin ⇒ `cf15`, other public CA ⇒ `letsencrypt`/`cloudflare`; plus a one-way boot heal for an already-stored wrong value.
+> - **Fixes** — `reconcile_dial_src` raised `KeyError` into the sync every 5s (and never persisted its state, so a cleared dial source leaked its route); the themed-swatch preview backdrops were restored; Settings → Authentication is one card.
 <!-- WHATS-NEW:END -->
 
 ---

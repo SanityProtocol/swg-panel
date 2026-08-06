@@ -2380,7 +2380,7 @@ def reconcile_dial_src(desired_by_iface, res):
         with contextlib.suppress(Exception):
             prev = json.load(open(statef))
         for ip in (set(prev) - set(want)):                     # dial_src cleared → drop our /32
-            run(["ip", "route", "del", ip + "/32"]); res["changed"] += 1
+            run(["ip", "route", "del", ip + "/32"]); res["changed"] = res.get("changed", 0) + 1
         for ip, ds in want.items():                            # (re)assert the source route (atomic, idempotent)
             g = run(["ip", "route", "get", ip]).stdout
             mdev = re.search(r"\bdev (\S+)", g); mvia = re.search(r"\bvia (\S+)", g)
@@ -2393,7 +2393,7 @@ def reconcile_dial_src(desired_by_iface, res):
             if run(cmd).returncode != 0:
                 res["errors"].append("dial-src " + ip + ": route failed")
             elif prev.get(ip) != ds:
-                res["changed"] += 1
+                res["changed"] = res.get("changed", 0) + 1
         if want != prev:
             with contextlib.suppress(Exception):
                 with open(statef + ".tmp", "w") as f:

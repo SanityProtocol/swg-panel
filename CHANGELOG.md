@@ -3,6 +3,43 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.6.2-beta] — 2026-08-06
+
+### Fixed
+- **A node with a pinned dial source reported an error every few seconds.** Mesh links that pin which
+  outbound address they dial from made the node log a `dial-src` fault on every sync and show as erroring
+  in the panel — while the routing itself was applied correctly the whole time. The same fault stopped the
+  node recording what it had pinned, so **clearing** a dial source afterwards left its route in place until
+  the machine was rebooted.
+- **The colour previews in settings were see-through.** Hovering a colour swatch shows how that colour reads
+  against each theme's real background; the preview had lost its backdrop, so the page behind it showed
+  through and the colour was impossible to judge.
+
+### Changed
+- **Settings → Authentication is a single panel again.** The password form and two-factor sat in two separate
+  boxes; they are now two sections of one card, like every other settings screen.
+
+## [1.6.1-beta] — 2026-08-01
+
+### Fixed
+- **Adopting a WDTT server this machine had run before deleted all of its users.** If the box had hosted that
+  server in an earlier life — after a re-install, or with a panel restored from an older backup — the take-over
+  quietly did nothing and the server was then emptied: every user removed, and the owner password replaced.
+  Adoption now runs whenever the panel doesn't already manage the server, whatever the machine has left over.
+- **A server's users are never deleted just because the panel hasn't heard of them yet.** Until the panel has
+  actually held a password for a server, its existing users are handed up and imported instead of removed —
+  which also covers creating a server on top of an older install's directory, and a node that lost its records
+  while the server's own store survived. Removing a user now requires you to remove it.
+- **Adopting a server no longer resets its clients' addresses.** Each device kept the address it had.
+- **The panel could report its TLS type as self-signed while serving a real certificate.** On a fresh install's
+  first start it guessed before it had anything to go on, then never corrected itself — so Settings → Access
+  read "self-signed" over a working Let's Encrypt certificate for the life of the box. It now reads the
+  certificate, and repairs the stored value when a real certificate contradicts it.
+- **WDTT configs that import by link were unreadable**, printed one character per line beside the "no VK call
+  link" notice. **WDTT-Plus** was also offered a QR code its app can't scan — it takes a link, like the others.
+- **The VK call link field was missing for users who only have a WDTT server.** Their config needs the link,
+  but the field only appeared for users behind a turn-proxy.
+
 ## [1.6.0-beta] — 2026-08-01
 
 The **WDTT** release: a third kind of server you can run from the panel, and the ability to **adopt

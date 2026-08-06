@@ -1,12 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.6.1-beta</code></p>
+<p align="center"><code>1.6.2-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.6.0-beta** — [full changelog](CHANGELOG.md)
-> - **WDTT servers** — a third kind of server, run from the panel: it carries a WireGuard tunnel inside a stream shaped like a VK video call, so it doesn't look like a VPN on the wire. Four forks to choose from, users managed exactly like everyone else, and its config on each user's subscription page.
-> - **Adopt servers you already have** — the panel spots WireGuard, AmneziaWG and WDTT servers a box was already running (even stopped ones) and takes them over as they are: same keys, same peers, nobody re-imports anything.
-> - **Installers stopped asking about VPN configuration** — they stand the service up and stop; interfaces, turn-proxies and WDTT servers are created in the panel, where you can see what you're doing.
+> **What's new in 1.6.2-beta** — [full changelog](CHANGELOG.md)
+> - **Adopting a WDTT server no longer empties it** (1.6.1) — taking over a server this machine had run before quietly deleted every user. A server's users are now handed up to the panel and imported; removing a user takes actually removing it.
+> - **The panel reads its own certificate** (1.6.1) — it could report "self-signed" while serving a real one, for the life of the box. It now repairs that.
+> - **Fixes** — a node with a pinned dial source no longer reports an error every few seconds, the colour previews in settings are no longer see-through, and Authentication is a single settings panel again.
 <!-- WHATS-NEW:END -->
 
 ---

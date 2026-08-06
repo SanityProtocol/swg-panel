@@ -13030,8 +13030,8 @@ function PanelSettingsScreen() {
           <div class="field"><label>Current password</label><input type="password" value=${secCur} disabled=${!secAuth} onInput=${e => setSecCur(e.target.value)} autocomplete="current-password" placeholder="required to confirm a change"/></div>
           <div class="row2"><div class="field"><label>New password</label><input type="password" value=${secNp} disabled=${!secAuth} onInput=${e => setSecNp(e.target.value)} autocomplete="new-password" placeholder="leave blank to keep current"/></div>
             <div class="field"><label>Confirm new password</label><input type="password" value=${secNp2} disabled=${!secAuth} onInput=${e => setSecNp2(e.target.value)} autocomplete="new-password"/></div></div>
+          <${TwoFactorCard} enabled=${sec2fa} disabled=${!secAuth} onChange=${setSec2fa}/>
         </div>` : null}
-        ${section === "security" ? html`<${TwoFactorCard} enabled=${sec2fa} disabled=${!secAuth} onChange=${setSec2fa}/>` : null}
         ${section === "configs" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Client configs</div>
           <div class="field"><label>Store client configs</label>
@@ -14549,8 +14549,10 @@ function TwoFactorCard({ enabled, disabled, onChange }) {
   };
   const copyRecovery = () => { try { navigator.clipboard.writeText(recovery.join("\n")); toast("Recovery codes copied.", "ok"); } catch (_) {} };
 
-  return html`<div class="card">
-    <div class="seclabel" style="margin-top:0">Two-factor authentication
+  // A SECTION of the Authentication card, not a card of its own — so the pane reads as one settings area with
+  // two headings, like Access & TLS. No margin-top:0 here: this is the second section and wants the gap.
+  return html`<${Fragment}>
+    <div class="seclabel">Two-factor authentication
       ${enabled && stage === "idle" ? html`<span class="grow"></span><span class="tg tg-ok">On</span>` : null}</div>
     ${err ? html`<div class="formmsg err">${err}</div>` : null}
     ${!enabled && stage === "idle" ? html`
@@ -14594,7 +14596,7 @@ function TwoFactorCard({ enabled, disabled, onChange }) {
         <button class="btn btn-ghost" disabled=${busy} onClick=${reset}>Cancel</button>
       </div>
     ` : null}
-  </div>`;
+  <//>`;
 }
 function require401() { showLogin(); throw new Error("unauthorized"); }
 function showLogin() { if (_loginShown) return; _loginShown = true; document.body.classList.add("loggedout"); try { render(h(LoginScreen), viewEl); } catch (_) {} }
