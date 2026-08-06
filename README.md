@@ -1,12 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.6.2-beta</code></p>
+<p align="center"><code>1.6.3-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.6.2-beta** — [full changelog](CHANGELOG.md)
-> - **Adopting a WDTT server no longer empties it** (1.6.1) — taking over a server this machine had run before quietly deleted every user. A server's users are now handed up to the panel and imported; removing a user takes actually removing it.
-> - **The panel reads its own certificate** (1.6.1) — it could report "self-signed" while serving a real one, for the life of the box. It now repairs that.
-> - **Fixes** — a node with a pinned dial source no longer reports an error every few seconds, the colour previews in settings are no longer see-through, and Authentication is a single settings panel again.
+> **What's new in 1.6.3-beta** — [full changelog](CHANGELOG.md)
+> - **Two health warnings that weren't real.** A node with a pinned dial source reported an error every few seconds while routing correctly, and a node could read "host routing degraded" simply because an SNI mode was picked before any interface had a routing category — both now tell *idle* apart from *broken*.
+> - **Colour previews in settings are no longer see-through**, so you can actually judge a colour against the theme it will be read on.
+> - **Settings → Authentication is a single panel again**, two sections in one card like every other settings screen.
 <!-- WHATS-NEW:END -->
 
 ---

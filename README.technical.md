@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.6.2-beta</code></p>
+<p align="center"><code>1.6.3-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.6.2-beta** — [full changelog](CHANGELOG.md)
-> - **WDTT adoption is honoured whenever the node has no record of the instance** (1.6.1) — a leftover config-dir and unit name from a previous install read as "already ours", so the seeded create was skipped and the roster-derived (empty) password set reaped the store. A `pw_seen` latch now makes an empty desired set mean "not known yet" until the panel has actually held a password.
-> - **`_infer_tls_mode` asks the certificate** (1.6.1) — it fell through to `selfsigned` on a fresh install's first boot and stuck, because the installers' heal is fill-if-empty. Cloudflare Origin ⇒ `cf15`, other public CA ⇒ `letsencrypt`/`cloudflare`; plus a one-way boot heal for an already-stored wrong value.
-> - **Fixes** — `reconcile_dial_src` raised `KeyError` into the sync every 5s (and never persisted its state, so a cleared dial source leaked its route); the themed-swatch preview backdrops were restored; Settings → Authentication is one card.
+> **What's new in 1.6.3-beta** — [full changelog](CHANGELOG.md)
+> - **Health checks now distinguish idle-by-design from down.** `reconcile_dial_src` raised `KeyError` into the sync loop every 5s (and never persisted its state, so a cleared dial source leaked its `/32`); `engine_ok` for `sni_user` reported the deliberately-unstarted classifier as a failure — it gains a `sni_idle` latch mirroring the kernel path's `xts_idle`.
+> - **Restored the themed-swatch preview backdrops** (`.tsw-dark` / `.tsw-light`), removed by 1.6.0's dead-CSS sweep because the class names are built (`"tsw-" + mode`) and invisible to a literal grep.
+> - **Settings → Authentication is one card**; `TwoFactorCard` renders as a section rather than its own `.card`.
 <!-- WHATS-NEW:END -->
 
 ---

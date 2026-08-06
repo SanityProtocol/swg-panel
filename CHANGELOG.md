@@ -3,7 +3,7 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-## [1.6.2-beta] — 2026-08-06
+## [1.6.3-beta] — 2026-08-06
 
 ### Fixed
 - **A node with a pinned dial source reported an error every few seconds.** Mesh links that pin which
@@ -14,6 +14,10 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **The colour previews in settings were see-through.** Hovering a colour swatch shows how that colour reads
   against each theme's real background; the preview had lost its backdrop, so the page behind it showed
   through and the colour was impossible to judge.
+- **A node could report "SNI parser down — host routing degraded" while working correctly.** Picking an
+  SNI routing mode before any interface has a routing category assigned leaves nothing to classify, so the
+  classifier is deliberately never started — and the health badge read that deliberate absence as a failure.
+  It now tells *idle by design* apart from *down*, which the kernel-SNI engine already did.
 
 ### Changed
 - **Settings → Authentication is a single panel again.** The password form and two-factor sat in two separate

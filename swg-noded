@@ -2763,6 +2763,11 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600):
     client's own DNS (incl. DoH/DoT) is never touched. Supervised as a subprocess (shares swg-noded's cgroup, so it
     dies on a noded restart and is relaunched here)."""
     want = domains is not None and bool(subnets)
+    # Nothing to route (no interface carries a routed category yet) ⇒ the classifier is stopped ON PURPOSE.
+    # Without this the health badge read the absent process as a failure and cried "SNI parser down — host
+    # routing degraded" on a node that was working exactly as configured — which is the first thing an operator
+    # sees after picking an SNI mode but before assigning any category. Mirrors `xts_idle` on the kernel path.
+    _SMART_MODE["sni_idle"] = not want
     p = _SNI_PROC.get("p")
     if not want:
         if p and p.poll() is None:
@@ -2870,7 +2875,7 @@ def smart_status():
     engine = _SMART_MODE.get("engine") or "none"                # actual running engine: none|dns|sni_user|sni_kernel
     sni_alive = bool(_SNI_PROC.get("p") and _SNI_PROC["p"].poll() is None)
     dns_alive = bool(_dnsmasq_running())
-    if engine == "sni_user":     engine_ok = sni_alive          # is the mode's fill engine actually up?
+    if engine == "sni_user":     engine_ok = sni_alive or bool(_SMART_MODE.get("sni_idle"))   # up, or idle by design (nothing routed)
     elif engine == "sni_kernel":                                # the hook is torn down on purpose when there is nothing to route
         engine_ok = bool(_SMART_MODE.get("xts_idle")) or run(
             ["iptables", "-w", "2", "-t", "mangle", "-C", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", "SWGK"]).returncode == 0
