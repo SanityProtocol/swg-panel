@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 from urllib.parse import urlparse
@@ -172,14 +173,22 @@ def _served_cert_real(port, domain="", host="", tries=60):
     <host> is the panel's PUBLISHED bind — connect to THAT, not a hardcoded 127.0.0.1: a bind to a specific public
     IP (PANEL_BIND=<ip>, not 0.0.0.0) doesn't answer on loopback, so probing 127.0.0.1 there falsely 'never served a
     cert' → a false rollback that then strands nodes that already followed the candidate. 0.0.0.0/::/blank → loopback."""
-    if subprocess.run(["sh", "-c", "command -v openssl"], capture_output=True).returncode != 0:
+    if shutil.which("openssl") is None:
         return None
     ch = host.strip() if (host or "").strip() and host.strip() not in ("0.0.0.0", "::", "*") else "127.0.0.1"
-    cmd = ("echo | openssl s_client -connect %s:%s 2>/dev/null | "
-           "openssl x509 -noout -issuer -subject -ext subjectAltName 2>/dev/null" % (ch, port))
+    # NO SHELL. `host` and `port` arrive from a queued request, and interpolating them into an `sh -c` string
+    # made this an injection primitive (a port of `1; <cmd>` would have run). The pipeline is driven in Python
+    # instead: every value is an argv element, so nothing can escape into a command. `input=""` replaces the
+    # old `echo |`, which existed only to hand s_client an immediate EOF so it doesn't wait for stdin.
     for _ in range(tries):                     # tries*3s ≈ 3 min ceiling — covers a slow Cloudflare DNS-01
-        r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=15)
-        out = r.stdout or ""
+        out = ""
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+            s = subprocess.run(["openssl", "s_client", "-connect", "%s:%s" % (ch, port)],
+                               input="", capture_output=True, text=True, timeout=15)
+            if (s.stdout or "").strip():
+                x = subprocess.run(["openssl", "x509", "-noout", "-issuer", "-subject", "-ext", "subjectAltName"],
+                                   input=s.stdout, capture_output=True, text=True, timeout=5)
+                out = x.stdout or ""
         iss = sub = None
         for ln in out.splitlines():
             if ln.startswith("issuer="):
@@ -224,6 +233,13 @@ def _bless_restore(snap):
     with open(tmp, "w") as f:
         f.write(snap)
     os.replace(tmp, BLESS)
+
+
+def _v_port(p):
+    """A queued value is only a port if it is digits in 1-65535. Everything that reaches a command line goes
+    through here — validating at the point of USE, not once per verb, so a verb added later can't miss it."""
+    s = str(p or "").strip()
+    return s.isdigit() and 1 <= int(s) <= 65535
 
 
 def _revert_snapshot_write(old_env, old_bless):
@@ -311,8 +327,12 @@ def _handle(verb, args):
         tls, domain, port = (args + ["", "", "", ""])[:3]
         ca = tls in ("cloudflare", "cf15", "letsencrypt", "letsencrypt-ip")
         if port:
-            busy = subprocess.run(["sh", "-c", "ss -lntH 'sport = :%s' 2>/dev/null | grep -q ." % port],
-                                  capture_output=True).returncode == 0
+            if not _v_port(port):
+                return False, "port %r isn't a valid port number (1-65535)" % (port,)
+            # NO SHELL: the filter is one argv element, so a crafted port can't escape into a command. The old
+            # `| grep -q .` is just "did ss print anything", which reads better in Python anyway.
+            _ss = subprocess.run(["ss", "-lntH", "sport = :%s" % port], capture_output=True)
+            busy = bool((_ss.stdout or b"").strip())
             if busy and str(port) != str(_read_env(["PANEL_PORT"]).get("PANEL_PORT", "")):
                 return False, "port %s is already in use on this host — choose a free port" % port
         # HTTP-01 CANNOT be dry-run in Docker, and failing the change over that is wrong. `compose run` publishes no
@@ -482,10 +502,34 @@ def main():
     if not os.path.isdir(QUEUE):
         return
     os.makedirs(STATUS, exist_ok=True)
+    # Who is allowed to enqueue: the panel, and nobody else. Bare-metal swg-netctl has always enforced this
+    # ("queue requests must be regular files OWNED BY THE PANEL USER"); this variant never did, which left the
+    # verbs below trusting whatever appeared in the directory. Accept only a REGULAR file (lstat — a symlink
+    # must not be followed out of the queue) owned by root or by the queue directory's own owner, which is who
+    # the panel container writes as. Anything else is skipped and removed, not executed.
+    try:
+        _qst = os.stat(QUEUE)
+    except OSError:
+        return
     for name in sorted(os.listdir(QUEUE)):
         if not name.endswith(".json"):
             continue
         path = os.path.join(QUEUE, name)
+        try:
+            _st = os.lstat(path)
+            if not stat.S_ISREG(_st.st_mode) or _st.st_uid not in (0, _qst.st_uid):
+                # Answer, don't just delete: the panel blocks in _netctl_wait until a status appears, so a
+                # silent removal would read as a hang. An owner mismatch is far more likely to be a broken
+                # install than an attack, and the operator needs to be able to see which it was.
+                with contextlib.suppress(OSError):
+                    with open(os.path.join(STATUS, name[:-5] + ".json"), "w") as f:
+                        json.dump({"status": "error",
+                                   "message": "refused: queue request not owned by the panel (uid %d)" % _st.st_uid}, f)
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+                continue
+        except OSError:
+            continue
         try:
             req = json.load(open(path))
         except (OSError, ValueError):
