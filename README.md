@@ -1,12 +1,11 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.6.3-beta</code></p>
+<p align="center"><code>1.6.4-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.6.3-beta** — [full changelog](CHANGELOG.md)
-> - **Two health warnings that weren't real.** A node with a pinned dial source reported an error every few seconds while routing correctly, and a node could read "host routing degraded" simply because an SNI mode was picked before any interface had a routing category — both now tell *idle* apart from *broken*.
-> - **Colour previews in settings are no longer see-through**, so you can actually judge a colour against the theme it will be read on.
-> - **Settings → Authentication is a single panel again**, two sections in one card like every other settings screen.
+> **What's new in 1.6.4-beta** — [full changelog](CHANGELOG.md)
+> - **Security fix for Docker installs** — a request from the panel's own queue could run commands as root on the host. No shell is used for those calls any more, and the queue is verified before anything acts on it. Reported by [@anupamme](https://github.com/anupamme).
+> - **"Don't offer" a server on a given OS** — pick nothing instead of an app that can't connect, and the server simply won't appear on those users' subscription pages.
 <!-- WHATS-NEW:END -->
 
 ---

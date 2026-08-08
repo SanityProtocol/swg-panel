@@ -1,12 +1,11 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.6.3-beta</code></p>
+<p align="center"><code>1.6.4-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.6.3-beta** — [full changelog](CHANGELOG.md)
-> - **Health checks now distinguish idle-by-design from down.** `reconcile_dial_src` raised `KeyError` into the sync loop every 5s (and never persisted its state, so a cleared dial source leaked its `/32`); `engine_ok` for `sni_user` reported the deliberately-unstarted classifier as a failure — it gains a `sni_idle` latch mirroring the kernel path's `xts_idle`.
-> - **Restored the themed-swatch preview backdrops** (`.tsw-dark` / `.tsw-light`), removed by 1.6.0's dead-CSS sweep because the class names are built (`"tsw-" + mode`) and invisible to a literal grep.
-> - **Settings → Authentication is one card**; `TwoFactorCard` renders as a section rather than its own `.card`.
+> **What's new in 1.6.4-beta** — [full changelog](CHANGELOG.md)
+> - **`swg-netctl-docker` hardening (CWE-78)** — two `sh -c` sites interpolated queue-supplied values (port, host); both now pass argv, ports validate at point of use via `_v_port`, and the queue enforces regular-file + panel ownership (`lstat`, no symlink escape) as bare-metal `swg-netctl` always has. A refusal writes a status rather than deleting silently. Reported by [@anupamme](https://github.com/anupamme).
+> - **`turn_client_default[fork][os] = "none"`** — the sub page's `turnGetApp` short-circuits before the compat-ranked fallback, so the deployment is hidden entirely; WDTT cells skip explicitly, since their encoder fallback would otherwise still render a card.
 <!-- WHATS-NEW:END -->
 
 ---

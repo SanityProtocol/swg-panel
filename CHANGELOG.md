@@ -3,6 +3,24 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.6.4-beta] — 2026-08-08
+
+### Security
+- **A queued host request could run commands as root (Docker installs only).** Two places in the Docker host
+  helper built a shell command out of values taken from the panel's own request queue, so a crafted port
+  could have run arbitrary commands on the host. Neither place needed a shell — both now pass every value as
+  an argument, and a port is checked where it is used rather than once per action. The queue itself is also
+  verified for the first time: a request is acted on only if it is an ordinary file belonging to the panel,
+  which is the rule the bare-metal helper has always applied. Reported by
+  [@anupamme](https://github.com/anupamme) (OrbisAI Security).
+
+### Added
+- **"Don't offer" a server on a given operating system.** Each server already lets you choose which app its
+  users are handed per platform; now you can also choose to offer **nothing**. The server then simply doesn't
+  appear on those users' subscription pages — no card, no download link — instead of offering an app that
+  can't connect to it. Useful when a server has no sensible client on a platform: iOS users of a
+  Windows-only server now see nothing for it, rather than something that fails.
+
 ## [1.6.3-beta] — 2026-08-06
 
 ### Fixed
