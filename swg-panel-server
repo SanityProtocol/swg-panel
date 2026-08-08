@@ -7417,7 +7417,9 @@ def api(method, path, qs, body, deps):
                     osk = str(osk); cidv = str(cidv)
                     if osk not in valid_os_d:
                         continue
-                    if cidv.startswith("sidecar@"):      # per-author CLI: sidecar@<author> — the author must drive this fork
+                    if cidv == "none":                  # "don't offer this server on this OS" — the sub page renders no card at all
+                        fout[osk] = "none"
+                    elif cidv.startswith("sidecar@"):   # per-author CLI: sidecar@<author> — the author must drive this fork
                         if "sidecar" in compat and cidv.split("@", 1)[1] in cli_authors:
                             fout[osk] = cidv
                     elif cidv in TURN_CLIENTS and cidv in compat:   # a GUI/app client that actually connects to this fork

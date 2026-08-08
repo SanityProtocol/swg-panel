@@ -1414,6 +1414,11 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .cpick-opt{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 10px;border:0;border-radius:6px;background:none;color:var(--ink-2);cursor:pointer;font:inherit}
 .cpick-opt:hover{background:color-mix(in srgb,var(--brand) 9%,transparent);color:var(--ink)}
 .cpick-opt.on{background:color-mix(in srgb,var(--brand) 12%,transparent);color:var(--ink)}
+/* "Don't offer" — last in the list and set apart by a rule above it: it withholds the server from an OS rather
+   than choosing an app for it, so it should never read as one more app in the same run. */
+.cpick-none{margin-top:4px;padding-top:9px;border-top:1px solid var(--line);border-radius:0 0 6px 6px;justify-content:space-between}
+.cpick-none.on{color:var(--fault);background:color-mix(in srgb,var(--fault) 11%,transparent)}
+.cpick-none-hint{font-size:11px;color:var(--faint);white-space:nowrap}
 .ce-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
 .ce-by{color:var(--muted)}
 .ce-auth{font-weight:700}

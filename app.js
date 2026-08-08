@@ -7712,6 +7712,11 @@ const TURN_OBF_LABEL = { "Moroka8": "WRAP", "samosvalishe": "rtpopus", "anton48"
 const _FORK_GUI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1, "WINGS-N": 1,       // a native/friendly GUI app rides the fork's obfuscation
                         "amurcanov": 1, "ildarmaga": 1, "wdttplus": 1, "xxcipherx": 1 };                 // WDTT apps always obfuscate (WRAP-A)
 const _FORK_CLI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1 };                 // a listed CLI author obfuscates (NOT WINGS — its wrap needs the app's SessionHello)
+// "Don't offer on this OS" — a stored choice in turn_client_default[fork][os], alongside a client id or
+// "sidecar@<author>". The sub page's turnGetApp() returns nothing for it, and every caller there already hides a
+// deployment with no app, so the card simply isn't rendered. NOT a pickerEntries member: it isn't an app, and
+// letting it into that list would put it into ranking, system-default and "has any app" logic.
+const NONE_KEY = "none";
 function pickerEntries(f, os) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
   const fork = f.id, compat = f.compat || {}, obfLabel = TURN_OBF_LABEL[fork] || "";
@@ -7763,6 +7768,9 @@ function turnForkPlatforms(f) {
     const es = pickerEntries(f, os);
     if (!es.length) return { os, label, disabled: true };   // no connectable client for this OS → greyed, unclickable (not hidden)
     const sd = defs[os], sk = sysDefaultKey(f, es);
+    // Deliberately withheld on this OS → ghost the chip like "no app", but keep it CLICKABLE: unlike a platform
+    // with nothing to offer, this one has apps and the operator may want to start offering it again.
+    if (sd === NONE_KEY) return { os, label, notOffered: true };
     const e = (sd && es.find(x => x.key === sd)) || (sk && es.find(x => x.key === sk)) || es[0];   // SAVED default (matches the settings picker) · else the WDTT system default · else the top-ranked. e.obf = obf label or "" for plain
     return { os, label, native: !!e.native, obf: !!e.obf, isCli: !!e.isCli, name: e.name, author: e.author, color: e.color, coreFork: e.coreFork || null, obfLabel: e.obf || "" };
   });
@@ -7803,10 +7811,16 @@ function useTurnClients(fork, commitRef, initialOs) {
   const entries = byOs[os] || [];
   // the admin's saved end-user default (an entry key) for this (fork, OS); falls back to the top-priority entry if unset / stale
   const savedDefault = (o) => (((Store.panelSettings || {}).turn_client_default || {})[fork] || {})[o];
-  const validDefault = (o) => { const sd = savedDefault(o), es = byOs[o] || []; if (sd && es.some(e => e.key === sd)) return sd; return sysDefaultKey(f, es) || ((es[0] || {}).key || null); };
-  const selEntry = (o) => { const es = byOs[o] || []; if (!es.length) return null; const k = sel[o] !== undefined ? sel[o] : validDefault(o); return es.find(x => x.key === k) || es[0]; };   // the chosen entry for ANY os (each OS button shows its own)
+  // NONE_KEY = "don't offer this server on this OS": a real, storable choice, not the absence of one — so it is
+  // valid wherever a client id is, and it round-trips through settings. It has no `cid`, so anything keyed by
+  // client id must skip it (see save()).
+  const noneEntry = (o) => ({ key: NONE_KEY, cid: null, none: true, isCli: false, native: false, obf: "",
+                              autostart: false, coreFork: null, author: "", color: "",
+                              name: "Not offered on " + ((_OS_TABS.find(([x]) => x === o) || [])[1] || o) });
+  const validDefault = (o) => { const sd = savedDefault(o), es = byOs[o] || []; if (sd === NONE_KEY) return NONE_KEY; if (sd && es.some(e => e.key === sd)) return sd; return sysDefaultKey(f, es) || ((es[0] || {}).key || null); };
+  const selEntry = (o) => { const es = byOs[o] || []; if (!es.length) return null; const k = sel[o] !== undefined ? sel[o] : validDefault(o); if (k === NONE_KEY) return noneEntry(o); return es.find(x => x.key === k) || es[0]; };   // the chosen entry for ANY os (each OS button shows its own)
   const selKey = sel[os] !== undefined ? sel[os] : validDefault(os);
-  const e = entries.find(x => x.key === selKey) || entries[0] || null;
+  const e = selKey === NONE_KEY ? noneEntry(os) : (entries.find(x => x.key === selKey) || entries[0] || null);
   const cid = e ? e.cid : null; const c = cid ? cmap[cid] : null;
   const cSchema = (cid && f.client_schemas && f.client_schemas[cid]) || (c && c.settings) || [];   // per-(fork,client) knobs — the mysorez app's core differs per fork
   const osLabel = (_OS_TABS.find(([o]) => o === os) || [])[1];
@@ -7824,10 +7838,12 @@ function useTurnClients(fork, commitRef, initialOs) {
   const save = async (close) => {
     setBusy(true);
     const def = { ...((Store.panelSettings || {}).turn_client_default || {}) };
-    const dfo = { ...(def[fork] || {}) }; dfo[os] = e.key; def[fork] = dfo;    // record this ENTRY (app or CLI-author) as the (fork, OS) default
+    const dfo = { ...(def[fork] || {}) }; dfo[os] = e.key; def[fork] = dfo;    // record this ENTRY (app or CLI-author, or NONE_KEY) as the (fork, OS) default
     const all = { ...((Store.panelSettings || {}).turn_client_settings || {}) };
-    const fo = { ...(all[fork] || {}) }; const co = { ...(fo[cid] || {}) };
-    co[os] = effVals; fo[cid] = co; all[fork] = fo;
+    if (!e.none) {                                                            // "not offered" has no client id — writing settings under it would key the map on null
+      const fo = { ...(all[fork] || {}) }; const co = { ...(fo[cid] || {}) };
+      co[os] = effVals; fo[cid] = co; all[fork] = fo;
+    }
     const r = await api.panelSettings({ turn_client_default: def, turn_client_settings: all });
     if (r && r.ok) {
       setDrafts(m => { const n = { ...m }; delete n[draftKey]; return n; }); await Store.poll();
@@ -7871,11 +7887,13 @@ function TurnAppsPicker({ ctl, offered }) {
           onClick=${() => { if (!has) return; setOs(o); setOpenOs(c => c === o ? null : o); }}>
           <span class="osapp-ic"><${Ic} i=${_OS_ICON[o]}/></span>
           <span class="osapp-col">
-            ${oe ? html`<span class="osapp-name">${oe.name}</span><span class="osapp-auth"><span style=${"color:" + oe.color}>${oe.author}</span>${oe.coreFork && oe.coreFork !== oe.author ? html`<span class="ce-by"> · </span><span style=${"color:" + turnColor(oe.coreFork)}>${oe.coreFork}</span>` : null}</span>`
+            ${oe && oe.none ? html`<span class="osapp-name osapp-dim">${label}</span><span class="osapp-auth osapp-dim">not offered</span>`
+                 : oe ? html`<span class="osapp-name">${oe.name}</span><span class="osapp-auth"><span style=${"color:" + oe.color}>${oe.author}</span>${oe.coreFork && oe.coreFork !== oe.author ? html`<span class="ce-by"> · </span><span style=${"color:" + turnColor(oe.coreFork)}>${oe.coreFork}</span>` : null}</span>`
                  : html`<span class="osapp-name osapp-dim">${label}</span><span class="osapp-auth osapp-dim">no client</span>`}
           </span>
           ${many ? html`<span class="osapp-car">▾</span>` : null}
-          ${oe ? html`<span class="osapp-bub"><span class="osapp-bub-txt"><b>${oe.name}</b>${oe.coreFork ? html`<span class="ce-by"> with </span><span style=${"color:" + turnColor(oe.coreFork)}>${oe.coreFork}</span><span class="ce-by"> core</span>` : html`<span class="ce-by"> by </span><span style=${"color:" + oe.color}>${oe.author}</span>`}${offered ? html`<span class="ce-by"> offered to ${label} users</span>` : null}</span><${ClientEntryBadges} e=${oe}/></span>` : null}
+          ${oe && oe.none ? html`<span class="osapp-bub"><span class="osapp-bub-txt"><b>Not offered</b><span class="ce-by"> — ${label} users get no card for this server</span></span></span>`
+            : oe ? html`<span class="osapp-bub"><span class="osapp-bub-txt"><b>${oe.name}</b>${oe.coreFork ? html`<span class="ce-by"> with </span><span style=${"color:" + turnColor(oe.coreFork)}>${oe.coreFork}</span><span class="ce-by"> core</span>` : html`<span class="ce-by"> by </span><span style=${"color:" + oe.color}>${oe.author}</span>`}${offered ? html`<span class="ce-by"> offered to ${label} users</span>` : null}</span><${ClientEntryBadges} e=${oe}/></span>` : null}
         </button>`;
       })}
     </div>
@@ -7884,6 +7902,12 @@ function TurnAppsPicker({ ctl, offered }) {
       ${openEntries.map(en => html`<button key=${en.key} type="button"
         class=${"cpick-opt" + (openCur && en.key === openCur.key ? " on" : "")} onClick=${() => pick(openOs, en.key)}>
         <${ClientEntryLabel} e=${en}/><${ClientEntryBadges} e=${en}/></button>`)}
+      ${""/* LAST, and set apart: offering nothing is a deliberate choice, not one more app. Picking it drops this
+            server from that OS's subscription pages entirely — no card, rather than a client that can't connect. */}
+      <button type="button" class=${"cpick-opt cpick-none" + (openCur && openCur.none ? " on" : "")}
+        onClick=${() => pick(openOs, NONE_KEY)}>
+        <span><b>Don't offer</b><span class="ce-by"> for ${openLabel}</span></span>
+        <span class="cpick-none-hint">no card on their page</span></button>
     </div>` : null}
     ${!anyApp ? html`<div class="notice" style="margin-top:12px"><${Ic} i="info"/><span>No ${f.label} client app yet.</span></div>` : null}
   <//>`;
@@ -7894,11 +7918,15 @@ function TurnClientParams({ ctl, embedded }) {
   const { cSchema, cName, osLabel, effVals, stageSetting, dirty, save, busy, flash, e } = ctl;
   if (!e) return html`<div class="hint">Pick a client app above first.</div>`;
   return html`<${Fragment}>
-    ${(cSchema && cSchema.length)
+    ${""/* "Not offered" has no settings — but it still has to be SAVEABLE, so this replaces the form only, never
+          the footer the Save button lives in (returning early here left the choice unable to be committed). */}
+    ${e.none
+      ? html`<div class="hint">This server isn't offered on ${osLabel} — those users won't see a card for it, so there's nothing to configure. Pick an app above to start offering it again.</div>`
+      : (cSchema && cSchema.length)
       ? html`<${TurnDefaultsForm} schema=${cSchema} values=${effVals} onSet=${stageSetting} busy=${busy}/>`
       : html`<div class="hint">${cName} has no in-app settings to configure.</div>`}
     ${embedded ? null : html`<div style="display:flex;align-items:center;gap:12px;margin-top:16px">
-        <span class="faint" style="font-size:12px">${osLabel} users will be offered ${clientAppLabel(e)}</span>
+        <span class="faint" style="font-size:12px">${e.none ? html`${osLabel} users will be offered nothing for this server` : html`${osLabel} users will be offered ${clientAppLabel(e)}`}</span>
         <span class="grow"></span>
         ${flash ? html`<span class="vk-status ok">${flash}</span>` : null}
         <button class="btn btn-primary" disabled=${busy || !dirty} onClick=${() => save(true)}>${busy ? "Saving…" : "Save"}</button>
@@ -12882,10 +12910,12 @@ function PanelSettingsScreen() {
               return html`<span class="tf-chk ok"><${Ic} i="check"/> up to date</span>`; })()}
             <span class="tf-plats">${turnForkPlatforms(f).map(p => html`<span key=${p.os} class="tf-platwrap turnwrap">
               <button type="button" aria-disabled=${p.disabled ? "true" : null}
-                class=${"tf-plat" + (p.disabled ? " off" : ((p.native ? " nat" : " cross") + (p.obf ? "" : " plain") + (p.isCli ? " cli" : "")))}
+                class=${"tf-plat" + (p.disabled || p.notOffered ? " off" : ((p.native ? " nat" : " cross") + (p.obf ? "" : " plain") + (p.isCli ? " cli" : "")))}
                 onClick=${() => { if (!p.disabled) openServerClients(f.id, p.os); }}><${Ic} i=${"os_" + p.os}/></button>
               <span class="turnbub tf-plbub">
-                ${p.disabled
+                ${p.notOffered
+                  ? html`<span class="tf-plbub-l"><span class="tf-plbub-app">Not offered on ${p.label} — those users get no card for this server</span></span>`
+                  : p.disabled
                   ? html`<span class="tf-plbub-l"><span class="tf-plbub-app">No ${f.label} app for ${p.label} yet</span></span>`
                   : html`<${Fragment}><span class="tf-plbub-l">
                       <span class="tf-plbub-app">${p.name}<span class="tf-plbub-by"> by </span><span style=${"color:" + (p.color || turnColor(p.author))}>${p.author}</span></span>

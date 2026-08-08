@@ -240,6 +240,11 @@
     //    Honoured ONLY if that client is still COMPATIBLE with the fork — a saved default goes stale when a pairing is
     //    retired (e.g. VK TURN Proxy dropped from MYSOREZ), and a stale default must never resurrect a dead pairing.
     var def = (((_lastData && _lastData.turn_client_default) || {})[forkId] || {})[os];
+    // "none" = the operator chose DON'T OFFER this server on this OS. Return nothing and stop — every caller
+    // already treats a falsy app as "hide this deployment entirely" (no card, no dot), which is exactly the
+    // intent. It must short-circuit BEFORE the compat-ranked fallback below, or the deliberate choice would
+    // silently resolve to some other app instead.
+    if (def === "none") return null;
     if (def) {
       if (def.indexOf("sidecar@") === 0) { if (compat.sidecar || !hasCompat) { var d0 = build("sidecar"); if (d0) return withCli(d0, def.split("@")[1]); } }
       else if (clients[def] && (compat[def] || !hasCompat)) { var d = build(def); if (d) return d; }
@@ -1772,7 +1777,14 @@
     var peer = row.peer, secret = row.secret, items = [];
     if (mode === "turn") {
       orderedTargets(peer.targets).forEach(function (tt) {
-        if (tt.type === "wdtt") { items.push({ tgt: tt, wdtt: tt.wdtt || {} }); return; }   // WDTT peer → a cell in the Turn group (a client ships for every OS: anton48/iOS, WDTT app/Android, PWDTT/desktop)
+        // WDTT peer → a cell in the Turn group (a client ships for every OS: anton48/iOS, WDTT app/Android,
+        // PWDTT/desktop). Unlike a turn-proxy the WDTT cell has an encoder FALLBACK, so a missing app never hides
+        // it — but "don't offer on this OS" is a decision, not a missing app, and must hide it like any other.
+        if (tt.type === "wdtt") {
+          var wfk = ((tt.wdtt || {}).fork) || "amurcanov";
+          if ((((_lastData && _lastData.turn_client_default) || {})[wfk] || {})[subOs()] === "none") return;
+          items.push({ tgt: tt, wdtt: tt.wdtt || {} }); return;
+        }
         var seen = {}, tps = [], isAwg = (tt.type === "awg");
         (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return;
           if (isAwg && turnWgOnly(f)) return;   // a WireGuard-only fork can't front this AmneziaWG interface
