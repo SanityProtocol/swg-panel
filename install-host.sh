@@ -891,9 +891,18 @@ info "Panel application"
 for f in swg-panel-server index.html app.css app.js reconcile.js; do
   [ -f "$SRC/$f" ] || die "missing $f beside this script (unzip the bundle here)"
 done
+[ -d "$SRC/js" ] || die "missing js/ beside this script (unzip the bundle here)"   # the SPA's ES modules
 mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/swg-panel-server" "$PREFIX$PANEL_DIR/"; chmod 755 "$PREFIX$PANEL_DIR/swg-panel-server"
 for f in index.html app.css app.js reconcile.js turn-artifacts.js; do mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/$f" "$PREFIX$PANEL_DIR/"; done
 mkdir -p "$PREFIX$PANEL_DIR/vendor"; cp -a "$SRC/vendor/." "$PREFIX$PANEL_DIR/vendor/"   # qrcode + vendored Preact/htm ESM (buildless SPA)
+mkdir -p "$PREFIX$PANEL_DIR/js"; cp -a "$SRC/js/." "$PREFIX$PANEL_DIR/js/"   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
+# A dropped or truncated module is a blank panel with no message (see verify_js_tree). Check the copy
+# we just made, while the operator is here to see it.
+if ! _jsbad="$(verify_js_tree "$PREFIX$PANEL_DIR")"; then
+  warn "the SPA module tree is INCOMPLETE after copying — the panel will load blank:"
+  printf '    %s\n' $_jsbad
+  echo "    Re-run the installer from a complete source tree."
+fi
 [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$PANEL_DIR/" || true   # version stamp (update.sh reports it)
 [ -f "$SRC/swg-passwd" ] && { mkdir -p "$PREFIX/usr/local/bin"; cp "$SRC/swg-passwd" "$PREFIX/usr/local/bin/swg-passwd"; chmod 755 "$PREFIX/usr/local/bin/swg-passwd"; }   # `sudo swg-passwd` — reset the panel login like the system passwd (mkdir so --dry-run's $PREFIX tree exists)
 ok "installed panel + SPA to $PANEL_DIR"
@@ -905,7 +914,7 @@ if [ -f "$SRC/swg-sub" ]; then
   info "Subscription server (swg-sub)"
   mkdir -p "$PREFIX$SUB_DIR/vendor"
   cp "$SRC/swg-sub" "$PREFIX$SUB_DIR/"; chmod 755 "$PREFIX$SUB_DIR/swg-sub"
-  for f in sub.html sub.js sub.css turn-artifacts.js; do [ -f "$SRC/$f" ] && cp "$SRC/$f" "$PREFIX$SUB_DIR/"; done
+  for f in $SUB_WEB; do [ -f "$SRC/$f" ] && cp "$SRC/$f" "$PREFIX$SUB_DIR/"; done
   [ -f "$SRC/vendor/qrcode.js" ] && cp "$SRC/vendor/qrcode.js" "$PREFIX$SUB_DIR/vendor/"
   [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$SUB_DIR/" || true
   # swg-sub's OWN TLS dir — its cert lives here (never the panel's key). swg-netctl/acme write it as root;
@@ -1669,6 +1678,32 @@ info "Enable services"
 run systemctl daemon-reload
 [ "$HOST_HAS_WG" = yes ] && { run systemctl enable --quiet swg-noded; run systemctl restart swg-noded || warn "couldn't start swg-noded"; }   # restart so a re-run picks up newly-added interfaces (config.json is read only at startup)
 run systemctl enable --quiet $_NOW swg-panel-server
+# Did it actually COME UP? Nothing downstream asks, so without this the script prints "✓ Host install
+# complete" over a service that died on startup — the most misleading thing an installer can do, because
+# the operator then debugs the URL instead of the cause.
+# The usual cause is the chosen port already being held. The check in the URL step does warn and offer a
+# different port, but its prompt reads from /dev/tty, so unattended (--yes, curl|bash, CI) that read fails
+# and falls through to "force" — which guarantees this. Found on a box where a leftover nginx held :443.
+# SWG_DEFER_START=1 means a convert is still holding the old panel up and starts this one later.
+if [ "${SWG_DEFER_START:-}" != 1 ] && ! $DRYRUN; then
+  # Ask the PANEL, not systemd. The unit is Type=simple, so systemd reports "active" the moment it forks the
+  # process — a panel that dies on bind a second later still looks active, and then Restart=on-failure keeps
+  # it flapping between activating and failed. Probing the loopback port is the only answer that means
+  # "serving": it is plain HTTP, always present, and is exactly what a co-located node dials.
+  _pw=0; while [ $_pw -lt 12 ] && ! curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${LOCAL_PORT}/" 2>/dev/null; do sleep 1; _pw=$((_pw+1)); done
+  if ! curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${LOCAL_PORT}/" 2>/dev/null; then
+    PANEL_UP=no
+    _bp="${URL_PORT:-443}"
+    _bw="$(ss -lntpH "sport = :$_bp" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
+    warn "the panel did NOT start — it is installed but not running"
+    if [ -n "$_bw" ]; then
+      echo "    port :$_bp is already held by $(col "$C_YEL" "$_bw")."
+      echo "    Give the panel a free port (re-run with PANEL_DOMAIN=${PANEL_DOMAIN}:8443),"
+      echo "    or serve it behind that web server (SERVE_MODE=nginx)."
+    fi
+    echo "    What went wrong:  journalctl -u swg-panel-server -n 30"
+  fi
+fi
 if [ -f "$PREFIX$SUB_DIR/swg-sub" ]; then write_sub_unit; run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-sub || warn "couldn't start swg-sub"; fi   # inert until enabled in Settings → Subscriptions
 write_netctl   # privileged network/TLS helper for the panel's Access & TLS settings (root; drains a validated queue)
 [ "$SERVE_MODE" = nginx ] && { run nginx -t && run systemctl reload nginx || warn "nginx -t failed; fix the vhost then: systemctl reload nginx"; }
@@ -1677,7 +1712,11 @@ write_netctl   # privileged network/TLS helper for the panel's Access & TLS sett
 # A convert (SWG_CONVERT_DIR set) prints ONE unified summary at the very end in convert.sh — suppress this
 # mid-flow panel summary so the converted box doesn't show two (matches bare→docker's single end summary).
 if [ -z "${SWG_CONVERT_DIR:-}" ]; then
-echo; ok "Host install complete."
+echo
+# The files are all in place either way, so this still prints the summary (the operator needs the login and
+# the paths) — but it must not call a dead panel a success.
+if [ "${PANEL_UP:-yes}" = no ]; then warn "Host install finished, but the panel is NOT running (see above)."
+else ok "Host install complete."; fi
 # We MINTED this login → hand the plaintext to the summary, the only place it's ever shown (the auth file keeps
 # just the pbkdf2 hash, so it can't be recovered afterwards — only reset). Kept login ⇒ nothing to show.
 [ "$KEEP_AUTH" = yes ] || export SWG_SUMMARY_PASS="$BASIC_PASS"

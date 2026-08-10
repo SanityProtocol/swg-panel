@@ -925,11 +925,12 @@ mkdir -p "$PREFIX$INSTALL_DIR"
 cp -a "$SRC/docker-compose.yml" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
 if $BUILD; then
   for f in Dockerfile Dockerfile.node .dockerignore VERSION \
-           swg-panel-server swg-agent swg-noded swg-sni swg-sub swg-passwd sub.html sub.js sub.css \
-           index.html app.css app.js reconcile.js turn-artifacts.js; do
+           swg-panel-server swg-agent swg-noded swg-sni swg-sub swg-passwd \
+           index.html app.css app.js reconcile.js $SUB_WEB; do
     [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
   done
   [ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
+  [ -d "$SRC/js" ] && cp -a "$SRC/js" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
   [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
   # flip compose: comment the GHCR image: lines, uncomment the build: blocks
   sed -i -E 's@^( *)image: (ghcr.io/[^:]*/swg-(panel|node):latest)@\1# image: \2@; s@^( *)# build: \.@\1build: .@; s@^( *)# (build:)$@\1\2@; s@^( *)#   (context: \.)@\1  \2@; s@^( *)#   (dockerfile: Dockerfile.node)@\1  \2@' "$PREFIX$INSTALL_DIR/docker-compose.yml"

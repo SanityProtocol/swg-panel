@@ -3,6 +3,63 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.7.0-beta] — 2026-08-10
+
+### Added
+- **The panel speaks Russian.** Every screen, every message, every confirmation — about 2,400 strings,
+  including the panel's own error messages and the activity log, which stays readable for records written
+  months ago because verbs are stored in English and translated on display. Switch with the **EN / РУ**
+  button in the app bar; the choice is remembered per browser, and the release notes shown in the panel
+  follow it too. Dates and numbers follow the panel's language rather than the machine's.
+- **Cyrillic in the panel's own typefaces.** The bundled faces carried only Latin, so Russian text fell back
+  to whatever the operating system had — a different look on every machine. Both families now ship Cyrillic
+  cuts, matched to the Latin x-height so a translated screen keeps its rhythm.
+
+### Changed
+- **Settings: "System mesh" and "Nodes egress" are now one section, "Mesh & egress".** They were two
+  per-node forms with identical chrome, and egress was two fields; they also interact, since traffic that
+  exits through another node travels the mesh to get there. Existing links to the mesh settings still work.
+- **The interface is delivered as ES modules** instead of one large file. It loads in a single wave rather
+  than three, and the panel can now tell you *which* file is missing if an update is interrupted.
+
+### Fixed
+- **A panel that could not come back after a restart.** If the TLS key was left owned by root alone, the
+  panel could not read it and the service died on the next start — a reboot, or the restart at the end of an
+  update, which made a years-old permission problem look like the update had broken the install. It stayed
+  invisible until then, because a running panel holds the certificate it already loaded. Updating now
+  repairs the ownership before the restart that would have exposed it.
+- **Every update on a Docker install failed.** The step that refreshes the host's addresses built a `sed`
+  command whose separator also appears in the value, so the update aborted part-way — after reporting the
+  new version, before any of the repair steps ran. It had failed this way since the first Docker release;
+  bare-metal was never affected.
+- **A failed install could report success.** When the chosen port was already in use, the unattended
+  installer printed "Host install complete" and a panel URL over a service that never started. It now
+  checks that the panel actually answers, and if it doesn't, says which port is taken and by what.
+- **A broken or partial deploy showed a blank page.** If one of the interface's files went missing or
+  arrived damaged, nothing rendered and the only trace was a line in the browser console. The panel now
+  names the files that failed to load and offers a reload; installs verify the interface after copying it,
+  and a Docker image build fails outright rather than shipping an incomplete one. An unsupported browser
+  gets its own message instead of the same blank page — the interface needs Safari 16.4+, Firefox 108+ or
+  Chrome/Edge 89+.
+- **Status colours were missing.** Since `1.6.0-beta` most peer and user statuses were drawn in plain grey,
+  so a lost peer read like a ready one. Green, blue, amber and red are back across the roster.
+- **Deleting a user or peer left its editor open** behind the confirmation, showing something that no longer
+  existed.
+- **The subscription page's images never reached the server.** The import-hint screenshot and the
+  AmneziaVPN / AmneziaWG / WireGuard logos were tracked and served, but no installer copied them — so the
+  iOS import instructions rendered with a blank space where the screenshot should be, and the client logos
+  were missing, on every install since they were added. One shared list now drives every copy site, so an
+  asset added to the subscription page can't drift out of the installers again.
+- **The subscription page's app-open countdown could run under the close button** on a narrow phone. The
+  card reserved less room than the fixed × actually occupies; a longer translation pushed it into the
+  overlap reliably, where the English text mostly escaped it.
+- **A WDTT interface page showed no turn section at all.** A WDTT server is a turn-family server that owns
+  its own transport, so nothing "forwards to" it and the section hid itself. Its card now appears there,
+  without the add-proxy button, since nothing can be pointed at that interface.
+- **Long names no longer break a row.** A peer title that didn't fit is cut with an ellipsis instead of
+  pushing its warning icon onto a line of its own, and the widest editor's buttons fit on one row.
+- Subscription pages no longer log an error for a peer that simply has no stored config yet.
+
 ## [1.6.4-beta] — 2026-08-08
 
 ### Security

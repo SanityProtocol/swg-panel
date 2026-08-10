@@ -200,7 +200,8 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .ih-text { display: flex; flex-direction: column; gap: 12px; color: #fff; text-align: center; }
 .ih-line { font-size: 21px; font-weight: 600; line-height: 1.3; }
 .ih-lead { font-size: 25px; font-weight: 700; margin-bottom: 2px; }   /* first line a touch bigger still */
-.ih-text b { font-size: 27px; font-weight: 800; }   /* Settings / Import: bold + bigger, same colour as the rest (no accent) */
+.ih-text b { font-size: 27px; font-weight: 800; }   /* Settings / Import: bold + bigger. Colour comes from the shared
+     `.ph-step b, .ih-line b` rule below (brand) — these are screen labels the reader has to find, same as every other hint. */
 .ih-countdown { font-size: 22px; font-weight: 700; color: var(--brand); text-align: center; letter-spacing: .3px; }   /* "App is opening in N…" — top of the anton48 iOS hint, hidden once the app opens */
 .ih-close { position: fixed; top: 14px; right: 14px; z-index: 91; width: 42px; height: 42px; border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, .35); background: rgba(255, 255, 255, .12); color: #fff; font-size: 25px;

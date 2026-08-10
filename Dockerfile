@@ -32,9 +32,26 @@ COPY swg-panel-server app.css app.js index.html reconcile.js turn-artifacts.js V
 # swg-sub — the public subscription surface + its buildless front-end. Rides in this image (pure
 # stdlib, no extra deps) but runs as a SEPARATE, read-only container (see docker-compose.yml).
 # turn-artifacts.js is shared by the admin app + the subscription page (already copied above).
-COPY swg-sub sub.html sub.js sub.css ./
+COPY swg-sub sub.html sub.js sub.css import-hint.png amneziavpn.svg amneziawg.png wireguard.svg ./
 COPY swg-passwd /usr/local/bin/swg-passwd
 COPY vendor/ ./vendor/
+# js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
+COPY js/ ./js/
+# Verify the tree we just copied against the manifest that shipped with it. Here — unlike the bare-metal
+# installers, which warn — a mismatch FAILS THE BUILD: an image is built once and run everywhere, so a
+# module lost to a bad .dockerignore or a truncated context would ship a blank panel to every container.
+RUN python3 - ./js ./js/manifest.json <<'PYJS'
+import hashlib, json, os, sys
+root, man = sys.argv[1], sys.argv[2]
+want = (json.load(open(man)) or {}).get("modules") or {}
+bad = [("missing " + r) if not os.path.exists(os.path.join(root, r))
+       else ("corrupt " + r) if hashlib.sha256(open(os.path.join(root, r), "rb").read()).hexdigest()[:16] != d
+       else "" for r, d in sorted(want.items())]
+bad = [b for b in bad if b]
+print("SPA modules: %d/%d present and intact" % (len(want) - len(bad), len(want)))
+if bad:
+    sys.exit("INCOMPLETE SPA in the image — " + "; ".join(bad))
+PYJS
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh ./swg-panel-server ./swg-sub /usr/local/bin/swg-passwd
 

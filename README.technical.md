@@ -1,11 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.6.4-beta</code></p>
+<p align="center"><code>1.7.0-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.6.4-beta** — [full changelog](CHANGELOG.md)
-> - **`swg-netctl-docker` hardening (CWE-78)** — two `sh -c` sites interpolated queue-supplied values (port, host); both now pass argv, ports validate at point of use via `_v_port`, and the queue enforces regular-file + panel ownership (`lstat`, no symlink escape) as bare-metal `swg-netctl` always has. A refusal writes a status rather than deleting silently. Reported by [@anupamme](https://github.com/anupamme).
-> - **`turn_client_default[fork][os] = "none"`** — the sub page's `turnGetApp` short-circuits before the compat-ranked fallback, so the deployment is hidden entirely; WDTT cells skip explicitly, since their encoder fallback would otherwise still render a card.
+> **What's new in 1.7.0-beta** — [full changelog](CHANGELOG.md)
+> - **The panel speaks Russian** — every screen and message, switchable with the **EN / РУ** button in the app bar. The bundled typefaces gained Cyrillic, so a translated screen keeps the same look on every machine.
+> - **Two fixes that could take a panel down:** a TLS key the service couldn't read made the panel die on its next restart, and every update on a Docker install had been failing part-way through.
+> - **No more blank pages** — an interrupted deploy or an unsupported browser now says what's wrong instead of rendering nothing.
 <!-- WHATS-NEW:END -->
 
 ---

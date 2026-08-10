@@ -26,6 +26,8 @@
 // Stale nodes never count as "missing" (they're unknown, not absent), so a peer
 // stays "online" while a replica is briefly unreachable.
 
+import { T } from "./js/i18n.js";
+
 const DEFAULTS = { graceMs: 60000, nodeStaleMs: 30000, unblockMs: 300000, restoreGraceMs: 120000 };   // unblockMs: how long "restoring" shows after an unblock before falling back to the real status. restoreGraceMs: how long a peer must stay dangling/broken before Restore/Correct is offered (not a hiccup / mid-create)
 
 // status priority for rolling several targets/peers into one (most-alive wins). faulty (handshake up, no data)
@@ -69,7 +71,7 @@ function reconcile(roster, stats, now, cfg) {
   const nodeStatus = {};
   for (const node of Object.keys(stats)) {
     const gen = stats[node] && stats[node].generated_at;
-    nodeStatus[node] = (gen && (now - gen * 1000) <= cfg.nodeStaleMs) ? "live" : "stale";
+    nodeStatus[node] = (gen && (now - gen * 1000) <= cfg.nodeStaleMs) ? "live" : "stale";   // i18n-keys: internal states
   }
 
   // observed peers, keyed node|iface|pubkey  (+ interfaces the node reports as DOWN, so we can say why)
@@ -241,19 +243,20 @@ function reconcile(roster, stats, now, cfg) {
     let reason = null;   // why a peer isn't healthy — surfaced on the status badge (incl. a DOWN interface)
     if (status === "dangling" || status === "partial" || status === "creating") {
       const dt = targets.find(d => d.down);
-      reason = dt ? ("interface " + dt.iface + " is down — " + dt.down)
-                  : (status === "dangling" ? "missing on every server"
-                     : status === "partial" ? "missing on some live servers" : "created — not seen on a node yet");
+      reason = dt ? T("interface {v1} is down — {v2}", { v1: dt.iface, v2: dt.down })
+                  : (status === "dangling" ? T("missing on every server")
+                     : status === "partial" ? T("missing on some live servers") : T("created — not seen on a node yet"));
     } else if (status === "blocked") {
       // name the datapath the peer's blocked interface(s) actually run (Wireguard vs AmneziaWG), so the "wrong
       // params" hint points at the right knobs; mixed / unknown → name both.
       const bt = new Set(targets.filter(d => d.status === "blocked").map(d => d.type));
-      const proto = (bt.has("awg") && bt.has("wg")) ? "Wireguard or AmneziaWG" : bt.has("awg") ? "AmneziaWG" : bt.has("wg") ? "Wireguard" : "Wireguard or AmneziaWG";
-      reason = "reaching the server but the handshake never completes — likely DPI / MTU / wrong " + proto + " params";
+      // datapath NAMES, not language — they are what the operator sees in wg/awg output   // i18n-keys
+      const proto = (bt.has("awg") && bt.has("wg")) ? "Wireguard or AmneziaWG" : bt.has("awg") ? "AmneziaWG" : bt.has("wg") ? "Wireguard" : "Wireguard or AmneziaWG";   // i18n-keys
+      reason = T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {v1} params", { v1: proto });
     }
-    else if (status === "faulty") reason = "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path";
-    else if (status === "broken") reason = "the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface";
-    else if (status === "expired") reason = selfExpired ? "this peer's access date has passed" : "the subscription's access date has passed";
+    else if (status === "faulty") reason = T("connected, but no inbound data is flowing — likely a one-way block / DPI on the return path");
+    else if (status === "broken") reason = T("the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface");
+    else if (status === "expired") reason = selfExpired ? T("this peer's access date has passed") : T("the subscription's access date has passed");
 
     // Restore/Correct is a REAL-PROBLEM affordance, not a hiccup: each deployment tracks how long it has been
     // dangling/broken (per-target block above, gated by restoreGraceMs) so a just-created peer, a brief node

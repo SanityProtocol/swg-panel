@@ -265,18 +265,36 @@ def _ver_ahead(have, ref):
 REMOTE_VERSION_URL = os.environ.get(
     "SWG_LATEST_URL", "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/VERSION")
 REMOTE_CHANGELOG_URL = REMOTE_VERSION_URL.rsplit("/", 1)[0] + "/CHANGELOG.md"   # sibling of VERSION on the same ref
+
+def _changelog_url(lang):
+    """The changelog in `lang`. The repo keeps CHANGELOG.md beside CHANGELOG.<lang>.md, so this is a
+    filename swap on the same ref — no second source of truth, no translation done here."""
+    if not lang or lang == "en":
+        return REMOTE_CHANGELOG_URL
+    return REMOTE_CHANGELOG_URL[:-len(".md")] + "." + lang + ".md"
+
+
+def _req_lang():
+    """The UI language of the browser making this request (js/store.js sets it on every call).
+
+    The panel translates nothing itself; it needs this only to fetch the right changelog file. Unknown or
+    missing → English, which is also the fallback when a translated changelog isn't published yet."""
+    v = (getattr(_REQ, "lang", "") or "").strip().lower()
+    return v if re.fullmatch(r"[a-z]{2}", v or "") else "en"
 LATEST_REMOTE = {"version": None, "checked": 0, "date": "", "notes": []}
 
-def _fetch_latest_changelog():
-    """Fetch the remote CHANGELOG.md TOP entry → (date, [bullet notes]) for the 'update to …' hover bubble.
+def _fetch_latest_changelog(lang="en"):
+    """Fetch the remote changelog's TOP entry → (date, [bullet notes]) for the 'update to …' hover bubble.
     Best-effort — ('', []) on any failure; markdown emphasis/code marks stripped from the bullets."""
+    base = _changelog_url(lang)
     try:
-        url = REMOTE_CHANGELOG_URL + (("&" if "?" in REMOTE_CHANGELOG_URL else "?") + "cb=" + str(int(time.time())))
+        url = base + (("&" if "?" in base else "?") + "cb=" + str(int(time.time())))
         req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
         with urllib.request.urlopen(req, timeout=8) as r:
             text = r.read(24000).decode("utf-8", "replace")
     except Exception:
-        return "", []
+        # a translated changelog may simply not be published yet → fall back to English rather than nothing
+        return ("", []) if lang == "en" else _fetch_latest_changelog("en")
     date, notes, started, cur = "", [], False, []
     def _flush():
         if cur:
@@ -304,20 +322,41 @@ def _fetch_latest_changelog():
     _flush()
     return date, notes[:8]
 
-_CHANGELOG_CACHE = {"at": 0, "entries": []}
-def _changelog_entries():
-    """Parse the FULL remote CHANGELOG.md → [{version, date, notes[]}] newest-first, for the version changelog browser
-    (prev/next). Cached ~1h; keeps the last good result on a transient fetch failure. Best-effort → [] if never fetched."""
+_CHANGELOG_CACHE = {}          # lang -> {"at": …, "entries": […]}   (one cache per language)
+_LATEST_NOTES = {}             # lang -> {"at": …, "date": …, "notes": […]}   (the update bubble's top entry)
+
+
+def _latest_notes(lang="en"):
+    """(date, notes) of the newest changelog entry, in `lang` — what the 'update to …' hover shows.
+
+    English comes straight from the background version check, which already fetched it. Another language is
+    fetched on first ask and cached for an hour: an operator reading Russian should not be handed English
+    release notes, and the panel is the only thing here holding an outbound connection."""
+    if lang == "en":
+        return LATEST_REMOTE.get("date") or "", LATEST_REMOTE.get("notes") or []
     now = int(time.time())
-    if _CHANGELOG_CACHE["entries"] and now - _CHANGELOG_CACHE["at"] < 3600:
-        return _CHANGELOG_CACHE["entries"]
+    c = _LATEST_NOTES.get(lang)
+    if c and now - c["at"] < 3600:
+        return c["date"], c["notes"]
+    date, notes = _fetch_latest_changelog(lang)
+    _LATEST_NOTES[lang] = {"at": now, "date": date, "notes": notes}
+    return date, notes
+def _changelog_entries(lang="en"):
+    """Parse the FULL remote changelog → [{version, date, notes[]}] newest-first, for the version changelog browser
+    (prev/next). Cached ~1h PER LANGUAGE; keeps the last good result on a transient fetch failure. Best-effort → []."""
+    now = int(time.time())
+    cache = _CHANGELOG_CACHE.setdefault(lang, {"at": 0, "entries": []})
+    if cache["entries"] and now - cache["at"] < 3600:
+        return cache["entries"]
     try:
-        url = REMOTE_CHANGELOG_URL + (("&" if "?" in REMOTE_CHANGELOG_URL else "?") + "cb=" + str(now))
+        base = _changelog_url(lang)
+        url = base + (("&" if "?" in base else "?") + "cb=" + str(now))
         req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
         with urllib.request.urlopen(req, timeout=8) as r:
             text = r.read(200000).decode("utf-8", "replace")
     except Exception:
-        return _CHANGELOG_CACHE["entries"]
+        # not published in this language (yet) → English, so the browser always has something to show
+        return cache["entries"] or (_changelog_entries("en") if lang != "en" else [])
     entries, cur_entry, cur = [], None, []
     def _flush():
         if cur_entry is not None and cur:
@@ -345,7 +384,7 @@ def _changelog_entries():
         e["notes"] = e["notes"][:20]
     entries = entries[:80]
     if entries:
-        _CHANGELOG_CACHE["at"] = now; _CHANGELOG_CACHE["entries"] = entries
+        cache["at"] = now; cache["entries"] = entries
     return entries
 # In-place updater — swg programs only (--no-components leaves wg/awg/turn-proxies alone), unattended.
 UPDATE_CMD = os.environ.get(
@@ -817,6 +856,101 @@ def _asset_q(fname):
     return q
 
 
+# ── SPA js/ modules: ONE shared cache key for the whole tree ────────────────────────────────────────────────
+# app.js is being split into js/*.js modules (docs/APP-JS-SPLIT-PLAN.md). Those are served `immutable`, which is
+# only sound if a module's URL changes whenever ANYTHING it imports changes: a per-FILE hash would leave an
+# immutable cached ui.js pointing at the previous util.js — a silently mixed build, the exact failure the ?v=
+# stamp exists to prevent. So the key is version + a hash over EVERY module, and a change anywhere re-keys them
+# all (a release ships the whole tree anyway). Re-derived when any module's mtime/size moves, so editing a module
+# against a running panel still shows up on reload — no restart needed.
+_JS_TREE = {"sig": None, "q": b""}
+
+
+def _js_dir():
+    return os.path.join(WEB_DIR, "js")
+
+
+def _js_tree_q():
+    """b"?v=<version>.<hash-of-every-js-module>" — the shared cache key for js/*.js.
+
+    The signature covers everything that determines the SERVED bytes: each module's content, and this
+    server's own build. The second half matters because _stamp_imports rewrites the modules on the way
+    out — change the rewriting without touching js/ or VERSION and the key would otherwise stand still
+    while the bytes moved, and an `immutable` client would keep the old copy."""
+    sig, names, srv = [], [], b""
+    with contextlib.suppress(Exception):
+        _st = os.stat(os.path.abspath(__file__))
+        srv = ("%d.%d" % (_st.st_mtime_ns, _st.st_size)).encode()
+        sig.append(("<server>", int(_st.st_mtime_ns), _st.st_size))
+    with contextlib.suppress(Exception):
+        for root, _dirs, files in os.walk(_js_dir()):
+            for fn in files:
+                if fn.endswith(".js"):
+                    p = os.path.join(root, fn)
+                    with contextlib.suppress(OSError):
+                        st = os.stat(p)
+                        names.append(p)
+                        sig.append((os.path.relpath(p, _js_dir()), int(st.st_mtime_ns), st.st_size))
+    sig.sort()
+    if sig == _JS_TREE["sig"]:
+        return _JS_TREE["q"]
+    h = hashlib.sha1()
+    h.update(srv)                     # this build rewrites the modules on the way out — see the docstring
+    for p in sorted(names):
+        with contextlib.suppress(OSError):
+            h.update(os.path.relpath(p, _js_dir()).encode())
+            with open(p, "rb") as f:
+                h.update(f.read())
+    base = (VERSIONS.get("panel") or "").strip()
+    tag = base + ("." + h.hexdigest()[:8] if names else "")
+    _JS_TREE["sig"] = sig
+    _JS_TREE["q"] = (("?v=" + quote(tag, safe="")) if tag else "").encode()
+    return _JS_TREE["q"]
+
+
+# Relative module specifiers in a served .js — `from "./x.js"`, `from "../x.js"` and dynamic `import("./x.js")`.
+# Both call forms are matched so a lazily-loaded module (the i18n locale files) gets a cache key too; a specifier
+# built from a VARIABLE cannot be stamped, so keep locale imports a literal map, not
+# `import("./js/lang/" + code + ".js")`.
+_IMPORT_SPEC_RE = re.compile(rb'((?:from|import)\s*\(?\s*")(\.{1,2}/[A-Za-z0-9_./-]+\.js)(")')
+
+
+def _stamp_imports(data, rel):
+    """Version-stamp every relative import inside a served .js (see _js_tree_q / _asset_q).
+
+    `rel` is the WEB_DIR-relative path of the file being served, and specifiers resolve against ITS
+    directory — "./util.js" inside js/store.js is js/util.js, not util.js. Resolving against WEB_DIR
+    instead mints a different ?v= for the same file than the one app.js asks for, and the browser then
+    fetches and INSTANTIATES the module twice: two copies of its state, silently."""
+    base = os.path.dirname(rel)
+    def one(m):
+        spec = m.group(2).decode("utf-8", "replace")           # "./util.js" | "../reconcile.js"
+        target = os.path.normpath(os.path.join(base, spec)).replace(os.sep, "/")
+        q = _js_tree_q() if target.startswith("js/") else _asset_q(target)
+        return m.group(1) + m.group(2) + q + m.group(3)
+    return _IMPORT_SPEC_RE.sub(one, data)
+
+
+# A js/ module is served by PREFIX, not by an allow-list entry each. The split lands ~17 of them, and a per-file
+# allow-list would have to stay in lockstep with the six installer copy loops that ship them — this repo has
+# already shipped that bug once (four swg-sub images allow-listed but absent from every copy loop, e5b1033).
+_JS_MODULE_RE = re.compile(r"^/js/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.js$")
+# js/manifest.json rides the same rule: the boot guard in index.html fetches it to name WHICH module is
+# missing when the SPA fails to start (the browser's own error event only ever names the module-graph
+# root, app.js, which is the one file that is fine). It lists filenames and hashes — no secrets.
+_JS_MANIFEST = "/js/manifest.json"
+
+
+def static_rel(path):
+    """WEB_DIR-relative file for a static request path, or None if it isn't one. Path containment is still
+    enforced by _static's realpath check — this only decides what is offered."""
+    if path in STATIC:
+        return STATIC[path]
+    if ".." not in path and (_JS_MODULE_RE.match(path) or path == _JS_MANIFEST):
+        return path.lstrip("/")
+    return None
+
+
 STATIC = {
     "/": "index.html", "/index.html": "index.html",
     "/app.css": "app.css", "/app.js": "app.js",
@@ -829,6 +963,15 @@ STATIC = {
     # self-hosted fonts (offline-safe; no third-party fetch)
     "/vendor/fonts/jetbrains-mono-400.woff2": "vendor/fonts/jetbrains-mono-400.woff2",
     "/vendor/fonts/jetbrains-mono-500.woff2": "vendor/fonts/jetbrains-mono-500.woff2",
+    # Cyrillic rides in its own file per weight (unicode-range in app.css) so an English reader never
+    # fetches it. Both MUST be listed here: assets are served from this allow-list, and a font that 404s
+    # fails silently — the glyphs just fall through to the OS font, which is the bug this fixes.
+    "/vendor/fonts/jetbrains-mono-400-cyrillic.woff2": "vendor/fonts/jetbrains-mono-400-cyrillic.woff2",
+    "/vendor/fonts/jetbrains-mono-500-cyrillic.woff2": "vendor/fonts/jetbrains-mono-500-cyrillic.woff2",
+    "/vendor/fonts/onest-400-cyrillic.woff2": "vendor/fonts/onest-400-cyrillic.woff2",
+    "/vendor/fonts/onest-500-cyrillic.woff2": "vendor/fonts/onest-500-cyrillic.woff2",
+    "/vendor/fonts/onest-600-cyrillic.woff2": "vendor/fonts/onest-600-cyrillic.woff2",
+    "/vendor/fonts/onest-700-cyrillic.woff2": "vendor/fonts/onest-700-cyrillic.woff2",
     "/vendor/fonts/hanken-400.woff2": "vendor/fonts/hanken-400.woff2",
     "/vendor/fonts/hanken-500.woff2": "vendor/fonts/hanken-500.woff2",
     "/vendor/fonts/hanken-600.woff2": "vendor/fonts/hanken-600.woff2",
@@ -873,6 +1016,30 @@ def strip_base(path):
 
 def err(op, msg, code="internal"):
     return {"ok": False, "op": op, "error": msg, "code": code}
+
+
+def perr(key, **vals):
+    """A user-facing error whose sentence carries VALUES.
+
+    The panel does not translate anything — the browser does, keying on the English sentence, which is the
+    same convention the SPA uses for its own strings. That works directly for a fixed sentence because the
+    wire already carries it. It cannot work for "couldn't bind 0.0.0.0:443 — permission denied": once the
+    values are baked in, there is nothing stable to look up.
+
+    So a parameterised error ships three things:
+      error       the interpolated English, exactly as before — logs, /api/v1 consumers and any older
+                  cached SPA build keep reading what they always read; nothing downstream has to change
+      error_key   the same sentence with {v1}, {v2} left as markers — what the browser looks up
+      error_vars  the values, so a translation can put them where that language puts them
+
+        return 400, {"ok": False, **perr("couldn't bind {v1} — {v2}", v1=addr, v2=str(e)),
+                     "code": "bind_failed"}
+    """
+    vals = {k: ("" if v is None else str(v)) for k, v in vals.items()}
+    msg = key
+    for k, v in vals.items():
+        msg = msg.replace("{" + k + "}", v)
+    return {"error": msg, "error_key": key, "error_vars": vals}
 
 
 def verify_password(stored, password):
@@ -1149,11 +1316,24 @@ def _ev_synth_eid(raw_line):
     return "L" + hashlib.sha1(raw_line.encode()).hexdigest()[:9]
 
 
-def ev_append(roster_path, kind, ident, verb, name, detail=""):
+def ev_append(roster_path, kind, ident, verb, name, detail="", detail_key="", detail_vars=None):
     """Record one operator action. kind=user|peer|node|panel, verb is the human action
-    ("Created peer"), name is the display label, detail is optional context."""
+    ("Created peer"), name is the display label, detail is optional context.
+
+    The VERB is English and stays that way on disk: the browser translates it on display by looking up
+    that very sentence, so rows written months ago translate too, with no migration. `kind`/`id` carry the
+    routing, so nothing downstream ever matches on the words.
+
+    `detail` is almost always a bare value (a name, a node/iface, a URL) and needs no translation. The two
+    that DO carry prose ("2 targets · node/iface") also pass detail_key + detail_vars — the same shape
+    perr() uses for errors — and the browser prefers those. Old rows have neither and render `detail`."""
     rec = {"eid": _ev_eid(), "ts": int(time.time()), "kind": kind, "id": ident or "",
            "verb": verb, "name": name or "", "detail": detail or ""}
+    if detail_key:
+        rec["detail_key"] = detail_key
+        # values are strings, EXCEPT a counted noun, which travels as {"n": 3, "noun": "target"} so the
+        # browser can decline it — Russian has three plural forms and the server has no business guessing
+        rec["detail_vars"] = {k: (v if isinstance(v, dict) else str(v)) for k, v in (detail_vars or {}).items()}
     p = events_path(roster_path)
     try:
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
@@ -7213,8 +7393,8 @@ def api(method, path, qs, body, deps):
                            **_cat_labels_extra},         # + catalog cats in use → their provider label
 
             "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
-            "latest_remote_date": LATEST_REMOTE.get("date") or "",   # its changelog date + notes → the "update to …" hover bubble
-            "latest_remote_notes": LATEST_REMOTE.get("notes") or [],
+            "latest_remote_date": _latest_notes(_req_lang())[0],     # its changelog date + notes → the "update to …" hover bubble
+            "latest_remote_notes": _latest_notes(_req_lang())[1],     # …in the reader's language (see _latest_notes)
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
             "tls": dict(TLS_STATUS),                                  # cert expiry watch — surface a stalled renewal before it goes dark
@@ -7613,9 +7793,9 @@ def api(method, path, qs, body, deps):
         _cd_secs, _cd_reason = _access_cooldown()
         if _cd_secs > 0:
             return 409, {"ok": False, "code": "cooldown", "cooldown_secs": _cd_secs, "reason": _cd_reason,
-                         "error": ("a change is still waiting to be confirmed — confirm it on the new address, cancel it, or wait for it to revert"
-                                   if _cd_reason == "verifying" else
-                                   "the previous change is still settling (%ds) — you can only cancel until it finishes" % _cd_secs)}
+                         **(perr("a change is still waiting to be confirmed — confirm it on the new address, cancel it, or wait for it to revert")
+                            if _cd_reason == "verifying" else
+                            perr("the previous change is still settling ({v1}s) — you can only cancel until it finishes", v1=_cd_secs))}
         mode = (acc.get("tls") or {}).get("mode") or ""
         # a cert is needed only when we currently HAVE TLS and either the domain changed (current cert doesn't
         # cover it) or a real-CA mode is still serving a self-signed placeholder — for a mode that issues certs.
@@ -7676,10 +7856,10 @@ def api(method, path, qs, body, deps):
             _tls = acc.get("tls") or {}
             if target_https and mode == "cloudflare" and not str(_tls.get("cf_token") or "").strip():
                 return 409, {"ok": False, "code": "flip_needs_cred",
-                             "error": "Cloudflare TLS needs a Cloudflare DNS token — add it in Access & TLS before switching, otherwise the panel would serve a self-signed certificate Cloudflare rejects (526)."}
+                             "error": "Cloudflare TLS needs a Cloudflare DNS token — add it in Panel URL before switching, otherwise the panel would serve a self-signed certificate Cloudflare rejects (526)."}
             if target_https and mode == "cf15" and not str(_tls.get("cf_origin_token") or "").strip():
                 return 409, {"ok": False, "code": "flip_needs_cred",
-                             "error": "Cloudflare Origin (cf15) TLS needs a Cloudflare Origin CA token — add it in Access & TLS before switching."}
+                             "error": "Cloudflare Origin (cf15) TLS needs a Cloudflare Origin CA token — add it in Panel URL before switching."}
             new_pub = _compute_public_url(deps)
             old_pub = _CONFIRMED_URL if _CONFIRMED_URL is not None else new_pub
             url_changed = bool(new_pub) and _url_authority(new_pub) != _url_authority(old_pub)
@@ -7764,7 +7944,7 @@ def api(method, path, qs, body, deps):
                         except OSError as e:
                             _restore_panel_bind(deps, cur["host"], cur["port"])
                             _apply_status("failed", "couldn't bind %s:%d — %s" % (d_host, d_port, e))
-                            return 400, {"ok": False, "error": "couldn't bind %s:%d — %s" % (d_host, d_port, e), "code": "bind_failed"}
+                            return 400, {"ok": False, **perr("couldn't bind {v1} — {v2}", v1="%s:%d" % (d_host, d_port), v2=e), "code": "bind_failed"}
                     _netctl_enqueue(deps, "set-listen", ["panel", d_host, d_port])   # persist the new port (best-effort)
                     LISTENERS.set_primary(new_lid)                                    # new bind canonical; OLD listener stays UP (no grace-drop timer)
                     pend["new_lid"] = new_lid
@@ -7818,7 +7998,8 @@ def api(method, path, qs, body, deps):
                 _restore_panel_bind(deps, cur["host"], cur["port"])
                 _apply_status("failed", "couldn't bind %s:%d for direct TLS — %s" % (d_host, d_port, e))
                 return 400, {"ok": False, "code": "bind_failed",
-                             "error": "couldn't bind %s:%d — %s. If your reverse proxy still owns that port, stop it there first — the panel and the proxy can't both hold it." % (d_host, d_port, e)}
+                             **perr("couldn't bind {v1} — {v2}. If your reverse proxy still owns that port, stop it there first — the panel and the proxy can't both hold it.",
+                                    v1="%s:%d" % (d_host, d_port), v2=e)}
             if _ftls_new_base != _ftls_old_base:
                 globals()["_ALT_BASE"] = _ftls_new_base   # dual-serve the new mount path on the fresh HTTPS listener → gate probe + confirm reach it
             with _APPLY["lock"]:
@@ -7877,7 +8058,7 @@ def api(method, path, qs, body, deps):
                 _APPLY["pending"] = None
             _restore_panel_bind(deps, cur["host"], cur["port"])   # config was saved ahead → roll it back to live
             _apply_status("failed", "couldn't bind %s:%d — %s" % (d_host, d_port, e))
-            return 400, {"ok": False, "error": "couldn't bind %s:%d — %s" % (d_host, d_port, e), "code": "bind_failed"}
+            return 400, {"ok": False, **perr("couldn't bind {v1} — {v2}", v1="%s:%d" % (d_host, d_port), v2=e), "code": "bind_failed"}
         with _APPLY["lock"]:
             nonce, redirect, deadline = _arm_pending(deps, new_lid, lid, d_host, d_port, d_url)
         return 200, {"ok": True, "applied": False, "nonce": nonce, "host": d_host, "port": d_port,
@@ -7927,7 +8108,8 @@ def api(method, path, qs, body, deps):
                 _mb = getattr(_REQ, "matched_base", PANEL_BASE)
                 if _mb != _nb:
                     return 409, {"ok": False, "code": "not_on_new_path",
-                                 "error": "the confirm didn't arrive on the new path %s (it came in on %s) — open the new address and try again" % (_nb or "/", _mb or "/")}
+                                 **perr("the confirm didn't arrive on the new path {v1} (it came in on {v2}) — open the new address and try again",
+                                            v1=_nb or "/", v2=_mb or "/")}
                 globals()["PANEL_BASE"] = _nb
                 globals()["_ALT_BASE"] = _ob                       # keep the OLD path serving through the grace so open tabs + nodes migrate
                 _netctl_enqueue(deps, "set-base", ["panel", _nb])  # persist SWG_PANEL_BASE for the next restart
@@ -8025,7 +8207,8 @@ def api(method, path, qs, body, deps):
         if getattr(_REQ, "listener_id", None) != new_lid:
             # this confirm arrived through the proxy on the OLD port → the proxy hasn't been re-pointed yet
             return 409, {"ok": False, "code": "proxy_not_switched",
-                         "error": "your reverse proxy is still routing to the old port %s — point its upstream at %s:%d and reload it, then confirm (nothing was dropped)" % (old_port, host, port)}
+                         **perr("your reverse proxy is still routing to the old port {v1} — point its upstream at {v2} and reload it, then confirm (nothing was dropped)",
+                                v1=old_port, v2="%s:%d" % (host, port))}
         with _APPLY["lock"]:
             _APPLY["pending"] = None
         LISTENERS.remove(old_lid)                    # PROVEN: the proxy is on the new port → stop serving the old one
@@ -8056,13 +8239,15 @@ def api(method, path, qs, body, deps):
         got = (getattr(_REQ, "http_host", "") or "").strip().lower()
         if want and got and want != got:
             return 409, {"ok": False, "code": "not_on_new",
-                         "error": "this panel wasn't reached on the new address (arrived on '%s', expected '%s') — re-point your reverse proxy to route %s here, then try again" % (got, want, new_url)}
+                         **perr("this panel wasn't reached on the new address (arrived on '{v1}', expected '{v2}') — re-point your reverse proxy to route {v3} here, then try again",
+                                v1=got, v2=want, v3=new_url)}
         # For a PATH change the host is identical, so the PROOF the proxy routes the new path here is that THIS confirm
         # arrived on the new mount base (the SPA opened the new url → its api call came in under the new path).
         got_base = getattr(_REQ, "matched_base", PANEL_BASE)
         if new_base != old_base and got_base != new_base:
             return 409, {"ok": False, "code": "not_on_new",
-                         "error": "this panel wasn't reached on the new path (arrived on '%s', expected '%s') — add a location for %s to your reverse proxy, then try again" % (got_base or "/", new_base or "/", new_url)}
+                         **perr("this panel wasn't reached on the new path (arrived on '{v1}', expected '{v2}') — add a location for {v3} to your reverse proxy, then try again",
+                                v1=got_base or "/", v2=new_base or "/", v3=new_url)}
         if cert_off and port_changed and getattr(_REQ, "listener_id", None) != new_lid:
             # A direct-TLS→reverse-proxy flip: committing CLEARS the cert env (→ plain HTTP) and drops the HTTPS
             # listener — both gated on this confirm arriving on the NEW plain-HTTP bind (proof the proxy now fronts
@@ -8070,7 +8255,8 @@ def api(method, path, qs, body, deps):
             # reverse-proxy while the cert env stays ON → HTTPS-on-loopback → 502 on restart. Refuse (nothing was
             # changed; the swap stays pending) until the proxy is actually re-pointed at the new bind.
             return 409, {"ok": False, "code": "proxy_not_switched",
-                         "error": "your reverse proxy isn't routing to the new bind yet — point its upstream at %s:%d and reload it, then confirm (nothing was changed)" % (pend.get("host"), pend.get("port"))}
+                         **perr("your reverse proxy isn't routing to the new bind yet — point its upstream at {v1} and reload it, then confirm (nothing was changed)",
+                                v1="%s:%s" % (pend.get("host"), pend.get("port")))}
         with _APPLY["lock"]:
             _APPLY["pending"] = None
         _grace_until = 0
@@ -8134,7 +8320,7 @@ def api(method, path, qs, body, deps):
             _arm_left = int(pend.get("arm_at", 0)) - int(time.time())
             if _arm_left > 0:
                 return 409, {"ok": False, "code": "arming", "arm_secs": _arm_left,
-                             "error": "hold on %ds — the nodes are still learning the new address so the restart won't strand them" % _arm_left}
+                             **perr("hold on {v1}s — the nodes are still learning the new address so the restart won't strand them", v1=_arm_left)}
             _p = dict(pend)   # snapshot the fields we need OUTSIDE the lock (the dry-run can take a while)
         rid = _netctl_enqueue(deps, "dryrun", [_p["tls"], _p.get("domain") or "", str(_p["port"])])
         ok, msg = _netctl_wait(deps, rid, timeout=220)
@@ -8143,7 +8329,7 @@ def api(method, path, qs, body, deps):
                           nonce=nonce, arm_secs=0, url_changed=_p.get("url_changed"), dryrun_failed=True,
                           old_url=_p.get("old_url"), new_url=_p.get("new_url"), probe_url=_p.get("new_url"))
             return 200, {"ok": False, "code": "dryrun_failed",
-                         "error": (msg or "the new address wouldn't work") + " — nothing was changed. Fix it and try again, or Revert."}
+                         **perr("{v1} — nothing was changed. Fix it and try again, or Revert.", v1=msg or "the new address wouldn't work")}
         # Dry-run passed → park the marker (survives the recreate; the NEW panel reads it to arm auto-revert) THEN
         # recreate. The flip verb optimistically blesses the new url + rolls back on a CA failure, so a broken cert can
         # never advertise the new address; the marker layer on top catches the residual case (the cert is fine but the
@@ -8658,7 +8844,12 @@ def api(method, path, qs, body, deps):
             if osec:
                 return 200, {"ok": True, "data": {"sec": osec, "user_id": SUB_ORPHAN}}
         if not sec:
-            return 404, {"ok": False, "error": "no encrypted config for this peer", "code": "not_found"}
+            # "no blob yet" is an ANSWER here, not a failure: ensurePeerBlob() asks precisely so it can
+            # publish one when the peer has none, and every caller branches on `sec` being truthy. Sending
+            # 404 made the browser log a console error for the normal path — noise that is indistinguishable
+            # from a real fault in exactly the console an operator (or a test sweep) reads to spot one.
+            # An unknown PEER is still 404 above; this is a known peer with nothing stored.
+            return 200, {"ok": True, "data": {"sec": "", "user_id": uid}}
         return 200, {"ok": True, "data": {"sec": sec, "user_id": uid}}
 
     if method == "POST" and path == "/api/sub/blob":                 # store/replace one peer's encrypted secret
@@ -8708,7 +8899,7 @@ def api(method, path, qs, body, deps):
         try:
             atomic_write(AUTH_FILE, f"{new_user}:{new_hash}\n", mode=0o600)
         except OSError as e:
-            return 500, {"ok": False, "error": f"could not write auth file: {e}", "code": "internal"}
+            return 500, {"ok": False, **perr("could not write auth file: {v1}", v1=e), "code": "internal"}
         deps["auth"] = (new_user, new_hash)          # hot-reload in-process; no restart
         if new_pw:                                   # a password change invalidates every outstanding session
             deps["session_secret"] = rotate_session_secret(roster_path)   # → a captured cookie dies; admin re-signs-in
@@ -8797,7 +8988,7 @@ def api(method, path, qs, body, deps):
     if method == "GET" and path == "/api/describe":
         node = (qs.get("node") or [""])[0]
         if not known(node):
-            return 400, {"ok": False, "error": f"unknown node {node!r}", "code": "bad_request"}
+            return 400, {"ok": False, **perr("unknown node {v1}", v1=repr(node)), "code": "bad_request"}
         snap = snaps.get(node)
         if not snap:
             return 400, {"ok": False, "error": "node has not reported yet (is swg-noded running?)",
@@ -8828,7 +9019,7 @@ def api(method, path, qs, body, deps):
         node = (qs.get("node") or [""])[0]
         rng = (qs.get("range") or ["live"])[0]
         if not known(node):
-            return 400, {"ok": False, "error": f"unknown node {node!r}", "code": "bad_request"}
+            return 400, {"ok": False, **perr("unknown node {v1}", v1=repr(node)), "code": "bad_request"}
         rrd = os.path.join(stats_dir, f"health-{node}.rrd") if stats_dir else None
         # each range = one ring's most-recent points: hour=15s(250) day=5min(300) week=30min(350) month=2h(400).
         # live also comes straight off the 15s ring as a fallback (the SPA prefers the raw 5s buffer).
@@ -9345,7 +9536,7 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "need nodes and iface", "code": "bad_request"}
         bad = [n for n in sel if not known(n)]
         if bad:
-            return 400, {"ok": False, "error": f"unknown node(s): {', '.join(bad)}", "code": "bad_request"}
+            return 400, {"ok": False, **perr("unknown node(s): {v1}", v1=", ".join(bad)), "code": "bad_request"}
         r = panel_next_ip(snaps, roster_load(roster_path), sel, iface)
         return (200 if r.get("ok") else 400), r
 
@@ -9404,7 +9595,7 @@ def api(method, path, qs, body, deps):
                 maxpeer = max((int(p.get("expiry") or 0) for p in roster["peers"].values()
                                if isinstance(p, dict) and p.get("user_id") == uid), default=0)
                 if maxpeer and exp < maxpeer:
-                    return 400, {"ok": False, "error": "Subscription expiry can't be earlier than a peer's expiry (" + fmt_day(maxpeer) + ")", "code": "bad_request"}
+                    return 400, {"ok": False, **perr("Subscription expiry can't be earlier than a peer's expiry ({v1})", v1=fmt_day(maxpeer)), "code": "bad_request"}
             fields["expiry"] = exp
         renamed = "name" in fields
         u = user_set(roster, uid, fields, now())
@@ -9439,7 +9630,9 @@ def api(method, path, qs, body, deps):
             if uid in _su:
                 del _su[uid]; save_sub_users(deps, _su)
         ev_append(roster_path, "user", uid, "Deleted user", uname,
-                  f"{freed} peer{'' if freed == 1 else 's'} unassigned" if freed else "")
+                  f"{freed} peer{'' if freed == 1 else 's'} unassigned" if freed else "",
+                  detail_key="{count} unassigned" if freed else "",
+                  detail_vars={"count": {"n": freed, "noun": "peer"}})
         return 200, {"ok": True, "data": {"id": uid, "unassigned_peers": freed}}
 
     # ─────────────── peers (credential + targets) ───────────────
@@ -9460,18 +9653,18 @@ def api(method, path, qs, body, deps):
         for t in targets:
             for f in ("node", "iface", "ip"):
                 if not (t or {}).get(f):
-                    return 400, {"ok": False, "error": f"target.{f} is required", "code": "bad_request"}
+                    return 400, {"ok": False, **perr("target.{v1} is required", v1=f), "code": "bad_request"}
             if not known(t["node"]):
-                return 400, {"ok": False, "error": f"unknown node {t['node']!r}", "code": "bad_request"}
+                return 400, {"ok": False, **perr("unknown node {v1}", v1=repr(t["node"])), "code": "bad_request"}
             if is_system_iface(deps, nodes, t["node"], t["iface"]):
-                return 400, {"ok": False, "error": f"{t['iface']} is a system mesh link — not a peer interface", "code": "system_iface"}
+                return 400, {"ok": False, **perr("{v1} is a system mesh link — not a peer interface", v1=t["iface"]), "code": "system_iface"}
             if _WDTT_IFACE_RE.match(t["iface"] or "") or (t["iface"] or "") in ((nodes.get(t["node"]) or {}).get("wdtt") or {}):
-                return 400, {"ok": False, "error": f"{t['iface']} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", "code": "wdtt_iface"}
+                return 400, {"ok": False, **perr("{v1} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", v1=t["iface"]), "code": "wdtt_iface"}
         seen = set()
         for t in targets:
             k = (t["node"], t["iface"])
             if k in seen:
-                return 400, {"ok": False, "error": f"duplicate target {t['node']}/{t['iface']}", "code": "bad_request"}
+                return 400, {"ok": False, **perr("duplicate target {v1}", v1=f"{t['node']}/{t['iface']}"), "code": "bad_request"}
             seen.add(k)
         be = bad_targets(targets)
         if be:
@@ -9495,7 +9688,10 @@ def api(method, path, qs, body, deps):
                                    "overrides": body.get("overrides") or {}}, now())
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Created peer", peer_label(roster, p),
-                  f"{len(targets)} target{'' if len(targets) == 1 else 's'} · {targets[0]['node']}/{targets[0]['iface']}")
+                  f"{len(targets)} target{'' if len(targets) == 1 else 's'} · {targets[0]['node']}/{targets[0]['iface']}",
+                  detail_key="{count} · {where}",
+                  detail_vars={"count": {"n": len(targets), "noun": "target"},
+                               "where": f"{targets[0]['node']}/{targets[0]['iface']}"})
         webhook_emit(deps, "peer.added", {"peer_id": pid, "title": p.get("title") or None,
                      "user": (roster["users"].get(uid) or {}).get("name") if uid else None,
                      "targets": [{"node": t["node"], "iface": t["iface"], "address": t.get("ip")} for t in targets]})
@@ -9509,15 +9705,15 @@ def api(method, path, qs, body, deps):
         target = body.get("target") or {}
         for f in ("node", "iface", "ip"):
             if not target.get(f):
-                return 400, {"ok": False, "error": f"target.{f} is required", "code": "bad_request"}
+                return 400, {"ok": False, **perr("target.{v1} is required", v1=f), "code": "bad_request"}
         if not known(target["node"]):
-            return 400, {"ok": False, "error": f"unknown node {target['node']!r}", "code": "bad_request"}
+            return 400, {"ok": False, **perr("unknown node {v1}", v1=repr(target["node"])), "code": "bad_request"}
         if is_system_iface(deps, nodes, target["node"], target["iface"]):
-            return 400, {"ok": False, "error": f"{target['iface']} is a system mesh link — not a peer interface", "code": "system_iface"}
+            return 400, {"ok": False, **perr("{v1} is a system mesh link — not a peer interface", v1=target["iface"]), "code": "system_iface"}
         if _WDTT_IFACE_RE.match(target["iface"] or ""):
-            return 400, {"ok": False, "error": f"{target['iface']} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", "code": "wdtt_iface"}
+            return 400, {"ok": False, **perr("{v1} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", v1=target["iface"]), "code": "wdtt_iface"}
         if not valid_addr(target["ip"]):
-            return 400, {"ok": False, "error": f"invalid address {target['ip']!r}", "code": "bad_request"}
+            return 400, {"ok": False, **perr("invalid address {v1}", v1=repr(target["ip"])), "code": "bad_request"}
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
@@ -9606,7 +9802,7 @@ def api(method, path, qs, body, deps):
                 owner_uid = changed.get("user_id", p.get("user_id"))
                 uexp = int((roster["users"].get(owner_uid) or {}).get("expiry") or 0) if owner_uid else 0
                 if uexp and exp > uexp:
-                    return 400, {"ok": False, "error": "Peer expiry can't be later than the subscription's expiry (" + fmt_day(uexp) + ")", "code": "bad_request"}
+                    return 400, {"ok": False, **perr("Peer expiry can't be later than the subscription's expiry ({v1})", v1=fmt_day(uexp)), "code": "bad_request"}
             changed["expiry"] = exp
         if not changed:
             return 400, {"ok": False, "error": "nothing to update", "code": "bad_request"}
@@ -9629,7 +9825,7 @@ def api(method, path, qs, body, deps):
         node = body.get("node") or ""; iface = body.get("iface") or ""
         ip = (body.get("ip") or "").split("/")[0].strip()
         if not valid_addr(ip):
-            return 400, {"ok": False, "error": f"invalid address {body.get('ip')!r}", "code": "bad_request"}
+            return 400, {"ok": False, **perr("invalid address {v1}", v1=repr(body.get("ip"))), "code": "bad_request"}
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
@@ -9641,7 +9837,7 @@ def api(method, path, qs, body, deps):
                 continue
             for t in op.get("targets", []):
                 if t.get("node") == node and t.get("iface") == iface and (t.get("ip") or "").split("/")[0] == ip:
-                    return 409, {"ok": False, "error": f"{ip} is already used on {node}/{iface}", "code": "exists"}
+                    return 409, {"ok": False, **perr("{v1} is already used on {v2}", v1=ip, v2=f"{node}/{iface}"), "code": "exists"}
         targets = [dict(t, ip=ip) if (t["node"] == node and t["iface"] == iface) else t for t in p["targets"]]
         p2 = peer_set(roster, pid, {"targets": targets}, now())
         roster_save(roster_path, roster)
@@ -9730,17 +9926,17 @@ def api(method, path, qs, body, deps):
         target = body.get("target") or {}
         for f in ("node", "iface", "ip"):
             if not target.get(f):
-                return 400, {"ok": False, "error": f"target.{f} is required", "code": "bad_request"}
+                return 400, {"ok": False, **perr("target.{v1} is required", v1=f), "code": "bad_request"}
         if not pubkey:
             return 400, {"ok": False, "error": "pubkey is required", "code": "bad_request"}
         if not known(target["node"]):
-            return 400, {"ok": False, "error": f"unknown node {target['node']!r}", "code": "bad_request"}
+            return 400, {"ok": False, **perr("unknown node {v1}", v1=repr(target["node"])), "code": "bad_request"}
         if is_system_iface(deps, nodes, target["node"], target["iface"]):
-            return 400, {"ok": False, "error": f"{target['iface']} is a system mesh link — not a peer interface", "code": "system_iface"}
+            return 400, {"ok": False, **perr("{v1} is a system mesh link — not a peer interface", v1=target["iface"]), "code": "system_iface"}
         if _WDTT_IFACE_RE.match(target["iface"] or ""):
-            return 400, {"ok": False, "error": f"{target['iface']} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", "code": "wdtt_iface"}
+            return 400, {"ok": False, **perr("{v1} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", v1=target["iface"]), "code": "wdtt_iface"}
         if not valid_addr(target["ip"]):
-            return 400, {"ok": False, "error": f"invalid address {target['ip']!r}", "code": "bad_request"}
+            return 400, {"ok": False, **perr("invalid address {v1}", v1=repr(target["ip"])), "code": "bad_request"}
         roster = roster_load(roster_path)
         uid = body.get("user_id")
         if uid and uid not in roster["users"]:
@@ -9786,7 +9982,7 @@ def api(method, path, qs, body, deps):
         try:
             net = ipaddress.ip_network(subnet, strict=False)
         except Exception:
-            return 400, {"ok": False, "error": f"interface subnet {subnet!r} is invalid", "code": "bad_request"}
+            return 400, {"ok": False, **perr("interface subnet {v1} is invalid", v1=repr(subnet)), "code": "bad_request"}
         # the targets to move: this peer's targets on THIS iface (one identity shares one IP across its nodes)
         movers = [t for t in p.get("targets", []) if t.get("iface") == iface]
         cur = ((movers[0].get("ip") if movers else "") or "").split("/")[0]
@@ -9904,7 +10100,7 @@ def api(method, path, qs, body, deps):
                         if ipaddress.ip_address(v).version != 4:
                             raise ValueError
                     except ValueError:
-                        return 400, {"ok": False, "error": k + " must be a valid IPv4 address (or blank)", "code": "bad_request"}
+                        return 400, {"ok": False, **perr("{v1} must be a valid IPv4 address (or blank)", v1=k), "code": "bad_request"}
                 nodes[nid][k] = v
         if "routing_mode" in body:              # how THIS node adds a HOST layer on top of the always-on IP layer:
             rm = (body.get("routing_mode") or "kernel").strip()   # kernel (IP only) | forcedns (host via dnsmasq, blocks
@@ -10006,7 +10202,7 @@ def api(method, path, qs, body, deps):
                         if ipaddress.ip_address(v).version != 4:
                             raise ValueError
                     except ValueError:
-                        return 400, {"ok": False, "error": key + " must be a valid IPv4 address (or blank)", "code": "bad_request"}
+                        return 400, {"ok": False, **perr("{v1} must be a valid IPv4 address (or blank)", v1=key), "code": "bad_request"}
                 nodes[nid]["links"][peer][key] = v
         nodes_save(deps["nodes_path"], nodes)
         return 200, {"ok": True, "data": {"node": nid, "peer": peer,
@@ -10071,7 +10267,7 @@ def api(method, path, qs, body, deps):
                 _own = [(((((deps.get("node_snaps") or {}).get(nid) or {}).get("interfaces") or {}).get(iface) or {}).get("meta") or {}).get("listen_port"), ov.get("desired_port")]
                 _pc = _port_conflict(deps, nodes, nid, p, own=_own)   # not already bound by another interface / turn-proxy / WDTT / mesh link on this node
                 if _pc:
-                    return 400, {"ok": False, "error": "port " + str(p) + " is already used by " + _pc + " on this node — pick another port", "code": "bad_request"}
+                    return 400, {"ok": False, **perr("port {v1} is already used by {v2} on this node — pick another port", v1=p, v2=_pc), "code": "bad_request"}
                 ov["listen_port"] = p
         if "dns" in body:
             dns = body.get("dns")
@@ -10252,7 +10448,7 @@ def api(method, path, qs, body, deps):
             _cp = int(body["listen_port"])
             _pc = _port_conflict(deps, nodes, nid, _cp)   # port free of every other interface / turn-proxy / WDTT / mesh link on this node
             if _pc:
-                return 400, {"ok": False, "error": "port " + str(_cp) + " is already used by " + _pc + " on this node — pick another port", "code": "bad_request"}
+                return 400, {"ok": False, **perr("port {v1} is already used by {v2} on this node — pick another port", v1=_cp, v2=_pc), "code": "bad_request"}
             req["listen_port"] = _cp
         if str(body.get("mtu") or "").strip():
             req["mtu"] = str(body["mtu"]).strip()
@@ -10375,17 +10571,20 @@ def api(method, path, qs, body, deps):
         if path.endswith("/adopt"):
             ov[key] = ov["_drift"][key]                 # panel override ← the node's actual value
             ov.setdefault("_synced", {})[key] = ov[key]
-            verb = "Adopted server-edited"
+            verb = "Adopted server-edited value"
         else:                                           # restore → re-push the panel value
             (ov.get("_synced") or {}).pop(key, None)
-            verb = "Restored panel"
+            verb = "Restored panel value"
         ov.get("_drift", {}).pop(key, None)
         if not ov.get("_drift"):
             ov.pop("_drift", None)
         if not ov.get("_synced"):
             ov.pop("_synced", None)
         nodes_save(deps["nodes_path"], nodes)
-        ev_append(roster_path, "node", nid, verb + " " + key, iface)
+        # The FIELD travels as the detail, not glued onto the verb: a verb assembled at runtime
+        # ("Adopted server-edited mtu") is a sentence no catalog key can ever match, so it could only
+        # ever render in English. detail is a bare value and needs no translation.
+        ev_append(roster_path, "node", nid, verb, iface, key)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "key": key}}
 
     # ── turn-proxy management (only on nodes that report turn_manage=true) ──
@@ -10405,7 +10604,7 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {"latest": latest}}
     if method == "GET" and path == "/api/changelog":
         # Full panel changelog (newest-first) for the version info bubble's prev/next browser.
-        return 200, {"ok": True, "data": {"current": VERSIONS.get("panel") or "", "entries": _changelog_entries()}}
+        return 200, {"ok": True, "data": {"current": VERSIONS.get("panel") or "", "entries": _changelog_entries(_req_lang())}}
     if method == "GET" and path == "/api/turn/roster-check":
         # Client-app schema drift: each curated source file's latest GitHub commit vs the last-acknowledged one.
         return 200, {"ok": True, "data": _turn_roster_check()}
@@ -10459,7 +10658,7 @@ def api(method, path, qs, body, deps):
         # own download is the real gate, and refusing on uncertainty could false-block a perfectly installable box).
         _snap = ((deps.get("node_snaps") or {}).get(nid) or {})
         if _snap.get("turn_capable") is False:
-            return 400, {"ok": False, "error": "no turn-proxy build for this node's architecture (" + (_snap.get("arch") or "unknown") + ") — forks publish amd64/arm64 only", "code": "bad_request"}
+            return 400, {"ok": False, **perr("no turn-proxy build for this node's architecture ({v1}) — forks publish amd64/arm64 only", v1=_snap.get("arch") or "unknown"), "code": "bad_request"}
         # STRICT validation — these values become a systemd unit + subprocess args on the node; a shell/heredoc
         # metacharacter here would be RCE. Legit forks/owners/ip:port/params all pass; injection payloads don't.
         if not re.match(r"^[A-Za-z0-9._-]+$", fork) or not _OWNER_RE.match(owner):
@@ -10473,7 +10672,7 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": rc, "code": "bad_request"}
         _lc = _port_conflict(deps, nodes, nid, listen.rsplit(":", 1)[1])   # not already bound by an interface / proxy / WDTT / mesh link on this node
         if _lc:
-            return 400, {"ok": False, "error": "listen port " + listen.rsplit(":", 1)[1] + " is already used by " + _lc + " on this node — pick another port", "code": "bad_request"}
+            return 400, {"ok": False, **perr("listen port {v1} is already used by {v2} on this node — pick another port", v1=listen.rsplit(":", 1)[1], v2=_lc), "code": "bad_request"}
         svc = "vk-turn-proxy-" + fork + "-" + listen.rsplit(":", 1)[1]
         if svc in (nodes[nid].get("turn") or {}):
             return 409, {"ok": False, "error": "an install for this fork+port is already pending", "code": "conflict"}
@@ -10484,7 +10683,7 @@ def api(method, path, qs, body, deps):
         ireq["pin"] = turn_pin(owner, _node_arch(deps, nid))   # checksum gate: fetch+hash THIS node's-arch binary (bounded+bg) so the pin rides the FIRST sync delivery
         nodes[nid].setdefault("turn", {})[svc] = ireq
         nodes_save(deps["nodes_path"], nodes)
-        ev_append(roster_path, "node", nid, "Installing turn-proxy", svc)
+        ev_append(roster_path, "node", nid, "Installed turn-proxy", svc)
         return 200, {"ok": True, "data": {"node": nid, "service": svc}}
 
     if method == "POST" and path in ("/api/turn/manage", "/api/turn/rotate", "/api/turn/delete", "/api/turn/restart", "/api/turn/reinstall", "/api/turn/stop", "/api/turn/start"):
@@ -10500,13 +10699,13 @@ def api(method, path, qs, body, deps):
             for k in ("listen", "connect"):
                 if (body.get(k) or "").strip():
                     if not valid_hostport(body[k].strip()):
-                        return 400, {"ok": False, "error": k + " must be ip:port", "code": "bad_request"}
+                        return 400, {"ok": False, **perr("{v1} must be ip:port", v1=k), "code": "bad_request"}
                     if k == "listen":   # a moved listen port must not land on another interface / proxy / WDTT / mesh link
                         _np = body["listen"].strip().rsplit(":", 1)[1]
                         _cp = svc.rsplit("-", 1)[-1]   # this proxy's current port (from its service name)
                         _lc = _port_conflict(deps, nodes, nid, _np, own=[_cp] if _cp.isdigit() else [])
                         if _lc:
-                            return 400, {"ok": False, "error": "listen port " + _np + " is already used by " + _lc + " on this node — pick another port", "code": "bad_request"}
+                            return 400, {"ok": False, **perr("listen port {v1} is already used by {v2} on this node — pick another port", v1=_np, v2=_lc), "code": "bad_request"}
                     req[k] = body[k].strip()
             if "params" in body:                        # free-text ExecStart tail after -connect (node uses it verbatim)
                 if not no_ctrl(body.get("params") or ""):
@@ -10605,7 +10804,7 @@ def api(method, path, qs, body, deps):
             if _p:
                 _lc = _port_conflict(deps, nodes, nid, _p, own=_own)
                 if _lc:
-                    return 400, {"ok": False, "error": _lbl + " " + str(_p) + " is already used by " + _lc + " on this node — pick another port", "code": "bad_request"}
+                    return 400, {"ok": False, **perr("{v1} {v2} is already used by {v3} on this node — pick another port", v1=_lbl, v2=_p, v3=_lc), "code": "bad_request"}
         if "stopped" in body:
             inst["stopped"] = bool(body.get("stopped"))
         if body.get("restart"):   # operator-requested restart: a monotonic nonce the node acts on once (systemctl restart)
@@ -10683,9 +10882,9 @@ def api(method, path, qs, body, deps):
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
         iface = (body.get("iface") or "").strip()
         if not _WDTT_ADOPT_IFACE_RE.match(iface):
-            return 400, {"ok": False, "error": "'" + iface + "' isn't a usable interface name — letters, digits, _ and -, up to 15 characters", "code": "bad_request"}
+            return 400, {"ok": False, **perr("'{v1}' isn't a usable interface name — letters, digits, _ and -, up to 15 characters", v1=iface), "code": "bad_request"}
         if iface in ((nodes[nid].get("wdtt")) or {}):
-            return 400, {"ok": False, "error": "this node already manages a WDTT instance on " + iface, "code": "bad_request"}
+            return 400, {"ok": False, **perr("this node already manages a WDTT instance on {v1}", v1=iface), "code": "bad_request"}
         # The NODE is the source of truth for what's actually running: only adopt an interface it currently reports
         # as an ADOPTABLE WDTT candidate. Without this, a stale/hand-made request would install an instance the node
         # can never seed (no foreign server / no identity) and it would fail on every 5s reconcile, forever.
@@ -10698,7 +10897,7 @@ def api(method, path, qs, body, deps):
         _dorm_dir = (body.get("adopt_config_dir") or "").strip()
         _dorm = next((d for d in (_snap.get("wdtt_dormant") or []) if (d or {}).get("config_dir") == _dorm_dir), None) if _dorm_dir else None
         if not _dorm and (not _cd or not _cw):
-            return 400, {"ok": False, "error": "this node doesn't report a WDTT server on " + iface + " — refresh and try again", "code": "bad_request"}
+            return 400, {"ok": False, **perr("this node doesn't report a WDTT server on {v1} — refresh and try again", v1=iface), "code": "bad_request"}
         # The operator may know where the identity actually lives (a fork with an unusual layout, a server started
         # from a different directory). Accept a path and let the NODE verify it — it copies first and refuses if
         # the file isn't there, so a wrong path costs nothing and the foreign server keeps serving.
@@ -10709,7 +10908,7 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "that server's identity (wg-keys.dat) can't be found on the node, so adopting it would break every existing client — point at its key file, or ignore it instead", "code": "bad_request"}
         fork = (body.get("fork") or "").strip() or "amurcanov"
         if fork not in WDTT_BUILDS:
-            return 400, {"ok": False, "error": "unknown WDTT fork: " + fork, "code": "bad_request"}
+            return 400, {"ok": False, **perr("unknown WDTT fork: {v1}", v1=fork), "code": "bad_request"}
         inst = {"iface": iface, "fork": fork, "adopt_foreign": True}
         if idpath:
             inst["identity_path"] = idpath
@@ -10760,14 +10959,14 @@ def api(method, path, qs, body, deps):
         # collides with an existing interface — and an instance the node's own validator rejects just fails on
         # every 5s reconcile with nothing shown at the API level.
         if not _WDTT_CIDR_RE.match(inst.get("wg_addr") or ""):
-            return 400, {"ok": False, "error": "this server's tunnel subnet isn't an IPv4 CIDR: " + (inst.get("wg_addr") or "(none)"), "code": "bad_request"}
+            return 400, {"ok": False, **perr("this server's tunnel subnet isn't an IPv4 CIDR: {v1}", v1=inst.get("wg_addr") or "(none)"), "code": "bad_request"}
         if not valid_hostport(inst.get("listen") or ""):
-            return 400, {"ok": False, "error": "this server's listen address isn't host:port: " + (inst.get("listen") or "(none)"), "code": "bad_request"}
+            return 400, {"ok": False, **perr("this server's listen address isn't host:port: {v1}", v1=inst.get("listen") or "(none)"), "code": "bad_request"}
         if inst.get("wg_port") is not None and not (1 <= int(inst["wg_port"]) <= 65535):
             return 400, {"ok": False, "error": "wg_port must be 1-65535", "code": "bad_request"}
         _clash = subnet_fleet_conflict(deps, nodes, inst["wg_addr"], skip_node=nid, skip_iface=iface)
         if _clash:
-            return 409, {"ok": False, "error": "its subnet " + inst["wg_addr"] + " is already used elsewhere in the fleet (" + str(_clash) + ") — adopting it would black-hole one of them", "code": "subnet_conflict"}
+            return 409, {"ok": False, **perr("its subnet {v1} is already used elsewhere in the fleet ({v2}) — adopting it would black-hole one of them", v1=inst["wg_addr"], v2=_clash), "code": "subnet_conflict"}
         nodes[nid].setdefault("wdtt", {})[iface] = inst
         unignore_iface(nodes[nid], iface)   # adopting a previously-ignored candidate clears the ignore
         nodes_save(deps["nodes_path"], nodes)
@@ -10896,7 +11095,7 @@ def api(method, path, qs, body, deps):
             if tn not in nodes:
                 return 400, {"ok": False, "error": "unknown node", "code": "bad_request"}
             if ti not in ((nodes[tn].get("wdtt")) or {}):
-                return 400, {"ok": False, "error": "no WDTT instance '" + ti + "' on node " + tn, "code": "bad_request"}
+                return 400, {"ok": False, **perr("no WDTT instance '{v1}' on node {v2}", v1=ti, v2=tn), "code": "bad_request"}
             tgts.append({"node": tn, "iface": ti, "ip": "", "type": "wdtt"})
         if not tgts:
             return 400, {"ok": False, "error": "at least one WDTT target is required", "code": "bad_request"}
@@ -11076,8 +11275,8 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {
             "checked": reached,                      # did we actually reach the repo this time?
             "latest_remote": LATEST_REMOTE.get("version"),
-            "latest_remote_date": LATEST_REMOTE.get("date") or "",
-            "latest_remote_notes": LATEST_REMOTE.get("notes") or [],
+            "latest_remote_date": _latest_notes(_req_lang())[0],
+            "latest_remote_notes": _latest_notes(_req_lang())[1],
             # strictly-newer remote only (same rule as the data bundle) — never flag a dev build that's
             # AHEAD of main as "outdated", which would offer a downgrade and leave the header with no pill.
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version"))}}
@@ -11128,7 +11327,7 @@ def api(method, path, qs, body, deps):
                 ev_append(roster_path, "node", "host", "Host update started", "")
                 return 200, {"ok": True, "data": {"started": True}}
             except Exception as e:
-                return 500, {"ok": False, "error": f"couldn't signal the updater: {e}", "code": "exec_failed"}
+                return 500, {"ok": False, **perr("couldn't signal the updater: {v1}", v1=e), "code": "exec_failed"}
         reason = ("this panel runs in Docker — a container can't recreate itself" if IN_DOCKER
                   else "automatic host update isn't set up on this install (update once on the host to enable it)")
         return 200, {"ok": True, "data": {"manual": True, "cmd": manual_cmd, "reason": reason}}
@@ -11702,7 +11901,10 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(code, obj)   # an error build isn't cached
 
     def _static(self, key):
-        full = os.path.normpath(os.path.join(WEB_DIR, STATIC[key]))
+        rel = static_rel(key)
+        if rel is None:
+            return self.send_error(404)
+        full = os.path.normpath(os.path.join(WEB_DIR, rel))
         if not full.startswith(os.path.realpath(WEB_DIR)) and not full.startswith(WEB_DIR):
             return self.send_error(403)
         try:
@@ -11713,7 +11915,7 @@ class Handler(BaseHTTPRequestHandler):
         _mb = getattr(_REQ, "matched_base", None)   # the base THIS request came in on (a path swap serves two)
         if _mb is None:                             # only fall back to the canonical mount when strip_base didn't match one
             _mb = PANEL_BASE                        # "" is a VALID (root) match during a swap — must NOT fall through to PANEL_BASE
-        if _mb and STATIC[key] == "index.html":   # point the SPA's <base> at the mount point this tab is under (_mb=="" → root, keep the default <base href="/">)
+        if _mb and rel == "index.html":   # point the SPA's <base> at the mount point this tab is under (_mb=="" → root, keep the default <base href="/">)
             data = data.replace(b'<base href="/">', ('<base href="%s/">' % _mb).encode())
         # Version-stamp the SPA entry points (?v=<panel version>). The assets are buildless (no content
         # hash in the filename), and a CDN in front (e.g. Cloudflare) caches .js/.css for hours regardless
@@ -11723,22 +11925,34 @@ class Handler(BaseHTTPRequestHandler):
         # URL-ENCODE the version for the query: a "+sha" dev build (e.g. 1.3.12-beta+0e1fdcc) would otherwise put a
         # literal "+" in the asset URL, which a CDN/WAF in front (Cloudflare) rejects outright — %2B keeps each
         # version a distinct, VALID cache-bust key.
-        if STATIC[key] == "index.html":
+        if rel == "index.html":
+            # Stamp the modulepreload hints with the SAME key the imports get, or the browser preloads one
+            # url and then fetches another: double the requests, none of the benefit.
+            data = re.sub(rb'href="(js/[A-Za-z0-9_.-]+\.js)"',
+                          lambda m: b'href="' + m.group(1) + _js_tree_q() + b'"', data)
             data = (data.replace(b'href="app.css"', b'href="app.css' + _asset_q("app.css") + b'"')
                         .replace(b'src="app.js"', b'src="app.js' + _asset_q("app.js") + b'"')
                         .replace(b'src="turn-artifacts.js"', b'src="turn-artifacts.js' + _asset_q("turn-artifacts.js") + b'"'))
-        elif STATIC[key] == "app.js":
-            data = data.replace(b'"./reconcile.js"', b'"./reconcile.js' + _asset_q("reconcile.js") + b'"')
+        elif rel.endswith(".js"):
+            # EVERY served .js gets its relative imports stamped — not just app.js's one hardcoded
+            # "./reconcile.js". With the SPA split across js/ modules, an unstamped specifier is how a CDN
+            # serves a fresh app.js against a stale ui.js.
+            data = _stamp_imports(data, rel)
         _, ext = os.path.splitext(full)
         # The SPA is buildless (no content-hashed filenames), so a stale app.js/app.css served
         # against a freshly-updated backend silently breaks the UI (e.g. a schema change). Force
         # revalidation: clients must check with the server (304 if unchanged) rather than trust a
         # cached copy. ETag makes that cheap; fonts can cache long since they never change.
-        if ext == ".woff2":
+        # js/ modules join the fonts: their URL carries the whole tree's hash (_js_tree_q), so any change
+        # re-keys them and a cached copy can never be stale. That also drops N revalidation round-trips
+        # per page load, which is what keeps the module split cheaper than the single app.js it replaces.
+        if ext == ".woff2" or rel.startswith("js/"):
             self.send_response(200)
             self.send_header("Content-Type", CTYPES.get(ext, "application/octet-stream"))
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            if ext == ".js":
+                self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             with contextlib.suppress(BrokenPipeError):
                 self.wfile.write(data)
@@ -11756,7 +11970,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("ETag", etag)
         self.send_header("X-Content-Type-Options", "nosniff")
-        if STATIC[key] == "index.html":
+        if rel == "index.html":
             # Defence-in-depth CSP for the buildless SPA: everything is same-origin except QR/favicon data:
             # URIs; 'unsafe-inline' is required for the theme-bootstrap + importmap inline scripts and the
             # app's inline styles. Restricts connect/img/object and blocks framing (clickjacking).
@@ -11915,7 +12129,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         ok, why = _verify_node_sig(node.get("token_sha"), ts, mac, body)
         if not ok:
-            self._send(401, {"error": "bad request signature (%s)" % why, "code": "bad_signature"}); return False
+            self._send(401, {**perr("bad request signature ({v1})", v1=why), "code": "bad_signature"}); return False
         return True
 
     def _node_sync(self):
@@ -12915,11 +13129,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         _REQ.listener_id = getattr(self.server, "listener_id", None)   # which listener → the Access-apply confirm gate
+        _REQ.lang = self.headers.get("X-SWG-Lang") or ""                # the browser's UI language (changelog only)
         u = urlparse(self.path)
         path = strip_base(u.path)
         if path is None:
             return self.send_error(404)
-        if path in STATIC:                 # SPA assets are public so the login page can load
+        if static_rel(path) is not None:   # SPA assets are public so the login page can load
             return self._static(path)
         if path == "/api/node/whoami":     # node-token auth (not a session) — lets a re-installer identify a leftover token
             return self._node_whoami()
@@ -12945,6 +13160,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         _REQ.listener_id = getattr(self.server, "listener_id", None)   # which listener → the Access-apply confirm gate
+        _REQ.lang = self.headers.get("X-SWG-Lang") or ""                # the browser's UI language (changelog only)
         _REQ.http_host = (self.headers.get("Host") or "").strip()      # the public host this request arrived on (proxy passes Host $host) → confirm-url proof
         u = urlparse(self.path)
         path = strip_base(u.path)

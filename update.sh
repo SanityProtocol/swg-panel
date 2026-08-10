@@ -326,7 +326,7 @@ ensure_sub_server(){   # HEAL (install-if-missing) the swg-sub subscription surf
   if [ ! -f "$SUB_DIR/swg-sub" ]; then    # binary missing → lay down the binary + any missing web assets
     mkdir -p "$SUB_DIR/vendor"
     cp "$SRC/swg-sub" "$SUB_DIR/"; chmod 755 "$SUB_DIR/swg-sub"
-    for f in sub.html sub.js sub.css turn-artifacts.js; do [ -f "$SUB_DIR/$f" ] || { [ -f "$SRC/$f" ] && cp "$SRC/$f" "$SUB_DIR/"; }; done
+    for f in $SUB_WEB; do [ -f "$SUB_DIR/$f" ] || { [ -f "$SRC/$f" ] && cp "$SRC/$f" "$SUB_DIR/"; }; done
     [ -f "$SUB_DIR/vendor/qrcode.js" ] || { [ -f "$SRC/vendor/qrcode.js" ] && cp "$SRC/vendor/qrcode.js" "$SUB_DIR/vendor/"; }
     [ -f "$SUB_DIR/VERSION" ] || stamp "$SUB_DIR"
   fi
@@ -452,6 +452,33 @@ ensure_awg_module(){   # HEAL (rebuild-if-missing) the AmneziaWG kernel module o
     DID_FAIL=yes; warn "AmneziaWG kernel module still won't load on kernel $(uname -r) — this box may lack matching linux-headers (or the PPA has no build for it); awg interfaces can't come up"; note "awg kernel module: heal FAILED"
   fi
 }
+
+ensure_cert_perms(){   # HEAL (fix-if-wrong) TLS key ownership so the panel can still read its key after a restart.
+  # The panel runs as swgpanel (group swg) and loads the cert IN-PROCESS, so a root:root 0600 key means
+  # load_cert_chain raises PermissionError and the service never comes back. The catch is that it fails only
+  # at the NEXT restart: a panel that is already running holds its loaded context, so the box looks healthy
+  # for weeks and then dies on a reboot — or, worse, on the restart at the end of THIS update, which makes a
+  # historical permission bug look like the update ate the install. Found exactly that on a box whose key had
+  # been written by an older path 19 minutes before the netctl that fixes perms was installed.
+  # Every writer we ship (install-host.sh cert_perms, swg-netctl _fix_cert_perms, the acme reloadcmd) already
+  # lands root:swg 0640 — this only repairs what an older or foreign one left behind. Perms are not operator
+  # content, so fixing them is not a rewrite; the file itself is never touched.
+  getent group swg >/dev/null 2>&1 || return 0
+  local f grp mode fixed=""
+  for f in "${TLS_DIR:-/etc/swg-panel/tls}/key.pem" /etc/swg-sub/tls/key.pem; do
+    [ -f "$f" ] || continue
+    grp="$(stat -c '%G' "$f" 2>/dev/null)"; mode="$(stat -c '%a' "$f" 2>/dev/null)"
+    # Already group swg WITH the group-read bit? Leave it exactly as the operator has it. Test the bit
+    # itself, not `-r`: this runs as root, for whom -r is true on a 0600 root-owned key — the very file
+    # the service cannot read. That check would have passed on every broken box.
+    case "$grp:$mode" in swg:*[4567]?) continue;; esac
+    $DRYRUN && { echo "    [skip] chown root:swg + chmod 640 $f (mode $mode $grp — the service user can't read it)"; continue; }
+    chown root:swg "$f" 2>/dev/null || true; chmod 640 "$f" 2>/dev/null || true
+    [ "$(stat -c '%G' "$f" 2>/dev/null)" = swg ] && fixed="$fixed $f"
+  done
+  [ -n "$fixed" ] && { DID_UPDATE=yes; ok "TLS key permissions healed —$fixed (the service user couldn't read it; the panel would not have survived a restart)"
+                       note "TLS key perms: healed$fixed"; }
+  return 0; }
 
 ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-metal panel whose TLS needs it.
   # The cert and its renewal STATE live in /root/.acme.sh, but the PROGRAM is separate — and a docker→bare-metal
@@ -626,6 +653,11 @@ ensure_update_unit_docker(){   # HEAL (install-if-missing) the docker one-click 
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
 if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   found=1; pan_seen=yes; pold="$(oldver "$PANEL_DIR")"
+  # Runs HERE, not in the heal pass below, because it is a PRECONDITION of the restart on line ~690 rather
+  # than a repair to leave behind: an unreadable TLS key makes that restart fail, and healing it afterwards
+  # would leave the service dead until someone restarted it by hand. Outside should_update on purpose — an
+  # already-current box needs the repair just as much, since the bomb goes off at the next reboot.
+  ensure_cert_perms
   if should_update "bare-metal swg-panel" "$PANEL_DIR"; then
     info "updating bare-metal swg-panel ($PANEL_DIR)"
     for f in swg-panel-server index.html app.css app.js reconcile.js turn-artifacts.js; do
@@ -633,6 +665,14 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     done
     # whole vendor/ dir — the buildless SPA needs the vendored Preact + htm ESM, not just qrcode
     [ -d "$SRC/vendor" ] && { run mkdir -p "$PANEL_DIR/vendor"; run cp -a "$SRC/vendor/." "$PANEL_DIR/vendor/"; }
+    # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
+    [ -d "$SRC/js" ] && { run mkdir -p "$PANEL_DIR/js"; run cp -a "$SRC/js/." "$PANEL_DIR/js/"; }
+    if ! $DRYRUN && ! _jsbad="$(verify_js_tree "$PANEL_DIR")"; then   # a partial copy = a blank panel, silently
+      DID_FAIL=yes
+      warn "the SPA module tree is INCOMPLETE after the update — the panel will load blank:"
+      printf '    %s\n' $_jsbad
+      note "SPA modules: INCOMPLETE after copy"
+    fi
     run chmod 755 "$PANEL_DIR/swg-panel-server"; stamp "$PANEL_DIR"
     install_update_unit                              # ensure one-click host self-update is wired
     if run systemctl restart swg-panel-server; then ok "swg-panel updated + restarted"; note "bare-metal swg-panel: ${pold} → ${NEW_VER}"
@@ -642,7 +682,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     # Inert unless enabled in the panel.
     if [ -f "$SUB_DIR/swg-sub" ] && [ -f "$SRC/swg-sub" ]; then
       run cp "$SRC/swg-sub" "$SUB_DIR/"; run chmod 755 "$SUB_DIR/swg-sub"
-      for f in sub.html sub.js sub.css turn-artifacts.js; do [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$SUB_DIR/"; done
+      for f in $SUB_WEB; do [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$SUB_DIR/"; done
       [ -f "$SRC/vendor/qrcode.js" ] && { run mkdir -p "$SUB_DIR/vendor"; run cp "$SRC/vendor/qrcode.js" "$SUB_DIR/vendor/"; }
       stamp "$SUB_DIR"
       run systemctl restart swg-sub 2>/dev/null && ok "swg-sub updated + restarted" || warn "swg-sub present but not restarted"
@@ -679,6 +719,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   ensure_netctl_helper   # swg-netctl privileged helper (+ queue dirs + trigger units)
   ensure_sub_server      # swg-sub subscription surface (user + binary + tls dir + unit)
   ensure_acme_client     # HEAL: the ACME client itself, when TLS_MODE needs it (a convert leaves the state, not the program)
+                         # (ensure_cert_perms runs ABOVE, before the restart it protects — see the note there)
   ensure_update_unit     # one-click self-update wiring (wrappers + service/timer + trigger drop-in)
   ensure_access_seed     # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from install.conf
   ensure_panel_unit_warn # swg-panel-server.service — detect + warn only (carries TLS/port/login)
@@ -743,7 +784,17 @@ PYHN
       _hips="$(host_bindable_ips)"
       if [ -n "$_hips" ]; then
         if grep -q '^HOST_IPS=' "$DOCKER_DIR/.env" 2>/dev/null; then
-          sed -i "s|^HOST_IPS=.*|HOST_IPS=$_hips|" "$DOCKER_DIR/.env"
+          # NOT sed: host_bindable_ips emits "ip|iface" pairs, so the value contains the very `|` that was
+          # being used as the s-command delimiter — `sed: unknown option to 's'`, and with set -e the whole
+          # update aborted right there. Only on the SECOND update onward (the first takes the append branch
+          # below), which is why it survived earlier testing. Rewriting the line in python keeps it in place
+          # and has no delimiter to collide with, whatever an interface is called.
+          python3 - "$DOCKER_DIR/.env" "$_hips" <<'PYIP'
+import sys
+path, val = sys.argv[1], sys.argv[2]
+lines = open(path).read().split("\n")
+open(path, "w").write("\n".join(("HOST_IPS=" + val) if l.startswith("HOST_IPS=") else l for l in lines))
+PYIP
         else printf 'HOST_IPS=%s\n' "$_hips" >> "$DOCKER_DIR/.env"; fi
       fi
     fi
@@ -768,10 +819,11 @@ PYHI
       info "restaging source + rebuilding ($DOCKER_DIR)"
       for f in Dockerfile Dockerfile.node .dockerignore VERSION \
                swg-panel-server swg-agent swg-noded swg-sni swg-sub swg-passwd \
-               index.html app.css app.js reconcile.js turn-artifacts.js sub.html sub.js sub.css; do
+               index.html app.css app.js reconcile.js $SUB_WEB; do
         [ -e "$SRC/$f" ] && run cp -a "$SRC/$f" "$DOCKER_DIR/"
       done
       [ -d "$SRC/vendor" ] && run cp -a "$SRC/vendor" "$DOCKER_DIR/"
+      [ -d "$SRC/js" ] && run cp -a "$SRC/js" "$DOCKER_DIR/"   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
       [ -d "$SRC/docker" ] && run cp -a "$SRC/docker" "$DOCKER_DIR/"; stamp "$DOCKER_DIR"
       if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof up -d --build)"; note "docker ($prof): would rebuild"
       else ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" up -d --build ) && { ok "docker ($prof) rebuilt + restarted"; note "docker ($prof): rebuilt"; } || { DID_FAIL=yes; warn "compose rebuild failed — check $DOCKER_DIR"; note "docker ($prof): rebuild FAILED"; }; fi

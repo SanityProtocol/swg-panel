@@ -1,11 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.6.4-beta</code></p>
+<p align="center"><code>1.7.0-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.6.4-beta** — [full changelog](CHANGELOG.md)
-> - **Security fix for Docker installs** — a request from the panel's own queue could run commands as root on the host. No shell is used for those calls any more, and the queue is verified before anything acts on it. Reported by [@anupamme](https://github.com/anupamme).
-> - **"Don't offer" a server on a given OS** — pick nothing instead of an app that can't connect, and the server simply won't appear on those users' subscription pages.
+> **What's new in 1.7.0-beta** — [full changelog](CHANGELOG.md)
+> - **The panel speaks Russian** — every screen and message, switchable with the **EN / РУ** button in the app bar. The bundled typefaces gained Cyrillic, so a translated screen keeps the same look on every machine.
+> - **Two fixes that could take a panel down:** a TLS key the service couldn't read made the panel die on its next restart, and every update on a Docker install had been failing part-way through.
+> - **No more blank pages** — an interrupted deploy or an unsupported browser now says what's wrong instead of rendering nothing.
 <!-- WHATS-NEW:END -->
 
 ---

@@ -5,6 +5,12 @@
 #
 # NB: this file is sourced, not executed — no shebang, no `set`, no side effects at load time.
 
+# Web assets swg-sub serves (its STATIC allow-list, minus vendor/qrcode.js which every site copies separately).
+# ONE list, shared by every installer/updater copy site — the four images were allow-listed by the server but
+# absent from all four copy loops, so `_a/import-hint.png` (and the client logos) 404'd on every install since
+# they were added. Keep this in sync with STATIC in swg-sub; nothing else needs touching when an asset is added.
+SUB_WEB="sub.html sub.js sub.css turn-artifacts.js import-hint.png amneziavpn.svg amneziawg.png wireguard.svg"
+
 # pretty protocol name for interface listings: awg → AmneziaWG, wg → Wireguard (anything else passes through)
 proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
 
@@ -991,6 +997,42 @@ v_cforigin_why(){ v_cftoken_why "$1"; }
 # The panel's own _bindable_ips() cannot produce these in docker: the container is BRIDGED, so it sees
 # only the compose network's 172.x — and `ip` isn't even in the panel image. The installer runs on the
 # host, so it captures them here and passes them in via .env (SWG_HOST_IPS). Without it the Access & TLS
+# ── the SPA module tree ─────────────────────────────────────────────────────────────────────────────
+# Verify a DEPLOYED js/ against the manifest that shipped with it.
+#   verify_js_tree <panel-dir>        -> prints nothing and returns 0 when the tree is complete
+#
+# The SPA is 22 ES modules plus a locale catalog. If a copy drops or truncates one, nothing anywhere
+# says so: the panel serves the rest happily, and the operator gets a blank page whose only clue is a
+# 404 in a console they will never open (verified — a missing module renders 40 characters of chrome
+# and no #view at all). The manifest makes "the tree that was built" a checkable fact, and the right
+# moment to check it is here, right after the copy, while the operator is still watching the install.
+# Never fatal on its own: the caller decides, because a half-copied SPA is worth shouting about but
+# not worth aborting an update that has already replaced the server binary.
+verify_js_tree(){
+  local dir="$1" man="$1/js/manifest.json"
+  [ -f "$man" ] || return 0                      # older tree with no manifest — nothing to check against
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$dir/js" "$man" <<'PYJS'
+import hashlib, json, os, sys
+root, man = sys.argv[1], sys.argv[2]
+try:
+    want = (json.load(open(man)) or {}).get("modules") or {}
+except Exception:
+    sys.exit(0)                                   # unreadable manifest is not evidence of a bad copy
+bad = []
+for rel, digest in sorted(want.items()):
+    p = os.path.join(root, rel)
+    if not os.path.exists(p):
+        bad.append("missing " + rel); continue
+    got = hashlib.sha256(open(p, "rb").read()).hexdigest()[:16]
+    if got != digest:
+        bad.append("corrupt " + rel)
+for b in bad:
+    print(b)
+sys.exit(1 if bad else 0)
+PYJS
+}
+
 # "Listen IP" picker offers nothing but 0.0.0.0 / 127.0.0.1 on every docker install.
 # The interface filter MIRRORS swg-panel-server's _IFACE_SKIP_RE — keep the two in step.
 # Excludes by DEVICE TYPE as well as name: the name filter only catches wgN/awgN, so any tunnel the operator

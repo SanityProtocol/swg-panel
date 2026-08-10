@@ -3,6 +3,24 @@
    one warm-amber signal, a cool jewel-tone status spectrum. */
 @font-face{font-family:"JetBrains Mono";src:url(vendor/fonts/jetbrains-mono-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:"JetBrains Mono";src:url(vendor/fonts/jetbrains-mono-500.woff2) format("woff2");font-weight:500;font-style:normal;font-display:swap}
+/* Cyrillic rides in its own @font-face with a unicode-range, rather than being folded into the Latin
+   subsets. Two reasons: an English reader never downloads it, and the Latin files stay byte-identical, so
+   the look nobody asked me to change cannot drift. The vendored Latin subsets carry NO Cyrillic at all —
+   every Russian glyph was falling through to the OS font, which is why Russian read a size larger. */
+@font-face{font-family:"JetBrains Mono";src:url(vendor/fonts/jetbrains-mono-400-cyrillic.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap;unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+@font-face{font-family:"JetBrains Mono";src:url(vendor/fonts/jetbrains-mono-500-cyrillic.woff2) format("woff2");font-weight:500;font-style:normal;font-display:swap;unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+/* Hanken Grotesk has no Cyrillic AT ALL — 0 of the 64 Russian letters — so Onest carries that script under
+   the same family name, restricted by unicode-range. It was drawn for Latin and Cyrillic together, which
+   matters here because this panel mixes them constantly ("Нода fra-edge-01").
+
+   size-adjust is the point of the pairing, not a flourish. Onest's x-height is 527 per 1000em against
+   Hanken's 493; left alone, every Russian word sits a size larger than the Latin beside it, which is
+   exactly the complaint that started this. 493/527 = 93.5% brings the two x-heights level, so a mixed line
+   reads as ONE typeface. Weights are declared separately because the panel uses all four. */
+@font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/onest-400-cyrillic.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap;size-adjust:93.5%;unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+@font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/onest-500-cyrillic.woff2) format("woff2");font-weight:500;font-style:normal;font-display:swap;size-adjust:93.5%;unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+@font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/onest-600-cyrillic.woff2) format("woff2");font-weight:600;font-style:normal;font-display:swap;size-adjust:93.5%;unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+@font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/onest-700-cyrillic.woff2) format("woff2");font-weight:700;font-style:normal;font-display:swap;size-adjust:93.5%;unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
 @font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/hanken-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/hanken-500.woff2) format("woff2");font-weight:500;font-style:normal;font-display:swap}
 @font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/hanken-600.woff2) format("woff2");font-weight:600;font-style:normal;font-display:swap}
@@ -105,6 +123,12 @@ h1,h2,h3{font-family:var(--sans)}
 .tabs a{padding:8px 11px;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;
   color:var(--faint);font-weight:500;transition:color .15s;position:relative}
 .tabs a:hover{color:var(--ink-2)}
+/* The tab row and the icon cluster share one line with no wrap and no scroll, so the bar has a width
+   below which they collide. Translation moves that threshold: Russian's tabs run ~30px wider than
+   English's (ПОЛЬЗОВАТЕЛИ vs USERS), which pulled the collision from ~1153px up to ~1243px. Trimming the
+   horizontal padding before that band buys ~40px in EVERY language — it fixes English's own limit too,
+   rather than making one translation fit and leaving the next one to rediscover this. */
+@media(max-width:1300px){.tabs a{padding:8px 7px}}
 .tabs a.active{color:var(--ink)}
 .tabs a.active::after{content:"";position:absolute;left:11px;right:11px;bottom:-1px;height:2px;border-radius:2px;
   background:var(--brand);box-shadow:0 0 9px color-mix(in srgb,var(--brand) 55%,transparent)}
@@ -185,7 +209,7 @@ button.upd-uptodate:hover{border-color:var(--online);background:color-mix(in srg
 .crumb b{color:var(--ink);font-weight:600}
 .lbl{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);font-weight:600}
 .card{background:linear-gradient(180deg,var(--raise),var(--surface));border:1px solid var(--line);border-radius:var(--r);padding:22px}
-.section-title{display:flex;align-items:center;gap:9px;margin:22px 2px 9px;scroll-margin-top:72px}   /* clear the 56px sticky appbar + a ~16px buffer when the rail jump-nav scrolls to a section */
+.section-title{display:flex;align-items:baseline;gap:9px;margin:22px 2px 9px;scroll-margin-top:72px}   /* clear the 56px sticky appbar + a ~16px buffer when the rail jump-nav scrolls to a section */
 .section-title h2{margin:0;font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);font-weight:500}
 .section-title .count{font-family:var(--mono);font-size:11px;color:var(--faint)}
 .section-title .nodehint{font-size:11.5px;color:var(--faint);font-weight:400;letter-spacing:normal;text-transform:none;margin-left:8px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -523,15 +547,31 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .badge.ic::before{display:none}
 .badge.ic svg{width:11px;height:11px}
 .b-online{background:color-mix(in srgb,var(--online) 13%,transparent);color:var(--online)} .b-online::before{animation:blink 2.6s infinite}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}   /* LIGHT RED — a problem that isn't a stopper (present on some targets, missing on others) */
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+/* Peer status badges. Thirteen of these were deleted in a86b6ce together with the .ustat set, leaving every
+   chip except online/blocked with no colour at all — a lost peer read the same ink as a ready one. Restored
+   from a86b6ce^; the stray comments that commit welded onto surviving lines are back on their own rules. */
+.b-ready{background:color-mix(in srgb,var(--ready) 12%,transparent);color:var(--ready)}   /* blue — deployed everywhere, awaiting first connection */
+.b-partial{background:color-mix(in srgb,var(--partial-r) 16%,transparent);color:var(--partial-r)}   /* LIGHT RED — a problem that isn't a stopper (present on some targets, missing on others) */
 /* ORANGE faults: blocked = reaching the server but no handshake; faulty = handshake up but no inbound data */
-.b-blocked,.b-faulty{background:color-mix(in srgb,var(--fault) 15%,transparent);color:var(--fault)}          /* ORANGE — about to expire */
+.b-blocked,.b-faulty{background:color-mix(in srgb,var(--fault) 15%,transparent);color:var(--fault)}
+.b-pending{background:color-mix(in srgb,var(--pending) 14%,transparent);color:var(--pending)}   /* violet — awaiting enrolment */
+.b-removing{background:rgba(242,107,130,.14);color:var(--dangling)}
+.b-dangling{background:color-mix(in srgb,var(--dangling) 14%,transparent);color:var(--dangling)}
+.b-orphan{background:rgba(95,117,105,.16);color:var(--unknown)}   /* GREY — unmanaged/external peer, informational */
+.b-creating{background:rgba(232,192,75,.16);color:var(--partial)}   /* YELLOW — being created */
+.b-rotating{background:rgba(232,192,75,.16);color:var(--partial)}   /* YELLOW — key rotation in flight */
+.b-disabled{background:color-mix(in srgb,var(--dangling) 15%,transparent);color:var(--dangling)}   /* RED — access revoked (settled) */
+.b-expired{background:color-mix(in srgb,var(--dangling) 15%,transparent);color:var(--dangling)}    /* RED — access date passed */
+.b-expiring{background:color-mix(in srgb,var(--fault) 15%,transparent);color:var(--fault)}          /* ORANGE — about to expire */
+.b-blocking{background:rgba(232,192,75,.16);color:var(--partial)}   /* AMBER — block converging on the node */
+.b-restoring{background:color-mix(in srgb,var(--ready) 12%,transparent);color:var(--ready)}   /* BLUE — restoring after unblock */
 /* access-lifecycle flag icon shown BEFORE the peer title / username when the status badge didn't already say it
    (i.e. a non-"ready" status) — red circle = blocked, red triangle = expired, orange triangle = about to expire */
 .lc-ic{display:inline-flex;align-items:center;flex:none;margin-right:5px;vertical-align:middle}
 .lc-ic svg{width:13px;height:13px}
 .lc-blocked,.lc-expired{color:var(--dangling)} .lc-expiring{color:var(--fault)}
-.u-name .lc-ic{margin-right:0}   /* BLUE — restoring after unblock */
+.u-name .lc-ic{margin-right:0}
 .ifc-orph{color:#F0913C;font-weight:600}
 .b-issue{background:color-mix(in srgb,var(--partial) 15%,transparent);color:var(--partial)}
 
@@ -880,7 +920,9 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
   display:none;align-items:flex-start;justify-content:center;padding:48px 18px;overflow:auto}
 .overlay.show{display:flex;animation:fade .2s}
 @keyframes fade{from{opacity:0}to{opacity:1}}
-.sheet{background:var(--surface);border:1px solid var(--line-solid);border-radius:16px;width:min(560px,100%);
+/* 560 was too narrow for the widest footer we ship — the user editor's Delete / Rotate all keys / Block row
+   plus Cancel + Save wrapped onto three lines. 640 fits it in both languages with room to spare. */
+.sheet{background:var(--surface);border:1px solid var(--line-solid);border-radius:16px;width:min(640px,100%);
   box-shadow:var(--shadow);animation:pop .24s var(--ease)}
 @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
 .sheet-head{display:flex;align-items:center;padding:18px 20px;border-bottom:1px solid var(--line)}
@@ -1303,7 +1345,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .appver-info svg{width:12px;height:12px;display:block}
 /* ‹ older / › newer buttons — grouped together just after the version number, vertically centred with it */
 .verbub .hub-h{align-items:center}
-.hub-nav-group{display:inline-flex;align-items:center;gap:10px;margin-left:12px}
+.hub-nav-group{display:inline-flex;align-items:center;justify-content:center;gap:16px}
 .hub-nav{appearance:none;border:1px solid var(--line);background:none;color:var(--fg);cursor:pointer;border-radius:6px;padding:2px 9px;font-size:11px;font-weight:600;line-height:1.4;flex:0 0 auto;display:inline-flex;align-items:center;gap:3px}
 .hub-nav:hover:not(:disabled){border-color:var(--brand);color:var(--brand)}
 .hub-nav:disabled{opacity:.3;cursor:default}
@@ -2084,7 +2126,11 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .ipk-field .grow{flex:1}
 .ipk-val{font-family:var(--mono);font-size:12px;color:var(--ink-2);word-break:break-all;min-width:0;text-align:right}
 .subnet-row{margin-bottom:14px}   /* breathing room before the Endpoint / Listen-port row */
-.subnet-row .ipk-val{text-align:left;word-break:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Wraps, never clips: the tail of this line is the INSTRUCTION ("delete & recreate to change"), so an
+   ellipsis eats the one piece of information the row exists to give. It fit on one line in English and
+   didn't in Russian. baseline keeps the label level with the first line when the hint runs to two. */
+.subnet-row{align-items:baseline}
+.subnet-row .ipk-val{text-align:left;word-break:normal;white-space:normal;overflow:visible}
 .seclabel{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin:18px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--line)}
 .awg-val{font-family:var(--mono);font-size:12px;color:var(--ink);padding:5px 7px;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ipk-custom{margin-top:6px;width:100%;font-family:var(--mono);font-size:12.5px}
@@ -2127,17 +2173,28 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 
 /* ───── fleet: merged node card (main block + health block) ───── */
 .fleet2{display:flex;flex-direction:column;gap:10px}
-.fnode{display:grid;grid-template-columns:minmax(0,0.9fr) minmax(0,1.16fr);border:1px solid var(--line);border-radius:var(--r);   /* left −10% / right +10% */
+/* Info left, health + CPU history right. The badges no longer live in the stats row (see .fnode-ifs), so the
+   left column needs less width than it did — the graphs get some of it. Not all: at 0.78 the info side read
+   as cramped, the badges crowding the node name. 0.86 sits between the original 0.9 and that, so the graphs
+   still gain. The floor on the left is its stats row staying on ONE line with the longest label set
+   (Russian, 3-digit online count); verified at this ratio. */
+.fnode{display:grid;grid-template-columns:minmax(0,0.86fr) minmax(0,1.2fr);border:1px solid var(--line);border-radius:var(--r);
   background:var(--surface);overflow:hidden;text-decoration:none;color:inherit;transition:border-color .15s,background .15s}
 .fnode:hover{border-color:var(--line-solid);background:var(--raise)}
 .fnode.stale{opacity:.82}
 .fnode-main{padding:13px 15px;display:flex;flex-direction:column;gap:11px;min-width:0}
+.fnode-top .fnode-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}   /* a long node name gives way, never the badges */
 .fnode-top{display:flex;align-items:center;gap:8px}
 .fnode-name{font-family:var(--mono);font-weight:600;font-size:14px;color:var(--ink)}
 .fnode-top .tport{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);background:var(--surface-2);padding:2px 6px;border-radius:5px}
 .fnode-top .rowarrow{color:var(--faint)}
 .fnode-stats{display:flex;gap:22px;flex-wrap:wrap;align-items:center}
-.fnode-ifs{margin:0 auto;display:flex;gap:6px;align-items:center;align-self:flex-end;padding-bottom:1px}   /* centred in the empty space; sit on the VALUES row (bottom of the stat blocks) */
+/* Interface badges ride the NAME row, right-aligned — not the stats row. In the stats row they were a flex
+   sibling of three translated labels, so their position depended on the width of the words: in Russian, with
+   a 3-digit online count ("100 пользователей"), the row overflowed and flex-wrap dropped the badges onto a
+   line of their own. A layout that only holds in one language isn't a layout. The name row has slack in every
+   language, and type badges belong next to the node's identity anyway. */
+.fnode-ifs{display:flex;gap:6px;align-items:center;flex:none;margin-left:auto}
 .fnode-ifs .iftype{font-size:10px;padding:2.5px 8px;font-weight:600}   /* same .iftype badge as the node interfaces, just a touch bigger */
 .fnode-stats .fl{display:block;font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);margin-bottom:3px}
 .fnode-stats .fv{font-family:var(--mono);font-size:12.5px;color:var(--ink-2)}
@@ -2237,7 +2294,10 @@ a.tg:hover{filter:brightness(1.25)}
 .urow-body{border-radius:0 0 calc(var(--r) - 1px) calc(var(--r) - 1px)}
 .urow.open{border-color:color-mix(in srgb,var(--brand) 42%,var(--line-solid));box-shadow:0 0 0 1px color-mix(in srgb,var(--brand) 18%,transparent)}
 .urow.open>.urow-head{background:color-mix(in srgb,var(--brand) 7%,transparent)}
-.editfoot{display:flex;align-items:center;gap:8px;margin-top:20px}
+/* wrap: five buttons in one row leave ~0 slack even in English (477px of buttons in a 472px row), so any
+   language with longer words overflows the sheet. Wrapping engages only when they don't fit — English keeps
+   its single line, Russian takes a second one instead of being cut off. */
+.editfoot{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:20px}
 .editfoot .grow{flex:1}
 /* one-line rows (status · name+tag+note · peers/online · last-online · rate · total · controls). The per-row
    labels are gone — the sortable header line carries the titles. Deterministic tracks so every row + the header
@@ -2264,10 +2324,24 @@ a.tg:hover{filter:brightness(1.25)}
 /* user-row status: bare node-style tag (dot + uppercase mono label), like the nodes list "reporting/offline"
    but a touch smaller — NOT the pill Badge used inside the grids */
 .ustat{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;line-height:normal;white-space:nowrap;color:var(--unknown)}
-.ustat::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}   /* s-off = Live "offline" (grey, no animation) */
-.ustat.s-blocked{color:var(--fault)}   /* orange — a peer is blocked / faulty */
-.ustat.s-expired{color:var(--dangling)}   /* red — access revoked / expired */
-.ustat.s-expiring{color:var(--fault)}   /* blue — restoring after unblock */
+.ustat::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+/* The status COLOUR vocabulary. Twelve of these rules were deleted wholesale in a86b6ce (the 1.6.0-beta
+   release commit) — nothing replaced them, so every status except blocked/expired/expiring fell through to
+   .ustat's grey default and the roster lost its colour coding: an ONLINE user read the same grey as a lost
+   one. Restored from a86b6ce^, with the comments re-attached to the rules they describe (the surviving
+   s-expiring had inherited "blue — restoring after unblock", which belongs to s-restoring). */
+.ustat.s-online{color:var(--online)} .ustat.s-online::before{box-shadow:0 0 8px currentColor;animation:blink 2.6s infinite}
+.ustat.s-ready{color:var(--ready)}
+.ustat.s-partial{color:#F19AA4}
+.ustat.s-pending{color:var(--pending)}
+.ustat.s-creating,.ustat.s-rotating{color:var(--partial)}
+.ustat.s-dangling,.ustat.s-removing{color:var(--dangling)}
+.ustat.s-unknown,.ustat.s-empty,.ustat.s-off{color:var(--unknown)}   /* s-off = Live "offline" (grey, no animation) */
+.ustat.s-blocked,.ustat.s-faulty{color:var(--fault)}   /* orange — a peer is blocked / faulty */
+.ustat.s-disabled,.ustat.s-expired{color:var(--dangling)}   /* red — access revoked / expired */
+.ustat.s-expiring{color:var(--fault)}   /* orange — about to expire */
+.ustat.s-blocking{color:var(--partial)}   /* amber — block converging */
+.ustat.s-restoring{color:var(--ready)}   /* blue — restoring after unblock */
 /* name row: name · tag · note all on one line, name + note ellipsize */
 .u-name{display:flex;align-items:center;gap:8px;min-width:0;font-size:14px;font-weight:600}
 .u-name>a{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto} .u-name>a:hover{color:var(--brand)}
@@ -2395,7 +2469,7 @@ a.tg:hover{filter:brightness(1.25)}
 .qrrow::-webkit-scrollbar{display:none}
 /* every carousel item is a uniform 256px column, whether a bare .deploy (peer modal) or a .upc-wrap (user modal) —
    uniform width is what keeps the scroll step and the "N of M" range honest */
-.qrrow > .deploy,.qrrow > .upc-wrap{width:256px;flex:none;scroll-snap-align:start}
+.qrrow > .deploy,.qrrow > .upc-wrap{width:292px;flex:none;scroll-snap-align:start}   /* = QR_ITEM in peer-ui.js */
 .qrrow > .upc-wrap{display:flex;flex-direction:column}   /* let the inner .deploy fill the stretched wrapper height */
 .qrrow > .upc-wrap > .deploy{width:100%;flex:1}
 .qrrow .deploy .qr,.qrrow .deploy .qr-none,.qrrow .deploy .qr-fail{flex:1;min-width:0}
@@ -2435,6 +2509,13 @@ a.tg:hover{filter:brightness(1.25)}
    the modal title row: Alice left · sentence centred (flex:1 fills the gap) · peer count right. center = its own
    centred line at the top of the edit-user card. */
 .substat{font-size:12px;font-weight:600;white-space:nowrap}
+/* …and in the modal title row it belongs on the RIGHT, beside the close button — the peer count moved next
+   to the name, so nothing else claims that end. The rule went missing when the count moved: `.substat-hr`
+   was still being emitted, matched nothing, and the sentence fell back to sitting flush against the title.
+   The auto margin has to be on the SENTENCE, not shared with the button: two auto margins split the free
+   space between them, which parks the sentence mid-row instead of at the end. */
+.sheet-head .substat-hr{margin-left:auto}
+.sheet-head .substat-hr ~ .x,.sheet-head .substat-hr ~ .sheet-back{margin-left:14px}
 /* access-expiry date input (edit-user / edit-peer) */
 .daterow{display:flex;align-items:center;gap:8px}
 .datein{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink);color-scheme:light dark}
@@ -2588,14 +2669,14 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 /* Live grid: status is just a green (online) / grey (offline) dot — a tiny column; the rest shifts left */
 /* live grids are now always `loc` (dot + iface badge in the status) → the old bare-dot 26px rule only applies to a
    non-loc live grid, if any. loc live status width is set by the h-status rules. */
-.peergrid.live:not(.loc) th:first-child,.peergrid.live:not(.loc) td[data-label="Status"]{width:26px;text-align:center;padding-left:12px;padding-right:0}
+.peergrid.live:not(.loc) th:first-child,.peergrid.live:not(.loc) td.c-status{width:26px;text-align:center;padding-left:12px;padding-right:0}
 /* cumulative transfer — SAME colours as the rate cell: faint when nothing moved, green ↓ / blue ↑ once it has */
 .xfer{font-family:var(--mono);color:var(--faint);white-space:nowrap} .xfer .up{opacity:.7}
 .xfer.live{color:var(--online)} .xfer.live .up{color:var(--rate-up);opacity:1}
 .peergrid .xfer{font-size:11.5px}
-.peergrid td[data-label="Rate"],.peergrid td[data-label="Total"],.peergrid th{white-space:nowrap}   /* keep 4-digit rates (1023 MB/s) on one line */
+.peergrid td.c-rate,.peergrid td.c-total,.peergrid th{white-space:nowrap}   /* keep 4-digit rates (1023 MB/s) on one line */
 /* Rate/Total are numeric — right-align header + values so the header text ends right above where the values end */
-.peergrid th.h-rate,.peergrid th.h-total,.peergrid td[data-label="Rate"],.peergrid td[data-label="Total"]{text-align:right}
+.peergrid th.h-rate,.peergrid th.h-total,.peergrid td.c-rate,.peergrid td.c-total{text-align:right}
 .peergrid td.rowacts{text-align:right;white-space:nowrap}
 /* the user-EXPANDED peer grid uses a FIXED column layout so its Online/Rate/Total/actions columns sit at
    stable, content-independent x-positions — the user-row header is aligned to exactly these widths so the
@@ -2605,8 +2686,12 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
    mirror the user-row .u-right so Peers/Nodes/Online/Rate/Total align vertically above them. */
 .peergrid{width:100%;table-layout:fixed}
 .peergrid th.h-status{width:9%}
-.peergrid.loc th.h-status{width:11%}   /* loc grids put the iface badge next to the status → a touch wider */
+.peergrid.loc th.h-status{width:18%}   /* loc grids put the iface badge next to the status: it must hold a
+   long interface name (qwdtt10009) as well as the status chip. table-layout is FIXED, so this % is the
+   real width — at 11% the cell needed 167px and got 118, and the badge spilled out of it. */
 .peergrid th.h-user{width:14%}
+.peergrid.loc th.h-user{width:11%}   /* the loc grid's user cell holds only the compact assign picker,
+   so its share goes to the status cell, which carries the interface name too */
 .peergrid th.h-title{width:13%}
 .peergrid th.h-ep{width:13%}
 .peergrid th.h-addr{width:11%}
@@ -2643,7 +2728,12 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .peergrid thead th:last-child{border-top-right-radius:calc(var(--r) - 1px)}
 .peergrid tbody tr:last-child td:first-child{border-bottom-left-radius:calc(var(--r) - 1px)}
 .peergrid tbody tr:last-child td:last-child{border-bottom-right-radius:calc(var(--r) - 1px)}
+/* A cell that doesn't fit CUTS with an ellipsis; it never wraps. nowrap on the CELL is the part that matters:
+   the title cell holds a lifecycle icon next to the text, and without it the icon wrapped onto its own line
+   above the title (the text truncated fine — the icon was what broke the row's alignment). */
+.peergrid td.c-name{white-space:nowrap}
 .peergrid td.c-name>b,.peergrid td.c-name>span{display:inline-block;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+.peergrid td.c-name>.lc-ic{vertical-align:bottom}   /* share the baseline with the truncated text, not the line above */
 .peergrid td.usercell .namecell>span{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* fleet-wide column: server name (left) + interface tag (right) on one line */
 .peergrid .srvcell{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
@@ -2670,10 +2760,13 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .deppop .deprow{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;white-space:nowrap}
 /* header update-widget hover bubbles (update-to / fix-issues) — rich content in place of the plain title tooltip */
 .hostupd-bub{z-index:90;min-width:440px;max-width:680px;padding:14px 17px 12px;white-space:normal;line-height:1.5;text-transform:none;letter-spacing:0;font-family:var(--sans)}
-.hub-h{display:flex;align-items:baseline;gap:10px;margin-bottom:11px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.hub-h{display:grid;grid-template-columns:1fr auto 1fr;align-items:baseline;gap:10px;margin-bottom:11px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.hub-title{justify-self:start;min-width:0}
+.hub-h > .hub-nav-group{justify-self:center}
+.hub-h > .hub-date{justify-self:end}
 .hub-title{font-size:13px;font-weight:600;color:var(--ink)}
 .hub-title b{color:var(--ready);font-weight:700}
-.hub-date{margin-left:auto;flex:none;font-family:var(--mono);font-size:10.5px;color:var(--faint);font-weight:400}
+.hub-date{flex:none;font-family:var(--mono);font-size:10.5px;color:var(--faint);font-weight:400}
 .hub-list{display:flex;flex-direction:column;gap:7px}
 .hub-row{display:flex;gap:10px;font-size:12px;color:var(--dim);align-items:flex-start}
 .hub-row.faint{color:var(--faint)}
@@ -2712,10 +2805,11 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .onlpop .onpop-viewall{display:block;font-size:11.5px;color:var(--brand);text-decoration:none;padding:7px 8px 4px;margin-top:3px;border-top:1px solid var(--line)}
 .onlpop .onpop-viewall:hover{text-decoration:underline}
 .assigncell{display:flex;align-items:center;gap:6px}
-.assigncell .usercombo{min-width:120px;max-width:150px}   /* the in-table "Assign to…" picker: keep it compact, don't stretch the column */
+.assigncell .usercombo{min-width:96px;max-width:132px}   /* the in-table "Assign to…" picker: kept compact
+   so the width it doesn't need goes to the status/iface cell beside it */
 /* searchable user picker */
 .usercombo{position:relative;min-width:150px}
-.uc-input{width:100%;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:7px;color:var(--ink);font:inherit;font-size:12.5px;padding:5px 9px}
+.uc-input{width:100%;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:7px;color:var(--ink);font:inherit;font-size:12.5px;padding:5px 7px}
 .uc-input:focus{outline:none;border-color:var(--brand)}
 .uc-list{position:absolute;z-index:40;top:calc(100% + 4px);left:0;min-width:200px;max-height:260px;overflow:auto;
   background:var(--raise);border:1px solid var(--line-solid);border-radius:9px;box-shadow:var(--shadow);padding:4px}

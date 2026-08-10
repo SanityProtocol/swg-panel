@@ -13,6 +13,8 @@
 <!-- Set the light/dark theme before first paint so there's no dark→light flash. Mirrors app.js's
      resolvedTheme(): stored mode (else "auto"), auto → prefers-color-scheme. -->
 <script>(function(){try{var m=localStorage.getItem("swg-theme");if(["light","dark"].indexOf(m)<0)m=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";document.documentElement.dataset.theme=m;}catch(e){document.documentElement.dataset.theme="dark";}})();</script>
+<!-- Language before first paint, mirroring the theme bootstrap above: stored pick, else the browser's. -->
+<script>(function(){try{var l=localStorage.getItem("swg-lang");if(!l){l=(navigator.language||"").slice(0,2).toLowerCase();if(l!=="ru")l="en";}document.documentElement.lang=l;}catch(e){document.documentElement.lang="en";}})();</script>
 </head>
 <body>
 <header class="appbar">
@@ -34,6 +36,7 @@
     <button class="iconbtn lg" id="vaultlock-btn" title="Lock encryption key" aria-label="Lock encryption key" hidden>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
     </button>
+    <button class="iconbtn lg" id="lang-btn" title="Language" aria-label="Language"></button>
     <button class="iconbtn lg" id="theme-btn" title="Theme" aria-label="Theme"></button>
     <a class="iconbtn lg" id="panel-settings-btn" href="#/panel/settings" title="Panel settings" aria-label="Panel settings">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -65,6 +68,127 @@
     "htm": "./vendor/htm.module.js"
 } }
 </script>
+<!-- The SPA is ~20 ES modules (docs/APP-JS-SPLIT-PLAN.md). Without these hints the browser can only
+     discover them by parsing app.js first, then each module's own imports — three request waves over an
+     HTTP/1.1 origin. Preloading flattens that to one. The panel stamps ?v= onto each href, the same
+     whole-tree key the imports carry, so a hint and its import are the SAME url and fetch once. -->
+<link rel="modulepreload" href="js/charts.js">
+<link rel="modulepreload" href="js/crypto.js">
+<link rel="modulepreload" href="js/grids.js">
+<link rel="modulepreload" href="js/iface.js">
+<link rel="modulepreload" href="js/model.js">
+<link rel="modulepreload" href="js/peer-actions.js">
+<link rel="modulepreload" href="js/peer-ui.js">
+<link rel="modulepreload" href="js/router.js">
+<link rel="modulepreload" href="js/routing.js">
+<link rel="modulepreload" href="js/screen-nodes.js">
+<link rel="modulepreload" href="js/screen-overview.js">
+<link rel="modulepreload" href="js/screen-roster.js">
+<link rel="modulepreload" href="js/screen-settings.js">
+<link rel="modulepreload" href="js/sheets-crud.js">
+<link rel="modulepreload" href="js/store.js">
+<link rel="modulepreload" href="js/theme.js">
+<link rel="modulepreload" href="js/turn-catalog.js">
+<link rel="modulepreload" href="js/turn.js">
+<link rel="modulepreload" href="js/ui.js">
+<link rel="modulepreload" href="js/util.js">
+<link rel="modulepreload" href="js/views.js">
 <script type="module" src="app.js"></script>
+<!-- Boot guard. The SPA is ~22 ES modules: if one 404s, is truncated, or the browser is too old to
+     support the importmap above, NOTHING renders and the only trace is a console line nobody opens —
+     verified by injection: a missing module leaves 40 characters of app-bar and no #view at all.
+     This script is deliberately:
+       · INLINE, because it has to run when zero modules load (the CSP allows 'unsafe-inline' scripts);
+       · ES5, because the browser it most needs to talk to is the one too old to parse modern syntax —
+         a guard written in the syntax it is warning about would fail silently with it;
+       · last in <body>, so the module tag above already exists and its load error is observable.
+     It distinguishes the two causes, because the fixes are completely different. -->
+<script>
+(function () {
+  var shown = false;
+  function importmapOK() {
+    return !!(window.HTMLScriptElement && HTMLScriptElement.supports &&
+              HTMLScriptElement.supports("importmap"));
+  }
+  /* Which module actually broke? The `error` event fires on the module-graph ROOT (app.js), never on the
+     nested import that 404'd — so the failing URL the browser hands us names the wrong file and would send
+     an operator after a file that is perfectly fine. The shipped manifest is the answer: probe each module
+     listed in it and report the ones that don't answer. Only runs in the already-failed state (so the
+     extra requests cost nothing in normal operation), and only on a modern browser (the old-browser branch
+     never gets here), which is why XHR is safe to use. */
+  function nameTheCulprit() {
+    var el = document.getElementById("swg-boot-which");
+    if (!el || !window.XMLHttpRequest) return;
+    var mx = new XMLHttpRequest();
+    mx.open("GET", "js/manifest.json", true);
+    mx.onload = function () {
+      var names;
+      try { names = Object.keys((JSON.parse(mx.responseText) || {}).modules || {}); } catch (e) { return; }
+      if (!names.length) return;
+      var missing = [], done = 0;
+      for (var i = 0; i < names.length; i++) (function (n) {
+        var r = new XMLHttpRequest();
+        // GET, not HEAD: the panel is a stdlib BaseHTTPRequestHandler and answers HEAD with 501, which
+        // would make every module look missing. These are small files and we are already in the failed
+        // state, so fetching them is fine.
+        r.open("GET", "js/" + n, true);
+        r.onloadend = function () {
+          /* STATUS ONLY — deliberately no hash check here. The panel rewrites import specifiers as it
+             serves a module (it stamps ?v= onto each one), so the bytes the browser receives never match
+             the on-disk digest in the manifest: comparing them reported 21 of 23 files "damaged" when a
+             single one was truncated. Telling an operator to re-copy everything because of a false
+             positive is worse than saying less. Truncation IS caught, by verify_js_tree at install time,
+             which hashes the files on disk where the digests are meaningful. */
+          if (r.status !== 200) missing.push(n);
+          if (++done !== names.length || !missing.length) return;
+          el.innerHTML = "Of the " + names.length + " files the interface is built from, <b>" +
+            missing.length + "</b> did not load:<br><code>js/" +
+            missing.slice(0, 6).join("</code>, <code>js/") + "</code>" +
+            (missing.length > 6 ? " and " + (missing.length - 6) + " more" : "") +
+            "<br>If that list looks complete, the files are present but damaged — either way it is an " +
+            "interrupted or partial update.";
+        };
+        r.send();
+      })(names[i]);
+    };
+    mx.send();
+  }
+  function diagnose() {
+    if (shown || window.__swgBooted) return;
+    var view = document.getElementById("view");
+    if (!view || view.firstChild) return;          // something rendered after all — stay out of the way
+    shown = true;
+    // HTMLScriptElement.supports only EXISTS on browsers new enough to have import maps, so its
+    // absence is the signal — no user-agent sniffing, and no false positive on a modern browser.
+    var old = !importmapOK();
+    var h = document.createElement("div");
+    h.className = "empty";
+    h.style.cssText = "max-width:46em;margin:12vh auto;text-align:left;line-height:1.6";
+    h.innerHTML = old
+      ? "<b>This panel needs a newer browser.</b><br>It uses ES modules with an import map, which needs " +
+        "<b>Safari 16.4+</b>, <b>Firefox 108+</b> or <b>Chrome/Edge 89+</b>. Everything else about your " +
+        "install is fine — open the panel in a newer browser.<br><br>" +
+        "<i>Your subscription page is unaffected; clients on older devices keep working.</i>"
+      : "<b>The panel's files didn't load.</b><br>" +
+        "<span id='swg-boot-which'>The interface is served from ~22 module files; one is missing or " +
+        "damaged, which usually means an interrupted update.</span><br><br>" +
+        "Re-run the update on the panel host:<br>" +
+        "<code>sudo swg-update</code> &nbsp;or&nbsp; <code>cd /root/swg-panel &amp;&amp; sudo ./update.sh</code>" +
+        "<br><br><button type='button' id='swg-boot-retry'>Reload</button>";
+    view.appendChild(h);
+    var b = document.getElementById("swg-boot-retry");
+    if (b) b.onclick = function () { location.reload(); };
+    if (!old) nameTheCulprit();
+  }
+  // A failed module/asset fetch fires `error` on the element; it does not bubble, so capture it.
+  window.addEventListener("error", function (e) {
+    var t = e && e.target;
+    if (t && (t.tagName === "SCRIPT" || t.tagName === "LINK")) setTimeout(diagnose, 50);
+  }, true);
+  // Backstop for everything an error event can't see (a parse error, a hang, an old browser that
+  // simply ignores the module tag). Generous, so a slow link is never called a failure.
+  setTimeout(diagnose, 10000);
+})();
+</script>
 </body>
 </html>

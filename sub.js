@@ -502,7 +502,12 @@
     inner.style.transform = "none";                                          // measure natural (unscaled) size
     var nw = inner.scrollWidth, nh = inner.scrollHeight;
     if (!nw || !nh) return;
-    var availW = window.innerWidth - 28, availH = window.innerHeight - 36;    // safe margins (the × sits in the corner)
+    // Usable box. The × is FIXED in the top-right corner (42px button at a 14px inset → it owns the top 56px),
+    // and the card is CENTRED, so what actually keeps the card clear of it is half-height ≤ (H-112)/2 — the old
+    // 36px margin didn't, and on a narrow phone the (longer) RU countdown ran straight through the ×.
+    var CLOSE = 56;                                                          // 14px inset + 42px button
+    var availW = window.innerWidth - 48,                                     // 48 = the overlay's own 24px padding
+        availH = window.innerHeight - 2 * CLOSE;
     var CEIL = 1.3, FLOOR = 0.4;                                             // ceiling: never gigantic · floor: readable, only the rare landscape-phone + 11-step case reaches it
     var k = Math.min(availW / nw, availH / nh, CEIL);
     if (k < FLOOR) k = FLOOR;
@@ -670,6 +675,9 @@
     _importCd = el("div", "ih-countdown"); _importCd.style.display = "none"; inner.appendChild(_importCd);   // "App is opening in N…" — driven by fireScheme's 5s countdown, hidden once the app opens
     var txt = el("div", "ih-text");
     txt.appendChild(el("div", "ih-line ih-lead", t("importHint1")));   // first line a bit bigger
+    // "Settings" / "Import" are DELIBERATELY hard-coded English, not table strings: anton48's iOS app ships in English
+    // only, so these must read exactly as they appear on the user's screen. Don't "fix" this by translating them — the
+    // labels elsewhere (TURN Proxy's *«Настройки»* / *«Импорт»*) are translated precisely because those apps ARE localised.
     var l2 = el("div", "ih-line"); l2.appendChild(document.createTextNode(t("importHint2"))); l2.appendChild(el("b", null, "Settings")); txt.appendChild(l2);
     var l3 = el("div", "ih-line"); l3.appendChild(document.createTextNode(t("importHint3"))); l3.appendChild(el("b", null, "Import")); txt.appendChild(l3);
     inner.appendChild(txt);
