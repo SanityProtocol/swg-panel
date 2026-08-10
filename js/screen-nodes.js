@@ -170,6 +170,12 @@ export function NodeDetail({ node: rawName }) {
           const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
           return html`<a class=${"tg tg-" + type + ((nodeStale(name) || ifaceNotUp(name, ifn)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
         })}
+        ${/* WDTT interfaces belong in this row too — they ARE interfaces of this node. They were absent
+              because they live in snap.wdtt rather than in `describe`, which is what userKeys is built
+              from, so a filter over describe can never see them. The node CARD gets this right (see
+              ifaceTags), and this ribbon had its own copy of the logic, which is how the two drifted. */""}
+        ${((snap && snap.wdtt) || []).filter(w => w && w.iface).map(w =>
+          html`<a class=${"tg tg-wdtt" + ((nodeStale(name) || (w.active !== "active" && !w.await_restore)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(w.iface)}>${w.iface}</a>`)}
         ${turnEnabled() ? orderById((snap && snap.turn_proxies) || [], nrec.turn_order, tp => tp.service).map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(name) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`) : null}
       </div>
       <span class="grow"></span>
