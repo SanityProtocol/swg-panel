@@ -103,15 +103,12 @@ export function NodeDetail({ node: rawName }) {
   const isSysName = k => k.startsWith(meshPfx) || k.startsWith("swg_");
   const isSysIface = k => (meta[k] && meta[k].system) || isSysName(k);
   const userKeys = meta ? Object.keys(meta).filter(k => !isSysIface(k)) : [];
-  // drag-to-reorder the (user) interface cards (saved order overlays the node's reported set) — WDTT-owned
-  // interfaces reorder alongside the wg/awg ones (they live in the same "User interfaces" grid).
-  const _wdttNames = ((Store.stats[name] || {}).wdtt || []).filter(w => w && w.iface).map(w => w.iface);
-  // An interface being deleted stays in this list until the node stops reporting it, so its "deleting" card
-  // holds the SLOT the live card had. Without it the name left ifaceIds the moment its server died and the
-  // card was re-rendered outside the ordered grid — jumping to the front of the page mid-teardown.
-  const _gonePfx = name + "|";
-  const _goneOn = Object.keys(Store.ifaceGone).filter(k => k.startsWith(_gonePfx)).map(k => k.slice(_gonePfx.length));
-  const ifaceIds = orderById([...new Set([...userKeys, ..._wdttNames, ..._goneOn])], nrec.iface_order, x => x);
+  // drag-to-reorder the (user) interface cards — the saved order overlays the node's reported set, and
+  // WDTT-owned interfaces reorder alongside the wg/awg ones (same "User interfaces" grid, so one order).
+  // `gone` keeps an interface being deleted in the list until the node stops reporting it, so its
+  // "deleting" card holds the SLOT the live card had: without it the name left ifaceIds the moment its
+  // server died and the card re-rendered outside the ordered grid — jumping to the top mid-teardown.
+  const ifaceIds = nodeIfaces(name, { gone: true }).map(x => x.ifn);
   const ifReorder = useReorder(ifaceIds, ids => mutate({
     patch: s => { const nn = (s.nodes || []).find(x => x.id === name); if (nn) nn.iface_order = ids; },
     call: () => api.saveOrder({ kind: "iface", node: name, order: ids }),
@@ -166,16 +163,7 @@ export function NodeDetail({ node: rawName }) {
 
     ${!snap ? html`<div class="node-nodata"><${Ic} i="activity"/><p>${T("This node isn't sending any data right now")}</p></div>` : html`<div class="noderibbon">
       <div class="nr-tags">
-        ${orderById(userKeys, nrec.iface_order, x => x).map(ifn => {
-          const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
-          return html`<a class=${"tg tg-" + type + ((nodeStale(name) || ifaceNotUp(name, ifn)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
-        })}
-        ${/* WDTT interfaces belong in this row too — they ARE interfaces of this node. They were absent
-              because they live in snap.wdtt rather than in `describe`, which is what userKeys is built
-              from, so a filter over describe can never see them. The node CARD gets this right (see
-              ifaceTags), and this ribbon had its own copy of the logic, which is how the two drifted. */""}
-        ${((snap && snap.wdtt) || []).filter(w => w && w.iface).map(w =>
-          html`<a class=${"tg tg-wdtt" + ((nodeStale(name) || (w.active !== "active" && !w.await_restore)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(w.iface)}>${w.iface}</a>`)}
+        ${nodeIfaces(name).map(x => IfaceTag(name, x))}
         ${turnEnabled() ? orderById((snap && snap.turn_proxies) || [], nrec.turn_order, tp => tp.service).map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(name) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`) : null}
       </div>
       <span class="grow"></span>
@@ -632,23 +620,55 @@ export const CpuWarnIc = ({ health }) => hotCores(health) ? html`<span class="cp
 
 
 // Inline "x of y" usage bar for table rows — a compact track + count.
-// interface tags for a node: each iface coloured by protocol, linking to its detail.
-export function ifaceTags(node) {
+
+// ── one node's interfaces, derived once ──────────────────────────────────────────────────────────
+// The ordered, typed, muted-flagged interface list for a node — the single source of truth for every
+// place that shows them: the fleet card's badge row, the detail ribbon's badge row, and the order of
+// the detail grid's cards. It used to be derived three times, and the copies drifted: a WDTT
+// interface lives in snap.wdtt, NOT in `describe`, so a filter over describe alone silently drops it
+// however it filters — which is how the ribbon lost its WDTT badges while the card kept them.
+//
+// Two things the callers must not have to know:
+//  · a WDTT interface is reported separately (it owns its own TUN device), but on every one of these
+//    surfaces it is simply another interface of this node, so it is merged in — WDTT-coloured — and
+//    ordered with the rest. iface_order already carries WDTT names (the grid reorders them together).
+//  · `gone: true` also yields interfaces mid-teardown, which the node has stopped reporting: their
+//    card must hold its slot until it does. Those have NO `describe` entry, so `type` can never be
+//    read off meta[ifn] blind — a member access on a missing entry is the shape of bug that took the
+//    node page down in 1.7.0. Anything meta can't answer is classified by NAME instead.
+export function nodeIfaces(node, { gone = false } = {}) {
   const meta = Store.describe[node] || {};
-  const pfx = (Store.panelSettings || {}).reserved?.iface_prefix || "swg_";
-  const tagFor = (ifn, type, muted) => {
-    const op = Store.ifaceOp[node + "|" + ifn];   // start/stop/restart in flight → show it here too (optimistic, set on click)
-    if (op && op.phase === "busy") return html`<a class="tg tg-busy" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}><${Ic} i="clock"/>${ifn} ${ifopBusy(op.verb)}</a>`;
-    return html`<a class=${"tg tg-" + type + (muted ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}>${ifn}</a>`;
-  };
-  const tags = Object.keys(meta).filter(ifn => !meta[ifn].system && !ifn.startsWith(pfx) && !ifn.startsWith("swg_"))
-    .map(ifn => tagFor(ifn, (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg", nodeStale(node) || ifaceNotUp(node, ifn)));
-  // WDTT interfaces are self-contained (snap.wdtt, not describe) — show them in the same interface list, WDTT-coloured
-  for (const w of ((Store.stats[node] || {}).wdtt || [])) {
-    if (w && w.iface) tags.push(tagFor(w.iface, "wdtt", nodeStale(node) || (w.active !== "active" && !w.await_restore)));
-  }
-  return tags;
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  // the node's own mesh prefix wins over the fleet default (a mid-delete mesh iface loses its system
+  // flag but keeps its swg_ name, so both spellings stay excluded)
+  const pfx = nrec.mesh_prefix || (Store.panelSettings || {}).reserved?.iface_prefix || "swg_";
+  const isSys = k => (meta[k] && meta[k].system) || k.startsWith(pfx) || k.startsWith("swg_");
+  const wdtt = new Map(((Store.stats[node] || {}).wdtt || []).filter(w => w && w.iface).map(w => [w.iface, w]));
+  const gonePfx = node + "|";
+  const goneOn = gone ? Object.keys(Store.ifaceGone).filter(k => k.startsWith(gonePfx)).map(k => k.slice(gonePfx.length)) : [];
+  const names = [...new Set([...Object.keys(meta).filter(k => !isSys(k)), ...wdtt.keys(), ...goneOn.filter(k => !isSys(k))])];
+  return orderById(names, nrec.iface_order, x => x).map(ifn => {
+    const w = wdtt.get(ifn), m = meta[ifn];
+    return {
+      ifn, wdtt: !!w,
+      type: (w || isWdttIface(ifn)) ? "wdtt" : (m && m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg",
+      muted: nodeStale(node) || (w ? (w.active !== "active" && !w.await_restore) : ifaceNotUp(node, ifn)),
+    };
+  });
 }
+// One interface badge: protocol-coloured, links to the interface, and shows a start/stop/restart in
+// flight in place of the plain name. Every badge row renders through this — two renderers is how the
+// rows diverged in the first place.
+export const IfaceTag = (node, { ifn, type, muted }) => {
+  const op = Store.ifaceOp[node + "|" + ifn];   // op in flight → say so here too (optimistic, set on click)
+  const href = "#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn);
+  const stop = e => e.stopPropagation();        // the fleet card is itself a link; the ribbon has nothing to bubble to
+  return (op && op.phase === "busy")
+    ? html`<a class="tg tg-busy" href=${href} onClick=${stop}><${Ic} i="clock"/>${ifn} ${ifopBusy(op.verb)}</a>`
+    : html`<a class=${"tg tg-" + type + (muted ? " muted" : "")} href=${href} onClick=${stop}>${ifn}</a>`;
+};
+// interface tags for a node: each iface coloured by protocol, linking to its detail.
+export const ifaceTags = node => nodeIfaces(node).map(x => IfaceTag(node, x));
 
 
 // Node throughput panel: a Peers/Mesh toggle in the header (right-aligned) splits the graph into client (rx−mrx),
