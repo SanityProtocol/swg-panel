@@ -164,7 +164,7 @@ export function NodeDetail({ node: rawName }) {
     ${!snap ? html`<div class="node-nodata"><${Ic} i="activity"/><p>${T("This node isn't sending any data right now")}</p></div>` : html`<div class="noderibbon">
       <div class="nr-tags">
         ${nodeIfaces(name).map(x => IfaceTag(name, x))}
-        ${turnEnabled() ? orderById((snap && snap.turn_proxies) || [], nrec.turn_order, tp => tp.service).map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(name) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`) : null}
+        ${turnEnabled() ? nodeTurns(name).map(tp => TurnTag(name, tp)) : null}
       </div>
       <span class="grow"></span>
       <div class="nr-sync"><span class="when">${syncTxt}</span>${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}</div>
@@ -670,6 +670,18 @@ export const IfaceTag = (node, { ifn, type, muted }) => {
 // interface tags for a node: each iface coloured by protocol, linking to its detail.
 export const ifaceTags = node => nodeIfaces(node).map(x => IfaceTag(node, x));
 
+// The other half of the same badge rows: the node's turn-proxies, in the operator's saved order.
+// `turn_order` also holds "wdtt:<iface>" entries, because the Turn-proxies grid it comes from lists
+// WDTT servers next to the proxies — those never match a tp.service, so they simply don't place a
+// badge here, which is right: a WDTT server is already in the interface half of the row.
+export const nodeTurns = node => {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  return orderById(((Store.stats[node] || {}).turn_proxies) || [], nrec.turn_order, tp => tp.service);
+};
+// One turn-proxy badge: fork-coloured, labelled with the fork + the port it answers on.
+export const TurnTag = (node, tp) =>
+  html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(node) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`;
+
 
 // Node throughput panel: a Peers/Mesh toggle in the header (right-aligned) splits the graph into client (rx−mrx),
 // mesh (mrx), or both. Never both off — turning off the only-selected one switches to the other (like the doughnuts).
@@ -955,9 +967,8 @@ export function NodeCard({ n, reorder }) {
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
   const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
   const snap = Store.stats[n.id];
-  const tps = (snap && snap.turn_proxies) || [];
+  const tps = nodeTurns(n.id);      // turn-proxies in the operator's order (same list the ribbon shows)
   const ifTags = ifaceTags(n.id);   // every interface tag, one wrapping line
-  const turnChip = tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(n.id) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`;
   const h = n.health, cpuUtil = h && typeof h.cpu_pct === "number";
   const hasCpu = cpuUtil || (h && Array.isArray(h.load));
   const l1 = (h && Array.isArray(h.load)) ? (h.load[0] || 0) : 0;
@@ -998,7 +1009,7 @@ export function NodeCard({ n, reorder }) {
       : html`<span class="nm-v faint">—</span>`}</span>
     <button class="iconbtn nc-ctl danger" title=${removing ? T("Force remove") : T("Remove node")} onClick=${e => { e.stopPropagation(); openNodeRemove(n); }}><${Ic} i="trash"/></button>
 
-    ${turnEnabled() && tps.length ? html`<div class="nc-turn nm-item"><span class="nm-l">${T("Turn-proxies")}</span><span class="tags">${tps.map(turnChip)}</span></div>` : null}
+    ${turnEnabled() && tps.length ? html`<div class="nc-turn nm-item"><span class="nm-l">${T("Turn-proxies")}</span><span class="tags">${tps.map(tp => TurnTag(n.id, tp))}</span></div>` : null}
   </div>`;
 }
 
