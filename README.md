@@ -1,12 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.0-beta</code></p>
+<p align="center"><code>1.7.1-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.0-beta** — [full changelog](CHANGELOG.md)
+> **What's new in 1.7.1-beta** — [full changelog](CHANGELOG.md)
 > - **The panel speaks Russian** — every screen and message, switchable with the **EN / РУ** button in the app bar. The bundled typefaces gained Cyrillic, so a translated screen keeps the same look on every machine.
 > - **Two fixes that could take a panel down:** a TLS key the service couldn't read made the panel die on its next restart, and every update on a Docker install had been failing part-way through.
-> - **No more blank pages** — an interrupted deploy or an unsupported browser now says what's wrong instead of rendering nothing.
+> - **No more blank pages** — an interrupted deploy, an unsupported browser, or a screen that fails to draw now each say what's wrong instead of rendering nothing.
 <!-- WHATS-NEW:END -->
 
 ---

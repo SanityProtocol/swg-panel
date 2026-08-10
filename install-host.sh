@@ -898,7 +898,7 @@ mkdir -p "$PREFIX$PANEL_DIR/vendor"; cp -a "$SRC/vendor/." "$PREFIX$PANEL_DIR/ve
 mkdir -p "$PREFIX$PANEL_DIR/js"; cp -a "$SRC/js/." "$PREFIX$PANEL_DIR/js/"   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
 # A dropped or truncated module is a blank panel with no message (see verify_js_tree). Check the copy
 # we just made, while the operator is here to see it.
-if ! _jsbad="$(verify_js_tree "$PREFIX$PANEL_DIR")"; then
+if ! _jsbad="$(verify_js_tree "$SRC/js" "$PREFIX$PANEL_DIR/js")"; then
   warn "the SPA module tree is INCOMPLETE after copying — the panel will load blank:"
   printf '    %s\n' $_jsbad
   echo "    Re-run the installer from a complete source tree."

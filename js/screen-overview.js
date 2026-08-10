@@ -952,7 +952,7 @@ export function ServiceIssueSheet({ issues }) {
   const list = (issues || []).filter(Boolean);
   if (!list.length) { closeModal(); return null; }
   return html`<${Sheet} noGuard=${true} onClose=${closeModal}
-      title=${list.length === 1 ? list[0].T("{v1} needs attention", { v1: label }) : T("Panel services need attention")}
+      title=${list.length === 1 ? T("{v1} needs attention", { v1: list[0].label }) : T("Panel services need attention")}
       foot=${html`<${Fragment}>
         <button class="btn btn-ghost" onClick=${() => { list.forEach(svcSilence); closeModal(); }}>${T("Silence")}</button>
         <span class="grow"></span>

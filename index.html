@@ -76,6 +76,7 @@
 <link rel="modulepreload" href="js/crypto.js">
 <link rel="modulepreload" href="js/grids.js">
 <link rel="modulepreload" href="js/iface.js">
+<link rel="modulepreload" href="js/i18n.js">
 <link rel="modulepreload" href="js/model.js">
 <link rel="modulepreload" href="js/peer-actions.js">
 <link rel="modulepreload" href="js/peer-ui.js">
@@ -119,44 +120,54 @@
   function nameTheCulprit() {
     var el = document.getElementById("swg-boot-which");
     if (!el || !window.XMLHttpRequest) return;
-    var mx = new XMLHttpRequest();
-    mx.open("GET", "js/manifest.json", true);
-    mx.onload = function () {
-      var names;
-      try { names = Object.keys((JSON.parse(mx.responseText) || {}).modules || {}); } catch (e) { return; }
-      if (!names.length) return;
-      var missing = [], done = 0;
-      for (var i = 0; i < names.length; i++) (function (n) {
-        var r = new XMLHttpRequest();
-        // GET, not HEAD: the panel is a stdlib BaseHTTPRequestHandler and answers HEAD with 501, which
-        // would make every module look missing. These are small files and we are already in the failed
-        // state, so fetching them is fine.
-        r.open("GET", "js/" + n, true);
-        r.onloadend = function () {
-          /* STATUS ONLY — deliberately no hash check here. The panel rewrites import specifiers as it
-             serves a module (it stamps ?v= onto each one), so the bytes the browser receives never match
-             the on-disk digest in the manifest: comparing them reported 21 of 23 files "damaged" when a
-             single one was truncated. Telling an operator to re-copy everything because of a false
-             positive is worse than saying less. Truncation IS caught, by verify_js_tree at install time,
-             which hashes the files on disk where the digests are meaningful. */
-          if (r.status !== 200) missing.push(n);
-          if (++done !== names.length || !missing.length) return;
+    /* The module list comes from this page's own <link rel="modulepreload"> tags — the graph is declared
+       right above, in the file being served, so the list can never be out of date with what the panel
+       ships. It replaced a fetched js/manifest.json of stored hashes, which had to be regenerated on every
+       edit and failed a release build the first time someone forgot. */
+    var links = document.querySelectorAll('link[rel="modulepreload"]'), names = [];
+    for (var i = 0; i < links.length; i++) {
+      var href = links[i].getAttribute("href") || "";
+      if (href) names.push(href.split("?")[0]);
+    }
+    if (!names.length) return;
+    var missing = [], done = 0;
+    for (var j = 0; j < names.length; j++) (function (n) {
+      var r = new XMLHttpRequest();
+      // GET, not HEAD: the panel is a stdlib BaseHTTPRequestHandler and answers HEAD with 501, which would
+      // make every module look missing. Small files, and we are already in the failed state.
+      r.open("GET", n, true);
+      r.onloadend = function () {
+        if (r.status !== 200) missing.push(n);
+        if (++done !== names.length) return;
+        if (missing.length) {
           el.innerHTML = "Of the " + names.length + " files the interface is built from, <b>" +
-            missing.length + "</b> did not load:<br><code>js/" +
-            missing.slice(0, 6).join("</code>, <code>js/") + "</code>" +
+            missing.length + "</b> did not load:<br><code>" +
+            missing.slice(0, 6).join("</code>, <code>") + "</code>" +
             (missing.length > 6 ? " and " + (missing.length - 6) + " more" : "") +
-            "<br>If that list looks complete, the files are present but damaged — either way it is an " +
-            "interrupted or partial update.";
-        };
-        r.send();
-      })(names[i]);
-    };
-    mx.send();
+            "<br>That is an interrupted or partial update.";
+          return;
+        }
+        /* Every file answered 200 — nothing is missing, the interface LOADED and then threw while
+           rendering. "Re-run the update" cannot help, so say what actually happened. */
+        var h = document.getElementById("swg-boot-head");
+        if (h) h.innerHTML = "<b>The panel's interface didn't start.</b>";
+        el.innerHTML = "All " + names.length + " of its files loaded, so nothing is missing — it failed " +
+          "while drawing this screen. Try another screen, or reload; if it keeps happening, the browser " +
+          "console (F12) holds the error, and reporting it with the panel version helps get it fixed.";
+      };
+      r.send();
+    })(names[j]);
   }
   function diagnose() {
     if (shown || window.__swgBooted) return;
     var view = document.getElementById("view");
-    if (!view || view.firstChild) return;          // something rendered after all — stay out of the way
+    if (!view) return;
+    // "Has a child" is NOT "rendered": app.js puts a `.loading` placeholder ("connecting…") here before
+    // Store.init(), so a crash DURING boot — a module that loads fine and then throws while rendering the
+    // first screen — left that placeholder up forever and this guard stayed silent. That is exactly what a
+    // broken node-detail page looked like in 1.7.0-beta: an eternal "connecting…", no diagnostic.
+    // Treat the placeholder as "not rendered yet"; anything else means the SPA is genuinely up.
+    if (view.firstChild && !view.querySelector(".loading")) return;
     shown = true;
     // HTMLScriptElement.supports only EXISTS on browsers new enough to have import maps, so its
     // absence is the signal — no user-agent sniffing, and no false positive on a modern browser.
@@ -169,12 +180,13 @@
         "<b>Safari 16.4+</b>, <b>Firefox 108+</b> or <b>Chrome/Edge 89+</b>. Everything else about your " +
         "install is fine — open the panel in a newer browser.<br><br>" +
         "<i>Your subscription page is unaffected; clients on older devices keep working.</i>"
-      : "<b>The panel's files didn't load.</b><br>" +
+      : "<span id='swg-boot-head'><b>The panel's files didn't load.</b></span><br>" +
         "<span id='swg-boot-which'>The interface is served from ~22 module files; one is missing or " +
         "damaged, which usually means an interrupted update.</span><br><br>" +
         "Re-run the update on the panel host:<br>" +
         "<code>sudo swg-update</code> &nbsp;or&nbsp; <code>cd /root/swg-panel &amp;&amp; sudo ./update.sh</code>" +
         "<br><br><button type='button' id='swg-boot-retry'>Reload</button>";
+    view.innerHTML = "";        // drop the "connecting…" placeholder — it is all that is in here
     view.appendChild(h);
     var b = document.getElementById("swg-boot-retry");
     if (b) b.onclick = function () { location.reload(); };

@@ -667,7 +667,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     [ -d "$SRC/vendor" ] && { run mkdir -p "$PANEL_DIR/vendor"; run cp -a "$SRC/vendor/." "$PANEL_DIR/vendor/"; }
     # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
     [ -d "$SRC/js" ] && { run mkdir -p "$PANEL_DIR/js"; run cp -a "$SRC/js/." "$PANEL_DIR/js/"; }
-    if ! $DRYRUN && ! _jsbad="$(verify_js_tree "$PANEL_DIR")"; then   # a partial copy = a blank panel, silently
+    if ! $DRYRUN && ! _jsbad="$(verify_js_tree "$SRC/js" "$PANEL_DIR/js")"; then   # a partial copy = a blank panel, silently
       DID_FAIL=yes
       warn "the SPA module tree is INCOMPLETE after the update — the panel will load blank:"
       printf '    %s\n' $_jsbad

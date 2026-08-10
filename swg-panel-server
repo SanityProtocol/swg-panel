@@ -935,10 +935,6 @@ def _stamp_imports(data, rel):
 # allow-list would have to stay in lockstep with the six installer copy loops that ship them — this repo has
 # already shipped that bug once (four swg-sub images allow-listed but absent from every copy loop, e5b1033).
 _JS_MODULE_RE = re.compile(r"^/js/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.js$")
-# js/manifest.json rides the same rule: the boot guard in index.html fetches it to name WHICH module is
-# missing when the SPA fails to start (the browser's own error event only ever names the module-graph
-# root, app.js, which is the one file that is fine). It lists filenames and hashes — no secrets.
-_JS_MANIFEST = "/js/manifest.json"
 
 
 def static_rel(path):
@@ -946,7 +942,7 @@ def static_rel(path):
     enforced by _static's realpath check — this only decides what is offered."""
     if path in STATIC:
         return STATIC[path]
-    if ".." not in path and (_JS_MODULE_RE.match(path) or path == _JS_MANIFEST):
+    if ".." not in path and _JS_MODULE_RE.match(path):
         return path.lstrip("/")
     return None
 

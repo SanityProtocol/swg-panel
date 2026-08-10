@@ -998,35 +998,39 @@ v_cforigin_why(){ v_cftoken_why "$1"; }
 # only the compose network's 172.x — and `ip` isn't even in the panel image. The installer runs on the
 # host, so it captures them here and passes them in via .env (SWG_HOST_IPS). Without it the Access & TLS
 # ── the SPA module tree ─────────────────────────────────────────────────────────────────────────────
-# Verify a DEPLOYED js/ against the manifest that shipped with it.
-#   verify_js_tree <panel-dir>        -> prints nothing and returns 0 when the tree is complete
+# Verify a DEPLOYED js/ against the SOURCE it was copied from.
+#   verify_js_tree <src-dir> <dest-dir>     -> prints nothing and returns 0 when the copy is complete
 #
-# The SPA is 22 ES modules plus a locale catalog. If a copy drops or truncates one, nothing anywhere
-# says so: the panel serves the rest happily, and the operator gets a blank page whose only clue is a
-# 404 in a console they will never open (verified — a missing module renders 40 characters of chrome
-# and no #view at all). The manifest makes "the tree that was built" a checkable fact, and the right
-# moment to check it is here, right after the copy, while the operator is still watching the install.
-# Never fatal on its own: the caller decides, because a half-copied SPA is worth shouting about but
-# not worth aborting an update that has already replaced the server binary.
+# The SPA is 22 ES modules plus a locale catalog. If a copy drops or truncates one, nothing anywhere says
+# so: the panel serves the rest happily and the operator gets a blank page whose only clue is a 404 in a
+# console they will never open. So check the copy — right here, while the operator is still watching.
+#
+# Compares the two DIRECTORIES rather than a manifest of stored hashes. A manifest has to be regenerated
+# every time any module changes, and a stale one cries wolf: it once reported six modules "corrupt" that
+# had merely been edited, which is exactly how a check trains people to ignore it. The source tree is the
+# authority we already have on disk, it is never out of date with itself, and comparing to it catches a
+# TRUNCATED file as well as a missing one.
+#
+# Never fatal on its own: the caller decides, because a half-copied SPA is worth shouting about but not
+# worth aborting an update that has already replaced the server binary.
 verify_js_tree(){
-  local dir="$1" man="$1/js/manifest.json"
-  [ -f "$man" ] || return 0                      # older tree with no manifest — nothing to check against
+  local src="$1" dst="$2"
+  [ -d "$src" ] && [ -d "$dst" ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
-  python3 - "$dir/js" "$man" <<'PYJS'
-import hashlib, json, os, sys
-root, man = sys.argv[1], sys.argv[2]
-try:
-    want = (json.load(open(man)) or {}).get("modules") or {}
-except Exception:
-    sys.exit(0)                                   # unreadable manifest is not evidence of a bad copy
+  python3 - "$src" "$dst" <<'PYJS'
+import filecmp, os, sys
+src, dst = sys.argv[1], sys.argv[2]
 bad = []
-for rel, digest in sorted(want.items()):
-    p = os.path.join(root, rel)
-    if not os.path.exists(p):
-        bad.append("missing " + rel); continue
-    got = hashlib.sha256(open(p, "rb").read()).hexdigest()[:16]
-    if got != digest:
-        bad.append("corrupt " + rel)
+for root, _dirs, files in os.walk(src):
+    for fn in sorted(files):
+        if not fn.endswith(".js"):
+            continue
+        rel = os.path.relpath(os.path.join(root, fn), src)
+        a, b = os.path.join(src, rel), os.path.join(dst, rel)
+        if not os.path.exists(b):
+            bad.append("missing " + rel)
+        elif not filecmp.cmp(a, b, shallow=False):   # shallow=False: compare CONTENT, not size+mtime
+            bad.append("differs " + rel)
 for b in bad:
     print(b)
 sys.exit(1 if bad else 0)

@@ -3,7 +3,7 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-## [1.7.0-beta] — 2026-08-10
+## [1.7.1-beta] — 2026-08-10
 
 ### Added
 - **The panel speaks Russian.** Every screen, every message, every confirmation — about 2,400 strings,
@@ -59,6 +59,11 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Long names no longer break a row.** A peer title that didn't fit is cut with an ellipsis instead of
   pushing its warning icon onto a line of its own, and the widest editor's buttons fit on one row.
 - Subscription pages no longer log an error for a peer that simply has no stored config yet.
+- **A panel that fails while drawing a screen says so too.** The message above covers files that never
+  arrived; a panel whose files are all present but which throws while drawing a screen used to leave
+  "connecting…" on screen forever with nothing else. It now says which case it is: the files that didn't
+  load, by name — or that all of them loaded and the interface failed while drawing, with where to find
+  the error.
 
 ## [1.6.4-beta] — 2026-08-08
 

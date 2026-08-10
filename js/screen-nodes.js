@@ -462,7 +462,7 @@ export function NodeDetail({ node: rawName }) {
               <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${wcfg.egress_mode === "forward" && wcfg.egress_node
                 ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(wcfg.egress_node)} title=${T("Exits via {v1}", { v1: Store.nodeName(wcfg.egress_node) + (wcfg.egress_ip ? " (" + wcfg.egress_ip + ")" : "") })}><${Ic} i="server"/>→ ${Store.nodeName(wcfg.egress_node)}</span>`
                 : wcfg.egress_mode === "smart"
-                ? html`<span class="egb egb-smart" title=${(wcfg.routing || []).T("{v1} destination rule(s)", { v1: filter(r => r.action === "exit").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
+                ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (wcfg.routing || []).filter(r => r.action === "exit").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                 : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${w.iface} orphans=${0} orphHref=${href}
@@ -510,7 +510,7 @@ export function NodeDetail({ node: rawName }) {
                   <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${m.egress_mode === "forward" && m.egress_node
                     ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(m.egress_node)} title=${T("Exits via {v1}", { v1: Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "") })}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>`
                     : m.egress_mode === "smart"
-                    ? html`<span class="egb egb-smart" title=${(m.routing || []).T("{v1} destination rule(s)", { v1: filter(r => r.action === "exit").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
+                    ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (m.routing || []).filter(r => r.action === "exit").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                     : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
                   <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                     ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph} orphHref=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}

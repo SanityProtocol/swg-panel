@@ -37,20 +37,34 @@ COPY swg-passwd /usr/local/bin/swg-passwd
 COPY vendor/ ./vendor/
 # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
 COPY js/ ./js/
-# Verify the tree we just copied against the manifest that shipped with it. Here — unlike the bare-metal
-# installers, which warn — a mismatch FAILS THE BUILD: an image is built once and run everywhere, so a
-# module lost to a bad .dockerignore or a truncated context would ship a blank panel to every container.
-RUN python3 - ./js ./js/manifest.json <<'PYJS'
-import hashlib, json, os, sys
-root, man = sys.argv[1], sys.argv[2]
-want = (json.load(open(man)) or {}).get("modules") or {}
-bad = [("missing " + r) if not os.path.exists(os.path.join(root, r))
-       else ("corrupt " + r) if hashlib.sha256(open(os.path.join(root, r), "rb").read()).hexdigest()[:16] != d
-       else "" for r, d in sorted(want.items())]
-bad = [b for b in bad if b]
-print("SPA modules: %d/%d present and intact" % (len(want) - len(bad), len(want)))
-if bad:
-    sys.exit("INCOMPLETE SPA in the image — " + "; ".join(bad))
+# Verify the SPA the image will serve. There is no source tree to compare against in here — the build
+# context is gone by the time this runs — so instead check the property that actually matters: every
+# relative import in every module resolves to a file that exists. That is self-describing (the code IS the
+# list), it can never go stale, and it catches the failure this exists for: a module lost to .dockerignore
+# or a truncated context. A mismatch FAILS THE BUILD, because an image is built once and run everywhere,
+# so an incomplete one would ship a blank panel to every container.
+RUN python3 - ./js ./app.js <<'PYJS'
+import os, re, sys
+jsdir, entry = sys.argv[1], sys.argv[2]
+files = [entry] + [os.path.join(jsdir, f) for f in sorted(os.listdir(jsdir)) if f.endswith(".js")]
+subdirs = [os.path.join(r, f) for r, _d, fs in os.walk(jsdir) for f in fs if f.endswith(".js")]
+files = sorted(set(files) | set(subdirs))
+spec = re.compile(r"""(?:import|export)[^;'"]*?from\s*["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']""")
+missing, edges = [], 0
+for f in files:
+    src = open(f, encoding="utf-8").read()
+    for m in spec.finditer(src):
+        target = m.group(1) or m.group(2)
+        if not target.startswith("."):          # preact / htm — resolved by the importmap, not on disk
+            continue
+        edges += 1
+        p = os.path.normpath(os.path.join(os.path.dirname(f), target))
+        if not os.path.exists(p):
+            missing.append("%s -> %s" % (os.path.basename(f), target))
+print("SPA: %d modules, %d local imports, all resolved" % (len(files), edges) if not missing
+      else "SPA: %d local imports checked" % edges)
+if missing:
+    sys.exit("INCOMPLETE SPA in the image — unresolved: " + "; ".join(missing[:8]))
 PYJS
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh ./swg-panel-server ./swg-sub /usr/local/bin/swg-passwd
