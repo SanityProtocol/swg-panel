@@ -3301,8 +3301,8 @@ def _ghost_refs(roster):
     for pid, p in (roster.get("peers") or {}).items():
         for t in (p.get("targets") or []):
             n, i = t.get("node"), t.get("iface")
-            if _is_wdtt_target(t):   # WDTT owns its own interface (snap.wdtt, not snap.interfaces) + has its own
-                continue             # lifecycle + vault restore — never a WG ghost/missing interface
+            if _is_wdtt_target(t) or _is_csqtt_target(t):   # WDTT/csqtt own their own interface (snap.wdtt/.csqtt,
+                continue                                    # not snap.interfaces) — never a WG ghost/missing interface
             if n and i:
                 refs.setdefault(n, {}).setdefault(i, []).append(pid)
     return refs
@@ -3577,6 +3577,11 @@ def _fleet_user_networks(deps, nodes, skip_node=None, skip_iface=None):
                 continue
             with contextlib.suppress(Exception):
                 out.append((nid, ifn, ipaddress.ip_network((w or {}).get("wg_addr") or "", strict=False)))
+        for ifn, c in (node.get("csqtt") or {}).items():   # csqtt TUN subnets also participate in overlap checks
+            if nid == skip_node and ifn == skip_iface:
+                continue
+            with contextlib.suppress(Exception):
+                out.append((nid, ifn, ipaddress.ip_network((c or {}).get("tun_addr") or "", strict=False)))
     return out
 
 
@@ -3686,6 +3691,10 @@ def _node_ports(deps, nodes, nid):
         add(tail(w.get("listen")), ifn + " (WDTT)"); add(w.get("wg_port"), ifn + " (WDTT internal WG)")
     for w in (snap.get("wdtt") or []):
         add(tail(w.get("listen")), (w.get("iface") or "") + " (WDTT)"); add(w.get("wg_port"), (w.get("iface") or "") + " (WDTT internal WG)")
+    for ifn, c in (node.get("csqtt") or {}).items():   # csqtt binds ONE DTLS listen port (raw TUN, no internal WG port)
+        add(tail(c.get("listen")), ifn + " (csqtt)")
+    for c in (snap.get("csqtt") or []):
+        add(tail(c.get("listen")), (c.get("iface") or "") + " (csqtt)")
     for lr in (node.get("links") or {}).values():
         add(lr.get("listen_port"), "a mesh link")
     return out
@@ -6705,6 +6714,13 @@ def snap_aggregates(snap, node_cfg):
         devs = (w.get("passwords") or {})
         on = sum(1 for e in devs.values() if (e or {}).get("online"))
         a["pon"] += on; a["ptot"] += len(devs)
+    # csqtt instances also own their TUN (raw datapath) → fold their throughput + online counts in too, same as WDTT.
+    for c in ((snap or {}).get("csqtt") or []):
+        if not c:
+            continue
+        a["rx"] += int(c.get("rx_speed", 0) or 0); a["tx"] += int(c.get("tx_speed", 0) or 0)
+        devs = (c.get("passwords") or {})
+        a["pon"] += sum(1 for e in devs.values() if (e or {}).get("online")); a["ptot"] += len(devs)
     return a
 
 
