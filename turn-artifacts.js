@@ -565,5 +565,21 @@
       hint: "Scan the QR or open the wdtt:// link in the WDTT app (Android) or PWDTT (desktop).", text: uri };
   }
 
-  root.SWGTurn = { artifact: artifact, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, stripVkUrl: stripVkUrl };
+  // ── csqtt (amurcanov/csqtt) client link — the CSQTT Android app imports `csqtt://connect?v=2&host=&peer=&password=&hashes=`.
+  // Format is authoritative from the app's own CsqttLinkTest.kt: host = server IP (IPv6 gets bracketed by the app on
+  // read, so we just URL-encode it), peer = the DTLS listen port, password URL-encoded, hashes = VK call hashes joined
+  // by '+' (a literal '+' inside a hash is %2B-escaped), max 6, omitted when there are none. `c` = {host,port,password,hashes[]}.
+  function csqttArtifact(c) {
+    c = c || {};
+    var hs = (c.hashes || []).map(function (s) { return String(s || "").trim(); }).filter(Boolean).slice(0, 6);
+    var vkMissing = hs.length === 0;   // VK hashes are the TURN credential; a link without them only works for a self-test
+    var qp = ["v=2", "host=" + encodeURIComponent(String(c.host || "")),
+              "peer=" + (parseInt(c.port, 10) || ""), "password=" + encodeURIComponent(String(c.password || ""))];
+    if (hs.length) qp.push("hashes=" + hs.map(function (h) { return h.replace(/\+/g, "%2B"); }).join("+"));
+    var uri = "csqtt://connect?" + qp.join("&");
+    return { fork: "csqtt", app: "CSQTT", label: "CSQTT (Android · csqtt://connect)", ext: "txt", uri: true, qr: true,
+      vkMissing: vkMissing, hint: "Scan the QR or open the csqtt:// link in the CSQTT app.", text: uri };
+  }
+
+  root.SWGTurn = { artifact: artifact, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
 })(typeof window !== "undefined" ? window : this);
