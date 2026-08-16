@@ -503,6 +503,14 @@ def _wdtt_versions(fork):                     # [(ver, tag)] newest first, "" fo
     return WDTT_BUILDS.get(fork) or []
 def _wdtt_current_version(fork):
     vs = _wdtt_versions(fork); return vs[0][0] if vs else ""
+
+# csqtt is built + hosted like the WDTT forks (one binary, no fork variance). CSQTT_BUILDS is the source of truth
+# [(author_version, our_release_tag)], newest first; empty until the A1 binary is published (A3b — the publish is
+# outward-facing + held, mirroring the WDTT publish policy). Empty → no `ver` injected → the node uses whatever it
+# has (the pre-placed A1 binary), so the reply path works before any release exists.
+CSQTT_BUILDS = []   # e.g. [("2.0.0", "csqtt-2.0.0")]
+def _csqtt_current_version():
+    return CSQTT_BUILDS[0][0] if CSQTT_BUILDS else ""
 def _wdtt_tag_for(fork, ver):                 # our release tag for a specific author version ("" / "wdtt" -> current)
     vs = _wdtt_versions(fork)
     if not vs:
@@ -1591,6 +1599,17 @@ def _is_wdtt_target(t):
     keyed off this rather than re-deriving."""
     return (t.get("type") == "wdtt") or bool(_WDTT_IFACE_RE.match(str(t.get("iface") or "")))
 
+# ── csqtt (amurcanov/csqtt — raw-TUN Rust rewrite): a self-contained kind like WDTT, driven by the same
+# node-store-config + roster-derived-password model. Its own reply channel / endpoints (parallel, not threaded
+# through the WDTT path → zero regression). ──────────────────────────────────────────────────────────────────
+_CSQTT_IFACE_RE = re.compile(r"^csqtt[0-9]{1,4}$")   # csqtt instance iface (node writes it as a unit/path component)
+def gen_csqtt_password():
+    """A csqtt per-peer access password (panel-owned like the PSK; csqtt mints the device keypair keyed on it)."""
+    return "".join(secrets.choice(_WDTT_PW_CHARS) for _ in range(16))
+def _is_csqtt_target(t):
+    """Does this roster target land on a csqtt instance? authoritative `type`, iface-name regex as fallback."""
+    return (t.get("type") == "csqtt") or bool(_CSQTT_IFACE_RE.match(str(t.get("iface") or "")))
+
 def _wdtt_net(cidr):
     """A WDTT instance's wg_addr (e.g. 10.66.73.1/24) → its network (10.66.73.0/24) — the source subnet that the
     datapath rules (smart routing / block DROP) match with `ip saddr <net>`. "" if the CIDR is unparseable."""
@@ -1739,7 +1758,7 @@ def peer_set(roster, pid, fields, now):
     # wdtt_password / vk_hash: a WDTT peer has no browser keypair — its panel-owned `wdtt_password` (custody like
     # the PSK) IS its credential, and `vk_hash` overrides the user's VK link for its TURN cred. Preserved here so
     # block/expire/update-target never drop them.
-    for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "vk_hash"):
+    for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
@@ -3086,6 +3105,8 @@ def desired_for_node(roster, node_id):
                 continue
             if _is_wdtt_target(t):
                 continue   # WDTT peers are keyless — never emit a WG desired-peer for a wdtt* iface (desired_wdtt_for_node owns them)
+            if _is_csqtt_target(t):
+                continue   # csqtt peers are keyless too (desired_csqtt_for_node owns them)
             iface = t.get("iface") or ""
             if not iface:
                 continue
@@ -3168,6 +3189,50 @@ def _wdtt_reply(roster, nodes, node_id):
             merged["key_blob"] = inst["key_blob"]         # escrowed ciphertext → a wiped node HOLDS (awaits restore) instead of minting a fresh key
         if restore.get(iface) and not fresh:
             merged["sealed_identity"] = restore[iface]    # operator-resealed identity → restore the ORIGINAL server key (one-shot, cleared on ack)
+        out[iface] = merged
+    return out
+
+
+def desired_csqtt_for_node(roster, nodes, node_id):
+    """The csqtt PASSWORD set the roster assigns to each csqtt* instance on one node (analogue of
+    desired_wdtt_for_node). A BLOCKED/EXPIRED peer is KEPT (is_deactivated/expires_at set) so the server can deny
+    cleanly and unblock is instant. Returns { iface: { password: {expires_at, vk_hash, name, is_deactivated} } }."""
+    insts = ((nodes.get(node_id) or {}).get("csqtt")) or {}
+    if not insts:
+        return {}
+    users = roster.get("users") or {}
+    out = {}
+    for p in (roster.get("peers") or {}).values():
+        if not isinstance(p, dict) or not p.get("csqtt_password"):
+            continue
+        u = users.get(p.get("user_id")) or {}
+        deact = bool(p.get("disabled") or u.get("disabled"))
+        exp = int(p.get("expiry") or 0) or int(u.get("expiry") or 0)
+        vkh = (p.get("vk_hash") or "").strip() or _wdtt_vk_hash(u.get("vk_link") or "")
+        name = (p.get("title") or u.get("name") or "").strip()
+        for t in p.get("targets", []):
+            if t.get("node") != node_id or t.get("iface") not in insts:
+                continue
+            out.setdefault(t["iface"], {})[p["csqtt_password"]] = {
+                "expires_at": exp, "vk_hash": vkh, "name": name, "is_deactivated": deact}
+    return out
+
+
+def _csqtt_reply(roster, nodes, node_id):
+    """reply["csqtt"] for one node: each instance's config FROM THE NODE STORE + its password set DERIVED FROM
+    THE ROSTER (passwords are roster-owned). The owner --password/--web-pass are node-owned → never shipped."""
+    insts = ((nodes.get(node_id) or {}).get("csqtt")) or {}
+    if not insts:
+        return {}
+    derived = desired_csqtt_for_node(roster, nodes, node_id)
+    out = {}
+    for iface, inst in insts.items():
+        merged = dict(inst or {}); merged["iface"] = iface
+        merged.pop("password", None); merged.pop("web_pass", None)   # node-owned secrets
+        merged["passwords"] = derived.get(iface) or {}               # authoritative: roster-derived
+        _cver = _turn_hold_get(node_id, "csqtt") or _csqtt_current_version()
+        if _cver:
+            merged["ver"] = _cver
         out[iface] = merged
     return out
 
@@ -4228,6 +4293,12 @@ TURN_SERVERS = {
                      "settings": [], "client_settings": _WDTT_CLIENT_CS},
     "xxcipherx":    {"label": "XXcipherX",  "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # XXcipherX fork: video-masquerade obfuscation + no-captcha; audio mode is amurcanov-compatible
+                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
+    # ── csqtt (amurcanov/csqtt) — SELF-CONTAINED like the WDTT family but a RAW-IP TUN datapath (no WireGuard),
+    # io_uring, Rust. kind:"csqtt" makes the SPA branch (A6); HIDDEN until that lands so it stays out of the fork
+    # picker meanwhile (the reply channel + endpoints work regardless of catalog visibility). We build+host the
+    # binary ourselves (CSQTT_BUILDS). PolyForm-Noncommercial-1.0.0 — non-commercial use only.
+    "csqtt":        {"label": "csqtt",      "owner": "amurcanov/csqtt",                 "kind": "csqtt", "hidden": True, "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#F97316", "light": "#C2410C"}, "clients": [], "reload": "sighup",
                      "settings": [], "client_settings": _WDTT_CLIENT_CS},
 }
 # client_settings = the app-DEDICATED knobs (per SETTINGS SPLIT): admin-chosen VALUES fed into the client
@@ -11024,6 +11095,124 @@ def api(method, path, qs, body, deps):
             ev_append(roster_path, "node", nid, "Removed WDTT instance", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
 
+    # ── csqtt endpoints (parallel to the WDTT ones) ──────────────────────────────────────────────────────────
+    if method == "POST" and path == "/api/csqtt/set":
+        # Declarative: create/update a csqtt instance's DESIRED config on a node → node["csqtt"][iface], shipped
+        # every sync; the node reconciles (install / desired.json+SIGHUP / reconfigure). No ack — it IS the state.
+        nid = body.get("node") or ""
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        iface = (body.get("iface") or "").strip()
+        if not _CSQTT_IFACE_RE.match(iface):
+            return 400, {"ok": False, "error": "invalid iface (csqtt0..csqtt9999)", "code": "bad_request"}
+        inst = dict((nodes[nid].get("csqtt") or {}).get(iface) or {}); inst["iface"] = iface
+        for k in ("listen", "tun_addr", "params", "title"):
+            if k in body:
+                v = (body.get(k) or "").strip()
+                if not no_ctrl(v):
+                    return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
+                inst[k] = v
+        if inst.get("tun_addr") and not (_WDTT_CIDR_RE.match(inst["tun_addr"]) and inst["tun_addr"].endswith("/24")):
+            return 400, {"ok": False, "error": "tun_addr must be an IPv4 /24 CIDR, e.g. 10.66.67.1/24", "code": "bad_request"}
+        if "max_passwords" in body:
+            try: inst["max_passwords"] = int(body.get("max_passwords") or 0) or 500
+            except (TypeError, ValueError): return 400, {"ok": False, "error": "max_passwords must be an integer", "code": "bad_request"}
+        # the DTLS listen port must not collide with any other interface / proxy / WDTT / csqtt / mesh on the node
+        _cur = (nodes[nid].get("csqtt") or {}).get(iface) or {}
+        _own = []
+        if ":" in str(_cur.get("listen") or ""):
+            _own.append(str(_cur["listen"]).rsplit(":", 1)[1])
+        _wl = (inst.get("listen") or "").strip()
+        _dtls = _wl.rsplit(":", 1)[1] if (":" in _wl) else None
+        if _dtls:
+            _lc = _port_conflict(deps, nodes, nid, _dtls, own=_own)
+            if _lc:
+                return 400, {"ok": False, **perr("listen port {v1} is already used by {v2} on this node — pick another port", v1=_dtls, v2=_lc), "code": "bad_request"}
+        if "stopped" in body:
+            inst["stopped"] = bool(body.get("stopped"))
+        if body.get("restart"):
+            inst["restart"] = int(time.time())
+        nodes[nid].setdefault("csqtt", {})[iface] = inst
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Set csqtt instance", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
+    if method == "POST" and path == "/api/csqtt/delete":
+        nid = body.get("node") or ""; iface = (body.get("iface") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        c = nodes[nid].get("csqtt") or {}
+        if iface in c:
+            c.pop(iface, None)
+            if c: nodes[nid]["csqtt"] = c
+            else: nodes[nid].pop("csqtt", None)
+            nodes[nid].setdefault("csqtt_delete", {})[iface] = {"at": int(time.time())}   # EXPLICIT removal (absence is not an instruction)
+            nodes_save(deps["nodes_path"], nodes)
+            roster = roster_load(roster_path); changed = False
+            for pid in list(roster["peers"].keys()):
+                p = roster["peers"][pid]
+                kept = [t for t in p.get("targets", []) if not (t.get("node") == nid and t.get("iface") == iface)]
+                if len(kept) != len(p.get("targets", [])):
+                    changed = True
+                    if kept:
+                        p["targets"] = kept; p["modified_at"] = int(time.time())
+                    else:
+                        del roster["peers"][pid]
+            if changed:
+                roster_save(roster_path, roster)
+            ev_append(roster_path, "node", nid, "Removed csqtt instance", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
+    if method == "POST" and path == "/api/csqtt-peer/create":
+        # A keyless csqtt peer: the panel mints ONE per-peer access password (its identity — csqtt mints the device
+        # keypair keyed on it). Targets = one or more csqtt* instances (multi-server failover). Shipped by _csqtt_reply.
+        raw = body.get("targets")
+        if not isinstance(raw, list) or not raw:
+            raw = [{"node": (body.get("node") or "").strip(), "iface": (body.get("iface") or "").strip()}]
+        tgts = []
+        for t in raw:
+            tn = (t.get("node") or "").strip() if isinstance(t, dict) else ""
+            ti = (t.get("iface") or "").strip() if isinstance(t, dict) else ""
+            if tn not in nodes:
+                return 400, {"ok": False, "error": "unknown node", "code": "bad_request"}
+            if ti not in ((nodes[tn].get("csqtt")) or {}):
+                return 400, {"ok": False, **perr("no csqtt instance '{v1}' on node {v2}", v1=ti, v2=tn), "code": "bad_request"}
+            tgts.append({"node": tn, "iface": ti, "ip": "", "type": "csqtt"})
+        if not tgts:
+            return 400, {"ok": False, "error": "at least one csqtt target is required", "code": "bad_request"}
+        title = strip_ctrl(body.get("title", ""))
+        vk_hash = _wdtt_vk_hash(body.get("vk_hash") or body.get("vk_link") or "")
+        if not no_ctrl(vk_hash) or not no_ctrl(title):
+            return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
+        roster = roster_load(roster_path)
+        uid = body.get("user_id")
+        if uid and uid not in roster["users"]:
+            return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
+        pid = gen_id()
+        while pid in roster["peers"]:
+            pid = gen_id()
+        fields = {"user_id": uid or None, "title": title, "pubkey": "", "psk": "",
+                  "targets": tgts, "csqtt_password": gen_csqtt_password()}
+        if vk_hash:
+            fields["vk_hash"] = vk_hash
+        p = peer_set(roster, pid, fields, now())
+        roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Created csqtt peer", peer_label(roster, p), ", ".join(t["node"] + "/" + t["iface"] for t in tgts))
+        return 200, {"ok": True, "data": p}
+
+    if method == "POST" and path == "/api/csqtt-peer/rotate":
+        # Rotate a csqtt peer's access password → the old password drops from the desired set on the next sync,
+        # instantly revoking the old link. The device/IP is re-minted by the server on the next connect.
+        pid = (body.get("peer_id") or body.get("id") or "").strip()
+        roster = roster_load(roster_path)
+        p = (roster.get("peers") or {}).get(pid)
+        if not p or not p.get("csqtt_password"):
+            return 404, {"ok": False, "error": "unknown csqtt peer", "code": "not_found"}
+        p["csqtt_password"] = gen_csqtt_password(); p["modified_at"] = int(time.time())
+        roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Rotated csqtt peer password", peer_label(roster, p))
+        return 200, {"ok": True, "data": p}
+
     if method == "POST" and path == "/api/wdtt/restore":
         # The operator unlocked the vault and RE-SEALED the escrowed WDTT identity (owner pw + wg-keys.dat) to the
         # node's transport key. Stash it as a one-shot for _wdtt_reply → the node restores the ORIGINAL server key
@@ -12926,6 +13115,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "turn": node.get("turn") or {}, "turn_onboard": node.get("turn_onboard") or [],
                                 "wdtt": _wdtt_reply(roster, nodes, nid),   # WDTT instances (node-store config) + roster-derived password set (declarative; node reconciles, no ack)
                                 "wdtt_remove": sorted((nodes.get(nid) or {}).get("wdtt_delete") or {}),   # EXPLICIT removals — the node never deletes an instance merely missing from `wdtt`
+                                "csqtt": _csqtt_reply(roster, nodes, nid),   # csqtt instances (raw-TUN) — parallel to wdtt; declarative, node reconciles
+                                "csqtt_remove": sorted((nodes.get(nid) or {}).get("csqtt_delete") or {}),   # EXPLICIT removals only
                                 "iface_key": node.get("iface_key") or {},   # per-iface {restore|rebaseline} keypair requests
                                 "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or []},   # Phase 2: policy-route forwards + exit SNAT
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
