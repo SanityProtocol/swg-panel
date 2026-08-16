@@ -4318,6 +4318,16 @@ _CLIENT_SOURCES = {
     "mysorez":     [{"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/models/Configs.kt"},
                     {"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/data/AppPreferences.kt"}],
     "sidecar":     [{"owner": "Moroka8", "repo": "vk-turn-proxy", "branch": "main", "path": "pkg/clientcore/main.go"}],
+    # WDTT-family CLIENT apps — previously watched by NOTHING (which is how qWDTT's Raw mode + csqtt reached us by
+    # word of mouth instead of a drift alert). Commit-drift watch only: they share the placeholder _WDTT_CLIENT_CS,
+    # so there is no per-field diff yet (no _CLIENT_FIELD_MAP entry) — a change to the app's SettingsStore raises a
+    # "changed upstream" flag so the schema can be revisited. amurcanov's wdttapp is deliberately absent (frozen /
+    # upstream discontinued 2026-08-04; superseded by csqtt).
+    "qwdtt":       [{"owner": "SpaceNeuroX", "repo": "proxy-turn-vk-android", "branch": "master", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"}],
+    "wdttplus":    [{"owner": "Ivan4537", "repo": "WDTT-Plus", "branch": "main", "path": "app/src/main/java/com/wdtt/plus/SettingsStore.kt"}],
+    "xxcipher":    [{"owner": "XXcipherX", "repo": "proxy-turn-vk-android", "branch": "main-new", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"}],
+    "pwdtt":       [{"owner": "luminescq", "repo": "PWDTT", "branch": "main", "path": "core/profiles.go"}],
+    "qwdttleg":    [{"owner": "lebrit", "repo": "qwdtt-legacy-android", "branch": "main", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"}],
 }
 def _client_sources(client_id):
     return [dict(s) for s in (_CLIENT_SOURCES.get(client_id) or [])]
