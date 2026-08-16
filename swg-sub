@@ -407,6 +407,24 @@ def read_data(state, token):
                     "primary": (n_t > 1 and i == 0),
                 })
                 continue
+            if (t.get("type") or "") == "csqtt":
+                # csqtt peer: keyless raw-TUN turn server. Its client link (csqtt://connect?v=2) carries only the
+                # panel-owned access password + the node's public host + the instance's UDP/DTLS port; the VK hashes
+                # (peer.vk_hash + the user's VK call links) are the TURN credential. No WG meta / no `sec`.
+                node_cfg = nodes.get(t.get("node")) or {}
+                inst = ((node_cfg.get("csqtt")) or {}).get(t.get("iface")) or {}
+                port = ((inst.get("listen") or "").rsplit(":", 1)[-1]) or "46000"
+                tgts.append({
+                    "node": t.get("node"), "iface": t.get("iface"),
+                    "node_name": node_cfg.get("name") or t.get("node"),
+                    "type": "csqtt",
+                    "csqtt": {"password": p.get("csqtt_password") or "",
+                              "endpoint_host": node_cfg.get("endpoint_host") or (describe.get(t.get("node")) or {}).get("pub_host") or "",
+                              "port": port,
+                              "vk_hash": (p.get("vk_hash") or "").strip()},
+                    "primary": (n_t > 1 and i == 0),
+                })
+                continue
             nd = describe.get(t.get("node")) or {}
             meta = (nd.get("ifaces") or {}).get(t.get("iface")) or {}
             awg = meta.get("awg_params") or {}

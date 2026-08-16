@@ -1206,7 +1206,7 @@
     "samosvalishe": { dark: "#E0A85F", light: "#C07A1E" }, "Moroka8": { dark: "#E07A9A", light: "#C24468" },
     "kiper292": { dark: "#6FD9A8", light: "#12A46B" }, "anton48": { dark: "#D9CF5F", light: "#8E8420" },
     "WDTT": { dark: "#A78BFA", light: "#7C3AED" } };   // WDTT (amurcanov) — a turn-family server; violet, kin to the Turn group accent
-  var IFACE_COLORS = { wg: { dark: "#3FD89A", light: "#0E9E63" }, awg: { dark: "#1FC8D6", light: "#0E9BB0" }, wdtt: { dark: "#81B512", light: "#5EAF0E" } };
+  var IFACE_COLORS = { wg: { dark: "#3FD89A", light: "#0E9E63" }, awg: { dark: "#1FC8D6", light: "#0E9BB0" }, wdtt: { dark: "#81B512", light: "#5EAF0E" }, csqtt: { dark: "#F97316", light: "#E5620C" } };
   var THEME = { color: "", light: "", forkOv: {}, ifaceOv: {}, nodeOv: {} };   // set from the served subscription data
   function isLight() {
     var d = document.documentElement.getAttribute("data-theme");   // manual override wins; else the OS preference
@@ -1226,7 +1226,7 @@
     return light ? defLight : defDark;
   }
   function forkColor(fork) { var s = turnServer(fork), d = (s && s.color) || FORK_COLORS_FALLBACK[fork] || { dark: "#8FA8C0", light: "#5E7085" }; return pickThemed(THEME.forkOv[fork], d.dark, d.light); }
-  function ifaceColor(type) { var k = (type || "").toLowerCase(); if (k !== "awg" && k !== "wdtt") k = "wg"; return pickThemed(THEME.ifaceOv[k], IFACE_COLORS[k].dark, IFACE_COLORS[k].light); }
+  function ifaceColor(type) { var k = (type || "").toLowerCase(); if (k !== "awg" && k !== "wdtt" && k !== "csqtt") k = "wg"; return pickThemed(THEME.ifaceOv[k], IFACE_COLORS[k].dark, IFACE_COLORS[k].light); }
   function nodeColor(nodeId, fallback) { var c = THEME.nodeOv[nodeId]; return (c && (c.dark || c.light)) ? pickThemed(c, fallback, fallback) : fallback; }   // server name in its panel colour
   function modeColor(m) { return m === "turn" ? "#7C5CFF" : ifaceColor(m); }   // Turn = the panel's turn-proxy accent (violet)
   function applyFavicon(accent, light) {
@@ -1390,6 +1390,7 @@
     var port = (mode === "turn" && tp)
       ? ((String(tp.listen || "").split(":").pop()) || (String(tp.service || "").match(/(\d+)\D*$/) || [])[1] || "")   // turn-proxy listen port
       : (tgt.type === "wdtt" && tgt.wdtt) ? (tgt.wdtt.dtls_port || "")                                                  // WDTT DTLS port
+      : (tgt.type === "csqtt" && tgt.csqtt) ? (tgt.csqtt.port || "")                                                    // csqtt UDP/DTLS port
       : (String(tgt.endpoint || "").split(":").pop() || "");                                                            // iface listen port (from Endpoint)
     var ipLast = (String(tgt.ip || "").split("/")[0].split(".").pop()) || "";   // last octet of the peer's tunnel IP
     var s = node + "_" + port + "_" + ipLast;
@@ -1586,7 +1587,41 @@
     ctrl.redraw = draw;
 
     if (mode === "turn") {
-      if (it.wdtt) {
+      if (it.csqtt) {
+        // A csqtt peer, rendered as a cell IN the Turn group (csqtt is a raw-TUN VK-turn-family server). Keyless:
+        // the panel mints the access password, csqtt mints the client address on connect, so the csqtt://connect
+        // link carries only the password + node host + UDP port; the VK hashes (peer.vk_hash + the user's VK call
+        // links) are the TURN credential. One app (CSQTT), which scans the QR.
+        var cd = it.csqtt, cfc = ifaceColor("csqtt");
+        var cstrip = function (s) { s = String(s || "").trim(); if (s.indexOf("/") >= 0) s = s.slice(s.lastIndexOf("/") + 1); if (s.indexOf("?") >= 0) s = s.slice(0, s.indexOf("?")); return s.trim(); };
+        var chashes = []; if (cd.vk_hash) chashes.push(cstrip(cd.vk_hash));
+        ((_lastData && _lastData.vk_links) || []).forEach(function (l) { var h = cstrip(l); if (h) chashes.push(h); });
+        var cseen = {}; chashes = chashes.filter(function (h) { if (!h || cseen[h]) return false; cseen[h] = 1; return true; }).slice(0, 6);
+        var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password, hashes: chashes });
+        var cga = turnGetApp("csqtt");   // the operator's per-OS default csqtt client (CSQTT) → download / Start
+        var ctag = el("span", "scell-tag");
+        var csrv = el("span", null, "csqtt"); csrv.style.color = cfc; ctag.appendChild(csrv);
+        ctag.appendChild(el("span", "scell-tag-sep", " · ")); var capp = el("span", null, (cga && (cga.productName || cga.app)) || "CSQTT"); capp.style.color = cfc; ctag.appendChild(capp);
+        srvRow.appendChild(ctag);
+        var cBackup = multi && !tgt.primary;                                   // csqtt is its own protocol family → the "csqtt" role chip, in the csqtt type colour
+        var crole = el("span", "scell-role" + (cBackup ? " scell-backup" : ""), (multi ? (tgt.primary ? t("primary") : t("backup")) + " " : "") + "csqtt");
+        if (!cBackup) crole.style.color = cfc;
+        srvRow.appendChild(crole);
+        ctrl.forkId = "csqtt"; ctrl.app = (cga && (cga.productName || cga.app)) || "CSQTT"; ctrl.zoomTail = ctrl.app;
+        if (cart.vkMissing) {                                                  // no VK link yet → the same warning the turn/WDTT cells show
+          var cvkw = el("div", "scell-vk scell-vkwarn");
+          cvkw.appendChild(el("div", "scell-vkwarn-t", t("vkMissingT")));
+          cvkw.appendChild(el("div", "scell-vkwarn-d", t("vkMissing").replace("{app}", t("theApp"))));
+          cell.appendChild(cvkw);
+        }
+        if (cga) { ctrl.dlAppUrl = cga.file; ctrl.dlAppFile = cga.fileName; ctrl.dlAppName = cga.app; ctrl.dlAppPage = cga.page; node.appendChild(getAppRow(cga)); }
+        ctrl.cliApp = false; ctrl.vktgz = false; ctrl.wgTurn = false;         // csqtt client is an app, never a CLI/VKTGZ/wgTurn flow
+        ctrl.payload = cart.text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
+        ctrl.isLink = true; ctrl.hasQR = true; ctrl.cmd = null; ctrl.wrapCfg = true;   // the csqtt app scans a QR (csqtt://connect)
+        ctrl.openUri = cart.text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
+        ctrl.view = "qr";
+        draw();
+      } else if (it.wdtt) {
         // A WDTT peer, rendered as a cell IN the Turn group (WDTT is a VK-TURN-family server). It's keyless: the
         // server owns its WireGuard + mints the client keypair via GETCONF, so the link carries only the WRAP
         // password + VK link + endpoint. Per-OS client: iOS → anton48 VK TURN Proxy (WRAP-A), else → WDTT app / PWDTT.
@@ -1793,6 +1828,10 @@
           if ((((_lastData && _lastData.turn_client_default) || {})[wfk] || {})[subOs()] === "none") return;
           items.push({ tgt: tt, wdtt: tt.wdtt || {} }); return;
         }
+        if (tt.type === "csqtt") {   // csqtt peer → a cell in the Turn group (raw-TUN VK-turn server, one app: CSQTT)
+          if ((((_lastData && _lastData.turn_client_default) || {}).csqtt || {})[subOs()] === "none") return;
+          items.push({ tgt: tt, csqtt: tt.csqtt || {} }); return;
+        }
         var seen = {}, tps = [], isAwg = (tt.type === "awg");
         (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return;
           if (isAwg && turnWgOnly(f)) return;   // a WireGuard-only fork can't front this AmneziaWG interface
@@ -1802,7 +1841,7 @@
         tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp }); });
       });
     } else {
-      orderedTargets(peer.targets).forEach(function (tt) { if (tt.type === "wdtt") return; if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // WDTT belongs to the Turn group only — never the wg/awg lists; primary connection first
+      orderedTargets(peer.targets).forEach(function (tt) { if (tt.type === "wdtt" || tt.type === "csqtt") return; if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // WDTT + csqtt belong to the Turn group only — never the wg/awg lists; primary connection first
     }
     if (!items.length) return null;
     var reason = row.bad ? t("outOfDate") : (!peer.sec ? t("notReady") : null);
@@ -2223,7 +2262,7 @@
       // ≥1 deployment has a proxy forwarding to it (same gate as the admin view).
       var has = { wg: false, awg: false, turn: false };
       liveRows.forEach(function (r) { (r.peer.targets || []).forEach(function (t) {
-        if (t.type === "wdtt") { if (data.turn_enabled) has.turn = true; return; }   // WDTT is a turn-family server → the Turn group (not a WG/AWG deployment)
+        if (t.type === "wdtt" || t.type === "csqtt") { if (data.turn_enabled) has.turn = true; return; }   // WDTT + csqtt are turn-family servers → the Turn group (not a WG/AWG deployment)
         has[t.type === "awg" ? "awg" : "wg"] = true;
         if (data.turn_enabled && (t.turn || []).length) has.turn = true;
       }); });
