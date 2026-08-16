@@ -241,6 +241,9 @@
     // Client (app) knobs — omitted when default/blank so the link stays minimal (empty/default keys are dropped, per uri.md).
     var n = csNum(cs, "n", 0); if (n > 0) o.n = n;                   // parallel TURN streams (-n); omit → app default (10)
     var spc = csNum(cs, "spc", 0); if (spc > 0) o.spc = spc;        // streams per cached credential (-streams-per-cred); omit → default (10)
+    var transport = String((cs || {}).transport || "").trim(); if (transport && transport !== "auto") o.transport = transport;   // -transport tcp|udp to the TURN relay (v2.1); auto → app default (udp)
+    var ftmode = String((cs || {}).mode || "").trim(); if (ftmode && ftmode !== "auto") o.mode = ftmode;   // -mode udp|tcp tunnel transport; auto → app default
+    if (csBool(cs, "bond", false) && o.mode === "tcp") o.bond = true;   // -bond TCP bonding — valid only with mode=tcp
     var dnsMode = String((cs || {}).dns || "").trim(); if (dnsMode && dnsMode !== "auto") o.dns = dnsMode;   // plain|doh (auto = default → omit)
     var dnss = String((cs || {}).dnss || "").trim(); if (dnss) o.dnss = dnss;   // custom DNS servers (-dns-servers)
     if (csBool(cs, "mcap", false)) o.mcap = true;                   // manual VK captcha
