@@ -8871,6 +8871,10 @@ def api(method, path, qs, body, deps):
         d = _sub_dir(deps)
         with contextlib.suppress(Exception):
             import shutil; shutil.rmtree(d, ignore_errors=True)
+        # rmtree also takes serve.json (swg-sub's enable/serve mirror, NOT vault state) with it. Left missing,
+        # swg-sub reads the feature as OFF and every URL 404s until the next panel boot / settings-save re-seeds
+        # it. Re-seed it right here so the reset only invalidates links, not the whole subscription surface.
+        write_sub_serve(deps)
         ev_append(roster_path, "panel", "account", "Reset subscription encryption", "")
         return 200, {"ok": True, "data": {"reset": True}}
 
