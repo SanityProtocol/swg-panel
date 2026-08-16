@@ -15,7 +15,7 @@
  * re-derives the freeze, pagination happens after.
  */
 
-import { isWdttIface, isCsqttIface, tkey } from "./util.js";
+import { isWdttIface, isCsqttIface, isSelfContainedIface, tkey } from "./util.js";
 import { Store, bus } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale } from "./model.js";
 import { go } from "./router.js";
@@ -48,8 +48,8 @@ export const peerStatusFilters = () => PEER_STATUS_KEYS.map(k => [k, k ? statusL
 export function ifaceOptGroups(names) {
   const wdtt = names.filter(isWdttIface);
   const csqtt = names.filter(isCsqttIface);
-  const awg = names.filter(n => !isWdttIface(n) && !isCsqttIface(n) && ifaceIsAwg(n));
-  const wg = names.filter(n => !isWdttIface(n) && !isCsqttIface(n) && !ifaceIsAwg(n));
+  const awg = names.filter(n => !isSelfContainedIface(n) && ifaceIsAwg(n));
+  const wg = names.filter(n => !isSelfContainedIface(n) && !ifaceIsAwg(n));
   const groups = [["*awg", "AmneziaWG", awg], ["*wg", "WireGuard", wg], ["*wdtt", "WDTT", wdtt], ["*csqtt", "csqtt", csqtt]].filter(g => g[2].length);
   if (groups.length < 2) return html`${names.map(i => html`<option value=${i}>${i}</option>`)}`;   // one kind → flat list (an "All <type>" would just duplicate "All interfaces")
   // "All <type>" shortcut per kind (only when that kind has >1 — else it equals the lone iface), then a group per kind.

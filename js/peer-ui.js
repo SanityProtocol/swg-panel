@@ -13,7 +13,7 @@
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPrimaryTarget,
-         useStableOrder, isWdttIface, isCsqttIface } from "./util.js";
+         useStableOrder, isSelfContainedKind, isSelfContainedTarget } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor } from "./model.js";
 import { go } from "./router.js";
@@ -71,7 +71,7 @@ export function openPeerConfigs(peer, opts) {
   (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child ? closeModal : null}
     subject=${{ kind: "peer", id: peer.id }} foot=${html`<${QRPeerFoot} pid=${peer.id}/>`}>
     ${vkUser ? html`<${PeerStatusLine} peer=${peer} pos="bar"/>` : null}
-    <${VaultUnlockPanel} need=${(peer.targets || []).some(t => { const ty = targetType(t); return ty !== "wdtt" && ty !== "csqtt"; })}/>
+    <${VaultUnlockPanel} need=${(peer.targets || []).some(t => !isSelfContainedKind(targetType(t)))}/>
     ${!hideVk && vkUser && targetsWantVk(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${orderedTargets(peer.targets).map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && isPrimaryTarget(peer.targets, t)}/>`)}/>
   <//>`);
@@ -276,7 +276,7 @@ export function userVkLinks(user) {
 // config needs.
 export function targetsWantVk(targets) {
   if (turnEnabled() && (targets || []).some(t => turnProxiesFor(t.node, t.iface).length > 0)) return true;
-  return (targets || []).some(t => t.type === "wdtt" || t.type === "csqtt" || isWdttIface(t.iface) || isCsqttIface(t.iface));
+  return (targets || []).some(isSelfContainedTarget);
 }
 const _VK_CALL_RE = /^https:\/\/(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)\/call\/join\/[\w-]+/i;
 // let the operator paste a VK link with or without the scheme — add https:// when it's missing
@@ -715,11 +715,8 @@ export function csqttArtInput(peer, t) {
   const _pub = (((Store.stats[t.node] || {}).node_ips) || []).find(ip => ip && !/^(0\.|10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(ip)) || "";
   const host = (nrec.endpoint_host || "").trim() || (_lh && _lh !== "0.0.0.0" ? _lh : "") || _pub;   // never 0.0.0.0 — a dead link
   const port = String(rb.listen || "").split(":").pop() || "46000";
-  const strip = s => { s = String(s || "").trim(); if (s.indexOf("/") >= 0) s = s.slice(s.lastIndexOf("/") + 1); if (s.indexOf("?") >= 0) s = s.slice(0, s.indexOf("?")); return s.trim(); };
-  const hashes = [];
-  if (peer.vk_hash) hashes.push(strip(peer.vk_hash));
-  (userVkLinks(user) || []).forEach(l => { const h = strip(l); if (h) hashes.push(h); });
-  return { host, port, password: peer.csqtt_password || "", hashes: [...new Set(hashes.filter(Boolean))].slice(0, 6) };
+  // Raw VK inputs — csqttArtifact strips/dedupes/caps them into the link's `hashes` (one place, shared with the sub page).
+  return { host, port, password: peer.csqtt_password || "", vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) || [] };
 }
 export function csqttClientCfg(inp) {
   const art = (typeof SWGTurn !== "undefined" && SWGTurn.csqttArtifact) ? SWGTurn.csqttArtifact(inp) : null;

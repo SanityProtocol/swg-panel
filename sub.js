@@ -1226,7 +1226,10 @@
     return light ? defLight : defDark;
   }
   function forkColor(fork) { var s = turnServer(fork), d = (s && s.color) || FORK_COLORS_FALLBACK[fork] || { dark: "#8FA8C0", light: "#5E7085" }; return pickThemed(THEME.forkOv[fork], d.dark, d.light); }
-  function ifaceColor(type) { var k = (type || "").toLowerCase(); if (k !== "awg" && k !== "wdtt" && k !== "csqtt") k = "wg"; return pickThemed(THEME.ifaceOv[k], IFACE_COLORS[k].dark, IFACE_COLORS[k].light); }
+  // Self-contained turn-family kinds (own their interface, keyless, address minted on connect) — one place, mirrors
+  // the app's isSelfContainedKind. Every shared gate on the sub page reads this so a new such kind is one edit.
+  function isSelfContained(type) { var k = (type || "").toLowerCase(); return k === "wdtt" || k === "csqtt"; }
+  function ifaceColor(type) { var k = (type || "").toLowerCase(); if (k !== "awg" && !isSelfContained(k)) k = "wg"; return pickThemed(THEME.ifaceOv[k], IFACE_COLORS[k].dark, IFACE_COLORS[k].light); }
   function nodeColor(nodeId, fallback) { var c = THEME.nodeOv[nodeId]; return (c && (c.dark || c.light)) ? pickThemed(c, fallback, fallback) : fallback; }   // server name in its panel colour
   function modeColor(m) { return m === "turn" ? "#7C5CFF" : ifaceColor(m); }   // Turn = the panel's turn-proxy accent (violet)
   function applyFavicon(accent, light) {
@@ -1593,11 +1596,9 @@
         // link carries only the password + node host + UDP port; the VK hashes (peer.vk_hash + the user's VK call
         // links) are the TURN credential. One app (CSQTT), which scans the QR.
         var cd = it.csqtt, cfc = ifaceColor("csqtt");
-        var cstrip = function (s) { s = String(s || "").trim(); if (s.indexOf("/") >= 0) s = s.slice(s.lastIndexOf("/") + 1); if (s.indexOf("?") >= 0) s = s.slice(0, s.indexOf("?")); return s.trim(); };
-        var chashes = []; if (cd.vk_hash) chashes.push(cstrip(cd.vk_hash));
-        ((_lastData && _lastData.vk_links) || []).forEach(function (l) { var h = cstrip(l); if (h) chashes.push(h); });
-        var cseen = {}; chashes = chashes.filter(function (h) { if (!h || cseen[h]) return false; cseen[h] = 1; return true; }).slice(0, 6);
-        var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password, hashes: chashes });
+        // raw VK inputs → csqttArtifact combines/strips/dedupes them (same one place the operator app uses)
+        var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
+          vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] });
         var cga = turnGetApp("csqtt");   // the operator's per-OS default csqtt client (CSQTT) → download / Start
         var ctag = el("span", "scell-tag");
         var csrv = el("span", null, "csqtt"); csrv.style.color = cfc; ctag.appendChild(csrv);
@@ -1841,7 +1842,7 @@
         tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp }); });
       });
     } else {
-      orderedTargets(peer.targets).forEach(function (tt) { if (tt.type === "wdtt" || tt.type === "csqtt") return; if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // WDTT + csqtt belong to the Turn group only — never the wg/awg lists; primary connection first
+      orderedTargets(peer.targets).forEach(function (tt) { if (isSelfContained(tt.type)) return; if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // WDTT + csqtt belong to the Turn group only — never the wg/awg lists; primary connection first
     }
     if (!items.length) return null;
     var reason = row.bad ? t("outOfDate") : (!peer.sec ? t("notReady") : null);
@@ -2262,7 +2263,7 @@
       // ≥1 deployment has a proxy forwarding to it (same gate as the admin view).
       var has = { wg: false, awg: false, turn: false };
       liveRows.forEach(function (r) { (r.peer.targets || []).forEach(function (t) {
-        if (t.type === "wdtt" || t.type === "csqtt") { if (data.turn_enabled) has.turn = true; return; }   // WDTT + csqtt are turn-family servers → the Turn group (not a WG/AWG deployment)
+        if (isSelfContained(t.type)) { if (data.turn_enabled) has.turn = true; return; }   // WDTT + csqtt are turn-family servers → the Turn group (not a WG/AWG deployment)
         has[t.type === "awg" ? "awg" : "wg"] = true;
         if (data.turn_enabled && (t.turn || []).length) has.turn = true;
       }); });

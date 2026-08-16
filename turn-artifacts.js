@@ -571,7 +571,17 @@
   // by '+' (a literal '+' inside a hash is %2B-escaped), max 6, omitted when there are none. `c` = {host,port,password,hashes[]}.
   function csqttArtifact(c) {
     c = c || {};
-    var hs = (c.hashes || []).map(function (s) { return String(s || "").trim(); }).filter(Boolean).slice(0, 6);
+    // TURN-credential hashes: the peer's own vk_hash + every VK call link on the user (each stripped to its bare
+    // hash), deduped, max 6. One place — both the operator app and the sub page pass raw {vk_hash, vk_links} and
+    // get identical hashes. A caller may still pass a pre-built `hashes` array (tests / advanced) to override.
+    var hs = c.hashes;
+    if (!hs) {
+      hs = [];
+      if (c.vk_hash) hs.push(stripVkUrl(c.vk_hash));
+      (Array.isArray(c.vk_links) ? c.vk_links : (c.vk_links ? [c.vk_links] : [])).forEach(function (l) { var h = stripVkUrl(l); if (h) hs.push(h); });
+    }
+    hs = hs.map(function (s) { return String(s || "").trim(); }).filter(Boolean);
+    var seen = {}; hs = hs.filter(function (h) { if (seen[h]) return false; seen[h] = 1; return true; }).slice(0, 6);
     var vkMissing = hs.length === 0;   // VK hashes are the TURN credential; a link without them only works for a self-test
     var qp = ["v=2", "host=" + encodeURIComponent(String(c.host || "")),
               "peer=" + (parseInt(c.port, 10) || ""), "password=" + encodeURIComponent(String(c.password || ""))];

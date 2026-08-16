@@ -10,7 +10,7 @@
  * dropdown, filter, badge and peer-create dispatch follows. See docs/APP-JS-SPLIT-PLAN.md §5.
  */
 
-import { isWdttIface, isCsqttIface, portOf } from "./util.js";
+import { isWdttIface, isCsqttIface, isSelfContainedIface, portOf } from "./util.js";
 import { Store } from "./store.js";
 import { T } from "./i18n.js";
 
@@ -51,8 +51,8 @@ export function ifaceMatch(iface, filter) {                                     
   if (!filter || filter === "*") return true;
   if (filter === "*wdtt") return isWdttIface(iface);
   if (filter === "*csqtt") return isCsqttIface(iface);
-  if (filter === "*awg") return ifaceIsAwg(iface) && !isWdttIface(iface) && !isCsqttIface(iface);
-  if (filter === "*wg") return !ifaceIsAwg(iface) && !isWdttIface(iface) && !isCsqttIface(iface);   // WDTT/csqtt own their own iface — never lump under WireGuard
+  if (filter === "*awg") return ifaceIsAwg(iface) && !isSelfContainedIface(iface);
+  if (filter === "*wg") return !ifaceIsAwg(iface) && !isSelfContainedIface(iface);   // WDTT/csqtt own their own iface — never lump under WireGuard
   return iface === filter;
 }
 

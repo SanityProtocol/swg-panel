@@ -13,7 +13,7 @@
  */
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
-import { esc, portOf, ipOf, ipPickerVal, seen, ago, dur, fmtBytes, rate, isWdttIface, isCsqttIface } from "./util.js";
+import { esc, portOf, ipOf, ipPickerVal, seen, ago, dur, fmtBytes, rate, isWdttIface, isCsqttIface, isSelfContainedKind } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
@@ -1215,10 +1215,10 @@ export function ServerDefaultsSheet({ fork }) {
   };
   return html`<${Sheet} title=${html`Server defaults <span class="faint" style="text-transform:none;letter-spacing:0">— ${fork}</span>`} width=${680} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
       foot=${footRow({ left: flash ? html`<span class="vk-status ok savedmsg"><${Ic} i="check"/> ${flash}</span>` : null, cancelLabel: (savedOnce && !dirty) ? T("Close") : T("Cancel"), onCancel: closeModal, disabled: busy || !dirty, onAction: save, action: busy ? T("Saving…") : T("Save") })}>
-    <p class="hint" style="margin:2px 0 14px">${(f.kind === "wdtt" || f.kind === "csqtt")
+    <p class="hint" style="margin:2px 0 14px">${isSelfContainedKind(f.kind)
       ? Trich("Extra command-line flags that *pre-fill* a new {v1} server. It's self-contained — its real config lives per interface — so there's little to default here beyond advanced flags.", { v1: f.label || fork })
       : Trich("The ExecStart flags that *pre-fill* a new {v1} proxy. Nothing here changes proxies you've already deployed.", { v1: fork })}</p>
-    <${TurnServerFields} schema=${schema} vals=${vals} setV=${setV} extra=${extra} setExtra=${setExtra} listen="server_ip:port" connect="interface_ip:port" template=${true} wdtt=${f.kind === "wdtt" || f.kind === "csqtt"}/>
+    <${TurnServerFields} schema=${schema} vals=${vals} setV=${setV} extra=${extra} setExtra=${setExtra} listen="server_ip:port" connect="interface_ip:port" template=${true} wdtt=${isSelfContainedKind(f.kind)}/>
     <${Disclosure} title=${T("Version & rollback")} sumCls="route" open=${verOpen} onToggle=${() => setVerOpen(o => !o)}>
       <p class="hint" style="margin:0 0 10px">${Trich("A {fork} server shares one binary per node, so the version is per node — every {fork} instance on a node moves together. Pinning an older version *holds* it (no auto-update); *Use latest* follows new releases.", { fork: f.label || fork })}</p>
       <${ForkVersionPanel} f=${f} commitRef=${verCommitRef} onDirty=${setVerDirty}/>
@@ -1278,7 +1278,7 @@ export async function startTurn(node, service) {
 }
 export function openSetupTurn(node, forwardIface) { openModal(html`<${SetupTurnSheet} node=${node} forwardIface=${forwardIface}/>`); }
 export function SetupTurnSheet({ node, forwardIface }) {
-  const FORKS = enabledTurnForks().filter(f => f.kind !== "wdtt" && f.kind !== "csqtt");   // forks that FRONT an interface; WDTT + csqtt are self-contained (created as their own interface), never added to one
+  const FORKS = enabledTurnForks().filter(f => !isSelfContainedKind(f.kind));   // forks that FRONT an interface; WDTT + csqtt are self-contained (created as their own interface), never added to one
   const [mode, setMode] = useState("new");   // new (install) | existing (adopt)
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const snap = Store.stats[node] || {};

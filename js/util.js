@@ -55,6 +55,12 @@ export function useStableOrder(targets) {
 export const isWdttIface = (name) => /^wdtt\d{1,3}$/.test(String(name));   // classify a WDTT interface by NAME (when there's no roster target to read `type` from); mirrors the node's _WDTT_IFACE_RE
 export const isCsqttIface = (name) => /^csqtt\d{1,4}$/.test(String(name));   // classify a csqtt interface by NAME; mirrors the node's _CSQTT_NAME_RE
 export const isSelfContainedIface = (name) => isWdttIface(name) || isCsqttIface(name);   // WDTT + csqtt own their own interface (keyless, not a WG target)
+// The self-contained turn-family KINDS: they own their interface, mint the client address on connect, and carry a
+// panel-owned access password instead of a browser keypair. ONE source of truth — every shared gate reads these,
+// so adding the next such kind is a single edit here, not a hunt through every filter/colour/vault/picker site.
+export const SELF_CONTAINED_KINDS = ["wdtt", "csqtt"];
+export const isSelfContainedKind = (kind) => kind === "wdtt" || kind === "csqtt";
+export const isSelfContainedTarget = (t) => !!t && (isSelfContainedKind(t.type) || isSelfContainedIface(t.iface));   // by roster target `type` OR iface-name sniff
 export function ipOf(hostport) { if (!hostport) return ""; const s = String(hostport); return s[0] === "[" ? s.slice(1, s.indexOf("]")) : s.split(":")[0]; }
 export function portOf(hostport) { if (!hostport) return ""; const s = String(hostport); const i = s.lastIndexOf(":"); return i < 0 ? "" : s.slice(i + 1); }
 export const ipPickerVal = (sel, custom) => sel === "__custom__" ? (custom || "").trim() : sel;

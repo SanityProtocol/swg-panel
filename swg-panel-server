@@ -1609,6 +1609,10 @@ def gen_csqtt_password():
 def _is_csqtt_target(t):
     """Does this roster target land on a csqtt instance? authoritative `type`, iface-name regex as fallback."""
     return (t.get("type") == "csqtt") or bool(_CSQTT_IFACE_RE.match(str(t.get("iface") or "")))
+def _is_self_contained_target(t):
+    """Does this roster target land on ANY self-contained turn-family instance (WDTT or csqtt)? Both own their
+    interface + key custody, so shared gates (ghost/missing/dangling skips, egress) key off this one predicate."""
+    return _is_wdtt_target(t) or _is_csqtt_target(t)
 
 def _wdtt_net(cidr):
     """A WDTT instance's wg_addr (e.g. 10.66.73.1/24) → its network (10.66.73.0/24) — the source subnet that the
@@ -3103,10 +3107,8 @@ def desired_for_node(roster, node_id):
         for t in p.get("targets", []):
             if t.get("node") != node_id:
                 continue
-            if _is_wdtt_target(t):
-                continue   # WDTT peers are keyless — never emit a WG desired-peer for a wdtt* iface (desired_wdtt_for_node owns them)
-            if _is_csqtt_target(t):
-                continue   # csqtt peers are keyless too (desired_csqtt_for_node owns them)
+            if _is_self_contained_target(t):
+                continue   # WDTT/csqtt peers are keyless — never emit a WG desired-peer for their iface (desired_wdtt/csqtt_for_node own them)
             iface = t.get("iface") or ""
             if not iface:
                 continue
@@ -3301,8 +3303,8 @@ def _ghost_refs(roster):
     for pid, p in (roster.get("peers") or {}).items():
         for t in (p.get("targets") or []):
             n, i = t.get("node"), t.get("iface")
-            if _is_wdtt_target(t) or _is_csqtt_target(t):   # WDTT/csqtt own their own interface (snap.wdtt/.csqtt,
-                continue                                    # not snap.interfaces) — never a WG ghost/missing interface
+            if _is_self_contained_target(t):   # WDTT/csqtt own their own interface (snap.wdtt/.csqtt,
+                continue                        # not snap.interfaces) — never a WG ghost/missing interface
             if n and i:
                 refs.setdefault(n, {}).setdefault(i, []).append(pid)
     return refs

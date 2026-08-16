@@ -9,7 +9,7 @@
 
 import { T, Tsplit, plural, srvText } from "./i18n.js";
 import { esc, tkey, V, BASE, seen, configErrors, orderedTargets, isPrimaryTarget, useStableOrder,
-         isWdttIface, ipOf, portOf, ipPickerVal } from "./util.js";
+         isSelfContainedKind, ipOf, portOf, ipPickerVal } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { NODE_COLOR_DEFAULT, NODE_CREATE_DEFAULT, toThemed } from "./theme.js";
 import { go } from "./router.js";
@@ -253,7 +253,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial }) {
         ${t.missing ? html`<span class="topt-missing" title=${T("This interface is gone from the node — uncheck to remove this deployment from the peer")}>${T("tag|missing")}</span>` : null}</label>
       <${Tag} kind=${ity} label=${ity}/>
       ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/>`}
-      ${(s && (s.wdtt || s.csqtt || ity === "wdtt" || ity === "csqtt"))
+      ${(s && (s.wdtt || s.csqtt || isSelfContainedKind(ity)))
         // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
         // target is seeded straight from the peer, so it never went through toggle and rendered an editable
         // address box for a self-contained server — which mints the client IP itself on connect and can't be told one.
