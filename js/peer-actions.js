@@ -82,7 +82,8 @@ export function rotateAllUserKeys(user, after) {
       (async () => {
         const oks = await Promise.all(peers.map(async p => {
           try {
-            if (p.wdtt_password) { Store.rotating[p.id] = Date.now(); await api.wdttPeerRotate({ peer_id: p.id }); }   // keyless WDTT peer → new WRAP password
+            if (p.csqtt_password) { Store.rotating[p.id] = Date.now(); await api.csqttPeerRotate({ peer_id: p.id }); }  // keyless csqtt peer → new access password
+            else if (p.wdtt_password) { Store.rotating[p.id] = Date.now(); await api.wdttPeerRotate({ peer_id: p.id }); }   // keyless WDTT peer → new WRAP password
             else await rotatePeerKeys(p);                                                                              // WG/AWG peer → new keypair + PSK
             return true;
           } catch (_) { return false; }

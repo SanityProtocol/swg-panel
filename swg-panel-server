@@ -4157,6 +4157,7 @@ TURN_CLIENTS = {
     #   `qwdtt://config?…&pass=<pw last>`             (qWDTT / PWDTT native — password can't be misread)
     #   `vkturnproxy://import?data=<b64url>`           (anton48 iOS native, WRAP-A)  ← the existing "vkturnproxy" entry
     "wdttapp":     {"name": "WDTT",  "author": "amurcanov",  "encoder": "wdtt",  "scheme": "wdtt://", "qr": False,  "platforms": {"android": {"github": "https://github.com/amurcanov/proxy-turn-vk-android/releases"}}},   # amurcanov's canonical Android app (colon wdtt://)
+    "csqttapp":    {"name": "CSQTT", "author": "amurcanov",  "encoder": "csqtt", "scheme": "csqtt://", "qr": True,  "platforms": {"android": {"github": "https://github.com/amurcanov/csqtt/releases"}}},   # amurcanov's CSQTT Android app (csqtt://connect v2 — see turn-artifacts.js csqttArtifact)
     "qwdtt":       {"name": "qWDTT", "author": "SpaceNeuroX", "color": {"dark": "#22C3E6", "light": "#0E8FB0"}, "encoder": "qwdtt", "scheme": "qwdtt://", "qr": True, "platforms": {"android": {"github": "https://github.com/SpaceNeuroX/proxy-turn-vk-android/releases"}}},
     "qwdttleg":    {"name": "qWDTT Legacy", "author": "lebrit", "color": {"dark": "#A8C93A", "light": "#6E8C1E"}, "encoder": "qwdtt", "scheme": "qwdtt://", "qr": True, "platforms": {"android": {"github": "https://github.com/lebrit/qwdtt-legacy-android/releases"}}},   # Android 5-8 compat backport of qWDTT (same qwdtt:// scheme) for old phones   # enhanced Android client fork (native qwdtt:// query scheme; also reads 6-field colon)
     "pwdtt":       {"name": "PWDTT", "author": "luminescq", "color": {"dark": "#43C46E", "light": "#2E9E52"}, "encoder": "wdtt",  "scheme": "wdtt://", "qr": False, "platforms": {   # desktop (Go+Wails). luminescq = upstream (colon/qwdtt); ildarmaga ships a modified build in its WDTT releases (sub-URL/base64) — offered as a per-author choice (_TURN_CLI_AUTHORS)
@@ -4307,7 +4308,7 @@ TURN_SERVERS = {
     # io_uring, Rust. kind:"csqtt" makes the SPA branch (A6); HIDDEN until that lands so it stays out of the fork
     # picker meanwhile (the reply channel + endpoints work regardless of catalog visibility). We build+host the
     # binary ourselves (CSQTT_BUILDS). PolyForm-Noncommercial-1.0.0 — non-commercial use only.
-    "csqtt":        {"label": "csqtt",      "owner": "amurcanov/csqtt",                 "kind": "csqtt", "hidden": True, "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#F97316", "light": "#C2410C"}, "clients": [], "reload": "sighup",
+    "csqtt":        {"label": "csqtt",      "owner": "amurcanov/csqtt",                 "kind": "csqtt", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#F97316", "light": "#C2410C"}, "clients": ["csqttapp"], "reload": "sighup",
                      "settings": [], "client_settings": _WDTT_CLIENT_CS},
 }
 # client_settings = the app-DEDICATED knobs (per SETTINGS SPLIT): admin-chosen VALUES fed into the client
@@ -4317,7 +4318,7 @@ TURN_SERVERS = {
 # descending — snapshot fetched 2026-07-16 (static, intentionally not live): MYSOREZ 17+443, samosvalishe
 # 141+314, kiper292 123+267, anton48 29+165, Moroka8 75+0.
 TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
-                     "samosvalishe", "xxcipherx", "cacggghp", "kiper292"]   # operator order; hidden forks (cacggghp/kiper292) last
+                     "samosvalishe", "xxcipherx", "csqtt", "cacggghp", "kiper292"]   # operator order; hidden forks (cacggghp/kiper292) last
 # Forks kept in the catalog (so a deployed instance still resolves its label/colour) but HIDDEN from the operator
 # UI — the settings toggle list, the install/enable picker, the interface Setup-proxy dropdown, and the fork
 # colour pickers all skip these. Purely cosmetic gating; nothing about a running proxy changes.
@@ -4328,7 +4329,7 @@ TURN_HIDDEN_FORKS = {"cacggghp", "kiper292"}
 _CLIENT_NATIVE_FORK = {"wingsv": "WINGS-N", "vkturnproxy": "anton48", "wgturn": "kiper292",
                        "freeturn": "samosvalishe", "mysorez": "MYSOREZ", "sidecar": None,
                        # WDTT-family clients all share _WDTT_CLIENT_CS (set on every WDTT fork) → any WDTT fork resolves it
-                       "wdttapp": "amurcanov", "qwdtt": "amurcanov", "qwdttleg": "amurcanov", "pwdtt": "ildarmaga", "pwdttilg": "ildarmaga",
+                       "wdttapp": "amurcanov", "qwdtt": "amurcanov", "qwdttleg": "amurcanov", "pwdtt": "ildarmaga", "pwdttilg": "ildarmaga", "csqttapp": "csqtt",
                        "wdttplus": "wdttplus", "xxcipher": "xxcipherx"}
 # Per-(server fork, client id) compatibility class for the app picker, from the wire-compat matrix (docs/compat).
 #   native        = the fork's own app/CLI in its intended mode (obfuscated, or plain for a plain fork).
@@ -6025,7 +6026,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "turn_enabled": True,
     # which turn-proxy forks are offered in the "install a fork" dropdown (by fork id; the fork set itself lives
     # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
-    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8", "amurcanov", "ildarmaga", "wdttplus", "xxcipherx"],   # all 4 WDTT server forks built + published (wdtt-<fork> releases)
+    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8", "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt"],   # + csqtt (raw-TUN self-contained kind)
     "turn_fork_colors": {},   # per-fork colour overrides {fork_id: "#rrggbb"} (else the SPA's TURN_FORKS default)
     "turn_client_settings": {},   # SETTINGS SPLIT: per-fork client (app) setting VALUES {fork: {key: value}} fed into config/QR/link generation (schema = catalog client_settings)
     "turn_client_default": {},    # per (fork, OS) END-USER default app {fork: {os: client_id}} — which app the sub page hands out
@@ -7301,6 +7302,7 @@ def api(method, path, qs, body, deps):
             # candidate (O(candidates x ignored) per node per poll) — /api/state is already this panel's dominant
             # CPU cost on a 1-core VM.
             _w = c.get("wdtt") or {}
+            _c = c.get("csqtt") or {}
             _ign = set(c.get("ignore_ifaces") or [])
             _claimed_wdtt_dirs = {(v or {}).get("adopt_config_dir") for v in _w.values() if (v or {}).get("adopt_config_dir")}
             _cands = [x for x in (snap.get("iface_candidates") or []) if isinstance(x, dict) and x.get("name")]
@@ -7397,6 +7399,12 @@ def api(method, path, qs, body, deps):
                                                                    "stopped", "block", "egress_mode", "egress_node",
                                                                    "egress_ip", "wan_iface", "routing", "title", "params") if k in ov}
                                      for ifn, ov in _w.items()},
+                        # DESIRED csqtt config (node store) so the SPA edit modal can prefill listen / address / egress /
+                        # routing / filters. Config fields only — never the owner password / minted access passwords.
+                        "csqtt_cfg": {ifn: {k: ov.get(k) for k in ("listen", "tun_addr", "max_passwords", "stopped",
+                                                                    "block", "egress_mode", "egress_node", "egress_ip",
+                                                                    "wan_iface", "routing", "title", "params") if k in ov}
+                                      for ifn, ov in _c.items()},
                         "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
                         "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
                         "wdtt_adopting": sorted(k for k, v in _w.items() if (v or {}).get("adopt_foreign")),   # foreign-server take-overs in flight (cleared once the node reports the instance)
@@ -7758,7 +7766,7 @@ def api(method, path, qs, body, deps):
         ic = incoming.get("iface_colors")               # per-protocol interface colour overrides {wg,awg: {dark,light}}
         if isinstance(ic, dict):
             out_ic = {}
-            for k in ("wg", "awg", "wdtt"):
+            for k in ("wg", "awg", "wdtt", "csqtt"):
                 tc = _themed_color(ic.get(k))
                 if tc: out_ic[k] = tc
             cur["iface_colors"] = out_ic

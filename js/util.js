@@ -53,6 +53,8 @@ export function useStableOrder(targets) {
   return out;
 }
 export const isWdttIface = (name) => /^wdtt\d{1,3}$/.test(String(name));   // classify a WDTT interface by NAME (when there's no roster target to read `type` from); mirrors the node's _WDTT_IFACE_RE
+export const isCsqttIface = (name) => /^csqtt\d{1,4}$/.test(String(name));   // classify a csqtt interface by NAME; mirrors the node's _CSQTT_NAME_RE
+export const isSelfContainedIface = (name) => isWdttIface(name) || isCsqttIface(name);   // WDTT + csqtt own their own interface (keyless, not a WG target)
 export function ipOf(hostport) { if (!hostport) return ""; const s = String(hostport); return s[0] === "[" ? s.slice(1, s.indexOf("]")) : s.split(":")[0]; }
 export function portOf(hostport) { if (!hostport) return ""; const s = String(hostport); const i = s.lastIndexOf(":"); return i < 0 ? "" : s.slice(i + 1); }
 export const ipPickerVal = (sel, custom) => sel === "__custom__" ? (custom || "").trim() : sel;

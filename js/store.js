@@ -180,6 +180,10 @@ export const api = {
   wdttRecreateFresh(b) { return this.post("/api/wdtt/recreate-fresh", b); }, // abandon the vaulted identity → mint a fresh key (users re-import)
   wdttVersions(q) { return this.get("/api/wdtt/versions?node=" + encodeURIComponent(q.node || "") + "&iface=" + encodeURIComponent(q.iface || "") + "&fork=" + encodeURIComponent(q.fork || "")); },   // our published builds (rollback targets) + any hold
   wdttVersion(b) { return this.post("/api/wdtt/version", b); },              // roll a WDTT instance to a build (ver) or release the hold (ver="")
+  csqttSet(b) { return this.post("/api/csqtt/set", b); },                    // create/update a csqtt instance on a node (declarative)
+  csqttDelete(b) { return this.post("/api/csqtt/delete", b); },              // remove a csqtt instance
+  csqttPeerCreate(b) { return this.post("/api/csqtt-peer/create", b); },     // keyless csqtt peer (mints the access password)
+  csqttPeerRotate(b) { return this.post("/api/csqtt-peer/rotate", b); },     // rotate a csqtt peer's password (revoke the old link)
   rosterCheck() { return this.get("/api/turn/roster-check"); },              // client-app schema drift vs upstream GitHub (P1 ack-only clients)
   rosterAck(client) { return this.post("/api/turn/roster-ack", { client }); },   // acknowledge a client's current upstream as the baseline
   p4Report(refresh) { return this.get("/api/turn/p4/report" + (refresh ? "?refresh=1" : "")); },  // P4a versioned per-field roster (parseable forks)
@@ -356,10 +360,11 @@ export const Store = {
     // Forwards-to pickers exclude wdtt* (their own filter), since a -connect fork can't front a WDTT interface.
     return !!m.system || String(iface).startsWith(pfx) || String(iface).startsWith("swg_");
   },
-  userIfacesOf(node) {   // wg/awg from describe + WDTT ifaces (they own their iface, absent from describe → pulled from the readback)
+  userIfacesOf(node) {   // wg/awg from describe + WDTT + csqtt ifaces (self-contained kinds own their iface, absent from describe → pulled from the readback)
     const base = this.ifacesOf(node).filter(i => !this.ifaceIsSystem(node, i));
     const wd = ((this.stats[node] || {}).wdtt || []).map(w => w && w.iface).filter(Boolean);
-    return Array.from(new Set([...base, ...wd]));
+    const cs = ((this.stats[node] || {}).csqtt || []).map(c => c && c.iface).filter(Boolean);
+    return Array.from(new Set([...base, ...wd, ...cs]));
   },
   peer(id) { return this.recon.peers.find(p => p.id === id); },
   user(id) { return this.recon.users.find(u => u.id === id); },

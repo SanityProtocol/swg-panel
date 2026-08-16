@@ -1101,7 +1101,8 @@ export function PanelSettingsScreen() {
   const [ifaceColors, setIfaceColors] = useState(() => ({
     wg: asThemed((ps.iface_colors || {}).wg, IFACE_COLOR_DEFAULTS.wg.dark, IFACE_COLOR_DEFAULTS.wg.light),
     awg: asThemed((ps.iface_colors || {}).awg, IFACE_COLOR_DEFAULTS.awg.dark, IFACE_COLOR_DEFAULTS.awg.light),
-    wdtt: asThemed((ps.iface_colors || {}).wdtt, IFACE_COLOR_DEFAULTS.wdtt.dark, IFACE_COLOR_DEFAULTS.wdtt.light) }));
+    wdtt: asThemed((ps.iface_colors || {}).wdtt, IFACE_COLOR_DEFAULTS.wdtt.dark, IFACE_COLOR_DEFAULTS.wdtt.light),
+    csqtt: asThemed((ps.iface_colors || {}).csqtt, IFACE_COLOR_DEFAULTS.csqtt.dark, IFACE_COLOR_DEFAULTS.csqtt.light) }));
   const [themeColorS, setThemeColorS] = useState(clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false));         // dark-mode accent (shown = applied)
   const [themeColorLightS, setThemeColorLightS] = useState(clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true));   // light-mode accent
   const themeVal = { dark: themeColorS, light: themeColorLightS };   // the theme accent as one themed swatch
@@ -1116,7 +1117,7 @@ export function PanelSettingsScreen() {
   // overrides derived from a raw source (state OR the stored panel-settings), normalized identically so a legacy
   // single-colour value in panel-settings compares equal to its normalized {dark,light} form (no phantom "dirty").
   const forkOvFrom = src => { const o = {}; for (const f of turnForkList()) { const t = asThemed((src || {})[f.id], f.color, f.colorL); if (!sameThemed(t, f.color, f.colorL)) o[f.id] = t; } return o; };
-  const ifaceOvFrom = src => { const o = {}; for (const k of ["wg", "awg", "wdtt"]) { const t = asThemed((src || {})[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light); if (!sameThemed(t, IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light)) o[k] = t; } return o; };
+  const ifaceOvFrom = src => { const o = {}; for (const k of ["wg", "awg", "wdtt", "csqtt"]) { const t = asThemed((src || {})[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light); if (!sameThemed(t, IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light)) o[k] = t; } return o; };
   const forkColorOverrides = () => forkOvFrom(forkColors);
   const ifaceColorOverrides = () => ifaceOvFrom(ifaceColors);
   const statusCondsOut = () => ({ blocked: statusConds.blocked, faulty: statusConds.faulty });
@@ -1732,9 +1733,11 @@ const sectionLabel = k => ({
             <${ThemedSwatch} val=${forkColors[f.id]} title=${T("Colour for {v1}", { v1: f.label })} onChange=${nv => setForkColors(c => ({ ...c, [f.id]: nv }))}
               sample=${(c) => html`<span class="tg tg-turn" style=${"--tfc:" + c}>${f.label}</span>`}/>
             <a class=${"tf-name tf-" + f.id} href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" style=${"color:" + fcol} title=${"github.com/" + f.owner}>${f.label}</a>
-            <span class="cl-caps" title=${f.kind === "wdtt" ? T("Self-contained WDTT server — owns its own WireGuard interface (not a WG/AWG front)") : forkSupportsAwg(f.id) ? T("Works with WireGuard and AmneziaWG interfaces") : T("{v1} is WireGuard-only — its client can't front an AmneziaWG interface", { v1: f.label })}>
+            <span class="cl-caps" title=${f.kind === "wdtt" ? T("Self-contained WDTT server — owns its own WireGuard interface (not a WG/AWG front)") : f.kind === "csqtt" ? T("Self-contained csqtt server — owns its own raw-TUN interface (not a WG/AWG front)") : forkSupportsAwg(f.id) ? T("Works with WireGuard and AmneziaWG interfaces") : T("{v1} is WireGuard-only — its client can't front an AmneziaWG interface", { v1: f.label })}>
               ${f.kind === "wdtt"
                 ? html`<span class="tg tg-wdtt">WDTT</span>`
+                : f.kind === "csqtt"
+                ? html`<span class="tg tg-csqtt">csqtt</span>`
                 : html`<${Fragment}><span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}<//>`}
             </span>
             ${(() => {
@@ -1881,7 +1884,7 @@ const sectionLabel = k => ({
         ${section === "access" ? html`<${AccessTLSCard} onChange=${onAccess}/>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">${T("Interface colours")}<span class="grow"></span>
-            ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg }, wdtt: { ...IFACE_COLOR_DEFAULTS.wdtt } })}><${Ic} i="refresh"/>${T("Reset")}</button>` : null}</div>
+            ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg }, wdtt: { ...IFACE_COLOR_DEFAULTS.wdtt }, csqtt: { ...IFACE_COLOR_DEFAULTS.csqtt } })}><${Ic} i="refresh"/>${T("Reset")}</button>` : null}</div>
           <p class="hint" style="margin:0 0 12px">${T("The colour each protocol's tags take everywhere — a value per theme. Hover a swatch to preview it.")}</p>
           <div class="palrow">
             <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wg} title=WireGuard onChange=${nv => setIfaceColors(c => ({ ...c, wg: nv }))}
@@ -1890,6 +1893,8 @@ const sectionLabel = k => ({
               sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/><span class="pallbl">AmneziaWG</span></span>
             <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wdtt} title=WDTT onChange=${nv => setIfaceColors(c => ({ ...c, wdtt: nv }))}
               sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>WDTT</span>`}/><span class="pallbl">WDTT</span></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.csqtt} title=csqtt onChange=${nv => setIfaceColors(c => ({ ...c, csqtt: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>csqtt</span>`}/><span class="pallbl">csqtt</span></span>
           </div>
           <div class="seclabel">${T("Peer health detection")}</div>
           <p class="hint" style="margin:0 0 10px">${Trich("Which failure conditions the panel flags on a peer. All on by default — untick one to stop it showing that status (the peer just reads online / ready instead). Both appear in {v1}.", { v1: html`<span class="b-faulty" style="padding:1px 6px;border-radius:6px">${T("val|orange")}</span>` })}</p>

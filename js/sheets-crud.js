@@ -149,6 +149,8 @@ export function allTargets() {
   // each from the node's WDTT readback so it's selectable as a (keyless) peer target.
   for (const node of Object.keys(Store.stats || {})) for (const w of ((Store.stats[node] || {}).wdtt || []))
     if (w && w.iface && !out.some(t => t.node === node && t.iface === w.iface)) out.push({ node, iface: w.iface });
+  for (const node of Object.keys(Store.stats || {})) for (const c of ((Store.stats[node] || {}).csqtt || []))
+    if (c && c.iface && !out.some(t => t.node === node && t.iface === c.iface)) out.push({ node, iface: c.iface });
   return out;
 }
 
@@ -210,6 +212,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial }) {
     const k = tkey(node, iface);
     if (sel[k]) setSel(s => { const n = { ...s }; delete n[k]; return n; });
     else if (iTypeOf(node, iface) === "wdtt") setSel(s => ({ ...s, [k]: { node, iface, ip: "", wdtt: true } }));   // WDTT mints the client IP on connect — no address to pick
+    else if (iTypeOf(node, iface) === "csqtt") setSel(s => ({ ...s, [k]: { node, iface, ip: "", csqtt: true } }));   // csqtt mints the address on connect too
     else allocIp(node, iface);
   };
   const setIp = (k, v) => setSel(s => s[k] ? { ...s, [k]: { ...s[k], ip: v } } : s);
@@ -225,6 +228,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial }) {
     if (!targets.length || Object.keys(sel).length || (initial && initial.length)) return;
     if (prefill && prefill.node && prefill.iface) {
       if (iTypeOf(prefill.node, prefill.iface) === "wdtt") setSel({ [tkey(prefill.node, prefill.iface)]: { node: prefill.node, iface: prefill.iface, ip: "", wdtt: true } });   // WDTT: select without allocating an address
+      else if (iTypeOf(prefill.node, prefill.iface) === "csqtt") setSel({ [tkey(prefill.node, prefill.iface)]: { node: prefill.node, iface: prefill.iface, ip: "", csqtt: true } });
       else allocIp(prefill.node, prefill.iface);
     } else if (prefill && prefill.node) targets.filter(t => t.node === prefill.node).slice(0, 1).forEach(t => allocIp(t.node, t.iface));
   }, [all]);
@@ -249,11 +253,11 @@ export function TargetPicker({ prefill, exclude, onChange, initial }) {
         ${t.missing ? html`<span class="topt-missing" title=${T("This interface is gone from the node — uncheck to remove this deployment from the peer")}>${T("tag|missing")}</span>` : null}</label>
       <${Tag} kind=${ity} label=${ity}/>
       ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/>`}
-      ${(s && (s.wdtt || ity === "wdtt"))
+      ${(s && (s.wdtt || s.csqtt || ity === "wdtt" || ity === "csqtt"))
         // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
         // target is seeded straight from the peer, so it never went through toggle and rendered an editable
-        // address box for a WDTT server — which mints the client IP itself at GETCONF and cannot be told one.
-        ? html`<span class="topt-ip faint" title=${T("WDTT assigns the address on connect")}>${T("val|auto")}</span>`
+        // address box for a self-contained server — which mints the client IP itself on connect and can't be told one.
+        ? html`<span class="topt-ip faint" title=${T("The server assigns the address on connect")}>${T("val|auto")}</span>`
         : (s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? T("not a valid IPv4 address") : ""} onInput=${e => setIp(k, e.target.value)}/>` : null)}
     </div>`;
   })}</div>`;
@@ -316,10 +320,12 @@ export function CreatePeerSheet({ prefill }) {
   }, [chosen]);
 
   const wdttMode = chosen.some(t => t.wdtt);   // the TargetPicker locks a peer to one kind, so any wdtt target ⇒ all wdtt
+  const csqttMode = chosen.some(t => t.csqtt);   // …likewise csqtt
+  const keylessMode = wdttMode || csqttMode;   // self-contained kinds: no address, no client-config fields
 
   const validate = () => {
     if (!chosen.length) return T("Pick at least one target.");
-    if (wdttMode) return null;   // WDTT targets carry no address (minted on connect) + no client-config fields
+    if (keylessMode) return null;   // self-contained targets carry no address (minted on connect) + no client-config fields
     const badIp = chosen.find(t => !V.ipv4(String(t.ip).trim()));
     if (badIp) return T("Invalid address for {v1}.", { v1: Store.nodeName(badIp.node) + "/" + badIp.iface });
     const ce = configErrors(cf); const k = Object.keys(ce)[0];
@@ -329,15 +335,16 @@ export function CreatePeerSheet({ prefill }) {
 
   const create = async () => {
     const err = validate(); if (err) return setMsg({ k: "err", t: err });
-    if (wdttMode) {   // keyless WDTT peer — the panel mints the WRAP password; WDTT mints the WG key on connect. One roster peer, one link per targeted server.
-      setBusy(true); setMsg({ k: "work", t: T("adding WDTT user…") });
-      const r = await api.wdttPeerCreate({ user_id: userId || null, title: title.trim(), targets: chosen.map(t => ({ node: t.node, iface: t.iface })) });
+    if (keylessMode) {   // keyless self-contained peer — the panel mints the access password; the server mints the client address on connect. One roster peer, one link per targeted server.
+      setBusy(true); setMsg({ k: "work", t: csqttMode ? T("adding csqtt user…") : T("adding WDTT user…") });
+      const body = { user_id: userId || null, title: title.trim(), targets: chosen.map(t => ({ node: t.node, iface: t.iface })) };
+      const r = await (csqttMode ? api.csqttPeerCreate(body) : api.wdttPeerCreate(body));
       if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: srvText(r) || T("Request failed.") }); }
       closeModal();
       if (prefill.lock && prefill.node && prefill.iface) go("#/node/" + encodeURIComponent(prefill.node) + "/" + encodeURIComponent(prefill.iface));
       else if (userId) revealUser(userId, (r.data && r.data.id) || "");
       Store.apply(); await Store.poll();
-      return toast(T("WDTT user added — their connect link is on the assigned subscription."), "ok");
+      return toast(csqttMode ? T("csqtt user added — their connect link is on the assigned subscription.") : T("WDTT user added — their connect link is on the assigned subscription."), "ok");
     }
     setBusy(true); setMsg({ k: "work", t: T("generating key…") });
     let keys, pskV, tgts, configs, body;
@@ -386,7 +393,9 @@ export function CreatePeerSheet({ prefill }) {
       <input value=${title} onInput=${e => setTitle(e.target.value)} maxlength="64" placeholder=${T("iPhone, Router, Laptop…")}/></div>
     <div class="field"><label>${T("Targets")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— one, or several for redundancy (same key)")}</span></label>
       <${TargetPicker} prefill=${prefill} onChange=${setChosen}/></div>
-    ${wdttMode
+    ${csqttMode
+      ? html`<div class="hint">${T("csqtt server — the panel mints this user's access password and csqtt mints their address on connect, so there's no key or client config to set here. The user's VK link (from their subscription) is the TURN credential.")}</div>`
+      : wdttMode
       ? html`<div class="hint">${T("WDTT server — the panel mints this user's access password and WDTT mints their WireGuard key + IP on connect, so there's no key or client config to set here. The user's VK link (from their subscription) is the TURN credential.")}</div>`
       : html`<${AdvancedFields} st=${cf}/>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -701,11 +710,16 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   };
 
   const isWdttPeer = !!peer.wdtt_password || (peer.targets || []).some(t => t.type === "wdtt");
+  const isCsqttPeer = !!peer.csqtt_password || (peer.targets || []).some(t => t.type === "csqtt");
+  const isKeyless = isWdttPeer || isCsqttPeer;   // self-contained turn peers: panel-owned password, no browser keypair
   const rotate = () => {
-    if (isWdttPeer) {   // WDTT peer: no browser keypair — rotate the panel-owned WRAP password (revokes the old link)
+    if (isKeyless) {   // keyless turn peer: no browser keypair — rotate the panel-owned access password (revokes the old link)
+      const rotateApi = isCsqttPeer ? api.csqttPeerRotate : api.wdttPeerRotate;
       openConfirm({ title: T("Rotate link"), confirmLabel: T("Rotate link"), warn: true,
-        body: T("A fresh access password is generated. The current WDTT link stops working — send the user their new link (from the subscription page) to re-import."),
-        onConfirm: () => { setRotating(true); api.wdttPeerRotate({ peer_id: peer.id }).then(async r => { await Store.poll(); setRotating(false); toast(r && r.ok ? T("Link rotated — the old one no longer works.") : (srvText(r) || T("Rotate failed.")), r && r.ok ? "ok" : "err"); }).catch(() => setRotating(false)); } });
+        body: isCsqttPeer
+          ? T("A fresh access password is generated. The current csqtt link stops working — send the user their new link (from the subscription page) to re-import.")
+          : T("A fresh access password is generated. The current WDTT link stops working — send the user their new link (from the subscription page) to re-import."),
+        onConfirm: () => { setRotating(true); rotateApi({ peer_id: peer.id }).then(async r => { await Store.poll(); setRotating(false); toast(r && r.ok ? T("Link rotated — the old one no longer works.") : (srvText(r) || T("Rotate failed.")), r && r.ok ? "ok" : "err"); }).catch(() => setRotating(false)); } });
       return;
     }
     openConfirm({ title: T("Rotate keys"), confirmLabel: T("Rotate keys"), warn: true,
@@ -737,9 +751,9 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       ? html`<button class="btn btn-ghost restore" onClick=${() => confirmRestoreDeployment(_rp, _fixT)}><${Ic} i="refresh"/> ${T("Restore interface")}</button>`
       : (_fixT && _fixT.correctable)
         ? html`<button class="btn btn-ghost correct" onClick=${() => confirmCorrectDeployment(_rp, _fixT)}><${Ic} i="check"/> ${T("Fix address")}</button>`
-        : html`<button class="btn btn-ghost" disabled=${rotating} onClick=${rotate}><${Ic} i="key"/> ${rotating ? (isWdttPeer ? T("Rotating link…") : T("Rotating keys…")) : (isWdttPeer ? T("Rotate link") : T("Rotate keys"))}</button>`;
+        : html`<button class="btn btn-ghost" disabled=${rotating} onClick=${rotate}><${Ic} i="key"/> ${rotating ? (isKeyless ? T("Rotating link…") : T("Rotating keys…")) : (isKeyless ? T("Rotate link") : T("Rotate keys"))}</button>`;
   return html`<${Sheet} title=${T("Edit peer")} width=${700} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
-    foot=${footRow({ left: html`${editable && !isWdttPeer ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/>QR</button>` : null}${isWdttPeer ? null : html`<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> ${T("Targets")}</button>`}${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
+    foot=${footRow({ left: html`${editable && !isKeyless ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/>QR</button>` : null}${isKeyless ? null : html`<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> ${T("Targets")}</button>`}${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
     <${PeerStatusLine} peer=${peer} pos="bar"/>
     <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder=${T("e.g. iPhone, Work laptop")}/></div>
     <div class="field"><label>${T("col|User")}</label>
@@ -753,13 +767,15 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
     <div class="field"><label>${T("Access expires")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— this peer only; blank = {fallback}", { fallback: ownerExp ? T("follows the subscription") : T("never") })}</span></label>
       <div class="daterow"><input type="date" class="datein" max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
       <div class=${"hint"}>${T("On this date the peer stops working (it reappears if you extend it).")}${ownerExp ? T(" Can't be later than the subscription's expiry ({v1}).", { v1: fmtDate(ownerExp) }) : ""}</div></div>
-    ${isWdttPeer ? html`<div class="field"><label>${T("Servers")}</label>
+    ${isKeyless ? html`<div class="field"><label>${T("Servers")}</label>
       <div class="targetpick">${targetsOrdered.map(t => html`<div class="targetopt sel locked" key=${tkey(t.node, t.iface)}>
         <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
         <${TargetFrontBadge} node=${t.node} iface=${t.iface}/>
-        <span class="topt-ip faint" title=${T("WDTT assigns the address on connect")}>${T("val|auto")}</span>
+        <span class="topt-ip faint" title=${isCsqttPeer ? T("csqtt assigns the address on connect") : T("WDTT assigns the address on connect")}>${T("val|auto")}</span>
       </div>`)}</div>
-      <div class="hint">${T("WDTT servers this user reaches. WDTT assigns each server's address on connect; the user's link per server is on their subscription. No client config (key/DNS/MTU) — WDTT owns the datapath.")}</div>
+      <div class="hint">${isCsqttPeer
+        ? T("csqtt servers this user reaches. csqtt assigns each server's address on connect; the user's link per server is on their subscription. No client config (key/DNS/MTU) — csqtt owns the datapath.")
+        : T("WDTT servers this user reaches. WDTT assigns each server's address on connect; the user's link per server is on their subscription. No client config (key/DNS/MTU) — WDTT owns the datapath.")}</div>
     </div>` : html`<${Fragment}>
     <div class="field"><label>${T("Addresses")}</label>
       <div class="targetpick">${targetsOrdered.map(t => {

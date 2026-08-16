@@ -987,6 +987,21 @@ export async function startOrRestartWdtt(node, iface, verb) {
   await Store.poll();
 }
 
+export async function startOrRestartCsqtt(node, iface, verb) {
+  const key = node + "|" + iface;
+  Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply();
+  const body = { node, iface };
+  if (verb === "stop") body.stopped = true;
+  else if (verb === "start") body.stopped = false;
+  else body.restart = Date.now();   // restart nonce → node systemctl restart
+  const r = await api.csqttSet(body);
+  if (!r.ok) {
+    Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 10000, err: srvText(r) || T("request failed") };
+    Store.apply(); setTimeout(() => Store.apply(), 10100); return;
+  }
+  await Store.poll();
+}
+
 // pinned, explained failure for a row's last action; dismissable
 export function RowError({ k }) {
   const e = rowError(k);
@@ -1077,7 +1092,7 @@ export function applyForkColors() {
 export function ifaceColor(type) {
   const t = (type || "").toLowerCase();
   const ov = (Store.panelSettings && Store.panelSettings.iface_colors) || {};
-  const k = t === "awg" ? "awg" : t === "wdtt" ? "wdtt" : "wg";   // WDTT (keyless proxy target) is operator-tunable too
+  const k = t === "awg" ? "awg" : t === "wdtt" ? "wdtt" : t === "csqtt" ? "csqtt" : "wg";   // WDTT + csqtt (keyless proxy targets) are operator-tunable too
   return pickThemed(ov[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light);
 }
 // perceived brightness (0–1) of a #rrggbb / #rgb colour — used to pick a contrasting ink for text on the brand.
@@ -1092,8 +1107,8 @@ export function themeColor() {
 // faulty classes (they don't read a custom property, so like the turn tags they need an explicit rule).
 let _themeSig = null;
 export function applyThemeColors() {
-  const theme = themeColor(), wg = ifaceColor("wg"), awg = ifaceColor("awg"), wdtt = ifaceColor("wdtt");
-  const sig = [resolvedTheme(), theme, wg, awg, wdtt].join("|");
+  const theme = themeColor(), wg = ifaceColor("wg"), awg = ifaceColor("awg"), wdtt = ifaceColor("wdtt"), csqtt = ifaceColor("csqtt");
+  const sig = [resolvedTheme(), theme, wg, awg, wdtt, csqtt].join("|");
   if (sig === _themeSig) return;   // nothing changed since last poll → skip the DOM write
   _themeSig = sig;
   const de = document.documentElement, cm = (c, p, m) => "color-mix(in srgb, " + c + " " + p + "%, " + m + ")";
@@ -1110,10 +1125,12 @@ export function applyThemeColors() {
     ".iftype.wg,.tg-wg{background:" + cm(wg, 14, "transparent") + ";color:" + wg + "}" +
     ".iftype.awg,.tg-awg{background:" + cm(awg, 15, "transparent") + ";color:" + awg + "}" +
     ".iftype.wdtt,.tg-wdtt{background:" + cm(wdtt, 15, "transparent") + ";color:" + wdtt + "}" +
+    ".iftype.csqtt,.tg-csqtt{background:" + cm(csqtt, 15, "transparent") + ";color:" + csqtt + "}" +
     // the create-interface Protocol chips track the SAME configured type colours (selected state only)
     ".chip.c-wg.on{color:" + wg + ";border-color:" + wg + ";background:" + cm(wg, 15, "transparent") + "}" +
     ".chip.c-awg.on{color:" + awg + ";border-color:" + awg + ";background:" + cm(awg, 15, "transparent") + "}" +
-    ".chip.c-wdtt.on{color:" + wdtt + ";border-color:" + wdtt + ";background:" + cm(wdtt, 15, "transparent") + "}";
+    ".chip.c-wdtt.on{color:" + wdtt + ";border-color:" + wdtt + ";background:" + cm(wdtt, 15, "transparent") + "}" +
+    ".chip.c-csqtt.on{color:" + csqtt + ";border-color:" + csqtt + ";background:" + cm(csqtt, 15, "transparent") + "}";
   applyFavicon(theme);
 }
 // Rebuild the browser-tab favicon (the indicator-LED mark) in the ACTIVE mode's accent colour, with a

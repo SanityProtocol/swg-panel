@@ -347,7 +347,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   //    count, not a time-average). ONLINE = DISTINCT peers seen connected: live → online right now; a range → the
   //    distinct peers that were active at any point in the window (unioned from the per-peer RRD, so cycling peers
   //    all count once — not the peak or the mean). ──
-  const nodeCnt = {}, typeCnt = { wg: { tot: 0, on: 0 }, awg: { tot: 0, on: 0 }, wdtt: { tot: 0, on: 0 } };
+  const nodeCnt = {}, typeCnt = { wg: { tot: 0, on: 0 }, awg: { tot: 0, on: 0 }, wdtt: { tot: 0, on: 0 }, csqtt: { tot: 0, on: 0 } };
   fleet.forEach(n => nodeCnt[n.id] = { tot: 0, on: 0 });
   // live interface is authoritative; the stored target.type is only a fallback for interfaces the node isn't reporting.
   // (WDTT targets classify as "wdtt" → counted in their own bucket, never miscounted under WireGuard.)
@@ -375,7 +375,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   }
 
   const nodeName = id => Store.nodeName(id), nodeColor = id => Store.nodeColor(id);
-  const TYPES = [["awg", "AmneziaWG"], ["wg", "WireGuard"], ["wdtt", "WDTT"], ["mesh", T("Mesh")]];   // the Mesh slice only fills when the Mesh badge is on
+  const TYPES = [["awg", "AmneziaWG"], ["wg", "WireGuard"], ["wdtt", "WDTT"], ["csqtt", "csqtt"], ["mesh", T("Mesh")]];   // the Mesh slice only fills when the Mesh badge is on
   const typeColor = t => t === "mesh" ? FLOW_MESH : ifaceColor(t);
   const segNodes = kind => fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: (nodeTraf[n.id] || {})[kind] || 0, color: nodeColor(n.id) }));
   const segTypes = kind => TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeTraf[t] || {})[kind] || 0, color: typeColor(t) }));
@@ -399,7 +399,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const totDownN = sum(nodeTraf, "rx"), totUpN = sum(nodeTraf, "tx");
   const totDownT = typeTraf.wg.rx + typeTraf.awg.rx + typeTraf.wdtt.rx + typeTraf.mesh.rx, totUpT = typeTraf.wg.tx + typeTraf.awg.tx + typeTraf.wdtt.tx + typeTraf.mesh.tx;
   const nodeOn = Object.values(nodeCnt).reduce((a, v) => a + v.on, 0), nodeTot = Object.values(nodeCnt).reduce((a, v) => a + v.tot, 0);
-  const typeOn = typeCnt.wg.on + typeCnt.awg.on + typeCnt.wdtt.on, typeTot = typeCnt.wg.tot + typeCnt.awg.tot + typeCnt.wdtt.tot;
+  const typeOn = typeCnt.wg.on + typeCnt.awg.on + typeCnt.wdtt.on + typeCnt.csqtt.on, typeTot = typeCnt.wg.tot + typeCnt.awg.tot + typeCnt.wdtt.tot + typeCnt.csqtt.tot;
 
   // traffic legends carry down/up SEPARATELY (perspective-adjusted) so each is independently hoverable —
   // hovering the ↓ value isolates the Download arc, the ↑ value the Upload arc.

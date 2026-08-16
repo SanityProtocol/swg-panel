@@ -13,7 +13,7 @@
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPrimaryTarget,
-         useStableOrder, isWdttIface } from "./util.js";
+         useStableOrder, isWdttIface, isCsqttIface } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor } from "./model.js";
 import { go } from "./router.js";
@@ -71,7 +71,7 @@ export function openPeerConfigs(peer, opts) {
   (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child ? closeModal : null}
     subject=${{ kind: "peer", id: peer.id }} foot=${html`<${QRPeerFoot} pid=${peer.id}/>`}>
     ${vkUser ? html`<${PeerStatusLine} peer=${peer} pos="bar"/>` : null}
-    <${VaultUnlockPanel} need=${(peer.targets || []).some(t => targetType(t) !== "wdtt")}/>
+    <${VaultUnlockPanel} need=${(peer.targets || []).some(t => { const ty = targetType(t); return ty !== "wdtt" && ty !== "csqtt"; })}/>
     ${!hideVk && vkUser && targetsWantVk(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${orderedTargets(peer.targets).map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && isPrimaryTarget(peer.targets, t)}/>`)}/>
   <//>`);
@@ -276,7 +276,7 @@ export function userVkLinks(user) {
 // config needs.
 export function targetsWantVk(targets) {
   if (turnEnabled() && (targets || []).some(t => turnProxiesFor(t.node, t.iface).length > 0)) return true;
-  return (targets || []).some(t => t.type === "wdtt" || isWdttIface(t.iface));
+  return (targets || []).some(t => t.type === "wdtt" || t.type === "csqtt" || isWdttIface(t.iface) || isCsqttIface(t.iface));
 }
 const _VK_CALL_RE = /^https:\/\/(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)\/call\/join\/[\w-]+/i;
 // let the operator paste a VK link with or without the scheme — add https:// when it's missing
@@ -684,7 +684,10 @@ export function UserEditCard({ user, done }) {
 // A peer deployment card. A WDTT deployment is keyless — it has no WG config/QR, so it dispatches to a dedicated
 // card that shows the wdtt:// client link instead of the (empty) WireGuard config. Everything else is WG/AWG.
 export function TargetCard(props) {
-  return targetType(props.t) === "wdtt" ? html`<${TargetCardWdtt} ...${props}/>` : html`<${TargetCardWg} ...${props}/>`;
+  const tt = targetType(props.t);
+  return tt === "csqtt" ? html`<${TargetCardCsqtt} ...${props}/>`
+       : tt === "wdtt" ? html`<${TargetCardWdtt} ...${props}/>`
+       : html`<${TargetCardWg} ...${props}/>`;
 }
 // The wdtt:// client artifact input for a peer's WDTT deployment, assembled from the node read-back (endpoint /
 // ports / iface) + the panel-owned per-peer password + the user's VK link. Mirrors what swg-sub builds server-side.
@@ -701,6 +704,56 @@ export function wdttArtInput(peer, t) {
     dtls_port: String(rb.listen || "").split(":").pop() || "56000",
     wg_port: rb.wg_port || 56001, tun_port: "9000",
     vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) };
+}
+// The csqtt:// client link input for a peer's csqtt deployment — assembled from the node read-back (endpoint /
+// listen port) + the panel-owned per-peer password + the user's VK call hashes. Mirrors wdttArtInput.
+export function csqttArtInput(peer, t) {
+  const rb = ((Store.stats[t.node] || {}).csqtt || []).find(c => c && c.iface === t.iface) || {};
+  const nrec = (Store.nodes || []).find(n => n.id === t.node) || {};
+  const user = (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null;
+  const _lh = ipOf(rb.listen || "");
+  const _pub = (((Store.stats[t.node] || {}).node_ips) || []).find(ip => ip && !/^(0\.|10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(ip)) || "";
+  const host = (nrec.endpoint_host || "").trim() || (_lh && _lh !== "0.0.0.0" ? _lh : "") || _pub;   // never 0.0.0.0 — a dead link
+  const port = String(rb.listen || "").split(":").pop() || "46000";
+  const strip = s => { s = String(s || "").trim(); if (s.indexOf("/") >= 0) s = s.slice(s.lastIndexOf("/") + 1); if (s.indexOf("?") >= 0) s = s.slice(0, s.indexOf("?")); return s.trim(); };
+  const hashes = [];
+  if (peer.vk_hash) hashes.push(strip(peer.vk_hash));
+  (userVkLinks(user) || []).forEach(l => { const h = strip(l); if (h) hashes.push(h); });
+  return { host, port, password: peer.csqtt_password || "", hashes: [...new Set(hashes.filter(Boolean))].slice(0, 6) };
+}
+export function csqttClientCfg(inp) {
+  const art = (typeof SWGTurn !== "undefined" && SWGTurn.csqttArtifact) ? SWGTurn.csqttArtifact(inp) : null;
+  return { art, uri: art && art.text, qr: true };
+}
+export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
+  useStore();
+  const peer = Store.recon.peers.find(p => p.id === peerProp.id) || peerProp;   // LIVE peer → current csqtt_password (a rotate would else leave a stale link)
+  const lt = (((Store.recon.peers.find(p => p.id === peer.id) || {}).targets) || []).find(d => d.node === t.node && d.iface === t.iface) || t;
+  const col = Store.nodeColor(t.node); const dnode = Store.nodeName(t.node);
+  const inp = csqttArtInput(peer, t);
+  const dc = csqttClientCfg(inp);
+  const uri = dc.uri;
+  const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
+  const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
+    + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-csqtt">${esc(t.iface)}</span>`;
+  return html`<div class="deploy deploy-csqtt">
+    ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind="csqtt" label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
+    <div class="deploy-body">
+      ${primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
+      ${!uri ? html`<div class="qr-none">${T("csqtt link unavailable — the server isn't reporting yet.")}</div>`
+        : html`<${QR} conf=${uri} label=${label}/>`}
+      ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>` : null}
+      ${bare ? null : html`<div class="dmeta">
+        <div class="row"><span class="k">${T("row|kind")}</span><span class="vv">${T("csqtt · keyless (server-minted address)")}</span></div>
+        <div class="row"><span class="k">${T("row|endpoint")}</span><span class="vv">${inp.host || "—"}:${inp.port}</span></div>
+        <div class="row"><span class="k">${T("row|address")}</span><span class="vv">${lt.ip || "—"}<span class="faint" style="text-transform:none;letter-spacing:0"> ${T("— assigned on first connect")}</span></span></div>
+        <div class="row"><span class="k">${T("row|status")}</span><span class="vv"><${Badge} s=${lt.status}/></span></div>
+      </div>`}
+    </div>
+    ${uri ? html`<div class="acts">
+      <button class="btn btn-mini" onClick=${() => copy(uri, T("csqtt link copied"))}><${Ic} i="copy"/> ${T("Copy")}</button>
+    </div>` : null}
+  </div>`;
 }
 // The clients a WDTT fork can drive (catalog ids the SPA knows) + one client's encoded artifact.
 export function wdttClientIds(fork) {

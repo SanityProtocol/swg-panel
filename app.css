@@ -675,6 +675,7 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .iftype.wg{background:rgba(63,216,154,.14);color:var(--online)}
 .iftype.awg{background:rgba(31,200,214,.15);color:var(--brand)}
 .iftype.wdtt{background:rgba(129,181,18,.16);color:#81B512}   /* WDTT type badge fallback until applyThemeColors injects the tunable colour */
+.iftype.csqtt{background:rgba(249,115,22,.16);color:#F97316}   /* csqtt type badge fallback until applyThemeColors injects the tunable colour */
 /* Approach-B adoption candidates — a wg/awg interface found on the node the panel doesn't manage yet: orange
    "found" cards in the same grid → open to Adopt or Ignore. */
 .ifcard.candidate{border-color:color-mix(in srgb,var(--fault) 45%,var(--line-solid));background:color-mix(in srgb,var(--fault) 6%,var(--surface-2))}
@@ -1190,6 +1191,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .tg-wg{background:rgba(63,216,154,.13);color:var(--online)}
 .tg-awg{background:rgba(31,200,214,.14);color:var(--brand)}
 .tg-wdtt{background:rgba(129,181,18,.16);color:#81B512}   /* WDTT type tag; applyThemeColors injects the tunable colour */
+.tg-csqtt{background:rgba(249,115,22,.16);color:#F97316}   /* csqtt type tag; applyThemeColors injects the tunable colour */
 .tg-turn{color:var(--tfc,#B49BF7);background:color-mix(in srgb,var(--tfc,#A78BF5) 17%,transparent)}
 /* the general turn-proxy accent (matches the turn-section panel icon .panel-ic.t-turn) */
 .tf-gen{--tfc:#7C5CFF}

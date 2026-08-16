@@ -10,7 +10,7 @@
  * dropdown, filter, badge and peer-create dispatch follows. See docs/APP-JS-SPLIT-PLAN.md §5.
  */
 
-import { isWdttIface, portOf } from "./util.js";
+import { isWdttIface, isCsqttIface, portOf } from "./util.js";
 import { Store } from "./store.js";
 import { T } from "./i18n.js";
 
@@ -33,6 +33,7 @@ export function wdttOn(node, iface) {
 }
 export function kindOf(node, iface, type) {
   if (type === "wdtt" || wdttOn(node, iface) || isWdttIface(iface)) return "wdtt";
+  if (type === "csqtt" || isCsqttIface(iface)) return "csqtt";   // raw-TUN self-contained kind (not in describe; keyed by name/type)
   const m = (Store.describe[node] || {})[iface];
   if (m) return (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
   return (String(type || "wg").toLowerCase() === "awg") ? "awg" : "wg";
@@ -45,12 +46,13 @@ export function ifaceIsAwg(iface) {
   return false;
 }
 // interface-filter dropdown values: "" / "*" = all · "*awg" / "*wg" / "*wdtt" = all of one type · else an exact name.
-export const ifaceIsAll = v => !v || v === "*" || v === "*awg" || v === "*wg" || v === "*wdtt";   // an aggregate (multi-iface) filter value
+export const ifaceIsAll = v => !v || v === "*" || v === "*awg" || v === "*wg" || v === "*wdtt" || v === "*csqtt";   // an aggregate (multi-iface) filter value
 export function ifaceMatch(iface, filter) {                                       // does an interface name pass the filter value?
   if (!filter || filter === "*") return true;
   if (filter === "*wdtt") return isWdttIface(iface);
-  if (filter === "*awg") return ifaceIsAwg(iface) && !isWdttIface(iface);
-  if (filter === "*wg") return !ifaceIsAwg(iface) && !isWdttIface(iface);   // WDTT owns its own wg iface — never lump it under WireGuard
+  if (filter === "*csqtt") return isCsqttIface(iface);
+  if (filter === "*awg") return ifaceIsAwg(iface) && !isWdttIface(iface) && !isCsqttIface(iface);
+  if (filter === "*wg") return !ifaceIsAwg(iface) && !isWdttIface(iface) && !isCsqttIface(iface);   // WDTT/csqtt own their own iface — never lump under WireGuard
   return iface === filter;
 }
 
