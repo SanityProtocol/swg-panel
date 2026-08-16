@@ -6522,7 +6522,7 @@ def iface_rrd_path(stats_dir, nid, ifn):   # per-(node,interface) throughput rin
     return os.path.join(stats_dir, "iface-" + nid + "-" + re.sub(r"[^A-Za-z0-9_.-]", "_", str(ifn)) + ".rrd")
 def block_rrd_path(stats_dir, nid):   # per-node blocking-activity ring — REUSES: rx slot = torrents/hr (mean), pon = scan sources (peak), ptot = blocked dsts reached (peak)
     return os.path.join(stats_dir, "block-" + nid + ".rrd")
-def _turn_ips_path(deps):   # unique turn-proxy source-IP store {nid:{ip:{first,last,by:[svc]}}} — client IPs seen connecting to each proxy
+def _turn_ips_path(deps):   # unique turn-proxy source-IP store {nid:{ip:{first,last,by:[svc]}}} — the VK relays that reach each proxy
     return os.path.join(os.path.dirname((deps or {}).get("nodes_path") or ".") or ".", "turn-ips.json")
 
 
@@ -9072,8 +9072,9 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": s}
 
     if method == "GET" and path == "/api/turn-ips":
-        # Unique client source IPs seen connecting to each node's turn-proxies. Merges the stored history (first/last
-        # seen + which proxies) with the LIVE snapshot (active_by = proxies currently reporting the IP). On-demand only.
+        # Unique remote-peer source IPs reaching each node's turn-proxies — the VK relays that front them. Merges the
+        # stored history (first/last seen + which proxies) with the LIVE snapshot (active_by = proxies currently
+        # reporting the IP). On-demand only.
         store = deps.get("turn_ips") or {}
         out = {}
         for nid in nodes:
@@ -12371,8 +12372,10 @@ class Handler(BaseHTTPRequestHandler):
                     tM = [0] * HRRD_NM; tM[3] = int(frx); tM[4] = int(ftx); tM[11] = fon; tM[12] = ftot   # rx,tx + pon,ptot
                     with contextlib.suppress(Exception):
                         hrrd_update(turn_rrd_path(stats_dir, nid, fork), now_i, tM)
-                # TURN source-IP collection: merge the unique client IPs the node ss-sampled per proxy (tp.src_ips) into
-                # the panel's unique-IP store. No bytes / no time-series — just first/last-seen + which proxies saw it.
+                # TURN source-IP collection: merge the unique remote-peer IPs the node captured per proxy (tp.src_ips)
+                # into the panel's unique-IP store. A client never dials a turn-proxy directly — it goes through a VK
+                # TURN server which relays to us — so these are the VK relays fronting each proxy (see swg-noded
+                # _ensure_turn_capture). No bytes / no time-series — just first/last-seen + which proxies saw it.
                 # "active" is derived at read time from the live snapshot, not stored here.
                 tips = Handler.deps.setdefault("turn_ips", {}).setdefault(nid, {})
                 for tp in (snap.get("turn_proxies") or []):

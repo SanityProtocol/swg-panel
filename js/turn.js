@@ -237,9 +237,10 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
 const _forkTag = svc => html`<span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(svc))}>${turnFork(svc)}</span>`;
 const _lastSeen = last => last ? T("{v1} ago", { v1: seen(Math.max(0, Math.floor(Date.now() / 1000) - last)) }) : "—";
 
-// The "Turn IPs" header control on the turn-edit modal: unique client IPs seen connecting to THIS proxy. The
-// active count comes from the live snapshot (no fetch); the hover bubble lists them (green dot = online) with a
-// Flush that drops the offline ones. `src_ips` is node-collected (ss); history persists on the panel.
+// The "Turn IPs" header control on the turn-edit modal: the unique remote peers reaching THIS proxy. A client
+// never dials a proxy directly — it goes through a VK TURN server which relays to us — so these are VK relays.
+// The active count comes from the live snapshot (no fetch); the hover bubble lists them (green dot = online) with
+// a Flush that drops the offline ones. `src_ips` is node-collected (nft); history persists on the panel.
 export function TurnIpsHeader({ node, svc }) {
   const [data, setData] = useState(null);
   const load = () => api.turnIps().then(r => setData(r && r.ok ? ((r.data.nodes || {})[node] || {}) : {})).catch(() => setData({}));
@@ -253,7 +254,7 @@ export function TurnIpsHeader({ node, svc }) {
   const rows = all.slice(0, 10);   // show at most 10 here — the full list lives in Settings
   const offlineN = all.filter(r => !r.on).length;   // only OFFLINE recorded IPs are flushable (online are kept)
   const flush = () => openConfirm({ title: T("Flush offline recorded IPs"), confirmLabel: T("Flush"), danger: true,
-    body: Trich(T("Remove {count} offline recorded for *this turn-proxy only*. Currently-online clients are kept, and other proxies are untouched.", { count: plural(offlineN, "IP") })),
+    body: Trich(T("Remove {count} offline recorded for *this turn-proxy only*. Currently-online relays are kept, and other proxies are untouched.", { count: plural(offlineN, "IP") })),
     onConfirm: async () => { await api.turnIpsFlush({ node, service: svc }); load(); } });   // service-scoped on the backend → this proxy's offline IPs only
   const openSettings = () => goSettingsTurnIps();
   const trigger = html`<span class="turnips-hd" onClick=${openSettings}>${T("Turn IPs")}${active.size ? html` · <b>${active.size}</b>` : ""}</span>`;
@@ -268,7 +269,7 @@ export function TurnIpsHeader({ node, svc }) {
   <//>`;
 }
 
-// The "Collected IPs" grid in Settings → Turn proxies: every unique client IP across the fleet's proxies,
+// The "Collected IPs" grid in Settings → Turn proxies: every unique VK relay IP across the fleet's proxies,
 // sorted by Last (online first), with per-row delete and a fleet-wide "Flush …" that keeps the online ones.
 export function TurnCollectedIps() {
   const [show, setShow] = useState(false);   // collapsed by default (advtoggle concept) — fetch on first expand

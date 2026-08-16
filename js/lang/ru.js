@@ -836,8 +836,8 @@ export const STR = {
   "No connections seen yet.": "Соединений пока не видели.",
   "Flush offline recorded IPs": "Очистить офлайн-записи IP",
   "Flush": "Очистить",
-  "Remove {count} offline recorded for *this turn-proxy only*. Currently-online clients are kept, and other proxies are untouched.":
-    "Удалить {count} из офлайн-записей *только этого turn-прокси*. Активные сейчас клиенты сохранятся, другие прокси не тронуты.",
+  "Remove {count} offline recorded for *this turn-proxy only*. Currently-online relays are kept, and other proxies are untouched.":
+    "Удалить {count} из офлайн-записей *только этого turn-прокси*. Активные сейчас релеи сохранятся, другие прокси не тронуты.",
   "Flush recorded IP history": "Очистить историю записанных IP",
   "Flush the collected turn-proxy IP history across the fleet? The currently-online IPs are kept.":
     "Очистить собранную историю IP turn-прокси по всему флоту? Активные сейчас IP сохранятся.",
