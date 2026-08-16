@@ -1,5 +1,5 @@
 diff --git a/server.go b/server.go
-index da7b686..06d12a6 100644
+index e946881..ad169b2 100644
 --- a/server.go
 +++ b/server.go
 @@ -42,14 +42,25 @@ import (
@@ -22,7 +22,7 @@ index da7b686..06d12a6 100644
 +)
 +
  const (
- 	wdttServerVersion     = "13"
+ 	wdttServerVersion     = "14"
 -	wgIfaceName           = "wdtt0"
 -	wgServerAddr          = "10.66.66.1"
 -	wgServerCIDR          = wgServerAddr + "/24"

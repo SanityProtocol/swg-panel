@@ -14,7 +14,7 @@
 # Pure-Go SQLite (modernc) → CGO_ENABLED=0 static build, so the binary runs on any glibc/musl node.
 set -euo pipefail
 
-PIN="${WDTT_ILDARMAGA_PIN:-ce79eeaec98fb9db898d9f4e6aa8079dffda3ea2}"   # pinned upstream commit
+PIN="${WDTT_ILDARMAGA_PIN:-ef697994bc7ac650b81623484933d930c5cd766b}"   # pinned upstream commit
 REPO="https://github.com/ildarmaga/wdtt.git"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PATCH="$HERE/wdtt-ildarmaga.patch"

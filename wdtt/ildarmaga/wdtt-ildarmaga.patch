@@ -21,7 +21,7 @@ index e3fc46d..6de4721 100644
  		go func() {
  			if err := panel.Run(); err != nil {
 diff --git a/server/config.go b/server/config.go
-index 89ee8a4..5867c5a 100644
+index ab78a82..891458d 100644
 --- a/server/config.go
 +++ b/server/config.go
 @@ -4,6 +4,7 @@ import (
@@ -32,7 +32,7 @@ index 89ee8a4..5867c5a 100644
  	"strings"
  	"sync"
  	"time"
-@@ -46,7 +47,36 @@ func initServerFlags() {
+@@ -49,7 +50,36 @@ func initServerFlags() {
  		flagHandshake = flag.Duration("handshake-timeout", 30*time.Second, "таймаут DTLS handshake")
  		flagAdminAddr = flag.String("admin-addr", "127.0.0.1:2861", "HTTP admin (localhost): /health, POST /admin/reload")
  		flagMaxDTLSDev = flag.Int("max-dtls-per-device", 0, "макс. параллельных GETCONF на device_id (0 = без лимита)")
@@ -336,12 +336,12 @@ index 0000000..272cd25
 +	}
 +}
 diff --git a/server/server.go b/server/server.go
-index 28d68a1..2c98d13 100644
+index 5f7877b..53c3595 100644
 --- a/server/server.go
 +++ b/server/server.go
-@@ -23,10 +23,32 @@ import (
- 	"golang.zx2c4.com/wireguard/device"
- )
+@@ -50,18 +50,40 @@ func rawDirectListenAddr(dtlsAddr string, rawPort int) (string, error) {
+ 	return net.JoinHostPort(host, strconv.Itoa(port)), nil
+ }
  
 +// Interface/subnet identity — vars (set from flags in config.go) so ONE binary hosts
 +// many independent instances per node; defaults preserve stock wdtt0/10.66.66.1/24.
@@ -369,13 +369,29 @@ index 28d68a1..2c98d13 100644
 +}
 +
  const (
--	wgIfaceName           = "wdtt0"
--	wgServerAddr          = "10.66.66.1"
--	wgServerCIDR          = wgServerAddr + "/24"
- 	defaultInternalWGPort = 56001
- 	defaultClientDNS      = "1.1.1.1"
- 	defaultMaxUsers       = 10
-@@ -455,7 +477,7 @@ func getNextIP() string {
+-	wgIfaceName             = "wdtt0"
+-	wgServerAddr            = "10.66.66.1"
+-	wgServerCIDR            = wgServerAddr + "/24"
+-	defaultInternalWGPort   = 56001
+-	defaultClientDNS        = "1.1.1.1"
+-	defaultMaxUsers         = 10
+-	maxUsersSubnetLimit     = 249
+-	defaultWgMTU            = 1280
+-	defaultPanelTCPPort     = 2860 // fallback до panel.db
+-	defaultSubTCPPort       = 2096
+-	keepalive               = 25 // default; overridden from panel.db via wgKeepaliveSec
++	defaultInternalWGPort = 56001
++	defaultClientDNS      = "1.1.1.1"
++	defaultMaxUsers       = 10
++	maxUsersSubnetLimit   = 249
++	defaultWgMTU          = 1280
++	defaultPanelTCPPort   = 2860 // fallback до panel.db
++	defaultSubTCPPort     = 2096
++	keepalive             = 25 // default; overridden from panel.db via wgKeepaliveSec
+ 	defaultStatsIntervalSec = 2
+ )
+ 
+@@ -485,7 +507,7 @@ func getNextIP() string {
  		used[dev.IP] = true
  	}
  	for i := 2; i <= 250; i++ {
@@ -384,7 +400,7 @@ index 28d68a1..2c98d13 100644
  		if !used[ip] {
  			return ip
  		}
-@@ -477,11 +499,24 @@ func RunManaged() {
+@@ -507,11 +529,24 @@ func RunManaged() {
  	log.Println("══════════════════════════════════════════")
  
  	cfg := baseServerConfigFromFlags()
@@ -409,7 +425,7 @@ index 28d68a1..2c98d13 100644
  	for {
  		ctx, cancel := context.WithCancel(context.Background())
  		restartCh := make(chan struct{}, 1)
-@@ -520,6 +555,7 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
+@@ -550,6 +585,7 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
  	cfg.applyGlobals()
  
  	initDB(cfg.MainPass, cfg.AdminID, cfg.BotToken)
@@ -418,10 +434,10 @@ index 28d68a1..2c98d13 100644
  
  	if disabled {
 diff --git a/server/server_conn.go b/server/server_conn.go
-index a05498e..63ebbad 100644
+index b43ad24..911974e 100644
 --- a/server/server_conn.go
 +++ b/server/server_conn.go
-@@ -115,7 +115,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -122,7 +122,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  			dbMutex.Unlock()
  			return
  		}
@@ -430,7 +446,7 @@ index a05498e..63ebbad 100644
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			log.Printf("[WG] Отказ: пароль %s — лимит устройств %d/%d, запрос от %s",
  				maskPassword(password), len(allEntryDeviceIDs(entry)), entryMaxDevices(entry), deviceID)
-@@ -125,13 +125,14 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -132,13 +132,14 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  		if valid {
  			connPassword = password
  			connIsMainPass = isMainPass
@@ -446,7 +462,7 @@ index a05498e..63ebbad 100644
  				if bindDeviceToEntry(entry, deviceID) {
  					if err := persistUserBindingsSQLiteLocked(password, entry); err != nil {
  						log.Printf("[DB] bind device save: %v", err)
-@@ -149,16 +150,16 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -156,16 +157,16 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  				ensureMainPasswordEntryLocked()
  			}
  
@@ -467,7 +483,7 @@ index a05498e..63ebbad 100644
  						log.Printf("[DB] new device save: %v", err)
  						persistFail()
  						return
-@@ -175,7 +176,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -182,7 +183,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  					if dev.IP == "" {
  						dev.IP = getNextIP()
  					}

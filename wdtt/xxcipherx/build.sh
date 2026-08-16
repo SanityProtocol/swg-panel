@@ -4,7 +4,7 @@
 # Usage: ./build.sh [out]   Env: GOARCH=amd64|arm64
 set -euo pipefail
 UPSTREAM_REPO="https://github.com/XXcipherX/proxy-turn-vk-android"
-UPSTREAM_SHA="bc1ba26e8acf5cdc4c9b49183dc9b16d59c46e6b"   # pinned; bump deliberately + re-test the patch (fork tracks amurcanov, applies with fuzz)
+UPSTREAM_SHA="9a3a7b87398a17bbf7399c14a7eba922d91660cf"   # v2.0.0.68; re-ported 2026-08-16 (union-merge: v2 added backoff consts + legacy/relay flags)
 SRC_SUBDIR="app/src/main/assets/linux-server"
 HERE="$(cd "$(dirname "$0")" && pwd)"; OUT="${1:-$HERE/wdtt-server}"; PATCH="$HERE/wdtt-xxcipherx.patch"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT

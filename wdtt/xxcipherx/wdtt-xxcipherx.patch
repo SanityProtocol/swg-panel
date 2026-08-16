@@ -1,5 +1,5 @@
 diff --git a/app/src/main/assets/linux-server/db.go b/app/src/main/assets/linux-server/db.go
-index 655b169..d4f5a02 100644
+index e7ef156..d2ce9d1 100644
 --- a/app/src/main/assets/linux-server/db.go
 +++ b/app/src/main/assets/linux-server/db.go
 @@ -1006,7 +1006,7 @@ func getNextIP() string {
@@ -187,7 +187,7 @@ index 0000000..5514bda
 +	}
 +}
 diff --git a/app/src/main/assets/linux-server/main.go b/app/src/main/assets/linux-server/main.go
-index fd5216a..8c390bf 100644
+index d303136..79074df 100644
 --- a/app/src/main/assets/linux-server/main.go
 +++ b/app/src/main/assets/linux-server/main.go
 @@ -1,5 +1,3 @@
@@ -196,17 +196,17 @@ index fd5216a..8c390bf 100644
  package main
  
  import (
-@@ -15,11 +13,64 @@ import (
- 	"sync"
- 	"sync/atomic"
- 	"syscall"
-+	"time"
+@@ -19,12 +17,63 @@ import (
  
  	"github.com/pion/dtls/v3"
  	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 +	"golang.zx2c4.com/wireguard/device"
  )
  
+ const (
+ 	acceptErrorMinBackoff = 10 * time.Millisecond
+ 	acceptErrorMaxBackoff = time.Second
+ )
 +// applyWgAddr parses -wg-addr ("10.66.66.1/24" or bare "10.66.66.1") into the
 +// interface's server address, CIDR and host-pool prefix.
 +func applyWgAddr(cidr string) {
@@ -257,14 +257,13 @@ index fd5216a..8c390bf 100644
 +		}
 +	}
 +}
-+
+ 
  func resolveServerListenAddress(value string) (*net.UDPAddr, error) {
  	value = strings.TrimSpace(value)
- 	if value == "" {
-@@ -101,7 +152,24 @@ func main() {
- 	publicHost := flag.String("public-host", os.Getenv("WDTT_PUBLIC_HOST"), "публичный IPv4 или DNS-имя для wdtt:// ссылок")
- 	maxConnections := flag.Int("max-connections", 512, "максимум одновременных DTLS-соединений")
- 	handshakeRate := flag.Int("handshake-rate", 64, "максимум новых DTLS handshakes в секунду")
+@@ -110,7 +159,24 @@ func main() {
+ 	legacyConnections := flag.Int("legacy-connections-per-device", defaultLegacyConnCap, "максимум legacy WRAP-A соединений на устройство")
+ 	legacyRelayIdleTimeout := flag.Duration("relay-idle-timeout", defaultLegacyRelayIdleTime, "таймаут legacy relay без пакетов или keepalive")
+ 	v2RelayIdleTimeout := flag.Duration("v2-relay-idle-timeout", defaultV2RelayIdleTime, "таймаут lifecycle v2 relay без пакетов или keepalive")
 +	// swg-panel: multi-instance identity + declarative management (defaults preserve stock single-instance behavior).
 +	ifaceFlag := flag.String("iface", wgIfaceName, "имя userspace-WG интерфейса")
 +	wgAddrFlag := flag.String("wg-addr", wgServerCIDR, "адрес/подсеть интерфейса, IPv4 CIDR")
@@ -286,7 +285,7 @@ index fd5216a..8c390bf 100644
  	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
  	if flag.NArg() != 0 {
  		log.Fatalf("[CONFIG] неожиданные аргументы: %s", strings.Join(flag.Args(), " "))
-@@ -183,6 +251,19 @@ func main() {
+@@ -202,6 +268,19 @@ func main() {
  	if err := syncPersistedPeersToWG(wgDev); err != nil {
  		log.Fatalf("[WG] Восстановление peer: %v", err)
  	}
@@ -306,7 +305,7 @@ index fd5216a..8c390bf 100644
  	defer func() {
  		wgDev.Close()
  		runCmdSilent("ip", "link", "del", wgIfaceName)
-@@ -196,7 +277,9 @@ func main() {
+@@ -215,7 +294,9 @@ func main() {
  	}()
  	go func() {
  		defer workers.Done()
@@ -318,10 +317,10 @@ index fd5216a..8c390bf 100644
  	go func() {
  		defer workers.Done()
 diff --git a/app/src/main/assets/linux-server/net.go b/app/src/main/assets/linux-server/net.go
-index 2a0ef73..4a0c875 100644
+index 9585258..2d0a1d3 100644
 --- a/app/src/main/assets/linux-server/net.go
 +++ b/app/src/main/assets/linux-server/net.go
-@@ -175,6 +175,18 @@ func b64ToHex(s string) (string, error) {
+@@ -199,6 +199,18 @@ func b64ToHex(s string) (string, error) {
  	return hex.EncodeToString(b), nil
  }
  
@@ -340,7 +339,7 @@ index 2a0ef73..4a0c875 100644
  func generateKeyPair() (privB64, pubB64 string, err error) {
  	var priv [32]byte
  	if _, err := rand.Read(priv[:]); err != nil {
-@@ -263,6 +275,24 @@ func writeWGKeysAtomic(dir, path string, keys *wgKeys) error {
+@@ -287,6 +299,24 @@ func writeWGKeysAtomic(dir, path string, keys *wgKeys) error {
  	return nil
  }
  
@@ -365,7 +364,7 @@ index 2a0ef73..4a0c875 100644
  func loadOrGenerateKeys(dir string) (*wgKeys, error) {
  	f := filepath.Join(dir, "wg-keys.dat")
  	data, err := os.ReadFile(f)
-@@ -531,7 +561,10 @@ func startUserspaceWG(keys *wgKeys, wgPort int) (*device.Device, error) {
+@@ -555,7 +585,10 @@ func startUserspaceWG(keys *wgKeys, wgPort int) (*device.Device, error) {
  		return nil, err
  	}
  
@@ -378,10 +377,10 @@ index 2a0ef73..4a0c875 100644
  		return nil, err
  	}
 diff --git a/app/src/main/assets/linux-server/types.go b/app/src/main/assets/linux-server/types.go
-index edb0e7d..08b170e 100644
+index 058d102..6541d2a 100644
 --- a/app/src/main/assets/linux-server/types.go
 +++ b/app/src/main/assets/linux-server/types.go
-@@ -5,17 +5,23 @@ import (
+@@ -5,12 +5,16 @@ import (
  	"time"
  )
  
@@ -401,6 +400,8 @@ index edb0e7d..08b170e 100644
 -	wgMTU                 = 1280
  	keepalive             = 25
  	dtlsHandshakeTimeout  = 15 * time.Second
+ 	initialRelayTimeout   = 30 * time.Second
+@@ -20,6 +24,8 @@ const (
  )
  
  var dns = "1.1.1.1"
@@ -409,7 +410,7 @@ index edb0e7d..08b170e 100644
  
  type ClientDevice struct {
  	DeviceID string `json:"device_id"`
-@@ -50,8 +56,11 @@ var (
+@@ -54,8 +60,11 @@ var (
  
  var serverWrapKeys = newWrapKeyStore()
  
