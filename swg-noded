@@ -2620,7 +2620,12 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
     smart_cats = sorted(set((smart or {}).get("categories") or []) | {e["category"] for e in smart_e})
     _smart_subs = {e["subnet"] for e in smart_e}                # smart interfaces (by subnet) → IPv6 fail-closed drop
-    smart_ifs = sorted({ifn for ifn in (node_cfg.get("interfaces") or {}) if _iface_subnet(node_cfg, ifn) in _smart_subs}) if _smart_subs else []
+    # v6 fail-closed drop set = every LOCAL iface whose subnet is smart-routed. Include the self-contained kinds
+    # (WDTT userspace-WG + csqtt raw TUN, both IPv4-only) so v6 can't leak past their v4-only smart routing — they
+    # live outside node_cfg["interfaces"], so without this they were the one datapath bit missing full parity.
+    smart_ifs = sorted(({ifn for ifn in (node_cfg.get("interfaces") or {}) if _iface_subnet(node_cfg, ifn) in _smart_subs}
+                        | {ifn for ifn, w in _wdtt_load().items() if _wdtt_subnet((w or {}).get("wg_addr") or "") in _smart_subs}
+                        | {ifn for ifn, c in _csqtt_load().items() if _csqtt_subnet((c or {}).get("tun_addr") or "") in _smart_subs})) if _smart_subs else []
     set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=is_sni, v6_ifaces=smart_ifs,
                                     reset_mark=(SNI_RESET_MARK if is_sni else 0), queue=(host_engine == "sni_user"),
                                     learn_ttl=learn_ttl)
