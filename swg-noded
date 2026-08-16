@@ -1186,6 +1186,19 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
         if changed:
             res["changed"] += 1
         client_devs.append(_wif)
+    # csqtt instances (raw-IP TUN, run with --no-nat) → the node owns their egress MASQUERADE + FORWARD/MSS too.
+    # Their subnet comes from the csqtt record (tun_addr), same treatment as a WDTT instance / client interface.
+    for _cif, _cinst in _csqtt_load().items():
+        _csub = _csqtt_subnet(_cinst.get("tun_addr") or "")
+        if not _csub:
+            continue
+        _cdes = ("MASQUERADE", default_wan, "") if not _has_foreign_egress(_csub, rules) else None
+        changed, err = _snat_reconcile_rule("swg-egress:" + _cif, _csub, _cdes, rules)
+        if err:
+            res["errors"].append("egress " + _cif + ": " + err); continue
+        if changed:
+            res["changed"] += 1
+        client_devs.append(_cif)
     # FORWARD-accept (belt-and-suspenders — harmless under the usual ACCEPT policy, load-bearing under DROP) and — the
     # real value — a TCP-MSS clamp TOWARD each client tunnel, so a website's return packets can't exceed the 1280 tunnel
     # MTU and silently blackhole ("connects but pages time out"). Applied to ALL client tunnels (PostUp never wrote an
@@ -3892,6 +3905,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "iface_key_sealed": dict(_IVK_SEALED),       # {iface: {pub, eph, ct, mac}} interface keys sealed to the vault, pending upload
             "wdtt_key_sealed": dict(_WDTT_SEALED)}        # {iface: {pub(server_pub), ...}} WDTT server identities sealed to the vault, pending upload
     snap["wdtt"] = wdtt_snapshot()                    # WDTT instances: active + server pubkey + per-password device/traffic (read-back for the panel; no privkeys)
+    snap["csqtt"] = csqtt_snapshot()                  # csqtt instances (raw-TUN): active + per-password device/traffic + byte-delta online (no privkeys)
     snap["iface_candidates"] = iface_candidates(node_cfg)   # unmanaged wg/awg interfaces on the box → panel adoption candidates (report-only, untouched)
     snap["wdtt_dormant"] = wdtt_dormant()                   # WDTT installs on disk with nothing running (no iface to be a candidate)
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
@@ -5687,6 +5701,19 @@ def _wdtt_fork(inst):
 _WDTT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$")
 _WDTT_CIDR_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
 
+# ── csqtt (amurcanov/csqtt — the Rust rewrite; raw-IP TUN, io_uring, NO WireGuard) ────────────────────────────
+# A SELF-CONTAINED, password-credential proxy like the WDTT family, but a raw-IP datapath (no wg handshake). Run
+# as a PARALLEL kind (own record / service names / reply channel) so the proven WDTT path is never threaded
+# through — zero regression risk (the same tactic WDTT used vs the turn path). Bare-metal systemd is the target;
+# io_uring is frequently blocked in container seccomp, so a docker path is deferred.
+CSQTT_RECORD = os.environ.get("SWG_CSQTT_RECORD") or "/etc/swg-agent/csqtt.json"
+CSQTT_ROOT = "/opt/swg-csqtt"                    # per-instance: <root>/<iface>/{server, csqtt.env, desired.json, passwords.json}
+CSQTT_BIN_DIR = CSQTT_ROOT + "/.bin"             # per-arch binary slot; our swg-panel-patched build
+CSQTT_OWNER = "amurcanov/csqtt"                  # panel-mirror owner key
+CSQTT_WEBUSER = "swgpanel"                       # csqtt's own admin panel login (node-owned; a strong random pw is minted)
+_CSQTT_NAME_RE = re.compile(r"^csqtt[0-9]{1,4}$")
+_CSQTT_LASTBYTES = {}                            # iface -> {pw: (up+down, at)} for byte-delta liveness (raw datapath has no wg handshake)
+
 def _wdtt_svc(iface): return "swg-wdtt-" + iface
 def _wdtt_dir(iface): return WDTT_ROOT + "/" + iface
 def _wdtt_unit_path(iface): return TURN_UNIT_DIR + "/" + _wdtt_svc(iface) + ".service"
@@ -6877,6 +6904,279 @@ def wdtt_snapshot():
     return out
 
 
+# ── csqtt node lifecycle (parallel to reconcile_wdtt; bare-metal systemd) ─────────────────────────────────────
+def _csqtt_svc(iface): return "swg-csqtt-" + iface
+def _csqtt_dir(iface): return CSQTT_ROOT + "/" + iface
+def _csqtt_bin_shared(): return CSQTT_BIN_DIR + "/" + _turn_arch() + "/csqtt-server"
+def _csqtt_unit_path(iface): return TURN_UNIT_DIR + "/" + _csqtt_svc(iface) + ".service"
+def _csqtt_present(iface): return os.path.exists(_csqtt_unit_path(iface))
+def _csqtt_subnet(cidr):
+    try: return str(ipaddress.ip_network(cidr, strict=False))
+    except Exception: return ""
+
+def _csqtt_load():
+    with contextlib.suppress(Exception):
+        with open(CSQTT_RECORD) as f:
+            d = json.load(f)
+            if isinstance(d, dict): return d
+    return {}
+
+def _csqtt_save(insts):
+    with contextlib.suppress(Exception):
+        os.makedirs(os.path.dirname(CSQTT_RECORD), exist_ok=True)
+        tmp = CSQTT_RECORD + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(insts, f)
+        os.replace(tmp, CSQTT_RECORD)
+    return os.path.isfile(CSQTT_RECORD)
+
+def _gen_csqtt_password():
+    return base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
+
+def _csqtt_webport(listen):
+    # deterministic per-instance HTTPS admin port derived from the DTLS listen port (won't clash with it)
+    try:
+        p = int(str(listen).rsplit(":", 1)[-1]); return (p + 1000) if p + 1000 < 65535 else (p - 1000)
+    except Exception:
+        return 46002
+
+def _csqtt_desired_body(passwords):
+    """csqtt desired.json = a LIST of panel-owned password records (matches the Rust patch's SwgDesiredFile).
+    NOTE the shape differs from WDTT's dict-keyed-by-password body."""
+    out = []
+    for pw, e in (passwords or {}).items():
+        e = e or {}
+        out.append({"password": pw, "expires_at": int(e.get("expires_at") or 0),
+                    "vk_hash": str(e.get("vk_hash") or ""), "name": str(e.get("name") or ""),
+                    "is_deactivated": bool(e.get("is_deactivated"))})
+    return json.dumps({"passwords": out})
+
+def _csqtt_env_text(inst):
+    cfgdir = _csqtt_dir(inst["iface"])
+    return ("SWG_LISTEN=%s\nSWG_WEBPORT=%s\nSWG_CFGDIR=%s\nSWG_DESIRED=%s\nSWG_IFACE=%s\nSWG_TUNADDR=%s\n"
+            "SWG_PASSWORD=%s\nSWG_WEBPASS=%s\nSWG_MAXPW=%s\nSWG_PARAMS=%s\n" % (
+                inst["listen"], inst.get("web_port") or _csqtt_webport(inst["listen"]), cfgdir,
+                cfgdir + "/desired.json", inst["iface"], inst["tun_addr"],
+                inst.get("password") or "", inst.get("web_pass") or "",
+                inst.get("max_passwords") or 500, (inst.get("params") or "").strip()))
+
+def _csqtt_unit_text(iface, binp, cfgdir):
+    # csqtt = raw-IP TUN + io_uring: needs CAP_NET_ADMIN + /dev/net/tun AND the io_uring syscall set, which is NOT
+    # in @system-service by default → allow @io-uring explicitly or the dataplane seccomp-dies. --no-nat: the NODE
+    # owns MASQUERADE/forward for the csqtt subnet (reconcile_egress). --web-*: csqtt's own admin panel, given a
+    # node-owned strong random password. $SWG_PARAMS unbraced (word-split; empty contributes nothing) — same as WDTT.
+    return ("[Unit]\nDescription=swg-csqtt (" + CSQTT_OWNER + ") — " + iface + "\n"
+            "After=network-online.target\nWants=network-online.target\n\n"
+            "[Service]\nType=simple\nEnvironmentFile=-" + cfgdir + "/csqtt.env\n"
+            "ExecStart=" + binp + " --listen ${SWG_LISTEN} --web-port ${SWG_WEBPORT} --config-dir ${SWG_CFGDIR}"
+            " --password ${SWG_PASSWORD} --web-user " + CSQTT_WEBUSER + " --web-pass ${SWG_WEBPASS}"
+            " --iface ${SWG_IFACE} --tun-addr ${SWG_TUNADDR} --desired ${SWG_DESIRED} --no-nat"
+            " --max-passwords ${SWG_MAXPW} $SWG_PARAMS\n"
+            "Restart=on-failure\nRestartSec=3\n"
+            "NoNewPrivileges=yes\nAmbientCapabilities=CAP_NET_ADMIN\nCapabilityBoundingSet=CAP_NET_ADMIN\n"
+            "DeviceAllow=/dev/net/tun rw\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths=" + cfgdir + "\n"
+            "ProtectControlGroups=yes\nProtectKernelModules=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n"
+            "SystemCallFilter=@system-service @io-uring\nSystemCallErrorNumber=EPERM\n\n"
+            "[Install]\nWantedBy=multi-user.target\n")
+
+def _csqtt_panel_fetch(dest, want_sha, tag="csqtt"):
+    """Fetch our patched csqtt server from the panel mirror (same /api/node/turn-binary transport, keyed by the
+    csqtt owner + a version tag). Best-effort; A2 pre-places the binary, the panel CSQTT_BUILDS lands in A3."""
+    with contextlib.suppress(Exception):
+        return _turn_panel_fetch(CSQTT_OWNER, tag or "csqtt", _turn_arch(), dest, want_sha)
+    return False
+
+def _csqtt_write_cfgdir(inst, binshared, binp, cfgdir):
+    """Lay down the config-dir (binary symlink + csqtt.env + desired.json) natively — a partial failure RAISES
+    before the unit is written, so there is never a half-installed instance to wedge the reconcile."""
+    os.makedirs(cfgdir, exist_ok=True); os.makedirs(os.path.dirname(binshared), exist_ok=True)
+    with contextlib.suppress(Exception): os.chmod(binshared, 0o755)
+    with contextlib.suppress(Exception):
+        if os.path.islink(binp) or os.path.exists(binp): os.remove(binp)
+        os.symlink(binshared, binp)
+    with open(cfgdir + "/csqtt.env", "w") as f: f.write(_csqtt_env_text(inst))
+    with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(inst.get("passwords")) + "\n")
+
+def _csqtt_verify(iface):
+    for _ in range(8):
+        time.sleep(0.5)
+        if (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null").stdout or "").strip() == "active":
+            return ""
+    return "service did not become active — check `journalctl -u " + _csqtt_svc(iface) + "` (io_uring/seccomp?)"
+
+def _csqtt_install(inst):
+    iface = inst["iface"]; cfgdir = _csqtt_dir(iface)
+    binshared = _csqtt_bin_shared(); binp = cfgdir + "/server"
+    if not os.path.exists(binshared):
+        _csqtt_panel_fetch(binshared, (inst.get("sha256") or "").strip(), (inst.get("ver") or "csqtt"))
+        if not os.path.exists(binshared):
+            return "csqtt binary unavailable for arch " + _turn_arch() + " (panel mirror has no build yet)"
+    try:
+        _csqtt_write_cfgdir(inst, binshared, binp, cfgdir)
+    except Exception as e:
+        return ("cfgdir write failed: " + str(e))[:160]
+    try:
+        with open(_csqtt_unit_path(iface), "w") as f: f.write(_csqtt_unit_text(iface, binp, cfgdir))
+    except Exception as e:
+        return ("unit write failed: " + str(e))[:160]
+    host_sh("systemctl daemon-reload; systemctl enable --now " + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
+    return _csqtt_verify(iface)
+
+def _csqtt_reconcile_desired(iface, passwords):
+    """Write the panel's desired password set + SIGHUP the server → applied with no restart / no tunnel drop."""
+    cfgdir = _csqtt_dir(iface)
+    try:
+        with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(passwords) + "\n")
+    except Exception as e:
+        return ("desired write failed: " + str(e))[:160]
+    w = host_sh("systemctl kill -s HUP " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null || true")
+    return "" if w.returncode == 0 else (w.stderr or w.stdout or "reconcile failed").strip()[:160]
+
+def _csqtt_desired_changed(iface, passwords):
+    try:
+        with open(_csqtt_dir(iface) + "/desired.json") as f:
+            cur = f.read().strip()
+    except Exception:
+        return True
+    return cur != _csqtt_desired_body(passwords).strip()
+
+def _csqtt_params_changed(prev, inst):
+    return ((prev.get("listen") or "") != (inst.get("listen") or "")
+            or (prev.get("tun_addr") or "") != (inst.get("tun_addr") or "")
+            or str(prev.get("max_passwords") or 500) != str(inst.get("max_passwords") or 500)
+            or (prev.get("params") or "").strip() != (inst.get("params") or "").strip())
+
+def _csqtt_reconfigure(inst):
+    """Apply a transport-param change (listen / tun-addr / max / params) to a running instance: rewrite csqtt.env
+    + the unit and restart. The store (passwords.json) is preserved."""
+    iface = inst["iface"]; cfgdir = _csqtt_dir(iface); binp = cfgdir + "/server"
+    try:
+        _csqtt_write_cfgdir(inst, _csqtt_bin_shared(), binp, cfgdir)
+        with open(_csqtt_unit_path(iface), "w") as f: f.write(_csqtt_unit_text(iface, binp, cfgdir))
+    except Exception as e:
+        return ("reconfigure failed: " + str(e))[:160]
+    host_sh("systemctl daemon-reload; systemctl restart " + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
+    return _csqtt_verify(iface)
+
+def _csqtt_remove(iface):
+    if not _CSQTT_NAME_RE.match(iface or ""):   # never rm -rf a path built from an unvalidated name
+        return
+    svc = _csqtt_svc(iface)
+    host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "
+            "rm -f " + shlex.quote(_csqtt_unit_path(iface)) + "; systemctl daemon-reload; "
+            "ip link del " + shlex.quote(iface) + " 2>/dev/null; "
+            "rm -rf " + shlex.quote(_csqtt_dir(iface)))
+    _CSQTT_LASTBYTES.pop(iface, None)
+    # node-owned egress rules (reconcile_egress won't drop them — the iface is already gone from the record)
+    _wdtt_del_iptables_comment("nat", "POSTROUTING", "swg-egress:" + iface)
+    _wdtt_del_iptables_comment("filter", "FORWARD", "swg-egress-acl:" + iface)
+    _wdtt_del_iptables_comment("mangle", "FORWARD", "swg-egress-mss:" + iface)
+
+def reconcile_csqtt(want, remove=None):
+    """Declarative csqtt reconcile (continuous). want = {iface: inst}. Installs missing, writes desired.json +
+    SIGHUPs on password change, reconfigures on transport-param change, and removes ONLY panel-listed instances.
+    Mirrors reconcile_wdtt minus the adoption/vault machinery (deferred to A7)."""
+    res = {"changed": 0, "errors": []}
+    want = want or {}
+    if not isinstance(want, dict):
+        res["errors"].append("panel sent a malformed csqtt set (%s) — ignored" % type(want).__name__)
+        return res
+    have = _csqtt_load()
+    if not want and not have:
+        return res
+    for iface in [i for i in (remove or []) if isinstance(i, str)]:
+        if iface in have and (have.get(iface) or {}).get("panel_managed"):
+            _csqtt_remove(iface); have.pop(iface, None); res["changed"] += 1
+    for iface, req in want.items():
+        try:
+            if not _CSQTT_NAME_RE.match(iface):
+                res["errors"].append(iface + ": bad csqtt iface name"); continue
+            inst = dict(req or {}); inst["iface"] = iface
+            prev = have.get(iface) or {}
+            inst["panel_managed"] = True
+            # owner --password + --web-pass are NODE-OWNED (the panel is blind): reuse the stored ones, else mint.
+            inst["password"] = (prev.get("password") or inst.get("password") or "").strip() or _gen_csqtt_password()
+            inst["web_pass"] = (prev.get("web_pass") or _gen_csqtt_password() + _gen_csqtt_password())
+            inst["web_port"] = prev.get("web_port") or _csqtt_webport(inst.get("listen") or "")
+            # pw_seen safety net: an EMPTY desired set must not reap users the panel has never owned (a create
+            # landing on an earlier install's dir, a lost node record). Until the panel has held a password here,
+            # skip writing an empty desired (which our --desired reconcile would use to delete every password).
+            _pw_seen = bool(prev.get("pw_seen") or (inst.get("passwords") or {}))
+            if _pw_seen:
+                inst["pw_seen"] = True
+            if not _csqtt_present(iface):
+                err = _csqtt_install(inst)
+                if err:
+                    res["errors"].append(iface + ": " + err); have[iface] = inst; continue
+                res["changed"] += 1
+            else:
+                if _csqtt_params_changed(prev, inst):
+                    err = _csqtt_reconfigure(inst)
+                    if err:
+                        res["errors"].append(iface + ": " + err); continue
+                    res["changed"] += 1
+                if _pw_seen and _csqtt_desired_changed(iface, inst.get("passwords")):
+                    err = _csqtt_reconcile_desired(iface, inst.get("passwords"))
+                    if err:
+                        res["errors"].append(iface + ": " + err); continue
+                    res["changed"] += 1
+            if bool(inst.get("stopped")) != bool(prev.get("stopped")):
+                host_sh("systemctl " + ("disable --now " if inst.get("stopped") else "enable --now ")
+                        + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
+                res["changed"] += 1
+            if inst.get("restart") and inst.get("restart") != prev.get("restart") and not inst.get("stopped"):
+                host_sh("systemctl restart " + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
+                res["changed"] += 1
+            have[iface] = inst
+        except Exception as e:
+            res["errors"].append(iface + ": " + str(e))
+    if not _csqtt_save(have):
+        res["errors"].append("couldn't write the csqtt record (" + CSQTT_RECORD + ")")
+    return res
+
+def csqtt_snapshot():
+    """Read each csqtt instance's runtime state back for the panel: service active + per-password device binding
+    + traffic (from the csqtt store passwords.json — WDTT-shaped). Raw datapath has NO wg handshake, so `online`
+    is a byte-delta heuristic (bytes moved since the last snapshot). Never returns any private key."""
+    out = []
+    insts = _csqtt_load()
+    if not insts:
+        return out
+    _nowt = int(time.time())
+    for iface, inst in insts.items():
+        svc = _csqtt_svc(iface)
+        active = (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null").stdout or "").strip()
+        pj = {}
+        with contextlib.suppress(Exception):
+            with open(_csqtt_dir(iface) + "/passwords.json") as f:
+                pj = json.load(f) or {}
+        pwds, devs = {}, {}
+        for did, d in (pj.get("devices") or {}).items():
+            d = d or {}
+            devs[did] = {"ip": d.get("ip", ""), "pub_key": d.get("pub_key", "")}   # NO priv_key
+        last = _CSQTT_LASTBYTES.setdefault(iface, {})
+        for pw, e in (pj.get("passwords") or {}).items():
+            e = e or {}
+            up, dn = int(e.get("up_bytes") or 0), int(e.get("down_bytes") or 0)
+            _dev = devs.get(e.get("device_id") or "") or {}
+            # byte-delta liveness: total bytes moved since the last snapshot (< ~3 min ⇒ online). Best-effort until
+            # a proper last-seen exists upstream (see the raw-datapath tax in the csqtt plan).
+            prev = last.get(pw)
+            online = bool(prev and (up + dn) > prev[0] and (_nowt - prev[1]) < 180)
+            last[pw] = (up + dn, _nowt)
+            pwds[pw] = {"device_id": e.get("device_id", ""), "up_bytes": up, "down_bytes": dn,
+                        "is_deactivated": bool(e.get("is_deactivated")), "expires_at": e.get("expires_at", 0),
+                        "ip": _dev.get("ip", ""), "online": online}
+        _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # TUN aggregate throughput (same reader as a wg iface)
+        out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
+                    "tun_addr": inst.get("tun_addr", ""), "web_port": inst.get("web_port", ""),
+                    "stopped": bool(inst.get("stopped")), "kind": "csqtt",
+                    "version": (inst.get("ver") or "").strip(),   # A3 wires CSQTT_BUILDS + a version board; record-tracked for now
+                    "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
+                    "passwords": pwds, "devices": devs})
+    return out
+
+
 # node self-update is NODE-ONLY: on a master box (panel + node together) it must NOT restart the
 # co-located panel, or the panel restart breaks the very sync that would clear the update request.
 DEFAULT_UPDATE_CMD = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
@@ -7056,6 +7356,7 @@ def main():
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
                 wd = reconcile_wdtt(reply.get("wdtt"), reply.get("wdtt_remove"))   # install/desired.json+SIGHUP; removals ONLY from the explicit list
+                cq = reconcile_csqtt(reply.get("csqtt"), reply.get("csqtt_remove"))   # csqtt (raw-TUN): parallel to wdtt; removals ONLY from the explicit list
                 r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
                 reconcile_dial_src(reply["desired"], r)        # Part 3: pin per-link outbound source IPs (folds into r)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)   # set-iface: write the new listen-port to the conf FIRST
@@ -7069,7 +7370,7 @@ def main():
                 _route_sig = json.dumps([reply.get("desired_ifaces"), reply.get("cascade"),
                                          reply.get("smart"), _def_egress], sort_keys=True, default=str)
                 _iface_churn = bool(cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
-                                    or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"])   # a WDTT install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
+                                    or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"] or cq["changed"])   # a WDTT/csqtt install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
                 if (_route_sig != last_route_sig or _iface_churn
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):
                     eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
@@ -7083,7 +7384,7 @@ def main():
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name — INCLUDING
                 # keypair restore/rebaseline (ik): a failed Restore (e.g. awg-quick up failed) is reported so the
                 # panel can show "restore failed" + the reason instead of hanging on "restoring".
-                for blk in (cr, dl, ob, rs, sp, sa, ik, wd):
+                for blk in (cr, dl, ob, rs, sp, sa, ik, wd, cq):
                     for e in blk["errors"]:
                         k, _, m = e.partition(": ")
                         NODE_ERRORS[k] = m or e
@@ -7099,7 +7400,7 @@ def main():
                           | set(reply.get("delete") or []) | set(reply.get("restart") or []) | set(reply.get("turn") or {})
                           | set(reply.get("iface_stop") or []) | set(reply.get("iface_start") or [])
                           | set(reply.get("iface_key") or {})
-                          | set(reply.get("turn_onboard") or []) | set(reply.get("wdtt") or {}))
+                          | set(reply.get("turn_onboard") or []) | set(reply.get("wdtt") or {}) | set(reply.get("csqtt") or {}))
                 for k in list(NODE_ERRORS):
                     if k not in active:
                         NODE_ERRORS.pop(k, None)
