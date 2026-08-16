@@ -6380,6 +6380,8 @@ def _resolve_iface_blocks(node, snap, panel_settings, mode):
     # NOT snap.interfaces). The datapath is subnet-based, so a WDTT subnet drops exactly like an interface's.
     for _wov in (node.get("wdtt") or {}).values():
         _add(_wdtt_net((_wov or {}).get("wg_addr") or ""), _validate_block((_wov or {}).get("block"), panel_settings))
+    for _cov in (node.get("csqtt") or {}).values():   # csqtt TUN subnets drop by `ip saddr <net>` exactly like WDTT/interfaces
+        _add(_wdtt_net((_cov or {}).get("tun_addr") or ""), _validate_block((_cov or {}).get("block"), panel_settings))
     return entries, srcs, {s: sorted(v) for s, v in mech.items()}
 
 
@@ -6503,6 +6505,13 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             if not S:
                 continue
             _collect_egress(nid, _wov, S, targets)
+        for _cov in (node.get("csqtt") or {}).values():   # csqtt instances too (subnet from tun_addr) — subnet-based, routed identically
+            if not _cov:
+                continue
+            S = _wdtt_net((_cov or {}).get("tun_addr") or "")
+            if not S:
+                continue
+            _collect_egress(nid, _cov, S, targets)
         if targets:
             slot(nid)["_targets"] = {p: SWG_RT_BASE + i for i, p in enumerate(sorted(targets))}
 
@@ -11148,6 +11157,50 @@ def api(method, path, qs, body, deps):
             inst["stopped"] = bool(body.get("stopped"))
         if body.get("restart"):
             inst["restart"] = int(time.time())
+        # Egress / routing / content-filters — the SAME override model as an interface / WDTT instance. csqtt's
+        # tun_addr subnet is fed into cascade_plan + the block plan by subnet, so routing modes + filters apply
+        # identically (the datapath never learns it's a raw TUN). NOTE the IPv6 fail-closed drop (smart_ifs) is the
+        # one bit keyed to node_cfg["interfaces"] — a self-contained kind (WDTT and csqtt alike) doesn't get it.
+        if "block" in body:
+            inst["block"] = _validate_block(body.get("block"), deps.get("panel_settings"))
+        if "egress_ip" in body:
+            e = (body.get("egress_ip") or "").strip()
+            if e:
+                try: ipaddress.ip_address(e)
+                except ValueError: return 400, {"ok": False, "error": "egress IP must be an IPv4 address", "code": "bad_request"}
+                inst["egress_ip"] = e
+            else:
+                inst.pop("egress_ip", None)
+        if "wan_iface" in body:
+            w = (body.get("wan_iface") or "").strip()
+            if w: inst["wan_iface"] = w
+            else: inst.pop("wan_iface", None)
+        if "egress_mode" in body:
+            mode = (body.get("egress_mode") or "direct").strip()
+            if mode not in ("direct", "forward", "smart"):
+                return 400, {"ok": False, "error": "egress_mode must be direct|forward|smart", "code": "bad_request"}
+            if mode == "forward":
+                en = (body.get("egress_node") or "").strip()
+                if en not in nodes or en == nid:
+                    return 400, {"ok": False, "error": "egress_node must be another known node", "code": "bad_request"}
+                inst["egress_mode"] = "forward"; inst["egress_node"] = en; inst.pop("routing", None)
+            elif mode == "smart":
+                rules, err = _validate_routing(body.get("routing"), nodes, nid, [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")])
+                if err:
+                    return 400, {"ok": False, "error": err, "code": "bad_request"}
+                inst["egress_mode"] = "smart"; inst["routing"] = rules; inst.pop("egress_node", None)
+            else:
+                inst["egress_mode"] = "direct"; inst.pop("egress_node", None); inst.pop("routing", None)
+        elif "routing" in body and inst.get("egress_mode") == "smart":
+            rules, err = _validate_routing(body.get("routing"), nodes, nid, [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")])
+            if err:
+                return 400, {"ok": False, "error": err, "code": "bad_request"}
+            inst["routing"] = rules
+        # tun_addr subnets must be unique across the fleet (mesh + routing key on subnet), like interfaces / WDTT.
+        if inst.get("tun_addr"):
+            fc = subnet_fleet_conflict(deps, nodes, inst["tun_addr"], skip_node=nid, skip_iface=iface)
+            if fc:
+                return 400, {"ok": False, "error": fc, "code": "bad_request"}
         nodes[nid].setdefault("csqtt", {})[iface] = inst
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Set csqtt instance", iface)
