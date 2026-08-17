@@ -817,12 +817,21 @@ def _attach_turn_src_ips(tp):
     `src_ips` name: it is snapshot transport a mixed-version panel already reads, and renaming it would blank the
     grid on either side of an upgrade. Best-effort — any failure leaves src_ips unset."""
     with contextlib.suppress(Exception):
-        if not tp:
-            _ensure_turn_capture([])                               # no proxies → drop the capture table
+        # The capture set covers EVERY turn-family listen port — the turn-proxies here AND the self-contained
+        # VK-turn servers (WDTT + csqtt), which also sit behind a VK relay. ONE ensure over the union so a second
+        # pass can't evict the others; the WDTT/csqtt snapshot entries read the same @peers set (build_snapshot).
+        sc_ports = []
+        with contextlib.suppress(Exception):
+            sc_ports = [str((v or {}).get("listen") or "").rsplit(":", 1)[-1]
+                        for v in list((_wdtt_load() or {}).values()) + list((_csqtt_load() or {}).values())]
+        turn_ports = [str(t.get("listen") or "").rsplit(":", 1)[-1] for t in (tp or [])]
+        allp = [p for p in (turn_ports + sc_ports) if p]
+        if not allp:
+            _ensure_turn_capture([])                               # nothing turn-family → drop the capture table
             return
-        _ensure_turn_capture([str(t.get("listen") or "").rsplit(":", 1)[-1] for t in tp])
+        _ensure_turn_capture(allp)
         cmap = _turn_peer_ips()
-        for t in tp:
+        for t in (tp or []):
             lp = str(t.get("listen") or "").rsplit(":", 1)[-1]
             if lp.isdigit():
                 t["src_ips"] = sorted(cmap.get(lp, ()))
@@ -3921,6 +3930,14 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "wdtt_key_sealed": dict(_WDTT_SEALED)}        # {iface: {pub(server_pub), ...}} WDTT server identities sealed to the vault, pending upload
     snap["wdtt"] = wdtt_snapshot()                    # WDTT instances: active + server pubkey + per-password device/traffic (read-back for the panel; no privkeys)
     snap["csqtt"] = csqtt_snapshot()                  # csqtt instances (raw-TUN): active + per-password device/traffic + byte-delta online (no privkeys)
+    with contextlib.suppress(Exception):              # VK-relay src-IPs for the self-contained turn servers (capture ensured in _attach_turn_src_ips, above)
+        _cmap = _turn_peer_ips()
+        for _x in (snap.get("wdtt") or []) + (snap.get("csqtt") or []):
+            if not _x:
+                continue
+            _lp = str(_x.get("listen") or "").rsplit(":", 1)[-1]
+            if _lp.isdigit():
+                _x["src_ips"] = sorted(_cmap.get(_lp, ()))
     snap["iface_candidates"] = iface_candidates(node_cfg)   # unmanaged wg/awg interfaces on the box → panel adoption candidates (report-only, untouched)
     snap["wdtt_dormant"] = wdtt_dormant()                   # WDTT installs on disk with nothing running (no iface to be a candidate)
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]

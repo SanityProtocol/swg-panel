@@ -239,7 +239,24 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
 // master switch: turn-proxy UI is shown unless explicitly disabled in Panel settings → Turn proxies.
 
 
-const _forkTag = svc => html`<span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(svc))}>${turnFork(svc)}</span>`;
+const _forkTag = svc => {
+  // A self-contained VK-turn server (WDTT/csqtt) collects relay IPs too; its service is `swg-<kind>-<iface>`, which
+  // turnFork can't parse. Resolve the running instance to its actual fork (WDTT has several; csqtt is single) so it
+  // renders a proper fork tag at parity with the turn-proxies, falling back to the kind's default fork.
+  const scm = /^swg-(wdtt|csqtt)-/.exec(String(svc || ""));
+  if (scm) {
+    const kind = scm[1];
+    let fork = "";
+    for (const nid of Object.keys(Store.stats || {})) {
+      const inst = ((Store.stats[nid] || {})[kind] || []).find(x => x && x.service === svc);
+      if (inst) { fork = inst.fork || ""; break; }
+    }
+    if (!fork) fork = kind === "csqtt" ? "csqtt" : "amurcanov";
+    const label = (turnForkList().find(x => x.id === fork) || {}).label || fork;
+    return html`<span class="tg tg-turn" style=${"--tfc:" + (turnColor(fork) || WDTT_COLOR)}>${label}</span>`;
+  }
+  return html`<span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(svc))}>${turnFork(svc)}</span>`;
+};
 const _lastSeen = last => last ? T("{v1} ago", { v1: seen(Math.max(0, Math.floor(Date.now() / 1000) - last)) }) : "—";
 
 // The "Turn IPs" header control on the turn-edit modal: the unique remote peers reaching THIS proxy. A client
@@ -250,8 +267,12 @@ export function TurnIpsHeader({ node, svc }) {
   const [data, setData] = useState(null);
   const load = () => api.turnIps().then(r => setData(r && r.ok ? ((r.data.nodes || {})[node] || {}) : {})).catch(() => setData({}));
   useEffect(() => { load(); }, [node]);
-  const tp = ((Store.stats[node] || {}).turn_proxies || []).find(t => t.service === svc);
-  const active = new Set(tp ? (tp.src_ips || []) : []);
+  const _snap = Store.stats[node] || {};
+  // a turn-proxy OR a self-contained VK-turn server (WDTT/csqtt) — all key their captured relay IPs off `service`
+  const _ent = (_snap.turn_proxies || []).find(t => t.service === svc)
+            || (_snap.wdtt || []).find(w => w && w.service === svc)
+            || (_snap.csqtt || []).find(c => c && c.service === svc);
+  const active = new Set(_ent ? (_ent.src_ips || []) : []);
   const recs = data || {};
   const ips = new Set([...Object.keys(recs).filter(ip => (recs[ip].by || []).includes(svc)), ...active]);
   const all = [...ips].map(ip => ({ ip, last: (recs[ip] || {}).last, on: active.has(ip) }))
@@ -1614,6 +1635,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   return html`<${Sheet}
     title=${html`WDTT-proxy · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: fork })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`}
     width=${664}
+    headExtra=${w.service ? html`<${TurnIpsHeader} node=${node} svc=${w.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", T("Start service"), T("Bring this WDTT server up on the node"))
@@ -1826,6 +1848,7 @@ export function CsqttCard({ node, c, reorder }) {
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
       <span class="iftype csqtt">CSQTT</span>
       <span class="ifname">${shownTitle("c|" + node + "|" + c.iface, (((nrec.csqtt_cfg || {})[c.iface] || {}).title || "").trim()) || c.iface}</span><span class="grow"></span>
+      ${(() => { const conn = wdttConnRows(node, c.iface); return conn.length ? html`<${OnlPop} peer title=${T("Connected to this csqtt server")} cls="ifc-conn" rows=${conn} trigger=${cnt => html`<b class="oncount on">${cnt}</b>`}/>` : null; })()}
       ${tag}
     </div>
     <div class="ifcard-rows">
@@ -1885,6 +1908,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   return html`<${Sheet}
     title=${html`csqtt-proxy · ${(title.trim() || iface)}${c.version ? html` <span class="sheet-ver">${c.version}</span>` : ""}`}
     width=${664}
+    headExtra=${c.service ? html`<${TurnIpsHeader} node=${node} svc=${c.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", T("Start service"), T("Bring this csqtt server up on the node"))

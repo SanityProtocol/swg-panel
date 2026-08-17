@@ -6641,6 +6641,18 @@ def _turn_ips_path(deps):   # unique turn-proxy source-IP store {nid:{ip:{first,
     return os.path.join(os.path.dirname((deps or {}).get("nodes_path") or ".") or ".", "turn-ips.json")
 
 
+def _turnfam_srcs(snap):
+    """(service, src_ips) for every turn-family server in a node snapshot — the turn-proxies AND the self-contained
+    VK-turn servers (WDTT + csqtt), all of which the node captures VK-relay source IPs for (by listen port)."""
+    snap = snap or {}
+    out = []
+    for group in ("turn_proxies", "wdtt", "csqtt"):
+        for e in (snap.get(group) or []):
+            if e:
+                out.append((e.get("service") or "", e.get("src_ips") or []))
+    return out
+
+
 def _rrd_series(path, rng):
     """Per-time-point {t, rx, tx} from one RRD ring, for the on-demand per-entity throughput graphs (turn /
     mesh / interface). None on a bad range. Same ring→range mapping as /api/node-history."""
@@ -9212,9 +9224,9 @@ def api(method, path, qs, body, deps):
         out = {}
         for nid in nodes:
             cur = {}                                     # ip -> set(services currently established)
-            for tp in ((snaps.get(nid) or {}).get("turn_proxies") or []):
-                for ip in (tp.get("src_ips") or []):
-                    cur.setdefault(ip, set()).add(tp.get("service") or "")
+            for svc, _sips in _turnfam_srcs(snaps.get(nid) or {}):
+                for ip in _sips:
+                    cur.setdefault(ip, set()).add(svc)
             recs = store.get(nid) or {}
             merged = {}
             for ip in set(recs) | set(cur):
@@ -9238,9 +9250,9 @@ def api(method, path, qs, body, deps):
         elif svc:                                        # bubble Flush — drop THIS proxy's offline IPs (keep online); un-tag shared ones
             recs = store.get(nid) or {}
             cur = set()
-            for tp in ((snaps.get(nid) or {}).get("turn_proxies") or []):
-                if (tp.get("service") or "") == svc:
-                    cur.update(tp.get("src_ips") or [])
+            for _svc, _sips in _turnfam_srcs(snaps.get(nid) or {}):
+                if _svc == svc:
+                    cur.update(_sips)
             for ip in list(recs):
                 rec = recs[ip]
                 if svc in (rec.get("by") or []) and ip not in cur:
@@ -9252,8 +9264,8 @@ def api(method, path, qs, body, deps):
             for tn in ([nid] if nid else list(store.keys())):
                 recs = store.get(tn) or {}
                 cur = set()
-                for tp in ((snaps.get(tn) or {}).get("turn_proxies") or []):
-                    cur.update(tp.get("src_ips") or [])
+                for _svc, _sips in _turnfam_srcs(snaps.get(tn) or {}):
+                    cur.update(_sips)
                 keep = {ip: r for ip, r in recs.items() if ip in cur}
                 removed += len(recs) - len(keep)
                 store[tn] = keep
@@ -12673,9 +12685,8 @@ class Handler(BaseHTTPRequestHandler):
                 # _ensure_turn_capture). No bytes / no time-series — just first/last-seen + which proxies saw it.
                 # "active" is derived at read time from the live snapshot, not stored here.
                 tips = Handler.deps.setdefault("turn_ips", {}).setdefault(nid, {})
-                for tp in (snap.get("turn_proxies") or []):
-                    svc = tp.get("service") or ""
-                    for ip in (tp.get("src_ips") or []):
+                for svc, _sips in _turnfam_srcs(snap):
+                    for ip in _sips:
                         if not isinstance(ip, str) or not ip:
                             continue
                         rec = tips.get(ip)
