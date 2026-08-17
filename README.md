@@ -1,9 +1,9 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.2-beta</code></p>
+<p align="center"><code>1.7.3-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.2-beta** — [full changelog](CHANGELOG.md)
+> **What's new in 1.7.3-beta** — [full changelog](CHANGELOG.md)
 > - **csqtt is a first-class server kind** — amurcanov's rewrite of WDTT and its successor, a raw-IP tunnel with no WireGuard inside it. Create one like any other interface, with its own routing, filters and egress; its users sit in Peers with everyone else and get a one-tap `csqtt://` link.
 > - **Adopt a csqtt or qWDTT server the panel didn't create** — the node finds it, and adopting keeps every user connected instead of forcing you to delete the server and lose them.
 > - **Choose what each peer publishes** — click a protocol tag to keep that kind of config off the holder's subscription page, without touching the deployment.

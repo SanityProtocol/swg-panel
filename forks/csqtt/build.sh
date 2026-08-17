@@ -2,7 +2,7 @@
 # Build the swg-panel csqtt server: clone upstream at the pinned commit, apply csqtt-swgpanel.patch, and
 # produce a static musl binary via cargo-zigbuild. Mirrors wdtt/<fork>/build.sh.
 #
-# Usage:  bash csqtt/build.sh <out-dir> [amd64|arm64]     (default arch: amd64)
+# Usage:  bash forks/csqtt/build.sh <out-dir> [amd64|arm64]     (default arch: amd64)
 # Needs:  cargo + rustup (toolchain 1.97.1) + zig + cargo-zigbuild on PATH (see the A0 scratchpad setup.sh).
 # csqtt is PolyForm-Noncommercial-1.0.0 — build only for non-commercial use.
 set -euo pipefail

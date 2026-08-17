@@ -4456,7 +4456,7 @@ TURN_SERVERS = {
                      # qWDTT: the actively-developed WDTT fork (amurcanov's own is frozen). Same DTLS+WRAP-A wire and
                      # the same passwords.json store, so every WDTT client and all our WDTT machinery apply unchanged;
                      # what differs is server FEATURES (multi-device passwords, downlink pacing, an experimental raw-IP
-                     # listener — see docs/QWDTT-AND-TCP-TRANSPORT-PLAN.md §A.3). We build it ourselves (qwdtt/build.sh,
+                     # listener — see docs/QWDTT-AND-TCP-TRANSPORT-PLAN.md §A.3). We build it ourselves (forks/qwdtt/build.sh,
                      # pinned commit) with the standard fork flags; its HTTP admin API is disabled in our build.
                      "settings": [], "client_settings": _WDTT_CLIENT_CS},
     # ── csqtt (amurcanov/csqtt) — SELF-CONTAINED like the WDTT family but a RAW-IP TUN datapath (no WireGuard),

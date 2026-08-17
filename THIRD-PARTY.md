@@ -21,12 +21,12 @@ recipe and the patch are in this repository, so any release can be reproduced an
 
 | Server | Upstream | Licence | Pinned commit | Our patch + recipe | Release |
 |---|---|---|---|---|---|
-| WDTT (original) | [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android) | **GPL-3.0** | `51057cc` (v1.2.4) | [`wdtt/`](wdtt/) | `wdtt-amurcanov-1.2.4-2` |
-| WDTT — ildarmaga | [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | see repo (no SPDX licence declared) | `ef697994` (v1.5.40) | [`wdtt/ildarmaga/`](wdtt/ildarmaga/) | `wdtt-ildarmaga-1.5.40` |
-| WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `10c6939b` (v14) | [`wdtt/wdttplus/`](wdtt/wdttplus/) | `wdtt-wdttplus-14` |
-| WDTT — XXcipherX | [XXcipherX/proxy-turn-vk-android](https://github.com/XXcipherX/proxy-turn-vk-android) | **GPL-3.0** | `9a3a7b87` (v2.0.0.68) | [`wdtt/xxcipherx/`](wdtt/xxcipherx/) | `wdtt-xxcipherx-2.0.0.68` |
-| qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `854a72fe` (Release 1.4.1) | [`qwdtt/`](qwdtt/) | `wdtt-qwdtt-1.4.1` |
-| csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `31114cb7` (v2.0.1) | [`csqtt/`](csqtt/) | `csqtt-2.0.1` |
+| WDTT (original) | [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android) | **GPL-3.0** | `51057cc` (v1.2.4) | [`forks/wdtt/`](forks/wdtt/) | `wdtt-amurcanov-1.2.4-2` |
+| WDTT — ildarmaga | [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | see repo (no SPDX licence declared) | `ef697994` (v1.5.40) | [`forks/wdtt/ildarmaga/`](forks/wdtt/ildarmaga/) | `wdtt-ildarmaga-1.5.40` |
+| WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `10c6939b` (v14) | [`forks/wdtt/wdttplus/`](forks/wdtt/wdttplus/) | `wdtt-wdttplus-14` |
+| WDTT — XXcipherX | [XXcipherX/proxy-turn-vk-android](https://github.com/XXcipherX/proxy-turn-vk-android) | **GPL-3.0** | `9a3a7b87` (v2.0.0.68) | [`forks/wdtt/xxcipherx/`](forks/wdtt/xxcipherx/) | `wdtt-xxcipherx-2.0.0.68` |
+| qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `854a72fe` (Release 1.4.1) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.1` |
+| csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `31114cb7` (v2.0.1) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.0.1` |
 
 ### Source for the GPL binaries
 

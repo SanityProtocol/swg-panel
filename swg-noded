@@ -5770,7 +5770,7 @@ def apply_turn(turn, turn_onboard):
 # Unlike the -connect turn forks, a WDTT instance OWNS its own userspace-WG interface (built-in). So the panel
 # manages it declaratively (like desired_ifaces, NOT request/ack): each sync ships the desired WDTT instance set
 # incl. the panel-owned generated-password set; the node installs missing instances, writes a panel-owned
-# desired.json + SIGHUPs (WDTT reconciles it with no restart / no tunnel drop — see wdtt/README.md), and removes
+# desired.json + SIGHUPs (WDTT reconciles it with no restart / no tunnel drop — see forks/wdtt/README.md), and removes
 # instances no longer desired. WDTT stays the sole writer of its runtime passwords.json (device bindings +
 # traffic), which the node reads back into the snapshot. Runs with -no-nat; the node owns the wdtt-subnet
 # MASQUERADE via reconcile_egress. Bare-metal only (a container can't reach the userspace-wg UAPI). The unit is
@@ -5876,7 +5876,7 @@ def _wdtt_raw(inst):
 
     Raw is qWDTT-only and opt-in: the operator picks a port, the panel derives the TUN name + subnet
     (the fork's own defaults are process-global constants, so siblings would fight over one TUN — see
-    qwdtt/README.md). Anything malformed reads as OFF rather than as a half-configured listener."""
+    forks/qwdtt/README.md). Anything malformed reads as OFF rather than as a half-configured listener."""
     port = str((inst or {}).get("raw_port") or "").strip()
     if not port.isdigit() or not (1 <= int(port) <= 65535):
         return None

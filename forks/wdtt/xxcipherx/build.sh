@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build our patched xxcipherx WDTT server (XXcipherX/proxy-turn-vk-android — video-masquerade fork) for swg-panel.
-# Same model as wdtt/build.sh (amurcanov): pinned upstream SHA + our patch, hosted in our mirror.
+# Same model as forks/wdtt/build.sh (amurcanov): pinned upstream SHA + our patch, hosted in our mirror.
 # Usage: ./build.sh [out]   Env: GOARCH=amd64|arm64
 set -euo pipefail
 UPSTREAM_REPO="https://github.com/XXcipherX/proxy-turn-vk-android"

@@ -3,9 +3,14 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-## [1.7.2-beta] — 2026-08-17
+## [1.7.3-beta] — 2026-08-18
 
 ### Added
+- **Every third-party licence in one place.** [THIRD-PARTY.md](THIRD-PARTY.md) now lists everything swgPanel
+  builds, bundles or distributes — each server fork with its upstream, licence, pinned commit and the patch we
+  apply, plus what the Docker images and the browser app carry. One item affects what you may do: **csqtt is
+  noncommercial-only**, and running one commercially needs a separate licence from its author. Everything else
+  the panel supports is free of that restriction.
 - **csqtt servers.** csqtt is amurcanov's rewrite of WDTT and its successor: a raw-IP tunnel with no
   WireGuard inside it, which makes it markedly faster over the same VK relay. It is now a first-class kind
   in the panel, not a special case — you create one like any other interface, it carries its own routing,
@@ -47,6 +52,10 @@ earlier releases predate the changelog — see the git history. · Русски�
   turning it on elsewhere on the same address moves it, and says so first.
 
 ### Fixed
+- **The one-click update on a Docker master updated only the node.** The panel and subscription containers were
+  left on their old images while the update reported success, so the panel never changed version and its own
+  Update button sat on "updating…" indefinitely. The updater was reading a marker written at install time, which
+  says `node` on a box converted from bare metal; it now goes by what is actually running.
 - **A stopped WDTT or csqtt server still read "starting".** Stopping one from the panel worked, but its card kept
   the same tag it wears before a server has ever come up — so an intentional stop looked identical to one that
   never started, on both the interface and the turn-proxy card. It now reads "stopped", like a stopped interface.
