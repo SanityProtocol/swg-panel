@@ -6774,7 +6774,11 @@ def reconcile_wdtt(want, remove=None):
     # has never heard of it": a freshly-enrolled node, or one syncing to a panel restored from an older
     # nodes.json, read as "delete everything" and took non-recreatable key material with it. panel_managed stays
     # as a second belt, so an instance the panel never acknowledged is never removed even if it appears in a list.
-    for iface in [i for i in (remove or []) if isinstance(i, str)]:
+    # A name the panel still lists for removal but ALSO asks for is a REUSED name: the operator deleted an
+    # instance and made a new one with the same iface. Honouring the removal would delete what was just created,
+    # and the next sync would build it again — remove/reinstall every few seconds, forever, re-minting the owner
+    # password each pass. The desired set is the newer instruction, so it wins.
+    for iface in [i for i in (remove or []) if isinstance(i, str) and i not in (want or {})]:
         if iface not in have:
             continue
         if not (have.get(iface) or {}).get("panel_managed"):
@@ -7696,7 +7700,11 @@ def reconcile_csqtt(want, remove=None):
     have = _csqtt_load()
     if not want and not have:
         return res
-    for iface in [i for i in (remove or []) if isinstance(i, str)]:
+    # A name the panel still lists for removal but ALSO asks for is a REUSED name: the operator deleted an
+    # instance and made a new one with the same iface. Honouring the removal would delete what was just created,
+    # and the next sync would build it again — remove/reinstall every few seconds, forever, re-minting the owner
+    # password each pass. The desired set is the newer instruction, so it wins.
+    for iface in [i for i in (remove or []) if isinstance(i, str) and i not in (want or {})]:
         if iface in have and (have.get(iface) or {}).get("panel_managed"):
             _csqtt_remove(iface); have.pop(iface, None); res["changed"] += 1
     for iface, req in want.items():

@@ -12866,6 +12866,21 @@ class Handler(BaseHTTPRequestHandler):
                 if _wdel: node["wdtt_delete"] = _wdel
                 else: node.pop("wdtt_delete", None)
                 with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # The SAME ack for csqtt, which shipped without one. csqtt_delete was written on every delete and cleared
+        # nowhere, so a node carried each removal for the rest of its life — harmless until an operator reused the
+        # iface name (csqtt1 is the default first name), at which point the node was told to remove and to create
+        # the same instance on every sync: stop, rm -rf the config dir, reinstall, re-mint the owner password, five
+        # seconds later again. Found on a live node doing exactly that.
+        _cdel = node.get("csqtt_delete") or {}
+        if _cdel:
+            _clive = {(c or {}).get("iface") for c in (snap.get("csqtt") or [])}
+            _cdone = [i for i in list(_cdel) if i not in _clive]
+            if _cdone:
+                for i in _cdone:
+                    _cdel.pop(i, None)
+                if _cdel: node["csqtt_delete"] = _cdel
+                else: node.pop("csqtt_delete", None)
+                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
         # An interface can become managed WITHOUT an adopt: a re-install or a bare<->docker convert rebuilds the
         # node's config.json from what is on disk. The ignore entry then outlives the thing it was about. Use the
         # node's OWN managed set as the signal — never mere absence from the candidate list, which also happens
@@ -13645,6 +13660,10 @@ class Handler(BaseHTTPRequestHandler):
                 _wi = _w.get("iface"); _wp = _w.get("server_pub")
                 if _wi and _wp and ((_wstore2.get(_wi) or {}).get("key_blob") or {}).get("pub") != _wp:
                     _wdtt_want.append(_wi)
+        # Bind the two self-contained desired sets once: the removal lists below subtract them, so an iface name the
+        # operator has reused can never be sent as "remove this" and "run this" in the same reply.
+        _wdtt_des = _wdtt_reply(roster, nodes, nid)
+        _csqtt_des = _csqtt_reply(roster, nodes, nid)
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
                                 "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
                                 "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
@@ -13663,10 +13682,13 @@ class Handler(BaseHTTPRequestHandler):
                                 "iface_start": list((node.get("iface_start") or {}).keys()),  # interfaces to start (up + enable)
                                 "onboard": node.get("onboard") or {}, "create": node.get("create") or None,
                                 "turn": node.get("turn") or {}, "turn_onboard": node.get("turn_onboard") or [],
-                                "wdtt": _wdtt_reply(roster, nodes, nid),   # WDTT instances (node-store config) + roster-derived password set (declarative; node reconciles, no ack)
-                                "wdtt_remove": sorted((nodes.get(nid) or {}).get("wdtt_delete") or {}),   # EXPLICIT removals — the node never deletes an instance merely missing from `wdtt`
-                                "csqtt": _csqtt_reply(roster, nodes, nid),   # csqtt instances (raw-TUN) — parallel to wdtt; declarative, node reconciles
-                                "csqtt_remove": sorted((nodes.get(nid) or {}).get("csqtt_delete") or {}),   # EXPLICIT removals only
+                                "wdtt": _wdtt_des,   # WDTT instances (node-store config) + roster-derived password set (declarative; node reconciles, no ack)
+                                # EXPLICIT removals — the node never deletes an instance merely missing from `wdtt`.
+                                # Minus anything this SAME reply asks for: a reused iface name would otherwise be
+                                # removed and recreated on every sync (see the delete-ack above).
+                                "wdtt_remove": sorted(set((nodes.get(nid) or {}).get("wdtt_delete") or {}) - set(_wdtt_des or {})),
+                                "csqtt": _csqtt_des,   # csqtt instances (raw-TUN) — parallel to wdtt; declarative, node reconciles
+                                "csqtt_remove": sorted(set((nodes.get(nid) or {}).get("csqtt_delete") or {}) - set(_csqtt_des or {})),
                                 "iface_key": node.get("iface_key") or {},   # per-iface {restore|rebaseline} keypair requests
                                 "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or []},   # Phase 2: policy-route forwards + exit SNAT
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
