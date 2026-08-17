@@ -7215,7 +7215,13 @@ def _csqtt_unit_text(iface, binp, cfgdir):
             "NoNewPrivileges=yes\nAmbientCapabilities=CAP_NET_ADMIN\nCapabilityBoundingSet=CAP_NET_ADMIN\n"
             "DeviceAllow=/dev/net/tun rw\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths=" + cfgdir + "\n"
             "ProtectControlGroups=yes\nProtectKernelModules=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n"
-            "SystemCallFilter=@system-service @io-uring\nSystemCallErrorNumber=EPERM\n\n"
+            # @aio is where systemd keeps io_uring_setup/_enter/_register. "@io-uring" is NOT a systemd group and
+            # never was: systemd logged "Unknown system call group, ignoring: @io-uring" and applied @system-service
+            # alone — which contains none of the three. With SystemCallErrorNumber=EPERM they then returned EPERM
+            # rather than dying loudly, so csqtt's io_uring dataplane (which has no fallback) failed on every
+            # bare-metal node since csqtt shipped. Docker never hit it: a container has no systemd, so only the
+            # docker seccomp profile applied there.
+            "SystemCallFilter=@system-service @aio\nSystemCallErrorNumber=EPERM\n\n"
             "[Install]\nWantedBy=multi-user.target\n")
 
 SWG_BUILD_REPO = os.environ.get("SWG_BUILD_REPO") or "SanityProtocol/swg-panel"   # where OUR patched server builds are published
@@ -7489,6 +7495,18 @@ def _csqtt_params_changed(prev, inst):
             or str(prev.get("max_passwords") or 500) != str(inst.get("max_passwords") or 500)
             or (prev.get("params") or "").strip() != (inst.get("params") or "").strip())
 
+def _csqtt_unit_drifted(iface, inst):
+    """True when the on-disk unit differs from what this build would write (docker has no unit → never)."""
+    if NODE_KIND == "docker":
+        return False
+    try:
+        with open(_csqtt_unit_path(iface)) as f:
+            have = f.read()
+    except OSError:
+        return False                       # missing unit is the install path's problem, not a drift
+    cfgdir = _csqtt_dir(iface)
+    return have.strip() != _csqtt_unit_text(iface, cfgdir + "/server", cfgdir).strip()
+
 def _csqtt_reconfigure(inst):
     """Apply a transport-param change (listen / tun-addr / max / params) to a running instance: rewrite csqtt.env
     + the unit and restart. The store (passwords.json) is preserved."""
@@ -7738,7 +7756,12 @@ def reconcile_csqtt(want, remove=None):
                 # node-owned owner password and the pw_seen flag with it. A transient failure (a server that
                 # cannot start yet) must never cost us the record of what we are managing; that is the same
                 # rule pw_seen exists to enforce one level down, at the password.
-                if _csqtt_params_changed(prev, inst):
+                # Heal a unit that no longer matches what this build writes. The unit is otherwise only written on
+                # install or a PARAMETER change, so a fix to the unit itself (the @io-uring→@aio syscall group, say)
+                # would never reach an instance that already exists — the operator would update the node and stay
+                # broken. Compare the rendered text and rewrite only on a real difference: this restarts the server,
+                # so it must not fire on every sync.
+                if _csqtt_unit_drifted(iface, inst) or _csqtt_params_changed(prev, inst):
                     err = _csqtt_reconfigure(inst)
                     if err:
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue
