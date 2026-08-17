@@ -41,6 +41,7 @@ $DRYRUN && info "DRY RUN — nothing will be changed."
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
 WDTT_DIR="${WDTT_DIR:-/opt/swg-wdtt}"     # WDTT servers: per-instance config-dir (identity + passwords) + .bin/<fork> shared binaries
+CSQTT_DIR="${CSQTT_DIR:-/opt/swg-csqtt}"  # csqtt servers: per-instance config-dir (password store) + .bin/<arch> shared binary
 SD="${SYSTEMD_DIR:-/etc/systemd/system}"   # overridable for testing
 # docker data-dir fate — decided up front, applied after teardown. `:-` so an UNATTENDED run's preset survives:
 # a bare ="" clobbered the caller's DOCKER_DATA_DEL=y before ask_yn ever read it, so the data dir it was told to
@@ -210,6 +211,7 @@ ask_full_data_fate(){   # the LAST swg container is going → decide the WHOLE d
   [ -d "$DOCKER_DIR/data/etc" ] && desc="${desc}nodes, certs, "
   [ -d "$DOCKER_DIR/data/node-confs" ] && desc="${desc}interface configs / peers, "
   [ -d "$DOCKER_DIR/data/node/wdtt" ] && desc="${desc}WDTT identities + passwords, "   # same irrecoverable weight as the bare-metal /opt/swg-wdtt question
+  [ -d "$DOCKER_DIR/data/node/csqtt" ] && desc="${desc}csqtt password stores, "        # csqtt has no keypair — the store IS what its clients authenticate against
   desc="${desc%, }"; [ -n "$desc" ] || desc="state"
   ask_yn "  Delete the data dir $DOCKER_DIR/data ($desc)?" n DOCKER_DATA_DEL
   DOCKER_KEEP_CONFS="${DOCKER_KEEP_CONFS:-}"      # keep a preset; only defined-ness is needed under set -u
@@ -525,6 +527,33 @@ rm_wdtt(){ local unit="$1" name iface fork
   ok "WDTT server ($iface) removed"
 }
 
+# csqtt: the same shape as rm_wdtt, with one difference that changes what the irrecoverable question means. csqtt has
+# NO server keypair — a password IS the credential — so its config-dir holds the password STORE and nothing else can
+# stand in for it: delete it and every client on this instance is locked out with no way back, exactly as if a WDTT
+# identity had been destroyed. Same per-instance question, same default NO.
+rm_csqtt(){ local unit="$1" name iface
+  name="$(basename "$unit" .service)"; iface="${name#swg-csqtt-}"
+  info "Removing csqtt server ($iface)"
+  [ -e "$unit" ] && run systemctl disable --now "$name"
+  rmrf "$unit"; run systemctl daemon-reload
+  command -v ip >/dev/null 2>&1 && run ip link delete dev "$iface" 2>/dev/null || true   # its raw TUN outlives the process
+  # The node owns this instance's egress rules (csqtt runs with --no-nat), same as WDTT — remove by our comment tag.
+  _rm_egress_rules "$iface"
+  local _delvar="CSQTT_DATA_DEL_${iface//[^A-Za-z0-9_]/_}"
+  [ -n "${CSQTT_DATA_DEL:-}" ] && printf -v "$_delvar" '%s' "$CSQTT_DATA_DEL"
+  ask_yn "  Delete this csqtt server's password store ($CSQTT_DIR/$iface)? Clients on it could never be restored." n "$_delvar"
+  if [ "${!_delvar}" = yes ]; then
+    rmrf "$CSQTT_DIR/$iface"
+  else
+    ok "Kept $CSQTT_DIR/$iface (password store) for a future re-install"
+  fi
+  ls $SD/swg-csqtt-*.service >/dev/null 2>&1 || {          # last one out: shared binary + the panel-facing record
+    rmrf "$CSQTT_DIR/.bin" /etc/swg-agent/csqtt.json
+    [ "${CSQTT_DATA_DEL:-}" = yes ] && rmrf "$CSQTT_DIR"
+  }
+  ok "csqtt server ($iface) removed"
+}
+
 # ───────────────────────── detect installed components ─────────────────────────
 declare -a CLABEL=() CDETAIL=() CFN=() CARG=() CHINT=() CVERB=() CPROMPT=()   # init empty (not just `declare -a`) — bash 5.2 + set -u treats a never-assigned array as unbound for ${#arr[@]}
 # ── richer component details: interface names+ports, node endpoints, turn-proxy ports ──
@@ -580,8 +609,28 @@ print(", ".join(out))
 PYWD
 )"
   wn="$(printf '%s' "$wl" | tr ',' '\n' | grep -c . 2>/dev/null)"
-  printf 'container swg-node%s%s%s%s%s' "${nm:+ · $nm}" "${ep:+ · endpoint $ep}" "${ifs:+ · ifaces: $ifs}" \
-         "${tn:+ · turn-proxies: $tn}" "${wl:+ · WDTT ($wn): $wl}"
+  # csqtt, same disclosure and for the same reason — a supervised subprocess inside swg-node, so no host unit names
+  # it and it would leave with the container unannounced. Its record is a flat {iface: inst} map, not WDTT's list.
+  local cl cn
+  cl="$(python3 - "$DOCKER_DIR/data/node/csqtt.json" <<'PYCQ' 2>/dev/null
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit
+if not isinstance(d, dict):
+    raise SystemExit
+out = []
+for k, i in d.items():
+    if isinstance(i, dict):
+        n = len(i.get("passwords") or {})
+        out.append("%s%s" % (k, (" (%d pw)" % n) if n else ""))
+print(", ".join(out))
+PYCQ
+)"
+  cn="$(printf '%s' "$cl" | tr ',' '\n' | grep -c . 2>/dev/null)"
+  printf 'container swg-node%s%s%s%s%s%s' "${nm:+ · $nm}" "${ep:+ · endpoint $ep}" "${ifs:+ · ifaces: $ifs}" \
+         "${tn:+ · turn-proxies: $tn}" "${wl:+ · WDTT ($wn): $wl}" "${cl:+ · csqtt ($cn): $cl}"
 }
 turn_exec_env(){  # <unit> -> "<listen>\t<connect>", resolving the EnvironmentFile (turn.env) form
   local unit="$1" exe envf
@@ -618,6 +667,20 @@ wdtt_detail(){  # <unit> -> "amurcanov · DTLS 1.2.3.4:56000 · wg :56001 · 10.
   lis="$(wdtt_env "$iface" SWG_LISTEN)"; wgp="$(wdtt_env "$iface" SWG_WGPORT)"; addr="$(wdtt_env "$iface" SWG_WGADDR)"
   [ -f "$WDTT_DIR/$iface/wg-keys.dat" ] && id="server identity on disk" || id="no identity file"
   printf '%s%s%s%s · %s' "${fork:-wdtt}" "${lis:+ · DTLS $lis}" "${wgp:+ · $iface:$wgp}" "${addr:+ · $addr}" "$id"
+}
+# csqtt: same idea, its own env file. There is no identity file to report — the store IS the identity, so say how
+# many passwords would go with it, which is the number that decides the keep/delete answer.
+csqtt_env(){ local iface="$1" k="$2"; sed -n "s/^$k=//p" "$CSQTT_DIR/$iface/csqtt.env" 2>/dev/null | head -1; }
+csqtt_listen(){ local n; n="$(basename "$1" .service)"; csqtt_env "${n#swg-csqtt-}" SWG_LISTEN; }
+csqtt_detail(){  # <unit> -> "csqtt · 1.2.3.4:56006 · 10.12.0.1/24 · 4 passwords on disk"
+  local unit="$1" n iface lis addr pw
+  n="$(basename "$unit" .service)"; iface="${n#swg-csqtt-}"
+  lis="$(csqtt_env "$iface" SWG_LISTEN)"; addr="$(csqtt_env "$iface" SWG_TUNADDR)"
+  pw="$(python3 -c 'import json,sys
+try: print(len(json.load(open(sys.argv[1])).get("passwords") or {}))
+except Exception: print("")' "$CSQTT_DIR/$iface/passwords.json" 2>/dev/null)"
+  if [ -n "$pw" ]; then pw="$pw password(s) on disk"; else pw="no password store"; fi
+  printf 'csqtt%s%s · %s' "${lis:+ · $lis}" "${addr:+ · $addr}" "$pw"
 }
 
 [ -d /opt/swg-panel ] || [ -f $SD/swg-panel-server.service ] && \
@@ -678,6 +741,9 @@ for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do
 done
 for unit in $(ls $SD/swg-wdtt-*.service 2>/dev/null || true); do   # WDTT servers — listed per instance, like turn-proxies
   add "WDTT (service + interface) $(basename "$unit" .service)" "$(wdtt_detail "$unit")" rm_wdtt "$unit" "$(wdtt_listen "$unit")" "" "WDTT-proxy $(basename "$unit" .service)"
+done
+for unit in $(ls $SD/swg-csqtt-*.service 2>/dev/null || true); do   # csqtt servers — same, one entry per instance
+  add "csqtt (service + interface) $(basename "$unit" .service)" "$(csqtt_detail "$unit")" rm_csqtt "$unit" "$(csqtt_listen "$unit")" "" "csqtt server $(basename "$unit" .service)"
 done
 
 N=${#CLABEL[@]}

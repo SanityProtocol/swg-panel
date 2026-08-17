@@ -72,11 +72,12 @@ summary_end(){ echo; }
 # commands. <baremetal|docker> [docker_install_dir]. b()/COMPOSE come from the sourcing script (installers/convert).
 node_reconfig_block(){
   local method="$1" dir="${2:-/opt/swg-panel-docker}" prof="${3:-node}" C="${COMPOSE:-docker compose}"
-  echo "  Interfaces, turn-proxies and WDTT servers can be re-configured in the web panel, or directly on the server:"; echo
+  echo "  Interfaces, turn-proxies, WDTT and csqtt servers can be re-configured in the web panel, or directly on the server:"; echo
   if [ "$method" = docker ]; then
     printf '    %-13s %s\n' "Interfaces"   "$(b "ls $dir/data/node-confs/*.conf")"
     printf '    %-13s %s\n' "Turn-proxies" "$(b 'docker ps --filter name=swg-turn')"
     printf '    %-13s %s\n' "WDTT"         "$(b "cat $dir/data/node/wdtt.json")   (servers + their interfaces)"
+    printf '    %-13s %s\n' "csqtt"        "$(b "cat $dir/data/node/csqtt.json")  (servers + their interfaces)"
     echo
     printf '    %-13s %s\n' "Directory"    "$(b "cd $dir")"
     printf '    %-13s %s\n' "Restart"      "$(b "cd $dir && $C restart swg-node")"
@@ -87,6 +88,7 @@ node_reconfig_block(){
     printf '    %-13s %s\n' "WireGuard"    "$(b 'ls /etc/wireguard/*.conf')"
     printf '    %-13s %s\n' "Turn-proxies" "$(b 'ls /etc/systemd/system/vk-turn-proxy*.service')"
     printf '    %-13s %s\n' "WDTT"         "$(b 'ls /etc/systemd/system/swg-wdtt-*.service')   (servers + their interfaces)"
+    printf '    %-13s %s\n' "csqtt"        "$(b 'ls /etc/systemd/system/swg-csqtt-*.service')  (servers + their interfaces)"
     echo
     printf '    %-13s %s\n' "SWG Agent"    "$(b 'nano /etc/swg-agent/config.json')"
     printf '    %-13s %s\n' "Restart"      "$(b 'systemctl restart swg-noded')"
@@ -229,6 +231,28 @@ _sum_wdtt_block(){   # <baremetal|docker> — the "WDTT interfaces & proxies" se
 $rows
 EOS
 }
+# csqtt servers, same section shape. Its record is a flat {iface: inst} map (WDTT's is a list under "wdtt"), and the
+# fork column is always csqtt — one implementation, no fork variance — so it reports the subnet's tun_addr instead.
+_sum_csqtt_rows(){   # <baremetal|docker>
+  local rec; if [ "$1" = docker ]; then rec="$_SUM_DDIR/data/node/csqtt.json"; else rec=/etc/swg-agent/csqtt.json; fi
+  [ -f "$rec" ] || return 0
+  have python3 || return 0
+  python3 -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: d={}
+if isinstance(d,dict):
+    for k,i in d.items():
+        if isinstance(i,dict):
+            print("\t".join([k, "csqtt", i.get("listen") or "?", i.get("tun_addr") or "?"]))' "$rec" 2>/dev/null
+}
+_sum_csqtt_block(){   # <baremetal|docker> — printed only when any exist
+  local rows _i _f _l _a
+  rows="$(_sum_csqtt_rows "$1")"; [ -n "$rows" ] || return 0
+  echo; echo "  $(b 'csqtt interfaces & proxies') (own their interface — managed from the panel):"; echo
+  while IFS="$(printf '\t')" read -r _i _f _l _a; do [ -n "$_i" ] && _sum_wdtt_row "$_i" "$_f" "$_l" "$_a"; done <<EOS
+$rows
+EOS
+}
 summary_node_block(){   # <method> <converted?yes|no>
   local m="$1" conv="$2" ver mlabel note="" nep purl conf n proto units svc inst lis con u _trec _meshif
   nep="$(_sum_node_ep)"; purl="$(_sum_node_purl)"
@@ -261,6 +285,7 @@ for t in tps:
       else for svc in $units; do _sum_turn_row "$svc" "" ""; done; fi
     fi
     _sum_wdtt_block docker
+    _sum_csqtt_block docker
   else
     _ifn=0; for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] && _ifn=$((_ifn+1)); done
     echo
@@ -279,6 +304,7 @@ for t in tps:
         con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
         _sum_turn_row "$svc" "$lis" "$con"; done; fi
     _sum_wdtt_block baremetal
+    _sum_csqtt_block baremetal
   fi
   echo; node_reconfig_block "$([ "$m" = docker ] && echo docker || echo baremetal)" "$_SUM_DDIR"
 }
@@ -550,6 +576,62 @@ migrate_wdtt(){
     return 0
   fi
   echo "    WDTT server state (identity + config) → $dst"
+  return 0; }
+
+# migrate_csqtt <to-docker|to-baremetal> [docker_dir] — the same carry for csqtt servers. Sibling of migrate_wdtt
+# rather than a shared core: the paths differ, and so does the honest failure story, which is the part that has to
+# be right when it goes wrong.
+# Paths:
+#     bare-metal : /opt/swg-csqtt/<iface>/…                record /etc/swg-agent/csqtt.json
+#     docker     : <docker_dir>/data/node/csqtt/<iface>/…   record …/data/node/csqtt.json  (→ container /var/lib/swg-noded)
+# csqtt has NO server keypair — a password IS the credential — so nothing here can re-mint a server identity the way
+# WDTT can. What must survive is each instance's passwords.json (the store its clients authenticate against) and the
+# record's NODE-OWNED owner password + pw_seen. Lose the record and the node re-mints the owner password over a store
+# that still holds the old one; lose the store and every client on that server stops connecting.
+# STRIP (to-baremetal only): identical reasoning to WDTT — drop the source run-model's runtime files (the `server`
+# symlink + server.pid / server.log / .server.lock / csqtt.env / desired.json, all pointing at container paths) so
+# the systemd unit doesn't crash-loop on them before the reconcile rewrites them. KEEP passwords.json and .bin
+# (depth 3, so the depth-2 sweep can't reach the binary cache).
+migrate_csqtt(){
+  local dir="$1" dd="${2:-/opt/swg-panel-docker}" src dst srec drec strip=no
+  local bare="${CSQTT_DIR:-/opt/swg-csqtt}" brec="${CSQTT_RECORD:-/etc/swg-agent/csqtt.json}"   # overridable, as in uninstall.sh
+  case "$dir" in
+    to-docker)    src="$bare";               dst="$dd/data/node/csqtt"; srec="$brec";                   drec="$dd/data/node/csqtt.json";;
+    to-baremetal) src="$dd/data/node/csqtt"; dst="$bare";               srec="$dd/data/node/csqtt.json"; drec="$brec"; strip=yes;;
+    *) return 0;;
+  esac
+  [ -d "$src" ] || return 0
+  local _bad=""
+  mkdir -p "$dst" || _bad="couldn't create $dst"
+  [ -n "$_bad" ] || cp -a "$src/." "$dst/" || _bad="couldn't copy $src → $dst"
+  if [ "$strip" = yes ] && [ -z "$_bad" ]; then
+    find "$dst/." -mindepth 2 -maxdepth 2 \( -type l -name server -o -type f \( -name server.pid -o -name server.log -o -name .server.lock -o -name csqtt.env -o -name desired.json \) \) -delete 2>/dev/null || true
+  fi
+  if [ -z "$_bad" ] && [ -f "$srec" ]; then
+    mkdir -p "$(dirname "$drec")" && cp -a "$srec" "$drec" || _bad="couldn't copy the csqtt record $srec → $drec"
+  fi
+  if [ -n "$_bad" ]; then
+    warn "csqtt state was NOT carried over: $_bad"
+    warn "  the csqtt servers will come up with a FRESH owner password and existing clients will stop connecting."
+    warn "  the originals are untouched in $src — copy them to $dst by hand and restart the node to recover."
+    return 0
+  fi
+  echo "    csqtt server state (passwords + config) → $dst"
+  return 0; }
+
+# stop_bare_csqtt — bring down every bare-metal csqtt server so it stops holding its port, TUN device and store.
+# A convert to docker hands those instances to a supervised child inside the container; leave the host units running
+# and the two fight over the same listen port and iface name, with the panel reporting whichever answered last.
+# Units only — the config-dir is carried by migrate_csqtt and removed by nothing here.
+stop_bare_csqtt(){
+  local unit name n=0 sd="${SYSTEMD_DIR:-/etc/systemd/system}"
+  for unit in $(ls "$sd"/swg-csqtt-*.service 2>/dev/null || true); do
+    name="$(basename "$unit" .service)"
+    systemctl disable --now "$name" >/dev/null 2>&1 || true
+    ip link delete dev "${name#swg-csqtt-}" >/dev/null 2>&1 || true   # the raw TUN outlives the process
+    rm -f "$unit"; n=$((n+1))
+  done
+  [ "$n" -gt 0 ] && { systemctl daemon-reload >/dev/null 2>&1 || true; echo "    stopped $n bare-metal csqtt server(s) — the container owns them now"; }
   return 0; }
 
 # ── turn-proxy: the curated forks + their owner/repo, and the binary download (GitHub direct, then opt-in mirrors) ──

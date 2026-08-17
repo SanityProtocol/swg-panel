@@ -761,6 +761,7 @@ migrate_baremetal_ifaces(){
   # WDTT FIRST, unconditionally. (Path map + copy/strip rationale live in migrate_wdtt, lib/common.sh; the bare
   # swg-wdtt UNITS are stopped at the atomic switch, not here — a mid-convert abort must not drop WDTT early.)
   migrate_wdtt to-docker "$INSTALL_DIR"
+  migrate_csqtt to-docker "$INSTALL_DIR"   # same, for csqtt servers (units stopped at the switch, as above)
   # a CONVERT's docker conf dir must hold ONLY this run's migrated set — wipe stale confs a previous convert
   # left in a reused dir, else current_node_ifaces resurrects them as a ghost "already on this node" entry.
   [ -d "$INSTALL_DIR/data/node-confs" ] && rm -f "$INSTALL_DIR/data/node-confs/"*.conf 2>/dev/null || true
@@ -1215,6 +1216,7 @@ if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
   # return) so a mid-convert abort never drops WDTT while the bare node is still the live install.
   if [ "$PROFILE" != host ]; then
     for _wu in $(systemctl list-unit-files --no-legend 2>/dev/null | grep -oE 'swg-wdtt-[^ ]+\.service'); do systemctl disable --now "$_wu" >/dev/null 2>&1 || true; done
+    stop_bare_csqtt   # same for csqtt — and its raw TUN, which outlives the process and would keep the iface name taken
   fi
 fi
 # swg-sub masks the panel's secret state with /dev/null (files) + tmpfs (dirs). A bind/tmpfs mount can only CREATE

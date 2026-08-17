@@ -705,6 +705,7 @@ print(urlparse(((( json.load(open(sys.argv[1])).get("access") or {}).get("sub") 
     # WDTT server state → the bare-metal paths (carries each wg-keys.dat identity + owner passwords so clients keep
     # working, no re-mint; strips the docker run-model's stale runtime files — see migrate_wdtt in lib/common.sh).
     migrate_wdtt to-baremetal "$DOCKER_DIR"
+    migrate_csqtt to-baremetal "$DOCKER_DIR"   # same carry for csqtt (password store + node-owned owner password)
     # ALWAYS run install-node for a master — even with NO interfaces to migrate. The co-located node still has to
     # become a bare swg-noded that syncs (ready for interfaces added later from the panel); gating on $mnames left a
     # 0-interface master's node orphaned as a docker container after the dir-move below. (install-node migrates the
@@ -845,6 +846,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   # so clients keep working after the switch — no re-mint; strips the docker run-model's stale runtime files that the
   # reconcile rewrites). Single source of truth: migrate_wdtt in lib/common.sh.
   migrate_wdtt to-baremetal "$DOCKER_DIR"
+  migrate_csqtt to-baremetal "$DOCKER_DIR"   # same carry for csqtt (password store + node-owned owner password)
 
   # 3) THE SWITCH — install-node.sh runs all its prompts WHILE docker still serves: Step 1 interfaces, then
   #    Step 2 migrates the docker turn-proxies (deferred) + adds more. Then, as its LAST step, the atomic cutover:

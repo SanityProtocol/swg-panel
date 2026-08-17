@@ -5809,9 +5809,14 @@ _WDTT_CIDR_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
 # ── csqtt (amurcanov/csqtt — the Rust rewrite; raw-IP TUN, io_uring, NO WireGuard) ────────────────────────────
 # A SELF-CONTAINED, password-credential proxy like the WDTT family, but a raw-IP datapath (no wg handshake). Run
 # as a PARALLEL kind (own record / service names / reply channel) so the proven WDTT path is never threaded
-# through — zero regression risk (the same tactic WDTT used vs the turn path). Bare-metal systemd is the target;
-# io_uring is frequently blocked in container seccomp, so a docker path is deferred.
-CSQTT_RECORD = os.environ.get("SWG_CSQTT_RECORD") or "/etc/swg-agent/csqtt.json"
+# through — zero regression risk (the same tactic WDTT used vs the turn path). Both run-models are supported;
+# io_uring is blocked by docker's DEFAULT seccomp profile, so a docker node needs SWG_NODE_SECCOMP=unconfined.
+# The record follows the run-model, exactly like WDTT_RECORD: on docker /etc is the container's own ephemeral
+# filesystem, and only /var/lib/swg-noded is a mounted volume. Writing the record to /etc there meant every
+# container recreate lost the NODE-OWNED owner password (re-minted, silently rotating it out from under the
+# instance's own passwords.json) and any in-flight adoption's captured users.
+CSQTT_RECORD = os.environ.get("SWG_CSQTT_RECORD") or (
+    "/var/lib/swg-noded/csqtt.json" if NODE_KIND == "docker" else "/etc/swg-agent/csqtt.json")
 # Where an instance lives. On docker this MUST be inside the container: the server runs as a supervised child of
 # swg-noded there (no systemd), and its config-dir + password store have to be readable by the same process that
 # writes desired.json and reports the snapshot. Pointing at /opt/swg-csqtt on a docker node is what left the panel
@@ -7167,6 +7172,10 @@ def _csqtt_unit_text(iface, binp, cfgdir):
     return ("[Unit]\nDescription=swg-csqtt (" + CSQTT_OWNER + ") — " + iface + "\n"
             "After=network-online.target\nWants=network-online.target\n\n"
             "[Service]\nType=simple\nEnvironmentFile=-" + cfgdir + "/csqtt.env\n"
+            # Same recovery as the docker path's _csqtt_clear_stale_tun: a TUN still holding this name makes the
+            # server die on "create TUN device", and Restart=on-failure then retries against it forever. `-` so the
+            # normal case, where there is nothing to delete, is not a startup failure.
+            "ExecStartPre=-/bin/sh -c 'ip link delete dev \"$SWG_IFACE\" 2>/dev/null || true'\n"
             "ExecStart=" + binp + " --listen ${SWG_LISTEN} --config-dir ${SWG_CFGDIR}"
             " --password ${SWG_PASSWORD} --no-web"
             " --iface ${SWG_IFACE} --tun-addr ${SWG_TUNADDR} --desired ${SWG_DESIRED} --no-nat"
@@ -7234,10 +7243,26 @@ def _csqtt_docker_pid(iface):
                 return pid
     return None
 
+def _csqtt_clear_stale_tun(iface):
+    """Drop a TUN still holding this instance's NAME before starting it.
+
+    The raw TUN can outlive its process (the same reason _csqtt_stop_foreign and _csqtt_remove delete it), and while
+    it does, the name is taken: the server dies at once with "create TUN device" and keeps doing so on every later
+    attempt, so the instance never comes back on its own. Observed on a converted box, where a bare-metal server the
+    convert never stopped was still holding csqtt1/csqtt2 — but the wedge is the same whatever stranded the device,
+    which is why the recovery lives here rather than only in the convert.
+    Skipped while a FOREIGN server is live on that name: adoption stops that one first, and pulling its datapath out
+    from under it would be the wrong kind of fix."""
+    if any((f.get("iface") or "").strip() == iface
+           and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/") for _p, f in _csqtt_procs()):
+        return
+    with contextlib.suppress(Exception): run(["ip", "link", "delete", "dev", iface])
+
 def _csqtt_docker_start(inst):
     """(Re)launch this instance's server as a supervised child. '' on success (alive after a beat), else error."""
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface); binp = cfgdir + "/server"
     _csqtt_docker_stop(iface)
+    _csqtt_clear_stale_tun(iface)   # a recreated container leaves its TUN behind, and the name with it
     if not os.path.exists(binp):
         return "csqtt binary missing at " + binp
     # Where THIS attempt's output starts. The log is append-only and holds every previous failure, so reading a
