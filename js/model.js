@@ -113,6 +113,17 @@ export function pendingWdttPorts(node) {
   }
   return out;
 }
+// Ports claimed by csqtt instances the panel already wants but the node has not reported yet (csqtt_cfg = the
+// desired set). Unlike WDTT, a csqtt server binds ONE port — the DTLS listen (raw TUN, no internal WG port).
+export function pendingCsqttPorts(node) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const out = [];
+  for (const c of Object.values(nrec.csqtt_cfg || {})) {
+    if (!c) continue;
+    const d = Number(String(c.listen || "").split(":").pop()); if (d) out.push(d);
+  }
+  return out;
+}
 export function suggestPort(node, kind, extra) {
   const snap = Store.stats[node] || {};
   const ifacePorts = Object.values(snap.interfaces || {}).map(b => Number((b.meta || {}).listen_port)).filter(Boolean)
@@ -122,7 +133,9 @@ export function suggestPort(node, kind, extra) {
   // WDTT instances each claim TWO ports (DTLS listen + internal wg-port) and don't appear in snap.interfaces,
   // so fold them into the used-set explicitly — else a suggestion could clash with a running WDTT server.
   const wdttPorts = (snap.wdtt || []).flatMap(w => w ? [Number(String(w.listen || "").split(":").pop()), Number(w.wg_port)] : []).filter(Boolean);
-  const used = new Set([...ifacePorts, ...turnPorts, ...wdttPorts, ...pendingWdttPorts(node), ...(extra || []).map(Number).filter(Boolean)]);   // extra = ports picked in-modal, not yet applied
+  // csqtt instances (raw TUN) each claim ONE port — the DTLS listen — and, like WDTT, don't appear in snap.interfaces.
+  const csqttPorts = (snap.csqtt || []).map(c => c ? Number(String(c.listen || "").split(":").pop()) : 0).filter(Boolean);
+  const used = new Set([...ifacePorts, ...turnPorts, ...wdttPorts, ...pendingWdttPorts(node), ...csqttPorts, ...pendingCsqttPorts(node), ...(extra || []).map(Number).filter(Boolean)]);   // extra = ports picked in-modal, not yet applied
   const mine = kind === "turn" ? turnPorts : ifacePorts;
   // Never hand out the UPSTREAM DEFAULTS. An unmanaged WDTT server binds 56000 (DTLS) + 56001 (internal WG) out
   // of the box and a stock WireGuard 51820, so suggesting one walks straight into a collision with something the
@@ -149,6 +162,10 @@ export function portHolder(node, port, own) {
     if (Number(String(w.listen || "").split(":").pop()) === p) return (w.iface || T("a WDTT proxy")) + T(" (WDTT)");
     if (Number(w.wg_port) === p) return (w.iface || T("a WDTT proxy")) + T(" (WDTT internal WG)");
   }
+  for (const c of (snap.csqtt || [])) {
+    if (!c) continue;
+    if (Number(String(c.listen || "").split(":").pop()) === p) return (c.iface || T("a csqtt proxy")) + T(" (CSQTT)");
+  }
   for (const pt of pendingIf(node)) if (Number(pt.port) === p) return (pt.name || T("a pending interface"));
   // WDTT instances the panel wants but the node has not started yet — named, so the inline error says which
   // instance is taking the port instead of only failing server-side on save.
@@ -158,6 +175,12 @@ export function portHolder(node, port, own) {
     if ((snap.wdtt || []).some(x => x && x.iface === ifn)) continue;   // already reported → handled above
     if (Number(String(w.listen || "").split(":").pop()) === p) return (ifn || T("a WDTT proxy")) + T(" (WDTT, starting)");
     if (Number(w.wg_port) === p) return (ifn || T("a WDTT proxy")) + T(" (WDTT internal WG, starting)");
+  }
+  // csqtt instances the panel wants but the node has not started yet (csqtt_cfg not yet in snap.csqtt).
+  for (const [ifn, c] of Object.entries(_nrec.csqtt_cfg || {})) {
+    if (!c) continue;
+    if ((snap.csqtt || []).some(x => x && x.iface === ifn)) continue;   // already reported → handled above
+    if (Number(String(c.listen || "").split(":").pop()) === p) return (ifn || T("a csqtt proxy")) + T(" (CSQTT, starting)");
   }
   return null;
 }
@@ -209,6 +232,19 @@ export function fleetSubnets(skipNode, skipIface) {
   }
   for (const nid of Object.keys(Store.stats || {})) {
     for (const w of ((Store.stats[nid] || {}).wdtt || [])) { if (!w || !w.iface || (nid === skipNode && w.iface === skipIface)) continue; if (w.wg_addr) out.push({ node: nid, iface: w.iface, subnet: w.wg_addr }); }
+    // csqtt raw-TUN subnets participate in the same fleet-unique check (mesh routes by subnet). tun_addr is the
+    // server address (10.X.0.1/24); subnetsOverlap masks to the prefix, so passing the .1 form is fine.
+    for (const c of ((Store.stats[nid] || {}).csqtt || [])) { if (!c || !c.iface || (nid === skipNode && c.iface === skipIface)) continue; if (c.tun_addr) out.push({ node: nid, iface: c.iface, subnet: c.tun_addr }); }
+  }
+  // csqtt instances the panel wants but the node hasn't reported yet (csqtt_cfg not in snap) — so a subnet suggested
+  // moments after creating one, or a second back-to-back create, doesn't re-offer a subnet that's about to be taken.
+  for (const nrec of (Store.nodes || [])) {
+    const nid = nrec.id; if (!nid) continue;
+    const reported = new Set(((Store.stats[nid] || {}).csqtt || []).map(c => c && c.iface).filter(Boolean));
+    for (const [ifn, c] of Object.entries(nrec.csqtt_cfg || {})) {
+      if (!c || reported.has(ifn) || (nid === skipNode && ifn === skipIface)) continue;
+      if (c.tun_addr) out.push({ node: nid, iface: ifn, subnet: c.tun_addr });
+    }
   }
   return out;
 }
