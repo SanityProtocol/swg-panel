@@ -1556,6 +1556,7 @@ export function WdttCard({ node, w, reorder }) {
   const awaiting = !!w.await_restore;
   const rid = "wdtt:" + w.iface;   // reorder id, namespaced so it never clashes with a turn service
   const it = reorder ? reorder.item(rid) : null;
+  const wstopped = !!((nrec.wdtt_cfg || {})[w.iface] || {}).stopped;   // operator-stopped (desired state), not a startup stage
   const _wop = Store.ifaceOp[node + "|" + w.iface];   // optimistic save lifecycle (applying/applied/failed), like every card
   const _wopTag = opTag(node + "|" + w.iface);
   const deleting = !!Store.ifaceGone[node + "|" + w.iface];   // the SAME server is shown twice (interface card + here) — both must say it is going
@@ -1567,6 +1568,10 @@ export function WdttCard({ node, w, reorder }) {
     : restoring ? html`<${StatusTag} cls="tg tg-pending" icon="clock" label="restoring…" title=${T("Restoring the vaulted server identity")}/>`
     : awaiting ? html`<${StatusTag} cls="tg-busy del" icon="shield" label=${T("Restore")} title=${T("A vaulted identity exists — restore it to bring this server back with its original key")}/>`
     : active ? null   // healthy → no persistent tag (matches normal turn/interface cards; reuse the standard status vocabulary)
+    // STOPPED BY THE OPERATOR is not a stage of starting. Without this branch the card fell through to
+    // "starting" and sat there for good — beside its own Start button, which only appears when it is stopped.
+    // The turn-proxy card and the interface page both already say "stopped"; this is the same vocabulary.
+    : wstopped ? html`<span class="tg-off" title=${T("Stopped from the panel — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
     : html`<${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title=${T("Installing / starting on the node")}/>`;
   const _wopBusy = _wop && _wop.phase === "busy";   // mid-save → don't let the card re-open the edit modal
   // awaiting restore → the SAME treatment as the interface card for the same server: dimmed with the danger
@@ -1917,10 +1922,12 @@ export function CsqttCard({ node, c, reorder }) {
   const _op = Store.ifaceOp[node + "|" + c.iface];
   const _opTag = opTag(node + "|" + c.iface);
   const deleting = !!Store.ifaceGone[node + "|" + c.iface];
+  const cstopped = !!((nrec.csqtt_cfg || {})[c.iface] || {}).stopped;   // operator-stopped, same as the WDTT card
   const tag = deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
     : converting ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
     : _opTag ? _opTag
     : active ? null
+    : cstopped ? html`<span class="tg-off" title=${T("Stopped from the panel — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
     : html`<${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title=${T("Installing / starting on the node")}/>`;
   const _opBusy = _op && _op.phase === "busy";
   const cdim = deleting || converting || !active || _opBusy;
