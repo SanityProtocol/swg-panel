@@ -37,4 +37,4 @@ export CGO_ENABLED=0 GOOS=linux
 go build -trimpath -ldflags="-s -w" -o "$OUT" .
 
 echo "[qwdtt] built: $OUT"
-"$OUT" -h 2>&1 | grep -E '^\s+-(iface|wg-addr|desired|no-nat|max-passwords|fixed-config|api-addr)' || true
+"$OUT" -h 2>&1 | grep -E '^\s+-(iface|wg-addr|desired|no-nat|max-passwords|fixed-config|api-addr|raw-iface|raw-addr)' || true

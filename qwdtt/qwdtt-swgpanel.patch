@@ -1,8 +1,8 @@
 diff --git a/server.go b/server.go
-index bf5df33..888f6c4 100644
+index bf5df33..85f56e1 100644
 --- a/server.go
 +++ b/server.go
-@@ -46,12 +46,18 @@ import (
+@@ -46,19 +46,29 @@ import (
  	pionudp "github.com/pion/transport/v4/udp"
  )
  
@@ -14,6 +14,12 @@ index bf5df33..888f6c4 100644
 +	wgServerAddr = "10.66.66.1"
 +	wgServerCIDR = wgServerAddr + "/16"
 +	wgMTU        = 1280
++	// Raw path. Upstream keeps these const, and newRawRouter() starts with
++	// `ip link del wdttraw0` — so a SECOND instance on the same node deletes the
++	// first one's raw TUN. Per-instance vars (-raw-iface / -raw-addr) fix that.
++	rawIfaceName  = "wdttraw0"
++	rawServerAddr = "10.70.66.1"
++	rawServerCIDR = rawServerAddr + "/16"
 +)
 +
  const (
@@ -25,7 +31,15 @@ index bf5df33..888f6c4 100644
  	keepalive             = 25
  
  	// Raw-IP роутер (без WireGuard) — отдельный TUN/подсеть/NAT, полностью
-@@ -166,11 +172,14 @@ var (
+ 	// параллельно WG-пути. Подсеть намеренно не пересекается с wgServerCIDR.
+-	rawIfaceName  = "wdttraw0"
+-	rawServerAddr = "10.70.66.1"
+-	rawServerCIDR = rawServerAddr + "/16"
++	// swg-panel: имя/подсеть вынесены в vars (см. ниже) — они ПЕР-ИНСТАНСНЫЕ.
+ 	// Raw-режим не несёт WG data header (~32 байта) — только RTP-obfs (12 байт
+ 	// заголовок + 16 байт AEAD tag + до 60 байт padding в video-режиме) и TURN
+ 	// ChannelData/Send Indication framing (4-24 байта). Даже в худшем случае
+@@ -166,11 +176,14 @@ var (
  var serverWrapKeys = newWrapKeyStore()
  
  const (
@@ -43,7 +57,7 @@ index bf5df33..888f6c4 100644
  func generatePassword() string {
  	b := make([]byte, generatedPasswordLen)
  	randomBytes := make([]byte, len(b))
-@@ -471,6 +480,11 @@ func getNextIP() string {
+@@ -471,6 +484,11 @@ func getNextIP() string {
  	for _, dev := range db.Devices {
  		used[dev.IP] = true
  	}
@@ -55,7 +69,19 @@ index bf5df33..888f6c4 100644
  	for b3 := 0; b3 <= 255; b3++ {
  		for b4 := 1; b4 <= 254; b4++ {
  			ip := fmt.Sprintf("10.66.%d.%d", b3, b4)
-@@ -1339,6 +1353,9 @@ func putBuf2048(b []byte) {
+@@ -492,6 +510,11 @@ func getNextRawIP() string {
+ 			used[dev.RawIP] = true
+ 		}
+ 	}
++	// swg-panel: honour -raw-addr's subnet (the stock pool below is hardwired to
++	// 10.70.0.0/16, which sibling instances would hand out from twice).
++	if swgRawPool != nil {
++		return swgNextIPFrom(swgRawPool, rawServerAddr, used)
++	}
+ 	for b3 := 0; b3 <= 255; b3++ {
+ 		for b4 := 1; b4 <= 254; b4++ {
+ 			ip := fmt.Sprintf("10.70.%d.%d", b3, b4)
+@@ -1339,6 +1362,9 @@ func putBuf2048(b []byte) {
  // ==================== Оптимизация ====================
  
  func enableBBR() {
@@ -65,7 +91,24 @@ index bf5df33..888f6c4 100644
  	log.Println("[SYS] Оптимизация TCP...")
  	out, _ := runCmd("bash", "-c", "sysctl net.ipv4.tcp_congestion_control")
  	if strings.Contains(out, "bbr") {
-@@ -1722,6 +1739,11 @@ generate:
+@@ -1438,6 +1464,16 @@ func flushRawDeviceTrafficLocked() {
+ 			dev.UpBytes += c.up
+ 			dev.DownBytes += c.down
+ 		}
++		// swg-panel: under -fixed-config the device key IS "pw:<password>", and the
++		// password entry's DeviceID/DeviceIDs are deliberately empty — without this
++		// the loop below matches nothing and a raw peer's traffic is never credited.
++		if strings.HasPrefix(deviceID, "pw:") {
++			if entry, ok := db.Passwords[deviceID[3:]]; ok && entry != nil {
++				entry.UpBytes += c.up
++				entry.DownBytes += c.down
++				continue
++			}
++		}
+ 		for _, entry := range db.Passwords {
+ 			matched := entry.DeviceID == deviceID
+ 			if !matched {
+@@ -1722,6 +1758,11 @@ generate:
  // ==================== NAT ====================
  
  func setupFullConeNAT(wgIface string) error {
@@ -77,7 +120,7 @@ index bf5df33..888f6c4 100644
  	log.Println("[NAT] ══════════════════════════════════════")
  
  	os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
-@@ -1762,6 +1784,10 @@ func setupNftNAT(extIface string) {
+@@ -1762,6 +1803,10 @@ func setupNftNAT(extIface string) {
  // выше не трогаются), setupForwardRules переиспользуется как есть — она уже
  // параметризована только именем интерфейса.
  func setupRawNAT(rawIface string) error {
@@ -88,7 +131,85 @@ index bf5df33..888f6c4 100644
  	extIface := getDefaultInterface()
  	log.Printf("[RAW-NAT] Внешний: %s", extIface)
  
-@@ -2580,13 +2606,16 @@ func main() {
+@@ -2274,6 +2319,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 	}
+ 
+ 	var assignedIP string
++	dkey := swgRawKey(deviceID)   // swg-panel: fixed-config device key (AUTH workers resolve it via the alias)
+ 
+ 	if isGetConf {
+ 		// Только этот воркер проверяет пароль и (при необходимости) создаёт
+@@ -2288,7 +2334,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 			clientConn.Write([]byte("DENIED:deactivated"))
+ 			return
+ 		}
+-		if valid && isGenPass && !entry.canConnectAndBind(deviceID) {
++		if valid && isGenPass && !fixedConfig && !entry.canConnectAndBind(deviceID) {
+ 			dbMutex.Unlock()
+ 			clientConn.Write([]byte("DENIED:device_mismatch"))
+ 			return
+@@ -2306,10 +2352,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 			saveDB()
+ 		}
+ 
+-		dev, exists := db.Devices[deviceID]
++		// swg-panel: same key as the WG path, so ONE password = ONE device record
++		// carrying both its wg IP and its raw IP (see swgRawRemember).
++		dkey = getconfDeviceKey(isGenPass, deviceID, password)
++		swgRawRemember(deviceID, dkey)
++		dev, exists := db.Devices[dkey]
+ 		if !exists {
+-			dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP(), RawIP: getNextRawIP()}
+-			db.Devices[deviceID] = dev
++			dev = &ClientDevice{DeviceID: dkey, IP: getNextIP(), RawIP: getNextRawIP()}
++			db.Devices[dkey] = dev
+ 			saveDB()
+ 		} else if dev.RawIP == "" {
+ 			dev.RawIP = getNextRawIP()
+@@ -2331,7 +2381,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 		// (без верного пароля пакет не прошёл бы аутентификацию на уровне obfs),
+ 		// нужен только IP устройства, чтобы зарегистрировать сессию в роутере.
+ 		dbMutex.Lock()
+-		dev, exists := db.Devices[deviceID]
++		dev, exists := db.Devices[dkey]
+ 		if exists && dev.RawIP == "" {
+ 			dev.RawIP = getNextRawIP()
+ 			saveDB()
+@@ -2347,19 +2397,19 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 		}
+ 	}
+ 
+-	dlWorker := router.register(assignedIP, clientConn, deviceID)
++	dlWorker := router.register(assignedIP, clientConn, dkey)
+ 	defer router.unregister(assignedIP, dlWorker)
+ 	log.Printf("[RAW] Сессия %s зарегистрирована (ip=%s, getConf=%v)", deviceID, assignedIP, isGetConf)
+ 	defer log.Printf("[RAW] Сессия %s (ip=%s) завершена", deviceID, assignedIP)
+ 
+ 	activeDevicesMu.Lock()
+-	activeDevices[deviceID]++
++	activeDevices[dkey]++
+ 	activeDevicesMu.Unlock()
+ 	defer func() {
+ 		activeDevicesMu.Lock()
+-		activeDevices[deviceID]--
+-		if activeDevices[deviceID] <= 0 {
+-			delete(activeDevices, deviceID)
++		activeDevices[dkey]--
++		if activeDevices[dkey] <= 0 {
++			delete(activeDevices, dkey)
+ 		}
+ 		activeDevicesMu.Unlock()
+ 	}()
+@@ -2410,7 +2460,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 			return
+ 		}
+ 		atomic.AddInt64(&totalBytesFromClient, int64(nn))
+-		addRawUplinkBytes(deviceID, int64(nn))
++		addRawUplinkBytes(dkey, int64(nn))
+ 		if wErr := router.writeUplink((*b)[:nn]); wErr != nil {
+ 			if atomic.CompareAndSwapUint32(&router.uplinkErrLogged, 0, 1) {
+ 				log.Printf("[RAW] Ошибка записи в TUN (ip=%s): %v", assignedIP, wErr)
+@@ -2580,13 +2630,16 @@ func main() {
  	adminID := flag.String("admin", "", "Telegram Admin ID")
  	botToken := flag.String("bot-token", "", "Telegram Bot Token")
  	dnsFlag := flag.String("dns", "8.8.8.8", "DNS серверы для клиентов")
@@ -106,7 +227,7 @@ index bf5df33..888f6c4 100644
  
  	ctx, cancel := context.WithCancel(context.Background())
  	defer cancel()
-@@ -2597,23 +2626,32 @@ func main() {
+@@ -2597,23 +2650,32 @@ func main() {
  	go func() {
  		for s := range sig {
  			if s == syscall.SIGHUP {
@@ -142,7 +263,7 @@ index bf5df33..888f6c4 100644
  				os.Exit(0)
  			}
  		}
-@@ -2633,31 +2671,43 @@ func main() {
+@@ -2633,31 +2695,43 @@ func main() {
  		log.Fatalf("[WG] Запуск: %v", err)
  	}
  	globalWgDev = wgDev
@@ -205,7 +326,7 @@ index bf5df33..888f6c4 100644
  
  	addr, _ := net.ResolveUDPAddr("udp", *listen)
  	cert, _ := selfsign.GenerateSelfSigned()
-@@ -2879,7 +2929,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -2879,7 +2953,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  			clientConn.Write([]byte("DENIED:deactivated"))
  			log.Printf("[WG] Отказ: пароль %s деактивирован, запрос от %s", maskPassword(password), deviceID)
  			dbMutex.Unlock()
@@ -214,7 +335,7 @@ index bf5df33..888f6c4 100644
  			// Достигнут лимит устройств или привязано к другому устройству
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			log.Printf("[WG] Отказ: пароль %s достиг лимита устройств (%d), запрос от %s", maskPassword(password), entry.MaxDevices, deviceID)
-@@ -2892,9 +2942,12 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -2892,9 +2966,12 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  				saveDB()
  			}
  
@@ -229,7 +350,7 @@ index bf5df33..888f6c4 100644
  			}
  			// Устройство могло быть создано раньше только Raw-путём
  			// (GETCONF_RAW, см. handleConnRaw) — там PrivKey/PubKey никогда
-@@ -2911,9 +2964,9 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -2911,9 +2988,9 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  				if keyErr == nil && dev.IP != "" {
  					dev.PrivKey = privB64
  					dev.PubKey = pubB64
@@ -243,10 +364,10 @@ index bf5df33..888f6c4 100644
  				}
 diff --git a/swgpanel.go b/swgpanel.go
 new file mode 100644
-index 0000000..0a74a70
+index 0000000..afaa3a3
 --- /dev/null
 +++ b/swgpanel.go
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,442 @@
 +package main
 +
 +// swg-panel additions to the qWDTT (SpaceNeuroX) server.
@@ -263,6 +384,8 @@ index 0000000..0a74a70
 +//	-no-nat         never touch host NAT/forward/sysctl (the node owns them)
 +//	-fixed-config   one generated password = one keypair+IP, any device (wg parity)
 +//	-api-addr       bind the HTTP control API here; EMPTY (default) = do not start it
++//	-raw-iface      raw-IP TUN name        (with -listen-raw; per instance)
++//	-raw-addr       raw-IP TUN address/subnet, CIDR
 +//
 +// Upstream binds its HTTP admin API on the *public DTLS port* (`-listen`), so a
 +// stock server answers HTTP on the same port it pretends to be a VK call on. We
@@ -278,6 +401,7 @@ index 0000000..0a74a70
 +	"os"
 +	"os/exec"
 +	"strings"
++	"sync"
 +	"time"
 +
 +	"golang.zx2c4.com/wireguard/device"
@@ -291,6 +415,7 @@ index 0000000..0a74a70
 +	fixedConfig bool   // -fixed-config: password-keyed config, device-agnostic
 +	swgAPIAddr  string // -api-addr: HTTP control API bind ("" = disabled)
 +	swgPool     *net.IPNet
++	swgRawPool  *net.IPNet
 +)
 +
 +var (
@@ -302,6 +427,8 @@ index 0000000..0a74a70
 +	swgNoNat      *bool
 +	swgFixed      *bool
 +	swgAPIFlag    *string
++	swgRawIface   *string
++	swgRawAddr    *string
 +)
 +
 +// swgRegisterFlags is called from main() before flag.Parse().
@@ -314,6 +441,8 @@ index 0000000..0a74a70
 +	swgNoNat = flag.Bool("no-nat", false, "не трогать NAT/forward/sysctl хоста (узел управляет ими)")
 +	swgFixed = flag.Bool("fixed-config", false, "один сгенерированный пароль = один keypair+IP для любого устройства (паритет с wg/awg)")
 +	swgAPIFlag = flag.String("api-addr", "", "адрес HTTP control API (напр. 127.0.0.1:56100); пусто = API выключен")
++	swgRawIface = flag.String("raw-iface", rawIfaceName, "имя raw-IP TUN (только с -listen-raw; для нескольких инстансов на узле)")
++	swgRawAddr = flag.String("raw-addr", rawServerCIDR, "адрес/подсеть raw-IP TUN, IPv4 CIDR (напр. 10.70.66.1/16)")
 +}
 +
 +// swgApplyFlags is called from main() right after flag.Parse().
@@ -332,6 +461,10 @@ index 0000000..0a74a70
 +	noNat = *swgNoNat
 +	fixedConfig = *swgFixed
 +	swgAPIAddr = strings.TrimSpace(*swgAPIFlag)
++	if v := strings.TrimSpace(*swgRawIface); v != "" {
++		rawIfaceName = v
++	}
++	applyRawAddr(*swgRawAddr)
 +}
 +
 +// applyWgAddr parses -wg-addr ("10.66.66.1/24" or a bare "10.66.66.1") into the
@@ -363,15 +496,17 @@ index 0000000..0a74a70
 +// swgNextIP walks the configured pool for a free host address. Skips the network
 +// address, the broadcast address and the server's own address. Stock getNextIP
 +// hardcodes 10.66.0.0/16, which cannot host several instances on one node.
-+func swgNextIP(used map[string]bool) string {
-+	if swgPool == nil {
++func swgNextIP(used map[string]bool) string { return swgNextIPFrom(swgPool, wgServerAddr, used) }
++
++func swgNextIPFrom(pool *net.IPNet, selfAddr string, used map[string]bool) string {
++	if pool == nil {
 +		return ""
 +	}
-+	base := swgPool.IP.Mask(swgPool.Mask).To4()
++	base := pool.IP.Mask(pool.Mask).To4()
 +	if base == nil {
 +		return ""
 +	}
-+	ones, bits := swgPool.Mask.Size()
++	ones, bits := pool.Mask.Size()
 +	if bits != 32 || ones > 30 {
 +		return ""
 +	}
@@ -380,12 +515,68 @@ index 0000000..0a74a70
 +	for i := uint32(1); i < total-1; i++ {
 +		v := start + i
 +		ip := net.IPv4(byte(v>>24), byte(v>>16), byte(v>>8), byte(v)).String()
-+		if ip == wgServerAddr || used[ip] {
++		if ip == selfAddr || used[ip] {
 +			continue
 +		}
 +		return ip
 +	}
 +	return ""
++}
++
++// applyRawAddr is applyWgAddr for the RAW subnet (-raw-addr).
++func applyRawAddr(cidr string) {
++	cidr = strings.TrimSpace(cidr)
++	if cidr == "" {
++		return
++	}
++	ipStr := cidr
++	if i := strings.Index(cidr, "/"); i >= 0 {
++		ipStr = cidr[:i]
++	} else {
++		cidr = cidr + "/16"
++	}
++	ip := net.ParseIP(strings.TrimSpace(ipStr))
++	if ip == nil || ip.To4() == nil {
++		log.Fatalf("[CFG] неверный -raw-addr %q (ожидается IPv4 CIDR, напр. 10.70.66.1/16)", cidr)
++	}
++	_, ipnet, err := net.ParseCIDR(cidr)
++	if err != nil || ipnet == nil {
++		log.Fatalf("[CFG] неверный -raw-addr %q: %v", cidr, err)
++	}
++	rawServerAddr = ip.To4().String()
++	rawServerCIDR = cidr
++	swgRawPool = ipnet
++}
++
++// ── raw-path device identity ────────────────────────────────────────────────
++//
++// Under -fixed-config a PASSWORD is the peer, so the raw path must key its device
++// by "pw:<password>" exactly like the WG path — otherwise one peer ends up with two
++// device records (one per datapath), its raw traffic is credited to neither, and
++// canConnectAndBind fills DeviceIDs with per-device bindings the panel never asked
++// for. Only the GETCONF_RAW worker carries the password; the other workers of the
++// group send bare AUTH, so remember the mapping for them.
++var (
++	swgRawAliasMu sync.Mutex
++	swgRawAlias   = map[string]string{}
++)
++
++func swgRawRemember(deviceID, dkey string) {
++	if deviceID == "" || dkey == "" || deviceID == dkey {
++		return
++	}
++	swgRawAliasMu.Lock()
++	swgRawAlias[deviceID] = dkey
++	swgRawAliasMu.Unlock()
++}
++
++func swgRawKey(deviceID string) string {
++	swgRawAliasMu.Lock()
++	defer swgRawAliasMu.Unlock()
++	if k, ok := swgRawAlias[deviceID]; ok {
++		return k
++	}
++	return deviceID
 +}
 +
 +// getconfDeviceKey keys a GETCONF config by the PASSWORD (not the device) under
@@ -616,5 +807,6 @@ index 0000000..0a74a70
 +	}
 +	log.Printf("   iface: %s | subnet: %s | desired: %q | no-nat: %v | fixed-config: %v | api: %s",
 +		wgIfaceName, wgServerCIDR, desiredFile, noNat, fixedConfig, api)
++	log.Printf("   raw: %s | subnet: %s", rawIfaceName, rawServerCIDR)
 +	_ = fmt.Sprintf
 +}

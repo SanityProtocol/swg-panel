@@ -39,8 +39,10 @@ upstream (single `wdtt0` on `10.66.66.1/16`, bot-driven, self-managed NAT).
 | `-no-nat` | skip BBR sysctls + iptables/nft NAT/forward (WG **and** raw paths) — the node owns them |
 | `-fixed-config` | one generated password = one keypair + IP for any device (wg/awg parity), instead of upstream's per-device binding (`MaxDevices`/`DeviceIDs`) |
 | `-api-addr <addr>` | bind the HTTP control API here; **empty (the default) = the API never starts** |
+| `-raw-iface <name>` | raw-IP TUN name (only with `-listen-raw`) — **per instance** |
+| `-raw-addr <cidr>` | raw-IP TUN address/subnet; the raw client pool is walked from it |
 
-Two upstream behaviours the patch fixes:
+Three upstream behaviours the patch fixes:
 
 - ⚠️ **The HTTP control API was bound to the public DTLS port.** Stock `main()` runs
   `http.ListenAndServe(*listen, mux)` on the very same `ip:port` as the DTLS data path, exposing
@@ -52,6 +54,17 @@ Two upstream behaviours the patch fixes:
   TCP data transport.*
 - **Stop leak**: upstream's signal handler calls `os.Exit(0)`, skipping the deferred `ip link del`.
   The patch runs one idempotent teardown (interface + `WDTT_MANAGED` rules) before exit.
+- ⚠️ **Raw mode was single-instance, destructively.** `rawIfaceName`/`rawServerCIDR` are consts upstream
+  (`wdttraw0`, `10.70.66.1/16`) and `newRawRouter()` opens with `ip link del wdttraw0` — so a second
+  instance on the same node **deleted the first one's raw TUN**. `-raw-iface`/`-raw-addr` make them
+  per-instance, and `getNextRawIP()` walks the configured pool.
+
+Plus one model fix: **raw honours `-fixed-config`.** Upstream's raw path keys its device by `deviceID`
+and runs `canConnectAndBind`, so a peer that used both datapaths got *two* device records, its raw
+traffic was credited to neither (the flush matches on `DeviceID`/`DeviceIDs`, which fixed-config leaves
+empty), and per-device bindings appeared that the panel never asked for. The raw path now uses the same
+`pw:<password>` key as the WG path — one password, one device record carrying both a wg IP and a raw IP,
+traffic credited to the password.
 
 ### `desired.json` schema (panel writes; the server reads)
 
@@ -85,3 +98,28 @@ One instance `wdtt9` / `10.77.0.1/24` / DTLS `:56750` / internal wg `:56751`, ru
   through the tunnel egressing at the server's public IP;
 - clean **SIGTERM** exit: interface gone, firewall identical to the pre-run snapshot, and the box's
   protected services (nginx/mongod/swg-noded) untouched throughout.
+
+## Raw mode (A2), live-validated 2026-08-17
+
+Proven end to end with a real client. `rawtun_provider.py` (in the campaign scratchpad) supplies the TUN
+fd the client expects from Android's VpnService, which is what made a headless raw test possible at all.
+
+- raw TUN comes up under `-no-nat` (the server skips its own NAT; the node owns it), and the host
+  firewall stays byte-identical;
+- a real client tunnels through it: TLS to a pinned target returns the **server's** public IP, and bulk
+  transfers run clean;
+- **two instances side by side** (`-raw-iface wdttraw9 -raw-addr 10.70.9.1/24` and `…raw7 10.70.10.1/24`)
+  keep four live interfaces and neither deletes the other's TUN;
+- the raw client lands on the **same** device record as the WG path (`pw:<password>`, carrying `ip` and
+  `raw_ip`) and its bytes are credited to the password.
+
+**Throughput, same box, same relay, same 20 MB file** (this is why raw exists):
+
+| path | throughput | 20 MB took |
+|---|---|---|
+| no tunnel (baseline) | ~48 MB/s | 0.4 s |
+| WG — DTLS + userspace WireGuard | 0.32–0.45 MB/s | 45–63 s |
+| **raw — no DTLS, no WireGuard** | **1.95–2.26 MB/s** | 8.8–10.2 s |
+
+≈**6×** the WG path. ⚠️ The trade: raw is WRAP AEAD keyed by `HKDF(password)` and nothing else — no
+forward secrecy, no replay protection. Keep it opt-in per instance, never a default, and label it.
