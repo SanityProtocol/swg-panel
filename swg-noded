@@ -3979,6 +3979,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 _x["src_ips"] = sorted(_cmap.get(_lp, ()))
     snap["iface_candidates"] = iface_candidates(node_cfg)   # unmanaged wg/awg interfaces on the box → panel adoption candidates (report-only, untouched)
     snap["wdtt_dormant"] = wdtt_dormant()                   # WDTT installs on disk with nothing running (no iface to be a candidate)
+    snap["csqtt_candidates"] = csqtt_candidates()           # FOREIGN csqtt servers on the box → panel adoption candidates (report-only, untouched)
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     snap["inet"] = sample_inet(node_cfg, now)   # measured internet up/down (B/s); cached, refreshed off the 5s path
@@ -7240,6 +7241,126 @@ def _csqtt_remove(iface):
     _wdtt_del_iptables_comment("filter", "FORWARD", "swg-egress-acl:" + iface)
     _wdtt_del_iptables_comment("mangle", "FORWARD", "swg-egress-mss:" + iface)
 
+def _csqtt_adopted_users(cfgdir):
+    """The users a FOREIGN csqtt server is serving, as {password: {vk_hash, expires_at, is_deactivated, comment}}.
+    csqtt keeps ONE store shape (passwords.json), unlike the WDTT family's two — same fields, so the panel's
+    importer treats both identically."""
+    out = {}
+    pj = os.path.join(cfgdir, "passwords.json")
+    if not os.path.isfile(pj):
+        return out
+    with contextlib.suppress(Exception):
+        with open(pj) as f:
+            raw = json.load(f)
+        src = raw.get("passwords") if isinstance(raw, dict) and isinstance(raw.get("passwords"), dict) else raw
+        if isinstance(src, dict):
+            for pw, e in src.items():
+                if not pw or not isinstance(e, dict):
+                    continue
+                out[str(pw)] = {"vk_hash": str(e.get("vk_hash") or "").strip(),
+                                "expires_at": int(e.get("expires_at") or 0),
+                                "is_deactivated": bool(e.get("is_deactivated")),
+                                "comment": str(e.get("comment") or "").strip()[:80]}
+    return out
+
+
+def _csqtt_procs():
+    """Every csqtt server process on this box → [(pid, argv-flags)]. csqtt names its binary `server` like the
+    WDTT forks, so the discriminator is the same one _wdtt_is_server uses in reverse: -tun-addr (a WDTT server
+    uses -wg-addr and never -tun-addr) or a csqtt path in argv[0]."""
+    out = []
+    with contextlib.suppress(Exception):
+        for ent in os.listdir("/proc"):
+            if not ent.isdigit():
+                continue
+            with contextlib.suppress(Exception):
+                with open("/proc/%s/cmdline" % ent, "rb") as f:
+                    parts = [x.decode(errors="replace") for x in f.read().split(b"\x00") if x]
+                if not parts:
+                    continue
+                fl = _wdtt_flags_from_argv(parts)
+                if (fl.get("tun-addr") or "").strip() or "csqtt" in (fl.get("_exe") or "").lower():
+                    out.append((int(ent), fl))
+    return out
+
+
+def csqtt_candidates():
+    """FOREIGN csqtt servers on this box — ones this node does not manage — as adoption candidates.
+
+    csqtt has NO server keypair (its whole credential is the panel-owned password), so unlike WDTT there is no
+    identity to locate and nothing that can be irrecoverably lost by adopting; what must survive is the password
+    store, which is why every candidate carries its users. Reported non-secret: the panel stays blind to the
+    passwords themselves until the node hands them up during the take-over."""
+    mine = set(_csqtt_load().keys())
+    out = []
+    for pid, f in _csqtt_procs():
+        iface = (f.get("iface") or "").strip()
+        cfg = (f.get("config-dir") or "").strip()
+        if not iface or iface in mine or not cfg:
+            continue
+        # our own supervised instances live under CSQTT_ROOT — anything there is managed, not foreign
+        if cfg.startswith(CSQTT_ROOT + "/"):
+            continue
+        users = _csqtt_adopted_users(cfg)
+        out.append({"iface": iface, "pid": pid, "config_dir": cfg,
+                    "listen": (f.get("listen") or "").strip(),
+                    "tun_addr": (f.get("tun-addr") or "").strip(),
+                    "max_passwords": (f.get("max-passwords") or "").strip(),
+                    "users": [{"comment": v["comment"], "vk_hash": v["vk_hash"], "expires_at": v["expires_at"],
+                               "is_deactivated": v["is_deactivated"]} for v in users.values()],
+                    "adoptable": True})     # no identity file to find: the store is the whole of it
+    return out
+
+
+def _csqtt_stop_foreign(iface, cfgdir):
+    """Stop the foreign csqtt serving `iface` so ours can bind its port and TUN. Disables the unit that starts it
+    first — otherwise systemd restarts it the moment it dies and it takes the port back from under us — then TERM,
+    wait, KILL. Returns True when nothing of it is left running.
+
+    Re-reads the process table immediately before signalling: a pid resolved a scan ago may since have been
+    reused, and the difference between stopping the foreign server and killing an unrelated process is exactly
+    that staleness."""
+    hit = next(((pid, f) for pid, f in _csqtt_procs()
+                if (f.get("iface") or "").strip() == iface
+                and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/")), None)
+    if not hit:
+        return True                              # already gone
+    pid, _f = hit
+    unit = _wdtt_unit_of_pid(pid, False)
+    if unit and not unit.startswith(("swg-csqtt-", "swg-wdtt-")):     # never our own supervisor
+        host_sh("systemctl disable --now " + shlex.quote(unit) + " >/dev/null 2>&1; :")
+    with contextlib.suppress(Exception):
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(30):
+            try:
+                os.kill(pid, 0); time.sleep(0.15)
+            except Exception:
+                break
+        else:
+            os.kill(pid, signal.SIGKILL)
+    with contextlib.suppress(Exception):          # the raw TUN can outlive the process
+        run(["ip", "link", "delete", "dev", iface])
+    return not any((f.get("iface") or "").strip() == iface
+                   and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/") for _p, f in _csqtt_procs())
+
+
+def _csqtt_serve_adopted(inst):
+    """Union the users recovered from a taken-over csqtt server into the set this instance serves, for as long as
+    the hand-off to the panel is open — same rule as _wdtt_serve_adopted, so existing clients keep connecting
+    through the take-over instead of being refused until the import lands."""
+    au = inst.get("adopt_users") or {}
+    if not au:
+        return
+    pwds = dict(inst.get("passwords") or {})
+    for pw, m in au.items():
+        if pw in pwds:
+            continue
+        m = m if isinstance(m, dict) else {}
+        pwds[pw] = {"expires_at": int(m.get("expires_at") or 0), "vk_hash": str(m.get("vk_hash") or ""),
+                    "is_deactivated": bool(m.get("is_deactivated"))}
+    inst["passwords"] = pwds
+
+
 def reconcile_csqtt(want, remove=None):
     """Declarative csqtt reconcile (continuous). want = {iface: inst}. Installs missing, writes desired.json +
     SIGHUPs on password change, reconfigures on transport-param change, and removes ONLY panel-listed instances.
@@ -7272,6 +7393,35 @@ def reconcile_csqtt(want, remove=None):
             _pw_seen = bool(prev.get("pw_seen") or (inst.get("passwords") or {}))
             if _pw_seen:
                 inst["pw_seen"] = True
+            # ADOPT a foreign csqtt: take its users, stop it, and run ours in its place. There is no server key
+            # to preserve (csqtt has none) — the password store IS the server's identity to a client, so copying
+            # it and serving it through the hand-off is the whole of a take-over.
+            # The hand-off closes ITSELF: once the panel's desired set already holds every recovered password the
+            # import has landed, and a 15-minute ceiling covers an import that never does. Same rule as WDTT, so
+            # nothing keeps re-offering peers the operator has since deleted.
+            _au = prev.get("adopt_users") or {}
+            if _au:
+                _have = set((inst.get("passwords") or {}).keys())
+                if (_have and not (set(_au) - _have)) or int(time.time()) - int(prev.get("adopt_users_at") or 0) > 900:
+                    _au = {}
+            if _au:
+                inst["adopt_users"] = _au
+                inst["adopt_users_at"] = prev.get("adopt_users_at") or int(time.time())
+            if inst.get("adopt_foreign") and not _csqtt_present(iface):
+                _src = (inst.get("adopt_config_dir") or "").strip()
+                if not _src:
+                    _src = next((c["config_dir"] for c in csqtt_candidates() if c["iface"] == iface), "")
+                _pre = _csqtt_adopted_users(_src) if _src else {}
+                if _pre:
+                    inst["adopt_users"] = _pre
+                    inst["adopt_users_at"] = int(time.time())
+                    _au = _pre
+                _stopped = _csqtt_stop_foreign(iface, _src)
+                if not _stopped:
+                    res["errors"].append(iface + ": couldn't stop the existing csqtt server — adopt again once it is down")
+                    have[iface] = inst; continue
+            if _au:
+                _csqtt_serve_adopted(inst)
             if not _csqtt_present(iface):
                 err = _csqtt_install(inst)
                 if err:
@@ -7341,6 +7491,9 @@ def csqtt_snapshot():
                     "stopped": bool(inst.get("stopped")), "kind": "csqtt",
                     "version": (inst.get("ver") or "").strip(),   # A3 wires CSQTT_BUILDS + a version board; record-tracked for now
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
+                    # Users recovered from a taken-over server, offered UP so the panel can recreate each as a
+                    # roster peer. Present only while the hand-off is open; the panel clears it by importing.
+                    "adopt_users": inst.get("adopt_users") or {},
                     "passwords": pwds, "devices": devs})
     return out
 

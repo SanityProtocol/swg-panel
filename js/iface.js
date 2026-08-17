@@ -263,6 +263,40 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm })
 // Adopting a DORMANT install: the identity and password store are on disk, but the runtime parameters only ever
 // existed in the process that isn't running — so the operator supplies them and the panel STARTS the server with
 // its original key. (Telling them to start it by hand would be odd advice from the one thing that can do it.)
+// Adopt a FOREIGN csqtt server the node found running. Far less to ask than a WDTT take-over: csqtt has no
+// server keypair — its whole credential is the password — so there is no identity to locate, nothing to vault,
+// and no way to break every client by minting a fresh key. What must survive is the password store, and the
+// node copies it, serves it through the hand-off, and offers each user up to become a roster peer.
+export function AdoptCsqttSheet({ node, c }) {
+  useStore();
+  const forks = enabledTurnForks().filter(f => f.kind === "csqtt");
+  const [fork, setFork] = useState((forks[0] || {}).id || "csqtt");
+  const [busy, setBusy] = useState(false);
+  const n = (c.users || []).length;
+  const doAdopt = async () => {
+    setBusy(true);
+    const r = await api.csqttAdopt({ node, iface: c.iface, fork });
+    if (!r || !r.ok) { setBusy(false); return toast(srvText(r) || T("Adopt failed"), "err"); }
+    closeAllModals(); await Store.poll();
+    toast(T("Adopting — the node takes it over on the next sync and its users keep connecting."), "ok");
+    location.hash = "#/node/" + encodeURIComponent(node);
+  };
+  return html`<${Sheet} title=${T("Adopt csqtt server · {v1}", { v1: c.iface })} width=${620}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy} onClick=${doAdopt}>${T("Adopt")}</button></>`}>
+    <div class="notice ok"><${Ic} i="check"/><span>${Trich("Its *users are kept* — the panel takes the server over on its own address and port, keeps serving every password it already had, and imports each one as a peer you can see and manage.")}</span></div>
+    <div class="iface-grid" style="margin:0 0 16px">
+      <div class="ig-item"><span class="ig-l">${T("Found at")}</span><span class="ig-v">${c.config_dir}</span></div>
+      <div class="ig-item"><span class="ig-l">${T("Listen")}</span><span class="ig-v">${c.listen || "—"}</span></div>
+      <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${c.tun_addr || "—"}</span></div>
+      <div class="ig-item"><span class="ig-l">${T("Users")}</span><span class="ig-v">${n || html`<span class="faint">${T("none found")}</span>`}</span></div>
+    </div>
+    ${n ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Its *{count}* come across on adopt — each becomes an unassigned peer you can hand to a user.", { count: plural(n, "user") })}</div>` : null}
+    <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select>
+      <div class="hint">${T("Which csqtt server implements this instance")}</div></div>
+    <div class="notice warn" style="margin-top:12px"><${Ic} i="warn"/><span>${T("The running server is stopped and ours starts in its place, on the same port — clients reconnect within seconds.")}</span></div>
+  <//>`;
+}
+
 export function AdoptDormantWdttSheet({ node, d, nrec }) {
   useStore();
   const forks = enabledTurnForks().filter(f => f.kind === "wdtt");
@@ -861,7 +895,9 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
           d=${{ config_dir: c.replace(/\/+$/, ""), fork: "", store: "", users: [], listen_port: 0, wg_port: 0 }}/>`);
         return;
       }
-      if (proto === "csqtt") return fail(T("Adopting an existing csqtt server isn't supported yet — create a new one instead."));
+      // A csqtt server is adopted from its CARD on the node page (the node finds it and reports it), not by
+      // typing a path here: it owns its raw TUN, so there is no .conf to point at.
+      if (proto === "csqtt") return fail(T("A csqtt server is adopted from its card on the node page — the node finds it and offers it there."));
       const c = conf.trim();
       if (!c.startsWith("/")) return fail(T("Enter the absolute path to the interface's .conf."));
       const base = (c.split("/").pop() || "").replace(/\.conf$/i, "");   // seed the name from the filename

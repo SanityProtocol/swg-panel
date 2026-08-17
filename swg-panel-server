@@ -3665,6 +3665,16 @@ def _wdtt_listen_ip(inst):
     return "" if ip in ("0.0.0.0", "::", "[::]") else ip
 
 
+def _csqtt_default_fork():
+    """The csqtt fork to assume when a caller names none — the catalog's first csqtt entry. One implementation
+    exists today (amurcanov's), but the catalog is fork-shaped and others are being built, so nothing hardcodes
+    the id."""
+    for fid, meta in TURN_SERVERS.items():
+        if (meta or {}).get("kind") == "csqtt":
+            return fid
+    return "csqtt"
+
+
 def _wdtt_alloc_raw_iface(nodes, nid, iface):
     """A free TUN name for an instance's RAW listener. `wdtt3` → `wdttraw3` reads best, but ADOPTED servers keep
     whatever name they had (letters, digits, _ and -), so a digit-strip can collide or come out empty — fall back
@@ -7568,6 +7578,11 @@ def api(method, path, qs, body, deps):
                         # unmanaged wg/awg interfaces the node found on the box (Approach B) → adoption candidates.
                         # Split: active (offered for adopt/ignore) vs ignored (operator dismissed → Settings → Interfaces).
                         "iface_candidates": [x for x in _cands if x["name"] not in _ign],
+                        # FOREIGN csqtt servers on the box. Not interface candidates: csqtt owns its own raw TUN
+                        # and is a distinct managed kind, so it is deliberately excluded from that scan. Drop any
+                        # this node has since taken over, or the card claims an adoption that already finished.
+                        "csqtt_candidates": [x for x in (snap.get("csqtt_candidates") or [])
+                                             if isinstance(x, dict) and x.get("iface") and x["iface"] not in _c],
                         # WDTT installs on disk with nothing running — no interface exists, so they can never be
                         # interface candidates, and without this the operator sees nothing where a real server lives.
                         # Adoption COPIES the identity, so the source directory still holds a wg-keys.dat and the
@@ -7632,6 +7647,7 @@ def api(method, path, qs, body, deps):
                         "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
                         "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
                         "wdtt_adopting": sorted(k for k, v in _w.items() if (v or {}).get("adopt_foreign")),   # foreign-server take-overs in flight (cleared once the node reports the instance)
+                        "csqtt_adopting": sorted(k for k, v in _c.items() if (v or {}).get("adopt_foreign")),  # same, for csqtt
                         # Config dirs already CLAIMED by an instance. adopt_foreign clears after a single sync, so
                         # it can't tell the operator that the dormant install they just adopted is being taken
                         # over — this can, and it stays true until the dir stops being reported as dormant at all.
@@ -11527,6 +11543,72 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Set csqtt instance", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
 
+    if method == "POST" and path == "/api/csqtt/adopt":
+        # ADOPT a FOREIGN csqtt server the node found. Declarative like /api/wdtt/adopt: write the instance with
+        # `adopt_foreign`, and the node takes over on its next sync — it reads the foreign password store, stops
+        # that server, installs ours in its place and SERVES those users through the hand-off, then offers them
+        # up so each becomes a roster peer.
+        #
+        # Simpler than a WDTT take-over in one decisive way: csqtt has NO server keypair. Its whole credential is
+        # the password, so there is no identity to locate and no way to silently break every client by minting a
+        # fresh key — which is why this needs no identity_path and no vault.
+        nid = body.get("node") or ""
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        iface = (body.get("iface") or "").strip()
+        if not _CSQTT_IFACE_RE.match(iface):
+            return 400, {"ok": False, "error": "invalid iface (csqtt0..csqtt9999)", "code": "bad_request"}
+        if iface in ((nodes[nid].get("csqtt")) or {}):
+            return 400, {"ok": False, **perr("this node already manages a csqtt instance on {v1}", v1=iface), "code": "bad_request"}
+        # Only ever adopt something the NODE currently reports: a hand-made request must not point us at an
+        # arbitrary directory, and an instance the node can never seed would fail on every 5s reconcile forever.
+        _snap = ((deps.get("node_snaps") or {}).get(nid) or {})
+        _cd = next((c for c in (_snap.get("csqtt_candidates") or []) if (c or {}).get("iface") == iface), None)
+        if not _cd:
+            return 400, {"ok": False, **perr("this node doesn't report a csqtt server on {v1} — refresh and try again", v1=iface), "code": "bad_request"}
+        inst = {"iface": iface, "adopt_foreign": True, "adopt_config_dir": _cd.get("config_dir") or ""}
+        fork = (body.get("fork") or "").strip() or _csqtt_default_fork()
+        if (TURN_SERVERS.get(fork) or {}).get("kind") != "csqtt":
+            return 400, {"ok": False, **perr("unknown csqtt fork: {v1}", v1=fork), "code": "bad_request"}
+        inst["fork"] = fork
+        for k in ("listen", "tun_addr", "title"):
+            v = (body.get(k) or "").strip() or (_cd.get(k) or "").strip()
+            if v:
+                if not no_ctrl(v):
+                    return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
+                inst[k] = v
+        with contextlib.suppress(TypeError, ValueError):
+            _mp = int(_cd.get("max_passwords") or 0)
+            if _mp:
+                inst["max_passwords"] = max(1, min(4000, _mp))
+        # `listen` is what CLIENTS dial: a wildcard bind says what the server listens ON and tells a client
+        # nothing, so advertise the node's endpoint instead (same normalisation as the WDTT adopt).
+        _lv = (inst.get("listen") or "").strip()
+        if ":" in _lv:
+            _hs, _dt = _lv.rsplit(":", 1)
+            if _dt.isdigit():
+                if _hs.strip("[]") in ("", "0.0.0.0", "::", "*"):
+                    _hs = (nodes[nid].get("endpoint_host") or "").strip() or (_snap.get("node_ips") or [""])[0]
+                if _hs:
+                    inst["listen"] = _hs + ":" + _dt
+        if not valid_hostport(inst.get("listen") or ""):
+            return 400, {"ok": False, **perr("this server's listen address isn't host:port: {v1}", v1=inst.get("listen") or "(none)"), "code": "bad_request"}
+        # A wildcard we could not resolve must not be STORED: `listen` is what every issued link tells a client
+        # to dial, and "0.0.0.0" is not an address anyone can reach. Ask for the host instead of silently
+        # minting links to nowhere.
+        if (inst.get("listen") or "").rsplit(":", 1)[0].strip("[]") in ("", "0.0.0.0", "::", "*"):
+            return 400, {"ok": False, **perr("this node has no endpoint address yet, so clients would have nothing to dial — set the node's endpoint host, or pass one with the adopt"), "code": "bad_request"}
+        if not (_WDTT_CIDR_RE.match(inst.get("tun_addr") or "") and (inst.get("tun_addr") or "").endswith("/24")):
+            return 400, {"ok": False, **perr("this server's tunnel subnet isn't an IPv4 /24: {v1}", v1=inst.get("tun_addr") or "(none)"), "code": "bad_request"}
+        _clash = subnet_fleet_conflict(deps, nodes, inst["tun_addr"], skip_node=nid, skip_iface=iface)
+        if _clash:
+            return 409, {"ok": False, **perr("its subnet {v1} is already used elsewhere in the fleet ({v2}) — adopting it would black-hole one of them", v1=inst["tun_addr"], v2=_clash), "code": "subnet_conflict"}
+        nodes[nid].setdefault("csqtt", {})[iface] = inst
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Adopting csqtt server", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "fork": fork,
+                                          "users": len(_cd.get("users") or [])}}
+
     if method == "POST" and path == "/api/csqtt/delete":
         nid = body.get("node") or ""; iface = (body.get("iface") or "").strip()
         if nid not in nodes:
@@ -13290,6 +13372,49 @@ class Handler(BaseHTTPRequestHandler):
         # early any more: they DO self-update now via the host updater (swg-noded writes a trigger → the host
         # runs `compose pull && up`), so popping the flag on first sight meant swg-noded usually never received
         # it. A docker node with no host updater wired reports `update-failed` itself, so it won't hang silently.
+        # Same hand-off for csqtt. Its credential is ONLY the password (no server key), so an adopted user
+        # that never becomes a roster peer is a client the panel serves but cannot see, block or expire —
+        # and the node stops re-offering after 15 minutes, so the window is the whole of the chance.
+        # Guarded like the WDTT one: an enrichment fault must never 500 the sync the fleet depends on.
+        try:
+            _cstore = node.get("csqtt") or {}
+            for _cifn, _csn in {c.get("iface"): c for c in (snap.get("csqtt") or []) if isinstance(c, dict)}.items():
+                _cau = (_csn or {}).get("adopt_users")
+                if not isinstance(_cau, dict) or not _cau or _cifn not in _cstore:
+                    continue
+                _cknown = {p.get("csqtt_password") for p in (roster.get("peers") or {}).values()
+                           if isinstance(p, dict) and p.get("csqtt_password")
+                           and any((t or {}).get("node") == nid and (t or {}).get("iface") == _cifn
+                                   for t in (p.get("targets") or []))}
+                _cimp = 0
+                for _pw, _meta in _cau.items():
+                    if not _pw or _pw in _cknown or not no_ctrl(str(_pw)):
+                        continue
+                    _meta = _meta if isinstance(_meta, dict) else {}
+                    _pid = gen_id()
+                    while _pid in roster["peers"]:
+                        _pid = gen_id()
+                    _f = {"user_id": None, "title": (str(_meta.get("comment") or "").strip() or "adopted")[:60],
+                          "pubkey": "", "psk": "",
+                          "targets": [{"node": nid, "iface": _cifn, "ip": "", "type": "csqtt"}],
+                          "csqtt_password": _pw}
+                    _vk = str(_meta.get("vk_hash") or "").strip()
+                    if _vk and no_ctrl(_vk):
+                        _f["vk_hash"] = _vk
+                    if _meta.get("is_deactivated"):
+                        _f["disabled"] = True
+                    with contextlib.suppress(Exception):
+                        _f["expiry"] = int(_meta.get("expires_at") or 0)
+                    _p = peer_set(roster, _pid, _f, int(time.time()))
+                    _cimp += 1
+                    ev_append(Handler.deps["roster_path"], "peer", _pid,
+                              "Imported csqtt user from adopted server", peer_label(roster, _p),
+                              nid + "/" + _cifn)
+                if _cimp:
+                    roster_save(Handler.deps["roster_path"], roster)
+        except Exception as _e:
+            print("csqtt adopt-import failed: " + str(_e)[:200], flush=True)
+
         upd = node.get("update")
         rv = snap.get("noded_version")
         if upd and rv and rv != upd.get("from"):                       # version advanced → the update landed, clear the request

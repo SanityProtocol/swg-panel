@@ -33,7 +33,7 @@ import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurn
          openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet } from "./turn.js";
 import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
 import { IgnoredIfacesCard, openOnboardIface, openEditIface, openConnectionEdit, OrphanRow,
-         AdoptIfaceSheet, AdoptDormantWdttSheet } from "./iface.js";
+         AdoptIfaceSheet, AdoptDormantWdttSheet, AdoptCsqttSheet } from "./iface.js";
 import { openNodeCreate, openNodeEdit, openNodeRemove, openNodeRecover, openNodeRotate, unflagNode } from "./sheets-crud.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, openRecreateRekey } from "./peer-actions.js";
 import { h, Fragment } from "preact";
@@ -425,6 +425,26 @@ export function NodeDetail({ node: rawName }) {
               : html`<span class="faint">${T("None")}</span>`}</span></div>
           </div></div>`; };
         const dcards = (nrec.wdtt_dormant || []).map(dcard);
+        // FOREIGN csqtt: a csqtt server running on the box that this panel doesn't manage. It owns its own raw
+        // TUN and is a distinct kind, so it never appears among the wg/awg interface candidates — without a card
+        // of its own the operator sees nothing where a real server, with real users, is running.
+        const _cAdopting = new Set(nrec.csqtt_adopting || []);
+        const cqcard = c => { const taking = _cAdopting.has(c.iface);
+          return html`<div class=${"ifcard candidate" + ((taking || blocked) ? " down" : "") + (blocked ? " locked" : "")} key=${"csqcand:" + c.iface}>
+          <div class="ifcard-top"><span class="iftype csqtt">CSQTT</span><span class="ifname">${c.iface}</span><span class="grow"></span>
+            ${(taking || blocked) ? null : html`<button class="mi-restore" title=${T("Adopt this csqtt server — its users are kept and imported")}
+              onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptCsqttSheet} node=${name} c=${c}/>`); }}><${Ic} i="plus"/> ${T("Adopt")}</button>`}
+            ${taking
+              ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
+              : html`<span class="tg tg-cand" title=${T("On the node, not managed by the panel")}><${Ic} i="warn"/>${T("tag|orphan")}</span>`}</div>
+          <div class="ifcard-rows">
+            <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${c.config_dir}</span></div>
+            <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
+            <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${c.tun_addr || "—"}</span></div>
+            <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${(c.users || []).length
+              ? html`<b>${(c.users || []).length}</b>` : html`<span class="faint">${T("None")}</span>`}</span></div>
+          </div></div>`; };
+        const cqcards = (nrec.csqtt_candidates || []).map(cqcard);
         const ccards = (nrec.iface_candidates || []).filter(cd => cd && cd.name && !_known(cd.name) && !pending.includes(cd.name) && !isSysName(cd.name)).map(cd => ccard(cd, false));
         const _gset = {};   // dedupe cold (ghost_ifaces) + keyless-missing into one gcard per iface; a recreate in flight (pending) drops the ghost card in favour of its "creating" card
         for (const ifn of Object.keys(nrec.ghost_ifaces || {})) if (!(meta && meta[ifn]) && !pending.includes(ifn) && !isSysName(ifn)) _gset[ifn] = 1;
@@ -525,7 +545,7 @@ export function NodeDetail({ node: rawName }) {
             </div></a>`; };
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.")}<br/><br/>${T("Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.")}</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>${T("reading server…")}</div>`
-          : (!userKeys.length && !pending.length && !mcards.length && !gcards.length && !wdttIfaces.length && !csqttIfaces.length && !wmcards.length && !cmcards.length && !ccards.length && !dcards.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("No managed interfaces reported.")}</span></div>`
+          : (!userKeys.length && !pending.length && !mcards.length && !gcards.length && !wdttIfaces.length && !csqttIfaces.length && !wmcards.length && !cmcards.length && !ccards.length && !dcards.length && !cqcards.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("No managed interfaces reported.")}</span></div>`
           : html`<div class="ifgrid" ...${ifReorder.container()}>${mcards}${wmcards}${cmcards}${gcards}${ifaceIds.map(ifn => {
               if (Store.ifaceGone[_pfx + ifn]) return delCard(ifn, Store.ifaceGone[_pfx + ifn]);   // teardown in flight → the inert "deleting" card, in place
               const _w = wdttIfaces.find(w => w.iface === ifn);   // WDTT interface → its card (reorders in the same grid); else a normal wg/awg card
@@ -573,7 +593,7 @@ export function NodeDetail({ node: rawName }) {
                         trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>${orph ? html` <span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>(${orph})</span>` : null}`}/>`
                     : (orph ? html`<span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>${orph}</span>` : html`<span class="faint">${T("None")}</span>`)}</span></div>
                 </div></a>`;
-            })}${pcards}${ccards}${dcards}</div>`; })()}
+            })}${pcards}${ccards}${dcards}${cqcards}</div>`; })()}
     <//>
 
     ${(hasTurns || hasWdtt || hasCsqtt) && turnEnabled() ? html`<${TurnProxiesBlock} node=${name} nrec=${nrec} snap=${snap} metas=${meta} title=${T("Turn proxies")}/>` : null}

@@ -181,6 +181,7 @@ export const api = {
   wdttVersions(q) { return this.get("/api/wdtt/versions?node=" + encodeURIComponent(q.node || "") + "&iface=" + encodeURIComponent(q.iface || "") + "&fork=" + encodeURIComponent(q.fork || "")); },   // our published builds (rollback targets) + any hold
   wdttVersion(b) { return this.post("/api/wdtt/version", b); },              // roll a WDTT instance to a build (ver) or release the hold (ver="")
   csqttSet(b) { return this.post("/api/csqtt/set", b); },                    // create/update a csqtt instance on a node (declarative)
+  csqttAdopt(b) { return this.post("/api/csqtt/adopt", b); },                // adopt a FOREIGN csqtt server (its users come across)
   csqttDelete(b) { return this.post("/api/csqtt/delete", b); },              // remove a csqtt instance
   csqttPeerCreate(b) { return this.post("/api/csqtt-peer/create", b); },     // keyless csqtt peer (mints the access password)
   csqttPeerRotate(b) { return this.post("/api/csqtt-peer/rotate", b); },     // rotate a csqtt peer's password (revoke the old link)

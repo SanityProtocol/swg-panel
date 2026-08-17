@@ -3177,8 +3177,6 @@ export const STR = {
   "val|auto": "авто",
   "tag|unbound": "не привязан",
   // ── csqtt (amurcanov's Rust rewrite of WDTT — self-contained raw-TUN VK-turn server) ──
-  "Adopting an existing csqtt server isn't supported yet — create a new one instead.":
-    "Принять существующий сервер csqtt пока нельзя — создайте новый.",
   "csqtt interface name must be csqtt0–csqtt9999.": "Интерфейс csqtt называется от csqtt0 до csqtt9999.",
   "csqtt needs a /24 tunnel subnet, e.g. 10.66.67.0/24.": "csqtt нужна подсеть туннеля /24, например 10.66.67.0/24.",
   "Max passwords must be a number.": "Максимум паролей должен быть числом.",
@@ -3268,6 +3266,29 @@ export const STR = {
   "The internal WG port must be a number.": "Внутренний порт WG должен быть числом.",
   "Where the DTLS half forwards, on loopback. No client dials it and no link carries it, so changing it only restarts the server — but it must not sit on the RAW port.":
     "Куда DTLS-половина переправляет трафик, по локальной петле. Ни один клиент туда не стучится и ни одна ссылка его не передаёт, поэтому смена порта лишь перезапускает сервер — но занимать порт RAW он не должен.",
+  "Adopt csqtt server · {v1}": "Принять сервер csqtt · {v1}",
+  "Adopt this csqtt server — its users are kept and imported": "Принять этот сервер csqtt — его пользователи сохранятся и будут импортированы",
+  "Adopting — the node takes it over on the next sync and its users keep connecting.":
+    "Принимаем — нода заберёт его на следующей синхронизации, и его пользователи продолжат подключаться.",
+  "Its *users are kept* — the panel takes the server over on its own address and port, keeps serving every password it already had, and imports each one as a peer you can see and manage.":
+    "Его *пользователи сохранятся* — панель заберёт сервер на его же адресе и порту, продолжит обслуживать все выданные им пароли и импортирует каждого как пира, которого вы видите и которым управляете.",
+  "Its *{count}* come across on adopt — each becomes an unassigned peer you can hand to a user.":
+    "Его *{count}* перейдут при приёме — каждый станет непривязанным пиром, которого можно выдать пользователю.",
+  "The running server is stopped and ours starts in its place, on the same port — clients reconnect within seconds.":
+    "Работающий сервер будет остановлен, а наш поднимется на его месте, на том же порту — клиенты переподключатся за секунды.",
+  "A csqtt server is adopted from its card on the node page — the node finds it and offers it there.":
+    "Сервер csqtt принимается со своей карточки на странице ноды — нода находит его и предлагает там.",
+  "RAW needs port {v1} and {v2} is using it on this node — move that first":
+    "RAW нужен порт {v1}, а его занимает {v2} на этой ноде — сначала перенесите его",
+  "this server would need port {v1} for RAW, but it is already using it — move its listen or internal WG port first":
+    "Этому серверу нужен порт {v1} для RAW, но он сам его занимает — сначала перенесите его порт приёма или внутренний порт WG",
+  "{v1} has no RAW-IP mode — it is a qWDTT feature": "У {v1} нет режима RAW-IP — это возможность qWDTT",
+  "no csqtt instance '{v1}' on node {v2}": "на ноде {v2} нет экземпляра csqtt «{v1}»",
+  "this node already manages a csqtt instance on {v1}": "эта нода уже управляет экземпляром csqtt на {v1}",
+  "this node doesn't report a csqtt server on {v1} — refresh and try again":
+    "эта нода не сообщает о сервере csqtt на {v1} — обновите и попробуйте снова",
+  "this server's tunnel subnet isn't an IPv4 /24: {v1}": "подсеть туннеля этого сервера не IPv4 /24: {v1}",
+  "unknown csqtt fork: {v1}": "неизвестный форк csqtt: {v1}",
   "Turn-proxy": "Turn-прокси",
   "RAW mode on": "RAW включён",
   "Extra flags": "Дополнительные флаги",
