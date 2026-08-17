@@ -14,7 +14,7 @@
 import { esc, tkey, seen, dur, fmtBytes } from "./util.js";
 import { T } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
-import { targetType, nodeStale, ghostIface, ifaceIsAll, ifaceMatch } from "./model.js";
+import { targetType, nodeStale, ghostIface, ifaceIsAll, ifaceMatch, tgtXfer, tgtSeenAge } from "./model.js";
 import {
   Ic, Tag, Badge, Dropdown, SearchBox, secTitle, footRow, Popover, toast, openModal, openConfirm,
   rowSingle, rowDouble, rowNoSelect, RowError, connDot, endpointCell, rateCell, xferCell, DepBadge,
@@ -93,9 +93,10 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             </div></td>` : null;
             return html`${userCell}${titleCell}${srvAgg}${addrCell}${live ? epCell : null}`;
           })()}
-          <td data-label=${T("col|Online")} class="c-online"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
-          <td data-label=${T("col|Rate")} class="c-rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
-          <td data-label=${T("col|Total")} class="c-total">${xferCell(...dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0))}</td>
+          <td data-label=${T("col|Online")} class="c-online"><span class="when">${seen(tgtSeenAge(t))}</span></td>
+          ${(() => { const xf = tgtXfer(t); return html`
+          <td data-label=${T("col|Rate")} class="c-rate">${rateCell(xf ? xf.rx_speed : 0, xf ? xf.tx_speed : 0)}</td>
+          <td data-label=${T("col|Total")} class="c-total">${xferCell(...dlul(xf ? xf.rx_bytes : 0, xf ? xf.tx_bytes : 0))}</td>`; })()}
           ${live ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
             ${(() => { const gh = ghostIface(t.node, t.iface); return (gh && gh.ripe)
               ? html`<button class="iconbtn ghost" title=${T("Recreate & rekey — {iface} is gone with no recoverable key; recreate it fresh and reissue every client's config", { iface: t.iface })} onClick=${() => openRecreateRekey(t.node, t.iface)}><${Ic} i="refresh"/></button>`

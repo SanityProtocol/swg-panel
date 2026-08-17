@@ -1193,6 +1193,16 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .tg-wdtt{background:rgba(129,181,18,.16);color:#81B512}   /* WDTT type tag; applyThemeColors injects the tunable colour */
 .tg-csqtt{background:rgba(249,115,22,.16);color:#F97316}   /* csqtt type tag; applyThemeColors injects the tunable colour */
 .tg-turn{color:var(--tfc,#B49BF7);background:color-mix(in srgb,var(--tfc,#A78BF5) 17%,transparent)}
+/* A protocol tag that is also the publish switch for that kind of config (peer view / edit / targets).
+   It has to keep reading as a tag first — a dotted underline on hover is the only affordance, and OFF is
+   the loud state: struck through, greyed, with an eye-off glyph, because that's the state you can't infer. */
+.pubtg{border:0;cursor:pointer;font:inherit;font-family:var(--mono);font-size:9px;font-weight:500;gap:3px}
+.pubtg:hover{box-shadow:inset 0 -1px 0 currentColor}
+.pubtg:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+.pubtg.off{background:color-mix(in srgb,var(--unknown) 13%,transparent)!important;color:var(--unknown)!important;text-decoration:line-through}
+.pubtg.off svg{width:9px;height:9px;text-decoration:none}
+.pubtg.lone{cursor:default}
+.pubtg.lone:hover{box-shadow:none}
 /* RAW-IP mode is on: amber, the same register as every other "this needs your attention" tag — it trades
    WireGuard's handshake for throughput, so it never reads as a neutral capability chip. */
 .tg-raw{background:color-mix(in srgb,#F0913C 15%,transparent);color:#F0913C}
@@ -1573,13 +1583,6 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .turncfg{display:flex;flex-direction:column;gap:14px}
 .turntabs{display:flex;flex-wrap:wrap;gap:8px}
 .turntab{font-size:12px}
-.xtag{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;padding:1px 5px;border-radius:4px;margin-left:6px;background:rgba(232,192,75,.14);color:var(--pending);border:1px solid rgba(232,192,75,.3)}
-/* the head "experimental" tag explains itself in a hover/focus bubble (justified) instead of an on-screen banner */
-.xtag-tip{position:relative;cursor:help;outline:none}
-.xtip-bubble{display:none;position:absolute;top:calc(100% + 7px);right:0;z-index:60;width:min(280px,72vw);
-  text-align:justify;text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:11px;font-weight:400;line-height:1.5;
-  color:var(--pending);background:color-mix(in srgb,#E8C04B 9%,var(--surface-2));border:1px solid rgba(232,192,75,.25);border-radius:8px;padding:8px 10px;box-shadow:0 8px 24px rgba(0,0,0,.28)}
-.xtag-tip:hover .xtip-bubble,.xtag-tip:focus .xtip-bubble,.xtag-tip:focus-visible .xtip-bubble{display:block}
 .turncfg-item>.hint{font-size:11px;line-height:1.5}
 /* redundant same-fork proxies: title left, dropdown right, on one line */
 .turninst{display:flex;align-items:center;gap:12px;justify-content:flex-end;margin-bottom:12px}   /* right-aligned: label sits next to its dropdown */

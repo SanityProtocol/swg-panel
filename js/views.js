@@ -17,7 +17,7 @@
 
 import { isWdttIface, isCsqttIface, isSelfContainedIface, tkey } from "./util.js";
 import { Store, bus } from "./store.js";
-import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale } from "./model.js";
+import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge } from "./model.js";
 import { go } from "./router.js";
 import { statusLabel, Popover, Ic, Tag, inProc, setPendingSection } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
@@ -84,9 +84,9 @@ export const PEER_SORT = {
   title: ({ p }) => String(p.title || p.name || "").toLowerCase(),
   address: ({ t }) => _ipKey(t.ip),
   endpoint: ({ t }) => ((t.observed && t.observed.endpoint) || "￿").toLowerCase(),
-  online: ({ t }) => (t.observed && t.observed.handshake_age != null) ? t.observed.handshake_age : Infinity,
-  rate: ({ t }) => t.observed ? (t.observed.rx_speed || 0) + (t.observed.tx_speed || 0) : 0,
-  total: ({ t }) => t.observed ? (t.observed.rx_bytes || 0) + (t.observed.tx_bytes || 0) : 0,
+  online: ({ t }) => { const a = tgtSeenAge(t); return a != null ? a : Infinity; },
+  rate: ({ t }) => { const x = tgtXfer(t); return x ? (x.rx_speed || 0) + (x.tx_speed || 0) : 0; },
+  total: ({ t }) => { const x = tgtXfer(t); return x ? (x.rx_bytes || 0) + (x.tx_bytes || 0) : 0; },
 };
 export const PEER_DEFDIR = { status: -1, rate: -1, total: -1, online: 1, title: 1, user: 1, server: 1, address: 1, endpoint: 1 };   // first-click direction per column
 // ── order freeze ─────────────────────────────────────────────────────────────────────────────────
@@ -161,7 +161,7 @@ export function userStatTag(user, live) {
 export function userStats(uid) {
   let rx = 0, tx = 0, rxb = 0, txb = 0, last = null;
   for (const p of Store.peersOfUser(uid)) for (const t of p.targets) {
-    const o = t.observed; if (!o) continue;
+    const o = tgtXfer(t); if (!o) continue;
     rx += o.rx_speed || 0; tx += o.tx_speed || 0; rxb += o.rx_bytes || 0; txb += o.tx_bytes || 0;
     if (o.handshake_age != null) last = (last == null) ? o.handshake_age : Math.min(last, o.handshake_age);
   }

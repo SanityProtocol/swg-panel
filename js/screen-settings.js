@@ -1074,6 +1074,7 @@ export function PanelSettingsScreen() {
   const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
   const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || TURN_FORKS_DEFAULT));   // forks offered in the install picker
   const [vkLinkS, setVkLinkS] = useState(ps.vk_link || "");   // VK call link baked into generated turn-proxy client configs
+  const [rawDefS, setRawDefS] = useState(ps.wdtt_raw_default !== false);   // new qWDTT servers come up with RAW-IP mode on
   // ---- themed colour pickers ({dark,light} each) — Interfaces / Display / Turn sections ----
   const asThemed = (v, dd, dl) => (v && typeof v === "object") ? { dark: v.dark || dd, light: v.light || dl } : { dark: v || dd, light: v || dl };
   const sameThemed = (a, dd, dl) => (a.dark || "").toLowerCase() === dd.toLowerCase() && (a.light || "").toLowerCase() === dl.toLowerCase();
@@ -1308,6 +1309,7 @@ export function PanelSettingsScreen() {
         hidden_categories: [...hidden],
         custom_lists: lists.map(({ _rid, domains, cidrs, ...l }) => l),   // send id/title/targets/enabled; backend re-derives domains+cidrs
         turn_enabled: turnEnabledS,
+        wdtt_raw_default: rawDefS,
         turn_update: { every_days: Math.max(0, Math.min(30, parseInt(tuEvery) || 0)), at: tuAt },
         enabled_turn_forks: [...turnForks],
         turn_fork_colors: forkColorOverrides(),
@@ -1483,7 +1485,7 @@ const sectionLabel = k => ({
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || []) || Object.keys(blockEdits).length > 0 || blockRemoved.length > 0) :
-    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
+    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || rawDefS !== (ps.wdtt_raw_default !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
     sec === "security" ? secChanged() :
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
@@ -1786,6 +1788,10 @@ const sectionLabel = k => ({
             <button class="iconbtn tf-gear" title=${T("Server-flag defaults for {v1} (pre-fill new proxies)", { v1: f.label })} onClick=${() => openServerDefaults(f.id)}><${Ic} i="gear"/></button>
           </div>`; })}</div>
           ${turnEnabledS ? html`<${Fragment}>
+          <div class="seclabel" style="margin-top:18px">${T("RAW-IP mode")}</div>
+          <p class="hint" style="margin:0 0 10px">${Trich("Forks that offer it (qWDTT today) carry a second, WireGuard-free listener that is roughly *6x* faster through the same VK relay. The server keeps its normal WireGuard listener either way, so each user picks per device — but RAW has *no forward secrecy and no replay protection*. This only sets what a NEWLY created server starts with; every server can be switched afterwards.")}</p>
+          <div class="cl-row" style="margin-bottom:4px"><span class="cl-name">${T("Enable RAW on new servers")}</span><span class="grow"></span>
+            <label class="swt" title=${rawDefS ? T("New servers start with RAW on") : T("New servers start with RAW off")}><input type="checkbox" checked=${rawDefS} onChange=${e => setRawDefS(e.target.checked)}/><span class="track"></span><span class="knob"></span></label></div>
           <div class="seclabel" style="margin-top:18px">${T("Auto-update schedule")}</div>
           <p class="hint" style="margin:0 0 10px">${Trich("The panel checks each deployed proxy's fork for a newer release and, if there is one, updates the binary and restarts the proxy automatically. A restart briefly drops that proxy's clients, so pick a *quiet hour*. (The panel stages the update; each node applies it on its next sync.)")}</p>
           <div class="schedrow">

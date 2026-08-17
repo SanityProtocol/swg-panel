@@ -15,7 +15,7 @@
 import { T, Tsplit, plural } from "./i18n.js";
 import { tkey, seen, isPrimaryTarget } from "./util.js";
 import { Store, api, useStore } from "./store.js";
-import { targetType, iTypeOf, ghostIface, ghostPeers } from "./model.js";
+import { targetType, iTypeOf, ghostIface, ghostPeers, peerSubSources, subHidden, subHides } from "./model.js";
 import { searchMatch, revealAssignedPeer } from "./views.js";
 import { Ic, toast, mutate, openModal, pushModal, openConfirm, closeModal, closeAllModals, Tag,
          Portal, useAnchoredList } from "./ui.js";
@@ -327,6 +327,32 @@ export function userBlockBtn(user, back) {
   return user.disabled
     ? html`<button class="btn btn-ok" onClick=${() => confirmUnblockUser(user, back)}><${Ic} i="refresh"/> ${T("Unblock")}</button>`
     : html`<button class="btn btn-danger" onClick=${() => confirmBlockUser(user, back)}><${Ic} i="off"/> ${T("Block")}</button>`;
+}
+
+// ── What a peer publishes to its subscription ─────────────────────────────────────────────────────────────────
+// The protocol tag on a deployment doubles as the publish switch for that KIND of config: click it and every
+// config of that kind drops out of the holder's subscription page (the deployment keeps running — this is about
+// what the holder is offered, not what exists). One kind always has to stay on, or the page would be empty with
+// nothing to explain why. `src` is a SUB_SOURCES member; `label` is what the tag reads.
+export function PubTag({ peer, src, label, kind, muted }) {
+  useStore();                                            // the flag lives in the roster — re-render when a poll lands
+  peer = (peer && Store.peer(peer.id)) || peer;          // a sheet's `peer` prop is a snapshot from open; read the live one
+  const hidden = subHides(peer, src);
+  const only = !hidden && peerSubSources(peer).filter(s => !subHides(peer, s)).length <= 1;
+  const title = only ? T("This is the last kind of config this peer publishes — a subscription can't be empty.")
+    : hidden ? T("Hidden from the subscription — click to publish it again")
+    : T("Published to the subscription — click to hide it");
+  const flip = () => {
+    if (only) { toast(T("A peer has to publish at least one kind of config — keep one selected."), "err", 4000); return; }
+    const next = hidden ? subHidden(peer).filter(s => s !== src) : subHidden(peer).concat([src]);
+    mutate({
+      key: "subhide:" + peer.id + ":" + src,
+      patch: st => { const p2 = st.roster.peers[peer.id]; if (p2) p2.sub_hide = next; },
+      call: () => api.peerUpdate({ peer_id: peer.id, sub_hide: next }),
+    });
+  };
+  return html`<button type="button" class=${"tg tg-" + (kind || src) + " pubtg" + (hidden ? " off" : "") + (muted ? " muted" : "") + (only ? " lone" : "")}
+    title=${title} aria-pressed=${!hidden} onClick=${e => { e.preventDefault(); e.stopPropagation(); flip(); }}>${label}${hidden ? html`<${Ic} i="off"/>` : null}</button>`;
 }
 
 // ── Access expiry (a timed revoke): a peer/subscription stops working once its date passes. Enforced live on the

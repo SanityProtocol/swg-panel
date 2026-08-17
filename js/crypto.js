@@ -803,15 +803,15 @@ function _b64ToBytes(b64) { try { const s = atob(String(b64 || "").trim()); cons
 // turn-artifacts.js (window.SWGTurn), loaded by both the admin app and the subscription page.
 export function turnArtifact(baseConf, tp, vkLink, vkLinks, asClient, os) {
   const fork = turnFork(tp.service);
-  // Every client (native OR experimental) gets the admin's saved values for THIS (server, client, OS); the encoder
+  // Every client (the server's own OR a cross-fork one) gets the admin's saved values for THIS (server, client, OS); the encoder
   // fills anything unset with the app's own default. `os` omitted → the client's primary platform (config-gen has
   // no device context yet; the sub page can pass the visitor's OS later).
   const native = (typeof SWGTurn.nativeEncoder === "function") ? SWGTurn.nativeEncoder(fork) : null;
   const cs = turnClientSettingsFor(fork, asClient || native, os);
   return SWGTurn.artifact(baseConf, tp, vkLink, cs, vkLinks, asClient);
 }
-// The client apps a server offers (from the catalog `clients` list) → {id, encoder, name, experimental}. Native
-// (the server's own app) first; cross-fork clients are experimental (shared-ancestor wire, interop unverified).
+// The client apps a server offers (from the catalog `clients` list) → {id, encoder, name, cross}. The server's
+// OWN app sorts first; a cross-fork app (shared-ancestor wire, another fork's client) follows it.
 export function turnClientsFor(fork) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
   const ids = ((turnForkList().find(x => x.id === fork) || {}).clients) || [];
@@ -819,13 +819,12 @@ export function turnClientsFor(fork) {
   const PL = { android: "Android", ios: "iOS", windows: "Windows", linux: "Linux", macos: "macOS" };
   const out = ids.map(id => {
     const c = cmap[id] || {}; const plat = Object.keys(c.platforms || {})[0];
-    return { id, encoder: c.encoder || id, name: c.name || id, plat: plat ? (PL[plat] || plat) : "", experimental: (c.encoder || id) !== native };
+    return { id, encoder: c.encoder || id, name: c.name || id, plat: plat ? (PL[plat] || plat) : "", cross: (c.encoder || id) !== native };
   });
-  return out.sort((a, b) => (a.experimental ? 1 : 0) - (b.experimental ? 1 : 0));
+  return out.sort((a, b) => (a.cross ? 1 : 0) - (b.cross ? 1 : 0));
 }
 // A FUNCTION: a module-level T() is evaluated at import, before loadLang() resolves, and would freeze
 // this warning in English for the life of the page (same rule as ui.js's label tables).
-export const EXP_WARN = () => T("Experimental server-client combination — not the server's native app. The wire formats share an ancestor but this pairing is unverified; test it before relying on it.");
 // the catalog client id whose encoder matches (clients map their own encoder; id==encoder for most)
 function _clientIdForEncoder(encoder) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};

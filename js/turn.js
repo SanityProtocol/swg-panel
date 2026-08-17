@@ -1609,7 +1609,6 @@ export function WdttManageSheet({ node, w: w0 }) {
   const rawCur = String(cfg.raw_port || w.raw_port || "");
   const [rawOn, setRawOn] = useState(!!rawCur);
   const [rawPort, setRawPort] = useState(rawCur);
-  const [rawOpen, setRawOpen] = useState(false);
   const wgPort = String(cfg.wg_port || w.wg_port || "56001");
   const newListen = (ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0") + ":" + (port.trim() || "56000");
   const endpointDirty = !!oldListen && newListen !== oldListen;
@@ -1674,20 +1673,26 @@ export function WdttManageSheet({ node, w: w0 }) {
         <div class="field"><label>${T("Listen port")}</label><input class=${wperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="56000"/>${wperr ? html`<div class="hint err">${wperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>
       </div>
       <div class="field"><label>${T("Forwards to")}</label><div class="ro-field" style="display:flex;align-items:center;gap:8px"><span class="mono">${iface} · 127.0.0.1:${wgPort}</span> <span class="faint">${T("— self-contained (its own userspace-WireGuard)")}</span><span class="grow"></span><button class="btn btn-mini" disabled=${blocked || awaiting} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
-      ${rawCapable ? html`<${Disclosure} title=${T("RAW-IP mode")}
-        summary=${rawCur ? html`<span class="tg tg-raw">${T("on")} · ${rawCur}</span>` : html`<span class="faint">${T("val|off")}</span>`}
-        open=${rawOpen} onToggle=${() => setRawOpen(o => !o)}>
-        <p class="hint" style="margin:0 0 10px">${T("Carries a peer's traffic without WireGuard — roughly 6× the throughput through the same VK relay. The server keeps its normal WireGuard listener, so peers choose per device.")}</p>
-        <div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${Trich("RAW drops WireGuard's handshake: *no forward secrecy and no replay protection*. Anyone who later learns a peer's password can read traffic they recorded earlier. Turn it on for people who need the speed and accept that.")}</span></div>
-        <label class="obfctl" style="margin-bottom:10px"><${Switch} on=${rawOn} onChange=${v => { setRawOn(v); if (v && !rawPort.trim()) setRawPort(portErrMsg(node, "56003", [rawCur, lport, wgPort]) ? String((Number(port) || 56000) + 20) : "56003"); }}/> <span class="obfctl-lbl">${T("Accept RAW connections")}</span></label>
-        ${rawOn ? html`<${Fragment}>
-          <div class="field"><label>${T("RAW port")}</label><input class=${rawErr ? "bad" : ""} value=${rawPort} onInput=${e => setRawPort(e.target.value)} placeholder="56020" autocomplete="off"/>
-            ${rawErr ? html`<div class="hint err">${rawErr}</div>` : html`<div class="hint">${T("UDP, separate from the listen and internal WG ports. The app stores ONE raw port for all servers (its default is 56003), so keeping the same number fleet-wide saves your users a step.")}</div>`}</div>
-          <div class="notice" style="margin-top:10px"><${Ic} i="info"/><span>${Trich("RAW lives in the app's own settings, never in a profile — no link or subscription can carry it. Each user sets it once: *server raw port = {v1}*, then connection mode *raw*. Their link keeps working for WireGuard mode.", { v1: rawPort.trim() || "—" })}</span></div>
+      ${/* RAW-IP lives INSIDE Server parameters — it is an advanced server capability, not a first-class control.
+            When it's on the accordion says so in its header, because the setting is otherwise invisible until opened. */ null}
+      <${Disclosure} title=${T("Server parameters")}
+        summary=${rawCur ? html`<span class="tg tg-raw">${T("RAW mode on")}</span><span class="faint" style="margin-left:6px">${rawCur}</span>` : html`<span class="faint">${T("tag|advanced")}</span>`}
+        open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
+        ${rawCapable ? html`<${Fragment}>
+          <div class="lbl" style="margin:0 0 6px">${T("RAW-IP mode")}</div>
+          <p class="hint" style="margin:0 0 10px">${T("Carries a peer's traffic without WireGuard — roughly 6× the throughput through the same VK relay. The server keeps its normal WireGuard listener, so peers choose per device.")}</p>
+          <div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${Trich("RAW drops WireGuard's handshake: *no forward secrecy and no replay protection*. Anyone who later learns a peer's password can read traffic they recorded earlier. Turn it on for people who need the speed and accept that.")}</span></div>
+          <label class="obfctl" style="margin-bottom:10px"><${Switch} on=${rawOn} onChange=${v => { setRawOn(v); if (v && !rawPort.trim()) setRawPort(portErrMsg(node, "56003", [rawCur, lport, wgPort]) ? String((Number(port) || 56000) + 20) : "56003"); }}/> <span class="obfctl-lbl">${T("Accept RAW connections")}</span></label>
+          ${rawOn ? html`<${Fragment}>
+            <div class="field"><label>${T("RAW port")}</label><input class=${rawErr ? "bad" : ""} value=${rawPort} onInput=${e => setRawPort(e.target.value)} placeholder="56020" autocomplete="off"/>
+              ${rawErr ? html`<div class="hint err">${rawErr}</div>` : html`<div class="hint">${T("UDP, separate from the listen and internal WG ports. The app dials 56003 out of the box, so keeping that number is what makes RAW work without the user touching anything.")}</div>`}</div>
+            ${rawPort.trim() === "56003"
+              ? html`<div class="notice" style="margin-top:10px"><${Ic} i="info"/><span>${Trich("RAW lives in the app's own settings, never in a profile — no link or subscription can carry it. On 56003 the user only switches connection mode to *raw*; their link keeps working for WireGuard mode.")}</span></div>`
+              : html`<div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${Trich("This is not the port the app dials by default. Out of the box it uses *56003*, so on *{v1}* every user has to turn on *Manual ports* in the app and set *server raw port = {v1}* — until they do, their raw connection times out. Use 56003 if the node has it free.", { v1: rawPort.trim() || "—" })}</span></div>`}
+          <//>` : null}
+          <div class="lbl" style="margin:18px 0 6px">${T("Extra flags")}</div>
         <//>` : null}
-      <//>` : null}
-      <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
-        <p class="hint" style="margin:0 0 12px">${T("Extra ExecStart flags for this {v1} server. WDTT is self-contained — its real config lives per interface — so there's little here beyond advanced flags.", { v1: forkLabel })}</p>
+        <p class="hint" style="margin:0 0 12px">${T("Extra command-line flags for this {v1} server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.", { v1: forkLabel })}</p>
         <${TurnServerFields} schema=${[]} vals=${{}} setV=${() => {}} extra=${params} setExtra=${setParams} template=${false} wdtt=${true} noHint=${true}/>
       <//>
       ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -1913,9 +1918,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const endpointDirty = !!oldListen && newListen !== oldListen;
   const titleDirty = title.trim() !== (cfg.title || "").trim();
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
-  const rawWant = (rawOn && rawCapable) ? (rawPort.trim() || "") : "";
-  const rawDirty = rawWant !== rawCur;
-  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty;
+  const anyDirty = endpointDirty || titleDirty || paramsDirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
   const wperr = portErrMsg(node, port, [lport]);
   const doSave = () => {
     const key = node + "|" + iface, verb = "apply";

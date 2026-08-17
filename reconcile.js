@@ -134,6 +134,13 @@ function reconcile(roster, stats, now, cfg) {
                  // this is a SEPARATE field from `observed` (which carries wg semantics 8+ widgets read). Overview
                  // top-talkers reads it to include WDTT/csqtt peers; nothing else touches it.
                  kwSpeed: dev ? { rx: dev.rx_speed || 0, tx: dev.tx_speed || 0 } : null,
+                 // …and the same numbers in WG's shape, so the rate/total cells can render a keyless deployment
+                 // without every widget learning what a password-keyed server is. `up_bytes` is client→server
+                 // (server rx), `down_bytes` the reverse — the node documents that in _pw_speed. NOT `observed`:
+                 // that field means "a wg wire peer" to a dozen call sites (handshake age, endpoint, faulty
+                 // detection) and a keyless server has none of it.
+                 kwXfer: dev ? { rx_speed: dev.rx_speed || 0, tx_speed: dev.tx_speed || 0,
+                                 rx_bytes: dev.up_bytes || 0, tx_bytes: dev.down_bytes || 0 } : null,
                  restorable: false, correctable: false, problemMs: 0, down: null };
       }
       const key = t.node + "|" + t.iface + "|" + pubkey;
@@ -285,6 +292,7 @@ function reconcile(roster, stats, now, cfg) {
       user_id: (p.user_id != null) ? p.user_id : null,
       name: user ? (user.name || "") : "", tag: user ? (user.tag || "") : "",
       unassigned: !user,
+      sub_hide: Array.isArray(p.sub_hide) ? p.sub_hide : [],   // config kinds the operator keeps OFF this peer's subscription page
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,
       presentCount: present.length, liveCount: live.length,

@@ -346,7 +346,7 @@
       "samosvalishe": "freeturn", "MYSOREZ": "vktgz", "cacggghp": "vktgz" })[fork] || "sidecar";
   }
   // The fork (turn-proxy server) a client encoder is NATIVE to — the canonical publisher, reverse of nativeEncoder.
-  // Lets the UI colour a cross-fork (experimental) pairing: the SERVER used vs the fork the chosen app belongs to.
+  // Lets the UI colour a cross-fork pairing: the SERVER used vs the fork the chosen app belongs to.
   function encoderFork(enc) {
     return ({ wingsv: "WINGS-N", anton48: "anton48", kiper292: "kiper292", freeturn: "samosvalishe", vktgz: "MYSOREZ" })[enc] || "";
   }
@@ -368,14 +368,13 @@
 
   // Build the client-import artifact for a peer deployed BEHIND a turn-proxy. `asClient` (an encoder id) selects which
   // client app to target; omitted → the server's native client. ONE server can offer several apps (multi-client); a
-  // cross-fork client (asClient !== native) is EXPERIMENTAL — the wire formats share an ancestor but interop is
-  // unverified, so the descriptor carries experimental:true for the UI to flag. Returns a descriptor:
-  // { fork, label, ext, qr, experimental, hint, uri?, cmd?, text? OR buildAsync } — `text` ready, `buildAsync` a
+  // A cross-fork client (asClient !== native) drives this server through a shared-ancestor wire format.
+  // Returns a descriptor:
+  // { fork, label, ext, qr, hint, uri?, cmd?, text? OR buildAsync } — `text` ready, `buildAsync` a
   // promise (wingsv://, VKTGZ need compression). `qr` = the client imports via a scannable QR.
   function artifact(baseConf, tp, vkLink, cs, vkLinks, asClient) {
     var fork = label(tp.service);
     var enc = asClient || nativeEncoder(fork);            // which client app's encoder to run
-    var experimental = enc !== nativeEncoder(fork);       // cross-fork client → unverified interop
     cs = cs || {};                                        // client (app) settings for THIS client (admin-chosen; defaults applied per reader)
     var listen = tp.listen || "";
     // The user's VK call links — an ordered list (primary first). vkLink is the legacy single (= primary). Each fork
@@ -390,7 +389,7 @@
       // qr:true — the WINGS V app scans a QR of the SAME wingsv:// string it imports from a link/paste
       // (WINGSV WingsImportParser.parseFromText: one entry point for scan, paste and deep-link). Long link →
       // the sub/panel QR renderer falls back to text if it can't encode.
-      return { fork: fork, app: "WINGS V", label: clientLabel(fork, "wingsv"), ext: "txt", uri: true, qr: true, vkMissing: vkMissing, experimental: experimental, enc: enc,
+      return { fork: fork, app: "WINGS V", label: clientLabel(fork, "wingsv"), ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
         hint: "Scan the QR with the WINGS V app, or paste the wingsv:// link (Settings → import from link).",
         buildAsync: function () { return wingsvLink(baseConf, tp, vkList, cs); } };   // pass ALL VK links → Turn.links[]; empty omitted
     }
@@ -401,7 +400,7 @@
         "#@wgt:StreamNum = " + csNum(cs, "streamNum", 4), "#@wgt:LocalPort = 9000",
         "#@wgt:StreamsPerCred = " + csNum(cs, "streamsPerCred", 4)]
         .concat(wdt > 0 ? ["#@wgt:WatchdogTimeout = " + wdt] : []).join("\n");
-      return { fork: fork, app: "WireGuard-TURN", label: clientLabel(fork, "kiper292"), ext: "conf", qr: true, vkMissing: vkMissing, experimental: experimental, enc: enc,
+      return { fork: fork, app: "WireGuard-TURN", label: clientLabel(fork, "kiper292"), ext: "conf", qr: true, vkMissing: vkMissing, enc: enc,
         hint: "Scan the QR or import .conf into the kiper292 WireGuard-TURN app. The TURN settings ride along as #@wgt: comments (the Endpoint stays the real server).",
         text: baseConf.replace(/\s*$/, "") + "\n" + block + "\n" };
     }
@@ -416,7 +415,7 @@
       //  • useWrapA/useWrapS emitted explicitly (even false) so the link fully defines the mode — omitting useWrapA
       //    can't switch a device OUT of SRTP-WRAP-A (stale useWrapA=true wins useWrapA>useSrtp>useWrap precedence).
       //  • allowedIPs is NOT emitted (removed iOS build 160 — the app pins 0.0.0.0/0 under includeAllNetworks).
-      // CROSS-FORK (experimental): this app also drives OTHER servers. Moroka8 (-wrap + hex -wrap-key) → the plain
+      // CROSS-FORK: this app also drives OTHER servers. Moroka8 (-wrap + hex -wrap-key) → the plain
       // useWrap+wrapKeyHex path below already matches. samosvalishe/free-turn (rtpopus SRTP + -obf-key + client-id)
       // → WRAP-S mode: useWrapS=true, obfProfile=rtpopus, the obf key in wrapKeyHex, and an allowlist-ready clientID.
       var isWrapS = (fork === "samosvalishe") || csBool(cs, "useWrapS", false);
@@ -440,7 +439,7 @@
       var turnOv = String((cs || {}).turnServerOverride || "").trim(); if (turnOv) s.turnServerOverride = turnOv;   // pin fresh conns to a specific TURN relay
       if (csBool(cs, "vkAuth", false)) s.vkAuth = true;                  // VK cookie-auth path (instead of anon PoW)
       var uri = "vkturnproxy://import?data=" + b64urlUtf8(jsonSortedCompact({ version: 1, type: "connection", settings: s }));
-      return { fork: fork, app: "VK TURN Proxy", label: clientLabel(fork, "anton48", isWrapS ? " · WRAP-S" : ""), ext: "txt", uri: true, qr: false, vkMissing: vkMissing, experimental: experimental, enc: enc,
+      return { fork: fork, app: "VK TURN Proxy", label: clientLabel(fork, "anton48", isWrapS ? " · WRAP-S" : ""), ext: "txt", uri: true, qr: false, vkMissing: vkMissing, enc: enc,
         hint: "Open the link on the iPhone (or the app's Settings → Import from connection link) to import into the VK TURN Proxy app.",
         text: uri };
     }
@@ -450,7 +449,7 @@
       // fork's core (Moroka8 / samosvalishe). The profile's customFlags/linkArg (vktgzCoreFlags) match that core's wire.
       var coreName = ({ MYSOREZ: "MYSOREZ", Moroka8: "Moroka8", samosvalishe: "free-turn", cacggghp: "cacggghp" })[fork] || fork;
       var launcher = (fork === "Moroka8" || fork === "samosvalishe");   // the app hosts ANOTHER fork's core (universal launcher)
-      return { fork: fork, app: "VK TURN Proxy", label: clientLabel(fork, "vktgz"), ext: "txt", qr: true, wrap: true, vkMissing: vkMissing, experimental: experimental, enc: enc,
+      return { fork: fork, app: "VK TURN Proxy", label: clientLabel(fork, "vktgz"), ext: "txt", qr: true, wrap: true, vkMissing: vkMissing, enc: enc,
         vk: true, vkLinks: vkList,
         hint: "Import the " + coreName + " core (client-android-arm64 from the " + coreName + " releases) into the VK TURN Proxy app"
           + (launcher ? " — it runs as a launcher for that core" : "") + ", then scan the QR (Profiles → Import) or paste the VKTGZ: text — the VK call link + endpoint ride inside" + (vkMissing ? " once you add a VK link." : "."),
@@ -460,7 +459,7 @@
       // samosvalishe now = free-turn-proxy server (the old standalone vk-turn-proxy server is archived). Its
       // clients (turn-proxy-android + free-turn-proxy CLI) import a freeturn:// link — one scannable QR that
       // carries the proxy endpoint, the rtpopus obfuscation key, and the whole WG config.
-      return { fork: fork, app: "FreeTurn", label: clientLabel(fork, "freeturn"), ext: "txt", uri: true, qr: true, vkMissing: vkMissing, experimental: experimental, enc: enc,
+      return { fork: fork, app: "FreeTurn", label: clientLabel(fork, "freeturn"), ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
         vk: true, vkLinks: vkList,   // the freeturn:// link now CARRIES the VK links (link/links, like the CLI's -link/-links) — testing whether the app honours them; the sub still lists them as a fallback to paste in-app
         hint: "Scan the QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link — it now includes the VK call link(s). If your app doesn't pick them up, add them in the app manually.",
         text: freeturnLink(tp, baseConf, vkList, cs) };
@@ -486,7 +485,7 @@
       return "./client -listen 127.0.0.1:9000 -peer " + listen + link + vkText + obf + (rawExtra ? " " + rawExtra : "");
     }
     var authors = authorForks.map(function (a) { return { fork: a, cmd: authorCmd(a), native: (a === fork) }; });
-    return { fork: fork, app: fork, label: clientLabel(fork, "sidecar"), ext: "conf", qr: true, vkMissing: vkMissing, experimental: experimental, enc: enc,
+    return { fork: fork, app: fork, label: clientLabel(fork, "sidecar"), ext: "conf", qr: true, vkMissing: vkMissing, enc: enc,
       hint: "This server needs a separate client binary. Scan the QR or import .conf into WireGuard/AmneziaWG, then run the client alongside it:",
       cmd: authors[0].cmd, cliAuthors: authors,   // authors[0] = the native/preferred build (backward-compatible single cmd)
       text: sidecar };

@@ -15,7 +15,7 @@ import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPrimaryTarget,
          useStableOrder, isSelfContainedKind, isSelfContainedTarget } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
-import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor } from "./model.js";
+import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor, tgtXfer } from "./model.js";
 import { go } from "./router.js";
 import { turnFork, turnLabel, turnColor, turnClientColor, turnClientAuthor, turnForkList } from "./turn-catalog.js";
 import {
@@ -28,7 +28,7 @@ import {
   QR, qrDataURL, qrZoom, copyQrImage, buildConf, parseFullConf, downloadConf, getConfig, configOverrides,
   anySessionConf, rerenderConf, effectiveClientParams, turnArtifact, turnClientsFor, turnClientSettingsFor,
   subFeatureOn, subSKCached, subBaseUrl, subUsersMap, useSubRec, ensureVaultUnlocked, subUrlFor,
-  subEnableUser, subRotateUser, subBackfillUser, subKeyB64, VaultPromptSheet, EXP_WARN, ensurePeerBlob,
+  subEnableUser, subRotateUser, subBackfillUser, subKeyB64, VaultPromptSheet, ensurePeerBlob,
   subPersistOn, subSetPersist, subUnlock, subRecover, subUsersForget,
 } from "./crypto.js";
 import {
@@ -614,7 +614,7 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
   const ready = text != null;
   const qrView = a.qr && view === "qr";
   return html`<div class="turncfg-item">
-    <div class="turncfg-head"><span class="tcf-label">${a.label}</span>${a.experimental ? html`<span class="xtag xtag-tip" tabindex="0"><span class="xtip-bubble">${EXP_WARN()}</span>${T("tag|experimental")}</span>` : null}</div>
+    <div class="turncfg-head"><span class="tcf-label">${a.label}</span></div>
     ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${a.hint}</div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
       : qrView ? (ready ? html`<div class="turncfg-qr"><${QR} conf=${text} label=${a.label}/></div>` : html`<div class="turncfg-qr qr-pending">${T("generating…")}</div>`)
@@ -888,7 +888,7 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
       ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">${T("row|address")}</span><span class="vv">${t.ip || "—"}</span></div>
         <div class="row"><span class="k">${T("row|handshake")}</span><span class="vv">${obs ? seen(obs.handshake_age) : "—"}</span></div>
-        <div class="row"><span class="k">${T("row|rate")}</span><span class="vv">${obs ? rateCell(obs.rx_speed, obs.tx_speed) : "—"}</span></div>
+        <div class="row"><span class="k">${T("row|rate")}</span><span class="vv">${(() => { const xf = tgtXfer(t); return xf ? rateCell(xf.rx_speed, xf.tx_speed) : "—"; })()}</span></div>
         <div class="row"><span class="k">${T("row|transport")}</span><span class="vv">${lt.viaTurn ? html`via <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnLabel(lt.viaTurn))}>${turnLabel(lt.viaTurn)}</span>` : (lt.via === "direct" ? "direct" : "—")}</span></div>
         ${tps.map(tp => html`<div class="row"><span class="k">${T("turn-proxy")}</span><span class="vv">${tp.listen || "—"}
           ${tp.wrap_key ? html`<${Fragment}> ${T("· key")} <span class="addr">${String(tp.wrap_key).slice(0, 8)}…</span><button class="copybtn" title=${T("Copy wrap key")} onClick=${() => copy(tp.wrap_key, T("Wrap key copied"))}><${Ic} i="copy"/></button></>` : null}</span></div>`)}

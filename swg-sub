@@ -385,8 +385,15 @@ def read_data(state, token):
         # keys render live from the interface defaults, so a fleet-wide default change reaches this peer.
         ov = p.get("overrides") if isinstance(p.get("overrides"), dict) else {}
         tgts = []
+        # Per-peer published SOURCES. The operator can hide a kind (say the turn-proxy configs) from THIS peer's
+        # subscription without touching its deployments — the panel still shows them all, the sub just narrows.
+        # A hidden source is dropped here, so its credential is never even served.
+        _hide = set(x for x in (p.get("sub_hide") or []) if isinstance(x, str))
         for i, t in enumerate(tgts_in):
             if not isinstance(t, dict):
+                continue
+            _ty = (t.get("type") or "wg")
+            if _ty in ("wdtt", "csqtt") and _ty in _hide:
                 continue
             if (t.get("type") or "") == "wdtt":
                 # WDTT peer: keyless. Its client link carries only the WRAP password (roster) + the node's public
@@ -434,6 +441,15 @@ def read_data(state, token):
             # connects to the iface's listen port). Only non-secret client-config material rides along.
             turn = [{"service": tp.get("service"), "listen": tp.get("listen"), "wrap_key": tp.get("wrap_key")}
                     for tp in (nd.get("turn") or []) if isinstance(tp, dict) and lp and _port_of(tp.get("connect")) == lp]
+            _wgty = "awg" if awg else (t.get("type") or "wg")
+            if "turn" in _hide:
+                turn = []                       # keep the direct config, drop its proxy variants
+            if _wgty in _hide:
+                if not turn:
+                    continue                    # nothing left to publish for this deployment
+                _direct_off = True              # publish ONLY its turn variants (below)
+            else:
+                _direct_off = False
             tgts.append({
                 "node": t.get("node"), "iface": t.get("iface"),
                 "node_name": (nodes.get(t.get("node")) or {}).get("name") or t.get("node"),
@@ -447,6 +463,7 @@ def read_data(state, token):
                 "keepalive": (ov["keepalive"] if isinstance(ov.get("keepalive"), int) else 25),
                 "awg": awg,
                 "turn": turn,
+                **({} if not _direct_off else {"direct": False}),   # its own kind is hidden: only the proxy variants publish
                 "primary": (n_t > 1 and i == 0),       # the default deployment, tagged first
             })
         # A blocked/expired peer still appears on the page, but the cell shows a "BLOCKED"/"EXPIRED" placeholder

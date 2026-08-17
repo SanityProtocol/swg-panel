@@ -97,7 +97,7 @@ export function turnColor(label) {
   const fk = turnForkList().find(x => x.id === label);
   return pickThemed(ov[label], (fk && fk.color) || "#8FA8C0", (fk && fk.colorL) || "#5E7085");
 }
-// A client app's colour = its NATIVE fork's turn-proxy server colour (a cross-fork/experimental app still shows its
+// A client app's colour = its NATIVE fork's turn-proxy server colour (a cross-fork app still shows its
 // HOME server's colour). null for the generic CLI (no native fork) — callers fall back to the current fork's colour.
 export function turnClientColor(clientId) {
   const c = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[clientId] || {};

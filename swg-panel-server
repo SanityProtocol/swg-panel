@@ -1766,12 +1766,49 @@ def peer_set(roster, pid, fields, now):
     # wdtt_password / vk_hash: a WDTT peer has no browser keypair — its panel-owned `wdtt_password` (custody like
     # the PSK) IS its credential, and `vk_hash` overrides the user's VK link for its TURN cred. Preserved here so
     # block/expire/update-target never drop them.
-    for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash"):
+    # sub_hide: which CONFIG SOURCES this peer publishes to its subscription (see SUB_SOURCES). Preserved across
+    # every other mutation for the same reason as the rest — an update-target must not silently re-publish a
+    # source the operator hid.
+    for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash", "sub_hide"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
     roster["peers"][pid] = rec
     return rec
+
+
+# What a peer can publish to its subscription. A deployment yields one or more SOURCES: a wg/awg target yields
+# its own type, and (when proxies front its interface) "turn"; a self-contained target yields its own kind. The
+# operator hides sources per peer — the panel still shows every deployment, only the subscription narrows.
+SUB_SOURCES = ("wg", "awg", "wdtt", "csqtt", "turn")
+
+def peer_sub_sources(peer, snaps):
+    """Every source this peer actually offers, in SUB_SOURCES order — the set a hide list is validated against.
+
+    A wg/awg deployment offers its own kind, plus "turn" when a proxy on that node forwards to its listen port
+    (the same test the subscription and the admin turn view use). A self-contained deployment offers its kind."""
+    out = []
+    for t in (peer or {}).get("targets") or []:
+        ty = (t or {}).get("type") or "wg"
+        if ty not in out:
+            out.append(ty)
+        if ty in ("wdtt", "csqtt") or "turn" in out:
+            continue
+        snap = (snaps or {}).get(t.get("node")) or {}
+        lp = (((snap.get("interfaces") or {}).get(t.get("iface")) or {}).get("meta") or {}).get("listen_port")
+        if lp and any(_port_of(tp.get("connect")) == str(lp) for tp in (snap.get("turn_proxies") or []) if isinstance(tp, dict)):
+            out.append("turn")
+    return [s for s in SUB_SOURCES if s in out]
+
+
+def clean_sub_hide(raw, peer, snaps):
+    """Normalise a hide list: known sources only, and never every source the peer has — a peer with nothing left
+    to publish would vanish from its own subscription with no way to tell why from the sub page."""
+    hide = [s for s in SUB_SOURCES if s in set(raw or [])]
+    have = peer_sub_sources(peer, snaps)
+    if have and all(s in hide for s in have):
+        return None
+    return hide
 
 
 def unassign_peer(p, store_configs, config_dir, now):
@@ -6071,6 +6108,10 @@ PANEL_SETTINGS_DEFAULTS = {
     # which turn-proxy forks are offered in the "install a fork" dropdown (by fork id; the fork set itself lives
     # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
     "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8", "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "qwdtt"],   # + csqtt (raw-TUN self-contained kind) + qwdtt (the live WDTT fork)
+    # RAW-IP mode on a NEW qWDTT server. On by default: it is ~6x the WireGuard path through the same relay, and
+    # the server keeps its normal WireGuard listener either way, so a peer that shouldn't use raw simply doesn't.
+    # Per-instance the operator can still switch it off; this only decides what a freshly created one starts with.
+    "wdtt_raw_default": True,
     "turn_fork_colors": {},   # per-fork colour overrides {fork_id: "#rrggbb"} (else the SPA's TURN_FORKS default)
     "turn_client_settings": {},   # SETTINGS SPLIT: per-fork client (app) setting VALUES {fork: {key: value}} fed into config/QR/link generation (schema = catalog client_settings)
     "turn_client_default": {},    # per (fork, OS) END-USER default app {fork: {os: client_id}} — which app the sub page hands out
@@ -7692,6 +7733,8 @@ def api(method, path, qs, body, deps):
             cur["hidden_categories"] = [c for c in hc if c in SMART_CATEGORIES and c != "all"]
         if "turn_enabled" in incoming:                  # master switch for all turn-proxy UI
             cur["turn_enabled"] = bool(incoming.get("turn_enabled"))
+        if "wdtt_raw_default" in incoming:              # RAW-IP mode on newly created qWDTT servers
+            cur["wdtt_raw_default"] = bool(incoming.get("wdtt_raw_default"))
         if "api_enabled" in incoming:                   # external integration API master switch (tokens stop working when off)
             _a = dict(cur.get("api") or {}); _a["enabled"] = bool(incoming.get("api_enabled")); cur["api"] = _a
         tf = incoming.get("enabled_turn_forks")         # which turn-proxy forks the install-a-fork picker offers
@@ -9984,6 +10027,14 @@ def api(method, path, qs, body, deps):
             changed["user_id"] = uid or None
         if "overrides" in body:                 # per-peer non-secret DNS/MTU/AllowedIPs/keepalive (the roster copy)
             changed["overrides"] = body.get("overrides") or {}
+        if "sub_hide" in body:                  # which config sources this peer publishes to its subscription
+            _h = body.get("sub_hide")
+            if _h is not None and not isinstance(_h, list):
+                return 400, {"ok": False, "error": "sub_hide must be a list", "code": "bad_request"}
+            _clean = clean_sub_hide(_h, p, deps.get("node_snaps") or {})
+            if _clean is None:
+                return 400, {"ok": False, **perr("A peer has to publish at least one kind of config — keep one selected."), "code": "bad_request"}
+            changed["sub_hide"] = _clean
         if "expiry" in body:                     # per-peer expiry date (epoch secs; 0/"" clears it)
             exp = coerce_expiry(body.get("expiry"))
             if exp is None:
@@ -11011,6 +11062,23 @@ def api(method, path, qs, body, deps):
         # for a second interface name + a second subnet is two more things to get wrong. Derived names are
         # stable (wdtt3 → wdttraw3) and the subnet, once allocated, is stored so it never moves under a
         # running client.
+        # Panel default: a new qWDTT server comes up WITH raw unless the operator says otherwise. Prefer 56003 —
+        # the app stores ONE raw port for every server, and that is its own default, so a user typically only has
+        # to switch the mode. Falls back to any free port when 56003 is taken on this node.
+        if ("raw_port" not in body and _existing is None
+                and (TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("raw")
+                and (deps.get("panel_settings") or {}).get("wdtt_raw_default", True)):
+            _pref = 56003 if not _port_conflict(deps, nodes, nid, 56003, own=_own) else 0
+            if not _pref:
+                for _c in range(56003, 56100):
+                    if str(_c) not in (str(_dtls or ""), str(_wgp or "")) and not _port_conflict(deps, nodes, nid, _c, own=_own):
+                        _pref = _c; break
+            if _pref and str(_pref) not in (str(_dtls or ""), str(_wgp or "")):
+                _ra = inst.get("raw_addr") or _wdtt_alloc_raw_subnet(deps, nodes, nid, iface)
+                if _ra:
+                    inst["raw_port"] = _pref
+                    inst["raw_iface"] = "wdttraw" + iface[len("wdtt"):]
+                    inst["raw_addr"] = _ra
         if "raw_port" in body:
             try:
                 _rp = int(body.get("raw_port") or 0)

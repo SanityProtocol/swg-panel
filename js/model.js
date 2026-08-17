@@ -141,7 +141,11 @@ export function suggestPort(node, kind, extra) {
   // of the box and a stock WireGuard 51820, so suggesting one walks straight into a collision with something the
   // panel does not manage — and, in WDTT's case, may not even be able to see. Same rule as the name suggestion:
   // the SUGGESTION avoids them, the field stays free to type.
-  const reserved = new Set([51820, 56000, 56001]);
+  // 56003 joins them for a different reason: it is the qWDTT app's HARD-CODED default RAW-IP port. The app only
+  // dials another one when its "Manual ports" switch is on, so keeping 56003 free fleet-wide is what makes
+  // "turn RAW on" a one-click change instead of a per-user instruction. (See _wdtt_alloc_raw_subnet / the RAW
+  // field's hint — the panel prefers 56003 for RAW and says so when it can't get it.)
+  const reserved = new Set([51820, 56000, 56001, 56003]);
   let p = mine.length ? Math.max(...mine) + 1 : (kind === "turn" ? 56002 : 51821);
   while ((used.has(p) || reserved.has(p)) && p < 65535) p++;
   return p;
@@ -298,3 +302,32 @@ export function nextCsqttName(node) {
   for (let i = 1; i < 10000; i++) if (!used.has("csqtt" + i)) return "csqtt" + i;   // csqtt0-9999; start at 1
   return "csqtt1";
 }
+
+// ── what a peer publishes to its subscription ────────────────────────────────────────────────────
+// A peer's configs come from up to five SOURCES: its own kind per deployment (wg / awg / wdtt / csqtt)
+// plus "turn" when a proxy fronts one of its wg/awg interfaces. `sub_hide` (roster) names the sources
+// the operator keeps OFF the subscription page — the deployment itself is untouched, only publishing is.
+export const SUB_SOURCES = ["wg", "awg", "wdtt", "csqtt", "turn"];
+export function peerSubSources(peer) {
+  const out = [];
+  for (const t of (peer && peer.targets) || []) {
+    const ty = targetType(t);
+    if (!out.includes(ty)) out.push(ty);
+    if (ty === "wdtt" || ty === "csqtt" || out.includes("turn")) continue;
+    if (turnProxiesFor(t.node, t.iface).length) out.push("turn");
+  }
+  return SUB_SOURCES.filter(s => out.includes(s));
+}
+export const subHidden = peer => ((peer && peer.sub_hide) || []).filter(s => SUB_SOURCES.includes(s));
+export const subHides = (peer, src) => subHidden(peer).includes(src);
+
+// A deployment's traffic counters in ONE shape, whatever kind it is. A wg/awg target reads them off the wire
+// (`observed`); a keyless one (WDTT / csqtt) has no wire peer, so the node derives the same four numbers from
+// its per-password byte counters (`kwXfer`). Every rate/total cell goes through here — a peer's numbers should
+// not depend on which kind of server it lives on. Deliberately NOT merged into `observed`: that record also
+// means "there is a WireGuard peer here" (handshake age, endpoint, faulty detection), which stays false.
+export const tgtXfer = t => (t && (t.observed || t.kwXfer)) || null;
+// "Online" for a deployment. wg/awg = the wire handshake age. A keyless server has no handshake, so its
+// liveness IS a byte delta over the last poll — the honest age for that is "just now" while it's flowing,
+// and unknown otherwise (nothing remembers when a keyless peer was last seen).
+export const tgtSeenAge = t => (t && t.observed) ? t.observed.handshake_age : ((t && t.kwXfer && t.online) ? 0 : null);

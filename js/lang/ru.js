@@ -797,8 +797,8 @@ export const STR = {
   "fields removed upstream": "поля убраны в апстриме",
   "values removed upstream": "значения убраны в апстриме",
   "Roll this client's schema to a previous app version": "Откатить схему этого клиента на предыдущую версию приложения",
-  "Extra ExecStart flags that *pre-fill* a new {v1} server. WDTT is self-contained — its real config lives per interface — so there's little to default here beyond advanced flags.":
-    "Дополнительные флаги ExecStart, которые *предзаполняют* новый сервер {v1}. WDTT самодостаточен — его настоящая конфигурация живёт на каждом интерфейсе — поэтому задавать здесь по умолчанию почти нечего, кроме продвинутых флагов.",
+  "Extra command-line flags that *pre-fill* a new {v1} server. It's self-contained — its real config lives per interface — so there's little to default here beyond advanced flags.":
+    "Дополнительные флаги командной строки, которые *предзаполняют* новый сервер {v1}. Он самодостаточен — его настоящая конфигурация живёт на каждом интерфейсе — поэтому задавать здесь по умолчанию почти нечего, кроме продвинутых флагов.",
   "The ExecStart flags that *pre-fill* a new {v1} proxy. Nothing here changes proxies you've already deployed.":
     "Флаги ExecStart, которые *предзаполняют* новый прокси {v1}. Ничто здесь не меняет уже развёрнутые прокси.",
   "WDTT server removed — the node tears it down on its next sync.": "Сервер WDTT удалён — нода снесёт его на следующей синхронизации.",
@@ -2505,7 +2505,7 @@ export const STR = {
   "Not deployed on any node yet — version & rollback appear once a {v1} server is running.":
     "Пока не развёрнут ни на одном сервере — версия и откат появятся, когда заработает {v1}.",
   "held · {v1}": "держим · {v1}",
-  "Extra ExecStart flags for this {v1} server. WDTT is self-contained — its real config lives per interface — so there's little here beyond advanced flags.":
+  "Extra command-line flags for this {v1} server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.":
     "Дополнительные флаги ExecStart для сервера {v1}. WDTT самодостаточен — его настройки живут в интерфейсах — так что здесь только тонкие флаги.",
   "All {v1}": "Все {v1}",
   "{v1} unmanaged orphan": "{v1} без владельца",
@@ -2542,8 +2542,6 @@ export const STR = {
     "У пользователя есть подписка, а после этой правки конфиг одного пира остался неопубликованным. Откройте ключ шифрования, чтобы опубликовать его и показать QR на странице подписки.",
   "the peer works right away, but it shows “Not ready yet” (an empty QR) on the user's subscription page. Unlock the key in this browser tab before you reload and it publishes automatically; after a reload you'd have to rekey the peer to re-issue it.":
     "пир сразу заработает, но на странице подписки будет значиться «Ещё не готов» с пустым QR. Откройте ключ в этой вкладке до перезагрузки — он опубликуется сам; после перезагрузки пира придётся перевыпускать со сменой ключей.",
-  "Experimental server-client combination — not the server's native app. The wire formats share an ancestor but this pairing is unverified; test it before relying on it.":
-    "Опытное сочетание сервера и клиента — приложение не родное для этого сервера. Форматы обмена у них общего происхождения, но связка не проверена; испытайте её, прежде чем полагаться.",
   "WDTT · not running": "WDTT · не запущен",
   "Interface ignored — listed in Settings → Interfaces.": "Интерфейс скрыт — он в «Настройках → Интерфейсы».",
   "Interface un-ignored — back as an adoption candidate.": "Интерфейс возвращён в кандидаты на подключение.",
@@ -3178,8 +3176,89 @@ export const STR = {
   "tag|untitled": "без имени",
   "val|auto": "авто",
   "tag|unbound": "не привязан",
+  // ── csqtt (amurcanov's Rust rewrite of WDTT — self-contained raw-TUN VK-turn server) ──
+  "Adopting an existing csqtt server isn't supported yet — create a new one instead.":
+    "Принять существующий сервер csqtt пока нельзя — создайте новый.",
+  "csqtt interface name must be csqtt0–csqtt9999.": "Интерфейс csqtt называется от csqtt0 до csqtt9999.",
+  "csqtt needs a /24 tunnel subnet, e.g. 10.66.67.0/24.": "csqtt нужна подсеть туннеля /24, например 10.66.67.0/24.",
+  "Max passwords must be a number.": "Максимум паролей должен быть числом.",
+  "What clients dial (over the VK relay)": "Куда звонят клиенты (через реле VK)",
+  "UDP DTLS listen (outside)": "Приём UDP DTLS (снаружи)",
+  "Max users": "Максимум пользователей",
+  "Cap on simultaneous access passwords · blank = 500": "Предел одновременных паролей доступа · пусто = 500",
+  "a csqtt proxy": "прокси csqtt",
+  " (CSQTT)": " (CSQTT)",
+  " (CSQTT, starting)": " (CSQTT, запускается)",
+  "csqtt link unavailable — the server isn't reporting yet.": "Ссылка csqtt недоступна — сервер ещё не отчитался.",
+  "csqtt · keyless (server-minted address)": "csqtt · без ключей (адрес выдаёт сервер)",
+  "csqtt link copied": "Ссылка csqtt скопирована",
+  "Open the csqtt server — details and settings": "Открыть сервер csqtt — детали и настройки",
+  "The node brings it up on its next sync": "Нода поднимет его на следующей синхронизации",
+  "waiting for the node to bring it up…": "ждём, пока нода поднимет его…",
+  "Edit csqtt server · {v1}": "Изменить сервер csqtt · {v1}",
+  "{v1} CSQTT": "{v1} CSQTT",
+  "Self-contained csqtt server — owns its own raw-TUN interface (not a WG/AWG front)":
+    "Самодостаточный сервер csqtt — владеет своим raw-TUN интерфейсом (не надстройка над WG/AWG)",
+  "The server assigns the address on connect": "Адрес назначает сервер при подключении",
+  "adding csqtt user…": "добавляем пользователя csqtt…",
+  "csqtt user added — their connect link is on the assigned subscription.":
+    "Пользователь csqtt добавлен — ссылка для подключения на назначенной подписке.",
+  "csqtt server — the panel mints this user's access password and csqtt mints their address on connect, so there's no key or client config to set here. The user's VK link (from their subscription) is the TURN credential.":
+    "Сервер csqtt — панель выпускает пароль доступа этого пользователя, а csqtt выдаёт адрес при подключении, поэтому здесь нечего задавать: ни ключа, ни клиентского конфига. Учётные данные TURN — это ссылка VK пользователя (с его подписки).",
+  "A fresh access password is generated. The current csqtt link stops working — send the user their new link (from the subscription page) to re-import.":
+    "Будет выпущен новый пароль доступа. Текущая ссылка csqtt перестанет работать — отправьте пользователю новую (со страницы подписки), чтобы он переимпортировал.",
+  "csqtt assigns the address on connect": "Адрес назначает csqtt при подключении",
+  "csqtt servers this user reaches. csqtt assigns each server's address on connect; the user's link per server is on their subscription. No client config (key/DNS/MTU) — csqtt owns the datapath.":
+    "Серверы csqtt, до которых достаёт этот пользователь. Адрес на каждом сервере csqtt выдаёт при подключении; ссылка на каждый сервер — на подписке пользователя. Клиентского конфига (ключ/DNS/MTU) нет — трактом владеет csqtt.",
+  "csqtt fields aren't ready yet.": "Поля csqtt ещё не готовы.",
+  "Interface must be csqtt0–csqtt9999.": "Интерфейс должен быть от csqtt0 до csqtt9999.",
+  "Subnet must be an IPv4 /24 CIDR (e.g. 10.66.67.1/24).": "Подсеть должна быть IPv4 /24 CIDR (например 10.66.67.1/24).",
+  "creating csqtt server… (the node installs it on its next sync)":
+    "создаём сервер csqtt… (нода установит его на следующей синхронизации)",
+  "csqtt server requested — the node installs it on its next sync. Add users from Peers.":
+    "Сервер csqtt заказан — нода установит его на следующей синхронизации. Пользователей добавляйте на вкладке «Пиры».",
+  "Built-in raw-IP tunnel": "Встроенный raw-IP туннель",
+  "csqtt owns its own raw-IP TUN interface — users attach to it directly (no forwards-to). It mints each user's address on connect; add + manage users from Peers.":
+    "csqtt владеет своим raw-IP TUN интерфейсом — пользователи подключаются прямо к нему (никуда не перенаправляет). Адрес каждому он выдаёт при подключении; добавляйте и ведите пользователей на вкладке «Пиры».",
+  "Auto-assigned to avoid collisions with this node's other servers, interfaces, and ports. /24 only.":
+    "Назначается автоматически, чтобы не столкнуться с другими серверами, интерфейсами и портами этой ноды. Только /24.",
+  "Connected to this csqtt server": "Подключены к этому серверу csqtt",
+  "CSQTT fork": "Форк CSQTT",
+  "Bring this csqtt server up on the node": "Поднять этот сервер csqtt на ноде",
+  "Take this csqtt server down (stays down until started)": "Остановить этот сервер csqtt (не поднимется, пока не запустите)",
+  "Bounce this csqtt server on the node": "Перезапустить этот сервер csqtt на ноде",
+  "— self-contained (its own raw-IP tunnel)": "— самодостаточный (свой raw-IP туннель)",
+  "Extra command-line flags for this csqtt server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.":
+    "Дополнительные флаги командной строки для этого сервера csqtt. Он самодостаточен — его настоящая конфигурация живёт на каждом интерфейсе — поэтому здесь почти ничего нет, кроме продвинутых флагов.",
+  "csqtt server removed — the node tears it down on its next sync.":
+    "Сервер csqtt удалён — нода снесёт его на следующей синхронизации.",
+  "Delete csqtt server · {v1}": "Удалить сервер csqtt · {v1}",
+  "Delete server": "Удалить сервер",
+  "This removes the *{iface}* csqtt server and *unassigns + deletes* every user on it — their credential is a password on this server, so it means nothing once the server is gone. Type *{iface}* to confirm.":
+    "Это удалит сервер csqtt *{iface}* и *отвяжет и удалит* всех его пользователей — их учётные данные это пароль на этом сервере, а без сервера он ничего не значит. Введите *{iface}* для подтверждения.",
+  "Type the interface name to confirm": "Введите имя интерфейса для подтверждения",
+  "Edit csqtt interface · {v1}": "Изменить интерфейс csqtt · {v1}",
+  "*csqtt* owns its own raw-IP tunnel *({iface} · {addr})* and mints each user's address on connect.":
+    "*csqtt* владеет своим raw-IP туннелем *({iface} · {addr})* и выдаёт адрес каждому пользователю при подключении.",
+  "CSQTT fork: {v1}": "Форк CSQTT: {v1}",
+
+  // ── what a peer publishes to its subscription (the clickable protocol tags) ──
+  "Published to the subscription — click to hide it": "Публикуется в подписке — нажмите, чтобы скрыть",
+  "Hidden from the subscription — click to publish it again": "Скрыто из подписки — нажмите, чтобы снова опубликовать",
+  "This is the last kind of config this peer publishes — a subscription can't be empty.":
+    "Это последний вид конфига, который публикует этот пир — подписка не может быть пустой.",
+  "A peer has to publish at least one kind of config — keep one selected.":
+    "Пир должен публиковать хотя бы один вид конфига — оставьте один выбранным.",
+
+  "UDP, separate from the listen and internal WG ports. The app dials 56003 out of the box, so keeping that number is what makes RAW work without the user touching anything.":
+    "UDP, отдельно от порта приёма и внутреннего порта WG. Из коробки приложение стучится на 56003, и именно этот номер позволяет RAW заработать без единого действия пользователя.",
+  "RAW lives in the app's own settings, never in a profile — no link or subscription can carry it. On 56003 the user only switches connection mode to *raw*; their link keeps working for WireGuard mode.":
+    "RAW живёт в собственных настройках приложения, а не в профиле — ни ссылка, ни подписка его не передают. На 56003 пользователю остаётся лишь переключить режим соединения на *raw*; его ссылка продолжит работать в режиме WireGuard.",
+  "This is not the port the app dials by default. Out of the box it uses *56003*, so on *{v1}* every user has to turn on *Manual ports* in the app and set *server raw port = {v1}* — until they do, their raw connection times out. Use 56003 if the node has it free.":
+    "Это не тот порт, на который приложение стучится по умолчанию. Из коробки оно использует *56003*, поэтому на *{v1}* каждому пользователю придётся включить в приложении *Ручные порты* и задать *raw-порт сервера = {v1}* — пока он этого не сделает, raw-соединение будет отваливаться по таймауту. Если на ноде свободен 56003, берите его.",
+  "RAW mode on": "RAW включён",
+  "Extra flags": "Дополнительные флаги",
   "val|none": "нет",
-  "tag|experimental": "опытный",
   "tag|advanced": "подробно",
   // ── RAW-IP mode (qWDTT): a second listener that trades WireGuard for throughput ──────────────
   "RAW-IP mode": "Режим RAW-IP",
@@ -3190,10 +3269,8 @@ export const STR = {
   "The RAW port must be a number.": "RAW-порт должен быть числом.",
   "The RAW port must differ from the listen and internal WG ports.": "RAW-порт должен отличаться от порта прослушивания и внутреннего WG-порта.",
   "RAW-IP mode — no WireGuard, no forward secrecy": "Режим RAW-IP — без WireGuard и без forward secrecy",
-  "UDP, separate from the listen and internal WG ports. The app stores ONE raw port for all servers (its default is 56003), so keeping the same number fleet-wide saves your users a step.": "UDP, отдельно от порта прослушивания и внутреннего WG-порта. Приложение хранит ОДИН raw-порт для всех серверов (по умолчанию 56003), поэтому одинаковый номер на всём флоте экономит пользователю шаг.",
   "Carries a peer's traffic without WireGuard — roughly 6× the throughput through the same VK relay. The server keeps its normal WireGuard listener, so peers choose per device.": "Передаёт трафик пира без WireGuard — примерно в 6 раз быстрее через то же VK-реле. Обычный WireGuard-слушатель сервера остаётся, так что пир выбирает режим на каждом устройстве.",
   "RAW drops WireGuard's handshake: *no forward secrecy and no replay protection*. Anyone who later learns a peer's password can read traffic they recorded earlier. Turn it on for people who need the speed and accept that.": "RAW убирает рукопожатие WireGuard: *нет forward secrecy и защиты от повтора*. Тот, кто потом узнает пароль пира, прочитает записанный ранее трафик. Включайте для тех, кому нужна скорость и кого это устраивает.",
-  "RAW lives in the app's own settings, never in a profile — no link or subscription can carry it. Each user sets it once: *server raw port = {v1}*, then connection mode *raw*. Their link keeps working for WireGuard mode.": "RAW живёт в собственных настройках приложения, а не в профиле — ни ссылка, ни подписка его не передают. Пользователь задаёт это один раз: *RAW-порт сервера = {v1}*, затем режим подключения *raw*. Ссылка продолжает работать в режиме WireGuard.",
   "RAW available · port {v1} · an app setting, not part of the link": "Доступен RAW · порт {v1} · настройка приложения, не часть ссылки",
   "The app keeps the RAW port and the connection mode in its own settings, not in a profile — so they are set once, by hand, and apply to every server.": "Приложение хранит RAW-порт и режим подключения в своих настройках, а не в профиле — они задаются один раз вручную и действуют для всех серверов.",
   "The node refused to install WDTT server {iface}: {err}": "Узел отказался устанавливать WDTT-сервер {iface}: {err}",
@@ -3206,6 +3283,10 @@ export const STR = {
   "No published build for {v1} yet, so a node has nothing to install. Pick another fork.": "Для {v1} ещё нет опубликованной сборки — узлу нечего устанавливать. Выберите другой форк.",
   "Which csqtt server implements this instance": "Какой csqtt-сервер реализует этот инстанс",
   "CSQTT proxy": "CSQTT-прокси",
+  "Enable RAW on new servers": "Включать RAW на новых серверах",
+  "New servers start with RAW on": "Новые серверы стартуют с включённым RAW",
+  "New servers start with RAW off": "Новые серверы стартуют с выключенным RAW",
+  "Forks that offer it (qWDTT today) carry a second, WireGuard-free listener that is roughly *6x* faster through the same VK relay. The server keeps its normal WireGuard listener either way, so each user picks per device — but RAW has *no forward secrecy and no replay protection*. This only sets what a NEWLY created server starts with; every server can be switched afterwards.": "Форки, где он есть (сегодня — qWDTT), поднимают второй слушатель без WireGuard: примерно в *6 раз* быстрее через то же VK-реле. Обычный WireGuard-слушатель остаётся в любом случае, так что пользователь выбирает режим на каждом устройстве — но у RAW *нет forward secrecy и защиты от повтора*. Настройка задаёт только состояние НОВОГО сервера; на каждом сервере режим потом переключается.",
   "row|kind": "тип",
   "row|endpoint": "адрес",
   "row|address": "адрес в ВПН",

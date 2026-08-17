@@ -1697,7 +1697,7 @@
       // Encode the artifact for the app we actually RESOLVED for this OS (its encoder), not the fork's NATIVE app — so
       // the config always matches the app shown. A Moroka8 relay reached via anton48's VK TURN Proxy on iOS must get the
       // vkturnproxy:// deeplink, NOT a sidecar CLI command that GUI can't run; on desktop the same fork resolves to the
-      // CLI and gets the ./client command. Cross-fork pairings (enc's home fork ≠ relay fork) stay flagged experimental.
+      // CLI and gets the ./client command. A cross-fork pairing (enc's home fork ≠ relay fork) is coloured by app, below.
       var asClient = (ga && ga.enc) ? ga.enc : null;
       var art = conf ? SWGTurn.artifact(conf, tp, vkLink, turnClientCS(forkId, asClient), (_lastData && _lastData.vk_links), asClient) : null;   // SETTINGS SPLIT: the RESOLVED client's saved values (asClient) + all VK links. _lastData (NOT `data` — makeCell isn't nested in render()) is the current payload, set at render() entry.
       // App name shown = the OS-resolved client's name (the OS-specific product name — desktop "WINGS DeX" vs Android
@@ -1713,7 +1713,7 @@
       var hasAppName = appName && appName !== forkId;
       ctrl.app = appName;   // Axis-3: the client app name for the "Open in {app}" deep-link button
       // Colour the app name by the fork its client is NATIVE to (server used vs app's home fork). Same fork for a
-      // native pairing → one colour; a cross-fork (experimental) app → the app chip takes its own fork's colour.
+      // native pairing → one colour; a cross-fork app → the app chip takes its own fork's colour.
       var appFork = (art && typeof SWGTurn.encoderFork === "function" && SWGTurn.encoderFork(art.enc)) || forkId;
       var appColor = forkColor(appFork);
       // Enlarged-QR caption (peer.title · …): a turn cell names the APP; the main-screen caption keeps the server name.
@@ -1860,7 +1860,7 @@
         tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp }); });
       });
     } else {
-      orderedTargets(peer.targets).forEach(function (tt) { if (isSelfContained(tt.type)) return; if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // WDTT + csqtt belong to the Turn group only — never the wg/awg lists; primary connection first
+      orderedTargets(peer.targets).forEach(function (tt) { if (isSelfContained(tt.type) || tt.direct === false) return; if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // WDTT + csqtt belong to the Turn group only — never the wg/awg lists; primary connection first
     }
     if (!items.length) return null;
     var reason = row.bad ? t("outOfDate") : (!peer.sec ? t("notReady") : null);
@@ -2282,7 +2282,7 @@
       var has = { wg: false, awg: false, turn: false };
       liveRows.forEach(function (r) { (r.peer.targets || []).forEach(function (t) {
         if (isSelfContained(t.type)) { if (data.turn_enabled) has.turn = true; return; }   // WDTT + csqtt are turn-family servers → the Turn group (not a WG/AWG deployment)
-        has[t.type === "awg" ? "awg" : "wg"] = true;
+        if (t.direct !== false) has[t.type === "awg" ? "awg" : "wg"] = true;   // direct:false = the peer publishes this deployment only through its proxies
         if (data.turn_enabled && (t.turn || []).length) has.turn = true;
       }); });
       var groups = ["wg", "awg", "turn"].filter(function (m) { return has[m]; });

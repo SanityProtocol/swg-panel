@@ -15,7 +15,7 @@ import { NODE_COLOR_DEFAULT, NODE_CREATE_DEFAULT, toThemed } from "./theme.js";
 import { go } from "./router.js";
 import { targetType, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
-         turnProxiesFor } from "./model.js";
+         turnProxiesFor, tgtXfer, tgtSeenAge } from "./model.js";
 import { turnFork, turnColor, turnForkList } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
@@ -32,7 +32,7 @@ import {
 import {
   confirmDeletePeer, confirmUnassign, peerBlockBtn, userBlockBtn, PeerStatusLine, SubStatusLine,
   fmtDate, expiryInputVal, expiryFromInput, UserCombo, UserPicker, PrimaryToggle, assignPeer,
-  confirmReassign, confirmCorrectDeployment, confirmRestoreDeployment, openRecreateRekey, rotatePeerKeys,
+  confirmReassign, confirmCorrectDeployment, confirmRestoreDeployment, openRecreateRekey, rotatePeerKeys, PubTag,
 } from "./peer-actions.js";
 import { searchMatch, usersView, revealUser } from "./views.js";
 import { turnEnabled, WDTT_COLOR, shownTitle } from "./turn.js";
@@ -190,7 +190,12 @@ export function TargetFrontBadge({ node, iface }) {
 // Reusable (node,iface) picker with per-target IP allocation. `exclude` is a Set of tkeys
 // to hide (interfaces a user is already on); `onChange` receives the chosen target list
 // [{node,iface,ip,ipHint}]. Used by the create-peer, create-user and add-peers flows.
-export function TargetPicker({ prefill, exclude, onChange, initial }) {
+export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
+  // `pubPeer` (Targets sheet only): rows that are ALREADY deployments of that peer get their protocol tag as a
+  // publish switch. A row you haven't ticked yet is a candidate — there is nothing of it to publish, so it stays
+  // a plain tag.
+  const pubHave = useMemo(() => new Set(((pubPeer && pubPeer.targets) || []).map(t => tkey(t.node, t.iface))),
+                          [pubPeer && pubPeer.targets]);
   const all = useMemo(allTargets, [Store.describe, Store.stats]);
   // locked: launched from one interface — show only that target, no toggling, just the IP.
   const locked = !!(prefill && prefill.lock && prefill.node && prefill.iface);
@@ -251,7 +256,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial }) {
         <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
         <span class="tp">${t.iface}</span>
         ${t.missing ? html`<span class="topt-missing" title=${T("This interface is gone from the node — uncheck to remove this deployment from the peer")}>${T("tag|missing")}</span>` : null}</label>
-      <${Tag} kind=${ity} label=${ity}/>
+      ${(pubPeer && pubHave.has(k)) ? html`<${PubTag} peer=${pubPeer} src=${ity} label=${ity}/>` : html`<${Tag} kind=${ity} label=${ity}/>`}
       ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/>`}
       ${(s && (s.wdtt || s.csqtt || isSelfContainedKind(ity)))
         // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
@@ -513,7 +518,7 @@ export function AddTargetSheet({ peer, back, child }) {
             ? T("This peer's private key isn't available here, so newly-added targets get the same key + PSK but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config.")
             : T("store_configs is off, so the client's private key isn't kept — new targets get the same key + PSK, but a fresh QR can't be shown.")}</span></div>` : null}
         <div class="field"><label>${T("Targets")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— check to deploy, uncheck to remove")}</span></label>
-          <${TargetPicker} initial=${initial} onChange=${setChosen}/></div>
+          <${TargetPicker} initial=${initial} pubPeer=${peer} onChange=${setChosen}/></div>
         ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
       </>`}
   <//>`;
@@ -557,12 +562,13 @@ export function PeerViewSheet({ pid, node, iface }) {
     <div class="lbl" style="margin:16px 2px 4px">${T("Deployments · {n}", { n: p.targets.length })}</div>
     <div class="pv-deps">${depsOrdered.map(t => {
       const obs = t.observed;
+      const xfer = tgtXfer(t);            // wire counters for wg/awg, per-password byte deltas for a keyless server
       const proto = targetType(t);
       return html`<div class=${"pv-dep" + (node === t.node && iface === t.iface ? " hl" : "")} key=${tkey(t.node, t.iface)}>
         <div class="pv-dep-top">${badgeWithReason(t.status, t.status === "blocked" ? blockedReason(t.type) : statusReason(t.status))}
           <span class="tags">
-            <${Tag} kind=${proto} label=${proto} muted=${!t.online}/>
-            ${/* TURN tag hidden until we can detect a peer is *actively* connected via turn-proxy (nodes-interface work) */ null}
+            <${PubTag} peer=${p} src=${proto} label=${proto} muted=${!t.online}/>
+            ${turnEnabled() && turnProxiesFor(t.node, t.iface).length ? html`<${PubTag} peer=${p} src="turn" label=${T("val|turn")}/>` : null}
           </span>
           <span class="grow"></span>
           <${PrimaryToggle} peer=${p} t=${t}/>
@@ -574,9 +580,9 @@ export function PeerViewSheet({ pid, node, iface }) {
           <span><span class="k">${T("col|Node")}</span> <span style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></span>
           <span><span class="k">${T("col|Interface")}</span> ${t.iface}</span>
           <span><span class="k">${T("col|Address")}</span> <span class="addr">${t.ip || "—"}</span></span>
-          <span><span class="k">${T("col|Rate")}</span> ${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</span>
-          <span><span class="k">${T("col|Total")}</span> ${xferCell(...dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0))}</span>
-          <span><span class="k">${T("col|Online")}</span> ${seen(obs ? obs.handshake_age : null)}</span>
+          <span><span class="k">${T("col|Rate")}</span> ${rateCell(xfer ? xfer.rx_speed : 0, xfer ? xfer.tx_speed : 0)}</span>
+          <span><span class="k">${T("col|Total")}</span> ${xferCell(...dlul(xfer ? xfer.rx_bytes : 0, xfer ? xfer.tx_bytes : 0))}</span>
+          <span><span class="k">${T("col|Online")}</span> ${seen(tgtSeenAge(t))}</span>
         </div></div>`;
     })}</div>
     ${editLocked ? html`<div class="notice warn" style="margin-top:14px"><${Ic} i="warn"/><span>${T("Editing is off while a deployment sits on a missing or misconfigured interface. A peer edit (keys, AmneziaWG params, DNS, address) applies to every deployment, so it would leave this peer inconsistent. To edit it, either Restore / Fix the interface above, or open Targets and remove that interface from this peer.")}</span></div>` : null}
@@ -785,7 +791,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         return html`<div class="targetopt sel locked" key=${k}>
           <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
           <${PrimaryToggle} peer=${peer} t=${t} compact=${true}/>
-          <${Tag} kind=${ity} label=${ity}/>
+          <${PubTag} peer=${live} src=${targetType(t)} label=${ity}/>
+          ${turnEnabled() && turnProxiesFor(t.node, t.iface).length ? html`<${PubTag} peer=${live} src="turn" label=${T("val|turn")}/>` : null}
           <${TargetFrontBadge} node=${t.node} iface=${t.iface}/>
           <input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>
         </div>`;
