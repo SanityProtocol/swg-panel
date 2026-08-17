@@ -59,7 +59,10 @@ export function turnForkList() {
     return cat.servers.map(s => ({ id: s.id, label: s.label || s.id, product: s.product || "", raw: !!s.raw, owner: s.owner || "", kind: s.kind || "turn",
       wrap: s.wrap || "", keyflag: s.keyflag, color: (s.color || {}).dark, colorL: (s.color || {}).light, hidden: !!s.hidden,
       protocols: (Array.isArray(s.protocols) && s.protocols.length) ? s.protocols : ["wg", "awg"],
-      settings: Array.isArray(s.settings) ? s.settings : [], client_settings: Array.isArray(s.client_settings) ? s.client_settings : [], clients: s.clients || [], compat: s.compat || {}, client_schemas: s.client_schemas || {}, cli_authors: Array.isArray(s.cli_authors) ? s.cli_authors : ["samosvalishe"] }));
+      settings: Array.isArray(s.settings) ? s.settings : [], client_settings: Array.isArray(s.client_settings) ? s.client_settings : [], clients: s.clients || [], compat: s.compat || {}, client_schemas: s.client_schemas || {},
+      wdtt_versions: Array.isArray(s.wdtt_versions) ? s.wdtt_versions : [],   // published builds; EMPTY = nothing a node could install yet
+      default_client: s.default_client || "",   // the fork's own preferred app, when it should win over the one-tap rule
+      cli_authors: Array.isArray(s.cli_authors) ? s.cli_authors : ["samosvalishe"] }));
   return TURN_FORKS_FALLBACK;
 }
 // Operator-facing fork list — the full catalog MINUS hidden/dead forks (cacggghp/kiper292). Lookups (turnColor/

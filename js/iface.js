@@ -637,6 +637,11 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing }) {
   const adopting = (nrec.wdtt_adopting || []).includes(iface);
   const awaiting = !adopting && (!!w.await_restore || !!missing);
   const stopped = !!cfg.stopped;
+  // The node REFUSED to install this one (no binary for the fork, bad params) — it never existed, so there is
+  // no identity to restore, nothing to recreate, and nothing to stop or restart. Its only honest actions are
+  // reading the reason and removing it.
+  const failErr = (nrec.cmd_errors || {})[iface] || "";
+  const never = !!missing && !!failErr && !((nrec.wdtt_vault || {})[iface]);
   const notup = !active && !awaiting;   // stopped / starting → offer Start; else Stop + Restart
   const restoring = (nrec.wdtt_restoring || []).includes(iface);
   const restorable = !!((nrec.wdtt_vault || {})[iface]);
@@ -658,8 +663,12 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing }) {
       <div class="grow"></div>
     </div>
     ${adopting ? html`<div class="notice"><${Ic} i="clock"/><span>${Trich("This server is being *taken over* — the node stops the existing one and brings it back up under the panel with its original identity and users. Its controls stay disabled until that finishes.")}</span></div>` : null}
-    ${awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${missing ? T("This node isn't reporting this server — it's gone from the box (a rebuild, or a node running a build without WDTT support).") : T("This server was wiped.")} ${Trich("Its identity is escrowed in your Encryption Vault, so it's held offline rather than coming back with a fresh key that would break every user. *Restore* to bring it back with its original identity, or *Recreate fresh* (every user re-imports).")}
-      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" disabled=${restoring} onClick=${() => wdttRestoreIdentity(node, iface)}><${Ic} i="shield"/> ${restoring ? T("Restoring…") : T("Restore server identity")}</button><button class="btn btn-ghost" disabled=${restoring} onClick=${() => wdttRecreateFresh(node, iface)}>${T("Recreate fresh")}</button></div></span></div>` : null}
+    ${never ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("The node refused to install this server, so it was never created: *{err}*. Fix that and create it again, or remove it — there is no identity to restore and nothing to recreate.", { err: failErr })}
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> ${T("Remove this server")}</button></div></span></div>`
+    : awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${missing ? T("This node isn't reporting this server — it's gone from the box (a rebuild, or a node running a build without WDTT support).") : T("This server was wiped.")} ${restorable
+      ? Trich("Its identity is escrowed in your Encryption Vault, so it's held offline rather than coming back with a fresh key that would break every user. *Restore* to bring it back with its original identity, or *Recreate fresh* (every user re-imports).")
+      : Trich("*No identity is escrowed for it*, so it can only come back with a new key — every user re-imports.")}
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">${restorable ? html`<button class="btn btn-primary" disabled=${restoring} onClick=${() => wdttRestoreIdentity(node, iface)}><${Ic} i="shield"/> ${restoring ? T("Restoring…") : T("Restore server identity")}</button>` : null}<button class=${restorable ? "btn btn-ghost" : "btn btn-primary"} disabled=${restoring} onClick=${() => wdttRecreateFresh(node, iface)}>${T("Recreate fresh")}</button></div></span></div>` : null}
     <${Panel} icon="key" title=${T("Interface details")} tone="online"
         actions=${Store.ifaceGone[node + "|" + iface]
           // Delete already submitted, the node has not torn it down yet — same guard as the wg/awg page.
@@ -667,7 +676,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing }) {
           : adopting
           // Take-over in flight: Stop/Restart/Edit/Delete would all act on a server that is being replaced.
           ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("The node applies the take-over on its next sync")}/>`
-          : html`<${Fragment}>${opFlash}${(op && op.phase === "busy") ? null : notup
+          : html`<${Fragment}>${opFlash}${(op && op.phase === "busy") || awaiting ? null : notup
           ? html`<button class="btn btn-mini" disabled=${blocked || awaiting} title=${blocked ? T("Unavailable while the node is down") : T("Bring this WDTT server up on the node")} onClick=${() => startOrRestartWdtt(node, iface, "start")}><${Ic} i="play"/> ${T("Start service")}</button>`
           : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${T("Take this WDTT server down (stays down until started)")} onClick=${() => startOrRestartWdtt(node, iface, "stop")}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-mini" disabled=${blocked} title=${T("Bounce this WDTT server on the node")} onClick=${() => startOrRestartWdtt(node, iface, "restart")}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}<button class="btn btn-mini" disabled=${blocked || awaiting || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down") : ""} onClick=${() => openEditWdtt(node, iface)}><${Ic} i="pencil"/>${T("Edit interface")}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${T("Stop + remove this WDTT server and disconnect its users")} onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
       <div class="iface-grid">
@@ -751,8 +760,12 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const sugWdttWg = suggestPort(node, "turn", [sugWdttListen]);           // internal userspace-WG port (≠ the listen)
   const [iface, setIface] = useState((pre && pre.iface) || (_defProto === "wdtt" ? sugWdtt : _defProto === "awg" ? sugAwg : sugWg)); const [subnet, setSubnet] = useState((pre && pre.subnet) || ((pre && pre.proto) === "wdtt" ? sugWdttNet : suggestSubnet(node)));
   const [host, setHost] = useState(""); const [port, setPort] = useState(String((pre && pre.proto) === "wdtt" ? sugWdttListen : suggestPort(node, "iface")));
-  const _wdttForks = enabledTurnForks().filter(f => f.kind === "wdtt");   // WDTT server forks the operator has enabled
-  const [wgPort, setWgPort] = useState(String(sugWdttWg)); const [fork, setFork] = useState((_wdttForks[0] || {}).id || "amurcanov");   // WDTT: internal userspace-WG port + which server fork (default = first enabled)
+  // WDTT server forks the operator has enabled. A fork with no PUBLISHED build has nothing for a node to
+  // install, so it is offered but not selectable — visible (it exists, and a build may land) with the reason
+  // attached, instead of silently creating a server that can never come up.
+  const _wdttForks = enabledTurnForks().filter(f => f.kind === "wdtt");
+  const _forkBuildable = f => (f.wdtt_versions || []).length > 0;
+  const [wgPort, setWgPort] = useState(String(sugWdttWg)); const [fork, setFork] = useState(((_wdttForks.find(f => (f.wdtt_versions || []).length) || _wdttForks[0] || {}).id) || "amurcanov");   // WDTT: internal userspace-WG port + which server fork (default = first enabled one that has a build)
   // WDTT is a turn-family fork → needs turn management on this node AND at least one WDTT fork enabled (else there's
   // nothing to create) — if every WDTT fork is disabled in Settings, don't offer the WDTT protocol at all.
   const wdttOk = turnEnabled() && nrec.turn_manage && nrec.turn_arch_ok !== false && enabledTurnForks().some(f => f.kind === "wdtt");
@@ -950,7 +963,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       </div>` : null}
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — after creating you must publish this port in the node's `docker-compose.yml` ({ports}) and `up -d`, or clients can't reach it. (A host-networking node needs none of this.)", { ports: 'ports: "' + (port || "PORT") + ":" + (port || "PORT") + '/udp"' })}</span></div>` : null}
       ${isWdtt ? html`<div class="row2">
-        <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${_wdttForks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select><div class="hint">${T("Which WDTT server implements this instance")}</div></div>
+        <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${_wdttForks.map(f => html`<option value=${f.id} disabled=${!_forkBuildable(f)}>${forkPickLabel(f.id)}${_forkBuildable(f) ? "" : " — " + T("no build published yet")}</option>`)}</select><div class="hint">${T("Which WDTT server implements this instance")}</div></div>
         <div class="field"><label>${T("Endpoint host / IP")}</label>
           <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
           <div class="hint">${T("What clients dial")}</div></div>

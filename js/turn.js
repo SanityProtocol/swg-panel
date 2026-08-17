@@ -706,10 +706,10 @@ export function ServerClientsSheet({ fork, initialOs }) {
 // (the fork's wire, or plain), and kind (app vs CLI). `key` = the client id, or "sidecar@<author>" for a CLI build.
 export const TURN_OBF_LABEL = { "Moroka8": "WRAP", "samosvalishe": "rtpopus", "anton48": "SRTP", "MYSOREZ": "WRAP", "WINGS-N": "WRAP",
                          // WDTT family: every client speaks WRAP-A (DTLS + RTP-AEAD). Never "plain".
-                         "amurcanov": "WRAP-A", "ildarmaga": "WRAP-A", "wdttplus": "WRAP-A", "xxcipherx": "WRAP-A",
+                         "amurcanov": "WRAP-A", "ildarmaga": "WRAP-A", "wdttplus": "WRAP-A", "xxcipherx": "WRAP-A", "qwdtt": "WRAP-A",
                          "csqtt": "RTP-AEAD" };   // csqtt masks its transport as encrypted VK-call/RTP media — always on
 const _FORK_GUI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1, "WINGS-N": 1,       // a native/friendly GUI app rides the fork's obfuscation
-                        "amurcanov": 1, "ildarmaga": 1, "wdttplus": 1, "xxcipherx": 1, "csqtt": 1 };      // WDTT apps always obfuscate (WRAP-A); csqtt always obfuscates (RTP-AEAD)
+                        "amurcanov": 1, "ildarmaga": 1, "wdttplus": 1, "xxcipherx": 1, "qwdtt": 1, "csqtt": 1 };   // WDTT apps always obfuscate (WRAP-A); csqtt always obfuscates (RTP-AEAD)
 const _FORK_CLI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1 };                 // a listed CLI author obfuscates (NOT WINGS — its wrap needs the app's SessionHello)
 // "Don't offer on this OS" — a stored choice in turn_client_default[fork][os], alongside a client id or
 // "sidecar@<author>". The sub page's turnGetApp() returns nothing for it, and every caller there already hides a
@@ -755,6 +755,10 @@ export function pickerEntries(f, os) {
 export function sysDefaultKey(f, entries) {
   const es = entries || [];
   if (!(f && f.kind === "wdtt") || !es.length) return null;
+  // A fork may name its own preferred app in the catalog (default_client). That wins over the one-tap rule
+  // below: qWDTT's app can't be deep-linked (its manifest registers no BROWSABLE scheme — only .qwdtt/.conf
+  // file opens), yet it is the app that fork's users want, and Start already falls back to copy + steps.
+  if (f.default_client) { const own = es.find(e => e.cid === f.default_client); if (own) return own.key; }
   if (es[0].autostart) return es[0].key;                    // already one-tap (e.g. the fork's own app) → keep it
   const xc = es.find(e => e.cid === "xxcipher");            // top pick can't one-tap (e.g. amurcanov's wdttapp) → xxcipher
   return xc ? xc.key : null;

@@ -490,6 +490,9 @@ WDTT_BUILDS = {                               # fork id -> [(author_version, our
     "ildarmaga": [("1.4.63",   "wdtt-ildarmaga-1.4.63")],
     "wdttplus":  [("13",       "wdtt-wdttplus-13")],
     "xxcipherx": [("2.0.0.61", "wdtt-xxcipherx-2.0.0.61")],
+    # qWDTT: built from SpaceNeuroX @854a72fe ("Release 1.4.1"). Mirrored into the panel's binary store, so a node
+    # pulls it from the panel and no public release is needed — see qwdtt/README.md.
+    "qwdtt":     [("1.4.1",    "wdtt-qwdtt-1.4.1")],
 }
 _WDTT_OWNER_FORK = {                          # catalog owner -> fork id (for owner-keyed callers like _turn_asset_url)
     "amurcanov/proxy-turn-vk-android": "amurcanov",
@@ -4330,7 +4333,7 @@ TURN_SERVERS = {
     "xxcipherx":    {"label": "XXcipherX",  "product": "WDTT",      "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # XXcipherX fork: video-masquerade obfuscation + no-captcha; audio mode is amurcanov-compatible
                      "settings": [], "client_settings": _WDTT_CLIENT_CS},
-    "qwdtt":        {"label": "SpaceNeuroX", "product": "qWDTT",    "raw": True, "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#FACC15", "light": "#A16207"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+    "qwdtt":        {"label": "SpaceNeuroX", "product": "qWDTT",    "raw": True, "default_client": "qwdtt", "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#FACC15", "light": "#A16207"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # qWDTT: the actively-developed WDTT fork (amurcanov's own is frozen). Same DTLS+WRAP-A wire and
                      # the same passwords.json store, so every WDTT client and all our WDTT machinery apply unchanged;
                      # what differs is server FEATURES (multi-device passwords, downlink pacing, an experimental raw-IP
@@ -4350,8 +4353,10 @@ TURN_SERVERS = {
 # Display order: cacggghp + WINGS-N pinned first; the rest by combined (server + client-app) GitHub stars,
 # descending — snapshot fetched 2026-07-16 (static, intentionally not live): MYSOREZ 17+443, samosvalishe
 # 141+314, kiper292 123+267, anton48 29+165, Moroka8 75+0.
-TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "csqtt", "qwdtt", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
-                     "samosvalishe", "xxcipherx", "cacggghp", "kiper292"]   # operator order (csqtt sits under amurcanov — same author; qwdtt is the live WDTT line); hidden forks (cacggghp/kiper292) last
+TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "csqtt", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
+                     "samosvalishe", "cacggghp", "kiper292", "xxcipherx", "qwdtt"]   # operator order (csqtt sits under amurcanov — same author).
+# The tail is pinned by hand: xxcipherx, then qwdtt LAST. Hidden forks (cacggghp/kiper292) sit before them so the
+# pinned pair stays at the bottom of every operator list even if either is ever un-hidden.
 # Forks kept in the catalog (so a deployed instance still resolves its label/colour) but HIDDEN from the operator
 # UI — the settings toggle list, the install/enable picker, the interface Setup-proxy dropdown, and the fork
 # colour pickers all skip these. Purely cosmetic gating; nothing about a running proxy changes.
@@ -10957,7 +10962,8 @@ def api(method, path, qs, body, deps):
         iface = (body.get("iface") or "").strip()
         if not _WDTT_IFACE_RE.match(iface):
             return 400, {"ok": False, "error": "invalid iface (wdtt0..wdtt999)", "code": "bad_request"}
-        inst = dict((nodes[nid].get("wdtt") or {}).get(iface) or {}); inst["iface"] = iface
+        _existing = (nodes[nid].get("wdtt") or {}).get(iface)
+        inst = dict(_existing or {}); inst["iface"] = iface
         # NOT sha256/tag: `tag` is never read by the node (version selection goes through `ver`, which the panel
         # computes), and a pinned `sha256` is copied forward against a MOVING desired version — so once set it
         # makes the node reject every correct binary. Neither is ever sent by the SPA.
@@ -10967,6 +10973,14 @@ def api(method, path, qs, body, deps):
                 if not no_ctrl(v):
                     return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
                 inst[k] = v
+        # A fork with no PUBLISHED build cannot be installed: the node fetches its binary from this panel's
+        # mirror, so the install fails on the node with "binary unavailable" and the operator is left with a
+        # server that never existed. Refuse at creation, where the reason can still be acted on. (An instance
+        # that already exists stays editable — its binary is on the node already.)
+        if _existing is None and (inst.get("fork") or "amurcanov") not in WDTT_BUILDS:
+            _fk = inst.get("fork") or "amurcanov"
+            _lbl = (TURN_SERVERS.get(_fk) or {}).get("label") or _fk
+            return 400, {"ok": False, **perr("No published build for {v1} yet, so a node has nothing to install. Pick another fork.", v1=_lbl), "code": "bad_request"}
         if "wg_port" in body:
             try: inst["wg_port"] = int(body.get("wg_port") or 0) or inst.get("wg_port") or 56001
             except (TypeError, ValueError): return 400, {"ok": False, "error": "wg_port must be an integer", "code": "bad_request"}

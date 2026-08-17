@@ -30,7 +30,7 @@ import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, Rank
 import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, onlineUserRows, onlinePeerRows,
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES } from "./views.js";
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
-         openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity } from "./turn.js";
+         openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet } from "./turn.js";
 import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
 import { IgnoredIfacesCard, openOnboardIface, openEditIface, openConnectionEdit, OrphanRow,
          AdoptIfaceSheet, AdoptDormantWdttSheet } from "./iface.js";
@@ -315,16 +315,25 @@ export function NodeDetail({ node: rawName }) {
           const restoring = (nrec.wdtt_restoring || []).includes(ifn);
           const fork = wc.fork || "amurcanov";
           const dtls = String(wc.listen || "").split(":").pop() || "";
-          const sentence = vaulted
+          // A server the node REFUSED to install (no binary for the fork, bad params) never existed, so the
+          // "it vanished / its key is gone / recreate with a new identity" story is wrong AND its only actions
+          // are impossible. Show what the node actually said, and offer the one thing that works: remove it.
+          const nerr = (nrec.cmd_errors || {})[ifn] || "";
+          const never = !!nerr && !vaulted;
+          const sentence = never
+            ? T("The node refused to install WDTT server {iface}: {err}", { iface: ifn, err: nerr })
+            : vaulted
             ? goneSentence(T("The node no longer reports WDTT server {iface} (subnet {subnet}). {verdict}, so Restore brings it back unchanged — no user re-imports.",
                 { iface: ifn, subnet: wc.wg_addr || "?" }), true, T("Its identity is escrowed in your Encryption Vault"))
             : goneSentence(T("The node no longer reports WDTT server {iface} (subnet {subnet}). {verdict}, so it can only come back with a new key — every user re-imports.",
                 { iface: ifn, subnet: wc.wg_addr || "?" }), false, T("No escrowed identity is stored"));
-          return html`<a class="ifcard missing" key=${"wdtt-missing:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${T("Open the WDTT server (read-only) — details and Restore")}>
+          return html`<a class=${"ifcard missing" + (never ? " failed" : "")} key=${"wdtt-missing:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${never ? T("This server was never installed — remove it or fix the cause") : T("Open the WDTT server (read-only) — details and Restore")}>
             <div class="ifcard-top"><span class="iftype wdtt">WDTT</span><span class="ifname">${ifn}</span><span class="grow"></span>
-              <button class="mi-restore" disabled=${blocked || restoring} title=${vaulted ? T("Bring this WDTT server back with its original identity — no user re-imports") : T("Recreate this WDTT server with a NEW identity — every user re-imports")}
-                onClick=${e => { e.preventDefault(); e.stopPropagation(); vaulted ? wdttRestoreIdentity(name, ifn) : wdttRecreateFresh(name, ifn); }}><${Ic} i=${vaulted ? "shield" : "refresh"}/> ${restoring ? T("Restoring…") : vaulted ? T("Restore") : T("Recreate")}</button>
-              <${StatusTag} cls="tg-del" icon="warn" label="missing" title=${T("This WDTT server is gone from the node")}/></div>
+              ${never ? null : html`<button class="mi-restore" disabled=${blocked || restoring} title=${vaulted ? T("Bring this WDTT server back with its original identity — no user re-imports") : T("Recreate this WDTT server with a NEW identity — every user re-imports")}
+                onClick=${e => { e.preventDefault(); e.stopPropagation(); vaulted ? wdttRestoreIdentity(name, ifn) : wdttRecreateFresh(name, ifn); }}><${Ic} i=${vaulted ? "shield" : "refresh"}/> ${restoring ? T("Restoring…") : vaulted ? T("Restore") : T("Recreate")}</button>`}
+              <button class="mi-restore danger" disabled=${blocked} title=${T("Remove this WDTT server from the panel")}
+                onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${WdttDeleteSheet} node=${name} iface=${ifn}/>`); }}><${Ic} i="trash"/> ${T("Delete")}</button>
+              <${StatusTag} cls="tg-del" icon="warn" label=${never ? T("not installed") : "missing"} title=${never ? nerr : T("This WDTT server is gone from the node")}/></div>
             <div class="ifcard-rows"><div class="mi-text">${sentence}</div></div></a>`; };
         // ADOPTING card — a take-over in flight, before the node has started the server. Same chrome as the
         // card it becomes, inert: nothing to start, stop or restore yet.
