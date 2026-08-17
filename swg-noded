@@ -6968,13 +6968,14 @@ def _csqtt_env_text(inst):
 def _csqtt_unit_text(iface, binp, cfgdir):
     # csqtt = raw-IP TUN + io_uring: needs CAP_NET_ADMIN + /dev/net/tun AND the io_uring syscall set, which is NOT
     # in @system-service by default → allow @io-uring explicitly or the dataplane seccomp-dies. --no-nat: the NODE
-    # owns MASQUERADE/forward for the csqtt subnet (reconcile_egress). --web-*: csqtt's own admin panel, given a
-    # node-owned strong random password. $SWG_PARAMS unbraced (word-split; empty contributes nothing) — same as WDTT.
+    # owns MASQUERADE/forward for the csqtt subnet (reconcile_egress). --no-web: run headless — csqtt's own admin
+    # panel (binds 0.0.0.0) + its DPI/syscalls monitor sockets are unused surfaces since the panel owns state via
+    # --desired. $SWG_PARAMS unbraced (word-split; empty contributes nothing) — same as WDTT.
     return ("[Unit]\nDescription=swg-csqtt (" + CSQTT_OWNER + ") — " + iface + "\n"
             "After=network-online.target\nWants=network-online.target\n\n"
             "[Service]\nType=simple\nEnvironmentFile=-" + cfgdir + "/csqtt.env\n"
-            "ExecStart=" + binp + " --listen ${SWG_LISTEN} --web-port ${SWG_WEBPORT} --config-dir ${SWG_CFGDIR}"
-            " --password ${SWG_PASSWORD} --web-user " + CSQTT_WEBUSER + " --web-pass ${SWG_WEBPASS}"
+            "ExecStart=" + binp + " --listen ${SWG_LISTEN} --config-dir ${SWG_CFGDIR}"
+            " --password ${SWG_PASSWORD} --no-web"
             " --iface ${SWG_IFACE} --tun-addr ${SWG_TUNADDR} --desired ${SWG_DESIRED} --no-nat"
             " --max-passwords ${SWG_MAXPW} $SWG_PARAMS\n"
             "Restart=on-failure\nRestartSec=3\n"
