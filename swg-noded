@@ -7253,6 +7253,14 @@ def _csqtt_docker_start(inst):
         tail = ""
         with contextlib.suppress(Exception):
             with open(cfgdir + "/server.log", "rb") as f: tail = f.read()[-240:].decode("utf-8", "replace").replace("\n", " ")
+        # csqtt's dataplane is io_uring and has no fallback, and Docker's DEFAULT seccomp profile denies
+        # io_uring_setup — so on a container node the server dies instantly with a message that says nothing
+        # about the actual cause. Name it: the operator cannot guess this one, and the fix is a container
+        # setting, not anything they can change in the panel.
+        if "io_uring" in tail:
+            return ("csqtt needs the io_uring syscalls, which this container's seccomp profile denies. "
+                    "Run the node container with a profile that allows io_uring_setup/enter/register "
+                    "(security_opt: seccomp=…), then it starts on the next sync.")
         return ("csqtt exited rc=%s: %s" % (p.returncode, tail.strip()))[:180]
     return ""
 
@@ -7330,7 +7338,11 @@ def _csqtt_reconcile_desired(iface, passwords):
     except Exception as e:
         return ("desired write failed: " + str(e))[:160]
     if NODE_KIND == "docker":
-        return "" if _csqtt_docker_sighup(iface) else "server is not running — nothing to reload"
+        # No child to signal is NOT a reload failure: desired.json is already on disk and a start reads it.
+        # Reporting an error here would `continue` past the supervision that relaunches the server — and would
+        # replace the real reason it is down (which the start carries) with a symptom.
+        _csqtt_docker_sighup(iface)
+        return ""
     w = host_sh("systemctl kill -s HUP " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null || true")
     return "" if w.returncode == 0 else (w.stderr or w.stdout or "reconcile failed").strip()[:160]
 
