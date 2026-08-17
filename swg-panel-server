@@ -7467,7 +7467,7 @@ def api(method, path, qs, body, deps):
                                      for ifn, ov in _w.items()},
                         # DESIRED csqtt config (node store) so the SPA edit modal can prefill listen / address / egress /
                         # routing / filters. Config fields only — never the owner password / minted access passwords.
-                        "csqtt_cfg": {ifn: {k: ov.get(k) for k in ("listen", "tun_addr", "max_passwords", "stopped",
+                        "csqtt_cfg": {ifn: {k: ov.get(k) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
                                                                     "block", "egress_mode", "egress_node", "egress_ip",
                                                                     "wan_iface", "routing", "title", "params") if k in ov}
                                       for ifn, ov in _c.items()},
@@ -11250,12 +11250,17 @@ def api(method, path, qs, body, deps):
         if not _CSQTT_IFACE_RE.match(iface):
             return 400, {"ok": False, "error": "invalid iface (csqtt0..csqtt9999)", "code": "bad_request"}
         inst = dict((nodes[nid].get("csqtt") or {}).get(iface) or {}); inst["iface"] = iface
-        for k in ("listen", "tun_addr", "params", "title"):
+        # csqtt is one implementation today (amurcanov), but the catalog is fork-shaped and others are being
+        # built — so the instance records WHICH fork from the start. Unknown/absent falls back to the catalog's
+        # single csqtt entry, exactly as an old record without the field does.
+        for k in ("listen", "tun_addr", "params", "title", "fork"):
             if k in body:
                 v = (body.get(k) or "").strip()
                 if not no_ctrl(v):
                     return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
                 inst[k] = v
+        if inst.get("fork") and (TURN_SERVERS.get(inst["fork"]) or {}).get("kind") != "csqtt":
+            return 400, {"ok": False, "error": "unknown csqtt fork", "code": "bad_request"}
         if inst.get("tun_addr") and not (_WDTT_CIDR_RE.match(inst["tun_addr"]) and inst["tun_addr"].endswith("/24")):
             return 400, {"ok": False, "error": "tun_addr must be an IPv4 /24 CIDR, e.g. 10.66.67.1/24", "code": "bad_request"}
         if "max_passwords" in body:
@@ -12849,13 +12854,17 @@ class Handler(BaseHTTPRequestHandler):
                     hrrd_update(iface_rrd_path(stats_dir, nid, ifn), now_i, iM)
             # WDTT interfaces live in snap.wdtt (own their TUN device) → ring their reported aggregate rx/tx the same
             # way, so the interface-detail graph works identically to a wg/awg one.
-            for w in (snap.get("wdtt") or []):
-                wifn = (w or {}).get("iface")
-                if not wifn:
-                    continue
-                iM = [0] * HRRD_NM; iM[3] = int(w.get("rx_speed", 0) or 0); iM[4] = int(w.get("tx_speed", 0) or 0)
-                with contextlib.suppress(Exception):
-                    hrrd_update(iface_rrd_path(stats_dir, nid, wifn), now_i, iM)
+            # csqtt owns a raw-IP TUN and WDTT a userspace-WG one; neither appears in snap.interfaces, so both
+            # ring their own reported aggregate here. csqtt was missing, which is why a csqtt interface graphed
+            # flat while the node was reporting hundreds of megabytes through it.
+            for _sc in ((snap.get("wdtt") or []), (snap.get("csqtt") or [])):
+                for w in _sc:
+                    wifn = (w or {}).get("iface")
+                    if not wifn:
+                        continue
+                    iM = [0] * HRRD_NM; iM[3] = int(w.get("rx_speed", 0) or 0); iM[4] = int(w.get("tx_speed", 0) or 0)
+                    with contextlib.suppress(Exception):
+                        hrrd_update(iface_rrd_path(stats_dir, nid, wifn), now_i, iM)
         # self-heal the full mesh BEFORE computing desired, so a node that entered the store outside
         # /api/nodes/create (auto-enrolled master/local node) or lost a link conf (convert/re-install)
         # gets its links (re)staged on its very next sync.

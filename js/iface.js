@@ -25,7 +25,7 @@ import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
   Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal,
   closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody,
-  useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, ifaceReady, ifaceWasBusy, RowError,
+  useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError,
   goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK,
   adoptOrphanPatch, dlul, rateCell, xferCell,
 } from "./ui.js";
@@ -36,7 +36,8 @@ import { EgressPicker, egressInit, egressError, egressBody, ifTrafficBadge, Bloc
 import { orphCount, OnlinePeersTag, peersView, searchMatch } from "./views.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
-         WdttDeleteSheet, openEditWdtt, ForkTag, shownTitle, enabledTurnForks } from "./turn.js";
+         WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
+         enabledTurnForks } from "./turn.js";
 import { PeerGrid, NodeRail } from "./grids.js";
 import { openCreatePeer } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
@@ -476,6 +477,12 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
   // already falls back to cfg for every field, and `missing` puts it in the restore-or-recreate state.
   const _wCfg = !_wInst && ((nrec.wdtt_cfg || {})[iface] || null);
   if (_wInst || _wCfg) return html`<${WdttIfaceDetail} node=${node} iface=${iface} w=${_wInst || { iface }} nrec=${nrec} missing=${!_wInst}/>`;
+  // csqtt owns its interface the same way (reported in snap.csqtt, absent from describe), so it takes the same
+  // detail rather than falling through to the wg/awg view — where it read as "hasn't been reported in a
+  // snapshot yet" for a server that was reporting hundreds of megabytes.
+  const _cInst = ((Store.stats[node] || {}).csqtt || []).find(c => c && c.iface === iface);
+  const _cCfg = !_cInst && ((nrec.csqtt_cfg || {})[iface] || null);
+  if (_cInst || _cCfg) return html`<${WdttIfaceDetail} node=${node} iface=${iface} w=${_cInst || { iface }} nrec=${nrec} missing=${!_cInst} kind="csqtt"/>`;
   // A DORMANT WDTT install has no interface at all — no device, no socket, no process — so it has no interface
   // NAME to be routed by. It is identified by its config dir, which url-encodes into this same slot (a path has
   // no bare "/" once encoded). Its users can run to dozens, which is why they get a screen and not a modal.
@@ -617,14 +624,15 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
 
 // A WDTT interface's detail page: the self-contained server (info + lifecycle) + its users (the shared PeerGrid).
 // One record — the server's turn-half is edited from its Turn-proxies card; here we manage the interface + peers.
-export function WdttIfaceDetail({ node, iface, w, nrec, missing }) {
+export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   useStore();
   const [q, setQ] = useState("");
+  const isCsq = kind === "csqtt";               // same page, two self-contained kinds
   const dname = nrec.name || node;
   const live = Store.recon.nodeStatus[node] === "live";
   const blocked = !live || inProc(nrec.proc_status);
-  const cfg = (nrec.wdtt_cfg || {})[iface] || {};
-  const fork = w.fork || cfg.fork || "amurcanov";
+  const cfg = (isCsq ? (nrec.csqtt_cfg || {}) : (nrec.wdtt_cfg || {}))[iface] || {};
+  const fork = w.fork || cfg.fork || (isCsq ? "csqtt" : "amurcanov");
   const active = w.active === "active";
   // `missing` = the node doesn't report this server at all. Treat it exactly like await_restore: the identity is
   // escrowed, so offer Restore (or Recreate fresh) and keep every other control off — there is nothing running
@@ -634,7 +642,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing }) {
   // being ADOPTED, and "Recreate fresh" there would mint a new key and break the very clients the adoption
   // exists to keep. `adopting` therefore wins over `missing`, and stands down every lifecycle control until
   // the node reports the result.
-  const adopting = (nrec.wdtt_adopting || []).includes(iface);
+  const adopting = !isCsq && (nrec.wdtt_adopting || []).includes(iface);
   const awaiting = !adopting && (!!w.await_restore || !!missing);
   const stopped = !!cfg.stopped;
   // The node REFUSED to install this one (no binary for the fork, bad params) — it never existed, so there is
@@ -642,9 +650,12 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing }) {
   // reading the reason and removing it.
   const failErr = (nrec.cmd_errors || {})[iface] || "";
   const never = !!missing && !!failErr && !((nrec.wdtt_vault || {})[iface]);
+  // csqtt derives every client credential from the panel-owned password — there is no server keypair to escrow,
+  // so a missing csqtt server is never "restorable", only recreatable from panel state (which self-heals).
+  const restorableK = !isCsq && !!((nrec.wdtt_vault || {})[iface]);
   const notup = !active && !awaiting;   // stopped / starting → offer Start; else Stop + Restart
   const restoring = (nrec.wdtt_restoring || []).includes(iface);
-  const restorable = !!((nrec.wdtt_vault || {})[iface]);
+  const restorable = restorableK;
   const op = Store.ifaceOp[node + "|" + iface];   // start/stop/restart/apply lifecycle (busy/ok/fail flash)
   const peers = Store.recon.peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface));
   const rows = peers.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
@@ -659,12 +670,12 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing }) {
     <${NodeRail} active=${node}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class="iftype wdtt">WDTT</span><${ForkTag} fork=${fork}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>${T("tag|adopting")}</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? "missing" : T("awaiting restore")}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}</span>` : stopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : active ? html`<span class="reporting">${T("tag|running")}</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> ${T("tag|starting")}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/></span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + (isCsq ? "csqtt" : "wdtt")}>${isCsq ? "CSQTT" : "WDTT"}</span><${ForkTag} fork=${fork}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>${T("tag|adopting")}</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? "missing" : T("awaiting restore")}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}</span>` : stopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : active ? html`<span class="reporting">${T("tag|running")}</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> ${T("tag|starting")}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/></span></div>
       <div class="grow"></div>
     </div>
     ${adopting ? html`<div class="notice"><${Ic} i="clock"/><span>${Trich("This server is being *taken over* — the node stops the existing one and brings it back up under the panel with its original identity and users. Its controls stay disabled until that finishes.")}</span></div>` : null}
     ${never ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("The node refused to install this server, so it was never created: *{err}*. Fix that and create it again, or remove it — there is no identity to restore and nothing to recreate.", { err: failErr })}
-      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> ${T("Remove this server")}</button></div></span></div>`
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary danger" onClick=${() => openModal(isCsq ? html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>` : html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> ${T("Remove this server")}</button></div></span></div>`
     : awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${missing ? T("This node isn't reporting this server — it's gone from the box (a rebuild, or a node running a build without WDTT support).") : T("This server was wiped.")} ${restorable
       ? Trich("Its identity is escrowed in your Encryption Vault, so it's held offline rather than coming back with a fresh key that would break every user. *Restore* to bring it back with its original identity, or *Recreate fresh* (every user re-imports).")
       : Trich("*No identity is escrowed for it*, so it can only come back with a new key — every user re-imports.")}
@@ -677,11 +688,11 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing }) {
           // Take-over in flight: Stop/Restart/Edit/Delete would all act on a server that is being replaced.
           ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("The node applies the take-over on its next sync")}/>`
           : html`<${Fragment}>${opFlash}${(op && op.phase === "busy") || awaiting ? null : notup
-          ? html`<button class="btn btn-mini" disabled=${blocked || awaiting} title=${blocked ? T("Unavailable while the node is down") : T("Bring this WDTT server up on the node")} onClick=${() => startOrRestartWdtt(node, iface, "start")}><${Ic} i="play"/> ${T("Start service")}</button>`
-          : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${T("Take this WDTT server down (stays down until started)")} onClick=${() => startOrRestartWdtt(node, iface, "stop")}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-mini" disabled=${blocked} title=${T("Bounce this WDTT server on the node")} onClick=${() => startOrRestartWdtt(node, iface, "restart")}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}<button class="btn btn-mini" disabled=${blocked || awaiting || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down") : ""} onClick=${() => openEditWdtt(node, iface)}><${Ic} i="pencil"/>${T("Edit interface")}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${T("Stop + remove this WDTT server and disconnect its users")} onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
+          ? html`<button class="btn btn-mini" disabled=${blocked || awaiting} title=${blocked ? T("Unavailable while the node is down") : T("Bring this WDTT server up on the node")} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "start")}><${Ic} i="play"/> ${T("Start service")}</button>`
+          : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${T("Take this WDTT server down (stays down until started)")} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "stop")}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-mini" disabled=${blocked} title=${T("Bounce this WDTT server on the node")} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "restart")}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}<button class="btn btn-mini" disabled=${blocked || awaiting || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down") : ""} onClick=${() => (isCsq ? openEditCsqtt(node, iface) : openEditWdtt(node, iface))}><${Ic} i="pencil"/>${T("Edit interface")}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${T("Stop + remove this WDTT server and disconnect its users")} onClick=${() => openModal(isCsq ? html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>` : html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
       <div class="iface-grid">
         <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${w.listen || cfg.listen || "—"}</span></div>
-        <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${w.wg_addr || "—"}</span></div>
+        <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${(isCsq ? (w.tun_addr || cfg.tun_addr) : w.wg_addr) || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Throughput")}</span><span class="ig-v">${ifTrafficBadge(cfg.egress_mode, cfg.egress_node)}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Fork")}</span><span class="ig-v"><${ForkTag} fork=${fork}/></span></div>
       </div>
@@ -692,7 +703,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing }) {
     ${/* A WDTT fork IS a turn-family server, so this page shows its card in the same section the node screen
           uses — read-only here: no add-proxy button, because a WDTT server owns its own transport
           and nothing can be pointed at this interface. */""}
-    ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title=${T("WDTT proxy")} iface=${iface}/>` : null}
+    ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title=${isCsq ? T("CSQTT proxy") : T("WDTT proxy")} iface=${iface}/>` : null}
 
     <${Panel} icon="users" title=${T("Peers on this interface")} count=${peers.length} pad=${false}
         lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder=${T("Search title, user, address…")} value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
@@ -777,7 +788,11 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const sugCsqttNet = suggestSubnet(node);
   const sugCsqttListen = suggestPort(node, "turn");
   const [maxPw, setMaxPw] = useState("500");
-  const csqttOk = turnEnabled() && nrec.turn_manage && nrec.turn_arch_ok !== false && enabledTurnForks().some(f => f.kind === "csqtt");
+  // csqtt fork picker. One fork ships today (amurcanov), but people are building others and the catalog is
+  // already fork-shaped — so the instance carries its fork from the start rather than being retrofitted later.
+  const _csqttForks = enabledTurnForks().filter(f => f.kind === "csqtt");
+  const csqttOk = turnEnabled() && nrec.turn_manage && nrec.turn_arch_ok !== false && _csqttForks.length > 0;
+  const [cfork, setCfork] = useState((_csqttForks[0] || {}).id || "csqtt");
   const isCsqtt = proto === "csqtt";
   const _idf = (Store.panelSettings || {}).interface_defaults || {};   // panel-wide new-interface defaults
   const [dns, setDns] = useState((_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String(_idf.mtu || 1280)); const [ka, setKa] = useState(String(_idf.keepalive || 25));
@@ -872,7 +887,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       if (maxPw.trim() && !/^\d+$/.test(maxPw.trim())) return fail(T("Max passwords must be a number."));
       const _lHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.csqttSet({ node, iface: nm, tun_addr: subnetServerAddr(subnet.trim()), listen: _lHost + ":" + (port.trim() || "46000"),
-        max_passwords: maxPw.trim() || "500", block: blk, ...egressBody(eg) });
+        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, ...egressBody(eg) });
     } else {
       const nm = iface.trim();
       if (!nm || /[\s/]/.test(nm)) return fail(T("Interface name is required (no spaces or /)."));
@@ -958,8 +973,8 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="46000"/>${pperr ? html`<div class="hint err">${pperr}</div>` : html`<div class="hint">${T("UDP DTLS listen (outside)")}</div>`}</div>
       </div>
       <div class="row2">
+        <div class="field"><label>${T("Server fork")}</label><select value=${cfork} onChange=${e => setCfork(e.target.value)}>${_csqttForks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select><div class="hint">${T("Which csqtt server implements this instance")}</div></div>
         <div class="field"><label>${T("Max users")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${maxPw} onInput=${e => setMaxPw(e.target.value)} placeholder="500"/><div class="hint">${T("Cap on simultaneous access passwords · blank = 500")}</div></div>
-        <div class="field"></div>
       </div>` : null}
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — after creating you must publish this port in the node's `docker-compose.yml` ({ports}) and `up -d`, or clients can't reach it. (A host-networking node needs none of this.)", { ports: 'ports: "' + (port || "PORT") + ":" + (port || "PORT") + '/udp"' })}</span></div>` : null}
       ${isWdtt ? html`<div class="row2">

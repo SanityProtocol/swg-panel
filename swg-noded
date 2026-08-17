@@ -7033,6 +7033,12 @@ def wdtt_snapshot():
 def _csqtt_svc(iface): return "swg-csqtt-" + iface
 def _csqtt_dir(iface): return CSQTT_ROOT + "/" + iface
 def _csqtt_bin_shared(): return CSQTT_BIN_DIR + "/" + _turn_arch() + "/csqtt-server"
+# csqtt ships one implementation today; the instance still records WHICH fork, so a second one can never be
+# silently substituted the way an unknown WDTT fork used to be (see _wdtt_fork_unknown).
+CSQTT_FORK_OWNER = {"csqtt": "amurcanov/csqtt"}
+def _csqtt_fork_unknown(inst):
+    f = ((inst or {}).get("fork") or "").strip()
+    return "" if (not f or f in CSQTT_FORK_OWNER) else f
 def _csqtt_unit_path(iface): return TURN_UNIT_DIR + "/" + _csqtt_svc(iface) + ".service"
 def _csqtt_present(iface): return os.path.exists(_csqtt_unit_path(iface))
 def _csqtt_subnet(cidr):
@@ -7131,6 +7137,11 @@ def _csqtt_verify(iface):
     return "service did not become active — check `journalctl -u " + _csqtt_svc(iface) + "` (io_uring/seccomp?)"
 
 def _csqtt_install(inst):
+    _unk = _csqtt_fork_unknown(inst)
+    if _unk:
+        return ("this node doesn't know the csqtt fork '" + _unk + "' — its swg-noded is older than the panel. "
+                "Update the node (its page offers \"update node to …\"), then this server installs on the next sync. "
+                "Known here: " + ", ".join(sorted(CSQTT_FORK_OWNER)) + ".")
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface)
     binshared = _csqtt_bin_shared(); binp = cfgdir + "/server"
     if not os.path.exists(binshared):

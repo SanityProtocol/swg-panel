@@ -3204,6 +3204,8 @@ export const STR = {
   "Remove this server": "Удалить сервер",
   "*No identity is escrowed for it*, so it can only come back with a new key — every user re-imports.": "*Личность сервера не депонирована*, поэтому он вернётся только с новым ключом — всем пользователям придётся переимпортировать.",
   "No published build for {v1} yet, so a node has nothing to install. Pick another fork.": "Для {v1} ещё нет опубликованной сборки — узлу нечего устанавливать. Выберите другой форк.",
+  "Which csqtt server implements this instance": "Какой csqtt-сервер реализует этот инстанс",
+  "CSQTT proxy": "CSQTT-прокси",
   "row|kind": "тип",
   "row|endpoint": "адрес",
   "row|address": "адрес в ВПН",
