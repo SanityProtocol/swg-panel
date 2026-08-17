@@ -116,6 +116,14 @@ services:
     restart: unless-stopped
     profiles: ["node", "master", "host-node"]
     cap_add: ["NET_ADMIN"]
+    # Syscall filtering. `builtin` is Docker's own default profile — the safe default, and what every install
+    # gets unless it opts out. Set SWG_NODE_SECCOMP=unconfined ONLY if you run csqtt servers on this node: csqtt's
+    # dataplane is io_uring and has no fallback, and the default profile denies io_uring_setup, so the server
+    # dies the instant it starts (the panel says so, naming this setting). Prefer this over `privileged: true`,
+    # which some csqtt-in-Docker recipes use — that also hands over every capability and device; this relaxes
+    # syscall filtering only, leaving the capability and device limits below in force.
+    security_opt:
+      - seccomp=${SWG_NODE_SECCOMP:-builtin}
     devices: ["/dev/net/tun:/dev/net/tun"]
     sysctls:
       - net.ipv4.ip_forward=1

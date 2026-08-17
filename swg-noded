@@ -7240,6 +7240,12 @@ def _csqtt_docker_start(inst):
     _csqtt_docker_stop(iface)
     if not os.path.exists(binp):
         return "csqtt binary missing at " + binp
+    # Where THIS attempt's output starts. The log is append-only and holds every previous failure, so reading a
+    # blind tail attributes an old error to a new attempt — which is exactly how a bind failure came back
+    # reported as a seccomp problem.
+    _from = 0
+    with contextlib.suppress(Exception):
+        _from = os.path.getsize(cfgdir + "/server.log")
     try:
         lf = open(cfgdir + "/server.log", "ab", buffering=0)
         p = subprocess.Popen(_csqtt_argv(inst, binp), stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, close_fds=True)
@@ -7252,15 +7258,19 @@ def _csqtt_docker_start(inst):
     if p.poll() is not None:                       # died immediately → surface the log tail
         tail = ""
         with contextlib.suppress(Exception):
-            with open(cfgdir + "/server.log", "rb") as f: tail = f.read()[-240:].decode("utf-8", "replace").replace("\n", " ")
+            with open(cfgdir + "/server.log", "rb") as f:
+                f.seek(_from)
+                tail = f.read()[-240:].decode("utf-8", "replace").replace("\n", " ")
         # csqtt's dataplane is io_uring and has no fallback, and Docker's DEFAULT seccomp profile denies
         # io_uring_setup — so on a container node the server dies instantly with a message that says nothing
         # about the actual cause. Name it: the operator cannot guess this one, and the fix is a container
         # setting, not anything they can change in the panel.
-        if "io_uring" in tail:
+        # Match the CAUSE line, not the word: every csqtt dataplane failure is reported under the banner
+        # "start io_uring protocol dataplane", so a substring test called a bind clash a seccomp problem.
+        if "create io_uring" in tail:
             return ("csqtt needs the io_uring syscalls, which this container's seccomp profile denies. "
-                    "Run the node container with a profile that allows io_uring_setup/enter/register "
-                    "(security_opt: seccomp=…), then it starts on the next sync.")
+                    "Set SWG_NODE_SECCOMP=unconfined in the node's .env and re-run "
+                    "`docker compose up -d swg-node` — it starts on the next sync.")
         return ("csqtt exited rc=%s: %s" % (p.returncode, tail.strip()))[:180]
     return ""
 
@@ -7604,15 +7614,20 @@ def reconcile_csqtt(want, remove=None):
                     res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                 res["changed"] += 1
             else:
+                # NOTE the `have[iface] = inst` before each continue. Without it an error here DROPPED the
+                # instance from the node record — and _csqtt_save then persisted the loss, taking the
+                # node-owned owner password and the pw_seen flag with it. A transient failure (a server that
+                # cannot start yet) must never cost us the record of what we are managing; that is the same
+                # rule pw_seen exists to enforce one level down, at the password.
                 if _csqtt_params_changed(prev, inst):
                     err = _csqtt_reconfigure(inst)
                     if err:
-                        res["errors"].append(iface + ": " + err); continue
+                        res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                     res["changed"] += 1
                 if _pw_seen and _csqtt_desired_changed(iface, inst.get("passwords")):
                     err = _csqtt_reconcile_desired(iface, inst.get("passwords"))
                     if err:
-                        res["errors"].append(iface + ": " + err); continue
+                        res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                     res["changed"] += 1
             if bool(inst.get("stopped")) != bool(prev.get("stopped")):
                 if NODE_KIND == "docker":
