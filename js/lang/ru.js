@@ -3289,6 +3289,8 @@ export const STR = {
     "эта нода не сообщает о сервере csqtt на {v1} — обновите и попробуйте снова",
   "this server's tunnel subnet isn't an IPv4 /24: {v1}": "подсеть туннеля этого сервера не IPv4 /24: {v1}",
   "unknown csqtt fork: {v1}": "неизвестный форк csqtt: {v1}",
+  "this node has no endpoint address yet, so clients would have nothing to dial — set the node's endpoint host, or pass one with the adopt":
+    "у этой ноды ещё нет адреса подключения, клиентам будет некуда стучаться — задайте адрес ноды или передайте его при приёме",
   "Turn-proxy": "Turn-прокси",
   "RAW mode on": "RAW включён",
   "Extra flags": "Дополнительные флаги",
