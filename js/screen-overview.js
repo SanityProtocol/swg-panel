@@ -375,7 +375,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   }
 
   const nodeName = id => Store.nodeName(id), nodeColor = id => Store.nodeColor(id);
-  const TYPES = [["awg", "AmneziaWG"], ["wg", "WireGuard"], ["wdtt", "WDTT"], ["csqtt", "csqtt"], ["mesh", T("Mesh")]];   // the Mesh slice only fills when the Mesh badge is on
+  const TYPES = [["awg", "AmneziaWG"], ["wg", "WireGuard"], ["wdtt", "WDTT"], ["csqtt", "CSQTT"], ["mesh", T("Mesh")]];   // the Mesh slice only fills when the Mesh badge is on
   const typeColor = t => t === "mesh" ? FLOW_MESH : ifaceColor(t);
   const segNodes = kind => fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: (nodeTraf[n.id] || {})[kind] || 0, color: nodeColor(n.id) }));
   const segTypes = kind => TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeTraf[t] || {})[kind] || 0, color: typeColor(t) }));

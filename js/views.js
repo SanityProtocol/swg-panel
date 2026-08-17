@@ -50,7 +50,7 @@ export function ifaceOptGroups(names) {
   const csqtt = names.filter(isCsqttIface);
   const awg = names.filter(n => !isSelfContainedIface(n) && ifaceIsAwg(n));
   const wg = names.filter(n => !isSelfContainedIface(n) && !ifaceIsAwg(n));
-  const groups = [["*awg", "AmneziaWG", awg], ["*wg", "WireGuard", wg], ["*wdtt", "WDTT", wdtt], ["*csqtt", "csqtt", csqtt]].filter(g => g[2].length);
+  const groups = [["*awg", "AmneziaWG", awg], ["*wg", "WireGuard", wg], ["*wdtt", "WDTT", wdtt], ["*csqtt", "CSQTT", csqtt]].filter(g => g[2].length);
   if (groups.length < 2) return html`${names.map(i => html`<option value=${i}>${i}</option>`)}`;   // one kind → flat list (an "All <type>" would just duplicate "All interfaces")
   // "All <type>" shortcut per kind (only when that kind has >1 — else it equals the lone iface), then a group per kind.
   return html`${groups.map(([val, label, arr]) => arr.length > 1 ? html`<option value=${val}>${T("All {v1}", { v1: label })}</option>` : null)}${groups.map(([, label, arr]) => html`<optgroup label=${label}>${arr.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>`)}`;

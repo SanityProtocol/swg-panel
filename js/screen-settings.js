@@ -1737,7 +1737,7 @@ const sectionLabel = k => ({
               ${f.kind === "wdtt"
                 ? html`<span class="tg tg-wdtt">WDTT</span>`
                 : f.kind === "csqtt"
-                ? html`<span class="tg tg-csqtt">csqtt</span>`
+                ? html`<span class="tg tg-csqtt">CSQTT</span>`
                 : html`<${Fragment}><span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}<//>`}
             </span>
             ${(() => {
@@ -1893,8 +1893,8 @@ const sectionLabel = k => ({
               sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/><span class="pallbl">AmneziaWG</span></span>
             <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wdtt} title=WDTT onChange=${nv => setIfaceColors(c => ({ ...c, wdtt: nv }))}
               sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>WDTT</span>`}/><span class="pallbl">WDTT</span></span>
-            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.csqtt} title=csqtt onChange=${nv => setIfaceColors(c => ({ ...c, csqtt: nv }))}
-              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>csqtt</span>`}/><span class="pallbl">csqtt</span></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.csqtt} title=CSQTT onChange=${nv => setIfaceColors(c => ({ ...c, csqtt: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>CSQTT</span>`}/><span class="pallbl">CSQTT</span></span>
           </div>
           <div class="seclabel">${T("Peer health detection")}</div>
           <p class="hint" style="margin:0 0 10px">${Trich("Which failure conditions the panel flags on a peer. All on by default — untick one to stop it showing that status (the peer just reads online / ready instead). Both appear in {v1}.", { v1: html`<span class="b-faulty" style="padding:1px 6px;border-radius:6px">${T("val|orange")}</span>` })}</p>

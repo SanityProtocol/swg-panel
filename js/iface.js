@@ -913,7 +913,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         <button class=${"chip c-wg" + (proto === "wg" ? " on" : "")} onClick=${() => pickProto("wg")}>WireGuard</button>
         <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => pickProto("awg")}>AmneziaWG</button>
         ${ghost || !wdttOk ? null : html`<button class=${"chip c-wdtt" + (proto === "wdtt" ? " on" : "")} onClick=${() => pickProto("wdtt")}>WDTT</button>`}
-        ${ghost || !csqttOk ? null : html`<button class=${"chip c-csqtt" + (proto === "csqtt" ? " on" : "")} onClick=${() => pickProto("csqtt")}>csqtt</button>`}
+        ${ghost || !csqttOk ? null : html`<button class=${"chip c-csqtt" + (proto === "csqtt" ? " on" : "")} onClick=${() => pickProto("csqtt")}>CSQTT</button>`}
         ${ghost ? null : html`<button type="button" class=${"adoptsw" + (adoptMode ? " on" : "")} aria-pressed=${adoptMode}
           title=${adoptMode ? T("Taking over an interface already on the node") : T("Create a new interface — switch on to take over one already on the node")}
           onClick=${() => setAdoptMode(v => !v)}>${T("Adopt existing")}</button>`}
