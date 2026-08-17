@@ -5745,6 +5745,16 @@ WDTT_FORK_OWNER = {"amurcanov": "amurcanov/proxy-turn-vk-android", "ildarmaga": 
 def _wdtt_fork(inst):
     f = (inst.get("fork") or "amurcanov").strip()
     return f if f in WDTT_FORK_OWNER else "amurcanov"   # unknown → default (also blocks path injection via the fork string)
+
+def _wdtt_fork_unknown(inst):
+    """The requested fork name when THIS build doesn't know it, else "".
+
+    The panel is updated before its nodes are, so a node WILL be asked for a fork it has never heard of.
+    _wdtt_fork() sanitizes to amurcanov — right for a path or a label, wrong for an install: it would run
+    a different author's server and report it under the requested fork's name, which reads as success.
+    Install refuses instead, and says what to do about it."""
+    f = (inst.get("fork") or "").strip()
+    return "" if (not f or f in WDTT_FORK_OWNER) else f
 # An ADOPTED server keeps the name it already had — we don't get to choose it. The name is used as a unit suffix
 # and a directory component, so "safe as a path component" is the actual requirement. Keeping the narrow wdtt<N>
 # rule here refused a perfectly good adoption AFTER the seed had already stopped the foreign server.
@@ -6412,6 +6422,12 @@ def _wdtt_install(inst):
         return "refused: bad/unsafe WDTT instance parameters"
     if not _turn_arch_ok():
         return "no WDTT build for this architecture (" + os.uname().machine + ")"
+    _unk = _wdtt_fork_unknown(inst)
+    if _unk:
+        # Never silently substitute a different fork's server — see _wdtt_fork_unknown.
+        return ("this node doesn't know the WDTT fork '" + _unk + "' — its swg-noded is older than the panel. "
+                "Update the node (its page offers \"update node to …\"), then this server installs on the next sync. "
+                "Known here: " + ", ".join(sorted(WDTT_FORK_OWNER)) + ".")
     iface = inst["iface"]; cfgdir = _wdtt_dir(iface); svc = _wdtt_svc(iface)
     fork = _wdtt_fork(inst)
     binshared = _wdtt_bin_shared(fork); binp = cfgdir + "/server"
