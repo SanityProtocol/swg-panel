@@ -1636,18 +1636,31 @@ export function WdttManageSheet({ node, w: w0 }) {
   const rawCur = String(cfg.raw_port || w.raw_port || "");
   const [rawOn, setRawOn] = useState(!!rawCur);
   const rawHolder = rawOwnerOn(node, iface);          // instance already offering RAW on THIS listen address
-  const wgPort = String(cfg.wg_port || w.wg_port || "56001");
+  // The server-internal WireGuard port: the DTLS half forwards to 127.0.0.1:<this>, no client ever dials it
+  // and no link carries it. Editable because it is the one thing that can squat RAW's fixed port — which is
+  // exactly how 56003 was lost on the first fleet — and there was no way to move it without hand-editing state.
+  const wgCur = String(cfg.wg_port || w.wg_port || "56001");
+  const [wgIn, setWgIn] = useState(wgCur);
+  const wgPort = (wgIn.trim() && /^\d+$/.test(wgIn.trim())) ? wgIn.trim() : wgCur;
+  const wgDirty = wgPort !== wgCur;
+  const wgErr = !wgIn.trim() ? T("The internal WG port is required.")
+    : !/^\d+$/.test(wgIn.trim()) ? T("The internal WG port must be a number.")
+    : wgIn.trim() === port.trim() ? T("The DTLS port and the internal WG port must differ.")
+    : portErrMsg(node, wgIn, [wgCur, lport]);
   const newListen = (ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0") + ":" + (port.trim() || "56000");
   const endpointDirty = !!oldListen && newListen !== oldListen;
   const titleDirty = title.trim() !== (cfg.title || "").trim();
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
   const rawWant = !!(rawOn && rawCapable);
-  const rawDirty = rawWant !== !!rawCur;
-  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty;
+  // A server saved before the port was fixed is still listening on its old one — which the app never dials.
+  // Treat that as dirty so Save migrates it to RAW_PORT in one click.
+  const rawStale = !!rawCur && String(rawCur) !== String(RAW_PORT);
+  const rawDirty = (rawWant !== !!rawCur) || (rawWant && rawStale);
+  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty || wgDirty;
   // live DTLS-port check: must differ from this instance's own internal WG port, and not collide with any other
   // port on the node (its own DTLS/WG ports don't count). Blocks Save so a clash never becomes a node "FAILED TO APPLY".
   const wperr = (port.trim() && Number(port) === Number(wgPort)) ? T("The DTLS port and the internal WG port must differ.")
-    : portErrMsg(node, port, [lport, wgPort]);
+    : portErrMsg(node, port, [lport, wgCur]);
   // The only way RAW can be refused now: this very server is already sitting on the one port RAW needs.
   const rawErr = (!rawOn || !rawCapable) ? ""
     : (port.trim() === String(RAW_PORT) || String(wgPort) === String(RAW_PORT))
@@ -1672,12 +1685,13 @@ export function WdttManageSheet({ node, w: w0 }) {
       return;
     }
     if (rawErr) return setMsg({ k: "err", t: rawErr });
+    if (wgErr) return setMsg({ k: "err", t: wgErr });
     if (rawWant && rawHolder) {   // one RAW listener per ADDRESS — turning it on here takes it from that one
       pushModal(html`<${ConfirmSheet} title=${T("Move RAW-IP to this server?")} confirmLabel=${T("Move RAW here")} warn=${true}
         body=${Trich("*{holder}* offers RAW-IP on this address today. The app dials one fixed port for every server, so an address can only run one raw listener — turning it on here turns it off on *{holder}*. Its users keep their links and fall back to WireGuard mode. Servers on this node's other IPs are untouched.", { holder: rawHolder })} onConfirm=${doSave}/>`);
       return;
     }
-    if (paramsDirty || rawDirty) { doSave(); return; }   // extra ExecStart flags / RAW listener → the node rewrites the unit + restarts
+    if (paramsDirty || rawDirty || wgDirty) { doSave(); return; }   // extra ExecStart flags / RAW listener → the node rewrites the unit + restarts
     // title-only → a cosmetic panel-side label (no node restart, like a turn-proxy title): store + close immediately
     closeModal();
     pushOptTitle("w|" + node + "|" + iface, title.trim());   // reflect on the card instantly
@@ -1711,7 +1725,10 @@ export function WdttManageSheet({ node, w: w0 }) {
       ${/* RAW-IP lives INSIDE Server parameters — it is an advanced server capability, not a first-class control.
             When it's on the accordion says so in its header, because the setting is otherwise invisible until opened. */ null}
       <${Disclosure} title=${T("Server parameters")}
-        summary=${rawCur ? html`<span class="tg tg-raw">${T("RAW mode on")}</span><span class="faint" style="margin-left:6px">${rawCur}</span>` : html`<span class="faint">${T("tag|advanced")}</span>`}
+        summary=${rawCur
+          ? html`<span class="tg tg-raw">${T("RAW mode on")}</span><span class=${rawStale ? "tg tg-pending" : "faint"} style="margin-left:6px"
+              title=${rawStale ? T("Listening on {v1}, but the app only ever dials {v2} — save to move it.", { v1: rawCur, v2: RAW_PORT }) : ""}>${rawCur}${rawStale ? " → " + RAW_PORT : ""}</span>`
+          : html`<span class="faint">${T("tag|advanced")}</span>`}
         open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
         ${rawCapable ? html`<${Fragment}>
           <div class="lbl" style="margin:0 0 6px">${T("RAW-IP mode")}</div>
@@ -1720,9 +1737,13 @@ export function WdttManageSheet({ node, w: w0 }) {
           <label class="obfctl" style="margin-bottom:10px"><${Switch} on=${rawOn} onChange=${v => setRawOn(v)}/> <span class="obfctl-lbl">${T("Accept RAW connections")}</span> <span class="tg tg-raw" style="margin-left:8px">${T("port {v1}", { v1: RAW_PORT })}</span></label>
           ${rawErr ? html`<div class="hint err" style="margin-bottom:10px">${rawErr}</div>` : null}
           ${rawOn ? html`<div class="notice" style="margin-bottom:10px"><${Ic} i="info"/><span>${Trich("The user switches connection mode to *raw* in the app — nothing else. The port isn't theirs to set: the app dials *{v1}* for every server and no link or subscription can carry another one, which is why the panel fixes it. Their link keeps working for WireGuard mode.", { v1: RAW_PORT })}</span></div>` : null}
+          ${rawStale ? html`<div class="notice warn" style="margin-bottom:10px"><${Ic} i="warn"/><span>${Trich("This server still listens for RAW on *{v1}*, from before the port was fixed. The app only ever dials *{v2}*, so nobody can reach it — *Save* moves the listener.", { v1: rawCur, v2: RAW_PORT })}</span></div>` : null}
           ${(rawOn && rawHolder) ? html`<div class="notice warn" style="margin-bottom:10px"><${Ic} i="warn"/><span>${Trich("*{v1}* offers RAW on this address today. One address can only run one raw listener, so saving moves it here and turns it off there.", { v1: rawHolder })}</span></div>` : null}
-          <div class="lbl" style="margin:18px 0 6px">${T("Extra flags")}</div>
         <//>` : null}
+        <div class="lbl" style="margin:${rawCapable ? "18px" : "0"} 0 6px">${T("Internal WireGuard port")}</div>
+        <div class="field"><input class=${wgErr ? "bad" : ""} value=${wgIn} onInput=${e => setWgIn(e.target.value)} placeholder="56001" autocomplete="off"/>
+          ${wgErr ? html`<div class="hint err">${wgErr}</div>` : html`<div class="hint">${T("Where the DTLS half forwards, on loopback. No client dials it and no link carries it, so changing it only restarts the server — but it must not sit on the RAW port.")}</div>`}</div>
+        <div class="lbl" style="margin:18px 0 6px">${T("Extra flags")}</div>
         <p class="hint" style="margin:0 0 12px">${T("Extra command-line flags for this {v1} server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.", { v1: forkLabel })}</p>
         <${TurnServerFields} schema=${[]} vals=${{}} setV=${() => {}} extra=${params} setExtra=${setParams} template=${false} wdtt=${true} noHint=${true}/>
       <//>
