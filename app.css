@@ -774,7 +774,8 @@ a.ifcard.candidate.ignored:hover{opacity:.85;border-color:var(--brand)}
 /* The interface name and the address are their OWN columns of the outer grid, not a nested one: every row
    is a subgrid of .pg2, so a max-content track sizes to the widest row and the names/addresses line up down
    the list. A nested grid per row could only align within that row, which is what left them ragged. */
-.pg2-tags{display:flex;align-items:center;gap:6px;min-width:0}   /* left-aligned in a shared track → the groups start on one line too */
+.pg2-tags{display:flex;align-items:center;gap:6px;min-width:0;justify-content:flex-end}   /* shared track, packed
+  RIGHT: a one-badge row then sits against the interface name it belongs to, not stranded a chip-width away */
 .pg2-tags .tgt-front{max-width:none;flex:none}   /* the fork name identifies the server — never the thing that clips */
 .pg2-ifn{color:var(--muted);font-family:var(--mono);font-size:12px;white-space:nowrap;justify-self:start}
 .pg2-ip{color:var(--ink-2);font-family:var(--mono);font-size:12px;white-space:nowrap;justify-self:end;margin-right:8px}   /* clear of the row actions */
