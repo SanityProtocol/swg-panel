@@ -695,12 +695,15 @@ export function wdttArtInput(peer, t) {
   const rb = ((Store.stats[t.node] || {}).wdtt || []).find(w => w && w.iface === t.iface) || {};
   const nrec = (Store.nodes || []).find(n => n.id === t.node) || {};
   const user = (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null;
-  // Host a client dials: operator endpoint_host → the WDTT listen host IF it's a real IP (0.0.0.0/blank means
-  // bound-to-all, not dialable) → the node's reported public IP. Never 0.0.0.0 — that would be a dead link.
+  // Host a client dials: the server's OWN bind IF it's a real IP → the node's endpoint_host → the node's reported
+  // public IP. The bind wins because it is the operator's per-server choice and the only address that answers: on a
+  // node with several public IPs, a node-wide endpoint_host pointed clients at an address this server never bound.
+  // Same rule wg/awg already follow, where a per-interface endpoint_host beats the node's (apply_iface_meta).
+  // A wildcard (0.0.0.0/blank) means bound-to-all, so there the node's endpoint is right. Never 0.0.0.0 — a dead link.
   const _lh = ipOf(rb.listen || "");
   const _pub = (((Store.stats[t.node] || {}).node_ips) || []).find(ip => ip && !/^(0\.|10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(ip)) || "";
   return { password: peer.wdtt_password || "",
-    endpoint_host: (nrec.endpoint_host || "").trim() || (_lh && _lh !== "0.0.0.0" ? _lh : "") || _pub,
+    endpoint_host: (_lh && _lh !== "0.0.0.0" ? _lh : "") || (nrec.endpoint_host || "").trim() || _pub,
     dtls_port: String(rb.listen || "").split(":").pop() || "56000",
     wg_port: rb.wg_port || 56001, tun_port: "9000",
     raw_port: rb.raw_port || "",   // RAW-IP mode, when this server accepts it (the user enters it in the app)
@@ -714,7 +717,7 @@ export function csqttArtInput(peer, t) {
   const user = (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null;
   const _lh = ipOf(rb.listen || "");
   const _pub = (((Store.stats[t.node] || {}).node_ips) || []).find(ip => ip && !/^(0\.|10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(ip)) || "";
-  const host = (nrec.endpoint_host || "").trim() || (_lh && _lh !== "0.0.0.0" ? _lh : "") || _pub;   // never 0.0.0.0 — a dead link
+  const host = (_lh && _lh !== "0.0.0.0" ? _lh : "") || (nrec.endpoint_host || "").trim() || _pub;   // bind wins (see above); never 0.0.0.0 — a dead link
   const port = String(rb.listen || "").split(":").pop() || "46000";
   // Raw VK inputs — csqttArtifact strips/dedupes/caps them into the link's `hashes` (one place, shared with the sub page).
   return { host, port, password: peer.csqtt_password || "", vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) || [] };

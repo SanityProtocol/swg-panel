@@ -425,7 +425,7 @@ def read_data(state, token):
                     "wdtt": {"password": p.get("wdtt_password") or "",
                              "fork": inst.get("fork") or "amurcanov",   # which WDTT fork → resolve the right per-OS client + encoder
 
-                             "endpoint_host": (node_cfg.get("endpoint_host") or _bind_ip_of(inst.get("listen"))
+                             "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
                                                or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
                              "dtls_port": dtls, "wg_port": str(inst.get("wg_port") or 56001), "tun_port": "9000",
                              "raw_port": str(inst.get("raw_port") or ""),   # RAW-IP mode, when this server accepts it
@@ -445,7 +445,7 @@ def read_data(state, token):
                     "node_name": node_cfg.get("name") or t.get("node"),
                     "type": "csqtt",
                     "csqtt": {"password": p.get("csqtt_password") or "",
-                              "endpoint_host": (node_cfg.get("endpoint_host") or _bind_ip_of(inst.get("listen"))
+                              "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
                                                 or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
                               "port": port,
                               "vk_hash": (p.get("vk_hash") or "").strip()},

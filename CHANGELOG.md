@@ -3,7 +3,7 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-## [1.7.5-beta] — 2026-08-18
+## [1.7.6-beta] — 2026-08-18
 
 ### Added
 - **Every third-party licence in one place.** [THIRD-PARTY.md](THIRD-PARTY.md) now lists everything swgPanel
@@ -56,6 +56,11 @@ earlier releases predate the changelog — see the git history. · Русски�
   turning it on elsewhere on the same address moves it, and says so first.
 
 ### Fixed
+- **A server's own address now wins over the node's.** On a node with several public IPs, a WDTT or csqtt server
+  binds the one you picked for it — but both the panel and the subscription page published the node's address with
+  that server's port, a pair nothing listens on. The address the server actually binds now takes precedence, and
+  the node's endpoint applies only where a server is bound to every address. This is the rule interfaces already
+  followed, where a per-interface endpoint beats the node's.
 - **Two delete dialogs could not open at all.** Deleting a turn-proxy, or deleting an interface, failed before the
   confirmation window appeared: the "type the name to confirm" label the delete dialogs share had been left private
   to one screen when the interface was split into modules, so the code was present but unreachable from the other
