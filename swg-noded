@@ -5723,7 +5723,8 @@ WDTT_OWNER = "amurcanov/proxy-turn-vk-android"   # default fork's panel-mirror k
 # WDTT fork family: fork id -> panel-mirror owner key. The node pulls each fork's binary from the panel
 # mirror keyed on this owner + the "wdtt" tag; the panel maps that to our release (WDTT_BUILDS).
 WDTT_FORK_OWNER = {"amurcanov": "amurcanov/proxy-turn-vk-android", "ildarmaga": "ildarmaga/wdtt",
-                   "wdttplus": "Ivan4537/WDTT-Plus", "xxcipherx": "XXcipherX/proxy-turn-vk-android"}
+                   "wdttplus": "Ivan4537/WDTT-Plus", "xxcipherx": "XXcipherX/proxy-turn-vk-android",
+                   "qwdtt": "SpaceNeuroX/proxy-turn-vk-android"}   # qWDTT takes the default fork flags (-password/-max-passwords/-fixed-config)
 def _wdtt_fork(inst):
     f = (inst.get("fork") or "amurcanov").strip()
     return f if f in WDTT_FORK_OWNER else "amurcanov"   # unknown → default (also blocks path injection via the fork string)

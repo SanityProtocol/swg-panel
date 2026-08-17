@@ -496,6 +496,7 @@ _WDTT_OWNER_FORK = {                          # catalog owner -> fork id (for ow
     "ildarmaga/wdtt":                  "ildarmaga",
     "Ivan4537/WDTT-Plus":              "wdttplus",
     "XXcipherX/proxy-turn-vk-android": "xxcipherx",
+    "SpaceNeuroX/proxy-turn-vk-android": "qwdtt",
 }
 # legacy (owner, "wdtt") -> release tag, kept so an already-installed node pinning the "wdtt" pseudo-tag still resolves
 
@@ -4308,6 +4309,13 @@ TURN_SERVERS = {
     "xxcipherx":    {"label": "XXcipherX",  "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # XXcipherX fork: video-masquerade obfuscation + no-captcha; audio mode is amurcanov-compatible
                      "settings": [], "client_settings": _WDTT_CLIENT_CS},
+    "qwdtt":        {"label": "SpaceNeuroX", "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#A3E635", "light": "#4D7C0F"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+                     # qWDTT: the actively-developed WDTT fork (amurcanov's own is frozen). Same DTLS+WRAP-A wire and
+                     # the same passwords.json store, so every WDTT client and all our WDTT machinery apply unchanged;
+                     # what differs is server FEATURES (multi-device passwords, downlink pacing, an experimental raw-IP
+                     # listener — see docs/QWDTT-AND-TCP-TRANSPORT-PLAN.md §A.3). We build it ourselves (qwdtt/build.sh,
+                     # pinned commit) with the standard fork flags; its HTTP admin API is disabled in our build.
+                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
     # ── csqtt (amurcanov/csqtt) — SELF-CONTAINED like the WDTT family but a RAW-IP TUN datapath (no WireGuard),
     # io_uring, Rust. kind:"csqtt" makes the SPA branch (A6); HIDDEN until that lands so it stays out of the fork
     # picker meanwhile (the reply channel + endpoints work regardless of catalog visibility). We build+host the
@@ -4321,8 +4329,8 @@ TURN_SERVERS = {
 # Display order: cacggghp + WINGS-N pinned first; the rest by combined (server + client-app) GitHub stars,
 # descending — snapshot fetched 2026-07-16 (static, intentionally not live): MYSOREZ 17+443, samosvalishe
 # 141+314, kiper292 123+267, anton48 29+165, Moroka8 75+0.
-TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "csqtt", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
-                     "samosvalishe", "xxcipherx", "cacggghp", "kiper292"]   # operator order (csqtt sits under amurcanov — same author); hidden forks (cacggghp/kiper292) last
+TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "csqtt", "qwdtt", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
+                     "samosvalishe", "xxcipherx", "cacggghp", "kiper292"]   # operator order (csqtt sits under amurcanov — same author; qwdtt is the live WDTT line); hidden forks (cacggghp/kiper292) last
 # Forks kept in the catalog (so a deployed instance still resolves its label/colour) but HIDDEN from the operator
 # UI — the settings toggle list, the install/enable picker, the interface Setup-proxy dropdown, and the fork
 # colour pickers all skip these. Purely cosmetic gating; nothing about a running proxy changes.
@@ -4333,7 +4341,7 @@ TURN_HIDDEN_FORKS = {"cacggghp", "kiper292"}
 _CLIENT_NATIVE_FORK = {"wingsv": "WINGS-N", "vkturnproxy": "anton48", "wgturn": "kiper292",
                        "freeturn": "samosvalishe", "mysorez": "MYSOREZ", "sidecar": None,
                        # WDTT-family clients all share _WDTT_CLIENT_CS (set on every WDTT fork) → any WDTT fork resolves it
-                       "wdttapp": "amurcanov", "qwdtt": "amurcanov", "qwdttleg": "amurcanov", "pwdtt": "ildarmaga", "pwdttilg": "ildarmaga", "csqttapp": "csqtt",
+                       "wdttapp": "amurcanov", "qwdtt": "qwdtt", "qwdttleg": "qwdtt", "pwdtt": "ildarmaga", "pwdttilg": "ildarmaga", "csqttapp": "csqtt",
                        "wdttplus": "wdttplus", "xxcipher": "xxcipherx"}
 # Per-(server fork, client id) compatibility class for the app picker, from the wire-compat matrix (docs/compat).
 #   native        = the fork's own app/CLI in its intended mode (obfuscated, or plain for a plain fork).
@@ -4357,6 +4365,7 @@ _TURN_CLIENT_COMPAT = {
     "ildarmaga":    {"pwdttilg": "native", "pwdtt": "friendly", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "vkturnproxy": "friendly"},
     "wdttplus":     {"wdttplus": "native", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
     "xxcipherx":    {"xxcipher": "native", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
+    "qwdtt":        {"qwdtt": "native",    "qwdttleg": "friendly", "wdttapp": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
     # csqtt — its OWN Android app is the ONLY client (raw-TUN RTP-AEAD protocol; NOT wire-compatible with the WDTT
     # apps or the turn-proxy sidecar — verified: the app registers/parses only csqtt://). No iOS/desktop client
     # published (amurcanov ships APKs only); those OSes correctly show "no client". Always obfuscated (masks as VK
@@ -6035,7 +6044,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "turn_enabled": True,
     # which turn-proxy forks are offered in the "install a fork" dropdown (by fork id; the fork set itself lives
     # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
-    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8", "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt"],   # + csqtt (raw-TUN self-contained kind)
+    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8", "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "qwdtt"],   # + csqtt (raw-TUN self-contained kind) + qwdtt (the live WDTT fork)
     "turn_fork_colors": {},   # per-fork colour overrides {fork_id: "#rrggbb"} (else the SPA's TURN_FORKS default)
     "turn_client_settings": {},   # SETTINGS SPLIT: per-fork client (app) setting VALUES {fork: {key: value}} fed into config/QR/link generation (schema = catalog client_settings)
     "turn_client_default": {},    # per (fork, OS) END-USER default app {fork: {os: client_id}} — which app the sub page hands out
