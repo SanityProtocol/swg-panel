@@ -515,6 +515,16 @@ def _wdtt_current_version(fork):
 CSQTT_BUILDS = [("2.0.1", "csqtt-2.0.1")]
 def _csqtt_current_version():
     return CSQTT_BUILDS[0][0] if CSQTT_BUILDS else ""
+CSQTT_MIRROR_OWNER = "amurcanov/csqtt"        # the mirror KEY the node asks under — NOT where the binary lives
+def _csqtt_tag_for(ver):                      # our release tag for an author version ("" / "csqtt" -> current build)
+    if not CSQTT_BUILDS:
+        return ""
+    if not ver or ver == "csqtt":
+        return CSQTT_BUILDS[0][1]
+    for v, tag in CSQTT_BUILDS:
+        if v == ver:
+            return tag
+    return ""
 def _wdtt_tag_for(fork, ver):                 # our release tag for a specific author version ("" / "wdtt" -> current)
     vs = _wdtt_versions(fork)
     if not vs:
@@ -526,10 +536,19 @@ def _wdtt_tag_for(fork, ver):                 # our release tag for a specific a
             return tag
     return ""
 
-def _turn_asset_url(owner, tag, arch):    # the immutable per-tag release asset (OUR repo for kind:wdtt, else the fork's)
+def _turn_asset_url(owner, tag, arch):    # the immutable per-tag release asset (OUR repo for kinds we BUILD, else the fork's)
     fork = _WDTT_OWNER_FORK.get(owner)
     if fork:
         rtag = _wdtt_tag_for(fork, tag)   # `tag` is an author version now (or "wdtt" -> current build)
+        if rtag:
+            return "https://github.com/" + WDTT_BUILD_REPO + "/releases/download/" + rtag + "/server-linux-" + arch
+    # csqtt is OURS to build too, and its owner key was missing here — so every mirror request fell through to the
+    # branch below and asked UPSTREAM for a binary upstream does not publish, at a tag it spells differently:
+    #   https://github.com/amurcanov/csqtt/releases/download/2.0.1/server-linux-amd64   → 404, on any network.
+    # The node's only source for csqtt is this mirror, so that 404 was the whole reason a csqtt server would never
+    # install — reported to the operator as "panel mirror has no build yet", which read like we had not published it.
+    if owner == CSQTT_MIRROR_OWNER:
+        rtag = _csqtt_tag_for(tag)
         if rtag:
             return "https://github.com/" + WDTT_BUILD_REPO + "/releases/download/" + rtag + "/server-linux-" + arch
     return "https://github.com/" + owner + "/releases/download/" + tag + "/server-linux-" + arch

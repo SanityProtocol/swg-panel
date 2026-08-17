@@ -6169,6 +6169,30 @@ def _wdtt_panel_fetch(fork, dest, want_sha, tag="wdtt"):
     the current build, back-compat). Returns True on a verified write."""
     return _turn_panel_fetch(WDTT_FORK_OWNER.get(fork, WDTT_OWNER), tag or "wdtt", _turn_arch(), dest, want_sha)
 
+def _wdtt_fetch_bin(fork, inst, binshared, ver=None):
+    """Put fork `fork`'s WDTT binary at `binshared`. '' on success, else WHY not.
+
+    Same two-hop shape csqtt now has, and for the same reason: _wdtt_panel_fetch alone means the panel is a single
+    point of failure for every node's binary — if it cannot resolve or reach the asset, no node can install or
+    version-bump a WDTT server, and the message blamed a missing build. The node reaches the panel where GitHub is
+    blocked; the node reaches GitHub where the panel cannot. Trying both covers both, and neither is trusted more
+    than the pinned sha256.
+    Our release tags are `wdtt-<fork>-<author version>` — deterministic, so no lookup table is needed here — but a
+    version IS required: see _swg_release_get on why there is no 'latest' fallback."""
+    if not _turn_arch_ok():
+        return ("no WDTT build for this architecture (" + os.uname().machine + ") — we publish amd64/arm64 only")
+    arch = _turn_arch()
+    v = (ver if ver is not None else (inst.get("ver") or "")).strip()
+    want = (inst.get("sha256") or "").strip()
+    if _wdtt_panel_fetch(fork, binshared, want, tag=v or "wdtt") and os.path.exists(binshared):
+        return ""
+    okd, why = _swg_release_get(("wdtt-" + fork + "-" + v) if v else "", arch, binshared, want, "WDTT")
+    if okd:
+        return ""
+    return ("couldn't fetch the " + fork + " WDTT binary for " + arch + (" " + v if v else "")
+            + " — the panel's mirror had none, and " + why
+            + ". If GitHub is blocked here, set SWG_TURN_MIRROR on the panel to a proxy you trust.")
+
 def _wdtt_ver_path(fork):   # the installed build version, alongside the shared per-fork binary
     return os.path.dirname(_wdtt_bin_shared(fork)) + "/version.txt"
 def _wdtt_installed_ver(fork):
@@ -6194,8 +6218,10 @@ def _wdtt_update_binary(inst, ver, ifaces):
     inode), stamp the version file, then restart every instance of the fork so they exec the new inode. '' on
     success else an error string."""
     fork = _wdtt_fork(inst); binshared = _wdtt_bin_shared(fork)
-    if not _wdtt_panel_fetch(fork, binshared, (inst.get("sha256") or "").strip(), tag=ver) or not os.path.exists(binshared):
-        return "WDTT binary unavailable for " + fork + " " + ver + " (panel mirror)"
+    _e = _wdtt_fetch_bin(fork, inst, binshared, ver=ver)
+    if _e or not os.path.exists(binshared):
+        return _e or ("WDTT binary missing after a reportedly successful fetch — check free space on "
+                      + os.path.dirname(binshared))
     _wdtt_write_ver(fork, ver)
     if NODE_KIND == "docker":                                  # container: restart each of the fork's supervised procs so they exec the new binary
         with contextlib.suppress(Exception): os.chmod(binshared, 0o755)
@@ -6346,10 +6372,11 @@ def _wdtt_adopt_seed(inst):
         return "refused: unknown WDTT fork '" + _want_fork + "' — the foreign server was left running"
     _fk = _wdtt_fork(inst); _bs = _wdtt_bin_shared(_fk)
     if not os.path.exists(_bs):
+        _e = ""
         with contextlib.suppress(Exception):
-            _wdtt_panel_fetch(_fk, _bs, (inst.get("sha256") or "").strip(), tag=(inst.get("ver") or "").strip() or "wdtt")
+            _e = _wdtt_fetch_bin(_fk, inst, _bs)
         if not os.path.exists(_bs):
-            return "refused: no " + _fk + " build available for this node yet — the foreign server was left running"
+            return "refused: " + (_e or ("no " + _fk + " build available for this node yet")) + " — the foreign server was left running"
     dst = _wdtt_dir(iface)
     # 1) copy-first: identity + password store + DTLS material into OUR config-dir (the foreign one keeps serving)
     try:
@@ -6497,9 +6524,11 @@ def _wdtt_install(inst):
     binshared = _wdtt_bin_shared(fork); binp = cfgdir + "/server"
     _want_ver = (inst.get("ver") or "").strip()
     if not os.path.exists(binshared):
-        _wdtt_panel_fetch(fork, binshared, (inst.get("sha256") or "").strip(), tag=_want_ver or "wdtt")
+        _e = _wdtt_fetch_bin(fork, inst, binshared, ver=_want_ver)
+        if _e:
+            return _e
         if not os.path.exists(binshared):
-            return "WDTT binary unavailable (panel mirror has no build yet)"
+            return "WDTT binary missing after a reportedly successful fetch — check free space on " + os.path.dirname(binshared)
         _wdtt_write_ver(fork, _want_ver)                       # stamp the build version for the version board + rollback
     # Config-dir (symlink + env + desired.json + optional vault-restore key) — native os writes, both run-models.
     # A vault restore lays down the ORIGINAL server keypair BEFORE first start so the instance comes back with its
@@ -6547,9 +6576,11 @@ def _wdtt_reconfigure(inst):
     fork = _wdtt_fork(inst)
     binshared = _wdtt_bin_shared(fork); binp = cfgdir + "/server"
     if not os.path.exists(binshared):                       # fork swap → fetch the new fork's binary from the mirror
-        _wdtt_panel_fetch(fork, binshared, (inst.get("sha256") or "").strip())
+        _e = _wdtt_fetch_bin(fork, inst, binshared)
+        if _e:
+            return _e
         if not os.path.exists(binshared):
-            return "WDTT binary unavailable for fork " + fork + " (panel mirror has no build yet)"
+            return "WDTT binary missing after a reportedly successful fetch — check free space on " + os.path.dirname(binshared)
     # Rewrite the config-dir (symlink/env/desired) natively — wg-keys.dat is untouched (identity → pubkey stable), and
     # desired.json is rewritten with the SAME current password set (idempotent; matches the docker path). Partial write
     # raises before the restart, so a failed reconfigure never leaves a mismatched unit running.
@@ -7187,7 +7218,40 @@ def _csqtt_unit_text(iface, binp, cfgdir):
             "SystemCallFilter=@system-service @io-uring\nSystemCallErrorNumber=EPERM\n\n"
             "[Install]\nWantedBy=multi-user.target\n")
 
-CSQTT_BUILD_REPO = os.environ.get("SWG_CSQTT_REPO") or "SanityProtocol/swg-panel"   # where our patched csqtt builds are published
+SWG_BUILD_REPO = os.environ.get("SWG_BUILD_REPO") or "SanityProtocol/swg-panel"   # where OUR patched server builds are published
+
+def _swg_release_get(tag, arch, dest, want, what):
+    """Download one of OUR published server binaries → dest. (True, "") on success, else (False, why).
+
+    A TAG IS REQUIRED and there is deliberately no 'latest' path. One repository publishes the binaries for six
+    different servers, so releases/latest is whichever of them was published most recently — right now that is
+    csqtt-2.0.1. A versionless fetch would cheerfully install one server's binary as another's and try to run it,
+    which is a far worse outcome than not downloading at all. No pinned version → no direct download.
+    """
+    if not tag:
+        return (False, "the panel sent no version to pin, and this repo publishes several servers — "
+                       "there is no safe 'latest' to fall back to")
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+    except OSError as e:
+        return (False, "mkdir: " + str(e))
+    err = ""
+    for url in _turn_dl_urls(SWG_BUILD_REPO, arch, tag):
+        r = run(["curl", "-4", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
+                 "--retry-delay", "3", "--retry-all-errors", url, "-o", dest], timeout=320)
+        if r.returncode == 0:
+            if not _turn_sha_ok(dest, want):          # never chmod+exec bytes that don't match the panel's hash
+                with contextlib.suppress(OSError): os.remove(dest)
+                return (False, "checksum mismatch — refusing to run an unverified " + what + " binary")
+            with contextlib.suppress(OSError): os.chmod(dest, 0o755)
+            # Say so. A fallback that silently succeeds papers over a broken mirror: the panel could be resolving
+            # the wrong URL for months and every node would quietly paper over it by going direct — which is
+            # exactly how the csqtt owner-mapping bug stayed invisible. Working is not the same as healthy.
+            print("fetch: %s %s came from GitHub direct — the panel's mirror did not serve it" % (what, tag),
+                  flush=True)
+            return (True, "")
+        err = (r.stderr or "").strip().replace("\n", " ")[:120]
+    return (False, "GitHub was unreachable from this node" + ((": " + err) if err else ""))
 
 def _csqtt_fetch_bin(inst, binshared):
     """Put the csqtt server binary at `binshared`. '' on success, else WHY not — naming the actual cause.
@@ -7208,24 +7272,11 @@ def _csqtt_fetch_bin(inst, binshared):
     want = (inst.get("sha256") or "").strip()
     if _csqtt_panel_fetch(binshared, want, ver or "csqtt") and os.path.exists(binshared):
         return ""
-    try:
-        os.makedirs(os.path.dirname(binshared), exist_ok=True)
-    except OSError as e:
-        return "mkdir: " + str(e)
-    err = ""
-    for url in _turn_dl_urls(CSQTT_BUILD_REPO, arch, ("csqtt-" + ver) if ver else ""):
-        r = run(["curl", "-4", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
-                 "--retry-delay", "3", "--retry-all-errors", url, "-o", binshared], timeout=320)
-        if r.returncode == 0:
-            if not _turn_sha_ok(binshared, want):     # never chmod+exec bytes that don't match the panel's hash
-                with contextlib.suppress(OSError): os.remove(binshared)
-                return "checksum mismatch — refusing to run an unverified csqtt binary (want " + want[:12] + "…)"
-            with contextlib.suppress(OSError): os.chmod(binshared, 0o755)
-            return ""
-        err = (r.stderr or "").strip().replace("\n", " ")[:120]
+    okd, why = _swg_release_get(("csqtt-" + ver) if ver else "", arch, binshared, want, "csqtt")
+    if okd:
+        return ""
     return ("couldn't fetch the csqtt binary for " + arch + (" " + ver if ver else "")
-            + " — the panel's mirror had none AND GitHub was unreachable from this node"
-            + ((": " + err) if err else "")
+            + " — the panel's mirror had none, and " + why
             + ". If GitHub is blocked here, set SWG_TURN_MIRROR on the panel to a proxy you trust.")
 
 def _csqtt_panel_fetch(dest, want_sha, tag="csqtt"):
