@@ -312,12 +312,12 @@ swgPanel использует несколько прекрасных проек
 **WDTT** — самодостаточный VPN-сервер, владеющий своими ключами, который панель запускает как интерфейс, и приложения, которыми подключаются люди:
 
 - [amurcanov](https://github.com/amurcanov/csqtt) — оригинал и csqtt, его преемник
+- [luminescq](https://github.com/luminescq/PWDTT)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
 - [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)
 - [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
-- [luminescq](https://github.com/luminescq/PWDTT)
 
 **Списки маршрутизации / гео-данные** — доменные и IP-списки, на которых работает умная маршрутизация:
 

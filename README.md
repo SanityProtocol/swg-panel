@@ -303,12 +303,12 @@ swgPanel integrates several excellent open-source projects — huge thanks to th
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
 
 - [amurcanov](https://github.com/amurcanov/csqtt) — the original, and csqtt, its successor
+- [luminescq](https://github.com/luminescq/PWDTT)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
 - [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)
 - [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
-- [luminescq](https://github.com/luminescq/PWDTT)
 
 **Routing / geo-data lists** — the domain & IP lists behind smart routing:
 
