@@ -20,7 +20,7 @@ import {
   suggestIface, suggestSubnet, suggestPort, portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr,
   cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg,
 } from "./model.js";
-import { turnFork, turnColor, turnForkList, forkSupportsAwg } from "./turn-catalog.js";
+import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkPickLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
   Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal,
@@ -316,7 +316,7 @@ export function AdoptDormantWdttSheet({ node, d, nrec }) {
       ? Trich("Ports recovered from its password store — its clients already dial these. The *subnet* is never written to disk, so set that below.")
       : T("Not running, so its ports and subnet can't be read from the server — set them here.")}</div>
     <div class="row2">
-      <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${f.label}</option>`)}</select><div class="hint">${d.fork ? html`Detected <b>${d.fork}</b> from its files` : T("Pick the fork this install is")}</div></div>
+      <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select><div class="hint">${d.fork ? html`Detected <b>${d.fork}</b> from its files` : T("Pick the fork this install is")}</div></div>
       <div class="field"><label>${T("Interface name")}</label><input class=${nameErr ? "bad" : ""} value=${iface} onInput=${e => setIface(e.target.value)} placeholder="wdtt1"/>${nameErr ? html`<div class="hint err">${nameErr}</div>` : null}</div>
     </div>
     <div class="row2">
@@ -439,7 +439,7 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
       </div></div></div>` : null}
     <div class="row2">
       ${type === "wdtt" ? html`<div class="field"><label>${T("Server fork")}</label>
-        <select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${f.label}</option>`)}</select>
+        <select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select>
         <div class="hint">${w.fork ? Trich("Detected *{v1}*{v2} — change only if wrong", { v1: w.fork, v2: w.store ? " (" + w.store + ")" : "" }) : T("Pick the fork this server runs")}</div>
       </div>` : null}
       <div class="field"><label>${T("Endpoint host / IP")}</label><${NodeIpPick} ips=${nrec.ips || []} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname"/><div class="hint">${T("What clients dial")}</div></div>
@@ -950,7 +950,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       </div>` : null}
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — after creating you must publish this port in the node's `docker-compose.yml` ({ports}) and `up -d`, or clients can't reach it. (A host-networking node needs none of this.)", { ports: 'ports: "' + (port || "PORT") + ":" + (port || "PORT") + '/udp"' })}</span></div>` : null}
       ${isWdtt ? html`<div class="row2">
-        <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${_wdttForks.map(f => html`<option value=${f.id}>${f.label}</option>`)}</select><div class="hint">${T("Which WDTT server implements this instance")}</div></div>
+        <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${_wdttForks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select><div class="hint">${T("Which WDTT server implements this instance")}</div></div>
         <div class="field"><label>${T("Endpoint host / IP")}</label>
           <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
           <div class="hint">${T("What clients dial")}</div></div>

@@ -14,7 +14,7 @@ import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
          turnProxiesFor, ifaceIsAwg } from "./model.js";
-import { turnFork, turnLabel, turnColor, turnForkList } from "./turn-catalog.js";
+import { turnFork, turnLabel, turnColor, turnForkList, forkProduct } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
   Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, openConfirm, ConfirmSheet,
@@ -334,7 +334,7 @@ export function NodeDetail({ node: rawName }) {
             <div class="ifcard-top"><span class="iftype wdtt">WDTT</span><span class="ifname">${ifn}</span><span class="grow"></span>
               <${ForkTag} fork=${fork}/><${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("The node takes it over on its next sync")}/></div>
             <div class="ifcard-rows">
-              <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${fork}${dtls ? ":" + dtls : ""}</span></div>
+              <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${forkProduct(fork)}${dtls ? ":" + dtls : ""}</span></div>
               <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${wc.wg_addr || "—"}</span></div>
               <div class="ifrow"><span class="l faint">${T("taking it over…")}</span></div>
             </div></div>`; };
@@ -454,7 +454,7 @@ export function NodeDetail({ node: rawName }) {
                 : active ? null
                 : html`<span class="tg tg-busy"><${Ic} i="clock"/>${T("tag|starting")}</span>`}</div>
             <div class="ifcard-rows">
-              <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${fork}${dtls ? ":" + dtls : ""}</span></div>
+              <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${forkProduct(fork)}${dtls ? ":" + dtls : ""}</span></div>
               <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${w.wg_addr || "—"}</span></div>
               <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${wcfg.egress_mode === "forward" && wcfg.egress_node
                 ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(wcfg.egress_node)} title=${T("Exits via {v1}", { v1: Store.nodeName(wcfg.egress_node) + (wcfg.egress_ip ? " (" + wcfg.egress_ip + ")" : "") })}><${Ic} i="server"/>→ ${Store.nodeName(wcfg.egress_node)}</span>`

@@ -56,7 +56,7 @@ export function turnOwner(svc) {
 export function turnForkList() {
   const cat = Store.turnCatalog;
   if (cat && Array.isArray(cat.servers) && cat.servers.length)
-    return cat.servers.map(s => ({ id: s.id, label: s.label || s.id, owner: s.owner || "", kind: s.kind || "turn",
+    return cat.servers.map(s => ({ id: s.id, label: s.label || s.id, product: s.product || "", owner: s.owner || "", kind: s.kind || "turn",
       wrap: s.wrap || "", keyflag: s.keyflag, color: (s.color || {}).dark, colorL: (s.color || {}).light, hidden: !!s.hidden,
       protocols: (Array.isArray(s.protocols) && s.protocols.length) ? s.protocols : ["wg", "awg"],
       settings: Array.isArray(s.settings) ? s.settings : [], client_settings: Array.isArray(s.client_settings) ? s.client_settings : [], clients: s.clients || [], compat: s.compat || {}, client_schemas: s.client_schemas || {}, cli_authors: Array.isArray(s.cli_authors) ? s.cli_authors : ["samosvalishe"] }));
@@ -70,6 +70,19 @@ export function turnForksVisible() { return turnForkList().filter(f => !f.hidden
 // name isn't its id — Ivan4537/wdttplus, XXcipherX/xxcipherx, SpaceNeuroX/qwdtt, amurcanov/csqtt — and the id leaking
 // into a label position is a recurring drift (see ForkTag). One lookup, so there is a single place to be right.
 export function forkLabel(fork) { return (turnForkList().find(f => f.id === fork) || {}).label || fork || ""; }
+// A fork has TWO names and they are not interchangeable: `label` is the AUTHOR (SpaceNeuroX) and `product` is the
+// server software they ship (qWDTT). Author identifies who maintains it — the fork tag, the settings row, the
+// version board; product identifies what is running — the Listen row of an interface card. The picker needs both,
+// because "SpaceNeuroX" alone doesn't say it's a qWDTT server and "qWDTT" alone doesn't say whose.
+export function forkProduct(fork) {
+  const f = turnForkList().find(x => x.id === fork) || {};
+  return f.product || (f.kind === "wdtt" ? "WDTT" : f.label) || fork || "";
+}
+export function forkPickLabel(fork) {   // fork dropdowns: "author · product" (author alone where there is no product)
+  const f = turnForkList().find(x => x.id === fork) || {};
+  const lbl = f.label || fork || "";
+  return f.product ? lbl + " · " + f.product : lbl;
+}
 export function forkSupportsAwg(fork) {
   const f = turnForkList().find(x => x.id === fork);
   return f ? (f.protocols || ["wg", "awg"]).includes("awg") : true;   // unknown fork → assume awg-capable (permissive, matches prior default)
