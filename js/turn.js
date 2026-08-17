@@ -1675,11 +1675,11 @@ export function WdttManageSheet({ node, w: w0 }) {
         open=${rawOpen} onToggle=${() => setRawOpen(o => !o)}>
         <p class="hint" style="margin:0 0 10px">${T("Carries a peer's traffic without WireGuard — roughly 6× the throughput through the same VK relay. The server keeps its normal WireGuard listener, so peers choose per device.")}</p>
         <div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${Trich("RAW drops WireGuard's handshake: *no forward secrecy and no replay protection*. Anyone who later learns a peer's password can read traffic they recorded earlier. Turn it on for people who need the speed and accept that.")}</span></div>
-        <label class="obfctl" style="margin-bottom:10px"><${Switch} on=${rawOn} onChange=${v => { setRawOn(v); if (v && !rawPort.trim()) setRawPort(String((Number(port) || 56000) + 20)); }}/> <span class="obfctl-lbl">${T("Accept RAW connections")}</span></label>
+        <label class="obfctl" style="margin-bottom:10px"><${Switch} on=${rawOn} onChange=${v => { setRawOn(v); if (v && !rawPort.trim()) setRawPort(portErrMsg(node, "56003", [rawCur, lport, wgPort]) ? String((Number(port) || 56000) + 20) : "56003"); }}/> <span class="obfctl-lbl">${T("Accept RAW connections")}</span></label>
         ${rawOn ? html`<${Fragment}>
           <div class="field"><label>${T("RAW port")}</label><input class=${rawErr ? "bad" : ""} value=${rawPort} onInput=${e => setRawPort(e.target.value)} placeholder="56020" autocomplete="off"/>
-            ${rawErr ? html`<div class="hint err">${rawErr}</div>` : html`<div class="hint">${T("UDP, separate from the listen and internal WG ports. The node opens it and routes the RAW subnet.")}</div>`}</div>
-          <div class="notice" style="margin-top:10px"><${Ic} i="info"/><span>${Trich("The qWDTT app can't read this from a link yet, so each user sets it once: *Settings → server raw port = {v1}*, then switch the connection mode to *raw*. Their existing link keeps working for WireGuard mode.", { v1: rawPort.trim() || "—" })}</span></div>
+            ${rawErr ? html`<div class="hint err">${rawErr}</div>` : html`<div class="hint">${T("UDP, separate from the listen and internal WG ports. The app stores ONE raw port for all servers (its default is 56003), so keeping the same number fleet-wide saves your users a step.")}</div>`}</div>
+          <div class="notice" style="margin-top:10px"><${Ic} i="info"/><span>${Trich("RAW lives in the app's own settings, never in a profile — no link or subscription can carry it. Each user sets it once: *server raw port = {v1}*, then connection mode *raw*. Their link keeps working for WireGuard mode.", { v1: rawPort.trim() || "—" })}</span></div>
         <//>` : null}
       <//>` : null}
       <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>

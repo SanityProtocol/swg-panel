@@ -1196,6 +1196,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 /* RAW-IP mode is on: amber, the same register as every other "this needs your attention" tag — it trades
    WireGuard's handshake for throughput, so it never reads as a neutral capability chip. */
 .tg-raw{background:color-mix(in srgb,#F0913C 15%,transparent);color:#F0913C}
+/* The RAW note under a peer's config — a FOOTNOTE, below the QR row, never inside it. It sat in
+   .deploy-body (a flex row) with white-space:nowrap, which made it an unshrinkable sibling and collapsed
+   the QR column to 0px: the note appeared to have replaced the config. It wraps, and it stays out of that row. */
+.raw-hint{max-width:100%;min-width:0;font-size:11px;margin-top:6px;text-align:center;opacity:.85}
 /* the general turn-proxy accent (matches the turn-section panel icon .panel-ic.t-turn) */
 .tf-gen{--tfc:#7C5CFF}
 /* collapsed "turn ×N" badge (>3 proxies forward to one iface): general colour + a highlighted, ringed area.
@@ -2739,7 +2743,9 @@ table.peergrid{border-collapse:separate;border-spacing:0}
    the title cell holds a lifecycle icon next to the text, and without it the icon wrapped onto its own line
    above the title (the text truncated fine — the icon was what broke the row's alignment). */
 .peergrid td.c-name{white-space:nowrap}
-.peergrid td.c-name>b,.peergrid td.c-name>span{display:inline-block;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+/* Truncate against the CELL, not a guess. A flat 180px was wider than the title column itself (13% of the
+   grid ≈ 142px at 1500px), so a long title ran past its cell and printed over the IF badge next to it. */
+.peergrid td.c-name>b,.peergrid td.c-name>span{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
 .peergrid td.c-name>.lc-ic{vertical-align:bottom}   /* share the baseline with the truncated text, not the line above */
 .peergrid td.usercell .namecell>span{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* fleet-wide column: server name (left) + interface tag (right) on one line */

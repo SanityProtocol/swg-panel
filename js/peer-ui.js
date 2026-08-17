@@ -787,7 +787,6 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
         : html`<div class="wdtt-link mono">${uri}</div>`}
       ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>` : null}
-      ${w.raw_port ? html`<div class="hint" style="margin-top:6px">${T("RAW mode is on for this server (port {v1}). The link can't carry it — the user sets that port in the app and switches the mode to RAW.", { v1: w.raw_port })}</div>` : null}
       ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">${T("row|kind")}</span><span class="vv">${T("WDTT · keyless (server-minted key)")}</span></div>
         <div class="row"><span class="k">${T("row|endpoint")}</span><span class="vv">${w.endpoint_host || "—"}:${w.dtls_port}</span></div>
@@ -795,6 +794,7 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
         <div class="row"><span class="k">${T("row|status")}</span><span class="vv"><${Badge} s=${lt.status}/></span></div>
       </div>`}
     </div>
+    ${w.raw_port ? html`<div class="hint raw-hint" title=${T("The app keeps the RAW port and the connection mode in its own settings, not in a profile — so they are set once, by hand, and apply to every server.")}>${T("RAW available · port {v1} · an app setting, not part of the link", { v1: w.raw_port })}</div>` : null}
     ${uri ? html`<div class="acts">
       <button class="btn btn-mini" onClick=${() => copy(uri, T("WDTT link copied"))}><${Ic} i="copy"/> ${T("Copy")}</button>
       ${clientIds.length > 1 ? html`<button class="btn btn-mini" onClick=${() => pushModal(html`<${WdttConfigSheet} peer=${peer} t=${t}/>`)}><${Ic} i="dots"/> ${T("Alternatives")}</button>` : null}
