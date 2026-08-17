@@ -1652,10 +1652,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   const titleDirty = title.trim() !== (cfg.title || "").trim();
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
   const rawWant = !!(rawOn && rawCapable);
-  // A server saved before the port was fixed is still listening on its old one — which the app never dials.
-  // Treat that as dirty so Save migrates it to RAW_PORT in one click.
-  const rawStale = !!rawCur && String(rawCur) !== String(RAW_PORT);
-  const rawDirty = (rawWant !== !!rawCur) || (rawWant && rawStale);
+  const rawDirty = rawWant !== !!rawCur;
   const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty || wgDirty;
   // live DTLS-port check: must differ from this instance's own internal WG port, and not collide with any other
   // port on the node (its own DTLS/WG ports don't count). Blocks Save so a clash never becomes a node "FAILED TO APPLY".
@@ -1725,10 +1722,8 @@ export function WdttManageSheet({ node, w: w0 }) {
       ${/* RAW-IP lives INSIDE Server parameters — it is an advanced server capability, not a first-class control.
             When it's on the accordion says so in its header, because the setting is otherwise invisible until opened. */ null}
       <${Disclosure} title=${T("Server parameters")}
-        summary=${rawCur
-          ? html`<span class="tg tg-raw">${T("RAW mode on")}</span><span class=${rawStale ? "tg tg-pending" : "faint"} style="margin-left:6px"
-              title=${rawStale ? T("Listening on {v1}, but the app only ever dials {v2} — save to move it.", { v1: rawCur, v2: RAW_PORT }) : ""}>${rawCur}${rawStale ? " → " + RAW_PORT : ""}</span>`
-          : html`<span class="faint">${T("tag|advanced")}</span>`}
+        summary=${rawCur ? html`<span class="tg tg-raw">${T("RAW mode on")}</span><span class="faint" style="margin-left:6px">${rawCur}</span>`
+                         : html`<span class="faint">${T("tag|advanced")}</span>`}
         open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
         ${rawCapable ? html`<${Fragment}>
           <div class="lbl" style="margin:0 0 6px">${T("RAW-IP mode")}</div>
@@ -1737,7 +1732,6 @@ export function WdttManageSheet({ node, w: w0 }) {
           <label class="obfctl" style="margin-bottom:10px"><${Switch} on=${rawOn} onChange=${v => setRawOn(v)}/> <span class="obfctl-lbl">${T("Accept RAW connections")}</span> <span class="tg tg-raw" style="margin-left:8px">${T("port {v1}", { v1: RAW_PORT })}</span></label>
           ${rawErr ? html`<div class="hint err" style="margin-bottom:10px">${rawErr}</div>` : null}
           ${rawOn ? html`<div class="notice" style="margin-bottom:10px"><${Ic} i="info"/><span>${Trich("The user switches connection mode to *raw* in the app — nothing else. The port isn't theirs to set: the app dials *{v1}* for every server and no link or subscription can carry another one, which is why the panel fixes it. Their link keeps working for WireGuard mode.", { v1: RAW_PORT })}</span></div>` : null}
-          ${rawStale ? html`<div class="notice warn" style="margin-bottom:10px"><${Ic} i="warn"/><span>${Trich("This server still listens for RAW on *{v1}*, from before the port was fixed. The app only ever dials *{v2}*, so nobody can reach it — *Save* moves the listener.", { v1: rawCur, v2: RAW_PORT })}</span></div>` : null}
           ${(rawOn && rawHolder) ? html`<div class="notice warn" style="margin-bottom:10px"><${Ic} i="warn"/><span>${Trich("*{v1}* offers RAW on this address today. One address can only run one raw listener, so saving moves it here and turns it off there.", { v1: rawHolder })}</span></div>` : null}
         <//>` : null}
         <div class="lbl" style="margin:${rawCapable ? "18px" : "0"} 0 6px">${T("Internal WireGuard port")}</div>

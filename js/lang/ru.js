@@ -3268,10 +3268,6 @@ export const STR = {
   "The internal WG port must be a number.": "Внутренний порт WG должен быть числом.",
   "Where the DTLS half forwards, on loopback. No client dials it and no link carries it, so changing it only restarts the server — but it must not sit on the RAW port.":
     "Куда DTLS-половина переправляет трафик, по локальной петле. Ни один клиент туда не стучится и ни одна ссылка его не передаёт, поэтому смена порта лишь перезапускает сервер — но занимать порт RAW он не должен.",
-  "Listening on {v1}, but the app only ever dials {v2} — save to move it.":
-    "Слушает {v1}, но приложение стучится только на {v2} — сохраните, чтобы перенести.",
-  "This server still listens for RAW on *{v1}*, from before the port was fixed. The app only ever dials *{v2}*, so nobody can reach it — *Save* moves the listener.":
-    "Этот сервер до сих пор слушает RAW на *{v1}* — с тех пор, когда порт ещё не был зафиксирован. Приложение стучится только на *{v2}*, поэтому туда никто не достучится — *Сохранить* перенесёт слушателя.",
   "RAW mode on": "RAW включён",
   "Extra flags": "Дополнительные флаги",
   "val|none": "нет",
