@@ -439,7 +439,7 @@ swgPanel использует несколько прекрасных проек
 
 **WDTT** — самодостаточный VPN-сервер, владеющий своими ключами, который панель запускает как интерфейс, и приложения, которыми подключаются люди:
 
-- [amurcanov](https://github.com/amurcanov/proxy-turn-vk-android) — оригинал
+- [amurcanov](https://github.com/amurcanov/csqtt) — оригинал и csqtt, его преемник
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
 - [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)

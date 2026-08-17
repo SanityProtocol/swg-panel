@@ -439,7 +439,7 @@ swgPanel integrates several excellent open-source projects — huge thanks to th
 
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
 
-- [amurcanov](https://github.com/amurcanov/proxy-turn-vk-android) — the original
+- [amurcanov](https://github.com/amurcanov/csqtt) — the original, and csqtt, its successor
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
 - [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)
