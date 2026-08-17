@@ -125,18 +125,40 @@ found=0; DID_UPDATE=no; DID_FAIL=no   # DID_FAIL flips to yes on ANY component f
 RESULTS=(); note(){ RESULTS+=("$*"); }
 pan_seen=no; nod_seen=no; doc_seen=no
 
+# docker_profile — which compose profile this box actually IS.
+#
+# The `# … profile: X` marker in .env records what install-docker.sh was RUN as, which is not always what the box
+# BECAME: a bare→docker convert of a MASTER hands its datapath off as `install-docker.sh node`, so the marker reads
+# `node` on a box that also runs the panel. Trusting it meant `--profile node` pulled and recreated swg-node ALONE
+# and left swg-panel/swg-sub on their old image — compose reported success, the panel never moved, and the UI sat on
+# "updating…" waiting for a version that could not change. (Seen on a converted master running 1.7.1-beta.)
+#
+# The RUNNING CONTAINERS are the ground truth; the marker is the fallback for a stack that is currently down.
+docker_profile(){
+  local names sniff="" mark
+  if have docker; then
+    names="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
+    case "$names" in
+      *swg-panel*) case "$names" in *swg-node*) sniff=master;; *) sniff=host;; esac;;
+      *swg-node*)  sniff=node;;
+    esac
+  fi
+  mark="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 || true)"
+  [ "$mark" = host-node ] && mark=master        # legacy alias, same stack
+  if [ -n "$sniff" ]; then
+    [ -n "$mark" ] && [ "$mark" != "$sniff" ] && \
+      warn "the .env profile marker says '$mark', but this box is running the '$sniff' stack — going with '$sniff'"
+    printf '%s' "$sniff"; return 0
+  fi
+  printf '%s' "${mark:-host}"; return 0; }
+
 # ── detect this box's shape (method × role) → title + which checks to run ──
 HAVE_BPAN=no; { ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; } && HAVE_BPAN=yes
 HAVE_BNODE=no; { [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; } && HAVE_BNODE=yes
 HAVE_DOCK=no; DOCK_PROF=""
 if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
   HAVE_DOCK=yes
-  DOCK_PROF="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 || true)"   # || true: .env may be absent (compose present) → don't abort before the fallback below
-  if [ -z "$DOCK_PROF" ] && have docker; then
-    _n="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
-    case "$_n" in *swg-panel*) case "$_n" in *swg-node*) DOCK_PROF=master;; *) DOCK_PROF=host;; esac;; *swg-node*) DOCK_PROF=node;; esac
-  fi
-  DOCK_PROF="${DOCK_PROF:-host}"
+  DOCK_PROF="$(docker_profile)"
 fi
 if [ "$HAVE_DOCK" = yes ]; then case "$DOCK_PROF" in master) _role=MASTER;; node) _role=NODE;; *) _role=HOST;; esac; TITLE="SWG DOCKER $_role UPDATE"
 elif [ "$HAVE_BPAN" = yes ] && [ "$HAVE_BNODE" = yes ]; then TITLE="SWG BARE-METAL MASTER UPDATE"
@@ -745,12 +767,7 @@ fi
 if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
   found=1; doc_seen=yes
   # which profile is running? prefer the marker install-docker.sh wrote into .env, else sniff containers
-  prof="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 || true)"   # || true: .env may be absent (compose present) → don't abort before the fallback below
-  if [ -z "$prof" ] && have docker; then
-    names="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
-    case "$names" in *swg-panel*) case "$names" in *swg-node*) prof=master;; *) prof=host;; esac;; *swg-node*) prof=node;; esac
-  fi
-  prof="${prof:-host}"   # older installs may carry a host-node marker — compose keeps it as a master alias
+  prof="$(docker_profile)"
   if have docker && docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi
   # Force-DNS DNATs a client's :53 to the node's loopback dnsmasq, which needs net.ipv4.conf.all.route_localnet=1.
   # A host-net container can't set it (read-only /proc/sys) and pre-fix installs never persisted it → repair it on

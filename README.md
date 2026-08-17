@@ -290,6 +290,8 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 ## Special thanks
 
 swgPanel integrates several excellent open-source projects — huge thanks to their authors.
+Licences, pinned commits and source for everything we build or bundle: **[THIRD-PARTY.md](THIRD-PARTY.md)**.
+Note that **csqtt is noncommercial-only** — commercial use needs a separate licence from its author.
 
 **Turn-proxy forks** — wrap WireGuard/AmneziaWG through VK TURN relays to get past tough blocks:
 
