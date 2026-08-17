@@ -9,7 +9,7 @@
  */
 
 import {
-  ago, dur, fmtBytes, isWdttIface, rate, seen,
+  ago, dur, fmtBytes, isWdttIface, isCsqttIface, rate, seen,
 } from "./util.js";
 import { T, Trich, plural, pluralWord, srvVerb, srvDetail } from "./i18n.js";
 import {
@@ -70,7 +70,8 @@ export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presenc
   const ifs = Store.describe[n.id] || {}; let wg = 0, awg = 0;
   for (const ifn in ifs) { const m = ifs[ifn]; if (!m || m.system) continue; if (m.awg_params && Object.keys(m.awg_params).length) awg++; else wg++; }
   const wdtt = ((Store.stats[n.id] || {}).wdtt || []).filter(w => w && w.iface).length;   // WDTT interfaces (own their TUN; not in describe)
-  const ifBadges = []; if (awg) ifBadges.push(["awg", awg]); if (wg) ifBadges.push(["wg", wg]); if (wdtt) ifBadges.push(["wdtt", wdtt]);
+  const csqtt = ((Store.stats[n.id] || {}).csqtt || []).filter(c => c && c.iface).length;   // csqtt interfaces (own their raw TUN; not in describe)
+  const ifBadges = []; if (awg) ifBadges.push(["awg", awg]); if (wg) ifBadges.push(["wg", wg]); if (wdtt) ifBadges.push(["wdtt", wdtt]); if (csqtt) ifBadges.push(["csqtt", csqtt]);
   return html`<a class=${"fnode " + (live ? "" : "stale")} href=${"#/node/" + encodeURIComponent(n.id)}>
     <div class="fnode-main">
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span>${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c]) => html`<span key=${t} class=${"iftype " + t}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}<span class="rowarrow"><${Ic} i="arrow"/></span></div>
@@ -92,7 +93,8 @@ export function ifCountPhrase(g) {
   if (g.wg.size) parts.push(T("{v1} WireGuard", { v1: g.wg.size }));
   if (g.awg.size) parts.push(T("{v1} AmneziaWG", { v1: g.awg.size }));
   if (g.wdtt && g.wdtt.size) parts.push(T("{v1} WDTT", { v1: g.wdtt.size }));
-  const tot = g.wg.size + g.awg.size + (g.wdtt ? g.wdtt.size : 0);
+  if (g.csqtt && g.csqtt.size) parts.push(T("{v1} CSQTT", { v1: g.csqtt.size }));
+  const tot = g.wg.size + g.awg.size + (g.wdtt ? g.wdtt.size : 0) + (g.csqtt ? g.csqtt.size : 0);
   return T("{v1} {v2}", { v1: parts.join(" and ") || "0", v2: pluralWord(tot, "interface") });
 }
 export function ifTypeLabel(node, iface) {
@@ -301,6 +303,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const isSys = (nid, ifn) => !!(Store.describe[nid] && Store.describe[nid][ifn] && Store.describe[nid][ifn].system);
   const ifType = (nid, ifn) => {
     if (((Store.stats[nid] || {}).wdtt || []).some(w => w && w.iface === ifn)) return "wdtt";   // WDTT owns its iface (snap.wdtt, not describe)
+    if (((Store.stats[nid] || {}).csqtt || []).some(c => c && c.iface === ifn)) return "csqtt";   // csqtt owns its raw-TUN iface (snap.csqtt, not describe)
     const m = Store.describe[nid] && Store.describe[nid][ifn]; return (m && m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg"; };
   const sPeers = Store.recon.peers.filter(p => p.targets.some(t => sel.has(t.node)));
   const _sum = a => (a || []).reduce((x, v) => x + (v || 0), 0);
@@ -314,7 +317,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   //    FT = by interface): accumulate the raw client/mesh components once, then apply each filter at the end. ──
   const FN = trafFlags("dnode"), FT = trafFlags("dtype");
   const nodeRaw = {};   // per node: client (crx/ctx) and mesh (mrx/mtx) kept apart so either filter can pick them
-  const typeRaw = { wg: { rx: 0, tx: 0 }, awg: { rx: 0, tx: 0 }, wdtt: { rx: 0, tx: 0 }, mesh: { rx: 0, tx: 0 } };
+  const typeRaw = { wg: { rx: 0, tx: 0 }, awg: { rx: 0, tx: 0 }, wdtt: { rx: 0, tx: 0 }, csqtt: { rx: 0, tx: 0 }, mesh: { rx: 0, tx: 0 } };
   const addType = (k, rx, tx) => { (typeRaw[k] = typeRaw[k] || { rx: 0, tx: 0 }).rx += rx; typeRaw[k].tx += tx; };
   fleet.forEach(n => {
     if (ranged) {
@@ -332,6 +335,9 @@ export function DashDoughnuts({ selIds, range, hist }) {
       if (snap) for (const w of (snap.wdtt || [])) {   // WDTT interfaces (own their TUN, report aggregate rx/tx) → client traffic, WDTT bucket
         const r = w.rx_speed || 0, t = w.tx_speed || 0; crx += r; ctx += t; addType("wdtt", r, t);
       }
+      if (snap) for (const c of (snap.csqtt || [])) {   // csqtt interfaces (own raw TUN, aggregate rx/tx) → client traffic, csqtt bucket
+        const r = c.rx_speed || 0, t = c.tx_speed || 0; crx += r; ctx += t; addType("csqtt", r, t);
+      }
       addType("mesh", mrx, mtx);
       nodeRaw[n.id] = { crx, ctx, mrx, mtx };
     }
@@ -340,7 +346,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const nodeTraf = {}; fleet.forEach(n => { const r = nodeRaw[n.id] || { crx: 0, ctx: 0, mrx: 0, mtx: 0 }; nodeTraf[n.id] = trafPick(r.crx + r.mrx, r.ctx + r.mtx, r.mrx, r.mtx, FN); });
   const typePick = k => k === "mesh" ? { rx: FT.mesh ? typeRaw.mesh.rx : 0, tx: FT.mesh ? typeRaw.mesh.tx : 0 }
                                      : { rx: FT.peers ? typeRaw[k].rx : 0, tx: FT.peers ? typeRaw[k].tx : 0 };
-  const typeTraf = { wg: typePick("wg"), awg: typePick("awg"), wdtt: typePick("wdtt"), mesh: typePick("mesh") };
+  const typeTraf = { wg: typePick("wg"), awg: typePick("awg"), wdtt: typePick("wdtt"), csqtt: typePick("csqtt"), mesh: typePick("mesh") };
   const trafFmt = ranged ? fmtBytes : rate;
 
   // ── peer deployments by node + by iface type. TOTAL = the roster count deployed to each node/iface (a real head-
@@ -397,7 +403,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
     <span class="mrc-tot dn">${on}<small style="color:var(--faint)"> / ${tot}</small></span></div>`;
 
   const totDownN = sum(nodeTraf, "rx"), totUpN = sum(nodeTraf, "tx");
-  const totDownT = typeTraf.wg.rx + typeTraf.awg.rx + typeTraf.wdtt.rx + typeTraf.mesh.rx, totUpT = typeTraf.wg.tx + typeTraf.awg.tx + typeTraf.wdtt.tx + typeTraf.mesh.tx;
+  const totDownT = typeTraf.wg.rx + typeTraf.awg.rx + typeTraf.wdtt.rx + typeTraf.csqtt.rx + typeTraf.mesh.rx, totUpT = typeTraf.wg.tx + typeTraf.awg.tx + typeTraf.wdtt.tx + typeTraf.csqtt.tx + typeTraf.mesh.tx;
   const nodeOn = Object.values(nodeCnt).reduce((a, v) => a + v.on, 0), nodeTot = Object.values(nodeCnt).reduce((a, v) => a + v.tot, 0);
   const typeOn = typeCnt.wg.on + typeCnt.awg.on + typeCnt.wdtt.on + typeCnt.csqtt.on, typeTot = typeCnt.wg.tot + typeCnt.awg.tot + typeCnt.wdtt.tot + typeCnt.csqtt.tot;
 
@@ -433,33 +439,40 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const fLive = {};   // fork → { rx, tx, on, tot } aggregated across every node/instance of that fork
   if (turnOn) sPeers.forEach(p => p.targets.forEach(t => {
     if (!sel.has(t.node)) return;
-    const isW = t.type === "wdtt" || isWdttIface(t.iface);   // WDTT clients are ON the WDTT server (no viaTurn) → fork = the instance's fork
+    const isCS = t.type === "csqtt" || isCsqttIface(t.iface);
+    const isSC = t.type === "wdtt" || isWdttIface(t.iface) || isCS;   // self-contained VK-turn servers (WDTT/csqtt) are ON the server (no viaTurn) → fork = the instance's fork
     let fk;
-    if (isW) { const w = ((Store.stats[t.node] || {}).wdtt || []).find(x => x && x.iface === t.iface); fk = (w && w.fork) || "amurcanov"; }
+    if (isSC) { const kind = isCS ? "csqtt" : "wdtt"; const inst = ((Store.stats[t.node] || {})[kind] || []).find(x => x && x.iface === t.iface); fk = (inst && inst.fork) || (isCS ? "csqtt" : "amurcanov"); }
     else if (t.viaTurn) fk = turnFork(t.viaTurn);
     else return;
     if (!enSet.has(fk)) return;
     const a = fLive[fk] = fLive[fk] || { rx: 0, tx: 0, on: 0, tot: 0 };
-    if (!isW) { const o = t.observed; if (o) { a.rx += o.rx_speed || 0; a.tx += o.tx_speed || 0; } }   // WDTT per-peer speed n/a → the iface counter is added below
+    if (!isSC) { const o = t.observed; if (o) { a.rx += o.rx_speed || 0; a.tx += o.tx_speed || 0; } }   // self-contained per-peer speed n/a → the iface counter is added below
     a.tot++; if (t.online) a.on++;
   }));
-  // WDTT traffic is reported per-interface (own TUN), not per-peer → add each instance's aggregate rx/tx to its fork
+  // Self-contained servers (WDTT + csqtt) report traffic per-interface (own TUN), not per-peer → add each instance's
+  // aggregate rx/tx to its fork. tot/on already came from the roster targets above — DON'T re-add the passwords count
+  // here (that double-counted every WDTT peer, inflating its deployment ring). A running server with traffic still
+  // shows via the (rx+tx)>0 test; the roster provides tot for the idle case.
   if (turnOn) fleet.forEach(n => { if (!sel.has(n.id)) return;
     for (const w of ((Store.stats[n.id] || {}).wdtt || [])) { const fk = (w && w.fork) || "amurcanov"; if (!enSet.has(fk)) continue;
-      const a = fLive[fk] = fLive[fk] || { rx: 0, tx: 0, on: 0, tot: 0 }; a.rx += w.rx_speed || 0; a.tx += w.tx_speed || 0;
-      const pw = w.passwords || {}; a.tot += Object.keys(pw).length; a.on += Object.values(pw).filter(e => e && e.online).length; } });   // WDTT deployment/online counts per fork (readback), so the fork shows even when idle
+      const a = fLive[fk] = fLive[fk] || { rx: 0, tx: 0, on: 0, tot: 0 }; a.rx += w.rx_speed || 0; a.tx += w.tx_speed || 0; }
+    for (const c of ((Store.stats[n.id] || {}).csqtt || [])) { const fk = (c && c.fork) || "csqtt"; if (!enSet.has(fk)) continue;
+      const a = fLive[fk] = fLive[fk] || { rx: 0, tx: 0, on: 0, tot: 0 }; a.rx += c.rx_speed || 0; a.tx += c.tx_speed || 0; } });
   const fRanged = {};   // sanitised fork → { rx, tx, pon, ptot } summed over selected nodes
   if (ranged) (hist.turn || []).forEach(e => { if (!sel.has(e.node)) return;
     const a = fRanged[e.fork] = fRanged[e.fork] || { rx: 0, tx: 0, pon: 0, ptot: 0 };
     a.rx += e.rx || 0; a.tx += e.tx || 0; a.pon += e.pon || 0; a.ptot += e.ptot || 0; });
   const turnRanged = ranged && Object.keys(fRanged).length > 0;   // ranged turn data present → use it; else live
-  const _wdttFork = fk => (((typeof turnForkList === "function" && turnForkList().find(f => f.id === fk)) || {}).kind) === "wdtt";   // WDTT forks have NO per-fork turn RRD yet → always show their live traffic, even on a range (else they vanish)
-  const fTraf = fk => (turnRanged && !_wdttFork(fk)) ? (fRanged[sanF(fk)] || { rx: 0, tx: 0 }) : (fLive[fk] || { rx: 0, tx: 0 });
-  // TOTAL (2nd number) = a CURRENT headcount (peers deployed to each fork now) → live for EVERY fork, so an idle
-  // normal fork isn't hidden on a range. ONLINE (1st number) IS range-aware: on a range it's the DISTINCT deployments
-  // that were online during the window (per-fork RRD `pon`) for normal forks; WDTT has no ranged turn RRD yet → live.
-  const fCnt = fk => ({ on: (turnRanged && !_wdttFork(fk)) ? Math.round((fRanged[sanF(fk)] || {}).pon || 0) : ((fLive[fk] || {}).on || 0),
-                        tot: (fLive[fk] || {}).tot || 0 });
+  const _selfFork = fk => { const k = (((typeof turnForkList === "function" && turnForkList().find(f => f.id === fk)) || {}).kind); return k === "wdtt" || k === "csqtt"; };   // self-contained forks (WDTT/csqtt) have NO per-fork turn RRD yet → always show their live traffic/counts, even on a range (else they vanish)
+  const fTraf = fk => (turnRanged && !_selfFork(fk)) ? (fRanged[sanF(fk)] || { rx: 0, tx: 0 }) : (fLive[fk] || { rx: 0, tx: 0 });
+  // On a range, BOTH numbers come from the per-fork RRD so they stay consistent: on = distinct deployments online
+  // during the window (`pon`), tot = distinct deployments seen during the window (`ptot`). Pairing a windowed `pon`
+  // against a LIVE-instant tot was the bug that showed 7 / 2 (7 seen over the window, 2 connected right now).
+  // Self-contained forks have no turn RRD → live counts for them (roster tot, live on).
+  const fCnt = fk => (turnRanged && !_selfFork(fk))
+    ? { on: Math.round((fRanged[sanF(fk)] || {}).pon || 0), tot: Math.round((fRanged[sanF(fk)] || {}).ptot || 0) }
+    : { on: (fLive[fk] || {}).on || 0, tot: (fLive[fk] || {}).tot || 0 };
   const forks = [...enSet].filter(fk => { const t = fTraf(fk), c = fCnt(fk); return (t.rx + t.tx) > 0 || c.tot > 0; });
   const turnFmt = turnRanged ? fmtBytes : rate;
   const turnCenter = (rx, tx) => { const [d, u] = dlul(rx, tx); const ds = "↓ " + turnFmt(d), us = "↑ " + turnFmt(u);
@@ -581,6 +594,7 @@ export function flowGraph(selIds, range, hist) {
     fleet.forEach(n => { const snap = Store.stats[n.id]; if (!snap) return;
       if (snap.inet) acc[n.id].inet = { out: snap.inet.up || 0, in: snap.inet.down || 0 };   // exact internet egress measured by the node (FORWARD counters) — replaces the client estimate
       for (const w of (snap.wdtt || [])) { if (!w) continue; const fk = w.fork || "amurcanov"; const at = (acc[n.id].turn[fk] = acc[n.id].turn[fk] || { rx: 0, tx: 0 }); at.rx += w.rx_speed || 0; at.tx += w.tx_speed || 0; }   // WDTT = a turn-family fork → its OWN relay satellite (like other turn proxies), coloured by fork; feeds the internet lane via turnRx
+      for (const c of (snap.csqtt || [])) { if (!c) continue; const fk = c.fork || "csqtt"; const at = (acc[n.id].turn[fk] = acc[n.id].turn[fk] || { rx: 0, tx: 0 }); at.rx += c.rx_speed || 0; at.tx += c.tx_speed || 0; }   // csqtt = a turn-family fork → its OWN relay satellite too
       for (const [ifn, blk] of Object.entries(snap.interfaces || {})) {
         const meta = (Store.describe[n.id] || {})[ifn] || blk.meta || {};
         const peer = meta.link_node || meta.egress_node;   // a system mesh link identifies its peer via link_node (egress_node is the user-iface forward target, blank here)
@@ -1155,6 +1169,7 @@ export function Overview() {
   const nodeRate = id => { const snap = Store.stats[id]; let r = 0, t = 0;
     if (snap) for (const [ifn, blk] of Object.entries(snap.interfaces || {})) { if (isSys(id, ifn)) continue; for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; } }
     if (snap) for (const w of (snap.wdtt || [])) { r += w.rx_speed || 0; t += w.tx_speed || 0; }   // WDTT owns its TUN (aggregate rx/tx)
+    if (snap) for (const c of (snap.csqtt || [])) { r += c.rx_speed || 0; t += c.tx_speed || 0; }   // csqtt owns its raw TUN (aggregate rx/tx)
     return [r, t]; };
 
   const online = sPeers.filter(p => p.targets.some(t => sel.has(t.node) && t.online)).length;
@@ -1166,7 +1181,7 @@ export function Overview() {
   const pUnassigned = sPeers.length - pAssigned;
   const sUsers = users.filter(u => sPeers.some(p => p.user_id === u.id));
   const liveNodes = fleetSel.filter(n => ns[n.id] === "live").length;
-  const ifaceCount = selIds.reduce((a, id) => a + Object.keys(Store.describe[id] || {}).filter(ifn => !isSys(id, ifn)).length + ((Store.stats[id] || {}).wdtt || []).filter(w => w && w.iface).length, 0);   // + WDTT interfaces (own their TUN, not in describe)
+  const ifaceCount = selIds.reduce((a, id) => a + Object.keys(Store.describe[id] || {}).filter(ifn => !isSys(id, ifn)).length + ((Store.stats[id] || {}).wdtt || []).filter(w => w && w.iface).length + ((Store.stats[id] || {}).csqtt || []).filter(c => c && c.iface).length, 0);   // + WDTT + csqtt interfaces (own their TUN, not in describe)
   const nodesAlerting = fleetSel.filter(n => healthAlerts(((Store.nodes || []).find(x => x.id === n.id) || {}).health).length).length;
   let rx = 0, tx = 0;
   fleetSel.forEach(n => { const [r, t] = nodeRate(n.id); rx += r; tx += t; });
@@ -1185,8 +1200,8 @@ export function Overview() {
   const unByNode = {};
   unassigned.forEach(p => p.targets.forEach(t => {
     if (!sel.has(t.node)) return;
-    const g = unByNode[t.node] || (unByNode[t.node] = { node: t.node, peers: new Set(), wg: new Set(), awg: new Set(), wdtt: new Set() });
-    g.peers.add(p.id); (g[targetType(t)] || g.wg).add(t.iface);   // wg | awg | wdtt — each to its own bucket (never lump wdtt under wg)
+    const g = unByNode[t.node] || (unByNode[t.node] = { node: t.node, peers: new Set(), wg: new Set(), awg: new Set(), wdtt: new Set(), csqtt: new Set() });
+    g.peers.add(p.id); (g[targetType(t)] || g.wg).add(t.iface);   // wg | awg | wdtt | csqtt — each to its own bucket (never lump self-contained under wg)
   }));
   const unGroups = Object.values(unByNode);
   const orphByIf = {};
