@@ -3,7 +3,7 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-## [1.7.3-beta] — 2026-08-18
+## [1.7.4-beta] — 2026-08-18
 
 ### Added
 - **Every third-party licence in one place.** [THIRD-PARTY.md](THIRD-PARTY.md) now lists everything swgPanel
@@ -43,6 +43,10 @@ earlier releases predate the changelog — see the git history. · Русски�
   the holder is offered — and a peer can never be left publishing nothing.
 
 ### Changed
+- **A node can fetch a server binary itself when the panel can't.** WDTT and csqtt binaries came only through the
+  panel's mirror, so anything that stopped the panel reaching GitHub stopped every node installing or updating one
+  of those servers. Nodes now fall back to the release directly, and to any mirror you have configured — and say
+  in their log when they had to, because a mirror that has quietly stopped working should not look like health.
 - **Server fork binaries are current again.** The WDTT forks ship at their latest upstream releases
   (ildarmaga 1.5.40, WDTT-Plus 14, XXcipherX 2.0.0.68), and qWDTT and csqtt are now published like the
   rest — before this, a fresh install had no way to get either of them.
@@ -52,6 +56,10 @@ earlier releases predate the changelog — see the git history. · Русски�
   turning it on elsewhere on the same address moves it, and says so first.
 
 ### Fixed
+- **A csqtt server could never install.** The panel resolved a node's request for the csqtt binary to amurcanov's
+  own repository — asking for a file only we build, at a tag he spells differently — so it was a 404 every time,
+  on every install, from the day csqtt shipped. A node has no other source for that binary, so the server simply
+  never appeared: no files, no service, and an error saying the build had not been published yet. It had.
 - **The one-click update on a Docker master updated only the node.** The panel and subscription containers were
   left on their old images while the update reported success, so the panel never changed version and its own
   Update button sat on "updating…" indefinitely. The updater was reading a marker written at install time, which
