@@ -249,3 +249,16 @@ export function nextWdttName(node) {
   for (let i = 1; i < 1000; i++) if (!used.has("wdtt" + i)) return "wdtt" + i;
   return "wdtt1";
 }
+export function nextCsqttName(node) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  // csqtt shares the interface namespace with wg/awg/wdtt — check them all so a suggestion never collides
+  const used = new Set([...Object.keys(nrec.csqtt_cfg || {}),
+                        ...((Store.stats[node] || {}).csqtt || []).map(c => c && c.iface),
+                        ...Object.keys(nrec.wdtt_cfg || {}),
+                        ...((Store.stats[node] || {}).wdtt || []).map(w => w && w.iface),
+                        ...Object.keys(Store.describe[node] || {}),
+                        ...Object.keys(nrec.missing_ifaces || {}), ...Object.keys(nrec.ghost_ifaces || {}),
+                        ...(nrec.iface_candidates || []).map(c => c && c.name)].filter(Boolean));
+  for (let i = 1; i < 10000; i++) if (!used.has("csqtt" + i)) return "csqtt" + i;   // csqtt0-9999; start at 1
+  return "csqtt1";
+}

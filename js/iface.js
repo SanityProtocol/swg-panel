@@ -11,14 +11,14 @@
  */
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
-import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, portOf, ipPickerVal, isWdttIface, V } from "./util.js";
+import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, portOf, ipPickerVal, isWdttIface, isCsqttIface, V } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, toThemed, IFACE_COLOR_DEFAULTS } from "./theme.js";
 import {
   kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnProxiesFor,
   suggestIface, suggestSubnet, suggestPort, portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr,
-  cidrNet, nextWdttName, ifaceIsAwg,
+  cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg,
 } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkSupportsAwg } from "./turn-catalog.js";
 import {
@@ -757,6 +757,15 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   // nothing to create) — if every WDTT fork is disabled in Settings, don't offer the WDTT protocol at all.
   const wdttOk = turnEnabled() && nrec.turn_manage && nrec.turn_arch_ok !== false && enabledTurnForks().some(f => f.kind === "wdtt");
   const isWdtt = proto === "wdtt";
+  // csqtt — a SELF-CONTAINED raw-IP TUN server, created as its own interface exactly like WDTT (peers target it).
+  // Same gate (turn-managed node + csqtt enabled). It takes a subnet like wg/awg (server .1 derived), a UDP DTLS
+  // listen, and a password cap — but NO fork (single binary) and NO internal WG port (raw TUN, no WireGuard).
+  const sugCsqtt = nextCsqttName(node);
+  const sugCsqttNet = suggestSubnet(node);
+  const sugCsqttListen = suggestPort(node, "turn");
+  const [maxPw, setMaxPw] = useState("500");
+  const csqttOk = turnEnabled() && nrec.turn_manage && nrec.turn_arch_ok !== false && enabledTurnForks().some(f => f.kind === "csqtt");
+  const isCsqtt = proto === "csqtt";
   const _idf = (Store.panelSettings || {}).interface_defaults || {};   // panel-wide new-interface defaults
   const [dns, setDns] = useState((_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String(_idf.mtu || 1280)); const [ka, setKa] = useState(String(_idf.keepalive || 25));
   const [conf, setConf] = useState("");
@@ -771,13 +780,16 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const [hostSel, setHostSel] = useState(_preEp ? (ips.includes(_preEp) ? _preEp : "__custom__") : (ips[0] || "__custom__"));
   const [hostCustom, setHostCustom] = useState(_preEp && !ips.includes(_preEp) ? _preEp : "");
   const pickProto = p => {   // switching base re-suggests the name only if the field is still an untouched suggestion
-    const untouched = iface === sugAwg || iface === sugWg || iface === sugWdtt || !iface.trim();
-    if (p !== "existing" && untouched) setIface(p === "wg" ? sugWg : p === "wdtt" ? sugWdtt : sugAwg);
+    const untouched = iface === sugAwg || iface === sugWg || iface === sugWdtt || iface === sugCsqtt || !iface.trim();
+    if (p !== "existing" && untouched) setIface(p === "wg" ? sugWg : p === "wdtt" ? sugWdtt : p === "csqtt" ? sugCsqtt : sugAwg);
     if (p === "wdtt") {   // WDTT: seed the subnet + collision-free DTLS listen + internal-WG ports
       if (!subnet.trim() || subnet === suggestSubnet(node)) setSubnet(sugWdttNet);
       if (!port.trim() || port === String(suggestPort(node, "iface"))) setPort(String(sugWdttListen));
       setWgPort(String(sugWdttWg));
-    } else if (port === String(sugWdttListen)) {   // switching away from WDTT → restore the interface listen port
+    } else if (p === "csqtt") {   // csqtt: seed the subnet + collision-free UDP DTLS listen (no internal WG port)
+      if (!subnet.trim() || subnet === suggestSubnet(node)) setSubnet(sugCsqttNet);
+      if (!port.trim() || port === String(suggestPort(node, "iface"))) setPort(String(sugCsqttListen));
+    } else if (port === String(sugWdttListen) || port === String(sugCsqttListen)) {   // switching away from a turn kind → restore the interface listen port
       setPort(String(suggestPort(node, "iface")));
     }
     setProto(p);
@@ -821,6 +833,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
           d=${{ config_dir: c.replace(/\/+$/, ""), fork: "", store: "", users: [], listen_port: 0, wg_port: 0 }}/>`);
         return;
       }
+      if (proto === "csqtt") return fail(T("Adopting an existing csqtt server isn't supported yet — create a new one instead."));
       const c = conf.trim();
       if (!c.startsWith("/")) return fail(T("Enter the absolute path to the interface's .conf."));
       const base = (c.split("/").pop() || "").replace(/\.conf$/i, "");   // seed the name from the filename
@@ -837,6 +850,16 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       const _dtlsHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.wdttSet({ node, iface: nm, wg_addr: subnetServerAddr(subnet.trim()), listen: _dtlsHost + ":" + (port.trim() || "56000"),
         wg_port: wgPort.trim() || "56001", fork, block: blk, ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
+    } else if (isCsqtt) {
+      // csqtt interface: ONE record — writes the same /api/csqtt/set the Turn-proxies card edits. Raw-TUN, so no
+      // internal WG port and no fork; takes the SUBNET like wg/awg (server .1 derived), a UDP DTLS listen, a pw cap.
+      const nm = iface.trim();
+      if (!/^csqtt\d{1,4}$/.test(nm)) return fail(T("csqtt interface name must be csqtt0–csqtt9999."));
+      if (!/\/24$/.test(subnet.trim())) return fail(T("csqtt needs a /24 tunnel subnet, e.g. 10.66.67.0/24."));
+      if (maxPw.trim() && !/^\d+$/.test(maxPw.trim())) return fail(T("Max passwords must be a number."));
+      const _lHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
+      r = await api.csqttSet({ node, iface: nm, tun_addr: subnetServerAddr(subnet.trim()), listen: _lHost + ":" + (port.trim() || "46000"),
+        max_passwords: maxPw.trim() || "500", block: blk, ...egressBody(eg) });
     } else {
       const nm = iface.trim();
       if (!nm || /[\s/]/.test(nm)) return fail(T("Interface name is required (no spaces or /)."));
@@ -856,7 +879,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       : { type: proto, subnet: subnet.trim(), port: port.trim(), endpoint: ipPickerVal(hostSel, hostCustom), at: Date.now() };
     if (ghost && !existing) Store.ghostRekey[node + "|" + _newName] = { peers: ghost.peers || [], at: Date.now() };   // phase 2: rekey these once the fresh iface is live
     closeModal(); Store.apply(); await Store.poll();
-    if (!existing && !isWdtt && isBridge) { openModal(html`<${BridgePortSheet} iface=${_newName} port=${port.trim()}/>`); return; }
+    if (!existing && !isWdtt && !isCsqtt && isBridge) { openModal(html`<${BridgePortSheet} iface=${_newName} port=${port.trim()}/>`); return; }
     toast(ghost ? ((ghost.peers || []).length === 1
         ? T("Recreating {v1} — keep this tab open and its 1 peer is rekeyed automatically once it's back; otherwise rekey it from its peer view. Then hand out the fresh config.", { v1: _newName })
         : T("Recreating {v1} — keep this tab open and its {v2} are rekeyed automatically once it's back; otherwise rekey each from its peer view. Then hand out the fresh configs.", { v1: _newName, v2: plural((ghost.peers || []).length, "peer") }))
@@ -871,8 +894,9 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   // interface — ours bound to its port while the device carries the foreign subnet, and neither serving.
   // Skipped for adopt (`existing`, keyed by conf path) and for a ghost recreate, which reuses its name by design.
   const _nameTaken = (!existing && !ghost && iface.trim()) ? (() => { const nm = iface.trim();
-    if ((Store.describe[node] || {})[nm] || (nrec.wdtt_cfg || {})[nm]
-        || ((Store.stats[node] || {}).wdtt || []).some(w => w && w.iface === nm)) return "managed";
+    if ((Store.describe[node] || {})[nm] || (nrec.wdtt_cfg || {})[nm] || (nrec.csqtt_cfg || {})[nm]
+        || ((Store.stats[node] || {}).wdtt || []).some(w => w && w.iface === nm)
+        || ((Store.stats[node] || {}).csqtt || []).some(c => c && c.iface === nm)) return "managed";
     if ((nrec.iface_candidates || []).some(c => c && c.name === nm)) return "unmanaged";
     return null; })() : null;
   const nameErr = _nameTaken === "managed" ? T("An interface named {v1} already exists on this node.", { v1: iface.trim() })
@@ -889,6 +913,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         <button class=${"chip c-wg" + (proto === "wg" ? " on" : "")} onClick=${() => pickProto("wg")}>WireGuard</button>
         <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => pickProto("awg")}>AmneziaWG</button>
         ${ghost || !wdttOk ? null : html`<button class=${"chip c-wdtt" + (proto === "wdtt" ? " on" : "")} onClick=${() => pickProto("wdtt")}>WDTT</button>`}
+        ${ghost || !csqttOk ? null : html`<button class=${"chip c-csqtt" + (proto === "csqtt" ? " on" : "")} onClick=${() => pickProto("csqtt")}>csqtt</button>`}
         ${ghost ? null : html`<button type="button" class=${"adoptsw" + (adoptMode ? " on" : "")} aria-pressed=${adoptMode}
           title=${adoptMode ? T("Taking over an interface already on the node") : T("Create a new interface — switch on to take over one already on the node")}
           onClick=${() => setAdoptMode(v => !v)}>${T("Adopt existing")}</button>`}
@@ -904,14 +929,24 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       ${(!exWdtt && nrec.kind === "docker") ? html`<div class="notice"><${Ic} i="info"/><span>${Trich("This node runs in a container, so it can only read paths inside it — a config elsewhere on the host is invisible from here. *The interface must be running*: the node then adopts it from the live device (keys, peers, ports and AmneziaWG parameters, all fresher than any file). A stopped interface whose config the node can't read cannot be adopted.")}</span></div>` : null}
     <//>` : html`<${Fragment}>
       <div class="row2">
-        <div class="field"><label>${T("Interface name")}</label><input autofocus=${!ghost} class=${nameErr ? "bad" : ""} value=${iface} onInput=${e => { if (!ghost) setIface(e.target.value); }} readOnly=${!!ghost} placeholder=${proto === "wg" ? "wg1" : proto === "wdtt" ? "wdtt1" : "awg1"} autocomplete="off"/>${ghost ? html`<div class="hint">${T("Fixed — must match the peers that reference it.")}</div>` : nameErr ? html`<div class="hint err">${nameErr}</div>` : null}</div>
+        <div class="field"><label>${T("Interface name")}</label><input autofocus=${!ghost} class=${nameErr ? "bad" : ""} value=${iface} onInput=${e => { if (!ghost) setIface(e.target.value); }} readOnly=${!!ghost} placeholder=${proto === "wg" ? "wg1" : proto === "wdtt" ? "wdtt1" : proto === "csqtt" ? "csqtt1" : "awg1"} autocomplete="off"/>${ghost ? html`<div class="hint">${T("Fixed — must match the peers that reference it.")}</div>` : nameErr ? html`<div class="hint err">${nameErr}</div>` : null}</div>
         <div class="field"><label>${T("Tunnel subnet (CIDR)")}</label><input class=${_subConflict ? "bad" : ""} value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.8.0.0/24" autocomplete="off"/>${_subConflict ? html`<div class="hint err">${subnetTaken(_subConflict.iface, Store.nodeName(_subConflict.node))}</div>` : null}</div>
       </div>
-      ${!isWdtt ? html`<div class="row2">
+      ${(!isWdtt && !isCsqtt) ? html`<div class="row2">
         <div class="field"><label>${T("Endpoint host / IP")}</label>
           <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
           <div class="hint">${T("What clients dial")}</div></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/>${pperr ? html`<div class="hint err">${pperr}</div>` : null}</div>
+      </div>` : null}
+      ${isCsqtt ? html`<div class="row2">
+        <div class="field"><label>${T("Endpoint host / IP")}</label>
+          <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
+          <div class="hint">${T("What clients dial (over the VK relay)")}</div></div>
+        <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="46000"/>${pperr ? html`<div class="hint err">${pperr}</div>` : html`<div class="hint">${T("UDP DTLS listen (outside)")}</div>`}</div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>${T("Max users")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${maxPw} onInput=${e => setMaxPw(e.target.value)} placeholder="500"/><div class="hint">${T("Cap on simultaneous access passwords · blank = 500")}</div></div>
+        <div class="field"></div>
       </div>` : null}
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — after creating you must publish this port in the node's `docker-compose.yml` ({ports}) and `up -d`, or clients can't reach it. (A host-networking node needs none of this.)", { ports: 'ports: "' + (port || "PORT") + ":" + (port || "PORT") + '/udp"' })}</span></div>` : null}
       ${isWdtt ? html`<div class="row2">
@@ -935,7 +970,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         open=${disc.filters} onToggle=${() => tog("filters")}>
         <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
       <//>
-      ${!isWdtt ? html`<${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS")}
+      ${(!isWdtt && !isCsqtt) ? html`<${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS")}
         open=${disc.advanced} onToggle=${() => tog("advanced")}>
         <div class="row2">
           <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">${T("Blank = 1280")}</div></div>

@@ -8,7 +8,7 @@
  * above any mount.
  */
 
-import { $, esc, seen, dur, ago, rate, fmtBytes, niceScaleCeil, tkey, ipOf, portOf, isWdttIface } from "./util.js";
+import { $, esc, seen, dur, ago, rate, fmtBytes, niceScaleCeil, tkey, ipOf, portOf, isWdttIface, isCsqttIface } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
@@ -29,7 +29,7 @@ import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, Rank
          RANGE_CAP } from "./charts.js";
 import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, onlineUserRows, onlinePeerRows,
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES } from "./views.js";
-import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt,
+import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
          openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity } from "./turn.js";
 import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
 import { IgnoredIfacesCard, openOnboardIface, openEditIface, openConnectionEdit, OrphanRow,
@@ -128,13 +128,15 @@ export function NodeDetail({ node: rawName }) {
   const hasTurns = !!((snap && (snap.turn_proxies || []).length) || Object.keys(nrec.turn_pending || {}).length || (nrec.turn_onboarding || []).length);
   const wdttIfaces = (snap && snap.wdtt || []).filter(w => w && w.iface);   // WDTT-owned userspace-WG interfaces → shown (flagged) in the interfaces section too
   const hasWdtt = wdttIfaces.length > 0;   // WDTT forks are self-contained turn-family servers → also shown in the Turn-proxies section
-  const hasCsqtt = (snap && snap.csqtt || []).filter(c => c && c.iface).length > 0;   // csqtt: self-contained raw-TUN turn server → same section
+  const csqttIfaces = (snap && snap.csqtt || []).filter(c => c && c.iface);   // csqtt-owned raw-TUN interfaces → shown (flagged) in the interfaces section too, like WDTT
+  const hasCsqtt = csqttIfaces.length > 0;   // csqtt: self-contained raw-TUN turn server → also shown in the Turn-proxies section
   // nothing for a turn-proxy to forward to → do not offer to create one (see TurnProxiesBlock)
   const canFrontTurn = userKeys.some(k => (meta[k] || {}).listen_port);
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === name));
   const onl = here.filter(p => p.targets.some(t => t.node === name && t.online)).length;
   let nrx = 0, ntx = 0; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { nrx += pp.rx_speed || 0; ntx += pp.tx_speed || 0; }
   if (snap) for (const w of (snap.wdtt || [])) { nrx += w.rx_speed || 0; ntx += w.tx_speed || 0; }   // include WDTT interface throughput in the node-card total
+  if (snap) for (const c of (snap.csqtt || [])) { nrx += c.rx_speed || 0; ntx += c.tx_speed || 0; }   // include csqtt interface throughput too
   let syncTxt = T("no snapshot yet");
   if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); syncTxt = live ? T("{ago} ago", { ago: seen(a) }) : T("stale for {ago}", { ago: seen(a) }); }
 
@@ -201,7 +203,7 @@ export function NodeDetail({ node: rawName }) {
       })}</div>
     <//>` : null}
 
-    <${Panel} icon="globe" title=${T("User interfaces")} tone="ready" count=${userKeys.length + wdttIfaces.length + Object.keys(nrec.wdtt_cfg || {}).filter(ifn => !wdttIfaces.some(w => w.iface === ifn)).length}
+    <${Panel} icon="globe" title=${T("User interfaces")} tone="ready" count=${userKeys.length + wdttIfaces.length + Object.keys(nrec.wdtt_cfg || {}).filter(ifn => !wdttIfaces.some(w => w.iface === ifn)).length + csqttIfaces.length + Object.keys(nrec.csqtt_cfg || {}).filter(ifn => !csqttIfaces.some(c => c.iface === ifn)).length}
         actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" title=${T("Recreate this node's missing interfaces with their original identities — node-rebuild recovery")} onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> Restore ${mr > 1 ? T("{v1} interfaces", { v1: mr }) : "interface"}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns && !hasWdtt && !hasCsqtt && canFrontTurn ? html`<button class="btn btn-mini" disabled=${blocked || nrec.turn_arch_ok === false} title=${blocked ? T("Unavailable while the node is down / converting") : nrec.turn_arch_ok === false ? T("No turn-proxy build for this node's architecture{arch} — only amd64 and arm64 are supported.", { arch: nrec.arch ? " (" + nrec.arch + ")" : "" }) : T("Set up the node's first turn-proxy")} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> ${T("Setup turn-proxy")}</button>` : null}<button class="btn btn-mini ico" title=${T("Interface defaults in Settings → Interfaces")} onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> ${T("Create new interface")}</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
@@ -241,7 +243,7 @@ export function NodeDetail({ node: rawName }) {
         // suggestions (name / subnet / port) account for it.
         // A WDTT interface is REPORTED via stats.wdtt (it owns its own interface), not the wg/awg `meta` map — so
         // its optimistic "creating" card must dedupe against the live WDTT set too, else it lingers as a ghost.
-        const _wLive = new Set(((Store.stats[name] || {}).wdtt || []).filter(w => w && w.iface).map(w => w.iface));
+        const _wLive = new Set([...((Store.stats[name] || {}).wdtt || []), ...((Store.stats[name] || {}).csqtt || [])].filter(w => w && w.iface).map(w => w.iface));   // self-contained (WDTT + csqtt) live ifaces — for optimistic create/delete dedup
         const _reported = i => (meta && meta[i]) || _wLive.has(i);
         for (const k of Object.keys(Store.ifaceNew)) {
           if (!k.startsWith(_pfx)) continue;
@@ -261,7 +263,7 @@ export function NodeDetail({ node: rawName }) {
         // reading left the card on "deleting" for ever after deleting the managed instance beside it. The
         // orphan card this used to suppress is now prevented at the source, on the node (_wdtt_remove drops
         // the cached proc walk it was being resurrected from).
-        const _stillOnNode = i => _reported(i) || !!(nrec.wdtt_cfg || {})[i];
+        const _stillOnNode = i => _reported(i) || !!(nrec.wdtt_cfg || {})[i] || !!(nrec.csqtt_cfg || {})[i];
         for (const k of Object.keys(Store.ifaceGone)) {
           if (!k.startsWith(_pfx)) continue;
           const i = k.slice(_pfx.length);
@@ -464,13 +466,63 @@ export function NodeDetail({ node: rawName }) {
                     trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
                 : html`<span class="faint">${T("None")}</span>`}</span></div>
             </div></a>`; };
+        // csqtt in the node store (csqtt_cfg) but NOT yet reported in snap.csqtt — a just-created instance the node
+        // hasn't brought up yet, or a wiped one it will re-establish (csqtt self-heals from panel state, no vault).
+        // Shows a syncing card so it doesn't vanish in that window. Same orange treatment as a WDTT missing card.
+        const cmcard = (ifn, cc) => html`<a class="ifcard down" key=${"csqtt-cfg:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${T("Open the csqtt server — details and settings")}>
+          <div class="ifcard-top"><span class="iftype csqtt">CSQTT</span><span class="ifname">${(cc.title || "").trim() || ifn}</span><span class="grow"></span>
+            <${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title=${T("The node brings it up on its next sync")}/></div>
+          <div class="ifcard-rows">
+            <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${cc.listen || "—"}</span></div>
+            <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${cc.tun_addr || "—"}</span></div>
+            <div class="ifrow"><span class="l faint">${T("waiting for the node to bring it up…")}</span></div>
+          </div></a>`;
+        const cmcards = Object.entries(nrec.csqtt_cfg || {})
+          .filter(([ifn]) => !csqttIfaces.some(c => c.iface === ifn) && !pending.includes(ifn))
+          .map(([ifn, cc]) => cmcard(ifn, cc || {}));
+        // csqtt-owned interface card — same chrome as the WDTT card (self-contained kind), but raw-TUN: Listen shows
+        // the host:port, Subnet shows the tun_addr, no fork tag, and the pencil opens the csqtt edit modal.
+        const csqCard = c => {
+          const active = c.active === "active";
+          const ccfg = (nrec.csqtt_cfg || {})[c.iface] || {};
+          const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === c.iface));
+          const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === c.iface && t.online)).length;
+          const _cop = Store.ifaceOp[name + "|" + c.iface];
+          const _copTag = opTag(name + "|" + c.iface);
+          const cconverting = (nrec.proc_status || "").startsWith("converting");
+          const idim = cconverting || !active || (_cop && _cop.phase === "busy");
+          const href = "#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(c.iface);
+          const it = ifReorder.item(c.iface);
+          const badge = html`<span class="iftype csqtt">CSQTT</span><span class="ifname">${c.iface}</span>`;
+          return html`<a key=${"csqtt-if:" + c.iface} class=${"ifcard" + (idim ? " down" : "") + (blocked ? " locked" : "") + it.cls} href=${href} draggable=${false} data-rid=${it.rid}>
+            <div class="ifcard-top"><span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.preventDefault()} ...${ifReorder.grip(c.iface)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>${(blocked || (_cop && _cop.phase === "busy")) ? badge
+              : html`<button class="ifc-edit" title=${T("Edit csqtt server · {v1}", { v1: c.iface })} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditCsqtt(name, c.iface); }}>${badge}<span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span>${cconverting
+                ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
+                : _copTag ? _copTag
+                : active ? null
+                : html`<span class="tg tg-busy"><${Ic} i="clock"/>${T("tag|starting")}</span>`}</div>
+            <div class="ifcard-rows">
+              <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
+              <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${c.tun_addr || "—"}</span></div>
+              <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${ccfg.egress_mode === "forward" && ccfg.egress_node
+                ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(ccfg.egress_node)} title=${T("Exits via {v1}", { v1: Store.nodeName(ccfg.egress_node) + (ccfg.egress_ip ? " (" + ccfg.egress_ip + ")" : "") })}><${Ic} i="server"/>→ ${Store.nodeName(ccfg.egress_node)}</span>`
+                : ccfg.egress_mode === "smart"
+                ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (ccfg.routing || []).filter(r => r.action === "exit").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
+                : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
+              <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
+                ? html`<${OnlinePeersTag} nodeId=${name} iface=${c.iface} orphans=${0} orphHref=${href}
+                    trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
+                : html`<span class="faint">${T("None")}</span>`}</span></div>
+            </div></a>`; };
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.")}<br/><br/>${T("Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.")}</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>${T("reading server…")}</div>`
-          : (!userKeys.length && !pending.length && !mcards.length && !gcards.length && !wdttIfaces.length && !wmcards.length && !ccards.length && !dcards.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("No managed interfaces reported.")}</span></div>`
-          : html`<div class="ifgrid" ...${ifReorder.container()}>${mcards}${wmcards}${gcards}${ifaceIds.map(ifn => {
+          : (!userKeys.length && !pending.length && !mcards.length && !gcards.length && !wdttIfaces.length && !csqttIfaces.length && !wmcards.length && !cmcards.length && !ccards.length && !dcards.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("No managed interfaces reported.")}</span></div>`
+          : html`<div class="ifgrid" ...${ifReorder.container()}>${mcards}${wmcards}${cmcards}${gcards}${ifaceIds.map(ifn => {
               if (Store.ifaceGone[_pfx + ifn]) return delCard(ifn, Store.ifaceGone[_pfx + ifn]);   // teardown in flight → the inert "deleting" card, in place
               const _w = wdttIfaces.find(w => w.iface === ifn);   // WDTT interface → its card (reorders in the same grid); else a normal wg/awg card
               if (_w) return wcard(_w);
+              const _c = csqttIfaces.find(c => c.iface === ifn);   // csqtt interface → its card (self-contained raw-TUN, like WDTT)
+              if (_c) return csqCard(_c);
               const m = meta[ifn];
               if (!m) return null;   // ifaceIds is built before the ifaceGone sweep below, so a marker cleared THIS render can leave a name with nothing behind it — rendering it would read meta of undefined and blank the page
               const it = ifReorder.item(ifn);
@@ -645,15 +697,16 @@ export function nodeIfaces(node, { gone = false } = {}) {
   const pfx = nrec.mesh_prefix || (Store.panelSettings || {}).reserved?.iface_prefix || "swg_";
   const isSys = k => (meta[k] && meta[k].system) || k.startsWith(pfx) || k.startsWith("swg_");
   const wdtt = new Map(((Store.stats[node] || {}).wdtt || []).filter(w => w && w.iface).map(w => [w.iface, w]));
+  const csqtt = new Map(((Store.stats[node] || {}).csqtt || []).filter(c => c && c.iface).map(c => [c.iface, c]));   // csqtt owns its own raw-TUN iface too
   const gonePfx = node + "|";
   const goneOn = gone ? Object.keys(Store.ifaceGone).filter(k => k.startsWith(gonePfx)).map(k => k.slice(gonePfx.length)) : [];
-  const names = [...new Set([...Object.keys(meta).filter(k => !isSys(k)), ...wdtt.keys(), ...goneOn.filter(k => !isSys(k))])];
+  const names = [...new Set([...Object.keys(meta).filter(k => !isSys(k)), ...wdtt.keys(), ...csqtt.keys(), ...goneOn.filter(k => !isSys(k))])];
   return orderById(names, nrec.iface_order, x => x).map(ifn => {
-    const w = wdtt.get(ifn), m = meta[ifn];
+    const w = wdtt.get(ifn), cc = csqtt.get(ifn), m = meta[ifn];
     return {
-      ifn, wdtt: !!w,
-      type: (w || isWdttIface(ifn)) ? "wdtt" : (m && m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg",
-      muted: nodeStale(node) || (w ? (w.active !== "active" && !w.await_restore) : ifaceNotUp(node, ifn)),
+      ifn, wdtt: !!w, csqtt: !!cc,
+      type: (w || isWdttIface(ifn)) ? "wdtt" : (cc || isCsqttIface(ifn)) ? "csqtt" : (m && m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg",
+      muted: nodeStale(node) || (w ? (w.active !== "active" && !w.await_restore) : cc ? (cc.active !== "active") : ifaceNotUp(node, ifn)),
     };
   });
 }
