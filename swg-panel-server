@@ -1956,7 +1956,9 @@ def _sub_node_colors(deps):
     with contextlib.suppress(Exception):
         for nid, n in (nodes_load(deps["nodes_path"]) or {}).items():
             c = (n or {}).get("color")
-            if isinstance(c, dict) and (c.get("dark") or c.get("light")):
+            if isinstance(c, str) and c.strip():          # legacy single-string colour (e.g. auto-enrolled master) → both themes
+                out[nid] = {"dark": c.strip(), "light": c.strip()}
+            elif isinstance(c, dict) and (c.get("dark") or c.get("light")):
                 out[nid] = {"dark": c.get("dark") or "", "light": c.get("light") or ""}
     return out
 
