@@ -1604,10 +1604,12 @@
         // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
         // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.
         var csfork = cd.fork || "amurcanov";
+        var cffork = forkColor("csqtt");   // the csqtt FORK colour (catalog key "csqtt"), distinct from the iface colour cfc
         var cAppName = (cga && (cga.productName || cga.app)) || "CSQTT";
         var ctag = el("span", "scell-tag");
-        var csrv = el("span", null, csfork); csrv.style.color = cfc; ctag.appendChild(csrv);
-        ctag.appendChild(el("span", "scell-tag-sep", " · ")); var capp = el("span", null, cAppName); capp.style.color = cfc; ctag.appendChild(capp);
+        // server + app chips take the FORK colour (like the WDTT/turn cells); the role chip below keeps the iface colour.
+        var csrv = el("span", null, csfork); csrv.style.color = cffork; ctag.appendChild(csrv);
+        ctag.appendChild(el("span", "scell-tag-sep", " · ")); var capp = el("span", null, cAppName); capp.style.color = cffork; ctag.appendChild(capp);
         if (cga && cga.author && cga.author !== csfork) ctag.appendChild(el("span", "scell-tag-by", " by " + cga.author));   // cross-author client only
         srvRow.appendChild(ctag);
         var cBackup = multi && !tgt.primary;                                   // csqtt is its own protocol family → the "CSQTT" role chip, in the csqtt type colour
