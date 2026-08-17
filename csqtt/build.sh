@@ -7,7 +7,7 @@
 # csqtt is PolyForm-Noncommercial-1.0.0 — build only for non-commercial use.
 set -euo pipefail
 
-PIN="31114cb70af67ed9a86adb063e2427ea4802c5c7"   # amurcanov/csqtt v2.0.0 (2026-08-16)
+PIN="31114cb70af67ed9a86adb063e2427ea4802c5c7"   # amurcanov/csqtt v2.0.1 (2026-08-17); v2.0.0 (2ff8a1a) differs by README only
 REPO="https://github.com/amurcanov/csqtt.git"
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${1:?usage: build.sh <out-dir> [amd64|arm64]}"

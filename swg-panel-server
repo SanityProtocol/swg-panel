@@ -487,11 +487,11 @@ WDTT_BUILDS = {                               # fork id -> [(author_version, our
     # that drops a blocked/rotated user's LIVE tunnel (it only denied new connections). The author version alone
     # can't express that, and the node only re-fetches when the version string changes.
     "amurcanov": [("1.2.4-2",  "wdtt-amurcanov-1.2.4-2")],
-    "ildarmaga": [("1.4.63",   "wdtt-ildarmaga-1.4.63")],
-    "wdttplus":  [("13",       "wdtt-wdttplus-13")],
-    "xxcipherx": [("2.0.0.61", "wdtt-xxcipherx-2.0.0.61")],
-    # qWDTT: built from SpaceNeuroX @854a72fe ("Release 1.4.1"). Mirrored into the panel's binary store, so a node
-    # pulls it from the panel and no public release is needed — see qwdtt/README.md.
+    "ildarmaga": [("1.5.40",   "wdtt-ildarmaga-1.5.40")],
+    "wdttplus":  [("14",       "wdtt-wdttplus-14")],
+    "xxcipherx": [("2.0.0.68", "wdtt-xxcipherx-2.0.0.68")],
+    # qWDTT: built from SpaceNeuroX @854a72fe ("Release 1.4.1"), now a published release like the rest — a node
+    # on a fresh install has no panel mirror to pull from, so mirror-only meant the fork simply did not work there.
     "qwdtt":     [("1.4.1",    "wdtt-qwdtt-1.4.1")],
 }
 _WDTT_OWNER_FORK = {                          # catalog owner -> fork id (for owner-keyed callers like _turn_asset_url)
@@ -512,7 +512,7 @@ def _wdtt_current_version(fork):
 # [(author_version, our_release_tag)], newest first; empty until the A1 binary is published (A3b — the publish is
 # outward-facing + held, mirroring the WDTT publish policy). Empty → no `ver` injected → the node uses whatever it
 # has (the pre-placed A1 binary), so the reply path works before any release exists.
-CSQTT_BUILDS = []   # e.g. [("2.0.0", "csqtt-2.0.0")]
+CSQTT_BUILDS = [("2.0.1", "csqtt-2.0.1")]
 def _csqtt_current_version():
     return CSQTT_BUILDS[0][0] if CSQTT_BUILDS else ""
 def _wdtt_tag_for(fork, ver):                 # our release tag for a specific author version ("" / "wdtt" -> current)

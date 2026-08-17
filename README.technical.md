@@ -1,12 +1,13 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.1-beta</code></p>
+<p align="center"><code>1.7.2-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.1-beta** — [full changelog](CHANGELOG.md)
-> - **The panel speaks Russian** — every screen and message, switchable with the **EN / РУ** button in the app bar. The bundled typefaces gained Cyrillic, so a translated screen keeps the same look on every machine.
-> - **Two fixes that could take a panel down:** a TLS key the service couldn't read made the panel die on its next restart, and every update on a Docker install had been failing part-way through.
-> - **No more blank pages** — an interrupted deploy, an unsupported browser, or a screen that fails to draw now each say what's wrong instead of rendering nothing.
+> **What's new in 1.7.2-beta** — [full changelog](CHANGELOG.md)
+> - **csqtt is a first-class server kind** — amurcanov's rewrite of WDTT and its successor, a raw-IP tunnel with no WireGuard inside it. Create one like any other interface, with its own routing, filters and egress; its users sit in Peers with everyone else and get a one-tap `csqtt://` link.
+> - **Adopt a csqtt or qWDTT server the panel didn't create** — the node finds it, and adopting keeps every user connected instead of forcing you to delete the server and lose them.
+> - **Choose what each peer publishes** — click a protocol tag to keep that kind of config off the holder's subscription page, without touching the deployment.
+> - **Traffic charts that had gone flat now record again**, and csqtt/qWDTT peers finally show their rate and totals.
 <!-- WHATS-NEW:END -->
 
 ---

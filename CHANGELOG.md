@@ -3,6 +3,56 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.7.2-beta] — 2026-08-17
+
+### Added
+- **csqtt servers.** csqtt is amurcanov's rewrite of WDTT and its successor: a raw-IP tunnel with no
+  WireGuard inside it, which makes it markedly faster over the same VK relay. It is now a first-class kind
+  in the panel, not a special case — you create one like any other interface, it carries its own routing,
+  filtering and egress, its users appear in Peers with everyone else, and each one gets a one-tap
+  `csqtt://` link on their subscription page. A csqtt user's whole credential is a password the panel
+  issues, so there is no key to hand out and nothing for them to import.
+- **Adopting a csqtt server the panel didn't create.** If csqtt is already running on a node — installed by
+  hand, or left behind when a panel's records were lost — the node now finds it and offers it on the node
+  page. Adopting keeps every user: the panel takes the server over on its own address and port, keeps
+  serving the passwords it already had so nobody is disconnected, and imports each user as a peer you can
+  see and manage. Without this the only way back was to delete the server, which would have destroyed
+  every user on it.
+- **qWDTT servers** (SpaceNeuroX's fork) can be created and adopted like the other WDTT forks, including
+  its **RAW-IP mode** — a second listener that carries traffic without WireGuard for roughly six times the
+  throughput, at the cost of forward secrecy. It is off by default, one switch to turn on, and the panel
+  says plainly what you give up.
+- **Choose what each peer publishes.** The protocol tag on a deployment is now a switch: click it and that
+  kind of config stops appearing on the holder's subscription page. Turn off the direct WireGuard config
+  and leave the turn-proxies, or the reverse. The deployment keeps running either way — this is about what
+  the holder is offered — and a peer can never be left publishing nothing.
+
+### Changed
+- **Server fork binaries are current again.** The WDTT forks ship at their latest upstream releases
+  (ildarmaga 1.5.40, WDTT-Plus 14, XXcipherX 2.0.0.68), and qWDTT and csqtt are now published like the
+  rest — before this, a fresh install had no way to get either of them.
+- **RAW-IP is a switch, not a port.** The app it talks to resolves that port from a single app-wide setting
+  and ignores whatever a link says, so a port you chose could only ever reach users who had edited their
+  app by hand. The panel now fixes it, keeps it free on every node, and allows one RAW server per address —
+  turning it on elsewhere on the same address moves it, and says so first.
+
+### Fixed
+- **Traffic charts that sat at zero.** Fleet throughput, turn-proxy throughput and Online peers had been
+  flat for days on a panel whose history files were left owned by another user — every write failed
+  silently and nothing said why. A file the panel cannot write is now replaced and logged.
+- **csqtt and qWDTT traffic was missing from the graphs**, and their peers showed no rate or total at all:
+  a keyless server has no WireGuard peer to read counters from, so the numbers were there but nothing
+  looked for them.
+- **A csqtt server's card did nothing when clicked.** Its settings sheet referenced a control that only
+  exists for WDTT, so the whole dialog failed to open.
+- **Adopting a server could pick the wrong fork.** qWDTT stores its files exactly like amurcanov's, so the
+  panel guessed wrong and would have managed it with another fork's binary, hiding its RAW mode. It is now
+  identified by a flag only that fork has.
+- **A stopped server offered up no ports or fork on adoption.** The scan that reads them gave up at the
+  first unreadable file in the system's service directory — and on a stock Debian that file sorts second,
+  so it almost always gave up, and the operator was asked for values the server's own service file spells
+  out.
+
 ## [1.7.1-beta] — 2026-08-10
 
 ### Added

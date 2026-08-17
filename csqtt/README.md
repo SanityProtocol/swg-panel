@@ -4,7 +4,7 @@
 VK-TURN proxy (no WireGuard), io_uring dataplane, its own web panel. This directory holds the patch that makes
 it manageable by swg-panel the same way the `wdtt/` forks are, plus a reproducible build.
 
-- **`csqtt-swgpanel.patch`** — pinned to upstream `31114cb7` (v2.0.0, 2026-08-16). Applies with
+- **`csqtt-swgpanel.patch`** — pinned to upstream `31114cb7` (v2.0.1, 2026-08-17). Applies with
   `git apply` from the repo root of a fresh csqtt clone. Verified apply-clean + build-clean + fleet-validated.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
   Needs rustup 1.97.1 + zig + cargo-zigbuild (see the A0 scratchpad toolchain).
