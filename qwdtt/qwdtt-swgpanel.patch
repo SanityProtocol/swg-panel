@@ -1,0 +1,620 @@
+diff --git a/server.go b/server.go
+index bf5df33..888f6c4 100644
+--- a/server.go
++++ b/server.go
+@@ -46,12 +46,18 @@ import (
+ 	pionudp "github.com/pion/transport/v4/udp"
+ )
+ 
++// swg-panel: interface identity is per-INSTANCE, so these are vars set from
++// flags (see swgpanel.go). The values below are upstream's defaults, so an
++// unflagged binary behaves exactly as before.
++var (
++	wgIfaceName  = "wdtt0"
++	wgServerAddr = "10.66.66.1"
++	wgServerCIDR = wgServerAddr + "/16"
++	wgMTU        = 1280
++)
++
+ const (
+-	wgIfaceName           = "wdtt0"
+-	wgServerAddr          = "10.66.66.1"
+-	wgServerCIDR          = wgServerAddr + "/16"
+ 	defaultInternalWGPort = 56001
+-	wgMTU                 = 1280
+ 	keepalive             = 25
+ 
+ 	// Raw-IP роутер (без WireGuard) — отдельный TUN/подсеть/NAT, полностью
+@@ -166,11 +172,14 @@ var (
+ var serverWrapKeys = newWrapKeyStore()
+ 
+ const (
+-	passChars             = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
+-	generatedPasswordLen  = 16
+-	maxGeneratedPasswords = 10
++	passChars            = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
++	generatedPasswordLen = 16
+ )
+ 
++// swg-panel: a var so -max-passwords can raise the stock 10 cap (we build the
++// binary ourselves, for fleet-appropriate scale).
++var maxGeneratedPasswords = 10
++
+ func generatePassword() string {
+ 	b := make([]byte, generatedPasswordLen)
+ 	randomBytes := make([]byte, len(b))
+@@ -471,6 +480,11 @@ func getNextIP() string {
+ 	for _, dev := range db.Devices {
+ 		used[dev.IP] = true
+ 	}
++	// swg-panel: honour -wg-addr's subnet (the stock pool below is hardwired to
++	// 10.66.0.0/16, which cannot host several instances on one node).
++	if swgPool != nil {
++		return swgNextIP(used)
++	}
+ 	for b3 := 0; b3 <= 255; b3++ {
+ 		for b4 := 1; b4 <= 254; b4++ {
+ 			ip := fmt.Sprintf("10.66.%d.%d", b3, b4)
+@@ -1339,6 +1353,9 @@ func putBuf2048(b []byte) {
+ // ==================== Оптимизация ====================
+ 
+ func enableBBR() {
++	if noNat { // swg-panel: host sysctls belong to the node, not to us
++		return
++	}
+ 	log.Println("[SYS] Оптимизация TCP...")
+ 	out, _ := runCmd("bash", "-c", "sysctl net.ipv4.tcp_congestion_control")
+ 	if strings.Contains(out, "bbr") {
+@@ -1722,6 +1739,11 @@ generate:
+ // ==================== NAT ====================
+ 
+ func setupFullConeNAT(wgIface string) error {
++	if noNat { // swg-panel: the node owns NAT/forward/sysctls for this subnet
++		natType = "отключён (-no-nat: NAT/forward/sysctl управляется узлом)"
++		log.Printf("[NAT] %s", natType)
++		return nil
++	}
+ 	log.Println("[NAT] ══════════════════════════════════════")
+ 
+ 	os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
+@@ -1762,6 +1784,10 @@ func setupNftNAT(extIface string) {
+ // выше не трогаются), setupForwardRules переиспользуется как есть — она уже
+ // параметризована только именем интерфейса.
+ func setupRawNAT(rawIface string) error {
++	if noNat { // swg-panel: the node owns NAT for the raw subnet too
++		log.Println("[RAW-NAT] отключён (-no-nat)")
++		return nil
++	}
+ 	extIface := getDefaultInterface()
+ 	log.Printf("[RAW-NAT] Внешний: %s", extIface)
+ 
+@@ -2580,13 +2606,16 @@ func main() {
+ 	adminID := flag.String("admin", "", "Telegram Admin ID")
+ 	botToken := flag.String("bot-token", "", "Telegram Bot Token")
+ 	dnsFlag := flag.String("dns", "8.8.8.8", "DNS серверы для клиентов")
++	swgRegisterFlags() // swg-panel flags (see swgpanel.go)
+ 	flag.Parse()
+ 	dns = *dnsFlag
++	swgApplyFlags()
+ 
+ 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+ 	log.Println("══════════════════════════════════════════")
+-	log.Println("   WDTT Server v2 (Multi-User)")
++	log.Println("   WDTT Server v2 (Multi-User, swg-panel)")
+ 	log.Println("══════════════════════════════════════════")
++	swgBanner()
+ 
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 	defer cancel()
+@@ -2597,23 +2626,32 @@ func main() {
+ 	go func() {
+ 		for s := range sig {
+ 			if s == syscall.SIGHUP {
+-				log.Println("[SYS] Получен сигнал SIGHUP. Перезагрузка базы паролей...")
+ 				if wgDev == nil {
+ 					log.Println("[ERR] WireGuard еще не запущен, пропуск SIGHUP")
+ 					continue
+ 				}
++				// swg-panel: under -desired the PANEL is the source of truth, so a
++				// SIGHUP re-reads desired.json instead of re-reading our own store.
++				if desiredFile != "" {
++					log.Println("[SYS] SIGHUP — сверка desired")
++					reconcileDesired(wgDev)
++					continue
++				}
++				log.Println("[SYS] Получен сигнал SIGHUP. Перезагрузка базы паролей...")
+ 				if err := reloadDB(wgDev); err != nil {
+ 					log.Printf("[ERR] Ошибка перезагрузки базы паролей: %v", err)
+ 				} else {
+ 					log.Println("[SYS] База паролей успешно перезагружена! Активных ключей в памяти:", serverWrapKeys.Count())
+ 				}
+ 			} else {
+-				cancel()
+ 				dbMutex.Lock()
+ 				flushRawDeviceTrafficLocked()
+ 				saveDB()
+ 				dbMutex.Unlock()
+-				time.Sleep(2 * time.Second)
++				// swg-panel: one teardown path — upstream's os.Exit(0) below skips
++				// the deferred interface/firewall cleanup, leaking both.
++				swgShutdown(cancel, wgDev)
++				time.Sleep(200 * time.Millisecond)
+ 				os.Exit(0)
+ 			}
+ 		}
+@@ -2633,31 +2671,43 @@ func main() {
+ 		log.Fatalf("[WG] Запуск: %v", err)
+ 	}
+ 	globalWgDev = wgDev
+-	if removed := cleanupExpiredPasswords(wgDev); removed > 0 {
+-		log.Printf("[DB] Удалено истёкших паролей при старте: %d", removed)
++	// swg-panel: with -desired the PANEL owns lifecycle (it prunes desired), so
++	// the server's own expiry janitor and boot cleanup are off — expiry is still
++	// enforced at the WRAP/GETCONF layer (expired passwords get no WRAP key and
++	// are refused by GETCONF).
++	if desiredFile == "" {
++		if removed := cleanupExpiredPasswords(wgDev); removed > 0 {
++			log.Printf("[DB] Удалено истёкших паролей при старте: %d", removed)
++		}
+ 	}
+ 	syncPersistedPeersToWG(wgDev)
+-	defer func() {
+-		wgDev.Close()
+-		runCmdSilent("ip", "link", "del", wgIfaceName)
+-	}()
++	reconcileDesired(wgDev)
++	defer swgShutdown(cancel, wgDev)
+ 
+ 	go statsLoop(ctx, *configDir)
+-	go expiredPasswordJanitor(ctx, wgDev)
++	if desiredFile == "" {
++		go expiredPasswordJanitor(ctx, wgDev)
++	}
++	go desiredWatcher(ctx, wgDev)
+ 	go botLoop(*botToken, *adminID, wgDev)
+ 
+-	// Запуск HTTP Control API
+-	go func() {
+-		mux := http.NewServeMux()
+-		mux.HandleFunc("/api/profile/status", handleAPIProfileStatus)
+-		mux.HandleFunc("/api/profile/unbind", handleAPIProfileUnbind)
+-		registerAdminAPIRoutes(mux)
+-
+-		log.Printf("[API] Запуск HTTP API на %s (TCP)...", *listen)
+-		if err := http.ListenAndServe(*listen, mux); err != nil {
+-			log.Printf("[API] [ERR] Ошибка запуска HTTP API: %v", err)
+-		}
+-	}()
++	// HTTP Control API. swg-panel: upstream bound this on the PUBLIC DTLS port
++	// (`-listen`), which answers HTTP on the port that is supposed to look like a
++	// VK call and exposes /admin + /api/profile to the internet. It is now OFF
++	// unless an explicit -api-addr (use a loopback address) is given.
++	if swgAPIAddr != "" {
++		go func() {
++			mux := http.NewServeMux()
++			mux.HandleFunc("/api/profile/status", handleAPIProfileStatus)
++			mux.HandleFunc("/api/profile/unbind", handleAPIProfileUnbind)
++			registerAdminAPIRoutes(mux)
++
++			log.Printf("[API] Запуск HTTP API на %s (TCP)...", swgAPIAddr)
++			if err := http.ListenAndServe(swgAPIAddr, mux); err != nil {
++				log.Printf("[API] [ERR] Ошибка запуска HTTP API: %v", err)
++			}
++		}()
++	}
+ 
+ 	addr, _ := net.ResolveUDPAddr("udp", *listen)
+ 	cert, _ := selfsign.GenerateSelfSigned()
+@@ -2879,7 +2929,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 			clientConn.Write([]byte("DENIED:deactivated"))
+ 			log.Printf("[WG] Отказ: пароль %s деактивирован, запрос от %s", maskPassword(password), deviceID)
+ 			dbMutex.Unlock()
+-		} else if valid && isGenPass && !entry.canConnectAndBind(deviceID) {
++		} else if valid && isGenPass && !fixedConfig && !entry.canConnectAndBind(deviceID) {
+ 			// Достигнут лимит устройств или привязано к другому устройству
+ 			clientConn.Write([]byte("DENIED:device_mismatch"))
+ 			log.Printf("[WG] Отказ: пароль %s достиг лимита устройств (%d), запрос от %s", maskPassword(password), entry.MaxDevices, deviceID)
+@@ -2892,9 +2942,12 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 				saveDB()
+ 			}
+ 
+-			dev, exists := db.Devices[deviceID]
++			// swg-panel: under -fixed-config the config is keyed by the PASSWORD,
++			// so one generated password = one keypair + one IP for any device.
++			dkey := getconfDeviceKey(isGenPass, deviceID, password)
++			dev, exists := db.Devices[dkey]
+ 			if !exists {
+-				dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP()}
++				dev = &ClientDevice{DeviceID: dkey, IP: getNextIP()}
+ 			}
+ 			// Устройство могло быть создано раньше только Raw-путём
+ 			// (GETCONF_RAW, см. handleConnRaw) — там PrivKey/PubKey никогда
+@@ -2911,9 +2964,9 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 				if keyErr == nil && dev.IP != "" {
+ 					dev.PrivKey = privB64
+ 					dev.PubKey = pubB64
+-					db.Devices[deviceID] = dev
++					db.Devices[dkey] = dev
+ 					saveDB()
+-					log.Printf("[WG] Сгенерированы ключи для устройства %s (IP: %s)", deviceID, dev.IP)
++					log.Printf("[WG] Сгенерированы ключи для устройства %s (IP: %s)", dkey, dev.IP)
+ 				} else {
+ 					dev = nil
+ 				}
+diff --git a/swgpanel.go b/swgpanel.go
+new file mode 100644
+index 0000000..0a74a70
+--- /dev/null
++++ b/swgpanel.go
+@@ -0,0 +1,371 @@
++package main
++
++// swg-panel additions to the qWDTT (SpaceNeuroX) server.
++//
++// Everything the panel needs lives here; server.go carries only small hooks. All
++// flags default to STOCK behaviour, so a binary built with this file but run
++// without our flags behaves exactly like upstream.
++//
++//	-iface          userspace-WG interface name      (multi-instance per node)
++//	-wg-addr        interface address/subnet, CIDR   (drives the client IP pool)
++//	-mtu            interface MTU
++//	-max-passwords  raise the stock 10-password cap
++//	-desired        panel-owned desired.json         (declarative password set)
++//	-no-nat         never touch host NAT/forward/sysctl (the node owns them)
++//	-fixed-config   one generated password = one keypair+IP, any device (wg parity)
++//	-api-addr       bind the HTTP control API here; EMPTY (default) = do not start it
++//
++// Upstream binds its HTTP admin API on the *public DTLS port* (`-listen`), so a
++// stock server answers HTTP on the same port it pretends to be a VK call on. We
++// default it OFF and require an explicit (loopback) address to enable it.
++
++import (
++	"context"
++	"encoding/json"
++	"flag"
++	"fmt"
++	"log"
++	"net"
++	"os"
++	"os/exec"
++	"strings"
++	"time"
++
++	"golang.zx2c4.com/wireguard/device"
++)
++
++// ── panel-owned globals (stock defaults) ────────────────────────────────────
++
++var (
++	noNat       bool   // -no-nat: the node owns NAT/forward/sysctls
++	desiredFile string // -desired: panel-owned declarative password set
++	fixedConfig bool   // -fixed-config: password-keyed config, device-agnostic
++	swgAPIAddr  string // -api-addr: HTTP control API bind ("" = disabled)
++	swgPool     *net.IPNet
++)
++
++var (
++	swgIfaceFlag  *string
++	swgWgAddrFlag *string
++	swgMTUFlag    *int
++	swgMaxPwFlag  *int
++	swgDesired    *string
++	swgNoNat      *bool
++	swgFixed      *bool
++	swgAPIFlag    *string
++)
++
++// swgRegisterFlags is called from main() before flag.Parse().
++func swgRegisterFlags() {
++	swgIfaceFlag = flag.String("iface", wgIfaceName, "имя userspace-WG интерфейса (для нескольких инстансов на узле)")
++	swgWgAddrFlag = flag.String("wg-addr", wgServerCIDR, "адрес/подсеть интерфейса, IPv4 CIDR (напр. 10.66.66.1/24)")
++	swgMTUFlag = flag.Int("mtu", wgMTU, "MTU интерфейса")
++	swgMaxPwFlag = flag.Int("max-passwords", maxGeneratedPasswords, "лимит сгенерированных паролей")
++	swgDesired = flag.String("desired", "", "путь к panel-owned desired.json (декларативное управление паролями; пусто = режим бота)")
++	swgNoNat = flag.Bool("no-nat", false, "не трогать NAT/forward/sysctl хоста (узел управляет ими)")
++	swgFixed = flag.Bool("fixed-config", false, "один сгенерированный пароль = один keypair+IP для любого устройства (паритет с wg/awg)")
++	swgAPIFlag = flag.String("api-addr", "", "адрес HTTP control API (напр. 127.0.0.1:56100); пусто = API выключен")
++}
++
++// swgApplyFlags is called from main() right after flag.Parse().
++func swgApplyFlags() {
++	if v := strings.TrimSpace(*swgIfaceFlag); v != "" {
++		wgIfaceName = v
++	}
++	applyWgAddr(*swgWgAddrFlag)
++	if *swgMTUFlag > 0 {
++		wgMTU = *swgMTUFlag
++	}
++	if *swgMaxPwFlag > 0 {
++		maxGeneratedPasswords = *swgMaxPwFlag
++	}
++	desiredFile = strings.TrimSpace(*swgDesired)
++	noNat = *swgNoNat
++	fixedConfig = *swgFixed
++	swgAPIAddr = strings.TrimSpace(*swgAPIFlag)
++}
++
++// applyWgAddr parses -wg-addr ("10.66.66.1/24" or a bare "10.66.66.1") into the
++// interface address, its CIDR, and the host pool the client IPs come from.
++func applyWgAddr(cidr string) {
++	cidr = strings.TrimSpace(cidr)
++	if cidr == "" {
++		return
++	}
++	ipStr := cidr
++	if i := strings.Index(cidr, "/"); i >= 0 {
++		ipStr = cidr[:i]
++	} else {
++		cidr = cidr + "/24"
++	}
++	ip := net.ParseIP(strings.TrimSpace(ipStr))
++	if ip == nil || ip.To4() == nil {
++		log.Fatalf("[CFG] неверный -wg-addr %q (ожидается IPv4 CIDR, напр. 10.66.66.1/24)", cidr)
++	}
++	_, ipnet, err := net.ParseCIDR(cidr)
++	if err != nil || ipnet == nil {
++		log.Fatalf("[CFG] неверный -wg-addr %q: %v", cidr, err)
++	}
++	wgServerAddr = ip.To4().String()
++	wgServerCIDR = cidr
++	swgPool = ipnet
++}
++
++// swgNextIP walks the configured pool for a free host address. Skips the network
++// address, the broadcast address and the server's own address. Stock getNextIP
++// hardcodes 10.66.0.0/16, which cannot host several instances on one node.
++func swgNextIP(used map[string]bool) string {
++	if swgPool == nil {
++		return ""
++	}
++	base := swgPool.IP.Mask(swgPool.Mask).To4()
++	if base == nil {
++		return ""
++	}
++	ones, bits := swgPool.Mask.Size()
++	if bits != 32 || ones > 30 {
++		return ""
++	}
++	total := uint32(1) << uint(bits-ones)
++	start := uint32(base[0])<<24 | uint32(base[1])<<16 | uint32(base[2])<<8 | uint32(base[3])
++	for i := uint32(1); i < total-1; i++ {
++		v := start + i
++		ip := net.IPv4(byte(v>>24), byte(v>>16), byte(v>>8), byte(v)).String()
++		if ip == wgServerAddr || used[ip] {
++			continue
++		}
++		return ip
++	}
++	return ""
++}
++
++// getconfDeviceKey keys a GETCONF config by the PASSWORD (not the device) under
++// -fixed-config, so a generated password behaves like a wg/awg config file: one
++// keypair + one IP, portable across the user's devices, one connection at a time
++// (WireGuard itself enforces that).
++func getconfDeviceKey(isGenPass bool, deviceID, password string) string {
++	if fixedConfig && isGenPass {
++		return "pw:" + password
++	}
++	return deviceID
++}
++
++// ── panel-owned desired state ───────────────────────────────────────────────
++
++// DesiredPassword is the panel-owned subset of a generated password's config.
++// Runtime fields (device bindings, traffic counters) are NOT here — the server
++// owns those, and this file is never written by anything but the panel.
++type DesiredPassword struct {
++	ExpiresAt     int64  `json:"expires_at,omitempty"`
++	VkHash        string `json:"vk_hash,omitempty"`
++	Ports         string `json:"ports,omitempty"`
++	IsDeactivated bool   `json:"is_deactivated,omitempty"`
++}
++
++type DesiredFile struct {
++	Passwords map[string]*DesiredPassword `json:"passwords"`
++}
++
++// swgDevicesOf returns every device-store key that belongs to a password: the
++// fixed-config key, the legacy single binding, and the multi-device list.
++func swgDevicesOf(password string, e *PasswordEntry) []string {
++	keys := []string{"pw:" + password}
++	if e != nil {
++		if e.DeviceID != "" && e.DeviceID != "multi" {
++			keys = append(keys, e.DeviceID)
++		}
++		keys = append(keys, e.DeviceIDs...)
++	}
++	return keys
++}
++
++// swgDropDevices removes a password's devices from WireGuard and (optionally)
++// from the store. Never touches devices that belong to another password or to
++// the owner (main) password.
++func swgDropDevices(wgDev *device.Device, password string, e *PasswordEntry, del bool) bool {
++	changed := false
++	for _, k := range swgDevicesOf(password, e) {
++		dev, ok := db.Devices[k]
++		if !ok {
++			continue
++		}
++		removePeerFromWG(wgDev, dev)
++		if del {
++			delete(db.Devices, k)
++		}
++		changed = true
++	}
++	return changed
++}
++
++// reconcileDesired merges the panel's desired generated-password set into the
++// live DB: add new passwords, update the panel-owned fields, drop passwords no
++// longer desired (with their devices and wg peers). Runtime fields survive for
++// passwords that stay, then WRAP keys and wg peers are re-synced — so a panel
++// edit lands with no restart and no tunnel drop for unaffected devices. The
++// owner (main) password is never touched here. No-op if -desired is unset.
++func reconcileDesired(wgDev *device.Device) {
++	if desiredFile == "" {
++		return
++	}
++	data, err := os.ReadFile(desiredFile)
++	if err != nil {
++		if !os.IsNotExist(err) {
++			log.Printf("[DESIRED] Чтение %s: %v", desiredFile, err)
++		}
++		return
++	}
++	var want DesiredFile
++	if err := json.Unmarshal(data, &want); err != nil {
++		log.Printf("[DESIRED] Разбор %s: %v", desiredFile, err)
++		return
++	}
++	if want.Passwords == nil {
++		want.Passwords = map[string]*DesiredPassword{}
++	}
++
++	dbMutex.Lock()
++	changed := false
++
++	// Add / update desired passwords, preserving runtime state.
++	for p, d := range want.Passwords {
++		if p == "" || d == nil {
++			continue
++		}
++		e, ok := db.Passwords[p]
++		if !ok {
++			e = &PasswordEntry{}
++			db.Passwords[p] = e
++			changed = true
++			log.Printf("[DESIRED] + пароль %s", maskPassword(p))
++		}
++		if e.ExpiresAt != d.ExpiresAt || e.VkHash != d.VkHash || e.Ports != d.Ports || e.IsDeactivated != d.IsDeactivated {
++			// Newly deactivated → drop the live tunnel now, not at handshake expiry.
++			if d.IsDeactivated && !e.IsDeactivated {
++				swgDropDevices(wgDev, p, e, false)
++			}
++			e.ExpiresAt = d.ExpiresAt
++			e.VkHash = d.VkHash
++			e.Ports = d.Ports
++			e.IsDeactivated = d.IsDeactivated
++			changed = true
++		}
++	}
++
++	// Remove passwords the panel no longer wants (+ their devices + wg peers).
++	for p, e := range db.Passwords {
++		if _, ok := want.Passwords[p]; ok {
++			continue
++		}
++		swgDropDevices(wgDev, p, e, true)
++		delete(db.Passwords, p)
++		changed = true
++		log.Printf("[DESIRED] - пароль %s", maskPassword(p))
++	}
++
++	// Load-bearing disconnect: a password that is still present but DEACTIVATED
++	// must not keep a live tunnel. Also reaps fixed-config devices whose password
++	// was rotated away earlier. Devices belonging to no password at all are left
++	// alone — the owner (main) password's device lives there.
++	for p, e := range db.Passwords {
++		if e != nil && e.IsDeactivated {
++			if swgDropDevices(wgDev, p, e, false) {
++				changed = true
++			}
++		}
++	}
++	for dkey, dev := range db.Devices {
++		if !strings.HasPrefix(dkey, "pw:") {
++			continue
++		}
++		if _, ok := db.Passwords[dkey[3:]]; !ok {
++			removePeerFromWG(wgDev, dev)
++			delete(db.Devices, dkey)
++			changed = true
++			log.Printf("[DESIRED] × device %s (пароль удалён)", maskPassword(dkey[3:]))
++		}
++	}
++
++	if changed {
++		saveDB()
++	}
++	if err := refreshWrapKeysFromDBLocked(); err != nil {
++		log.Printf("[DESIRED] Обновление WRAP-ключей: %v", err)
++	}
++	dbMutex.Unlock()
++
++	// Re-add surviving devices' peers (idempotent; takes the lock itself).
++	syncPersistedPeersToWG(wgDev)
++}
++
++// desiredWatcher reconciles whenever the desired file's mtime changes — a
++// dependency-free backstop to SIGHUP, so a panel write always lands.
++func desiredWatcher(ctx context.Context, wgDev *device.Device) {
++	if desiredFile == "" {
++		return
++	}
++	var last int64
++	if fi, err := os.Stat(desiredFile); err == nil {
++		last = fi.ModTime().UnixNano()
++	}
++	ticker := time.NewTicker(3 * time.Second)
++	defer ticker.Stop()
++	for {
++		select {
++		case <-ctx.Done():
++			return
++		case <-ticker.C:
++			fi, err := os.Stat(desiredFile)
++			if err != nil {
++				continue
++			}
++			if m := fi.ModTime().UnixNano(); m != last {
++				last = m
++				log.Println("[DESIRED] Изменение файла — сверка")
++				reconcileDesired(wgDev)
++			}
++		}
++	}
++}
++
++// ── teardown ────────────────────────────────────────────────────────────────
++
++// removeManagedFirewall reverses this instance's WDTT_MANAGED NAT/forward rules
++// on a clean stop, scoped to this instance's CIDR + interface so siblings are
++// untouched. No-op under -no-nat (the node owns the rules, and we never added
++// any).
++func removeManagedFirewall() {
++	if noNat {
++		return
++	}
++	extIface := getDefaultInterface()
++	if commandExists("iptables") {
++		for i := 0; i < 5; i++ {
++			exec.Command("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", wgServerCIDR, "-o", extIface, "-m", "comment", "--comment", "WDTT_MANAGED", "-j", "MASQUERADE").Run()
++			exec.Command("iptables", "-D", "FORWARD", "-i", wgIfaceName, "-m", "comment", "--comment", "WDTT_MANAGED", "-j", "ACCEPT").Run()
++			exec.Command("iptables", "-D", "FORWARD", "-o", wgIfaceName, "-m", "comment", "--comment", "WDTT_MANAGED", "-j", "ACCEPT").Run()
++		}
++	}
++}
++
++// swgShutdown is the ONE teardown path for every exit — upstream's signal
++// handler calls os.Exit(0), which skips the deferred interface cleanup.
++func swgShutdown(cancel context.CancelFunc, wgDev *device.Device) {
++	cancel()
++	if wgDev != nil {
++		wgDev.Close()
++	}
++	runCmdSilent("ip", "link", "del", wgIfaceName)
++	removeManagedFirewall()
++}
++
++// swgBanner logs the panel-relevant configuration at boot.
++func swgBanner() {
++	api := swgAPIAddr
++	if api == "" {
++		api = "выключен"
++	}
++	log.Printf("   iface: %s | subnet: %s | desired: %q | no-nat: %v | fixed-config: %v | api: %s",
++		wgIfaceName, wgServerCIDR, desiredFile, noNat, fixedConfig, api)
++	_ = fmt.Sprintf
++}
