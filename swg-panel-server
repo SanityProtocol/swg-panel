@@ -4295,7 +4295,7 @@ TURN_SERVERS = {
     # binary mirror (WDTT_BUILDS → our patched linux-server release). ALL FOUR forks patched + built + published
     # (wdtt-<fork> releases on WDTT_BUILD_REPO): amurcanov, ildarmaga, wdttplus (Ivan4537, server.go @ b3aad32),
     # xxcipherx (XXcipherX, assets/linux-server @ bc1ba26). Build tooling in wdtt/<fork>/build.sh.
-    "amurcanov":    {"label": "amurcanov-wdtt",  "owner": "amurcanov/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#A78BFA", "light": "#7C3AED"}, "clients": ["wdttapp", "qwdtt", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+    "amurcanov":    {"label": "amurcanov",  "owner": "amurcanov/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#A78BFA", "light": "#7C3AED"}, "clients": ["wdttapp", "qwdtt", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      "settings": [], "client_settings": _WDTT_CLIENT_CS},
     "ildarmaga":    {"label": "ildarmaga",  "owner": "ildarmaga/wdtt",                  "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#5B8DEF", "light": "#2563EB"}, "clients": ["pwdtt", "wdttapp", "qwdtt", "wdttplus", "xxcipher", "vkturnproxy"], "reload": "sighup",
                      # richer server: multi-user panel + subscription + Xray + Telegram bot; its native desktop client is the ildarmaga PWDTT build (sub-URL / base64)
@@ -4310,7 +4310,7 @@ TURN_SERVERS = {
     # io_uring, Rust. kind:"csqtt" makes the SPA branch (A6); HIDDEN until that lands so it stays out of the fork
     # picker meanwhile (the reply channel + endpoints work regardless of catalog visibility). We build+host the
     # binary ourselves (CSQTT_BUILDS). PolyForm-Noncommercial-1.0.0 — non-commercial use only.
-    "csqtt":        {"label": "amurcanov-csqtt",      "owner": "amurcanov/csqtt",                 "kind": "csqtt", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#F97316", "light": "#C2410C"}, "clients": ["csqttapp"], "reload": "sighup",
+    "csqtt":        {"label": "amurcanov",      "owner": "amurcanov/csqtt",                 "kind": "csqtt", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#38BDF8", "light": "#0284C7"}, "clients": ["csqttapp"], "reload": "sighup",
                      "settings": [], "client_settings": _WDTT_CLIENT_CS},
 }
 # client_settings = the app-DEDICATED knobs (per SETTINGS SPLIT): admin-chosen VALUES fed into the client

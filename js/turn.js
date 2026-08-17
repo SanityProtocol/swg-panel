@@ -1972,7 +1972,10 @@ export function EditCsqttSheet({ node, iface }) {
 export function ForkTag({ fork, suffix, title }) {
   if (!fork) return null;
   const col = turnColor(fork) || WDTT_COLOR;
-  const label = (turnForkList().find(x => x.id === fork) || {}).label || fork;
+  const fk = turnForkList().find(x => x.id === fork) || {};
+  const label = fk.label || fork;
+  // Both amurcanov forks now read "amurcanov"; the kind-specific title (and the fork colour) tell them apart.
+  const defTitle = fk.kind === "csqtt" ? T("CSQTT fork: {v1}", { v1: label }) : T("WDTT fork: {v1}", { v1: label });
   return html`<span class="tg" style=${"color:" + col + ";background:color-mix(in srgb," + col + " 16%,transparent)"}
-    title=${title || (T("WDTT fork: {v1}", { v1: label }))}>${label}${suffix || ""}</span>`;
+    title=${title || defTitle}>${label}${suffix || ""}</span>`;
 }
