@@ -1205,8 +1205,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .pubtg.lone:hover{box-shadow:none}
 /* RAW-IP mode is on: amber, the same register as every other "this needs your attention" tag — it trades
    WireGuard's handshake for throughput, so it never reads as a neutral capability chip. */
-.tg-raw{background:color-mix(in srgb,#F0913C 15%,transparent);color:#F0913C}
-.rawport{color:#F0913C;font-weight:500}   /* the RAW port riding along in a Listen row — same hue as .tg-raw */
+.tg-raw{background:color-mix(in srgb,#FACC15 15%,transparent);color:#FACC15}   /* RAW = a qWDTT capability → the qWDTT fork colour; applyForkColors re-injects the operator's pick */
+.rawport{color:#FACC15;font-weight:500}   /* the RAW port riding along in a Listen row — same hue as .tg-raw */
 /* The RAW note under a peer's config — a FOOTNOTE, below the QR row, never inside it. It sat in
    .deploy-body (a flex row) with white-space:nowrap, which made it an unshrinkable sibling and collapsed
    the QR column to 0px: the note appeared to have replaced the config. It wraps, and it stays out of that row. */

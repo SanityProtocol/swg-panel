@@ -1079,7 +1079,12 @@ export function useAnchoredList(open, setOpen, deps) {
 export function applyForkColors() {
   let el = document.getElementById("tf-colors");
   if (!el) { el = document.createElement("style"); el.id = "tf-colors"; (document.head || document.documentElement).appendChild(el); }
-  el.textContent = turnForkList().map(f => ".tf-" + f.id + "{--tfc:" + turnColor(f.id) + "}").join("");
+  // RAW-IP is a qWDTT capability, so its tag/port take the qWDTT fork's colour — including whatever the
+  // operator picked for it in Settings. One rule, so every RAW mark tracks that fork instead of a hardcoded hue.
+  const raw = turnColor("qwdtt") || "#FACC15";
+  el.textContent = turnForkList().map(f => ".tf-" + f.id + "{--tfc:" + turnColor(f.id) + "}").join("")
+    + ".tg-raw{color:" + raw + ";background:color-mix(in srgb," + raw + " 15%,transparent)}"
+    + ".rawport{color:" + raw + "}";
 }
 // ---- palette overrides (Panel settings → Interfaces / Display) ----
 // Interface protocol colours (wg / awg), peer-health colours (blocked / faulty) and the brand/theme colour
