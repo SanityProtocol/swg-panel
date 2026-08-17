@@ -56,7 +56,7 @@ export function turnOwner(svc) {
 export function turnForkList() {
   const cat = Store.turnCatalog;
   if (cat && Array.isArray(cat.servers) && cat.servers.length)
-    return cat.servers.map(s => ({ id: s.id, label: s.label || s.id, product: s.product || "", owner: s.owner || "", kind: s.kind || "turn",
+    return cat.servers.map(s => ({ id: s.id, label: s.label || s.id, product: s.product || "", raw: !!s.raw, owner: s.owner || "", kind: s.kind || "turn",
       wrap: s.wrap || "", keyflag: s.keyflag, color: (s.color || {}).dark, colorL: (s.color || {}).light, hidden: !!s.hidden,
       protocols: (Array.isArray(s.protocols) && s.protocols.length) ? s.protocols : ["wg", "awg"],
       settings: Array.isArray(s.settings) ? s.settings : [], client_settings: Array.isArray(s.client_settings) ? s.client_settings : [], clients: s.clients || [], compat: s.compat || {}, client_schemas: s.client_schemas || {}, cli_authors: Array.isArray(s.cli_authors) ? s.cli_authors : ["samosvalishe"] }));

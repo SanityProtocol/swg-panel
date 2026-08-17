@@ -62,6 +62,7 @@
       vkAddApp: "Add this VK call link to {app}", vkAddFork: "Add this VK call link to {fork} app",
       backup: "Backup",
       vkMissingT: "No VK call link provided in the subscription", vkMissing: "Create a VK call and add its vk.ru/call/join/… link in {app}", theApp: "the app",
+      rawT: "Faster mode available", rawD: "In the app, set the server RAW port to {port} and switch the connection mode to RAW. It drops WireGuard for speed, so use it only where that is fine.",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
       outOfDate: "This link is out of date — ask your administrator for a fresh one.",
       someBad: "Some peers couldn’t be decrypted — this link may be out of date. Ask your administrator for a fresh one.",
@@ -119,6 +120,7 @@
       vkAddApp: "Добавьте эту ссылку на звонок VK в {app}", vkAddFork: "Добавьте эту ссылку на звонок VK в приложении",
       backup: "Запасной",
       vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Создайте звонок VK и добавьте ссылку vk.ru/call/join/… в {app}", theApp: "приложении",
+      rawT: "Доступен быстрый режим", rawD: "В приложении укажите RAW-порт сервера {port} и переключите режим подключения на RAW. Он работает без WireGuard — включайте, если это допустимо.",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
       outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
       someBad: "Некоторые пиры не удалось расшифровать — возможно, ссылка устарела. Попросите у администратора новую.",
@@ -1640,7 +1642,7 @@
         var wasClient = (wga && wga.enc) ? wga.enc : ((subOs() === "ios") ? "anton48" : "wdtt");
         var wclientQR = !!(wga && wclients[wga.cid] && wclients[wga.cid].qr);   // only some clients scan a QR; the rest import a pasted link
         var wart = SWGTurn.wdttArtifact({ password: wd.password, endpoint_host: wd.endpoint_host, dtls_port: wd.dtls_port,
-          wg_port: wd.wg_port, tun_port: wd.tun_port, vk_hash: wd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, wasClient);
+          wg_port: wd.wg_port, tun_port: wd.tun_port, raw_port: wd.raw_port, vk_hash: wd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, wasClient);
         var wAppName = (wga && (wga.productName || wga.app)) || wart.app;
         // Badge "<fork> · <app>", collapsing to just the fork when the app name echoes it — same rule the turn cells use.
         var wHasApp = wAppName && wAppName !== wfork;
@@ -1668,6 +1670,14 @@
         // turn-family fork, so it gets the identical get-app dropdown (logo/name → releases page · ⬇ → direct file for
         // this OS) and Start-button behaviour (open the app via the deep-link below, or fetch its installer).
         if (wga) { ctrl.dlAppUrl = wga.file; ctrl.dlAppFile = wga.fileName; ctrl.dlAppName = wga.app; ctrl.dlAppPage = wga.page; node.appendChild(getAppRow(wga)); }
+        // RAW-IP mode: this server accepts it, but no WDTT app can read the port from a link yet — so state the
+        // number and the two settings that switch it on. Speed is the reason to bother; the trade is named.
+        if (wd.raw_port) {
+          var wraw = el("div", "scell-raw");
+          wraw.appendChild(el("div", "scell-raw-t", t("rawT")));
+          wraw.appendChild(el("div", "scell-raw-d", t("rawD").replace("{port}", wd.raw_port)));
+          cell.appendChild(wraw);
+        }
         ctrl.cliApp = false; ctrl.vktgz = false; ctrl.wgTurn = false;   // WDTT clients are apps, never a CLI/VKTGZ/wgTurn flow
         // The VK link is embedded IN the WDTT link (wrapAPassword+vkLink / wdtt://…:vkHash), so no separate "add this
         // link" prompt is needed. Wire the payload straight into the shared config/QR + Start-button machinery.

@@ -703,6 +703,7 @@ export function wdttArtInput(peer, t) {
     endpoint_host: (nrec.endpoint_host || "").trim() || (_lh && _lh !== "0.0.0.0" ? _lh : "") || _pub,
     dtls_port: String(rb.listen || "").split(":").pop() || "56000",
     wg_port: rb.wg_port || 56001, tun_port: "9000",
+    raw_port: rb.raw_port || "",   // RAW-IP mode, when this server accepts it (the user enters it in the app)
     vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) };
 }
 // The csqtt:// client link input for a peer's csqtt deployment — assembled from the node read-back (endpoint /
@@ -786,6 +787,7 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
         : html`<div class="wdtt-link mono">${uri}</div>`}
       ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>` : null}
+      ${w.raw_port ? html`<div class="hint" style="margin-top:6px">${T("RAW mode is on for this server (port {v1}). The link can't carry it — the user sets that port in the app and switches the mode to RAW.", { v1: w.raw_port })}</div>` : null}
       ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">${T("row|kind")}</span><span class="vv">${T("WDTT · keyless (server-minted key)")}</span></div>
         <div class="row"><span class="k">${T("row|endpoint")}</span><span class="vv">${w.endpoint_host || "—"}:${w.dtls_port}</span></div>

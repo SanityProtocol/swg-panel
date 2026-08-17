@@ -7448,7 +7448,8 @@ def api(method, path, qs, body, deps):
                         # routing / filters. Config fields only — never the owner password / sealed key material.
                         "wdtt_cfg": {ifn: {k: ov.get(k) for k in ("wg_addr", "listen", "fork", "wg_port", "max_passwords",
                                                                    "stopped", "block", "egress_mode", "egress_node",
-                                                                   "egress_ip", "wan_iface", "routing", "title", "params") if k in ov}
+                                                                   "egress_ip", "wan_iface", "routing", "title", "params",
+                                                                   "raw_port", "raw_iface", "raw_addr") if k in ov}
                                      for ifn, ov in _w.items()},
                         # DESIRED csqtt config (node store) so the SPA edit modal can prefill listen / address / egress /
                         # routing / filters. Config fields only — never the owner password / minted access passwords.

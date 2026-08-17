@@ -1193,6 +1193,9 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .tg-wdtt{background:rgba(129,181,18,.16);color:#81B512}   /* WDTT type tag; applyThemeColors injects the tunable colour */
 .tg-csqtt{background:rgba(249,115,22,.16);color:#F97316}   /* csqtt type tag; applyThemeColors injects the tunable colour */
 .tg-turn{color:var(--tfc,#B49BF7);background:color-mix(in srgb,var(--tfc,#A78BF5) 17%,transparent)}
+/* RAW-IP mode is on: amber, the same register as every other "this needs your attention" tag — it trades
+   WireGuard's handshake for throughput, so it never reads as a neutral capability chip. */
+.tg-raw{background:color-mix(in srgb,#F0913C 15%,transparent);color:#F0913C}
 /* the general turn-proxy accent (matches the turn-section panel icon .panel-ic.t-turn) */
 .tf-gen{--tfc:#7C5CFF}
 /* collapsed "turn ×N" badge (>3 proxies forward to one iface): general colour + a highlighted, ringed area.

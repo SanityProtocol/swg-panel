@@ -277,6 +277,11 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .scell-vkwarn { max-width: 96%; margin: 0 auto; text-align: center; line-height: 1.15; color: #f97316; }
 .scell-vkwarn-t { font-size: clamp(12px, 3.4vw, 13.5px); font-weight: 700; }
 .scell-vkwarn-d { margin-top: 0; font-size: clamp(11.5px, 3.3vw, 13px); font-weight: 500; }
+/* RAW-IP availability note — informational, not a warning: the peer's link works as-is, this is an optional
+   faster mode they can switch on by hand. Muted, so it never competes with the vk-missing warning above it. */
+.scell-raw { max-width: 96%; margin: 6px auto 0; text-align: center; line-height: 1.2; color: var(--muted, #8aa0b4); }
+.scell-raw-t { font-size: clamp(11.5px, 3.2vw, 12.5px); font-weight: 700; color: #F0913C; }
+.scell-raw-d { margin-top: 1px; font-size: clamp(10.5px, 3vw, 11.5px); font-weight: 500; }
 
 /* the stage — QR or config, centred and capped so it never looks oversized on a tablet */
 .scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }

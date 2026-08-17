@@ -1561,6 +1561,7 @@ export function WdttCard({ node, w, reorder }) {
     <div class="ifcard-rows">
       <div class="ifrow"><span class="l">${T("WDTT fork")}</span><span class="r">${forkLabel(w.fork || "amurcanov")}</span></div>
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${w.listen || "—"}</span></div>
+      ${w.raw_port ? html`<div class="ifrow"><span class="l">${T("RAW listen")}</span><span class="r addr" title=${T("RAW-IP mode — no WireGuard, no forward secrecy")}>${ipOf(w.listen || "") || ""}:${w.raw_port}</span></div>` : null}
       <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r"><a class="tg tg-wdtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(w.iface)} onClick=${e => e.stopPropagation()}>${w.iface}</a></span></div>
     </div></div>`;
 }
@@ -1599,21 +1600,34 @@ export function WdttManageSheet({ node, w: w0 }) {
   const [hostCustom, setHostCustom] = useState(initHost && !ips.includes(initHost) ? initHost : "");
   const [port, setPort] = useState(lport || "");
   const [msg, setMsg] = useState(null);
+  // RAW-IP mode — a SECOND listener on the same server, qWDTT-only and off unless the operator asks for it.
+  const rawCapable = !!(turnForkList().find(x => x.id === fork) || {}).raw;
+  const rawCur = String(cfg.raw_port || w.raw_port || "");
+  const [rawOn, setRawOn] = useState(!!rawCur);
+  const [rawPort, setRawPort] = useState(rawCur);
+  const [rawOpen, setRawOpen] = useState(false);
   const wgPort = String(cfg.wg_port || w.wg_port || "56001");
   const newListen = (ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0") + ":" + (port.trim() || "56000");
   const endpointDirty = !!oldListen && newListen !== oldListen;
   const titleDirty = title.trim() !== (cfg.title || "").trim();
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
-  const anyDirty = endpointDirty || titleDirty || paramsDirty;
+  const rawWant = (rawOn && rawCapable) ? (rawPort.trim() || "") : "";
+  const rawDirty = rawWant !== rawCur;
+  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty;
   // live DTLS-port check: must differ from this instance's own internal WG port, and not collide with any other
   // port on the node (its own DTLS/WG ports don't count). Blocks Save so a clash never becomes a node "FAILED TO APPLY".
   const wperr = (port.trim() && Number(port) === Number(wgPort)) ? T("The DTLS port and the internal WG port must differ.")
     : portErrMsg(node, port, [lport, wgPort]);
+  const rawErr = !rawOn || !rawCapable ? ""
+    : !rawPort.trim() ? T("Pick a port for RAW traffic.")
+    : !/^\d+$/.test(rawPort.trim()) ? T("The RAW port must be a number.")
+    : (rawPort.trim() === port.trim() || rawPort.trim() === wgPort) ? T("The RAW port must differ from the listen and internal WG ports.")
+    : portErrMsg(node, rawPort, [rawCur, lport, wgPort]);
   const doSave = () => {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
+    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw_port: Number(rawWant) || 0, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); Store.poll(); })
       .catch(e => fail((e && e.message) || T("save failed")));
   };
@@ -1624,11 +1638,12 @@ export function WdttManageSheet({ node, w: w0 }) {
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
       return;
     }
-    if (paramsDirty) { doSave(); return; }   // extra ExecStart flags → the node rewrites the unit + restarts
+    if (rawErr) return setMsg({ k: "err", t: rawErr });
+    if (paramsDirty || rawDirty) { doSave(); return; }   // extra ExecStart flags / RAW listener → the node rewrites the unit + restarts
     // title-only → a cosmetic panel-side label (no node restart, like a turn-proxy title): store + close immediately
     closeModal();
     pushOptTitle("w|" + node + "|" + iface, title.trim());   // reflect on the card instantly
-    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
+    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw_port: Number(rawWant) || 0, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
       .then(r => { if (r && r.ok) { Store.poll(); toast(T("Title saved."), "ok"); } else toast(srvText(r) || T("Save failed."), "err"); });
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting} title=${title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
@@ -1655,6 +1670,18 @@ export function WdttManageSheet({ node, w: w0 }) {
         <div class="field"><label>${T("Listen port")}</label><input class=${wperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="56000"/>${wperr ? html`<div class="hint err">${wperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>
       </div>
       <div class="field"><label>${T("Forwards to")}</label><div class="ro-field" style="display:flex;align-items:center;gap:8px"><span class="mono">${iface} · 127.0.0.1:${wgPort}</span> <span class="faint">${T("— self-contained (its own userspace-WireGuard)")}</span><span class="grow"></span><button class="btn btn-mini" disabled=${blocked || awaiting} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
+      ${rawCapable ? html`<${Disclosure} title=${T("RAW-IP mode")}
+        summary=${rawCur ? html`<span class="tg tg-raw">${T("on")} · ${rawCur}</span>` : html`<span class="faint">${T("val|off")}</span>`}
+        open=${rawOpen} onToggle=${() => setRawOpen(o => !o)}>
+        <p class="hint" style="margin:0 0 10px">${T("Carries a peer's traffic without WireGuard — roughly 6× the throughput through the same VK relay. The server keeps its normal WireGuard listener, so peers choose per device.")}</p>
+        <div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${Trich("RAW drops WireGuard's handshake: *no forward secrecy and no replay protection*. Anyone who later learns a peer's password can read traffic they recorded earlier. Turn it on for people who need the speed and accept that.")}</span></div>
+        <label class="obfctl" style="margin-bottom:10px"><${Switch} on=${rawOn} onChange=${v => { setRawOn(v); if (v && !rawPort.trim()) setRawPort(String((Number(port) || 56000) + 20)); }}/> <span class="obfctl-lbl">${T("Accept RAW connections")}</span></label>
+        ${rawOn ? html`<${Fragment}>
+          <div class="field"><label>${T("RAW port")}</label><input class=${rawErr ? "bad" : ""} value=${rawPort} onInput=${e => setRawPort(e.target.value)} placeholder="56020" autocomplete="off"/>
+            ${rawErr ? html`<div class="hint err">${rawErr}</div>` : html`<div class="hint">${T("UDP, separate from the listen and internal WG ports. The node opens it and routes the RAW subnet.")}</div>`}</div>
+          <div class="notice" style="margin-top:10px"><${Ic} i="info"/><span>${Trich("The qWDTT app can't read this from a link yet, so each user sets it once: *Settings → server raw port = {v1}*, then switch the connection mode to *raw*. Their existing link keeps working for WireGuard mode.", { v1: rawPort.trim() || "—" })}</span></div>
+        <//>` : null}
+      <//>` : null}
       <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
         <p class="hint" style="margin:0 0 12px">${T("Extra ExecStart flags for this {v1} server. WDTT is self-contained — its real config lives per interface — so there's little here beyond advanced flags.", { v1: forkLabel })}</p>
         <${TurnServerFields} schema=${[]} vals=${{}} setV=${() => {}} extra=${params} setExtra=${setParams} template=${false} wdtt=${true} noHint=${true}/>
@@ -1882,7 +1909,9 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const endpointDirty = !!oldListen && newListen !== oldListen;
   const titleDirty = title.trim() !== (cfg.title || "").trim();
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
-  const anyDirty = endpointDirty || titleDirty || paramsDirty;
+  const rawWant = (rawOn && rawCapable) ? (rawPort.trim() || "") : "";
+  const rawDirty = rawWant !== rawCur;
+  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty;
   const wperr = portErrMsg(node, port, [lport]);
   const doSave = () => {
     const key = node + "|" + iface, verb = "apply";
