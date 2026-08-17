@@ -3,7 +3,7 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-## [1.7.6-beta] — 2026-08-18
+## [1.7.7-beta] — 2026-08-18
 
 ### Added
 - **Every third-party licence in one place.** [THIRD-PARTY.md](THIRD-PARTY.md) now lists everything swgPanel
@@ -56,6 +56,11 @@ earlier releases predate the changelog — see the git history. · Русски�
   turning it on elsewhere on the same address moves it, and says so first.
 
 ### Fixed
+- **csqtt servers restarted every few seconds on bare metal.** The service definition tried to permit the io_uring
+  system calls csqtt's data path depends on, but named a permission group that does not exist — so it was quietly
+  ignored and those calls were refused. The server could not carry traffic, the node kept restarting it, and every
+  connected client dropped with it. Docker installs were never affected. Updating repairs the service definition of
+  any csqtt server you already have, restarting it once.
 - **A server's own address now wins over the node's.** On a node with several public IPs, a WDTT or csqtt server
   binds the one you picked for it — but both the panel and the subscription page published the node's address with
   that server's port, a pair nothing listens on. The address the server actually binds now takes precedence, and
