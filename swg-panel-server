@@ -6420,6 +6420,8 @@ def _resolve_iface_blocks(node, snap, panel_settings, mode):
     # NOT snap.interfaces). The datapath is subnet-based, so a WDTT subnet drops exactly like an interface's.
     for _wov in (node.get("wdtt") or {}).values():
         _add(_wdtt_net((_wov or {}).get("wg_addr") or ""), _validate_block((_wov or {}).get("block"), panel_settings))
+        if (_wov or {}).get("raw_port"):   # a RAW listener is the SAME instance on a second subnet — same filters
+            _add(_wdtt_net((_wov or {}).get("raw_addr") or ""), _validate_block((_wov or {}).get("block"), panel_settings))
     for _cov in (node.get("csqtt") or {}).values():   # csqtt TUN subnets drop by `ip saddr <net>` exactly like WDTT/interfaces
         _add(_wdtt_net((_cov or {}).get("tun_addr") or ""), _validate_block((_cov or {}).get("block"), panel_settings))
     return entries, srcs, {s: sorted(v) for s, v in mech.items()}
@@ -6545,6 +6547,13 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             if not S:
                 continue
             _collect_egress(nid, _wov, S, targets)
+            # RAW is a second subnet on the SAME instance, so it inherits that instance's egress mode and
+            # routing rules — otherwise turning RAW on would quietly bypass a forward/smart policy (and the
+            # Force-DNS + v6 fail-closed rules that ride the smart set with it).
+            if (_wov or {}).get("raw_port"):
+                _RS = _wdtt_net((_wov or {}).get("raw_addr") or "")
+                if _RS:
+                    _collect_egress(nid, _wov, _RS, targets)
         for _cov in (node.get("csqtt") or {}).values():   # csqtt instances too (subnet from tun_addr) — subnet-based, routed identically
             if not _cov:
                 continue
