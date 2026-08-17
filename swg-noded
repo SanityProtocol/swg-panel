@@ -3264,7 +3264,15 @@ def _wdtt_is_server(flags):
     -iface, and _wdtt_iface_of then attributed it to the DEFAULT interface: the foreign lookup for wdtt0 returned
     a TURN-PROXY, the panel offered its port as "currently" the one to adopt, and the adopt would have signalled
     it. A turn-proxy carries -connect/-obf-*/-wrap-*; none of the flags below, and no "wdtt" in its path."""
-    if "wdtt" in (flags.get("_exe") or "").lower():
+    # csqtt (amurcanov's Rust rewrite) is a DISTINCT kind with its own reconcile loop, but it also names its binary
+    # `server` and carries -iface/-config-dir/-desired — so without this it looks like a foreign WDTT server, the
+    # scan claims its raw-TUN interface, and the panel offers the managed csqtt instance for ADOPTION ("orphan").
+    # It carries -tun-addr (a WDTT server uses -wg-addr, never -tun-addr) and its binary lives under /opt/swg-csqtt.
+    # NB: don't key off -no-nat — our WDTT servers pass it too; only -tun-addr and the exe path are csqtt-exclusive.
+    _exe = (flags.get("_exe") or "").lower()
+    if "csqtt" in _exe or (flags.get("tun-addr") or "").strip():
+        return False
+    if "wdtt" in _exe:
         return True
     return any((flags.get(k) or "").strip() for k in ("iface", "config-dir", "wg-port", "wg-addr", "desired"))
 
@@ -3705,6 +3713,8 @@ def iface_candidates(node_cfg):
     # exactly an adoption candidate — and since reconcile_wdtt now preserves those instead of deleting them, this
     # is what makes them visible; otherwise they'd survive on disk and appear nowhere.
     managed |= set(k for k, v in local_wdtt.items() if (v or {}).get("panel_managed"))
+    with contextlib.suppress(Exception):
+        managed |= set(_csqtt_load().keys())     # csqtt is a distinct managed kind — never a wg/awg/WDTT candidate
     names_wdtt = set(k for k in local_wdtt if k not in managed)
     names = set(names_wdtt)                                  # unadopted local WDTT instances are candidates too
     for tool in (["wg"], ["awg"]):                           # kernel + any userspace socket the CLI can read
