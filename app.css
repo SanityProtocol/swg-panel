@@ -798,6 +798,12 @@ input:focus,select:focus{outline:none;border-color:var(--brand)}
 /* read-only field value — matches an input's box but visibly non-editable (create-time settings shown in an edit sheet) */
 .ro-field{background:var(--surface);border:1px dashed var(--line-solid);color:var(--dim);border-radius:var(--r-sm);
   padding:9px 12px;font-size:13px;width:100%;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* read-only row that carries an action. The button must never be the thing that gets clipped — .ro-field's own
+   overflow:hidden would eat it, and a wider sheet only moves the breakpoint (a longer translation re-breaks it).
+   So the identity and the button hold their size and the descriptive note is what truncates. */
+.ro-field.ro-act{display:flex;align-items:center;gap:8px;overflow:visible}
+.ro-act>.mono,.ro-act>.btn{flex:0 0 auto}
+.ro-act>.ro-note{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 textarea.ta{background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);padding:10px 12px;font-family:var(--mono);font-size:13px;width:100%;resize:vertical;line-height:1.6;min-height:84px;word-break:break-all}
 textarea.ta:focus{outline:none;border-color:var(--brand)}
 textarea.ta::placeholder{color:var(--faint)}
