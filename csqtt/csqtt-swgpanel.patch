@@ -1,0 +1,684 @@
+diff --git a/csqtt-uring/dataplane.rs b/csqtt-uring/dataplane.rs
+index b11262c..4906c1d 100644
+--- a/csqtt-uring/dataplane.rs
++++ b/csqtt-uring/dataplane.rs
+@@ -2,7 +2,7 @@
+ // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+ 
+ use crate::{
+-    net_setup::{TUN_ADDR, TUN_IFACE, enable_ipv4_forwarding, setup_nat},
++    net_setup::{enable_ipv4_forwarding, setup_nat},
+     perf::{self, Profiler, Stage, thread_cpu_time_ns},
+     uring_io::{IoCounters, PacketSink, UringIo},
+ };
+@@ -37,8 +37,9 @@ impl DataplaneConfig {
+     pub fn new(listen: SocketAddr) -> Self {
+         Self {
+             listen,
+-            tun_iface: TUN_IFACE.to_owned(),
+-            tun_addr: TUN_ADDR.to_owned(),
++            // swg-panel: iface/addr follow --iface / --tun-addr (stock: csqtt1 / 10.66.67.1).
++            tun_iface: crate::swgpanel::iface().to_owned(),
++            tun_addr: crate::swgpanel::gw_addr().to_owned(),
+             command_capacity: 1024,
+         }
+     }
+@@ -165,7 +166,10 @@ fn run_dataplane<L>(
+ where
+     L: DataplaneLogic,
+ {
+-    enable_ipv4_forwarding()?;
++    // swg-panel: under --no-nat the node owns ip_forward + MASQUERADE for csqtt subnets; skip host mutation.
++    if !crate::swgpanel::no_nat() {
++        enable_ipv4_forwarding()?;
++    }
+     let mut io = match UringIo::new(
+         config.listen,
+         event_fd.as_raw_fd(),
+@@ -178,7 +182,9 @@ where
+             return Err(error);
+         }
+     };
+-    setup_nat(&config.tun_iface)?;
++    if !crate::swgpanel::no_nat() {
++        setup_nat(&config.tun_iface)?;
++    }
+     perf::publish_dataplane_tid();
+     let _ = startup_tx.send(Ok(()));
+     let mut running = true;
+diff --git a/csqtt-uring/main.rs b/csqtt-uring/main.rs
+index b858193..8c67c11 100644
+--- a/csqtt-uring/main.rs
++++ b/csqtt-uring/main.rs
+@@ -14,6 +14,7 @@ mod proxy_route;
+ #[path = "../shared/selective_fec.rs"]
+ mod selective_fec;
+ mod striped_scheduler;
++mod swgpanel;
+ mod tproxy;
+ mod tun_device;
+ #[cfg(test)]
+@@ -115,6 +116,34 @@ struct Args {
+         help = "Число последних DPI-записей"
+     )]
+     samples: usize,
++
++    // ── swg-panel integration flags (all optional; absent → stock csqtt behaviour) ──
++    #[arg(long, help = "swg-panel: TUN interface name for multi-instance (stock: csqtt1)")]
++    iface: Option<String>,
++    #[arg(
++        long = "tun-addr",
++        help = "swg-panel: TUN gateway CIDR /24, e.g. 10.66.68.1/24 (stock: 10.66.67.1/24)"
++    )]
++    tun_addr: Option<String>,
++    #[arg(
++        long = "no-nat",
++        default_value_t = false,
++        help = "swg-panel: skip ip_forward + iptables NAT (the node owns NAT for csqtt subnets)"
++    )]
++    no_nat: bool,
++    #[arg(
++        long = "no-web",
++        default_value_t = false,
++        help = "swg-panel: run headless — no web admin panel (it binds 0.0.0.0) and no DPI/syscalls monitor sockets; the panel owns all state via --desired, so these are unused surfaces"
++    )]
++    headless: bool,
++    #[arg(
++        long,
++        help = "swg-panel: declarative desired-passwords JSON, panel-owned (SIGHUP/mtime reload, no restart)"
++    )]
++    desired: Option<std::path::PathBuf>,
++    #[arg(long = "max-passwords", help = "swg-panel: max generated passwords (stock: 20)")]
++    max_passwords: Option<usize>,
+ }
+ 
+ #[derive(Debug, Default, serde::Deserialize)]
+@@ -1248,6 +1277,16 @@ async fn main() -> Result<()> {
+         bail!("csqtt-server must run as root");
+     }
+ 
++    // swg-panel: lock in the per-instance config (iface/subnet/NAT/desired/max) before anything reads it.
++    swgpanel::init(swgpanel::build(
++        args.iface.clone(),
++        args.tun_addr.clone(),
++        args.no_nat,
++        args.headless,
++        args.max_passwords,
++        args.desired.clone(),
++    )?);
++
+     if args.config_dir == std::path::Path::new("/etc/csqtt")
+         && !args.config_dir.exists()
+         && std::path::Path::new("/etc/wdttq").exists()
+@@ -1402,19 +1441,23 @@ async fn main() -> Result<()> {
+     let web_app = app.clone();
+     let stats_app = app.clone();
+ 
+-    tokio::spawn(async move {
+-        if let Err(e) = protocol::run_dpi_server().await {
+-            eprintln!("[DPI] Server listener error: {e}");
+-        }
+-    });
++    // swg-panel: the DPI (46003) + syscalls (46004) sockets only serve csqtt's own `dpi`/`syscalls` monitor CLIs,
++    // which we never use; their fixed loopback ports also collide on a multi-instance node. Skip them when headless.
++    if !swgpanel::headless() {
++        tokio::spawn(async move {
++            if let Err(e) = protocol::run_dpi_server().await {
++                eprintln!("[DPI] Server listener error: {e}");
++            }
++        });
+ 
+-    tokio::spawn(async move {
+-        if let Err(e) = protocol::run_syscalls_server().await {
+-            eprintln!("[SYSCALLS] Server listener error: {e}");
+-        }
+-    });
++        tokio::spawn(async move {
++            if let Err(e) = protocol::run_syscalls_server().await {
++                eprintln!("[SYSCALLS] Server listener error: {e}");
++            }
++        });
+ 
+-    tokio::spawn(syscalls_broadcast_loop());
++        tokio::spawn(syscalls_broadcast_loop());
++    }
+ 
+     let cert_path = app.config_dir.join("web_cert.pem");
+     let key_path = app.config_dir.join("web_key.pem");
+@@ -1456,9 +1499,21 @@ async fn main() -> Result<()> {
+ 
+     let protocol_runtime = protocol::start(app.clone()).await?;
+     let mut protocol_status = protocol_runtime.status_receiver();
+-    let mut web_task = tokio::spawn(async move { web_panel::run(web_app, tls_config).await });
++    // swg-panel: headless (--no-web) doesn't run the web admin panel (it would bind 0.0.0.0). A never-completing
++    // task fills the web_task slot so the select! below keeps its shape — its "web server stopped" arm never fires.
++    let mut web_task = if swgpanel::headless() {
++        tokio::spawn(async { std::future::pending::<anyhow::Result<()>>().await })
++    } else {
++        tokio::spawn(async move { web_panel::run(web_app, tls_config).await })
++    };
+     tokio::spawn(protocol::session_janitor(app.clone()));
+-    tokio::spawn(protocol::password_janitor(app.clone()));
++    // swg-panel: under --desired the panel owns expiry (it rewrites desired.json), so csqtt's own expiry
++    // janitor is disabled to avoid two writers pruning the same set. Without --desired it runs as stock.
++    if let Some(desired) = swgpanel::desired_path().cloned() {
++        tokio::spawn(swgpanel_desired_loop(app.clone(), desired));
++    } else {
++        tokio::spawn(protocol::password_janitor(app.clone()));
++    }
+ 
+     let cpu_app = stats_app.clone();
+     tokio::spawn(cpu_loop(cpu_app));
+@@ -1467,10 +1522,37 @@ async fn main() -> Result<()> {
+     let monitor_app = app.clone();
+     tokio::spawn(local_proxy_monitor_loop(monitor_app));
+ 
++    // swg-panel: csqtt's tokio-based graceful shutdown does NOT reliably fire — tokio installs a SIGTERM
++    // handler (replacing default-terminate) but the notify future can sit unconsumed, so SIGTERM is neither
++    // handled nor fatal and the box has to SIGKILL. In our managed (--no-nat) mode the node owns NAT (nothing
++    // to unwind here) and the store is persisted incrementally, so install a raw async-signal-safe handler
++    // that exits immediately. Registered here, AFTER the spawns; the select below is made to NOT register
++    // tokio's own terminate handler under --no-nat, so this one stays authoritative.
++    #[cfg(unix)]
++    if swgpanel::no_nat() {
++        extern "C" fn swg_stop(_sig: libc::c_int) {
++            unsafe { libc::_exit(0) };
++        }
++        unsafe {
++            libc::signal(libc::SIGTERM, swg_stop as libc::sighandler_t);
++            libc::signal(libc::SIGINT, swg_stop as libc::sighandler_t);
++        }
++    }
++
+     let mut web_completed = false;
+     let mut terminal_error = None;
++    // swg-panel: under --no-nat the raw SIGTERM/SIGINT handler above owns stop, so DON'T let tokio register
++    // its own terminate handler here (it would override ours). This branch then only reacts to a crashing
++    // web/dataplane. Stock (no --no-nat) keeps the original graceful shutdown_signal path unchanged.
++    let graceful = async {
++        if swgpanel::no_nat() {
++            std::future::pending::<()>().await
++        } else {
++            shutdown_signal().await
++        }
++    };
+     tokio::select! {
+-        _ = shutdown_signal() => {}
++        _ = graceful => {}
+         result = &mut web_task => {
+             web_completed = true;
+             terminal_error = Some(match result {
+@@ -1523,9 +1605,162 @@ async fn main() -> Result<()> {
+     }
+ 
+     protocol::drop_all_sessions(&app);
++
++    // swg-panel: remove exactly the NAT rules we added (no-op under --no-nat, where the node owns NAT). The
++    // TUN iface auto-drops when the dataplane fd closes.
++    if !swgpanel::no_nat() {
++        net_setup::teardown_nat(swgpanel::iface());
++    }
++    // swg-panel: hard-exit so a lingering io_uring dataplane thread or spawned task can't hold the process
++    // open on SIGTERM (stock returned from main and could stall the tokio runtime shutdown → the box needed
++    // SIGKILL). The final DB flush already ran above.
+     match terminal_error {
+-        Some(error) => Err(error),
+-        None => Ok(()),
++        Some(error) => {
++            eprintln!("[SHUTDOWN] {error:#}");
++            std::process::exit(1);
++        }
++        None => std::process::exit(0),
++    }
++}
++
++// ── swg-panel: declarative desired-passwords reconcile (panel owns the set; csqtt owns runtime device/traffic) ──
++#[derive(serde::Deserialize, Default)]
++struct SwgDesiredFile {
++    #[serde(default)]
++    passwords: Vec<SwgDesiredPw>,
++}
++
++#[derive(serde::Deserialize)]
++struct SwgDesiredPw {
++    password: String,
++    #[serde(default)]
++    expires_at: i64,
++    #[serde(default)]
++    vk_hash: String,
++    #[serde(default)]
++    name: String,
++    #[serde(default)]
++    is_deactivated: bool,
++}
++
++// Watch desired.json and reconcile on start, on SIGHUP, and on mtime change (3s poll). desired.json is the
++// panel's INPUT (sole writer); passwords.json is csqtt's OUTPUT (sole writer) → no write race.
++async fn swgpanel_desired_loop(app: Arc<App>, path: std::path::PathBuf) {
++    swgpanel_reconcile_desired(&app, &path).await;
++    let mut last = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
++    #[cfg(unix)]
++    let mut sighup =
++        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
++    let mut ticker = tokio::time::interval(Duration::from_secs(3));
++    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
++    loop {
++        #[cfg(unix)]
++        let hup = async {
++            match sighup.as_mut() {
++                Some(s) => {
++                    s.recv().await;
++                }
++                None => std::future::pending::<()>().await,
++            }
++        };
++        #[cfg(not(unix))]
++        let hup = std::future::pending::<()>();
++        tokio::select! {
++            _ = ticker.tick() => {
++                let m = std::fs::metadata(&path).and_then(|md| md.modified()).ok();
++                if m != last {
++                    last = m;
++                    swgpanel_reconcile_desired(&app, &path).await;
++                }
++            }
++            _ = hup => {
++                swgpanel_reconcile_desired(&app, &path).await;
++                last = std::fs::metadata(&path).and_then(|md| md.modified()).ok();
++            }
++        }
++    }
++}
++
++async fn swgpanel_reconcile_desired(app: &Arc<App>, path: &std::path::Path) {
++    let text = match std::fs::read_to_string(path) {
++        Ok(t) => t,
++        Err(_) => return, // absent/unreadable → never wipe live passwords on a transient read error
++    };
++    let desired: SwgDesiredFile = match serde_json::from_str(&text) {
++        Ok(d) => d,
++        Err(error) => {
++            eprintln!("[DESIRED] parse {}: {error}", path.display());
++            return;
++        }
++    };
++    let want: HashMap<String, &SwgDesiredPw> = desired
++        .passwords
++        .iter()
++        .map(|p| (p.password.clone(), p))
++        .collect();
++    let mut changed = false;
++    {
++        let mut db = app.db.write().await;
++        let main_pw = db.main_password.clone();
++        // remove generated passwords no longer desired (+ any device they bound)
++        let to_remove: Vec<String> = db
++            .passwords
++            .keys()
++            .filter(|k| **k != main_pw && !want.contains_key(*k))
++            .cloned()
++            .collect();
++        for k in to_remove {
++            if let Some(entry) = db.passwords.remove(&k) {
++                if !entry.device_id.is_empty() {
++                    db.devices.remove(&entry.device_id);
++                }
++                changed = true;
++            }
++        }
++        // add new / update mutable metadata (never touch device_id / up_bytes / down_bytes — csqtt owns those)
++        for (pw, d) in &want {
++            if pw == &main_pw {
++                continue;
++            }
++            match db.passwords.get_mut(pw) {
++                Some(entry) => {
++                    if entry.expires_at != d.expires_at
++                        || entry.vk_hash != d.vk_hash
++                        || entry.name != d.name
++                        || entry.is_deactivated != d.is_deactivated
++                    {
++                        entry.expires_at = d.expires_at;
++                        entry.vk_hash = d.vk_hash.clone();
++                        entry.vk_hashes = d.vk_hash.clone();
++                        entry.name = d.name.clone();
++                        entry.is_deactivated = d.is_deactivated;
++                        changed = true;
++                    }
++                }
++                None => {
++                    db.passwords.insert(
++                        pw.clone(),
++                        model::PasswordEntry {
++                            expires_at: d.expires_at,
++                            vk_hash: d.vk_hash.clone(),
++                            vk_hashes: d.vk_hash.clone(),
++                            name: d.name.clone(),
++                            is_deactivated: d.is_deactivated,
++                            ..Default::default()
++                        },
++                    );
++                    changed = true;
++                }
++            }
++        }
++        if changed {
++            app.db_persistence.submit(db.clone());
++        }
++    }
++    if changed
++        && let Err(error) = protocol::refresh_credentials(app).await
++    {
++        eprintln!("[DESIRED] refresh credentials: {error:#}");
+     }
+ }
+ 
+diff --git a/csqtt-uring/model.rs b/csqtt-uring/model.rs
+index 56e499c..f07beb4 100644
+--- a/csqtt-uring/model.rs
++++ b/csqtt-uring/model.rs
+@@ -16,6 +16,7 @@ use std::{
+ };
+ use x25519_dalek::{PublicKey, StaticSecret};
+ 
++#[allow(dead_code)] // swg-panel: runtime cap via swgpanel::max_passwords() (--max-passwords); kept as the stock default
+ pub const MAX_PASSWORDS: usize = 20;
+ pub const PASSWORD_LEN: usize = 16;
+ pub const PASS_CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+@@ -425,11 +426,13 @@ pub fn is_expired(entry: &PasswordEntry) -> bool {
+ }
+ 
+ pub fn get_next_ip(db: &Database) -> Option<String> {
++    // swg-panel: pool base follows the instance's --tun-addr /24 (stock: 10.66.67).
++    let p = crate::swgpanel::subnet_prefix();
+     let mut buf = String::with_capacity(16);
+     for i in 2..=250u8 {
+         buf.clear();
+         use std::fmt::Write;
+-        let _ = write!(buf, "10.66.67.{i}");
++        let _ = write!(buf, "{}.{}.{}.{i}", p[0], p[1], p[2]);
+         let is_used = db.devices.values().any(|d| d.ip == buf);
+         if !is_used {
+             return Some(buf);
+diff --git a/csqtt-uring/net_setup.rs b/csqtt-uring/net_setup.rs
+index 9d5c11b..5059f2e 100644
+--- a/csqtt-uring/net_setup.rs
++++ b/csqtt-uring/net_setup.rs
+@@ -4,8 +4,12 @@
+ use anyhow::{Context, Result};
+ use std::process::Command;
+ 
++// swg-panel: stock defaults kept for reference; live values now come from swgpanel (--iface / --tun-addr).
++#[allow(dead_code)]
+ pub const TUN_IFACE: &str = "csqtt1";
++#[allow(dead_code)]
+ pub const TUN_ADDR: &str = "10.66.67.1";
++#[allow(dead_code)]
+ pub const TUN_SUBNET: &str = "10.66.67.0/24";
+ 
+ pub fn enable_ipv4_forwarding() -> Result<()> {
+@@ -25,70 +29,44 @@ fn iptables(args: &[&str]) -> Result<std::process::Output> {
+ }
+ 
+ pub fn setup_nat(tun_iface: &str) -> Result<()> {
++    // swg-panel: the masqueraded subnet follows the instance's --tun-addr (stock: 10.66.67.0/24).
++    let subnet = crate::swgpanel::subnet_cidr();
+     let _ = iptables(&[
+-        "-t",
+-        "nat",
+-        "-D",
+-        "POSTROUTING",
+-        "-s",
+-        TUN_SUBNET,
+-        "!",
+-        "-o",
+-        tun_iface,
+-        "-j",
+-        "MASQUERADE",
++        "-t", "nat", "-D", "POSTROUTING", "-s", subnet, "!", "-o", tun_iface, "-j", "MASQUERADE",
+     ]);
+     let output = iptables(&[
+-        "-t",
+-        "nat",
+-        "-A",
+-        "POSTROUTING",
+-        "-s",
+-        TUN_SUBNET,
+-        "!",
+-        "-o",
+-        tun_iface,
+-        "-j",
+-        "MASQUERADE",
++        "-t", "nat", "-A", "POSTROUTING", "-s", subnet, "!", "-o", tun_iface, "-j", "MASQUERADE",
+     ])?;
+     if !output.status.success() {
+         let stderr = String::from_utf8_lossy(&output.stderr);
+         eprintln!("[TUN] iptables MASQUERADE: {stderr}");
+     }
+-    let _ = iptables(&["-D", "FORWARD", "-s", TUN_SUBNET, "-j", "ACCEPT"]);
+-    let _ = iptables(&["-A", "FORWARD", "-s", TUN_SUBNET, "-j", "ACCEPT"]);
+-    let _ = iptables(&["-D", "FORWARD", "-d", TUN_SUBNET, "-j", "ACCEPT"]);
+-    let _ = iptables(&["-A", "FORWARD", "-d", TUN_SUBNET, "-j", "ACCEPT"]);
++    let _ = iptables(&["-D", "FORWARD", "-s", subnet, "-j", "ACCEPT"]);
++    let _ = iptables(&["-A", "FORWARD", "-s", subnet, "-j", "ACCEPT"]);
++    let _ = iptables(&["-D", "FORWARD", "-d", subnet, "-j", "ACCEPT"]);
++    let _ = iptables(&["-A", "FORWARD", "-d", subnet, "-j", "ACCEPT"]);
+ 
+     // TCP MSS Clamping to prevent PMTU blackholes and packet drops on mobile networks
+     let _ = iptables(&[
+-        "-t",
+-        "mangle",
+-        "-D",
+-        "FORWARD",
+-        "-p",
+-        "tcp",
+-        "--tcp-flags",
+-        "SYN,RST",
+-        "SYN",
+-        "-j",
+-        "TCPMSS",
+-        "--clamp-mss-to-pmtu",
++        "-t", "mangle", "-D", "FORWARD", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j",
++        "TCPMSS", "--clamp-mss-to-pmtu",
+     ]);
+     let _ = iptables(&[
+-        "-t",
+-        "mangle",
+-        "-A",
+-        "FORWARD",
+-        "-p",
+-        "tcp",
+-        "--tcp-flags",
+-        "SYN,RST",
+-        "SYN",
+-        "-j",
+-        "TCPMSS",
+-        "--clamp-mss-to-pmtu",
++        "-t", "mangle", "-A", "FORWARD", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j",
++        "TCPMSS", "--clamp-mss-to-pmtu",
+     ]);
+ 
+     Ok(())
+ }
++
++// swg-panel: remove exactly the rules setup_nat added (the MSS clamp is left in place: it is a generic,
++// idempotent, benign rule the box may share with other services). Called on clean shutdown when NAT is owned
++// by csqtt (i.e. NOT --no-nat); under --no-nat nothing was added so this is never called.
++pub fn teardown_nat(tun_iface: &str) {
++    let subnet = crate::swgpanel::subnet_cidr();
++    let _ = iptables(&[
++        "-t", "nat", "-D", "POSTROUTING", "-s", subnet, "!", "-o", tun_iface, "-j", "MASQUERADE",
++    ]);
++    let _ = iptables(&["-D", "FORWARD", "-s", subnet, "-j", "ACCEPT"]);
++    let _ = iptables(&["-D", "FORWARD", "-d", subnet, "-j", "ACCEPT"]);
++}
+diff --git a/csqtt-uring/swgpanel.rs b/csqtt-uring/swgpanel.rs
+new file mode 100644
+index 0000000..11081c2
+--- /dev/null
++++ b/csqtt-uring/swgpanel.rs
+@@ -0,0 +1,119 @@
++// SPDX-FileCopyrightText: 2026 SanityProtocol
++// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
++//
++// swg-panel integration knobs for csqtt. Every field defaults to the upstream/stock value, so a binary
++// invoked WITHOUT any of the new flags behaves byte-for-byte like stock csqtt. Set once at boot from the
++// CLI args (each instance is its own process → a process-global OnceLock is the whole config).
++
++use std::path::PathBuf;
++use std::sync::OnceLock;
++
++#[derive(Clone, Debug)]
++pub struct InstanceCfg {
++    pub iface: String,        // TUN interface name (stock: csqtt1)
++    pub gw_addr: String,      // gateway/.1 address (stock: 10.66.67.1)
++    pub subnet_prefix: [u8; 3], // first 3 octets of the /24 (stock: 10.66.67)
++    pub subnet_cidr: String,  // stock: 10.66.67.0/24
++    pub no_nat: bool,         // skip enable_ipv4_forwarding + setup_nat (node owns NAT)
++    pub headless: bool,       // skip the web admin panel + the DPI/syscalls monitor sockets (the swg-panel owns
++                              // everything via --desired; those servers are unused operator/diagnostic surfaces —
++                              // the web panel binds 0.0.0.0, and the fixed loopback 46003/46004 collide on a
++                              // multi-instance node). Stock false ⇒ unset behaves exactly like upstream.
++    pub max_passwords: usize, // stock: 20
++    pub desired_path: Option<PathBuf>, // declarative desired-passwords file (panel-owned)
++}
++
++impl Default for InstanceCfg {
++    fn default() -> Self {
++        Self {
++            iface: "csqtt1".to_owned(),
++            gw_addr: "10.66.67.1".to_owned(),
++            subnet_prefix: [10, 66, 67],
++            subnet_cidr: "10.66.67.0/24".to_owned(),
++            no_nat: false,
++            headless: false,
++            max_passwords: 20,
++            desired_path: None,
++        }
++    }
++}
++
++static CFG: OnceLock<InstanceCfg> = OnceLock::new();
++
++pub fn init(cfg: InstanceCfg) {
++    let _ = CFG.set(cfg);
++}
++pub fn get() -> &'static InstanceCfg {
++    CFG.get_or_init(InstanceCfg::default)
++}
++pub fn iface() -> &'static str {
++    &get().iface
++}
++pub fn gw_addr() -> &'static str {
++    &get().gw_addr
++}
++pub fn subnet_cidr() -> &'static str {
++    &get().subnet_cidr
++}
++pub fn subnet_prefix() -> [u8; 3] {
++    get().subnet_prefix
++}
++pub fn no_nat() -> bool {
++    get().no_nat
++}
++pub fn headless() -> bool {
++    get().headless
++}
++pub fn max_passwords() -> usize {
++    get().max_passwords
++}
++pub fn desired_path() -> Option<&'static PathBuf> {
++    get().desired_path.as_ref()
++}
++
++// Build a config from the optional flags. Only /24 is accepted: the datapath route table indexes a session
++// by the packet's last octet, so a differently-sized mask would need a different table shape.
++pub fn build(
++    iface: Option<String>,
++    tun_addr: Option<String>,
++    no_nat: bool,
++    headless: bool,
++    max_passwords: Option<usize>,
++    desired: Option<PathBuf>,
++) -> anyhow::Result<InstanceCfg> {
++    let mut cfg = InstanceCfg::default();
++    if let Some(i) = iface
++        && !i.is_empty()
++    {
++        cfg.iface = i;
++    }
++    if let Some(a) = tun_addr {
++        let a = a.trim();
++        if !a.is_empty() {
++            let (ip_part, mask) = a.split_once('/').unwrap_or((a, "24"));
++            if mask != "24" {
++                anyhow::bail!("--tun-addr must be a /24 (got /{mask})");
++            }
++            let octs: Vec<u8> = ip_part
++                .split('.')
++                .map(|o| o.parse::<u8>())
++                .collect::<Result<_, _>>()
++                .map_err(|_| anyhow::anyhow!("bad --tun-addr {a}"))?;
++            if octs.len() != 4 {
++                anyhow::bail!("bad --tun-addr {a}");
++            }
++            cfg.subnet_prefix = [octs[0], octs[1], octs[2]];
++            cfg.gw_addr = format!("{}.{}.{}.{}", octs[0], octs[1], octs[2], octs[3]);
++            cfg.subnet_cidr = format!("{}.{}.{}.0/24", octs[0], octs[1], octs[2]);
++        }
++    }
++    cfg.no_nat = no_nat;
++    cfg.headless = headless;
++    if let Some(m) = max_passwords
++        && m > 0
++    {
++        cfg.max_passwords = m;
++    }
++    cfg.desired_path = desired;
++    Ok(cfg)
++}
+diff --git a/csqtt-uring/tun_device.rs b/csqtt-uring/tun_device.rs
+index a20cbbe..da26dce 100644
+--- a/csqtt-uring/tun_device.rs
++++ b/csqtt-uring/tun_device.rs
+@@ -6,6 +6,7 @@ use std::net::Ipv4Addr;
+ 
+ pub const TUN_IFACE: &str = "csqtt1";
+ pub const TUN_SUBNET: &str = "10.66.67.0/24";
++#[allow(dead_code)] // swg-panel: prefix now read at runtime via swgpanel::subnet_prefix(); kept for tests/reference
+ const SUBNET_PREFIX: [u8; 3] = [10, 66, 67];
+ 
+ pub type SessionId = u64;
+@@ -158,7 +159,9 @@ impl Default for RouteTable {
+ 
+ #[inline(always)]
+ fn route_index(ip: [u8; 4]) -> Option<usize> {
+-    (ip[..3] == SUBNET_PREFIX).then_some(ip[3] as usize)
++    // swg-panel: the /24 prefix follows the instance's --tun-addr (stock: 10.66.67). One process = one
++    // subnet, so this reads a process-global set once at boot (a relaxed load, negligible vs per-packet AEAD).
++    (ip[..3] == crate::swgpanel::subnet_prefix()).then_some(ip[3] as usize)
+ }
+ 
+ pub fn parse_ipv4(value: &str) -> Option<[u8; 4]> {
+diff --git a/csqtt-uring/web_panel.rs b/csqtt-uring/web_panel.rs
+index 49c2ffb..941886c 100644
+--- a/csqtt-uring/web_panel.rs
++++ b/csqtt-uring/web_panel.rs
+@@ -3,7 +3,7 @@
+ 
+ use crate::{
+     App, lock_unpoison, log_event,
+-    model::{MAX_PASSWORDS, PasswordEntry, is_expired, now, random_password, random_token},
++    model::{PasswordEntry, is_expired, now, random_password, random_token},
+     protocol,
+ };
+ use axum::{
+@@ -703,7 +703,7 @@ async fn clients_create(
+     let result = {
+         let mut db = state.app.db.write().await;
+         db.passwords.retain(|_, entry| !is_expired(entry));
+-        if db.passwords.len() >= MAX_PASSWORDS {
++        if db.passwords.len() >= crate::swgpanel::max_passwords() {
+             return (StatusCode::BAD_REQUEST, "limit reached").into_response();
+         }
+         let password = (0..64)
