@@ -4321,8 +4321,8 @@ TURN_SERVERS = {
 # Display order: cacggghp + WINGS-N pinned first; the rest by combined (server + client-app) GitHub stars,
 # descending — snapshot fetched 2026-07-16 (static, intentionally not live): MYSOREZ 17+443, samosvalishe
 # 141+314, kiper292 123+267, anton48 29+165, Moroka8 75+0.
-TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
-                     "samosvalishe", "xxcipherx", "csqtt", "cacggghp", "kiper292"]   # operator order; hidden forks (cacggghp/kiper292) last
+TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "csqtt", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
+                     "samosvalishe", "xxcipherx", "cacggghp", "kiper292"]   # operator order (csqtt sits under amurcanov — same author); hidden forks (cacggghp/kiper292) last
 # Forks kept in the catalog (so a deployed instance still resolves its label/colour) but HIDDEN from the operator
 # UI — the settings toggle list, the install/enable picker, the interface Setup-proxy dropdown, and the fork
 # colour pickers all skip these. Purely cosmetic gating; nothing about a running proxy changes.
