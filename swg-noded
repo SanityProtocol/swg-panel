@@ -5814,6 +5814,7 @@ def _wdtt_subnet(cidr):
         return ""
 
 _WDTT_RAW_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$")
+_IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
 def _wdtt_raw(inst):
     """(listen, iface, addr) for an instance's RAW-IP listener, or None when raw is off.
@@ -5828,7 +5829,15 @@ def _wdtt_raw(inst):
     addr = ((inst or {}).get("raw_addr") or "").strip()
     if not _WDTT_RAW_NAME_RE.match(ifn) or not _WDTT_CIDR_RE.match(addr):
         return None
-    return ("0.0.0.0:" + port, ifn, addr)
+    # Bind the instance's OWN listen address, not the wildcard. The raw port is one fixed number (the app
+    # dials that and nothing else), so a wildcard bind would hand the whole box to the first raw instance —
+    # while the address is exactly what the app DOES take from the link, so one IP per raw server keeps a
+    # multi-IP node able to run several. Falls back to the wildcard for a wildcard-bound instance.
+    lip = str((inst or {}).get("listen") or "")
+    lip = lip.rsplit(":", 1)[0].strip() if ":" in lip else ""
+    if not _IPV4_RE.match(lip or ""):
+        lip = "0.0.0.0"
+    return (lip + ":" + port, ifn, addr)
 
 def _wdtt_valid(inst):
     """Defence-in-depth: refuse control chars (interpolated into a root heredoc) + basic shape. The panel

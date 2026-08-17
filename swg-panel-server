@@ -3649,6 +3649,58 @@ def subnet_fleet_conflict(deps, nodes, subnet, skip_node=None, skip_iface=None):
     return None
 
 
+# RAW-IP's ONE port. Fixed, never operator-chosen: the qWDTT app resolves it from a single app-wide
+# preference (default 56003) and replaces the link's port with it, so any other value only reaches users who
+# hand-edit app settings. Kept free on every node by _port_conflict + the SPA's suggestPort.
+WDTT_RAW_PORT = 56003
+
+
+def _wdtt_listen_ip(inst):
+    """The address half of an instance's `listen` ("203.0.113.5:56010" → "203.0.113.5"); "" for a wildcard bind.
+
+    This is what a client's link carries as the host, and the app NEVER overrides it — so it, not the node, is
+    what scopes RAW: two instances on two addresses of one box can each run a raw listener on the same port."""
+    ip = (inst or {}).get("listen") or ""
+    ip = ip.rsplit(":", 1)[0].strip() if ":" in ip else ""
+    return "" if ip in ("0.0.0.0", "::", "[::]") else ip
+
+
+def _wdtt_raw_holder(nodes, nid, ip, skip_iface=None):
+    """The interface on `nid` already offering RAW on address `ip`, or "" — one raw listener per ADDRESS.
+
+    A wildcard-bound instance ("" ip) grabs the port on every address, so it collides with, and is collided
+    with by, any address on the node."""
+    for ifn, w in ((nodes.get(nid) or {}).get("wdtt") or {}).items():
+        if ifn == skip_iface or not isinstance(w, dict) or not w.get("raw_port"):
+            continue
+        wip = _wdtt_listen_ip(w)
+        if wip == ip or not wip or not ip:      # same address, or either side is a wildcard bind
+            return ifn
+    return ""
+
+
+def _wdtt_raw_clear_others(nodes, nid, ip, keep_iface):
+    """Hand RAW over to `keep_iface`: strip it from the instances it would collide with — those on the SAME
+    listen address (or on a wildcard bind). Returns the interface it was taken from, or "".
+
+    Why it must move rather than coexist: the app resolves ONE raw port for every server and replaces the
+    link's port with it, so two raw listeners on one ADDRESS can never both be reachable — the second is a
+    port no client dials, and its users fail with nothing to see. Their links keep working; those peers fall
+    back to WireGuard mode. Instances on a DIFFERENT address are untouched: the host is the one thing the app
+    does take from the link."""
+    moved = ""
+    for ifn, w in ((nodes.get(nid) or {}).get("wdtt") or {}).items():
+        if ifn == keep_iface or not isinstance(w, dict) or not w.get("raw_port"):
+            continue
+        wip = _wdtt_listen_ip(w)
+        if not (wip == ip or not wip or not ip):
+            continue
+        moved = moved or ifn
+        for k in ("raw_port", "raw_iface", "raw_addr"):
+            w.pop(k, None)
+    return moved
+
+
 def _wdtt_alloc_raw_subnet(deps, nodes, nid, iface):
     """First free /24 in 10.70.0.0/16 for a qWDTT RAW TUN, or "" if the space is full.
 
@@ -3774,6 +3826,12 @@ def _port_conflict(deps, nodes, nid, port, own=()):
         return None
     if port in {int(str(p)) for p in own if str(p).strip().isdigit()}:
         return None
+    # RAW-IP's fixed port is reserved on EVERY node, held or not. The qWDTT app dials that one number and
+    # nothing else, so a listen or internal-WG port that takes it (exactly how 56003 got lost on the first
+    # fleet — it became an instance's internal WG port) locks RAW out of the whole box: the internal WG
+    # listener binds the wildcard address, so it blocks every IP, not just its own.
+    if port == WDTT_RAW_PORT:
+        return _wdtt_raw_holder(nodes, nid, "") or "RAW-IP (reserved)"
     return _node_ports(deps, nodes, nid).get(port)
 
 
@@ -11057,54 +11115,49 @@ def api(method, path, qs, body, deps):
                 if _lc:
                     return 400, {"ok": False, **perr("{v1} {v2} is already used by {v3} on this node — pick another port", v1=_lbl, v2=_p, v3=_lc), "code": "bad_request"}
         # ── RAW-IP listener (qWDTT only, opt-in) ──────────────────────────────────────────────────────
-        # The operator picks a PORT; the TUN name and subnet are DERIVED here. Upstream keeps both as
-        # process-global constants, so sibling instances would fight over one TUN — and asking an operator
-        # for a second interface name + a second subnet is two more things to get wrong. Derived names are
-        # stable (wdtt3 → wdttraw3) and the subnet, once allocated, is stored so it never moves under a
-        # running client.
-        # Panel default: a new qWDTT server comes up WITH raw unless the operator says otherwise. Prefer 56003 —
-        # the app stores ONE raw port for every server, and that is its own default, so a user typically only has
-        # to switch the mode. Falls back to any free port when 56003 is taken on this node.
-        if ("raw_port" not in body and _existing is None
-                and (TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("raw")
-                and (deps.get("panel_settings") or {}).get("wdtt_raw_default", True)):
-            _pref = 56003 if not _port_conflict(deps, nodes, nid, 56003, own=_own) else 0
-            if not _pref:
-                for _c in range(56003, 56100):
-                    if str(_c) not in (str(_dtls or ""), str(_wgp or "")) and not _port_conflict(deps, nodes, nid, _c, own=_own):
-                        _pref = _c; break
-            if _pref and str(_pref) not in (str(_dtls or ""), str(_wgp or "")):
-                _ra = inst.get("raw_addr") or _wdtt_alloc_raw_subnet(deps, nodes, nid, iface)
-                if _ra:
-                    inst["raw_port"] = _pref
-                    inst["raw_iface"] = "wdttraw" + iface[len("wdtt"):]
-                    inst["raw_addr"] = _ra
-        if "raw_port" in body:
-            try:
-                _rp = int(body.get("raw_port") or 0)
-            except (TypeError, ValueError):
-                return 400, {"ok": False, "error": "raw_port must be an integer", "code": "bad_request"}
-            if _rp:
-                if not (TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("raw"):
-                    return 400, {"ok": False, **perr("{v1} has no RAW-IP mode — it is a qWDTT feature", v1=((TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("label") or inst.get("fork") or "This fork")), "code": "bad_request"}
-                if not (1 <= _rp <= 65535):
-                    return 400, {"ok": False, "error": "raw_port must be a port number", "code": "bad_request"}
-                _rown = [inst.get("raw_port")] if inst.get("raw_port") else []
-                _rc = _port_conflict(deps, nodes, nid, _rp, own=_own + _rown)
-                if _rc:
-                    return 400, {"ok": False, **perr("RAW port {v1} is already used by {v2} on this node — pick another port", v1=_rp, v2=_rc), "code": "bad_request"}
-                if str(_rp) in (str(_dtls or ""), str(_wgp or "")):
-                    return 400, {"ok": False, "error": "the RAW port must differ from the DTLS and internal WG ports", "code": "bad_request"}
-                inst["raw_port"] = _rp
-                inst["raw_iface"] = "wdttraw" + iface[len("wdtt"):]        # wdtt3 → wdttraw3 (iface is ^wdtt\d{1,4}$)
-                if not inst.get("raw_addr"):
-                    _ra = _wdtt_alloc_raw_subnet(deps, nodes, nid, iface)
-                    if not _ra:
-                        return 400, {"ok": False, "error": "no free RAW subnet left in 10.70.0.0/16", "code": "bad_request"}
-                    inst["raw_addr"] = _ra
-            else:
-                for _k in ("raw_port", "raw_iface", "raw_addr"):
-                    inst.pop(_k, None)
+        # RAW-IP is an on/off, never a port. The qWDTT APP resolves the raw port as
+        #     if (manualPortsEnabled) store.serverRawPort else 56003          (TunnelService.kt:96 and :201)
+        # from ONE app-wide preference whose default is also 56003 — there is no per-profile, per-server or
+        # per-link raw port, and no intent extra for it, so a link cannot carry one. Raw mode then REPLACES
+        # the link's port (PeerAddress.withPort, unconditional) with that single number. A custom port
+        # therefore only works if every user edits app settings by hand; offering one is a trap. So the panel
+        # fixes RAW at WDTT_RAW_PORT and keeps that port free everywhere (see _port_conflict / suggestPort).
+        #
+        # The app varies the HOST freely and the PORT not at all, so RAW is one listener per ADDRESS: turning
+        # it on here takes it from another instance on the SAME listen IP (below) and leaves this box's other
+        # IPs — and every other node — untouched. A node with two public IPs runs two raw servers on 56003.
+        _raw_want = None
+        if "raw" in body:
+            _raw_want = bool(body.get("raw"))
+        elif "raw_port" in body:                       # legacy callers (and older SPA builds) sent a port
+            try: _raw_want = bool(int(body.get("raw_port") or 0))
+            except (TypeError, ValueError): _raw_want = False
+        elif (_existing is None and (TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("raw")
+              and (deps.get("panel_settings") or {}).get("wdtt_raw_default", True)
+              and not _wdtt_raw_holder(nodes, nid, _wdtt_listen_ip(inst), iface)):
+            _raw_want = True                           # panel default: a NEW qWDTT server comes up with RAW,
+                                                       # unless another instance on this node already has it
+        _raw_moved = ""
+        if _raw_want is True:
+            if not (TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("raw"):
+                return 400, {"ok": False, **perr("{v1} has no RAW-IP mode — it is a qWDTT feature", v1=((TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("label") or inst.get("fork") or "This fork")), "code": "bad_request"}
+            if str(WDTT_RAW_PORT) in (str(_dtls or ""), str(_wgp or "")):
+                return 400, {"ok": False, **perr("this server would need port {v1} for RAW, but it is already using it — move its listen or internal WG port first", v1=WDTT_RAW_PORT), "code": "bad_request"}
+            _rc = _node_ports(deps, nodes, nid).get(WDTT_RAW_PORT)
+            if _rc:
+                return 400, {"ok": False, **perr("RAW needs port {v1} and {v2} is using it on this node — move that first", v1=WDTT_RAW_PORT, v2=_rc), "code": "bad_request"}
+            if not inst.get("raw_addr"):
+                _ra = _wdtt_alloc_raw_subnet(deps, nodes, nid, iface)
+                if not _ra:
+                    return 400, {"ok": False, "error": "no free RAW subnet left in 10.70.0.0/16", "code": "bad_request"}
+                inst["raw_addr"] = _ra
+            inst["raw_port"] = WDTT_RAW_PORT
+            inst["raw_iface"] = "wdttraw" + iface[len("wdtt"):]        # wdtt3 → wdttraw3 (iface is ^wdtt\d{1,4}$)
+            # One raw listener per ADDRESS, not per node: instances on this box's other IPs keep theirs.
+            _raw_moved = _wdtt_raw_clear_others(nodes, nid, _wdtt_listen_ip(inst), iface)
+        elif _raw_want is False:
+            for _k in ("raw_port", "raw_iface", "raw_addr"):
+                inst.pop(_k, None)
         if "stopped" in body:
             inst["stopped"] = bool(body.get("stopped"))
         if body.get("restart"):   # operator-requested restart: a monotonic nonce the node acts on once (systemctl restart)
@@ -11167,7 +11220,9 @@ def api(method, path, qs, body, deps):
         nodes[nid].setdefault("wdtt", {})[iface] = inst
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Set WDTT instance", iface)
-        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+        if _raw_moved:
+            ev_append(roster_path, "node", nid, "Moved RAW-IP", "%s → %s" % (_raw_moved, iface))
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "raw_moved": _raw_moved}}
 
     if method == "POST" and path == "/api/wdtt/adopt":
         # ADOPT a FOREIGN WDTT server the node found (Approach B). Declarative, like /api/wdtt/set: we write the

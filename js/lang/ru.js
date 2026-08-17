@@ -3250,24 +3250,27 @@ export const STR = {
   "A peer has to publish at least one kind of config — keep one selected.":
     "Пир должен публиковать хотя бы один вид конфига — оставьте один выбранным.",
 
-  "UDP, separate from the listen and internal WG ports. The app dials 56003 out of the box, so keeping that number is what makes RAW work without the user touching anything.":
-    "UDP, отдельно от порта приёма и внутреннего порта WG. Из коробки приложение стучится на 56003, и именно этот номер позволяет RAW заработать без единого действия пользователя.",
-  "RAW lives in the app's own settings, never in a profile — no link or subscription can carry it. On 56003 the user only switches connection mode to *raw*; their link keeps working for WireGuard mode.":
-    "RAW живёт в собственных настройках приложения, а не в профиле — ни ссылка, ни подписка его не передают. На 56003 пользователю остаётся лишь переключить режим соединения на *raw*; его ссылка продолжит работать в режиме WireGuard.",
-  "This is not the port the app dials by default. Out of the box it uses *56003*, so on *{v1}* every user has to turn on *Manual ports* in the app and set *server raw port = {v1}* — until they do, their raw connection times out. Use 56003 if the node has it free.":
-    "Это не тот порт, на который приложение стучится по умолчанию. Из коробки оно использует *56003*, поэтому на *{v1}* каждому пользователю придётся включить в приложении *Ручные порты* и задать *raw-порт сервера = {v1}* — пока он этого не сделает, raw-соединение будет отваливаться по таймауту. Если на ноде свободен 56003, берите его.",
   "RAW-IP port — no WireGuard, no forward secrecy": "RAW-IP порт — без WireGuard, без прямой секретности",
+  "This server is using port {v1} itself — move its listen or internal WG port before turning RAW on.":
+    "Этот сервер сам занимает порт {v1} — сначала перенесите его порт приёма или внутренний порт WG, потом включайте RAW.",
+  "RAW-IP moved from {v1} to {v2} — one raw listener per address.":
+    "RAW-IP перенесён с {v1} на {v2} — на один адрес приходится один raw-слушатель.",
+  "Move RAW-IP to this server?": "Перенести RAW-IP на этот сервер?",
+  "Move RAW here": "Перенести RAW сюда",
+  "*{holder}* offers RAW-IP on this address today. The app dials one fixed port for every server, so an address can only run one raw listener — turning it on here turns it off on *{holder}*. Its users keep their links and fall back to WireGuard mode. Servers on this node's other IPs are untouched.":
+    "Сейчас RAW-IP на этом адресе отдаёт *{holder}*. Приложение стучится на один и тот же порт для всех серверов, поэтому на адресе может работать только один raw-слушатель — включив его здесь, вы выключите его на *{holder}*. Ссылки его пользователей останутся рабочими, они вернутся в режим WireGuard. Серверы на других IP этой ноды не затрагиваются.",
+  "port {v1}": "порт {v1}",
+  "The user switches connection mode to *raw* in the app — nothing else. The port isn't theirs to set: the app dials *{v1}* for every server and no link or subscription can carry another one, which is why the panel fixes it. Their link keeps working for WireGuard mode.":
+    "Пользователю остаётся переключить режим соединения на *raw* — и всё. Порт задавать не ему: приложение стучится на *{v1}* для всех серверов, и никакая ссылка или подписка другой порт не передаёт — поэтому панель фиксирует его. Ссылка продолжит работать в режиме WireGuard.",
+  "*{v1}* offers RAW on this address today. One address can only run one raw listener, so saving moves it here and turns it off there.":
+    "Сейчас RAW на этом адресе отдаёт *{v1}*. На адресе может работать только один raw-слушатель, поэтому сохранение перенесёт его сюда и выключит там.",
   "RAW mode on": "RAW включён",
   "Extra flags": "Дополнительные флаги",
   "val|none": "нет",
   "tag|advanced": "подробно",
   // ── RAW-IP mode (qWDTT): a second listener that trades WireGuard for throughput ──────────────
   "RAW-IP mode": "Режим RAW-IP",
-  "RAW port": "RAW-порт",
   "Accept RAW connections": "Принимать RAW-подключения",
-  "Pick a port for RAW traffic.": "Укажите порт для RAW-трафика.",
-  "The RAW port must be a number.": "RAW-порт должен быть числом.",
-  "The RAW port must differ from the listen and internal WG ports.": "RAW-порт должен отличаться от порта прослушивания и внутреннего WG-порта.",
   "Carries a peer's traffic without WireGuard — roughly 6× the throughput through the same VK relay. The server keeps its normal WireGuard listener, so peers choose per device.": "Передаёт трафик пира без WireGuard — примерно в 6 раз быстрее через то же VK-реле. Обычный WireGuard-слушатель сервера остаётся, так что пир выбирает режим на каждом устройстве.",
   "RAW drops WireGuard's handshake: *no forward secrecy and no replay protection*. Anyone who later learns a peer's password can read traffic they recorded earlier. Turn it on for people who need the speed and accept that.": "RAW убирает рукопожатие WireGuard: *нет forward secrecy и защиты от повтора*. Тот, кто потом узнает пароль пира, прочитает записанный ранее трафик. Включайте для тех, кому нужна скорость и кого это устраивает.",
   "RAW available · port {v1} · an app setting, not part of the link": "Доступен RAW · порт {v1} · настройка приложения, не часть ссылки",
