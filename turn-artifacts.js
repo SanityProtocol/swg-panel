@@ -546,10 +546,10 @@
       if (w.name) q.push("name=" + encodeURIComponent(w.name));
       if (vkHashes.length) q.push("hashes=" + encodeURIComponent(vkHashes.join(",")));
       if (w.workers) q.push("workers=" + encodeURIComponent(w.workers));
-      // The server's RAW-IP port, when it runs one. Today's qWDTT importer reads name/peer/hashes/workers/port/pass
-      // and ignores anything else, so the user still sets it by hand — emitting it costs nothing and the link starts
-      // working unattended the day their importer learns the key.
-      if (w.raw_port) q.push("raw=" + encodeURIComponent(w.raw_port));
+      // Deliberately NO raw port here. Neither importer reads one (SubscriptionImport and ProfilesTab take
+      // name/peer/hashes/workers/port/pass, plus dtls_port|server_port), the connect path resolves it from an
+      // app-wide preference whose default IS the port we fix RAW at, and a longer payload only makes the QR
+      // denser. There is nothing for the link to say.
       q.push("port=" + encodeURIComponent(tun));
       var uriq = "qwdtt://config?" + q.join("&") + "&pass=" + pass;
       return { fork: "WDTT", app: "qWDTT", label: "WDTT via qWDTT (Android · qwdtt://)", ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
