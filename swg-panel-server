@@ -7079,6 +7079,32 @@ def _hrrd_salvage(path):
     return pts or None
 
 
+_hrrd_healed = set()          # paths already recreated once — the log line is worth seeing, a loop of them is not
+
+
+def _ring_drop_unwritable(path, make):
+    """A ring file owned by a DIFFERENT uid can never be written again — and because every writer wraps its
+    write in `suppress(OSError)`, that failure is invisible: the ring freezes, the chart reads a flat zero,
+    and nothing anywhere says why. (Seen live: a panel that had once run as root left nine root-owned rings
+    behind, so fleet throughput, turn throughput and presence all sat at zero while the per-interface rings
+    written after it were fine.)
+
+    The stats dir is ours, so replace the file. Losing that ring's history costs a graph its past; keeping it
+    costs the graph its present, permanently, with no signal. Logged once per path — a self-heal that keeps
+    firing is a real ownership problem, not a hiccup."""
+    with contextlib.suppress(OSError):
+        os.unlink(path)
+    ok = False
+    with contextlib.suppress(OSError):
+        make(path)
+        ok = True
+    if path not in _hrrd_healed:
+        _hrrd_healed.add(path)
+        print("stats: %s was not writable (owned by another user) — recreated%s"
+              % (os.path.basename(path), "" if ok else " FAILED"), flush=True)
+    return ok
+
+
 def hrrd_update(path, ts, M):
     """Append one metric vector M (HRRD_NM values) at time ts to the per-node ring."""
     ts = int(ts)
@@ -7095,9 +7121,24 @@ def hrrd_update(path, ts, M):
                     with open(path, "r+b") as f:
                         for (cts, cM) in carry:
                             _hrrd_feed(f, cts, cM)
-        with contextlib.suppress(OSError):
-            with open(path, "r+b") as f:
-                _hrrd_feed(f, ts, M)
+        for _try in (0, 1):
+            try:
+                with open(path, "r+b") as f:
+                    _hrrd_feed(f, ts, M)
+                return
+            except PermissionError:
+                if _try or not _ring_drop_unwritable(path, _hrrd_blank):
+                    return
+            except OSError:
+                return
+
+
+def _hrrd_blank(path):
+    with open(path, "wb") as f:
+        f.write(HRRD_HEAD.pack(HRRD_MAGIC, HRRD_VER, HRRD_RINGS[0][0], HRRD_RINGS[0][1]))
+        f.write(b"\x00" * (HRRD_SLOT.size * HRRD_TOTAL))
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o644)
 
 
 # ───────────────────── presence rings: WHICH peers were online in each bucket ─────────────────────
@@ -7197,6 +7238,10 @@ def pres_feed(path, ts, bit_list, bits):
     In-place slot writes only — never rewrites the file."""
     with _pres_lock:
         bits = _pres_ensure(path, bits)
+        # Same trap as the numeric rings: a file owned by another uid opens read-only, the caller's
+        # suppress(Exception) hides it, and "Online peers" flatlines with nothing to see. The dir is ours.
+        if not os.access(path, os.W_OK):
+            _ring_drop_unwritable(path, lambda p2: _pres_ensure(p2, bits))
         slot = _pres_slot(bits); nb = bits // 8
         with open(path, "r+b") as f:
             def rd(i, bucket):

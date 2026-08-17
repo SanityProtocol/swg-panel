@@ -3275,7 +3275,6 @@ export const STR = {
   // ── RAW-IP mode (qWDTT): a second listener that trades WireGuard for throughput ──────────────
   "RAW-IP mode": "Режим RAW-IP",
   "Accept RAW connections": "Принимать RAW-подключения",
-  "Carries a peer's traffic without WireGuard — roughly 6× the throughput through the same VK relay. The server keeps its normal WireGuard listener, so peers choose per device.": "Передаёт трафик пира без WireGuard — примерно в 6 раз быстрее через то же VK-реле. Обычный WireGuard-слушатель сервера остаётся, так что пир выбирает режим на каждом устройстве.",
   "RAW drops WireGuard's handshake: *no forward secrecy and no replay protection*. Anyone who later learns a peer's password can read traffic they recorded earlier. Turn it on for people who need the speed and accept that.": "RAW убирает рукопожатие WireGuard: *нет forward secrecy и защиты от повтора*. Тот, кто потом узнает пароль пира, прочитает записанный ранее трафик. Включайте для тех, кому нужна скорость и кого это устраивает.",
   "RAW available · port {v1} · an app setting, not part of the link": "Доступен RAW · порт {v1} · настройка приложения, не часть ссылки",
   "The app keeps the RAW port and the connection mode in its own settings, not in a profile — so they are set once, by hand, and apply to every server.": "Приложение хранит RAW-порт и режим подключения в своих настройках, а не в профиле — они задаются один раз вручную и действуют для всех серверов.",

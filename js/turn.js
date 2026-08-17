@@ -1727,7 +1727,6 @@ export function WdttManageSheet({ node, w: w0 }) {
         open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
         ${rawCapable ? html`<${Fragment}>
           <div class="lbl" style="margin:0 0 6px">${T("RAW-IP mode")}</div>
-          <p class="hint" style="margin:0 0 10px">${T("Carries a peer's traffic without WireGuard — roughly 6× the throughput through the same VK relay. The server keeps its normal WireGuard listener, so peers choose per device.")}</p>
           <div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${Trich("RAW drops WireGuard's handshake: *no forward secrecy and no replay protection*. Anyone who later learns a peer's password can read traffic they recorded earlier. Turn it on for people who need the speed and accept that.")}</span></div>
           <label class="obfctl" style="margin-bottom:10px"><${Switch} on=${rawOn} onChange=${v => setRawOn(v)}/> <span class="obfctl-lbl">${T("Accept RAW connections")}</span> <span class="tg tg-raw" style="margin-left:8px">${T("port {v1}", { v1: RAW_PORT })}</span></label>
           ${rawErr ? html`<div class="hint err" style="margin-bottom:10px">${rawErr}</div>` : null}
