@@ -3173,6 +3173,9 @@ def _wdtt_reply(roster, nodes, node_id):
         merged.pop("password", None)   # the owner password is node-owned — never ship it
         merged.pop("key_blob", None)   # the escrow blob lives in the store (dict(inst) copied it) — ship it ONLY as the HOLD signal below, so a fresh-recreate can actually suppress it
         merged["passwords"] = derived.get(iface) or {}   # authoritative: roster-derived, overriding any stale node-store copy
+        if not merged.get("raw_port"):   # RAW off → ship nothing at all, so an old field can't half-enable it
+            for _k in ("raw_port", "raw_iface", "raw_addr"):
+                merged.pop(_k, None)
         # Desired build VERSION: a rollback hold for this (node, iface) pins an older version; otherwise the fork's
         # current published build. The node swaps its shared per-fork binary to match + stamps/reports it.
         _wfork = (inst.get("fork") or "amurcanov")
@@ -3582,6 +3585,9 @@ def _fleet_user_networks(deps, nodes, skip_node=None, skip_iface=None):
                 continue
             with contextlib.suppress(Exception):
                 out.append((nid, ifn, ipaddress.ip_network((w or {}).get("wg_addr") or "", strict=False)))
+            if (w or {}).get("raw_addr"):   # a qWDTT RAW listener owns a SECOND subnet — just as unique-per-fleet
+                with contextlib.suppress(Exception):
+                    out.append((nid, ifn + " (raw)", ipaddress.ip_network(w["raw_addr"], strict=False)))
         for ifn, c in (node.get("csqtt") or {}).items():   # csqtt TUN subnets also participate in overlap checks
             if nid == skip_node and ifn == skip_iface:
                 continue
@@ -3601,6 +3607,21 @@ def subnet_fleet_conflict(deps, nodes, subnet, skip_node=None, skip_iface=None):
             nm = ((nodes.get(nid) or {}).get("name") or nid)
             return "subnet overlaps %s on %s (%s) — interface subnets must be unique across the fleet" % (ifn, nm, on)
     return None
+
+
+def _wdtt_alloc_raw_subnet(deps, nodes, nid, iface):
+    """First free /24 in 10.70.0.0/16 for a qWDTT RAW TUN, or "" if the space is full.
+
+    10.70/16 is the fork's own raw range, kept so an unpatched build's defaults still land inside it. A /24
+    per instance is plenty (a raw peer is one address) and leaves 256 instances fleet-wide; the allocation
+    goes through the SAME fleet-uniqueness check as any interface subnet, so it can never overlap a wg,
+    csqtt or sibling raw subnet.
+    """
+    for third in range(0, 256):
+        cand = "10.70.%d.1/24" % third
+        if not subnet_fleet_conflict(deps, nodes, cand, skip_node=nid, skip_iface=iface):
+            return cand
+    return ""
 
 
 def gen_awg_params():
@@ -4309,7 +4330,7 @@ TURN_SERVERS = {
     "xxcipherx":    {"label": "XXcipherX",  "product": "WDTT",      "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # XXcipherX fork: video-masquerade obfuscation + no-captcha; audio mode is amurcanov-compatible
                      "settings": [], "client_settings": _WDTT_CLIENT_CS},
-    "qwdtt":        {"label": "SpaceNeuroX", "product": "qWDTT",    "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#FACC15", "light": "#A16207"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+    "qwdtt":        {"label": "SpaceNeuroX", "product": "qWDTT",    "raw": True, "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#FACC15", "light": "#A16207"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # qWDTT: the actively-developed WDTT fork (amurcanov's own is frozen). Same DTLS+WRAP-A wire and
                      # the same passwords.json store, so every WDTT client and all our WDTT machinery apply unchanged;
                      # what differs is server FEATURES (multi-device passwords, downlink pacing, an experimental raw-IP
@@ -10960,6 +10981,38 @@ def api(method, path, qs, body, deps):
                 _lc = _port_conflict(deps, nodes, nid, _p, own=_own)
                 if _lc:
                     return 400, {"ok": False, **perr("{v1} {v2} is already used by {v3} on this node — pick another port", v1=_lbl, v2=_p, v3=_lc), "code": "bad_request"}
+        # ── RAW-IP listener (qWDTT only, opt-in) ──────────────────────────────────────────────────────
+        # The operator picks a PORT; the TUN name and subnet are DERIVED here. Upstream keeps both as
+        # process-global constants, so sibling instances would fight over one TUN — and asking an operator
+        # for a second interface name + a second subnet is two more things to get wrong. Derived names are
+        # stable (wdtt3 → wdttraw3) and the subnet, once allocated, is stored so it never moves under a
+        # running client.
+        if "raw_port" in body:
+            try:
+                _rp = int(body.get("raw_port") or 0)
+            except (TypeError, ValueError):
+                return 400, {"ok": False, "error": "raw_port must be an integer", "code": "bad_request"}
+            if _rp:
+                if not (TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("raw"):
+                    return 400, {"ok": False, **perr("{v1} has no RAW-IP mode — it is a qWDTT feature", v1=((TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("label") or inst.get("fork") or "This fork")), "code": "bad_request"}
+                if not (1 <= _rp <= 65535):
+                    return 400, {"ok": False, "error": "raw_port must be a port number", "code": "bad_request"}
+                _rown = [inst.get("raw_port")] if inst.get("raw_port") else []
+                _rc = _port_conflict(deps, nodes, nid, _rp, own=_own + _rown)
+                if _rc:
+                    return 400, {"ok": False, **perr("RAW port {v1} is already used by {v2} on this node — pick another port", v1=_rp, v2=_rc), "code": "bad_request"}
+                if str(_rp) in (str(_dtls or ""), str(_wgp or "")):
+                    return 400, {"ok": False, "error": "the RAW port must differ from the DTLS and internal WG ports", "code": "bad_request"}
+                inst["raw_port"] = _rp
+                inst["raw_iface"] = "wdttraw" + iface[len("wdtt"):]        # wdtt3 → wdttraw3 (iface is ^wdtt\d{1,4}$)
+                if not inst.get("raw_addr"):
+                    _ra = _wdtt_alloc_raw_subnet(deps, nodes, nid, iface)
+                    if not _ra:
+                        return 400, {"ok": False, "error": "no free RAW subnet left in 10.70.0.0/16", "code": "bad_request"}
+                    inst["raw_addr"] = _ra
+            else:
+                for _k in ("raw_port", "raw_iface", "raw_addr"):
+                    inst.pop(_k, None)
         if "stopped" in body:
             inst["stopped"] = bool(body.get("stopped"))
         if body.get("restart"):   # operator-requested restart: a monotonic nonce the node acts on once (systemctl restart)

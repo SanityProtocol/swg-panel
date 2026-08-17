@@ -1195,6 +1195,21 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
         if changed:
             res["changed"] += 1
         client_devs.append(_wif)
+        # A qWDTT instance with RAW enabled owns a SECOND tunnel (its own TUN + subnet, no WireGuard). It runs
+        # -no-nat like the wg one, so its egress is ours too — including the MSS clamp client_devs brings, which
+        # upstream adds itself and our -no-nat gate skips.
+        _wraw = _wdtt_raw(_winst)
+        if _wraw:
+            _rsub = _wdtt_subnet(_wraw[2])
+            if _rsub:
+                _rdes = ("MASQUERADE", default_wan, "") if not _has_foreign_egress(_rsub, rules) else None
+                changed, err = _snat_reconcile_rule("swg-egress:" + _wraw[1], _rsub, _rdes, rules)
+                if err:
+                    res["errors"].append("egress " + _wraw[1] + ": " + err)
+                else:
+                    if changed:
+                        res["changed"] += 1
+                    client_devs.append(_wraw[1])
     # csqtt instances (raw-IP TUN, run with --no-nat) → the node owns their egress MASQUERADE + FORWARD/MSS too.
     # Their subnet comes from the csqtt record (tun_addr), same treatment as a WDTT instance / client interface.
     for _cif, _cinst in _csqtt_load().items():
@@ -5786,6 +5801,23 @@ def _wdtt_subnet(cidr):
     except Exception:
         return ""
 
+_WDTT_RAW_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$")
+
+def _wdtt_raw(inst):
+    """(listen, iface, addr) for an instance's RAW-IP listener, or None when raw is off.
+
+    Raw is qWDTT-only and opt-in: the operator picks a port, the panel derives the TUN name + subnet
+    (the fork's own defaults are process-global constants, so siblings would fight over one TUN — see
+    qwdtt/README.md). Anything malformed reads as OFF rather than as a half-configured listener."""
+    port = str((inst or {}).get("raw_port") or "").strip()
+    if not port.isdigit() or not (1 <= int(port) <= 65535):
+        return None
+    ifn = ((inst or {}).get("raw_iface") or "").strip()
+    addr = ((inst or {}).get("raw_addr") or "").strip()
+    if not _WDTT_RAW_NAME_RE.match(ifn) or not _WDTT_CIDR_RE.match(addr):
+        return None
+    return ("0.0.0.0:" + port, ifn, addr)
+
 def _wdtt_valid(inst):
     """Defence-in-depth: refuse control chars (interpolated into a root heredoc) + basic shape. The panel
     validates too — this is the belt on the node against a compromised/MITM panel."""
@@ -5796,7 +5828,8 @@ def _wdtt_valid(inst):
     if ":" not in (inst.get("listen") or ""):
         return False
     strs = [inst.get("iface"), inst.get("wg_addr"), inst.get("listen"), str(inst.get("wg_port") or ""),
-            inst.get("password") or "", inst.get("params") or ""]
+            inst.get("password") or "", inst.get("params") or "",
+            inst.get("raw_iface") or "", inst.get("raw_addr") or "", str(inst.get("raw_port") or "")]
     for pw, e in (inst.get("passwords") or {}).items():
         strs.append(pw)
         if isinstance(e, dict):
@@ -5836,11 +5869,16 @@ def _wdtt_serve_adopted(inst):
 
 def _wdtt_env_text(inst):
     cfgdir = _wdtt_dir(inst["iface"])
+    _raw = _wdtt_raw(inst)
+    # The RAW listener is one group of flags or nothing at all. It rides a SINGLE unbraced var for the same
+    # reason SWG_PARAMS does: ${...} passes an empty argument when unset, and the server then exits on an
+    # unexpected positional. Empty here = raw off, no flags, stock behaviour.
+    _rawflags = ("-listen-raw %s -raw-iface %s -raw-addr %s" % _raw) if _raw else ""
     return ("SWG_IFACE=%s\nSWG_WGADDR=%s\nSWG_LISTEN=%s\nSWG_WGPORT=%s\nSWG_CFGDIR=%s\nSWG_DESIRED=%s\n"
-            "SWG_PASSWORD=%s\nSWG_MAXPW=%s\nSWG_PARAMS=%s\n" % (
+            "SWG_PASSWORD=%s\nSWG_MAXPW=%s\nSWG_RAWFLAGS=%s\nSWG_PARAMS=%s\n" % (
                 inst["iface"], inst["wg_addr"], inst["listen"], inst.get("wg_port") or 56001, cfgdir,
                 cfgdir + "/desired.json", inst.get("password") or "",
-                inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or ""),
+                inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or ""), _rawflags,
                 (inst.get("params") or "").strip()))   # operator extra ExecStart flags (systemd splits on whitespace → argv, never a shell)
 
 def _wdtt_unit_text(iface, binp, cfgdir, fork):
@@ -5870,7 +5908,7 @@ def _wdtt_unit_text(iface, binp, cfgdir, fork):
             # then reports "неожиданные аргументы" (unexpected positional) and exits 1, crash-looping forever on
             # the default no-extra-flags case. The unbraced form splits on whitespace and empty contributes nothing
             # (this is also what the turn-proxy units use).
-            + forkflags + " $SWG_PARAMS\n"
+            + forkflags + " $SWG_RAWFLAGS $SWG_PARAMS\n"
             "Restart=on-failure\nRestartSec=3\n"
             "NoNewPrivileges=yes\nAmbientCapabilities=CAP_NET_ADMIN\nCapabilityBoundingSet=CAP_NET_ADMIN\n"
             "DeviceAllow=/dev/net/tun rw\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths=" + cfgdir + "\n"
@@ -5904,6 +5942,9 @@ def _wdtt_argv(inst, binp):
         a += ["-max-passwords", maxpw, "-fixed-config", "-no-panel"]
     else:
         a += ["-max-passwords", maxpw, "-fixed-config"]
+    _raw = _wdtt_raw(inst)          # opt-in RAW-IP listener (qWDTT); absent = not passed at all
+    if _raw:
+        a += ["-listen-raw", _raw[0], "-raw-iface", _raw[1], "-raw-addr", _raw[2]]
     params = (inst.get("params") or "").strip()
     if params:
         with contextlib.suppress(Exception):
@@ -6409,7 +6450,8 @@ def _wdtt_params_changed(prev, inst):
             or str(prev.get("wg_port") or 56001) != str(inst.get("wg_port") or 56001)
             or (str(prev.get("max_passwords") or _wdtt_maxpw_for(prev.get("wg_addr") or ""))
                 != str(inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or "")))
-            or (prev.get("params") or "").strip() != (inst.get("params") or "").strip())   # extra ExecStart flags → rewrite unit + restart
+            or (prev.get("params") or "").strip() != (inst.get("params") or "").strip()   # extra ExecStart flags → rewrite unit + restart
+            or _wdtt_raw(prev) != _wdtt_raw(inst))   # RAW listener turned on/off or moved → same treatment
 
 def _wdtt_reconfigure(inst):
     """Apply a transport-param change (listen / wg-port / max) to a RUNNING WDTT instance: rewrite wdtt.env + the
@@ -6898,6 +6940,8 @@ def wdtt_snapshot():
             active = "active" if _wdtt_docker_alive(iface) else "inactive"
         else:
             active = (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null").stdout or "").strip()
+        _rawinfo = _wdtt_raw(inst)          # (listen, iface, addr) when this instance runs a RAW listener
+        _rawon = bool(_rawinfo)
         if inst.get("fork", "amurcanov") == "ildarmaga":
             pwds, devs = _wdtt_read_paneldb(_wdtt_dir(iface))   # ildarmaga: SQLite panel.db, not passwords.json
         else:
@@ -6938,12 +6982,25 @@ def wdtt_snapshot():
             _hsv = hs.get(_pub, 0)
             _pe["online"] = bool(_pub and _hsv and (_nowt - _hsv) < 180)
             _pe["ip"] = _dev.get("ip", "")   # the peer's assigned WDTT IP (readback/UI)
+            _pe["raw_ip"] = _dev.get("raw_ip", "")   # its RAW-datapath address, when the instance runs one
             _pe["rx_speed"], _pe["tx_speed"] = _pw_speed(_WDTT_PW_BYTES.setdefault(iface, {}), _pw, _pe.get("up_bytes"), _pe.get("down_bytes"), _nowt)   # per-peer speed for the Overview talkers
+            # A RAW peer has no WireGuard handshake to read — the wg check above can only ever say "offline" for
+            # it. Fall back to the same byte-delta liveness csqtt uses (moving bytes now = connected now), and
+            # only for instances that actually run raw, so a wg-only peer's status logic is untouched.
+            if _rawon and not _pe["online"] and (_pe["rx_speed"] or _pe["tx_speed"]):
+                _pe["online"] = True
         srvpub = _wdtt_server_pub(iface)
         _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # interface aggregate throughput → panel graphs it like a wg iface
+        # RAW traffic crosses a SECOND TUN, so the wg interface's counters can't see it. Read that TUN too and
+        # report the sum — otherwise an instance carrying its whole load over raw graphs as idle.
+        if _rawon:
+            _rrxb, _rtxb, _rrxs, _rtxs = _wdtt_iface_traffic(_rawinfo[1])
+            _rxb += _rrxb; _txb += _rtxb; _rxs += _rrxs; _txs += _rtxs
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
                     "wg_addr": inst.get("wg_addr", ""), "wg_port": inst.get("wg_port", ""),
                     "server_pub": srvpub, "stopped": bool(inst.get("stopped")), "fork": inst.get("fork", "amurcanov"),
+                    "raw_port": (inst.get("raw_port") or "") if _rawon else "",   # RAW listener (empty = off)
+                    "raw_iface": _rawinfo[1] if _rawon else "", "raw_addr": _rawinfo[2] if _rawon else "",
                     "version": _wdtt_installed_ver(inst.get("fork", "amurcanov")),   # installed build version (version board + rollback)
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a foreign server at take-over, for the panel to adopt into the roster.
