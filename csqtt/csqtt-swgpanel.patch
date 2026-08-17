@@ -47,7 +47,7 @@ index b11262c..4906c1d 100644
      let _ = startup_tx.send(Ok(()));
      let mut running = true;
 diff --git a/csqtt-uring/main.rs b/csqtt-uring/main.rs
-index b858193..8c67c11 100644
+index b858193..6381399 100644
 --- a/csqtt-uring/main.rs
 +++ b/csqtt-uring/main.rs
 @@ -14,6 +14,7 @@ mod proxy_route;
@@ -110,7 +110,25 @@ index b858193..8c67c11 100644
      if args.config_dir == std::path::Path::new("/etc/csqtt")
          && !args.config_dir.exists()
          && std::path::Path::new("/etc/wdttq").exists()
-@@ -1402,19 +1441,23 @@ async fn main() -> Result<()> {
+@@ -1265,9 +1304,14 @@ async fn main() -> Result<()> {
+     }
+ 
+     let _instance_lock = acquire_instance_lock(&args.config_dir)?;
+-    proxy_route::ProxyRoute::cleanup_orphaned_policy()
+-        .await
+-        .context("cleanup orphaned CSQTT proxy policy")?;
++    // swg-panel: managed mode (--no-nat) never uses csqtt's local-proxy / TPROXY policy routing, so skip its
++    // orphaned-policy cleanup — it shells out to `iptables-save` (which needs ipset) and hard-fails the boot on
++    // hosts / sandboxes where that socket can't open. The node owns all routing; there's nothing to clean up here.
++    if !swgpanel::no_nat() {
++        proxy_route::ProxyRoute::cleanup_orphaned_policy()
++            .await
++            .context("cleanup orphaned CSQTT proxy policy")?;
++    }
+ 
+     let mut db = load_database(&args.config_dir)?;
+     db.admin_id.clear();
+@@ -1402,19 +1446,23 @@ async fn main() -> Result<()> {
      let web_app = app.clone();
      let stats_app = app.clone();
  
@@ -145,7 +163,7 @@ index b858193..8c67c11 100644
  
      let cert_path = app.config_dir.join("web_cert.pem");
      let key_path = app.config_dir.join("web_key.pem");
-@@ -1456,9 +1499,21 @@ async fn main() -> Result<()> {
+@@ -1456,21 +1504,64 @@ async fn main() -> Result<()> {
  
      let protocol_runtime = protocol::start(app.clone()).await?;
      let mut protocol_status = protocol_runtime.status_receiver();
@@ -169,10 +187,17 @@ index b858193..8c67c11 100644
  
      let cpu_app = stats_app.clone();
      tokio::spawn(cpu_loop(cpu_app));
-@@ -1467,10 +1522,37 @@ async fn main() -> Result<()> {
-     let monitor_app = app.clone();
-     tokio::spawn(local_proxy_monitor_loop(monitor_app));
+     tokio::spawn(stats_loop(stats_app));
  
+-    let monitor_app = app.clone();
+-    tokio::spawn(local_proxy_monitor_loop(monitor_app));
++    // swg-panel: the local-proxy monitor drives csqtt's SOCKS5/TPROXY proxy-chaining — unused in managed mode
++    // (the node owns egress/routing), so don't run it under --no-nat.
++    if !swgpanel::no_nat() {
++        let monitor_app = app.clone();
++        tokio::spawn(local_proxy_monitor_loop(monitor_app));
++    }
++
 +    // swg-panel: csqtt's tokio-based graceful shutdown does NOT reliably fire — tokio installs a SIGTERM
 +    // handler (replacing default-terminate) but the notify future can sit unconsumed, so SIGTERM is neither
 +    // handled nor fatal and the box has to SIGKILL. In our managed (--no-nat) mode the node owns NAT (nothing
@@ -189,7 +214,7 @@ index b858193..8c67c11 100644
 +            libc::signal(libc::SIGINT, swg_stop as libc::sighandler_t);
 +        }
 +    }
-+
+ 
      let mut web_completed = false;
      let mut terminal_error = None;
 +    // swg-panel: under --no-nat the raw SIGTERM/SIGINT handler above owns stop, so DON'T let tokio register
@@ -208,7 +233,18 @@ index b858193..8c67c11 100644
          result = &mut web_task => {
              web_completed = true;
              terminal_error = Some(match result {
-@@ -1523,9 +1605,162 @@ async fn main() -> Result<()> {
+@@ -1508,7 +1599,9 @@ async fn main() -> Result<()> {
+     if let Some(route) = proxy_route {
+         route.deactivate().await;
+     }
+-    if let Err(error) = proxy_route::ProxyRoute::cleanup_orphaned_policy().await
++    // swg-panel: skip the local-proxy policy teardown in managed mode — nothing was ever set up (see boot).
++    if !swgpanel::no_nat()
++        && let Err(error) = proxy_route::ProxyRoute::cleanup_orphaned_policy().await
+         && terminal_error.is_none()
+     {
+         terminal_error = Some(error.context("cleanup CSQTT proxy policy during shutdown"));
+@@ -1523,9 +1616,162 @@ async fn main() -> Result<()> {
      }
  
      protocol::drop_all_sessions(&app);
