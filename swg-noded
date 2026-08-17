@@ -3468,7 +3468,10 @@ def _wdtt_users_local(cfgdir):
             for _pw, e in (raw.get("passwords") or {}).items():
                 e = e if isinstance(e, dict) else {}
                 _did = str(e.get("device_id") or "").strip()
-                out.append({"label": "", "bound": bool(_did), "last_seen": int(e.get("last_seen_at") or 0),
+                # The JSON stores DO carry a display name (`name`); hardcoding "" here listed every user of a
+                # foreign server as an unlabelled row, which is the one thing that tells them apart on adopt.
+                out.append({"label": str(e.get("name") or e.get("comment") or "").strip()[:60],
+                            "bound": bool(_did), "last_seen": int(e.get("last_seen_at") or 0),
                             "expires_at": int(e.get("expires_at") or 0),
                             "disabled": bool(e.get("is_deactivated")), "vk": bool(str(e.get("vk_hash") or "").strip()),
                             "down_bytes": int(e.get("down_bytes") or 0), "up_bytes": int(e.get("up_bytes") or 0),
@@ -3883,8 +3886,13 @@ def iface_candidates(node_cfg):
         with contextlib.suppress(Exception):
             fp = wdtt_foreign_probe(name)
             if fp:
+                # An explicit allowlist, so anything wdtt_foreign_probe learns has to be named here too.
+                # `users` was missing: the adopt sheet counted the users of a DORMANT install but showed none for
+                # a RUNNING foreign server — the one case where the operator most needs to see who they take on.
+                # `raw_listen` decides whether adoption carries the server's RAW listener over.
                 ent["wdtt"] = {k: fp[k] for k in ("fork", "config_dir", "listen", "wg_port", "wg_addr",
-                                                  "max_passwords", "has_identity", "adoptable", "store")}
+                                                  "max_passwords", "has_identity", "adoptable", "store",
+                                                  "users", "raw_listen")}
                 ent["wdtt_hint"] = True
                 ent["type_hint"] = "wdtt"
                 ent["type_why"] = "a WDTT server (" + (fp.get("fork") or "unknown fork") + ") is running on it"
@@ -6901,7 +6909,11 @@ def _wdtt_adopted_users(cfgdir):
                     meta = meta if isinstance(meta, dict) else {}
                     out[pw] = {"vk_hash": str(meta.get("vk_hash") or "").strip(),
                                "expires_at": int(meta.get("expires_at") or 0),
-                               "is_deactivated": bool(meta.get("is_deactivated")), "comment": ""}
+                               "is_deactivated": bool(meta.get("is_deactivated")),
+                               # the JSON stores call it `name`; ildarmaga's SQLite calls it `comment`. Whichever
+                               # it is, it is what the operator typed — without it every imported peer is titled
+                               # "adopted" and they cannot tell one recovered user from another.
+                               "comment": str(meta.get("name") or meta.get("comment") or "").strip()[:80]}
     return out
 
 
@@ -7260,7 +7272,7 @@ def _csqtt_adopted_users(cfgdir):
                 out[str(pw)] = {"vk_hash": str(e.get("vk_hash") or "").strip(),
                                 "expires_at": int(e.get("expires_at") or 0),
                                 "is_deactivated": bool(e.get("is_deactivated")),
-                                "comment": str(e.get("comment") or "").strip()[:80]}
+                                "comment": str(e.get("name") or e.get("comment") or "").strip()[:80]}
     return out
 
 
