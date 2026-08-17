@@ -751,7 +751,7 @@ a.ifcard.candidate.ignored:hover{opacity:.85;border-color:var(--brand)}
 .pg2-hdr{display:flex;align-items:center;gap:10px;margin:0 0 9px}
 .pg2-hdr label{margin:0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
 .pg2-fresh{flex:none}
-.pg2{display:grid;grid-template-columns:auto minmax(140px,1.7fr) minmax(140px,1.1fr) 66px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line-solid) transparent}
+.pg2{display:grid;grid-template-columns:auto minmax(120px,1fr) max-content max-content max-content 66px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line-solid) transparent}
 .pg2::-webkit-scrollbar{width:9px}
 .pg2::-webkit-scrollbar-track{background:transparent}
 .pg2::-webkit-scrollbar-thumb{background:var(--line-solid);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
@@ -768,12 +768,16 @@ a.ifcard.candidate.ignored:hover{opacity:.85;border-color:var(--brand)}
 .pg2-c{min-width:0}
 .pg2-title{display:flex;align-items:center;gap:10px}
 .pg2-nm{font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pg2-rel{flex:none;margin-left:auto;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;border-radius:4px;padding:1.5px 6px}
+.pg2-rel{flex:none;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;border-radius:4px;padding:1.5px 6px}
 .pg2-rel.primary{color:var(--brand);background:color-mix(in srgb,var(--brand) 15%,transparent)}
 .pg2-bk{font-style:italic;font-weight:400;color:var(--dim)}
-.pg2-if{display:flex;align-items:center;gap:6px;white-space:nowrap;font-family:var(--mono);font-size:12px}
-.pg2-ifn{color:var(--muted)}
-.pg2-ip{color:var(--ink-2)}
+/* The interface name and the address are their OWN columns of the outer grid, not a nested one: every row
+   is a subgrid of .pg2, so a max-content track sizes to the widest row and the names/addresses line up down
+   the list. A nested grid per row could only align within that row, which is what left them ragged. */
+.pg2-tags{display:flex;align-items:center;gap:6px;min-width:0}   /* left-aligned in a shared track → the groups start on one line too */
+.pg2-tags .tgt-front{max-width:none;flex:none}   /* the fork name identifies the server — never the thing that clips */
+.pg2-ifn{color:var(--muted);font-family:var(--mono);font-size:12px;white-space:nowrap;justify-self:start}
+.pg2-ip{color:var(--ink-2);font-family:var(--mono);font-size:12px;white-space:nowrap;justify-self:end;margin-right:8px}   /* clear of the row actions */
 .pg2-ctl{display:flex;justify-content:flex-end;gap:5px}
 .pg2-act{flex:none;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:7px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer;transition:all .14s}
 .pg2-act svg{width:17px;height:17px}
@@ -1206,9 +1210,18 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .pubtg:hover{box-shadow:inset 0 -1px 0 currentColor}
 .pubtg:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
 .pubtg.off{background:color-mix(in srgb,var(--unknown) 13%,transparent)!important;color:var(--unknown)!important;text-decoration:line-through}
-.pubtg.off svg{width:9px;height:9px;text-decoration:none}
+/* the hidden-marker sits INSIDE the chip, so it has to ride the text's centre line — not its baseline */
+.pubtg.off .ic{align-self:center;line-height:0}
+.pubtg.off svg{width:9px;height:9px;display:block;text-decoration:none}
 .pubtg.lone{cursor:default}
 .pubtg.lone:hover{box-shadow:none}
+/* not currently connected: the tag keeps its protocol colour (grey said "unknown kind", which it isn't) and
+   just reads quieter. Full strength on hover, so it is still legible while you are aiming at it. */
+.pubtg.dim{opacity:.5}
+.pubtg.dim:hover{opacity:1}
+/* the turn front-badge doubling as a publish switch: it is a <button>, so re-assert the chip layout */
+.tgt-front.pubtg{display:inline-flex;align-items:center}
+.tgt-front .turnx{margin-left:4px;font-weight:600;opacity:.85}
 /* RAW-IP mode is on: amber, the same register as every other "this needs your attention" tag — it trades
    WireGuard's handshake for throughput, so it never reads as a neutral capability chip. */
 .tg-raw{background:color-mix(in srgb,#FACC15 15%,transparent);color:#FACC15}   /* RAW = a qWDTT capability → the qWDTT fork colour; applyForkColors re-injects the operator's pick */
@@ -2906,7 +2919,7 @@ body.has-oldaddr .appbar{margin-top:var(--oldaddr-h,40px);top:var(--oldaddr-h,40
    the wg/awg chip beside it — it is context, not a second status. */
 .tgt-front{color:var(--tgc,var(--turn,#A974F2));background:color-mix(in srgb,var(--tgc,#A974F2) 16%,transparent);
   max-width:12ch;overflow:hidden;text-overflow:ellipsis;display:inline-block}
-.tgt-front-many{cursor:default;text-transform:none}
+.tgt-front-many{cursor:default}   /* keeps .tg's uppercase: reads TURN ×3, like every other protocol chip */
 .tgt-front-many b{margin-left:4px;font-weight:600}
 .tgt-frontpop{display:inline-flex}
 .tgt-frontbub{padding:8px 10px;min-width:150px}

@@ -334,25 +334,36 @@ export function userBlockBtn(user, back) {
 // config of that kind drops out of the holder's subscription page (the deployment keeps running — this is about
 // what the holder is offered, not what exists). One kind always has to stay on, or the page would be empty with
 // nothing to explain why. `src` is a SUB_SOURCES member; `label` is what the tag reads.
-export function PubTag({ peer, src, label, kind, muted }) {
-  useStore();                                            // the flag lives in the roster — re-render when a poll lands
-  peer = (peer && Store.peer(peer.id)) || peer;          // a sheet's `peer` prop is a snapshot from open; read the live one
+// The publish state of one SOURCE on one peer, and the click that flips it. Split out of PubTag because the
+// turn badge is not a plain chip — it carries the proxy count and a hover list — yet must behave identically.
+export function pubState(peer, src) {
+  peer = (peer && Store.peer(peer.id)) || peer;          // sheets hold a snapshot from open; read the live one
   const hidden = subHides(peer, src);
   const only = !hidden && peerSubSources(peer).filter(s => !subHides(peer, s)).length <= 1;
-  const title = only ? T("This is the last kind of config this peer publishes — a subscription can't be empty.")
-    : hidden ? T("Hidden from the subscription — click to publish it again")
-    : T("Published to the subscription — click to hide it");
-  const flip = () => {
-    if (only) { toast(T("A peer has to publish at least one kind of config — keep one selected."), "err", 4000); return; }
-    const next = hidden ? subHidden(peer).filter(s => s !== src) : subHidden(peer).concat([src]);
-    mutate({
-      key: "subhide:" + peer.id + ":" + src,
-      patch: st => { const p2 = st.roster.peers[peer.id]; if (p2) p2.sub_hide = next; },
-      call: () => api.peerUpdate({ peer_id: peer.id, sub_hide: next }),
-    });
+  return {
+    hidden, only,
+    title: only ? T("This is the last kind of config this peer publishes — a subscription can't be empty.")
+      : hidden ? T("Hidden from the subscription — click to publish it again")
+      : T("Published to the subscription — click to hide it"),
+    flip: () => {
+      if (only) { toast(T("A peer has to publish at least one kind of config — keep one selected."), "err", 4000); return; }
+      const next = hidden ? subHidden(peer).filter(s => s !== src) : subHidden(peer).concat([src]);
+      mutate({
+        key: "subhide:" + peer.id + ":" + src,
+        patch: st => { const p2 = st.roster.peers[peer.id]; if (p2) p2.sub_hide = next; },
+        call: () => api.peerUpdate({ peer_id: peer.id, sub_hide: next }),
+      });
+    },
   };
-  return html`<button type="button" class=${"tg tg-" + (kind || src) + " pubtg" + (hidden ? " off" : "") + (muted ? " muted" : "") + (only ? " lone" : "")}
-    title=${title} aria-pressed=${!hidden} onClick=${e => { e.preventDefault(); e.stopPropagation(); flip(); }}>${label}${hidden ? html`<${Ic} i="off"/>` : null}</button>`;
+}
+// Classes shared by every publish switch, whatever it renders inside.
+export const pubCls = (st, extra) => "pubtg" + (st.hidden ? " off" : "") + (st.only ? " lone" : "") + (extra ? " " + extra : "");
+
+export function PubTag({ peer, src, label, kind, dim }) {
+  useStore();                                            // the flag lives in the roster — re-render when a poll lands
+  const st = pubState(peer, src);
+  return html`<button type="button" class=${"tg tg-" + (kind || src) + " " + pubCls(st, dim ? "dim" : "")}
+    title=${st.title} aria-pressed=${!st.hidden} onClick=${e => { e.preventDefault(); e.stopPropagation(); st.flip(); }}>${label}${st.hidden ? html`<${Ic} i="off"/>` : null}</button>`;
 }
 
 // ── Access expiry (a timed revoke): a peer/subscription stops working once its date passes. Enforced live on the
@@ -369,7 +380,7 @@ export function expiryFromInput(str) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exe
 // (blocked|expired). Block/expiry carry the date they happened / will happen.
 export function subState(user) {
   const now = now_s(), u = user || {}, exp = +(u.expiry || 0);
-  if (u.disabled) return { cls: "s-blocked", text: T("Subscription was blocked") + (u.disabledAt ? " on " + fmtDate(u.disabledAt) : "") };
+  if (u.disabled) return { cls: "s-blocked", text: T("Subscription was blocked") + (u.disabledAt ? " " + fmtDate(u.disabledAt) : "") };
   if (exp && now >= exp) return { cls: "s-expired", text: T("Subscription expired on {v1}", { v1: fmtDate(exp) })};
   if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: "s-expiring", text: T("Subscription is about to expire on {v1}", { v1: fmtDate(exp) })};
   return { cls: "s-active", text: exp ? T("Subscription is active until {v1}", { v1: fmtDate(exp) }) : T("Subscription is active") };
@@ -379,7 +390,7 @@ export function subState(user) {
 // common case → nothing to show). Same colour scheme as subState.
 export function peerState(peer) {
   const now = now_s(), p = peer || {}, exp = +(p.ownExpiry || 0);
-  if (p.selfDisabled) return { cls: "s-blocked", text: T("Peer was blocked") + (p.disabledAt ? " on " + fmtDate(p.disabledAt) : "") };
+  if (p.selfDisabled) return { cls: "s-blocked", text: T("Peer was blocked") + (p.disabledAt ? " " + fmtDate(p.disabledAt) : "") };
   if (exp && now >= exp) return { cls: "s-expired", text: T("Peer expired on {v1}", { v1: fmtDate(exp) })};
   if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: "s-expiring", text: T("Peer is about to expire on {v1}", { v1: fmtDate(exp) })};
   if (exp) return { cls: "s-active", text: T("Peer is active until {v1}", { v1: fmtDate(exp) })};
@@ -393,7 +404,7 @@ const _statCls = pos => pos ? " substat-" + pos : "";   // i18n-keys: a CSS clas
 // user with no expiry and no block has nothing to say, so the line stays empty).
 export function userState(user) {
   const now = now_s(), u = user || {}, exp = +(u.expiry || 0);
-  if (u.disabled) return { cls: "s-blocked", text: T("User was blocked") + (u.disabledAt ? " on " + fmtDate(u.disabledAt) : "") };
+  if (u.disabled) return { cls: "s-blocked", text: T("User was blocked") + (u.disabledAt ? " " + fmtDate(u.disabledAt) : "") };
   if (exp && now >= exp) return { cls: "s-expired", text: T("User expired on {v1}", { v1: fmtDate(exp) })};
   if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: "s-expiring", text: T("User is about to expire on {v1}", { v1: fmtDate(exp) })};
   return null;

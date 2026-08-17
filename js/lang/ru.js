@@ -398,8 +398,8 @@ export const STR = {
   "Block access · {name}": "Закрыть доступ · {name}",
   "Unblock access": "Открыть доступ",
   "Unblock access · {name}": "Открыть доступ · {name}",
-  "Block": "Закрыть",
-  "Unblock": "Открыть",
+  "Block": "Заблокировать",
+  "Unblock": "Разблокировать",
   "This removes the peer from every server it's deployed on, cutting its connection within a sync. The keys are unchanged, so unblocking later restores the same config — no new QR needed.":
     "Пир снимается со всех серверов, где он развёрнут, и соединение обрывается в течение синхронизации. Ключи не меняются, поэтому при открытии доступа заработает тот же конфиг — новый QR не нужен.",
   "This restores the peer on every server it's deployed on. It reconnects with its existing keys once the servers converge.":
@@ -3268,6 +3268,7 @@ export const STR = {
   "The internal WG port must be a number.": "Внутренний порт WG должен быть числом.",
   "Where the DTLS half forwards, on loopback. No client dials it and no link carries it, so changing it only restarts the server — but it must not sit on the RAW port.":
     "Куда DTLS-половина переправляет трафик, по локальной петле. Ни один клиент туда не стучится и ни одна ссылка его не передаёт, поэтому смена порта лишь перезапускает сервер — но занимать порт RAW он не должен.",
+  "Turn-proxy": "Turn-прокси",
   "RAW mode on": "RAW включён",
   "Extra flags": "Дополнительные флаги",
   "val|none": "нет",

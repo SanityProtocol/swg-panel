@@ -33,6 +33,7 @@ import {
   confirmDeletePeer, confirmUnassign, peerBlockBtn, userBlockBtn, PeerStatusLine, SubStatusLine,
   fmtDate, expiryInputVal, expiryFromInput, UserCombo, UserPicker, PrimaryToggle, assignPeer,
   confirmReassign, confirmCorrectDeployment, confirmRestoreDeployment, openRecreateRekey, rotatePeerKeys, PubTag,
+  pubState, pubCls,
 } from "./peer-actions.js";
 import { searchMatch, usersView, revealUser } from "./views.js";
 import { turnEnabled, WDTT_COLOR, shownTitle } from "./turn.js";
@@ -96,7 +97,9 @@ export function PeerBlockGrid({ peers, mode, act }) {
         <span class="pg2-c pg2-title">${i === 0
           ? html`<${Fragment}><span class="pg2-nm">${(p.title || "").trim() || html`<span class="faint">${T("tag|untitled")}</span>`}</span>${multi ? html`<span class="pg2-rel primary">${T("Primary")}</span>` : null}<//>`
           : html`<span class="pg2-bk">${T("Backup")}</span>`}</span>
-        <span class="pg2-c pg2-if">${t.node ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/><${Tag} kind=${targetType(t)} label=${targetType(t)}/><span class="pg2-ifn">${t.iface}</span><span class="pg2-ip">${String(t.ip || "").split("/")[0] || "—"}</span>` : null}</span>
+        <span class="pg2-c pg2-tags">${t.node ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/><${Tag} kind=${targetType(t)} label=${targetType(t)}/>` : null}</span>
+        <span class="pg2-c pg2-ifn">${t.node ? t.iface : ""}</span>
+        <span class="pg2-c pg2-ip">${t.node ? (String(t.ip || "").split("/")[0] || "—") : ""}</span>
         <span class="pg2-c pg2-ctl">${i === 0 ? html`<${Fragment}>${mode === "mine" ? html`<button type="button" class="pg2-act add" title=${T("Add or edit interface deployments")} onClick=${() => openAddTarget(p)}><${Ic} i="plus"/></button>` : null}<button type="button" class=${"pg2-act " + mode} title=${mode === "mine" ? T("Unassign from this user") : T("Assign to this user (keeps its key)")} onClick=${() => act(p)}><${Ic} i=${mode === "mine" ? "link" : "plus"}/></button><//>` : null}</span>
       </div>`)}</div>`;
   })}</div>`;
@@ -127,7 +130,7 @@ export function AddPeersSheet({ userId, userName }) {
       onOk: () => { delete Store.sessionConfigs[p.pubkey]; Store.configEpoch++; } }); }}/>`);
   const createFresh = () => openCreatePeer({ user_id: userId, userName, lockUser: true }, true);
 
-  return html`<${Sheet} title=${userName ? T("Add peers · {v1}", { v1: userName }) : T("Add peers")} width=${720}>
+  return html`<${Sheet} title=${userName ? T("Add peers · {v1}", { v1: userName }) : T("Add peers")} width=${800}>
     <div class="pg2-sec">
       <div class="pg2-hdr"><label>${T("This user’s peers")}</label><span class="grow"></span>
         <button class="btn btn-mini pg2-fresh" onClick=${createFresh}><${Ic} i="plus"/> ${T("Create fresh peer")}</button></div>
@@ -160,7 +163,11 @@ export function allTargets() {
 //   turn  — one proxy: its title, else the fork name, in that fork's colour. SEVERAL: a neutral "turn" badge
 //           (naming one of several would be a lie), with the full list on hover.
 // Nothing in front → nothing rendered; a plain wg/awg interface keeps the grid quiet.
-export function TargetFrontBadge({ node, iface }) {
+// The badge naming what fronts a deployment. For a wg/awg target that is its turn-proxies — and since that IS
+// the peer's "turn" config source, passing `peer` makes the badge itself the publish switch for it. One chip:
+// a separate TURN toggle beside a "turn ×3" badge said the same thing twice.
+export function TargetFrontBadge({ node, iface, peer }) {
+  useStore();          // it is a publish switch when `peer` is set — without this it never re-renders after a toggle
   if (!node || !iface) return null;
   if (kindOf(node, iface, null) === "wdtt") {
     const nrec = (Store.nodes || []).find(x => x.id === node) || {};
@@ -175,12 +182,18 @@ export function TargetFrontBadge({ node, iface }) {
   const tps = turnProxiesFor(node, iface);
   if (!tps.length) return null;
   const one = t => shownTitle("t|" + node + "|" + t.service, t.title) || turnFork(t.service);
+  const st = peer ? pubState(peer, "turn") : null;
+  const tag = (body, cls, style, title) => st
+    ? html`<button type="button" class=${"tg tgt-front " + pubCls(st, cls)} style=${style} title=${st.title}
+        aria-pressed=${!st.hidden} onClick=${e => { e.preventDefault(); e.stopPropagation(); st.flip(); }}>${body}${st.hidden ? html`<${Ic} i="off"/>` : null}</button>`
+    : html`<span class=${"tg tgt-front " + (cls || "")} style=${style} title=${title}>${body}</span>`;
   if (tps.length === 1) {
     const f = turnFork(tps[0].service);
-    return html`<span class="tg tgt-front" style=${"--tgc:" + (turnColor(f) || "var(--turn)")} title=${"Turn-proxy" + (f ? " · " + f : "")}>${one(tps[0])}</span>`;
+    return tag(one(tps[0]), "", "--tgc:" + (turnColor(f) || "var(--turn)"), T("Turn-proxy") + (f ? " · " + f : ""));
   }
   return html`<${Popover} hoverOnly cls="tgt-frontpop" popCls="tgt-frontbub"
-    trigger=${html`<span class="tg tgt-front tgt-front-many" title=${T("{v1} turn-proxies forward to this interface", { v1: tps.length })}>${T("val|turn")} <b>${tps.length}</b></span>`}>
+    trigger=${tag(html`<${Fragment}>${T("val|turn")}<b class="turnx">×${tps.length}</b><//>`, "tgt-front-many", "",
+                  T("{v1} turn-proxies forward to this interface", { v1: tps.length }))}>
     <div class="tgt-frontlist"><span class="tgt-frontlbl">${T("Turn-proxies on this interface")}</span>
       ${tps.map(t => { const f = turnFork(t.service);
         return html`<span class="tg tgt-front" key=${t.service} style=${"--tgc:" + (turnColor(f) || "var(--turn)")}>${one(t)}</span>`; })}</div>
@@ -257,7 +270,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
         <span class="tp">${t.iface}</span>
         ${t.missing ? html`<span class="topt-missing" title=${T("This interface is gone from the node — uncheck to remove this deployment from the peer")}>${T("tag|missing")}</span>` : null}</label>
       ${(pubPeer && pubHave.has(k)) ? html`<${PubTag} peer=${pubPeer} src=${ity} label=${ity}/>` : html`<${Tag} kind=${ity} label=${ity}/>`}
-      ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/>`}
+      ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${(pubPeer && pubHave.has(k)) ? pubPeer : null}/>`}
       ${(s && (s.wdtt || s.csqtt || isSelfContainedKind(ity)))
         // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
         // target is seeded straight from the peer, so it never went through toggle and rendered an editable
@@ -567,8 +580,8 @@ export function PeerViewSheet({ pid, node, iface }) {
       return html`<div class=${"pv-dep" + (node === t.node && iface === t.iface ? " hl" : "")} key=${tkey(t.node, t.iface)}>
         <div class="pv-dep-top">${badgeWithReason(t.status, t.status === "blocked" ? blockedReason(t.type) : statusReason(t.status))}
           <span class="tags">
-            <${PubTag} peer=${p} src=${proto} label=${proto} muted=${!t.online}/>
-            ${turnEnabled() && turnProxiesFor(t.node, t.iface).length ? html`<${PubTag} peer=${p} src="turn" label=${T("val|turn")}/>` : null}
+            <${PubTag} peer=${p} src=${proto} label=${proto} dim=${!t.online}/>
+            ${turnEnabled() ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${p}/>` : null}
           </span>
           <span class="grow"></span>
           <${PrimaryToggle} peer=${p} t=${t}/>
@@ -791,9 +804,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         return html`<div class="targetopt sel locked" key=${k}>
           <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
           <${PrimaryToggle} peer=${peer} t=${t} compact=${true}/>
-          <${PubTag} peer=${live} src=${targetType(t)} label=${ity}/>
-          ${turnEnabled() && turnProxiesFor(t.node, t.iface).length ? html`<${PubTag} peer=${live} src="turn" label=${T("val|turn")}/>` : null}
-          <${TargetFrontBadge} node=${t.node} iface=${t.iface}/>
+          <${PubTag} peer=${live} src=${targetType(t)} label=${ity} dim=${!t.online}/>
+          <${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${live}/>
           <input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>
         </div>`;
       })}</div>
