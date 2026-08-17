@@ -130,6 +130,10 @@ function reconcile(roster, stats, now, cfg) {
                        : (dev.online ? "online" : "ready");                            // shipped/provisioned = ready; recent traffic/handshake = online
         return { node: t.node, iface: t.iface, ip: (dev && dev.ip) || "", type: t.type, primary: !!t.primary,
                  status: st, online: st === "online", observed: null, via: null, viaTurn: null,
+                 // keyless per-peer speed (byte-delta the node computes per password) — no wg wire counter exists, so
+                 // this is a SEPARATE field from `observed` (which carries wg semantics 8+ widgets read). Overview
+                 // top-talkers reads it to include WDTT/csqtt peers; nothing else touches it.
+                 kwSpeed: dev ? { rx: dev.rx_speed || 0, tx: dev.tx_speed || 0 } : null,
                  restorable: false, correctable: false, problemMs: 0, down: null };
       }
       const key = t.node + "|" + t.iface + "|" + pubkey;

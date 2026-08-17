@@ -1269,14 +1269,16 @@ export function Overview() {
   // by pubkey. Same node-selector + perspective as every other figure.
   let perPeer;   // per-PEER traffic first (live per-target speeds, or ranged per-peer volume from the RRD)…
   if (dRanged) {
-    const pkPeer = {}; sPeers.forEach(p => { if (p.pubkey) pkPeer[p.pubkey] = p; });   // pubkey → reconciled peer
+    const pkPeer = {}; sPeers.forEach(p => { if (p.pubkey) pkPeer[p.pubkey] = p; pkPeer[p.id] = p; });   // wg peers keyed by pubkey; keyless (WDTT/csqtt) rows come back keyed by peer id
     const byPk = {};
     (rangeHist.peers || []).forEach(e => { if (!sel.has(e.node) || !pkPeer[e.pubkey]) return;
       const a = byPk[e.pubkey] = byPk[e.pubkey] || { rx: 0, tx: 0 }; a.rx += e.rx || 0; a.tx += e.tx || 0; });
     perPeer = Object.entries(byPk).map(([pk, v]) => ({ p: pkPeer[pk], rx: v.rx, tx: v.tx })).filter(x => x.p);
   } else {
     perPeer = sPeers.map(p => {
-      let r = 0, t = 0; p.targets.forEach(tg => { if (!sel.has(tg.node)) return; const o = tg.observed; if (o) { r += o.rx_speed || 0; t += o.tx_speed || 0; } });
+      let r = 0, t = 0; p.targets.forEach(tg => { if (!sel.has(tg.node)) return;
+        const o = tg.observed; if (o) { r += o.rx_speed || 0; t += o.tx_speed || 0; }
+        else if (tg.kwSpeed) { r += tg.kwSpeed.rx || 0; t += tg.kwSpeed.tx || 0; } });   // WDTT/csqtt keyless per-peer speed
       return { p, rx: r, tx: t };
     });
   }

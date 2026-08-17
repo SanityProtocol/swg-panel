@@ -9642,6 +9642,10 @@ def api(method, path, qs, body, deps):
             pk = p.get("pubkey")
             if pk:
                 h2pk[hashlib.sha256(pk.encode()).hexdigest()[:16]] = pk
+            for _pwf in ("wdtt_password", "csqtt_password"):    # keyless peers: reverse the password hash → the peer id (Top-talkers matches these by id)
+                _pw = p.get(_pwf)
+                if _pw:
+                    h2pk[hashlib.sha256(_pw.encode()).hexdigest()[:16]] = p.get("id") or _pw
         try:
             files = os.listdir(stats_dir) if stats_dir else []
         except OSError:
@@ -12732,6 +12736,19 @@ class Handler(BaseHTTPRequestHandler):
                     with contextlib.suppress(Exception):
                         hrrd_update(peer_rrd_path(stats_dir, nid, pk), now_i, pM)
                     plast_w[(nid, pk)] = now_i
+            # keyless self-contained servers (WDTT/csqtt): no wg pubkey, so ring each peer by its PASSWORD hash (the
+            # node reports per-password rx/tx speed). /api/peer-history reverses the password → peer id via the roster,
+            # so ranged Top-talkers can include these peers too.
+            if stats_dir:
+                for _grp in ("wdtt", "csqtt"):
+                    for _inst in (snap.get(_grp) or []):
+                        for _pw, _pe in ((_inst or {}).get("passwords") or {}).items():
+                            _prx = (_pe or {}).get("rx_speed", 0) or 0; _ptx = (_pe or {}).get("tx_speed", 0) or 0
+                            if (_prx + _ptx) >= PEER_MIN_BPS and now_i - plast_w.get((nid, _pw), 0) >= MESH_THROTTLE_S:
+                                pM = [0] * HRRD_NM; pM[3] = int(_prx); pM[4] = int(_ptx)
+                                with contextlib.suppress(Exception):
+                                    hrrd_update(peer_rrd_path(stats_dir, nid, _pw), now_i, pM)
+                                plast_w[(nid, _pw)] = now_i
             # PER-IFACE throughput history (drives the interface-detail graph). CLIENT ifaces only (skip system/mesh).
             # rx/tx = sum of the iface's peers' speeds — the exact value snap_aggregates + the doughnuts use — ringed
             # every sync (few ifaces per node → cheap, as smooth as the node graph). Panel-derived; no node change.

@@ -6860,6 +6860,22 @@ def _wdtt_iface_traffic(iface):
     _WDTT_IFTRAF[iface] = (rxb, txb, now)
     return (rxb, txb, int(rs), int(ts))
 
+_WDTT_PW_BYTES = {}   # iface -> {pw: (up, down, t)} for per-password speed (keyless servers have no per-peer wire counter)
+def _pw_speed(cache, pw, up, dn, now):
+    """Per-password rx/tx speed (B/s) from cumulative byte deltas: up = client→server = server rx, down = the reverse
+    = tx. `cache` is the per-iface {pw: (up, down, t)} dict. This byte-delta IS the per-peer speed the Overview
+    top-talkers use for WDTT/csqtt, which expose no per-peer wire counter (only cumulative per-password bytes)."""
+    try:
+        up = int(up or 0); dn = int(dn or 0)
+    except Exception:
+        up = dn = 0
+    prev = cache.get(pw); rs = ts = 0
+    if prev and len(prev) >= 3 and now - prev[2] > 0:
+        dt = now - prev[2]
+        rs = int(max(0, up - prev[0]) / dt); ts = int(max(0, dn - prev[1]) / dt)
+    cache[pw] = (up, dn, now)
+    return rs, ts
+
 def wdtt_snapshot():
     """Read each WDTT instance's runtime state back for the panel: service active, server pubkey + endpoint
     (for client links), and per-password observed device binding + traffic. Never returns any private key."""
@@ -6921,6 +6937,7 @@ def wdtt_snapshot():
             _hsv = hs.get(_pub, 0)
             _pe["online"] = bool(_pub and _hsv and (_nowt - _hsv) < 180)
             _pe["ip"] = _dev.get("ip", "")   # the peer's assigned WDTT IP (readback/UI)
+            _pe["rx_speed"], _pe["tx_speed"] = _pw_speed(_WDTT_PW_BYTES.setdefault(iface, {}), _pw, _pe.get("up_bytes"), _pe.get("down_bytes"), _nowt)   # per-peer speed for the Overview talkers
         srvpub = _wdtt_server_pub(iface)
         _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # interface aggregate throughput → panel graphs it like a wg iface
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
@@ -7192,14 +7209,14 @@ def csqtt_snapshot():
             e = e or {}
             up, dn = int(e.get("up_bytes") or 0), int(e.get("down_bytes") or 0)
             _dev = devs.get(e.get("device_id") or "") or {}
-            # byte-delta liveness: total bytes moved since the last snapshot (< ~3 min ⇒ online). Best-effort until
-            # a proper last-seen exists upstream (see the raw-datapath tax in the csqtt plan).
-            prev = last.get(pw)
-            online = bool(prev and (up + dn) > prev[0] and (_nowt - prev[1]) < 180)
-            last[pw] = (up + dn, _nowt)
+            # byte-delta liveness + per-peer speed: raw TUN has no wg handshake, so recent traffic (speed > 0) IS the
+            # online signal — and the SAME delta is the per-peer speed the Overview top-talkers use (no per-peer wire
+            # counter exists for a keyless server). `last` now holds (up, down, t) per password.
+            _rs, _ts = _pw_speed(last, pw, up, dn, _nowt)
+            online = (_rs + _ts) > 0
             pwds[pw] = {"device_id": e.get("device_id", ""), "up_bytes": up, "down_bytes": dn,
                         "is_deactivated": bool(e.get("is_deactivated")), "expires_at": e.get("expires_at", 0),
-                        "ip": _dev.get("ip", ""), "online": online}
+                        "ip": _dev.get("ip", ""), "online": online, "rx_speed": _rs, "tx_speed": _ts}
         _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # TUN aggregate throughput (same reader as a wg iface)
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
                     "tun_addr": inst.get("tun_addr", ""), "web_port": inst.get("web_port", ""),
