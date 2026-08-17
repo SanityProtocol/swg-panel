@@ -1829,8 +1829,9 @@ export function CsqttCard({ node, c, reorder }) {
       ${tag}
     </div>
     <div class="ifcard-rows">
+      <div class="ifrow"><span class="l">${T("CSQTT fork")}</span><span class="r">amurcanov</span></div>
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
-      <div class="ifrow"><span class="l">${T("Tunnel")}</span><span class="r"><a class="tg tg-csqtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(c.iface)} onClick=${e => e.stopPropagation()}>${c.iface}</a> <span class="mono faint">${c.tun_addr || ""}</span></span></div>
+      <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r"><a class="tg tg-csqtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(c.iface)} onClick=${e => e.stopPropagation()}>${c.iface}</a></span></div>
     </div></div>`;
 }
 
