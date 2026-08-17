@@ -4355,6 +4355,11 @@ _TURN_CLIENT_COMPAT = {
     "ildarmaga":    {"pwdttilg": "native", "pwdtt": "friendly", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "xxcipher": "friendly", "vkturnproxy": "friendly"},
     "wdttplus":     {"wdttplus": "native", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "xxcipher": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
     "xxcipherx":    {"xxcipher": "native", "wdttapp": "friendly", "qwdtt": "friendly", "qwdttleg": "friendly", "wdttplus": "friendly", "pwdtt": "friendly", "pwdttilg": "friendly", "vkturnproxy": "friendly"},
+    # csqtt — its OWN Android app is the ONLY client (raw-TUN RTP-AEAD protocol; NOT wire-compatible with the WDTT
+    # apps or the turn-proxy sidecar — verified: the app registers/parses only csqtt://). No iOS/desktop client
+    # published (amurcanov ships APKs only); those OSes correctly show "no client". Always obfuscated (masks as VK
+    # call/RTP media), so csqttapp is `native` + carries the obf label.
+    "csqtt":        {"csqttapp": "native"},
 }
 # The sidecar CLI has no native GUI app, so its schema lives here: just a raw-flags text area (mirrors a server
 # ExecStart's extra-flags box) appended to the client command.

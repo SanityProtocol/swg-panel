@@ -685,9 +685,10 @@ export function ServerClientsSheet({ fork, initialOs }) {
 // (the fork's wire, or plain), and kind (app vs CLI). `key` = the client id, or "sidecar@<author>" for a CLI build.
 export const TURN_OBF_LABEL = { "Moroka8": "WRAP", "samosvalishe": "rtpopus", "anton48": "SRTP", "MYSOREZ": "WRAP", "WINGS-N": "WRAP",
                          // WDTT family: every client speaks WRAP-A (DTLS + RTP-AEAD). Never "plain".
-                         "amurcanov": "WRAP-A", "ildarmaga": "WRAP-A", "wdttplus": "WRAP-A", "xxcipherx": "WRAP-A" };
+                         "amurcanov": "WRAP-A", "ildarmaga": "WRAP-A", "wdttplus": "WRAP-A", "xxcipherx": "WRAP-A",
+                         "csqtt": "RTP-AEAD" };   // csqtt masks its transport as encrypted VK-call/RTP media — always on
 const _FORK_GUI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1, "WINGS-N": 1,       // a native/friendly GUI app rides the fork's obfuscation
-                        "amurcanov": 1, "ildarmaga": 1, "wdttplus": 1, "xxcipherx": 1 };                 // WDTT apps always obfuscate (WRAP-A)
+                        "amurcanov": 1, "ildarmaga": 1, "wdttplus": 1, "xxcipherx": 1, "csqtt": 1 };      // WDTT apps always obfuscate (WRAP-A); csqtt always obfuscates (RTP-AEAD)
 const _FORK_CLI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1 };                 // a listed CLI author obfuscates (NOT WINGS — its wrap needs the app's SessionHello)
 // "Don't offer on this OS" — a stored choice in turn_client_default[fork][os], alongside a client id or
 // "sidecar@<author>". The sub page's turnGetApp() returns nothing for it, and every caller there already hides a
@@ -712,8 +713,11 @@ export function pickerEntries(f, os) {
       name: ((cl.platforms || {})[os] || {}).name || cl.name || cid,
       color: turnClientColor(cid) || turnColor(fork) });
   });
+  // The generic UDP-relay sidecar CLI is a VK-TURN-PROXY-family client — offer it ONLY to forks whose compat
+  // declares it (per _TURN_CLIENT_COMPAT). Self-contained kinds (WDTT/csqtt) own their datapath and the sidecar
+  // can't front them, so they must NOT get it (they'd else show a bogus "Sidecar by samosvalishe" desktop client).
   const sc = cmap.sidecar;
-  if (sc && sc.platforms && sc.platforms[os]) (f.cli_authors || ["samosvalishe"]).forEach(author => {
+  if (sc && sc.platforms && sc.platforms[os] && compat.sidecar) (f.cli_authors || ["samosvalishe"]).forEach(author => {
     out.push({ key: "sidecar@" + author, cid: "sidecar", isCli: true, native: author === fork, autostart: false,   // a CLI is a copy-and-run command, never a one-tap open
       obf: _FORK_CLI_OBF[fork] ? obfLabel : "", coreFork: null, author, name: sc.name || "Sidecar", color: turnColor(author) });
   });
