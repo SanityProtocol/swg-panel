@@ -1600,12 +1600,18 @@
         var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
           vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] });
         var cga = turnGetApp("csqtt");   // the operator's per-OS default csqtt client (CSQTT) → download / Start
+        // Badge "<fork> · <app>", + " by <author>" only when the client is CROSS-AUTHOR (author !== fork) — same
+        // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
+        // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.
+        var csfork = cd.fork || "amurcanov";
+        var cAppName = (cga && (cga.productName || cga.app)) || "CSQTT";
         var ctag = el("span", "scell-tag");
-        var csrv = el("span", null, "csqtt"); csrv.style.color = cfc; ctag.appendChild(csrv);
-        ctag.appendChild(el("span", "scell-tag-sep", " · ")); var capp = el("span", null, (cga && (cga.productName || cga.app)) || "CSQTT"); capp.style.color = cfc; ctag.appendChild(capp);
+        var csrv = el("span", null, csfork); csrv.style.color = cfc; ctag.appendChild(csrv);
+        ctag.appendChild(el("span", "scell-tag-sep", " · ")); var capp = el("span", null, cAppName); capp.style.color = cfc; ctag.appendChild(capp);
+        if (cga && cga.author && cga.author !== csfork) ctag.appendChild(el("span", "scell-tag-by", " by " + cga.author));   // cross-author client only
         srvRow.appendChild(ctag);
-        var cBackup = multi && !tgt.primary;                                   // csqtt is its own protocol family → the "csqtt" role chip, in the csqtt type colour
-        var crole = el("span", "scell-role" + (cBackup ? " scell-backup" : ""), (multi ? (tgt.primary ? t("primary") : t("backup")) + " " : "") + "csqtt");
+        var cBackup = multi && !tgt.primary;                                   // csqtt is its own protocol family → the "CSQTT" role chip, in the csqtt type colour
+        var crole = el("span", "scell-role" + (cBackup ? " scell-backup" : ""), (multi ? (tgt.primary ? t("primary") : t("backup")) + " " : "") + "CSQTT");
         if (!cBackup) crole.style.color = cfc;
         srvRow.appendChild(crole);
         ctrl.forkId = "csqtt"; ctrl.app = (cga && (cga.productName || cga.app)) || "CSQTT"; ctrl.zoomTail = ctrl.app;
