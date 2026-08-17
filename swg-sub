@@ -258,6 +258,23 @@ def _port_of(hostport):
         return None
 
 
+def _bind_ip_of(listen):
+    """The concrete IP an instance binds, from its `host:port` listen string — "" for a wildcard or a bare port.
+
+    A node can carry several public addresses, and a WDTT/csqtt server binds ONE of them. That bind is the only
+    address that will answer, so it beats the node-wide fallback; a wildcard bind answers on all of them, and there
+    the operator's endpoint choice is the right one. This mirrors the operator app's own resolution order
+    (js/peer-ui.js) — which the subscription page had simply never learned, so on a multi-address node it handed
+    the holder a different IP from the one the operator picked, with the right port. Nothing listens there.
+    """
+    s = str(listen or "").strip()
+    i = s.rfind(":")
+    host = s[:i] if i > 0 else ""
+    if not host or host in ("0.0.0.0", "::", "[::]", "*"):
+        return ""
+    return host.strip("[]")
+
+
 def token_lookup(users, token):
     """Raw token → user_id via constant-time sha256 match; None if unknown or disabled."""
     if not token:
@@ -408,7 +425,8 @@ def read_data(state, token):
                     "wdtt": {"password": p.get("wdtt_password") or "",
                              "fork": inst.get("fork") or "amurcanov",   # which WDTT fork → resolve the right per-OS client + encoder
 
-                             "endpoint_host": node_cfg.get("endpoint_host") or (describe.get(t.get("node")) or {}).get("pub_host") or "",
+                             "endpoint_host": (node_cfg.get("endpoint_host") or _bind_ip_of(inst.get("listen"))
+                                               or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
                              "dtls_port": dtls, "wg_port": str(inst.get("wg_port") or 56001), "tun_port": "9000",
                              "raw_port": str(inst.get("raw_port") or ""),   # RAW-IP mode, when this server accepts it
                              "vk_hash": (p.get("vk_hash") or "").strip()},
@@ -427,7 +445,8 @@ def read_data(state, token):
                     "node_name": node_cfg.get("name") or t.get("node"),
                     "type": "csqtt",
                     "csqtt": {"password": p.get("csqtt_password") or "",
-                              "endpoint_host": node_cfg.get("endpoint_host") or (describe.get(t.get("node")) or {}).get("pub_host") or "",
+                              "endpoint_host": (node_cfg.get("endpoint_host") or _bind_ip_of(inst.get("listen"))
+                                                or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
                               "port": port,
                               "vk_hash": (p.get("vk_hash") or "").strip()},
                     "primary": (n_t > 1 and i == 0),
