@@ -3491,7 +3491,7 @@ def _wdtt_cfg_probe(cfg):
                "store": ("panel.db" if os.path.isfile(os.path.join(cfg, "panel.db")) else
                          ("passwords.json" if os.path.isfile(os.path.join(cfg, "passwords.json")) else "")),
                "users": _wdtt_users_local(cfg), "inbound_ports": _wdtt_inbound_ports_local(cfg),
-               "unit_listen": "", "unit_wg_port": ""}
+               "unit_listen": "", "unit_wg_port": "", "unit_fork": ""}
         with contextlib.suppress(Exception):
             _udir = "/etc/systemd/system"
             for _un in sorted(x for x in os.listdir(_udir) if x.endswith(".service")):
@@ -3501,11 +3501,18 @@ def _wdtt_cfg_probe(cfg):
                     continue
                 for _l in _txt.splitlines():
                     if _l.startswith("ExecStart="):
-                        res["unit_listen"], res["unit_wg_port"] = _wdtt_unit_ports(_l.split("=", 1)[1])
+                        _ex = _l.split("=", 1)[1]
+                        res["unit_listen"], res["unit_wg_port"] = _wdtt_unit_ports(_ex)
+                        # A STOPPED server has no argv to read, but the unit that starts it spells the same
+                        # flags out — the only way to tell a dormant qWDTT from a dormant amurcanov, since
+                        # they share both the store and the identity file.
+                        for _fl, _fk in _WDTT_FORK_BY_FLAG:
+                            if (" -" + _fl) in _ex:
+                                res["unit_fork"] = _fk; break
                         break
                 break
     else:
-        res = {"id": False, "store": "", "users": [], "inbound_ports": ("", ""), "unit_listen": "", "unit_wg_port": ""}
+        res = {"id": False, "store": "", "users": [], "inbound_ports": ("", ""), "unit_listen": "", "unit_wg_port": "", "unit_fork": ""}
         with contextlib.suppress(Exception):
             # The trailing `; :` keeps the probe's exit status at 0 whatever happens. It is a QUESTION, not an
             # assertion: "no passwords.json" exited 1 and "the dir is gone" exited 2, so a probe that had
@@ -3555,13 +3562,26 @@ def _wdtt_cfg_probe(cfg):
     _WDTT_CFGPROBE[cfg] = (now, res)
     return res
 
-def _wdtt_guess_fork(exe, cfgdir):
-    """Best-effort fork id for a FOREIGN WDTT: our own binary path → exact; else the config-dir layout
-    (panel.db = ildarmaga, passwords.json = amurcanov-family); else the binary's own -h flag signature.
-    Never authoritative — the panel's adopt modal always lets the operator confirm/override it."""
+# Flags that only ONE fork's server has, so seeing one in a foreign argv (or in its -h) names the fork outright.
+# qWDTT is the case that forced this: it stores passwords.json and wg-keys.dat exactly like the amurcanov family,
+# so the layout check below cannot tell them apart and every foreign qWDTT was adopted labelled "amurcanov" —
+# which then hides its RAW-IP capability and manages it with the wrong fork's binary. `-listen-raw` and
+# `-listen-direct` are UPSTREAM qWDTT flags (not ours), and no other fork has either.
+_WDTT_FORK_BY_FLAG = (("listen-raw", "qwdtt"), ("listen-direct", "qwdtt"), ("admin-addr", "ildarmaga"), ("no-panel", "wdttplus"))
+
+
+def _wdtt_guess_fork(exe, cfgdir, flags=None):
+    """Best-effort fork id for a FOREIGN WDTT: our own binary path → exact; else a fork-unique flag in its argv;
+    else the config-dir layout (panel.db = ildarmaga, passwords.json = amurcanov-family); else the binary's own
+    -h signature. Never authoritative — the panel's adopt modal always lets the operator confirm/override it."""
     for fk in WDTT_FORK_OWNER:
         if ("/" + fk + "/") in (exe or ""):
             return fk
+    # argv first: free, exact, and the ONLY signal that also works on a docker node (where the config dir is a
+    # host path we cannot stat and exec'ing a host binary in here just burns the timeout).
+    for _fl, _fk in _WDTT_FORK_BY_FLAG:
+        if _fl in (flags or {}):
+            return _fk
     # Host-aware: a FOREIGN server's config-dir is on the HOST, so os.path.isfile() from inside a container always
     # said no. The layout check then fell through, the -h probe below tried to exec a host path that doesn't exist
     # in here, and the fork came back "" — which the panel renders as its DEFAULT, amurcanov. An upstream ildarmaga
@@ -3580,10 +3600,9 @@ def _wdtt_guess_fork(exe, cfgdir):
     with contextlib.suppress(Exception):
         _r = run([exe, "-h"], timeout=6)
         h = (_r.stderr or "") + (_r.stdout or "")
-    if "-admin-addr" in h:
-        return "ildarmaga"
-    if "-no-panel" in h:
-        return "wdttplus"
+    for _fl, _fk in _WDTT_FORK_BY_FLAG:
+        if ("-" + _fl) in h:
+            return _fk
     return "amurcanov" if _store == "passwords.json" else ""
 
 def _wdtt_procs():
@@ -3676,7 +3695,7 @@ def wdtt_dormant():
             with contextlib.suppress(Exception):
                 _at = int(os.path.getmtime(os.path.join(d, "wg-keys.dat")))   # local only; 0 on docker (host path)
             out.append({"config_dir": d, "store": store,
-                        "fork": _wdtt_guess_fork("", d),
+                        "fork": probe.get("unit_fork") or _wdtt_guess_fork("", d),
                         "listen_port": lp, "wg_port": wp,
                         "users": probe.get("users") or [],    # non-secret rows, so the adopt UI can show WHO is on it
                         "at": _at})
@@ -3718,8 +3737,11 @@ def wdtt_foreign_probe(iface):
                 _p = ln.split()
                 if len(_p) >= 4 and _p[2] == "inet":
                     _wa = _p[3]; break
-    return {"pid": pid, "fork": _wdtt_guess_fork(f.get("_exe") or "", cfg), "config_dir": cfg,
+    return {"pid": pid, "fork": _wdtt_guess_fork(f.get("_exe") or "", cfg, f), "config_dir": cfg,
             "listen": f.get("listen") or "", "wg_port": f.get("wg-port") or "", "wg_addr": _wa,
+            # Whether the foreign server is ALSO serving raw-IP. Without this the panel adopts it with RAW off
+            # and every raw client of that server silently stops connecting, with nothing on screen to say why.
+            "raw_listen": f.get("listen-raw") or "",
             "max_passwords": f.get("max-passwords") or "", "has_identity": probe["id"], "adoptable": bool(probe["id"]),
             # Non-secret rows from its own store, so the adoption UI can list EVERY issued user — the interface
             # only knows the ones that have connected, which undercounts what the operator is taking on.

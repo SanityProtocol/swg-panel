@@ -3665,6 +3665,20 @@ def _wdtt_listen_ip(inst):
     return "" if ip in ("0.0.0.0", "::", "[::]") else ip
 
 
+def _wdtt_alloc_raw_iface(nodes, nid, iface):
+    """A free TUN name for an instance's RAW listener. `wdtt3` → `wdttraw3` reads best, but ADOPTED servers keep
+    whatever name they had (letters, digits, _ and -), so a digit-strip can collide or come out empty — fall back
+    to the first free wdttrawN on the node."""
+    taken = {(w or {}).get("raw_iface") for ifn, w in ((nodes.get(nid) or {}).get("wdtt") or {}).items() if ifn != iface}
+    digits = re.sub(r"\D", "", iface or "")
+    if digits and ("wdttraw" + digits) not in taken:
+        return "wdttraw" + digits
+    for n in range(1, 10000):
+        if ("wdttraw%d" % n) not in taken:
+            return "wdttraw%d" % n
+    return ""
+
+
 def _wdtt_raw_holder(nodes, nid, ip, skip_iface=None):
     """The interface on `nid` already offering RAW on address `ip`, or "" — one raw listener per ADDRESS.
 
@@ -11197,7 +11211,7 @@ def api(method, path, qs, body, deps):
                     return 400, {"ok": False, "error": "no free RAW subnet left in 10.70.0.0/16", "code": "bad_request"}
                 inst["raw_addr"] = _ra
             inst["raw_port"] = WDTT_RAW_PORT
-            inst["raw_iface"] = "wdttraw" + iface[len("wdtt"):]        # wdtt3 → wdttraw3 (iface is ^wdtt\d{1,4}$)
+            inst["raw_iface"] = inst.get("raw_iface") or _wdtt_alloc_raw_iface(nodes, nid, iface)
             # One raw listener per ADDRESS, not per node: instances on this box's other IPs keep theirs.
             _raw_moved = _wdtt_raw_clear_others(nodes, nid, _wdtt_listen_ip(inst), iface)
         elif _raw_want is False:
@@ -11367,11 +11381,26 @@ def api(method, path, qs, body, deps):
         _clash = subnet_fleet_conflict(deps, nodes, inst["wg_addr"], skip_node=nid, skip_iface=iface)
         if _clash:
             return 409, {"ok": False, **perr("its subnet {v1} is already used elsewhere in the fleet ({v2}) — adopting it would black-hole one of them", v1=inst["wg_addr"], v2=_clash), "code": "subnet_conflict"}
+        # A foreign qWDTT may already be serving RAW-IP clients. Adopting with RAW off would cut every one of
+        # them with nothing on screen to explain it, so carry the capability over — on OUR fixed port, and only
+        # if this address has no raw listener yet (one per address; see WDTT_RAW_PORT).
+        _raw_kept = False
+        if (_cw.get("raw_listen") and (TURN_SERVERS.get(fork) or {}).get("raw")
+                and not _wdtt_raw_holder(nodes, nid, _wdtt_listen_ip(inst), iface)
+                and str(WDTT_RAW_PORT) not in (str(inst.get("wg_port") or ""), (inst.get("listen") or "").rsplit(":", 1)[-1])
+                and not _node_ports(deps, nodes, nid).get(WDTT_RAW_PORT)):
+            _ra = _wdtt_alloc_raw_subnet(deps, nodes, nid, iface)
+            if _ra:
+                inst["raw_port"] = WDTT_RAW_PORT
+                inst["raw_iface"] = _wdtt_alloc_raw_iface(nodes, nid, iface)
+                inst["raw_addr"] = _ra
+                _raw_kept = True
         nodes[nid].setdefault("wdtt", {})[iface] = inst
         unignore_iface(nodes[nid], iface)   # adopting a previously-ignored candidate clears the ignore
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Adopting WDTT server", iface)
-        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "fork": fork}}
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "fork": fork, "raw_kept": _raw_kept,
+                                          "raw_was": _cw.get("raw_listen") or ""}}
 
     if method == "POST" and path == "/api/wdtt/delete":
         nid = body.get("node") or ""; iface = (body.get("iface") or "").strip()
