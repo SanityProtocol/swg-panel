@@ -5812,7 +5812,12 @@ _WDTT_CIDR_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
 # through — zero regression risk (the same tactic WDTT used vs the turn path). Bare-metal systemd is the target;
 # io_uring is frequently blocked in container seccomp, so a docker path is deferred.
 CSQTT_RECORD = os.environ.get("SWG_CSQTT_RECORD") or "/etc/swg-agent/csqtt.json"
-CSQTT_ROOT = "/opt/swg-csqtt"                    # per-instance: <root>/<iface>/{server, csqtt.env, desired.json, passwords.json}
+# Where an instance lives. On docker this MUST be inside the container: the server runs as a supervised child of
+# swg-noded there (no systemd), and its config-dir + password store have to be readable by the same process that
+# writes desired.json and reports the snapshot. Pointing at /opt/swg-csqtt on a docker node is what left the panel
+# reporting csqtt servers as active with ZERO passwords — the store was on the host, invisible from in here.
+CSQTT_ROOT = ("/var/lib/swg-noded/csqtt" if NODE_KIND == "docker"
+              else "/opt/swg-csqtt")            # per-instance: <root>/<iface>/{server, csqtt.env, desired.json, passwords.json}
 CSQTT_BIN_DIR = CSQTT_ROOT + "/.bin"             # per-arch binary slot; our swg-panel-patched build
 CSQTT_OWNER = "amurcanov/csqtt"                  # panel-mirror owner key
 CSQTT_WEBUSER = "swgpanel"                       # csqtt's own admin panel login (node-owned; a strong random pw is minted)
@@ -7098,7 +7103,11 @@ def _csqtt_fork_unknown(inst):
     f = ((inst or {}).get("fork") or "").strip()
     return "" if (not f or f in CSQTT_FORK_OWNER) else f
 def _csqtt_unit_path(iface): return TURN_UNIT_DIR + "/" + _csqtt_svc(iface) + ".service"
-def _csqtt_present(iface): return os.path.exists(_csqtt_unit_path(iface))
+def _csqtt_present(iface):
+    """Is this instance set up on THIS node? docker: its binary symlink is laid down. systemd: its unit exists."""
+    if NODE_KIND == "docker":
+        return os.path.exists(_csqtt_dir(iface) + "/server")
+    return os.path.exists(_csqtt_unit_path(iface))
 def _csqtt_subnet(cidr):
     try: return str(ipaddress.ip_network(cidr, strict=False))
     except Exception: return ""
@@ -7187,7 +7196,100 @@ def _csqtt_write_cfgdir(inst, binshared, binp, cfgdir):
     with open(cfgdir + "/csqtt.env", "w") as f: f.write(_csqtt_env_text(inst))
     with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(inst.get("passwords")) + "\n")
 
+# ── Docker run-model (mirror of the WDTT one above) ──────────────────────────────────────────────────────────
+# A container has no systemd, so on a docker node swg-noded runs each csqtt server as a SUPERVISED CHILD PROCESS
+# in THIS container. With host networking its raw TUN lands in the right netns automatically. reconcile_csqtt
+# relaunches a died server on the next pass (the equivalent of Restart=on-failure); SIGHUP reloads desired.json
+# live; SIGTERM runs its clean teardown. Everything — binary, config-dir, store — lives where noded runs, so
+# nothing goes through host_sh (which nsenters the HOST, where these files must NOT be).
+_CSQTT_PROCS = {}   # iface -> subprocess.Popen (this noded lifetime)
+
+def _csqtt_pidfile(iface): return _csqtt_dir(iface) + "/server.pid"
+
+def _csqtt_argv(inst, binp):
+    """The exact server invocation (mirror of _csqtt_unit_text's ExecStart) as an argv list, for a direct Popen."""
+    iface = inst["iface"]; cfgdir = _csqtt_dir(iface)
+    a = [binp, "--listen", inst.get("listen") or "", "--config-dir", cfgdir,
+         "--password", inst.get("password") or "", "--no-web",
+         "--iface", iface, "--tun-addr", inst.get("tun_addr") or "",
+         "--desired", cfgdir + "/desired.json", "--no-nat",
+         "--max-passwords", str(inst.get("max_passwords") or 500)]
+    params = (inst.get("params") or "").strip()
+    if params:
+        with contextlib.suppress(Exception):
+            a += shlex.split(params)
+    return a
+
+def _csqtt_docker_pid(iface):
+    """The live server pid for iface (tracked Popen, else the pidfile verified against /proc cmdline), or None."""
+    p = _CSQTT_PROCS.get(iface)
+    if p is not None and p.poll() is None:
+        return p.pid
+    with contextlib.suppress(Exception):
+        with open(_csqtt_pidfile(iface)) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            if ("--iface\x00" + iface + "\x00").encode() in f.read():
+                return pid
+    return None
+
+def _csqtt_docker_start(inst):
+    """(Re)launch this instance's server as a supervised child. '' on success (alive after a beat), else error."""
+    iface = inst["iface"]; cfgdir = _csqtt_dir(iface); binp = cfgdir + "/server"
+    _csqtt_docker_stop(iface)
+    if not os.path.exists(binp):
+        return "csqtt binary missing at " + binp
+    try:
+        lf = open(cfgdir + "/server.log", "ab", buffering=0)
+        p = subprocess.Popen(_csqtt_argv(inst, binp), stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, close_fds=True)
+    except Exception as e:
+        return ("spawn failed: " + str(e))[:160]
+    _CSQTT_PROCS[iface] = p
+    with contextlib.suppress(Exception):
+        with open(_csqtt_pidfile(iface), "w") as f: f.write(str(p.pid))
+    time.sleep(1.5)
+    if p.poll() is not None:                       # died immediately → surface the log tail
+        tail = ""
+        with contextlib.suppress(Exception):
+            with open(cfgdir + "/server.log", "rb") as f: tail = f.read()[-240:].decode("utf-8", "replace").replace("\n", " ")
+        return ("csqtt exited rc=%s: %s" % (p.returncode, tail.strip()))[:180]
+    return ""
+
+def _csqtt_docker_stop(iface):
+    """SIGTERM (clean teardown drops the TUN), SIGKILL if it lingers; reap the child; drop the pidfile."""
+    p = _CSQTT_PROCS.pop(iface, None)
+    pid = p.pid if p is not None else _csqtt_docker_pid(iface)
+    if pid:
+        with contextlib.suppress(Exception): os.kill(pid, signal.SIGTERM)
+        for _ in range(20):
+            try:
+                os.kill(pid, 0); time.sleep(0.15)
+            except Exception:
+                break
+        else:
+            # for/else — SIGKILL only if it is STILL alive. A pid read from the pidfile after a noded restart is
+            # not our child, so it is reaped the instant it exits and the number can already belong to something else.
+            with contextlib.suppress(Exception): os.kill(pid, signal.SIGKILL)
+    if p is not None:
+        with contextlib.suppress(Exception): p.wait(timeout=2)
+    with contextlib.suppress(Exception): os.remove(_csqtt_pidfile(iface))
+
+def _csqtt_docker_sighup(iface):
+    pid = _csqtt_docker_pid(iface)
+    if pid:
+        with contextlib.suppress(Exception): os.kill(pid, signal.SIGHUP)
+        return True
+    return False
+
+
 def _csqtt_verify(iface):
+    if NODE_KIND == "docker":                      # the supervised child IS the service
+        for _ in range(8):
+            time.sleep(0.5)
+            if _csqtt_docker_pid(iface):
+                return ""
+        return "server did not stay up — see " + _csqtt_dir(iface) + "/server.log (io_uring/seccomp?)"
     for _ in range(8):
         time.sleep(0.5)
         if (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null").stdout or "").strip() == "active":
@@ -7210,6 +7312,9 @@ def _csqtt_install(inst):
         _csqtt_write_cfgdir(inst, binshared, binp, cfgdir)
     except Exception as e:
         return ("cfgdir write failed: " + str(e))[:160]
+    if NODE_KIND == "docker":
+        err = _csqtt_docker_start(inst)
+        return err or _csqtt_verify(iface)
     try:
         with open(_csqtt_unit_path(iface), "w") as f: f.write(_csqtt_unit_text(iface, binp, cfgdir))
     except Exception as e:
@@ -7224,6 +7329,8 @@ def _csqtt_reconcile_desired(iface, passwords):
         with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(passwords) + "\n")
     except Exception as e:
         return ("desired write failed: " + str(e))[:160]
+    if NODE_KIND == "docker":
+        return "" if _csqtt_docker_sighup(iface) else "server is not running — nothing to reload"
     w = host_sh("systemctl kill -s HUP " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null || true")
     return "" if w.returncode == 0 else (w.stderr or w.stdout or "reconcile failed").strip()[:160]
 
@@ -7247,14 +7354,27 @@ def _csqtt_reconfigure(inst):
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface); binp = cfgdir + "/server"
     try:
         _csqtt_write_cfgdir(inst, _csqtt_bin_shared(), binp, cfgdir)
-        with open(_csqtt_unit_path(iface), "w") as f: f.write(_csqtt_unit_text(iface, binp, cfgdir))
+        if NODE_KIND != "docker":
+            with open(_csqtt_unit_path(iface), "w") as f: f.write(_csqtt_unit_text(iface, binp, cfgdir))
     except Exception as e:
         return ("reconfigure failed: " + str(e))[:160]
+    if NODE_KIND == "docker":
+        err = _csqtt_docker_start(inst)            # respawn with the new argv
+        return err or _csqtt_verify(iface)
     host_sh("systemctl daemon-reload; systemctl restart " + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
     return _csqtt_verify(iface)
 
 def _csqtt_remove(iface):
     if not _CSQTT_NAME_RE.match(iface or ""):   # never rm -rf a path built from an unvalidated name
+        return
+    if NODE_KIND == "docker":
+        _csqtt_docker_stop(iface)
+        with contextlib.suppress(Exception): run(["ip", "link", "delete", "dev", iface])
+        with contextlib.suppress(Exception): shutil.rmtree(_csqtt_dir(iface), ignore_errors=True)
+        _CSQTT_LASTBYTES.pop(iface, None)
+        _wdtt_del_iptables_comment("nat", "POSTROUTING", "swg-egress:" + iface)
+        _wdtt_del_iptables_comment("filter", "FORWARD", "swg-egress-acl:" + iface)
+        _wdtt_del_iptables_comment("mangle", "FORWARD", "swg-egress-mss:" + iface)
         return
     svc = _csqtt_svc(iface)
     host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "
@@ -7293,8 +7413,18 @@ def _csqtt_adopted_users(cfgdir):
 def _csqtt_procs():
     """Every csqtt server process on this box → [(pid, argv-flags)]. csqtt names its binary `server` like the
     WDTT forks, so the discriminator is the same one _wdtt_is_server uses in reverse: -tun-addr (a WDTT server
-    uses -wg-addr and never -tun-addr) or a csqtt path in argv[0]."""
+    uses -wg-addr and never -tun-addr) or a csqtt path in argv[0].
+
+    On docker this walks the HOST's pid namespace as well: the container has no pid:host, so a foreign csqtt
+    running on the host — the whole point of the adoption scan — is invisible to a local walk. Reuses the WDTT
+    host walk, which is already cached per TTL (one privileged one-shot container, not one per candidate)."""
     out = []
+    if NODE_KIND == "docker":
+        for pid, parts in _wdtt_host_procs():
+            fl = _wdtt_flags_from_argv(parts) if isinstance(parts, list) else (parts or {})
+            if (fl.get("tun-addr") or "").strip() or "csqtt" in (fl.get("_exe") or "").lower():
+                out.append((pid, fl))
+        return out
     with contextlib.suppress(Exception):
         for ent in os.listdir("/proc"):
             if not ent.isdigit():
@@ -7352,20 +7482,28 @@ def _csqtt_stop_foreign(iface, cfgdir):
     if not hit:
         return True                              # already gone
     pid, _f = hit
-    unit = _wdtt_unit_of_pid(pid, False)
+    _host = (NODE_KIND == "docker")               # the pid lives in the HOST namespace; os.kill here can't see it
+    unit = _wdtt_unit_of_pid(pid, _host)
     if unit and not unit.startswith(("swg-csqtt-", "swg-wdtt-")):     # never our own supervisor
         host_sh("systemctl disable --now " + shlex.quote(unit) + " >/dev/null 2>&1; :")
-    with contextlib.suppress(Exception):
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(30):
-            try:
-                os.kill(pid, 0); time.sleep(0.15)
-            except Exception:
-                break
-        else:
-            os.kill(pid, signal.SIGKILL)
+    if _host:
+        # TERM, wait up to ~4.5s, then KILL — the same escalation as the local branch, run host-side in one hop.
+        host_sh("kill -TERM %d 2>/dev/null; i=0; while [ $i -lt 30 ] && kill -0 %d 2>/dev/null; do sleep 0.15; "
+                "i=$((i+1)); done; kill -0 %d 2>/dev/null && kill -KILL %d 2>/dev/null; :" % (pid, pid, pid, pid))
+    else:
+        with contextlib.suppress(Exception):
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(30):
+                try:
+                    os.kill(pid, 0); time.sleep(0.15)
+                except Exception:
+                    break
+            else:
+                os.kill(pid, signal.SIGKILL)
     with contextlib.suppress(Exception):          # the raw TUN can outlive the process
         run(["ip", "link", "delete", "dev", iface])
+    if _host:
+        host_sh("ip link delete dev %s 2>/dev/null; :" % shlex.quote(iface))
     return not any((f.get("iface") or "").strip() == iface
                    and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/") for _p, f in _csqtt_procs())
 
@@ -7465,12 +7603,27 @@ def reconcile_csqtt(want, remove=None):
                         res["errors"].append(iface + ": " + err); continue
                     res["changed"] += 1
             if bool(inst.get("stopped")) != bool(prev.get("stopped")):
-                host_sh("systemctl " + ("disable --now " if inst.get("stopped") else "enable --now ")
-                        + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
+                if NODE_KIND == "docker":
+                    _csqtt_docker_stop(iface) if inst.get("stopped") else _csqtt_docker_start(inst)
+                else:
+                    host_sh("systemctl " + ("disable --now " if inst.get("stopped") else "enable --now ")
+                            + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
                 res["changed"] += 1
             if inst.get("restart") and inst.get("restart") != prev.get("restart") and not inst.get("stopped"):
-                host_sh("systemctl restart " + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
+                if NODE_KIND == "docker":
+                    _csqtt_docker_start(inst)
+                else:
+                    host_sh("systemctl restart " + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
                 res["changed"] += 1
+            # docker has no Restart=on-failure: a server that died since the last pass is relaunched here, which
+            # is what makes the supervised model as durable as the systemd one.
+            if (NODE_KIND == "docker" and not inst.get("stopped") and _csqtt_present(iface)
+                    and not _csqtt_docker_pid(iface)):
+                err = _csqtt_docker_start(inst)
+                if err:
+                    res["errors"].append(iface + ": " + err)
+                else:
+                    res["changed"] += 1
             have[iface] = inst
         except Exception as e:
             res["errors"].append(iface + ": " + str(e))
@@ -7489,7 +7642,11 @@ def csqtt_snapshot():
     _nowt = int(time.time())
     for iface, inst in insts.items():
         svc = _csqtt_svc(iface)
-        active = (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null").stdout or "").strip()
+        # docker: the supervised child IS the service. Asking systemd here used to answer from the HOST, which on a
+        # converted master still had the old units running — so the panel was told "active" for servers this node
+        # was not running, beside an empty password store it could not read. Two wrong answers that agreed.
+        active = ("active" if _csqtt_docker_pid(iface) else "inactive") if NODE_KIND == "docker" else \
+                 (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null").stdout or "").strip()
         pj = {}
         with contextlib.suppress(Exception):
             with open(_csqtt_dir(iface) + "/passwords.json") as f:
