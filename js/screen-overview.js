@@ -16,7 +16,7 @@ import {
   Store, api, bus, useStore,
 } from "./store.js";
 import {
-  turnColor, turnFork, turnForkList,
+  turnColor, turnFork, turnForkList, forkLabel,
 } from "./turn-catalog.js";
 import {
   targetType,
@@ -479,15 +479,15 @@ export function DashDoughnuts({ selIds, range, hist }) {
     const dfs = fitFs(Math.max(ds.length, us.length)), ufs = Math.max(11, dfs - 3);
     return html`<div class="mrc-def"><span class="mrc-k">${T("val|total")}</span>
       <span class="mrc-tot dn" style=${"font-size:" + dfs + "px"}>${ds}</span><span class="mrc-tot up" style=${"font-size:" + ufs + "px"}>${us}</span></div>`; };
-  const turnTrafRings = () => { const rxS = forks.map(fk => ({ key: fk, name: fk, value: fTraf(fk).rx, color: turnColor(fk) })),
-      txS = forks.map(fk => ({ key: fk, name: fk, value: fTraf(fk).tx, color: turnColor(fk) }));
+  const turnTrafRings = () => { const rxS = forks.map(fk => ({ key: fk, name: forkLabel(fk), value: fTraf(fk).rx, color: turnColor(fk) })),
+      txS = forks.map(fk => ({ key: fk, name: forkLabel(fk), value: fTraf(fk).tx, color: turnColor(fk) }));
     const dn = povPeers ? txS : rxS, up = povPeers ? rxS : txS;
     return [{ label: T("traffic|Download"), dir: "dn", fmt: turnFmt, unitColor: "var(--online)", segments: dn }, { label: T("traffic|Upload"), dir: "up", fmt: turnFmt, unitColor: "var(--rate-up)", segments: up }]; };
   const turnCntRings = () => [
-    { label: T("Deployments"), fmt: v => v, segments: forks.map(fk => ({ key: fk, name: fk, value: fCnt(fk).tot, color: turnColor(fk) })) },
-    { label: T("Online"), fmt: v => v, segments: forks.map(fk => ({ key: fk, name: fk, value: fCnt(fk).on, color: turnColor(fk) })) }];
-  const turnTrafLeg = forks.map(fk => ({ key: fk, name: fk, color: turnColor(fk), ...(() => { const t = fTraf(fk), [d, u] = dlul(t.rx, t.tx); return { down: turnFmt(d), up: turnFmt(u) }; })() }));
-  const turnCntLeg = forks.map(fk => { const c = fCnt(fk); return { key: fk, name: fk, color: turnColor(fk), right: c.on + " / " + c.tot }; });
+    { label: T("Deployments"), fmt: v => v, segments: forks.map(fk => ({ key: fk, name: forkLabel(fk), value: fCnt(fk).tot, color: turnColor(fk) })) },
+    { label: T("Online"), fmt: v => v, segments: forks.map(fk => ({ key: fk, name: forkLabel(fk), value: fCnt(fk).on, color: turnColor(fk) })) }];
+  const turnTrafLeg = forks.map(fk => ({ key: fk, name: forkLabel(fk), color: turnColor(fk), ...(() => { const t = fTraf(fk), [d, u] = dlul(t.rx, t.tx); return { down: turnFmt(d), up: turnFmt(u) }; })() }));
+  const turnCntLeg = forks.map(fk => { const c = fCnt(fk); return { key: fk, name: forkLabel(fk), color: turnColor(fk), right: c.on + " / " + c.tot }; });
   const turnTot = forks.reduce((s, fk) => { const t = fTraf(fk), c = fCnt(fk); s.rx += t.rx; s.tx += t.tx; s.on += c.on; s.tot += c.tot; return s; }, { rx: 0, tx: 0, on: 0, tot: 0 });
   const turnLiveNote = html`<div class="donut-note">${T("live rates")}${ranged ? T(" · no history yet for this range") : ""}</div>`;
   const turnNote = turnRanged ? volNote : turnLiveNote;       // traffic card → volume

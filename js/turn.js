@@ -17,7 +17,7 @@ import { esc, portOf, ipOf, ipPickerVal, seen, ago, dur, fmtBytes, rate, isWdttI
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
-  TURN_FORKS_FALLBACK, turnLabel, turnFork, turnOwner, turnForkList, turnForksVisible,
+  TURN_FORKS_FALLBACK, turnLabel, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel,
   forkSupportsAwg, turnColor, turnClientColor, turnClientAuthor,
 } from "./turn-catalog.js";
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnProxiesFor, wdttOn,
@@ -252,7 +252,7 @@ const _forkTag = svc => {
       if (inst) { fork = inst.fork || ""; break; }
     }
     if (!fork) fork = kind === "csqtt" ? "csqtt" : "amurcanov";
-    const label = (turnForkList().find(x => x.id === fork) || {}).label || fork;
+    const label = forkLabel(fork);
     return html`<span class="tg tg-turn" style=${"--tfc:" + (turnColor(fork) || WDTT_COLOR)}>${label}</span>`;
   }
   return html`<span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(svc))}>${turnFork(svc)}</span>`;
@@ -504,7 +504,7 @@ export function turnEnabled() { return !(Store.panelSettings && Store.panelSetti
 // PANEL_SETTINGS_DEFAULTS["enabled_turn_forks"] server-side; it lived as three separate literals and two of them
 // had fallen behind, hiding wdttplus and xxcipherx — two of the four WDTT servers we build and publish.
 export const TURN_FORKS_DEFAULT = ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8",
-                            "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt"];
+                            "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "qwdtt"];
 export function enabledTurnForks() {
   const en = Store.panelSettings && Store.panelSettings.enabled_turn_forks;
   // Mirror of PANEL_SETTINGS_DEFAULTS["enabled_turn_forks"] server-side — used before settings load, and on a
@@ -1559,7 +1559,7 @@ export function WdttCard({ node, w, reorder }) {
       ${tag}
     </div>
     <div class="ifcard-rows">
-      <div class="ifrow"><span class="l">${T("WDTT fork")}</span><span class="r">${w.fork || "amurcanov"}</span></div>
+      <div class="ifrow"><span class="l">${T("WDTT fork")}</span><span class="r">${forkLabel(w.fork || "amurcanov")}</span></div>
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${w.listen || "—"}</span></div>
       <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r"><a class="tg tg-wdtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(w.iface)} onClick=${e => e.stopPropagation()}>${w.iface}</a></span></div>
     </div></div>`;
@@ -1997,7 +1997,7 @@ export function ForkTag({ fork, suffix, title }) {
   if (!fork) return null;
   const col = turnColor(fork) || WDTT_COLOR;
   const fk = turnForkList().find(x => x.id === fork) || {};
-  const label = fk.label || fork;
+  const label = forkLabel(fork);
   // Both amurcanov forks now read "amurcanov"; the kind-specific title (and the fork colour) tell them apart.
   const defTitle = fk.kind === "csqtt" ? T("CSQTT fork: {v1}", { v1: label }) : T("WDTT fork: {v1}", { v1: label });
   return html`<span class="tg" style=${"color:" + col + ";background:color-mix(in srgb," + col + " 16%,transparent)"}

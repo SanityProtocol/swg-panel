@@ -66,6 +66,10 @@ export function turnForkList() {
 // turnFork label) use the FULL turnForkList() so a deployed hidden-fork instance still resolves; only the pickers/
 // toggles/dropdowns use this filtered view.
 export function turnForksVisible() { return turnForkList().filter(f => !f.hidden); }
+// A fork's OPERATOR-FACING name (the catalog label), never the internal id. They differ for every fork whose author
+// name isn't its id — Ivan4537/wdttplus, XXcipherX/xxcipherx, SpaceNeuroX/qwdtt, amurcanov/csqtt — and the id leaking
+// into a label position is a recurring drift (see ForkTag). One lookup, so there is a single place to be right.
+export function forkLabel(fork) { return (turnForkList().find(f => f.id === fork) || {}).label || fork || ""; }
 export function forkSupportsAwg(fork) {
   const f = turnForkList().find(x => x.id === fork);
   return f ? (f.protocols || ["wg", "awg"]).includes("awg") : true;   // unknown fork → assume awg-capable (permissive, matches prior default)
