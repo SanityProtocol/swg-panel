@@ -1564,8 +1564,10 @@ export function WdttCard({ node, w, reorder }) {
     </div>
     <div class="ifcard-rows">
       <div class="ifrow"><span class="l">${T("WDTT fork")}</span><span class="r">${forkLabel(w.fork || "amurcanov")}</span></div>
-      <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${w.listen || "—"}</span></div>
-      ${w.raw_port ? html`<div class="ifrow"><span class="l">${T("RAW listen")}</span><span class="r addr" title=${T("RAW-IP mode — no WireGuard, no forward secrecy")}>${ipOf(w.listen || "") || ""}:${w.raw_port}</span></div>` : null}
+      ${/* One address, one row: the RAW listener shares the host and differs only in port, so it reads as
+            "…:56012 (56032)" with the raw port in the RAW colour — a second full row said the same thing twice. */ null}
+      <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${w.listen || "—"}${w.raw_port
+        ? html` <b class="rawport" title=${T("RAW-IP port — no WireGuard, no forward secrecy")}>(${w.raw_port})</b>` : null}</span></div>
       <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r"><a class="tg tg-wdtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(w.iface)} onClick=${e => e.stopPropagation()}>${w.iface}</a></span></div>
     </div></div>`;
 }
