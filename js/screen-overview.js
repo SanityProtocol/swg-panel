@@ -412,8 +412,13 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const legDU = (rx, tx) => { const [d, u] = dlul(rx, tx); return { down: trafFmt(d), up: trafFmt(u) }; };
   const trafLegNodes = fleet.map(n => ({ key: n.id, name: nodeName(n.id), color: nodeColor(n.id),
     ...legDU((nodeTraf[n.id] || {}).rx || 0, (nodeTraf[n.id] || {}).tx || 0) }));
-  const trafLegTypes = TYPES.filter(([t]) => (typeTraf[t] || {}).rx + (typeTraf[t] || {}).tx > 0).map(([t, nm]) => ({ key: t, name: nm, color: typeColor(t),
-    ...legDU(typeTraf[t].rx, typeTraf[t].tx) }));
+  // Keyed off what the fleet HAS, not what moved bytes — the same test the counts card beside it uses. Filtering
+  // on traffic emptied the whole legend on an idle fleet, so the one card in the grid went blank while every other
+  // ring still listed its entries at 0. `mesh` is not a deployment kind and never appears in typeCnt, so it stays
+  // traffic-gated: it shows up exactly when the Mesh badge has put something in the ring.
+  const trafLegTypes = TYPES.filter(([t]) => (typeCnt[t] || { tot: 0 }).tot > 0
+      || ((typeTraf[t] || {}).rx || 0) + ((typeTraf[t] || {}).tx || 0) > 0).map(([t, nm]) => ({ key: t, name: nm, color: typeColor(t),
+    ...legDU((typeTraf[t] || {}).rx || 0, (typeTraf[t] || {}).tx || 0) }));
   const cntLegNodes = fleet.map(n => ({ key: n.id, name: nodeName(n.id), color: nodeColor(n.id), right: nodeCnt[n.id].on + " / " + nodeCnt[n.id].tot }));
   const cntLegTypes = TYPES.filter(([t]) => (typeCnt[t] || { tot: 0 }).tot > 0).map(([t, nm]) => ({ key: t, name: nm, color: ifaceColor(t), right: typeCnt[t].on + " / " + typeCnt[t].tot }));
 

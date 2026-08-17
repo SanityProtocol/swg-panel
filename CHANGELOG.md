@@ -18,6 +18,16 @@ earlier releases predate the changelog — see the git history. · Русски�
   serving the passwords it already had so nobody is disconnected, and imports each user as a peer you can
   see and manage. Without this the only way back was to delete the server, which would have destroyed
   every user on it.
+- **csqtt runs on Docker nodes, not only bare metal.** A container has no systemd, so each server runs as a
+  supervised process inside the node and is started again if it ever dies. One thing you set yourself: csqtt's
+  dataplane is io_uring, which Docker's default syscall profile blocks outright, so a Docker node that will run
+  csqtt needs `SWG_NODE_SECCOMP=unconfined` in its `.env`. Miss it and the panel names that as the reason rather
+  than leaving you with a server that silently won't start.
+- **Moving or removing a node keeps its csqtt servers straight.** Converting between bare metal and Docker carries
+  each server's password store across and takes the old one down before the new one comes up, instead of leaving
+  both to fight over the same port and interface. Uninstalling lists every csqtt server, asks per server before
+  deleting its password store — the one step that cannot be undone — and on Docker says up front which servers are
+  about to leave with the node.
 - **qWDTT servers** (SpaceNeuroX's fork) can be created and adopted like the other WDTT forks, including
   its **RAW-IP mode** — a second listener that carries traffic without WireGuard for roughly six times the
   throughput, at the cost of forward secrecy. It is off by default, one switch to turn on, and the panel
@@ -37,6 +47,9 @@ earlier releases predate the changelog — see the git history. · Русски�
   turning it on elsewhere on the same address moves it, and says so first.
 
 ### Fixed
+- **A stopped WDTT or csqtt server still read "starting".** Stopping one from the panel worked, but its card kept
+  the same tag it wears before a server has ever come up — so an intentional stop looked identical to one that
+  never started, on both the interface and the turn-proxy card. It now reads "stopped", like a stopped interface.
 - **Traffic charts that sat at zero.** Fleet throughput, turn-proxy throughput and Online peers had been
   flat for days on a panel whose history files were left owned by another user — every write failed
   silently and nothing said why. A file the panel cannot write is now replaced and logged.
