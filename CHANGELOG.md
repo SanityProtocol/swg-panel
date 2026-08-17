@@ -3,7 +3,7 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-## [1.7.4-beta] — 2026-08-18
+## [1.7.5-beta] — 2026-08-18
 
 ### Added
 - **Every third-party licence in one place.** [THIRD-PARTY.md](THIRD-PARTY.md) now lists everything swgPanel
@@ -56,6 +56,11 @@ earlier releases predate the changelog — see the git history. · Русски�
   turning it on elsewhere on the same address moves it, and says so first.
 
 ### Fixed
+- **Two delete dialogs could not open at all.** Deleting a turn-proxy, or deleting an interface, failed before the
+  confirmation window appeared: the "type the name to confirm" label the delete dialogs share had been left private
+  to one screen when the interface was split into modules, so the code was present but unreachable from the other
+  two. Deleting a peer or a user was never affected, and nothing was ever removed by accident — the window simply
+  never opened.
 - **A csqtt server could never install.** The panel resolved a node's request for the csqtt binary to amurcanov's
   own repository — asking for a file only we build, at a tag he spells differently — so it was a 404 every time,
   on every install, from the day csqtt shipped. A node has no other source for that binary, so the server simply

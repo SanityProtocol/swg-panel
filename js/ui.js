@@ -120,6 +120,13 @@ export function toast(msg, kind = "info", ms = 5500) {
   host.appendChild(t);
   setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 250); }, ms);
 }
+// The "type <name> to confirm" label above a destructive sheet's input. Shared: three delete sheets use it
+// (peer/user, interface, turn-proxy) and it lived private in sheets-crud.js, so the other two threw a
+// ReferenceError the moment they rendered — a delete dialog that could not open at all.
+export function typeToConfirm(phrase) {
+  const [a, b] = Tsplit("Type {phrase} to confirm", "phrase");
+  return html`<${Fragment}>${a}<span class="mono" style="text-transform:none">${phrase}</span>${b}<//>`;
+}
 export function copy(text, what) { navigator.clipboard.writeText(text); toast((what || T("Copied")) + ".", "ok", 1500); }
 
 // ───────────────────────── mutations (optimistic, status-on-failure) ─────────────────────────
