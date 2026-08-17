@@ -290,7 +290,7 @@ export function AdoptCsqttSheet({ node, c }) {
       <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${c.tun_addr || "—"}</span></div>
       <div class="ig-item"><span class="ig-l">${T("Users")}</span><span class="ig-v">${n || html`<span class="faint">${T("none found")}</span>`}</span></div>
     </div>
-    ${n ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Its *{count}* come across on adopt — each becomes an unassigned peer you can hand to a user.", { count: plural(n, "user") })}</div>` : null}
+    ${n ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Adopting brings its *{count}* across — each becomes an unassigned peer you can hand to a user.", { count: plural(n, "user") })}</div>` : null}
     <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select>
       <div class="hint">${T("Which csqtt server implements this instance")}</div></div>
     <div class="notice warn" style="margin-top:12px"><${Ic} i="warn"/><span>${T("The running server is stopped and ours starts in its place, on the same port — clients reconnect within seconds.")}</span></div>
@@ -346,7 +346,7 @@ export function AdoptDormantWdttSheet({ node, d, nrec }) {
       <div class="ig-item"><span class="ig-l">${T("Server identity")}</span><span class="ig-v"><span class="mi-ok">${T("tag|present")}</span></span></div>
       <div class="ig-item"><span class="ig-l">${T("Users")}</span><span class="ig-v">${(d.users || []).length || html`<span class="faint">${T("none found")}</span>`}</span></div>
     </div>
-    ${(d.users || []).length ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Its *{count}* come across on adopt — open the install from its card to see them.", { count: plural((d.users || []).length, "user") })}</div>` : null}
+    ${(d.users || []).length ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Adopting brings its *{count}* across — open the install from its card to see them.", { count: plural((d.users || []).length, "user") })}</div>` : null}
     <div class="hint" style="margin:-6px 0 14px">${d.listen_port
       ? Trich("Ports recovered from its password store — its clients already dial these. The *subnet* is never written to disk, so set that below.")
       : T("Not running, so its ports and subnet can't be read from the server — set them here.")}</div>
@@ -459,7 +459,13 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
     <div class="iface-grid" style="margin:0 0 16px">
       <div class="ig-item"><span class="ig-l">${T("Datapath")}</span><span class="ig-v">${cand.datapath}${cand.up ? "" : " · down"}</span></div>
       <div class="ig-item"><span class="ig-l">${T("Tunnel subnet")}</span><span class="ig-v">${cand.address || w.wg_addr || "—"}</span></div>
-      <div class="ig-item"><span class="ig-l">${T("Existing peers")}</span><span class="ig-v">${cand.peers || 0}</span></div>
+      ${/* For a WDTT server the interface's peer count is the WRONG number: it counts wg peers that have
+            CONNECTED, so a server with three issued users nobody has used yet reads "0 existing peers" —
+            the opposite of what an operator needs before taking it on. Its store knows what was issued. */ null}
+      <div class="ig-item"><span class="ig-l">${T("Existing peers")}</span><span class="ig-v">${(() => {
+        const wu = ((cand.wdtt || {}).users || []).length;
+        return wu ? html`${wu}${cand.peers ? html` <span class="faint">${T("· {v1} connected", { v1: cand.peers })}</span>` : null}` : (cand.peers || 0);
+      })()}</span></div>
       ${cand.conf ? html`<div class="ig-item"><span class="ig-l">${T("Config file")}</span><span class="ig-v">${cand.conf}</span></div>` : null}
       ${type === "wdtt" ? html`<${Fragment}>
         <div class="ig-item"><span class="ig-l">${T("Config directory")}</span><span class="ig-v">${w.config_dir || "—"}</span></div>

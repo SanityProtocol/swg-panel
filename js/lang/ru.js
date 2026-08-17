@@ -1079,8 +1079,6 @@ export const STR = {
   "never connected": "не подключался",
   "Password store": "Хранилище паролей",
   "none found": "не найдено",
-  "Its *{count}* come across on adopt — open the install from its card to see them.":
-    "Его *{count}* перейдут при приёме — откройте установку с её карточки, чтобы посмотреть.",
   "Adopting — the node starts this server with its existing key on the next sync.":
     "Принимаем — нода запустит этот сервер с его существующим ключом на следующей синхронизации.",
   "Adopting the WDTT server — the node takes it over on its next sync.":
@@ -3272,8 +3270,6 @@ export const STR = {
     "Принимаем — нода заберёт его на следующей синхронизации, и его пользователи продолжат подключаться.",
   "Its *users are kept* — the panel takes the server over on its own address and port, keeps serving every password it already had, and imports each one as a peer you can see and manage.":
     "Его *пользователи сохранятся* — панель заберёт сервер на его же адресе и порту, продолжит обслуживать все выданные им пароли и импортирует каждого как пира, которого вы видите и которым управляете.",
-  "Its *{count}* come across on adopt — each becomes an unassigned peer you can hand to a user.":
-    "Его *{count}* перейдут при приёме — каждый станет непривязанным пиром, которого можно выдать пользователю.",
   "The running server is stopped and ours starts in its place, on the same port — clients reconnect within seconds.":
     "Работающий сервер будет остановлен, а наш поднимется на его месте, на том же порту — клиенты переподключатся за секунды.",
   "A csqtt server is adopted from its card on the node page — the node finds it and offers it there.":
@@ -3291,6 +3287,11 @@ export const STR = {
   "unknown csqtt fork: {v1}": "неизвестный форк csqtt: {v1}",
   "this node has no endpoint address yet, so clients would have nothing to dial — set the node's endpoint host, or pass one with the adopt":
     "у этой ноды ещё нет адреса подключения, клиентам будет некуда стучаться — задайте адрес ноды или передайте его при приёме",
+  "· {v1} connected": "· подключено {v1}",
+  "Adopting brings its *{count}* across — open the install from its card to see them.":
+    "При приёме его *{count}* перейдут — откройте установку с её карточки, чтобы их увидеть.",
+  "Adopting brings its *{count}* across — each becomes an unassigned peer you can hand to a user.":
+    "При приёме его *{count}* перейдут — каждый станет непривязанным пиром, которого можно выдать пользователю.",
   "Turn-proxy": "Turn-прокси",
   "RAW mode on": "RAW включён",
   "Extra flags": "Дополнительные флаги",

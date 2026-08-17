@@ -3480,6 +3480,15 @@ def _wdtt_users_local(cfgdir):
     return out
 
 
+def _listdir_safe(path):
+    """os.listdir that answers [] instead of raising — a scan over a directory we may not be able to read must
+    not take its caller down with it."""
+    try:
+        return os.listdir(path)
+    except OSError:
+        return []
+
+
 def _wdtt_cfg_probe(cfg):
     """{'id': bool, 'store': str, 'users': [...]} for a config-dir — does it hold an identity (wg-keys.dat),
     which store, and the NON-SECRET rows of that store (never the passwords).
@@ -3495,9 +3504,14 @@ def _wdtt_cfg_probe(cfg):
                          ("passwords.json" if os.path.isfile(os.path.join(cfg, "passwords.json")) else "")),
                "users": _wdtt_users_local(cfg), "inbound_ports": _wdtt_inbound_ports_local(cfg),
                "unit_listen": "", "unit_wg_port": "", "unit_fork": ""}
-        with contextlib.suppress(Exception):
-            _udir = "/etc/systemd/system"
-            for _un in sorted(x for x in os.listdir(_udir) if x.endswith(".service")):
+        _udir = "/etc/systemd/system"
+        # Per-FILE suppression, not per-scan: /etc/systemd/system is full of dangling symlinks (a stock box has
+        # dbus-org.freedesktop.ModemManager1.service pointing at nothing) and .wants directories. With one
+        # suppress around the whole loop, the first unreadable entry aborted the scan — so a dormant install
+        # whose unit sorted after it recovered NO ports and NO fork, and the operator was asked for values the
+        # unit spells out. It sorts second on a default Debian, so this was the common case, not the edge.
+        for _un in sorted(x for x in _listdir_safe(_udir) if x.endswith(".service")):
+            with contextlib.suppress(Exception):
                 _u = os.path.join(_udir, _un)
                 _txt = open(_u, errors="replace").read()
                 if ("config-dir " + cfg) not in _txt:
