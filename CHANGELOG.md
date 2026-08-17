@@ -3,7 +3,7 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-## [1.7.7-beta] — 2026-08-18
+## [1.7.8-beta] — 2026-08-18
 
 ### Added
 - **Every third-party licence in one place.** [THIRD-PARTY.md](THIRD-PARTY.md) now lists everything swgPanel
@@ -56,6 +56,12 @@ earlier releases predate the changelog — see the git history. · Русски�
   turning it on elsewhere on the same address moves it, and says so first.
 
 ### Fixed
+- **Reusing the name of a deleted csqtt server broke it permanently.** The panel remembered every deletion for the
+  life of the node and never forgot one, so creating a new server with the same interface name — `csqtt1` is the
+  name the first one gets — left the node being told to delete it and to run it in the same breath, every few
+  seconds. It was stopped, wiped and rebuilt on a loop with a new owner password each time, so no connection ever
+  lasted: the server showed no online peers, and clients connected to something that was already gone. Deletions
+  are now forgotten once carried out, and a server you have asked for is never also queued for deletion.
 - **csqtt servers restarted every few seconds on bare metal.** The service definition tried to permit the io_uring
   system calls csqtt's data path depends on, but named a permission group that does not exist — so it was quietly
   ignored and those calls were refused. The server could not carry traffic, the node kept restarting it, and every
