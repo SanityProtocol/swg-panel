@@ -266,27 +266,38 @@ export function AdoptCsqttSheet({ node, c }) {
   const [fork, setFork] = useState((forks[0] || {}).id || "csqtt");
   const [busy, setBusy] = useState(false);
   const n = (c.users || []).length;
+  // Did the node manage to READ its password store? Distinct from "it has none": an empty store is fine, but a
+  // store we could not reach means adopting drops every client this server has with nothing to re-issue from — so
+  // the promise below is withdrawn and the operator has to accept the loss instead of being told the opposite.
+  // Undefined = a node older than this signal, whose only working case was a local read; treat as read.
+  const storeGone = c.store_found === false;
+  const [accept, setAccept] = useState(false);
   const doAdopt = async () => {
     setBusy(true);
-    const r = await api.csqttAdopt({ node, iface: c.iface, fork });
+    const r = await api.csqttAdopt({ node, iface: c.iface, fork, ...(storeGone ? { accept_no_store: true } : {}) });
     if (!r || !r.ok) { setBusy(false); return toast(srvText(r) || T("Adopt failed"), "err"); }
     closeAllModals(); await Store.poll();
     toast(T("Adopting — the node takes it over on the next sync and its users keep connecting."), "ok");
     location.hash = "#/node/" + encodeURIComponent(node);
   };
   return html`<${Sheet} title=${T("Adopt csqtt server · {v1}", { v1: c.iface })} width=${620}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy} onClick=${doAdopt}>${T("Adopt")}</button></>`}>
-    <div class="notice ok"><${Ic} i="check"/><span>${Trich("Its *users are kept* — the panel takes the server over on its own address and port, keeps serving every password it already had, and imports each one as a peer you can see and manage.")}</span></div>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class=${"btn " + (storeGone ? "btn-danger" : "btn-primary")} disabled=${busy || (storeGone && !accept)} onClick=${doAdopt}>${storeGone ? T("Adopt without its users") : T("Adopt")}</button></>`}>
+    ${storeGone
+      ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("The node *can't read this server's password store* at {v1}, so its users cannot come across. Adopting stops it and starts ours in its place with *no users at all* — everyone it is serving right now is dropped, and you have nothing to re-issue their access from.", { v1: c.config_dir })}</span></div>
+        <div class="hint" style="margin:-6px 0 14px">${T("This usually means the server runs inside a container of its own, where the node can't reach its files. To keep its users, stop it and re-create the server from the panel instead.")}</div>`
+      : html`<div class="notice ok"><${Ic} i="check"/><span>${Trich("Its *users are kept* — the panel takes the server over on its own address and port, keeps serving every password it already had, and imports each one as a peer you can see and manage.")}</span></div>`}
     <div class="iface-grid" style="margin:0 0 16px">
       <div class="ig-item"><span class="ig-l">${T("Found at")}</span><span class="ig-v">${c.config_dir}</span></div>
       <div class="ig-item"><span class="ig-l">${T("Listen")}</span><span class="ig-v">${c.listen || "—"}</span></div>
       <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${c.tun_addr || "—"}</span></div>
-      <div class="ig-item"><span class="ig-l">${T("Users")}</span><span class="ig-v">${n || html`<span class="faint">${T("none found")}</span>`}</span></div>
+      <div class="ig-item"><span class="ig-l">${T("Users")}</span><span class="ig-v">${storeGone ? html`<span class="faint">${T("couldn't be read")}</span>` : (n || html`<span class="faint">${T("none found")}</span>`)}</span></div>
     </div>
     ${n ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Adopting brings its *{count}* across — each becomes an unassigned peer you can hand to a user.", { count: plural(n, "user") })}</div>` : null}
     <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select>
       <div class="hint">${T("Which csqtt server implements this instance")}</div></div>
-    <div class="notice warn" style="margin-top:12px"><${Ic} i="warn"/><span>${T("The running server is stopped and ours starts in its place, on the same port — clients reconnect within seconds.")}</span></div>
+    ${storeGone
+      ? html`<label class="ivk-esc-row" style="margin-top:12px"><${Switch} on=${accept} onChange=${setAccept}/><span>${T("I understand its current users will be lost")}</span></label>`
+      : html`<div class="notice warn" style="margin-top:12px"><${Ic} i="warn"/><span>${T("The running server is stopped and ours starts in its place, on the same port — clients reconnect within seconds.")}</span></div>`}
   <//>`;
 }
 

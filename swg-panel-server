@@ -11481,6 +11481,16 @@ def api(method, path, qs, body, deps):
         iface = (body.get("iface") or "").strip()
         if not _CSQTT_IFACE_RE.match(iface):
             return 400, {"ok": False, "error": "invalid iface (csqtt0..csqtt9999)", "code": "bad_request"}
+        # Never CREATE onto a name a server we don't manage already holds. Upstream csqtt hardcodes `csqtt1`, so
+        # this is not a corner case — it is the first name the panel offers on a node that already runs one by
+        # hand. The node would then find its TUN taken and, before the scan was fixed, delete it out from under
+        # a live third party. Adopt is the correct route: it takes the server over WITH its users.
+        # Only on create — an existing instance re-reports itself and must stay editable. Silent when the node
+        # reports no candidates (older node, or a scan that could not complete): the authority is what it saw.
+        if iface not in (nodes[nid].get("csqtt") or {}):
+            _fsnap = ((deps.get("node_snaps") or {}).get(nid) or {})
+            if any((c or {}).get("iface") == iface for c in (_fsnap.get("csqtt_candidates") or [])):
+                return 400, {"ok": False, **perr("a csqtt server this panel doesn't manage already holds {v1} on this node — adopt it from the node's page to take it over with its users, or pick another name", v1=iface), "code": "iface_taken"}
         inst = dict((nodes[nid].get("csqtt") or {}).get(iface) or {}); inst["iface"] = iface
         # csqtt is one implementation today (amurcanov), but the catalog is fork-shaped and others are being
         # built — so the instance records WHICH fork from the start. Unknown/absent falls back to the catalog's
@@ -11585,6 +11595,14 @@ def api(method, path, qs, body, deps):
         _cd = next((c for c in (_snap.get("csqtt_candidates") or []) if (c or {}).get("iface") == iface), None)
         if not _cd:
             return 400, {"ok": False, **perr("this node doesn't report a csqtt server on {v1} — refresh and try again", v1=iface), "code": "bad_request"}
+        # The node could not read this server's password store (its config-dir is somewhere we cannot reach — a
+        # container of its own, say). Adopting anyway is a legitimate choice: the operator may simply want the
+        # thing gone. What is NOT legitimate is doing it while the sheet promises "its users are kept" — the
+        # take-over stops a live server, and with no store to carry across, every client it serves is dropped with
+        # nothing to re-issue from. So it needs an explicit yes. Absent field = a node older than this check, whose
+        # only reachable case was a local read that already worked: don't break it.
+        if not _cd.get("store_found", True) and not body.get("accept_no_store"):
+            return 400, {"ok": False, **perr("the node can't read this server's password store at {v1}, so adopting would stop it and take over with NO users — its clients would all be dropped. Confirm to adopt anyway.", v1=_cd.get("config_dir") or "?"), "code": "store_unreadable"}
         inst = {"iface": iface, "adopt_foreign": True, "adopt_config_dir": _cd.get("config_dir") or ""}
         fork = (body.get("fork") or "").strip() or _csqtt_default_fork()
         if (TURN_SERVERS.get(fork) or {}).get("kind") != "csqtt":

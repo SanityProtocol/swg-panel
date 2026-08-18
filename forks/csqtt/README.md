@@ -1,4 +1,4 @@
-# csqtt — swg-panel integration patch (Phase A1)
+# csqtt — swg-panel integration patch
 
 `csqtt` (github.com/amurcanov/csqtt) is amurcanov's Rust rewrite and the successor to WDTT — a **raw-IP TUN**
 VK-TURN proxy (no WireGuard), io_uring dataplane, its own web panel. This directory holds the patch that makes
@@ -7,7 +7,7 @@ it manageable by swg-panel the same way the `wdtt/` forks are, plus a reproducib
 - **`csqtt-swgpanel.patch`** — pinned to upstream `31114cb7` (v2.0.1, 2026-08-17). Applies with
   `git apply` from the repo root of a fresh csqtt clone. Verified apply-clean + build-clean + fleet-validated.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
-  Needs rustup 1.97.1 + zig + cargo-zigbuild (see the A0 scratchpad toolchain).
+  Needs rustup 1.97.1 + zig + cargo-zigbuild.
 
 ## What the patch adds (every flag defaults to STOCK when absent → an un-flagged binary is byte-for-byte upstream)
 
@@ -35,16 +35,3 @@ the store persists incrementally. Measured: SIGTERM → exit in ~3 ms; the TUN a
 Reconcile: adds new / removes generated passwords no longer listed (and their bound device), and updates
 `expires_at / vk_hash / name / is_deactivated` on existing ones — **never** touching `device_id / up_bytes /
 down_bytes` (csqtt owns those runtime fields). The main `--password` is never managed via desired.json.
-
-## Fleet validation (svo-im, 2026-08-16)
-
-Two isolated `--no-nat` instances (csqtt1/10.66.67.1 + csqtt2/10.66.68.1) ran together; host iptables +
-ip_forward untouched; `--desired` add/update/remove all applied via SIGHUP with the **same PID** (no restart),
-instance B unaffected; both exited cleanly on SIGTERM; ifaces auto-dropped; protected services (nginx/mongod)
-untouched throughout.
-
-## Not done here (later phases)
-
-Build/host the binary in the panel mirror + `CSQTT_BUILDS` version board (A3) · arm64 build is supported by
-`build.sh` but not yet exercised on hardware · node lifecycle/reconciler + unit template with io_uring syscall
-allowances (A2). Nothing is published to GitHub until the whole csqtt integration is complete and tested.

@@ -3272,6 +3272,15 @@ export const STR = {
     "Его *пользователи сохранятся* — панель заберёт сервер на его же адресе и порту, продолжит обслуживать все выданные им пароли и импортирует каждого как пира, которого вы видите и которым управляете.",
   "The running server is stopped and ours starts in its place, on the same port — clients reconnect within seconds.":
     "Работающий сервер будет остановлен, а наш поднимется на его месте, на том же порту — клиенты переподключатся за секунды.",
+  "The node *can't read this server's password store* at {v1}, so its users cannot come across. Adopting stops it and starts ours in its place with *no users at all* — everyone it is serving right now is dropped, and you have nothing to re-issue their access from.":
+    "Нода *не может прочитать хранилище паролей этого сервера* в {v1}, поэтому его пользователи не перейдут. При приёме он будет остановлен, а наш поднимется на его месте *вообще без пользователей* — все, кого он сейчас обслуживает, отвалятся, и восстановить их доступ будет не из чего.",
+  "This usually means the server runs inside a container of its own, where the node can't reach its files. To keep its users, stop it and re-create the server from the panel instead.":
+    "Обычно это значит, что сервер работает в собственном контейнере, куда нода не достаёт до его файлов. Чтобы сохранить пользователей, остановите его и создайте сервер заново из панели.",
+  "Adopt without its users": "Принять без пользователей",
+  "I understand its current users will be lost": "Я понимаю, что его текущие пользователи будут потеряны",
+  "couldn't be read": "не удалось прочитать",
+  "the node can't read this server's password store at {v1}, so adopting would stop it and take over with NO users — its clients would all be dropped. Confirm to adopt anyway.":
+    "нода не может прочитать хранилище паролей этого сервера в {v1}: при приёме он будет остановлен, а мы заберём его БЕЗ пользователей — все его клиенты отвалятся. Подтвердите, чтобы принять всё равно.",
   "A csqtt server is adopted from its card on the node page — the node finds it and offers it there.":
     "Сервер csqtt принимается со своей карточки на странице ноды — нода находит его и предлагает там.",
   "RAW needs port {v1} and {v2} is using it on this node — move that first":
@@ -3283,6 +3292,8 @@ export const STR = {
   "this node already manages a csqtt instance on {v1}": "эта нода уже управляет экземпляром csqtt на {v1}",
   "this node doesn't report a csqtt server on {v1} — refresh and try again":
     "эта нода не сообщает о сервере csqtt на {v1} — обновите и попробуйте снова",
+  "a csqtt server this panel doesn't manage already holds {v1} on this node — adopt it from the node's page to take it over with its users, or pick another name":
+    "сервер csqtt, которым эта панель не управляет, уже занимает {v1} на этой ноде — примите его со страницы ноды, чтобы забрать вместе с пользователями, или выберите другое имя",
   "this server's tunnel subnet isn't an IPv4 /24: {v1}": "подсеть туннеля этого сервера не IPv4 /24: {v1}",
   "unknown csqtt fork: {v1}": "неизвестный форк csqtt: {v1}",
   "this node has no endpoint address yet, so clients would have nothing to dial — set the node's endpoint host, or pass one with the adopt":

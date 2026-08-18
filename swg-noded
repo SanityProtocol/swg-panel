@@ -3244,7 +3244,9 @@ WDTT_CFG_DIRS = ("/etc/wdtt", "/opt/wdtt", "/var/lib/wdtt", "/usr/local/etc/wdtt
 # at all (ildarmaga compiles wgIfaceName = "wdtt0", alongside a hardcoded 10.66.66.1/24 and :2860 admin surface),
 # which is also why only one upstream server can run per host.
 WDTT_DEFAULT_IFACE = "wdtt0"
-_WDTT_HOSTPROC = {"at": 0.0, "rows": []}    # docker: cached HOST /proc walk (see _wdtt_host_procs)
+_WDTT_HOSTPROC = {"at": 0.0, "rows": [], "ok": True}   # docker: cached HOST /proc walk (see _wdtt_host_procs).
+                                            # "ok" = the walk COMPLETED. An empty rows list means "nothing is
+                                            # running" only when ok; otherwise it means "we could not look".
 _WDTT_CFGPROBE = {}                          # docker: cfgdir -> (ts, {...}) cached host-side file probe
 _WDTT_HOST_TTL = 45                          # each host probe is a privileged one-shot container — never per-5s
 
@@ -3384,30 +3386,53 @@ def _wdtt_flags_host(pid):
 
 
 def _wdtt_host_procs():
-    """WDTT servers in the HOST's pid namespace — docker only. This container has no pid:host, so a foreign server
-    running on the host is invisible to a local /proc walk and could never be adopted. host_sh reaches it, but each
-    call spawns a privileged one-shot container, so the result is cached: the foreign lookup runs per candidate per
-    5s snapshot, and paying a container for each of those would be ruinous.
-    cmdline goes over as base64 — an argv with spaces or newlines must survive the trip intact."""
+    """WDTT *and csqtt* servers in the HOST's pid namespace — docker only. This container has no pid:host, so a
+    foreign server running on the host is invisible to a local /proc walk and could never be adopted. host_sh
+    reaches it, but each call spawns a privileged one-shot container, so the result is cached: the foreign lookup
+    runs per candidate per 5s snapshot, and paying a container for each of those would be ruinous.
+    cmdline goes over as base64 — an argv with spaces or newlines must survive the trip intact.
+
+    The net has to be wider than the name suggests: this is the ONLY host walk on a docker node, and _csqtt_procs
+    reads it too. Matching *wdtt*|*server* alone missed the case it exists for — the AUTHORS' upstream csqtt
+    installs its binary as `csqtt` (/usr/local/bin/csqtt), which contains neither, so a hand-installed csqtt eating
+    a whole box was discarded here before the csqtt discriminator downstream ever saw it, and the panel reported
+    the node as running nothing. Everything collected is classified downstream — _wdtt_procs drops csqtt via
+    _wdtt_is_server, _csqtt_procs keeps exactly it — so widening here cannot cross the two kinds."""
     now = time.time()
     if now - _WDTT_HOSTPROC["at"] < _WDTT_HOST_TTL:
         return _WDTT_HOSTPROC["rows"]
     rows = []
+    ok = False
     with contextlib.suppress(Exception):
         cmd = ("for p in /proc/[0-9]*; do c=$p/cmdline; [ -r \"$c\" ] || continue; "
-               "case \"$(head -c 200 \"$c\" | tr '\\0' ' ')\" in *wdtt*|*server*) "
+               "case \"$(head -c 200 \"$c\" | tr '\\0' ' ')\" in *wdtt*|*csqtt*|*server*) "
                "printf '%s ' \"${p#/proc/}\"; base64 -w0 < \"$c\"; echo ;; esac; done")
-        for ln in (host_sh(cmd, timeout=30).stdout or "").splitlines():
+        _r = host_sh(cmd, timeout=30)
+        # rc 124 is run()'s timeout. This hop DOES fail in the field — a box seen forking ~500 helpers per pass
+        # under load logged nothing but `host_sh rc=124` — and an empty answer from a failed walk is
+        # indistinguishable from a healthy "nothing there" unless we record which one it was.
+        ok = (_r.returncode == 0)
+        for ln in (_r.stdout or "").splitlines():
             pid, _, b64 = ln.strip().partition(" ")
             if not pid.isdigit() or not b64:
                 continue
             with contextlib.suppress(Exception):
                 parts = [x.decode("utf-8", "replace") for x in base64.b64decode(b64).split(b"\x00") if x]
-                if parts and ("wdtt" in parts[0] or "server" in parts[0]):
+                if parts and ("wdtt" in parts[0] or "csqtt" in parts[0] or "server" in parts[0]):
                     rows.append((int(pid), _wdtt_flags_from_argv(parts)))
     _WDTT_HOSTPROC["at"] = now
     _WDTT_HOSTPROC["rows"] = rows
+    _WDTT_HOSTPROC["ok"] = ok
     return rows
+
+
+def _wdtt_hostproc_flush():
+    """Make the next _wdtt_host_procs re-walk instead of answering from the TTL cache.
+
+    The cache is right for the per-5s snapshot and wrong for anything that SIGNALS: a pid read from a walk up to
+    45s old may already have been reused, and the difference between stopping a foreign server and killing an
+    unrelated process is exactly that staleness. Bare metal walks live and ignores this."""
+    _WDTT_HOSTPROC["at"] = 0.0
 
 
 def _wdtt_unit_ports(execstart):
@@ -5084,7 +5109,11 @@ def _dturn_run(tp):   # (re)create the container to match tp; returns the docker
     # Axis-2 P3: drop every capability except NET_BIND_SERVICE (bind a <1024 listen port) + no-new-privileges —
     # a turn proxy only forwards packets, so a compromised fork binary is confined to its sockets.
     harden = ["--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges"]
-    return run(["docker", "run", "-d", "--name", cn] + net + ["--restart", "unless-stopped"] + harden +
+    # Bound the container log. Docker's json-file driver defaults to UNLIMITED, and a fork binary that spins and
+    # logs per iteration will fill the host disk — observed at 9.6G from one such server. compose caps the panel's
+    # own services the same way; these are created here, so they must be capped here.
+    logcap = ["--log-opt", "max-size=10m", "--log-opt", "max-file=3"]
+    return run(["docker", "run", "-d", "--name", cn] + net + ["--restart", "unless-stopped"] + harden + logcap +
                ["-v", _turn_bin_host(svc) + ":/turn-server:ro", "--entrypoint", "/turn-server",
                 SWG_TURN_IMAGE] + _dturn_args(tp), timeout=60)
 
@@ -5827,6 +5856,14 @@ CSQTT_BIN_DIR = CSQTT_ROOT + "/.bin"             # per-arch binary slot; our swg
 CSQTT_OWNER = "amurcanov/csqtt"                  # panel-mirror owner key
 CSQTT_WEBUSER = "swgpanel"                       # csqtt's own admin panel login (node-owned; a strong random pw is minted)
 _CSQTT_NAME_RE = re.compile(r"^csqtt[0-9]{1,4}$")
+# csqtt's STOCK datapath values, for a server we did not deploy. OUR build takes --iface/--tun-addr; the authors'
+# upstream hardcodes them (src/net_setup.rs: TUN_IFACE = "csqtt1", TUN_ADDR = 10.66.67.1/24) and registers no such
+# flags — so a genuinely foreign server has neither in its argv. Same lesson as _wdtt_iface_of: keying the scan on
+# a flag only OUR binary passes means it can only ever find servers we already manage, i.e. never the case it is
+# for. Adopting on a stock guess is safe here — the adopt re-checks the subnet against the fleet, and csqtt hands
+# clients an address at connect time, so a subnet that turns out to differ costs a reconnect, not a lost client.
+CSQTT_DEFAULT_IFACE = "csqtt1"
+CSQTT_DEFAULT_TUNADDR = "10.66.67.1/24"
 _CSQTT_LASTBYTES = {}                            # iface -> {pw: (up+down, at)} for byte-delta liveness (raw datapath has no wg handshake)
 
 def _wdtt_svc(iface): return "swg-wdtt-" + iface
@@ -6069,12 +6106,32 @@ def _wdtt_write_cfgdir(inst, binshared, binp, cfgdir):
         if not _wdtt_identity_ok(_kf):
             raise ValueError("restored identity is not a usable WDTT key file — refusing to start with a fresh key")
 
+SERVERLOG_MAX = 8 << 20     # per supervised server, rotated one deep → at most 2× this on disk
+
+def _rotate_serverlog(path, cap=SERVERLOG_MAX):
+    """Keep a supervised server's log bounded before it is appended to again.
+
+    server.log is opened "ab" and nothing ever truncated it. A server that crash-loops is relaunched by the
+    reconcile every 5s, and one that stays up but spins can log per iteration with no backoff — which is exactly
+    how a csqtt on a user's box wrote 9.6G of `[WARN] I/O errors +1` into its docker log and filled the disk.
+    Ours is the same shape with no cap at all, so it is the same box-killer waiting on a noisier server.
+
+    Rotate rather than truncate: the tail of the PREVIOUS run is the diagnostic, and the failure paths that read
+    this file back are why it exists. One generation is kept — enough to explain the last failure, bounded enough
+    that it cannot be the thing that fills the disk. os.replace is atomic, so a reader never sees a partial file."""
+    with contextlib.suppress(Exception):
+        if os.path.getsize(path) < cap:
+            return
+        os.replace(path, path + ".1")
+
+
 def _wdtt_docker_start(inst):
     """(Re)launch the WDTT server for this instance as a supervised child. '' on success (alive after a beat) else error."""
     iface = inst["iface"]; cfgdir = _wdtt_dir(iface); binp = cfgdir + "/server"
     _wdtt_docker_stop(iface)
     if not os.path.exists(binp):
         return "WDTT binary missing at " + binp
+    _rotate_serverlog(cfgdir + "/server.log")
     try:
         lf = open(cfgdir + "/server.log", "ab", buffering=0)
         p = subprocess.Popen(_wdtt_argv(inst, binp), stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, close_fds=True)
@@ -7355,8 +7412,16 @@ def _csqtt_clear_stale_tun(iface):
     which is why the recovery lives here rather than only in the convert.
     Skipped while a FOREIGN server is live on that name: adoption stops that one first, and pulling its datapath out
     from under it would be the wrong kind of fix."""
+    procs = _csqtt_procs()
+    if not _csqtt_scan_ok():
+        # Fail SAFE. Deleting the device is only correct once we KNOW no foreign server is on this name; with the
+        # scan incomplete this is precisely the branch that pulls a live third party's datapath out from under it.
+        # Worst case we skip a cleanup and the instance reports "create TUN device" — recoverable, and loud.
+        print("swg-noded: csqtt " + iface + ": skipping stale-TUN cleanup — the process scan did not complete, "
+              "so a foreign server holding this name would be invisible", flush=True)
+        return
     if any((f.get("iface") or "").strip() == iface
-           and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/") for _p, f in _csqtt_procs()):
+           and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/") for _p, f in procs):
         return
     with contextlib.suppress(Exception): run(["ip", "link", "delete", "dev", iface])
 
@@ -7370,6 +7435,9 @@ def _csqtt_docker_start(inst):
     # Where THIS attempt's output starts. The log is append-only and holds every previous failure, so reading a
     # blind tail attributes an old error to a new attempt — which is exactly how a bind failure came back
     # reported as a seccomp problem.
+    # Rotate BEFORE the offset is taken, so _from stays consistent with the file the child appends to (after a
+    # rotation there is no file, getsize raises, and _from correctly stays 0 = the start of this attempt).
+    _rotate_serverlog(cfgdir + "/server.log")
     _from = 0
     with contextlib.suppress(Exception):
         _from = os.path.getsize(cfgdir + "/server.log")
@@ -7550,18 +7618,22 @@ def _csqtt_remove(iface):
     _wdtt_del_iptables_comment("filter", "FORWARD", "swg-egress-acl:" + iface)
     _wdtt_del_iptables_comment("mangle", "FORWARD", "swg-egress-mss:" + iface)
 
-def _csqtt_adopted_users(cfgdir):
-    """The users a FOREIGN csqtt server is serving, as {password: {vk_hash, expires_at, is_deactivated, comment}}.
-    csqtt keeps ONE store shape (passwords.json), unlike the WDTT family's two — same fields, so the panel's
-    importer treats both identically."""
+# A FOREIGN csqtt's config-dir lives on the HOST — the one that prompted this ran as its own container with
+# /etc/csqtt bind-mounted from the host — so on a docker node os.path.isfile() from in here (the swg-node
+# container) always says no. This is exactly why the WDTT scan has _wdtt_cfg_probe; csqtt read the store with a
+# plain open() and so would have reported EVERY foreign server as having zero users, then stopped it and taken
+# over serving nobody. One batched host probe, cached like the proc walk: this runs per candidate per 5s
+# snapshot, and paying a privileged one-shot container for each of those would be ruinous.
+_CSQTT_STOREPROBE = {}         # cfgdir -> (at, (users, store_found))
+_CSQTT_STORE_MAX = 8 << 20     # a probe, not a backup — a store bigger than this is answered after adoption
+
+def _csqtt_users_from_text(raw):
+    """Parse a csqtt passwords.json body → {password: {vk_hash, expires_at, is_deactivated, comment}}. csqtt keeps
+    ONE store shape, unlike the WDTT family's two — same fields, so the panel's importer treats both identically."""
     out = {}
-    pj = os.path.join(cfgdir, "passwords.json")
-    if not os.path.isfile(pj):
-        return out
     with contextlib.suppress(Exception):
-        with open(pj) as f:
-            raw = json.load(f)
-        src = raw.get("passwords") if isinstance(raw, dict) and isinstance(raw.get("passwords"), dict) else raw
+        data = json.loads(raw)
+        src = data.get("passwords") if isinstance(data, dict) and isinstance(data.get("passwords"), dict) else data
         if isinstance(src, dict):
             for pw, e in src.items():
                 if not pw or not isinstance(e, dict):
@@ -7569,8 +7641,55 @@ def _csqtt_adopted_users(cfgdir):
                 out[str(pw)] = {"vk_hash": str(e.get("vk_hash") or "").strip(),
                                 "expires_at": int(e.get("expires_at") or 0),
                                 "is_deactivated": bool(e.get("is_deactivated")),
+                                # the JSON stores call it `name`; whichever it is, it is what the operator typed —
+                                # without it every imported peer is titled "adopted" and they cannot tell them apart
                                 "comment": str(e.get("name") or e.get("comment") or "").strip()[:80]}
     return out
+
+
+def _csqtt_store_probe(cfgdir, fresh=False):
+    """(users, store_found) for a csqtt config-dir — one of ours or a foreign one.
+
+    store_found means we LOCATED AND READ the store. That is deliberately NOT the same question as "does it have
+    users": an empty store is a legitimate state for a freshly started server, while "we could not look" must never
+    be presented to the operator as "there is nothing here to lose". Adopting on that confusion would stop a live
+    server and take over serving nobody — the users it was serving simply gone. The adopt turns the difference into
+    a warning that has to be accepted explicitly.
+
+    `fresh` skips the cache for the take-over itself: that read happens once and is destructive if it is wrong."""
+    if not cfgdir:
+        return {}, False
+    now = time.time()
+    hit = _CSQTT_STOREPROBE.get(cfgdir)
+    if hit and not fresh and now - hit[0] < _WDTT_HOST_TTL:
+        return hit[1]
+    res = ({}, False)
+    pj = os.path.join(cfgdir, "passwords.json")
+    if os.path.isfile(pj):                      # bare metal, or a store mounted into THIS container
+        with contextlib.suppress(Exception):
+            with open(pj) as f:
+                res = (_csqtt_users_from_text(f.read()), True)
+    elif NODE_KIND == "docker":
+        # The trailing `; :` holds the exit status at 0 whatever happens: this is a QUESTION, not an assertion, and
+        # "no such dir" exiting 1 every 45s would bury the real log lines (the same lesson as _wdtt_cfg_probe).
+        # An 'F:' prefix reports that the file EXISTS separately from its contents, so an oversized store still
+        # answers store_found=True rather than looking like an absent one.
+        with contextlib.suppress(Exception):
+            _cmd = ("cd %s 2>/dev/null && { [ -f passwords.json ] || exit 0; printf 'F:'; "
+                    "[ $(stat -c %%s passwords.json) -le %d ] && base64 -w0 < passwords.json; }; :"
+                    % (shlex.quote(cfgdir), _CSQTT_STORE_MAX))
+            raw = (host_sh(_cmd, timeout=40).stdout or "").strip()
+            if raw.startswith("F:"):
+                b64 = raw[2:].strip()
+                res = ((_csqtt_users_from_text(base64.b64decode(b64).decode("utf-8", "replace")) if b64 else {}), True)
+    _CSQTT_STOREPROBE[cfgdir] = (now, res)
+    return res
+
+
+def _csqtt_adopted_users(cfgdir, fresh=False):
+    """The users a FOREIGN csqtt server is serving — everything the panel needs to recreate each one as a roster
+    peer, and nothing else. See _csqtt_store_probe for how the store is reached on a docker node."""
+    return _csqtt_store_probe(cfgdir, fresh)[0]
 
 
 def _csqtt_procs():
@@ -7613,22 +7732,60 @@ def csqtt_candidates():
     mine = set(_csqtt_load().keys())
     out = []
     for pid, f in _csqtt_procs():
-        iface = (f.get("iface") or "").strip()
+        # No -iface/-tun-addr means an UPSTREAM build, which hardcodes both — fall back to what it hardcodes
+        # rather than skipping it. config-dir is NOT guessed: upstream does take that flag, and a wrong guess
+        # would adopt an empty store, i.e. silently drop every user the take-over is meant to preserve.
+        iface = (f.get("iface") or "").strip() or CSQTT_DEFAULT_IFACE
         cfg = (f.get("config-dir") or "").strip()
-        if not iface or iface in mine or not cfg:
+        if iface in mine or not cfg:
             continue
         # our own supervised instances live under CSQTT_ROOT — anything there is managed, not foreign
         if cfg.startswith(CSQTT_ROOT + "/"):
             continue
-        users = _csqtt_adopted_users(cfg)
+        users, store_found = _csqtt_store_probe(cfg)
         out.append({"iface": iface, "pid": pid, "config_dir": cfg,
+                    # Could we read its store at all? The panel refuses a silent take-over when we could not:
+                    # "no users found" and "we could not look" must not reach the operator as the same sentence.
+                    "store_found": store_found,
                     "listen": (f.get("listen") or "").strip(),
-                    "tun_addr": (f.get("tun-addr") or "").strip(),
+                    "tun_addr": (f.get("tun-addr") or "").strip() or CSQTT_DEFAULT_TUNADDR,
                     "max_passwords": (f.get("max-passwords") or "").strip(),
                     "users": [{"comment": v["comment"], "vk_hash": v["vk_hash"], "expires_at": v["expires_at"],
                                "is_deactivated": v["is_deactivated"]} for v in users.values()],
                     "adoptable": True})     # no identity file to find: the store is the whole of it
     return out
+
+
+def _csqtt_scan_ok():
+    """Did the scan behind the last _csqtt_procs() actually COMPLETE?
+
+    Everything that stops or deletes keys off "is a foreign server live on this name", and answers no when the
+    scan returns nothing. On a docker node that scan is a privileged one-shot container over the host's /proc,
+    and it can time out — so "nothing found" silently became "nothing is there", and the destructive branch ran
+    on the strength of an answer we never got. A detection failure must fail SAFE, so callers ask this first.
+    Bare metal walks /proc directly and has no such failure mode."""
+    return True if NODE_KIND != "docker" else bool(_WDTT_HOSTPROC.get("ok", True))
+
+
+def _csqtt_container_of(pid):
+    """The docker container id this pid runs in, '' when it isn't in one.
+
+    The docker analogue of _wdtt_unit_of_pid, needed for the same reason that one exists: killing a SUPERVISED
+    process just hands it back to its supervisor. That function only recognises systemd (a cgroup segment ending
+    .service), so a foreign server running as its own container — which is how amurcanov's csqtt recipe installs
+    it, and how the one that prompted all this ran — reads back as unsupervised. TERM/KILL against
+    `restart: unless-stopped` brings it straight back, ours can never bind the port, and the reconcile retries
+    every 5s forever. Matches both cgroup drivers: `docker-<id>.scope` (systemd) and `/docker/<id>` (cgroupfs).
+    On a bare-metal node the local /proc IS the host's, so no hop is needed to answer the same question."""
+    txt = ""
+    if NODE_KIND == "docker":
+        txt = (host_sh("cat /proc/%d/cgroup 2>/dev/null; :" % int(pid), timeout=20).stdout or "")
+    else:
+        with contextlib.suppress(Exception):
+            with open("/proc/%d/cgroup" % int(pid)) as f:
+                txt = f.read()
+    m = re.search(r"docker[-/]([0-9a-f]{12,64})", txt)
+    return m.group(1) if m else ""
 
 
 def _csqtt_stop_foreign(iface, cfgdir):
@@ -7638,17 +7795,44 @@ def _csqtt_stop_foreign(iface, cfgdir):
 
     Re-reads the process table immediately before signalling: a pid resolved a scan ago may since have been
     reused, and the difference between stopping the foreign server and killing an unrelated process is exactly
-    that staleness."""
-    hit = next(((pid, f) for pid, f in _csqtt_procs()
-                if (f.get("iface") or "").strip() == iface
-                and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/")), None)
-    if not hit:
-        return True                              # already gone
-    pid, _f = hit
+    that staleness. On a docker node that promise needs _wdtt_hostproc_flush to be true at all — the walk it reads
+    is cached for 45s."""
     _host = (NODE_KIND == "docker")               # the pid lives in the HOST namespace; os.kill here can't see it
+
+    def _foreign():
+        """(pid, flags) of the foreign server on this iface RIGHT NOW, or None — never off a cached walk."""
+        _wdtt_hostproc_flush()
+        return next(((p, f) for p, f in _csqtt_procs()
+                     if (f.get("iface") or "").strip() == iface
+                     and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/")), None)
+
+    def _drop_tun():
+        with contextlib.suppress(Exception):      # the raw TUN can outlive the process
+            run(["ip", "link", "delete", "dev", iface])
+        if _host:
+            host_sh("ip link delete dev %s 2>/dev/null; :" % shlex.quote(iface))
+
+    hit = _foreign()
+    if not hit:
+        # "Nothing found" is only "already gone" when the scan ran. Otherwise say so: the caller treats False as
+        # "couldn't stop it — adopt again once it is down", which is the honest answer and retries next pass.
+        return _csqtt_scan_ok()
+    pid, _f = hit
     unit = _wdtt_unit_of_pid(pid, _host)
     if unit and not unit.startswith(("swg-csqtt-", "swg-wdtt-")):     # never our own supervisor
         host_sh("systemctl disable --now " + shlex.quote(unit) + " >/dev/null 2>&1; :")
+    cid = _csqtt_container_of(pid)
+    if cid:
+        # `docker stop`, never `rm`: this is someone else's container and their data. stop also settles the
+        # restart policy, so `unless-stopped` doesn't bring it back — the same semantics as the disable above.
+        # Expect it to take the full StopTimeout then SIGKILL: an unpatched csqtt registers a SIGTERM handler
+        # and never consumes it (see forks/csqtt/README.md), so SIGTERM is neither handled nor fatal.
+        host_sh("docker stop " + shlex.quote(cid) + " >/dev/null 2>&1; :", timeout=60)
+        if not _foreign() and _csqtt_scan_ok():
+            # Gone, and we know it. Do NOT fall through to the signals: that pid is free now and may already
+            # belong to something else — the very staleness this function re-reads the table to avoid.
+            _drop_tun()
+            return True
     if _host:
         # TERM, wait up to ~4.5s, then KILL — the same escalation as the local branch, run host-side in one hop.
         host_sh("kill -TERM %d 2>/dev/null; i=0; while [ $i -lt 30 ] && kill -0 %d 2>/dev/null; do sleep 0.15; "
@@ -7663,12 +7847,11 @@ def _csqtt_stop_foreign(iface, cfgdir):
                     break
             else:
                 os.kill(pid, signal.SIGKILL)
-    with contextlib.suppress(Exception):          # the raw TUN can outlive the process
-        run(["ip", "link", "delete", "dev", iface])
-    if _host:
-        host_sh("ip link delete dev %s 2>/dev/null; :" % shlex.quote(iface))
-    return not any((f.get("iface") or "").strip() == iface
-                   and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/") for _p, f in _csqtt_procs())
+    gone = not _foreign()
+    if not (gone and _csqtt_scan_ok()):
+        return False                             # never drop a TUN we cannot prove is unused
+    _drop_tun()
+    return True
 
 
 def _csqtt_serve_adopted(inst):
@@ -7742,7 +7925,7 @@ def reconcile_csqtt(want, remove=None):
                 _src = (inst.get("adopt_config_dir") or "").strip()
                 if not _src:
                     _src = next((c["config_dir"] for c in csqtt_candidates() if c["iface"] == iface), "")
-                _pre = _csqtt_adopted_users(_src) if _src else {}
+                _pre = _csqtt_adopted_users(_src, fresh=True) if _src else {}
                 if _pre:
                     inst["adopt_users"] = _pre
                     inst["adopt_users_at"] = int(time.time())

@@ -296,6 +296,10 @@ export function nextCsqttName(node) {
                         ...((Store.stats[node] || {}).csqtt || []).map(c => c && c.iface),
                         ...Object.keys(nrec.wdtt_cfg || {}),
                         ...((Store.stats[node] || {}).wdtt || []).map(w => w && w.iface),
+                        // FOREIGN csqtt servers the node found. Same lesson nextWdttName spells out for wdtt0,
+                        // and it bites harder here: upstream csqtt hardcodes `csqtt1`, which is precisely the
+                        // name this loop suggests first. Proposing it walks onto a live third party's TUN.
+                        ...(nrec.csqtt_candidates || []).map(c => c && c.iface),
                         ...Object.keys(Store.describe[node] || {}),
                         ...Object.keys(nrec.missing_ifaces || {}), ...Object.keys(nrec.ghost_ifaces || {}),
                         ...(nrec.iface_candidates || []).map(c => c && c.name)].filter(Boolean));
