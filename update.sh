@@ -826,6 +826,45 @@ open(f,"w").write("\n".join(o))
 PYHI
     fi ;;
   esac
+  # docker-compose.yml is never REPLACED by an update — it is patched key by key, like the two above. Anything
+  # added to the shipped compose therefore reaches only FRESH installs unless it also lands here. Both of the
+  # following shipped without a migration and so had never reached a single existing install.
+  #
+  # 1) The seccomp knob. csqtt's dataplane is io_uring and has no fallback, and docker's DEFAULT profile denies
+  #    io_uring_setup — so on every pre-knob install csqtt dies instantly with "create io_uring" and the operator
+  #    has no setting to change. This adds the KNOB, defaulting to `builtin` (docker's own default = today's
+  #    behaviour); turning it off is the operator's decision, and the panel's error names the line to add.
+  case "$prof" in node|master|host-node)
+    if ! $DRYRUN && ! grep -q 'SWG_NODE_SECCOMP' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
+      python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYSC' && note "docker-compose.yml: added the seccomp knob (SWG_NODE_SECCOMP — needed to run csqtt)"
+import sys
+f=sys.argv[1]; o=[]
+for l in open(f).read().split("\n"):
+    o.append(l)
+    if "cap_add:" in l and "NET_ADMIN" in l:
+        o.append('    security_opt:')
+        o.append('      - seccomp=${SWG_NODE_SECCOMP:-builtin}')
+open(f,"w").write("\n".join(o))
+PYSC
+    fi ;;
+  esac
+  # 2) Log caps. docker's json-file driver keeps a container's output FOREVER by default; one runaway server
+  #    wrote 9.6G of a single repeated line and filled a disk. Same anchor + per-service reference the shipped
+  #    file uses, so a migrated install and a fresh one end up identical.
+  if ! $DRYRUN && ! grep -q 'x-logging:' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
+    python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYLG' && note "docker-compose.yml: capped container logs at 10m x 3 per service"
+import sys
+f=sys.argv[1]; o=[]
+for l in open(f).read().split("\n"):
+    if l.rstrip() == "services:":
+        o += ['x-logging: &logging', '  driver: json-file', '  options:',
+              '    max-size: "10m"', '    max-file: "3"', '']
+    o.append(l)
+    if l.strip().startswith("container_name: swg-"):
+        o.append('    logging: *logging')
+open(f,"w").write("\n".join(o))
+PYLG
+  fi
   ensure_netctl_docker "$prof"   # HEAL: install the docker address helper if a panel-bearing host lacks it
   ensure_update_unit_docker "$prof"   # HEAL: install the docker one-click self-update wiring if a panel-bearing host lacks it
   ensure_access_seed                  # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from .env
