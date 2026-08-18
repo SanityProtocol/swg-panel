@@ -1,13 +1,11 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.9-beta</code></p>
+<p align="center"><code>1.7.10-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.9-beta** — [full changelog](CHANGELOG.md)
-> - **A csqtt server the panel didn't create is now found on Docker nodes too** — it was only ever found on bare metal, so on Docker the node page showed nothing while such a server ran, and ate the machine.
-> - **A scan that fails can no longer delete a running server's tunnel** — the check that protects a server the panel doesn't manage now fails safe instead of assuming nothing is there.
-> - **Adopting one no longer promises users it can't deliver** — the node reads the server's own password store; when it genuinely can't reach it, the panel says so instead of taking the server over and serving nobody.
-> - **Container logs are capped** — one runaway server had written 9.6G of a single repeated line and filled a disk.
+> **What's new in 1.7.10-beta** — [full changelog](CHANGELOG.md)
+> - **csqtt can now start on Docker nodes installed before this week** — it never could, and the setting the panel told you to change did not exist in your configuration. Updating adds it.
+> - **The log cap from 1.7.9 now reaches existing installs too** — it had only ever applied to brand-new ones, which is the opposite of what it was for.
 <!-- WHATS-NEW:END -->
 
 ---

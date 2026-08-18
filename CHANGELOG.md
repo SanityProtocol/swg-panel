@@ -3,6 +3,22 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.7.10-beta] — 2026-08-18
+
+### Fixed
+- **csqtt could not start on any Docker node installed before this week, and the fix the panel offered did not
+  exist.** csqtt's data path uses io_uring, which Docker blocks under its default security profile, so the server
+  died the instant it started and the node kept retrying it every few seconds. The panel diagnosed that correctly
+  and told you to set `SWG_NODE_SECCOMP=unconfined` — but that setting reads a line in the Docker configuration
+  file, an update never rewrites that file, and the line only exists in installations created after it was added.
+  So the instruction was right and impossible to follow. Updating now adds the setting to an existing installation.
+  It stays **off** by default, which is Docker's own default and today's behaviour: turning it off is your
+  decision and is only needed on a node that runs csqtt.
+- **The container log limit from 1.7.9 reached only brand-new installations.** It lived in the same Docker
+  configuration file, so an update never delivered it — leaving it inapplicable to exactly the installations that
+  had been running long enough to fill a disk. It is now added on update, and applies to each container as it is
+  recreated.
+
 ## [1.7.9-beta] — 2026-08-18
 
 ### Fixed
