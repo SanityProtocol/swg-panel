@@ -11,6 +11,17 @@
 # Nodes reach the panel over OUTBOUND HTTPS. For master, set PANEL_URL=https://swg-panel:8443
 # (the panel's service name on the compose network). (`host-node` is kept as an alias of
 # `master` for older installs.)
+# Docker's json-file driver defaults to UNLIMITED. A container that spins and logs per iteration fills the host
+# disk with nothing else wrong: a csqtt a user had installed by hand next to the panel wrote 9.6G of one repeating
+# `[WARN] I/O errors` line and took the box down that way. 10m x 3 caps each service at 30MB. Applies on container
+# RECREATE, which `compose up -d` (and update.sh) already does. swg-noded caps the turn-proxy containers it
+# creates with the same numbers, in _dturn_run.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   swg-panel:
     # Pulls the prebuilt multi-arch image from GHCR (no local build, no Docker Hub limit).
@@ -20,6 +31,7 @@ services:
     pull_policy: ${PULL_POLICY:-missing}
     container_name: swg-panel
     restart: unless-stopped
+    logging: *logging
     profiles: ["host", "master", "host-node"]
     ports:
       - "${PANEL_BIND:-0.0.0.0}:${PANEL_PORT:-443}:8443"   # PUBLIC port → container's 8443 (moves on a scheme/port change)
@@ -74,6 +86,7 @@ services:
     pull_policy: ${PULL_POLICY:-missing}
     container_name: swg-sub
     restart: unless-stopped
+    logging: *logging
     profiles: ["host", "master", "host-node"]     # runs wherever the panel runs
     depends_on: ["swg-panel"]
     entrypoint: ["/opt/swg-panel/swg-sub"]        # NOT the panel entrypoint — no acme/fleet-write, just serve
@@ -114,6 +127,7 @@ services:
     pull_policy: ${PULL_POLICY:-missing}
     container_name: swg-node
     restart: unless-stopped
+    logging: *logging
     profiles: ["node", "master", "host-node"]
     cap_add: ["NET_ADMIN"]
     # Syscall filtering. `builtin` is Docker's own default profile — the safe default, and what every install
