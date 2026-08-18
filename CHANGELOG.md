@@ -3,6 +3,34 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.7.9-beta] — 2026-08-18
+
+### Fixed
+- **A csqtt server the panel didn't create was invisible on Docker nodes.** Adopting one has been possible since
+  1.7.8, but only on bare metal: on Docker the node looks for such servers by name, and it did not know the name
+  csqtt's own installer gives the program. So the node page showed nothing while a hand-installed server ran on
+  that machine — in the case that brought this to light, one that had pinned every CPU for hours and was filling
+  the disk. It is now found there too, and offered for adoption like any other.
+- **A server the panel didn't create could have its tunnel deleted underneath it.** Before starting a csqtt server
+  the node clears a tunnel device left behind by a previous one, and skips that when a server it does not manage
+  is holding the name. On a Docker node that check relied on the search above, so it never triggered — and the
+  device was deleted out from under a running third-party server, which then spun on its own errors without
+  carrying traffic. Two things now prevent it: a search that does not complete is no longer read as "nothing is
+  there", so nothing destructive follows an answer the node never got; and the panel no longer offers or accepts
+  an interface name such a server already holds, pointing you at adopting it instead.
+- **Adopting one could take it over and serve nobody.** The node read the server's password store from a path that,
+  inside a Docker node, is its own rather than the machine's — so every user would have been reported as none, and
+  the take-over would have stopped a working server and replaced it with an empty one. It now reads the real store.
+  Where it genuinely cannot reach it, the panel says so and asks you to confirm losing those users, rather than
+  promising they are kept.
+- **Adopting one that runs as its own container never completed.** Stopping it signalled the program, which Docker
+  simply started again a moment later, so the panel could never take the port. The container is now stopped as a
+  container.
+- **A runaway server could fill the disk with its own log.** Docker keeps a container's output forever unless told
+  otherwise, and nothing told it to: one server logging an error on every pass wrote 9.6G of a single repeated
+  line. Every container the panel runs now keeps at most 30MB, and the logs of servers running inside a node are
+  rotated the same way. Applies as each container is recreated, which updating does.
+
 ## [1.7.8-beta] — 2026-08-18
 
 ### Added

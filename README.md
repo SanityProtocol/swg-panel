@@ -1,13 +1,13 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.8-beta</code></p>
+<p align="center"><code>1.7.9-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.8-beta** — [full changelog](CHANGELOG.md)
-> - **csqtt is a first-class server kind** — amurcanov's rewrite of WDTT and its successor, a raw-IP tunnel with no WireGuard inside it. Create one like any other interface, with its own routing, filters and egress; its users sit in Peers with everyone else and get a one-tap `csqtt://` link.
-> - **Adopt a csqtt or qWDTT server the panel didn't create** — the node finds it, and adopting keeps every user connected instead of forcing you to delete the server and lose them.
-> - **Choose what each peer publishes** — click a protocol tag to keep that kind of config off the holder's subscription page, without touching the deployment.
-> - **Traffic charts that had gone flat now record again**, and csqtt/qWDTT peers finally show their rate and totals.
+> **What's new in 1.7.9-beta** — [full changelog](CHANGELOG.md)
+> - **A csqtt server the panel didn't create is now found on Docker nodes too** — it was only ever found on bare metal, so on Docker the node page showed nothing while such a server ran, and ate the machine.
+> - **A scan that fails can no longer delete a running server's tunnel** — the check that protects a server the panel doesn't manage now fails safe instead of assuming nothing is there.
+> - **Adopting one no longer promises users it can't deliver** — the node reads the server's own password store; when it genuinely can't reach it, the panel says so instead of taking the server over and serving nobody.
+> - **Container logs are capped** — one runaway server had written 9.6G of a single repeated line and filled a disk.
 <!-- WHATS-NEW:END -->
 
 ---
