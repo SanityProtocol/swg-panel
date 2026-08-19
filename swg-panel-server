@@ -4486,6 +4486,7 @@ TURN_SERVERS = {
                                          {"key": "useUDP", "type": "bool", "default": False, "label": "UDP control transport", "help": "Off = TCP-control (bypasses VK's per-cred allocation-rate throttle — recommended). On only if your network throttles TCP to the relay."},
                                          {"key": "dnsServers", "type": "text", "default": "", "label": "Custom DNS", "help": "Comma-separated DNS resolvers. Blank = the peer's own config DNS (else 1.1.1.1)."},
                                          {"key": "turnServerOverride", "type": "text", "default": "", "label": "TURN relay override", "help": "Pin fresh connections to a specific TURN relay (ip:port). Blank = the VK-returned relay."},
+                                         {"key": "serverName", "type": "text", "default": "", "label": "Server name", "help": "Name this connection takes in the app's server list (build 179+, which keeps several named servers). Importing adds a server under this name and makes it active; the ones already there are kept. Blank = the app names it ServerN. Older builds ignore it."},
                                          {"key": "vkAuth", "type": "bool", "default": False, "label": "VK cookie auth", "help": "Use the VK cookie-auth path instead of anonymous proof-of-work."},
                                          {"key": "obfProfile", "type": "enum", "values": ["auto", "rtpopus", "rtpopus2", "rtpopus3"], "default": "auto", "label": "Obfuscation profile", "help": "For rtpopus (WRAP-S) servers: which RTP/Opus profile the app mimics (Turn.obfProfile) — must match the server. auto = the app's default (rtpopus)."}]},
     # ── WDTT family (kind:"wdtt") — SELF-CONTAINED, key-owning VK-TURN servers. Each owns its OWN userspace-WireGuard
@@ -4673,6 +4674,7 @@ _CLIENT_FIELD_MAP = {
     },
     "vkturnproxy": {  # anton quick_link.py CONFIG keys (turnServerOverride/vkAuth are panel-side, not in CONFIG)
         "numConnections": "numConnections", "useUDP": "useUDP", "dnsServers": "dnsServers", "obfProfile": "obfProfile",
+        "serverName": "serverName",
     },
     "wgturn": {  # kiper292 TurnSettings.kt property names (NOT the encoder's #@wgt keys)
         "streamNum": "streams", "streamsPerCred": "streamsPerCred", "watchdogTimeout": "watchdogTimeout",
@@ -5104,6 +5106,11 @@ def _turn_p4_report_all(do_refresh=False):
         _turn_roster_save(roster)
     return {"clients": out, "checked_at": int(time.time())}
 
+# When GitHub last refused us over budget rather than over a path. `until` is its own reset stamp, so the UI can
+# say how long instead of "try again sometime". (_gh_release_latest spends the same budget and does not record
+# it — the roster check is where the operator reads the result, so that is where it is reported.)
+_GH_RATE = {"until": 0}
+
 def _gh_latest_commit(owner, repo, branch, path):
     """Latest commit {sha,date,url} touching `path` on `branch`, via the GitHub API. None on any error/rate-limit.
     Cached ~1h so a burst of re-checks doesn't exhaust the 60/hr unauthenticated budget (SWG_GH_TOKEN lifts it)."""
@@ -5124,8 +5131,20 @@ def _gh_latest_commit(owner, repo, branch, path):
         if isinstance(data, list) and data:
             c = data[0]
             res = {"sha": c.get("sha"), "date": (((c.get("commit") or {}).get("committer") or {}).get("date")), "url": c.get("html_url")}
-    except Exception:
+    except Exception as e:
         res = None
+        # A 403/429 carrying X-RateLimit-Remaining: 0 is not "this path is wrong", it is "ask again later".
+        # Recording which one happened is the difference between an operator waiting a few minutes (or setting
+        # SWG_GH_TOKEN) and hunting a path that was correct all along.
+        _h = getattr(e, "headers", None)
+        if getattr(e, "code", None) in (403, 429) and _h is not None:
+            with contextlib.suppress(Exception):
+                if str(_h.get("X-RateLimit-Remaining", "")).strip() == "0":
+                    _GH_RATE["until"] = int(_h.get("X-RateLimit-Reset") or 0)
+                    # Do NOT cache this. The cache holds an hour and the budget resets in minutes, so caching
+                    # the refusal would keep every client reading "couldn't check" long after GitHub started
+                    # answering again — the check would look broken while nothing was.
+                    return None
     _GH_COMMIT_CACHE[key] = {"res": res, "at": time.time()}
     return res
 
@@ -5373,7 +5392,11 @@ def _turn_roster_check(seed=True):
                     "sources": srcs, "acknowledged_at": (roster.get(cid) or {}).get("at")}
     if seeded:
         _turn_roster_save(roster)
-    return {"clients": out, "checked_at": int(time.time())}
+    # Reported ONCE for the whole check, not per client: it is one condition affecting all of them, and repeating
+    # it on nineteen rows would read as nineteen broken paths.
+    rl = int(_GH_RATE.get("until") or 0)
+    return {"clients": out, "checked_at": int(time.time()),
+            "rate_limited": (rl if rl > int(time.time()) else 0)}
 
 def _turn_roster_ack(cid):
     """Acknowledge a client's current upstream as the new baseline (writes its latest commits into the fingerprint)."""

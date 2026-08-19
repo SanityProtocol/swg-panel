@@ -185,6 +185,15 @@ export const STR = {
   "converted to bare-metal": "переведён на bare-metal",
   "converted to docker": "переведён на docker",
   "updated": "обновлён",
+  "changed": "изменился",
+  "couldn't check": "не удалось проверить",
+  "*GitHub is rate-limiting this panel*, so the rows below could not be checked — it is the budget, not the sources. It clears in about {v1} min. Setting *SWG_GH_TOKEN* on the panel raises the limit well past what this check needs.":
+    "*GitHub ограничивает частоту запросов от этой панели*, поэтому строки ниже проверить не удалось — дело в лимите, а не в источниках. Он снимется примерно через {v1} мин. Переменная *SWG_GH_TOKEN* на панели поднимает лимит намного выше того, что нужно этой проверке.",
+  "not watched": "не отслеживается",
+  "No upstream source is tracked for this client — a format change here would not raise a flag.":
+    "Для этого клиента не отслеживается ни один источник — смена формата здесь не поднимет флаг.",
+  "The tracked file could not be fetched — the check did not run.":
+    "Отслеживаемый файл не удалось получить — проверка не выполнялась.",
   "up to date": "актуален",
   "re-install aborted": "переустановка прервана",
   "convert aborted": "перевод прерван",
@@ -1067,6 +1076,7 @@ export const STR = {
   // budget-ok: card row label, own cell
   "Server identity": "Идентичность сервера",
   "Server address": "Адрес сервера",
+  "Server name": "Имя сервера",
   // budget-ok: Panel heading, own line
   "Users on this server": "Пользователи этого сервера",
   "Peers on this interface": "Пиры на этом интерфейсе",
@@ -3942,6 +3952,8 @@ export const STR = {
     "Параллельные TURN-потоки (#@wgt:StreamNum, в приложении 1–16).",
   "Parallel TURN streams (-n). Blank = the app's default (10).":
     "Параллельные TURN-потоки (-n). Пусто = умолчание приложения (10).",
+  "Name this connection takes in the app's server list (build 179+, which keeps several named servers). Importing adds a server under this name and makes it active; the ones already there are kept. Blank = the app names it ServerN. Older builds ignore it.":
+    "Имя, под которым это подключение попадёт в список серверов приложения (сборка 179+, где хранится несколько именованных серверов). Импорт добавляет сервер с этим именем и делает его активным; уже добавленные остаются. Пусто = приложение само назовёт его ServerN. Более старые сборки поле игнорируют.",
   "Pin fresh connections to a specific TURN relay (ip:port). Blank = the VK-returned relay.":
     "Закрепить новые соединения за конкретным TURN-релеем (ip:порт). Пусто = релей, который вернул VK.",
   "Reach the TURN relay over UDP (-udp). On by default in the app.":

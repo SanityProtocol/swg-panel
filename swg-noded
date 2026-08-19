@@ -4342,6 +4342,57 @@ def _reconstruct_conf(iface, cmd):
     return ""
 
 
+def selfheal_ifaces(node_cfg, desired_ifaces):
+    """Interfaces the PANEL manages that are live on this box but that we hold no config for → onboard them
+    ourselves, as {iface: {cmd, conf}} for onboard_ifaces.
+
+    The case this exists for: a container recreate wipes a conf written to container-local storage while the
+    interface itself survives in the host netns (it lives there, not in the container). The node then comes back
+    to a live device it has no record of, stops reporting it, and the panel shows the interface as MISSING until
+    somebody clicks Restore — which does exactly what this does, from the same live device. There is nothing for
+    a human to decide: the panel already says it owns the interface, and the interface is right there.
+
+    Only ever for an interface that is genuinely UP here. One the panel wants and this box does not have is a
+    different situation — it may need recreating from a key backup, which is a decision, not a repair — and it
+    must not be retried every five seconds.
+    """
+    want = set(desired_ifaces or {})
+    have = set((node_cfg.get("interfaces") or {}).keys())
+    gap = want - have
+    if not gap:
+        return {}
+    # NOT via iface_candidates(): that list exists for ADOPTION and deliberately drops every name starting
+    # with "swg_" — an interface the panel itself created is not a foreign device for an operator to classify.
+    # But those are precisely the interfaces that land here, so reusing it healed exactly nothing. Ask the
+    # datapath instead: the running device is the authority on what is live on this box.
+    owned = set()
+    with contextlib.suppress(Exception):
+        owned |= set(_wdtt_load() or {})          # a WDTT server owns its interface — not ours to adopt
+    with contextlib.suppress(Exception):
+        owned |= set(_csqtt_load() or {})         # nor a csqtt server's raw TUN
+    with contextlib.suppress(Exception):
+        for _pid, _fl in _wdtt_procs():           # including a FOREIGN server's, which writes no record here
+            owned.add(_wdtt_iface_of(_fl))
+    out = {}
+    for tool in (["awg"], ["wg"]):                # awg first: an amneziawg device answers only to awg
+        with contextlib.suppress(Exception):
+            r = run(_wgcmd(tool) + ["show", "interfaces"])
+            if r.returncode != 0:
+                continue
+            for n in (r.stdout or "").split():
+                if n not in gap or n in owned or n in out:
+                    continue
+                # Genuinely UP only. A device an operator took down is a decision of theirs, not damage to
+                # repair, and a wg device reports state UNKNOWN when up — so read the flags, not the state.
+                flags = ""
+                with contextlib.suppress(Exception):
+                    flags = (run(["ip", "-o", "link", "show", n]).stdout or "").split(">")[0]
+                if "UP" not in flags:
+                    continue
+                out[n] = {"cmd": list(tool), "conf": ""}
+    return out
+
+
 def onboard_ifaces(node_cfg, onboard):
     """Add panel-requested interfaces to this node's managed set (config.json) when they exist
     locally — for a wg/awg interface the panel didn't auto-detect. Once added, build_snapshot
@@ -7463,11 +7514,71 @@ def _csqtt_docker_start(inst):
         # Match the CAUSE line, not the word: every csqtt dataplane failure is reported under the banner
         # "start io_uring protocol dataplane", so a substring test called a bind clash a seccomp problem.
         if "create io_uring" in tail:
-            return ("csqtt needs the io_uring syscalls, which this container's seccomp profile denies. "
-                    "Set SWG_NODE_SECCOMP=unconfined in the node's .env and re-run "
-                    "`docker compose up -d swg-node` — it starts on the next sync.")
+            # The remedy is a container setting, not anything the operator can reach from the panel — so
+            # apply it here instead of printing instructions and waiting. Returns a message either way.
+            return _csqtt_seccomp_autofix() or (
+                "csqtt needs the io_uring syscalls, which this container's seccomp profile denies. "
+                "Set SWG_NODE_SECCOMP=unconfined in the node's .env and re-run "
+                "`docker compose up -d swg-node` — it starts on the next sync.")
         return ("csqtt exited rc=%s: %s" % (p.returncode, tail.strip()))[:180]
     return ""
+
+SECCOMP_MARK = os.path.join(STATE_DIR, ".seccomp-applied")   # bind-mounted → survives the recreate it triggers
+
+
+def _csqtt_seccomp_autofix():
+    """Apply SWG_NODE_SECCOMP=unconfined on the HOST and recreate this container, once.
+
+    csqtt's dataplane is io_uring and has no fallback; docker's default seccomp profile denies
+    io_uring_setup, so a csqtt server in a container dies the instant it starts. The remedy is a
+    container-level setting the node cannot reach from inside itself — .env is not even mounted here — so
+    until now the panel could only print the line and wait for somebody to edit a file over SSH.
+
+    Do it instead. The operator already approved the thing that requires it: they asked for a csqtt server
+    on this node, and the seccomp profile is an implementation detail of running one, no different from
+    NET_ADMIN. The change is scoped to this node's container and nothing else on the box.
+
+    Once per node, and the marker is written BEFORE the recreate — the recreate kills this process, and a
+    fix that re-applied itself on every start would be a restart loop rather than a repair. Plain `up -d`,
+    not the update trigger: the container is recreated to re-read .env, NOT updated to a new image, which
+    is not what the operator asked for. An operator's own SWG_NODE_SECCOMP line is never overwritten.
+    """
+    if NODE_KIND != "docker":
+        return ""
+    if os.path.exists(SECCOMP_MARK):
+        return ("csqtt needs the io_uring syscalls, which this container's seccomp profile denies. "
+                "SWG_NODE_SECCOMP=unconfined was already applied here and csqtt still cannot start — "
+                "check that the container was recreated (`docker compose --profile node up -d swg-node`).")
+    if not SWG_HOST_NODE_DIR:
+        return ""                                  # can't locate the install on the host — leave the hint as-is
+    inst = os.path.dirname(os.path.dirname(SWG_HOST_NODE_DIR))    # …/data/node → the compose directory
+    envf = inst + "/.env"
+    line = ("SWG_NODE_SECCOMP=unconfined   # csqtt needs io_uring, which the default seccomp profile denies "
+            "(applied by swg-noded)")
+    # rc 3 = no .env to edit; rc 4 = the operator already has a line of their own, whatever its value.
+    r = host_sh("[ -f %s ] || exit 3; grep -q '^SWG_NODE_SECCOMP=' %s && exit 4; printf '%%s\\n' %s >> %s"
+                % (shlex.quote(envf), shlex.quote(envf), shlex.quote(line), shlex.quote(envf)))
+    if r.returncode == 4:
+        return ("csqtt needs the io_uring syscalls, which this container's seccomp profile denies. "
+                "%s already sets SWG_NODE_SECCOMP — csqtt needs the value `unconfined`, then "
+                "`docker compose --profile node up -d swg-node`." % envf)
+    if r.returncode != 0:
+        return ("csqtt needs the io_uring syscalls, which this container's seccomp profile denies. Set "
+                "SWG_NODE_SECCOMP=unconfined in %s and re-run `docker compose --profile node up -d "
+                "swg-node` — this node could not write that file itself." % envf)
+    with contextlib.suppress(Exception):
+        with open(SECCOMP_MARK, "w") as f:
+            f.write(str(int(time.time())) + "\n")
+    print("csqtt: wrote SWG_NODE_SECCOMP=unconfined to " + envf + " — recreating this container so it takes "
+          "effect (csqtt's io_uring dataplane is denied without it)", flush=True)
+    # Recreating our own container kills this process mid-call: that is the expected end of this function,
+    # and the helper runs on the host, so the recreate completes regardless.
+    host_sh("cd %s && (docker compose --profile node up -d swg-node || "
+            "docker-compose --profile node up -d swg-node)" % shlex.quote(inst), timeout=180)
+    return ("csqtt needs the io_uring syscalls, which this container's seccomp profile denies. "
+            "SWG_NODE_SECCOMP=unconfined has been applied and the node container recreated — csqtt "
+            "starts on the next sync.")
+
 
 def _csqtt_docker_stop(iface):
     """SIGTERM (clean teardown drops the TUN), SIGKILL if it lingers; reap the child; drop the pidfile."""
@@ -8222,7 +8333,11 @@ def main():
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
                 dl = delete_ifaces(node_cfg, reply.get("delete"), agent, sudo)   # tear down deleted ones
                 apply_panel_settings(reply.get("panel"))      # Panel settings → mirrors / geo TTL / geo refetch
-                ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
+                _heal = selfheal_ifaces(node_cfg, reply.get("desired_ifaces"))   # panel owns it, it is live here, we lost the conf
+                if _heal:
+                    print("self-heal: adopting live interface(s) the panel manages but we hold no conf for: "
+                          + ", ".join(sorted(_heal)), flush=True)
+                ob = onboard_ifaces(node_cfg, {**(reply.get("onboard") or {}), **_heal})   # add panel-requested interfaces first
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
                 wd = reconcile_wdtt(reply.get("wdtt"), reply.get("wdtt_remove"))   # install/desired.json+SIGHUP; removals ONLY from the explicit list
                 cq = reconcile_csqtt(reply.get("csqtt"), reply.get("csqtt_remove"))   # csqtt (raw-TUN): parallel to wdtt; removals ONLY from the explicit list

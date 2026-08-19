@@ -3,6 +3,40 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.7.12-beta] — 2026-08-19
+
+### Added
+- **Name the server a VK TURN Proxy link creates on the phone.** Recent builds of the app keep a list of named
+  servers rather than one configuration, so importing two of our links left a subscriber with "Server1" and
+  "Server2" and nothing to tell them apart. There is now a **Server name** setting for that client: fill it in
+  and the imported connection appears under that name, and the servers already on the device are kept. Leave it
+  blank — as it is by default — and nothing changes: the app names it itself, as before.
+
+### Fixed
+- **A WireGuard interface went missing after updating a Docker node.** Only one directory inside a node
+  container survives a container being recreated, and a plain-WireGuard interface's config was not written
+  there. Updating the node destroyed the file while the interface itself kept running, so the node no longer
+  recognised an interface that was right in front of it: the panel showed it as missing, and every five
+  seconds after that the node was told to create an interface that already existed and could not be created
+  again. Three things now stop this. New interfaces are written where they survive. An update carries across
+  any config still in the old place, so nothing is lost in the first place. And a node that finds itself
+  running an interface the panel owns but it has no config for adopts it back — keeping its key, port and
+  peers, so the peers on it never notice. That last one also repairs nodes this already happened to.
+- **csqtt on a Docker node needed a file edited over SSH before it would start.** Its dataplane uses a set of
+  syscalls Docker's default security profile blocks, so it died the instant it started, with a message about
+  io_uring that named nothing an operator could act on. The panel has explained the fix for a while, but
+  applying it meant editing `.env` on the box by hand. Now it is applied for you — when converting a node
+  that already ran csqtt, when updating one, and when you add your first csqtt server to a node that is
+  already running. If you have set that value yourself, whatever it is, it is left alone.
+- **The client roster said "couldn't check" about a client it never checks.** Amurcanov's WDTT is
+  deliberately not watched — upstream stopped in August — but the roster had no way to say so and reported a
+  failed check instead. It now says "not watched", and both states explain which of the two happened.
+- **"Couldn't check" also meant GitHub was rate-limiting the panel.** The roster reads nineteen upstream
+  files against an hourly budget, and being refused for budget looked identical to a file that could not be
+  fetched — so there was no way to tell "wait a few minutes" from "this source is wrong". Rate-limiting is
+  now recognised and reported once for the whole check, with the option of setting a GitHub token to raise
+  the budget.
+
 ## [1.7.11-beta] — 2026-08-19
 
 ### Fixed

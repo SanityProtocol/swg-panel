@@ -379,6 +379,7 @@ ${subextra}Restart=on-failure
 RestartSec=2
 # hardening — read-only (no ReadWritePaths), and the secrets are masked at the kernel level so even a
 # bug in this internet-facing process cannot open the login hash, the TLS key, the subscription-key
+
 # vault, panel-settings (webhook secrets), or any stored configs, regardless of file permissions.
 NoNewPrivileges=true
 ProtectSystem=strict
@@ -655,6 +656,30 @@ EOF
   ok "docker address helper healed — one-click address changes will work now"
 }
 
+rescue_container_confs(){   # $1 = compose profile
+  # RESCUE any interface conf still living in the container's OWN /etc/wireguard before a recreate destroys it.
+  # Only /etc/amnezia/amneziawg is a bind-mount; an interface created by an agent older than the container-aware
+  # fix wrote a plain-WG conf to container-local storage. The device survives the recreate (host netns), the conf
+  # does not, and the node comes back to a live interface it has no record of — reported as MISSING until somebody
+  # restores it. Copying it onto the mount first means the update simply keeps working. `docker cp` reads a stopped
+  # container too, and -n never clobbers a conf the mount already holds (that one is authoritative — it is where
+  # the fixed agent writes, leaving only a disposable symlink behind in /etc/wireguard).
+  [ "${1:-}" = host ] && return 0
+  $DRYRUN && { echo "    [skip] rescue container-local interface confs"; return 0; }
+  docker ps -aq -f name=swg-node 2>/dev/null | grep -q . || return 0
+  [ -d "$DOCKER_DIR/data/node-confs" ] || return 0
+  _rescue="$(mktemp -d)" || return 0
+  if docker cp swg-node:/etc/wireguard/. "$_rescue"/ >/dev/null 2>&1; then
+    for _wc in "$_rescue"/*.conf; do
+      [ -f "$_wc" ] || continue          # skips the symlink the fixed agent leaves (its target is already on the mount)
+      if cp -n "$_wc" "$DOCKER_DIR/data/node-confs/" 2>/dev/null; then
+        note "rescued interface conf $(basename "$_wc") onto the persisted volume (was container-local)"
+      fi
+    done
+  fi
+  rm -rf "$_rescue" 2>/dev/null || true
+}
+
 ensure_update_unit_docker(){   # HEAL (install-if-missing) the docker one-click self-update wiring on a panel-bearing docker host.
   # install-docker.sh's wire_host_updater lays this down at install time; on an older/partial docker host with the
   # wrappers or units missing, the panel's one-click "Update" button silently does nothing. All pieces are STATIC
@@ -848,6 +873,21 @@ open(f,"w").write("\n".join(o))
 PYSC
     fi ;;
   esac
+  # 1b) …and TURN IT ON for a node that already runs csqtt servers. The knob alone leaves them dead: it defaults
+  #    to docker's profile, which is what denies io_uring in the first place. A node with a csqtt server recorded
+  #    was running it before this update (or is crash-looping right now because nothing ever set the value), so
+  #    keeping it working is not a decision to delegate. A node with no csqtt keeps the stricter default, and an
+  #    operator's own SWG_NODE_SECCOMP= — whatever its value — is never touched.
+  case "$prof" in node|master|host-node)
+    if ! $DRYRUN && [ -s "$DOCKER_DIR/data/node/csqtt.json" ] \
+       && ! grep -q '^SWG_NODE_SECCOMP=' "$DOCKER_DIR/.env" 2>/dev/null \
+       && grep -q 'SWG_NODE_SECCOMP' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null \
+       && grep -q '"iface"' "$DOCKER_DIR/data/node/csqtt.json" 2>/dev/null; then
+      printf '%s\n' 'SWG_NODE_SECCOMP=unconfined   # this node runs csqtt servers, whose io_uring dataplane the default profile denies' \
+        >> "$DOCKER_DIR/.env" \
+        && note ".env: SWG_NODE_SECCOMP=unconfined (this node runs csqtt — its io_uring dataplane needs it)"
+    fi ;;
+  esac
   # 2) Log caps. docker's json-file driver keeps a container's output FOREVER by default; one runaway server
   #    wrote 9.6G of a single repeated line and filled a disk. Same anchor + per-service reference the shipped
   #    file uses, so a migrated install and a fresh one end up identical.
@@ -881,6 +921,7 @@ PYLG
       [ -d "$SRC/vendor" ] && run cp -a "$SRC/vendor" "$DOCKER_DIR/"
       [ -d "$SRC/js" ] && run cp -a "$SRC/js" "$DOCKER_DIR/"   # js/ = the SPA's ES modules (docs/APP-JS-SPLIT-PLAN.md) — copied as a DIRECTORY, like vendor/, so adding a module never touches this loop
       [ -d "$SRC/docker" ] && run cp -a "$SRC/docker" "$DOCKER_DIR/"; stamp "$DOCKER_DIR"
+      rescue_container_confs "$prof"
       if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof up -d --build)"; note "docker ($prof): would rebuild"
       else ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" up -d --build ) && { ok "docker ($prof) rebuilt + restarted"; note "docker ($prof): rebuilt"; } || { DID_FAIL=yes; warn "compose rebuild failed — check $DOCKER_DIR"; note "docker ($prof): rebuild FAILED"; }; fi
     else note "docker ($prof): unchanged"; fi
@@ -894,6 +935,7 @@ PYLG
       # container on the OLD image (log shows "Started", not "Recreated") — so the node keeps the old
       # version until a 2nd run. Forcing recreation guarantees it runs the freshly-pulled image.
       else
+        rescue_container_confs "$prof"
         for _c in $(case "$prof" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
         ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" pull && on_tty $COMPOSE --profile "$prof" up -d --force-recreate ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { DID_FAIL=yes; warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
     else warn "docker ($prof): skipped"; note "docker ($prof): skipped"; fi

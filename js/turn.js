@@ -997,13 +997,21 @@ export function RosterCheckSheet() {
   const setVersion = (cid, index) => withBusy(cid, async () => { await api.p4SetVersion(cid, index); await load(false); });
   const p1c = (data && data.p1) || {}, p4c = (data && data.p4) || {};
   const cids = Object.keys(p1c).length ? Object.keys(p1c) : Object.keys(p4c);
-  const TAG = { up_to_date: ["tg-ready", "check", T("up to date")], changed: ["tg-pending", "warn", "changed"], unknown: ["tg-off", "info", "couldn't check"] };
+  // `unwatched` is a state, not a failure: a client nobody watches used to be dropped from this list entirely,
+  // which read as full coverage. Falling back to `unknown` here would have said "couldn't check" — we tried and
+  // failed — when the truth is we never look (amurcanov's WDTT: upstream discontinued 2026-08-04).
+  const TAG = { up_to_date: ["tg-ready", "check", T("up to date")], changed: ["tg-pending", "warn", T("changed")],
+                unknown: ["tg-off", "info", T("couldn't check")], unwatched: ["tg-off", "info", T("not watched")] };
   return html`<${Sheet} title=${T("Client rosters")} width=${740} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
       foot=${footRow({ left: html`<button class="btn btn-mini" disabled=${checking} onClick=${() => load(true)}><span class=${checking ? "ic-spin" : ""}><${Ic} i="refresh"/></span> ${checking ? T("Checking…") : T("Re-check")}</button>`, cancelLabel: T("Close"), onCancel: closeModal })}>
     <p class="hint" style="margin:2px 0 14px">${T("Each client app's config schema vs upstream on GitHub.")} <b style="color:var(--online)">+n</b> ${T("new adoptable fields ·")} <b style="color:var(--ready)">+y</b> ${T("new values ·")} <b style="color:var(--dangling)">−</b> ${T("removed ·")} <b style="color:var(--fault)">+x</b> ${T("new items that need a panel update (encoder wiring) before they work.")} <b>${T("Set version")}</b> ${T("rolls a client back to a previous app version.")}</p>
     ${!data && !err ? html`<div class="loading"><span class="spin"></span>${T("loading…")}</div>`
       : err ? html`<div class="notice warn"><${Ic} i="warn"/><span>${err}</span></div>`
-      : html`<div class="rosterlist">
+      : html`<${Fragment}>
+        ${data.rate_limited ? html`<div class="notice warn" style="margin-bottom:12px"><${Ic} i="warn"/><span>${Trich(
+          "*GitHub is rate-limiting this panel*, so the rows below could not be checked — it is the budget, not the sources. It clears in about {v1} min. Setting *SWG_GH_TOKEN* on the panel raises the limit well past what this check needs.",
+          { v1: Math.max(1, Math.ceil((data.rate_limited * 1000 - Date.now()) / 60000)) })}</span></div>` : null}
+        <div class="rosterlist">
           ${cids.map(cid => {
             const p4 = p4c[cid], p1 = p1c[cid], t = p1 ? (TAG[p1.status] || TAG.unknown) : null;
             const color = turnClientColor(cid), author = (turnClientAuthor(cid) || {}).fork;
@@ -1012,7 +1020,7 @@ export function RosterCheckSheet() {
             return html`<div class="roster-row" key=${cid}>
               <div class="roster-hd">
                 <span class="roster-nm" style=${color ? "color:" + color : ""}>${name}</span>${author ? html`<span class="roster-by">by ${author}</span>` : null}
-                ${p4 ? RosterCounts(p4.counts) : (t ? html`<span class=${"tg " + t[0]}><${Ic} i=${t[1]}/>${t[2]}</span>` : null)}
+                ${p4 ? RosterCounts(p4.counts) : (t ? html`<span class=${"tg " + t[0]} title=${p1.status === "unwatched" ? T("No upstream source is tracked for this client — a format change here would not raise a flag.") : (p1.status === "unknown" ? T("The tracked file could not be fetched — the check did not run.") : "")}><${Ic} i=${t[1]}/>${t[2]}</span>` : null)}
                 <span class="grow"></span>
                 ${p4 && (p4.versions || []).length ? SetVersionPicker(p4, i => setVersion(cid, i), busy[cid]) : null}
                 ${p4has ? html`<button class="btn btn-mini" disabled=${busy[cid]} onClick=${() => openRosterP4Review(cid, p4, reload)}>${T("Review")}</button>` : null}
@@ -1022,7 +1030,7 @@ export function RosterCheckSheet() {
             </div>`;
           })}
           <div class="hint faint" style="margin-top:10px">${Trich("Rate-limited by GitHub (60/hour unauthenticated); set `SWG_GH_TOKEN` to lift it. A field tagged \"needs wiring\" becomes usable after a panel update.")}</div>
-        </div>`}
+        </div><//>`}
   <//>`;
 }
 export function rcTotal(c) { return c ? (c.n + c.x + c.m + (c.y || 0) + (c.z || 0)) : 0; }

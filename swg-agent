@@ -573,6 +573,11 @@ def _awg_obfuscation():
             "I1 = <b 0xc300000001><r 1200>\n")
 
 
+# Same test swg-noded makes (NODE_KIND): the agent otherwise has no idea it is inside a container, and where a
+# conf may safely live depends entirely on that.
+_IN_CONTAINER = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
 def op_create_iface(cfg, req):
     """Create a BRAND-NEW wg/awg interface natively (kernel on bare-metal, userspace in a node
     container): genkey, write the .conf (Address from the given subnet, ListenPort, MTU, auto-NAT
@@ -598,7 +603,12 @@ def op_create_iface(cfg, req):
         raise AgentError("bad_request", "listen_port must be a number")
     mtu = str(req.get("mtu") or "1280")
     _ensure_tool(tool)                          # install wg/awg tools if this node doesn't have them yet
-    conf_dir = "/etc/amnezia/amneziawg" if tool == "awg" else "/etc/wireguard"
+    # On a container node ONLY /etc/amnezia/amneziawg is a bind-mount that outlives a container recreate;
+    # /etc/wireguard is container-local. A plain-WG conf written there is destroyed by the next update while the
+    # interface itself survives in the host netns — so the node comes back to a live device it has no conf for,
+    # classifies it as somebody else's (adoption candidate), stops reporting it, and the panel shows the
+    # interface as missing. AmneziaWG never hit this because its directory IS the mount.
+    conf_dir = "/etc/amnezia/amneziawg" if (tool == "awg" or _IN_CONTAINER) else "/etc/wireguard"
     conf = os.path.join(conf_dir, iface + ".conf")
     if os.path.exists(conf):
         raise AgentError("exists", f"{conf} already exists")
@@ -641,11 +651,31 @@ def op_create_iface(cfg, req):
         supp = {k: str(supp[k]) for k in AWG_KEYS if supp and str(supp.get(k, "")) != ""} if supp else None
         body += ("".join(f"{k} = {supp[k]}\n" for k in AWG_KEYS if k in supp)) if supp else _awg_obfuscation()
     write_conf_atomic(conf, body)
+    # `wg-quick up <name>` resolves the name against /etc/wireguard and NOWHERE else, so moving the file to the
+    # mount would break the bring-up it is supposed to enable. Link the name back into that directory: every
+    # by-name call (up here, down/restart later, and wg-quick's own `wg setconf`) keeps working, while the file
+    # that must survive a container recreate sits on the volume. The link is container-local and disposable —
+    # after a recreate it is gone, the conf is not, and the node re-adopts the live interface from it.
+    link = ""
+    if conf_dir != "/etc/wireguard" and tool != "awg":
+        link = os.path.join("/etc/wireguard", iface + ".conf")
+        try:
+            os.makedirs("/etc/wireguard", exist_ok=True)
+            if os.path.islink(link) or os.path.exists(link):
+                os.unlink(link)
+            os.symlink(conf, link)
+        except OSError as e:
+            with contextlib.suppress(Exception):
+                os.unlink(conf)
+            raise AgentError("link_fail", f"couldn't link {link} -> {conf}: {e}")
     try:
         run([tool + "-quick", "up", iface])
     except Exception as e:
         with contextlib.suppress(Exception):
             os.unlink(conf)
+        if link:
+            with contextlib.suppress(Exception):
+                os.unlink(link)
         msg = str(e)
         # "Unknown device type" / "Protocol not supported" == the kernel datapath module isn't loadable (the awg
         # DKMS module never built against this kernel, or a kernel upgrade left it stale). The agent is sandboxed

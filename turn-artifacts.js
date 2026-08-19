@@ -442,6 +442,10 @@
         clientID: isWrapS ? stableCid(cf, tp) : "" };   // WRAP-S needs an allowlist-ready client-id; free-turn runs open so it is attribution-only
       // Keys the app's parser accepts but quick_link.py's CONFIG omits — emitted only when set (empty would clobber a device value):
       var wrapApw = String((cs || {}).wrapAPassword || "").trim(); if (wrapApw) s.wrapAPassword = wrapApw;   // amurcanov WRAP-A secret (future)
+      // serverName IS in quick_link.py's CONFIG, but it is emitted the same conditional way and for the same reason:
+      // build 179+ keeps a SET of named servers and an import adds one under this name, so an empty value would file
+      // the connection under a blank name. Omitted → the app assigns "ServerN" itself (older builds ignore it).
+      var srvName = String((cs || {}).serverName || "").trim(); if (srvName) s.serverName = srvName;
       var turnOv = String((cs || {}).turnServerOverride || "").trim(); if (turnOv) s.turnServerOverride = turnOv;   // pin fresh conns to a specific TURN relay
       if (csBool(cs, "vkAuth", false)) s.vkAuth = true;                  // VK cookie-auth path (instead of anon PoW)
       var uri = "vkturnproxy://import?data=" + b64urlUtf8(jsonSortedCompact({ version: 1, type: "connection", settings: s }));
