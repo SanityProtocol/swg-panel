@@ -7,6 +7,20 @@
      (e.g. /swg/) when SWG_PANEL_BASE is set, so all relative URLs resolve correctly. -->
 <base href="/">
 <title>swgPanel</title>
+<!-- A control panel has no business in a search index: a sign-in page that is findable is a list of targets
+     for anyone enumerating installs, and no operator asked to be listed. The subscription page has carried
+     this since it shipped; the panel had nothing, which is how installs ended up indexed. Chat previews
+     (Telegram/Slack/WhatsApp) ignore robots and still read the og: tags below, so this costs nothing. -->
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="dark light">
+<!-- Description/og are rewritten per request in the panel's index.html handler, in the language the request
+     asks for — the same rule js/i18n.js pick() uses in the browser. These are the English defaults. -->
+<meta name="description" content="Self-hosted control panel for WireGuard and AmneziaWG — add users in the browser, hand them a QR code, and run your VPN across your own servers.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="swgPanel">
+<meta property="og:title" content="swgPanel">
+<meta property="og:description" content="Self-hosted control panel for WireGuard and AmneziaWG — add users in the browser, hand them a QR code, and run your VPN across your own servers.">
+<meta name="twitter:card" content="summary">
 <!-- inline SVG favicon (the cyan indicator-LED mark); offline-safe, no extra request -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231FC8D6'/%3E%3Ccircle cx='16' cy='14.5' r='5.5' fill='%230A0E15'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="app.css">

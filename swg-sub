@@ -188,6 +188,30 @@ def apply_iface_meta(node_cfg, interfaces):
 
 # ── the subscription state (all read-only; the panel owns writes) ──
 
+_SUB_META = {
+    "ru": {"desc": "Ваш доступ к VPN — настройки и QR-коды для ваших устройств в одном месте.",
+           "title": "Ваш доступ к VPN",
+           "ogdesc": "Настройки и QR-коды для ваших устройств в одном месте."},
+}
+
+def _sub_meta(data, lang):
+    """Rewrite the shell's description/og for `lang`. English is what sub.html ships with, so that is a no-op;
+    an unknown code leaves the file as written rather than emptying the tags. Nothing here is per-user — the URL
+    carries a token, so a preview must describe the page and never say whose it is."""
+    m = _SUB_META.get((lang or "").strip().lower()[:2])
+    if not m:
+        return data
+    out = data.replace(b'<html lang="en">', ('<html lang="%s">' % lang).encode())
+    with contextlib.suppress(Exception):
+        out = re.sub(rb'(<meta name="description" content=")[^"]*(")',
+                     lambda mo: mo.group(1) + m["desc"].encode() + mo.group(2), out)
+        out = re.sub(rb'(<meta property="og:title" content=")[^"]*(")',
+                     lambda mo: mo.group(1) + m["title"].encode() + mo.group(2), out)
+        out = re.sub(rb'(<meta property="og:description" content=")[^"]*(")',
+                     lambda mo: mo.group(1) + m["ogdesc"].encode() + mo.group(2), out)
+    return out
+
+
 class State:
     """Resolved paths into the panel's state dir, from fleet.json + the panel's own defaults."""
 
@@ -589,6 +613,11 @@ class Handler(BaseHTTPRequestHandler):
                         .replace(b'src="_a/sub.js"', b'src="_a/sub.js' + q + b'"')
                         .replace(b'src="_a/qrcode.js"', b'src="_a/qrcode.js' + q + b'"')
                         .replace(b'src="_a/turn-artifacts.js"', b'src="_a/turn-artifacts.js' + q + b'"'))
+        # Metadata in the language the ADMIN set as the subscriptions default (subs.languages.default) — not the
+        # visitor's, and not a per-browser choice: this is what a link preview shows wherever the URL is pasted,
+        # long before anyone opens it and picks a language. Body text still follows the visitor's own selection.
+        _lg = state.subscriptions().get("languages")
+        data = _sub_meta(data, ((_lg if isinstance(_lg, dict) else {}).get("default") or "en"))
         self._send(200, data, "text/html; charset=utf-8", cache="no-cache", extra={"Content-Security-Policy": self._CSP})
 
     def _client_ident(self):

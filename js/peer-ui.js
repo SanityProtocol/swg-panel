@@ -614,11 +614,11 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
   const ready = text != null;
   const qrView = a.qr && view === "qr";
   return html`<div class="turncfg-item">
-    <div class="turncfg-head"><span class="tcf-label">${a.label}</span></div>
-    ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${a.hint}</div>` : null}
+    <div class="turncfg-head"><span class="tcf-label">${artLabel(a)}</span></div>
+    ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${T(a.hint)}</div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
       : qrView ? (ready ? html`<div class="turncfg-qr"><${QR} conf=${text} label=${a.label}/></div>` : html`<div class="turncfg-qr qr-pending">${T("generating…")}</div>`)
-      : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => e.target.select()}>${ready ? text : T("generating…")}</textarea>
+      : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => { e.target.select(); copy(text, a.uri ? T("Link copied") : T("Config copied")); }}>${ready ? text : T("generating…")}</textarea>
           <button class="cmd-copy" title=${T("Copy")} disabled=${!ready} onClick=${() => copy(text, a.uri ? T("Link copied") : T("Config copied"))}><${Ic} i="copy"/></button></div>`}
     ${a.cmd ? html`<div class="turncfg-cmd"><div class="tokenbox">${a.cmd}</div>
       <button class="cmd-copy" title=${T("Copy command")} onClick=${() => copy(a.cmd, T("Command copied"))}><${Ic} i="copy"/></button></div>` : null}
@@ -691,6 +691,37 @@ export function TargetCard(props) {
 }
 // The wdtt:// client artifact input for a peer's WDTT deployment, assembled from the node read-back (endpoint /
 // ports / iface) + the panel-owned per-peer password + the user's VK link. Mirrors what swg-sub builds server-side.
+// A link shown on a card: the same readonly textarea + corner copy button the Alternatives sheet uses, so the
+// two places a config appears behave the same way (click selects, the icon copies). autoGrow keeps it to the
+// text's own height; the CSS caps it so one long link can't stretch the card past its neighbours.
+export function LinkBox({ uri }) {
+  const ref = useRef(null);
+  useEffect(() => { autoGrow(ref.current); }, [uri]);
+  return html`<div class="turncfg-tawrap">
+    <textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${ref}
+      onClick=${e => { e.target.select(); copy(uri, T("Link copied")); }}>${uri}</textarea>
+    <button class="cmd-copy" title=${T("Copy link")} onClick=${() => copy(uri, T("Link copied"))}><${Ic} i="copy"/></button>
+  </div>`;
+}
+// An artifact's label is English prose composed in turn-artifacts.js, so T() on the finished string can never
+// match a key — it carries a fork and an author. Recompose it here from the parts instead; a fork with no client
+// metadata (the CLI clients) keeps its own label, which IS a fixed sentence and translates directly.
+// How this app takes the config, in the order that is easiest for the person holding the phone: a deeplink it
+// can open itself, else a QR to scan, else a link to paste. The label used to say "imports a pasted link"
+// whichever it was, so an app that opens on a tap — the ⚡ in the picker beside it — read as the most laborious
+// of the three. autostart is per-OS, because the same app can register the scheme on Android and not on desktop.
+export function clientHandoff(cl, cid, qr, os) {
+  const name = (cl && cl.name) || cid;
+  const deeplink = !!((((cl || {}).platforms || {})[os] || {}).autostart);
+  if (deeplink) return T("{v1} — opens with one tap", { v1: name });
+  if (qr) return T("{v1} — scans a QR code", { v1: name });
+  return T("{v1} — imports a pasted link", { v1: name });
+}
+export function artLabel(a) {
+  const m = (typeof SWGTurn !== "undefined" && SWGTurn.clientMeta) ? SWGTurn.clientMeta(a.enc) : null;
+  if (!m) return T(a.label || "");
+  return T("{v1} via {v2} ({v3}) by {v4}", { v1: a.fork, v2: m.app, v3: m.platform + (a.labelMode || ""), v4: m.author });
+}
 export function wdttArtInput(peer, t) {
   const rb = ((Store.stats[t.node] || {}).wdtt || []).find(w => w && w.iface === t.iface) || {};
   const nrec = (Store.nodes || []).find(n => n.id === t.node) || {};
@@ -724,7 +755,7 @@ export function csqttArtInput(peer, t) {
 }
 export function csqttClientCfg(inp) {
   const art = (typeof SWGTurn !== "undefined" && SWGTurn.csqttArtifact) ? SWGTurn.csqttArtifact(inp) : null;
-  return { art, uri: art && art.text, qr: true };
+  return { art, uri: art && art.text, qr: !!(art && art.qr) };   // the encoder decides — the CSQTT app can't scan yet
 }
 export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   useStore();
@@ -739,10 +770,11 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
     + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-csqtt">${esc(t.iface)}</span>`;
   return html`<div class="deploy deploy-csqtt">
     ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind="csqtt" label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
-    <div class="deploy-body">
+    <div class=${"deploy-body" + (uri && !dc.qr ? " deploy-body-stack" : "")   /* no scanner → the link stacks, same as a WDTT link card */}>
       ${primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
       ${!uri ? html`<div class="qr-none">${T("csqtt link unavailable — the server isn't reporting yet.")}</div>`
-        : html`<${QR} conf=${uri} label=${label}/>`}
+        : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
+        : html`<${LinkBox} uri=${uri}/>`}
       ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>` : null}
       ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">${T("row|kind")}</span><span class="vv">${T("csqtt · keyless (server-minted address)")}</span></div>
@@ -761,10 +793,23 @@ export function wdttClientIds(fork) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
   return (((typeof turnForkList === "function" && turnForkList().find(f => f.id === fork)) || {}).clients || []).filter(cid => cmap[cid]);
 }
-export function wdttClientCfg(w, cid) {
+export function wdttClientCfg(w, cid, fork, os) {
   const cl = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[cid] || {};
-  const art = (typeof SWGTurn !== "undefined" && SWGTurn.wdttArtifact) ? SWGTurn.wdttArtifact(w, cl.encoder || "wdtt") : null;
+  const enc = cl.encoder || "wdtt";
+  // SETTINGS SPLIT, applied here rather than in wdttArtInput because it is keyed by the CLIENT, which only this
+  // layer knows. qWDTT is the one family app whose link carries a knob (`workers`); the encoder has always had
+  // the branch for it and nothing ever populated it, so the admin's value was saved and silently dropped. The
+  // other encoders take no client values at all, so there is nothing to pass them.
+  const wIn = (enc === "qwdtt" && fork) ? { ...w, ...pickDefined(turnClientSettingsFor(fork, enc, os), ["workers"]) } : w;
+  const art = (typeof SWGTurn !== "undefined" && SWGTurn.wdttArtifact) ? SWGTurn.wdttArtifact(wIn, enc) : null;
   return { cl, qr: !!cl.qr, art, uri: art && art.text };   // qr = the app scans a QR; else it imports a pasted link
+}
+// Only the keys that carry a real value: the encoder omits a blank `workers` entirely (the app then uses its own
+// default), so an empty saved value must not become `workers=` in the link.
+function pickDefined(o, keys) {
+  const out = {};
+  for (const k of keys) { const v = (o || {})[k]; if (v !== undefined && v !== null && String(v).trim() !== "") out[k] = v; }
+  return out;
 }
 export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
   useStore();   // re-render on each poll so the status badge stays live
@@ -777,7 +822,7 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
   const rb = ((Store.stats[t.node] || {}).wdtt || []).find(x => x && x.iface === t.iface) || {};
   const fork = rb.fork || "amurcanov";
   const clientIds = wdttClientIds(fork);
-  const dc = wdttClientCfg(w, clientIds[0] || "wdttapp");
+  const dc = wdttClientCfg(w, clientIds[0] || "wdttapp", fork);
   const uri = dc.uri;
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
   const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
@@ -788,7 +833,7 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
       ${primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
       ${!uri ? html`<div class="qr-none">${T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
-        : html`<div class="wdtt-link mono">${uri}</div>`}
+        : html`<${LinkBox} uri=${uri}/>`}
       ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>` : null}
       ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">${T("row|kind")}</span><span class="vv">${T("WDTT · keyless (server-minted key)")}</span></div>
@@ -797,7 +842,6 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
         <div class="row"><span class="k">${T("row|status")}</span><span class="vv"><${Badge} s=${lt.status}/></span></div>
       </div>`}
     </div>
-    ${w.raw_port ? html`<div class="hint raw-hint" title=${T("The app keeps the RAW port and the connection mode in its own settings, not in a profile — so they are set once, by hand, and apply to every server.")}>${T("RAW available · port {v1} · an app setting, not part of the link", { v1: w.raw_port })}</div>` : null}
     ${uri ? html`<div class="acts">
       <button class="btn btn-mini" onClick=${() => copy(uri, T("WDTT link copied"))}><${Ic} i="copy"/> ${T("Copy")}</button>
       ${clientIds.length > 1 ? html`<button class="btn btn-mini" onClick=${() => pushModal(html`<${WdttConfigSheet} peer=${peer} t=${t}/>`)}><${Ic} i="dots"/> ${T("Alternatives")}</button>` : null}
@@ -824,7 +868,7 @@ export function WdttConfigSheet({ peer, t }) {
   const authorOf = id => (turnClientAuthor(id) || {}).fork || (cmap[id] || {}).author || fork;
   const clr = id => turnClientColor(id) || turnColor(authorOf(id));
   const base = (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node);
-  return html`<${Sheet} title=${T("WDTT client apps · {v1}", { v1: peer.title || peer.name || T("val|peer") })} width=${560} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+  return html`<${Sheet} title=${T("WDTT client apps · {v1}", { v1: peer.title || peer.name || T("val|peer") })} width=${600} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
       headExtra=${html`<${PeerStatusLine} peer=${peer} pos="hr"/>`}>
     <div class="turncfg">
       <${PeerStatusLine} peer=${peer} pos="bar"/>
@@ -836,22 +880,22 @@ export function WdttConfigSheet({ peer, t }) {
               autostart: !!(((c.platforms || {})[curOs] || {}).autostart) }; })}
           onChange=${id => setCi(Math.max(0, clients.findIndex(c => c.id === id)))}/></div>` : null}
       </div>
-      ${client ? html`<${WdttCfgItem} key=${client.id + "|" + curOs} w=${w} cid=${client.id} base=${base}/>` : html`<div class="hint">${T("No client app for this device.")}</div>`}
+      ${client ? html`<${WdttCfgItem} key=${client.id + "|" + curOs} w=${w} cid=${client.id} base=${base} fork=${fork} os=${curOs}/>` : html`<div class="hint">${T("No client app for this device.")}</div>`}
     </div>
   <//>`;
 }
-export function WdttCfgItem({ w, cid, base }) {
-  const dc = wdttClientCfg(w, cid); const uri = dc.uri;
+export function WdttCfgItem({ w, cid, base, fork, os }) {
+  const dc = wdttClientCfg(w, cid, fork, os); const uri = dc.uri;
   const [view, setView] = useState(dc.qr ? "qr" : "text");
   const taRef = useRef(null);
   useEffect(() => { setView(dc.qr ? "qr" : "text"); }, [cid]);
   useEffect(() => { if (view === "text") autoGrow(taRef.current); }, [uri, view]);
   const qrView = dc.qr && view === "qr";
   return html`<div class="turncfg-item">
-    <div class="turncfg-head"><span class="tcf-label">${dc.cl.name || cid}${dc.qr ? "" : " — imports a pasted link"}</span></div>
+    <div class="turncfg-head"><span class="tcf-label">${clientHandoff(dc.cl, cid, dc.qr, os)}</span></div>
     ${!uri ? html`<div class="qr-none">${T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
       : qrView ? html`<div class="turncfg-qr"><${QR} conf=${uri} label=${dc.cl.name || cid}/></div>`
-      : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => e.target.select()}>${uri}</textarea>
+      : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => { e.target.select(); copy(uri, T("WDTT link copied")); }}>${uri}</textarea>
           <button class="cmd-copy" title=${T("Copy link")} onClick=${() => copy(uri, T("WDTT link copied"))}><${Ic} i="copy"/></button></div>`}
     <div class="turncfg-foot">
       ${dc.qr ? html`<button class="btn btn-mini" onClick=${() => setView(v => v === "qr" ? "text" : "qr")}><${Ic} i=${qrView ? "doc" : "qr"}/> ${qrView ? T("Show link") : T("Show QR")}</button>` : null}

@@ -2496,7 +2496,8 @@ export const STR = {
   "No {v1} client app yet.": "Клиента для {v1} пока нет.",
   "This server isn't offered on {v1} — those users won't see a card for it, so there's nothing to configure. Pick an app above to start offering it again.":
     "Этот сервер не предлагается на {v1} — карточки не будет, настраивать нечего. Выберите приложение выше, чтобы снова его предлагать.",
-  "{v1} has no in-app settings to configure.": "У {v1} нет настроек внутри приложения.",
+  "{v1} has no settings the panel can preset — its options are set in the app itself.":
+    "У {v1} нет настроек, которые может задать панель — они настраиваются в самом приложении.",
   "view change → {v1}": "что изменилось → {v1}",
   "Add {v1}": "Новое {v1}",
   "Remove {v1}": "Убрать {v1}",
@@ -3312,8 +3313,6 @@ export const STR = {
   "RAW-IP mode": "Режим RAW-IP",
   "Accept RAW connections": "Принимать RAW-подключения",
   "RAW drops WireGuard's handshake: *no forward secrecy and no replay protection*. Anyone who later learns a peer's password can read traffic they recorded earlier. Turn it on for people who need the speed and accept that.": "RAW убирает рукопожатие WireGuard: *нет forward secrecy и защиты от повтора*. Тот, кто потом узнает пароль пира, прочитает записанный ранее трафик. Включайте для тех, кому нужна скорость и кого это устраивает.",
-  "RAW available · port {v1} · an app setting, not part of the link": "Доступен RAW · порт {v1} · настройка приложения, не часть ссылки",
-  "The app keeps the RAW port and the connection mode in its own settings, not in a profile — so they are set once, by hand, and apply to every server.": "Приложение хранит RAW-порт и режим подключения в своих настройках, а не в профиле — они задаются один раз вручную и действуют для всех серверов.",
   "The node refused to install WDTT server {iface}: {err}": "Узел отказался устанавливать WDTT-сервер {iface}: {err}",
   "This server was never installed — remove it or fix the cause": "Этот сервер так и не был установлен — удалите его или устраните причину",
   "Remove this WDTT server from the panel": "Удалить этот WDTT-сервер из панели",
@@ -3880,6 +3879,182 @@ export const STR = {
   "unassigned peer": "пир без владельца",
   "panel nginx server block": "блок server для nginx (панель)",
   "subscription nginx server block": "блок server для nginx (подписки)",
+
+  /* Catalog-authored field text (fork client/server schemas) and the two sheets that render it.
+     These arrive from the panel as DATA, so no extractor ever saw them — they are translated the way
+     server messages are: the English sentence is the key. Fork names, blocklist providers and protocol
+     names are deliberately absent, being proper nouns that render as-is through T()'s fallback. */
+  "64 hex chars — must match the FreeTurn client.": "64 hex-символа — должны совпадать с клиентом FreeTurn.",
+  "64 hex chars — must match the client app. Changing it breaks every client using the old key.":
+    "64 hex-символа — должны совпадать с приложением. Смена ломает всех клиентов со старым ключом.",
+  "AEAD the server accepts for WRAP (-wrap-cipher, WINGS-N v2.1.0). any = accept either; or pin one — the client must offer it.":
+    "AEAD, который сервер принимает для WRAP (-wrap-cipher, WINGS-N v2.1.0). any = принимать любой; либо закрепить один — клиент должен его предлагать.",
+  "Anonymous credential path (-vk-anon-path): vkcalls = the v1.5.x api.vk.me flow that usually SKIPS the captcha (recommended) · legacy = the old path. Needs the LATEST MYSOREZ core.":
+    "Путь анонимных учёток (-vk-anon-path): vkcalls = схема api.vk.me из v1.5.x, обычно БЕЗ капчи (рекомендуется) · legacy = старый путь. Нужно САМОЕ НОВОЕ ядро MYSOREZ.",
+  "Browser fingerprint": "Отпечаток браузера",
+  "Captcha auto-solver": "Авторешатель капчи",
+  "Captcha mode": "Режим капчи",
+  "Comma-separated DNS resolvers the app uses (Turn.user_dns). Blank = the app's default.":
+    "DNS-резолверы приложения через запятую (Turn.user_dns). Пусто = умолчание приложения.",
+  "Comma-separated DNS resolvers. Blank = the peer's own config DNS (else 1.1.1.1).":
+    "DNS-резолверы через запятую. Пусто = DNS из конфига самого пира (иначе 1.1.1.1).",
+  "Comma-separated DNS servers (-dns-servers). Blank = the app's default.":
+    "DNS-серверы через запятую (-dns-servers). Пусто = умолчание приложения.",
+  "Connections": "Соединения",
+  "Credential group size": "Размер группы учёток",
+  "Curated": "Подобранный",
+  "Custom DNS": "Свой DNS",
+  "DNS mode": "Режим DNS",
+  "Debug logging": "Подробный лог",
+  "Default client apps": "Клиентские приложения по умолчанию",
+  "Device ID": "ID устройства",
+  "Disable obfuscation": "Отключить обфускацию",
+  "Extra CLI flags": "Дополнительные флаги CLI",
+  "Extra arguments appended to the client command, one per line (e.g. -turn <relay>). Blank = none.":
+    "Дополнительные аргументы к команде клиента, по одному в строке (например -turn <релей>). Пусто = нет.",
+  "Extra command arguments, one per line — appended to the app's flags (the app's Raw-mode 'Флаги и аргументы'). Blank = none.":
+    "Дополнительные аргументы команды, по одному в строке — добавляются к флагам приложения (поле «Флаги и аргументы» в Raw-режиме). Пусто = нет.",
+  "Extra flags (raw)": "Дополнительные флаги (как есть)",
+  "For rtpopus (WRAP-S) servers: which RTP/Opus profile the app mimics (Turn.obfProfile) — must match the server. auto = the app's default (rtpopus).":
+    "Для серверов rtpopus (WRAP-S): под какой профиль RTP/Opus маскируется приложение (Turn.obfProfile) — должен совпадать с сервером. auto = умолчание приложения (rtpopus).",
+  "Force manual captcha entry in the app (Turn.manual_captcha). Off = the app's default.":
+    "Всегда вводить капчу вручную в приложении (Turn.manual_captcha). Выкл = умолчание приложения.",
+  "How many TURN streams share one VK credential group (Turn.creds_group_size, WINGSV_DeX v0.3.0). Blank = the app's default.":
+    "Сколько TURN-потоков делят одну группу учёток VK (Turn.creds_group_size, WINGSV_DeX v0.3.0). Пусто = умолчание приложения.",
+  "How the MYSOREZ core solves the VK captcha (-captcha-mode): auto = Go smart-captcha solver (recommended) · wv = in-app WebView (NOT wired to feed the token back) · rjs = remote JS.":
+    "Как ядро MYSOREZ решает капчу VK (-captcha-mode): auto = решатель smart-captcha на Go (рекомендуется) · wv = WebView внутри приложения (токен обратно НЕ передаётся) · rjs = удалённый JS.",
+  "How the app runs the tunnel (Turn.runtime_mode). auto = the app decides; vpn = system VPN; proxy = local proxy.":
+    "Как приложение поднимает туннель (Turn.runtime_mode). auto = решает приложение; vpn = системный VPN; proxy = локальный прокси.",
+  "How the app solves the VK captcha (Turn.captcha_auto_solver): auto = the app's own default (Enhanced) · v2 = Enhanced · v1 = Classic · bypass = solve via vk.me.":
+    "Как приложение решает капчу VK (Turn.captcha_auto_solver): auto = собственное умолчание приложения (Enhanced) · v2 = Enhanced · v1 = Classic · bypass = через vk.me.",
+  "Link source": "Источник ссылки",
+  "MYSOREZ mzrtp obfuscation (-wrap) — needs a password. Off = plain (VK throttles unobfuscated traffic).":
+    "Обфускация mzrtp у MYSOREZ (-wrap) — нужен пароль. Выкл = без обфускации (VK режет неприкрытый трафик).",
+  "Manual captcha": "Капча вручную",
+  "Obfuscation (WRAP)": "Обфускация (WRAP)",
+  "Obfuscation key": "Ключ обфускации",
+  "Obfuscation profile": "Профиль обфускации",
+  "Off = TCP-control (bypasses VK's per-cred allocation-rate throttle — recommended). On only if your network throttles TCP to the relay.":
+    "Выкл = управление по TCP (обходит ограничение VK на скорость выдачи по учётке — рекомендуется). Вкл только если ваша сеть режет TCP до релея.",
+  "Parallel TURN connections (1–50). The VK TURN Proxy app default is 30.":
+    "Параллельные TURN-соединения (1–50). В приложении VK TURN Proxy по умолчанию 30.",
+  "Parallel TURN streams (#@wgt:StreamNum, app range 1–16).":
+    "Параллельные TURN-потоки (#@wgt:StreamNum, в приложении 1–16).",
+  "Parallel TURN streams (-n). Blank = the app's default (10).":
+    "Параллельные TURN-потоки (-n). Пусто = умолчание приложения (10).",
+  "Pin fresh connections to a specific TURN relay (ip:port). Blank = the VK-returned relay.":
+    "Закрепить новые соединения за конкретным TURN-релеем (ip:порт). Пусто = релей, который вернул VK.",
+  "Reach the TURN relay over UDP (-udp). On by default in the app.":
+    "Ходить к TURN-релею по UDP (-udp). В приложении включено по умолчанию.",
+  "Reach the TURN relay over UDP (Turn.use_udp). On by default.":
+    "Ходить к TURN-релею по UDP (Turn.use_udp). По умолчанию включено.",
+  "Reconnect after N seconds idle (#@wgt:WatchdogTimeout). Blank = off.":
+    "Переподключаться после N секунд простоя (#@wgt:WatchdogTimeout). Пусто = выключено.",
+  "Reconnect when the device network changes (Turn.restart_on_network_change). Off = the app's default.":
+    "Переподключаться при смене сети на устройстве (Turn.restart_on_network_change). Выкл = умолчание приложения.",
+  "Relay transport": "Транспорт до релея",
+  "Resolver mode (-dns-mode). auto = the app decides.":
+    "Режим резолвера (-dns-mode). auto = решает приложение.",
+  "Restart on network change": "Перезапуск при смене сети",
+  "Runtime mode": "Режим работы",
+  "SRTP mode": "Режим SRTP",
+  "Server defaults": "Настройки сервера по умолчанию",
+  "Session mode": "Режим сессии",
+  "Shared secret the core HKDFs to the AEAD key — must match the client. Required when WRAP is on. Auto-generated.":
+    "Общий секрет, из которого ядро выводит ключ AEAD через HKDF — должен совпадать с клиентом. Обязателен при включённом WRAP. Генерируется автоматически.",
+  "Solve the VK captcha manually in the app (--manual-captcha).":
+    "Решать капчу VK вручную в приложении (--manual-captcha).",
+  "Solve the VK captcha manually in the app (-manual-captcha).":
+    "Решать капчу VK вручную в приложении (-manual-captcha).",
+  "Stable device id (-device-id) VK ties the session to. Blank = the core generates one.":
+    "Постоянный id устройства (-device-id), к которому VK привязывает сессию. Пусто = ядро сгенерирует само.",
+  "Stream/worker count (-n). Blank = the app's default (8).":
+    "Количество потоков/воркеров (-n). Пусто = умолчание приложения (8).",
+  "Streams": "Потоки",
+  "Streams per credential": "Потоков на учётку",
+  "Streams sharing one VK credential (#@wgt:StreamsPerCred).":
+    "Сколько потоков делят одну учётку VK (#@wgt:StreamsPerCred).",
+  "Streams sharing one VK credential (-streams-per-cred). Blank = default (10).":
+    "Сколько потоков делят одну учётку VK (-streams-per-cred). Пусто = по умолчанию 10.",
+  "TLS/HTTP imitation family the relay presents (Turn.browser_fingerprint). auto = random per session.":
+    "Под какое семейство TLS/HTTP маскируется релей (Turn.browser_fingerprint). auto = случайно на каждую сессию.",
+  "TURN relay override": "Явный TURN-релей",
+  "TURN session multiplexing (Turn.session_mode). auto = the app decides; mux shares one session across streams.":
+    "Мультиплексирование TURN-сессий (Turn.session_mode). auto = решает приложение; mux = одна сессия на все потоки.",
+  "Transport to the TURN relay (-transport, free-turn-proxy v2.1). auto = the app default (udp); tcp helps where UDP is throttled or blocked.":
+    "Транспорт до TURN-релея (-transport, free-turn-proxy v2.1). auto = умолчание приложения (udp); tcp помогает там, где UDP режут или блокируют.",
+  "Turn off the app's traffic obfuscation (Turn.no_obfuscation). Off = the app's default (obfuscation on).":
+    "Отключить обфускацию трафика в приложении (Turn.no_obfuscation). Выкл = умолчание приложения (обфускация включена).",
+  "UDP control transport": "Управление по UDP",
+  "UDP transport": "Транспорт UDP",
+  "Use the VK cookie-auth path instead of anonymous proof-of-work.":
+    "Использовать вход VK по cookie вместо анонимного proof-of-work.",
+  "VK auth": "Авторизация VK",
+  "VK authentication (-vk-auth): anonymous = proof-of-work (recommended) · account = needs a creds bridge the app doesn't provide.":
+    "Аутентификация VK (-vk-auth): anonymous = proof-of-work (рекомендуется) · account = нужен мост учётных данных, которого в приложении нет.",
+  "VK bypass path": "Путь обхода VK",
+  "VK cookie auth": "Авторизация VK по cookie",
+  "Verbose app logging (-debug).": "Подробный лог приложения (-debug).",
+  "WINGS V worker count (-n). Blank = the app's own default.":
+    "Количество воркеров WINGS V (-n). Пусто = собственное умолчание приложения.",
+  "WRAP = keyed (the key must match the app's WRAP KEY field); SRTP = keyless.":
+    "WRAP = с ключом (ключ должен совпадать с полем WRAP KEY в приложении); SRTP = без ключа.",
+  "WRAP cipher": "Шифр WRAP",
+  "Watchdog timeout": "Таймаут сторожа",
+  "Which call-link source the app uses: -vk-link = VK Calls · -yandex-link = Yandex.":
+    "Какой источник ссылок на звонки использует приложение: -vk-link = Звонки VK · -yandex-link = Яндекс.",
+  "Worker threads": "Рабочие потоки",
+  "TURN worker streams the app opens per VK hash (the qwdtt:// link's `workers`). Blank = the app's default.":
+    "Сколько рабочих TURN-потоков приложение открывает на один хеш VK (параметр `workers` в ссылке qwdtt://). Пусто = умолчание приложения.",
+  "Workers per hash": "Воркеров на хеш",
+  "Wrap key": "Ключ WRAP",
+  "off": "выкл",
+  "on": "вкл",
+  "rtpopus* dress the traffic as an RTP/Opus call; none = plain. Must match the FreeTurn client.":
+    "rtpopus* маскируют трафик под звонок RTP/Opus; none = без маскировки. Должно совпадать с клиентом FreeTurn.",
+  "{v1} users will be offered nothing for this server":
+    "Пользователям {v1} для этого сервера ничего не предложат",
+  "{v1} users will be offered {v2}": "Пользователям {v1} предложат {v2}",
+
+
+  /* Client-artifact text from turn-artifacts.js — the label on a config panel and the hint under it.
+     That file is a plain script shared with the subscription page, so it cannot call T(); the panel
+     translates what it renders, the way it does for catalog and server sentences. The label is composed
+     there from a fork and an author, so it arrives as parts and goes through the placeholder key below. */
+  "CSQTT (Android · csqtt://connect)": "CSQTT (Android · csqtt://connect)",
+  "Open the csqtt:// link in the CSQTT app, or paste it in.":
+    "Откройте ссылку csqtt:// в приложении CSQTT или вставьте её вручную.",
+  "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in WRAP-A mode.":
+    "Откройте ссылку на iPhone (или VK TURN Proxy → Настройки → Импорт из ссылки подключения), чтобы импортировать в режиме WRAP-A.",
+  "Open the link on the iPhone (or the app's Settings → Import from connection link) to import into the VK TURN Proxy app.":
+    "Откройте ссылку на iPhone (или Настройки приложения → Импорт из ссылки подключения), чтобы импортировать в VK TURN Proxy.",
+  "Paste the wdtt:// link into PWDTT — «Добавление VK профиля».":
+    "Вставьте ссылку wdtt:// в PWDTT — «Добавление VK профиля».",
+  "Scan the QR or import .conf into the kiper292 WireGuard-TURN app. The TURN settings ride along as #@wgt: comments (the Endpoint stays the real server).":
+    "Отсканируйте QR или импортируйте .conf в приложение WireGuard-TURN от kiper292. Настройки TURN едут в комментариях #@wgt: (Endpoint остаётся настоящим сервером).",
+  "Scan the QR or open the qwdtt:// link in the qWDTT app (Android) or PWDTT (desktop).":
+    "Отсканируйте QR или откройте ссылку qwdtt:// в приложении qWDTT (Android) или PWDTT (десктоп).",
+  "Scan the QR or open the wdtt:// link in WDTT-Plus.":
+    "Отсканируйте QR или откройте ссылку wdtt:// в WDTT-Plus.",
+  "Scan the QR or open the wdtt:// link in the WDTT app (Android) or PWDTT (desktop).":
+    "Отсканируйте QR или откройте ссылку wdtt:// в приложении WDTT (Android) или PWDTT (десктоп).",
+  "Scan the QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link — it now includes the VK call link(s). If your app doesn't pick them up, add them in the app manually.":
+    "Отсканируйте QR приложением FreeTurn (samosvalishe/turn-proxy-android) или вставьте ссылку freeturn:// — она уже содержит ссылки на звонки VK. Если приложение их не подхватит, добавьте вручную.",
+  "Scan the QR with the WINGS V app, or paste the wingsv:// link (Settings → import from link).":
+    "Отсканируйте QR приложением WINGS V или вставьте ссылку wingsv:// (Настройки → импорт из ссылки).",
+  "This server needs a separate client binary. Scan the QR or import .conf into WireGuard/AmneziaWG, then run the client alongside it:":
+    "Этому серверу нужен отдельный клиентский бинарник. Отсканируйте QR или импортируйте .conf в WireGuard/AmneziaWG, а затем запустите клиент рядом:",
+  "WDTT via PWDTT (desktop · wdtt:// base64) by ildarmaga":
+    "WDTT через PWDTT (десктоп · wdtt:// base64) от ildarmaga",
+  "WDTT via VK TURN Proxy (iOS · WRAP-A) by anton48": "WDTT через VK TURN Proxy (iOS · WRAP-A) от anton48",
+  "WDTT via WDTT app (Android · WRAP)": "WDTT через приложение WDTT (Android · WRAP)",
+  "WDTT via WDTT-Plus (Android · wdtt://connect)": "WDTT через WDTT-Plus (Android · wdtt://connect)",
+  "WDTT via qWDTT (Android · qwdtt://)": "WDTT через qWDTT (Android · qwdtt://)",
+  "{v1} via {v2} ({v3}) by {v4}": "{v1} через {v2} ({v3}) от {v4}",
+  "{v1} — opens with one tap": "{v1} — открывается в одно касание",
+  "{v1} — scans a QR code": "{v1} — сканирует QR-код",
+  "{v1} — imports a pasted link": "{v1} — импортирует скопированную ссылку",
+
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the

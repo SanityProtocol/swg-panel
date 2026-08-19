@@ -255,7 +255,13 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .mz-links .ph-dl { margin-top: 0; }
 .ph-dl { color: var(--brand); font-size: 16px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; margin-top: 26px; }   /* sits lower, clearly below the steps */
 .ph-dl + .ph-dl { margin-top: 14px; }   /* a second action (copy) belongs WITH the download above it, not adrift at the same 26px gap */
-.ph-dlpanel { position: static; width: min(320px, calc(100vw - 48px)); max-height: 40vh; cursor: default; }
+.ph-dlpanel { position: static; width: min(320px, calc(100vw - 48px)); max-height: 40vh; cursor: default;
+  /* A disclosure belongs to the link that opened it, so it hugs that link instead of taking a full turn of the
+     column's 30px rhythm: -22px leaves 8px above. Below, -16px leaves 14px — the same "this action belongs with
+     the one above" spacing .ph-dl + .ph-dl sets, which inserting the panel here breaks (the two links are no
+     longer adjacent, so the copy link would otherwise spring back to its standalone 26px). */
+  margin-top: -22px; margin-bottom: -16px; }
+.ph-dlpanel + .ph-dl { margin-top: 0; }
 /* small app logo beside a download item (WG/AWG apps) */
 .dl-bubble-item.has-logo { flex-direction: row; align-items: center; gap: 10px; }
 .dl-item-logo { width: 26px; height: 26px; object-fit: contain; flex: 0 0 auto; border-radius: 6px; }

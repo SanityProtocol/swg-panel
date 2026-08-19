@@ -215,9 +215,14 @@
   // NOT included — the recipient supplies their own in the app. Obfuscation is rtpopus and its key MUST
   // match the free-turn-proxy server's -obf-profile/-obf-key on the node.
   function b64urlUtf8(s) {
+    return b64Utf8(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  // Standard alphabet, padded — what Go's base64.StdEncoding reads. The url-safe variant above would hand a
+  // decoder '-'/'_' where it expects '+'/'/', so anything Go-side must use THIS one.
+  function b64Utf8(s) {
     var bytes = new TextEncoder().encode(String(s)), bin = "";
     for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return btoa(bin);
   }
   // Strip comments, blank lines and any MTU line (MTU rides in its own link field) — shorter link, denser
   // QR. Mirrors ShareLinkBuilder.normalizeConf so our links look like the app's own.
@@ -242,8 +247,9 @@
     var n = csNum(cs, "n", 0); if (n > 0) o.n = n;                   // parallel TURN streams (-n); omit → app default (10)
     var spc = csNum(cs, "spc", 0); if (spc > 0) o.spc = spc;        // streams per cached credential (-streams-per-cred); omit → default (10)
     var transport = String((cs || {}).transport || "").trim(); if (transport && transport !== "auto") o.transport = transport;   // -transport tcp|udp to the TURN relay (v2.1); auto → app default (udp)
-    var ftmode = String((cs || {}).mode || "").trim(); if (ftmode && ftmode !== "auto") o.mode = ftmode;   // -mode udp|tcp tunnel transport; auto → app default
-    if (csBool(cs, "bond", false) && o.mode === "tcp") o.bond = true;   // -bond TCP bonding — valid only with mode=tcp
+    // `mode` and `bond` used to ride here. free-turn-proxy removed -mode and -bond on 2026-08-16 (a `break!`
+    // commit) and deleted both keys from docs/uri.md, so writing them now describes flags the client does not
+    // have. `transport` below is the surviving control.
     var dnsMode = String((cs || {}).dns || "").trim(); if (dnsMode && dnsMode !== "auto") o.dns = dnsMode;   // plain|doh (auto = default → omit)
     var dnss = String((cs || {}).dnss || "").trim(); if (dnss) o.dnss = dnss;   // custom DNS servers (-dns-servers)
     if (csBool(cs, "mcap", false)) o.mcap = true;                   // manual VK captcha
@@ -439,7 +445,7 @@
       var turnOv = String((cs || {}).turnServerOverride || "").trim(); if (turnOv) s.turnServerOverride = turnOv;   // pin fresh conns to a specific TURN relay
       if (csBool(cs, "vkAuth", false)) s.vkAuth = true;                  // VK cookie-auth path (instead of anon PoW)
       var uri = "vkturnproxy://import?data=" + b64urlUtf8(jsonSortedCompact({ version: 1, type: "connection", settings: s }));
-      return { fork: fork, app: "VK TURN Proxy", label: clientLabel(fork, "anton48", isWrapS ? " · WRAP-S" : ""), ext: "txt", uri: true, qr: false, vkMissing: vkMissing, enc: enc,
+      return { fork: fork, app: "VK TURN Proxy", label: clientLabel(fork, "anton48", isWrapS ? " · WRAP-S" : ""), labelMode: (isWrapS ? " · WRAP-S" : ""), ext: "txt", uri: true, qr: false, vkMissing: vkMissing, enc: enc,
         hint: "Open the link on the iPhone (or the app's Settings → Import from connection link) to import into the VK TURN Proxy app.",
         text: uri };
     }
@@ -561,6 +567,26 @@
       return { fork: "WDTT", app: "VK TURN Proxy", label: "WDTT via VK TURN Proxy (iOS · WRAP-A) by anton48", ext: "txt", uri: true, qr: false, vkMissing: vkMissing, enc: enc,
         hint: "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in WRAP-A mode.", text: uri2 };
     }
+    if (enc === "pwdttilg") {
+      // ildarmaga's PWDTT build (shipped in ildarmaga/wdtt releases) DROPPED the colon form — its
+      // pkg/sharelink/codec.go Decode() rejects any wdtt:// payload containing ':' outright, as
+      // "устаревший colon-формат", which is why users saw "Ссылка wdtt:// повреждена — нет ip/порта/пароля
+      // внутри" for a link that is perfectly valid for every other WDTT app. Current import is a base64 JSON
+      // payload (pkg/sharelink/payload.go). Note what is NOT in it: no wg port and no tun port — this client
+      // derives RAW as dtls+3 unless `raw` overrides, so sending them would be meaningless.
+      // Encode() requires ip, pass and dtls>0; base64 is StdEncoding, and its Decode accepts the unpadded form too.
+      var pl = { ip: host, dtls: parseInt(dtls, 10) || 56000, pass: pass };
+      var rawp = parseInt(w.raw_port, 10) || 0;
+      if (rawp && rawp !== (parseInt(dtls, 10) || 56000) + 3) pl.raw = rawp;   // 0/omitted = the client's own dtls+3
+      if (w.name) pl.name = String(w.name);
+      // Their vkhash.Max is 4 — a longer list is truncated by the client anyway. Omitted when empty: their own
+      // builder substitutes a literal "VK_HASH" placeholder there, which is a prompt, not a credential.
+      if (vkHashes.length) pl.hash = vkHashes.slice(0, 4).join(",");
+      var uriI = "wdtt://" + b64Utf8(JSON.stringify(pl));
+      return { fork: "WDTT", app: "PWDTT", label: "WDTT via PWDTT (desktop · wdtt:// base64) by ildarmaga", ext: "txt",
+        uri: true, qr: false, vkMissing: vkMissing, enc: enc,
+        hint: "Paste the wdtt:// link into PWDTT — «Добавление VK профиля».", text: uriI };
+    }
     // colon wdtt:// — ALWAYS 6 fields (host:dtls:wg:tun:password:hash). Multiple hashes join with a comma at index 5.
     var vkh = vkHashes.join(",");
     var uri = "wdtt://" + host + ":" + dtls + ":" + wg + ":" + tun + ":" + pass + ":" + vkh;
@@ -590,9 +616,14 @@
               "peer=" + (parseInt(c.port, 10) || ""), "password=" + encodeURIComponent(String(c.password || ""))];
     if (hs.length) qp.push("hashes=" + hs.map(function (h) { return h.replace(/\+/g, "%2B"); }).join("+"));
     var uri = "csqtt://connect?" + qp.join("&");
-    return { fork: "csqtt", app: "CSQTT", label: "CSQTT (Android · csqtt://connect)", ext: "txt", uri: true, qr: true,
-      vkMissing: vkMissing, hint: "Scan the QR or open the csqtt:// link in the CSQTT app.", text: uri };
+    // qr:false — the CSQTT app has no scanner yet, so a QR is a dead end for the user. Link only until it does.
+    return { fork: "csqtt", app: "CSQTT", label: "CSQTT (Android · csqtt://connect)", ext: "txt", uri: true, qr: false,
+      vkMissing: vkMissing, hint: "Open the csqtt:// link in the CSQTT app, or paste it in.", text: uri };
   }
 
-  root.SWGTurn = { artifact: artifact, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
+  // The label is composed here as English prose ("<fork> via <app> (<platform>) by <author>"), which no catalog
+  // key can match — the fork and author are proper nouns. Expose the PARTS so the panel can put them through a
+  // placeholder string instead, the way it already does for every other composed sentence.
+  function clientMeta(enc) { var m = CLIENT_META[enc]; return m ? { app: m.app, platform: m.platform, author: m.author } : null; }
+  root.SWGTurn = { artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
 })(typeof window !== "undefined" ? window : this);

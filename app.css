@@ -883,12 +883,12 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .wdtt-link{flex:1;min-width:0;align-self:center;font-size:11.5px;line-height:1.55;word-break:break-all;color:var(--fg)}
 /* carousel WDTT card: body fills between header and the (bottom-pinned) actions, link vertically centred — so Copy/
    Alternatives line up with the QR cards' Config/Copy row and the short link sits mid-card */
-.qrrow .deploy-wdtt .deploy-body{flex:1;align-items:center}
+.qrrow .deploy .deploy-body{flex:1;align-items:center;justify-content:center}
 /* link instead of a QR: STACK. The body is a flex row (a QR beside its meta), and there a sibling — the
    "no VK call link" hint, or the meta table — keeps its intrinsic width while the link's flex:1;min-width:0
    lets it collapse to zero, so break-all sets the wdtt:// link one character per line. The first selector
    is not redundant: `.deploy-body-stack` alone loses to the align-items:center on the line above. */
-.qrrow .deploy-wdtt .deploy-body-stack, .deploy-body-stack{flex-direction:column;align-items:stretch;gap:8px}
+.qrrow .deploy .deploy-body-stack, .deploy-body-stack{flex-direction:column;align-items:stretch;justify-content:center;gap:8px}
 .deploy-body-stack .wdtt-link{flex:0 0 auto;align-self:stretch}
 .deploy-body{padding:15px;display:flex;gap:15px;position:relative}
 .deploy .qr{background:#fff;border-radius:var(--r-sm);padding:8px;line-height:0;flex:none;cursor:zoom-in}
@@ -1218,7 +1218,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .pubtg.lone:hover{box-shadow:none}
 /* not currently connected: the tag keeps its protocol colour (grey said "unknown kind", which it isn't) and
    just reads quieter. Full strength on hover, so it is still legible while you are aiming at it. */
-.pubtg.dim{opacity:.5}
+/* Offline: a fade, not a disappearance — .5 read as broken rather than idle. Applies to a plain tag too, so the
+   interface badge and the turn badge beside it fade together. NOT stacked on .off: a source the operator has
+   switched off the subscription page already says so with its own grey + strikethrough, and dimming that as well
+   makes two different states look like one. */
+.pubtg.dim,.tg.dim{opacity:.72}
+.pubtg.dim.off{opacity:1}
 .pubtg.dim:hover{opacity:1}
 /* the turn front-badge doubling as a publish switch: it is a <button>, so re-assert the chip layout */
 .tgt-front.pubtg{display:inline-flex;align-items:center}
@@ -1230,7 +1235,6 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 /* The RAW note under a peer's config — a FOOTNOTE, below the QR row, never inside it. It sat in
    .deploy-body (a flex row) with white-space:nowrap, which made it an unshrinkable sibling and collapsed
    the QR column to 0px: the note appeared to have replaced the config. It wraps, and it stays out of that row. */
-.raw-hint{max-width:100%;min-width:0;font-size:11px;margin-top:6px;text-align:center;opacity:.85}
 /* the general turn-proxy accent (matches the turn-section panel icon .panel-ic.t-turn) */
 .tf-gen{--tfc:#7C5CFF}
 /* collapsed "turn ×N" badge (>3 proxies forward to one iface): general colour + a highlighted, ringed area.
@@ -1479,7 +1483,12 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .osapp-menu{margin-top:10px;background:var(--surface);border:1px solid var(--line-solid);border-radius:10px;padding:6px;display:flex;flex-direction:column;gap:1px}
 .osapp-menu-hd{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:4px 8px 6px}
 /* styled OS dropdown (glyph + name), used in the turn-config modal — mirrors the Clients-sheet OS visuals */
-.turncfg-devrow{display:flex;align-items:center;gap:14px 20px;flex-wrap:wrap;margin:0 0 12px}
+/* space-between, NOT margin-left:auto on the app control. Identical while both fit on one line — Device left,
+   App right — but margin-left:auto keeps pushing right after the row WRAPS, so the app control sat alone and
+   right-aligned on a second line, staggered under the device. With space-between a wrapped line holds one item
+   and starts it at the left, so the pair simply stacks. Language-proof: the Russian labels are longer than the
+   English and wrap sooner, which is exactly when this mattered. */
+.turncfg-devrow{display:flex;align-items:center;justify-content:space-between;gap:14px 20px;flex-wrap:wrap;margin:0 0 12px}
 .turncfg-devrow .turncfg-os{margin:0}
 .turncfg-os{display:flex;align-items:center;gap:12px;margin:0 0 12px}
 .turncfg-os > label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2)}
@@ -1627,7 +1636,12 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .turncfg-cmd:hover .cmd-copy{color:var(--brand);border-color:var(--brand);background:color-mix(in srgb,var(--brand) 10%,transparent)}
 .turncfg-ta{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--dim);
   background:var(--surface-2);border:1px solid var(--line-solid);border-radius:8px;padding:9px 11px;
-  white-space:pre-wrap;word-break:break-all;overflow:hidden;resize:none;min-height:52px}
+  white-space:pre-wrap;word-break:break-all;overflow:hidden;resize:none;min-height:52px;
+  /* block, not the inline-block a textarea defaults to: as an inline box it sat on the text baseline and left
+     ~6.5px of descender space under it inside the wrapper. The copy button is positioned against the WRAPPER,
+     so that phantom strip made "7px from the bottom" land 0.5px under the textarea while the right stayed 7 —
+     the button looked stuck to the bottom border on one axis and inset on the other. */
+  display:block}
 .turnhead{display:flex;align-items:center;gap:10px}
 .turnhead .grow{flex:1}
 /* ───── Settings → Integrations (external API + webhooks) ───── */
@@ -2516,7 +2530,7 @@ a.tg:hover{filter:brightness(1.25)}
 .qrrow > .deploy,.qrrow > .upc-wrap{align-self:stretch}
 .qrrow > .deploy .acts{margin-top:auto}
 /* app picker (turn/WDTT config): a Device-style dropdown reading "<app> by <author>", pushed to the right */
-.turncfg-app{display:flex;align-items:center;gap:12px;margin-left:auto}
+.turncfg-app{display:flex;align-items:center;gap:12px}   /* placed by the row's space-between, not a margin */
 .turncfg-app > label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2)}
 .appdd .osdd-btn{min-width:210px}
 .appdd .osdd-menu{left:auto;right:0}   /* right-aligned menu (the picker sits at the row's right edge) */
@@ -2525,9 +2539,24 @@ a.tg:hover{filter:brightness(1.25)}
 .app-plain{color:var(--dangling);font-size:8.5px;font-weight:800;letter-spacing:.05em;border:1px solid color-mix(in srgb,var(--dangling) 42%,transparent);border-radius:4px;padding:0 4px;margin-left:4px;line-height:1.5}
 /* copy icon on config/link textareas — same affordance as the CLI command box */
 .turncfg-tawrap{position:relative}
-.turncfg-tawrap .turncfg-ta{padding-right:40px}   /* clear the copy button in the top-right */
-.turncfg-tawrap .cmd-copy{top:7px;bottom:auto;right:7px}
-.turncfg-tawrap:hover .cmd-copy{color:var(--brand);border-color:var(--brand);background:color-mix(in srgb,var(--brand) 10%,transparent)}
+/* Mirrors the subscription page's .cfgcopy exactly (sub.css): a corner OVERLAY, not a button beside the text —
+   borderless, brand-coloured, and filled with the SAME background as the box so it masks whatever it covers.
+   3px on both axes — tighter into the corner than the sub page's 5px, still clear of where the box's 8px radius
+   starts to curve away from the button's own 6px one. */
+.turncfg-tawrap .cmd-copy{right:3px;bottom:3px;border:none;color:var(--brand);background:var(--surface-2)}
+.turncfg-tawrap .cmd-copy:active{transform:scale(.9)}
+/* ...and the box itself is the affordance, as it is there: clicking anywhere in it copies, so it says so. */
+.turncfg-tawrap .turncfg-ta{cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.turncfg-tawrap .turncfg-ta:hover{border-color:var(--brand);box-shadow:inset 0 0 0 1px var(--brand)}
+/* No position override and no reserved padding: the button keeps .cmd-copy's own bottom-right corner and sits
+   OVER the text, which is how every other copyable block in the product behaves (the subscription page, the
+   wg/awg config views). Reserving a 40px gutter for it made this one box the odd one out and cost a column of
+   text on a 292px card. */
+/* A config shown as text on a peer card gets the SAME box the Alternatives sheet uses — a readonly textarea
+   with the copy button in its corner — so "select it" and "copy it" work identically wherever a link appears.
+   Capped here because a card is 292px wide and shares its height with its neighbours. */
+.qrrow .deploy .turncfg-tawrap{width:100%}
+.qrrow .deploy .turncfg-ta{max-height:190px;font-size:11px}
 .qrnav{display:flex;align-items:center;justify-content:center;gap:16px}
 .qrnavbtn{appearance:none;width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:18px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0}
 .qrnavbtn:disabled{opacity:.35;cursor:default}

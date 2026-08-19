@@ -8032,6 +8032,11 @@ def csqtt_snapshot():
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
                     "tun_addr": inst.get("tun_addr", ""), "web_port": inst.get("web_port", ""),
                     "stopped": bool(inst.get("stopped")), "kind": "csqtt",
+                    # WHICH fork this instance is. The WDTT snapshot has always carried it and csqtt's did not, so
+                    # the panel's fork list had nothing to match a running csqtt against and showed the fork as
+                    # "not yet used" while the node was running two of them. Absent on an old record = the single
+                    # csqtt fork known here, the same assumption _csqtt_fork_unknown already makes.
+                    "fork": (inst.get("fork") or "").strip() or next(iter(CSQTT_FORK_OWNER)),
                     "version": (inst.get("ver") or "").strip(),   # A3 wires CSQTT_BUILDS + a version board; record-tracked for now
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a taken-over server, offered UP so the panel can recreate each as a

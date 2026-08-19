@@ -160,7 +160,7 @@ export function allTargets() {
 // The badge naming what fronts a deployment. For a wg/awg target that is its turn-proxies — and since that IS
 // the peer's "turn" config source, passing `peer` makes the badge itself the publish switch for it. One chip:
 // a separate TURN toggle beside a "turn ×3" badge said the same thing twice.
-export function TargetFrontBadge({ node, iface, peer }) {
+export function TargetFrontBadge({ node, iface, peer, dim }) {
   useStore();          // it is a publish switch when `peer` is set — without this it never re-renders after a toggle
   if (!node || !iface) return null;
   if (kindOf(node, iface, null) === "wdtt") {
@@ -171,16 +171,18 @@ export function TargetFrontBadge({ node, iface, peer }) {
     const label = shownTitle("w|" + node + "|" + iface, String(cfg.title || live.title || "").trim()) || fork;
     if (!label) return null;
     const col = turnColor(fork) || WDTT_COLOR;
-    return html`<span class="tg tgt-front" style=${"--tgc:" + col} title=${T("WDTT server") + (fork ? " · " + fork : "")}>${label}</span>`;
+    return html`<span class=${"tg tgt-front" + (dim ? " dim" : "")} style=${"--tgc:" + col} title=${T("WDTT server") + (fork ? " · " + fork : "")}>${label}</span>`;
   }
   const tps = turnProxiesFor(node, iface);
   if (!tps.length) return null;
   const one = t => shownTitle("t|" + node + "|" + t.service, t.title) || turnFork(t.service);
   const st = peer ? pubState(peer, "turn") : null;
+  // Offline dims this the same way it dims the interface badge beside it — they describe one deployment, so
+  // one of them fading while the other stays lit read as a difference in state that isn't there.
   const tag = (body, cls, style, title) => st
-    ? html`<button type="button" class=${"tg tgt-front " + pubCls(st, cls)} style=${style} title=${st.title}
+    ? html`<button type="button" class=${"tg tgt-front " + pubCls(st, ((cls || "") + (dim ? " dim" : "")).trim())} style=${style} title=${st.title}
         aria-pressed=${!st.hidden} onClick=${e => { e.preventDefault(); e.stopPropagation(); st.flip(); }}>${body}${st.hidden ? html`<${Ic} i="off"/>` : null}</button>`
-    : html`<span class=${"tg tgt-front " + (cls || "")} style=${style} title=${title}>${body}</span>`;
+    : html`<span class=${"tg tgt-front " + (cls || "") + (dim ? " dim" : "")} style=${style} title=${title}>${body}</span>`;
   if (tps.length === 1) {
     const f = turnFork(tps[0].service);
     return tag(one(tps[0]), "", "--tgc:" + (turnColor(f) || "var(--turn)"), T("Turn-proxy") + (f ? " · " + f : ""));
@@ -575,7 +577,7 @@ export function PeerViewSheet({ pid, node, iface }) {
         <div class="pv-dep-top">${badgeWithReason(t.status, t.status === "blocked" ? blockedReason(t.type) : statusReason(t.status))}
           <span class="tags">
             <${PubTag} peer=${p} src=${proto} label=${proto} dim=${!t.online}/>
-            ${turnEnabled() ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${p}/>` : null}
+            ${turnEnabled() ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${p} dim=${!t.online}/>` : null}
           </span>
           <span class="grow"></span>
           <${PrimaryToggle} peer=${p} t=${t}/>

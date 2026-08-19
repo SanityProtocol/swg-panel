@@ -1125,13 +1125,14 @@ export function PanelSettingsScreen() {
   const themeColorOut = () => themeColorS.toLowerCase() === THEME_COLOR_DEFAULT.toLowerCase() ? "" : themeColorS;
   const themeColorLightOut = () => themeColorLightS.toLowerCase() === THEME_COLOR_LIGHT_DEFAULT.toLowerCase() ? "" : themeColorLightS;
   // deployed version(s) of a fork across the fleet (from snapshots) — "" if it's never been installed
-  // deployed versions of a fork across the fleet. Classic forks come from snap.turn_proxies; WDTT forks own their
-  // interface so they live in snap.wdtt (keyed by the instance's `fork`), and don't report a binary version yet →
-  // show "installed" so a deployed WDTT fork reads as used, not T("not yet used").
+  // deployed versions of a fork across the fleet. Classic forks come from snap.turn_proxies; WDTT *and csqtt*
+  // forks own their interface so they live in snap.wdtt / snap.csqtt (keyed by the instance's `fork`), and don't
+  // report a binary version yet → show "installed" so a deployed one reads as used, not T("not yet used").
+  // csqtt was missing here, so a node running two csqtt servers still showed that fork as never used.
   const forkVersions = fid => { const v = new Set();
     for (const snap of Object.values(Store.stats || {})) {
       for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version);
-      for (const w of (snap.wdtt || [])) if (w && w.fork === fid) v.add(w.version || "installed");   // i18n-keys
+      for (const w of [...(snap.wdtt || []), ...(snap.csqtt || [])]) if (w && w.fork === fid) v.add(w.version || "installed");   // i18n-keys
     }
     return [...v]; };
   // per-NODE view of a fork for the hover bubble: one row per node carrying its version + whether it's mid-update
@@ -1148,7 +1149,7 @@ export function PanelSettingsScreen() {
         if (turnUpdating[uk] && Date.now() < turnUpdating[uk]) cur.updatePending = true;
         m[nid] = cur;
       }
-      for (const w of (snap.wdtt || [])) {   // WDTT instances (self-contained; keyed by fork, no version string)
+      for (const w of [...(snap.wdtt || []), ...(snap.csqtt || [])]) {   // self-contained kinds (keyed by fork, usually no version string)
         if (!w || w.fork !== fid) continue;
         const cur = m[nid] || { version: "", installing: false, updatePending: false };
         cur.version = w.version || cur.version || "installed";   // i18n-keys

@@ -274,6 +274,38 @@ def _changelog_url(lang):
     return REMOTE_CHANGELOG_URL[:-len(".md")] + "." + lang + ".md"
 
 
+# The panel has no fleet-wide language setting — js/i18n.js picks per browser (saved choice → navigator.language
+# → en). A crawler or a chat's preview fetcher runs none of that, so the shell's metadata mirrors the same rule on
+# the only signal a request carries: Accept-Language. Body text is still whatever the browser resolves; this is
+# only the description a link preview reads.
+_META_LANG = {
+    "ru": {"desc": "Панель управления WireGuard и AmneziaWG на своём сервере — добавляйте пользователей в браузере, "
+                   "выдавайте QR-код и держите весь VPN под своим контролем.",
+           "title": "swgPanel"},
+}
+
+def _accept_lang(hdr):
+    """First supported language in an Accept-Language header, else 'en'. Quality values are not weighed: with two
+    languages the order the browser lists them in already says which it prefers."""
+    for part in (hdr or "").split(","):
+        code = part.split(";")[0].strip().lower()[:2]
+        if code in _META_LANG:
+            return code
+    return "en"
+
+def _localize_meta(data, lang):
+    """Swap the shell's description/og-description for `lang`. English is what the file ships with, so it is a
+    no-op there — and an unknown language keeps the file as written rather than blanking the tags."""
+    m = _META_LANG.get(lang)
+    if not m:
+        return data
+    out = data.replace(b'<html lang="en">', ('<html lang="%s">' % lang).encode())
+    with contextlib.suppress(Exception):
+        out = re.sub(rb'(<meta (?:name="description"|property="og:description") content=")[^"]*(")',
+                     lambda mo: mo.group(1) + m["desc"].encode() + mo.group(2), out)
+    return out
+
+
 def _req_lang():
     """The UI language of the browser making this request (js/store.js sets it on every call).
 
@@ -4324,14 +4356,14 @@ TURN_CLIENTS = {
     #   `qwdtt://config?…&pass=<pw last>`             (qWDTT / PWDTT native — password can't be misread)
     #   `vkturnproxy://import?data=<b64url>`           (anton48 iOS native, WRAP-A)  ← the existing "vkturnproxy" entry
     "wdttapp":     {"name": "WDTT",  "author": "amurcanov",  "encoder": "wdtt",  "scheme": "wdtt://", "qr": False,  "platforms": {"android": {"github": "https://github.com/amurcanov/proxy-turn-vk-android/releases"}}},   # amurcanov's canonical Android app (colon wdtt://)
-    "csqttapp":    {"name": "CSQTT", "author": "amurcanov",  "encoder": "csqtt", "scheme": "csqtt://", "qr": True,  "platforms": {"android": {"github": "https://github.com/amurcanov/csqtt/releases", "autostart": True}}},   # amurcanov's CSQTT Android app (csqtt://connect v2 — see turn-artifacts.js csqttArtifact). autostart: its MainActivity registers a BROWSABLE csqtt:// intent-filter → Start fires the deeplink (one-tap), QR/copy stay as fallback
+    "csqttapp":    {"name": "CSQTT", "author": "amurcanov",  "encoder": "csqtt", "scheme": "csqtt://", "qr": False,  "platforms": {"android": {"github": "https://github.com/amurcanov/csqtt/releases", "autostart": True}}},   # amurcanov's CSQTT Android app (csqtt://connect v2 — see turn-artifacts.js csqttArtifact). autostart: its MainActivity registers a BROWSABLE csqtt:// intent-filter → Start fires the deeplink (one-tap), QR/copy stay as fallback
     "qwdtt":       {"name": "qWDTT", "author": "SpaceNeuroX", "color": {"dark": "#22C3E6", "light": "#0E8FB0"}, "encoder": "qwdtt", "scheme": "qwdtt://", "qr": True, "platforms": {"android": {"github": "https://github.com/SpaceNeuroX/proxy-turn-vk-android/releases"}}},
     "qwdttleg":    {"name": "qWDTT Legacy", "author": "lebrit", "color": {"dark": "#A8C93A", "light": "#6E8C1E"}, "encoder": "qwdtt", "scheme": "qwdtt://", "qr": True, "platforms": {"android": {"github": "https://github.com/lebrit/qwdtt-legacy-android/releases"}}},   # Android 5-8 compat backport of qWDTT (same qwdtt:// scheme) for old phones   # enhanced Android client fork (native qwdtt:// query scheme; also reads 6-field colon)
     "pwdtt":       {"name": "PWDTT", "author": "luminescq", "color": {"dark": "#43C46E", "light": "#2E9E52"}, "encoder": "wdtt",  "scheme": "wdtt://", "qr": False, "platforms": {   # desktop (Go+Wails). luminescq = upstream (colon/qwdtt); ildarmaga ships a modified build in its WDTT releases (sub-URL/base64) — offered as a per-author choice (_TURN_CLI_AUTHORS)
                        "windows": {"github": "https://github.com/luminescq/PWDTT/releases"},
                        "linux":   {"github": "https://github.com/luminescq/PWDTT/releases"},
                        "macos":   {"github": "https://github.com/luminescq/PWDTT/releases"}}},
-    "pwdttilg":    {"name": "PWDTT", "author": "ildarmaga", "encoder": "wdtt",  "scheme": "wdtt://", "qr": False, "platforms": {   # ildarmaga's modified PWDTT build, bundled in ildarmaga/wdtt releases (imports via sub-URL/base64, also reads colon)
+    "pwdttilg":    {"name": "PWDTT", "author": "ildarmaga", "encoder": "pwdttilg",  "scheme": "wdtt://", "qr": False, "platforms": {   # ildarmaga's modified PWDTT build, bundled in ildarmaga/wdtt releases. Imports a base64 JSON wdtt:// (or a sub-URL) and NO LONGER reads colon: pkg/sharelink/codec.go Decode() rejects a ':' payload as "устаревший colon-формат" (dropped in their 1.4.45/46, 2026-06-17). luminescq's upstream `pwdtt` above still takes colon — hence two client ids, two encoders.
                        "windows": {"github": "https://github.com/ildarmaga/wdtt/releases"},
                        "linux":   {"github": "https://github.com/ildarmaga/wdtt/releases"}}},
     "wdttplus":    {"name": "WDTT-Plus",     "author": "Ivan4537", "encoder": "wdttplus", "scheme": "wdtt://", "qr": False, "platforms": {"android": {"github": "https://github.com/Ivan4537/WDTT-Plus/releases", "autostart": True}}},   # Ivan4537 fork: in-app admin + WARP alternate-exit. CLICKABLE via wdtt://connect?… (valid URI); the colon form the OS rejects as "unsupported link" — the app still reads both
@@ -4394,11 +4426,14 @@ _MYSOREZ_CORE_CS = [_CC_THREADS,
 # An rtpopus CORE (Moroka8 / free-turn) loaded into the app as a universal launcher: the obf key rides from the SERVER
 # and those cores auto-solve the captcha, so only the common knobs apply.
 _RTPOPUS_CORE_CS = [_CC_THREADS, _CC_RAWFLAGS]
-# Shared client knobs for the WDTT-family apps. The password + VK hashes come from the peer/server (custody is
-# inverted — the panel owns them), so the tunable client-side knobs are the worker/stream count and DNS.
-_WDTT_CLIENT_CS = [
-    {"key": "workers", "type": "int", "default": "", "label": "Workers per hash", "help": "TURN worker streams the client opens per VK hash. Blank = the app's default (≈16)."},
-    {"key": "dns", "type": "text", "default": "", "label": "Custom DNS", "help": "Comma-separated DNS resolvers the client uses. Blank = the peer's config DNS."},
+# qWDTT is the ONE WDTT-family app whose link carries a client knob: its qwdtt:// importer reads `workers`
+# (turn-artifacts.js, the qwdtt branch). Every other family link carries none — the colon wdtt:// form is six
+# FIXED fields, WDTT-Plus's wdtt://connect reads v/host/dtls/wg/local/password/hashes, and the vkturnproxy://
+# payload is {useWrapA, wrapAPassword, peerAddress, vkLink}. So they declare no client settings rather than
+# offering knobs nothing delivers, which is what the shared placeholder this replaces had been doing: it also
+# carried a `dns` field that NO WDTT or csqtt link format has ever been able to express.
+_QWDTT_CLIENT_CS = [
+    {"key": "workers", "type": "int", "default": "", "label": "Workers per hash", "help": "TURN worker streams the app opens per VK hash (the qwdtt:// link's `workers`). Blank = the app's default."},
 ]
 TURN_SERVERS = {
     "cacggghp":     {"label": "cacggghp",     "owner": "cacggghp/vk-turn-proxy",        "wrap": "",                     "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#5FB0E0", "light": "#2C7EC0"}, "clients": ["mysorez", "vkturnproxy", "sidecar"],    "reload": "restart",
@@ -4428,9 +4463,10 @@ TURN_SERVERS = {
                                   {"key": "obf_key", "flag": "-obf-key", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Obfuscation key", "help": "64 hex chars — must match the FreeTurn client."}],
                      "client_settings": [{"key": "n", "type": "int", "default": "", "label": "Streams", "help": "Parallel TURN streams (-n). Blank = the app's default (10)."},
                                          {"key": "spc", "type": "int", "default": "", "label": "Streams per credential", "help": "Streams sharing one VK credential (-streams-per-cred). Blank = default (10)."},
+                                         # -mode (udp|tcp) and -bond were removed upstream on 2026-08-16
+                                         # ("break!: выпил tcp-режим туннеля"), which also deleted the mode/bond
+                                         # keys from docs/uri.md. -transport below survives and is the live control.
                                          {"key": "transport", "type": "enum", "values": ["auto", "udp", "tcp"], "default": "auto", "label": "Relay transport", "help": "Transport to the TURN relay (-transport, free-turn-proxy v2.1). auto = the app default (udp); tcp helps where UDP is throttled or blocked."},
-                                         {"key": "mode", "type": "enum", "values": ["auto", "udp", "tcp"], "default": "auto", "label": "Tunnel mode", "help": "Local tunnel transport mode (-mode). auto = the app default."},
-                                         {"key": "bond", "type": "bool", "default": False, "label": "TCP bonding", "help": "Bond several TCP connections (-bond) — only applies when Tunnel mode = tcp."},
                                          {"key": "dns", "type": "enum", "values": ["auto", "plain", "doh"], "default": "auto", "label": "DNS mode", "help": "Resolver mode (-dns-mode). auto = the app decides."},
                                          {"key": "dnss", "type": "text", "default": "", "label": "Custom DNS", "help": "Comma-separated DNS servers (-dns-servers). Blank = the app's default."},
                                          {"key": "mcap", "type": "bool", "default": False, "label": "Manual captcha", "help": "Solve the VK captcha manually in the app (-manual-captcha)."}]},
@@ -4461,29 +4497,37 @@ TURN_SERVERS = {
     # (wdtt-<fork> releases on WDTT_BUILD_REPO): amurcanov, ildarmaga, wdttplus (Ivan4537, server.go @ b3aad32),
     # xxcipherx (XXcipherX, assets/linux-server @ bc1ba26). Build tooling in wdtt/<fork>/build.sh.
     "amurcanov":    {"label": "amurcanov",  "product": "WDTT",      "owner": "amurcanov/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#A78BFA", "light": "#7C3AED"}, "clients": ["wdttapp", "qwdtt", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
-                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
+                     "settings": [], "client_settings": []},
     "ildarmaga":    {"label": "ildarmaga",  "product": "WDTT",      "owner": "ildarmaga/wdtt",                  "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#5B8DEF", "light": "#2563EB"}, "clients": ["pwdtt", "wdttapp", "qwdtt", "wdttplus", "xxcipher", "vkturnproxy"], "reload": "sighup",
                      # richer server: multi-user panel + subscription + Xray + Telegram bot; its native desktop client is the ildarmaga PWDTT build (sub-URL / base64)
-                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
+                     "settings": [], "client_settings": []},
     "wdttplus":     {"label": "Ivan4537",   "product": "WDTT-Plus", "owner": "Ivan4537/WDTT-Plus",              "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#F0705E", "light": "#D9432E"}, "clients": ["wdttplus", "wdttapp", "qwdtt", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # Ivan4537 fork: in-app admin + WARP alternate-exit IP; wire-compatible with amurcanov
-                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
+                     "settings": [], "client_settings": []},
     "xxcipherx":    {"label": "XXcipherX",  "product": "WDTT",      "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # XXcipherX fork: video-masquerade obfuscation + no-captcha; audio mode is amurcanov-compatible
-                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
+                     "settings": [], "client_settings": []},
     "qwdtt":        {"label": "SpaceNeuroX", "product": "qWDTT",    "raw": True, "default_client": "qwdtt", "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#FACC15", "light": "#A16207"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # qWDTT: the actively-developed WDTT fork (amurcanov's own is frozen). Same DTLS+WRAP-A wire and
                      # the same passwords.json store, so every WDTT client and all our WDTT machinery apply unchanged;
                      # what differs is server FEATURES (multi-device passwords, downlink pacing, an experimental raw-IP
                      # listener — see docs/QWDTT-AND-TCP-TRANSPORT-PLAN.md §A.3). We build it ourselves (forks/qwdtt/build.sh,
                      # pinned commit) with the standard fork flags; its HTTP admin API is disabled in our build.
-                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
+                     "settings": [], "client_settings": _QWDTT_CLIENT_CS},
     # ── csqtt (amurcanov/csqtt) — SELF-CONTAINED like the WDTT family but a RAW-IP TUN datapath (no WireGuard),
     # io_uring, Rust. kind:"csqtt" makes the SPA branch (A6); HIDDEN until that lands so it stays out of the fork
     # picker meanwhile (the reply channel + endpoints work regardless of catalog visibility). We build+host the
     # binary ourselves (CSQTT_BUILDS). PolyForm-Noncommercial-1.0.0 — non-commercial use only.
     "csqtt":        {"label": "amurcanov",      "product": "CSQTT", "owner": "amurcanov/csqtt",                 "kind": "csqtt", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#38BDF8", "light": "#0284C7"}, "clients": ["csqttapp"], "reload": "sighup",
-                     "settings": [], "client_settings": _WDTT_CLIENT_CS},
+                     # NO client settings. This carried the shared WDTT-family placeholder (workers/dns), which the panel saved and
+                     # NOTHING ever delivered: csqttArtifact builds `csqtt://connect?v=2&host=&peer=&password=&hashes=`
+                     # and takes no client values at all. Verified against the app itself (amurcanov/csqtt,
+                     # app/.../ui/utils/UiUtils.kt parseCsqttV2): it reads v, host, peer, password and hashes, and
+                     # nothing else — an extra query param is silently ignored, not honoured. Its workers-per-hash
+                     # and DNS live in the app's own SettingsStore, set by the user on the device; its DNS model is
+                     # even a primary/secondary pair plus a no-DNS toggle, not the comma-separated list that schema
+                     # describes. Offering the fields was a promise the link cannot keep.
+                     "settings": [], "client_settings": []},
 }
 # client_settings = the app-DEDICATED knobs (per SETTINGS SPLIT): admin-chosen VALUES fed into the client
 # config/QR/link, stored per-fork in panel_settings.turn_client_settings. Server + coupled settings live in
@@ -4504,7 +4548,7 @@ TURN_HIDDEN_FORKS = {"cacggghp", "kiper292"}
 # is offered — so the Clients tab edits it in ONE place. Maps each client id → the server that natively runs it.
 _CLIENT_NATIVE_FORK = {"wingsv": "WINGS-N", "vkturnproxy": "anton48", "wgturn": "kiper292",
                        "freeturn": "samosvalishe", "mysorez": "MYSOREZ", "sidecar": None,
-                       # WDTT-family clients all share _WDTT_CLIENT_CS (set on every WDTT fork) → any WDTT fork resolves it
+                       # WDTT-family clients resolve to their own fork; only qwdtt declares a knob (_QWDTT_CLIENT_CS)
                        "wdttapp": "amurcanov", "qwdtt": "qwdtt", "qwdttleg": "qwdtt", "pwdtt": "ildarmaga", "pwdttilg": "ildarmaga", "csqttapp": "csqtt",
                        "wdttplus": "wdttplus", "xxcipher": "xxcipherx"}
 # Per-(server fork, client id) compatibility class for the app picker, from the wire-compat matrix (docs/compat).
@@ -4582,14 +4626,32 @@ _CLIENT_SOURCES = {
                     {"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/data/AppPreferences.kt"}],
     "sidecar":     [{"owner": "Moroka8", "repo": "vk-turn-proxy", "branch": "main", "path": "pkg/clientcore/main.go"}],
     # WDTT-family CLIENT apps — previously watched by NOTHING (which is how qWDTT's Raw mode + csqtt reached us by
-    # word of mouth instead of a drift alert). Commit-drift watch only: they share the placeholder _WDTT_CLIENT_CS,
+    # word of mouth instead of a drift alert). Commit-drift watch only: only qWDTT declares a knob,
     # so there is no per-field diff yet (no _CLIENT_FIELD_MAP entry) — a change to the app's SettingsStore raises a
     # "changed upstream" flag so the schema can be revisited. amurcanov's wdttapp is deliberately absent (frozen /
     # upstream discontinued 2026-08-04; superseded by csqtt).
-    "qwdtt":       [{"owner": "SpaceNeuroX", "repo": "proxy-turn-vk-android", "branch": "master", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"}],
+    # SettingsStore is the app's own knobs; SubscriptionImport is where a qwdtt:// link is accepted or refused
+    # (name/peer/hashes/workers/port/pass). Both matter, and only the first was watched.
+    "qwdtt":       [{"owner": "SpaceNeuroX", "repo": "proxy-turn-vk-android", "branch": "master", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"},
+                    {"owner": "SpaceNeuroX", "repo": "proxy-turn-vk-android", "branch": "master", "path": "app/src/main/java/com/wdtt/client/SubscriptionImport.kt"}],
     "wdttplus":    [{"owner": "Ivan4537", "repo": "WDTT-Plus", "branch": "main", "path": "app/src/main/java/com/wdtt/plus/SettingsStore.kt"}],
-    "xxcipher":    [{"owner": "XXcipherX", "repo": "proxy-turn-vk-android", "branch": "main-new", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"}],
-    "pwdtt":       [{"owner": "luminescq", "repo": "PWDTT", "branch": "main", "path": "core/profiles.go"}],
+    # Same split here: ConnectionProfileParser is what decides whether our vkturnproxy:// payload imports
+    # (it requires peerAddress plus useWrapA/useWrapS), and it is not in SettingsStore.
+    "xxcipher":    [{"owner": "XXcipherX", "repo": "proxy-turn-vk-android", "branch": "main-new", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"},
+                    {"owner": "XXcipherX", "repo": "proxy-turn-vk-android", "branch": "main-new", "path": "app/src/main/java/com/wdtt/client/ConnectionProfile.kt"}],
+    # NOT core/profiles.go, which this watched for a long time while containing no link code at all — a watch
+    # that cannot fire reads as coverage and is worse than none. parseWdttUrl is the accept/reject decision.
+    "pwdtt":       [{"owner": "luminescq", "repo": "PWDTT", "branch": "main", "path": "frontend/src/lib/utils/wdttLink.ts"}],
+    # Watched because it was NOT: ildarmaga's build dropped the colon format in June and the panel kept sending it
+    # for two months, so the first report was a user's screenshot of "Ссылка wdtt:// повреждена". codec.go is where
+    # the accept/reject decision lives and payload.go is the shape it decodes into — a change to either is the
+    # signal we missed.
+    # csqtt's app: parseCsqttV2 is the whole contract (v/host/peer/password/hashes; anything else is ignored),
+    # and SettingsStore is where its own knobs live — the two files that decide whether our link still imports.
+    "csqttapp":    [{"owner": "amurcanov", "repo": "csqtt", "branch": "main", "path": "app/src/main/java/com/csqtt/client/ui/utils/UiUtils.kt"},
+                    {"owner": "amurcanov", "repo": "csqtt", "branch": "main", "path": "app/src/main/java/com/csqtt/client/SettingsStore.kt"}],
+    "pwdttilg":    [{"owner": "ildarmaga", "repo": "wdtt", "branch": "main", "path": "pkg/sharelink/codec.go"},
+                    {"owner": "ildarmaga", "repo": "wdtt", "branch": "main", "path": "pkg/sharelink/payload.go"}],
     "qwdttleg":    [{"owner": "lebrit", "repo": "qwdtt-legacy-android", "branch": "main", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"}],
 }
 def _client_sources(client_id):
@@ -5259,6 +5321,11 @@ def _turn_roster_check(seed=True):
     for cid in TURN_CLIENTS:
         srcs = _client_sources(cid)
         if not srcs:
+            # A client nobody watches used to be dropped from the report entirely, so the roster read as full
+            # coverage while csqtt's app and amurcanov's WDTT were in it unwatched — and a format change reached
+            # us as a user's screenshot. Say so instead: absent is a state worth showing, not a row to omit.
+            out[cid] = {"name": (TURN_CLIENTS[cid].get("name") or cid), "status": "unwatched",
+                        "files": [], "sources": [], "acknowledged_at": None}
             continue
         prev = (roster.get(cid) or {}).get("files") or {}
         files, any_unknown, any_changed, seen = [], False, False, {}
@@ -12632,6 +12699,8 @@ class Handler(BaseHTTPRequestHandler):
             _mb = PANEL_BASE                        # "" is a VALID (root) match during a swap — must NOT fall through to PANEL_BASE
         if _mb and rel == "index.html":   # point the SPA's <base> at the mount point this tab is under (_mb=="" → root, keep the default <base href="/">)
             data = data.replace(b'<base href="/">', ('<base href="%s/">' % _mb).encode())
+        if rel == "index.html":
+            data = _localize_meta(data, _accept_lang(self.headers.get("Accept-Language", "")))
         # Version-stamp the SPA entry points (?v=<panel version>). The assets are buildless (no content
         # hash in the filename), and a CDN in front (e.g. Cloudflare) caches .js/.css for hours regardless
         # of our no-cache header — so a browser can run a stale app.js against a freshly-updated backend.

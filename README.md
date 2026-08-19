@@ -1,11 +1,13 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.10-beta</code></p>
+<p align="center"><code>1.7.11-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.10-beta** — [full changelog](CHANGELOG.md)
-> - **csqtt can now start on Docker nodes installed before this week** — it never could, and the setting the panel told you to change did not exist in your configuration. Updating adds it.
-> - **The log cap from 1.7.9 now reaches existing installs too** — it had only ever applied to brand-new ones, which is the opposite of what it was for.
+> **What's new in 1.7.11-beta** — [full changelog](CHANGELOG.md)
+> - **PWDTT can import the links again** — that build changed its link format in June and we were still sending the old one, so importing failed on a link every other WDTT app accepts.
+> - **Panels stay out of search engines** — nothing had told crawlers to skip them, so installs were being indexed. Sharing a link still shows a proper title and summary.
+> - **Two client settings that reached nobody are gone**, and the one that does reach an app — qWDTT's worker count — is now actually delivered.
+> - **The app picker says what each app does** — opens on a tap, scans a QR, or takes a pasted link — instead of calling everything a pasted link.
 <!-- WHATS-NEW:END -->
 
 ---

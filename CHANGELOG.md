@@ -3,6 +3,42 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.7.11-beta] — 2026-08-19
+
+### Fixed
+- **PWDTT could not import the links the panel handed out.** ildarmaga's build stopped reading the older link
+  format in June and now takes a different one; the panel kept sending the old, so importing failed with
+  "the wdtt:// link is damaged — no ip/port/password inside" for a link every other WDTT app accepts. It sends
+  the format that build reads now. luminescq's PWDTT, a separate build of the same app, still takes the old one
+  and is unaffected — they are offered separately in the app picker for exactly this reason.
+- **A client setting that no client could receive.** "Workers per hash" and "Custom DNS" were offered for csqtt
+  and every WDTT server, saved, and then delivered to nobody: those apps take their settings on the device, and
+  no link format for them can carry either value. csqtt's app confirms it — the link it reads has room for the
+  server, the password and the VK hashes, and ignores anything else. The two boxes are gone, except the one that
+  IS delivered: qWDTT reads a worker count from its link, and now receives the one you set.
+- **A fork with servers running on it read "not yet used".** The node reported which csqtt servers were running
+  but not which fork they were, so the fork list on the Settings page could not match them up and showed csqtt as
+  never deployed on a node running two of them.
+- **A control panel could be found in a search engine.** Nothing told crawlers to leave it alone, so installs
+  were being indexed — a list of panels for anyone who goes looking. Both the panel and the subscription page now
+  ask to be left out. Sharing a link still shows a proper title and summary, in the panel's language and, for a
+  subscription, in the default language you chose for subscriptions.
+- **csqtt configs are handed over as a link, not a QR.** The csqtt app cannot scan one yet, so a QR was a dead
+  end. It will go back to a QR when the app gains a scanner.
+- **The app picker described every app as needing a pasted link**, including the ones that open the config on a
+  tap and the ones that scan a QR. It now says which of the three that app actually does.
+
+### Changed
+- **A deployment's badges now fade together when the peer is offline.** The interface tag dimmed and the
+  turn-proxy tag beside it stayed lit, which read as two different states for one deployment. The fade is
+  also lighter than it was, and a source you have switched off the subscription page keeps its own look
+  rather than being dimmed twice over.
+- **A config on a peer card is now the same copyable box used everywhere else** — click it to copy, with the copy
+  button in its corner. Cards, the alternatives sheet and the config panels all behave the same way.
+- **The Russian panel translates the parts of the app pickers that were still English** — every server and client
+  setting, their explanations, and the instruction line under each client. Fork names, protocol names and
+  blocklist providers stay as they are, which is what they are called everywhere.
+
 ## [1.7.10-beta] — 2026-08-18
 
 ### Fixed

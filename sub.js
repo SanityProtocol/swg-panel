@@ -472,6 +472,20 @@
     wrap.appendChild(btn);
     return wrap;
   }
+  // A get-app panel opens UNDER its own link and closes on the next click that isn't in it. It used to be appended
+  // to the end of the column, which put it below whatever the overlay added after the link (the "copy the link
+  // again" row), so it read as a bubble stuck to the bottom of the page rather than a disclosure on the link.
+  // The link's own handler toggles, so the link is excluded here — otherwise this closes it and the click reopens it.
+  function openDlPanel(dl, panel, close) {
+    dl.insertAdjacentElement("afterend", panel);
+    dl.classList.add("open");
+    function onDown(e) {
+      if (panel.isConnected && (panel.contains(e.target) || dl.contains(e.target))) return;
+      document.removeEventListener("mousedown", onDown, true);
+      if (panel.isConnected) close();
+    }
+    setTimeout(function () { document.addEventListener("mousedown", onDown, true); }, 0);
+  }
   // Device/browser BACK while an instructions popover/overlay is open should just CLOSE it, not navigate away. Opening
   // one pushes a single throwaway history entry; a Back press pops it → popstate → we close every hint. Closing by any
   // OTHER means (×/Esc/backdrop/outside) pops that entry itself (disarmOverlayBack) so history stays balanced. Only one
@@ -742,7 +756,8 @@
     dl.onclick = function (e) {
       e.preventDefault();
       if (panel) { panel.remove(); panel = null; dl.classList.remove("open"); return; }   // toggle
-      panel = amneziaDlPanel(); inner.appendChild(panel); dl.classList.add("open");
+      panel = amneziaDlPanel();
+      openDlPanel(dl, panel, function () { panel.remove(); panel = null; dl.classList.remove("open"); });
     };
     inner.appendChild(dl);
     if (c && c.openUri) inner.appendChild(copyRow("copyLink", function () { return c.openUri; }, "linkCopied"));
@@ -801,7 +816,8 @@
     dl.onclick = function (e) {
       e.preventDefault();
       if (panel) { panel.remove(); panel = null; dl.classList.remove("open"); return; }
-      panel = appDlPanelFor((c && c.dlAppName) || "WG Turn", c && c.dlAppUrl, c && c.dlAppPage); inner.appendChild(panel); dl.classList.add("open");
+      panel = appDlPanelFor((c && c.dlAppName) || "WG Turn", c && c.dlAppUrl, c && c.dlAppPage);
+      openDlPanel(dl, panel, function () { panel.remove(); panel = null; dl.classList.remove("open"); });
     };
     inner.appendChild(dl);
     if (c && c.payload) inner.appendChild(copyRow("copyCfg", function () { return c.payload; }, "cfgCopied"));
@@ -852,7 +868,8 @@
       dl.onclick = function (e) {
         e.preventDefault();
         if (panel) { panel.remove(); panel = null; dl.classList.remove("open"); return; }   // toggle
-        panel = appDlPanelFor(c.dlAppName || app, c.dlAppUrl, c.dlAppPage); inner.appendChild(panel); dl.classList.add("open");
+        panel = appDlPanelFor(c.dlAppName || app, c.dlAppUrl, c.dlAppPage);
+        openDlPanel(dl, panel, function () { panel.remove(); panel = null; dl.classList.remove("open"); });
       };
       inner.appendChild(dl);
     }
@@ -1628,7 +1645,7 @@
         if (cga) { ctrl.dlAppUrl = cga.file; ctrl.dlAppFile = cga.fileName; ctrl.dlAppName = cga.app; ctrl.dlAppPage = cga.page; node.appendChild(getAppRow(cga)); }
         ctrl.cliApp = false; ctrl.vktgz = false; ctrl.wgTurn = false;         // csqtt client is an app, never a CLI/VKTGZ/wgTurn flow
         ctrl.payload = cart.text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
-        ctrl.isLink = true; ctrl.hasQR = true; ctrl.cmd = null; ctrl.wrapCfg = true;   // the csqtt app scans a QR (csqtt://connect)
+        ctrl.isLink = true; ctrl.hasQR = false; ctrl.cmd = null; ctrl.wrapCfg = true;   // no scanner in the CSQTT app yet → hand out the csqtt:// link itself
         ctrl.openUri = cart.text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
         ctrl.view = "qr";
         draw();
@@ -1641,8 +1658,14 @@
         var wga = turnGetApp(wfork);   // the operator's per-OS default client for THIS fork → encoder + app name + download
         var wasClient = (wga && wga.enc) ? wga.enc : ((subOs() === "ios") ? "anton48" : "wdtt");
         var wclientQR = !!(wga && wclients[wga.cid] && wclients[wga.cid].qr);   // only some clients scan a QR; the rest import a pasted link
+        // SETTINGS SPLIT: qWDTT is the one WDTT-family app whose link carries a client knob (`workers`), so the
+        // admin's saved value for (fork, qWDTT, this visitor's OS) rides along. Blank stays blank — the encoder
+        // omits the parameter and the app uses its own default. No other family encoder reads client values.
+        var wcs = (wasClient === "qwdtt") ? (turnClientCS(wfork, wasClient) || {}) : {};
+        var wWorkers = String(wcs.workers == null ? "" : wcs.workers).trim();
         var wart = SWGTurn.wdttArtifact({ password: wd.password, endpoint_host: wd.endpoint_host, dtls_port: wd.dtls_port,
-          wg_port: wd.wg_port, tun_port: wd.tun_port, raw_port: wd.raw_port, vk_hash: wd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, wasClient);
+          wg_port: wd.wg_port, tun_port: wd.tun_port, raw_port: wd.raw_port, workers: wWorkers,
+          vk_hash: wd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, wasClient);
         var wAppName = (wga && (wga.productName || wga.app)) || wart.app;
         // Badge "<fork> · <app>", collapsing to just the fork when the app name echoes it — same rule the turn cells use.
         var wHasApp = wAppName && wAppName !== wfork;

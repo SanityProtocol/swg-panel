@@ -614,8 +614,8 @@ export function TurnServerFields({ schema, vals, setV, extra, setExtra, listen, 
     ${obfFields.length ? html`<div class="field"><label>${T("Obfuscation")}</label>
       <div class="obfrow">
         ${obfFields.map(d => d.type === "bool"
-          ? html`<label class="obfctl" key=${d.key}><${Switch} on=${!!vals[d.key]} onChange=${v => setV(d.key, v)}/> <span class="obfctl-lbl">${d.label}</span></label>`
-          : html`<label class="obfctl" key=${d.key}><select class="selwrap" value=${vals[d.key]} onChange=${e => setV(d.key, e.target.value)}>${turnOptions(d).map(o => html`<option value=${o.value}>${o.label}</option>`)}</select></label>`)}
+          ? html`<label class="obfctl" key=${d.key}><${Switch} on=${!!vals[d.key]} onChange=${v => setV(d.key, v)}/> <span class="obfctl-lbl">${d.label ? T(d.label) : d.key}</span></label>`
+          : html`<label class="obfctl" key=${d.key}><select class="selwrap" value=${vals[d.key]} onChange=${e => setV(d.key, e.target.value)}>${turnOptions(d).map(o => html`<option value=${o.value}>${o.label ? T(o.label) : o.value}</option>`)}</select></label>`)}
         ${keyField && keyUsed ? html`<button type="button" class="btn btn-mini" onClick=${() => setV(keyField.key, randWrapKey())}><${Ic} i="refresh"/> ${T("Generate key")}</button>${!vals[keyField.key] ? html`<span class="notgen">${T("Not generated yet")}</span>` : null}` : null}
       </div></div>` : null}
     <div class="field"><label>${T("ExecStart parameters")}</label>
@@ -650,11 +650,11 @@ export function TurnDefaultsForm({ schema, values, onSet, busy }) {
   const cur = d => { const v = (values || {})[d.key]; return (v === undefined || v === null) ? d.default : v; };
   // two fields per row; textarea (raw flags) spans the full width.
   return html`<div class="fld2">${(schema || []).filter(d => settingShown(d, values || {})).map(d => html`<div class=${"field" + (d.type === "textarea" ? " span2" : "")} key=${d.key}>
-    <label>${d.label || d.key}</label>
+    <label>${d.label ? T(d.label) : d.key}</label>
     ${d.type === "bool"
-      ? html`<div style="display:flex;align-items:center;gap:10px"><${Switch} on=${!!cur(d)} disabled=${busy} onChange=${v => onSet(d.key, v)}/> <span class="faint">${cur(d) ? "on" : "off"}</span></div>`
+      ? html`<div style="display:flex;align-items:center;gap:10px"><${Switch} on=${!!cur(d)} disabled=${busy} onChange=${v => onSet(d.key, v)}/> <span class="faint">${cur(d) ? T("on") : T("off")}</span></div>`
       : (d.type === "enum" || d.type === "flagenum")
-      ? html`<select class="selwrap" value=${cur(d)} disabled=${busy} onInput=${e => onSet(d.key, e.target.value)}>${turnOptions(d).map(o => html`<option value=${o.value}>${o.label}</option>`)}</select>`
+      ? html`<select class="selwrap" value=${cur(d)} disabled=${busy} onInput=${e => onSet(d.key, e.target.value)}>${turnOptions(d).map(o => html`<option value=${o.value}>${o.label ? T(o.label) : o.value}</option>`)}</select>`
       : d.type === "hexkey"
       ? html`<div style="display:flex;gap:8px;align-items:center">
           <input class="mono" style="flex:1" value=${cur(d)} spellcheck="false" autocomplete="off" placeholder=${T("64 hex chars — blank = a fresh key per proxy")} disabled=${busy} onInput=${e => onSet(d.key, e.target.value.trim())}/>
@@ -664,7 +664,7 @@ export function TurnDefaultsForm({ schema, values, onSet, busy }) {
       : d.type === "textarea"
       ? html`<textarea class="ta" rows="3" value=${cur(d) || ""} disabled=${busy} spellcheck="false" placeholder=${d.placeholder || ""} onInput=${e => onSet(d.key, e.target.value)}></textarea>`
       : html`<input value=${cur(d)} disabled=${busy} onInput=${e => onSet(d.key, e.target.value)}/>`}
-    ${d.help ? html`<div class="hint">${d.help}</div>` : null}
+    ${d.help ? html`<div class="hint">${T(d.help)}</div>` : null}
   </div>`)}</div>`;
 }
 // Servers-tab "Clients" icon → the end-user apps that can connect to this fork's proxies, grouped by device/OS.
@@ -711,7 +711,7 @@ export function AppDropdown({ value, options, onChange }) {
 export function openServerClients(fork, os) { pushModal(html`<${ServerClientsSheet} fork=${fork} initialOs=${os}/>`); }
 export function ServerClientsSheet({ fork, initialOs }) {
   const f = turnForkList().find(x => x.id === fork) || {};
-  return html`<${Sheet} title=${html`Default client apps <span class="faint" style="text-transform:none;letter-spacing:0">— <b style=${"color:" + (turnColor(fork) || "var(--fg)") + ";font-weight:700"}>${f.label}</b></span>`} width=${880} noGuard=${true} onClose=${closeModal} onBack=${closeModal}>
+  return html`<${Sheet} title=${html`${T("Default client apps")} <span class="faint" style="text-transform:none;letter-spacing:0">— <b style=${"color:" + (turnColor(fork) || "var(--fg)") + ";font-weight:700"}>${f.label}</b></span>`} width=${880} noGuard=${true} onClose=${closeModal} onBack=${closeModal}>
     <${ServerClientsBody} fork=${fork} initialOs=${initialOs}/>
   <//>`;
 }
@@ -955,9 +955,9 @@ export function TurnClientParams({ ctl, embedded }) {
       ? html`<div class="hint">${T("This server isn't offered on {v1} — those users won't see a card for it, so there's nothing to configure. Pick an app above to start offering it again.", { v1: osLabel })}</div>`
       : (cSchema && cSchema.length)
       ? html`<${TurnDefaultsForm} schema=${cSchema} values=${effVals} onSet=${stageSetting} busy=${busy}/>`
-      : html`<div class="hint">${T("{v1} has no in-app settings to configure.", { v1: cName })}</div>`}
+      : html`<div class="hint">${T("{v1} has no settings the panel can preset — its options are set in the app itself.", { v1: cName })}</div>`}
     ${embedded ? null : html`<div style="display:flex;align-items:center;gap:12px;margin-top:16px">
-        <span class="faint" style="font-size:12px">${e.none ? html`${osLabel} users will be offered nothing for this server` : html`${osLabel} users will be offered ${clientAppLabel(e)}`}</span>
+        <span class="faint" style="font-size:12px">${e.none ? T("{v1} users will be offered nothing for this server", { v1: osLabel }) : T("{v1} users will be offered {v2}", { v1: osLabel, v2: clientAppLabel(e) })}</span>
         <span class="grow"></span>
         ${flash ? html`<span class="vk-status ok">${flash}</span>` : null}
         <button class="btn btn-primary" disabled=${busy || !dirty} onClick=${() => save(true)}>${busy ? T("Saving…") : T("Save")}</button>
@@ -1257,7 +1257,7 @@ export function ServerDefaultsSheet({ fork }) {
     toast(verDirty ? T("Version change requested — applies on each node's next sync.") : T("Server defaults saved — used when creating new {v1} proxies.", { v1: f.label || fork }), "ok");
     return true;
   };
-  return html`<${Sheet} title=${html`Server defaults <span class="faint" style="text-transform:none;letter-spacing:0">— ${fork}</span>`} width=${680} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+  return html`<${Sheet} title=${html`${T("Server defaults")} <span class="faint" style="text-transform:none;letter-spacing:0">— ${fork}</span>`} width=${680} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
       foot=${footRow({ left: flash ? html`<span class="vk-status ok savedmsg"><${Ic} i="check"/> ${flash}</span>` : null, cancelLabel: (savedOnce && !dirty) ? T("Close") : T("Cancel"), onCancel: closeModal, disabled: busy || !dirty, onAction: save, action: busy ? T("Saving…") : T("Save") })}>
     <p class="hint" style="margin:2px 0 14px">${isSelfContainedKind(f.kind)
       ? Trich("Extra command-line flags that *pre-fill* a new {v1} server. It's self-contained — its real config lives per interface — so there's little to default here beyond advanced flags.", { v1: f.label || fork })
