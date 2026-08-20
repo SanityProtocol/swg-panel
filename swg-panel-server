@@ -214,6 +214,16 @@ def host_datapath_health(ttl=20):
     if _DATAPATH_SVC["data"] and now - _DATAPATH_SVC["at"] < ttl:
         return _DATAPATH_SVC["data"]
     out = {}
+    # Is an update running RIGHT NOW? update.sh writes /run/swg-update.running (its own pid) under its lock and
+    # clears it on exit. While it runs, "the module isn't loaded" is a statement about a rebuild in progress, not
+    # a fault — and raising it as CRITICAL then invites the operator to launch a SECOND update on top of the
+    # first, which is exactly what happened. Read-only, and pid-checked so a marker left by a killed run cannot
+    # suppress the alert for ever.
+    upd = False
+    with contextlib.suppress(Exception):
+        with open("/run/swg-update.running") as f:
+            _pid = int((f.read() or "0").strip() or 0)
+        upd = _pid > 0 and os.path.exists("/proc/%d" % _pid)
     try:
         # "awg used on this host" = the AmneziaWG CLI is installed. The panel is unprivileged and CAN'T read the
         # root-only /etc/amnezia confs, but /usr/bin/awg is world-visible — and this is also exactly the broken
@@ -235,7 +245,7 @@ def host_datapath_health(ttl=20):
                             built = True; break
                     except Exception:
                         continue
-            out["awg"] = {"needed": True, "ok": bool(loaded or built)}
+            out["awg"] = {"needed": True, "ok": bool(loaded or built), "updating": upd}
     except Exception:
         return _DATAPATH_SVC["data"]                     # probe failed → keep last good; never break /api/state
     _DATAPATH_SVC["at"] = now; _DATAPATH_SVC["data"] = out

@@ -624,7 +624,9 @@ export function serviceIssues() {
   else if (unen(up)) add("update", "warn", "disabled", T("one-click self-update won’t arm again after a reboot"));
   if (unen(ps.panel)) add("panel", "warn", "disabled", T("the panel won’t start again after a reboot"));   // it's answering → it's up; only reboot-survival matters
   const dp = (Store.datapath || {}).awg;               // local node's AmneziaWG kernel module — a broken DKMS build is what Update rebuilds
-  if (dp && dp.needed && !dp.ok) add("awg", "critical", "module", T("the AmneziaWG kernel module isn’t built or loaded — awg interfaces can’t come up; running Update rebuilds it"));
+  // …but NOT while an update is running: the module legitimately isn't loaded while it is being rebuilt, and
+  // raising CRITICAL then invites a SECOND update on top of the first — which is exactly what one operator did.
+  if (dp && dp.needed && !dp.ok && !dp.updating) add("awg", "critical", "module", T("the AmneziaWG kernel module isn’t built or loaded — awg interfaces can’t come up; running Update rebuilds it"));
   out.sort((a, b) => (b.sev === "critical") - (a.sev === "critical"));
   return out;
 }

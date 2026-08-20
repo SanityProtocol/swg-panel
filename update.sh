@@ -24,6 +24,27 @@ for a in "$@"; do case "$a" in
 esac; done
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ───────────────────────── one update at a time ─────────────────────────
+# The panel's one-click writes a trigger that a 30s timer turns into ANOTHER run of this script, so an
+# operator who is already updating from the CLI (or who clicks twice) gets two of these racing each other.
+# They install identical bytes, so the copies are harmless — but both reach apt, dpkg's own lock makes one
+# of them lose, and a step that merely lost a race then REPORTS failure it did not have ("AmneziaWG could
+# not be installed"). Take the lock and say so instead; exit 0, because a second update is not an error.
+# The marker beside it is what the PANEL reads to stop raising healable-issue alerts mid-update (a module
+# genuinely isn't loaded while it is being rebuilt) — /run so a killed run can never leave a stale one
+# across a reboot, world-readable so the unprivileged panel can see it.
+UPD_LOCK=/run/swg-update.lock; UPD_RUNNING=/run/swg-update.running
+# NB: `have` is defined further down — this runs before it, so test flock directly.
+if ! $DRYRUN && command -v flock >/dev/null 2>&1; then
+  exec 9>"$UPD_LOCK" 2>/dev/null || exec 9>/tmp/swg-update.lock
+  if ! flock -n 9; then
+    echo "swg update: another update is already running on this host — leaving it to finish."
+    exit 0
+  fi
+  ( umask 022; echo $$ > "$UPD_RUNNING" ) 2>/dev/null || true
+  trap 'rm -f "$UPD_RUNNING" 2>/dev/null || true' EXIT
+fi
+
 PANEL_DIR="${PANEL_DIR:-/opt/swg-panel}"
 SUB_DIR="${SUB_DIR:-/opt/swg-sub}"
 AGENT_DIR="${AGENT_DIR:-/opt/swg-agent}"
