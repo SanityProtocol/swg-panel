@@ -181,6 +181,7 @@ export const api = {
   wdttVersions(q) { return this.get("/api/wdtt/versions?node=" + encodeURIComponent(q.node || "") + "&iface=" + encodeURIComponent(q.iface || "") + "&fork=" + encodeURIComponent(q.fork || "")); },   // our published builds (rollback targets) + any hold
   wdttVersion(b) { return this.post("/api/wdtt/version", b); },              // roll a WDTT instance to a build (ver) or release the hold (ver="")
   csqttSet(b) { return this.post("/api/csqtt/set", b); },                    // create/update a csqtt instance on a node (declarative)
+  containerAdopt(b) { return this.post("/api/container/adopt", b); },   // take a wg/awg server over from another container (Amnezia)
   csqttAdopt(b) { return this.post("/api/csqtt/adopt", b); },                // adopt a FOREIGN csqtt server (its users come across)
   csqttDelete(b) { return this.post("/api/csqtt/delete", b); },              // remove a csqtt instance
   csqttPeerCreate(b) { return this.post("/api/csqtt-peer/create", b); },     // keyless csqtt peer (mints the access password)
@@ -213,6 +214,8 @@ export const Store = {
   rotating: {},              // peer id -> ts — key rotation in flight; grid shows "rotating" until the new key is live
   ifaceOp: {},               // "node|iface" -> { verb:start|restart, phase:busy|ok|fail, started, until, err }
   ifaceNew: {},              // "node|iface" -> { type } — optimistic "creating/onboarding" card shown the instant Create is clicked (until the server's own pending/meta picks it up)
+  ctrAdopt: {},              // "node|container:iface" -> { at } — optimistic "taking over" the instant it is
+                             // confirmed, until /api/state carries the node's adopt_container back (or it ages out)
   ifaceGone: {},             // "node|iface" -> { at } — ifaceNew's mirror image: optimistic "deleting" card shown the instant Delete is confirmed (until the node stops reporting the interface)
   ghostRekey: {},            // "node|iface" -> { peers:[id], at } — a ghost recreate staged its peers; maybeRekeyGhosts() rekeys them once the fresh interface reports its new key (phase 2)
   turnNew: {},               // "node|service" -> { listen, connect, ... } — optimistic "installing" turn card (full entered data), shown until the node reports the real proxy

@@ -369,11 +369,11 @@ rm_netctl(){   # a leftover swg-netctl (e.g. after a docker convert) with no bar
   # invisible to every uninstall — the detection globbed swg-netctl.* , which needs a literal dot and so never
   # matched swg-netctl-docker.service — leaving an ACTIVE .timer polling a queue for a panel that was gone.
   for _nc in swg-netctl.path swg-netctl.timer swg-netctl.service \
-             swg-netctl-docker.timer swg-netctl-docker.service; do
+             swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
     [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true   # one at a time: a multi-unit disable aborts wholesale on the first missing unit
   done
   rmrf $SD/swg-netctl.service $SD/swg-netctl.path $SD/swg-netctl.timer \
-       $SD/swg-netctl-docker.service $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl
+       $SD/swg-netctl-docker.service $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl
   run systemctl daemon-reload; ok "swg-netctl removed"
 }
 # Host-side remnants of a DOCKER or converted install that no container remover owns: swg-sub's own tls dir and its

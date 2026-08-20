@@ -484,7 +484,7 @@ teardown_bare_panel(){
   # and returns 1; the same call without the missing unit stops it and returns 0.
   # The `stop` fallback covers a unit whose FILE is already gone while the process is still alive — `disable`
   # refuses that outright, and it is how the orphan survived a second teardown.
-  for _u in swg-sub swg-netctl.path swg-netctl.service swg-netctl.timer swg-netctl-docker.timer swg-netctl-docker.service; do
+  for _u in swg-sub swg-netctl.path swg-netctl.service swg-netctl.timer swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
     systemctl disable --now "$_u" >/dev/null 2>&1 || systemctl stop "$_u" >/dev/null 2>&1 || true
   done
   rm -f /etc/systemd/system/swg-sub.service /etc/systemd/system/swg-netctl.service /etc/systemd/system/swg-netctl.path /etc/systemd/system/swg-netctl.timer /usr/local/bin/swg-netctl \

@@ -613,12 +613,45 @@ ensure_netctl_docker(){   # HEAL (install-if-missing) the docker address helper 
   # mounted data/lib/netctl/queue and THIS host unit drains them into compose actions (restart / rebind
   # swg-sub on an address change). Missing on older/partial docker installs → one-click address changes fall
   # back to a manual restart. HEAL CONTRACT: install only the missing pieces (binary + .service + .timer),
-  # never rewrite existing ones; enable the timer. Templates MUST mirror install-docker.sh's wire_docker_netctl.
+  # never rewrite existing ones; enable the watch + timer. Templates MUST mirror install-docker.sh's wire_docker_netctl.
   case "${1:-}" in host|master|host-node) ;; *) return 0;; esac    # panel-bearing profiles only
   local drainer="$SRC/docker/swg-netctl-docker"
   [ -f "$drainer" ] || return 0
   if [ -x /usr/local/bin/swg-netctl-docker ] && [ -f /etc/systemd/system/swg-netctl-docker.service ] \
      && [ -f /etc/systemd/system/swg-netctl-docker.timer ]; then
+    if grep -q '^OnUnitActiveSec=1s' /etc/systemd/system/swg-netctl-docker.timer 2>/dev/null \
+       || [ ! -f /etc/systemd/system/swg-netctl-docker.path ]; then
+      info "the docker address helper polled every second — switching it to a queue watch"
+      if $DRYRUN; then echo "    [skip] write swg-netctl-docker.path + relax the timer to 10s"; else
+        mkdir -p "$DOCKER_DIR/data/lib/netctl/queue"
+        cat > /etc/systemd/system/swg-netctl-docker.path <<EOF
+[Unit]
+Description=watch for swg-panel docker netctl requests (address changes)
+
+[Path]
+DirectoryNotEmpty=$DOCKER_DIR/data/lib/netctl/queue
+Unit=swg-netctl-docker.service
+
+[Install]
+WantedBy=paths.target
+EOF
+        cat > /etc/systemd/system/swg-netctl-docker.timer <<EOF
+[Unit]
+Description=poll the swg-panel docker netctl queue (fallback for the path watch)
+
+[Timer]
+OnActiveSec=10s
+OnUnitActiveSec=10s
+
+[Install]
+WantedBy=timers.target
+EOF
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl enable --quiet --now swg-netctl-docker.path 2>/dev/null || true
+        systemctl restart swg-netctl-docker.timer 2>/dev/null || true
+        ok "docker address helper: now watches the queue (was a 1s poll)"
+      fi
+    fi
     $DRYRUN || systemctl is-enabled --quiet swg-netctl-docker.timer 2>/dev/null || systemctl enable --quiet --now swg-netctl-docker.timer 2>/dev/null || true
     return 0
   fi
@@ -637,21 +670,34 @@ Environment=SWG_DOCKER_DIR=$DOCKER_DIR
 ExecStart=/usr/local/bin/swg-netctl-docker
 EOF
   fi
+  if [ ! -f /etc/systemd/system/swg-netctl-docker.path ]; then
+    cat > /etc/systemd/system/swg-netctl-docker.path <<EOF
+[Unit]
+Description=watch for swg-panel docker netctl requests (address changes)
+
+[Path]
+DirectoryNotEmpty=$DOCKER_DIR/data/lib/netctl/queue
+Unit=swg-netctl-docker.service
+
+[Install]
+WantedBy=paths.target
+EOF
+  fi
   if [ ! -f /etc/systemd/system/swg-netctl-docker.timer ]; then
     cat > /etc/systemd/system/swg-netctl-docker.timer <<EOF
 [Unit]
-Description=poll the swg-panel docker netctl queue (address changes)
+Description=poll the swg-panel docker netctl queue (fallback for the path watch)
 
 [Timer]
-OnActiveSec=5s
-OnUnitActiveSec=1s
-AccuracySec=1s
+OnActiveSec=10s
+OnUnitActiveSec=10s
 
 [Install]
 WantedBy=timers.target
 EOF
   fi
   systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --quiet --now swg-netctl-docker.path 2>/dev/null || warn "couldn't enable swg-netctl-docker.path"
   systemctl enable --quiet --now swg-netctl-docker.timer 2>/dev/null || warn "couldn't enable swg-netctl-docker.timer"
   ok "docker address helper healed — one-click address changes will work now"
 }

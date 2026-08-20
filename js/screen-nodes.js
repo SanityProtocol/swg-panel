@@ -8,7 +8,7 @@
  * above any mount.
  */
 
-import { $, esc, seen, dur, ago, rate, fmtBytes, niceScaleCeil, tkey, ipOf, portOf, isWdttIface, isCsqttIface } from "./util.js";
+import { $, esc, seen, dur, ago, rate, fmtBytes, niceScaleCeil, tkey, ipOf, portOf, listenAddr, isWdttIface, isCsqttIface } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
@@ -18,9 +18,9 @@ import { turnFork, turnLabel, turnColor, turnForkList, forkProduct } from "./tur
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
   Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, openConfirm, ConfirmSheet,
-  opTag, procTag, inProc, procFailed, procSuccess, procAborted, isUpdateState, procInClass,
+  opTag, procTag, procErr, inProc, procFailed, procSuccess, procAborted, isUpdateState, procInClass,
   dismissNodeProc, dismissHostProc, statusLabel, LogBody, logRaw, useReorder, GRIP_SVG,
-  orderById, rowSingle, rowDouble, rowNoSelect, RowError, goSettings, ifaceReady, ifaceWasBusy,
+  orderById, rowSingle, rowDouble, rowNoSelect, RowError, goSettings, ifaceReady, ifaceWasBusy, ifaceFlash, adoptSeen,
   trackIfaceOps, StoreOffBanner, ifaceColor, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
 } from "./ui.js";
 import { T, Tsplit, plural, srvText } from "./i18n.js";
@@ -82,6 +82,8 @@ export function HealthDot({ issues }) {
     ${issues.map(it => html`<div class="onrow hrow"><span class="on-name">${it}</span></div>`)}
   </${Popover}>`;
 }
+const _CTR_PROC = new Set(["adopted-container", "adopt-container-failed"]);   // one interface's outcome, not the node's
+
 export function NodeDetail({ node: rawName }) {
   const name = decodeURIComponent(rawName);   // `name` is the node id (the connector); display uses dname
   const node = Store.node(name);
@@ -144,12 +146,12 @@ export function NodeDetail({ node: rawName }) {
     <${NodeRail} active=${name}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? T("kind|docker") : T("kind|bare-metal")}</span>` : null}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), nrec.proc_err, !live && nrec.status === "dangling") : null}<${HealthDot} issues=${nrec.issues}/></div>
+      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? T("kind|docker") : T("kind|bare-metal")}</span>` : null}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}<${HealthDot} issues=${nrec.issues}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version && !nrec.uninstalled ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? T("Node is running a newer version than the panel — update the panel to catch up") : ""}>v${nrec.version}</span>` : null}
         ${nrec.uninstalled ? null : dhUpdating ? html`<span class="livepill upd-busy">${T("updating…")} <svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>`
-          : (nrec.proc_status && isUpdateState(nrec.proc_status)) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), nrec.proc_err)
+          : (nrec.proc_status && isUpdateState(nrec.proc_status)) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec))
           : (nrec.local && Store.panelOutdated) ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateHost()} title=${T("Update this master (panel + co-located node) to the latest release")}>${T("update to")} <b>${Store.latestRemote || "?"}</b></button>`
           : nrec.outdated ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateNode(nrec)} title=${blocked ? T("Unavailable while the node is down / converting") : T("Update this node")}>${T("update node to")} <b>${nrec.latest || "?"}</b></button>`
           : nrec.repairable ? html`<button class="livepill updpill fixpill" disabled=${blocked} onClick=${() => nrec.local ? updateHost() : updateNode(nrec)} title=${(nrec.kind === "docker" ? T("A container or the datapath isn't running on this node — recreating it should fix it. ") : T("The AmneziaWG kernel module isn't built or loaded on this node — awg interfaces can't come up. ")) + (nrec.local ? T("Re-run the updater to repair.") : T("Update this node to repair."))}><${Ic} i="warn"/> ${T("repair node")}</button>`
@@ -385,10 +387,10 @@ export function NodeDetail({ node: rawName }) {
                 ? _cop
                 : adopting
                 ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
-                : html`<span class=${"tg " + (ig ? "tg-ign" : "tg-cand")} title=${ig ? T("Ignored candidate — Settings-style dismissed; open to Un-ignore") : T("Found on the node — the panel doesn't manage it. Adopt to manage, or Ignore.")}><${Ic} i="warn"/>${ig ? "ignored" : "orphan"}</span>`}</div>
+                : html`<span class=${"tg " + (ig ? "tg-ign" : "tg-cand")} title=${ig ? T("Ignored candidate — Settings-style dismissed; open to Un-ignore") : T("Found on the node — the panel doesn't manage it. Adopt to manage, or Ignore.")}><${Ic} i="warn"/>${ig ? T("tag|ignored") : T("tag|orphan")}</span>`}</div>
             <div class="ifcard-rows">
               <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${(cd.conf ? cd.conf.replace(/\/[^/]*$/, "") : ((cd.wdtt || {}).config_dir || "")) || html`<span class="faint">—</span>`}</span></div>
-              <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${ip0}${cd.listen_port ? ":" + cd.listen_port : ""}</span></div>
+              <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${listenAddr(nrec.endpoint_host, cd.listen_port)}</span></div>
               <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${cd.address || "—"}</span></div>
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${cd.peers ? html`<b>${cd.peers}</b>` : html`<span class="faint">${T("None")}</span>`}</span></div>
             </div></a>`; };
@@ -449,6 +451,68 @@ export function NodeDetail({ node: rawName }) {
         const _gset = {};   // dedupe cold (ghost_ifaces) + keyless-missing into one gcard per iface; a recreate in flight (pending) drops the ghost card in favour of its "creating" card
         for (const ifn of Object.keys(nrec.ghost_ifaces || {})) if (!(meta && meta[ifn]) && !pending.includes(ifn) && !isSysName(ifn)) _gset[ifn] = 1;
         for (const [ifn, mi] of Object.entries(nrec.missing_ifaces || {})) if (!mi.key_source && !(meta && meta[ifn]) && !pending.includes(ifn) && !isSysName(ifn)) _gset[ifn] = 1;
+        // Interfaces running inside ANOTHER container's network namespace — AmneziaWG's server is the case: its
+        // container has its own netns and brings the interface up from a conf on a filesystem we cannot reach, so
+        // every scan we have finds nothing and this grid was simply empty. Somebody looking at a working AmneziaWG
+        // server reads that as the panel being broken. Say what is there instead.
+        // Same chrome as a candidate so it belongs to this grid, minus every affordance that does not apply: no
+        // link, because there is no detail page for something we do not manage, and no Adopt, because it cannot be
+        // adopted in place — their container brings the interface back up from its own conf on every restart, so
+        // peers added here would vanish. Migration is the honest next step, and this is what it will hang off.
+        // A pending take-over names ONE interface. Gating every card on it meant a request that never landed
+        // (node offline — the panel's sweep only runs on that node's own sync) hid every take-over button on the
+        // box with no way back. Each card now answers only for itself, and a pending one can be withdrawn.
+        // A take-over's outcome belongs to ONE interface, not to the node — so it lands on the card. On success
+        // the interface has just appeared among a dozen others: flash it once so the eye finds it, and let the
+        // usual green "ready" tag say what happened. Armed once per outcome (keyed by its timestamp).
+        const _adAt = nrec.proc_at || (nrec.proc_status ? String(nrec.proc_status) : "");
+        if (nrec.proc_status === "adopted-container" && !adoptSeen.has(name + "|" + _adAt)) {
+          adoptSeen.add(name + "|" + _adAt);
+          const _got = ((nrec.proc_err_vars || {}).i || "").trim();
+          if (_got) { ifaceReady[name + "|" + _got] = Date.now() + 5000; ifaceFlash[name + "|" + _got] = Date.now() + 2400; }
+        }
+        const _adFail = nrec.proc_status === "adopt-container-failed" ? (nrec.proc_err_vars || {}) : null;
+        const _adc = nrec.adopt_container && typeof nrec.adopt_container === "object" ? nrec.adopt_container : null;
+        const _clash = x => _known(x.name);
+        const _ck = x => name + "|" + x.container + ":" + x.name;
+        const _pend = x => {
+          const srv = !!_adc && _adc.container === x.container && (!_adc.iface || _adc.iface === x.name);
+          const opt = Store.ctrAdopt[_ck(x)];
+          if (opt && (srv || Date.now() - (opt.at || 0) > 900000)) delete Store.ctrAdopt[_ck(x)];
+          return srv || !!Store.ctrAdopt[_ck(x)];
+        };
+        const xcards = (nrec.container_ifaces || []).filter(x => x && x.name && x.container).map(x =>
+          html`<a class=${"ifcard candidate" + (_pend(x) ? " down" : "") + (blocked ? " locked" : "")} key=${"ctr:" + x.container + ":" + x.name}
+              href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent("ctr:" + x.container + ":" + x.name)}>
+            <div class="ifcard-top"><span class=${"iftype " + (x.proto === "awg" ? "awg" : "wg")}
+                title=${T("Running inside container {v1} — swgPanel cannot manage it there", { v1: x.container })}>${x.proto === "awg" ? "awg" : "wg"}</span>
+              <span class="ifname">${x.name}</span><span class="grow"></span>
+              ${(blocked || _pend(x) || (_adFail && _adFail.c === x.container)) ? null : _clash(x) ? html`<${StatusTag} cls="tg-warn tg-click" icon="warn" label=${T("name taken")}
+        msg=${T("This node already runs an interface called {v1}, so the take-over cannot recreate this one under that name — it would collide. Free the name first: open {v1} and delete it if you don't need it, or move its peers to another interface. Nothing has been changed here.", { v1: x.name })}
+        title=${T("Why this can't be taken over")}/>` : html`<button class="mi-restore" title=${T("Take this interface over: stop that container and run the same server here, keeping its key, port and peers")}
+                onClick=${e => { e.preventDefault(); e.stopPropagation(); openConfirm({
+                  title: T("Take over {v1}", { v1: x.name }), confirmLabel: T("Take it over"), warn: true,
+                  body: T("swgPanel will STOP the container {v1} and run {v2} here instead — same key, same port, same obfuscation, so the configs already on your users' devices keep working, and its peers are imported. That container is only stopped, never deleted: if anything goes wrong the node starts it again, and you can start it yourself to go back. It will not come back on its own afterwards.", { v1: x.container, v2: x.name }),
+                  onConfirm: async () => {
+                    Store.ctrAdopt[_ck(x)] = { at: Date.now() }; Store.apply();   // show it NOW, not on the next poll
+                    const r = await api.containerAdopt({ node: name, container: x.container, iface: x.name });
+                    if (!(r && r.ok)) { delete Store.ctrAdopt[_ck(x)]; Store.apply(); }
+                    toast(r && r.ok ? T("Taking it over — the node does this on its next sync.") : (srvText(r) || T("Couldn't start the take-over.")), r && r.ok ? "ok" : "err"); } }); }}><${Ic} i="plus"/> ${T("Take over")}</button>`}
+              ${_adFail && _adFail.c === x.container
+                ? html`<span class="tg tg-warn tg-click" title=${T("Why this can't be taken over")}
+                    onClick=${e => { e.preventDefault(); e.stopPropagation();
+                      openConfirm({ title: T("container take-over failed"), log: procErr(nrec) || "", confirmLabel: T("Close") }); }}><${Ic} i="warn"/>${T("tag|failed")}<button class="xbtn" title=${T("Dismiss")}
+                      onClick=${e => { e.preventDefault(); e.stopPropagation(); dismissNodeProc(nrec.id); }}><${Ic} i="x"/></button></span>`
+                : _pend(x)
+                ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|taking over")} title=${T("The node does this on its next sync")}/>`
+                : html`<span class="tg tg-ign" title=${T("Another program owns this interface: it runs in its own container, from its own config. swgPanel can see it, but a change made here would be undone the next time that container restarts.")}>${T("tag|alien")}</span>`}</div>
+            <div class="ifcard-rows">
+              <div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${x.container}</span></div>
+              <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${listenAddr(x.host_port ? nrec.endpoint_host : "", x.host_port || x.listen_port)}</span></div>
+              <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${x.address || "—"}</span></div>
+              <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${x.peers
+                ? html`<b>${x.peers}</b>` : html`<span class="faint">${T("None")}</span>`}</span></div>
+            </div></a>`);
         const gcards = Object.keys(_gset).map(ifn => [ifn, ghostIface(name, ifn)]).filter(([, g]) => g).map(([ifn, g]) => gcard(ifn, g));
         // WDTT-owned interfaces: a self-contained WDTT fork brings up its OWN userspace-WireGuard interface. Show it
         // here (flagged) so the operator sees the datapath, but it's READ-ONLY for peer/key management — WDTT owns
@@ -548,7 +612,7 @@ export function NodeDetail({ node: rawName }) {
             </div></a>`; };
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.")}<br/><br/>${T("Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.")}</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>${T("reading server…")}</div>`
-          : (!userKeys.length && !pending.length && !mcards.length && !gcards.length && !wdttIfaces.length && !csqttIfaces.length && !wmcards.length && !cmcards.length && !ccards.length && !dcards.length && !cqcards.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("No managed interfaces reported.")}</span></div>`
+          : (!userKeys.length && !pending.length && !mcards.length && !gcards.length && !wdttIfaces.length && !csqttIfaces.length && !wmcards.length && !cmcards.length && !xcards.length && !ccards.length && !dcards.length && !cqcards.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("No managed interfaces reported.")}</span></div>`
           : html`<div class="ifgrid" ...${ifReorder.container()}>${mcards}${wmcards}${cmcards}${gcards}${ifaceIds.map(ifn => {
               if (Store.ifaceGone[_pfx + ifn]) return delCard(ifn, Store.ifaceGone[_pfx + ifn]);   // teardown in flight → the inert "deleting" card, in place
               const _w = wdttIfaces.find(w => w.iface === ifn);   // WDTT interface → its card (reorders in the same grid); else a normal wg/awg card
@@ -581,7 +645,8 @@ export function NodeDetail({ node: rawName }) {
               // can't be edited, and every card on the page gets it at once. `iconverting`/`nodeStale` moved out
               // of here into `blocked` for exactly that reason.
               const idim = deleting || idown || istopped || irestarting || iopBusy || !!iprog || !!(nrec.cmd_errors || {})[ifn];
-              return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + (blocked ? " locked" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
+              const iflash = ifaceFlash[name + "|" + ifn] && Date.now() < ifaceFlash[name + "|" + ifn];
+              return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + (blocked ? " locked" : "") + (iflash ? " flash" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
                 <div class="ifcard-top"><span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>${(blocked || iopBusy || deleting || irestarting) ? html`<span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>` : html`<button class="ifc-edit" title=${T("Edit interface · {v1}", { v1: type.toUpperCase() })} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditIface(name, ifn); }}><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span>${ifaceTurnBadges(name, fwdTurns, tight)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title=${T("Working on the node")}/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${ifopBusy(iop.verb)}</span>` : iconverting ? html`<span class="tg tg-convert" title=${T("The node is converting between bare-metal and docker")}><${Ic} i="clock"/>${T("tag|converting")}</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title=${T("Command failed on the node")}/>` : istopped ? html`<span class="tg-off" title=${T("Stopped by you — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || (T("interface is down on the node — awg-quick couldn't bring it up: {v1}", { v1: idown }))} title=${T("Interface down on the node")}/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${T("tag|restarting")}</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title=${T("Command failed on the node")}/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title=${T("A setting was edited directly on the server — open to Adopt or Restore")}><${Ic} i="warn"/>${T("tag|modified")}</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>${T("tag|ready")}</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
@@ -596,7 +661,7 @@ export function NodeDetail({ node: rawName }) {
                         trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>${orph ? html` <span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>(${orph})</span>` : null}`}/>`
                     : (orph ? html`<span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>${orph}</span>` : html`<span class="faint">${T("None")}</span>`)}</span></div>
                 </div></a>`;
-            })}${pcards}${ccards}${dcards}${cqcards}</div>`; })()}
+            })}${pcards}${ccards}${xcards}${dcards}${cqcards}</div>`; })()}
     <//>
 
     ${(hasTurns || hasWdtt || hasCsqtt) && turnEnabled() ? html`<${TurnProxiesBlock} node=${name} nrec=${nrec} snap=${snap} metas=${meta} title=${T("Turn proxies")}/>` : null}
@@ -1066,7 +1131,8 @@ export function NodeCard({ n, reorder }) {
   // list-card update tag: a co-located node updates WITH the panel (its "updating" comes from hostUpdating, not
   // its own proc_status) — mirror the detail's dh-ver so the LIST shows "updating" too, while a terminal wins.
   const nUpdating = n.updating || (n.local && (hostUpdating || inProc(Store.hostProc)));
-  const procEff = (n.proc_status && !inProc(n.proc_status)) ? n.proc_status : (nUpdating ? "updating" : n.proc_status);   // i18n-keys
+  const _proc0 = _CTR_PROC.has(n.proc_status) ? null : n.proc_status;   // one interface's outcome, not the node's
+  const procEff = (_proc0 && !inProc(_proc0)) ? _proc0 : (nUpdating ? "updating" : _proc0);   // i18n-keys
   const nav = () => go("#/node/" + encodeURIComponent(n.id));
   return html`<div class=${"ncard clk" + (removing ? " removing" : "") + (it ? it.cls : "")} onClick=${nav} data-rid=${it ? it.rid : null}>
     <div class="nc-gutter">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(n.id)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}</div>
@@ -1077,7 +1143,7 @@ export function NodeCard({ n, reorder }) {
       ${n.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>`
         : st === "online" ? html`<span class="reporting">${T("reporting")}</span>`
         : st === "offline" ? html`<span class="nstat offline"><${Ic} i="info"/> ${T("tag|offline")}</span>`
-        : html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>`}${procEff ? procTag(procEff, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, n.proc_err, st !== "online" && st !== "offline") : null}
+        : html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>`}${procEff ? procTag(procEff, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, procErr(n), st !== "online" && st !== "offline") : null}
       <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
       ${removing ? html`<span class="nstat removing" style="margin-left:14px"><${Ic} i="trash"/> ${T("tag|flagged for removal")}</span>` : null}
     </div>

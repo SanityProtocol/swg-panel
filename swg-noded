@@ -3244,11 +3244,19 @@ WDTT_CFG_DIRS = ("/etc/wdtt", "/opt/wdtt", "/var/lib/wdtt", "/usr/local/etc/wdtt
 # at all (ildarmaga compiles wgIfaceName = "wdtt0", alongside a hardcoded 10.66.66.1/24 and :2860 admin surface),
 # which is also why only one upstream server can run per host.
 WDTT_DEFAULT_IFACE = "wdtt0"
-_WDTT_HOSTPROC = {"at": 0.0, "rows": [], "ok": True}   # docker: cached HOST /proc walk (see _wdtt_host_procs).
+_WDTT_HOSTPROC = {"at": 0.0, "walked": 0.0, "rows": [], "ok": True}   # docker: cached HOST /proc walk.
                                             # "ok" = the walk COMPLETED. An empty rows list means "nothing is
                                             # running" only when ok; otherwise it means "we could not look".
+                                            # "at" is the CACHE clock a flush resets; "walked" is when a walk
+                                            # last actually ran, which nothing resets — see _WDTT_HOST_FLOOR.
 _WDTT_CFGPROBE = {}                          # docker: cfgdir -> (ts, {...}) cached host-side file probe
-_WDTT_HOST_TTL = 45                          # each host probe is a privileged one-shot container — never per-5s
+_WDTT_HOST_TTL = 120                         # each host probe is a privileged one-shot container — never per-5s.
+                                            # This is DISCOVERY: it changes when a human installs or starts a
+                                            # server on the box, so minutes is the right granularity. It was 45s,
+                                            # which on a live node cost ~80 privileged containers an hour to learn
+                                            # nothing had changed; anything that must not act on a stale answer
+                                            # flushes first, and that is what the flush is for.
+_WDTT_HOST_FLOOR = 5                         # a walk THIS recent is reused even when the cache was flushed
 
 
 def _awg_conf_dirs():
@@ -3401,11 +3409,24 @@ def _wdtt_host_procs():
     now = time.time()
     if now - _WDTT_HOSTPROC["at"] < _WDTT_HOST_TTL:
         return _WDTT_HOSTPROC["rows"]
+    # A flush sets "at" to 0 to force freshness. Several call sites can flush — or expire together, since every
+    # host probe shares this TTL — inside ONE reconcile pass, and each miss costs a privileged container. Measured
+    # on a live node: bursts of ~5 back-to-back walks, then a clean 42s gap. The gap proved the TTL was working
+    # and the burst was the whole cost. A walk that finished seconds ago is fresh enough for every caller in the
+    # same pass, so honour a floor that a flush cannot cross: correctness is unaffected (nothing can start, be
+    # noticed, and be acted on inside five seconds) and the burst collapses to one walk.
+    if now - _WDTT_HOSTPROC["walked"] < _WDTT_HOST_FLOOR:
+        return _WDTT_HOSTPROC["rows"]
     rows = []
     ok = False
     with contextlib.suppress(Exception):
+        # NOT *server*: every server kind we look for names itself in its own path — ours live under
+        # .../wdtt/<iface>/server and .../csqtt/<iface>/server, a bare-metal install under /opt/swg-wdtt/, and the
+        # authors' upstream csqtt at /usr/local/bin/csqtt. A bare *server* added nothing and matched the whole box:
+        # on a live node it returned fail2ban-server, both turn-proxies and swg-panel-server ITSELF, every one of
+        # which then had to be carried back over the hop and thrown away downstream.
         cmd = ("for p in /proc/[0-9]*; do c=$p/cmdline; [ -r \"$c\" ] || continue; "
-               "case \"$(head -c 200 \"$c\" | tr '\\0' ' ')\" in *wdtt*|*csqtt*|*server*) "
+               "case \"$(head -c 200 \"$c\" | tr '\\0' ' ')\" in *wdtt*|*csqtt*) "
                "printf '%s ' \"${p#/proc/}\"; base64 -w0 < \"$c\"; echo ;; esac; done")
         _r = host_sh(cmd, timeout=30)
         # rc 124 is run()'s timeout. This hop DOES fail in the field — a box seen forking ~500 helpers per pass
@@ -3418,11 +3439,20 @@ def _wdtt_host_procs():
                 continue
             with contextlib.suppress(Exception):
                 parts = [x.decode("utf-8", "replace") for x in base64.b64decode(b64).split(b"\x00") if x]
+                # Deliberately WIDER than the shell net above, and not to be "tidied" into matching it: the net
+                # tests the whole cmdline, this tests argv[0]. A foreign server started as `server -iface wdtt1`
+                # gets through the net on its ARGUMENT and would be dropped here by a wdtt/csqtt-only test.
                 if parts and ("wdtt" in parts[0] or "csqtt" in parts[0] or "server" in parts[0]):
                     rows.append((int(pid), _wdtt_flags_from_argv(parts)))
     _WDTT_HOSTPROC["at"] = now
+    _WDTT_HOSTPROC["walked"] = time.time()
     _WDTT_HOSTPROC["rows"] = rows
     _WDTT_HOSTPROC["ok"] = ok
+    # One line per walk, and a walk is now a rare event. It says how often this actually runs and whether the
+    # answer can be trusted — the two things that took a live box and a packet of measurements to establish.
+    print("host-walk: %d server proc(s), %.1fs, %s" % (len(rows), _WDTT_HOSTPROC["walked"] - now,
+                                                       "complete" if ok else "INCOMPLETE (answer not trusted)"),
+          flush=True)
     return rows
 
 
@@ -3658,7 +3688,12 @@ def _wdtt_procs():
             with contextlib.suppress(Exception):
                 with open("/proc/%s/cmdline" % ent, "rb") as f:
                     parts = f.read().split(b"\x00")
-                if not parts or not parts[0] or not (b"server" in parts[0] or b"wdtt" in parts[0]):
+                # "csqtt" belongs here as much as on the docker hop: the AUTHORS' upstream installs its binary
+                # as /usr/local/bin/csqtt, which contains neither "server" nor "wdtt". That gap was found and
+                # closed for the host walk a docker node makes, and left open on this one — so the same
+                # hand-installed csqtt that a docker node now finds stayed invisible on a BARE-METAL node, and
+                # to a docker node for anything inside its own namespace. Same net, both paths.
+                if not parts or not parts[0] or not any(m in parts[0] for m in (b"server", b"wdtt", b"csqtt")):
                     continue
                 out.append((int(ent), _wdtt_cmdline_flags(int(ent))))
     # DOCKER: the walk above only sees THIS container's pid namespace — our own supervised children. A foreign
@@ -3789,6 +3824,337 @@ def wdtt_foreign_probe(iface):
             # only knows the ones that have connected, which undercounts what the operator is taking on.
             "users": probe.get("users") or [],
             "store": probe["store"]}
+
+_CTR_IF_TTL = 120                                  # discovery, not reconcile — see _container_ifaces
+_CTR_IF = {"at": 0.0, "rows": []}
+_CTR_ADOPT = {}          # last container take-over result, reported ONCE so the panel can import + clear
+_OUR_CTRS = ("swg-node", "swg-panel", "swg-sub", "swg-turn-")   # ours; never reported as somebody else's
+
+
+def _container_ifaces(timeout=15):
+    """wg/awg interfaces that live inside ANOTHER container's network namespace → [{name, container, proto}].
+
+    AmneziaVPN is the case this exists for. Its own run_container.sh starts the server WITHOUT --network host
+    (a published UDP port and its own netns) and its start.sh runs `awg-quick up /opt/amnezia/awg/awg0.conf`
+    INSIDE the container, so the device is a kernel interface in a namespace we are not in and its .conf is on
+    a filesystem we cannot see. Every source iface_candidates has — wg/awg show, the UAPI socket dirs, the conf
+    directories — is namespace- and filesystem-local, so the panel truthfully found nothing and said nothing.
+    An operator who has just pointed swgPanel at a working AmneziaWG server reads that as "it doesn't work".
+
+    REPORT ONLY, and deliberately not merged into iface_candidates: this is not adoptable in place. Amnezia's
+    container is --restart always, and its start.sh takes the interface DOWN and back UP from its own conf on
+    every start — so a peer we added to the live device would vanish on the next restart unless we also wrote
+    into a file inside their container, which their client rewrites whenever the operator adds a user there.
+    Two writers on one config, one of them restoring from its own copy on a schedule we do not control.
+
+    `docker exec`, not nsenter: a docker node has its OWN pid namespace, so a host pid from `docker inspect`
+    does not resolve inside it, and nsenter would work on bare metal only. exec needs no pid at all and behaves
+    identically on both. Cached, because discovery of something a human installs does not belong on a 5s loop.
+    """
+    now = time.time()
+    if now - _CTR_IF["at"] < _CTR_IF_TTL:
+        return _CTR_IF["rows"]
+    rows = []
+    with contextlib.suppress(Exception):
+        r = run(["docker", "ps", "--format", "{{.ID}}\t{{.Names}}"], timeout=15)
+        if r.returncode == 0:
+            for ln in (r.stdout or "").splitlines():
+                cid, _, name = ln.partition("\t")
+                cid, name = cid.strip(), name.strip()
+                if not cid or name.startswith(_OUR_CTRS):
+                    continue
+                for tool, proto in (("awg", "awg"), ("wg", "wg")):
+                    with contextlib.suppress(Exception):
+                        q = run(["docker", "exec", cid, tool, "show", "interfaces"], timeout=15)
+                        if q.returncode != 0:
+                            continue
+                        for ifn in (q.stdout or "").split():
+                            if not ifn or any(x["name"] == ifn and x["container"] == name for x in rows):
+                                continue
+                            # its subnet, so the card can say what the interface actually serves — the one
+                            # fact an operator needs to see whether it collides with anything of theirs
+                            cidr = ""
+                            with contextlib.suppress(Exception):
+                                a = run(["docker", "exec", cid, "ip", "-4", "-o", "addr", "show", ifn], timeout=timeout)
+                                for tok in (a.stdout or "").split():
+                                    if "/" in tok and tok[0].isdigit():
+                                        cidr = tok
+                                        break
+                            port, plist = 0, []
+                            with contextlib.suppress(Exception):
+                                d = run(["docker", "exec", cid, tool, "show", ifn, "dump"], timeout=timeout)
+                                if d.returncode == 0:
+                                    head, plist = parse_dump(d.stdout or "")
+                                    if len(head) > 2 and str(head[2]).isdigit():
+                                        port = int(head[2])
+                            # Amnezia keeps the display names in its own table, joined to the device by pubkey
+                            # (clientId == clientPubKey). Without it every peer reads as an anonymous key.
+                            if plist:
+                                with contextlib.suppress(Exception):
+                                    for pk, nm in (_ctr_peer_names(cid, timeout=timeout) or {}).items():
+                                        for pe in plist:
+                                            if pe.get("public_key") == pk:
+                                                pe["name"] = nm
+                            hport = _ctr_published(cid, port, timeout=timeout) if port else 0
+                            rows.append({"name": ifn, "container": name, "proto": proto, "address": cidr,
+                                         "listen_port": port, "host_port": hport, "peers": len(plist),
+                                         # the panel forwards this verbatim; cap it so one very large foreign
+                                         # server cannot bloat every snapshot this node posts
+                                         "peer_list": plist[:200]})
+    _CTR_IF["at"] = now
+    _CTR_IF["rows"] = rows
+    return rows
+
+
+def _ctr_err(template, **vars):
+    """One operator-facing failure from the container take-over.
+
+    Carries the finished English sentence AND the template it came from, because the panel translates by
+    looking the sentence up as a catalogue key — and a sentence with the container name already interpolated
+    into it can never match one. Old panels read `error` and see English, new ones read `error_key`/`error_vars`
+    and show the operator's language. Keep the template EXACTLY in step with js/lang/*.js.
+    """
+    return {"error": template.format(**vars), "error_key": template, "error_vars": dict(vars)}
+
+
+def _ctr_published(container, port, timeout=15):
+    """The HOST udp port this container publishes for `port`, or 0 if it publishes none.
+
+    A container on its own netns is unreachable from outside the box unless docker forwards a host port to it,
+    so this is what decides whether an external address may be shown for it at all — and it is also the port
+    that would collide with one of ours. `--network host` publishes nothing but IS the host, so the container's
+    own port is the host's.
+    """
+    with contextlib.suppress(Exception):
+        r = run(["docker", "inspect", "-f",
+                 "{{.HostConfig.NetworkMode}}\t{{json .NetworkSettings.Ports}}", container], timeout=timeout)
+        if r.returncode != 0:
+            return 0
+        mode, _, raw = (r.stdout or "").strip().partition("\t")
+        if mode.strip() == "host":
+            return int(port)
+        for spec, binds in (json.loads(raw or "{}") or {}).items():
+            if not spec.endswith("/udp") or not binds:
+                continue
+            if spec.split("/")[0] != str(port):
+                continue
+            for b in binds:
+                hp = str((b or {}).get("HostPort") or "").strip()
+                if hp.isdigit():
+                    return int(hp)
+    return 0
+
+
+def _ctr_peer_names(container, conf_dir="", timeout=25):
+    """{pubkey: display name} out of Amnezia's own client table, or {} if there isn't one we can read.
+
+    Their desktop client keeps the names beside the conf in a JSON table whose filename has moved between
+    versions, so this DISCOVERS the table rather than guessing at it, and joins on the public key — their
+    wireguardConfigurator.cpp sets `clientConfig.clientId = connData.clientPubKey`, so the id IS the pubkey.
+    Best-effort by construction: no table, or an unreadable one, just means the peers read as anonymous keys.
+    """
+    names = {}
+    for d in ([conf_dir] if conf_dir else []) + ["/opt/amnezia/awg", "/opt/amnezia/wireguard", "/opt/amnezia"]:
+        with contextlib.suppress(Exception):
+            t = run(["docker", "exec", container, "sh", "-c",
+                     "for f in %s/*; do case \"$f\" in *.conf|*.key) ;; *) [ -f \"$f\" ] && echo \"$f\";; esac; done" % d],
+                    timeout=timeout)
+            for f in [x.strip() for x in (t.stdout or "").split() if x.strip()]:
+                with contextlib.suppress(Exception):
+                    b = run(["docker", "exec", container, "cat", f], timeout=timeout)
+                    doc = json.loads(b.stdout or "")
+                    rows = doc if isinstance(doc, list) else (doc.get("clients") or [])
+                    for row in rows if isinstance(rows, list) else []:
+                        if not isinstance(row, dict):
+                            continue
+                        cid = str(row.get("clientId") or "").strip()
+                        nm = str(((row.get("userData") or {}) if isinstance(row.get("userData"), dict) else {})
+                                 .get("clientName") or row.get("clientName") or "").strip()
+                        if cid and nm:
+                            names[cid] = nm
+                if names:
+                    break
+        if names:
+            break
+    return names
+
+
+def container_iface_read(container, want_iface=None, timeout=25):
+    """Read a wg/awg server out of ANOTHER container: its interface config and its peers, with names.
+
+    Everything needed to recreate the server natively is in one file. Amnezia's configure_container.sh writes
+    /opt/amnezia/<proto>/<iface>.conf holding PrivateKey, ListenPort, Address and the full AWG obfuscation set
+    (Jc/Jmin/Jmax/S1..S4/H1..H4/I1), followed by a [Peer] block per client. Recreated with the same key, port
+    and params, an existing client config keeps working untouched — the phone cannot tell it changed hands.
+
+    Names are NOT in that file; the desktop client keeps them in a JSON table beside it, and its filename has
+    moved between versions. So DISCOVER it rather than hardcode a guess: any other .json/table next to the conf
+    is tried, and entries are joined to peers by public key — `clientConfig.clientId = connData.clientPubKey`
+    in their wireguardConfigurator.cpp, so the id IS the pubkey. No table, or an unreadable one, simply means
+    the peers arrive unnamed; it must never cost us the import.
+
+    Returns {"conf": <text>, "path": ..., "iface": ..., "interface": {...}, "peers": [{...}], "named": n} or
+    {"error": ...}. Reads only — nothing here stops, writes or deletes anything.
+    """
+    out = {"peers": [], "named": 0}
+    if not container:
+        return _ctr_err("no container given")
+    r = run(["docker", "exec", container, "sh", "-c",
+             "ls -1 /opt/amnezia/*/*.conf /opt/amnezia/*.conf 2>/dev/null"], timeout=timeout)
+    paths = [p.strip() for p in (r.stdout or "").split() if p.strip().endswith(".conf")]
+    if not paths:
+        return _ctr_err("no wg/awg config found in container {c}", c=container)
+    # A .conf on disk is NOT evidence that anything is serving it. A leftover from a previous protocol, a file
+    # an operator parked there, or a second conf beside the live one would all read exactly the same — and the
+    # take-over this feeds STOPS somebody's container, so "there is a file" is not a good enough reason. Ask
+    # the container what is actually UP and take the conf that belongs to it.
+    live = {}
+    for tool in ("awg", "wg"):
+        with contextlib.suppress(Exception):
+            q = run(["docker", "exec", container, tool, "show", "interfaces"], timeout=timeout)
+            if q.returncode == 0:
+                for n in (q.stdout or "").split():
+                    live.setdefault(n, tool)
+    want = (want_iface or "").strip()
+    path = ""
+    for cand in paths:
+        base = os.path.basename(cand)[:-5]
+        if (base == want) if want else (base in live):
+            path = cand
+            break
+    if not path:
+        if want:
+            return _ctr_err("{c} has no config for {i}", c=container, i=want)
+        return _ctr_err("{c} has {n} wg/awg config(s) but none of them is running ({names}) — nothing to take over",
+                        c=container, n=len(paths), names=", ".join(sorted(live)) or "no interface is up")
+    out["running"] = os.path.basename(path)[:-5] in live
+    out["live_tool"] = live.get(os.path.basename(path)[:-5], "")
+    c = run(["docker", "exec", container, "cat", path], timeout=timeout)
+    if c.returncode != 0 or not (c.stdout or "").strip():
+        return _ctr_err("could not read {p} in {c}", p=path, c=container)
+    conf = c.stdout
+    out["path"], out["conf"] = path, conf
+    out["iface"] = os.path.basename(path)[:-5]
+    out["interface"] = parse_interface_section(conf)
+    # Final proof that this file describes THAT interface: derive the public key from the conf's private key
+    # and compare it with the key the live interface is actually using. Names can collide and files can be
+    # stale; a matching key cannot be a coincidence.
+    out["key_match"] = False
+    with contextlib.suppress(Exception):
+        _priv = (out["interface"].get("PrivateKey") or out["interface"].get("privatekey") or "").strip()
+        _live = (run(["docker", "exec", container, out.get("live_tool") or "wg", "show",
+                      out["iface"], "public-key"], timeout=timeout).stdout or "").strip()
+        _mine = (run(["wg", "pubkey"], input_text=_priv + "\n", timeout=timeout).stdout or "").strip()
+        out["key_match"] = bool(_live and _mine and _live == _mine)
+    # peers, in file order — pubkey is the identity, and the only thing that joins to a name
+    cur = None
+    for ln in conf.splitlines():
+        s = ln.strip()
+        if s.startswith("["):
+            if cur:
+                out["peers"].append(cur)
+            cur = {} if s.lower() == "[peer]" else None
+            continue
+        if cur is None or "=" not in s or s.startswith("#"):
+            continue
+        k, _, v = s.partition("=")
+        cur[k.strip().lower()] = v.strip()
+    if cur:
+        out["peers"].append(cur)
+    # names: any table beside the conf, joined by pubkey. Best-effort by construction.
+    with contextlib.suppress(Exception):
+        names = _ctr_peer_names(container, os.path.dirname(path), timeout=timeout)
+        for p in out["peers"]:
+            nm = names.get((p.get("publickey") or "").strip())
+            if nm:
+                p["name"] = nm
+                out["named"] += 1
+    return out
+
+
+_AWG_CONF_KEYS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1")
+
+
+def container_iface_takeover(container, node_cfg, agent, sudo):
+    """Take a wg/awg server over from ANOTHER container: stop it, and stand the SAME server up natively.
+
+    Same identity, deliberately: the private key, listen port, address and obfuscation parameters are reused,
+    so every config already on a client keeps working — nobody re-imports anything and nobody notices, which
+    is the only reason to do this rather than tell the operator to start again.
+
+    Order matters and is not negotiable. Their container is stopped FIRST, because one process can hold that
+    UDP port: bringing ours up first would simply fail to bind. And --restart=no is set with it, or the daemon
+    puts it back at the next reboot to fight ours for the port, months later, with nobody watching.
+
+    Every failure after the stop puts their container back exactly as it was — started, with its original
+    restart policy. A take-over that half-happened is worse than one that did not: their users would be down
+    with nothing serving them.
+
+    Returns {"ok": True, "iface", "peers": [...]} for the panel to import, or {"error": ...}.
+    """
+    r = container_iface_read(container)
+    if r.get("error"):
+        return r
+    iface = r.get("iface") or ""
+    info = {k.lower(): v for k, v in (r.get("interface") or {}).items()}
+    priv, port = (info.get("privatekey") or "").strip(), (info.get("listenport") or "").strip()
+    addr = (info.get("address") or "").strip()
+    if not iface or not priv or not addr:
+        return _ctr_err("{c}: its config has no interface name, key or address to reuse", c=container)
+    # Refuse on anything but a live interface whose key matches its config. This stops somebody else's
+    # container; "there was a file that looked right" is not a standard worth acting on.
+    if not r.get("running"):
+        return _ctr_err("{i} in {c} is not actually running — nothing to take over", i=iface, c=container)
+    if not r.get("key_match"):
+        return _ctr_err("{i} in {c} does not match the config we read (its live key is a different one), so "
+                        "taking it over would not keep existing clients working — refusing", i=iface, c=container)
+    if iface in (node_cfg.get("interfaces") or {}):
+        return _ctr_err("this node already runs an interface called {i}, so the same name cannot be created "
+                        "here — free it first (delete that interface if it is unused, or move its peers "
+                        "elsewhere). Nothing was changed.", i=iface)
+    awg = {k: v for k, v in (r.get("interface") or {}).items() if k in _AWG_CONF_KEYS}
+    cmd = ["awg"] if awg else ["wg"]          # obfuscation params present => it is AmneziaWG, not plain WireGuard
+
+    # what the daemon will restore on failure
+    pol = ""
+    with contextlib.suppress(Exception):
+        pol = (run(["docker", "inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}", container],
+                   timeout=20).stdout or "").strip()
+    if run(["docker", "update", "--restart=no", container], timeout=30).returncode != 0:
+        return _ctr_err("could not clear the restart policy on {c} — nothing was changed", c=container)
+    if run(["docker", "stop", container], timeout=90).returncode != 0:
+        with contextlib.suppress(Exception):
+            run(["docker", "update", "--restart=" + (pol or "always"), container], timeout=30)
+        return _ctr_err("could not stop {c} — nothing was changed", c=container)
+
+    def _undo(why):
+        with contextlib.suppress(Exception):
+            run(["docker", "update", "--restart=" + (pol or "always"), container], timeout=30)
+        with contextlib.suppress(Exception):
+            run(["docker", "start", container], timeout=90)
+        _CTR_IF["at"] = 0.0
+        print("container-takeover: %s failed (%s) — put %s back" % (iface, why, container), flush=True)
+        return _ctr_err("{why} — {c} was restarted and is serving again, nothing was taken over",
+                        why=why, c=container)
+
+    ag = run_agent(agent, sudo, {"op": "create-iface", "iface": iface, "cmd": cmd,
+                                 "subnet": addr, "address": addr,
+                                 "listen_port": int(port) if port.isdigit() else 0,
+                                 "private_key": priv, "awg_params": awg or None,
+                                 "mtu": (info.get("mtu") or "").strip() or None})
+    if not ag.get("ok"):
+        return _undo("could not create %s here: %s" % (iface, ag.get("error")))
+    conf = (ag.get("data") or {}).get("conf") or ""
+    if not conf:
+        return _undo("the agent created %s but returned no config path" % iface)
+    node_cfg.setdefault("interfaces", {})[iface] = {"cmd": cmd, "conf": conf, "adopted_from": container}
+    _CTR_IF["at"] = 0.0
+    print("container-takeover: %s is ours now (from %s, %d peer(s) to import)"
+          % (iface, container, len(r.get("peers") or [])), flush=True)
+    return {"ok": True, "iface": iface, "container": container, "conf": conf,
+            "listen_port": port, "address": addr, "proto": cmd[0],
+            "peers": r.get("peers") or [], "named": r.get("named") or 0}
+
 
 def iface_candidates(node_cfg):
     """wg/awg interfaces present on this box that this node does NOT manage — Approach-B adoption candidates for the
@@ -4024,7 +4390,13 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             _lp = str(_x.get("listen") or "").rsplit(":", 1)[-1]
             if _lp.isdigit():
                 _x["src_ips"] = sorted(_cmap.get(_lp, ()))
-    snap["iface_candidates"] = iface_candidates(node_cfg)   # unmanaged wg/awg interfaces on the box → panel adoption candidates (report-only, untouched)
+    snap["iface_candidates"] = iface_candidates(node_cfg)
+    # Interfaces in ANOTHER container's netns (AmneziaWG's server is the case). A SEPARATE key, never
+    # merged into the candidates above: those are offers to adopt, and this one cannot be adopted in
+    # place — see _container_ifaces. Reported so the panel can say what is running instead of nothing.
+    snap["container_ifaces"] = _container_ifaces()
+    if _CTR_ADOPT:
+        snap["container_adopt"] = dict(_CTR_ADOPT)   # take-over result → the panel imports the peers and clears   # unmanaged wg/awg interfaces on the box → panel adoption candidates (report-only, untouched)
     snap["wdtt_dormant"] = wdtt_dormant()                   # WDTT installs on disk with nothing running (no iface to be a candidate)
     snap["csqtt_candidates"] = csqtt_candidates()           # FOREIGN csqtt servers on the box → panel adoption candidates (report-only, untouched)
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
@@ -8294,6 +8666,10 @@ def main():
                             os.replace(PANEL_IP_FILE + ".tmp", PANEL_IP_FILE)
                         else:
                             os.unlink(PANEL_IP_FILE)
+            if status == 200 and snap.get("container_adopt"):
+                # The panel has it now (it imports the peers and clears the request on this same call), so drop
+                # it. Left in place it is re-sent for ever and consumes every later request as its own answer.
+                _CTR_ADOPT.clear()
             if status == 200 and isinstance(reply.get("desired"), dict):
                 _newurl = apply_panel_hints(panel, node_cfg, reply)   # pin-gated auto-repoint on a panel host/port change
                 if _newurl:
@@ -8340,6 +8716,20 @@ def main():
                 ob = onboard_ifaces(node_cfg, {**(reply.get("onboard") or {}), **_heal})   # add panel-requested interfaces first
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
                 wd = reconcile_wdtt(reply.get("wdtt"), reply.get("wdtt_remove"))   # install/desired.json+SIGHUP; removals ONLY from the explicit list
+                # Take over a wg/awg server from another container (Amnezia). One-shot and operator-driven:
+                # it stops somebody else's container, so it runs only while the panel is asking for it, and the
+                # answer — taken over, or refused and nothing changed — rides back in the next snapshot.
+                _adc = reply.get("adopt_container")
+                if isinstance(_adc, dict) and (_adc.get("container") or "").strip():
+                    _res = container_iface_takeover((_adc.get("container") or "").strip(),
+                                                    node_cfg, agent, sudo)
+                    _CTR_ADOPT.clear()
+                    _CTR_ADOPT.update({"container": (_adc.get("container") or "").strip(),
+                                       "req_iface": (_adc.get("iface") or "").strip(),
+                                       "req_at": _adc.get("at") or 0,   # which REQUEST this answers — see below
+                                       "at": int(time.time()), **_res})
+                    if _res.get("ok"):
+                        _persist_config(node_cfg)      # the interface is ours now — persist before anything else
                 cq = reconcile_csqtt(reply.get("csqtt"), reply.get("csqtt_remove"))   # csqtt (raw-TUN): parallel to wdtt; removals ONLY from the explicit list
                 r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
                 reconcile_dial_src(reply["desired"], r)        # Part 3: pin per-link outbound source IPs (folds into r)

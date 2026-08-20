@@ -62,6 +62,8 @@ export const SELF_CONTAINED_KINDS = ["wdtt", "csqtt"];
 export const isSelfContainedKind = (kind) => kind === "wdtt" || kind === "csqtt";
 export const isSelfContainedTarget = (t) => !!t && (isSelfContainedKind(t.type) || isSelfContainedIface(t.iface));   // by roster target `type` OR iface-name sniff
 export function ipOf(hostport) { if (!hostport) return ""; const s = String(hostport); return s[0] === "[" ? s.slice(1, s.indexOf("]")) : s.split(":")[0]; }
+export const listenAddr = (host, port) => (port ? ((host ? host : "0.0.0.0") + ":" + port) : "\u2014");
+
 export function portOf(hostport) { if (!hostport) return ""; const s = String(hostport); const i = s.lastIndexOf(":"); return i < 0 ? "" : s.slice(i + 1); }
 export const ipPickerVal = (sel, custom) => sel === "__custom__" ? (custom || "").trim() : sel;
 

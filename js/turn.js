@@ -1008,9 +1008,14 @@ export function RosterCheckSheet() {
     ${!data && !err ? html`<div class="loading"><span class="spin"></span>${T("loading…")}</div>`
       : err ? html`<div class="notice warn"><${Ic} i="warn"/><span>${err}</span></div>`
       : html`<${Fragment}>
-        ${data.rate_limited ? html`<div class="notice warn" style="margin-bottom:12px"><${Ic} i="warn"/><span>${Trich(
-          "*GitHub is rate-limiting this panel*, so the rows below could not be checked — it is the budget, not the sources. It clears in about {v1} min. Setting *SWG_GH_TOKEN* on the panel raises the limit well past what this check needs.",
-          { v1: Math.max(1, Math.ceil((data.rate_limited * 1000 - Date.now()) / 60000)) })}</span></div>` : null}
+        ${!data.rate_limited ? null
+            : data.watch_via !== "api"
+            ? html`<div class="notice warn" style="margin-bottom:12px"><${Ic} i="warn"/><span>${Trich(
+                "*GitHub is rate-limiting this panel* for the few sources the published list does not cover, so those rows could not be checked — it is the budget, not the sources. It clears in about {v1} min.",
+                { v1: Math.max(1, Math.ceil((data.rate_limited * 1000 - Date.now()) / 60000)) })}</span></div>`
+            : html`<div class="notice warn" style="margin-bottom:12px"><${Ic} i="warn"/><span>${Trich(
+                "*This panel could not fetch the published client fingerprints*, so it fell back to asking GitHub directly and hit the 60-an-hour limit. Check that the panel can reach *raw.githubusercontent.com* — with it, these rows cost no GitHub budget at all. It clears in about {v1} min.",
+                { v1: Math.max(1, Math.ceil((data.rate_limited * 1000 - Date.now()) / 60000)) })}</span></div>`}
         <div class="rosterlist">
           ${cids.map(cid => {
             const p4 = p4c[cid], p1 = p1c[cid], t = p1 ? (TAG[p1.status] || TAG.unknown) : null;
@@ -1772,6 +1777,9 @@ export function wdttRecreateFresh(node, iface) {
       await Store.poll(); } });
 }
 export function WdttDeleteSheet({ node, iface }) {
+  // Same gate as every other destructive delete (interface, turn-proxy, node): the typed phrase is
+  // "DELETE <name>", not the bare name — see DeleteIfaceSheet.
+  const phrase = T("DELETE {v1}", { v1: iface });
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null);
   const del = async () => {
@@ -1789,10 +1797,10 @@ export function WdttDeleteSheet({ node, iface }) {
     closeModal(); Store.apply(); await Store.poll();
     toast(T("WDTT server removed — the node tears it down on its next sync."), "ok");
   };
-  return html`<${Sheet} title=${T("Delete WDTT server")} width=${480}
-    foot=${footRow({ onCancel: closeModal, disabled: busy || confirm.trim() !== iface, onAction: del, action: T("Delete"), danger: true })}>
+  return html`<${Sheet} title=${T("Delete WDTT server · {v1}", { v1: iface })}
+    foot=${footRow({ onCancel: closeModal, disabled: busy || confirm !== phrase, onAction: del, action: T("Delete server"), danger: true })}>
     <div class="notice warn"><${Ic} i="warn"/><span>${Trich("This stops and removes the WDTT server *{iface}* on this node and disconnects its users. Each user's credential is a password on *this* server, so its peers go with it (a peer also deployed elsewhere keeps those deployments). Type *{iface}* to confirm.", { iface })}</span></div>
-    <div class="field"><input value=${confirm} onInput=${e => setConfirm(e.target.value)} placeholder=${iface} autocomplete="off"/></div>
+    <div class="field"><label>${typeToConfirm(phrase)}</label><input autofocus value=${confirm} onInput=${e => setConfirm(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -2020,6 +2028,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
 }
 
 export function CsqttDeleteSheet({ node, iface }) {
+  const phrase = T("DELETE {v1}", { v1: iface });   // same gate as the other destructive deletes
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null);
   const del = async () => {
@@ -2030,10 +2039,10 @@ export function CsqttDeleteSheet({ node, iface }) {
     closeAllModals(); Store.apply(); await Store.poll();
     toast(T("csqtt server removed — the node tears it down on its next sync."), "ok");
   };
-  return html`<${Sheet} title=${T("Delete csqtt server · {v1}", { v1: iface })} width=${520}
-    foot=${footRow({ onCancel: closeModal, danger: true, disabled: busy || confirm.trim() !== iface, onAction: del, action: T("Delete server") })}>
+  return html`<${Sheet} title=${T("Delete csqtt server · {v1}", { v1: iface })}
+    foot=${footRow({ onCancel: closeModal, danger: true, disabled: busy || confirm !== phrase, onAction: del, action: T("Delete server") })}>
     <div class="notice warn"><${Ic} i="shield"/><span>${Trich("This removes the *{iface}* csqtt server and *unassigns + deletes* every user on it — their credential is a password on this server, so it means nothing once the server is gone. Type *{iface}* to confirm.", { iface })}</span></div>
-    <div class="field"><label>${T("Type the interface name to confirm")}</label><input value=${confirm} onInput=${e => setConfirm(e.target.value)} placeholder=${iface} autocomplete="off"/></div>
+    <div class="field"><label>${typeToConfirm(phrase)}</label><input autofocus value=${confirm} onInput=${e => setConfirm(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }

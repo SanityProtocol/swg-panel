@@ -1334,19 +1334,30 @@ Type=oneshot
 Environment=SWG_DOCKER_DIR=$INSTALL_DIR
 ExecStart=/usr/local/bin/swg-netctl-docker
 EOF
+  cat > /etc/systemd/system/swg-netctl-docker.path <<EOF
+[Unit]
+Description=watch for swg-panel docker netctl requests (address changes)
+
+[Path]
+DirectoryNotEmpty=$INSTALL_DIR/data/lib/netctl/queue
+Unit=swg-netctl-docker.service
+
+[Install]
+WantedBy=paths.target
+EOF
   cat > /etc/systemd/system/swg-netctl-docker.timer <<EOF
 [Unit]
-Description=poll the swg-panel docker netctl queue (address changes)
+Description=poll the swg-panel docker netctl queue (fallback for the path watch)
 
 [Timer]
-OnActiveSec=5s
-OnUnitActiveSec=1s
-AccuracySec=1s
+OnActiveSec=10s
+OnUnitActiveSec=10s
 
 [Install]
 WantedBy=timers.target
 EOF
   systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now swg-netctl-docker.path >/dev/null 2>&1 || warn "couldn't enable swg-netctl-docker.path"
   systemctl enable --now swg-netctl-docker.timer >/dev/null 2>&1 || warn "couldn't enable swg-netctl-docker.timer"
   ok "one-click address changes wired — the panel restarts swg-sub / rebinds via the host on Save"
 }

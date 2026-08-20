@@ -545,6 +545,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "swg-sub"
     protocol_version = "HTTP/1.1"
     state = None
+    _meta_warned = False        # link-preview metadata failure is reported once, not once per visit
 
     def log_message(self, *a):
         pass                                            # no request logging — the page is public, keep it quiet
@@ -616,8 +617,25 @@ class Handler(BaseHTTPRequestHandler):
         # Metadata in the language the ADMIN set as the subscriptions default (subs.languages.default) — not the
         # visitor's, and not a per-browser choice: this is what a link preview shows wherever the URL is pasted,
         # long before anyone opens it and picks a language. Body text still follows the visitor's own selection.
-        _lg = state.subscriptions().get("languages")
-        data = _sub_meta(data, ((_lg if isinstance(_lg, dict) else {}).get("default") or "en"))
+        # Handler.state, NOT a bare `state`: the state object is a CLASS attribute, which is not in a method's
+        # scope, so the bare name was a plain global lookup that could only ever raise NameError. Every other route
+        # already reads it this way (`st = Handler.state`). It raised AFTER the connection was accepted, so the
+        # page replied with nothing at all — and an empty reply is invisible in every place anyone looks: the unit
+        # reads active, the journal is clean, /healthz, /api/<token> and every asset answer 200, and a CDN in front
+        # reports its own 520 as if the origin were at fault. Only the one route that renders the page was dead.
+        # Suppressed, too: the shell must be served even if the metadata step fails. A localised og: tag is worth
+        # strictly less than the page loading, and this is the whole subscription surface.
+        # Reported ONCE, not suppressed silently: this page is served on every visit, so a per-request line would
+        # be noise — but a failure nobody can see is exactly what made the bug above survive a release. Degrade,
+        # and say so a single time.
+        try:
+            _lg = (Handler.state.subscriptions() or {}).get("languages")
+            data = _sub_meta(data, ((_lg if isinstance(_lg, dict) else {}).get("default") or "en"))
+        except Exception as _e:
+            if not Handler._meta_warned:
+                Handler._meta_warned = True
+                print("sub: link-preview metadata skipped (%s) — the page itself is served unchanged"
+                      % str(_e)[:160], flush=True)
         self._send(200, data, "text/html; charset=utf-8", cache="no-cache", extra={"Content-Security-Policy": self._CSP})
 
     def _client_ident(self):

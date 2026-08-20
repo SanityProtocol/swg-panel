@@ -11,7 +11,7 @@
  */
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
-import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, portOf, ipPickerVal, isWdttIface, isCsqttIface, V } from "./util.js";
+import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, portOf, listenAddr, ipPickerVal, isWdttIface, isCsqttIface, V } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, toThemed, IFACE_COLOR_DEFAULTS } from "./theme.js";
@@ -111,6 +111,12 @@ export function IgnoredIfacesCard() {
         rows.push({ n, id: d.config_dir, name: (d.config_dir.split("/").filter(Boolean).pop() || "wdtt"),
                     info: T("WDTT · not running") + (d.listen_port ? " · :" + d.listen_port : ""),
                     adopt: () => openModal(html`<${AdoptDormantWdttSheet} node=${n.id} d=${d} nrec=${n}/>`) });
+    for (const x of (n.ignored_containers || []))
+      if (x && x.name && x.container)
+        rows.push({ n, id: "ctr:" + x.container + ":" + x.name, name: x.name,
+                    info: (x.proto === "awg" ? "AWG" : "WG") + " · " + T("in {v1}", { v1: x.container })
+                          + (x.address ? " · " + x.address : ""),
+                    unignore: true });
   }
   if (!rows.length) return null;
   return html`<div class="card">
@@ -121,16 +127,27 @@ export function IgnoredIfacesCard() {
       <span class="ignrow-node">on ${r.n.name || r.n.id}</span>
       <span class="grow"></span>
       <span class="ignrow-f">${r.info}</span>
-      <button class="iconbtn" title=${T("Adopt {v1}", { v1: T("{v1} — start managing it from the panel", { v1: r.name }) })}
-        onClick=${r.adopt}><${Ic} i="plus"/></button>
+      ${r.unignore
+        ? html`<button class="iconbtn" title=${T("Stop ignoring it — show it on the node again")}
+            onClick=${() => api.ifaceUnignore({ node: r.n.id, iface: r.id })
+              .then(res => toast(res && res.ok ? T("Back on the node screen.") : (srvText(res) || T("Could not restore it.")), res && res.ok ? "ok" : "err"))}><${Ic} i="eye"/></button>`
+        : html`<button class="iconbtn" title=${T("Adopt {v1}", { v1: T("{v1} — start managing it from the panel", { v1: r.name }) })}
+            onClick=${r.adopt}><${Ic} i="plus"/></button>`}
     </div>`)}</div>
   </div>`;
 }
-export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm }) {
+export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm, ctr }) {
   useStore();
   const dname = nrec.name || node;
   const wd = !!cand.wdtt_hint;
-  const title = dorm ? cand.name : iface;   // a dormant install is addressed by its config dir; show its folder
+  const _adc = (nrec || {}).adopt_container;
+  const _ctrPending = !!ctr && !!_adc && typeof _adc === "object" && _adc.container === ctr.container
+                      && (!_adc.iface || _adc.iface === ctr.name);
+  // Same pre-flight the node card does: a take-over recreates the server under the SAME interface name, so it
+  // cannot run beside one this node already has. Explain it here rather than let the node refuse after a click.
+  const _ctrClash = !!ctr && !!Store.ifaceMeta(node, ctr.name);
+  const _named = (cand.peer_list || []).some(p => p && p.name);   // only widen the table when there IS a name
+  const title = (dorm || ctr) ? cand.name : iface;   // addressed by a config dir / container key; show the name
   const ip0 = (cand.address || "").split("/")[0];
   // Optimistic: the tag flips to "ignoring" on the click and we leave for the node page immediately, so the
   // decision is visible where its result lands (the card) instead of the page sitting still through a round-trip
@@ -151,7 +168,7 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm })
     })();
   };
   const doIgnore   = () => panelOp("ignore",   () => api.ifaceIgnore({ node, iface }),   T("Interface ignored — listed in Settings → Interfaces."), true);
-  const doUnignore = () => panelOp("unignore", () => api.ifaceUnignore({ node, iface }), T("Interface un-ignored — back as an adoption candidate."), false);
+  const doUnignore = () => panelOp("unignore", () => api.ifaceUnignore({ node, iface }), ctr ? T("Back on the node screen.") : T("Interface un-ignored — back as an adoption candidate."), false);
   // Never disable Adopt: the sheet lets the operator pick a different type, and for WDTT it explains exactly why
   // an identity-less server can't be taken over. A blocked action that says why beats a dead control.
   // Same shape as a managed interface's page — head, "Interface details", "Peers on this interface" — so a
@@ -159,17 +176,21 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm })
   // turn-proxies and peer management all describe things the panel doesn't run for it.
   return html`<div class="screen">
     <${NodeRail} active=${node}/>
-    <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
+    <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${title}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${title}</h1><span class=${"iftype " + (wd ? "wdtt" : (cand.type_hint === "awg" ? "awg" : "orph"))}>${wd ? "wdtt" : cand.type_hint === "awg" ? "awg?" : "wg?"}</span>
+      <div class="title"><h1>${title}</h1><span class=${"iftype " + (wd ? "wdtt" : ctr ? (cand.type_hint === "awg" ? "awg" : "wg") : (cand.type_hint === "awg" ? "awg" : "orph"))}>${wd ? "wdtt" : ctr ? (cand.type_hint === "awg" ? "awg" : "wg") : cand.type_hint === "awg" ? "awg?" : "wg?"}</span>
         ${dorm ? html`<${ForkTag} fork=${dorm.fork || "amurcanov"}/><span class="nstat stopped" title=${T("Installed on disk, nothing running")}><${Ic} i="stop"/> ${T("not running")}</span>` : null}
-        <span class=${"tg " + (ignored ? "tg-ign" : "tg-cand")} title=${ignored ? T("Dismissed — the panel isn't managing it") : T("On the node, not managed by the panel")}><${Ic} i="warn"/>${ignored ? "ignored" : "orphan"}</span></div>
+        <span class=${"tg " + (ignored ? "tg-ign" : "tg-cand")} title=${ignored ? T("Dismissed — the panel isn't managing it") : ctr ? T("Another program owns this interface — it runs in its own container") : T("On the node, not managed by the panel")}><${Ic} i="warn"/>${ignored ? T("tag|ignored") : ctr ? T("tag|alien") : T("tag|orphan")}</span></div>
       <div class="grow"></div>
     </div>
     <div class="notice warn"><${Ic} i="warn"/><span>${Store.ifaceGone[node + "|" + iface]
       ? Trich("This interface is being *deleted* — the node tears it down on its next sync. It still reports the device, which is the only reason this page is showing.")
       : ignored
       ? Trich("This interface is *ignored* — the panel isn't managing it and it's hidden from the node's page. It's listed in *Settings → Interfaces*. *Un-ignore* to bring it back as a candidate, or *Adopt* to start managing it now.")
+      : ctr && _ctrClash
+      ? T("This node already runs an interface called {v1}, so the take-over cannot recreate this one under that name — it would collide. Free the name first: open {v1} and delete it if you don't need it, or move its peers to another interface. Nothing has been changed here.", { v1: ctr.name })
+      : ctr
+      ? Trich("This interface runs inside the container *{v1}*, from that container's own config — swgPanel can see it but cannot manage it there, and a change made here would be undone the next time that container restarts. *Take over* stops that container and runs the same server natively, keeping its key, port and peers.", { v1: ctr.container })
       : dorm
       ? html`${Trich("A WDTT server is *installed here but not running*. It owns its own tunnel device, so while it is stopped there is no interface, no socket and no process — this directory is its only trace. *Adopt* takes it over and starts it, keeping its server key and users, so existing clients keep working; *Ignore* leaves it alone.")}
           ${!dorm.listen_port ? html`<div style="margin-top:8px">${Trich("*Its ports couldn't be identified*, so adoption will offer defaults — replace them with the ports this server was actually listening on. Clients dial the port written into the config they already hold, so adopting on the wrong one leaves every existing user unable to connect until you re-issue and re-distribute their links.")}</div>` : null}`
@@ -188,20 +209,45 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm })
             // SECOND onboard for the same interface; show what is happening instead.
             ? html`<${StatusTag} cls="tg-busy" icon="clock" label="onboarding" title=${T("The node takes it over on its next sync")}/>`
             : html`<${Fragment}>
-          ${ignored
+          ${_ctrPending
+            ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|taking over")} title=${T("The node does this on its next sync")}/>
+                <button class="btn btn-mini" title=${T("Withdraw the request — nothing has happened on the node yet")}
+                  onClick=${async () => { delete Store.ctrAdopt[node + "|" + ctr.container + ":" + ctr.name]; Store.apply();
+                    const r = await api.containerAdopt({ node, cancel: true, container: ctr.container });
+                    toast(r && r.ok ? T("Request withdrawn.") : (srvText(r) || T("Could not withdraw it.")), r && r.ok ? "ok" : "err"); }}>${T("Withdraw")}</button>`
+            : ignored
             ? html`<button class="btn btn-mini" onClick=${doUnignore}>${T("Un-ignore")}</button>`
             : html`<button class="btn btn-mini" onClick=${doIgnore}>${T("Ignore")}</button>`}
-          <button class="btn btn-mini btn-primary"
-            title=${T("Start managing this interface from the panel")}
-            onClick=${() => openModal(dorm
-              ? html`<${AdoptDormantWdttSheet} node=${node} d=${dorm} nrec=${nrec}/>`
-              : html`<${AdoptIfaceSheet} node=${node} iface=${iface} cand=${cand} nrec=${nrec}/>`)}>${T("Adopt")}</button>
+          ${_ctrPending
+            ? null
+            : _ctrClash
+            ? html`<${StatusTag} cls="tg-warn tg-click" icon="warn" label=${T("name taken")}
+                msg=${T("This node already runs an interface called {v1}, so the take-over cannot recreate this one under that name — it would collide. Free the name first: open {v1} and delete it if you don't need it, or move its peers to another interface. Nothing has been changed here.", { v1: ctr.name })}
+                title=${T("Why this can't be taken over")}/>`
+            : ctr
+            ? html`<button class="btn btn-mini btn-primary" onClick=${() => openConfirm({
+                title: T("Take over {v1}", { v1: ctr.name }), confirmLabel: T("Take it over"), warn: true,
+                body: T("swgPanel will STOP the container {v1} and run {v2} here instead — same key, same port, same obfuscation, so the configs already on your users' devices keep working, and its peers are imported. That container is only stopped, never deleted: if anything goes wrong the node starts it again, and you can start it yourself to go back. It will not come back on its own afterwards.", { v1: ctr.container, v2: ctr.name }),
+                onConfirm: async () => {
+                  const k = node + "|" + ctr.container + ":" + ctr.name;
+                  Store.ctrAdopt[k] = { at: Date.now() }; Store.apply();
+                  const r = await api.containerAdopt({ node, container: ctr.container, iface: ctr.name });
+                  if (!(r && r.ok)) { delete Store.ctrAdopt[k]; Store.apply(); }
+                  toast(r && r.ok ? T("Taking it over — the node does this on its next sync.") : (srvText(r) || T("Couldn't start the take-over.")), r && r.ok ? "ok" : "err");
+                  if (r && r.ok) go("#/node/" + encodeURIComponent(node)); } })}>${T("Take over")}</button>`
+            : html`<button class="btn btn-mini btn-primary"
+                title=${T("Start managing this interface from the panel")}
+                onClick=${() => openModal(dorm
+                  ? html`<${AdoptDormantWdttSheet} node=${node} d=${dorm} nrec=${nrec}/>`
+                  : html`<${AdoptIfaceSheet} node=${node} iface=${iface} cand=${cand} nrec=${nrec}/>`)}>${T("Adopt")}</button>`}
         <//>`}>
       <div class="iface-grid">
         <div class="ig-item"><span class="ig-l">${T("Type")}</span><span class="ig-v">${wd
           ? html`WDTT${(cand.wdtt && cand.wdtt.fork) ? " · " + cand.wdtt.fork : ""}`
           : cand.type_why
           ? html`looks like ${(cand.type_hint || "wg").toUpperCase()}`
+          : ctr
+          ? html`${(cand.type_hint || "wg").toUpperCase()}`
           : html`<span class="faint">${T("chosen when you adopt")}</span>`}</span></div>
         ${dorm
           // A stopped install has no endpoint, address or datapath to report — those are properties of a RUNNING
@@ -214,9 +260,10 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm })
               <div class="ig-item"><span class="ig-l">${T("Server identity")}</span><span class="ig-v"><span class="mi-ok">${T("tag|present")}</span></span></div>
             <//>`
           : html`<${Fragment}>
-              <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${ip0}${cand.listen_port ? ":" + cand.listen_port : ""}</span></div>
+              <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${listenAddr(ctr ? (ctr.host_port ? (nrec || {}).endpoint_host : "") : (nrec || {}).endpoint_host, (ctr && ctr.host_port) || cand.listen_port)}</span></div>
               <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${cand.address || "—"}</span></div>
-              <div class="ig-item"><span class="ig-l">${T("Found at")}</span><span class="ig-v">${cand.conf || ((cand.wdtt || {}).config_dir) || html`<span class="faint">—</span>`}</span></div>
+              ${ctr ? html`<div class="ig-item"><span class="ig-l">${T("Container")}</span><span class="ig-v">${ctr.container}</span></div>` : null}
+              ${ctr ? null : html`<div class="ig-item"><span class="ig-l">${T("Found at")}</span><span class="ig-v">${cand.conf || ((cand.wdtt || {}).config_dir) || html`<span class="faint">—</span>`}</span></div>`}
             <//>`}
       </div>
     <//>
@@ -235,8 +282,9 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm })
 
     ${wd && ((cand.wdtt || {}).users || []).length ? null : html`<${Panel} icon="users" title=${T("Peers on this interface")} count=${cand.peers || 0} pad=${false}>
       ${(cand.peer_list || []).length
-        ? html`<table><thead><tr><th>${T("col|Address")}</th><th>${T("PUBLIC KEY")}</th><th>${T("col|Endpoint")}</th><th>${T("LAST HANDSHAKE")}</th><th class="num">${T("TRANSFER")}</th></tr></thead>
+        ? html`<table><thead><tr>${_named ? html`<th>${T("col|Peer")}</th>` : null}<th>${T("col|Address")}</th><th>${T("PUBLIC KEY")}</th><th>${T("col|Endpoint")}</th><th>${T("LAST HANDSHAKE")}</th><th class="num">${T("TRANSFER")}</th></tr></thead>
             <tbody>${cand.peer_list.map(p => html`<tr key=${p.public_key}>
+              ${_named ? html`<td>${p.name || html`<span class="faint">${T("unnamed")}</span>`}</td>` : null}
               <td class="addr">${p.allowed_ips || "—"}</td>
               <td class="mono faint" title=${p.public_key}>${String(p.public_key || "").slice(0, 16)}…</td>
               <td class="addr">${p.endpoint || html`<span class="faint">${T("never connected")}</span>`}</td>
@@ -545,6 +593,19 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
                        has_identity: true, adoptable: true, users: _dorm.users || [] } }}/>`;
     return html`<div class="screen"><div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${nrec.name || node}</a><span class="sep">/</span><b>${iface}</b></div>
       <div class="empty"><b>${T("Not found")}</b>${T("the node no longer reports a WDTT install at this path — it may have been started (look for it as an interface) or removed.")}</div></div>`;
+  }
+  if (iface.startsWith("ctr:")) {
+    const _cut = iface.indexOf(":", 4);
+    const _ctn = iface.slice(4, _cut < 0 ? undefined : _cut), _cif = _cut < 0 ? "" : iface.slice(_cut + 1);
+    const _hit = (l) => (l || []).find(x => x && x.container === _ctn && x.name === _cif);
+    const _x = _hit(nrec.container_ifaces) || _hit(nrec.ignored_containers);
+    if (_x) return html`<${CandidateIfaceDetail} node=${node} iface=${iface} nrec=${nrec} ctr=${_x}
+      ignored=${!!_hit(nrec.ignored_containers)}
+      cand=${{ name: _x.name, type_hint: _x.proto === "awg" ? "awg" : "wg", address: _x.address || "",
+               listen_port: _x.listen_port || 0, peers: _x.peers || 0, peer_list: _x.peer_list || [],
+               conf: "" }}/>`;
+    return html`<div class="screen"><div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${nrec.name || node}</a><span class="sep">/</span><b>${_cif || iface}</b></div>
+      <div class="empty"><b>${T("Not found")}</b>${T("the node no longer reports this interface inside that container — it may have been stopped, or the container removed.")}</div></div>`;
   }
   const dname = nrec.name || node;
   const meta = Store.ifaceMeta(node, iface);

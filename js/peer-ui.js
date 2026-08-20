@@ -162,7 +162,7 @@ export function VaultUnlockPanel({ need } = {}) {
     setBusy(false);
   };
   return html`<div class="unlockpanel">
-    <div class="unlockpanel-msg"><${Ic} i="lock"/><span>${T("Unlock the Encryption Vault to see configs, QR codes and the subscription link.")}</span></div>
+    <div class="unlockpanel-msg"><${Ic} i="key"/><span>${T("Unlock the Encryption Vault to see configs, QR codes and the subscription link.")}</span></div>
     <div class="unlockpanel-row">
       <input class="subpw" type="password" autofocus autocomplete="off" placeholder=${T("Panel password")} value=${pw}
         onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
@@ -267,6 +267,18 @@ export function userVkLinks(user) {
           : (user && (user.vk_link || "").trim() ? [user.vk_link] : []);
   if (!arr.length) { const t = ((Store.panelSettings || {}).vk_link || "").trim(); if (t) arr = [t]; }
   return arr.map(s => (s || "").trim()).filter(Boolean);
+}
+// Does this peer have a VK hash OF ITS OWN — its own vk_hash, or its user's link(s)? When it doesn't, the
+// generator above still produces a complete-looking link by baking in the panel-wide fallback, and the operator
+// has no way to tell the two apart by looking. That matters twice over: the fallback is one link shared by every
+// such peer, and the SUBSCRIPTION page deliberately uses only per-user links — so the user's own page hands out
+// a link without it. Says so at the moment a config is generated, which is the only moment anyone would act.
+// Note `user` is also null when peer.user_id does not resolve, which is the same situation from here.
+export function vkOwnHash(peer, user) {
+  if (((peer || {}).vk_hash || "").trim()) return true;
+  const own = (user && Array.isArray(user.vk_links) && user.vk_links.length) ? user.vk_links
+            : (user && (user.vk_link || "").trim() ? [user.vk_link] : []);
+  return own.some(s => (s || "").trim());
 }
 // Is any of these deployments behind a turn-proxy? (turn feature on AND a proxy forwards to the interface.) Gates
 // the per-user VK field + the sub's VK warning — no turn-proxy on a user's interfaces ⇒ they never use a VK link.
@@ -764,6 +776,8 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   const col = Store.nodeColor(t.node); const dnode = Store.nodeName(t.node);
   const inp = csqttArtInput(peer, t);
   const dc = csqttClientCfg(inp);
+  // the link is complete, but only because the panel-wide fallback filled it in — see vkOwnHash
+  const vkFallbackHere = !vkOwnHash(peer, (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null);
   const uri = dc.uri;
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
   const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
@@ -775,7 +789,8 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
       ${!uri ? html`<div class="qr-none">${T("csqtt link unavailable — the server isn't reporting yet.")}</div>`
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
         : html`<${LinkBox} uri=${uri}/>`}
-      ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>` : null}
+      ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>`
+          : vkFallbackHere ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("Using the panel's fallback VK call link — this user has none of their own. Their subscription page hands out a link without it, so set a VK link on the user before sending them there.")}</div>` : null}
       ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">${T("row|kind")}</span><span class="vv">${T("csqtt · keyless (server-minted address)")}</span></div>
         <div class="row"><span class="k">${T("row|endpoint")}</span><span class="vv">${inp.host || "—"}:${inp.port}</span></div>
@@ -823,6 +838,8 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
   const fork = rb.fork || "amurcanov";
   const clientIds = wdttClientIds(fork);
   const dc = wdttClientCfg(w, clientIds[0] || "wdttapp", fork);
+  // same as the csqtt card: complete-looking link, filled in from the panel-wide fallback — see vkOwnHash
+  const vkFallbackHere = !vkOwnHash(peer, (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null);
   const uri = dc.uri;
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
   const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
@@ -834,7 +851,8 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
       ${!uri ? html`<div class="qr-none">${T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
         : html`<${LinkBox} uri=${uri}/>`}
-      ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>` : null}
+      ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>`
+          : vkFallbackHere ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("Using the panel's fallback VK call link — this user has none of their own. Their subscription page hands out a link without it, so set a VK link on the user before sending them there.")}</div>` : null}
       ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">${T("row|kind")}</span><span class="vv">${T("WDTT · keyless (server-minted key)")}</span></div>
         <div class="row"><span class="k">${T("row|endpoint")}</span><span class="vv">${w.endpoint_host || "—"}:${w.dtls_port}</span></div>

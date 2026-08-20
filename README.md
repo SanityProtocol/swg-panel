@@ -1,13 +1,14 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.12-beta</code></p>
+<p align="center"><code>1.7.13-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.11-beta** — [full changelog](CHANGELOG.md)
-> - **PWDTT can import the links again** — that build changed its link format in June and we were still sending the old one, so importing failed on a link every other WDTT app accepts.
-> - **Panels stay out of search engines** — nothing had told crawlers to skip them, so installs were being indexed. Sharing a link still shows a proper title and summary.
-> - **Two client settings that reached nobody are gone**, and the one that does reach an app — qWDTT's worker count — is now actually delivered.
-> - **The app picker says what each app does** — opens on a tap, scans a QR, or takes a pasted link — instead of calling everything a pasted link.
+> **What's new in 1.7.13-beta** — [full changelog](CHANGELOG.md)
+> - **Take over an AmneziaVPN server running in its own Docker container** — the panel could not see one at all; now it shows its subnet, port and peers (with the names you gave them in Amnezia) and takes it over keeping the same key, port and obfuscation, so existing client configs keep working.
+> - **Unassigning a peer now really revokes csqtt access** — it authenticates on a password alone, and that password was never rotated, so a deleted user's link kept working. If you unassigned anyone on an earlier version, do it again after updating.
+> - **The subscription page returned nothing at all on 1.7.11–1.7.12** — while the panel, its API and its health check all answered normally, so nothing looked wrong from the panel side.
+> - **The rotate-link button no longer sticks for ever** on a csqtt or WDTT peer, and VK links are authorised against the hash the link actually carries.
+> - **Less needless work on your servers** — client build info is published once instead of every panel walking GitHub, and the Docker helper timer stopped starting a unit every second.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -180,6 +181,12 @@ If you chose **Master** above, you already have your first VPN server — you ca
 If that server was **already running** WireGuard, AmneziaWG or WDTT, those show up on its page in the
 panel as cards offering **Adopt** or **Ignore**. Adopting takes a server over exactly as it is — same
 keys, same port, same users — so everyone’s existing configs keep working and nothing goes down.
+
+That includes a server run by the **AmneziaVPN** app in its own Docker container. The panel can see it
+even though it lives in a separate network namespace, shows you its subnet, port and users first, and
+**Take over** stands the same server up natively — same key, same port, same obfuscation — so the
+configs already on your users’ phones keep working. Its users come across with the names you gave them
+in Amnezia. That container is only stopped, never deleted: start it again to go back.
 
 The new server reaches out to the panel on its own — **you never have to open special access to it**,
 no inbound ports, no SSH keys shared around. Within a few seconds it shows up in your Nodes list.

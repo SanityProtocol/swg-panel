@@ -1,0 +1,125 @@
+name: client-fingerprints
+
+# Publish the upstream commit fingerprints for every watched CLIENT schema source, so a panel does not
+# have to walk GitHub's API itself.
+#
+# WHY: the drift watch reads 19 upstream paths across 13 repos. Unauthenticated GitHub allows 60 requests
+# an hour PER SOURCE IP, shared with the release/version checks — so a single panel cannot complete one
+# full pass, and every install reports "couldn't check" rather than whether a client's format moved. That
+# is the check that exists because a client changed its link format in June and reached us as a user's
+# screenshot two months later. Conditional requests do not help: a 304 costs a full unit (measured).
+#
+# So do it ONCE, here, with the Actions token, and let every panel fetch one file from raw.githubusercontent
+# — a CDN with no API budget at all. No operator ever needs a token, at any number of installs.
+#
+# Published to the `fingerprints` BRANCH, never to main: main carries one commit per release
+# (docs/RELEASING) and a daily bot commit would bury that.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'      # daily; drift detection does not need to be live
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['swg-panel-server']   # the source list lives there — re-publish when it changes
+
+permissions:
+  contents: write             # to push the fingerprints branch
+
+concurrency:
+  group: client-fingerprints
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect fingerprints
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import importlib.machinery, importlib.util, json, os, sys, time
+          import urllib.error, urllib.parse, urllib.request
+
+          # The watch list is NOT duplicated here: it is read from the panel itself, so the two can never
+          # disagree about which file defines a client's format.
+          spec = importlib.util.spec_from_loader(
+              "sp", importlib.machinery.SourceFileLoader("sp", "swg-panel-server"))
+          sp = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(sp)
+          sources = sp._CLIENT_SOURCES
+
+          tok = os.environ.get("GH_TOKEN", "")
+          hdr = {"User-Agent": "swg-panel-fingerprints", "Accept": "application/vnd.github+json"}
+          if tok:
+              hdr["Authorization"] = "Bearer " + tok
+
+          def latest(owner, repo, branch, path):
+              url = ("https://api.github.com/repos/%s/%s/commits?path=%s&sha=%s&per_page=1"
+                     % (owner, repo, urllib.parse.quote(path), urllib.parse.quote(branch)))
+              req = urllib.request.Request(url, headers=hdr)
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  rows = json.loads(r.read().decode("utf-8", "replace"))
+              if not rows:
+                  return None
+              c = rows[0]
+              return {"sha": c.get("sha") or "",
+                      "date": (((c.get("commit") or {}).get("committer") or {}).get("date") or ""),
+                      "url": c.get("html_url") or ""}
+
+          out, failed = {}, []
+          for cid, srcs in sorted(sources.items()):
+              files = {}
+              for s in srcs:
+                  key = "%s/%s@%s:%s" % (s["owner"], s["repo"], s["branch"], s["path"])
+                  try:
+                      res = latest(s["owner"], s["repo"], s["branch"], s["path"])
+                  except Exception as e:                    # a repo that vanished or was renamed
+                      failed.append("%s :: %s" % (key, str(e)[:120])); continue
+                  if res:
+                      files[key] = res
+              if files:
+                  out[cid] = files
+
+          # A partial file is worse than a stale one: a panel would read a missing client as "no drift".
+          # Only publish a complete pass; a failure keeps yesterday's file live and shows up here.
+          if failed:
+              print("::error::could not read %d source(s):" % len(failed))
+              for f in failed:
+                  print("::error::  " + f)
+              sys.exit(1)
+
+          doc = {"generated_at": int(time.time()), "schema": 1, "clients": out}
+          os.makedirs("out", exist_ok=True)
+          with open("out/client-fingerprints.json", "w") as f:
+              json.dump(doc, f, indent=1, sort_keys=True)
+              f.write("\n")
+          print("collected %d client(s), %d path(s)" % (len(out), sum(len(v) for v in out.values())))
+          PY
+
+      - name: Publish to the fingerprints branch
+        run: |
+          set -e
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # An orphan branch that holds ONLY this file: nothing else should be fetchable from it, and its
+          # history is a readable log of exactly when each client's upstream moved.
+          git fetch origin fingerprints:fingerprints 2>/dev/null && git checkout fingerprints \
+            || git checkout --orphan fingerprints
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          find . -maxdepth 1 ! -name . ! -name .git ! -name out -exec rm -rf {} + 2>/dev/null || true
+          mv out/client-fingerprints.json .
+          rmdir out 2>/dev/null || true
+          git add client-fingerprints.json
+          if git diff --cached --quiet; then
+            echo "no upstream movement — nothing to publish"
+            exit 0
+          fi
+          # The diff IS the alert: what changed here is a client whose format may have moved, and the
+          # panel's own roster will start reporting it within a day.
+          git diff --cached --stat
+          git commit -m "client fingerprints $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push origin fingerprints

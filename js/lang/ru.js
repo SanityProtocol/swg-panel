@@ -187,9 +187,100 @@ export const STR = {
   "updated": "обновлён",
   "changed": "изменился",
   "couldn't check": "не удалось проверить",
-  "*GitHub is rate-limiting this panel*, so the rows below could not be checked — it is the budget, not the sources. It clears in about {v1} min. Setting *SWG_GH_TOKEN* on the panel raises the limit well past what this check needs.":
-    "*GitHub ограничивает частоту запросов от этой панели*, поэтому строки ниже проверить не удалось — дело в лимите, а не в источниках. Он снимется примерно через {v1} мин. Переменная *SWG_GH_TOKEN* на панели поднимает лимит намного выше того, что нужно этой проверке.",
+  "*GitHub is rate-limiting this panel* for the few sources the published list does not cover, so those rows could not be checked — it is the budget, not the sources. It clears in about {v1} min.":
+    "*GitHub ограничивает частоту запросов от этой панели* для тех немногих источников, которых нет в опубликованном списке, — поэтому эти строки проверить не удалось. Дело в лимите, а не в источниках. Он снимется примерно через {v1} мин.",
+  "*This panel could not fetch the published client fingerprints*, so it fell back to asking GitHub directly and hit the 60-an-hour limit. Check that the panel can reach *raw.githubusercontent.com* — with it, these rows cost no GitHub budget at all. It clears in about {v1} min.":
+    "*Панели не удалось получить опубликованные отпечатки клиентов*, поэтому она обратилась к GitHub напрямую и упёрлась в лимит 60 запросов в час. Проверьте, что панель может достучаться до *raw.githubusercontent.com* — с ним эти строки не тратят лимит GitHub вообще. Лимит снимется примерно через {v1} мин.",
   "not watched": "не отслеживается",
+  "Take this interface over: stop that container and run the same server here, keeping its key, port and peers":
+    "Перенять этот интерфейс: остановить тот контейнер и поднять тот же сервер здесь, сохранив его ключ, порт и пиров",
+  "Take over {v1}":
+    "Перенять {v1}",
+  "Take it over":
+    "Перенять",
+  "swgPanel will STOP the container {v1} and run {v2} here instead — same key, same port, same obfuscation, so the configs already on your users' devices keep working, and its peers are imported. That container is only stopped, never deleted: if anything goes wrong the node starts it again, and you can start it yourself to go back. It will not come back on its own afterwards.":
+    "swgPanel ОСТАНОВИТ контейнер {v1} и поднимет {v2} здесь — тот же ключ, тот же порт, та же обфускация, поэтому конфигурации, уже стоящие на устройствах ваших пользователей, продолжат работать, а его пиры будут импортированы. Контейнер только останавливается, но не удаляется: если что-то пойдёт не так, нода запустит его снова, и вы сами можете запустить его, чтобы вернуться назад. Сам по себе он больше не поднимется.",
+  "Taking it over — the node does this on its next sync.":
+    "Перенимаем — нода сделает это на следующей синхронизации.",
+  "Couldn't start the take-over.":
+    "Не удалось начать перенос.",
+  "took over a container's interface":
+    "интерфейс контейнера перенят",
+  "container take-over failed":
+    "не удалось перенять контейнер",
+  "Running inside container {v1} — swgPanel cannot manage it there":
+    "Работает внутри контейнера {v1} — swgPanel не может им там управлять",
+  "Another program owns this interface: it runs in its own container, from its own config. swgPanel can see it, but a change made here would be undone the next time that container restarts.":
+    "Этим интерфейсом владеет другая программа: он работает в своём контейнере и со своей конфигурацией. swgPanel его видит, но изменение, сделанное здесь, откатится при следующем перезапуске того контейнера.",
+  "tag|alien": "чужой",
+  "tag|failed": "не удалось",
+  "Took {i} over from container {c} — {n} imported. That container is stopped and will not restart; delete it once you are happy, or start it again to go back.":
+    "{i} перенят из контейнера {c} — импортировано: {n}. Тот контейнер остановлен и сам не поднимется; удалите его, когда убедитесь, что всё в порядке, или запустите снова, чтобы вернуться назад.",
+  "no container given": "контейнер не указан",
+  "no wg/awg config found in container {c}": "в контейнере {c} не найдено конфигурации wg/awg",
+  "{c} has no config for {i}": "в {c} нет конфигурации для {i}",
+  "{c} has {n} wg/awg config(s) but none of them is running ({names}) — nothing to take over":
+    "в {c} есть конфигураций wg/awg: {n}, но ни одна из них не запущена ({names}) — перенимать нечего",
+  "could not read {p} in {c}": "не удалось прочитать {p} в {c}",
+  "{c}: its config has no interface name, key or address to reuse":
+    "{c}: в его конфигурации нет ни имени интерфейса, ни ключа, ни адреса, которые можно было бы переиспользовать",
+  "{i} in {c} is not actually running — nothing to take over":
+    "{i} в {c} на самом деле не запущен — перенимать нечего",
+  "{i} in {c} does not match the config we read (its live key is a different one), so taking it over would not keep existing clients working — refusing":
+    "{i} в {c} не совпадает с прочитанной конфигурацией (у работающего интерфейса другой ключ), поэтому перенос не сохранил бы работу существующих клиентов — отказано",
+  "this node already runs an interface called {i}, so the same name cannot be created here — free it first (delete that interface if it is unused, or move its peers elsewhere). Nothing was changed.":
+    "на этой ноде уже работает интерфейс с именем {i}, поэтому создать такое же имя здесь нельзя — сначала освободите его (удалите тот интерфейс, если он не нужен, либо перенесите его пиров). Ничего не изменено.",
+  "could not clear the restart policy on {c} — nothing was changed":
+    "не удалось снять политику перезапуска с {c} — ничего не изменено",
+  "could not stop {c} — nothing was changed": "не удалось остановить {c} — ничего не изменено",
+  "{why} — {c} was restarted and is serving again, nothing was taken over":
+    "{why} — {c} запущен снова и продолжает обслуживать клиентов, ничего не перенято",
+  "name taken": "имя занято",
+  "Why this can't be taken over": "Почему его нельзя перенять",
+  "This node already runs an interface called {v1}, so the take-over cannot recreate this one under that name — it would collide. Free the name first: open {v1} and delete it if you don't need it, or move its peers to another interface. Nothing has been changed here.":
+    "На этой ноде уже работает интерфейс с именем {v1}, поэтому перенос не сможет поднять этот под тем же именем — они столкнутся. Сначала освободите имя: откройте {v1} и удалите его, если он не нужен, либо перенесите его пиров на другой интерфейс. Здесь ничего не изменено.",
+  "Container": "Контейнер",
+  "Take over": "Перенять",
+  "The node does this on its next sync": "Нода сделает это на следующей синхронизации",
+  "What happened": "Что произошло",
+  "a take-over is already pending on this node": "на этой ноде уже есть незавершённый перенос",
+  "bad container name": "неверное имя контейнера",
+  "at least one csqtt target is required": "нужна хотя бы одна цель csqtt",
+  "invalid iface (csqtt0..csqtt9999)": "неверный интерфейс (csqtt0..csqtt9999)",
+  "no free RAW subnet left in 10.70.0.0/16": "в 10.70.0.0/16 не осталось свободных RAW-подсетей",
+  "sub_hide must be a list": "sub_hide должен быть списком",
+  "tun_addr must be an IPv4 /24 CIDR, e.g. 10.66.67.1/24":
+    "tun_addr должен быть IPv4-подсетью /24, например 10.66.67.1/24",
+  "unknown csqtt fork": "неизвестная сборка csqtt",
+  "unknown csqtt peer": "неизвестный пир csqtt",
+  "Adopting csqtt server": "Принимаем сервер csqtt",
+  "Created csqtt peer": "Создан пир csqtt",
+  "Imported csqtt user from adopted server": "Пользователь csqtt импортирован с принятого сервера",
+  "Imported peer from an adopted container": "Пир импортирован из перенятого контейнера",
+  "Removed csqtt instance": "Удалён экземпляр csqtt",
+  "Rotated csqtt peer password": "Пароль пира csqtt заменён",
+  "Set csqtt instance": "Настроен экземпляр csqtt",
+  "Moved RAW-IP": "RAW-IP перенесён",
+  "tag|ignored": "скрыт",
+  "Another program owns this interface — it runs in its own container":
+    "Этим интерфейсом владеет другая программа — он работает в своём контейнере",
+  "col|Peer": "ПИР",
+  "unnamed": "без имени",
+  "This interface runs inside the container *{v1}*, from that container's own config — swgPanel can see it but cannot manage it there, and a change made here would be undone the next time that container restarts. *Take over* stops that container and runs the same server natively, keeping its key, port and peers.":
+    "Этот интерфейс работает внутри контейнера *{v1}*, со своей конфигурацией — swgPanel его видит, но управлять им там не может, и изменение, сделанное здесь, откатится при следующем перезапуске того контейнера. *Перенять* остановит тот контейнер и поднимет тот же сервер нативно, сохранив его ключ, порт и пиров.",
+  "the node no longer reports this interface inside that container — it may have been stopped, or the container removed.":
+    "нода больше не сообщает об этом интерфейсе внутри того контейнера — возможно, он остановлен или контейнер удалён.",
+  "tag|taking over": "перенимаем",
+  "Withdraw": "Отозвать",
+  "Withdraw the request — nothing has happened on the node yet":
+    "Отозвать запрос — на ноде ещё ничего не произошло",
+  "Request withdrawn.": "Запрос отозван.",
+  "Could not withdraw it.": "Не удалось отозвать.",
+  "Stop ignoring it — show it on the node again":
+    "Перестать игнорировать — снова показывать на ноде",
+  "Back on the node screen.": "Снова на экране ноды.",
+  "Could not restore it.": "Не удалось вернуть.",
+  "in {v1}": "в {v1}",
   "No upstream source is tracked for this client — a format change here would not raise a flag.":
     "Для этого клиента не отслеживается ни один источник — смена формата здесь не поднимет флаг.",
   "The tracked file could not be fetched — the check did not run.":
@@ -206,6 +297,7 @@ export const STR = {
   "convert failed": "ошибка перевода",
   "update failed": "ошибка обновления",
   "uninstall failed": "ошибка удаления",
+  "take-over failed": "не удалось перенять сервер",
   "proc|failed": "ошибка",
   // a node that never enrolled: its "re-install" is really a first install
   "installing": "установка",
@@ -811,7 +903,7 @@ export const STR = {
   "The ExecStart flags that *pre-fill* a new {v1} proxy. Nothing here changes proxies you've already deployed.":
     "Флаги ExecStart, которые *предзаполняют* новый прокси {v1}. Ничто здесь не меняет уже развёрнутые прокси.",
   "WDTT server removed — the node tears it down on its next sync.": "Сервер WDTT удалён — нода снесёт его на следующей синхронизации.",
-  "Delete WDTT server": "Удалить сервер WDTT",
+  "Delete WDTT server · {v1}": "Удалить сервер WDTT · {v1}",
 
   "*Finish the reverse-proxy switch.* The panel is serving the old *and* new setup at once — each node keeps its current address and only moves once the old one stops. Update your reverse proxy to match {v1}, then confirm. Nothing goes down in between.":
     "*Завершите переход на обратный прокси.* Панель сейчас отдаёт и старую, *и* новую конфигурацию одновременно — каждая нода держит свой текущий адрес и переедет, только когда старый отключится. Настройте обратный прокси соответственно {v1}, затем подтвердите. Между этими шагами ничего не падает.",
@@ -1878,6 +1970,8 @@ export const STR = {
   "No VK call link set — configs carry a placeholder. Set it in {where}.":
     "Ссылка на звонок VK не задана — в конфигах стоит заглушка. Задайте её в {where}.",
   "Panel settings → Turn proxies": "Настройки панели → Turn-прокси",
+  "Using the panel's fallback VK call link — this user has none of their own. Their subscription page hands out a link without it, so set a VK link on the user before sending them there.":
+    "Используется запасная VK-ссылка панели — своей у этого пользователя нет. На его странице подписки ссылка будет выдана без неё, поэтому задайте пользователю VK-ссылку, прежде чем отправлять его туда.",
   "No VK call link on this user — the link won't authenticate until one is set.":
     "У пользователя нет ссылки на звонок VK — ссылка не пройдёт авторизацию, пока её не зададут.",
 
@@ -3171,7 +3265,7 @@ export const STR = {
   "tag|restarted": "перезапущен",
   "tag|pending": "ожидает",
   "tag|unsaved": "не сохр.",
-  "tag|orphan": "чужой",
+  "tag|orphan": "сирота",
   "tag|unassigned": "свободен",
   "val|total": "всего",
   "val|online": "в сети",
@@ -3243,7 +3337,6 @@ export const STR = {
   "Delete server": "Удалить сервер",
   "This removes the *{iface}* csqtt server and *unassigns + deletes* every user on it — their credential is a password on this server, so it means nothing once the server is gone. Type *{iface}* to confirm.":
     "Это удалит сервер csqtt *{iface}* и *отвяжет и удалит* всех его пользователей — их учётные данные это пароль на этом сервере, а без сервера он ничего не значит. Введите *{iface}* для подтверждения.",
-  "Type the interface name to confirm": "Введите имя интерфейса для подтверждения",
   "Edit csqtt interface · {v1}": "Изменить интерфейс csqtt · {v1}",
   "*csqtt* owns its own raw-IP tunnel *({iface} · {addr})* and mints each user's address on connect.":
     "*csqtt* владеет своим raw-IP туннелем *({iface} · {addr})* и выдаёт адрес каждому пользователю при подключении.",
@@ -3619,6 +3712,8 @@ export const STR = {
   "Reinstalling turn-proxy": "Переустанавливаем turn-прокси",
   "Restarting turn-proxy": "Перезапускаем turn-прокси",
   "Restored panel value": "Возвращено значение панели",
+  "Take over a container's interface": "Перенимаем интерфейс контейнера",
+  "Withdrew a container take-over": "Отозван перенос контейнера",
   "Restoring adoption candidate": "Возвращаем кандидата",
   "Restoring original server key on": "Возвращаем исходный ключ",
   "Rolling back WDTT": "Откатываем WDTT",
@@ -3952,8 +4047,8 @@ export const STR = {
     "Параллельные TURN-потоки (#@wgt:StreamNum, в приложении 1–16).",
   "Parallel TURN streams (-n). Blank = the app's default (10).":
     "Параллельные TURN-потоки (-n). Пусто = умолчание приложения (10).",
-  "Name this connection takes in the app's server list (build 179+, which keeps several named servers). Importing adds a server under this name and makes it active; the ones already there are kept. Blank = the app names it ServerN. Older builds ignore it.":
-    "Имя, под которым это подключение попадёт в список серверов приложения (сборка 179+, где хранится несколько именованных серверов). Импорт добавляет сервер с этим именем и делает его активным; уже добавленные остаются. Пусто = приложение само назовёт его ServerN. Более старые сборки поле игнорируют.",
+  "Name this connection takes in the app's server list (build 179+, which keeps several named servers; older ones ignore it). Importing adds a server under this name and keeps the ones already there. This setting covers every proxy of this fork, so use {fork}, {host} or {port} to vary it per server — «Frankfurt {port}» becomes «Frankfurt 56005». Blank = the app names it ServerN.":
+    "Имя, под которым это подключение попадёт в список серверов приложения (сборка 179+, где хранится несколько именованных серверов; более старые поле игнорируют). Импорт добавляет сервер с этим именем, уже добавленные остаются. Настройка общая для всех прокси этого форка, поэтому, чтобы имя различалось по серверам, используйте {fork}, {host} или {port} — «Frankfurt {port}» превратится в «Frankfurt 56005». Пусто = приложение само назовёт его ServerN.",
   "Pin fresh connections to a specific TURN relay (ip:port). Blank = the VK-returned relay.":
     "Закрепить новые соединения за конкретным TURN-релеем (ip:порт). Пусто = релей, который вернул VK.",
   "Reach the TURN relay over UDP (-udp). On by default in the app.":

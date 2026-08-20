@@ -504,6 +504,12 @@ tbody tr:last-child td{border-bottom:0}
 tbody tr.clk{cursor:pointer;transition:background .15s}
 tbody tr.clk:hover{background:var(--surface-2)}
 tbody tr.flash{animation:flash 2.6s var(--ease)}
+.ifcard.flash{animation:cardflash 2.4s var(--ease)}
+@keyframes cardflash{
+  0%{background:color-mix(in srgb,var(--ready) 22%,transparent);border-color:var(--ready)}
+  70%{background:color-mix(in srgb,var(--ready) 10%,transparent)}
+  100%{background:transparent}}
+@media (prefers-reduced-motion:reduce){.ifcard.flash{animation:none;border-color:var(--ready)}}
 @keyframes flash{0%{background:color-mix(in srgb,var(--online) 20%,transparent)}100%{background:transparent}}
 /* just-created peer row — a one-shot branded glow that ramps 0 → peak → 0 over 1.5s (all peer grids) */
 .peergrid tbody tr.pcreate td{animation:pcreate 1.5s var(--ease)}
@@ -647,6 +653,9 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .tg-click{cursor:pointer;transition:filter .12s}
 .tg-click:hover{filter:brightness(1.45)}
 /* the name truncates (…) so a long fork name never pushes the status tag + cancel × out of the card */
+/* the NAME never loses the squeeze: a long status tag beside it truncated `awg0` to "a." — tags shrink first */
+.ifcard-top .tg{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ifcard-top .ifname{flex:0 1 auto;min-width:3.5ch}
 .ifcard-top .ifname{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ifcard-top .iftype,.ifcard-top .tg-busy,.ifcard-top .tg-ok,.ifcard-top .tg-warn,.ifcard-top .tg-del,.ifcard-top .cmderr,.ifcard-top .xbtn{flex:none}
 .ifcard-top .rowarrow{color:var(--faint)}

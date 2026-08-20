@@ -1,13 +1,14 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.12-beta</code></p>
+<p align="center"><code>1.7.13-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.11-beta** — [full changelog](CHANGELOG.md)
-> - **PWDTT can import the links again** — that build changed its link format in June and we were still sending the old one, so importing failed on a link every other WDTT app accepts.
-> - **Panels stay out of search engines** — nothing had told crawlers to skip them, so installs were being indexed. Sharing a link still shows a proper title and summary.
-> - **Two client settings that reached nobody are gone**, and the one that does reach an app — qWDTT's worker count — is now actually delivered.
-> - **The app picker says what each app does** — opens on a tap, scans a QR, or takes a pasted link — instead of calling everything a pasted link.
+> **What's new in 1.7.13-beta** — [full changelog](CHANGELOG.md)
+> - **Take over an AmneziaVPN server running in its own Docker container** — the panel could not see one at all; now it shows its subnet, port and peers (with the names you gave them in Amnezia) and takes it over keeping the same key, port and obfuscation, so existing client configs keep working.
+> - **Unassigning a peer now really revokes csqtt access** — it authenticates on a password alone, and that password was never rotated, so a deleted user's link kept working. If you unassigned anyone on an earlier version, do it again after updating.
+> - **The subscription page returned nothing at all on 1.7.11–1.7.12** — while the panel, its API and its health check all answered normally, so nothing looked wrong from the panel side.
+> - **The rotate-link button no longer sticks for ever** on a csqtt or WDTT peer, and VK links are authorised against the hash the link actually carries.
+> - **Less needless work on your servers** — client build info is published once instead of every panel walking GitHub, and the Docker helper timer stopped starting a unit every second.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -163,6 +164,7 @@ Nodes are managed entirely from the UI — the installer no longer asks about th
 
 - **wg/awg** — adopting reads the live device (keys, peers, port, subnet, MTU) and takes it over **add-only**: existing peers are imported, never wiped. On Docker, a `.conf` that only ever existed inside the container is reconstructed from the live device so it can be adopted at all.
 - **WDTT** — the fork is identified from the running server process (not a UAPI socket), its subnet read off the live interface, and its **password store imported** as roster peers, so links already in circulation keep working. A **dormant** (stopped) install is discovered too, with whatever it can tell about itself, and **Adopt existing** takes a directory path directly for an install that was moved or renamed.
+- **A server in another container** (AmneziaVPN) — invisible to every scan above, because it runs in its own network namespace with its config on a filesystem the node cannot see. Found instead by asking each foreign container directly (`docker exec … wg|awg show`), reported with its subnet, listen port and peers — named, when Amnezia's own client table is readable. **Take over** stops that container and stands the same server up natively, reusing its key, port, address and obfuscation params, so existing client configs keep working; the peers are imported by public key. It refuses, changing nothing, unless the interface is really running, its live key matches its config, and the name is free on the node — and if anything fails after the container is stopped, the node starts it again. Needs docker access: on a Docker node that means the socket is mounted (`TURN_MANAGE=panel`, the default).
 - Ignored candidates are recorded and listed under **Settings → Interfaces**; one that later becomes managed drops off by itself.
 
 Against a **self-signed** panel the installer **auto-pins the cert on first contact** (trust-on-first-use): the node stores its sha256 and checks it on every handshake, before the token is sent — so a man-in-the-middle can't impersonate the panel even without a CA. A **real-CA** panel is verified against the system trust store instead. Override with `TLS_VERIFY=yes|no` or an explicit `TLS_FINGERPRINT=<sha256-hex>`. If the panel later moves (host/port), a node **auto-re-points** to the new address — but only when it still presents the pinned/trusted cert.

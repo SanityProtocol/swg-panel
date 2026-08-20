@@ -1512,6 +1512,105 @@ def gen_wdtt_password():
     return "".join(secrets.choice(_WDTT_PW_CHARS) for _ in range(16))
 
 
+# csqtt's own normalize_client_vk_hashes: comma-joined, NO whitespace, 1..6 entries, each >= 16 chars,
+# <= 1024 total. Its web panel then writes that one string into BOTH vk_hash and vk_hashes, so the singular
+# field has always held a SET — we were filling it with one hash while handing the client up to six.
+_CSQTT_VK_MAX, _CSQTT_VK_MINLEN, _CSQTT_VK_MAXLEN = 6, 16, 1024
+
+
+def _csqtt_vk_hashes(p, u, fallback_vk=""):
+    """Every VK hash this peer's LINK carries, joined the way csqtt stores them.
+
+    Same order and the same cap of 6 as csqttArtifact in turn-artifacts.js — the peer's own hash, then each of
+    the user's links, then the panel-wide fallback when the user has none — so the record on the server says
+    what the client was actually issued.
+
+    A RECORD, not a credential: csqtt authenticates on the password alone (protocol.rs
+    CredentialSet::contains_password) and its dataplane never reads these fields. This keeps csqtt's own web
+    panel honest about a client the panel created, and a link regenerated there identical to ours. Validated
+    to upstream's rules HERE, because the reconcile in our patch stores what it is handed.
+    """
+    links = list((u or {}).get("vk_links") or [])
+    if not links and (u or {}).get("vk_link"):
+        links = [(u or {}).get("vk_link")]
+    if not links and fallback_vk:
+        links = [fallback_vk]
+    out = []
+    for raw in [(p or {}).get("vk_hash") or ""] + links:
+        h = _wdtt_vk_hash(raw)
+        if not h or len(h) < _CSQTT_VK_MINLEN or any(c.isspace() for c in h) or "," in h or h in out:
+            continue
+        out.append(h)
+        if len(out) >= _CSQTT_VK_MAX:
+            break
+    joined = ",".join(out)
+    return joined if len(joined) <= _CSQTT_VK_MAXLEN else ",".join(out[:1])
+
+
+# One dismissed foreign-container interface, addressed for the ignore list. The container has to be part of
+# the key: two containers can each run a `wg0`, and dismissing one must not take the other with it. Kept next
+# to the reader so the panel and the UI cannot drift on what a dismissal is keyed by.
+def _proc_msg(template, **vars):
+    """One operator-facing proc_status message, as {err, err_key, err_vars}.
+
+    The panel translates by looking a sentence up as a catalogue key, and a sentence with the interface and
+    container names already in it can never match one. So keep the template and its values apart — exactly as
+    swg-noded's `_ctr_err` does for the failures. `err` stays the finished English for a browser that cannot
+    translate; `err_key` + `err_vars` are what the SPA renders (see procErr / srvVars). A COUNTED value is
+    passed as {"n": <count>, "noun": "peer"} so the browser declines it — Russian picks between three forms
+    and the rule is not derivable from English.
+    """
+    plain = {k: ("%d %s(s)" % (v["n"], v["noun"]) if isinstance(v, dict) and "n" in v else v)
+             for k, v in vars.items()}
+    return {"err": template.format(**plain), "err_key": template, "err_vars": dict(vars)}
+
+
+def _ctr_res_id(res):
+    """Identity of ONE take-over result: which container, produced when. Seconds alone are not enough — two
+    containers can be answered inside the same second."""
+    return "%s@%s" % (res.get("container") or "", res.get("at") or "")
+
+
+def _ctr_answers(res, req):
+    """Does this take-over RESULT answer that pending REQUEST?
+
+    Nodes older than the fix re-send their last result on every sync for ever. Accepting one blindly means the
+    next request is 'answered' the instant it is written — cleared before the node ever sees it, with the
+    previous container's outcome reported in its place. Match on the request stamp when the node sends one,
+    and fall back to the container name so an older node still works for the first take-over.
+    """
+    if not isinstance(res, dict) or not isinstance(req, dict):
+        return False
+    if str(res.get("container") or "") != str(req.get("container") or ""):
+        return False
+    ra = res.get("req_at")
+    return str(ra) == str(req.get("at") or "") if ra else True
+
+
+def _ctr_key(x):
+    return "ctr:%s:%s" % (x.get("container") or "", x.get("name") or "")
+
+
+def _peer_vk_hash(p, u, fallback_vk=""):
+    """The ONE VK hash the SERVER is told to authorise for a peer — resolved the way the LINK is built.
+
+    These two had drifted apart. js/peer-ui.js userVkLinks() resolves peer.vk_hash -> user.vk_links[] ->
+    the panel-wide fallback, and bakes the result into the config the operator hands out. The server side
+    stopped at the user's own link, so a peer relying on the fallback was handed a link carrying a hash the
+    server had never heard of: it solves the captcha, allocates a TURN session, computes its key from the
+    password — and is refused at the last step, with nothing anywhere naming the reason.
+
+    The array needs no special case here: _norm_vk_links keeps user["vk_link"] synced to vk_links[0], so the
+    PRIMARY is already covered. Carrying the rest is a separate change (the desired file ships one hash; the
+    server's own store models several) and needs a csqtt build that reads them.
+    """
+    h = (p.get("vk_hash") or "").strip()
+    if h:
+        return h
+    h = _wdtt_vk_hash((u or {}).get("vk_link") or "")
+    return h or _wdtt_vk_hash(fallback_vk or "")
+
+
 def _wdtt_vk_hash(vk_link):
     """Strip a VK call link to its bare hash (the WDTT `wdtt://…:<vkHash>` credential). Last path segment,
     query dropped — mirrors the WDTT server's stripVkUrl."""
@@ -1875,6 +1974,13 @@ def unassign_peer(p, store_configs, config_dir, now):
     p["psk"] = gen_psk()
     if p.get("wdtt_password"):
         p["wdtt_password"] = gen_wdtt_password()   # WDTT peer has no keypair — rotate its WRAP password so the old link dies
+    if p.get("csqtt_password"):
+        # csqtt is keyless too, and has no WireGuard PSK at all — it is a raw-IP TUN, so the rotation above
+        # revokes nothing here. Its password IS the access: csqtt authenticates on it alone, and the panel
+        # keeps shipping it in desired.json for as long as the peer holds a target, user or no user. Without
+        # this the ex-holder's link kept working after their user was deleted, which is exactly what this
+        # function exists to prevent — and silently, since the peer looks safely parked from the panel.
+        p["csqtt_password"] = gen_csqtt_password()
     p["modified_at"] = now
     for t in p.get("targets", []):
         if p.get("pubkey"):                        # WG only; a keyless WDTT peer has no stored .conf
@@ -3216,7 +3322,7 @@ def desired_for_node(roster, node_id):
     return out
 
 
-def desired_wdtt_for_node(roster, nodes, node_id):
+def desired_wdtt_for_node(roster, nodes, node_id, fallback_vk=""):
     """The WDTT PASSWORD set the roster assigns to each wdtt* instance on one node — the analogue of
     desired_for_node, keyed by the panel-owned per-peer password. Divergence from the WG path: a BLOCKED/EXPIRED
     WDTT peer is KEPT (with is_deactivated / expires_at set), not dropped — the WDTT server needs the password
@@ -3234,7 +3340,7 @@ def desired_wdtt_for_node(roster, nodes, node_id):
         u = users.get(p.get("user_id")) or {}
         deact = bool(p.get("disabled") or u.get("disabled"))
         exp = int(p.get("expiry") or 0) or int(u.get("expiry") or 0)
-        vkh = (p.get("vk_hash") or "").strip() or _wdtt_vk_hash(u.get("vk_link") or "")
+        vkh = _peer_vk_hash(p, u, fallback_vk)
         for t in p.get("targets", []):
             if t.get("node") != node_id:
                 continue
@@ -3249,13 +3355,13 @@ def desired_wdtt_for_node(roster, nodes, node_id):
     return out
 
 
-def _wdtt_reply(roster, nodes, node_id):
+def _wdtt_reply(roster, nodes, node_id, fallback_vk=""):
     """The reply["wdtt"] for one node: each instance's config FROM THE NODE STORE + its password set DERIVED
     FROM THE ROSTER (never the node store — passwords are roster-owned)."""
     insts = ((nodes.get(node_id) or {}).get("wdtt")) or {}
     if not insts:
         return {}
-    derived = desired_wdtt_for_node(roster, nodes, node_id)
+    derived = desired_wdtt_for_node(roster, nodes, node_id, fallback_vk)
     restore = (nodes.get(node_id) or {}).get("wdtt_restore") or {}
     recreate = (nodes.get(node_id) or {}).get("wdtt_recreate") or {}
     out = {}
@@ -3292,7 +3398,7 @@ def _wdtt_reply(roster, nodes, node_id):
     return out
 
 
-def desired_csqtt_for_node(roster, nodes, node_id):
+def desired_csqtt_for_node(roster, nodes, node_id, fallback_vk=""):
     """The csqtt PASSWORD set the roster assigns to each csqtt* instance on one node (analogue of
     desired_wdtt_for_node). A BLOCKED/EXPIRED peer is KEPT (is_deactivated/expires_at set) so the server can deny
     cleanly and unblock is instant. Returns { iface: { password: {expires_at, vk_hash, name, is_deactivated} } }."""
@@ -3307,7 +3413,7 @@ def desired_csqtt_for_node(roster, nodes, node_id):
         u = users.get(p.get("user_id")) or {}
         deact = bool(p.get("disabled") or u.get("disabled"))
         exp = int(p.get("expiry") or 0) or int(u.get("expiry") or 0)
-        vkh = (p.get("vk_hash") or "").strip() or _wdtt_vk_hash(u.get("vk_link") or "")
+        vkh = _csqtt_vk_hashes(p, u, fallback_vk)   # csqtt stores a SET here — see _csqtt_vk_hashes
         name = (p.get("title") or u.get("name") or "").strip()
         for t in p.get("targets", []):
             if t.get("node") != node_id or t.get("iface") not in insts:
@@ -3317,13 +3423,13 @@ def desired_csqtt_for_node(roster, nodes, node_id):
     return out
 
 
-def _csqtt_reply(roster, nodes, node_id):
+def _csqtt_reply(roster, nodes, node_id, fallback_vk=""):
     """reply["csqtt"] for one node: each instance's config FROM THE NODE STORE + its password set DERIVED FROM
     THE ROSTER (passwords are roster-owned). The owner --password/--web-pass are node-owned → never shipped."""
     insts = ((nodes.get(node_id) or {}).get("csqtt")) or {}
     if not insts:
         return {}
-    derived = desired_csqtt_for_node(roster, nodes, node_id)
+    derived = desired_csqtt_for_node(roster, nodes, node_id, fallback_vk)
     out = {}
     for iface, inst in insts.items():
         merged = dict(inst or {}); merged["iface"] = iface
@@ -3445,7 +3551,8 @@ PROC_SUCCESS_SHOW = 20    # success tag lifetime — long enough to ride through
                           # host "converted" stays put instead of blanking between the panel-up stamp and the node
                           # stage), still short enough to clear shortly after the operator has seen it
 PROC_INPROGRESS = ("reinstalling", "converting-bare", "converting-docker", "updating", "uninstalling")
-PROC_SUCCESS = ("reinstalled", "reinstalled-updated", "converted-bare", "converted-docker", "updated", "uptodate")
+PROC_SUCCESS = ("reinstalled", "reinstalled-updated", "converted-bare", "converted-docker", "updated", "uptodate",
+                "adopted-container")
 _PROC_FAIL = {"reinstalling": "reinstall-failed", "converting-bare": "convert-failed",
               "converting-docker": "convert-failed", "updating": "update-failed", "uninstalling": "uninstall-failed"}
 def _proc_inprogress(s): return s in PROC_INPROGRESS
@@ -3858,8 +3965,9 @@ def _used_ports(nodes, snaps, nid):
 
 def _node_ports(deps, nodes, nid):
     """Every UDP port CLAIMED on a node → {port: holder-label}: wg/awg interfaces, turn-proxies, WDTT (DTLS listen +
-    internal WG port) and mesh links, from BOTH the live snapshot AND the desired store (so a just-created but
-    not-yet-reported one still counts). The single source of truth for port-collision checks on create/edit."""
+    internal WG port), mesh links, and wg/awg servers in FOREIGN containers that publish a host port, from BOTH
+    the live snapshot AND the desired store (so a just-created but not-yet-reported one still counts). The
+    single source of truth for port-collision checks on create/edit."""
     snap = (deps.get("node_snaps") or {}).get(nid) or {}
     node = nodes.get(nid) or {}
     out = {}
@@ -3890,6 +3998,9 @@ def _node_ports(deps, nodes, nid):
         add(tail(c.get("listen")), (c.get("iface") or "") + " (csqtt)")
     for lr in (node.get("links") or {}).values():
         add(lr.get("listen_port"), "a mesh link")
+    for x in (snap.get("container_ifaces") or []):
+        if isinstance(x, dict) and x.get("host_port"):
+            add(x["host_port"], "%s in container %s" % (x.get("name") or "an interface", x.get("container") or "?"))
     return out
 
 def _port_conflict(deps, nodes, nid, port, own=()):
@@ -4486,7 +4597,7 @@ TURN_SERVERS = {
                                          {"key": "useUDP", "type": "bool", "default": False, "label": "UDP control transport", "help": "Off = TCP-control (bypasses VK's per-cred allocation-rate throttle — recommended). On only if your network throttles TCP to the relay."},
                                          {"key": "dnsServers", "type": "text", "default": "", "label": "Custom DNS", "help": "Comma-separated DNS resolvers. Blank = the peer's own config DNS (else 1.1.1.1)."},
                                          {"key": "turnServerOverride", "type": "text", "default": "", "label": "TURN relay override", "help": "Pin fresh connections to a specific TURN relay (ip:port). Blank = the VK-returned relay."},
-                                         {"key": "serverName", "type": "text", "default": "", "label": "Server name", "help": "Name this connection takes in the app's server list (build 179+, which keeps several named servers). Importing adds a server under this name and makes it active; the ones already there are kept. Blank = the app names it ServerN. Older builds ignore it."},
+                                         {"key": "serverName", "type": "text", "default": "", "label": "Server name", "help": "Name this connection takes in the app's server list (build 179+, which keeps several named servers; older ones ignore it). Importing adds a server under this name and keeps the ones already there. This setting covers every proxy of this fork, so use {fork}, {host} or {port} to vary it per server — «Frankfurt {port}» becomes «Frankfurt 56005». Blank = the app names it ServerN."},
                                          {"key": "vkAuth", "type": "bool", "default": False, "label": "VK cookie auth", "help": "Use the VK cookie-auth path instead of anonymous proof-of-work."},
                                          {"key": "obfProfile", "type": "enum", "values": ["auto", "rtpopus", "rtpopus2", "rtpopus3"], "default": "auto", "label": "Obfuscation profile", "help": "For rtpopus (WRAP-S) servers: which RTP/Opus profile the app mimics (Turn.obfProfile) — must match the server. auto = the app's default (rtpopus)."}]},
     # ── WDTT family (kind:"wdtt") — SELF-CONTAINED, key-owning VK-TURN servers. Each owns its OWN userspace-WireGuard
@@ -5111,10 +5222,53 @@ def _turn_p4_report_all(do_refresh=False):
 # it — the roster check is where the operator reads the result, so that is where it is reported.)
 _GH_RATE = {"until": 0}
 
+# ── published fingerprints — the drift watch WITHOUT spending anyone's GitHub budget ──────────────────
+# Reading the 19 watched paths costs 19 API calls, against 60/hour PER SOURCE IP shared with the release
+# checks. One panel cannot complete a single pass, so every install reported "couldn't check" and the watch
+# — which exists because a client's link format changed and reached us as a user's screenshot two months
+# later — told nobody anything. Conditional requests do not help: a 304 costs a full unit (measured).
+# CI walks the list once for everyone and publishes the answers; a panel fetches ONE file from
+# raw.githubusercontent, a CDN with no API budget. No operator needs a token, at any number of installs.
+_GH_FP_URL = os.environ.get(
+    "SWG_FINGERPRINTS_URL",
+    "https://raw.githubusercontent.com/SanityProtocol/swg-panel/fingerprints/client-fingerprints.json")
+_GH_FP_TTL = 3600
+_GH_FP = {"at": 0.0, "map": {}, "ok": False}
+
+
+def _gh_fingerprints():
+    """{"owner/repo@branch:path": {sha,date,url}} from the published file. {} when it can't be read — the
+    caller then falls back to the API exactly as before, so an unreachable file degrades to today's
+    behaviour rather than to a wrong answer."""
+    now = time.time()
+    if now - _GH_FP["at"] < _GH_FP_TTL:
+        return _GH_FP["map"]
+    flat = {}
+    ok = False
+    with contextlib.suppress(Exception):
+        req = urllib.request.Request(_GH_FP_URL, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            doc = json.loads(r.read(2_000_000).decode("utf-8", "replace"))
+        if isinstance(doc, dict) and int(doc.get("schema") or 0) == 1:
+            for _cid, files in (doc.get("clients") or {}).items():
+                for key, rec in (files or {}).items():
+                    if isinstance(rec, dict) and rec.get("sha"):
+                        flat[key] = {"sha": rec.get("sha"), "date": rec.get("date"), "url": rec.get("url")}
+            ok = True
+    _GH_FP.update({"at": now, "map": flat, "ok": ok})
+    return flat
+
 def _gh_latest_commit(owner, repo, branch, path):
     """Latest commit {sha,date,url} touching `path` on `branch`, via the GitHub API. None on any error/rate-limit.
     Cached ~1h so a burst of re-checks doesn't exhaust the 60/hr unauthenticated budget (SWG_GH_TOKEN lifts it)."""
     key = "%s/%s@%s:%s" % (owner, repo, branch, path)
+    # The published answer first, unless the operator supplied a token and wants live ones. It is a day old
+    # at worst, which is the right granularity for "did an author change their format" — and it costs no
+    # API budget, so the check completes instead of stopping halfway through with most clients unread.
+    if not os.environ.get("SWG_GH_TOKEN", "").strip():
+        hit = _gh_fingerprints().get(key)
+        if hit:
+            return hit
     ent = _GH_COMMIT_CACHE.get(key)
     if ent and time.time() - ent["at"] < 3600:
         return ent["res"]
@@ -5395,7 +5549,15 @@ def _turn_roster_check(seed=True):
     # Reported ONCE for the whole check, not per client: it is one condition affecting all of them, and repeating
     # it on nineteen rows would read as nineteen broken paths.
     rl = int(_GH_RATE.get("until") or 0)
+    # WHICH path answered these rows, so a rate-limit notice can name the real cause instead of guessing:
+    #   file       the published fingerprints — the normal case, no GitHub budget touched at all
+    #   api-token  the operator asked for live answers and supplied a token; being throttled means THEIR
+    #              token is spent, and telling them to check a CDN they never used would misdirect
+    #   api        neither — the panel could not read the published file and fell back, which is now the
+    #              only way an untokened panel can reach the limit at all
+    _tok = os.environ.get("SWG_GH_TOKEN", "").strip()
     return {"clients": out, "checked_at": int(time.time()),
+            "watch_via": "api-token" if _tok else ("file" if _GH_FP.get("ok") else "api"),
             "rate_limited": (rl if rl > int(time.time()) else 0)}
 
 def _turn_roster_ack(cid):
@@ -7646,6 +7808,13 @@ def api(method, path, qs, body, deps):
             _w = c.get("wdtt") or {}
             _c = c.get("csqtt") or {}
             _ign = set(c.get("ignore_ifaces") or [])
+            _ctr_ifaces = [{"name": x.get("name"), "container": x.get("container"),
+                            "proto": x.get("proto") or "wg", "address": x.get("address") or "",
+                            "listen_port": x.get("listen_port") or 0, "host_port": x.get("host_port") or 0,
+                            "peers": x.get("peers") or 0,
+                            "peer_list": x.get("peer_list") if isinstance(x.get("peer_list"), list) else []}
+                           for x in (snap.get("container_ifaces") or [])
+                           if isinstance(x, dict) and x.get("name") and x.get("container")]
             _claimed_wdtt_dirs = {(v or {}).get("adopt_config_dir") for v in _w.values() if (v or {}).get("adopt_config_dir")}
             _cands = [x for x in (snap.get("iface_candidates") or []) if isinstance(x, dict) and x.get("name")]
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
@@ -7668,6 +7837,9 @@ def api(method, path, qs, body, deps):
                         "proc_status": (_proc_view((c.get("proc_status") or {}).get("state"), (c.get("proc_status") or {}).get("at"))
                                         or (_proc_view("updating", (c.get("update") or {}).get("at")) if c.get("update") else None)),
                         "proc_err": (c.get("proc_status") or {}).get("err") or None,
+                        "proc_at": (c.get("proc_status") or {}).get("at") or None,
+                        "proc_err_key": (c.get("proc_status") or {}).get("err_key") or None,
+                        "proc_err_vars": (c.get("proc_status") or {}).get("err_vars") or None,
                         "last_seen": ls,
                         "status": "online" if online else ("dangling" if ls is None else "offline"),
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
@@ -7687,6 +7859,14 @@ def api(method, path, qs, body, deps):
                         # unmanaged wg/awg interfaces the node found on the box (Approach B) → adoption candidates.
                         # Split: active (offered for adopt/ignore) vs ignored (operator dismissed → Settings → Interfaces).
                         "iface_candidates": [x for x in _cands if x["name"] not in _ign],
+                        # wg/awg interfaces inside ANOTHER container's netns (AmneziaWG's server). Report-only,
+                        # kept OUT of iface_candidates on purpose: those are offers to adopt and this cannot be
+                        # adopted in place. Without it the panel showed an empty grid on a box that is plainly
+                        # running a VPN, which is the whole complaint.
+                        "container_ifaces": [x for x in _ctr_ifaces if _ctr_key(x) not in _ign],
+                        "ignored_containers": [x for x in _ctr_ifaces if _ctr_key(x) in _ign],
+                        **({"adopt_container": c["adopt_container"]}
+                           if isinstance(c.get("adopt_container"), dict) else {}),
                         # FOREIGN csqtt servers on the box. Not interface candidates: csqtt owns its own raw TUN
                         # and is a distinct managed kind, so it is deliberately excluded from that scan. Drop any
                         # this node has since taken over, or the card claims an adoption that already finished.
@@ -10888,7 +11068,8 @@ def api(method, path, qs, body, deps):
         # the dormant filter matches on. So an absolute path is a legitimate subject here, held to its own bar
         # (no traversal, no doubled separators) rather than smuggled past the name check.
         _isdir = iface.startswith("/")
-        if (not no_ctrl(iface) or len(iface) > (200 if _isdir else 64)
+        _isctr = iface.startswith("ctr:")
+        if (not no_ctrl(iface) or len(iface) > (200 if (_isdir or _isctr) else 64)
                 or (not _isdir and "/" in iface)
                 or (_isdir and (".." in iface or "//" in iface or iface.endswith("/")))):
             return 400, {"ok": False, "error": "bad interface name", "code": "bad_request"}
@@ -11448,7 +11629,10 @@ def api(method, path, qs, body, deps):
         fork = (body.get("fork") or "").strip() or "amurcanov"
         if fork not in WDTT_BUILDS:
             return 400, {"ok": False, **perr("unknown WDTT fork: {v1}", v1=fork), "code": "bad_request"}
-        inst = {"iface": iface, "fork": fork, "adopt_foreign": True}
+        # adopt_at starts the clock on the take-over: the node retries it every sync while the marker is set,
+        # so the marker needs a lifetime or a take-over that can never land retries for ever (see the sweep in
+        # the sync handler, which mirrors how a stuck self-update request is cleared).
+        inst = {"iface": iface, "fork": fork, "adopt_foreign": True, "adopt_at": int(time.time())}
         if idpath:
             inst["identity_path"] = idpath
         if _dorm:
@@ -11662,6 +11846,32 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Set csqtt instance", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
 
+    if method == "POST" and path == "/api/container/adopt":
+        # TAKE OVER a wg/awg server running in another container (Amnezia). Declarative like the adoptions
+        # below: write the request, the node acts on its next sync and reports back. It STOPS somebody else's
+        # container, so the node refuses unless that interface is genuinely running and its key matches its
+        # config — the operator's confirmation is not the only gate.
+        nid = str(body.get("node") or "").strip()
+        ctr = str(body.get("container") or "").strip()
+        nodes = nodes_load(Handler.deps["nodes_path"])
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if (not ctr and not body.get("cancel")) or not no_ctrl(ctr) or len(ctr) > 128:
+            return 400, {"ok": False, "error": "bad container name", "code": "bad_request"}
+        if body.get("cancel"):
+            if not nodes[nid].pop("adopt_container", None):
+                return 200, {"ok": True, "data": {"node": nid, "cancelled": False}}
+            nodes_save(Handler.deps["nodes_path"], nodes)
+            ev_append(Handler.deps["roster_path"], "node", nid, "Withdrew a container take-over", ctr, "")
+            return 200, {"ok": True, "data": {"node": nid, "cancelled": True}}
+        if nodes[nid].get("adopt_container"):
+            return 409, {"ok": False, "error": "a take-over is already pending on this node", "code": "busy"}
+        nodes[nid]["adopt_container"] = {"container": ctr, "iface": str(body.get("iface") or "").strip(),
+                                         "at": int(time.time())}
+        nodes_save(Handler.deps["nodes_path"], nodes)
+        ev_append(Handler.deps["roster_path"], "node", nid, "Take over a container's interface", ctr, "")
+        return 200, {"ok": True, "data": {"node": nid, "container": ctr}}
+
     if method == "POST" and path == "/api/csqtt/adopt":
         # ADOPT a FOREIGN csqtt server the node found. Declarative like /api/wdtt/adopt: write the instance with
         # `adopt_foreign`, and the node takes over on its next sync — it reads the foreign password store, stops
@@ -11693,7 +11903,8 @@ def api(method, path, qs, body, deps):
         # only reachable case was a local read that already worked: don't break it.
         if not _cd.get("store_found", True) and not body.get("accept_no_store"):
             return 400, {"ok": False, **perr("the node can't read this server's password store at {v1}, so adopting would stop it and take over with NO users — its clients would all be dropped. Confirm to adopt anyway.", v1=_cd.get("config_dir") or "?"), "code": "store_unreadable"}
-        inst = {"iface": iface, "adopt_foreign": True, "adopt_config_dir": _cd.get("config_dir") or ""}
+        inst = {"iface": iface, "adopt_foreign": True, "adopt_at": int(time.time()),   # see the take-over sweep
+                "adopt_config_dir": _cd.get("config_dir") or ""}
         fork = (body.get("fork") or "").strip() or _csqtt_default_fork()
         if (TURN_SERVERS.get(fork) or {}).get("kind") != "csqtt":
             return 400, {"ok": False, **perr("unknown csqtt fork: {v1}", v1=fork), "code": "bad_request"}
@@ -13507,7 +13718,54 @@ class Handler(BaseHTTPRequestHandler):
             # on every reconcile. The node's own guard makes this safe meanwhile; this keeps the store honest.
             for _wifn, _wov in _wstore.items():
                 if _wov.get("adopt_foreign") and (_wsnap.get(_wifn) or {}).get("server_pub"):
-                    _wov.pop("adopt_foreign", None); _wdtt_dirty = True
+                    _wov.pop("adopt_foreign", None); _wov.pop("adopt_at", None); _wdtt_dirty = True
+            # csqtt had NO such clear at all — only the node's _csqtt_present guard stood between a stale marker
+            # and the hazard named above, so the marker sat in the store for ever and a later wipe would re-arm a
+            # take-over of a server that no longer exists. csqtt has no server keypair (every credential derives
+            # from the panel-owned password), so "it is ours now" is simply the node reporting the instance.
+            _cstore0 = node.get("csqtt") or {}
+            _csnap0 = {c.get("iface") for c in (snap.get("csqtt") or []) if isinstance(c, dict)}
+            for _cifn, _cov in _cstore0.items():
+                if _cov.get("adopt_foreign") and _cifn in _csnap0:
+                    _cov.pop("adopt_foreign", None); _cov.pop("adopt_at", None); _wdtt_dirty = True
+            # A take-over that never lands must not be retried for ever. While the marker is set the node re-runs
+            # the whole attempt every sync — stopping a foreign service, killing its process, deleting its device —
+            # and on failure the panel tells the operator "adopt again once it is down" while quietly retrying
+            # anyway. The message and the behaviour disagreed, and only one of them can be right: a take-over is a
+            # decision, not a repair. Give it the same window a stuck self-update request gets, then clear it and
+            # SAY so, so the operator can adopt again instead of watching a red row that is still trying.
+            # The window rides over the ordinary transient (the foreign server mid-restart, stoppable moments later).
+            # Same lifetime for a container take-over: the node answers on its very next sync, so a request
+            # still sitting here past the window means it never got there. Left set, it would keep asking a
+            # node to stop a container that is by now back up and serving.
+            _adc0 = node.get("adopt_container") if isinstance(node.get("adopt_container"), dict) else None
+            if _adc0:
+                _aat0 = _adc0.get("at") or 0
+                if not _aat0:
+                    _adc0["at"] = int(time.time()); _wdtt_dirty = True
+                elif time.time() - _aat0 > PROC_GRACE:
+                    node.pop("adopt_container", None); _wdtt_dirty = True
+                    node["proc_status"] = {
+                        "state": "adopt-container-failed", "at": int(time.time()),
+                        "err": "Taking %s over from container %s did not finish within %d min — the node never "
+                               "reported back. Nothing was taken over; check the node is online and try again."
+                               % (_adc0.get("iface") or "that interface", _adc0.get("container") or "?",
+                                  PROC_GRACE // 60)}
+            for _st, _kind in ((_wstore, "WDTT"), (_cstore0, "csqtt")):
+                for _ifn, _ov in _st.items():
+                    if not _ov.get("adopt_foreign"):
+                        continue
+                    _aat = _ov.get("adopt_at") or 0
+                    if not _aat:                    # requested before this version — start its clock now, don't
+                        _ov["adopt_at"] = int(time.time()); _wdtt_dirty = True; continue   # strand it un-expiring
+                    if time.time() - _aat <= PROC_GRACE:
+                        continue
+                    _ov.pop("adopt_foreign", None); _ov.pop("adopt_at", None); _wdtt_dirty = True
+                    node["proc_status"] = {
+                        "state": "adopt-failed", "at": int(time.time()),
+                        "err": "Taking over the existing %s server on %s did not finish within %d min — it is "
+                               "still running, so nothing was taken over. Stop it on the node, then adopt again."
+                               % (_kind, _ifn, PROC_GRACE // 60)}
             if _wdtt_dirty:
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
@@ -13558,6 +13816,68 @@ class Handler(BaseHTTPRequestHandler):
                     roster_save(Handler.deps["roster_path"], roster)
         except Exception as _e:
             print("csqtt adopt-import failed: " + str(_e)[:200], flush=True)
+
+        # ── a container take-over came back ────────────────────────────────────────────────────────────────
+        # The node has already stopped their container and stood the same server up natively; what is left is
+        # to make its clients ours. Peers are matched by PUBLIC KEY, which is also how their own client table
+        # names them, so a peer already in the roster is updated rather than duplicated — running this twice
+        # must not double anybody. The request is cleared either way: it is one-shot, and a failure that keeps
+        # asking would keep trying to stop a container that is already back up and serving.
+        try:
+            _ca = snap.get("container_adopt")
+            _req = node.get("adopt_container") if isinstance(node.get("adopt_container"), dict) else None
+            _seen = node.get("adopt_container_seen")
+            if isinstance(_ca, dict) and _ca.get("container") and _seen and _ctr_res_id(_ca) == _seen:
+                _ca = None                     # already consumed — a node re-sending its last result
+            if isinstance(_ca, dict) and _ca.get("container") and _req and not _ctr_answers(_ca, _req):
+                print("node %s: ignoring a container take-over result for %r — the pending request is for %r"
+                      % (nid, _ca.get("container"), _req.get("container")), flush=True)
+                _ca = None
+            if isinstance(_ca, dict) and _ca.get("container") and node.get("adopt_container"):
+                _cn, _cif = str(_ca.get("container")), str(_ca.get("iface") or "")
+                if _ca.get("ok") and _cif:
+                    _have = {(p.get("pubkey") or "").strip(): pid
+                             for pid, p in (roster.get("peers") or {}).items() if isinstance(p, dict)}
+                    _new = 0
+                    for _pr in (_ca.get("peers") or []):
+                        _pk = str((_pr or {}).get("publickey") or "").strip()
+                        if not _pk or not no_ctrl(_pk):
+                            continue
+                        _ip = str(_pr.get("allowedips") or "").split(",")[0].split("/")[0].strip()
+                        _f = {"pubkey": _pk, "psk": str(_pr.get("presharedkey") or "").strip(),
+                              "title": (str(_pr.get("name") or "").strip() or "adopted")[:60],
+                              "targets": [{"node": nid, "iface": _cif, "ip": _ip}]}
+                        _pid = _have.get(_pk)
+                        if not _pid:
+                            _pid = gen_id()
+                            while _pid in roster["peers"]:
+                                _pid = gen_id()
+                            _f["user_id"] = None
+                            _new += 1
+                        _p = peer_set(roster, _pid, _f, int(time.time()))
+                        ev_append(Handler.deps["roster_path"], "peer", _pid,
+                                  "Imported peer from an adopted container", peer_label(roster, _p),
+                                  nid + "/" + _cif)
+                    if _new:
+                        roster_save(Handler.deps["roster_path"], roster)
+                    node["proc_status"] = {"state": "adopted-container", "at": int(time.time()), **_proc_msg(
+                        "Took {i} over from container {c} — {n} imported. That container is stopped and will "
+                        "not restart; delete it once you are happy, or start it again to go back.",
+                        i=_cif, c=_cn, n={"n": _new, "noun": "peer"})}
+                else:
+                    node["proc_status"] = {"state": "adopt-container-failed", "at": int(time.time()),
+                                           "err": str(_ca.get("error") or "the node could not take it over")[:400],
+                                           **({"err_key": str(_ca.get("error_key"))[:400]} if _ca.get("error_key") else {}),
+                                           **({"err_vars": {str(k)[:40]: str(v)[:120] for k, v in
+                                                            list((_ca.get("error_vars") or {}).items())[:8]}}
+                                              if isinstance(_ca.get("error_vars"), dict) else {})}
+                node.pop("adopt_container", None)
+                if _ca.get("at"):
+                    node["adopt_container_seen"] = _ctr_res_id(_ca)   # never act on this same result again
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
+        except Exception as _e:
+            print("container adopt-import failed: " + str(_e)[:200], flush=True)
 
         upd = node.get("update")
         rv = snap.get("noded_version")
@@ -13772,9 +14092,18 @@ class Handler(BaseHTTPRequestHandler):
                     _wdtt_want.append(_wi)
         # Bind the two self-contained desired sets once: the removal lists below subtract them, so an iface name the
         # operator has reused can never be sent as "remove this" and "run this" in the same reply.
-        _wdtt_des = _wdtt_reply(roster, nodes, nid)
-        _csqtt_des = _csqtt_reply(roster, nodes, nid)
+        # The panel-wide fallback VK link, resolved HERE so both families authorise exactly what the operator's
+        # config generator puts in the link. Read live from deps (kept current on every settings save), not
+        # captured at boot, so changing the fallback takes effect on the next sync rather than the next restart.
+        _fb_vk = str(((Handler.deps.get("panel_settings") or {}) if Handler.deps else {}).get("vk_link") or "")
+        _wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk)
+        _csqtt_des = _csqtt_reply(roster, nodes, nid, _fb_vk)
+        # Take over a wg/awg server running in ANOTHER container (Amnezia). One-shot, like the adoption
+        # markers above: the node stops that container and stands the same server up natively, then reports
+        # what it found so the peers can be imported. Sent only while the request is live.
+        _adc = node.get("adopt_container") if isinstance(node.get("adopt_container"), dict) else None
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
+                                **({"adopt_container": _adc} if _adc else {}),
                                 "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
                                 "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
                                 "wdtt_vault_want": _wdtt_want,   # WDTT instances the panel needs a current sealed server identity for

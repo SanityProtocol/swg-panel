@@ -367,6 +367,27 @@
     freeturn: { app: "FreeTurn",       platform: "Android", author: "samosvalishe" },
     vktgz:    { app: "VK TURN Proxy",  platform: "Android", author: "MYSOREZ" }
   };
+  // A server name may be a TEMPLATE. The sheet that sets it is per (fork, OS), so one literal string names every
+  // proxy of that fork identically — and a fleet running one fork on several nodes is the ordinary topology here,
+  // not an edge case. {fork} {host} {port} are filled in per proxy from what this encoder already holds, so the
+  // one setting can still produce a distinct name per server. {host} is the one that always separates two nodes:
+  // they can just as easily run the same fork on the same port.
+  // Anything else in braces is left EXACTLY as typed — an unrecognised brace is far more likely part of somebody's
+  // name than a mistyped placeholder, and silently blanking it would file the server under a mangled name.
+  function expandServerName(tpl, fork, listen) {
+    if (!tpl) return "";
+    var l = String(listen || ""), host = l, port = "";
+    var m = l.match(/^\[(.*)\]:(\d+)$/);                   // [2001:db8::1]:56005 — bracketed IPv6 + port
+    if (m) { host = m[1]; port = m[2]; }
+    else {                                                  // host:port only when there is ONE colon: a bare IPv6
+      var i = l.lastIndexOf(":");                           // address is all colons and has no port to split off.
+      if (i > 0 && l.indexOf(":") === i) { host = l.slice(0, i); port = l.slice(i + 1); }
+    }
+    return tpl.replace(/\{(fork|host|port)\}/g, function (_m, k) {
+      return k === "fork" ? String(fork || "") : (k === "host" ? host : port);
+    }).trim();
+  }
+
   function clientLabel(fork, enc, mode) {
     var m = CLIENT_META[enc];
     return m ? (fork + " via " + m.app + " (" + m.platform + (mode || "") + ") by " + m.author) : (fork + " · CLI client (desktop)");
@@ -445,7 +466,8 @@
       // serverName IS in quick_link.py's CONFIG, but it is emitted the same conditional way and for the same reason:
       // build 179+ keeps a SET of named servers and an import adds one under this name, so an empty value would file
       // the connection under a blank name. Omitted → the app assigns "ServerN" itself (older builds ignore it).
-      var srvName = String((cs || {}).serverName || "").trim(); if (srvName) s.serverName = srvName;
+      var srvName = expandServerName(String((cs || {}).serverName || "").trim(), fork, listen);
+      if (srvName) s.serverName = srvName;
       var turnOv = String((cs || {}).turnServerOverride || "").trim(); if (turnOv) s.turnServerOverride = turnOv;   // pin fresh conns to a specific TURN relay
       if (csBool(cs, "vkAuth", false)) s.vkAuth = true;                  // VK cookie-auth path (instead of anon PoW)
       var uri = "vkturnproxy://import?data=" + b64urlUtf8(jsonSortedCompact({ version: 1, type: "connection", settings: s }));

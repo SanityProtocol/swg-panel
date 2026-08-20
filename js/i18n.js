@@ -186,7 +186,7 @@ export function srvText(r) {
    panel deliberately doesn't guess the plural, because Russian picks between three forms and the rule
    isn't derivable from English. Declining it here means the same wire payload reads correctly in any
    language we add later. */
-function srvVars(vars) {
+export function srvVars(vars) {
   if (!vars) return undefined;
   const out = {};
   for (const k in vars) {

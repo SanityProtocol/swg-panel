@@ -3,6 +3,46 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.7.13-beta] — 2026-08-20
+
+### Added
+- **Take over an AmneziaVPN server that runs in its own Docker container.** The panel could not see one at all:
+  it lives in a separate network namespace, with its config on a filesystem the node has no access to, so you
+  opened a node's page and saw an empty grid on a machine that was plainly running a VPN. Such servers now
+  appear there — with their subnet, listen port and peers, carrying the names you gave them in Amnezia itself.
+  **Take over** stops that container and stands the same server up natively: same key, same port, same
+  obfuscation, so the configs already on your users' devices keep working and nobody has to reinstall anything.
+  Its peers are imported with their names. The container is only stopped, never deleted — start it again to go
+  back. And it refuses, changing nothing, if the running interface does not match its own config or if the name
+  is already taken on that node, saying which and what to do about it; if anything fails after the container is
+  stopped, the node starts it again by itself.
+
+### Security
+- **Unassigning a peer did not revoke csqtt access.** Deleting a user unassigns every peer they hold precisely
+  so their saved configs stop working. That never applied to csqtt: it authenticates on a password alone, and
+  the password was left unchanged — the link kept working indefinitely while the panel showed the peer as
+  safely parked. The same applied to the explicit Unassign action. The password is now rotated with the
+  unassignment. If you unassigned or deleted anyone on an earlier version, update and unassign them again.
+
+### Fixed
+- **The subscription page returned nothing at all on 1.7.11–1.7.12.** The connection was accepted and no reply
+  ever came, so Cloudflare answered 520. What made it hard to spot is that the panel itself, its API and its
+  health check all answered normally throughout — nothing on the panel side looked wrong. Fixed, and the step
+  that caused it can no longer take the whole page down with it.
+- **The rotate-link button stuck for ever on a keyless peer** (csqtt, WDTT) and rotated nothing while it sat
+  there. It works now and reports what happened.
+- **VK links are authorised against the hash the link actually carries**, rather than the first one on record,
+  and the panel says plainly when the fallback link is the one in use.
+- **The client roster's "couldn't check" notice names the real cause** — a GitHub rate limit is reported once
+  for the whole check, together with how to raise it, and a client that is deliberately not tracked is now
+  described as exactly that.
+
+### Changed
+- **Less needless work on your servers.** Panels no longer each walk GitHub for client build information — it
+  is published once, so a rate limit no longer hits everyone at the same time. A node's scan of foreign
+  containers got considerably cheaper. And the helper timer on Docker hosts stopped starting a unit every
+  second: it now waits for the queue to change instead, which is visible both in the journal and in load.
+
 ## [1.7.12-beta] — 2026-08-19
 
 ### Added

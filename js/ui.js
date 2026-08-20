@@ -16,7 +16,7 @@
 import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rate, seen } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
-import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText } from "./i18n.js";
+import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText, srvVars } from "./i18n.js";
 import { IFACE_COLOR_DEFAULTS, THEME_COLOR_DEFAULT, THEME_COLOR_LIGHT_DEFAULT, THEME_MODES,
          clampBrand, hexLum, pickThemed, resolvedTheme, themeMode } from "./theme.js";
 import { targetType } from "./model.js";
@@ -645,7 +645,7 @@ const PROC_LABEL = once(() => ({
   reinstalling: T("re-installing"), "converting-bare": T("converting to bare-metal"), "converting-docker": T("converting to docker"), updating: T("updating"), uninstalling: T("uninstalling"),
   reinstalled: T("re-installed"), "reinstalled-updated": T("re-installed and updated"), "converted-bare": T("converted to bare-metal"), "converted-docker": T("converted to docker"), updated: T("updated"), uptodate: T("up to date"),
   "reinstall-aborted": T("re-install aborted"), "convert-aborted": T("convert aborted"), "update-aborted": T("update aborted"), "uninstall-aborted": T("uninstall aborted"),
-  "reinstall-failed": T("re-install failed"), "convert-failed": T("convert failed"), "update-failed": T("update failed"), "uninstall-failed": T("uninstall failed"), failed: T("proc|failed") }));
+  "reinstall-failed": T("re-install failed"), "convert-failed": T("convert failed"), "update-failed": T("update failed"), "uninstall-failed": T("uninstall failed"), "adopt-failed": T("take-over failed"), "adopted-container": T("took over a container's interface"), "adopt-container-failed": T("container take-over failed"), failed: T("proc|failed") }));
 // a node still AWAITING ENROLL never came up, so a "re-install" of it is really a first install — relabel the reinstall* states
 const PROC_LABEL_FRESH = once(() => ({ reinstalling: T("installing"), reinstalled: T("installed"), "reinstalled-updated": T("installed and updated"),
   "reinstall-aborted": T("install aborted"), "reinstall-failed": T("install failed") }));
@@ -655,15 +655,22 @@ export const procLabel = (state, fresh) => (fresh && PROC_LABEL_FRESH()[state]) 
 // success (green, ~5s, no ×), aborted (grey + ×), failed (red + error popup + ×) — all shown beside the real status.
 export const procFailed  = s => !!s && /failed$/.test(s);
 export const procAborted = s => !!s && /aborted$/.test(s);
-export const procSuccess = s => s === "reinstalled" || s === "reinstalled-updated" || s === "converted-bare" || s === "converted-docker" || s === "updated" || s === "uptodate";   // i18n-keys
+export const procSuccess = s => s === "reinstalled" || s === "reinstalled-updated" || s === "converted-bare" || s === "converted-docker" || s === "updated" || s === "uptodate" || s === "adopted-container";   // i18n-keys
 export const isUpdateState = s => s === "updating" || s === "updated" || s === "update-failed" || s === "update-aborted" || s === "uptodate";   // the whole UPDATE lifecycle lives ONLY in the dh-ver pill, never as a proc-tag beside the node title   // i18n-keys
 export const inProc      = s => !!s && !procFailed(s) && !procAborted(s) && !procSuccess(s);
 // in-progress proc-tag colour by op — converting→purple, uninstalling→red, everything else active (re-installing /
 // updating / installing) → yellow. (pending→blue and ready→green are handled by the turn/iface lifecycle classes.)
 export const procInClass = s => s === "uninstalling" ? "procuninstall" : (s || "").startsWith("converting") ? "procconvert" : "procbusy";   // i18n-keys
+export const procErr = rec => (rec && rec.proc_err_key)
+  ? T(rec.proc_err_key, srvVars(rec.proc_err_vars))
+  : ((rec && rec.proc_err) || null);
+
 export function procTag(state, onX, err, fresh) {
   const lbl = procLabel(state, fresh);
-  if (procSuccess(state)) return html`<span class="nstat procok"><${Ic} i="check"/> ${lbl}</span>`;   // green, auto-clears (no ×)
+  if (procSuccess(state)) return err
+    ? html`<span class="nstat procok tg-click" title=${T("What happened")}
+        onClick=${e => { e.stopPropagation(); e.preventDefault(); openConfirm({ title: lbl, log: err, confirmLabel: T("Close") }); }}><${Ic} i="check"/> ${lbl}</span>`
+    : html`<span class="nstat procok"><${Ic} i="check"/> ${lbl}</span>`;   // green, auto-clears (no ×)
   const xbtn = onX ? html`<button class="xbtn" title=${T("Dismiss — show the node's actual status")} onClick=${e => { e.stopPropagation(); e.preventDefault(); onX(e); }}><${Ic} i="x"/></button>` : null;
   if (procAborted(state)) return html`<span class="nstat procaborted"><${Ic} i="info"/> ${lbl}${xbtn}</span>`;
   if (procFailed(state)) {   // whole tag clickable → details popup (when there's a log tail), distinct hover, no caption
@@ -866,7 +873,7 @@ export function StatusTag({ cls, icon, label, msg, title }) {
   if (!msg) return html`<span class=${cls} title=${title || ""}>${ic}${label}</span>`;   // plain (non-error) tag keeps its hint
   // an error/detail tag: the WHOLE tag is clickable (→ popup), distinct hover, no native caption
   return html`<span class=${cls + " tg-click"}
-    onClick=${e => { e.stopPropagation(); openConfirm({ title: title || T("Details"), log: msg, confirmLabel: T("Close") }); }}>${ic}${label}</span>`;
+    onClick=${e => { e.preventDefault(); e.stopPropagation(); openConfirm({ title: title || T("Details"), log: msg, confirmLabel: T("Close") }); }}>${ic}${label}</span>`;
 }
 
 // ───────────────────────── form controls ─────────────────────────
@@ -1039,6 +1046,9 @@ export function NodeIpPick({ ips, value, onChange, auto, customPlaceholder, disa
 // interface op flashes — the iface twins of the turn* maps, read by the node cards
 export const ifaceReady = {};         // "node|iface"   -> expiry ts for the green "ready" flash (5s after an interface comes up)
 export const ifaceWasBusy = {};       // "node|iface"   -> was it pending/creating last render
+export const ifaceFlash = {};         // "node|iface"   -> expiry ts for a ONE-SHOT highlight: an interface that
+                                      // has just arrived somewhere in a grid of a dozen, so the eye can find it
+export const adoptSeen = new Set();   // "node|<proc at>" -> that outcome has already armed its flash
 
 // A label-less pair of colour pickers — DARK then LIGHT — for one themed colour. Hovering a swatch pops a preview
 // of `sample(colour)` on that mode's real backdrop, so you see how it reads in that theme before committing. `val`

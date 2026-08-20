@@ -729,12 +729,38 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const isKeyless = isWdttPeer || isCsqttPeer;   // self-contained turn peers: panel-owned password, no browser keypair
   const rotate = () => {
     if (isKeyless) {   // keyless turn peer: no browser keypair — rotate the panel-owned access password (revokes the old link)
-      const rotateApi = isCsqttPeer ? api.csqttPeerRotate : api.wdttPeerRotate;
+      // Called ON the api object, never pulled off it: these are shorthand methods that do `this.post(...)`, so a
+      // detached reference loses `this` and the call throws SYNCHRONOUSLY — before .then/.catch are attached, so
+      // the catch never runs, the button sits on "Rotating link…" for ever and the request never leaves the
+      // browser. The password was never rotated either, so retrying the same button looked equally dead.
+      const rotateApi = b => (isCsqttPeer ? api.csqttPeerRotate(b) : api.wdttPeerRotate(b));
       openConfirm({ title: T("Rotate link"), confirmLabel: T("Rotate link"), warn: true,
         body: isCsqttPeer
           ? T("A fresh access password is generated. The current csqtt link stops working — send the user their new link (from the subscription page) to re-import.")
           : T("A fresh access password is generated. The current WDTT link stops working — send the user their new link (from the subscription page) to re-import."),
-        onConfirm: () => { setRotating(true); rotateApi({ peer_id: peer.id }).then(async r => { await Store.poll(); setRotating(false); toast(r && r.ok ? T("Link rotated — the old one no longer works.") : (srvText(r) || T("Rotate failed.")), r && r.ok ? "ok" : "err"); }).catch(() => setRotating(false)); } });
+        // try/finally, not .catch: a .catch only runs on a REJECTED promise, so anything that throws before one
+        // exists leaves the button stuck. finally clears it whatever happened — and the operator is told, rather
+        // than left watching a disabled button that will never change.
+        // Deliberately NOT an async onConfirm: ConfirmSheet awaits it, which would hold the dialog open for the
+        // whole request. The design here (and on the keypair path below) is that the confirm closes at once and
+        // the BUTTON carries the progress. So: fire-and-forget, but with the clearing guaranteed on all three
+        // routes out — a synchronous throw, a rejection, and success. `.catch` alone covered only the middle one.
+        onConfirm: () => {
+          setRotating(true);
+          try {
+            rotateApi({ peer_id: peer.id })
+              .then(async r => {
+                await Store.poll();
+                toast(r && r.ok ? T("Link rotated — the old one no longer works.") : (srvText(r) || T("Rotate failed.")),
+                      r && r.ok ? "ok" : "err");
+              })
+              .catch(() => toast(T("Rotate failed."), "err"))
+              .finally(() => setRotating(false));
+          } catch (e) {
+            setRotating(false);
+            toast(T("Rotate failed."), "err");
+          }
+        } });
       return;
     }
     openConfirm({ title: T("Rotate keys"), confirmLabel: T("Rotate keys"), warn: true,
