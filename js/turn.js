@@ -957,7 +957,7 @@ export function TurnClientParams({ ctl, embedded }) {
       ? html`<${TurnDefaultsForm} schema=${cSchema} values=${effVals} onSet=${stageSetting} busy=${busy}/>`
       : html`<div class="hint">${T("{v1} has no settings the panel can preset — its options are set in the app itself.", { v1: cName })}</div>`}
     ${embedded ? null : html`<div style="display:flex;align-items:center;gap:12px;margin-top:16px">
-        <span class="faint" style="font-size:12px">${e.none ? T("{v1} users will be offered nothing for this server", { v1: osLabel }) : T("{v1} users will be offered {v2}", { v1: osLabel, v2: clientAppLabel(e) })}</span>
+        <span class="faint" style="font-size:12px">${e.none ? T("{v1} users will be offered nothing for this server", { v1: osLabel }) : Trich("{v1} users will be offered {v2}", { v1: osLabel, v2: clientAppLabel(e) })}</span>
         <span class="grow"></span>
         ${flash ? html`<span class="vk-status ok">${flash}</span>` : null}
         <button class="btn btn-primary" disabled=${busy || !dirty} onClick=${() => save(true)}>${busy ? T("Saving…") : T("Save")}</button>

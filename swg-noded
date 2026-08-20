@@ -3896,6 +3896,8 @@ def _container_ifaces(timeout=15):
                                             if pe.get("public_key") == pk:
                                                 pe["name"] = nm
                             hport = _ctr_published(cid, port, timeout=timeout) if port else 0
+                            # the conf is the authority, not the tool that answered (see _ctr_is_awg)
+                            proto = "awg" if _ctr_is_awg(cid, ifn, timeout=timeout) else proto
                             rows.append({"name": ifn, "container": name, "proto": proto, "address": cidr,
                                          "listen_port": port, "host_port": hport, "peers": len(plist),
                                          # the panel forwards this verbatim; cap it so one very large foreign
@@ -3943,6 +3945,25 @@ def _ctr_published(container, port, timeout=15):
                 if hp.isdigit():
                     return int(hp)
     return 0
+
+
+def _ctr_is_awg(container, ifn, timeout=15):
+    """Authoritative wg-vs-awg for a container interface: does its conf carry obfuscation params?
+
+    Which TOOL answered is not a reliable signal. On a box whose amneziawg module backs everything, `wg`
+    enumerates AWG devices too — the exact false positive iface_candidates documents and refuses to use, and
+    the reason a card could read "WG" for an interface the take-over then correctly created with `awg`.
+    Amnezia names its AmneziaWG interface `wg0`, so the NAME says nothing either. Cheap: one exec per iface.
+    """
+    with contextlib.suppress(Exception):
+        pat = "^[[:space:]]*(Jc|Jmin|Jmax|S[1-4]|H[1-4]|I[1-5])[[:space:]]*="
+        q = run(["docker", "exec", container, "sh", "-c",
+                 "grep -lE '%s' /opt/amnezia/awg/%s.conf /opt/amnezia/wireguard/%s.conf "
+                 "/opt/amnezia/*/%s.conf /etc/wireguard/%s.conf /etc/amnezia/amneziawg/%s.conf 2>/dev/null"
+                 % (pat, ifn, ifn, ifn, ifn, ifn)], timeout=timeout)
+        if q.returncode == 0 and (q.stdout or "").strip():
+            return True
+    return False
 
 
 def _ctr_peer_names(container, conf_dir="", timeout=25):
@@ -4072,7 +4093,8 @@ def container_iface_read(container, want_iface=None, timeout=25):
     return out
 
 
-_AWG_CONF_KEYS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1")
+_AWG_CONF_KEYS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4",
+                  "I1", "I2", "I3", "I4", "I5")
 
 
 def container_iface_takeover(container, node_cfg, agent, sudo):
@@ -4112,6 +4134,25 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
         return _ctr_err("this node already runs an interface called {i}, so the same name cannot be created "
                         "here — free it first (delete that interface if it is unused, or move its peers "
                         "elsewhere). Nothing was changed.", i=iface)
+    # Two Amnezia containers routinely carry the SAME tunnel subnet: each has its own netns, so 10.8.1.0/24
+    # inside one and inside another never meet. Taking both over moves them into the HOST namespace, where
+    # that stops being true — two routes for one prefix, and the second interface's peers break. Names differ
+    # (wg0 vs awg0), so the name check above cannot catch it. Refuse BEFORE the stop: discovering this after
+    # would have torn down a working server to find out.
+    _mine = (node_cfg.get("interfaces") or {})
+    with contextlib.suppress(Exception):
+        _want = ipaddress.ip_network(addr.split(",")[0].strip(), strict=False)
+        for _ifn in _mine:
+            _have = _iface_subnet(node_cfg, _ifn)
+            if not _have:
+                continue
+            with contextlib.suppress(Exception):
+                if ipaddress.ip_network(_have, strict=False).overlaps(_want):
+                    return _ctr_err(
+                        "{i} in {c} serves {s}, which overlaps {o} already on this node. In its own container "
+                        "that is fine — each has its own network namespace — but taking it over moves it here, "
+                        "where one subnet cannot be served twice. Take over only one of them, or renumber the "
+                        "other first. Nothing was changed.", i=iface, c=container, s=str(_want), o=_ifn)
     awg = {k: v for k, v in (r.get("interface") or {}).items() if k in _AWG_CONF_KEYS}
     cmd = ["awg"] if awg else ["wg"]          # obfuscation params present => it is AmneziaWG, not plain WireGuard
 
@@ -4120,6 +4161,16 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
     with contextlib.suppress(Exception):
         pol = (run(["docker", "inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}", container],
                    timeout=20).stdout or "").strip()
+    # Tools BEFORE the stop. This used to be discovered inside create-iface, i.e. after their container was
+    # already down — so a node missing the awg tools took a working VPN offline for the stop/fail/restart
+    # cycle just to learn a precondition we could have read up front. Same rule as the name and subnet checks:
+    # anything knowable without touching their service is checked before we touch it.
+    _need = cmd[0]
+    if not (shutil.which(_need) and shutil.which(_need + "-quick")):
+        return _ctr_err("{i} in {c} is {p}, and this node does not have the {p} tools ({t} and {t}-quick) to "
+                        "stand it up. Install them, then take it over again — {c} was not touched and is "
+                        "still serving.", i=iface, c=container, p=("AmneziaWG" if _need == "awg" else "WireGuard"),
+                        t=_need)
     if run(["docker", "update", "--restart=no", container], timeout=30).returncode != 0:
         return _ctr_err("could not clear the restart policy on {c} — nothing was changed", c=container)
     if run(["docker", "stop", container], timeout=90).returncode != 0:
@@ -4154,6 +4205,63 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
     return {"ok": True, "iface": iface, "container": container, "conf": conf,
             "listen_port": port, "address": addr, "proto": cmd[0],
             "peers": r.get("peers") or [], "named": r.get("named") or 0}
+
+
+_DEFAULT_ROUTES = ("0.0.0.0/0", "::/0")
+
+
+def _outbound_client_tunnel(conf, addr, live_peers):
+    """True when this interface is THIS BOX dialling OUT — a client tunnel, not a server anyone joins.
+
+    WDTT-Plus's optional exit is one: pick `warp_free`, `imported_wg` or `wireguard_vps` in its bot and it
+    writes /etc/wireguard/wg-wdtt-exit.conf (Cloudflare WARP, an imported profile, or another VPS) and
+    policy-routes its users out through it. A hand-rolled wgcf/WARP tunnel has the identical shape. Offering
+    one for adoption would hand the panel the box's own egress and present its single upstream as if it were
+    a user, so these never reach the operator as a candidate at all.
+
+    All three are required, so a server can never match: the interface holds a HOST address (/32 or /128 — a
+    server holds the subnet it hands out, and our mesh links a /31), and it has a peer with an Endpoint (we
+    dial IT, not the reverse) whose AllowedIPs take the default route (everything goes there).
+    """
+    host = False
+    for part in str(addr or "").split(","):
+        part = part.strip()
+        if "/" not in part:
+            continue
+        with contextlib.suppress(ValueError):
+            pfx = int(part.rsplit("/", 1)[1])
+            host = host or (pfx == 32 and "." in part) or (pfx == 128 and ":" in part)
+    if not host:
+        return False
+
+    def dials(ep, aips):
+        return bool(str(ep or "").strip()) and any(
+            a.strip() in _DEFAULT_ROUTES for a in str(aips or "").split(","))
+
+    for p in (live_peers or []):
+        if dials(p.get("endpoint"), p.get("allowed_ips")):
+            return True
+    if conf:                                   # a DOWN tunnel is still one — read it off the file
+        with contextlib.suppress(Exception):
+            ep = aips = ""
+            inpeer = False
+            for ln in open(conf):
+                if re.match(r"\s*\[", ln):
+                    if inpeer and dials(ep, aips):
+                        return True
+                    inpeer = bool(re.match(r"(?i)\s*\[Peer\]", ln)); ep = aips = ""
+                    continue
+                if not inpeer:
+                    continue
+                m = re.match(r"(?i)\s*Endpoint\s*=\s*(.+)", ln)
+                if m:
+                    ep = m.group(1).strip()
+                m = re.match(r"(?i)\s*AllowedIPs\s*=\s*(.+)", ln)
+                if m:
+                    aips = m.group(1).strip()
+            if inpeer and dials(ep, aips):
+                return True
+    return False
 
 
 def iface_candidates(node_cfg):
@@ -4264,6 +4372,8 @@ def iface_candidates(node_cfg):
                     m = re.match(r"\s*Address\s*=\s*([0-9./,]+)", ln)
                     if m and not addr:
                         addr = m.group(1).split(",")[0].strip()
+        if _outbound_client_tunnel(conf, addr, ent_peers):
+            continue                                        # this box dialling out (WDTT-Plus exit / WARP) — never a candidate
         ent = {"name": name, "proto": proto, "datapath": "userspace" if userspace else "kernel",
                "listen_port": port, "address": addr, "peers": peers, "up": bool(up),
                "wdtt_hint": bool(userspace or name in names_wdtt),
@@ -4665,6 +4775,36 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
     return res
 
 
+def _strip_learned_endpoints(body):
+    """Drop `Endpoint =` lines that `showconf` LEARNED rather than read from configuration.
+
+    A peer's endpoint is the source address of the last packet wg accepted from it — transient client state,
+    not config. Writing it into the server's conf pins a client's IP into a file that backups and the
+    bare<->docker conversion copy around, and makes the next `wg-quick up` dial an address the client may
+    have left. wg corrects it on the first authenticated packet, so keeping it buys nothing.
+
+    A peer that also sets PersistentKeepalive is the exception: that pair is how a dial-OUT peer is written
+    (mesh / node-to-node), and there the Endpoint IS configuration — drop it and the link only forms if the
+    far end happens to initiate. showconf cannot otherwise tell the two apart.
+    """
+    out, sec = [], []
+
+    def emit():
+        blk = sec
+        if blk and re.match(r"(?i)^\s*\[Peer\]", blk[0]) and not any(
+                re.match(r"(?i)^\s*PersistentKeepalive\s*=", l) for l in blk):
+            blk = [l for l in blk if not re.match(r"(?i)^\s*Endpoint\s*=", l)]
+        out.extend(blk)
+
+    for ln in body.splitlines():
+        if re.match(r"(?i)^\s*\[", ln):
+            emit(); sec = [ln]
+        else:
+            sec.append(ln)
+    emit()
+    return "\n".join(out)
+
+
 def _reconstruct_conf(iface, cmd):
     """Rebuild an interface's .conf from the LIVE device and return its path ('' if that isn't possible).
 
@@ -4683,6 +4823,7 @@ def _reconstruct_conf(iface, cmd):
         body = (r.stdout or "").strip()
         if not body or "[Interface]" not in body:
             return ""
+        body = _strip_learned_endpoints(body)
         addr = ""
         with contextlib.suppress(Exception):
             for ln in (run(["ip", "-4", "-o", "addr", "show", iface]).stdout or "").splitlines():
@@ -4712,6 +4853,18 @@ def _reconstruct_conf(iface, cmd):
         os.chmod(path, 0o600)
         return path
     return ""
+
+
+def _live_wg_ifaces():
+    """Names of wg/awg devices that exist on this box right now. The datapath is the authority — awg first,
+    because an amneziawg device answers only to `awg`."""
+    live = set()
+    for tool in (["awg"], ["wg"]):
+        with contextlib.suppress(Exception):
+            r = run(_wgcmd(tool) + ["show", "interfaces"])
+            if r.returncode == 0:
+                live |= set((r.stdout or "").split())
+    return live
 
 
 def selfheal_ifaces(node_cfg, desired_ifaces):
@@ -5177,8 +5330,22 @@ def create_ifaces(node_cfg, create, agent, sudo):
         return res
     ifaces = node_cfg.setdefault("interfaces", {})
     changed = False
+    _live = None                            # datapath asked at most once per pass, and only if we need it
     for iface, want in create.items():
-        if iface in ifaces:                 # already created — nothing to do (panel clears it)
+        if iface in ifaces:
+            # Already ours. Normally this is just the panel not having seen our report yet — say nothing.
+            # But if we hold a record for a device that is NOT on this box, creating it is exactly what the
+            # panel is asking for and we are about to decline: skipping in silence leaves it asking every five
+            # seconds for ever, with the card stuck on "creating" and no reason anywhere. Recreating it here
+            # would mint a NEW server key and break every client config, so that stays a decision (Restore,
+            # which can use the key backup) — but the operator has to be told there is one to make.
+            if _live is None:
+                _live = _live_wg_ifaces()
+            if iface not in _live:
+                res["errors"].append(
+                    f"{iface}: this node already has a record for {iface} but no such interface exists here — "
+                    f"it cannot be created again under that name. Restore it (that reuses its original server "
+                    f"key, so existing clients keep working), or delete it and create it under a free name.")
             continue
         cmd = want.get("cmd") or ["awg"]
         # RESTORE of a vanished interface: recreate it with its ORIGINAL server key so no client re-imports.

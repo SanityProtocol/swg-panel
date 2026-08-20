@@ -1137,3 +1137,90 @@ host_bindable_ips(){
     $2 !~ /^(wg[0-9]|awg[0-9]|swg_|docker|br-|veth|virbr|tun[0-9]|tap[0-9]|cni|flannel|kube|cali|nerdctl)/ {
       split($4, a, "/"); printf "%s%s|%s", (m++ ? "," : ""), a[1], $2 }'
 }
+
+# ─────────────────────── AmneziaWG: get the BEST datapath this box can run ───────────────────────
+# The amnezia PPA is a LAUNCHPAD ppa — Ubuntu only. On Debian (very common on VPS), on any non-apt
+# distro, and on a kernel with no matching headers, `add-apt-repository ppa:amnezia/ppa` cannot work,
+# and until now that left the node with NO AmneziaWG at all: the installer only warned, then reported a
+# successful install. These two rungs close that. Order matters — the kernel module is materially
+# faster, so it is always tried first and userspace is only a fallback.
+
+awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstream. 0 = tools AND module.
+  # Tools first and unconditionally: `awg` + `awg-quick` are what the panel needs to write and bring up a
+  # conf, and they build anywhere with a compiler — no distro repo involved. WITH_WGQUICK=yes is what
+  # produces awg-quick; without it you get the confusing half-installed state (`awg` present, awg-quick
+  # missing) that reads from the panel as "not installed at all". Same recipe as Dockerfile.node.
+  local w; w="$(mktemp -d)"
+  if ! have awg || ! have awg-quick; then
+    info "building AmneziaWG tools from source (the amnezia PPA is Ubuntu-only)…"
+    # ca-certificates is NOT optional here: without it every https git clone below fails cert verification.
+    # Dockerfile.node never hit this because its golang base image ships them; a minimal Debian does not.
+    have apt-get && run apt-get install -y --no-install-recommends git make build-essential ca-certificates >/dev/null 2>&1
+    if ! have git || ! have make; then
+      warn "cannot build AmneziaWG tools — git/make/compiler missing and no apt-get to add them"
+      rm -rf "$w"; return 1
+    fi
+    { run git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-tools "$w/tools" \
+        && run make -C "$w/tools/src" \
+        && run make -C "$w/tools/src" install PREFIX=/usr WITH_BASHCOMPLETION=no WITH_SYSTEMDUNITS=no \
+                WITH_WGQUICK=yes; } >"$w/build.log" 2>&1 || true
+  fi
+  $DRYRUN && { rm -rf "$w"; return 0; }
+  have awg && have awg-quick || {
+    warn "AmneziaWG tools did not build: $(tail -n 2 "$w/build.log" 2>/dev/null | tr '\n' ' ' | cut -c1-200)"
+    rm -rf "$w"; return 1; }
+  # Kernel module. Wanted wherever it is possible: it is the fast datapath, and on Debian this source
+  # build is the ONLY way to it. Needs headers for the RUNNING kernel — a provider kernel often has none,
+  # and an LXC/OpenVZ guest cannot load a module at all, which is what the userspace rung is for.
+  # No modprobe at all (a stripped image, some containers) means no kernel module is possible here — say so
+  # by falling through to userspace rather than returning modprobe's 127 to the caller.
+  have modprobe || { rm -rf "$w"; return 1; }
+  if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
+  info "building the AmneziaWG kernel module for $(uname -r)…"
+  have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
+  { run git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" \
+      && run make -C "$w/mod/src" \
+      && run make -C "$w/mod/src" install; } >"$w/mod.log" 2>&1 || true
+  run depmod -a >/dev/null 2>&1 || true
+  rm -rf "$w"
+  modprobe amneziawg 2>/dev/null || return 1
+}
+
+ensure_awg_userspace(){ # last rung: the userspace datapath, so AWG works even with no loadable module. 0/1
+  # awg-quick falls back to this ON ITS OWN — its add_if() exits unless the module is missing AND
+  # `amneziawg-go` is on PATH, so simply having the binary is the whole wiring. No env var, no config.
+  # Slower than the kernel module (which is why it is last), but it is the same datapath our Docker nodes
+  # have always run, and it works on boxes where nothing else can: no matching headers, LXC/OpenVZ guests.
+  have amneziawg-go && return 0
+  $DRYRUN && return 0
+  have go || { have apt-get && run apt-get install -y --no-install-recommends golang-go git ca-certificates >/dev/null 2>&1; }
+  have go || { warn "no Go toolchain — install amneziawg-go by hand for a userspace AmneziaWG datapath"; return 1; }
+  info "building the userspace AmneziaWG datapath (amneziawg-go)…"
+  local w; w="$(mktemp -d)"
+  { run git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" \
+      && ( cd "$w/go" && run go build -o /usr/local/bin/amneziawg-go . ); } >"$w/go.log" 2>&1 || true
+  # Debian STABLE ships a Go far older than amneziawg-go asks for (bookworm: 1.19 vs a go.mod wanting 1.25),
+  # and 1.19 predates Go fetching its own toolchain, so it cannot bootstrap out of it either. backports is
+  # Debian's own answer to exactly this and carries a current Go — reach for it once before giving up.
+  if ! have amneziawg-go && have apt-get && [ -r /etc/os-release ]; then
+    local _cn; _cn="$(sed -n 's/^VERSION_CODENAME=//p' /etc/os-release | tr -d '"')"
+    if [ -n "$_cn" ] && [ ! -f /etc/apt/sources.list.d/swg-backports.list ]; then
+      info "this distro's Go is too old for amneziawg-go — trying ${_cn}-backports…"
+      echo "deb http://deb.debian.org/debian ${_cn}-backports main" > /etc/apt/sources.list.d/swg-backports.list
+      run apt-get update -qq >/dev/null 2>&1 || true
+      run apt-get install -y -t "${_cn}-backports" --no-install-recommends golang-go >/dev/null 2>&1 || true
+      { ( cd "$w/go" && run go build -o /usr/local/bin/amneziawg-go . ); } >>"$w/go.log" 2>&1 || true
+      have amneziawg-go || rm -f /etc/apt/sources.list.d/swg-backports.list   # leave no source behind if it did not help
+    fi
+  fi
+  if ! have amneziawg-go; then
+    # The usual reason is a distro Go older than amneziawg-go's go.mod (Debian 12 ships 1.19 against a
+    # go.mod asking 1.25), and Go only learned to fetch its own toolchain in 1.21 — so the old one cannot
+    # bootstrap out of it either. Say exactly that: "no userspace datapath" with no reason is unactionable.
+    warn "amneziawg-go did not build (this node's Go is $(go version 2>/dev/null | awk '{print $3}' || echo unknown)): $(
+      tail -n 2 "$w/go.log" 2>/dev/null | tr '\n' ' ' | cut -c1-160)"
+    rm -rf "$w"; return 1
+  fi
+  rm -rf "$w"
+  return 0
+}

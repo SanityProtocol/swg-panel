@@ -160,9 +160,11 @@ function reconcile(roster, stats, now, cfg) {
             else if (rx > prev.rx) { prev.rx = rx; prev.flatSince = null; }         // data flowing → healthy
             else { if (prev.flatSince == null) prev.flatSince = now; if (cfg.detectFaulty !== false && (now - prev.flatSince) >= (cfg.faultyMs || 45000)) st = "faulty"; }
           }
-        } else if (cfg.detectBlocked !== false && obs.endpoint && obs.handshake_age == null && (now - createdMs) > cfg.graceMs) {
-          // BLOCKED: wg learned the client's endpoint (it IS sending packets) but no handshake ever completed —
-          // the client reaches the server but the tunnel won't come up (DPI on the handshake, MTU, wrong params).
+        } else if (cfg.detectBlocked !== false && obs.endpoint && (obs.rx_bytes || 0) > 0
+                   && obs.handshake_age == null && (now - createdMs) > cfg.graceMs) {
+          // BLOCKED: the client IS sending packets (rx moved) but no handshake ever completed — it reaches the
+          // server and the tunnel won't come up (DPI on the handshake, MTU, wrong params). The endpoint alone
+          // does not prove that: a server conf can carry one, and then nothing has arrived at all.
           st = "blocked";
         } else st = "ready";
       }

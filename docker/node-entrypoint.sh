@@ -69,7 +69,7 @@ gen_awg_params(){
   b3=$(( 2000000000 + $(rand32) % 900000000 )); b4=$(( 3000000000 + $(rand32) % 900000000 ))
   printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nS3 = %s\nS4 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
     "$s1" "$s2" "$s3" "$s4" "$b1" $((b1+15)) "$b2" $((b2+15)) "$b3" $((b3+15)) "$b4" $((b4+15))
-  printf 'I1 = <b 0xc300000001><r 1200>\n'   # conservative QUIC v1 Initial mimicry (no <c>/<t>)
+  printf 'I1 = <b 0xc000000001><r 64><t>\nI2 = <r 24><t>\nI3 = <r 32>\nI4 = <b 0xc000000001><r 32><t>\nI5 = <t><r 48>\n'   # I1-I5: QUIC-Initial-shaped junk (0xc0 long header, QUIC v1) + random bytes + timestamp
 }
 
 # gen_conf <name> <port> <address> <plain?yes|no>  — generate a server interface conf

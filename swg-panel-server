@@ -3910,10 +3910,12 @@ def gen_awg_params():
     w = 15
     return {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": s1, "S2": s2, "S3": s3, "S4": s4,
             "H1": f"{b[0]}-{b[0]+w}", "H2": f"{b[1]}-{b[1]+w}", "H3": f"{b[2]}-{b[2]+w}", "H4": f"{b[3]}-{b[3]+w}",
-            "I1": "<b 0xc300000001><r 1200>"}
+            "I1": "<b 0xc000000001><r 64><t>", "I2": "<r 24><t>", "I3": "<r 32>",
+            "I4": "<b 0xc000000001><r 32><t>", "I5": "<t><r 48>"}
 
 
-AWG_FIELDS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1")
+AWG_FIELDS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4",
+              "I1", "I2", "I3", "I4", "I5")
 
 
 def sanitize_awg_params(raw):
@@ -6439,7 +6441,7 @@ SUB_LANGS = {"en": "English", "ru": "Русский"}
 # Panel settings (persisted to panel-settings.json; surfaced + edited via the Panel settings screen).
 # store_configs=None means "use the fleet.json default"; geo_epoch is bumped by the Refresh-geo button.
 PANEL_SETTINGS_DEFAULTS = {
-    "interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25},
+    "interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25, "awg_params": {}},
     "mesh_awg": {},   # default AmneziaWG obfuscation for NEW mesh links ({} = auto-generate a fresh set per link)
     "mirrors": {"geo": "", "turn": ""},
     "store_configs": None,
@@ -8057,7 +8059,10 @@ def api(method, path, qs, body, deps):
             cur["interface_defaults"] = {
                 "dns": (dns if isinstance(dns, list) else [s.strip() for s in str(dns or "").split(",") if s.strip()]),
                 "mtu": int(idf.get("mtu") or 1280),
-                "keepalive": int(idf.get("keepalive") or 25)}
+                "keepalive": int(idf.get("keepalive") or 25),
+                # AWG obfuscation handed to each NEW awg interface. sanitize drops blanks, and a blank field is
+                # the point: it leaves that one to the node, which rolls S1-S4/H1-H4 per interface.
+                "awg_params": sanitize_awg_params(idf.get("awg_params"))}
         if "mesh_awg" in incoming:   # default AmneziaWG obfuscation for new mesh links ({} = auto per link)
             cur["mesh_awg"] = sanitize_awg_params(incoming.get("mesh_awg"))
         mir = incoming.get("mirrors")
@@ -11117,8 +11122,19 @@ def api(method, path, qs, body, deps):
             req["listen_port"] = _cp
         if str(body.get("mtu") or "").strip():
             req["mtu"] = str(body["mtu"]).strip()
+        # Panel-wide AWG obfuscation default. Handed to the node in the create request so the conf is right the
+        # first time (swg-agent uses supplied params and only generates when none arrive), and recorded as the
+        # interface's override so it stays the declared desired state — a later recreate/Restore keeps it. Only
+        # the fields the operator actually filled in: a blank one is left to the node, which rolls S1-S4/H1-H4
+        # fresh per interface so two interfaces never share a fingerprint.
+        _awgdef = sanitize_awg_params(((deps.get("panel_settings") or {}).get("interface_defaults") or {}).get(
+            "awg_params")) if cmd == ["awg"] else {}
+        if _awgdef:
+            req["awg_params"] = dict(_awgdef)
         nodes[nid].setdefault("create", {})[iface] = req
         ov = nodes[nid].setdefault("ifaces", {}).setdefault(iface, {})   # config-render overrides
+        if _awgdef:
+            ov["awg_params"] = dict(_awgdef)
         if (body.get("endpoint_host") or "").strip():
             ov["endpoint_host"] = body["endpoint_host"].strip()
         if (body.get("dns") or "").strip():
@@ -13638,7 +13654,10 @@ class Handler(BaseHTTPRequestHandler):
                     nodes_save(Handler.deps["nodes_path"], nodes)
 
         _wstore = node.get("wdtt") or {}
-        if _wstore:
+        # `or node.get("csqtt")`: the csqtt half of this block lives under the same guard, so a node that runs
+        # csqtt and never ran WDTT swept neither — its stuck take-over stayed set for ever. Everything
+        # WDTT-specific below reads _wstore through .items()/.get(), so an empty store is simply a no-op.
+        if _wstore or node.get("csqtt"):
             _wsealed = snap.get("wdtt_key_sealed") or {}
             _wsnap = {w.get("iface"): w for w in (snap.get("wdtt") or []) if isinstance(w, dict)}
             _wdtt_dirty = False
@@ -13735,22 +13754,6 @@ class Handler(BaseHTTPRequestHandler):
             # decision, not a repair. Give it the same window a stuck self-update request gets, then clear it and
             # SAY so, so the operator can adopt again instead of watching a red row that is still trying.
             # The window rides over the ordinary transient (the foreign server mid-restart, stoppable moments later).
-            # Same lifetime for a container take-over: the node answers on its very next sync, so a request
-            # still sitting here past the window means it never got there. Left set, it would keep asking a
-            # node to stop a container that is by now back up and serving.
-            _adc0 = node.get("adopt_container") if isinstance(node.get("adopt_container"), dict) else None
-            if _adc0:
-                _aat0 = _adc0.get("at") or 0
-                if not _aat0:
-                    _adc0["at"] = int(time.time()); _wdtt_dirty = True
-                elif time.time() - _aat0 > PROC_GRACE:
-                    node.pop("adopt_container", None); _wdtt_dirty = True
-                    node["proc_status"] = {
-                        "state": "adopt-container-failed", "at": int(time.time()),
-                        "err": "Taking %s over from container %s did not finish within %d min — the node never "
-                               "reported back. Nothing was taken over; check the node is online and try again."
-                               % (_adc0.get("iface") or "that interface", _adc0.get("container") or "?",
-                                  PROC_GRACE // 60)}
             for _st, _kind in ((_wstore, "WDTT"), (_cstore0, "csqtt")):
                 for _ifn, _ov in _st.items():
                     if not _ov.get("adopt_foreign"):
@@ -13767,6 +13770,29 @@ class Handler(BaseHTTPRequestHandler):
                                "still running, so nothing was taken over. Stop it on the node, then adopt again."
                                % (_kind, _ifn, PROC_GRACE // 60)}
             if _wdtt_dirty:
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
+        # NOT a WDTT concern: this used to sit inside `if _wstore:`, so a node with no WDTT store
+        # never timed out a stuck container take-over at all — the request stayed pending for ever.
+        # Same lifetime for a container take-over: the node answers on its very next sync, so a request
+        # still sitting here past the window means it never got there. Left set, it would keep asking a
+        # node to stop a container that is by now back up and serving.
+        _adc0 = node.get("adopt_container") if isinstance(node.get("adopt_container"), dict) else None
+        if _adc0:
+            _adc_dirty = False
+            _aat0 = _adc0.get("at") or 0
+            if not _aat0:
+                _adc0["at"] = int(time.time()); _adc_dirty = True
+            elif time.time() - _aat0 > PROC_GRACE:
+                node.pop("adopt_container", None); _adc_dirty = True
+                node["proc_status"] = {"state": "adopt-container-failed", "at": int(time.time()), **_proc_msg(
+                    "Taking {i} over from container {c} did not finish within {m} min — the node never reported "
+                    "back. Nothing was taken over; check the node is online and try again.",
+                    i=_adc0.get("iface") or "that interface", c=_adc0.get("container") or "?",
+                    m=PROC_GRACE // 60)}
+            # Saved here rather than on the WDTT block's dirty flag: that flag is checked above this point, so
+            # setting it here wrote nothing at all and the cleared request came straight back on the next sync.
+            if _adc_dirty:
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
         # clear a pending self-update once the node reports a version different from when it was requested
@@ -13868,7 +13894,10 @@ class Handler(BaseHTTPRequestHandler):
                     node["proc_status"] = {"state": "adopt-container-failed", "at": int(time.time()),
                                            "err": str(_ca.get("error") or "the node could not take it over")[:400],
                                            **({"err_key": str(_ca.get("error_key"))[:400]} if _ca.get("error_key") else {}),
-                                           **({"err_vars": {str(k)[:40]: str(v)[:120] for k, v in
+                                           # 400, not 120: these carry the NODE's own message, and at 120 a copy-pasteable
+                                             # install command was severed mid-word — the operator could not run
+                                             # the very thing we had just told them to run.
+                                             **({"err_vars": {str(k)[:40]: str(v)[:400] for k, v in
                                                             list((_ca.get("error_vars") or {}).items())[:8]}}
                                               if isinstance(_ca.get("error_vars"), dict) else {})}
                 node.pop("adopt_container", None)

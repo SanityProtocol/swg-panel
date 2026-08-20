@@ -549,18 +549,51 @@ def _wan_iface():
 def _ensure_tool(tool):
     """Require the wg/awg tools to be present. We can't install them from here: the swg-noded service
     is sandboxed (ProtectSystem/ProtectHome make /usr and /root read-only, so apt + add-apt-repository
-    fail) and the agent has a short timeout. So: a clear, copy-pasteable install command if missing —
-    once it's installed the pending create completes on the next sync."""
-    if shutil.which(tool) and shutil.which(tool + "-quick"):
+    fail) and the agent has a short timeout.
+
+    The advice deliberately does NOT name the amnezia PPA any more. That PPA is Launchpad — Ubuntu-only, so
+    it cannot work on Debian at all, and even on Ubuntu `add-apt-repository` dies with an unreadable Python
+    traceback ("'NoneType' object has no attribute 'people'") whenever Launchpad's API is unreachable, which
+    is exactly what one operator hit. The installer now builds tools and the kernel module from source on
+    any distro and falls back to the userspace datapath, so "re-run the installer" is both correct
+    everywhere and the shortest true answer.
+
+    Each message is a FIXED sentence with nothing interpolated, so the panel can translate it by catalogue
+    lookup like any other string — node messages otherwise arrive as untranslated English inside a
+    translated page.
+    """
+    have, quick = shutil.which(tool), shutil.which(tool + "-quick")
+    if have and quick:
         return
-    how = ("sudo apt-get install -y wireguard" if tool == "wg" else
-           "sudo add-apt-repository -y ppa:amnezia/ppa && sudo apt-get update && sudo apt-get install -y amneziawg")
-    raise AgentError("no_tool", f"'{tool}' tools aren't installed on this node. Run on the node:  {how}  "
-                     f"— then the interface creates automatically on the next sync.")
+    if tool == "wg":
+        raise AgentError("no_tool", "WireGuard tools are not installed on this node. Install them with your "
+                         "package manager (on Debian/Ubuntu: apt-get install -y wireguard), then this "
+                         "interface creates itself on the next sync.")
+    # Distinguish "nothing installed" from "half installed": awg without awg-quick is a real and confusing
+    # state that reads from the panel exactly like the tools being absent.
+    if have and not quick:
+        if _IN_CONTAINER:
+            raise AgentError("no_tool", "This node's container image has awg but not awg-quick. Update the node "
+                             "(docker compose pull && docker compose up -d) so it runs a current swg-node image, "
+                             "then this interface creates itself on the next sync.")
+        raise AgentError("no_tool", "AmneziaWG is only half-installed on this node: awg is present but "
+                         "awg-quick is missing. Re-run the swgPanel node installer — it builds both from "
+                         "source — then this interface creates itself on the next sync.")
+    # A DOCKER node gets its tools from the swg-node image, which fails its own build unless awg, awg-quick
+    # and amneziawg-go are all present — so this should be unreachable there. If it ever is, "re-run the
+    # installer" is the wrong instruction: nothing on the host owns those binaries. Pull the image instead.
+    if _IN_CONTAINER:
+        raise AgentError("no_tool", "AmneziaWG tools are missing from this node's container image. Update the "
+                         "node (docker compose pull && docker compose up -d) so it runs a current swg-node "
+                         "image, then this interface creates itself on the next sync.")
+    raise AgentError("no_tool", "AmneziaWG tools are not installed on this node. Re-run the swgPanel node "
+                     "installer — it builds them from source on any distribution, and falls back to the "
+                     "userspace datapath where the kernel module cannot load. Then this interface creates "
+                     "itself on the next sync.")
 
 
 def _awg_obfuscation():
-    """Mirror install-host.sh's awg_obfuscation: random S1–S4, four disjoint H1–H4 bands, conservative I1."""
+    """Mirror install-host.sh's awg_obfuscation: random S1–S4, four disjoint H1–H4 bands, fixed I1–I5."""
     s1 = 15 + random.randint(0, 135); s2 = 15 + random.randint(0, 135)
     while s2 == s1 or s2 == s1 + 56:
         s2 = 15 + random.randint(0, 135)
@@ -570,7 +603,8 @@ def _awg_obfuscation():
     return ("Jc = 4\nJmin = 40\nJmax = 70\n"
             f"S1 = {s1}\nS2 = {s2}\nS3 = {s3}\nS4 = {s4}\n"
             f"H1 = {b[0]}-{b[0] + w}\nH2 = {b[1]}-{b[1] + w}\nH3 = {b[2]}-{b[2] + w}\nH4 = {b[3]}-{b[3] + w}\n"
-            "I1 = <b 0xc300000001><r 1200>\n")
+            "I1 = <b 0xc000000001><r 64><t>\nI2 = <r 24><t>\nI3 = <r 32>\n"
+            "I4 = <b 0xc000000001><r 32><t>\nI5 = <t><r 48>\n")
 
 
 # Same test swg-noded makes (NODE_KIND): the agent otherwise has no idea it is inside a container, and where a
@@ -649,7 +683,21 @@ def op_create_iface(cfg, req):
         # recreated interface won't speak the clients' handshake. A brand-new create gets fresh random params.
         supp = req.get("awg_params") if isinstance(req.get("awg_params"), dict) else None
         supp = {k: str(supp[k]) for k in AWG_KEYS if supp and str(supp.get(k, "")) != ""} if supp else None
-        body += ("".join(f"{k} = {supp[k]}\n" for k in AWG_KEYS if k in supp)) if supp else _awg_obfuscation()
+        # A supplied set may be PARTIAL: the panel sends only the fields an operator filled into the defaults and
+        # leaves the rest to us. Generate the full set first and overlay what arrived, or a blank field would
+        # vanish from the conf altogether — an awg interface with no S/H is not obfuscated at all. Restore
+        # supplies every key, so overlaying gives back exactly what it sent.
+        _gen = _awg_obfuscation()
+        if supp:
+            _out = []
+            for _ln in _gen.splitlines():
+                _k = _ln.split("=")[0].strip()
+                _out.append(f"{_k} = {supp[_k]}" if _k in supp else _ln)
+            _seen = {l.split("=")[0].strip() for l in _out}
+            _out += [f"{k} = {supp[k]}" for k in AWG_KEYS if k in supp and k not in _seen]
+            body += "\n".join(_out) + "\n"
+        else:
+            body += _gen
     write_conf_atomic(conf, body)
     # `wg-quick up <name>` resolves the name against /etc/wireguard and NOWHERE else, so moving the file to the
     # mount would break the bring-up it is supposed to enable. Link the name back into that directory: every

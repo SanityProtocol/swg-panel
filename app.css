@@ -1497,7 +1497,11 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
    right-aligned on a second line, staggered under the device. With space-between a wrapped line holds one item
    and starts it at the left, so the pair simply stacks. Language-proof: the Russian labels are longer than the
    English and wrap sooner, which is exactly when this mattered. */
-.turncfg-devrow{display:flex;align-items:center;justify-content:space-between;gap:14px 20px;flex-wrap:wrap;margin:0 0 12px}
+.turncfg-devrow{display:flex;align-items:center;justify-content:space-between;gap:14px 20px;flex-wrap:nowrap;margin:0 0 12px}
+.turncfg-devrow > .turncfg-os,.turncfg-devrow > .turncfg-app{min-width:0}
+.turncfg-app .appdd{min-width:0;max-width:100%}
+.turncfg-app .appdd .osdd-btn{width:210px;min-width:0;max-width:100%}
+.turncfg-app .appdd .osdd-btn > *{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .turncfg-devrow .turncfg-os{margin:0}
 .turncfg-os{display:flex;align-items:center;gap:12px;margin:0 0 12px}
 .turncfg-os > label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2)}
@@ -2541,7 +2545,7 @@ a.tg:hover{filter:brightness(1.25)}
 /* app picker (turn/WDTT config): a Device-style dropdown reading "<app> by <author>", pushed to the right */
 .turncfg-app{display:flex;align-items:center;gap:12px}   /* placed by the row's space-between, not a margin */
 .turncfg-app > label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2)}
-.appdd .osdd-btn{min-width:210px}
+.appdd .osdd-btn{min-width:210px}   /* narrowed inside .turncfg-devrow, which must stay one line */
 .appdd .osdd-menu{left:auto;right:0}   /* right-aligned menu (the picker sits at the row's right edge) */
 .appdd .osdd-lbl{display:inline-flex;align-items:center;gap:2px}
 .appdd .app-by{color:var(--dim);font-weight:400}

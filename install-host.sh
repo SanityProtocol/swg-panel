@@ -437,7 +437,17 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   build_awg_module
   $DRYRUN && return 0
   have awg && modprobe amneziawg 2>/dev/null && return 0
-  have awg && warn "AmneziaWG tools installed, but its kernel module didn't build/load on kernel $(uname -r) — this box is missing matching linux-headers (dkms couldn't compile it). 'awg' interfaces can't come up until that's fixed; you can create a plain WireGuard interface instead, or install linux-headers-$(uname -r) + reboot and re-run."
+  # The apt path did not get us there — Debian (the PPA is Ubuntu-only), a non-apt distro, or a kernel with
+  # no matching headers. Do NOT stop at a warning: build from source, which is the only route to the KERNEL
+  # datapath off Ubuntu and is what we want wherever it is possible.
+  awg_build_from_source && { info "AmneziaWG: kernel datapath (built from source)"; return 0; }
+  # Still no module: no headers for this kernel, or an LXC/OpenVZ guest that cannot load one at all. Fall
+  # back to userspace so the node can still serve AmneziaWG — awg-quick picks it up by itself.
+  if ensure_awg_userspace; then
+    warn "AmneziaWG will run on the SLOWER userspace datapath — no loadable kernel module on $(uname -r).$(
+      have apt-get && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
+    return 0
+  fi
   return 1
 }
 build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the RUNNING kernel. Critical: `apt install
@@ -473,9 +483,9 @@ awg_obfuscation(){ # emit AmneziaWG v2 obfuscation — H1–H4 ranges, S1–S4, 
   b4=$(( 3000000000 + (RANDOM*RANDOM) % 900000000 ))
   printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nS3 = %s\nS4 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
     "$s1" "$s2" "$s3" "$s4" "$b1" $((b1+w)) "$b2" $((b2+w)) "$b3" $((b3+w)) "$b4" $((b4+w))
-  # Conservative QUIC-Initial mimicry on I1 only (no <c> counters, no <t> — keeps amneziawg-go/Android working).
-  # 0xc3 = long-header Initial first byte; 0x00000001 = QUIC v1; then random payload.
-  printf 'I1 = <b 0xc300000001><r 1200>\n'
+  # I1-I5 junk packets, QUIC-Initial shaped: 0xc0 = long-header first byte, 0x00000001 = QUIC v1,
+  # <r N> = N random bytes, <t> = timestamp (so the packets differ between handshakes).
+  printf 'I1 = <b 0xc000000001><r 64><t>\nI2 = <r 24><t>\nI3 = <r 32>\nI4 = <b 0xc000000001><r 32><t>\nI5 = <t><r 48>\n'
 }
 server_addr(){ # server_addr <cidr> -> "<first-host>/<prefix>"
   have python3 || die "python3 is required to compute the tunnel address (it's also needed by the daemon)"

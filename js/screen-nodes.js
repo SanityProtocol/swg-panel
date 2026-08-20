@@ -210,12 +210,32 @@ export function NodeDetail({ node: rawName }) {
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
-          <div class="ifcard-top"><span class=${"iftype " + (type || "turn")}>${type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><${StatusTag} cls="tg-busy" icon="clock" label=${label} title=${T("Setting it up on the node")}/></div>
-          <div class="ifcard-rows"><div class="ifrow"><span class="l faint">${label === "creating" ? T("the node is creating it…") : T("the node is adding it…")}</span><button class="btn btn-mini warn" title=${T("Drop this pending request")} onClick=${() => mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) })}>${T("Cancel")}</button></div><${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
+          <div class="ifcard-top"><span class=${"iftype " + (type || "turn")}>${type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span>${(() => {
+              // Same as the optimistic card below: a create the node REFUSED never arrives, so this card sat on
+              // "creating" beside its own error icon for ever. `label` also arrived as a raw English word.
+              const _ce = (nrec.cmd_errors || {})[ifn];
+              return html`<${CmdErr} err=${_ce}/><${StatusTag}
+                cls=${_ce ? "tg tg-warn" : "tg-busy"} icon=${_ce ? "warn" : "clock"}
+                label=${_ce ? T("tag|failed") : (label === "creating" ? T("tag|creating") : T("tag|onboarding"))}
+                title=${_ce ? T("The node could not set it up — open the error for what to do") : T("Setting it up on the node")}/>`;
+            })()}</div>
+          <div class="ifcard-rows"><div class="ifrow"><span class="l faint">${(nrec.cmd_errors || {})[ifn]
+              ? T("the node refused — open the error above")   /* badge says failed; this line must not still say creating */
+              : label === "creating" ? T("the node is creating it…") : T("the node is adding it…")}</span><button class="btn btn-mini warn" title=${T("Drop this pending request")} onClick=${() => mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) })}>${T("Cancel")}</button></div><${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
         // client-optimistic create: the FULL card with the values just entered, dimmed + "creating" + × in the
         // header — identical layout to the turn-proxy optimistic card. Shown until the node reports the iface.
         const optIfCard = (ifn, e) => html`<div class="ifcard down" key=${"new:" + ifn}>
-          <div class="ifcard-top"><span class=${"iftype " + (e.type || "turn")}>${e.type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><${StatusTag} cls="tg-busy" icon="clock" label=${e.type ? "creating" : "onboarding"} title=${T("Setting it up on the node")}/><button class="xbtn" title=${T("Cancel this request")} onClick=${() => { delete Store.ifaceNew[name + "|" + ifn]; mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) }); }}><${Ic} i="x"/></button></div>
+          <div class="ifcard-top"><span class=${"iftype " + (e.type || "turn")}>${e.type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span>${(() => {
+              // A create that FAILED left this card reading "creating" for ever: the optimistic card clears only
+              // when the node reports the interface, and a failed one never arrives — so the card sat in-progress
+              // next to its own error icon. If the node reported an error for this name, say so instead.
+              // (The label was also passed raw, so it rendered as English "creating" inside a translated page.)
+              const _ce = (nrec.cmd_errors || {})[ifn];
+              return html`<${CmdErr} err=${_ce}/><${StatusTag}
+                cls=${_ce ? "tg tg-warn" : "tg-busy"} icon=${_ce ? "warn" : "clock"}
+                label=${_ce ? T("tag|failed") : (e.type ? T("tag|creating") : T("tag|onboarding"))}
+                title=${_ce ? T("The node could not set it up — open the error for what to do") : T("Setting it up on the node")}/>`;
+            })()}<button class="xbtn" title=${T("Cancel this request")} onClick=${() => { delete Store.ifaceNew[name + "|" + ifn]; mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) }); }}><${Ic} i="x"/></button></div>
           <div class="ifcard-rows">
             ${(e.endpoint || e.port) ? html`<div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${(e.endpoint || "") + (e.port ? ":" + e.port : "") || "—"}</span></div>` : null}
             ${e.subnet ? html`<div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${e.subnet}</span></div>` : null}
@@ -323,7 +343,7 @@ export function NodeDetail({ node: rawName }) {
           const nerr = (nrec.cmd_errors || {})[ifn] || "";
           const never = !!nerr && !vaulted;
           const sentence = never
-            ? T("The node refused to install WDTT server {iface}: {err}", { iface: ifn, err: nerr })
+            ? T("The node refused to install WDTT server {iface}: {err}", { iface: ifn, err: T(nerr) })
             : vaulted
             ? goneSentence(T("The node no longer reports WDTT server {iface} (subnet {subnet}). {verdict}, so Restore brings it back unchanged — no user re-imports.",
                 { iface: ifn, subnet: wc.wg_addr || "?" }), true, T("Its identity is escrowed in your Encryption Vault"))
@@ -392,7 +412,14 @@ export function NodeDetail({ node: rawName }) {
               <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${(cd.conf ? cd.conf.replace(/\/[^/]*$/, "") : ((cd.wdtt || {}).config_dir || "")) || html`<span class="faint">—</span>`}</span></div>
               <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${listenAddr(nrec.endpoint_host, cd.listen_port)}</span></div>
               <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${cd.address || "—"}</span></div>
-              <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${cd.peers ? html`<b>${cd.peers}</b>` : html`<span class="faint">${T("None")}</span>`}</span></div>
+              ${/* A WDTT server's accounts are NOT its device peers: the fork programs a kernel peer at CONNECT
+                    time and drops it when a password expires, so a server with five users can show one peer —
+                    and the detail page, which lists the accounts, then contradicts this card. Count what the
+                    operator is deciding about (and what that page shows). Every other candidate keeps the
+                    device count, which is the right number for them. */ ""}
+              ${(() => { const _wu = ((cd.wdtt || {}).users || []).length, _n = cd.wdtt ? _wu : cd.peers;
+                 return html`<div class="ifrow"><span class="l">${cd.wdtt ? T("Users") : T("Peers")}</span><span class="r">${_n
+                   ? html`<b>${_n}</b>` : html`<span class="faint">${T("None")}</span>`}</span></div>`; })()}
             </div></a>`; };
         // A name the panel already has for THIS node is not an orphan — it is one of ours the node stopped
         // reporting, which is the missing/ghost card right above. Showing both said "we manage it, it's gone"

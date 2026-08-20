@@ -3,6 +3,114 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.7.14-beta] — 2026-08-21
+
+### Changed
+- **New AmneziaWG interfaces are harder to fingerprint.** A new interface used to carry a single junk-packet
+  definition; it now carries all five, two of them timestamped, so the traffic that precedes a handshake varies
+  between sessions instead of repeating one fixed shape. This applies to interfaces you create from now on —
+  existing interfaces keep exactly the parameters they already have, and nobody needs a new config.
+- **Adopting an interface no longer copies a client's address into the server's configuration.** Rebuilding a
+  config from a running interface picked up whichever address each peer last spoke from — transient information
+  about a person, not configuration — and wrote it into a file that backups and the Docker/bare-metal conversion
+  then carry around. It is left out now, except where it genuinely is configuration: a node-to-node link that
+  dials out keeps its address.
+
+### Added
+- **The AmneziaWG obfuscation a new interface gets is now yours to set.** Panel settings → Interfaces →
+  Defaults holds the full parameter grid beside DNS, MTU and keepalive, and it behaves like they do: what you
+  fill in is applied to every new AmneziaWG interface, and you can still override it per interface afterwards.
+  A cell left blank keeps the built-in behaviour, which the placeholder text spells out — the constants for
+  Jc/Jmin/Jmax and I1–I5, and for S1–S4 and H1–H4 a fresh roll **per interface**, so two interfaces never
+  carry the same fingerprint and learning one server's headers tells an observer nothing about the rest.
+  Fill those in only if you want the whole fleet to share them. WireGuard interfaces ignore all of it.
+
+### Fixed
+- **A take-over the node never answered stayed pending for ever** — and on most nodes the timeout that was
+  supposed to end it never ran at all. It only ran on nodes that also happened to run a WDTT server, so a plain
+  server taking over a container, or one running only csqtt, kept a request open indefinitely: the panel went on
+  asking the node to stop a container that was long since back up, and you watched a row that said it was still
+  trying. A take-over that gets no answer now gives up after five minutes and says so, naming the container, and
+  you can start a fresh one.
+- **A peer that had never connected was reported as "Restricted".** That status means the client is reaching the
+  server and being stopped, and it sent people looking at DPI, MTU and obfuscation for someone who had simply
+  never connected. It was reached whenever the server's config already held an address for the peer, which
+  happens after a Docker-to-bare-metal conversion. The panel now requires that something actually arrived from
+  the peer, so a genuinely blocked client still reads as blocked and one that never connected reads as ready.
+- **An interface stuck on "Creating" now tells you when it is a dead end.** If the node holds a record for the
+  name but no such interface exists on it any more, it stayed silent while the panel asked again every five
+  seconds, so the card said "Creating" indefinitely with no reason given. The node now says what is wrong.
+  Re-creating the interface is left to you deliberately: it would mint a new server key and break every existing
+  client config, where Restore reuses the original key.
+- **A server's own outbound tunnel was offered for adoption.** WDTT-Plus can send its users out through
+  Cloudflare WARP, an imported WireGuard profile or another VPS; choosing one of those exits in its bot creates
+  a second interface (`wg-wdtt-exit`) that is your box dialling **out**, not a server anyone connects to. The
+  panel listed it as an orphan and offered to take it over — which would have handed it your server's egress
+  and presented its single upstream as though it were one of your users. Interfaces of that shape — a host
+  address, plus a peer with an endpoint that takes the default route — are no longer discovered at all. A
+  hand-rolled WARP or wgcf tunnel looks the same and is skipped for the same reason.
+- **A WDTT server's card counted live connections where the page it opens counted accounts.** The card showed
+  the peers currently programmed onto the kernel device, so a server with five users could read "1" and then
+  list five when opened. Both numbers were honest — WDTT puts a peer on the device when someone connects and
+  removes it when their password expires — but the card now counts accounts, which is what you are deciding
+  about when you adopt it.
+- **A create the node refused sat on "creating" for ever, next to its own error icon.** The card only cleared
+  when the node reported the interface — which a failed one never does. It now reads **failed** the moment the
+  node reports why, and the line beneath says to open the error rather than claiming work is still happening.
+- **The panel stopped telling you to run a command that cannot work.** When AmneziaWG tools were missing it
+  always named the Amnezia PPA, which is Ubuntu-only — and even on Ubuntu `add-apt-repository` ends in an
+  unreadable Python traceback whenever Launchpad is unreachable. Since the installer now builds from source on
+  any distribution, it simply says to re-run it.
+- **Messages from your nodes are translated.** Sixteen of them — including every "cannot create this
+  interface" reason — arrived as English inside an otherwise translated page.
+- **A take-over that could not succeed no longer stops the server first.** The tools needed to stand the
+  interface up were only checked once the container was already down, so a node without them took a working
+  VPN offline for the stop-fail-restart cycle just to discover a precondition. It is checked before anything
+  is touched now, and says which protocol and which two binaries are needed.
+- **Updating now installs AmneziaWG on a node that never got it.** The update already healed a kernel module
+  that failed to build, but it skipped any node where the tools were missing entirely — "this node doesn't use
+  AmneziaWG, nothing to heal" — which is exactly the node that needed it. That is how an install could report
+  success and leave a server permanently unable to create or take over an AmneziaWG interface. The update now
+  brings such a node up to what a fresh install would have given it: the package route where it works, a source
+  build where it doesn't, and the userspace datapath where no kernel module can load. It tells you which one you
+  ended up on, and stays a silent no-op on a node that is already fine.
+- **AmneziaWG now installs on Debian — and on anything else, not just Ubuntu.** The installer only ever knew
+  one way to get it: the Amnezia PPA, which is Ubuntu-only. Everywhere else it warned and carried on, so the
+  install "succeeded" onto a node that could not run AmneziaWG at all — and nothing said so until you tried
+  to create or take over an interface. It now builds the tools and the kernel module from source when the
+  package route is unavailable, so a Debian node gets the same fast kernel datapath an Ubuntu one does. If
+  the module genuinely cannot load — no headers for the running kernel, or a container-based VPS that cannot
+  load modules at all — it falls back to the userspace datapath instead of leaving you with nothing, and says
+  which one you ended up on and how to get the faster one.
+- **A container's interface could be labelled WG when it was AmneziaWG** — and taking it over then failed
+  asking for tools you had no reason to think you needed. The card named the protocol by whichever tool
+  answered inside the container, but on a host whose AmneziaWG module backs everything, `wg` lists AWG
+  interfaces too, and Amnezia names its AmneziaWG interface `wg0`. The card now reads the interface's own
+  config, which is what the take-over has always used.
+- **That failure then told you to run a command that cannot work on your system.** The install hint always
+  named the Amnezia PPA, which is Ubuntu-only — on anything else it is the very command that already failed
+  during install. It now says what applies to the system it is running on, and distinguishes "not installed"
+  from "installed, but `awg-quick` is missing", which looks identical from the panel and is not.
+- **…and the message was cut off mid-command**, at 120 characters, so the install line could not even be
+  copied. Node messages now travel whole.
+- **Taking over a second container that shares a subnet is refused, before anything is stopped.** Two
+  AmneziaVPN containers routinely use the same tunnel subnet: each has its own network namespace, so they
+  never meet. Taking both over moves them into one namespace where that stops being true, and the second
+  one's users break. Their names differ, so nothing caught it. The panel now explains the overlap and leaves
+  both servers running.
+- **A mesh link's graph used only a quarter of its width on Live and Hour.** The per-pair history is folded at
+  most once a minute, but those two ranges read a ring whose buckets are 15 seconds wide — so three out of
+  four slots were always empty and the chart, which deliberately fills from the right while a ring is still
+  filling, sat pinned at a quarter width no matter how long the link had been up. These graphs now size their
+  axis to the resolution the data actually has. A range that is genuinely still filling — a month view on a
+  ring only a few days old — still fills from the right, because that one is true.
+- **A line in the client-app sheet read "[object Object]".** The footer that tells you which app a platform's
+  users will be offered has rendered the app name and author as `[object Object], ,by ,[object Object]` since
+  1.7.11: the name is styled markup, and it was being pushed through plain text substitution. It reads properly
+  again — "iOS users will be offered VK TURN Proxy by anton48".
+- **"Device" and "Client" stopped sharing a row** as soon as their labels grew — a longer app name or the Russian
+  wording was enough to push the two pickers onto separate lines. The row no longer wraps at any width.
+
 ## [1.7.13-beta] — 2026-08-20
 
 ### Added

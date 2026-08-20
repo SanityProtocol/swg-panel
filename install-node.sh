@@ -204,7 +204,17 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   build_awg_module
   $DRYRUN && return 0
   have awg && modprobe amneziawg 2>/dev/null && return 0
-  have awg && warn "AmneziaWG tools installed, but its kernel module didn't build/load on kernel $(uname -r) — this box is missing matching linux-headers (dkms couldn't compile it). 'awg' interfaces can't come up until that's fixed; install linux-headers-$(uname -r) + reboot and re-run, or use a plain WireGuard interface."
+  # The apt path did not get us there — Debian (the PPA is Ubuntu-only), a non-apt distro, or a kernel with
+  # no matching headers. Do NOT stop at a warning: build from source, which is the only route to the KERNEL
+  # datapath off Ubuntu and is what we want wherever it is possible.
+  awg_build_from_source && { info "AmneziaWG: kernel datapath (built from source)"; return 0; }
+  # Still no module: no headers for this kernel, or an LXC/OpenVZ guest that cannot load one at all. Fall
+  # back to userspace so the node can still serve AmneziaWG — awg-quick picks it up by itself.
+  if ensure_awg_userspace; then
+    warn "AmneziaWG will run on the SLOWER userspace datapath — no loadable kernel module on $(uname -r).$(
+      have apt-get && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
+    return 0
+  fi
   return 1
 }
 build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the RUNNING kernel — `apt install amneziawg` is
@@ -237,7 +247,7 @@ awg_obfuscation(){ # AmneziaWG v2 obfuscation — H1–H4 ranges, S1–S4, conse
   b3=$(( 2000000000 + (RANDOM*RANDOM) % 900000000 )); b4=$(( 3000000000 + (RANDOM*RANDOM) % 900000000 ))
   printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nS3 = %s\nS4 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
     "$s1" "$s2" "$s3" "$s4" "$b1" $((b1+w)) "$b2" $((b2+w)) "$b3" $((b3+w)) "$b4" $((b4+w))
-  printf 'I1 = <b 0xc300000001><r 1200>\n'   # QUIC v1 Initial prefix + random; no <c>/<t> (Android-safe)
+  printf 'I1 = <b 0xc000000001><r 64><t>\nI2 = <r 24><t>\nI3 = <r 32>\nI4 = <b 0xc000000001><r 32><t>\nI5 = <t><r 48>\n'   # I1-I5: QUIC-Initial-shaped junk (0xc0 long header, QUIC v1) + random bytes + timestamp
 }
 server_addr(){ have python3 || die "python3 required for the tunnel address (also needed by the daemon)"
   python3 - "$1" <<'PY'
@@ -346,7 +356,19 @@ reconstruct_live_orphans(){
       up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${sub} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
       down="iptables -t nat -D POSTROUTING -s ${sub} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
       mkdir -p "$dir" 2>/dev/null || true
-      { echo '#swg:onboarded'; printf '%s\n' "$sc" | awk -v a="$addr" -v u="$up" -v d="$down" '/^\[Interface\]/ { print; print "Address = " a; print "MTU = 1420"; print "PostUp = " u; print "PostDown = " d; next } { print }'; } > "$dir/$n.conf" 2>/dev/null && chmod 600 "$dir/$n.conf" 2>/dev/null || true
+      # `showconf` reports each peer's CURRENT endpoint — the source address of its last packet, not
+      # configuration. Persisting it would pin a client's IP into a file that backups and the bare<->docker
+      # conversion copy around, and wg re-learns it on the first authenticated packet anyway. A peer that
+      # also sets PersistentKeepalive is a dial-OUT (mesh) peer: there the Endpoint IS config, so it stays.
+      { echo '#swg:onboarded'; printf '%s\n' "$sc" | awk -v a="$addr" -v u="$up" -v d="$down" '
+        function flush(  i) { if (np == 0) return
+          for (i = 1; i <= np; i++) if (ka || peer[i] !~ /^[ \t]*[Ee]ndpoint[ \t]*=/) print peer[i]
+          np = 0; ka = 0 }
+        /^[ \t]*\[Interface\]/ { flush(); print; print "Address = " a; print "MTU = 1420"; print "PostUp = " u; print "PostDown = " d; next }
+        /^[ \t]*\[Peer\]/      { flush(); peer[++np] = $0; next }
+        np > 0                  { peer[++np] = $0; if ($0 ~ /^[ \t]*[Pp]ersistentKeepalive[ \t]*=/) ka = 1; next }
+                                { print }
+        END                     { flush() }'; } > "$dir/$n.conf" 2>/dev/null && chmod 600 "$dir/$n.conf" 2>/dev/null || true
       info "  detected running interface $(b "$n") with no config on disk — rebuilt its conf so it's managed (peers kept)"
     done
   done

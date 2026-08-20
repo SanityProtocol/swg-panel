@@ -55,7 +55,9 @@ const html = htm.bind(h);
 function ifaceDownNote(reason) {
   const [a, b] = Tsplit("This interface is *down* on the node — its config below is read from the *.conf* (not live). The node reported: {reason}. Use *Start interface* — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.", "reason");
   const rich = t => t.split("*").map((p, i) => (i % 2 ? html`<b>${p}</b>` : p));
-  return html`<${Fragment}>${rich(a)}<code>${reason}</code>${rich(b)}<//>`;
+  // T() on the NODE's sentence: node messages are English by construction, and this page is not. Ours are
+  // fixed sentences that sit in the catalogue as keys; anything else falls through unchanged.
+  return html`<${Fragment}>${rich(a)}<code>${T(reason)}</code>${rich(b)}<//>`;
 }
 /* The middle clause differs with whether the key survives, so it arrives as a translated VALUE. */
 function ifaceGoneNote(iface, nodeName, verdict) {

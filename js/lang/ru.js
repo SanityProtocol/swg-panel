@@ -212,10 +212,50 @@ export const STR = {
     "Работает внутри контейнера {v1} — swgPanel не может им там управлять",
   "Another program owns this interface: it runs in its own container, from its own config. swgPanel can see it, but a change made here would be undone the next time that container restarts.":
     "Этим интерфейсом владеет другая программа: он работает в своём контейнере и со своей конфигурацией. swgPanel его видит, но изменение, сделанное здесь, откатится при следующем перезапуске того контейнера.",
+  "tag|creating": "создаётся",
+  "tag|onboarding": "подключается",
+  "The node could not set it up — open the error for what to do":
+    "Нода не смогла его настроить — откройте ошибку, чтобы понять, что делать",
+  "the node refused — open the error above": "нода отказала — откройте ошибку выше",
   "tag|alien": "чужой",
   "tag|failed": "не удалось",
   "Took {i} over from container {c} — {n} imported. That container is stopped and will not restart; delete it once you are happy, or start it again to go back.":
     "{i} перенят из контейнера {c} — импортировано: {n}. Тот контейнер остановлен и сам не поднимется; удалите его, когда убедитесь, что всё в порядке, или запустите снова, чтобы вернуться назад.",
+  "Taking {i} over from container {c} did not finish within {m} min — the node never reported back. Nothing was taken over; check the node is online and try again.":
+    "Перенять {i} из контейнера {c} не удалось за {m} мин — нода так и не ответила. Ничего не перенято; проверьте, что нода на связи, и попробуйте ещё раз.",
+  "blank = random": "пусто = случайно",
+  "AmneziaWG obfuscation": "Обфускация AmneziaWG",
+  "settings|customised": "изменено",
+  "settings|built-in": "встроенная",
+  "Given to every new AmneziaWG interface. Leave a cell blank to keep what the node does today — S and H are rolled fresh for each interface, so two interfaces never look alike. WireGuard interfaces ignore all of it.":
+    "Выдаётся каждому новому интерфейсу AmneziaWG. Оставьте поле пустым, чтобы всё осталось как сейчас: S и H нода заново разыгрывает для каждого интерфейса, поэтому два интерфейса никогда не выглядят одинаково. Интерфейсы WireGuard всё это игнорируют.",
+  "{i} in {c} serves {s}, which overlaps {o} already on this node. In its own container that is fine — each has its own network namespace — but taking it over moves it here, where one subnet cannot be served twice. Take over only one of them, or renumber the other first. Nothing was changed.":
+    "{i} в {c} обслуживает {s}, а эта подсеть пересекается с {o}, которая уже есть на этой ноде. В своём контейнере это нормально — у каждого своё сетевое пространство имён, — но перенос переносит интерфейс сюда, где одну подсеть нельзя обслуживать дважды. Перенесите только один из них или сначала смените адресацию у другого. Ничего не изменено.",
+  "{i} in {c} is {p}, and this node does not have the {p} tools ({t} and {t}-quick) to stand it up. Install them, then take it over again — {c} was not touched and is still serving.":
+    "{i} в {c} — это {p}, а на этой ноде нет инструментов {p} ({t} и {t}-quick), чтобы его поднять. Установите их и повторите перенос — {c} не тронут и продолжает обслуживать клиентов.",
+  "AmneziaWG tools are not installed on this node. Re-run the swgPanel node installer — it builds them from source on any distribution, and falls back to the userspace datapath where the kernel module cannot load. Then this interface creates itself on the next sync.":
+    "На этой ноде не установлены инструменты AmneziaWG. Запустите установщик ноды swgPanel заново — он соберёт их из исходников на любом дистрибутиве, а там, где модуль ядра не поднимается, перейдёт на датапас в пользовательском пространстве. После этого интерфейс создастся сам на следующей синхронизации.",
+  "AmneziaWG is only half-installed on this node: awg is present but awg-quick is missing. Re-run the swgPanel node installer — it builds both from source — then this interface creates itself on the next sync.":
+    "AmneziaWG на этой ноде установлен наполовину: awg есть, а awg-quick нет. Запустите установщик ноды swgPanel заново — он соберёт оба из исходников, — и интерфейс создастся сам на следующей синхронизации.",
+  "WireGuard tools are not installed on this node. Install them with your package manager (on Debian/Ubuntu: apt-get install -y wireguard), then this interface creates itself on the next sync.":
+    "На этой ноде не установлены инструменты WireGuard. Установите их пакетным менеджером (в Debian/Ubuntu: apt-get install -y wireguard), и интерфейс создастся сам на следующей синхронизации.",
+  "interface conf has no Address": "в конфигурации интерфейса нет Address",
+  "no free addresses in subnet": "в подсети не осталось свободных адресов",
+  "public_key is not a valid WireGuard key": "public_key не является корректным ключом WireGuard",
+  "a peer with this public key already exists": "пир с таким публичным ключом уже есть",
+  "allowed_ips must be CIDR(s), e.g. 10.0.0.5/32": "allowed_ips должен быть CIDR, например 10.0.0.5/32",
+  "allowed_ips must be CIDR(s), e.g. 0.0.0.0/0 or 10.8.0.0/24": "allowed_ips должен быть CIDR, например 0.0.0.0/0 или 10.8.0.0/24",
+  "no peer with this public key": "пира с таким публичным ключом нет",
+  "listen_port must be a number": "listen_port должен быть числом",
+  "listen_port out of range (1-65535)": "listen_port вне диапазона (1–65535)",
+  "nothing to set": "нечего задавать",
+  "invalid interface name": "недопустимое имя интерфейса",
+  "address must be CIDR like 10.99.0.0/31": "адрес должен быть CIDR, например 10.99.0.0/31",
+  "private_key required": "требуется private_key",
+  "AmneziaWG tools are missing from this node's container image. Update the node (docker compose pull && docker compose up -d) so it runs a current swg-node image, then this interface creates itself on the next sync.":
+    "В образе контейнера этой ноды нет инструментов AmneziaWG. Обновите ноду (docker compose pull && docker compose up -d), чтобы она работала на актуальном образе swg-node, и интерфейс создастся сам на следующей синхронизации.",
+  "This node's container image has awg but not awg-quick. Update the node (docker compose pull && docker compose up -d) so it runs a current swg-node image, then this interface creates itself on the next sync.":
+    "В образе контейнера этой ноды есть awg, но нет awg-quick. Обновите ноду (docker compose pull && docker compose up -d), чтобы она работала на актуальном образе swg-node, и интерфейс создастся сам на следующей синхронизации.",
   "no container given": "контейнер не указан",
   "no wg/awg config found in container {c}": "в контейнере {c} не найдено конфигурации wg/awg",
   "{c} has no config for {i}": "в {c} нет конфигурации для {i}",

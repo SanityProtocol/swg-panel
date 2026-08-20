@@ -1,14 +1,14 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.13-beta</code></p>
+<p align="center"><code>1.7.14-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.13-beta** — [full changelog](CHANGELOG.md)
-> - **Take over an AmneziaVPN server running in its own Docker container** — the panel could not see one at all; now it shows its subnet, port and peers (with the names you gave them in Amnezia) and takes it over keeping the same key, port and obfuscation, so existing client configs keep working.
-> - **Unassigning a peer now really revokes csqtt access** — it authenticates on a password alone, and that password was never rotated, so a deleted user's link kept working. If you unassigned anyone on an earlier version, do it again after updating.
-> - **The subscription page returned nothing at all on 1.7.11–1.7.12** — while the panel, its API and its health check all answered normally, so nothing looked wrong from the panel side.
-> - **The rotate-link button no longer sticks for ever** on a csqtt or WDTT peer, and VK links are authorised against the hash the link actually carries.
-> - **Less needless work on your servers** — client build info is published once instead of every panel walking GitHub, and the Docker helper timer stopped starting a unit every second.
+> **What's new in 1.7.14-beta** — [full changelog](CHANGELOG.md)
+> - **AmneziaWG installs on Debian and anywhere else, not just Ubuntu** — the installer only knew the Ubuntu-only Amnezia PPA and merely *warned* when it failed, so an install could report success onto a server that could never run AmneziaWG. It now builds from source where packages aren't available, and falls back to the userspace datapath where no kernel module can load.
+> - **Updating heals a node that never got AmneziaWG at all** — the old repair skipped exactly that node ("doesn't use it, nothing to heal"). One update now brings it up to what a fresh install would have given it, and says which datapath it ended on.
+> - **New AmneziaWG interfaces are harder to fingerprint, and the parameters are now yours to set** — five junk-packet definitions instead of one, and the whole grid lives in Settings → Interfaces → Defaults. A blank cell keeps today's behaviour, including a fresh roll per interface so no two share a fingerprint.
+> - **Taking over an AmneziaVPN container is safer and clearer** — an interface is no longer mislabelled WG when it is AmneziaWG, a second container sharing a subnet is refused before anything is stopped, a server's own outbound tunnel is never offered for adoption, and a take-over that cannot succeed no longer stops the server first.
+> - **Statuses stop lying** — a failed create no longer reads "creating" for ever, a peer that never connected is no longer reported as "Restricted", a stuck take-over gives up and says so, and sixteen messages from your nodes are translated.
 <!-- WHATS-NEW:END -->
 
 ---

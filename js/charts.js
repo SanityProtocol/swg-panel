@@ -352,6 +352,34 @@ export const HIST_RANGES = ["live", "hour", "day", "week", "month"];
 // blocks (= slots = plotted points) each range's x-axis holds — must match swg-panel-server
 // HRRD_RINGS slot counts (live = LIVE_MAX). Charts pin data to the right and fill leftward.
 export const RANGE_CAP = { live: 200, hour: 250, day: 300, week: 350, month: 400 };
+// Seconds each range covers — mirrors the panel's RANGE_SPEC windows. Only used to work out how many samples
+// a window can hold at a series' real resolution (densityCap).
+export const RANGE_WIN = { live: 200 * 15, hour: 3600, day: 86400, week: 7 * 86400, month: 30 * 86400 };
+
+/* How many slots this range's x-axis should hold FOR THIS SERIES.
+
+   RANGE_CAP assumes a series folded once per its ring's step. A source that writes less often can never
+   reach that count, and the chart — which right-anchors a partly-filled ring on purpose, so it fills from
+   the right as blocks arrive — would then sit pinned at a fraction of the width for ever. The mesh pair ring
+   is exactly that: it folds at most once a minute into a 15s ring, so live and hour topped out at a quarter
+   width no matter how long the link had been up.
+
+   So derive the capacity from the spacing the series actually has. A ring that is merely still filling is
+   unaffected: its samples are correctly spaced, so C comes out right and the short series keeps
+   right-anchoring — a month graph on a 13-day-old file still reads as 13 days of a 30-day window. */
+export function densityCap(times, range) {
+  const fallback = RANGE_CAP[range] || 0, win = RANGE_WIN[range];
+  const t = (times || []).filter(x => x != null);
+  if (!win || t.length < 3) return fallback;
+  const gaps = [];
+  for (let i = 1; i < t.length; i++) { const d = t[i] - t[i - 1]; if (d > 0) gaps.push(d); }
+  if (!gaps.length) return fallback;
+  gaps.sort((a, b) => a - b);
+  const step = gaps[Math.floor(gaps.length / 2)];   // median: one long gap from a restart must not widen the axis
+  if (!step) return fallback;
+  // never exceed the designed block count — this only ever narrows the axis to what the data can fill
+  return Math.max(2, Math.min(fallback, Math.round(win / step)));
+}
 export const tailSeries = (s, n) => { const o = {}; for (const k of ["t", "cpu", "mem", "disk", "rx", "tx", "mrx", "mtx"]) if (Array.isArray((s || {})[k])) o[k] = s[k].slice(-n); return o; };
 
 // The live/hour/day/week/month picker. Rendered inside the chart by default, or lifted into a panel header
@@ -385,7 +413,7 @@ export function RangedHistory({ node, kind, live, h, head, liveFine, fetch, traf
     : range === "hour" ? (live || {}) : (fetched || {});
   // x-axis capacity: the live fallback is coarse 15s data, so let it fit to its own length (cap 0)
   // rather than pinning to the 5s window; every other range uses its fixed block count.
-  const cap = custom ? RANGE_CAP[range] : range === "live" ? (liveBuf ? RANGE_CAP.live : 0) : RANGE_CAP[range];
+  const cap = custom ? densityCap(s.t, range) : range === "live" ? (liveBuf ? RANGE_CAP.live : 0) : RANGE_CAP[range];
   const hasData = (s.cpu || s.rx || []).some(x => x != null);
   const nlive = Store.recon.nodeStatus[node] === "live";   // node hasn't reported for several rounds → the live feed is frozen
   // A node that stops reporting (update / re-install / convert / brief outage) must NEVER blank the

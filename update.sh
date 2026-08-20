@@ -445,34 +445,63 @@ EOF
   ok "swg-noded unit healed — the node will sync + survive a reboot now"
 }
 
-ensure_awg_module(){   # HEAL (rebuild-if-missing) the AmneziaWG kernel module on a bare-metal node/master that USES awg.
-  # `apt install amneziawg` only lays down the `awg` TOOL; the datapath is a DKMS module that must COMPILE against
-  # linux-headers-$(uname -r). Two ways it goes missing: a first install that lacked dkms/headers (tool present,
-  # module never built → `ip link add type amneziawg` = "Unknown device type"), or a KERNEL UPGRADE that left the
-  # old build stale so awg interfaces silently fail after a reboot. This rebuilds it — a cheap no-op when already
-  # loadable. Docker nodes run userspace amneziawg-go (no kernel module) → skipped by the HAVE_BNODE gate.
+ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a bare-metal node/master.
+  # Was ensure_awg_module, and it only ever REBUILT a module for a box that already had the awg tool:
+  #     have awg || ls /etc/amnezia/amneziawg/*.conf || return 0   # "node doesn't use awg → nothing to heal"
+  # which skipped precisely the box that needed healing most — one where the tools never installed at all. A
+  # fresh install always lays AmneziaWG down ("for future interface creation"), so an update must heal to that
+  # same state, or a node stays permanently unable to create or take over an awg interface with nothing saying
+  # why. That is what one operator hit: install reported success, and the failure only surfaced later.
+  #
+  # It also only knew the amnezia PPA — Launchpad, so Ubuntu-only, and unreachable from some networks even
+  # there (add-apt-repository then dies in an unreadable Python traceback). The ladder below tries the package
+  # route first, then builds from source, and only then falls back to the userspace datapath.
+  # Docker nodes run userspace amneziawg-go from their image → skipped by the HAVE_BNODE gate.
   [ "$HAVE_BNODE" = yes ] || return 0
-  have awg || ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || return 0    # node doesn't use awg → nothing to heal
-  { $DRYRUN || modprobe amneziawg 2>/dev/null; } && return 0                  # already loadable → done (silent)
-  have apt-get || { warn "AmneziaWG kernel module not loadable — install amneziawg-dkms + linux-headers for kernel $(uname -r) with your package manager"; return 0; }
-  info "healing the AmneziaWG kernel module (not loadable on kernel $(uname -r) — awg interfaces can't come up; rebuilding its DKMS module)"
-  apt_refresh
-  run apt-get install -y software-properties-common 2>/dev/null || true
-  run add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
-  run apt-get update -qq 2>/dev/null || true
-  run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
-  run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
-  # FORCE the DKMS module to COMPILE for the RUNNING kernel — `apt install amneziawg` is a NO-OP when the package
-  # is already installed (tool present) but its module never built (headers were missing then), so nothing
-  # rebuilds it. `-k $(uname -r)` targets the running kernel explicitly: a box on an OLD kernel with newer headers
-  # installed would otherwise build for the wrong kernel and modprobe would still fail. --reinstall re-runs the postinst.
-  run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
-  modprobe amneziawg 2>/dev/null || { run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null; run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true
-  run modprobe amneziawg 2>/dev/null || true
-  if $DRYRUN || modprobe amneziawg 2>/dev/null; then
-    DID_UPDATE=yes; ok "AmneziaWG kernel module healed — awg interfaces can come up now"; note "awg kernel module: rebuilt for $(uname -r)"
+  local _tools=no _mod=no
+  have awg && have awg-quick && _tools=yes
+  { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes
+  [ "$_tools" = yes ] && [ "$_mod" = yes ] && return 0           # already working → done, silent
+  $DRYRUN && return 0
+
+  if [ "$_tools" = no ]; then
+    info "healing AmneziaWG (its tools are missing on this node — awg interfaces cannot be created or taken over)"
   else
-    DID_FAIL=yes; warn "AmneziaWG kernel module still won't load on kernel $(uname -r) — this box may lack matching linux-headers (or the PPA has no build for it); awg interfaces can't come up"; note "awg kernel module: heal FAILED"
+    info "healing the AmneziaWG kernel module (not loadable on kernel $(uname -r) — awg interfaces can't come up)"
+  fi
+  # 1. package route: fastest where it works (Ubuntu with Launchpad reachable). Every step already tolerant.
+  if have apt-get; then
+    apt_refresh
+    run apt-get install -y software-properties-common 2>/dev/null || true
+    run add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
+    run apt-get update -qq 2>/dev/null || true
+    run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
+    run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
+    # `apt install` is a NO-OP when the package is present but its module never built (headers were missing
+    # then), so force a build for the RUNNING kernel — an old kernel with newer headers would otherwise build
+    # for the wrong one and modprobe would still fail.
+    run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
+    modprobe amneziawg 2>/dev/null || { run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null
+                                        run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true
+    run modprobe amneziawg 2>/dev/null || true
+  fi
+  # 2. source build — the only route to the KERNEL datapath off Ubuntu, and the answer when the PPA is
+  #    unreachable. No-op for the tools half when they are already present.
+  have awg && have awg-quick && modprobe amneziawg 2>/dev/null || awg_build_from_source || true
+  # 3. still no module (no headers for this kernel, or a guest that cannot load one): userspace, so the node
+  #    can serve AmneziaWG at all. awg-quick picks amneziawg-go up by itself.
+  have awg && have awg-quick && ! modprobe amneziawg 2>/dev/null && ensure_awg_userspace || true
+
+  if modprobe amneziawg 2>/dev/null; then
+    DID_UPDATE=yes; ok "AmneziaWG healed — kernel datapath, awg interfaces can come up now"
+    note "AmneziaWG: kernel module ready for $(uname -r)"
+  elif have awg && have awg-quick && have amneziawg-go; then
+    DID_UPDATE=yes; ok "AmneziaWG healed — running the slower USERSPACE datapath (no loadable kernel module)"
+    note "AmneziaWG: userspace (amneziawg-go); install matching linux-headers for the faster kernel module"
+  elif have awg && have awg-quick; then
+    DID_FAIL=yes; warn "AmneziaWG tools are installed but its kernel module will not load on $(uname -r), and the userspace datapath could not be built — awg interfaces cannot come up"
+  else
+    DID_FAIL=yes; warn "AmneziaWG could not be installed on this node — awg interfaces cannot be created or taken over. See the log above for the failing step"
   fi
 }
 
@@ -831,7 +860,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
     else DID_FAIL=yes; warn "couldn't restart swg-noded — run: systemctl restart swg-noded"; note "bare-metal swg-node: updated but RESTART FAILED"; fi
   else note "bare-metal swg-node: unchanged (${nold})"; fi
   ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
-  ensure_awg_module      # HEAL: rebuild the AmneziaWG DKMS kernel module if it's missing/stale (e.g. after a kernel upgrade)
+  ensure_awg_datapath    # HEAL: install AmneziaWG if missing, rebuild its module, else userspace
 fi
 
 # ───────────────────────── Docker (host / node / master) ─────────────────────────
