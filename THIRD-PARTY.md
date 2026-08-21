@@ -1,5 +1,7 @@
 # Third-party software
 
+· Русский: [THIRD-PARTY.ru.md](THIRD-PARTY.ru.md)
+
 swgPanel itself is MIT (see [LICENSE](LICENSE)). It also **builds, ships and runs** software written by other
 people, under their own licences. This file says exactly what, under which licence, and where the source is —
 in one place, so you can check it without reading the build scripts.
