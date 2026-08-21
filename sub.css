@@ -381,7 +381,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .cfg-fail { color: var(--muted); font-size: 14px; text-align: center; padding: 24px 16px; align-self: center; margin: auto; }
 
 /* steady bottom action bar — same spot regardless of which peer/server is showing */
-.pbar { position: relative; z-index: 10; isolation: isolate; flex: none; display: flex; gap: 0; width: 100%; max-width: 560px; margin: 0 auto; justify-content: space-evenly;
+.pbar { flex: none; display: flex; gap: 0; width: 100%; max-width: 560px; margin: 0 auto; justify-content: space-evenly;
   align-items: center; min-height: 104px; padding: 12px 0 calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 .pbtn { flex: 1; appearance: none; border: 0; cursor: pointer; font: inherit; font-weight: 700;
   font-size: clamp(13px, 3.7vw, 15px); min-height: 52px; padding: 0 12px; border-radius: 13px;
@@ -398,7 +398,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 /* ── the signature START button: a glowing brand orb (SVG face), round, 1.5× the icon buttons, brand-coloured glow.
    Deep-links into the app if installed, else downloads it. The utility icons stay small, centred on its centre. ── */
 .pbtn-start { flex: 0 0 auto; appearance: none; border: 0; padding: 0; margin: 0 4px; background: none; cursor: pointer;
-  width: 90px; height: 90px; border-radius: 50%; position: relative; z-index: 1; pointer-events: auto; touch-action: manipulation;
+  width: 90px; height: 90px; border-radius: 50%; position: relative;
   box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--brand) 60%, transparent),
               0 0 36px color-mix(in srgb, var(--brand) 62%, transparent),
               0 0 68px color-mix(in srgb, var(--brand) 34%, transparent), 0 6px 20px rgba(0, 0, 0, .28);
@@ -522,7 +522,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
   .scell-stage { flex: none; width: 100%; max-width: 520px; margin: 0 auto; }   /* wide enough for a full AWG config line */
   .textwrap { max-width: 100%; }
   .qrimg { width: min(48vh, 340px); }
-  .pbar { position: relative; margin-top: 14px; border-top: 1px solid var(--line); min-height: 0; padding-top: 14px; }
+  .pbar { position: static; margin-top: 14px; border-top: 1px solid var(--line); min-height: 0; padding-top: 14px; }
   /* uniform text size for EVERY config/link/command box (matches the AWG config); fitText is disabled in landscape */
   .cfgtext, .cmdtext { font-size: 12px; }
   .state { min-height: 66vh; }
