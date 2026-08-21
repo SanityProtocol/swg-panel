@@ -1157,6 +1157,13 @@
     '<path d="M77 25 a41 41 0 0 1 0 50" stroke-width="2.4" stroke-opacity=".15"/></g>' +
     '<g stroke="var(--brand-ink)" stroke-width="6" stroke-linecap="round" fill="none">' +
     '<path d="M50 27 v19"/><path d="M38.5 38 a17 17 0 1 0 23 0"/></g></svg>';
+  var _startSvgN = 0;
+  function startSvg() {
+    // Every peer/protocol page stays mounted so its generated config state is preserved. SVG paint-server IDs are
+    // document-wide in some desktop engines, so duplicate `startorb` IDs can make a visible button resolve its fill
+    // against a hidden page's gradient and appear blank/disabled. Give every orb its own paint server.
+    return START_SVG.replace(/startorb/g, "startorb-" + (++_startSvgN));
+  }
   // brief "Copied to clipboard" bubble centred over a text box (its wrapper must be position:relative)
   function flashCopied(container) {
     if (!container) return;
@@ -1908,7 +1915,7 @@
     // The signature START button — deep-links into the app if installed, else downloads it (apk/exe/deb). Replaces the
     // old plain "Open in app" button: bigger, round, glowing. The utility icons stay small, centred on its centre.
     var startB = el("button", "pbtn-start"); startB.type = "button";
-    startB.innerHTML = START_SVG; startB.setAttribute("aria-label", t("start"));
+    startB.innerHTML = startSvg(); startB.setAttribute("aria-label", t("start"));
     // START is the CENTRE slot — utilities split to its left (Config, Copy) and right (Download, Share). The toggle
     // slot is only visibility-toggled (never removed), so START stays centred whether 3 or 4 utilities are visible.
     bar.appendChild(toggle); bar.appendChild(copyB); bar.appendChild(startB); bar.appendChild(dlB); bar.appendChild(shareB);
