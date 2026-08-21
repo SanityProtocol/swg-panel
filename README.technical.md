@@ -199,7 +199,7 @@ Live status (online, partial, dangling, …) is computed every refresh from the 
 - **Isolation.** `swg-sub` is its own process/container running as a dedicated low-privilege user: it mounts panel state `:ro` and **masks** every secret it must never open (`auth`, `panel-settings.json`, `subs/vault.json`, `subs/escrow.json`, the TLS key) with `/dev/null` + `tmpfs`. No login, write, or node code.
 - **Serving.** Config mirrors to `subs/serve.json` (`enabled`, `serve.{host,port,tls_mode,cert_path,key_path}`, languages). `swg-sub` terminates its own TLS — its own Let's Encrypt cert for `sub.<domain>`, an explicit cert path, or `reverse-proxy` mode (plain HTTP behind your proxy). Docker: the `swg-sub` container (`:8444`, front with your reverse proxy / Cloudflare). Bare-metal: the `swg-sub` systemd service.
 
-**Suspend / block access** — a declarative per-user (or per-node) `disabled` flag. Flip it and the next node reconcile **removes the peer** (tunnels drop) *and* **suspends the subscription** (the page goes dark) — but `token_sha` and keys are kept, so unblocking is instant: the peer is re-added and the page restored with **no re-issued keys**.
+**Suspend / block access** — a declarative `disabled` flag on a **user** or on a single **peer** (there is no per-node variant: blocking a peer drops it from every node it is deployed on). Flip it and the next node reconcile **removes the peer** (tunnels drop) *and* **suspends the subscription** (the page goes dark) — but `token_sha` and keys are kept, so unblocking is instant: the peer is re-added and the page restored with **no re-issued keys**.
 
 ## Docker
 

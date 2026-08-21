@@ -47,6 +47,7 @@ subscription and no one else sitting in the middle of your traffic.
 - [Step 1 — Install the panel](#step-1--install-the-panel)
 - [Step 2 — Add your servers](#step-2--add-your-servers)
 - [Step 3 — Add users and hand out access](#step-3--add-users-and-hand-out-access)
+- [Subscriptions & access control](#subscriptions--access-control)
 - [Using it day to day](#using-it-day-to-day)
 - [Keeping it running](#keeping-it-running)
 - [A few things worth knowing](#a-few-things-worth-knowing)
@@ -58,7 +59,7 @@ subscription and no one else sitting in the middle of your traffic.
 - **One page to run everything.** Add servers, add users, hand out access — all from the web panel.
 - **Access in a QR code.** Create a person, show them the QR, they scan it in the WireGuard/AmneziaWG app — no fiddly config files to email around.
 - **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [samosvalishe](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys.
-- **Suspend access in one click.** Block a person — or just one of their servers — instantly, without deleting them. Their tunnels stop and their subscription page goes dark; unblock to restore with the same keys, nothing to re-issue.
+- **Suspend access in one click.** Block a person — or just one of their devices — instantly, without deleting them. Their tunnels stop and their subscription page goes dark; unblock to restore with the same keys, nothing to re-issue.
 - **See what’s happening, live.** Who’s online, how much they’re downloading, which servers are busy — updated every few seconds.
 - **Single or multiple servers.** Put servers in different countries; a person can fail over between them.
 - **Panel here or apart.** Run the panel on the same server as a VPN node, or on a separate box that only manages your nodes — either works.
@@ -216,6 +217,36 @@ no inbound ports, no SSH keys shared around. Within a few seconds it shows up in
 That’s the whole flow. The secret half of their key is created in your browser and shown **once** — so
 save/hand over the config there and then. Need to give the same person a second device? Just make another
 peer.
+
+## Subscriptions & access control
+
+Rather than sending someone a QR every time, give each person **one private link**. It opens a
+phone-friendly page with the config and QR for every server they're on, and it keeps itself up to date —
+put them on another server and it simply appears there.
+
+**Turn it on** (once, for the whole panel):
+
+1. **Settings → Client configs** — set your **encryption key**. Subscription pages are built from
+   encrypted configs, so this comes first.
+2. **Settings → Subscriptions → On.** Switch on **Auto-generate subscription links for new users** if
+   you'd like every new person to get one without you asking.
+3. **Settings → Panel URL** — set the address the page is served on. If the panel tells you the
+   subscription server isn't installed, run the update command from
+   [Keeping it running](#keeping-it-running); it installs itself.
+
+**Give someone their link.** Open them under **Users**, press **Enable subscription**, and copy the link.
+Send it however you like — but treat it like a password: whoever holds it holds that person's configs.
+
+**Taking access away.** Two buttons, and the difference matters:
+
+- **Block** is the one that actually cuts access — on a person, or on a single device. Their tunnels stop
+  within seconds and their page goes dark. **Unblock** puts it all back with the same keys, so there's
+  nothing to re-issue and nothing for them to re-scan.
+- **Disable URL** only switches off the *link*. Anyone already connected stays connected. It's for a link
+  that has gone somewhere it shouldn't — not for cutting someone off.
+- **Rotate token** hands them a fresh link and kills the old one, without interrupting their access.
+
+You can also give a subscription an **expiry date**, and the panel warns you a few days before it runs out.
 
 ## Using it day to day
 
