@@ -767,6 +767,14 @@ def main():
     if not (cert and key) and _sv.get("tls_mode") not in (None, "", "reverse-proxy") \
             and not (os.environ.get("SWG_SUB_TLS_CERT") and os.environ.get("SWG_SUB_TLS_KEY")):
         print("swg-sub: direct-TLS (%s) but no certificate yet — waiting for the panel to issue it…" % _sv.get("tls_mode"), flush=True)
+        # SURVIVE THE SIGNAL THAT SAYS THE CERT IS READY. The real SIGHUP handler is installed further down,
+        # AFTER this wait — so for the whole ~90s window the default action applied and a HUP simply killed
+        # the process. And a HUP is exactly what arrives here: the panel issues the certificate and then
+        # signals swg-sub to pick it up. Observed end to end — "waiting for the panel to issue it…", cert
+        # issued 2s later, "Sent signal SIGHUP", process dead, subscription page down (Cloudflare 521).
+        # Ignoring it is enough: the loop below re-reads every 2s and finds the cert on its own.
+        with contextlib.suppress(Exception):
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
         for _ in range(45):                       # ~90s ceiling — a Cloudflare DNS-01 issue+install
             time.sleep(2)
             state = State(fleet); Handler.state = state
