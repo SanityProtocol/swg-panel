@@ -23,7 +23,7 @@ import {
 } from "./model.js";
 import {
   Badge, Popover, STATUS_RANK, Sheet, StoreOffBanner, closeModal, dlul, ifaceColor, modalDepth, openModal,
-  rateCell, secTitle, xferCell,
+  rateCell, secTitle, toast, xferCell,
   Ic,
 } from "./ui.js";
 import {
@@ -970,12 +970,26 @@ export function maybeAlertServices() {
 export function ServiceIssueSheet({ issues }) {
   const list = (issues || []).filter(Boolean);
   if (!list.length) { closeModal(); return null; }
+  // A MISSING CERTIFICATE is not something "Run update" can fix: update reinstalls the swg-sub SERVICE, and
+  // the service is already installed — it is the cert that is absent, and only apply-sub issues one. Offering
+  // the generic remedy here meant the operator ran it, saw it succeed, and still had a dead subscription page
+  // (Cloudflare 525) with the same alert waiting. Give this issue the remedy that matches it.
+  const certOnly = list.every(i => i.id === "subcert");
+  const reissue = async () => {
+    try { await api.post("/api/access/apply-sub", {}); toast(T("Issuing the subscription certificate…"), "ok"); }
+    catch (e) { toast((e && e.message) || T("Failed"), "err"); }
+    closeModal();
+  };
   return html`<${Sheet} noGuard=${true} onClose=${closeModal}
       title=${list.length === 1 ? T("{v1} needs attention", { v1: list[0].label }) : T("Panel services need attention")}
       foot=${html`<${Fragment}>
         <button class="btn btn-ghost" onClick=${() => { list.forEach(svcSilence); closeModal(); }}>${T("Silence")}</button>
         <span class="grow"></span>
-        <button class="btn btn-primary" onClick=${() => { closeModal(); updateHost(); }}>${T("Run update")}</button>
+        ${list.some(i => i.id === "subcert")
+          ? html`<button class="btn btn-primary" onClick=${reissue}>${T("Reissue certificate")}</button>` : null}
+        ${certOnly ? null
+          : html`<button class=${"btn " + (list.some(i => i.id === "subcert") ? "btn-ghost" : "btn-primary")}
+                    onClick=${() => { closeModal(); updateHost(); }}>${T("Run update")}</button>`}
       <//>`}>
     <div class="svc-modal">
       ${list.map(i => html`<div class=${"svc-item " + i.sev} key=${svcKey(i)}>
@@ -985,7 +999,9 @@ export function ServiceIssueSheet({ issues }) {
         ${i.unit ? html`<div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>journalctl -u ${i.unit} -e</code></div>`
           : html`<div class="svc-cmd"><code>dkms status</code> · <code>modprobe amneziawg</code></div>`}
       </div>`)}
-      <div class="svc-foot">${T("“Run update” reinstalls anything missing and re-enables the service — the same repair the Update button runs. A service that keeps crashing needs the logs above.")}</div>
+      <div class="svc-foot">${certOnly
+        ? T("The subscription service is installed — what is missing is its certificate, which only a reissue can create. “Run update” cannot fix this one.")
+        : T("“Run update” reinstalls anything missing and re-enables the service — the same repair the Update button runs. A service that keeps crashing needs the logs above.")}</div>
     </div>
   <//>`;
 }

@@ -2158,6 +2158,10 @@ export const STR = {
   "Silence": "Заглушить",
   // budget-ok: sheet-foot button, foot has a grow spacer
   "Run update": "Запустить обновление",
+  "Reissue certificate": "Перевыпустить сертификат",
+  "Issuing the subscription certificate…": "Выпускаем сертификат подписки…",
+  "The subscription service is installed — what is missing is its certificate, which only a reissue can create. “Run update” cannot fix this one.":
+    "Служба подписок установлена — не хватает её сертификата, а его создаёт только перевыпуск. «Запустить обновление» здесь не поможет.",
   "“Run update” reinstalls anything missing and re-enables the service — the same repair the Update button runs. A service that keeps crashing needs the logs above.":
     "«Запустить обновление» доустановит недостающее и включит службу — то же самое делает кнопка обновления. Если служба падает снова и снова, смотрите логи выше.",
 
