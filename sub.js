@@ -79,7 +79,7 @@
       errResp: "The server returned an unexpected response.",
       unsupported: "Unsupported browser",
       unsupportedSub: "This page needs a modern browser with Web Crypto (and a secure https:// connection) to decrypt your configs.",
-      wg: "WireGuard", awg: "AmneziaWG", turn: "Turn", turnApp: "Turn proxy app", forkApp: "{fork} app",
+      wg: "WireGuard", awg: "AmneziaWG", turn: "Turn", protocol: "Protocol", turnApp: "Turn proxy app", forkApp: "{fork} app",
       slowPlain: "Plain — no obfuscation, so slower (may be throttled)",
       langName: "EN", themeToLight: "Switch to light", themeToDark: "Switch to dark", langLabel: "Language", osLabel: "Device / OS",
     },
@@ -137,7 +137,7 @@
       errResp: "Сервер вернул неожиданный ответ.",
       unsupported: "Браузер не поддерживается",
       unsupportedSub: "Для расшифровки конфигов нужен современный браузер с Web Crypto и защищённое соединение https://.",
-      wg: "WireGuard", awg: "AmneziaWG", turn: "Turn", turnApp: "Приложение для turn proxy", forkApp: "Приложение {fork}",
+      wg: "WireGuard", awg: "AmneziaWG", turn: "Turn", protocol: "Протокол", turnApp: "Приложение для turn proxy", forkApp: "Приложение {fork}",
       slowPlain: "Без обфускации — медленнее (возможно ограничение скорости)",
       langName: "RU", themeToLight: "Светлая тема", themeToDark: "Тёмная тема", langLabel: "Язык", osLabel: "Устройство / ОС",
     },
@@ -1284,15 +1284,15 @@
     document.documentElement.lang = LANG;
     return enabled;
   }
-  // Capture where the reader is right now (which page + deployment + QR/config view) so a rebuild can restore it.
+  // Capture the selected protocol + peer + deployment + QR/config view so a rebuild can restore it.
   function capturePos() {
     var pager = document.querySelector("#peers .pager");
     if (!pager) return null;
     var pages = pager.children; if (!pages.length) return null;
-    var top = pager.getBoundingClientRect().top + 6, pi = pages.length - 1;
-    for (var i = 0; i < pages.length; i++) { if (pages[i].getBoundingClientRect().bottom > top) { pi = i; break; } }
-    var pg = pages[pi], sub = (pg && pg._pos) ? pg._pos() : { cell: 0, view: null };
-    return { page: pi, cell: sub.cell, view: sub.view };
+    var pg = pager.querySelector(".ppage.on"), pi = pg ? Array.prototype.indexOf.call(pages, pg) : 0;
+    if (!pg) pg = pages[pi];
+    var sub = (pg && pg._pos) ? pg._pos() : { cell: 0, view: null };
+    return { page: pi, peer: pg && pg.getAttribute("data-peer"), mode: pg && pg.getAttribute("data-mode"), cell: sub.cell, view: sub.view };
   }
   function reRender() {   // rebuild for a lang/theme change, but land the reader back where they were
     if (!_lastData || !_lastKey) return;
@@ -1835,10 +1835,10 @@
 
   // ── ONE (peer, protocol) as a full-viewport page: title · a horizontal swipe row of the peer's deployment
   //    cells (servers for WG/AWG, forks for TURN) · the fixed icon action bar (acts on the visible cell). The
-  //    vertical pager stacks these grouped by protocol, so up/down walks peer→peer and left/right walks a
-  //    peer's deployments. Returns null if this peer has no deployment in `mode`. ──
+  //    protocol + peer bars choose this page; left/right still walks its deployments. Returns null if this peer
+  //    has no deployment in `mode`. ──
   var _relayoutRail = null;   // render() points this at its alignRail so a page's layout pass can re-centre the icon rail
-  // A BLOCKED or EXPIRED peer still takes a slot in the carousel, but instead of QR/config/buttons it shows the peer
+  // A BLOCKED or EXPIRED peer still takes a slot in the peer selector, but instead of QR/config/buttons it shows the peer
   // name + a centred BLOCKED / EXPIRED word + the same text as the whole-sub screen — so the holder sees WHY this one
   // config stopped working. One page per dead peer (no protocol split, no deployment arrows, no action bar).
   function deadPeerPage(row) {
@@ -1854,7 +1854,7 @@
     box.appendChild(el("p", "state-word", expired ? t("subExpiredWord") : t("subBlockedWord")));
     box.appendChild(el("p", "state-sub", expired ? t("subExpiredSub") : t("subDisabledSub")));
     stage.appendChild(box); cell.appendChild(stage); srow.appendChild(cell); page.appendChild(srow);
-    // up/down peer-nav hints so the carousel still walks past this page (render hides the ends)
+    // Kept for layout compatibility with live pages; selector mode hides these old vertical-navigation hints.
     page.appendChild(hint("vhint vhint-u", "u")); page.appendChild(hint("vhint vhint-d", "d"));
     return page;
   }
@@ -1915,7 +1915,7 @@
     var ctrls = items.map(function (it) { var cc = makeCell(userName, peer, it, mode, secret, vkLink, reason, multi); srow.appendChild(cc.el); return cc.ctrl; });
     page.appendChild(srow);
 
-    // up/down swipe HINT (vertical, between peers) — flanks the QR top/bottom; render hides the ends.
+    // Legacy vertical-peer hints are kept as layout anchors; selector mode hides them.
     var vUp = hint("vhint vhint-u", "u"), vDown = hint("vhint vhint-d", "d");
     page.appendChild(vUp); page.appendChild(vDown);
 
@@ -2248,6 +2248,9 @@
       if (target) srow.scrollLeft = target.offsetLeft - srow.offsetLeft;
       syncBar();
     };
+    // Pages other than the current selection are hidden. Re-run the size-dependent layout when a peer/protocol tab
+    // reveals this one; its first background pass may have happened while it had no measurable box.
+    page._show = syncBar;
     return page;
   }
 
@@ -2311,158 +2314,80 @@
       var groups = ["wg", "awg", "turn"].filter(function (m) { return has[m]; });
       if (!groups.length && !deadRows.length) { showState(t("noConfigs"), t("noConfigsSub")); return; }
 
-      // ONE flat vertical pager through EVERY config, grouped by protocol: all WG, then all AWG, then all Turn.
-      // The mode buttons don't switch views — each JUMPS to the first page of its group; the group whose page is
-      // in view is highlighted and its button disabled (you're already there).
-      var bar = el("div", "modebar"), pager = el("div", "pager"), btns = {}, firstOf = {};
-      var pinMode = null, pinTimer = 0;
-      // keep the per-protocol mtab-* modifier: it carries each icon's size/baseline tweak, and rebuilding
-      // className without it flattened the wg/awg glyphs the first time a tab was clicked
-      function highlight(cur) { groups.forEach(function (m) { var on = (m === cur); btns[m].className = "modetab mtab-" + m + (on ? " on" : ""); btns[m].disabled = on; }); }
+      // Build every (peer, protocol) page once, then expose the two axes as independent selectors. This keeps all
+      // generated QR/config state warm while removing the old vertical journey through every connection.
+      var bar = el("div", "modebar"), peerbar = el("div", "peerbar"), pager = el("div", "pager selector-pager");
+      var btns = {}, peerBtns = {}, pageMap = {}, peerPages = {}, modePages = {};
+      rows.forEach(function (row, i) { row._viewKey = "peer-" + i; });
+      bar.setAttribute("role", "tablist"); bar.setAttribute("aria-label", t("protocol"));
+      peerbar.setAttribute("role", "tablist"); peerbar.setAttribute("aria-label", t("peer"));
+
       groups.forEach(function (mode) {
-        var b = el("button", "modetab mtab-" + mode); b.type = "button"; b.title = t(mode); b.setAttribute("aria-label", t(mode));
+        var b = el("button", "modetab mtab-" + mode); b.type = "button"; b.title = t(mode); b.setAttribute("aria-label", t(mode)); b.setAttribute("role", "tab");
         b.appendChild(protoIcon(mode));
         var mc = modeColor(mode); b.style.setProperty("--mc", mc); b.style.setProperty("--mc-ink", hexLum(mc) > 0.6 ? "#06222a" : "#EAFBFF");
-        b.onclick = function () {
-          pinMode = mode; highlight(mode);                                       // highlight NOW, don't wait for the scroll
-          var f = firstOf[mode]; if (f) f.scrollIntoView({ behavior: "smooth", block: "start" });
-          // Hold the pin until the smooth-scroll actually LANDS on this group (syncGroup releases it) — a fixed timer
-          // would drop the pin mid-flight and briefly light up whichever group the scroll is passing through.
-          clearTimeout(pinTimer); pinTimer = setTimeout(function () { pinMode = null; syncGroup(); }, 1500);   // safety fallback only
-        };
-        btns[mode] = b; bar.appendChild(b);
+        btns[mode] = b; bar.appendChild(b); modePages[mode] = [];
       });
+
+      function addPage(pg, row, mode) {
+        var key = row._viewKey;
+        pg.setAttribute("data-peer", key); pg.setAttribute("role", "tabpanel"); pg.hidden = true;
+        Array.prototype.forEach.call(pg.querySelectorAll(".vhint"), function (v) { v.style.display = "none"; });
+        pager.appendChild(pg);
+        pageMap[key + "|" + mode] = pg;
+        (peerPages[key] || (peerPages[key] = [])).push(pg);
+        if (modePages[mode]) modePages[mode].push(pg);
+      }
       groups.forEach(function (mode) {
-        liveRows.forEach(function (row) {
-          var pg = peerProtoPage(mode, row, vkLink, userName);
-          if (pg) { if (!firstOf[mode]) firstOf[mode] = pg; pager.appendChild(pg); }
-        });
+        liveRows.forEach(function (row) { var pg = peerProtoPage(mode, row, vkLink, userName); if (pg) addPage(pg, row, mode); });
       });
-      // blocked/expired peers last — one placeholder page each, so they're visible in the carousel but carry no config
-      deadRows.forEach(function (row) { pager.appendChild(deadPeerPage(row)); });
+      deadRows.forEach(function (row) { addPage(deadPeerPage(row), row, "dead"); });
       if (!pager.children.length) { showState(t("noConfigs"), t("noConfigsSub")); return; }
+
+      var peerRows = rows.filter(function (row) { return !!peerPages[row._viewKey]; });
+      peerRows.forEach(function (row, i) {
+        var key = row._viewKey, label = row.peer.title || (t("peer") + " " + (i + 1));
+        var b = el("button", "peertab", label); b.type = "button"; b.title = label; b.setAttribute("aria-label", label); b.setAttribute("role", "tab");
+        b.onclick = function () { selectPage(activeMode, key, "peer"); };
+        peerBtns[key] = b; peerbar.appendChild(b);
+      });
+      groups.forEach(function (mode) { btns[mode].onclick = function () { selectPage(mode, activePeer, "mode"); }; });
+
       if (groups.length > 1) wrap.appendChild(bar);
+      if (peerRows.length > 1) wrap.appendChild(peerbar);
       wrap.appendChild(pager);
 
-      var pages = Array.prototype.slice.call(pager.children);
-      // up/down hint per page: hint both directions, except no "up" on the first page and no "down" on the last
-      // (a lone page hints neither). left/right hints are handled inside the page (per deployment).
-      pages.forEach(function (pg, i) {
-        var u = pg.querySelector(".vhint-u"), d = pg.querySelector(".vhint-d");
-        if (u) u.style.display = (pages.length > 1 && i > 0) ? "" : "none";
-        if (d) d.style.display = (pages.length > 1 && i < pages.length - 1) ? "" : "none";
-      });
+      var pages = Array.prototype.slice.call(pager.children), activePeer = null, activeMode = groups[0] || "dead";
+      function selectPage(mode, peerKey, priority) {
+        var target = pageMap[peerKey + "|" + mode];
+        if (!target && priority === "peer" && peerPages[peerKey]) target = peerPages[peerKey][0];
+        if (!target && priority === "mode" && modePages[mode] && modePages[mode].length) target = modePages[mode][0];
+        if (!target && peerPages[peerKey]) target = peerPages[peerKey][0];
+        if (!target && modePages[mode] && modePages[mode].length) target = modePages[mode][0];
+        if (!target) target = pages[0];
 
-      // Highlight + disable the button for the protocol group whose page is at the top. Viewport-relative rects
-      // so it works whether the PAGER scrolls (phone) or the WINDOW does (desktop).
-      // Sit the fixed left rail so its vertical centre lines up with the QR/config box of the page in view — not
-      // the viewport centre (the header pushes the QR below it). All pages share a layout, so the current one's
-      // box is representative; re-run on scroll/resize since a QR↔config toggle can change the box height.
-      function alignRail() { /* icon row is static now — nothing to reposition */ }
-      _relayoutRail = alignRail;   // let a page's layout pass (QR↔config toggle, fit, swipe) re-centre the rail
-      function syncGroup() {
-        // highlight the group of the page actually in view (the top-most visible one — same logic as paging)
-        var pg = pages[curIndex()];
-        var mode = pg ? pg.getAttribute("data-mode") : (pages[0] ? pages[0].getAttribute("data-mode") : groups[0]);
-        if (pinMode) {
-          if (mode === pinMode) { pinMode = null; clearTimeout(pinTimer); }   // scroll arrived → release the pin
-          else { highlight(pinMode); return; }                                // still travelling → keep the target lit
-        }
-        highlight(mode);
-      }
-      var raf = 0, navLock = false;
-      function curIndex() {
-        // portrait: the PAGER is the scroll container, so measure against its top. landscape/desktop: the WINDOW
-        // scrolls, so measure against a fixed point just below the sticky header (in viewport coords).
-        var pagerScrolls = getComputedStyle(pager).overflowY !== "visible";
-        var top = pagerScrolls ? (pager.getBoundingClientRect().top + 6) : 80;
-        for (var i = 0; i < pages.length; i++) { if (pages[i].getBoundingClientRect().bottom > top) return i; }
-        return pages.length - 1;
-      }
-      // Step exactly ONE peer up/down (shared by the vertical swipe + wheel). A lock during the animation stops a
-      // fling from chaining.
-      function stepConfig(dir) {
-        if (navLock) return;
-        navLock = true; setTimeout(function () { navLock = false; }, 460);
-        var i = curIndex(), j = Math.max(0, Math.min(i + dir, pages.length - 1));
-        if (j !== i) pages[j].scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-      // Step exactly ONE deployment left/right in the CURRENT page's carousel (mirrors stepConfig for the
-      // horizontal axis) — so a fast flick advances one server/fork, not three.
-      function stepCell(dir) {
-        if (navLock) return;
-        var pg = pages[curIndex()]; if (!pg) return;
-        var srow = pg.querySelector(".srow"); if (!srow) return;
-        var cells = srow.children; if (cells.length < 2) return;
-        var sl = srow.scrollLeft, cur = 0, bd = Infinity;
-        for (var i = 0; i < cells.length; i++) { var d = Math.abs((cells[i].offsetLeft - srow.offsetLeft) - sl); if (d < bd) { bd = d; cur = i; } }
-        var j = Math.max(0, Math.min(cur + dir, cells.length - 1));
-        if (j === cur) return;
-        navLock = true; setTimeout(function () { navLock = false; }, 460);
-        srow.scrollTo({ left: cells[j].offsetLeft - srow.offsetLeft, behavior: "smooth" });
+        pages.forEach(function (pg) { var on = pg === target; pg.hidden = !on; pg.classList.toggle("on", on); pg.setAttribute("aria-hidden", on ? "false" : "true"); });
+        activePeer = target.getAttribute("data-peer"); activeMode = target.getAttribute("data-mode");
+        groups.forEach(function (m) {
+          var on = m === activeMode, b = btns[m];
+          b.className = "modetab mtab-" + m + (on ? " on" : ""); b.disabled = on; b.setAttribute("aria-selected", on ? "true" : "false");
+        });
+        Object.keys(peerBtns).forEach(function (key) {
+          var on = key === activePeer, b = peerBtns[key];
+          b.className = "peertab" + (on ? " on" : ""); b.disabled = on; b.setAttribute("aria-selected", on ? "true" : "false");
+        });
+        var pb = peerBtns[activePeer];
+        if (pb && peerRows.length > 1) peerbar.scrollTo({ left: Math.max(0, pb.offsetLeft - (peerbar.clientWidth - pb.offsetWidth) / 2), behavior: "smooth" });
+        if (target._show) requestAnimationFrame(target._show);
       }
 
-      function onScroll() { if (raf) return; raf = requestAnimationFrame(function () { raf = 0; syncGroup(); }); }
-      pager.addEventListener("scroll", onScroll, { passive: true });
-      window.addEventListener("scroll", onScroll, { passive: true });
-      window.addEventListener("resize", onScroll, { passive: true });
-      // Restore the reader's place (deployment + QR/config view + which page) after a lang/theme rebuild — BEFORE
-      // the first syncGroup so nothing flashes the top config first.
-      if (keepPos && pages.length) {
-        var kp = Math.max(0, Math.min(keepPos.page | 0, pages.length - 1));
-        var kpg = pages[kp];
-        if (kpg && kpg._seek) kpg._seek(keepPos.cell, keepPos.view);
-        kpg.scrollIntoView({ block: "start" });   // instant (no smooth) — land, don't animate from the top
-      }
-      syncGroup();
-      requestAnimationFrame(syncGroup);   // re-sync once laid out
-      setTimeout(alignRail, 120);         // catch the QR's async first paint
-
-      // ── Deliberate VERTICAL paging (phone): a fling can skip several peers, so take over vertical touch/wheel
-      //    and step EXACTLY ONE peer per FIRM gesture. HORIZONTAL gestures are left to the deployment carousel
-      //    (native scroll-snap), so left/right still swipes a peer's servers/forks. ──
-      var isPager = getComputedStyle(pager).overflowY !== "visible";   // phone: the pager scrolls (desktop scrolls the window → leave native)
-      if (isPager) {
-        var scrollableUnder = function (node) {   // a config-text box that itself needs scrolling — let it, don't page
-          for (var n = node; n && n !== pager; n = n.parentNode) {
-            if (n.classList && n.classList.contains("cfgtext") && n.scrollHeight > n.clientHeight + 2) return true;
-          }
-          return false;
-        };
-        var tX = 0, tY = 0, tT = 0, tAxis = null, tOwn = false;
-        pager.addEventListener("touchstart", function (e) { tOwn = !scrollableUnder(e.target); tAxis = null; tX = e.touches[0].clientX; tY = e.touches[0].clientY; tT = Date.now(); }, { passive: true });
-        pager.addEventListener("touchmove", function (e) {
-          if (!tOwn) return;
-          var dx = e.touches[0].clientX - tX, dy = e.touches[0].clientY - tY;
-          if (tAxis === null && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) tAxis = (Math.abs(dx) > Math.abs(dy)) ? "h" : "v";
-          if (tAxis === "v") e.preventDefault();   // take over VERTICAL only (one peer per firm gesture). HORIZONTAL is left
-          // to the carousel's native scroll-snap so the card tracks the finger live and snaps on release (scroll-snap-stop:
-          // always still limits it to one deployment) — no wait-for-release-then-animate.
-        }, { passive: false });
-        pager.addEventListener("touchend", function (e) {
-          if (!tOwn || tAxis !== "v") return;   // horizontal already handled natively (finger-tracked + snapped)
-          var dt = Date.now() - tT;
-          var dy = e.changedTouches[0].clientY - tY, vel = Math.abs(dy) / Math.max(1, dt);
-          if (Math.abs(dy) > 85 || (Math.abs(dy) > 45 && vel > 0.7)) stepConfig(dy < 0 ? 1 : -1);   // FIRM swipe only
-        }, { passive: false });
-        var wAcc = 0, wT = 0, hAcc = 0, hT = 0;
-        // Firefox reports wheel deltas in LINES (deltaMode 1) or PAGES (2), not pixels like Chrome — so the raw
-        // deltas are tiny and never reach the 120px step threshold, blocking scroll entirely. Normalise to pixels.
-        function wpx(d, e) { return e.deltaMode === 1 ? d * 16 : e.deltaMode === 2 ? d * (pager.clientHeight || 800) : d; }
-        pager.addEventListener("wheel", function (e) {
-          if (scrollableUnder(e.target)) return;
-          e.preventDefault();
-          if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {   // horizontal wheel → step ONE deployment (no fling-skip)
-            var nx = Date.now(); if (nx - hT > 180) hAcc = 0; hT = nx;
-            hAcc += wpx(e.deltaX, e);
-            if (Math.abs(hAcc) > 120) { stepCell(hAcc > 0 ? 1 : -1); hAcc = 0; }
-            return;
-          }
-          var now = Date.now(); if (now - wT > 180) wAcc = 0; wT = now;
-          wAcc += wpx(e.deltaY, e);
-          if (Math.abs(wAcc) > 120) { stepConfig(wAcc > 0 ? 1 : -1); wAcc = 0; }
-        }, { passive: false });
-      }
+      _relayoutRail = function () {};   // the protocol controls are in-flow selectors now; there is no floating rail to align
+      var initial = null;
+      if (keepPos) initial = pageMap[(keepPos.peer || "") + "|" + (keepPos.mode || "")]
+                         || pages[Math.max(0, Math.min(keepPos.page | 0, pages.length - 1))];
+      if (!initial) initial = pages[0];
+      selectPage(initial.getAttribute("data-mode"), initial.getAttribute("data-peer"));
+      if (keepPos && initial._seek) initial._seek(keepPos.cell, keepPos.view);
 
       document.getElementById("state").hidden = true;
       wrap.hidden = false;

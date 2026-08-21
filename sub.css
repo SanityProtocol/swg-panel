@@ -1,6 +1,6 @@
-/* swg-sub — the public subscription page. Mobile-first, full-screen paging: one peer per screen (scroll
-   down for the next), swipe a peer's servers left/right, a big centred QR that toggles to the config text,
-   and a steady bottom action bar. Dark by default, self-contained (no external fonts — the CSP forbids them). */
+/* swg-sub — the public subscription page. Mobile-first, full-screen selection: choose a protocol and peer,
+   swipe that peer's servers left/right, toggle the big centred QR to config text, and use the steady bottom
+   action bar. Dark by default, self-contained (no external fonts — the CSP forbids them). */
 
 :root {
   --bg: #0a0e15;
@@ -97,7 +97,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .spin { width: 34px; height: 34px; margin: 0 auto 16px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* the peers region fills the rest and hosts the tabs + the vertical pager */
+/* the peers region fills the rest and hosts the protocol/peer selectors + the selected page */
 #peers { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #peers[hidden] { display: none; }
 
@@ -118,11 +118,32 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .modetab:disabled { cursor: default; }
 .modetab:disabled:active { transform: none; }
 
-/* vertical pager — one peer per screen, snap between them */
+/* Peer selector: the second mode bar. It stays a single horizontal row; a long peer list scrolls sideways, while
+   only the selected peer's page is visible below. The end auto-margins centre short lists without making the
+   beginning of a long list unreachable. */
+.peerbar { flex: none; display: flex; align-items: center; gap: 8px; width: 100%; overflow-x: auto;
+  padding: 4px 12px 9px; scrollbar-width: none; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
+.peerbar::-webkit-scrollbar { display: none; }
+.peertab { flex: none; appearance: none; max-width: min(62vw, 260px); min-height: 38px; padding: 7px 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; color: var(--ink-2);
+  font: inherit; font-size: 13px; font-weight: 750; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel-2); transition: color .18s, border-color .18s, box-shadow .18s, transform .1s; }
+.peertab:first-child { margin-left: auto; }
+.peertab:last-child { margin-right: auto; }
+.peertab.on { color: var(--ink); background: var(--panel); border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
+.peertab:hover:not(:disabled) { color: var(--ink); border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
+.peertab:active { transform: translateY(1px); }
+.peertab:disabled { cursor: default; }
+.peertab:disabled:active { transform: none; }
+
+/* selected-page host (the base pager rules remain for the full-screen sizing and hidden scrollbar) */
 .pager { flex: 1; min-height: 0; overflow-y: auto; scroll-snap-type: y mandatory; overscroll-behavior: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
 .pager::-webkit-scrollbar { display: none; }
+.selector-pager { overflow-y: hidden; scroll-snap-type: none; }
+.selector-pager .ppage[hidden] { display: none !important; }
+.selector-pager .vhint { display: none !important; }
 
-/* one peer page — head · swipe-row · bottom bar, filling exactly one screen */
+/* one selected peer page — head · swipe-row · bottom bar, filling exactly one screen */
 .ppage { height: 100%; scroll-snap-align: start; scroll-snap-stop: always; flex: none; display: flex; flex-direction: column; min-height: 0; padding-top: 8px; position: relative; isolation: isolate; overflow: hidden; }
 /* the peer-title header and the per-cell server name are placed by JS (syncVHints) so the whole
    [ name · up-arrow · content · down-arrow · buttons ] stack stays balanced whatever the box size */
@@ -441,6 +462,8 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
   .bar { gap: clamp(8px, 2.2vh, 14px); padding-bottom: 8px; }
   .modebar { gap: 14px; padding: 6px 12px 4px; }
   .modetab { width: 52px; height: 52px; padding: 9px; }
+  .peerbar { padding-top: 2px; padding-bottom: 6px; }
+  .peertab { min-height: 34px; padding: 5px 12px; }
   .pbar { min-height: 84px; padding: 9px 0 calc(9px + env(safe-area-inset-bottom)); }
   .pbtn.ico { width: 52px; height: 52px; min-height: 52px; }
   .pbtn.ico svg { width: 24px; height: 24px; }
@@ -453,6 +476,8 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
   .who { font-size: clamp(15px, 4.4vw, 18px); }
   .modebar { gap: 12px; padding: 4px 12px 2px; }
   .modetab { width: 46px; height: 46px; padding: 8px; }
+  .peerbar { padding-top: 1px; padding-bottom: 4px; }
+  .peertab { min-height: 31px; padding: 4px 11px; font-size: 12px; }
   .pbar { min-height: 66px; padding: 7px 0 calc(7px + env(safe-area-inset-bottom)); }
   .pbtn.ico { width: 46px; height: 46px; min-height: 46px; }
   .pbtn.ico svg { width: 22px; height: 22px; }
@@ -483,6 +508,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
   body { height: auto; min-height: 100dvh; overflow-x: hidden; overflow-y: auto; display: block; }
   #app, #peers, .pager { display: block; height: auto; min-height: 0; overflow: visible; }
   .pager { scroll-snap-type: none; }
+  .pager.selector-pager { overflow: visible; }
   /* the icon row stays a normal horizontal row under the username here too */
   .modebar { position: static; top: auto; transform: none; }
   .ppage { height: auto; display: block; scroll-snap-align: none; padding: 20px 0 24px; border-bottom: 1px solid var(--line); max-width: 760px; margin: 0 auto; scroll-margin-top: 72px; overflow: visible; }
