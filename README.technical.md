@@ -24,13 +24,14 @@ Multi-hop in mind (edge entry → distant exit), and built to scale — from a c
 - **Panel** (control plane) — serves the web UI, its own TLS + login, and a node-sync API. It owns the roster (your peers) and the node store. Pure Python, no database.
 - **Node** (entry server) — runs `swg-noded`, which every few seconds posts a snapshot of its interface to the panel, receives the peers it *should* have, and reconciles locally through `swg-agent` (adding/removing peers on the live wg/awg interface). Outbound HTTPS only.
 - **Declarative** — you change peers in the panel; nodes converge. A node that misses a beat self-heals on the next sync, and a transient panel outage never wipes a node's peers (a node only reconciles on a valid reply).
-- **WDTT** — a third server type, run by the node as a supervised process per interface: it owns its own tunnel (so it is *not* a front for a wg/awg interface the way a turn-proxy is) and authenticates users by **password** rather than a keypair. The panel owns the password set and writes it declaratively; the server reconciles on SIGHUP/mtime **without dropping live tunnels**. Binaries are our own patched builds of four upstream forks, versioned and rollback-able per instance.
-- **Adoption** — anything the node finds that the panel didn't create (a wg/awg interface, a running or stopped WDTT install) is reported as a **candidate**, not touched. You adopt it in place — same keys, port, subnet and peers, WDTT password store included — or ignore it, and ignored ones are remembered.
-- **Keys are generated in your browser** — peer keypairs are always minted client-side. **By default** (`store_configs`, on) the panel then keeps a copy of each generated config — private key included — so its QR/download stays available any time. Prefer no secrets at rest? Set `store_configs` off (Settings → Client configs) and the panel keeps only the public key, the assigned IP, and the preshared key; the private key is shown **once** at creation and never stored. The PSK is always panel-owned, so every node a peer lives on stays consistent.
+- **WDTT** — a third server type, run by the node as a supervised process per interface: it owns its own tunnel (so it is *not* a front for a wg/awg interface the way a turn-proxy is) and authenticates users by **password** rather than a keypair. The panel owns the password set and writes it declaratively; the server reconciles on SIGHUP/mtime **without dropping live tunnels**. Binaries are our own patched builds of five upstream forks, versioned and rollback-able per instance.
+- **csqtt** — a fourth server type. Self-contained like WDTT (its own tunnel, panel-owned passwords), but on a **raw-IP TUN** datapath instead of WireGuard. Same lifecycle: create it as an interface, adopt one the box already runs, assign peers. Its dataplane is `io_uring`, so a **Docker** node needs `SWG_NODE_SECCOMP=unconfined` or the server dies the instant it starts. csqtt is **noncommercial-only** — see [THIRD-PARTY.md](THIRD-PARTY.md).
+- **Adoption** — anything the node finds that the panel didn't create (a wg/awg interface, a running or stopped WDTT install, a csqtt server) is reported as a **candidate**, not touched. You adopt it in place — same keys, port, subnet and peers, WDTT password store included — or ignore it, and ignored ones are remembered.
+- **Keys are generated in your browser** — peer keypairs are always minted client-side. **By default** (`store_configs: encrypted`) the panel then keeps each generated config **encrypted at rest**, sealed with an **encryption key only you hold** (**Settings → Client configs**), so a peer's QR/download stays available whenever you're signed in while the server itself can never read a private key. Prefer nothing at rest? Set it to `off` and the panel keeps only the public key, the assigned IP, and the preshared key; the private key is shown **once** at creation. The PSK is always panel-owned, so every node a peer lives on stays consistent.
 
 ## Contents
 
-- [Method × Role](#method-role)
+- [Method × Role](#method--role)
 - [The pieces](#the-pieces)
 - [Quick start](#quick-start)
 - [Installing the panel](#installing-the-panel)
@@ -69,6 +70,8 @@ Mix freely: a Docker panel with bare-metal nodes, a bare-metal `master` plus ext
 | `swg-noded` | each node | posts snapshots, pulls the desired peer set, reconciles locally — outbound HTTPS only |
 | `swg-agent` | each node | applies a single peer add/remove to the live interface and its `.conf` |
 | WDTT server | each node | our patched build of the operator's chosen fork — one supervised process per WDTT interface, driven by a panel-written `desired.json` |
+| csqtt server | each node | same model on a raw-IP TUN datapath — one supervised process per csqtt interface |
+| `swg-sub` | host | the public, read-only subscription surface; its own process/user, panel state mounted `:ro` |
 | `users.json` | host | the **roster** — your peers (public key, IP, PSK, and which nodes each lives on) |
 | `nodes.json` | host | the **node store** — node names, endpoints, and enrollment-token hashes |
 
@@ -84,13 +87,13 @@ Four one-liners — each **prompts for whatever it needs**. Choose a method (bar
 
 **Panel** — asks the role: master (panel + this box is a node) or host (panel only)
 
-```
+```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s bare-metal
 ```
 
 **Node** — asks for the panel URL + the key from Nodes → Add node
 
-```
+```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node
 ```
 
@@ -98,13 +101,13 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 **Panel** — installs Docker if needed, then asks the role (master: panel + this box is a node, auto-enrolled · host: panel only) and a domain + TLS choice (login auto-generated, change it later in the panel)
 
-```
+```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
 ```
 
 **Node** — asks for the panel URL + the key from Nodes → Add node
 
-```
+```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
 ```
 
@@ -112,7 +115,7 @@ Open the panel URL, log in, and add entry servers from **Nodes → Add node** �
 
 **Update** any box later, in place (auto-detects what's installed):
 
-```
+```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
 ```
 
@@ -124,14 +127,15 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 |---|---|---|
 | Panel · 1 | **Role** | `master` (default — panel + this box is an entry server) or `host` (panel only) |
 | Panel · 2 | **Panel URL** | IP, host, or host with a subpath (`vpn.example.com/swg`) to mount the panel under an existing site. Default is this host's public IP. |
-| Panel · 3 | **TLS** | `letsencrypt` (default) · `cloudflare` · `cf15` · `selfsigned` · `skip` |
+| Panel · 3 | **TLS** | `letsencrypt` (default, needs a domain) · `letsencrypt-ip` (default when the panel URL is a public IP) · `cloudflare` · `cf15` · `selfsigned` · `skip` |
 | Panel · 4 | **Serve mode** | `internal` (default, self-contained) · `nginx` · `caddy` · `skip` |
-| Panel | **Port / admin** | port (default **443** for `internal`; the unit adds the bind capability for ports < 1024) and the web login — suggests `admin` + 3 digits; changeable later under **Account** |
+| Panel | **Port / admin** | port (default **443** for `internal`; the unit adds the bind capability for ports < 1024) and the web login — suggests `admin` + 3 digits; changeable later under **Settings → Authentication** |
 | Node · 1 | **Node name** | *(master)* this box's node name (default: hostname) |
 | Node · 2 | **Datapath tooling** | *(master)* no prompt. Installs nftables + dnsmasq (smart routing / Force-DNS), the AmneziaWG tools **and** the DKMS kernel module, and plain WireGuard — so the panel can create either type immediately — then detects the interfaces already on the box and hands them to the panel as adoption candidates. |
 
 **TLS:**
 - **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
+- **letsencrypt-ip** — real cert for a **public IP**, no domain needed. Short-lived (**~6 days**); `acme.sh` renews it daily, so a renewal outage of about a week expires it. Offered only when the panel URL is a public IP.
 - **cloudflare** — real cert via DNS-01; **never uses port 80**. The token needs `Zone:DNS:Edit` + `Zone:Read`.
 - **cf15** — Cloudflare **Origin** certificate, **15 years**, issued via the CF API (needs an **API token** with `Zone` → `SSL and Certificates` → `Edit`; the legacy Origin CA Key is deprecated). ⚠️ Only trusted **behind Cloudflare's proxy** (orange cloud) — a direct hit to the origin shows an untrusted cert. No renewal needed for 15 years.
 - **selfsigned** — instant; browsers warn once. Good for getting going or behind a tunnel.
@@ -141,7 +145,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 Unattended example (config via env):
 
-```
+```bash
 sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.net \
      BASIC_USER=admin BASIC_PASS='…' bash -s bare-metal \
      < <(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)
@@ -153,18 +157,19 @@ Nodes are managed entirely from the UI — the installer no longer asks about th
 
 1. **Nodes → Add node** — give it a name, the public IP/host clients dial, and a colour. You get a **one-time enrollment token** and the exact one-liner.
 2. **On the entry server**, paste that one-liner — it fetches the repo and runs the node installer:
-   ```
+   ```bash
    curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
      | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
    ```
-   It installs the datapath tooling and starts `swg-noded` — it does **not** ask you to configure anything. Interfaces, turn-proxies and WDTT servers are created from the panel. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
+   It installs the datapath tooling and starts `swg-noded` — it does **not** ask you to configure anything. Interfaces, turn-proxies, WDTT and csqtt servers are all created from the panel. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
 3. Within a few seconds the node turns **online** in the Nodes screen.
 
-**Adopting what the box already runs.** The node scans where wg/awg and WDTT normally live — not only where *we* install them — and reports each interface or WDTT install the panel did not create. They appear on the node's page as **candidate** cards with **Adopt** / **Ignore**:
+**Adopting what the box already runs.** The node scans where wg/awg, WDTT and csqtt normally live — not only where *we* install them — and reports each interface or server install the panel did not create. They appear on the node's page as **candidate** cards with **Adopt** / **Ignore**:
 
 - **wg/awg** — adopting reads the live device (keys, peers, port, subnet, MTU) and takes it over **add-only**: existing peers are imported, never wiped. On Docker, a `.conf` that only ever existed inside the container is reconstructed from the live device so it can be adopted at all.
 - **WDTT** — the fork is identified from the running server process (not a UAPI socket), its subnet read off the live interface, and its **password store imported** as roster peers, so links already in circulation keep working. A **dormant** (stopped) install is discovered too, with whatever it can tell about itself, and **Adopt existing** takes a directory path directly for an install that was moved or renamed.
 - **A server in another container** (AmneziaVPN) — invisible to every scan above, because it runs in its own network namespace with its config on a filesystem the node cannot see. Found instead by asking each foreign container directly (`docker exec … wg|awg show`), reported with its subnet, listen port and peers — named, when Amnezia's own client table is readable. **Take over** stops that container and stands the same server up natively, reusing its key, port, address and obfuscation params, so existing client configs keep working; the peers are imported by public key. It refuses, changing nothing, unless the interface is really running, its live key matches its config, and the name is free on the node — and if anything fails after the container is stopped, the node starts it again. Needs docker access: on a Docker node that means the socket is mounted (`TURN_MANAGE=panel`, the default).
+- **csqtt** — scanned and adopted on its own path, like WDTT: the fork is read off the running server, its subnet off the live raw-TUN interface, and its password store imported as roster peers.
 - Ignored candidates are recorded and listed under **Settings → Interfaces**; one that later becomes managed drops off by itself.
 
 Against a **self-signed** panel the installer **auto-pins the cert on first contact** (trust-on-first-use): the node stores its sha256 and checks it on every handshake, before the token is sent — so a man-in-the-middle can't impersonate the panel even without a CA. A **real-CA** panel is verified against the system trust store instead. Override with `TLS_VERIFY=yes|no` or an explicit `TLS_FINGERPRINT=<sha256-hex>`. If the panel later moves (host/port), a node **auto-re-points** to the new address — but only when it still presents the pinned/trusted cert.
@@ -202,35 +207,35 @@ Live status (online, partial, dangling, …) is computed every refresh from the 
 
 **Panel** — Step 1 asks the role, exactly like bare-metal: **master** (panel + this box also runs WG/AWG as a co-located node container, auto-enrolled in one pass) or **host** (panel only). `master` is the default.
 
-```
+```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
 ```
 
 **Node** — a separate entry server; asks for the panel URL + the key from **Nodes → Add node** (this is how the `host` role's nodes are deployed)
 
-```
+```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
 ```
 
-Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces`, `-net host|bridge` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
+Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-user`, `-pass`, `-domain`, `-base`, `-port`, `-tls`, `-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`, `-net host|bridge`, `--build` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
 
-**Or by hand** — one compose file, three profiles named after the roles:
+**Or by hand** — one compose file, three profiles named after the roles. The `host` and `master` profiles bring up `swg-panel` **and** `swg-sub` (same image, port `8444`, idle until you enable subscriptions); `node` and `master` bring up `swg-node`.
 
 **Panel + a local node** (role `master`)
 
-```
+```bash
 docker compose --profile master up -d
 ```
 
 **Panel only** (role `host`)
 
-```
+```bash
 docker compose --profile host up -d
 ```
 
 **Entry server only** (role `node`)
 
-```
+```bash
 docker compose --profile node up -d
 ```
 
@@ -238,12 +243,14 @@ By hand the `master` profile does **not** auto-enroll the local node — add it 
 
 Configure via `.env`:
 
-- **Panel:** `PANEL_PASSWORD` (required), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (optional subpath, e.g. `/swg`), `PANEL_PORT`, and `TLS` — `letsencrypt` · `cloudflare` · `cf15` · `selfsigned` · `none`, issued in-container by the bundled `acme.sh` exactly like bare-metal (set `ACME_EMAIL` / `CF_TOKEN` / `CF_ORIGIN_TOKEN` as the chosen mode needs; see [TLS](#installing-the-panel)).
-- **Node:** `PANEL_URL` (for a `master` on bridge use `https://swg-panel:8443`; host networking uses loopback), `NODE_TOKEN` (from the Nodes screen), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `NODE_NET` (`host` · `bridge`), `TLS_VERIFY`, `DNS`.
+- **Panel:** `PANEL_PASSWORD` (required), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (optional subpath, e.g. `/swg`), `PANEL_PORT`, and `TLS` — `letsencrypt` · `letsencrypt-ip` · `cloudflare` · `cf15` · `selfsigned` · `none`, issued in-container by the bundled `acme.sh` exactly like bare-metal (set `ACME_EMAIL` / `CF_TOKEN` / `CF_ORIGIN_TOKEN` as the chosen mode needs; see [TLS](#installing-the-panel)).
+- **Node:** `PANEL_URL` (for a `master` on bridge use `https://swg-panel:8443`; host networking uses loopback), `NODE_TOKEN` (from the Nodes screen), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `NODE_MTU`, `NODE_PLAIN_WG`, `NODE_NET` (`host` · `bridge`), `TLS_VERIFY`, `TLS_FINGERPRINT`, `DNS`, and `SWG_NODE_SECCOMP=unconfined` (only on a node that runs **csqtt** — its `io_uring` dataplane is blocked by Docker's default seccomp profile).
+- **Subscriptions:** the `swg-sub` container runs from the same `swg-panel` image under the `host`/`master` profiles — `SUB_PORT` (host port, default `8444`), `SUB_DOMAIN`, `SUB_BIND`, `SUB_TRUST_XFF`. It stays idle until you enable subscriptions in the panel.
+- **Both:** `PULL_POLICY` (`missing` default; `always` re-pulls `:latest`), `PANEL_BIND` (`127.0.0.1` to keep the panel behind your own reverse proxy).
 
 **Networking** — the installer puts the node on **`network_mode: host`** by default (`NODE_NET=host`), so every interface UDP port — **including interfaces you later create from the panel** — is reachable with no per-port mapping, and throughput is better (no `docker-proxy`). On a `master` the node reaches the co-located panel over loopback. Choose **`bridge`** to isolate the node's network namespace instead; then each interface's `ListenPort` must be **published** in `docker-compose.yml` (the panel flags this and prints the exact line when you create an interface on a bridge node). The node reports its mode to the panel so the guidance only shows where it's needed.
 
-**Two images** (pulled prebuilt from GHCR by default; `--build` builds them locally). `swg-panel` is pure Python + the bundled `acme.sh`. `swg-node` carries the userspace **`amneziawg-go`** datapath + `awg` tools (a container can't load the host kernel module) and needs `NET_ADMIN` + `/dev/net/tun`. It manages one interface by default (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` for plain WG), several via `NODE_IFACES` (`name:port:addr[:proto[:endpoint]],…`), or any confs you mount under `/etc/swg-node/*.conf`. Panel-created interfaces persist across `up -d` (the conf dir is a volume). Masquerade is automatic. For best throughput, prefer a **bare-metal** node with the kernel module. With turn-proxy management enabled, `swg-noded` runs each proxy as a sibling `swg-turn-*` container (host network, `--restart unless-stopped`) over the mounted Docker socket — editing one just recreates the container, no host systemd.
+**Two images** (pulled prebuilt from GHCR by default; `--build` builds them locally). `swg-panel` is pure Python + the bundled `acme.sh`. `swg-node` carries the userspace **`amneziawg-go`** datapath + `awg` tools (a container can't load the host kernel module) and needs `NET_ADMIN` + `/dev/net/tun`. It comes up with **no interface by default** — you add them from the panel (Interfaces → Load new interface). Set `NODE_IFACE` for one bootstrap interface (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` for plain WG), `NODE_IFACES` for several (`name:port:addr[:proto[:endpoint]],…`), or mount your own confs under `/etc/swg-node/*.conf`. Panel-created interfaces persist across `up -d` (the conf dir is a volume). Masquerade is automatic. For best throughput, prefer a **bare-metal** node with the kernel module. With turn-proxy management enabled, `swg-noded` runs each proxy as a sibling `swg-turn-*` container (host network, `--restart unless-stopped`) over the mounted Docker socket — editing one just recreates the container, no host systemd.
 
 Prebuilt images: `ghcr.io/sanityprotocol/swg-panel` and `ghcr.io/sanityprotocol/swg-node`.
 
@@ -253,10 +260,16 @@ Prebuilt images: `ghcr.io/sanityprotocol/swg-panel` and `ghcr.io/sanityprotocol/
 
 Switch a box's **method** in place: re-run the installer asking for the *other* method, and it offers **convert · keep · abort**.
 
+Run the same one-liner with the other method. **To bare-metal** — a bare role word means bare-metal:
+
 ```bash
-# the same one-liner with the other method — e.g. a Docker master ⇆ bare-metal:
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master         # → bare-metal (a bare role word means bare-metal)
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master  # → Docker
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master
+```
+
+**To Docker** — prefix the role with `docker`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master
 ```
 
 A convert **keeps everything** — the panel's URL, login, roster, nodes and TLS cert, and (for a `master`) the local node's token, interfaces and turn-proxies. It is **copy-first**: the new method is staged in full *before* the old one is torn down, so the only downtime is the few seconds of the atomic switch — nodes self-heal on their next sync.
@@ -278,13 +291,18 @@ A convert **keeps everything** — the panel's URL, login, roster, nodes and TLS
   "roster_path":   "/var/lib/swg-panel/users.json",
   "nodes_path":    "/var/lib/swg-panel/nodes.json",
   "stats_dir":     "/var/www/wgstats",
-  "store_configs": true,
+  "store_configs": "encrypted",
   "config_dir":    "/var/lib/swg-panel/configs",
   "node_interval": 5
 }
 ```
 
-`store_configs` keeps the generated client configs (including private keys) on the panel so QR codes and downloads stay available any time — **on by default** (the installers write `true`). Set it to `false` for **no secrets at rest**: the panel then stores only the public key, IP, and PSK, and each config's private key is shown once at creation. The panel flags when it's off (existing peers then need a one-time key rotation to re-capture a config).
+`store_configs` is `"encrypted"` (the default) or `"off"`.
+
+- **`encrypted`** — each client config is stored as a blob your browser sealed with your **encryption key**, so QR codes and downloads stay available any time you're signed in, and the server itself cannot read a private key. Set the key up under **Settings → Client configs**; subscriptions require it.
+- **`off`** — nothing kept. The panel stores only the public key, IP and PSK, and each config's QR is shown once at creation. The panel flags when it's off (existing peers then need a one-time key rotation to re-capture a config).
+
+This is the **legacy default** only: once you touch the setting in the UI it lives in `panel-settings.json` and that wins. The old booleans still resolve — `true` → `encrypted`, `false` → `off` — and the plaintext write path is gone, so "stored" now always means encrypted.
 
 **Node — `/etc/swg-agent/config.json`**:
 
@@ -307,7 +325,7 @@ A node can serve several interfaces — list them all under `interfaces`; each p
 - **Remove a node:** Nodes → Remove. Stop `swg-noded` on the box itself to take it offline.
 - **Back up:** `users.json` + `nodes.json` (under `/var/lib/swg-panel`) are the whole state — copy the directory somewhere off-box and you can rebuild the panel anywhere.
 - **Automatic backups + self-repair:** every write to a critical state file (`users.json`, `nodes.json`, `panel-settings.json`) also drops a timestamped copy beside it — `users.json.bak.<epoch>` — and prunes to the **last 8**. On startup the loader validates each primary and, if one is corrupt/empty (bad shutdown, full disk), **automatically restores the newest good backup** — no operator action. So a backup exists after *every change*, not on a schedule. (Off-box copies are still recommended for whole-host loss.)
-- **Update:** `… | sudo bash -s update` (or `./update.sh`). Pulls the latest code, auto-detects what's installed (bare-metal panel/node and/or Docker), refreshes the binaries/SPA, and restarts — config + state are preserved. The installed version is stamped in each component's `VERSION` file (repo: [`VERSION`](VERSION)).
+- **Update:** `… | sudo bash -s update` (or `./update.sh`). Pulls the latest code, auto-detects what's installed (bare-metal panel/node and/or Docker), refreshes the binaries/SPA, and restarts — config + state are preserved. `--dry-run` previews, `-y`/`--yes` takes every available upgrade unprompted, `-f`/`--force` re-applies components already on the latest version. The installed version is stamped in each component's `VERSION` file (repo: [`VERSION`](VERSION)).
 - **Re-install keeps data:** re-running *any* installer on a box detects the existing install and preserves everything (login, cert, roster, nodes, node token, interfaces, turn-proxies), offering current values as defaults — safe after an interrupted run or to change an option. To start clean, uninstall first.
 - **Recover a node's identity:** a re-installed or converted node persists its enrollment identity to `/var/lib/swg-recovery`, so it can rejoin **without re-enrolling**. Open that menu directly with `… | sudo bash -s recovery` (works even on a box that still has a live node — e.g. to reattach a leftover token after a rebuild).
 - **Move the panel:** change its host/port and **pinned nodes auto-re-point** on their next sync — as long as the new address still presents their trusted cert — so a panel migration needs no per-node re-enroll.
@@ -325,11 +343,11 @@ Enable it in **Settings → Integrations**: mint a token (shown once), optionall
 
 **Authentication.** Every endpoint except the liveness probes needs a token, sent one of three ways:
 
-```
-Authorization: Bearer <token>
-X-API-Key: <token>
-?token=<token>          # query param, for tools that can't set a header
-```
+| where | how to send it | when to use it |
+|---|---|---|
+| header | `Authorization: Bearer <token>` | the default |
+| header | `X-API-Key: <token>` | tools that reserve `Authorization` for their own auth |
+| query | `?token=<token>` | tools that cannot set a header at all |
 
 Tokens are minted in the UI (`swgp_…`); only a SHA-256 hash is stored. An admin session cookie also authenticates (so the settings page can preview). Turning the API **off** rejects all tokens immediately. `GET /healthz` and `GET /api/v1/health` are unauthenticated liveness probes and expose no secrets.
 
@@ -360,6 +378,9 @@ Tokens are minted in the UI (`swgp_…`); only a SHA-256 hash is stored. An admi
 | `swg_node_rx_bytes_per_second` / `…_tx_…` | gauge | `node`,`name` | per-node throughput |
 | `swg_node_last_seen_timestamp_seconds` | gauge | `node`,`name` | last sync (unix) |
 | `swg_node_cpu_percent` / `_memory_percent` / `_disk_percent` | gauge | `node`,`name` | host health |
+| `swg_node_cpu_max_percent` | gauge | `node`,`name` | busiest single logical CPU |
+| `swg_node_cpu_saturated_cores` | gauge | `node`,`name` | logical CPUs at or above 90% |
+| `swg_node_cpu_iowait_percent` | gauge | `node`,`name` | time waiting on I/O — **not** CPU |
 | `swg_node_uptime_seconds` | gauge | `node`,`name` | host uptime |
 
 **Webhooks.** The panel POSTs a signed JSON body to each configured URL when a subscribed event fires: `peer.added`, `peer.removed`, `node.online`, `node.offline`.
@@ -371,24 +392,28 @@ Tokens are minted in the UI (`swgp_…`); only a SHA-256 hash is stored. An admi
 
 Every delivery carries a signature header so you can verify it came from the panel:
 
-```
+```http
 X-SWG-Signature: sha256=<hex HMAC-SHA256(secret, raw_body)>
 ```
 
 The secret is generated when you add the webhook (shown once). Delivery is best-effort with one retry; node online/offline is derived from sync staleness, so `node.offline` fires when a node misses syncs past the offline window (`NODE_OFFLINE`, 30s). The watcher does **no work at all** when no webhooks are configured.
 
-**Examples:**
+**Examples.** Liveness, no auth:
 
 ```bash
-# liveness (no auth)
 curl -s https://panel.example.com/api/v1/health
+```
 
-# fleet, with a token
+The whole fleet, with a token:
+
+```bash
 curl -s -H 'Authorization: Bearer swgp_…' https://panel.example.com/api/v1/servers | jq
+```
 
-# one node's peers + handshake timing
-curl -s -H 'Authorization: Bearer swgp_…' \
-  https://panel.example.com/api/v1/servers/moscow-1/peers | jq
+One node's peers, with handshake timing:
+
+```bash
+curl -s -H 'Authorization: Bearer swgp_…' https://panel.example.com/api/v1/servers/moscow-1/peers | jq
 ```
 
 Prometheus scrape config:
@@ -405,7 +430,7 @@ scrape_configs:
 
 Uptime Kuma: add an **HTTP(s) - Keyword** monitor on `/api/v1/health`, keyword `"ok"`. Terraform/Ansible: read `/api/v1/servers` and `/api/v1/peers` to discover fleet state for inventory or drift checks (the API is read-only — provision through the panel UI/roster).
 
-Full reference: [`docs/API.md`](docs/API.md).
+Full reference, with a response body for every endpoint: **[API.md](API.md)**.
 
 ## Security
 
@@ -413,7 +438,7 @@ Full reference: [`docs/API.md`](docs/API.md).
 - **Request signing (replay-resistant):** every node→panel request carries `X-SWG-TS` + `X-SWG-MAC` = HMAC-SHA256(the node's `token_sha`, `ts`·sha256(body)); the panel verifies it inside a short time window (rejecting replays) and looks the node up by a per-node `token_sha` index — constant-time, so a bogus token can't force pbkdf2 amplification.
 - **Node tokens** authenticate a node to the panel. They are shown once, stored only as a hash, and can be rotated. Treat the node's `config.json` (which holds the live token) as a secret — it is mode `600`.
 - **PSKs** are generated per peer and stored in the roster so every node stays consistent; keep `/var/lib/swg-panel` readable only by the panel user.
-- **Private keys** are generated in your browser. By default (`store_configs` on) the panel keeps the generated config — private key included — so QR/download stay available; set `store_configs` off for no secrets at rest, and each private key is shown only once at creation. Either way, if a peer's key is lost, re-issue the peer.
+- **Private keys** are generated in your browser and never sent to the panel in the clear. By default (`store_configs: encrypted`) the panel keeps each config as a blob your browser sealed with **your** encryption key, so QR/download stay available while the server cannot read the key; set `store_configs: off` for nothing at rest, and each private key is shown only once at creation. Either way, if a peer's key is lost, re-issue the peer.
 - **API tokens** are read-only and hashed at rest (SHA-256); a leaked token can observe fleet state but never modify it, and disabling the API in **Settings → Integrations** revokes every token immediately.
 
 ## Troubleshooting

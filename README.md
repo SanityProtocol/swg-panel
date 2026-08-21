@@ -48,7 +48,7 @@ subscription and no one else sitting in the middle of your traffic.
 - [Step 2 — Add your servers](#step-2--add-your-servers)
 - [Step 3 — Add users and hand out access](#step-3--add-users-and-hand-out-access)
 - [Using it day to day](#using-it-day-to-day)
-- [Keeping it running](#keeping-it-running) — updates, backups, recovery, switching method, uninstall
+- [Keeping it running](#keeping-it-running)
 - [A few things worth knowing](#a-few-things-worth-knowing)
 - [Learn more](#learn-more)
 - [Special thanks](#special-thanks)
@@ -71,9 +71,12 @@ subscription and no one else sitting in the middle of your traffic.
   apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
 - **WDTT servers.** A whole VPN server that hides inside a VK-video-call-shaped stream. Where a
   turn-proxy fronts a tunnel you already have, a **WDTT** server *is* the tunnel — create it like any
-  other interface, pick one of four forks, and hand people a password instead of a key. Its config
+  other interface, pick one of five forks, and hand people a password instead of a key. Its config
   lands on their subscription page next to everything else, app download included.
-- **Bring what you already have.** Already running WireGuard, AmneziaWG or WDTT on a box by hand? The
+- **csqtt servers too.** The same idea on a newer, faster datapath — create it like any other interface
+  and hand out a password. Note that **csqtt is free for personal use only**; running one commercially
+  needs a licence from its author ([details](THIRD-PARTY.md)).
+- **Bring what you already have.** Already running WireGuard, AmneziaWG, WDTT or csqtt on a box by hand? The
   panel finds those servers and offers to **adopt** them — keys, port, subnet and existing users
   intact, nothing to re-issue and no downtime.
 - **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
@@ -83,7 +86,7 @@ subscription and no one else sitting in the middle of your traffic.
 
 | | |
 |---|---|
-| **Users** — everyone you’ve given access to, at a glance | ![Peers](screenshots/peers.png) |
+| **Peers** — every device you’ve given access to, at a glance | ![Peers](screenshots/peers.png) |
 | **Activity log** — every change, and anything that needs attention | ![Activity log](screenshots/activity-log.png) |
 | **Smart routing** — send chosen sites out through a chosen server | ![Smart routing](screenshots/smart-routing.png) |
 | **Routing lists** — pick a routing mode and manage lists per server | ![Routing lists](screenshots/settings-routing.png) |
@@ -118,8 +121,8 @@ plenty. It should have:
 - **`sudo`/root** access, and a way to paste a command into it (SSH).
 
 That’s it. If you want a domain name (like `vpn.example.com`) you can point it at the server first — the
-installer will get a real HTTPS certificate for it automatically. No domain? It still works with the
-server’s IP address.
+installer will get a real HTTPS certificate for it automatically. No domain? It still works — and if the
+server has a public IP, the installer can get a real certificate for the bare IP as well.
 
 You can add **more servers** later — each extra server is one more command, run the same way.
 
@@ -145,7 +148,7 @@ You can mix freely: a Docker panel with bare-metal servers, and so on.
 Copy the command onto your server and run it. It **asks you a few simple questions** and sets everything
 up, including HTTPS.
 
-```
+```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s
 ```
 
@@ -167,18 +170,25 @@ If you chose **Master** above, you already have your first VPN server — you ca
 **more** servers (called **nodes**), do this for each one:
 
 1. In the panel, open **Nodes → Add node**. It shows you a ready-to-paste command with a key already
-   filled in — one for bare-metal, one for Docker. It looks like this:
+   filled in — one for bare-metal, one for Docker. They look like this.
 
+   For a **bare-metal** server:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node
    ```
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node        # bare-metal
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node # Docker
+
+   For a **Docker** server:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
    ```
 
 2. Run that command on the new server. It asks for your panel’s address and the key (both pre-filled if
    you copied the panel’s command), then connects itself back to the panel. It doesn’t ask you to
    configure any VPN — you do that in the panel, where you can see what you’re doing.
 
-If that server was **already running** WireGuard, AmneziaWG or WDTT, those show up on its page in the
+If that server was **already running** WireGuard, AmneziaWG, WDTT or csqtt, those show up on its page in the
 panel as cards offering **Adopt** or **Ignore**. Adopting takes a server over exactly as it is — same
 keys, same port, same users — so everyone’s existing configs keep working and nothing goes down.
 
@@ -199,9 +209,9 @@ no inbound ports, no SSH keys shared around. Within a few seconds it shows up in
    app on their phone/computer, scans the QR (or imports the file), and they’re online.
 3. Using a **turn-proxy** on that server? Getting its config is just as easy — the panel shows the proxy’s
    address and a **wrap key** to drop into the vk-turn-proxy client app, right alongside the QR.
-4. On a **WDTT** server there’s no key to scan: the person gets a link that opens straight in the WDTT
-   app (or a QR, for the apps that scan one), and the panel points them at the right app for their
-   phone or computer.
+4. On a **WDTT** or **csqtt** server there’s no key to scan: the person gets a link that opens straight
+   in the matching app (or a QR, for the apps that scan one), and the panel points them at the right app
+   for their phone or computer.
 
 That’s the whole flow. The secret half of their key is created in your browser and shown **once** — so
 save/hand over the config there and then. Need to give the same person a second device? Just make another
@@ -230,7 +240,7 @@ before it does anything** and keeps your data safe.
 
 Run this on any server (panel or VPN server) — it figures out what’s installed and updates it in place,
 keeping all your settings and users:
-```
+```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
 ```
 
@@ -250,7 +260,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   (login, certificate, users, servers) — handy if a command got interrupted, or to change an option.
 - **Rebuilding a VPN server?** Run the recovery helper on it and it finds the server’s leftover identity so
   it rejoins your panel **without re-enrolling**:
-  ```
+  ```bash
   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s recovery
   ```
 - **Lost the whole panel box?** Put your saved `/var/lib/swg-panel` folder back on a fresh install and your
@@ -259,11 +269,20 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 ### Switch between bare-metal and Docker
 
 Changed your mind about how a server is installed? You can **convert** it in place, keeping everything.
-Just re-run the installer asking for the *other* method — it offers **convert · keep · abort**:
+Just re-run the installer asking for the *other* method — it offers **convert · keep · abort**.
+
+To move a server **to bare-metal**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master
 ```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master         # → bare-metal
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master  # → Docker
+
+To move it **to Docker**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master
 ```
+
 It stages the new version fully **before** removing the old one, so the switch takes only a few seconds and
 your users barely notice. (A “master” box can convert as a whole, or just its panel half or just its
 server half.)
@@ -273,25 +292,27 @@ server half.)
 Removes swgPanel, asking about **each piece** first (the panel, a VPN server, the VPN software, any
 turn-proxies) — nothing goes without a yes, and you can keep your users/servers data for a future
 reinstall:
-```
+```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s uninstall
 ```
 
 ## A few things worth knowing
 
 - **You decide how private it is.** A person’s keys are always created in your browser. **By default**, the
-  panel keeps a copy of each config (which includes the secret key) so you can re-show its QR code or
-  hand it out again later. Want maximum privacy instead? Flip **one setting** —
-  **Settings → Client configs → off** — and the panel keeps only the public parts (public key, address,
-  preshared key); the secret key is then shown **once** and never stored anywhere.
+  panel keeps each config **encrypted**, locked with an **encryption key that only you hold** — so you can
+  re-show a QR code any time you’re signed in, while the server itself can never read anyone’s secret key.
+  You set that key up once, under **Settings → Client configs**. Want nothing kept at all? Switch the same
+  setting to **off** and the panel keeps only the public parts (public key, address, preshared key); the
+  secret key is then shown **once** and never stored anywhere.
 - **A hiccup won’t lock anyone out.** If the panel is briefly unreachable, your servers keep running with
   the access they already have and catch up on the next check-in.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more
 
-- **[Technical guide (English)](README.technical.md)** — architecture, every install option and flag,
-  Docker by hand, converting, smart routing, the external API, backups & security, and troubleshooting.
+- **[Technical guide](README.technical.md)** — architecture, every install option and flag,
+  Docker by hand, converting, smart routing, backups & security, and troubleshooting.
+- **[External API](API.md)** — the read-only REST surface, Prometheus metrics and webhooks.
 - **[Русский](README.ru.md)** · **[Техническое (RU)](README.technical.ru.md)**
 
 ## Special thanks
