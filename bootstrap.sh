@@ -51,21 +51,36 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   pr="  $p${d:+ [$(col "$C_BLUE" "$sc")]}: "
   while :; do
-    printf '%s' "$pr" 2>/dev/null >/dev/tty   # read -p writes the prompt to stderr (lost if redirected) — print it to the tty ourselves
+    # read -p writes the prompt to stderr (lost if redirected) — print it to the tty ourselves. The redirect
+    # itself FAILS when there is no controlling terminal (`ssh host 'cmd'` without -t, cron, CI), and under
+    # set -e that killed the whole script right here: exit 1, not one word on stdout or stderr. Fall back to
+    # stdout the way _pnl above already does, so the refusal below is what speaks instead.
+    printf '%s' "$pr" 2>/dev/null >/dev/tty || printf '%s' "$pr"
     if read -r v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
+    # REFUSE before the default is applied. This used to sit AFTER `v="${v:-$d}"`, where it could never fire:
+    # $d is always a valid option, so the match loop returned the default and went home. A default that answers
+    # itself is not a fallback but a decision — this is the prompt that picks bare-metal vs docker, master vs
+    # node, and convert-vs-keep-vs-abort on a box that already has an install.
+    [ "$rc" -ne 0 ] && die "no interactive input for '$p' — run this from a terminal (ssh -t), or pass it as a flag (one of: $opts)"
     v="${v:-$d}"
     case "$v" in ''|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] → the Nth option
     for o in $opts; do [ "$v" = "$o" ] || { [ -n "$v" ] && [ "$v" = "${o:0:1}" ]; } && { printf -v "$var" '%s' "$o"; _pnl; return; }; done
-    [ "$rc" -ne 0 ] && die "no interactive input for '$p' — pass it as a flag (one of: $opts)"
     if [ -n "$v" ]; then
       pr="  Can't understand \"$v\". $p${d:+ or press Enter to use the default [$(col "$C_BLUE" "$sc")]}: "
     else
       pr="  $p${d:+ [$(col "$C_BLUE" "$sc")]}: "
     fi
   done; }
-ask_yn(){ local p="$1" d="$2" var="$3" v   # ask_yn <prompt> <y|n default> <var>  → sets var to yes/no
-  printf '%s' "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " 2>/dev/null >/dev/tty
-  read -r v 2>/dev/null </dev/tty || v="$d"; v="${v:-$d}"
+ask_yn(){ local p="$1" d="$2" var="$3" v pr   # ask_yn <prompt> <y|n default> <var>  → sets var to yes/no
+  pr="  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): "
+  printf '%s' "$pr" 2>/dev/null >/dev/tty || printf '%s' "$pr"
+  # Same contract as ask_choice: no terminal ⇒ refuse, never assume. `|| v="$d"` used to live here and was
+  # DEAD CODE — the printf above died first — so simply making that printf non-fatal would have revived it and
+  # answered Y to whatever came first. On a box with an interrupted convert that is "Resume the conversion
+  # now" [Y/n], which exec's convert.sh: an unattended re-run would have resumed a conversion nobody asked to
+  # resume. There is no flag for these, so the only honest remedy is a terminal.
+  read -r v 2>/dev/null </dev/tty || die "no interactive input for '$p' — run this from a terminal (e.g. ssh -t), so it is not answered for you"
+  v="${v:-$d}"
   case "$v" in [Yy]*) printf -v "$var" yes;; *) printf -v "$var" no;; esac; _pnl; }
 
 ACTION=""; METHOD="${METHOD:-}"; ROLE="${ROLE:-}"; ROLE_EXPLICIT=no; HAVE_KEY=no
