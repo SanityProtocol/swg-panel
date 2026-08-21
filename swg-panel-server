@@ -14768,7 +14768,19 @@ def sub_cert_health():
     nag about a file that is legitimately absent. Surfaced in "needs attention" because the failure is
     otherwise invisible from the panel: swg-sub keeps serving plain HTTP on its port and only the SUBSCRIBER
     sees it — as a TLS handshake failure (Cloudflare 525), from a service the panel reports as healthy."""
-    if IN_DOCKER:
+    # Docker used to be excluded outright, and had a reason: the docker root helper no-op'd issue-cert, so
+    # reporting this would have named a problem the panel could not fix. That reason is gone — swg-netctl-docker's
+    # issue-cert verb reuses the panel's cert when it covers the sub host and issues a separate one otherwise —
+    # and the panel already reads THIS path on docker with no guard at all (_apply_sub_worker gates on
+    # _cert_needs_issue(SUB_CERT_PATH, ...) before enqueueing). Detection was the only half still switched off,
+    # so a docker panel handed every subscriber a 525 while reporting the service healthy.
+    #
+    # What docker DOES still need a guard for: ./data/sub-tls was mounted into the PANEL container later than
+    # the sub itself shipped, and update.sh never restages docker-compose.yml. On a panel older than that mount
+    # the path is simply absent, and "no file" there means "cannot see", not "no certificate" — an alert the
+    # button could never clear either, since the docker verb writes the HOST path. No directory ⇒ stay silent,
+    # exactly as today. This can only ever withhold an alert, never invent one.
+    if IN_DOCKER and not os.path.isdir(os.path.dirname(SUB_CERT_PATH)):
         return {}
     try:
         acc = (Handler.deps.get("panel_settings") or {}).get("access") or {}

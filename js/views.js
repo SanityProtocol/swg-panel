@@ -612,7 +612,7 @@ export function serviceIssues() {
                label: T("Subscription certificate"), unit: SVC_UNIT.sub,
                msg: sc.present
                  ? T("the subscription server's certificate doesn't match {v1}", { v1: T("{v1} — subscribers get a TLS error", { v1: sc.domain }) })
-                 : "the subscription server has no certificate for " + T("{v1} — subscribers get a TLS error", { v1: sc.domain }) });
+                 : T("the subscription server has no certificate for {v1}", { v1: T("{v1} — subscribers get a TLS error", { v1: sc.domain }) }) });
   }
   const np = ps.netctl_path, nt = ps.netctl_timer;    // path OR timer covers the helper; collapse to one record
   if (gone(np) || gone(nt))       add("netctl", "warn", "missing", T("Panel URL and address changes can’t be applied until it’s restored"));

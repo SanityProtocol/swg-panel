@@ -3660,6 +3660,7 @@ export const STR = {
   "Users online · {v1}": "Кто в сети · {v1}",
   "val|range": "период",
   "the subscription server's certificate doesn't match {v1}": "сертификат сервера подписок не подходит для {v1}",
+  "the subscription server has no certificate for {v1}": "у сервера подписок нет сертификата для {v1}",
   "{v1} — subscribers get a TLS error": "{v1} — у подписчиков будет ошибка TLS",
   "mode → {v1}": "режим → {v1}",
   "{v1} will briefly drop off the mesh (and any cascade/smart traffic routed through it pauses) until every peer pulls the new config and reconnects — usually a few seconds. Other nodes' links to each other are unaffected.":
