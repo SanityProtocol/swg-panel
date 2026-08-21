@@ -502,9 +502,6 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
    viewport doesn't have, so fall back to a normal scrolling document centred in a column — desktop style. The
    servers still swipe within a peer; the action bar sits inline under each peer. ── */
 @media (orientation: landscape) {
-  /* overflow-anchor:none — the collapsing sticky header (below) changes document height; Firefox's scroll
-     anchoring reacts by re-adjusting scrollY, which fought the user and jumped the page back up. */
-  html, body { overflow-anchor: none; }
   body { height: auto; min-height: 100dvh; overflow-x: hidden; overflow-y: auto; display: block; }
   #app, #peers, .pager { display: block; height: auto; min-height: 0; overflow: visible; }
   .pager { scroll-snap-type: none; }
@@ -539,24 +536,4 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
   .navarrow-l { left: clamp(6px, 4vw, 54px); }
   .navarrow-r { right: clamp(6px, 4vw, 54px); }
 
-  /* ── Scrolled state: collapse the header into a sticky top bar (logo left · username centred · lang/theme
-     right) and float the protocol switch as a vertical rail on the right. Everything animates. ── */
-  .bar { transition: padding .28s ease, background-color .28s ease, box-shadow .28s ease; }
-  .brand, .who { transition: transform .28s ease, font-size .28s ease; }
-  .modebar { transition: transform .3s ease, opacity .25s ease; }
-  body.scrolled .bar {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 30; min-height: 66px;   /* tall enough to vertically centre the lang/theme controls */
-    flex-direction: row; align-items: center; justify-content: flex-start; gap: 0;
-    padding: 0 clamp(104px, 16vw, 170px) 0 clamp(14px, 4vw, 28px);   /* right pad clears the fixed lang/theme controls */
-    background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px); box-shadow: 0 1px 0 var(--line);
-  }
-  body.scrolled .bar .brand-mark { width: 30px; }
-  body.scrolled .bar .who { position: absolute; left: 50%; transform: translateX(-50%); }   /* keep the username's own size */
-  body.scrolled .topctl { z-index: 40; top: 0; height: 66px; align-items: center; }         /* centre the controls on the taller bar */
-  body.scrolled #app { padding-top: 66px; }                             /* clear the fixed bar */
-  body.scrolled .modebar {
-    position: fixed; right: clamp(10px, 2.4vw, 26px); top: 50%; transform: translateY(-50%); z-index: 30;
-    flex-direction: column; width: auto; padding: 0; gap: 12px;
-  }
 }

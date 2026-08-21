@@ -1363,27 +1363,8 @@
       if (b) e.preventDefault();   // don't focus on click; keyboard Tab focus still works
     }, false);
   }
-  var _stickWired = false;
-  function wireStickyHeader() {   // landscape/desktop only: past the fold, collapse the header into a sticky top bar + a side rail
-    if (_stickWired) return; _stickWired = true;
-    var update = function () {
-      var landscape = window.matchMedia && window.matchMedia("(orientation: landscape)").matches;
-      var y = window.scrollY || document.documentElement.scrollTop || 0;
-      // Hysteresis: engage past 90px, release below 40px. Collapsing the header flips .bar to position:fixed and
-      // changes document height; a single hard threshold let that height change re-cross the line and oscillate
-      // (Firefox jumped back up). The dead-band + overflow-anchor:none (CSS) keep it stable.
-      if (!landscape) { document.body.classList.remove("scrolled"); return; }
-      var on = document.body.classList.contains("scrolled");
-      if (!on && y > 90) document.body.classList.add("scrolled");
-      else if (on && y < 40) document.body.classList.remove("scrolled");
-    };
-    window.addEventListener("scroll", update, { passive: true });
-    window.addEventListener("resize", update, { passive: true });
-    update();
-  }
   function wireControls() {
     suppressButtonFocus();
-    wireStickyHeader();
     ensureOsControl();
     var lb = document.getElementById("lang-btn"), tb = document.getElementById("theme-btn");
     if (lb && !lb._wired) { lb._wired = 1; lb.onclick = function () {
