@@ -58,7 +58,7 @@ subscription and no one else sitting in the middle of your traffic.
 
 - **One page to run everything.** Add servers, add users, hand out access — all from the web panel.
 - **Access in a QR code.** Create a person, show them the QR, they scan it in the WireGuard/AmneziaWG app — no fiddly config files to email around.
-- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [samosvalishe](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys.
+- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [samosvalishe](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys. [How to set them up ↓](#subscriptions--access-control)
 - **Suspend access in one click.** Block a person — or just one of their devices — instantly, without deleting them. Their tunnels stop and their subscription page goes dark; unblock to restore with the same keys, nothing to re-issue.
 - **See what’s happening, live.** Who’s online, how much they’re downloading, which servers are busy — updated every few seconds.
 - **Single or multiple servers.** Put servers in different countries; a person can fail over between them.
@@ -222,7 +222,9 @@ peer.
 
 Rather than sending someone a QR every time, give each person **one private link**. It opens a
 phone-friendly page with the config and QR for every server they're on, and it keeps itself up to date —
-put them on another server and it simply appears there.
+put them on another server and it simply appears there. Here's one:
+[WireGuard](screenshots/sub-wireguard.jpg) · [AmneziaWG](screenshots/sub-amneziawg.jpg) ·
+[WINGS-N](screenshots/sub-wings-n.jpg).
 
 **Turn it on** (once, for the whole panel):
 
@@ -231,13 +233,13 @@ put them on another server and it simply appears there.
 2. **Settings → Subscriptions → On.** Switch on **Auto-generate subscription links for new users** if
    you'd like every new person to get one without you asking.
 3. **Settings → Panel URL** — set the address the page is served on. If the panel tells you the
-   subscription server isn't installed, run the update command from
-   [Keeping it running](#keeping-it-running); it installs itself.
+   subscription server isn't installed, re-run the install command from
+   [Step 1](#step-1--install-the-panel) — that adds the missing piece and keeps everything you already have.
 
 **Give someone their link.** Open them under **Users**, press **Enable subscription**, and copy the link.
 Send it however you like — but treat it like a password: whoever holds it holds that person's configs.
 
-**Taking access away.** Two buttons, and the difference matters:
+**Taking access away.** Three controls that look alike and aren't:
 
 - **Block** is the one that actually cuts access — on a person, or on a single device. Their tunnels stop
   within seconds and their page goes dark. **Unblock** puts it all back with the same keys, so there's
