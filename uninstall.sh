@@ -115,6 +115,14 @@ try:
     try: r.read()
     except http.client.IncompleteRead: pass
     sys.exit(0)
+except ConnectionResetError:
+    # Covers http.client.RemoteDisconnected, which subclasses it. The panel removes the node BEFORE it
+    # replies (see the note above), so a connection closed with no status line is the same "it landed"
+    # case as the IncompleteRead handled just above, one step earlier. It was falling through to the
+    # generic handler and reporting "never reached the panel" — while the panel's own event log recorded
+    # 'Node uninstalled — kept for re-install'. Sending the operator to remove a node that is already
+    # gone is worse than saying nothing.
+    sys.exit(2)
 except urllib.error.HTTPError as e:
     if e.code in (200, 404): sys.exit(0)        # removed / already gone
     if 500 <= e.code <= 599: sys.exit(2)        # proxy/gateway error — request reached the panel, node likely dropped
@@ -124,7 +132,7 @@ except Exception as e:
 PY
   case $? in
     0) ok "Panel notified — your peers are KEPT for a re-install (re-enroll with the same token to restore them). To purge for good, use Nodes → remove in the panel.";;
-    2) warn "Panel returned a gateway error — check the Nodes screen.";;
+    2) warn "The panel closed the connection without a reply — it almost certainly ACTIONED the sign-off (it removes the node before responding). Check the Nodes screen to confirm.";;
     *) warn "Couldn't reach the panel; the node will just go offline there (your peers are kept). Remove it from the Nodes screen if you want it gone.";;
   esac
 }
@@ -329,8 +337,15 @@ remove_ifaces(){ local dir="$1" tool="$2" f n addr port
   for f in "$dir"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"
     addr="$(awk -F= 'tolower($1)~/address/{gsub(/[ \t]/,"",$2);split($2,a,",");print a[1];exit}' "$f" 2>/dev/null)"
     port="$(awk -F= 'tolower($1)~/listenport/{gsub(/[ \t]/,"",$2);print $2;exit}' "$f" 2>/dev/null)"
-    if $DRYRUN; then echo "    [dry] down + remove $n"
-    else { command -v "$tool" >/dev/null 2>&1 && "$tool" down "$n"; ip link delete "$n"; } >/dev/null 2>&1 || true; rm -f "$f"; fi
+    if $DRYRUN; then echo "    [dry] down + disable ${tool}@$n + remove $n"
+    else { command -v "$tool" >/dev/null 2>&1 && "$tool" down "$n"; ip link delete "$n"; } >/dev/null 2>&1 || true
+      # DISABLE the unit instance, not just `down` it. Without this the enable symlink in
+      # multi-user.target.wants survives the conf it points at, and once the wg/awg package is removed too
+      # there is no unit file behind it either — systemd then reports `wg-quick@<n>.service not-found failed`
+      # for ever and tries again on every boot. A full uninstall left 36 of these on a test box. swg-agent
+      # already disables the instance on its own delete/stop paths; this is the same call, in the uninstaller.
+      run systemctl disable "${tool}@$n" >/dev/null 2>&1 || true
+      rm -f "$f"; fi
     printf '    %s✓ %s%s%s%s\n' "$(c '0;32')" "$n" "$(c 0)" "${addr:+ · $addr}" "${port:+ · :$port}"
   done; }
 

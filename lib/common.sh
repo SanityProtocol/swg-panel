@@ -465,10 +465,16 @@ lc_teardown_baremetal(){
 # box with no compose install, hits systemd's start-limit, and races the real helper for the panel's address
 # changes. Existence-guarded, so calling it on a box that never had docker is a no-op.
 remove_docker_netctl(){
-  for _u in swg-netctl-docker.timer swg-netctl-docker.service; do
+  # .path BELONGS IN THIS LIST. update.sh writes swg-netctl-docker.path (it superseded the 1s .timer), but this
+  # helper was written before that existed and never caught up — so a docker→bare-metal convert left the .path
+  # ENABLED and ACTIVE, triggering a .service the same call had just deleted. Reproduced converting a master
+  # back: `swg-netctl-docker.service not-found failed`, a permanently broken unit that also masks real failures
+  # in `systemctl --failed`. uninstall.sh already listed all three; this is that fix, applied to the convert.
+  for _u in swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
     systemctl disable --now "$_u" >/dev/null 2>&1 || systemctl stop "$_u" >/dev/null 2>&1 || true
   done
-  rm -f /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+  rm -f /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer \
+        /etc/systemd/system/swg-netctl-docker.path /usr/local/bin/swg-netctl-docker
   systemctl daemon-reload >/dev/null 2>&1 || true; }
 
 # restages cleanly. Used by the bare→docker host/master convert (install-docker.sh, at the atomic switch).
