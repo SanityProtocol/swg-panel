@@ -3379,6 +3379,55 @@ def _wdtt_unit_of_pid(pid, host_ns=False):
     return ""
 
 
+_CTR_NAMES = {"at": 0.0, "map": {}}      # container id -> name; one `docker ps` shared by every candidate
+
+
+def _ctr_name_map(timeout=15):
+    """{full container id: name}, cached on the same TTL as the proc walks — a `docker ps` per candidate per
+    5s snapshot would cost more than the answer is worth."""
+    now = time.time()
+    if now - _CTR_NAMES["at"] < _CTR_IF_TTL:
+        return _CTR_NAMES["map"]
+    m = {}
+    with contextlib.suppress(Exception):
+        r = run(["docker", "ps", "--no-trunc", "--format", "{{.ID}} {{.Names}}"], timeout=timeout)
+        for ln in (r.stdout or "").splitlines():
+            cid, _, nm = ln.strip().partition(" ")
+            if cid and nm.strip():
+                m[cid] = nm.strip()
+    _CTR_NAMES["at"], _CTR_NAMES["map"] = now, m
+    return m
+
+
+def _proc_container(pid):
+    """Name of the container a foreign server runs in, or "" when it runs on the node itself.
+
+    The panel calls an interface ALIEN when another program owns it in its own container, and ORPHAN when it
+    sits on the node and is merely unmanaged — two different things to do about it, so two different words.
+    wg/awg candidates carry `container` and get that right; WDTT and csqtt carried no such field, so every
+    foreign one of them rendered as ORPHAN, including servers plainly running in Docker. That is the case the
+    operator most needs to recognise BEFORE adopting, since taking over a container's server means stopping a
+    container somebody else's tooling will restart.
+
+    Read from the pid's cgroup, the same way _wdtt_unit_of_pid reads its unit — and from the HOST's /proc when
+    the pid lives there (a docker node's host walk). "" on any doubt: unlabelled is better than mislabelled.
+    """
+    if not pid:
+        return ""
+    txt = ""
+    if NODE_KIND == "docker" and not os.path.exists("/proc/%d" % int(pid)):
+        txt = (host_sh("cat /proc/%d/cgroup 2>/dev/null; :" % int(pid), timeout=20).stdout or "")
+    else:
+        with contextlib.suppress(Exception):
+            with open("/proc/%d/cgroup" % int(pid)) as f:
+                txt = f.read()
+    m = re.search(r"[0-9a-f]{64}", txt)
+    if not m:
+        return ""                       # a systemd slice, or nothing recognisable → it is on the node
+    cid = m.group(0)
+    return _ctr_name_map().get(cid) or cid[:12]
+
+
 def _wdtt_flags_host(pid):
     """Flags for ONE pid in the HOST's pid namespace (docker) — the same base64 hand-off as _wdtt_host_procs,
     but never cached: this backs the re-verify taken immediately before we signal, where a stale answer is the
@@ -3859,7 +3908,8 @@ def wdtt_foreign_probe(iface):
                 _p = ln.split()
                 if len(_p) >= 4 and _p[2] == "inet":
                     _wa = _p[3]; break
-    return {"pid": pid, "fork": _wdtt_guess_fork(f.get("_exe") or "", cfg, f, pid), "config_dir": cfg,
+    return {"pid": pid, "container": _proc_container(pid),
+            "fork": _wdtt_guess_fork(f.get("_exe") or "", cfg, f, pid), "config_dir": cfg,
             "listen": f.get("listen") or "", "wg_port": f.get("wg-port") or "", "wg_addr": _wa,
             # Whether the foreign server is ALSO serving raw-IP. Without this the panel adopts it with RAW off
             # and every raw client of that server silently stops connecting, with nothing on screen to say why.
@@ -4516,7 +4566,7 @@ def iface_candidates(node_cfg):
                 # `raw_listen` decides whether adoption carries the server's RAW listener over.
                 ent["wdtt"] = {k: fp[k] for k in ("fork", "config_dir", "listen", "wg_port", "wg_addr",
                                                   "max_passwords", "has_identity", "adoptable", "store",
-                                                  "users", "raw_listen")}
+                                                  "users", "raw_listen", "container")}
                 ent["wdtt_hint"] = True
                 ent["type_hint"] = "wdtt"
                 ent["type_why"] = "a WDTT server (" + (fp.get("fork") or "unknown fork") + ") is running on it"
@@ -8515,6 +8565,9 @@ def csqtt_candidates():
             continue
         users, store_found = _csqtt_store_probe(cfg, pid=pid)
         out.append({"iface": iface, "pid": pid, "config_dir": cfg,
+                    # Which container owns it, "" when it runs on the node — this is what decides ALIEN vs
+                    # ORPHAN in the panel (see _proc_container).
+                    "container": _proc_container(pid),
                     # Could we read its store at all? The panel refuses a silent take-over when we could not:
                     # "no users found" and "we could not look" must not reach the operator as the same sentence.
                     "store_found": store_found,

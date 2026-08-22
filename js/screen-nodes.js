@@ -394,6 +394,10 @@ export function NodeDetail({ node: rawName }) {
           // instant they click, so without this the card would sit unchanged until the next poll quietly
           // removed it, and the click would read as having done nothing.
           const _cop = opTag(name + "|" + cd.name);
+          // ALIEN vs ORPHAN is one question: does another program own this in its own container, or is it just
+          // sitting on the node unmanaged? The node answers it for a RUNNING server (see _proc_container); a
+          // dormant install has no process, so it can only ever be the latter.
+          const wctr = (cd.wdtt || {}).container || "";
           // `blocked` = the node is converting / re-installing / down. Every managed card dims and disables for
           // it; the candidate cards were the exception, still offering an Adopt that the node cannot act on.
           return html`<a class=${"ifcard candidate" + (ig ? " ignored" : "") + ((adopting || blocked || _cop) ? " down" : "") + (blocked ? " locked" : "")} key=${(ig ? "ign:" : "cand:") + cd.name}
@@ -407,8 +411,9 @@ export function NodeDetail({ node: rawName }) {
                 ? _cop
                 : adopting
                 ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
-                : html`<span class=${"tg " + (ig ? "tg-ign" : "tg-cand")} title=${ig ? T("Ignored candidate — Settings-style dismissed; open to Un-ignore") : T("Found on the node — the panel doesn't manage it. Adopt to manage, or Ignore.")}><${Ic} i="warn"/>${ig ? T("tag|ignored") : T("tag|orphan")}</span>`}</div>
+                : html`<span class=${"tg " + (ig ? "tg-ign" : "tg-cand")} title=${ig ? T("Ignored candidate — Settings-style dismissed; open to Un-ignore") : wctr ? T("Another program owns this interface — it runs in its own container") : T("Found on the node — the panel doesn't manage it. Adopt to manage, or Ignore.")}><${Ic} i="warn"/>${ig ? T("tag|ignored") : wctr ? T("tag|alien") : T("tag|orphan")}</span>`}</div>
             <div class="ifcard-rows">
+              ${wctr ? html`<div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${wctr}</span></div>` : null}
               <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${(cd.conf ? cd.conf.replace(/\/[^/]*$/, "") : ((cd.wdtt || {}).config_dir || "")) || html`<span class="faint">—</span>`}</span></div>
               <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${listenAddr(nrec.endpoint_host, cd.listen_port)}</span></div>
               <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${cd.address || "—"}</span></div>
@@ -465,8 +470,9 @@ export function NodeDetail({ node: rawName }) {
               onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptCsqttSheet} node=${name} c=${c}/>`); }}><${Ic} i="plus"/> ${T("Adopt")}</button>`}
             ${taking
               ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
-              : html`<span class="tg tg-cand" title=${T("On the node, not managed by the panel")}><${Ic} i="warn"/>${T("tag|orphan")}</span>`}</div>
+              : html`<span class="tg tg-cand" title=${c.container ? T("Another program owns this interface — it runs in its own container") : T("On the node, not managed by the panel")}><${Ic} i="warn"/>${c.container ? T("tag|alien") : T("tag|orphan")}</span>`}</div>
           <div class="ifcard-rows">
+            ${c.container ? html`<div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${c.container}</span></div>` : null}
             <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${c.config_dir}</span></div>
             <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${c.tun_addr || "—"}</span></div>
