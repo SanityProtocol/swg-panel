@@ -11661,8 +11661,15 @@ def api(method, path, qs, body, deps):
         inst = {"iface": iface, "fork": fork, "adopt_foreign": True, "adopt_at": int(time.time())}
         if idpath:
             inst["identity_path"] = idpath
-        if _dorm:
-            inst["adopt_config_dir"] = _dorm["config_dir"]
+        # Which directory on the node this instance now OWNS. Recorded for the dormant path since it began, but a
+        # take-over of a RUNNING server left it blank — and that is the same install, reached from the other side.
+        # The node reports a config dir as dormant the moment nothing is running out of it, which a take-over
+        # guarantees for a beat while it stops their service and starts ours; with no claim on the dir, the panel
+        # re-offers "Adopt" on the very server it has just adopted, under a card named after the directory. Claim
+        # it from whichever side named it.
+        _claim = (_dorm or {}).get("config_dir") or (_cw.get("config_dir") or "").strip()
+        if _claim:
+            inst["adopt_config_dir"] = _claim
         for k in ("wg_addr", "listen", "title"):
             v = (body.get(k) or "").strip()
             if v:
