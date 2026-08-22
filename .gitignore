@@ -13,6 +13,13 @@ __pycache__/
 # local scratch / notes (never commit)
 scratchpad/
 tasks.txt
+# internal tooling + notes — deliberately NOT published. These lived only in .git/info/exclude, which is
+# local to one clone: a fresh clone of this repo did not have them, so a single `git add -A` there would
+# have pushed them. The rule belongs with the repo, not with one machine's config.
+.campaign/
+docs/
+tests/
+access_harness.py
 # test-harness / screenshot cruft (never commit)
 .playwright-mcp/
 *.png
