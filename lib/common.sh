@@ -423,6 +423,9 @@ _lc_exit(){ local rc=$?                                        # MUST preserve r
   # plaintext — the one place it is ever shown. Leaving that in /tmp until the next reboot is a real
   # credential leak on a shared box. The only consumer is the failure tail just above, so drop it here.
   [ -n "${LC_LOG:-}" ] && rm -f "$LC_LOG" 2>/dev/null || true
+  # Whatever EXIT trap the caller had installed before lc_init took the slot (see lc_init). Run it LAST, once
+  # the lifecycle state is out, and never let it change rc — the caller's exit status is the contract here.
+  [ -n "${LC_ATEXIT:-}" ] && { eval "$LC_ATEXIT"; } >/dev/null 2>&1 || true
   return $rc; }
 lc_init(){ LC_OP="$1"; LC_EMIT="$2"; LC_ABORT=""; LC_HANDOFF=""; LC_DONE=""; LC_SUCCESS=""
   LC_LOG="$(mktemp 2>/dev/null || echo "/tmp/swg-lc.$$")"; : > "$LC_LOG" 2>/dev/null || true
@@ -433,6 +436,14 @@ lc_init(){ LC_OP="$1"; LC_EMIT="$2"; LC_ABORT=""; LC_HANDOFF=""; LC_DONE=""; LC_
     LC_TEE=$!; exec 1>&${LC_TEEFD} 2>&${LC_TEEFD}
   else LC_OUT=""; fi
   trap 'LC_ABORT=1; exit 130' INT TERM HUP                     # user abort → flag + exit → EXIT trap emits "aborted"
+  # Installing an EXIT trap REPLACES whatever was there — bash keeps exactly ONE. update.sh sets one at the top
+  # of the script to clear its run marker and reaches this ~35 lines later, so on every REAL update (LC_TOKEN is
+  # read straight out of the node config / .env, so this arms itself, not just for a panel-triggered run) the
+  # marker was silently orphaned and outlived the process. Adopt the caller's handler instead of discarding it.
+  # Strip trap -p's `trap -- '…' EXIT` wrapper; a handler that itself contains quotes would need more care than
+  # this, and none does. Never adopt our OWN handler — lc_init can run twice on some convert paths.
+  LC_ATEXIT="$(trap -p EXIT)"; LC_ATEXIT="${LC_ATEXIT#trap -- \'}"; LC_ATEXIT="${LC_ATEXIT%\' EXIT}"
+  [ "$LC_ATEXIT" = "_lc_exit" ] && LC_ATEXIT=""
   trap '_lc_exit' EXIT
   lc_emit "$(_lc_inprogress "$LC_OP")"; }                      # step 1 done → signal in-progress now
 
