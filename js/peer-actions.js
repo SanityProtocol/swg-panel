@@ -13,7 +13,7 @@
  */
 
 import { T, Tsplit, plural } from "./i18n.js";
-import { tkey, seen, isPrimaryTarget } from "./util.js";
+import { tkey, seen, isPrimaryTarget, isSelfContainedTarget } from "./util.js";
 import { Store, api, useStore } from "./store.js";
 import { targetType, iTypeOf, ghostIface, ghostPeers, peerSubSources, subHidden, subHides } from "./model.js";
 import { searchMatch, revealAssignedPeer } from "./views.js";
@@ -44,7 +44,11 @@ export async function rotatePeerKeys(peer) {
   let keys, psk, configs;
   try {
     keys = await genKeys(); psk = genPSK(); configs = {};   // rotate BOTH the keypair and the PSK
-    for (const t of peer.targets) {
+    // WG/AWG targets ONLY. A wdtt/csqtt deployment is keyless — no client config to rebuild, and asking
+    // Store.ifaceMeta for its interface answers nothing, which trips the `!m` guard below and aborts the whole
+    // rotation. A legal peer is single-kind, so this filter changes nothing for it; it earns its keep only on a
+    // roster written outside the API, where it stops one impossible target taking the rotation down with it.
+    for (const t of (peer.targets || []).filter(t => !isSelfContainedTarget(t))) {
       const m = Store.ifaceMeta(t.node, t.iface);
       if (!m) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: T("{v1} hasn't reported {v2} yet", { v1: Store.nodeName(t.node), v2: t.iface }), at: Date.now(), node: t.node, iface: t.iface }; Store.apply(); return; }
       const cur = await getConfig(peer.pubkey, t.node, t.iface);
@@ -82,10 +86,20 @@ export function rotateAllUserKeys(user, after) {
       (async () => {
         const oks = await Promise.all(peers.map(async p => {
           try {
-            if (p.csqtt_password) { Store.rotating[p.id] = Date.now(); await api.csqttPeerRotate({ peer_id: p.id }); }  // keyless csqtt peer → new access password
-            else if (p.wdtt_password) { Store.rotating[p.id] = Date.now(); await api.wdttPeerRotate({ peer_id: p.id }); }   // keyless WDTT peer → new WRAP password
-            else await rotatePeerKeys(p);                                                                              // WG/AWG peer → new keypair + PSK
-            return true;
+            // A peer is ONE kind by construction: the TargetPicker locks it to a single kind, and /api/peers/create
+            // refuses a WDTT interface on a WireGuard peer outright. So exactly one of these three fires for any peer
+            // the product can make, and this is identical to the if/else-if/else it replaces. It is written
+            // cumulatively as belt-and-braces for a roster that reached us some other way — a seeded fixture, a
+            // migration, a hand-edit — where the branching form rotated only the FIRST applicable kind and still
+            // reported the whole run done, leaving a peer whose QR never came back (rotatePeerKeys is what rebuilds
+            // the config the card renders).
+            let did = false;
+            if (p.csqtt_password) { await api.csqttPeerRotate({ peer_id: p.id }); did = true; }   // new access password
+            if (p.wdtt_password)  { await api.wdttPeerRotate({ peer_id: p.id });  did = true; }   // new WRAP password
+            // LAST: this one changes the pubkey, and the two above address the peer by id, so order is safe.
+            if ((p.targets || []).some(t => !isSelfContainedTarget(t))) { await rotatePeerKeys(p); did = true; }
+            if (!did) delete Store.rotating[p.id];     // nothing to rotate → don't leave the row spinning
+            return did;
           } catch (_) { return false; }
         }));
         const n = oks.filter(Boolean).length;
@@ -529,7 +543,7 @@ export async function assignPeerToUser(peer, userId) {
   let keys, psk, configs;
   try {
     keys = await genKeys(); psk = genPSK(); configs = {};
-    for (const t of peer.targets) {
+    for (const t of (peer.targets || []).filter(t => !isSelfContainedTarget(t))) {   // keyless kinds have no config — see rotatePeerKeys
       const m = Store.ifaceMeta(t.node, t.iface);
       if (!m) { Store.rowErrors[key] = { msg: T("{v1} hasn't reported {v2} yet", { v1: Store.nodeName(t.node), v2: t.iface }), at: Date.now(), node: t.node, iface: t.iface }; Store.apply(); return; }
       configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: t.ip + "/32", dns: m.dns, mtu: 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk, endpoint: m.endpoint, allowed: "0.0.0.0/0, ::/0", keepalive: 25 });
