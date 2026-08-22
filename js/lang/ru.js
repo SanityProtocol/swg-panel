@@ -1346,6 +1346,7 @@ export const STR = {
   "Bounce this interface's service on the node (down then up)": "Перезапустить службу этого интерфейса на ноде (вниз, затем вверх)",
   "Take this WDTT server down (stays down until started)": "Остановить этот сервер WDTT (останется остановленным до запуска)",
   "Bounce this WDTT server on the node": "Перезапустить этот сервер WDTT на ноде",
+  "Stop + remove this WDTT server and disconnect its users": "Остановить и удалить этот сервер WDTT, отключив его пользователей",
   "Reachable via turn-proxy": "Доступен через turn-прокси",
   // budget-ok: Panel heading, own line
   "Unmanaged on this interface": "Не под управлением на этом интерфейсе",

@@ -392,7 +392,13 @@ lc_emit_post(){ [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ] || return 0
   #     "updated"), so wait ~30s for it to come back — otherwise the tag hangs until PROC_GRACE flips it to a
   #     FALSE "<op> failed". (The panel also self-heals "updating" once the node reports the target version, so
   #     this is belt-and-suspenders.)
-  local _tries; case "$1" in updating|reinstalling|converting-bare|converting-docker|uninstalling) _tries=4;; *) _tries=25;; esac
+  # The same split decides the WORDING: an in-progress state has not "finished" anything, and a *-failed or
+  # *-aborted state must never be announced as done. Both lines below said "this finished" / "the conversion
+  # itself is done" for every op and every outcome — so `bootstrap.sh update` on a box with no install at all
+  # ended its "no swg-panel install found" error with a line claiming a conversion had completed.
+  local _tries _phase; case "$1" in
+    updating|reinstalling|converting-bare|converting-docker|uninstalling) _tries=4; _phase="started";;
+    *) _tries=25; _phase="finished";; esac
   # SAY SO while waiting. This runs from the EXIT trap, i.e. AFTER the completion summary has printed, so a
   # silent 25-retry loop looks exactly like a hang at the very moment the operator has been told it's done —
   # and the run then exits fine, which is more baffling still. One line on the first failure, one on give-up.
@@ -401,10 +407,12 @@ lc_emit_post(){ [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ] || return 0
     auth_curl "$LC_TOKEN" -fsS $ins --max-time 6 -X POST -H "Content-Type: application/json" \
       --data "$data" "${LC_URL%/}/api/node/proc-status" >/dev/null 2>&1 && {
         [ "$_i" -gt 0 ] && echo "    panel reached — status recorded." || true; return 0; }
-    [ "$_i" -eq 0 ] && echo "    telling the panel this finished (it may still be restarting) — up to ${_tries}s…"
+    [ "$_i" -eq 0 ] && echo "    telling the panel this $_phase (it may still be restarting) — up to ${_tries}s…"
     _i=$((_i + 1)); sleep 1
   done
-  echo "    couldn't reach the panel to record the status — the conversion itself is done; the panel corrects the tag on the node's next sync."
+  # Name the state we could not record and stop there. Whether the op succeeded is not this function's news to
+  # break: it only failed to POST, which changes nothing either way about what happened on the box.
+  echo "    couldn't reach the panel to record \"$1\" — the panel corrects the tag on the node's next sync."
   return 0; }
 lc_emit_file(){ local f="${LC_FILE:-}"; [ -n "$f" ] || return 0; mkdir -p "$(dirname "$f")" 2>/dev/null || true
   if [ -n "${2:-}" ]; then printf '%s\n%s\n' "$1" "$2" > "$f" 2>/dev/null || true
