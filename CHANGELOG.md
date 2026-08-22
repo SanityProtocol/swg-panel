@@ -31,6 +31,11 @@ earlier releases predate the changelog — see the git history. · Русски�
   button, and the Russian pages now name the Settings tabs the way the Russian panel does.
 
 ### Fixed
+- **An unattended uninstall no longer throws away the interface keys and peers it offered to keep.** Every
+  keep-by-default question silently resolved to "no" whenever there was no terminal to ask on — so running
+  the uninstaller from a script, a pipe, or a non-interactive connection deleted `data/node-confs`, which is
+  exactly what that prompt promises to leave behind for a future re-install. The same defect also left a
+  container whose interface had been taken over switched off, reporting only "start one by hand".
 - **Re-installing after an uninstall that kept your data no longer leaves the Encryption Vault sealed.** The
   uninstaller keeps `/var/lib/swg-panel` by default but removes the login the vault is wrapped under, so the
   re-install minted a new password the vault could not follow — and the one prompt that accepts your

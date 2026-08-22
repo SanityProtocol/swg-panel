@@ -26,7 +26,13 @@ ask_yn(){ local v p="$1" d="${2:-n}"
   # the obvious FOO=y — the same letter the prompt offers as "Y/n" — was compared against "yes", didn't match, and
   # silently meant NO: an unattended uninstall with PANEL_DATA_DEL=y kept the data it was told to delete.
   if [ -n "${!3:-}" ]; then case "${!3}" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; return; fi
-  if ! { true </dev/tty; } 2>/dev/null; then printf -v "$3" '%s' "$d"; return; fi   # /dev/tty not openable (no controlling terminal) → default, no leaked error
+  # …and so is the DEFAULT taken when there is no terminal. Same defect as the preset path above, one branch
+  # down: this wrote the raw letter, so a default of `y` became "y", every consumer compares against "yes",
+  # and each keep-by-default question silently answered NO. An unattended uninstall therefore DELETED the
+  # interface keys + peers it promises to keep (DOCKER_KEEP_CONFS, KNODE) and left the containers it took an
+  # interface over from switched off (RESTORE_CTRS) — the exact "no server at all" state that prompt exists
+  # to avoid. Normalise it the same way a typed answer is normalised.
+  if ! { true </dev/tty; } 2>/dev/null; then case "$d" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; return; fi
   read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; echo; }   # one trailing blank after the prompt
 # ask_comp <label> — the per-component yes/no (honours --yes); returns 0 = uninstall
