@@ -218,6 +218,8 @@ export const STR = {
     "Нода не смогла его настроить — откройте ошибку, чтобы понять, что делать",
   "the node refused — open the error above": "нода отказала — откройте ошибку выше",
   "tag|alien": "чужой",
+  "its config wasn't published to the subscription — {v1}":
+    "его конфиг не попал в подписку — {v1}",
   "Another program is running this server — taking it over stops it first":
     "Этот сервер запущен другой программой — при перенятии он будет сначала остановлен",
   "tag|failed": "не удалось",

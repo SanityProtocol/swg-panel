@@ -497,7 +497,20 @@ export async function subMaybePublish(userId, peerId, privkey, psk) {
     const unlockKey = await ensureUserUnlockKey(uid);
     if (!unlockKey) return;
     await subEncryptPeer(uid, peerId, privkey, psk, unlockKey);
-  } catch (_) { /* an encryption hiccup must never break the peer flow */ }
+  } catch (e) {
+    // Best-effort stays best-effort: the peer itself is fine and this must never break the flow. But swallowing
+    // it ENTIRELY meant a rotate could report "keys changed" for every peer while the new config never reached
+    // the subscription — the operator saw success, the user's page kept serving the old QR (or "Not ready yet"),
+    // and nothing anywhere said otherwise. Seen for real: subs/blobs left un-writable by root-owned tooling, so
+    // every publish 500'd and the only trace was a console line. Pin it to the peer's row — the same surface
+    // rotatePeerKeys already uses for the failures it can name, auto-expiring like the rest.
+    if (peerId) {
+      Store.rowErrors["peer:" + peerId] = {
+        msg: T("its config wasn't published to the subscription — {v1}", { v1: String((e && e.message) || e) }),
+        at: Date.now() };
+      Store.apply();
+    }
+  }
 }
 // Peers whose publish was SKIPPED while the vault was locked — peer_id → {userId, privkey, psk}. The private key
 // lives ONLY in this tab (never on the server), so this is the one chance to still save it: unlocking the vault
