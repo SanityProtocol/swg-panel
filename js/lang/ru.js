@@ -880,7 +880,8 @@ export const STR = {
   // budget-ok: disclosure summary, own line
   "*{v1}* {v2} · first match wins": "*{v1}* {v2} · срабатывает первое совпадение",
   "Delete interface": "Удалить интерфейс",
-  "Reassigning to ": "Переназначаем на ",
+  "Reassigning to {v1} rotates the peer's keys. The current user loses access immediately and permanently — assigning them back later would still be a brand-new credential.":
+    "Переназначение на {v1} перевыпускает ключи пира. Текущий пользователь теряет доступ немедленно и безвозвратно — даже если вернуть пира ему позже, это будут совершенно новые учётные данные.",
   "Issue a fresh link and invalidate the current one. A config already scanned keeps working until you rekey or remove the peer.":
     "Выпустить новую ссылку и аннулировать текущую. Уже отсканированный конфиг продолжит работать, пока вы не смените ключи или не удалите пира.",
   "This only turns off this user's subscription LINK — the page stops resolving. It does NOT disconnect their peers: existing connections keep working, and a config already scanned keeps working until you rekey or remove the peer. To actually cut this user's access, use Block instead. Re-enabling later issues a fresh link over the same configs.":

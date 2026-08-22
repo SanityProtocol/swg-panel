@@ -493,7 +493,11 @@ export function confirmReassign(peer, userId, back) {
   const toName = to ? to.name : T("the selected user");
   openConfirm({
     title: T("Reassign peer"), confirmLabel: T("Reassign"), danger: true, back,
-    body: T("Reassigning to ") + toName + " rotates the peer's keys. The current user loses access immediately and permanently — assigning them back later would still be a brand-new credential. " + T("{v1} gets a fresh QR / config that must be re-distributed.", { v1: toName }),
+    // ONE sentence per key, with the name as a placeholder. This was three pieces glued together — a key, the
+    // name, then a bare English sentence — so a Russian operator read the irreversible part of an irreversible
+    // action in English. Fragments cannot be translated anyway: the word order moves.
+    body: T("Reassigning to {v1} rotates the peer's keys. The current user loses access immediately and permanently — assigning them back later would still be a brand-new credential.", { v1: toName })
+          + " " + T("{v1} gets a fresh QR / config that must be re-distributed.", { v1: toName }),
     onConfirm: () => assignPeerToUser(peer, userId),
   });
 }
