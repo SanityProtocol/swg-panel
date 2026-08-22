@@ -3544,22 +3544,57 @@ def _listdir_safe(path):
         return []
 
 
-def _wdtt_cfg_probe(cfg):
+def _proc_cfg_root(pid, reader_init="/proc/self"):
+    """Prefix that makes a foreign server's -config-dir resolve the way THAT PROCESS sees it, or "".
+
+    Every WDTT fork and csqtt ship a Docker install, and a containerised server's -config-dir is a path inside
+    ITS filesystem. Reading that path on the host gives one of two wrong answers: nothing there, so the server is
+    reported un-adoptable and the operator is told to point at a key file that is not on the host either — or,
+    far worse, a DIFFERENT install at the same default path. /etc/wdtt is WDTT_CFG_DIRS[0], so any box that has
+    ever run a bare-metal fork collides, and the probe then reports the containerised server as adoptable while
+    carrying the HOST install's wg-keys.dat and password store. Adoption seeds the new server with that identity
+    and breaks every client of BOTH — the same failure the explicit-config-dir guard above exists to prevent,
+    reached from a direction it does not cover, because the path IS explicit; it is just namespace-local.
+
+    /proc/<pid>/root is the process's own root, and for an ordinary host process it IS the host root — so this
+    returns "" there and nothing changes for the case that has always worked. Empty on any doubt (pid gone, a
+    namespace we cannot read): failing safe means behaving exactly as before, never guessing at a path.
+    """
+    if not pid:
+        return ""
+    with contextlib.suppress(Exception):
+        if os.readlink("/proc/%d/ns/mnt" % int(pid)) != os.readlink(reader_init + "/ns/mnt"):
+            return "/proc/%d/root" % int(pid)
+    return ""
+
+
+def _wdtt_cfg_probe(cfg, pid=None):
     """{'id': bool, 'store': str, 'users': [...]} for a config-dir — does it hold an identity (wg-keys.dat),
     which store, and the NON-SECRET rows of that store (never the passwords).
     A FOREIGN server's config-dir lives on the HOST, so on a docker node os.path.isfile() here always says no and
     every foreign WDTT reported adoptable=False. One batched host probe, cached like the proc walk."""
     now = time.time()
-    hit = _WDTT_CFGPROBE.get(cfg)
+    # A CONTAINERISED server's config-dir must be read through its own root (see _proc_cfg_root). "" for every
+    # ordinary host process, so this is a no-op there. On a docker node the pid belongs to the HOST namespace and
+    # is not in our /proc at all — _proc_cfg_root returns "" and the host shell below does the same test itself.
+    _root = _proc_cfg_root(pid)
+    # Key the cache on the RESOLVED path, not the bare dir: a host /etc/wdtt and a container /etc/wdtt are two
+    # different installs that would otherwise share one entry and answer for each other.
+    _ck = (_root, cfg)
+    hit = _WDTT_CFGPROBE.get(_ck)
     if hit and now - hit[0] < _WDTT_HOST_TTL:
         return hit[1]
+    _cfgr = _root + cfg
     if NODE_KIND != "docker":
-        res = {"id": os.path.isfile(os.path.join(cfg, "wg-keys.dat")),
-               "store": ("panel.db" if os.path.isfile(os.path.join(cfg, "panel.db")) else
-                         ("passwords.json" if os.path.isfile(os.path.join(cfg, "passwords.json")) else "")),
-               "users": _wdtt_users_local(cfg), "inbound_ports": _wdtt_inbound_ports_local(cfg),
+        res = {"id": os.path.isfile(os.path.join(_cfgr, "wg-keys.dat")),
+               "store": ("panel.db" if os.path.isfile(os.path.join(_cfgr, "panel.db")) else
+                         ("passwords.json" if os.path.isfile(os.path.join(_cfgr, "passwords.json")) else "")),
+               "users": _wdtt_users_local(_cfgr), "inbound_ports": _wdtt_inbound_ports_local(_cfgr),
                "unit_listen": "", "unit_wg_port": "", "unit_fork": ""}
-        _udir = "/etc/systemd/system"
+        # A containerised server is started by its own compose/entrypoint, never by a unit on this host. Any host
+        # unit naming the same -config-dir belongs to the OTHER install at that path — attributing its ports and
+        # fork to this server is the same mistake as reading its identity. Skip the scan entirely.
+        _udir = "" if _root else "/etc/systemd/system"
         # Per-FILE suppression, not per-scan: /etc/systemd/system is full of dangling symlinks (a stock box has
         # dbus-org.freedesktop.ModemManager1.service pointing at nothing) and .wants directories. With one
         # suppress around the whole loop, the first unreadable entry aborted the scan — so a dormant install
@@ -3593,13 +3628,20 @@ def _wdtt_cfg_probe(cfg):
             # The store rides back base64'd in the SAME batched call — one privileged container per 45s, not
             # one per question. Size-capped: this is a probe, not a backup, and a store big enough to matter is
             # better answered after adoption than by shipping it through a shell.
-            _cmd = (("cd %s 2>/dev/null && { [ -f wg-keys.dat ] && echo id; [ -f panel.db ] && echo panel.db; "
+            # The pid here belongs to the HOST namespace, so _proc_cfg_root could not test it from inside this
+            # container — the host shell does the same comparison itself and prefixes the config-dir when the
+            # server turns out to be containerised (a fork installed via its own compose on the host's docker).
+            # Same rule for the unit scan: skip it whenever a prefix applies, since that server has no host unit.
+            _pfxsh = ("R=''; P=%s; [ -n \"$P\" ] && [ -e /proc/$P/ns/mnt ] && "
+                      "[ \"$(readlink /proc/$P/ns/mnt)\" != \"$(readlink /proc/1/ns/mnt)\" ] && R=/proc/$P/root; "
+                      % shlex.quote(str(int(pid)) if pid else ""))
+            _cmd = _pfxsh + (("cd \"$R\"%s 2>/dev/null && { [ -f wg-keys.dat ] && echo id; [ -f panel.db ] && echo panel.db; "
                      "[ -f passwords.json ] && echo passwords.json; "
                      "for f in passwords.json panel.db panel.db-wal; do [ -f \"$f\" ] || continue; "
                      "[ $(stat -c %%s \"$f\") -gt 8388608 ] && continue; "
                      "printf 'B64:%%s ' \"$f\"; base64 -w0 < \"$f\"; echo; done; }; "
                      # the unit that STARTS this config dir carries the ports a stopped server can't tell us
-                     "for u in /etc/systemd/system/*.service; do [ -f \"$u\" ] || continue; "
+                     "[ -n \"$R\" ] || for u in /etc/systemd/system/*.service; do [ -f \"$u\" ] || continue; "
                      "grep -q -- %s \"$u\" 2>/dev/null || continue; "
                      "printf 'EXEC:'; grep -h '^ExecStart=' \"$u\" | head -1; done; :")
                     % (shlex.quote(cfg), shlex.quote("config-dir " + cfg)))
@@ -3631,7 +3673,7 @@ def _wdtt_cfg_probe(cfg):
                     res["inbound_ports"] = _wdtt_inbound_ports_local(_tmp)
                 finally:
                     shutil.rmtree(_tmp, ignore_errors=True)
-    _WDTT_CFGPROBE[cfg] = (now, res)
+    _WDTT_CFGPROBE[_ck] = (now, res)
     return res
 
 # Flags that only ONE fork's server has, so seeing one in a foreign argv (or in its -h) names the fork outright.
@@ -3642,7 +3684,7 @@ def _wdtt_cfg_probe(cfg):
 _WDTT_FORK_BY_FLAG = (("listen-raw", "qwdtt"), ("listen-direct", "qwdtt"), ("admin-addr", "ildarmaga"), ("no-panel", "wdttplus"))
 
 
-def _wdtt_guess_fork(exe, cfgdir, flags=None):
+def _wdtt_guess_fork(exe, cfgdir, flags=None, pid=None):
     """Best-effort fork id for a FOREIGN WDTT: our own binary path → exact; else a fork-unique flag in its argv;
     else the config-dir layout (panel.db = ildarmaga, passwords.json = amurcanov-family); else the binary's own
     -h signature. Never authoritative — the panel's adopt modal always lets the operator confirm/override it."""
@@ -3658,7 +3700,7 @@ def _wdtt_guess_fork(exe, cfgdir, flags=None):
     # said no. The layout check then fell through, the -h probe below tried to exec a host path that doesn't exist
     # in here, and the fork came back "" — which the panel renders as its DEFAULT, amurcanov. An upstream ildarmaga
     # server was therefore adopted and labelled as a different author's fork.
-    _store = _wdtt_cfg_probe(cfgdir)["store"] if cfgdir else ""
+    _store = _wdtt_cfg_probe(cfgdir, pid)["store"] if cfgdir else ""
     if _store == "panel.db":
         return "ildarmaga"
     # ONE exec, not two: this runs per unmanaged candidate on every 5s snapshot, and `run` blocks — two hung
@@ -3715,7 +3757,10 @@ def _wdtt_live_cfgdirs():
             dirs.add(os.path.realpath(_wdtt_dir(ifn)))
     for _pid, flags in _wdtt_procs():
         cd = (flags.get("config-dir") or "").strip()
-        if cd:
+        # Only a server sharing OUR mount namespace makes a HOST directory live. A containerised fork's
+        # -config-dir names a path inside its own image; treating that as live here silently hid the host's
+        # genuinely dormant install at the same default path from the adoption list.
+        if cd and not _proc_cfg_root(_pid):
             with contextlib.suppress(Exception):
                 dirs.add(os.path.realpath(cd))
     return dirs
@@ -3798,11 +3843,11 @@ def wdtt_foreign_probe(iface):
     cfg = (f.get("config-dir") or "").strip()
     if not cfg:
         for cand in list(WDTT_CFG_DIRS) + [f.get("_cwd") or ""]:
-            if cand and _wdtt_cfg_probe(cand)["id"]:
+            if cand and _wdtt_cfg_probe(cand, pid)["id"]:
                 cfg = cand; break
         else:
             cfg = WDTT_CFG_DIRS[0]
-    probe = _wdtt_cfg_probe(cfg)          # host-aware: a foreign config-dir lives on the HOST, not in this container
+    probe = _wdtt_cfg_probe(cfg, pid)     # host-aware AND namespace-aware: see _proc_cfg_root
     # -wg-addr, like -iface, is OUR flag: the authors' builds compile the subnet in (ildarmaga hardcodes
     # 10.66.66.1/24) and register nothing to read it from. argv therefore yields "" for a genuinely foreign
     # server and adoption refused it — "this server's tunnel subnet isn't an IPv4 CIDR: (none)" — for a value
@@ -3814,7 +3859,7 @@ def wdtt_foreign_probe(iface):
                 _p = ln.split()
                 if len(_p) >= 4 and _p[2] == "inet":
                     _wa = _p[3]; break
-    return {"pid": pid, "fork": _wdtt_guess_fork(f.get("_exe") or "", cfg, f), "config_dir": cfg,
+    return {"pid": pid, "fork": _wdtt_guess_fork(f.get("_exe") or "", cfg, f, pid), "config_dir": cfg,
             "listen": f.get("listen") or "", "wg_port": f.get("wg-port") or "", "wg_addr": _wa,
             # Whether the foreign server is ALSO serving raw-IP. Without this the panel adopts it with RAW off
             # and every raw client of that server silently stops connecting, with nothing on screen to say why.
@@ -8362,7 +8407,7 @@ def _csqtt_users_from_text(raw):
     return out
 
 
-def _csqtt_store_probe(cfgdir, fresh=False):
+def _csqtt_store_probe(cfgdir, fresh=False, pid=None):
     """(users, store_found) for a csqtt config-dir — one of ours or a foreign one.
 
     store_found means we LOCATED AND READ the store. That is deliberately NOT the same question as "does it have
@@ -8375,11 +8420,18 @@ def _csqtt_store_probe(cfgdir, fresh=False):
     if not cfgdir:
         return {}, False
     now = time.time()
-    hit = _CSQTT_STOREPROBE.get(cfgdir)
+    # csqtt ships a Docker install too, and it has NO identity file — the password store IS the whole credential.
+    # Reading a containerised server's -config-dir on the host therefore does not merely mislabel it: adopting on
+    # another install's store at the same path takes over serving THAT store's users and silently drops every user
+    # this server actually had. Read it the way the process sees it (see _proc_cfg_root); "" for a host process.
+    _root = _proc_cfg_root(pid)
+    _ck = (_root, cfgdir)
+    hit = _CSQTT_STOREPROBE.get(_ck)
     if hit and not fresh and now - hit[0] < _WDTT_HOST_TTL:
         return hit[1]
     res = ({}, False)
-    pj = os.path.join(cfgdir, "passwords.json")
+    _cfgr = _root + cfgdir
+    pj = os.path.join(_cfgr, "passwords.json")
     if os.path.isfile(pj):                      # bare metal, or a store mounted into THIS container
         with contextlib.suppress(Exception):
             with open(pj) as f:
@@ -8390,21 +8442,25 @@ def _csqtt_store_probe(cfgdir, fresh=False):
         # An 'F:' prefix reports that the file EXISTS separately from its contents, so an oversized store still
         # answers store_found=True rather than looking like an absent one.
         with contextlib.suppress(Exception):
-            _cmd = ("cd %s 2>/dev/null && { [ -f passwords.json ] || exit 0; printf 'F:'; "
+            # The pid is a HOST pid here, so the host shell applies the same namespace test itself.
+            _pfxsh = ("R=''; P=%s; [ -n \"$P\" ] && [ -e /proc/$P/ns/mnt ] && "
+                      "[ \"$(readlink /proc/$P/ns/mnt)\" != \"$(readlink /proc/1/ns/mnt)\" ] && R=/proc/$P/root; "
+                      % shlex.quote(str(int(pid)) if pid else ""))
+            _cmd = _pfxsh + ("cd \"$R\"%s 2>/dev/null && { [ -f passwords.json ] || exit 0; printf 'F:'; "
                     "[ $(stat -c %%s passwords.json) -le %d ] && base64 -w0 < passwords.json; }; :"
                     % (shlex.quote(cfgdir), _CSQTT_STORE_MAX))
             raw = (host_sh(_cmd, timeout=40).stdout or "").strip()
             if raw.startswith("F:"):
                 b64 = raw[2:].strip()
                 res = ((_csqtt_users_from_text(base64.b64decode(b64).decode("utf-8", "replace")) if b64 else {}), True)
-    _CSQTT_STOREPROBE[cfgdir] = (now, res)
+    _CSQTT_STOREPROBE[_ck] = (now, res)
     return res
 
 
-def _csqtt_adopted_users(cfgdir, fresh=False):
+def _csqtt_adopted_users(cfgdir, fresh=False, pid=None):
     """The users a FOREIGN csqtt server is serving — everything the panel needs to recreate each one as a roster
     peer, and nothing else. See _csqtt_store_probe for how the store is reached on a docker node."""
-    return _csqtt_store_probe(cfgdir, fresh)[0]
+    return _csqtt_store_probe(cfgdir, fresh, pid)[0]
 
 
 def _csqtt_procs():
@@ -8457,7 +8513,7 @@ def csqtt_candidates():
         # our own supervised instances live under CSQTT_ROOT — anything there is managed, not foreign
         if cfg.startswith(CSQTT_ROOT + "/"):
             continue
-        users, store_found = _csqtt_store_probe(cfg)
+        users, store_found = _csqtt_store_probe(cfg, pid=pid)
         out.append({"iface": iface, "pid": pid, "config_dir": cfg,
                     # Could we read its store at all? The panel refuses a silent take-over when we could not:
                     # "no users found" and "we could not look" must not reach the operator as the same sentence.
@@ -8640,7 +8696,13 @@ def reconcile_csqtt(want, remove=None):
                 _src = (inst.get("adopt_config_dir") or "").strip()
                 if not _src:
                     _src = next((c["config_dir"] for c in csqtt_candidates() if c["iface"] == iface), "")
-                _pre = _csqtt_adopted_users(_src, fresh=True) if _src else {}
+                # This is THE destructive read: whatever store it returns becomes the users we recreate, and the
+                # foreign server is stopped straight after. Resolve the serving process so a containerised csqtt is
+                # read inside its own namespace — on the host path we would hand over another install's users and
+                # lose every one of this server's. Falls back to the plain path when no process matches.
+                _spid = next((pid for pid, f in _csqtt_procs()
+                              if ((f.get("iface") or "").strip() or CSQTT_DEFAULT_IFACE) == iface), None)
+                _pre = _csqtt_adopted_users(_src, fresh=True, pid=_spid) if _src else {}
                 if _pre:
                     inst["adopt_users"] = _pre
                     inst["adopt_users_at"] = int(time.time())

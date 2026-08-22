@@ -31,6 +31,12 @@ earlier releases predate the changelog — see the git history. · Русски�
   button, and the Russian pages now name the Settings tabs the way the Russian panel does.
 
 ### Fixed
+- **A WDTT or csqtt server installed in Docker is no longer read as a different install.** Every fork ships a
+  Docker option, and a containerised server's configuration directory is a path inside that container — but the
+  node looked for it on the host. On a machine that had ever run one on bare metal both sit at the same default
+  path, so the panel offered to adopt the containerised server while showing the OTHER install's users, and
+  adopting it would have taken over the wrong identity and password store, breaking every client of both. The
+  node now reads each server's configuration the way that server itself sees it.
 - **An unattended uninstall no longer throws away the interface keys and peers it offered to keep.** Every
   keep-by-default question silently resolved to "no" whenever there was no terminal to ask on — so running
   the uninstaller from a script, a pipe, or a non-interactive connection deleted `data/node-confs`, which is
