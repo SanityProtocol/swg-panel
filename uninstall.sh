@@ -197,6 +197,24 @@ rm_node(){
   if [ -e $SD/swg-noded.service ]; then run systemctl disable --now swg-noded; fi
   run systemctl unmask dnsmasq 2>/dev/null || true   # install masked the distro dnsmasq (node ran its own); restore it
   rmrf $SD/swg-noded.service; run systemctl daemon-reload
+  # An interface TAKEN OVER from somebody else's container came with a promise: their server keeps serving, just
+  # from here instead. Uninstalling ends that — we delete the interface further down — and the container it came
+  # from is still stopped with restart=no, exactly as the take-over left it. Removing swgPanel then leaves the
+  # operator with NO server at all: ours gone, theirs disabled and never told to come back. Capture the pairs now,
+  # while the record still exists; the restore itself is deferred to the end of the run, past the interface
+  # removal, or their container would come back to a port ours is still holding.
+  ADOPTED_CTRS="$(python3 - <<'PY' 2>/dev/null || true
+import json
+try:
+    with open("/etc/swg-agent/config.json") as f:
+        d = json.load(f)
+except Exception:
+    raise SystemExit
+for i, v in (d.get("interfaces") or {}).items():
+    if isinstance(v, dict) and v.get("adopted_from"):
+        print(v["adopted_from"])
+PY
+)"
   rmrf /opt/swg-agent /opt/swg-noded /srv/swg-queue /var/log/swg-agent /var/lib/swg-noded /var/lib/swg-recovery /etc/sudoers.d/swg-agent
   rmrf /etc/swg-agent   # turn-proxy.json here is just a panel-facing record; a kept turn-proxy keeps running
   for u in swgpush swgagent; do if id "$u" >/dev/null 2>&1; then run userdel -r "$u"; fi; done
@@ -795,6 +813,25 @@ if [ "${NEED_NETOBJ_SWEEP:-false}" = true ]; then
   else
     rm_node_netobjects
   fi
+fi
+
+# Containers we TOOK an interface over from (see rm_node). Their server was somebody else's before it was ours,
+# and the take-over stopped it with restart=no on the promise that we would serve it instead. That promise ends
+# here, so put them back the way we found them — after the interfaces above are gone, so the port they bind is
+# free. Default YES: leaving a box with neither our interface nor their container is the one outcome nobody wants.
+if [ -n "${ADOPTED_CTRS:-}" ] && command -v docker >/dev/null 2>&1; then
+  _nc="$(printf '%s\n' "$ADOPTED_CTRS" | grep -c .)"
+  info "$_nc container(s) had an interface taken over by this node — still stopped, as the take-over left them."
+  ask_yn "  Start them again? Without this the box is left with no server at all — ours removed, theirs off." y RESTORE_CTRS
+  if [ "${RESTORE_CTRS:-}" = yes ]; then
+    printf '%s\n' "$ADOPTED_CTRS" | while IFS= read -r _c; do [ -n "$_c" ] || continue
+      docker inspect "$_c" >/dev/null 2>&1 || { info "  $(b "$_c") is gone — nothing to restore"; continue; }
+      run sh -c "docker update --restart=always '$_c' >/dev/null 2>&1 || true"
+      if $DRYRUN; then echo "    [dry] docker start $_c"; continue; fi
+      if docker start "$_c" >/dev/null 2>&1; then ok "restarted $(b "$_c") — its own server is serving again"
+      else warn "  could not start $(b "$_c") — start it by hand: docker start $_c"; fi
+    done
+  else info "  Left stopped — start one by hand with: docker start <name>"; fi
 fi
 
 # Recovery archives from earlier converts/uninstalls (.converted-* / .uninstalled-*). They are OURS, but they are
