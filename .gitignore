@@ -19,6 +19,8 @@ tasks.txt
 .campaign/
 docs/
 tests/
+.claude/settings.local.json
+.claude/settings.local.json.bak
 access_harness.py
 # test-harness / screenshot cruft (never commit)
 .playwright-mcp/
