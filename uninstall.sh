@@ -83,6 +83,14 @@ rm_panel(){
   elif [ -d /var/lib/swg-panel ]; then
     rmrf /var/lib/swg-panel/.ssh /var/lib/swg-panel/configs            # keep the roster; never leave secrets at rest
     ok "Kept /var/lib/swg-panel (users, peers, nodes) for a future re-install"
+    # The vault lives in the dir we just kept; the login it is wrapped under lives in /etc/swg-panel, which we
+    # removed a few lines up. Say so HERE — this is the last moment the operator still has the old password.
+    if [ -f /var/lib/swg-panel/subs/vault.json ]; then
+      sub "  Your Encryption Vault is in there too — but the login it is sealed under is not (that lived in /etc/swg-panel)."
+      sub "  A re-install mints a NEW password, so the panel will ask you to reconnect the vault with the OLD"
+      sub "  password or your encryption key. Keep one of them, or your subscription links and escrowed"
+      sub "  interface keys stay sealed."
+    fi
   fi
   if id swgpanel >/dev/null 2>&1; then run userdel swgpanel; fi
   if id swgsub >/dev/null 2>&1; then run userdel swgsub; fi   # swg-sub's dedicated read-only user

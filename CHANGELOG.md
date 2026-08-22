@@ -31,6 +31,12 @@ earlier releases predate the changelog — see the git history. · Русски�
   button, and the Russian pages now name the Settings tabs the way the Russian panel does.
 
 ### Fixed
+- **Re-installing after an uninstall that kept your data no longer leaves the Encryption Vault sealed.** The
+  uninstaller keeps `/var/lib/swg-panel` by default but removes the login the vault is wrapped under, so the
+  re-install minted a new password the vault could not follow — and the one prompt that accepts your
+  encryption key never appeared, while Settings went on showing a configured vault. Nothing was ever
+  destroyed; the panel now asks you to reconnect it at the next sign-in, with the old password or your
+  encryption key, and the uninstaller says so while you still have that password.
 - **The subscription page could go down exactly when its certificate arrived.** Serving without a
   certificate yet, `swg-sub` waited for the panel to issue one — but the signal that says "it's ready" had
   no handler installed until after that wait, so it killed the process instead. Subscribers went from a TLS

@@ -1395,6 +1395,24 @@ print("%s:pbkdf2_sha256$%d$%s$%s" % (u, it, base64.b64encode(salt).decode(), bas
 PYAUTH
   fi
   chmod 640 "$PREFIX$ETC_DIR/auth" 2>/dev/null || true; run chown root:swg "$ETC_DIR/auth"
+  # A vault that predates the auth file we just minted is wrapped under a password that no longer exists
+  # anywhere, and we cannot re-wrap it — the key only ever lives in the admin's browser. Reached by
+  # uninstall(keep the data dir) -> re-install: the uninstaller takes /etc/swg-panel WITH the auth file but
+  # leaves /var/lib/swg-panel, so this function runs (it is called only when KEEP_AUTH is not yes) while
+  # subs/ still holds the old vault. Nothing is destroyed — the sign-in path refuses to mint over an existing
+  # wrap — but the ONE prompt that accepts the encryption key is gated on this marker, so without it the
+  # operator has nowhere to type the key they were told to keep, and Settings can only reveal that key while
+  # the vault is already open. Safe to drop unconditionally: if the new password happens to open the vault
+  # anyway, the panel re-wraps and clears the marker without troubling anyone.
+  if [ -f "$PREFIX$STATE_DIR/subs/vault.json" ] && [ ! -f "$PREFIX$STATE_DIR/subs/vault.reset" ]; then
+    if $DRYRUN; then echo "    [skip] drop ${STATE_DIR}/subs/vault.reset (an existing vault must be reconnected under the new login)"
+    else
+      printf 'reset\n' > "$PREFIX$STATE_DIR/subs/vault.reset" 2>/dev/null || true   # same one-word marker swg-passwd writes; only its existence is read
+      chmod 640 "$PREFIX$STATE_DIR/subs/vault.reset" 2>/dev/null || true
+      run chown root:swg "$STATE_DIR/subs/vault.reset" 2>/dev/null || true
+      warn "an Encryption Vault from a previous install is still here, wrapped under the OLD panel password. Nothing was lost — at your next sign-in the panel will ask to reconnect it, with that old password or the encryption key you saved."
+    fi
+  fi
   ok "login: $BASIC_USER  (stored hashed in ${ETC_DIR}/auth)"
 }
 cert_perms(){ run chown root:swg "$TLS_DIR/fullchain.pem" "$TLS_DIR/key.pem" 2>/dev/null || true
