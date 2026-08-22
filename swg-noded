@@ -4114,6 +4114,47 @@ _AWG_CONF_KEYS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3"
                   "I1", "I2", "I3", "I4", "I5")
 
 
+# Which container each taken-over interface came from, mirrored OUT of config.json into the node's STATE dir.
+# config.json is authoritative, but on a docker node it lives inside the node container and does not survive a
+# recreate, while the state dir is a bind mount — and the uninstaller runs on the HOST, where it can read
+# neither the container's filesystem nor a container that has already been removed. Same reason
+# _persist_panel_url keeps a copy here. Read by uninstall.sh to put their server back.
+ADOPTED_CTRS_PATH = os.path.join(STATE_DIR, "adopted-containers.json")
+
+
+def _adopted_ctr_load():
+    with contextlib.suppress(Exception):
+        with open(ADOPTED_CTRS_PATH) as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            return {k: v for k, v in d.items() if isinstance(k, str) and isinstance(v, str) and v}
+    return {}
+
+
+def _adopted_ctr_save(m):
+    with contextlib.suppress(Exception):
+        os.makedirs(STATE_DIR, exist_ok=True)
+        tmp = ADOPTED_CTRS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(m, f, indent=1)
+        os.replace(tmp, ADOPTED_CTRS_PATH)
+
+
+def _adopted_ctr_set(iface, container):
+    m = _adopted_ctr_load()
+    if m.get(iface) != container:
+        m[iface] = container
+        _adopted_ctr_save(m)
+
+
+def _adopted_ctr_forget(iface):
+    """The interface is gone, so we no longer owe anyone their container back — drop the claim, or a later
+    uninstall would start a container for an interface this node stopped serving long ago."""
+    m = _adopted_ctr_load()
+    if m.pop(iface, None) is not None:
+        _adopted_ctr_save(m)
+
+
 def container_iface_takeover(container, node_cfg, agent, sudo):
     """Take a wg/awg server over from ANOTHER container: stop it, and stand the SAME server up natively.
 
@@ -4221,6 +4262,7 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
     if not conf:
         return _undo("the agent created %s but returned no config path" % iface)
     node_cfg.setdefault("interfaces", {})[iface] = {"cmd": cmd, "conf": conf, "adopted_from": container}
+    _adopted_ctr_set(iface, container)     # survives a docker node recreate; the uninstaller reads it
     _CTR_IF["at"] = 0.0
     print("container-takeover: %s is ours now (from %s, %d peer(s) to import)"
           % (iface, container, len(r.get("peers") or [])), flush=True)
@@ -5422,6 +5464,7 @@ def delete_ifaces(node_cfg, delete, agent, sudo):
         if not r.get("ok"):
             res["errors"].append(f"{iface}: {r.get('error')}"); continue
         ifaces.pop(iface, None)
+        _adopted_ctr_forget(iface)
         changed = True
         res["deleted"].append(iface)
     if changed:

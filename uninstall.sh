@@ -191,6 +191,41 @@ docker_node_uninstalling(){   # red "uninstalling" tag while a docker node tears
   _proc_post "$url" "$tok" "$verify" uninstalling
 }
 
+# Containers we took an interface over from — see the restore at the end of the run. config.json is the
+# authoritative record, but on a DOCKER node it lives inside the node container and is gone after a recreate,
+# so swg-noded also mirrors the map into its state dir, which is a bind mount the host can always read. Read
+# both and dedupe: whichever exists wins, and a container named twice is started once.
+adopted_ctrs(){ # adopted_ctrs <config.json> <adopted-containers.json>
+  python3 - "$1" "$2" 2>/dev/null <<'PYADOPT' || true
+import json, sys
+out = []
+try:
+    with open(sys.argv[1]) as f:
+        for _i, v in (json.load(f).get("interfaces") or {}).items():
+            if isinstance(v, dict) and v.get("adopted_from"):
+                out.append(v["adopted_from"])
+except Exception:
+    pass
+try:
+    with open(sys.argv[2]) as f:
+        d = json.load(f)
+    if isinstance(d, dict):
+        out += [v for v in d.values() if isinstance(v, str) and v]
+except Exception:
+    pass
+seen = set()
+for c in out:
+    if c and c not in seen:
+        seen.add(c)
+        print(c)
+PYADOPT
+}
+# Append to the run-wide list (a box can carry a bare-metal AND a docker node), keeping it unique.
+capture_adopted(){ local _n
+  _n="$(adopted_ctrs "$1" "$2")"
+  [ -n "$_n" ] && ADOPTED_CTRS="$(printf '%s\n%s\n' "${ADOPTED_CTRS:-}" "$_n" | awk 'NF && !seen[$0]++')"
+  return 0; }
+
 rm_node(){
   info "Removing swg-node (bare-metal entry server)"
   node_goodbye   # signal the panel before we tear down the config it needs
@@ -203,18 +238,7 @@ rm_node(){
   # operator with NO server at all: ours gone, theirs disabled and never told to come back. Capture the pairs now,
   # while the record still exists; the restore itself is deferred to the end of the run, past the interface
   # removal, or their container would come back to a port ours is still holding.
-  ADOPTED_CTRS="$(python3 - <<'PY' 2>/dev/null || true
-import json
-try:
-    with open("/etc/swg-agent/config.json") as f:
-        d = json.load(f)
-except Exception:
-    raise SystemExit
-for i, v in (d.get("interfaces") or {}).items():
-    if isinstance(v, dict) and v.get("adopted_from"):
-        print(v["adopted_from"])
-PY
-)"
+  capture_adopted /etc/swg-agent/config.json /var/lib/swg-noded/adopted-containers.json
   rmrf /opt/swg-agent /opt/swg-noded /srv/swg-queue /var/log/swg-agent /var/lib/swg-noded /var/lib/swg-recovery /etc/sudoers.d/swg-agent
   rmrf /etc/swg-agent   # turn-proxy.json here is just a panel-facing record; a kept turn-proxy keeps running
   for u in swgpush swgagent; do if id "$u" >/dev/null 2>&1; then run userdel -r "$u"; fi; done
@@ -319,6 +343,13 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
   local _ifn _n _c
   _ifn="$(docker exec swg-node sh -c 'for d in /etc/amnezia/amneziawg /etc/wireguard; do ls "$d"/*.conf 2>/dev/null; done' 2>/dev/null | sed 's#.*/##; s#\.conf$##' | tr '\n' ' ')"
   [ -n "$_ifn" ] || _ifn="$(for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] && basename "$_c" .conf; done | tr '\n' ' ')"
+  # Same debt the bare-metal node owes (see rm_node): an interface taken over from somebody else's container
+  # left that container stopped with restart=no. Read the mirror off the bind-mounted state dir, and — for a
+  # take-over that predates the mirror — the container's own config.json while it is still up to be asked.
+  _acfg="$(mktemp 2>/dev/null || echo /tmp/swg-adopted.$$)"
+  docker exec swg-node cat /etc/swg-agent/config.json >"$_acfg" 2>/dev/null || : >"$_acfg"
+  capture_adopted "$_acfg" "$DOCKER_DIR/data/node/adopted-containers.json"
+  rm -f "$_acfg"
   run sh -c 'docker rm -f swg-node >/dev/null 2>&1 || true'
   run sh -c 'ids=$(docker ps -aq --filter name=swg-turn- 2>/dev/null); [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1 || true'   # this node's turn-proxy containers
   docker_node_goodbye                 # sign off AFTER the container is stopped — else its next 5s sync re-reports and clears the panel's "Uninstalled" tag (leaving it merely "offline")
@@ -338,6 +369,9 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
   NEED_NETOBJ_SWEEP=true
   ok "swg-node container removed"; }
 rm_docker_files(){ info "Removing the Docker deployment files ($DOCKER_DIR)"
+  # This component can run without rm_docker_node ever firing, so it owes the same debt: a container we took
+  # an interface over from is still stopped with restart=no. Capture before anything is torn down.
+  capture_adopted /dev/null "$DOCKER_DIR/data/node/adopted-containers.json"
   # The dir-based component doesn't go through rm_docker_node/panel, so tear down ANY swg container here too
   # (incl. compose's "<id>_swg-node" recreate-backups, which is why the node sometimes isn't detected by name).
   ( cd "$DOCKER_DIR" 2>/dev/null && { docker compose down --remove-orphans >/dev/null 2>&1 || docker-compose down --remove-orphans >/dev/null 2>&1; } ) || true
