@@ -95,7 +95,13 @@ export function ifCountPhrase(g) {
   if (g.wdtt && g.wdtt.size) parts.push(T("{v1} WDTT", { v1: g.wdtt.size }));
   if (g.csqtt && g.csqtt.size) parts.push(T("{v1} CSQTT", { v1: g.csqtt.size }));
   const tot = g.wg.size + g.awg.size + (g.wdtt ? g.wdtt.size : 0) + (g.csqtt ? g.csqtt.size : 0);
-  return T("{v1} {v2}", { v1: parts.join(" and ") || "0", v2: pluralWord(tot, "interface") });
+  // Join the way a list is joined, and let the language say it. This was a hard-coded " and " between every
+  // part, which put the only English word left in an otherwise Russian sentence — "3 WireGuard and 7
+  // AmneziaWG and 1 CSQTT интерфейсов" — and read badly in English too once a third kind existed.
+  const phrase = parts.length > 1
+    ? T("{v1} and {v2}", { v1: parts.slice(0, -1).join(", "), v2: parts[parts.length - 1] })
+    : (parts[0] || "0");
+  return T("{v1} {v2}", { v1: phrase, v2: pluralWord(tot, "interface") });
 }
 export function ifTypeLabel(node, iface) {
   const m = Store.ifaceMeta && Store.ifaceMeta(node, iface);
