@@ -3,6 +3,70 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.7.15-beta] — 2026-08-22
+
+### Added
+- **Any connection in two taps on the subscription page** — a device with several servers or proxies used to
+  be a dozen swipes away. Tap the device name, or the new **Connections** button, to get an index of every
+  device on the subscription; tap a device, tap a connection, and the page is already there. Levels with
+  nothing to choose are skipped, and a subscription holding a single config doesn't show the button at all.
+- **An update now tells you when your `docker-compose.yml` is older than the release.** Compose is patched
+  key by key rather than replaced, because it carries settings nothing else records — so anything added to
+  the shipped file reaches only fresh installs. The update now names the difference instead of leaving you
+  to discover it.
+- **THIRD-PARTY notices in Russian**, kept in step with the English page by a check that fails if the two
+  ever disagree.
+
+### Changed
+- **Up and down now feel like left and right on the subscription page.** Moving between devices tracks your
+  finger and lands on exactly one device per swipe, the same way moving between a device's servers always
+  has. A soft swipe used to do nothing at all.
+- **Full-screen hints close on a swipe in either direction**, up or down, following your finger the whole
+  way — let go short of the threshold and the card springs back.
+- **The connection list shows each app's real logo** and each connection's own colour, so you can pick one
+  without reading it.
+- **A blocked or expired device reads more clearly** — room around the status word, and the explanation on
+  two lines.
+- **The published guides were rewritten**: a plain-language subscriptions section, one command per copy
+  button, and the Russian pages now name the Settings tabs the way the Russian panel does.
+
+### Fixed
+- **The subscription page could go down exactly when its certificate arrived.** Serving without a
+  certificate yet, `swg-sub` waited for the panel to issue one — but the signal that says "it's ready" had
+  no handler installed until after that wait, so it killed the process instead. Subscribers went from a TLS
+  error to no server at all, and nothing restarted it.
+- **A Docker panel reported the subscription service healthy while every subscriber got a TLS error.** The
+  certificate check was switched off on Docker, and once switched on it was still discarded before it could
+  be shown. Both halves are fixed.
+- **The certificate alert now offers a remedy that can fix it** — Reissue certificate, rather than "Run
+  update", which reinstalls a service that is already installed and then reports success.
+- **Updating from the command line no longer raises a CRITICAL alert about the AmneziaWG module**, which was
+  true only because the update was rebuilding it — and sat next to a button that started a second update on
+  top of the first. Only one update can now run at a time.
+- **An update no longer leaves its "in progress" marker behind**, which made later runs think one was still
+  going.
+- **Re-running the installer on a master no longer unenrols the rest of the fleet.** Every other node kept
+  syncing, got rejected, and showed as never-enrolled while its peers still pointed at it.
+- **Re-installing a Docker node with a new key no longer locks it out permanently** with "invalid node
+  token" every five seconds.
+- **Taking over an AmneziaVPN container no longer breaks its clients.** The interface was brought up with
+  obfuscation settings the existing clients knew nothing about; handshakes still completed, so the server
+  looked healthy while traffic silently stopped.
+- **Uninstalling gives back a container whose interface was taken over**, on bare metal and on Docker,
+  instead of leaving the machine with no server at all.
+- **Adopting a running WDTT server no longer leaves the panel offering to adopt it again.**
+- **Container discovery stopped asking containers for tools their image doesn't have** — around 1,400
+  failed calls a day on a busy box, burying anything real in the logs.
+- **Uninstalling and converting now disable the units they delete**, instead of leaving a permanently
+  failing service behind.
+- **`bootstrap.sh` says why it stopped** instead of exiting silently when there's no terminal, and no longer
+  risks answering a destructive prompt on your behalf.
+- **A turn proxy is no longer labelled a backup of the tunnel it fronts.** Primary and Backup now compare
+  like with like, and a preferred deployment marked in the panel is finally honoured by the subscription
+  page.
+- **Two more English sentences on a Russian panel** — the irreversible half of the Reassign warning, and the
+  interface breakdown on the Overview.
+
 ## [1.7.14-beta] — 2026-08-21
 
 ### Changed

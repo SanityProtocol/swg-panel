@@ -1,14 +1,14 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.14-beta</code></p>
+<p align="center"><code>1.7.15-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.14-beta** — [full changelog](CHANGELOG.md)
-> - **AmneziaWG installs on Debian and anywhere else, not just Ubuntu** — the installer only knew the Ubuntu-only Amnezia PPA and merely *warned* when it failed, so an install could report success onto a server that could never run AmneziaWG. It now builds from source where packages aren't available, and falls back to the userspace datapath where no kernel module can load.
-> - **Updating heals a node that never got AmneziaWG at all** — the old repair skipped exactly that node ("doesn't use it, nothing to heal"). One update now brings it up to what a fresh install would have given it, and says which datapath it ended on.
-> - **New AmneziaWG interfaces are harder to fingerprint, and the parameters are now yours to set** — five junk-packet definitions instead of one, and the whole grid lives in Settings → Interfaces → Defaults. A blank cell keeps today's behaviour, including a fresh roll per interface so no two share a fingerprint.
-> - **Taking over an AmneziaVPN container is safer and clearer** — an interface is no longer mislabelled WG when it is AmneziaWG, a second container sharing a subnet is refused before anything is stopped, a server's own outbound tunnel is never offered for adoption, and a take-over that cannot succeed no longer stops the server first.
-> - **Statuses stop lying** — a failed create no longer reads "creating" for ever, a peer that never connected is no longer reported as "Restricted", a stuck take-over gives up and says so, and sixteen messages from your nodes are translated.
+> **What's new in 1.7.15-beta** — [full changelog](CHANGELOG.md)
+> - **Any connection in two taps on the subscription page** — tap a device name or the new **Connections** button for an index of the whole subscription, then tap a device and a connection to land straight on it. Moving between devices now tracks your finger and lands on exactly one per swipe, the way moving between a device's servers always has.
+> - **The subscription page could go down exactly when its certificate arrived** — the signal meaning "the certificate is ready" had no handler yet and killed the server waiting to serve it. On Docker the certificate problem was invisible twice over: the check was switched off, and once on it was discarded before it could be shown. The alert now offers Reissue certificate instead of an update that cannot fix it.
+> - **Re-running an installer no longer costs you the fleet** — a master re-install unenrolled every other node, and a Docker node re-installed with a new key locked itself out with "invalid node token" for ever.
+> - **Taking over an AmneziaVPN container no longer breaks its clients** — the interface came up with obfuscation settings they knew nothing about, so the server looked healthy while traffic silently stopped. Uninstalling now gives the container back instead of leaving the machine with no server at all.
+> - **Updating from the command line stopped raising a false CRITICAL** about the AmneziaWG module it was itself rebuilding, next to a button that started a second update on top of the first.
 <!-- WHATS-NEW:END -->
 
 ---
