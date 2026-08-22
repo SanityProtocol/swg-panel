@@ -291,6 +291,7 @@ export const STR = {
   "bad container name": "неверное имя контейнера",
   "at least one csqtt target is required": "нужна хотя бы одна цель csqtt",
   "invalid iface (csqtt0..csqtt9999)": "неверный интерфейс (csqtt0..csqtt9999)",
+  "invalid iface (letters, digits, - and _; max 15)": "неверное имя интерфейса (буквы, цифры, - и _; не длиннее 15)",
   "no free RAW subnet left in 10.70.0.0/16": "в 10.70.0.0/16 не осталось свободных RAW-подсетей",
   "sub_hide must be a list": "sub_hide должен быть списком",
   "tun_addr must be an IPv4 /24 CIDR, e.g. 10.66.67.1/24":

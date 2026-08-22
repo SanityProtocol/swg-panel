@@ -6605,7 +6605,12 @@ CSQTT_ROOT = ("/var/lib/swg-noded/csqtt" if NODE_KIND == "docker"
 CSQTT_BIN_DIR = CSQTT_ROOT + "/.bin"             # per-arch binary slot; our swg-panel-patched build
 CSQTT_OWNER = "amurcanov/csqtt"                  # panel-mirror owner key
 CSQTT_WEBUSER = "swgpanel"                       # csqtt's own admin panel login (node-owned; a strong random pw is minted)
-_CSQTT_NAME_RE = re.compile(r"^csqtt[0-9]{1,4}$")
+# Instance NAME rule, mirroring _WDTT_NAME_RE: permissive on purpose. Names we CREATE are gated to
+# csqtt0..csqtt9999 by the panel; a server we ADOPT arrives with whatever name its operator chose, and a
+# strict pattern here rejected it after the panel had already accepted the take-over — the instance was
+# dropped on every reconcile with nothing on screen to say why. Still narrow enough for the two things the
+# name becomes: a systemd unit name and a path component (no "/", no ".", so no traversal in the rm -rf guard).
+_CSQTT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$")
 # csqtt's STOCK datapath values, for a server we did not deploy. OUR build takes --iface/--tun-addr; the authors'
 # upstream hardcodes them (src/net_setup.rs: TUN_IFACE = "csqtt1", TUN_ADDR = 10.66.67.1/24) and registers no such
 # flags — so a genuinely foreign server has neither in its argv. Same lesson as _wdtt_iface_of: keying the scan on
@@ -7063,7 +7068,7 @@ def _wdtt_maxpw_for(wg_addr, cap=4000):
     return 200
 
 
-def _wdtt_stage_foreign(cfgdir):
+def _wdtt_stage_foreign(cfgdir, pid=None):
     """DOCKER only: copy a FOREIGN WDTT config-dir off the HOST into a container-local staging dir and return that
     path ('' when there is nothing to stage, or on bare-metal where the dir is already reachable).
 
@@ -7074,8 +7079,20 @@ def _wdtt_stage_foreign(cfgdir):
 
     Read-only by construction: tar reads the original and nothing writes back, so an aborted adopt still leaves the
     foreign server serving — the property the copy-first ordering exists to preserve."""
-    if NODE_KIND != "docker" or not cfgdir:
+    if not cfgdir:
         return ""
+    # A CONTAINERISED foreign server's config-dir is a path inside ITS filesystem — /etc/wdtt in the container,
+    # nothing at all on the box. wdtt_foreign_probe already reads it through the server's own root and reports it
+    # adoptable; the take-over then opened the bare path and found nothing, so a server sitting right there was
+    # refused with "no usable server identity". That is the scan-says-yes/executor-says-no split this helper was
+    # written to close, on the axis it did not cover: host-vs-container was handled, container-vs-container was not.
+    # On a BARE-METAL node the server's root is directly readable at /proc/<pid>/root, so hand that path back and
+    # every check and copy2 downstream works unchanged — no staging copy needed, and read-only by construction.
+    # (Safe to hold across the caller: the copy and the SQLite capture both run BEFORE the foreign server is
+    # stopped — the copy-first ordering this whole path is built on.)
+    _root = _proc_cfg_root(pid)
+    if NODE_KIND != "docker":
+        return (_root + cfgdir) if _root else ""
     dst = "/tmp/swg-wdtt-adopt"
     with contextlib.suppress(Exception):
         shutil.rmtree(dst, ignore_errors=True)
@@ -7084,7 +7101,14 @@ def _wdtt_stage_foreign(cfgdir):
         # panel.db-wal / -shm come too: a WAL-mode SQLite store is NOT one file. ildarmaga keeps its users in
         # panel.db, and staging the base file alone captured a stale snapshot whose wdtt_users table had not been
         # checkpointed yet — the adopted server started with an EMPTY user set and rejected every existing client.
-        b64 = (host_sh("tar -C %s -cf - wg-keys.dat passwords.json panel.db panel.db-wal panel.db-shm "
+        # The pid belongs to the HOST namespace here, so _proc_cfg_root could not test it from inside this
+        # container — the host shell runs the same comparison itself and prefixes the dir when the server turns
+        # out to be containerised. Identical idiom to _wdtt_cfg_probe's _pfxsh, so the scan and the take-over
+        # resolve the SAME directory; they disagreeing is exactly the bug.
+        _pfx = ("R=''; P=%s; [ -n \"$P\" ] && [ -e /proc/$P/ns/mnt ] && "
+                "[ \"$(readlink /proc/$P/ns/mnt)\" != \"$(readlink /proc/1/ns/mnt)\" ] && R=/proc/$P/root; "
+                % shlex.quote(str(int(pid)) if pid else ""))
+        b64 = (host_sh(_pfx + "tar -C \"$R\"%s -cf - wg-keys.dat passwords.json panel.db panel.db-wal panel.db-shm "
                        "dtls-cert.pem dtls-key.pem 2>/dev/null | base64 -w0" % shlex.quote(cfgdir), timeout=60).stdout or "").strip()
         if b64:
             with tarfile.open(fileobj=io.BytesIO(base64.b64decode(b64))) as _t:
@@ -7144,8 +7168,18 @@ def _wdtt_adopt_seed(inst):
     # identity", protecting keys that were in fact right there. The scan (host-aware) said adoptable, the executor
     # disagreed. Stage the dir into the container ONCE here, then every check and copy2 below works unchanged on
     # both install methods. Read-only: the foreign original is never touched, so an abort still leaves it serving.
+    # pid drives the namespace resolution, and it must ride with `dormant_src` too: the panel fills
+    # adopt_config_dir from the CANDIDATE for a running server as well (swg-panel-server `_claim`), not only for a
+    # genuinely dormant one — so gating the pid on "no dormant_src" switched the resolution off for exactly the
+    # containerised case it exists to serve, and `src` then read the host directory. On a box that has ever run a
+    # bare-metal fork that path EXISTS and holds a different install's wg-keys.dat, so the adopt succeeded, seeded
+    # the wrong identity, and broke every client of the server it took over — silently, with nothing to see.
+    # (Measured on msk before this line was fixed: ours came up holding the host key, not the container's.)
+    # A real DORMANT adopt has no process, so `pid` is None there anyway and the behaviour is unchanged.
+    # An operator-supplied identity_path is the one path they picked THEMSELVES on the node: no prefix.
     _stage = _wdtt_stage_foreign(os.path.dirname(idpath) if idpath else
-                                 (dormant_src or ((probe or {}).get("config_dir") or "")))
+                                 (dormant_src or ((probe or {}).get("config_dir") or "")),
+                                 pid=(None if idpath else (probe or {}).get("pid")))
     if _stage:
         if idpath:
             idpath = os.path.join(_stage, os.path.basename(idpath))
@@ -7286,6 +7320,26 @@ def _wdtt_adopt_seed(inst):
     _unit = _wdtt_unit_of_pid(probe["pid"], _host_pid)
     if _unit and not _unit.startswith("swg-wdtt-"):        # never our own supervisor
         host_sh("systemctl disable --now " + shlex.quote(_unit) + " >/dev/null 2>&1; :")
+    # A container is the OTHER kind of supervisor, and _wdtt_unit_of_pid cannot see it: every WDTT fork ships a
+    # Docker install, and a foreign server running as its own container reads back as unsupervised. TERM/KILL
+    # against `restart: unless-stopped` brings it straight back, ours never binds the port, and the take-over
+    # times out with "it is still running" — which is exactly what it says, just not why. Same remedy csqtt
+    # already uses: `docker stop`, never `rm` — this is somebody else's container and their data, and stop also
+    # settles the restart policy, the container-level equivalent of the disable above.
+    _cid = _csqtt_container_of(probe["pid"])   # generic cgroup→container-id read, despite the csqtt-era name
+    if _cid:
+        host_sh("docker stop " + shlex.quote(_cid) + " >/dev/null 2>&1; :", timeout=60)
+        _wdtt_hostproc_flush()                 # the walk below must not answer from the pre-stop cache
+        _after = _wdtt_flags_host(probe["pid"]) if _host_pid else _wdtt_cmdline_flags(probe["pid"])
+        if not _wdtt_is_server(_after):
+            # Gone, and we know it. Do NOT fall through to the signals: that pid is free now and may already
+            # belong to something else — and we run as root. Same guard as _csqtt_stop_foreign.
+            with contextlib.suppress(Exception):
+                run(["ip", "link", "delete", "dev", iface])
+            if _host_pid:
+                host_sh("ip link delete dev %s 2>/dev/null; :" % shlex.quote(iface))
+            _WDTT_HOSTPROC["at"] = 0.0
+            return ""
     if _host_pid:
         # TERM, wait up to ~4.5s, then KILL — the same escalation as the local branch, run host-side in one hop.
         _p = int(probe["pid"])

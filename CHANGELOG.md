@@ -36,7 +36,17 @@ earlier releases predate the changelog — see the git history. · Русски�
   node looked for it on the host. On a machine that had ever run one on bare metal both sit at the same default
   path, so the panel offered to adopt the containerised server while showing the OTHER install's users, and
   adopting it would have taken over the wrong identity and password store, breaking every client of both. The
-  node now reads each server's configuration the way that server itself sees it.
+  node now reads each server's configuration the way that server itself sees it. Taking one over reads and stops it the same
+  way: it copies the identity and passwords from inside the container, and stops the container rather than only
+  the process — a container set to restart simply came back, held the port, and the take-over timed out saying
+  the server was still running.
+- **A csqtt server can now be taken over whatever it is called.** Adoption reused the naming rule meant for
+  instances the panel creates, so a server someone else installed was refused with "invalid iface
+  (csqtt0..csqtt9999)" — for a server the panel had just listed as adoptable. Names we choose are still
+  `csqtt0`–`csqtt9999`; a server we adopt keeps the name it already has, exactly as WDTT already did.
+- **A card for an interface owned by a container no longer prints a path that doesn't exist on the node.** It
+  showed both the container and a "Found at" directory, but that directory is inside the container — the
+  container name is the thing you can act on, so it is now shown on its own.
 - **An unattended uninstall no longer throws away the interface keys and peers it offered to keep.** Every
   keep-by-default question silently resolved to "no" whenever there was no terminal to ask on — so running
   the uninstaller from a script, a pipe, or a non-interactive connection deleted `data/node-confs`, which is

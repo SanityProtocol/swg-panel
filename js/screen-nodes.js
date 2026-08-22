@@ -416,8 +416,12 @@ export function NodeDetail({ node: rawName }) {
                 ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
                 : html`<span class=${"tg " + ((ig || alien) ? "tg-ign" : "tg-cand")} title=${ig ? T("Ignored candidate — Settings-style dismissed; open to Un-ignore") : alien ? (wctr ? T("Another program owns this interface — it runs in its own container") : T("Another program is running this server — taking it over stops it first")) : T("Found on the node — the panel doesn't manage it. Adopt to manage, or Ignore.")}><${Ic} i="warn"/>${ig ? T("tag|ignored") : alien ? T("tag|alien") : T("tag|orphan")}</span>`}</div>
             <div class="ifcard-rows">
-              ${wctr ? html`<div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${wctr}</span></div>` : null}
-              <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${(cd.conf ? cd.conf.replace(/\/[^/]*$/, "") : ((cd.wdtt || {}).config_dir || "")) || html`<span class="faint">—</span>`}</span></div>
+              ${/* An ALIEN's path is INSIDE its container: it does not exist on the node, so printing it as "Found at"
+                    points the operator at a directory they cannot open. The container name is the thing they can
+                    act on — show that instead, never both. */
+                wctr
+                ? html`<div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${wctr}</span></div>`
+                : html`<div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${(cd.conf ? cd.conf.replace(/\/[^/]*$/, "") : ((cd.wdtt || {}).config_dir || "")) || html`<span class="faint">—</span>`}</span></div>`}
               <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${listenAddr(nrec.endpoint_host, cd.listen_port)}</span></div>
               <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${cd.address || "—"}</span></div>
               ${/* A WDTT server's accounts are NOT its device peers: the fork programs a kernel peer at CONNECT
@@ -475,8 +479,9 @@ export function NodeDetail({ node: rawName }) {
               ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
               : html`<span class=${"tg " + "tg-ign"} title=${c.container ? T("Another program owns this interface — it runs in its own container") : T("Another program is running this server — taking it over stops it first")}><${Ic} i="warn"/>${T("tag|alien")}</span>`}</div>
           <div class="ifcard-rows">
-            ${c.container ? html`<div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${c.container}</span></div>` : null}
-            <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${c.config_dir}</span></div>
+            ${c.container                        /* container-internal path — see the note on the iface card */
+              ? html`<div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${c.container}</span></div>`
+              : html`<div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${c.config_dir}</span></div>`}
             <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${c.tun_addr || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${(c.users || []).length

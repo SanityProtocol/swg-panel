@@ -1767,6 +1767,13 @@ def _is_wdtt_target(t):
 # node-store-config + roster-derived-password model. Its own reply channel / endpoints (parallel, not threaded
 # through the WDTT path → zero regression). ──────────────────────────────────────────────────────────────────
 _CSQTT_IFACE_RE = re.compile(r"^csqtt[0-9]{1,4}$")   # csqtt instance iface (node writes it as a unit/path component)
+# ADOPTION is the other half of that rule. A csqtt server we did NOT create carries whatever name its operator
+# gave it — `csqfbm2`, `vpn0`, anything — and taking it over was refused with "invalid iface (csqtt0..csqtt9999)"
+# for a server sitting right there in the candidate list, marked adoptable. CREATE stays strict (we choose those
+# names); ADOPT takes the name as found, exactly as WDTT already does via _WDTT_ADOPT_IFACE_RE. Still no "/" or
+# "." — the node builds a unit name and a config path from it. Classification never depends on the name: every
+# target the panel writes carries an authoritative `type` (see _is_csqtt_target).
+_CSQTT_ADOPT_IFACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$")
 def gen_csqtt_password():
     """A csqtt per-peer access password (panel-owned like the PSK; csqtt mints the device keypair keyed on it)."""
     return "".join(secrets.choice(_WDTT_PW_CHARS) for _ in range(16))
@@ -11918,8 +11925,8 @@ def api(method, path, qs, body, deps):
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
         iface = (body.get("iface") or "").strip()
-        if not _CSQTT_IFACE_RE.match(iface):
-            return 400, {"ok": False, "error": "invalid iface (csqtt0..csqtt9999)", "code": "bad_request"}
+        if not _CSQTT_ADOPT_IFACE_RE.match(iface):   # as-found name: see _CSQTT_ADOPT_IFACE_RE
+            return 400, {"ok": False, "error": "invalid iface (letters, digits, - and _; max 15)", "code": "bad_request"}
         if iface in ((nodes[nid].get("csqtt")) or {}):
             return 400, {"ok": False, **perr("this node already manages a csqtt instance on {v1}", v1=iface), "code": "bad_request"}
         # Only ever adopt something the NODE currently reports: a hand-made request must not point us at an
