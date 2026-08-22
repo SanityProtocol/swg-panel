@@ -3829,6 +3829,12 @@ _CTR_IF_TTL = 120                                  # discovery, not reconcile �
 _CTR_IF = {"at": 0.0, "rows": []}
 _CTR_ADOPT = {}          # last container take-over result, reported ONCE so the panel can import + clear
 _OUR_CTRS = ("swg-node", "swg-panel", "swg-sub", "swg-turn-")   # ours; never reported as somebody else's
+# (container ID, tool) pairs where that image simply has no such binary — an mtproxy has neither wg nor awg, and
+# a plain-WireGuard Amnezia container has wg but not awg. Whether a binary exists is fixed for a container's life,
+# but we re-asked every 120s, and each miss is a `docker exec` that can only fail and that dockerd logs as an
+# error: ~700 a day per missing tool, burying the lines that matter. Keyed by container ID, so a recreate (new ID)
+# is probed afresh, and pruned each walk to the containers still running.
+_CTR_NOTOOL = set()
 
 
 def _container_ifaces(timeout=15):
@@ -3858,15 +3864,24 @@ def _container_ifaces(timeout=15):
     with contextlib.suppress(Exception):
         r = run(["docker", "ps", "--format", "{{.ID}}\t{{.Names}}"], timeout=15)
         if r.returncode == 0:
+            _live_ids = set()
             for ln in (r.stdout or "").splitlines():
                 cid, _, name = ln.partition("\t")
                 cid, name = cid.strip(), name.strip()
                 if not cid or name.startswith(_OUR_CTRS):
                     continue
+                _live_ids.add(cid)
                 for tool, proto in (("awg", "awg"), ("wg", "wg")):
+                    if (cid, tool) in _CTR_NOTOOL:   # that image has no such binary — asking again cannot change it
+                        continue
                     with contextlib.suppress(Exception):
                         q = run(["docker", "exec", cid, tool, "show", "interfaces"], timeout=15)
                         if q.returncode != 0:
+                            # "executable file not found in $PATH" is the image telling us it has no such tool —
+                            # a permanent answer, unlike a busy/erroring container, which must stay retryable.
+                            # Both streams: the docker CLI prints this OCI error on stdout, not stderr.
+                            if "executable file not found" in (q.stderr or "") + (q.stdout or ""):
+                                _CTR_NOTOOL.add((cid, tool))
                             continue
                         for ifn in (q.stdout or "").split():
                             if not ifn or any(x["name"] == ifn and x["container"] == name for x in rows):
@@ -3903,6 +3918,8 @@ def _container_ifaces(timeout=15):
                                          # the panel forwards this verbatim; cap it so one very large foreign
                                          # server cannot bloat every snapshot this node posts
                                          "peer_list": plist[:200]})
+            # forget containers that are gone; a recreate gets a new ID and is probed from scratch
+            _CTR_NOTOOL.difference_update({p for p in _CTR_NOTOOL if p[0] not in _live_ids})
     _CTR_IF["at"] = now
     _CTR_IF["rows"] = rows
     return rows
