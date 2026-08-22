@@ -218,6 +218,8 @@ export const STR = {
     "Нода не смогла его настроить — откройте ошибку, чтобы понять, что делать",
   "the node refused — open the error above": "нода отказала — откройте ошибку выше",
   "tag|alien": "чужой",
+  "Another program is running this server — taking it over stops it first":
+    "Этот сервер запущен другой программой — при перенятии он будет сначала остановлен",
   "tag|failed": "не удалось",
   "Took {i} over from container {c} — {n} imported. That container is stopped and will not restart; delete it once you are happy, or start it again to go back.":
     "{i} перенят из контейнера {c} — импортировано: {n}. Тот контейнер остановлен и сам не поднимется; удалите его, когда убедитесь, что всё в порядке, или запустите снова, чтобы вернуться назад.",

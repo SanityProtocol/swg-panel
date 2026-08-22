@@ -142,6 +142,10 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm, c
   useStore();
   const dname = nrec.name || node;
   const wd = !!cand.wdtt_hint;
+  // ALIEN vs ORPHAN is about an OWNER, not about containers: alien = something is running this and taking
+  // it over stops that first; orphan = nothing is running it, so there is nobody to stop. A dormant install
+  // is files on disk and can only ever be the latter.
+  const alien = !dorm && (wd || !!ctr);
   const _adc = (nrec || {}).adopt_container;
   const _ctrPending = !!ctr && !!_adc && typeof _adc === "object" && _adc.container === ctr.container
                       && (!_adc.iface || _adc.iface === ctr.name);
@@ -182,7 +186,7 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm, c
     <div class="detail-head">
       <div class="title"><h1>${title}</h1><span class=${"iftype " + (wd ? "wdtt" : ctr ? (cand.type_hint === "awg" ? "awg" : "wg") : (cand.type_hint === "awg" ? "awg" : "orph"))}>${wd ? "wdtt" : ctr ? (cand.type_hint === "awg" ? "awg" : "wg") : cand.type_hint === "awg" ? "awg?" : "wg?"}</span>
         ${dorm ? html`<${ForkTag} fork=${dorm.fork || "amurcanov"}/><span class="nstat stopped" title=${T("Installed on disk, nothing running")}><${Ic} i="stop"/> ${T("not running")}</span>` : null}
-        <span class=${"tg " + (ignored ? "tg-ign" : "tg-cand")} title=${ignored ? T("Dismissed — the panel isn't managing it") : ctr ? T("Another program owns this interface — it runs in its own container") : T("On the node, not managed by the panel")}><${Ic} i="warn"/>${ignored ? T("tag|ignored") : ctr ? T("tag|alien") : T("tag|orphan")}</span></div>
+        <span class=${"tg " + ((ignored || alien) ? "tg-ign" : "tg-cand")} title=${ignored ? T("Dismissed — the panel isn't managing it") : alien ? (ctr ? T("Another program owns this interface — it runs in its own container") : T("Another program is running this server — taking it over stops it first")) : T("On the node, not managed by the panel")}><${Ic} i="warn"/>${ignored ? T("tag|ignored") : alien ? T("tag|alien") : T("tag|orphan")}</span></div>
       <div class="grow"></div>
     </div>
     <div class="notice warn"><${Ic} i="warn"/><span>${Store.ifaceGone[node + "|" + iface]

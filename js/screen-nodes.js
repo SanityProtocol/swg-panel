@@ -394,10 +394,13 @@ export function NodeDetail({ node: rawName }) {
           // instant they click, so without this the card would sit unchanged until the next poll quietly
           // removed it, and the click would read as having done nothing.
           const _cop = opTag(name + "|" + cd.name);
-          // ALIEN vs ORPHAN is one question: does another program own this in its own container, or is it just
-          // sitting on the node unmanaged? The node answers it for a RUNNING server (see _proc_container); a
-          // dormant install has no process, so it can only ever be the latter.
+          // ALIEN vs ORPHAN is about an OWNER, not about containers: alien = something is running this and
+          // taking it over means stopping that something first; orphan = nothing is running it, so there is
+          // nobody to stop and the panel can simply adopt it. A running WDTT server owns its interface; a bare
+          // unmanaged wg/awg interface is kernel state with no daemon behind it. `wctr` only NAMES the owner
+          // when it happens to be a container — it is not what decides the word.
           const wctr = (cd.wdtt || {}).container || "";
+          const alien = !!cd.wdtt;                    // a server process owns this interface
           // `blocked` = the node is converting / re-installing / down. Every managed card dims and disables for
           // it; the candidate cards were the exception, still offering an Adopt that the node cannot act on.
           return html`<a class=${"ifcard candidate" + (ig ? " ignored" : "") + ((adopting || blocked || _cop) ? " down" : "") + (blocked ? " locked" : "")} key=${(ig ? "ign:" : "cand:") + cd.name}
@@ -406,12 +409,12 @@ export function NodeDetail({ node: rawName }) {
                 title=${wd ? T("A WDTT server is running on it") : cd.type_why ? T("Looks like {v1} — {v2}", { v1: String(cd.type_hint || "wg").toUpperCase(), v2: cd.type_why }) : T("Type not established — you choose it when adopting")}>${wd ? "wdtt" : cd.type_hint === "awg" ? "awg?" : "wg?"}</span><span class="ifname">${cd.name}</span>
               <span class="grow"></span>
               ${(ig || adopting || blocked || _cop) ? null : html`<button class="mi-restore" title=${T("Adopt this interface — choose its type, keys and peers are kept")}
-                onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptIfaceSheet} node=${name} iface=${cd.name} cand=${cd} nrec=${nrec}/>`); }}><${Ic} i="plus"/> ${T("Adopt")}</button>`}
+                onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptIfaceSheet} node=${name} iface=${cd.name} cand=${cd} nrec=${nrec}/>`); }}><${Ic} i="plus"/> ${alien ? T("Take over") : T("Adopt")}</button>`}
               ${_cop
                 ? _cop
                 : adopting
                 ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
-                : html`<span class=${"tg " + (ig ? "tg-ign" : "tg-cand")} title=${ig ? T("Ignored candidate — Settings-style dismissed; open to Un-ignore") : wctr ? T("Another program owns this interface — it runs in its own container") : T("Found on the node — the panel doesn't manage it. Adopt to manage, or Ignore.")}><${Ic} i="warn"/>${ig ? T("tag|ignored") : wctr ? T("tag|alien") : T("tag|orphan")}</span>`}</div>
+                : html`<span class=${"tg " + ((ig || alien) ? "tg-ign" : "tg-cand")} title=${ig ? T("Ignored candidate — Settings-style dismissed; open to Un-ignore") : alien ? (wctr ? T("Another program owns this interface — it runs in its own container") : T("Another program is running this server — taking it over stops it first")) : T("Found on the node — the panel doesn't manage it. Adopt to manage, or Ignore.")}><${Ic} i="warn"/>${ig ? T("tag|ignored") : alien ? T("tag|alien") : T("tag|orphan")}</span>`}</div>
             <div class="ifcard-rows">
               ${wctr ? html`<div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${wctr}</span></div>` : null}
               <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${(cd.conf ? cd.conf.replace(/\/[^/]*$/, "") : ((cd.wdtt || {}).config_dir || "")) || html`<span class="faint">—</span>`}</span></div>
@@ -467,10 +470,10 @@ export function NodeDetail({ node: rawName }) {
           return html`<div class=${"ifcard candidate" + ((taking || blocked) ? " down" : "") + (blocked ? " locked" : "")} key=${"csqcand:" + c.iface}>
           <div class="ifcard-top"><span class="iftype csqtt">CSQTT</span><span class="ifname">${c.iface}</span><span class="grow"></span>
             ${(taking || blocked) ? null : html`<button class="mi-restore" title=${T("Adopt this csqtt server — its users are kept and imported")}
-              onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptCsqttSheet} node=${name} c=${c}/>`); }}><${Ic} i="plus"/> ${T("Adopt")}</button>`}
+              onClick=${e => { e.preventDefault(); e.stopPropagation(); openModal(html`<${AdoptCsqttSheet} node=${name} c=${c}/>`); }}><${Ic} i="plus"/> ${T("Take over")}</button>`}
             ${taking
               ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("Taking it over — the node applies this on its next sync")}/>`
-              : html`<span class="tg tg-cand" title=${c.container ? T("Another program owns this interface — it runs in its own container") : T("On the node, not managed by the panel")}><${Ic} i="warn"/>${c.container ? T("tag|alien") : T("tag|orphan")}</span>`}</div>
+              : html`<span class=${"tg " + "tg-ign"} title=${c.container ? T("Another program owns this interface — it runs in its own container") : T("Another program is running this server — taking it over stops it first")}><${Ic} i="warn"/>${T("tag|alien")}</span>`}</div>
           <div class="ifcard-rows">
             ${c.container ? html`<div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${c.container}</span></div>` : null}
             <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${c.config_dir}</span></div>
@@ -538,7 +541,7 @@ export function NodeDetail({ node: rawName }) {
                       onClick=${e => { e.preventDefault(); e.stopPropagation(); dismissNodeProc(nrec.id); }}><${Ic} i="x"/></button></span>`
                 : _pend(x)
                 ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|taking over")} title=${T("The node does this on its next sync")}/>`
-                : html`<span class="tg tg-ign" title=${T("Another program owns this interface: it runs in its own container, from its own config. swgPanel can see it, but a change made here would be undone the next time that container restarts.")}>${T("tag|alien")}</span>`}</div>
+                : html`<span class="tg tg-ign" title=${T("Another program owns this interface: it runs in its own container, from its own config. swgPanel can see it, but a change made here would be undone the next time that container restarts.")}><${Ic} i="warn"/>${T("tag|alien")}</span>`}</div>
             <div class="ifcard-rows">
               <div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${x.container}</span></div>
               <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${listenAddr(x.host_port ? nrec.endpoint_host : "", x.host_port || x.listen_port)}</span></div>
