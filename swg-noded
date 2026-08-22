@@ -4192,6 +4192,11 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
                                  "subnet": addr, "address": addr,
                                  "listen_port": int(port) if port.isdigit() else 0,
                                  "private_key": priv, "awg_params": awg or None,
+                                 # `awg` is every obfuscation key THEIR conf carried — no more, no less. Whatever
+                                 # it omits, their clients omit too, so the agent must not top it up from our
+                                 # defaults: a server written by an older AmneziaWG has no S3/S4/I1–I5, and adding
+                                 # them still handshakes while dropping every data packet the clients send.
+                                 "awg_params_exact": True,
                                  "mtu": (info.get("mtu") or "").strip() or None})
     if not ag.get("ok"):
         return _undo("could not create %s here: %s" % (iface, ag.get("error")))

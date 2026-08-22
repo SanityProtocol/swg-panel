@@ -685,10 +685,18 @@ def op_create_iface(cfg, req):
         supp = {k: str(supp[k]) for k in AWG_KEYS if supp and str(supp.get(k, "")) != ""} if supp else None
         # A supplied set may be PARTIAL: the panel sends only the fields an operator filled into the defaults and
         # leaves the rest to us. Generate the full set first and overlay what arrived, or a blank field would
-        # vanish from the conf altogether — an awg interface with no S/H is not obfuscated at all. Restore
-        # supplies every key, so overlaying gives back exactly what it sent.
-        _gen = _awg_obfuscation()
-        if supp:
+        # vanish from the conf altogether — an awg interface with no S/H is not obfuscated at all.
+        #
+        # …but ONLY the caller knows which kind of set it sent. A TAKE-OVER reads somebody else's conf and passes
+        # back exactly the keys it found, which for a server built by an older AmneziaWG is Jc/Jmin/Jmax/S1/S2/H1–H4
+        # and nothing else. Filling the rest from _awg_obfuscation() then hands the interface S3/S4 and our fixed
+        # I1–I5 — junk the clients baked into their configs know nothing about. The handshake still completes (it
+        # rides on the keys that DID match), so the server looks healthy and every existing client silently stops
+        # passing data. `awg_params_exact` says "this set is the whole truth": write those keys and invent none.
+        if supp and req.get("awg_params_exact"):
+            body += "".join(f"{k} = {supp[k]}\n" for k in AWG_KEYS if k in supp)
+        elif supp:
+            _gen = _awg_obfuscation()
             _out = []
             for _ln in _gen.splitlines():
                 _k = _ln.split("=")[0].strip()
@@ -697,7 +705,7 @@ def op_create_iface(cfg, req):
             _out += [f"{k} = {supp[k]}" for k in AWG_KEYS if k in supp and k not in _seen]
             body += "\n".join(_out) + "\n"
         else:
-            body += _gen
+            body += _awg_obfuscation()
     write_conf_atomic(conf, body)
     # `wg-quick up <name>` resolves the name against /etc/wireguard and NOWHERE else, so moving the file to the
     # mount would break the bring-up it is supposed to enable. Link the name back into that directory: every
