@@ -1075,11 +1075,44 @@ print(nid)
 PYID
 )"
   [ -n "$LOCAL_NODE_ID" ] || LOCAL_NODE_ID="$HOST_NODE_NAME"
-  writef "$STATE_DIR/nodes.json" 600 <<EOF
-{
-  "${LOCAL_NODE_ID}": { "id": "${LOCAL_NODE_ID}", "name": "${HOST_NODE_NAME}", "color": "${PALETTE[0]}", "endpoint_host": "", "stats_file": "stats-${LOCAL_NODE_ID}.json", "token_hash": "${LOCAL_TOKHASH}", "created": $(date +%s 2>/dev/null || echo 0) }
-}
-EOF
+  # MERGE, never replace. This file is the WHOLE FLEET's node store — every remote entry server's token hash and
+  # per-node settings (routing mode, egress, mesh, WDTT/csqtt instances) live here, and only the local entry is
+  # ours to write. Re-running the installer on a master — a repair, an update-by-reinstall, or a "remove it and
+  # set it up again" — used to write a fresh file holding this box alone, silently unenrolling every other node:
+  # they keep syncing, get 401, show up as never-enrolled, and their peers stop converging. The roster survives,
+  # which makes it worse: the peers are all still there, pointed at nodes the panel no longer knows.
+  # Read to a variable FIRST, write after. Piping straight into writef races: both ends of a pipeline start at
+  # once and writef's `cat > file` truncates the very file python is still reading, so the merge saw an empty
+  # store and "preserved" nothing — the exact bug it exists to prevent, hidden behind a fix that looked right.
+  _NODES_MERGED="$(python3 - "$PREFIX$STATE_DIR/nodes.json" "$LOCAL_NODE_ID" "$HOST_NODE_NAME" "${PALETTE[0]}" "$LOCAL_TOKHASH" <<'PYNODES'
+import json, sys, time
+path, nid, name, color, tokhash = sys.argv[1:6]
+try:
+    d = json.load(open(path))
+    assert isinstance(d, dict)
+except Exception:
+    d = {}
+# An older install may hold THIS box under a different key (a random id from before ids were made stable).
+# Drop that twin, or the panel lists the same server twice and only one of them has the token we just minted.
+for k in [k for k, v in list(d.items()) if isinstance(v, dict) and v.get("name") == name and k != nid]:
+    d.pop(k, None)
+cur = d.get(nid) if isinstance(d.get(nid), dict) else {}
+cur.update({"id": nid, "name": name, "token_hash": tokhash, "stats_file": "stats-%s.json" % nid})
+# token_sha is the fast-lookup index for the PREVIOUS token, and find_node_by_token skips the pbkdf2 fallback
+# for any entry that has one — so keeping it beside a freshly minted token_hash locks the node out for good
+# ("sync HTTP 401: invalid node token", for ever). Drop it; the panel re-indexes on the node's first sync.
+cur.pop("token_sha", None)
+cur.setdefault("color", color)
+cur.setdefault("endpoint_host", "")
+cur.setdefault("created", int(time.time()))
+d[nid] = cur
+json.dump(d, sys.stdout, indent=1)
+PYNODES
+)"
+  # A merge that produced nothing (unreadable python, OOM, …) must not become an empty node store: keep what is
+  # already on disk and let the panel carry on, rather than silently unenrolling the fleet.
+  if [ -n "$_NODES_MERGED" ]; then printf '%s\n' "$_NODES_MERGED" | writef "$STATE_DIR/nodes.json" 600
+  else warn "  could not rebuild nodes.json — leaving the existing node store untouched"; fi
 elif [ ! -f "$PREFIX$STATE_DIR/nodes.json" ]; then
   writef "$STATE_DIR/nodes.json" 600 <<EOF
 {}
