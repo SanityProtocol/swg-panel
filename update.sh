@@ -1001,6 +1001,84 @@ for l in open(f).read().split("\n"):
 open(f,"w").write("\n".join(o))
 PYLG
   fi
+  # 3) …and REPORT whatever the migrations above could not deliver. Every hand-written migration buys exactly
+  #    one key, needs its own anchor into a file whose historical shape varies, and only ever covers a gap
+  #    somebody already noticed. This covers the one nobody has noticed yet: compare what the shipped compose
+  #    OFFERS against what this install HAS, after the migrations have run, and name the difference. It fixes
+  #    nothing — an automatic restage would destroy the state this file carries and nothing else records
+  #    (hand-published bridge ports, a build: block, custom conf mounts) — but a silent gap becomes a visible
+  #    one, on the box where the stale file actually is.
+  if [ -f "$SRC/docker-compose.yml" ]; then
+    _drift="$(python3 - "$SRC/docker-compose.yml" "$DOCKER_DIR/docker-compose.yml" 2>/dev/null <<'PYDRIFT'
+import re, sys
+
+# The installer DISABLES two things by commenting them rather than deleting (host networking): the node's
+# `ports:` / `sysctls:` blocks and their items. Un-comment ONLY those shapes — stripping '#' from every line
+# let a prose comment ("# NOTE: the installer puts the node on ...") mint an env token of its own.
+_UNCOMMENT = (re.compile(r'^(\s*)#\s{0,3}(- .*)$'), re.compile(r'^(\s*)#\s?((?:ports|sysctls):).*$'))
+
+def tokens(text):
+    """What this compose FILE offers -> {token: owning service}."""
+    out, service, in_services = {}, "", False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        for rx in _UNCOMMENT:
+            m = rx.match(line)
+            if m:
+                line = m.group(1) + m.group(2); break
+        if re.match(r'^[a-z-]+:', line):
+            in_services = line.startswith("services:"); service = ""
+            if line.startswith("x-"):
+                out["anchor:" + line.split(":")[0]] = ""
+            continue
+        if in_services and re.match(r'^  [a-z0-9-]+:\s*$', line):
+            service = line.strip().rstrip(":"); out["service:" + service] = service; continue
+        m = re.match(r'^\s{6}([A-Z_][A-Z0-9_]*):\s', line)
+        if m:
+            out["env:" + m.group(1)] = service; continue
+        m = re.match(r'^\s*-\s*"?([^"#]+?)"?\s*(?:#.*)?$', line)
+        if m:
+            v = m.group(1).strip()
+            if re.search(r':\d+(/(udp|tcp))?$', v) or re.search(r'\}:\$?\{?[A-Za-z_]', v):
+                out["port:" + re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}', r'$\1', v).split(":")[-1]] = service
+            elif v.startswith("./") or v.startswith("/"):
+                out["volume:" + (v.split(":")[1] if ":" in v else v)] = service
+            else:
+                out["opt:" + v.split("=")[0].strip()] = service
+            continue
+        m = re.match(r'^\s{4}(security_opt|logging|network_mode|cap_add|devices|sysctls|profiles|restart):', line)
+        if m and service:
+            out["key:%s.%s" % (service, m.group(1))] = service
+    return out
+
+try:
+    ship, inst = (tokens(open(p).read()) for p in sys.argv[1:3])
+except Exception:
+    sys.exit(0)                                   # unreadable either side -> say nothing, never block an update
+missing = {t: o for t, o in ship.items() if t not in inst}
+gone = set(o for t, o in missing.items() if t.startswith("service:"))
+rest = sorted(t for t, o in missing.items() if not t.startswith("service:") and o not in gone)
+if not missing:
+    sys.exit(0)
+print("%d|%s|%s" % (len(gone) + len(rest), ",".join(sorted(gone)), " ".join(rest)))
+PYDRIFT
+)"
+    if [ -n "$_drift" ]; then
+      _dn="${_drift%%|*}"; _rest="${_drift#*|}"; _dsvc="${_rest%%|*}"; _dtok="${_rest#*|}"
+      echo
+      warn "$DOCKER_DIR/docker-compose.yml predates this release — $_dn thing(s) it ships are not in your copy."
+      [ -n "$_dsvc" ] && sub "  missing service(s): $(b "$_dsvc")   (with everything inside them)"
+      [ -n "$_dtok" ] && sub "  also missing: $_dtok"
+      sub "  An update PATCHES this file key by key and cannot add these — they reach fresh installs only."
+      sub "  To restage it, re-run the Docker installer: it re-copies docker-compose.yml and re-applies your .env."
+      sub "  On $(b bridge) networking, re-publish any extra interface UDP ports afterwards — a restage keeps"
+      sub "  only the bootstrap port."
+      # The migrations above are all `! $DRYRUN`-guarded, so on a dry run they have not touched the file and
+      # this list still contains the ones a real update WOULD add. Say so rather than overstate the backlog.
+      $DRYRUN && sub "  (dry-run: the migrations above were skipped, so a real update would already add some of these)"
+      note "docker-compose.yml: $_dn shipped item(s) MISSING (older than this release — re-run the installer to restage)"
+    fi
+  fi
   ensure_netctl_docker "$prof"   # HEAL: install the docker address helper if a panel-bearing host lacks it
   ensure_update_unit_docker "$prof"   # HEAL: install the docker one-click self-update wiring if a panel-bearing host lacks it
   ensure_access_seed                  # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from .env
