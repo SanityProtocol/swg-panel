@@ -71,9 +71,10 @@
       incomplete: "Incomplete link",
       incompleteSub: "This link is missing the part after “#”. Copy the whole URL — the section after the # is what unlocks your configs and it never leaves your device.",
       notFound: "Link not found", notFoundSub: "This subscription doesn’t exist, was revoked, or subscriptions are turned off.",
-      subDisabledSub: "This subscription has been turned off. Please contact your administrator.",
+      subDisabledSub: "This subscription has been turned off\nPlease contact your administrator",
       subBlockedWord: "BLOCKED", subExpiredWord: "EXPIRED",
-      subExpiredSub: "This subscription has expired. Please contact your administrator.",
+      pickDevices: "Your devices", pickOpen: "Jump to any device or connection", close: "Close", connections: "Connections",
+      subExpiredSub: "This subscription has expired\nPlease contact your administrator",
       err: "Something went wrong", errServer: "Couldn’t load this subscription (server error). Please try again later.",
       errNet: "Couldn’t load this subscription. Check your connection and try again.",
       errResp: "The server returned an unexpected response.",
@@ -118,8 +119,8 @@
       clientCmd: "Команда клиента", generating: "Генерация…", qrTooBig: "конфиг слишком большой для QR",
       cantGen: "не удалось сгенерировать ссылку", tapCopy: "Нажмите, чтобы скопировать",
       vkAddApp: "Добавьте эту ссылку на звонок VK в {app}", vkAddFork: "Добавьте эту ссылку на звонок VK в приложении",
-      backup: "Запасной",
-      vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Создайте звонок VK и добавьте ссылку vk.ru/call/join/… в {app}", theApp: "приложении",
+      backup: "Резерв",
+      vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Добавьте ссылку vk.ru/call/join/… в {app}", theApp: "приложение",   /* accusative — every {app} slot that falls back to it takes one — «в приложение», «Открыть приложение», «Установить приложение» */
       rawT: "Доступен быстрый режим", rawD: "В настройках приложения укажите RAW-порт {port} и режим подключения RAW — они хранятся там, а не в этой ссылке. Работает без WireGuard.",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
       outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
@@ -129,9 +130,10 @@
       incomplete: "Неполная ссылка",
       incompleteSub: "В ссылке отсутствует часть после «#». Скопируйте URL целиком — часть после # разблокирует ваши конфиги и никогда не покидает ваше устройство.",
       notFound: "Ссылка не найдена", notFoundSub: "Эта подписка не существует, была отозвана или подписки отключены.",
-      subDisabledSub: "Эта подписка отключена. Обратитесь к администратору.",
+      subDisabledSub: "Эта подписка отключена\nОбратитесь к администратору",
       subBlockedWord: "ЗАБЛОКИРОВАНО", subExpiredWord: "ИСТЕКЛО",
-      subExpiredSub: "Срок действия этой подписки истёк. Обратитесь к администратору.",
+      pickDevices: "Ваши устройства", pickOpen: "Перейти к любому устройству или подключению", close: "Закрыть", connections: "Подключения",
+      subExpiredSub: "Срок действия этой подписки истёк\nОбратитесь к администратору",
       err: "Что-то пошло не так", errServer: "Не удалось загрузить подписку (ошибка сервера). Попробуйте позже.",
       errNet: "Не удалось загрузить подписку. Проверьте соединение и попробуйте снова.",
       errResp: "Сервер вернул неожиданный ответ.",
@@ -491,8 +493,13 @@
   // OTHER means (×/Esc/backdrop/outside) pops that entry itself (disarmOverlayBack) so history stays balanced. Only one
   // hint is open at a time, and a transition (choice → walkthrough) REUSES the one entry (arm is idempotent) — no churn.
   var _ovArmed = false;
-  function closeAllHints() { clearFit(); closeImportHint(); closePasteHint(); closeWgTurnHint(); closeLinkImportHint(); closeVktgzChoice(); closeVktgzHint(); closeCliHint(); }
+  function closeAllHints() { clearFit(); closeImportHint(); closePasteHint(); closeWgTurnHint(); closeLinkImportHint(); closeVktgzChoice(); closeVktgzHint(); closeCliHint(); closeConfigPicker(); }
   function _ovOnPop() { _ovArmed = false; window.removeEventListener("popstate", _ovOnPop); closeAllHints(); }
+  // This page owns its scroll position (the pager in portrait, the document in landscape) and the only history
+  // entries it ever pushes are the overlay ones. Leaving restoration on `auto` meant closing an overlay ran a
+  // history.back() whose scroll restore snapped the document back to wherever the entry was pushed — which
+  // silently undid the picker's jump in the landscape/desktop layout, where the jump IS the document scroll.
+  try { if ("scrollRestoration" in history) history.scrollRestoration = "manual"; } catch (_) {}
   function armOverlayBack() {
     if (_ovArmed) return;
     try { history.pushState({ swgOv: 1 }, ""); } catch (_) { return; }
@@ -528,7 +535,19 @@
     var k = Math.min(availW / nw, availH / nh, CEIL);
     if (k < FLOOR) k = FLOOR;
     inner.style.transformOrigin = "center center";
-    inner.style.transform = (k > 0.995 && k < 1.005) ? "none" : "scale(" + k.toFixed(3) + ")";
+    inner._fitK = k;
+    paintCard(inner);
+  }
+  // The card's transform is shared: the fit owns the SCALE, a dismiss-swipe owns the OFFSET. Compose them here
+  // so a drag can't wipe out the fit (and a re-fit mid-drag can't snap the card back under the finger).
+  function paintCard(inner, dy) {
+    var k = (inner._fitK == null) ? 1 : inner._fitK;
+    if (dy == null) dy = inner._dragY || 0;
+    inner._dragY = dy;
+    var parts = [];
+    if (dy) parts.push("translateY(" + Math.round(dy) + "px)");
+    if (!(k > 0.995 && k < 1.005)) parts.push("scale(" + k.toFixed(3) + ")");
+    inner.style.transform = parts.length ? parts.join(" ") : "none";
   }
   function clearFit() { if (_fitRO) { try { _fitRO.disconnect(); } catch (_) {} _fitRO = null; } _fitInner = null; }
   function openFit(inner) {
@@ -538,21 +557,179 @@
     if (window.ResizeObserver) { _fitRO = new ResizeObserver(function () { fitOverlay(inner); }); try { _fitRO.observe(inner); } catch (_) {} }
   }
   window.addEventListener("resize", function () { if (_fitInner) fitOverlay(_fitInner); });
-  // Swipe DOWN on a full-screen hint closes it (a natural "dismiss sheet" gesture). Tracks a mostly-vertical drag past a
-  // threshold; horizontal drags (pager swipes) and taps are ignored.
-  function attachSwipeDown(ov, onClose) {
-    var y0 = 0, x0 = 0, tracking = false;
+  // Swipe UP **or** DOWN on a full-screen overlay dismisses it — whichever way the thumb already happens to be
+  // going. The card TRACKS THE FINGER the whole way and the backdrop fades with it, so the gesture is visibly
+  // reversible: let go short of the threshold and it springs back; past it, the card carries on off the edge it
+  // was heading for and the overlay closes behind it. (It used to be a downward flick only, decided on release,
+  // with nothing moving in between.) Horizontal drags are ignored — that's the pager's axis — and a drag that
+  // starts inside a scrollable list belongs to the list until the list runs out of scroll in that direction.
+  function attachSwipeClose(ov, onClose, card) {
+    var x0 = 0, y0 = 0, t0 = 0, dyNow = 0, own = false, axis = null, inner = null, scroller = null;
+    function scrollerUnder(node) {
+      for (var n = node; n && n !== ov; n = n.parentNode) {
+        if (n.scrollHeight > n.clientHeight + 2 && /auto|scroll/.test(getComputedStyle(n).overflowY)) return n;
+      }
+      return null;
+    }
+    function paint(dy) {
+      dyNow = dy;
+      if (inner) paintCard(inner, dy);
+      ov.style.opacity = String(Math.max(0.2, 1 - Math.abs(dy) / 420));
+    }
+    function anim(on) {
+      if (inner) inner.style.transition = on || "";
+      ov.style.transition = on ? "opacity .2s linear" : "";
+    }
     ov.addEventListener("touchstart", function (e) {
-      if (e.touches.length !== 1) { tracking = false; return; }
-      tracking = true; y0 = e.touches[0].clientY; x0 = e.touches[0].clientX;
+      if (e.touches.length !== 1) { own = false; return; }
+      inner = card || ov.querySelector(".ih-inner, .qz-inner, .cp-panel");
+      scroller = scrollerUnder(e.target);
+      x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
+      axis = null; own = true; anim("");
     }, { passive: true });
-    ov.addEventListener("touchend", function (e) {
-      if (!tracking) return;
-      tracking = false;
-      var t = (e.changedTouches && e.changedTouches[0]) || null; if (!t) return;
-      var dy = t.clientY - y0, dx = t.clientX - x0;
-      if (dy > 70 && dy > Math.abs(dx) * 1.5) onClose();   // clear downward flick
+    ov.addEventListener("touchmove", function (e) {
+      if (!own) return;
+      var dx = e.touches[0].clientX - x0, dy = e.touches[0].clientY - y0;
+      if (axis === null) {
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;             // still inside the tap slop
+        if (Math.abs(dx) > Math.abs(dy)) { own = false; return; }     // horizontal → not a dismiss
+        if (scroller &&                                              // the list can still scroll this way → it keeps the gesture
+            ((dy < 0 && scroller.scrollTop < scroller.scrollHeight - scroller.clientHeight - 1) ||
+             (dy > 0 && scroller.scrollTop > 1))) { own = false; return; }
+        axis = "v";
+      }
+      e.preventDefault();                                            // the card follows the finger, nothing else moves
+      paint(dy);
+    }, { passive: false });
+    ov.addEventListener("touchend", function () {
+      if (!own || axis !== "v") { own = false; return; }
+      own = false;
+      var vel = Math.abs(dyNow) / Math.max(1, Date.now() - t0);
+      if (Math.abs(dyNow) > 70 || (Math.abs(dyNow) > 32 && vel > 0.5)) {   // committed → see it out the way it was going
+        anim("transform .18s ease-in");
+        paint((dyNow < 0 ? -1 : 1) * (window.innerHeight * 0.8 + 120));
+        ov.style.opacity = "0";
+        setTimeout(onClose, 170);
+      } else {                                                            // short of the threshold → spring back
+        anim("transform .22s cubic-bezier(.22,.7,.3,1)");
+        paint(0);
+        setTimeout(function () { anim(""); }, 240);
+      }
     }, { passive: true });
+  }
+
+  // ── The landscape/desktop "Connections" button rides with the USERNAME ───────────────────────────────
+  // On a phone the button belongs to the page (on the chevron's line). On the wide layout the pages scroll as
+  // one document, so a per-page button would repeat down the whole page — there it lives once, beside the
+  // username, and follows it into the collapsed sticky bar for free because it sits in the same row.
+  // The slot is ZERO-WIDTH: the name has to stay centred on the VIEWPORT, so the button must contribute no
+  // width to the centring and simply overflow to the right of it.
+  function headerSwitch(onOpen) {
+    var who = document.getElementById("who"); if (!who) return null;
+    var row = (who.parentNode && who.parentNode.classList && who.parentNode.classList.contains("who-row"))
+            ? who.parentNode : null;
+    if (!row) { row = el("div", "who-row"); who.parentNode.insertBefore(row, who); row.appendChild(who); }
+    var slot = row.querySelector(".who-switch");
+    if (!slot) { slot = el("span", "who-switch"); row.appendChild(slot); }
+    slot.textContent = "";                                   // a rebuild (lang/theme) re-makes the button
+    if (!onOpen) return null;
+    var b = el("button", "pswitch pswitch-head", t("connections")); b.type = "button";
+    b.setAttribute("aria-label", t("pickOpen"));
+    b.onclick = onOpen; slot.appendChild(b);
+    return b;
+  }
+  // ── Jump picker — any config in two taps ────────────────────────────────────────────────────────────────
+  // The pager is a grid: up/down walks the peers, left/right walks that peer's deployments. Reaching the fifth
+  // proxy of the seventh device is a dozen swipes. This overlay collapses that to: tap the device, tap the
+  // connection, land — instantly, no animation, because a jump is a jump and watching fifteen screens fly past
+  // is exactly what the picker exists to avoid.
+  //
+  // A level with nothing to choose is never shown: one device ⇒ it opens straight on that device's connections,
+  // and a device with a single connection lands on the first tap. The rows are built from the CARD's own badge
+  // element (cloned) and the server name in the server's colour, so the picker names a config exactly the way
+  // the config names itself — no second vocabulary to learn.
+  var _pickOv = null;
+  function closeConfigPicker() {
+    if (!_pickOv) return;
+    var ov = _pickOv; _pickOv = null;
+    try { ov.remove(); } catch (_) {}
+    document.removeEventListener("keydown", _pickKey, true);
+  }
+  function _pickKey(e) {
+    if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); dismissHints(); }
+  }
+  // peers: [{ title, dead, entries: [{ pi, ci, srv, color, badge }] }] · cur: {pi, ci} · jump(pi, ci)
+  function openConfigPicker(peers, cur, jump) {
+    // Raw close, not dismissHints: this is a TRANSITION between overlays, so the Back entry has to carry over —
+    // disarming here would queue a history.back() that lands on the entry armOverlayBack() pushes below.
+    closeAllHints();
+    if (!peers.length) return;
+    var ov = el("div", "cp-overlay");
+    var panel = el("div", "cp-panel");
+    var head = el("div", "cp-head"), title = el("div", "cp-title"), list = el("div", "cp-list");
+    // The close button lives in the BOX's own header, so it belongs to the picker rather than floating over the
+    // page. It sits outside `title` because switching levels rebuilds the title and would otherwise wipe it.
+    var x = el("button", "cp-close"); x.type = "button"; x.setAttribute("aria-label", t("close")); x.textContent = "×";
+    x.onclick = dismissHints;
+    head.appendChild(title); head.appendChild(x);
+    panel.appendChild(head); panel.appendChild(list);
+    ov.appendChild(panel);
+    ov.onclick = function (e) { if (e.target === ov) dismissHints(); };   // only the backdrop closes
+
+    function isHere(en) { return cur && en.pi === cur.pi && en.ci === cur.ci; }
+    function go(en) { dismissHints(); jump(en.pi, en.ci); }
+    function row(on) { var r = el("button", "cp-row" + (on ? " on" : "")); r.type = "button"; return r; }
+
+    function showConnections(g, back) {
+      title.textContent = ""; list.textContent = "";
+      if (back) {
+        var b = el("button", "cp-back"); b.type = "button";
+        b.appendChild(el("span", "cp-back-ar", "‹"));
+        b.appendChild(el("span", "cp-back-t", g.title));
+        b.onclick = showPeers;
+        title.appendChild(b);
+      } else title.appendChild(el("span", "cp-eyebrow", g.title));
+      g.entries.forEach(function (en) {
+        var r = row(isHere(en));
+        var lead = el("span", "cp-lead");
+        // the protocol's own brand mark leads the row, in full colour — see rowIcon()
+        var mark = rowIcon(en.mode);
+        if (mark) { var ic = el("span", "cp-ico"); ic.appendChild(mark); lead.appendChild(ic); }
+        if (en.badge) lead.appendChild(en.badge.cloneNode(true));
+        r.appendChild(lead);
+        r.onclick = function () { go(en); };
+        list.appendChild(r);
+      });
+    }
+    function showPeers() {
+      title.textContent = ""; list.textContent = "";
+      title.appendChild(el("span", "cp-eyebrow", t("pickDevices")));
+      peers.forEach(function (g) {
+        var r = row(cur && g.entries.some(function (en) { return en.pi === cur.pi; }));
+        r.appendChild(el("span", "cp-name", g.title));
+        if (g.dead && g.entries[0] && g.entries[0].badge) {
+          r.appendChild(g.entries[0].badge.cloneNode(true));   // BLOCKED / EXPIRED — say so here, don't make them tap to find out
+        } else {
+          // one dot per connection, in its server's colour — a miniature of the rail you'd otherwise swipe
+          var dots = el("span", "cp-dots");
+          g.entries.forEach(function (en) {
+            var d = el("i", "cp-dot" + (isHere(en) ? " on" : ""));
+            if (en.kind) d.style.background = en.kind;
+            dots.appendChild(d);
+          });
+          r.appendChild(dots);
+        }
+        r.onclick = function () { g.entries.length === 1 ? go(g.entries[0]) : showConnections(g, true); };
+        list.appendChild(r);
+      });
+    }
+
+    if (peers.length === 1) showConnections(peers[0], false); else showPeers();
+    document.body.appendChild(ov);
+    _pickOv = ov;
+    attachSwipeClose(ov, dismissHints, panel);
+    setTimeout(function () { document.addEventListener("keydown", _pickKey, true); }, 0);
+    armOverlayBack();
   }
 
   // Download bubble — a single global popover anchored just below its trigger, growing downward, capped so it never
@@ -704,7 +881,7 @@
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };   // only the dark backdrop closes — no auto-dismiss
     document.body.appendChild(ov);
     _importHint = ov; openFit(inner);
-    attachSwipeDown(ov, dismissHints);
+    attachSwipeClose(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _ihKey, true); }, 0);
     armOverlayBack();
   }
@@ -767,7 +944,7 @@
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };   // only the dark backdrop closes — no auto-dismiss
     document.body.appendChild(ov);
     _pasteHint = ov; openFit(inner);
-    attachSwipeDown(ov, dismissHints);
+    attachSwipeClose(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _phKey, true); }, 0);
     armOverlayBack();
   }
@@ -827,7 +1004,7 @@
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };
     document.body.appendChild(ov);
     _wgTurnHint = ov; openFit(inner);
-    attachSwipeDown(ov, dismissHints);
+    attachSwipeClose(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _wtKey, true); }, 0);
     armOverlayBack();
   }
@@ -880,7 +1057,7 @@
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };   // only the dark backdrop closes — no auto-dismiss
     document.body.appendChild(ov);
     _linkHint = ov; openFit(inner);
-    attachSwipeDown(ov, dismissHints);
+    attachSwipeClose(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _liKey, true); }, 0);
     armOverlayBack();
   }
@@ -978,7 +1155,7 @@
     var x = el("button", "ih-close"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.textContent = "×"; x.onclick = dismissHints; ov.appendChild(x);
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };
     document.body.appendChild(ov); _vktgzHint = ov; openFit(inner);
-    attachSwipeDown(ov, dismissHints);
+    attachSwipeClose(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _mzKey, true); }, 0);
     armOverlayBack();
   }
@@ -1037,7 +1214,7 @@
     var x = el("button", "ih-close"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.textContent = "×"; x.onclick = dismissHints; ov.appendChild(x);
     ov.onclick = function (e) { if (e.target === ov) dismissHints(); };
     document.body.appendChild(ov); _cliHint = ov; openFit(inner);
-    attachSwipeDown(ov, dismissHints);
+    attachSwipeClose(ov, dismissHints);
     setTimeout(function () { document.addEventListener("keydown", _cliKey, true); }, 0);
     armOverlayBack();
   }
@@ -1179,6 +1356,24 @@
     turn: '<svg viewBox="1.5 1.6 21 20.8" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g1" gradientUnits="userSpaceOnUse" x1="2" y1="4" x2="22" y2="20"><stop offset="0" stop-color="#1FC8D6"/><stop offset="1" stop-color="#2B7CD3"/></linearGradient></defs><path d="M16.7 5.2 A8.7 8.7 0 1 0 16.7 18.8" fill="none" stroke="url(#g1)" stroke-width="1.6" stroke-linecap="round"/><path d="M14.44 18.98 L12.94 21.57" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M12.32 19.66 L15.06 20.88" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M7.87 19.12 L4.91 19.64" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M5.98 17.94 L6.8 20.82" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M3.53 14.17 L1.24 12.25" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M3.22 11.97 L1.55 14.45" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M4.53 7.68 L4.53 4.68" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M6.03 6.02 L3.04 6.34" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M10.15 4.27 L12.45 2.34" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M12.38 4.35 L10.22 2.26" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M11 9.7 V12.4" fill="none" stroke="url(#g1)" stroke-width="1.35" stroke-linecap="round"/><path d="M11 12.4 L8.1 14.4" fill="none" stroke="url(#g1)" stroke-width="1.35" stroke-linecap="round"/><path d="M11 12.4 L13.9 14.4" fill="none" stroke="url(#g1)" stroke-width="1.35" stroke-linecap="round"/><circle cx="11" cy="7.7" r="2.0" fill="none" stroke="url(#g1)" stroke-width="1.35"/><circle cx="7.5" cy="15.4" r="1.5" fill="none" stroke="url(#g1)" stroke-width="1.35"/><circle cx="14.5" cy="15.4" r="1.5" fill="none" stroke="url(#g1)" stroke-width="1.35"/><path d="M17.5 9.9 H20.4" fill="none" stroke="url(#g1)" stroke-width="1.25" stroke-linecap="round"/><path d="M17.5 11.7 H21.4" fill="none" stroke="url(#g1)" stroke-width="1.25" stroke-linecap="round"/><path d="M17.5 13.5 H20.4" fill="none" stroke="url(#g1)" stroke-width="1.25" stroke-linecap="round"/></svg>'
   };
   var _protoN = 0;
+  // ── Row icons for the jump picker ───────────────────────────────────────────────────────
+  // Full-colour BRAND marks, not the flat brand-tinted set the protocol TABS use: those are 62px buttons
+  // whose selected/unselected state is carried by colour, so they have to stay tintable. A picker row is a
+  // 28px glance, and the real logos are what make it placeable without reading.
+  // wg/awg are the files swg-sub already serves; turn has no vendor logo, so it's ours — recoloured off the
+  // flat cyan into three tones: the ring + its ticks, lighter speed lines, and an inner node in currentColor
+  // so it reads near-white on the dark theme and deep indigo on the light one (a fixed white would vanish),
+  // The spikes and the speed lines are both tokens (--turn-spike / --turn-dash), so each theme gets its
+  // OWN palette rather than one palette adjusted for contrast: black spikes + red lines on the light
+  // ground, red spikes + cyan lines on the dark one.
+  var ROW_ICON_IMG = { wg: "_a/wireguard.svg", awg: "_a/amneziavpn.svg" };
+  var TURN_ROW_SVG = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M16.7 5.2 A8.7 8.7 0 1 0 16.7 18.8" fill="none" stroke="#7C7FF0" stroke-width="1.7" stroke-linecap="round"/><path d="M14.28 19.12 L13.1 21.43" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M12.53 19.68 L14.85 20.86" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M7.66 19.09 L5.12 19.67" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M6.1 18.11 L6.68 20.64" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M3.42 13.99 L1.35 12.43" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M3.17 12.17 L1.6 14.25" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M4.6 7.48 L4.47 4.88" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M5.83 6.11 L3.24 6.25" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M10.35 4.19 L12.25 2.42" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M12.19 4.26 L10.42 2.35" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M11 9.7 V12.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><path d="M11 12.4 L8.1 14.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><path d="M11 12.4 L13.9 14.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><circle cx="11" cy="7.7" r="2.0" fill="none" stroke="currentColor" stroke-width="1.35"/><circle cx="7.5" cy="15.4" r="1.5" fill="none" stroke="currentColor" stroke-width="1.35"/><circle cx="14.5" cy="15.4" r="1.5" fill="none" stroke="currentColor" stroke-width="1.35"/><path d="M18.4 10.6 H21.6" fill="none" style="stroke:var(--turn-dash)" stroke="#EF4444" stroke-width="1.25" stroke-linecap="round"/><path d="M18.4 12.4 H22.7" fill="none" style="stroke:var(--turn-dash)" stroke="#EF4444" stroke-width="1.25" stroke-linecap="round"/><path d="M18.4 14.2 H21.6" fill="none" style="stroke:var(--turn-dash)" stroke="#EF4444" stroke-width="1.25" stroke-linecap="round"/></svg>';
+  function rowIcon(mode) {
+    if (ROW_ICON_IMG[mode]) { var im = document.createElement("img"); im.src = ROW_ICON_IMG[mode]; im.alt = ""; return im; }
+    if (mode !== "turn") return null;
+    var doc = new DOMParser().parseFromString(TURN_ROW_SVG, "image/svg+xml");
+    return document.importNode(doc.documentElement, true);
+  }
   function protoIcon(mode) {
     var raw = PROTO_SVG[mode];
     if (!raw) return document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -1632,7 +1827,9 @@
         if (cga && cga.author && cga.author !== csfork) ctag.appendChild(el("span", "scell-tag-by", " by " + cga.author));   // cross-author client only
         srvRow.appendChild(ctag);
         var cBackup = multi && !tgt.primary;                                   // csqtt is its own protocol family → the "CSQTT" role chip, in the csqtt type colour
-        var crole = el("span", "scell-role" + (cBackup ? " scell-backup" : ""), (multi ? (tgt.primary ? t("primary") : t("backup")) + " " : "") + "CSQTT");
+        var crole = el("span", "scell-role" + (cBackup ? " scell-backup" : ""));
+        if (multi) crole.appendChild(document.createTextNode((tgt.primary ? t("primary") : t("backup")) + " "));
+        crole.appendChild(el("span", "scell-role-if", "CSQTT"));
         if (!cBackup) crole.style.color = cfc;
         srvRow.appendChild(crole);
         ctrl.forkId = "csqtt"; ctrl.app = (cga && (cga.productName || cga.app)) || "CSQTT"; ctrl.zoomTail = ctrl.app;
@@ -1679,7 +1876,9 @@
           if (wga && wga.author && wga.author !== wfork) wtag.appendChild(el("span", "scell-tag-by", " by " + wga.author)); }   // app author (e.g. luminescq)
         srvRow.appendChild(wtag);
         var wBackup = multi && !tgt.primary;                                    // WDTT is its own protocol family in the panel → the "WDTT" role chip (not the built-in WG), in the WDTT type colour
-        var wrole = el("span", "scell-role" + (wBackup ? " scell-backup" : ""), (multi ? (tgt.primary ? t("primary") : t("backup")) + " " : "") + "WDTT");
+        var wrole = el("span", "scell-role" + (wBackup ? " scell-backup" : ""));
+        if (multi) wrole.appendChild(document.createTextNode((tgt.primary ? t("primary") : t("backup")) + " "));
+        wrole.appendChild(el("span", "scell-role-if", "WDTT"));
         if (!wBackup) wrole.style.color = ifaceColor("wdtt");
         srvRow.appendChild(wrole);
         ctrl.forkId = wfork; ctrl.app = wAppName; ctrl.zoomTail = wHasApp ? wAppName : wfork;
@@ -1751,9 +1950,13 @@
       }
       srvRow.appendChild(tag);
       // role + interface next to the badge: multi → "Primary/Backup WG"; single → "WG". Primary/single = iface colour, backup = grey.
+      // The interface word is its OWN span (and the whole role is marked when that's all it says) so the jump
+      // picker can drop it: there, the row already leads with the protocol icon and the fork name.
       var ifaceUp = (tgt.type === "awg") ? "AWG" : "WG";
       var isBackup = multi && !tgt.primary;
-      var role = el("span", "scell-role" + (isBackup ? " scell-backup" : ""), (multi ? (tgt.primary ? t("primary") : t("backup")) + " " : "") + ifaceUp);
+      var role = el("span", "scell-role" + (isBackup ? " scell-backup" : ""));
+      if (multi) role.appendChild(document.createTextNode((tgt.primary ? t("primary") : t("backup")) + " "));
+      role.appendChild(el("span", "scell-role-if", ifaceUp));
       if (!isBackup) role.style.color = ifaceColor(tgt.type);
       srvRow.appendChild(role);
       // Plain (unobfuscated) → the fork's normal transport, which VK throttles: mark it slow with a brand-coloured turtle.
@@ -1850,12 +2053,24 @@
     var cell = el("div", "scell");
     var stage = el("div", "scell-stage");
     var box = el("div", "peer-dead " + (expired ? "state-expired" : "state-blocked"));
-    box.appendChild(el("p", "peer-dead-name", peer.title || t("peer")));
+    var nameEl = el("p", "peer-dead-name", peer.title || t("peer"));
+    nameEl.setAttribute("data-pick", "");   // the picker's trigger on a page that has no title bar
+    box.appendChild(nameEl);
     box.appendChild(el("p", "state-word", expired ? t("subExpiredWord") : t("subBlockedWord")));
     box.appendChild(el("p", "state-sub", expired ? t("subExpiredSub") : t("subDisabledSub")));
     stage.appendChild(box); cell.appendChild(stage); srow.appendChild(cell); page.appendChild(srow);
     // up/down peer-nav hints so the carousel still walks past this page (render hides the ends)
     page.appendChild(hint("vhint vhint-u", "u")); page.appendChild(hint("vhint vhint-d", "d"));
+    // Same Switch button as a live page — this page runs no layout pass, so it sits on the chevron line by its
+    // CSS default. Landing here is a dead end otherwise: there's no config to act on, only somewhere else to go.
+    var switchEl = el("button", "pswitch", t("connections")); switchEl.type = "button"; switchEl.hidden = true;
+    switchEl.setAttribute("data-pick", "");
+    page.appendChild(switchEl);
+    // A blocked/expired device still gets a picker entry — reaching it is how the holder finds out WHY that
+    // one config stopped working. Its "badge" is the state word, in place of a protocol tag.
+    page._pick = { row: row, dead: true, title: peer.title || t("peer"),
+                   cells: [{ srv: "", kind: "",
+                             badge: el("span", "scell-tag cp-dead", expired ? t("subExpiredWord") : t("subBlockedWord")) }] };
     return page;
   }
   function peerProtoPage(mode, row, vkLink, userName) {
@@ -1891,9 +2106,21 @@
     var page = el("section", "ppage");
     page.setAttribute("data-mode", mode);
     var head = el("div", "ppage-head");
-    var titleEl = el("span", "ppage-title", (peer.title || t("peer")) + " ");
+    // The title is a ROW, not one run of text: the device name is the only part allowed to truncate, so the
+    // server name stays readable however long the device is called. The row's `gap` supplies the space between
+    // them — a trailing space inside a flex item is trimmed, which is why the two used to run together.
+    var titleEl = el("span", "ppage-title");
+    var nameEl = el("span", "ppage-name", peer.title || t("peer"));
     var srvEl = el("span", "ppage-srv");   // "· edge-1" in the server colour — updated per deployment by syncBar
-    titleEl.appendChild(srvEl); head.appendChild(titleEl);
+    titleEl.appendChild(nameEl); titleEl.appendChild(srvEl);
+    titleEl.setAttribute("data-pick", "");   // the device name doubles as the jump picker's trigger (render wires it)
+    head.appendChild(titleEl);
+    // The picker's LABELLED entry point, on the same line as the down-chevron and hard against the right edge.
+    // syncVHints places it on that line whether or not the chevron itself is shown, so it never moves between
+    // pages. Hidden by render when there's nothing to pick.
+    var switchEl = el("button", "pswitch", t("connections")); switchEl.type = "button"; switchEl.hidden = true;
+    switchEl.setAttribute("data-pick", "");
+    page.appendChild(switchEl);
     // deployment nav row (only when >1 deployment): the dots flanked by left/right hint arrows — the LEFT/RIGHT
     // SWIPE walks the deployments; the arrows are graphical hints (non-interactive), each fading at its end.
     var dotEls = [], sL, sR;
@@ -1960,6 +2187,7 @@
       if (window.matchMedia && window.matchMedia("(orientation: landscape)").matches) {
         head.style.top = ""; head.style.gap = ""; head.style.paddingTop = "";
         vUp.style.left = ""; vDown.style.left = ""; vUp.style.top = ""; vDown.style.top = "";
+        switchEl.style.top = "";   // landscape/desktop flows it in-document (CSS) — drop the portrait placement
         Array.prototype.forEach.call(srow.children, function (c) {   // clear ALL portrait inline positioning on every cell
           var st = c.querySelector(".scell-stage"); if (st) { st.style.alignItems = ""; st.style.paddingTop = ""; }
           var n = c.querySelector(".scell-node"); if (n) n.style.top = "";
@@ -1997,12 +2225,16 @@
       var vkH = hasVk ? vk.offsetHeight : 0;
       var cmdH = cmdEl ? cmdEl.offsetHeight : 0, hasCmd = cmdH > 0;
       var uShown = vUp.style.display !== "none", dShown = vDown.style.display !== "none";
+      // The bottom line is OCCUPIED whenever the chevron OR the Switch button is on it. Reserving it either way
+      // is what keeps Switch (and everything stacked above it) at the same y on every page — the last page draws
+      // no chevron, and without this the whole column redistributed and the button slid ~74px down.
+      var dLineShown = dShown || !switchEl.hidden;
       var barTop = bar.getBoundingClientRect().top - pr.top;
       var GAP_MIN = 8;
 
-      var nEl = 2 /* title + config */ + (uShown ? 1 : 0) + (dShown ? 1 : 0) + (hasDots ? 1 : 0) + (hasTag ? 1 : 0) + (hasVk ? 1 : 0) + (hasCmd ? 1 : 0);
+      var nEl = 2 /* title + config */ + (uShown ? 1 : 0) + (dLineShown ? 1 : 0) + (hasDots ? 1 : 0) + (hasTag ? 1 : 0) + (hasVk ? 1 : 0) + (hasCmd ? 1 : 0);
       var nGaps = nEl + 1;
-      var fixedH = (uShown ? uH : 0) + titleH + (hasDots ? dotsH : 0) + (hasTag ? tagH : 0) + (hasVk ? vkH : 0) + (hasCmd ? cmdH : 0) + (dShown ? dH : 0);
+      var fixedH = (uShown ? uH : 0) + titleH + (hasDots ? dotsH : 0) + (hasTag ? tagH : 0) + (hasVk ? vkH : 0) + (hasCmd ? cmdH : 0) + (dLineShown ? dH : 0);
 
       // fit the CONFIG alone (not the command) to what's left after GAP_MIN on every gap
       stage.style.alignItems = "flex-start";
@@ -2036,6 +2268,9 @@
       y += G; configTop = y; y += configH;
       if (hasCmd) y += G + cmdH;
       boxBottom = y;
+      // The chevron LINE exists whether or not the chevron is drawn on it (the last page has no "down"), so the
+      // Switch button gets its own unconditional y — otherwise it would jump on the one page that hides the arrow.
+      var dLine = boxBottom + G;
       if (dShown) { y += G; downTop = y; }
 
       head.style.paddingTop = "0px"; head.style.gap = G + "px"; head.style.top = Math.round(headTop) + "px";
@@ -2052,8 +2287,12 @@
       var cr2 = configEl.getBoundingClientRect();
       var aCx = Math.round((cr2.left + cr2.right) / 2 - pr.left);
       vUp.style.left = aCx + "px"; vDown.style.left = aCx + "px";
+      // "Connections" sits ON the chevron's line (same y on every page — dLine is computed above whether or not
+      // the chevron is drawn), right-aligned to the same 12px inset as the header controls above it.
+      switchEl.style.top = Math.round(dLine + dH / 2) + "px";
+      switchEl.style.left = ""; switchEl.style.right = ""; switchEl.style.bottom = "";
       if (sL && sR) {
-        var topRef = uShown ? (upTop + uH) : 0, botRef = dShown ? downTop : boxBottom;
+        var topRef = uShown ? (upTop + uH) : 0, botRef = dLineShown ? dLine : boxBottom;
         var midY = Math.round((topRef + botRef) / 2 + (botRef - topRef) * 0.1);   // a touch below centre
         sL.style.top = midY + "px"; sR.style.top = midY + "px";
       }
@@ -2236,6 +2475,22 @@
     }
     try { new ResizeObserver(scheduleVH).observe(srow); } catch (_) {}   // viewport / rotation → re-measure the hint gap
     setTimeout(syncBar, 0);
+    // What the jump picker needs from this page: the roster row (peer IDENTITY — a peer owns one page per
+    // protocol, and the picker groups them back together by it) and, per deployment, the card's OWN badge line
+    // plus the server name/colour. Cloning the badge keeps the picker's wording identical to the card's.
+    page._pick = { row: row, dead: false, title: peer.title || t("peer"),
+                   cells: ctrls.map(function (c, i) {
+                     var cellEl = srow.children[i], it = items[i];
+                     // The device list's dots carry each connection's OWN colour, so a glance at a device tells
+                     // you what it can connect with. Anything with a fork — turn-proxies, wdtt, csqtt — uses the
+                     // panel's colour for THAT fork (`ctrl.forkId` is already resolved per cell), which is the
+                     // same colour its name is printed in one level down. A plain wg/awg deployment has no fork,
+                     // so it falls back to its interface colour.
+                     return { srv: c.srvName,
+                              kind: c.forkId ? forkColor(c.forkId)
+                                             : ifaceColor((it && it.tgt && it.tgt.type) || mode),
+                              badge: cellEl && cellEl.querySelector(".scell-srv") };
+                   }) };
     // Position snapshot/restore so a language or theme switch (which rebuilds every page) can drop the user back
     // onto the SAME deployment + QR/config view they were reading — not the first config.
     page._pos = function () { return { cell: curIdx, view: ctrls[curIdx] ? ctrls[curIdx].view : null }; };
@@ -2353,6 +2608,57 @@
         if (d) d.style.display = (pages.length > 1 && i < pages.length - 1) ? "" : "none";
       });
 
+      // ── Jump-picker index: every config on this subscription, grouped back together by PEER. One peer owns a
+      //    page per protocol and a cell per deployment inside it, so its configs are scattered down the pager —
+      //    group by the roster row (identity, not title: two devices may share a name), then order devices A–Z
+      //    with the blocked/expired ones last, the way the pager itself is ordered. ──
+      var pickPeers = [];
+      pages.forEach(function (pg, pi) {
+        var pk = pg._pick; if (!pk) return;
+        var g = null;
+        for (var i = 0; i < pickPeers.length; i++) if (pickPeers[i].row === pk.row) { g = pickPeers[i]; break; }
+        if (!g) { g = { row: pk.row, title: pk.title, dead: !!pk.dead, entries: [] }; pickPeers.push(g); }
+        var mode = pg.getAttribute("data-mode");
+        pk.cells.forEach(function (c, ci) {
+          g.entries.push({ pi: pi, ci: ci, mode: mode, srv: c.srv, kind: c.kind, badge: c.badge });
+        });
+      });
+      pickPeers.sort(function (a, b) {
+        return (a.dead ? 1 : 0) - (b.dead ? 1 : 0) || String(a.title).localeCompare(String(b.title));
+      });
+      var pickTotal = pickPeers.reduce(function (n, g) { return n + g.entries.length; }, 0);
+
+      function jumpTo(pi, ci) {
+        var pg = pages[pi]; if (!pg) return;
+        if (pg._seek) pg._seek(ci, null);
+        pg.scrollIntoView({ block: "start" });   // instant (no smooth) — land, don't animate past every page between
+        syncGroup();
+      }
+      function curPick() {   // where the reader is right now, so the picker can mark it
+        var pi = curIndex(), pg = pages[pi];
+        return { pi: pi, ci: ((pg && pg._pos) ? pg._pos() : { cell: 0 }).cell };
+      }
+      // Every page carries two triggers for the picker: the device NAME (the thing you'd instinctively tap) and
+      // the labelled "Switch" button on the chevron line (the thing you'd look for). Both are offered only when
+      // there IS something to pick — a subscription with a single config needs no index.
+      var openPicker = function () { openConfigPicker(pickPeers, curPick(), jumpTo); };
+      headerSwitch(pickTotal > 1 ? openPicker : null);   // one button beside the username (wide layout only)
+      if (pickTotal > 1) {
+        pages.forEach(function (pg) {
+          Array.prototype.forEach.call(pg.querySelectorAll("[data-pick]"), function (trg) {
+            if (trg.tagName === "BUTTON") { trg.hidden = false; trg.onclick = openPicker; return; }
+            trg.classList.add("pickable");                       // plain text → give it a button's semantics
+            trg.setAttribute("role", "button");
+            trg.setAttribute("tabindex", "0");
+            trg.setAttribute("aria-label", t("pickOpen"));
+            trg.onclick = openPicker;
+            trg.onkeydown = function (e) {
+              if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); }
+            };
+          });
+        });
+      }
+
       // Highlight + disable the button for the protocol group whose page is at the top. Viewport-relative rects
       // so it works whether the PAGER scrolls (phone) or the WINDOW does (desktop).
       // Sit the fixed left rail so its vertical centre lines up with the QR/config box of the page in view — not
@@ -2418,51 +2724,44 @@
       requestAnimationFrame(syncGroup);   // re-sync once laid out
       setTimeout(alignRail, 120);         // catch the QR's async first paint
 
-      // ── Deliberate VERTICAL paging (phone): a fling can skip several peers, so take over vertical touch/wheel
-      //    and step EXACTLY ONE peer per FIRM gesture. HORIZONTAL gestures are left to the deployment carousel
-      //    (native scroll-snap), so left/right still swipes a peer's servers/forks. ──
-      var isPager = getComputedStyle(pager).overflowY !== "visible";   // phone: the pager scrolls (desktop scrolls the window → leave native)
-      if (isPager) {
-        var scrollableUnder = function (node) {   // a config-text box that itself needs scrolling — let it, don't page
-          for (var n = node; n && n !== pager; n = n.parentNode) {
-            if (n.classList && n.classList.contains("cfgtext") && n.scrollHeight > n.clientHeight + 2) return true;
-          }
-          return false;
-        };
-        var tX = 0, tY = 0, tT = 0, tAxis = null, tOwn = false;
-        pager.addEventListener("touchstart", function (e) { tOwn = !scrollableUnder(e.target); tAxis = null; tX = e.touches[0].clientX; tY = e.touches[0].clientY; tT = Date.now(); }, { passive: true });
-        pager.addEventListener("touchmove", function (e) {
-          if (!tOwn) return;
-          var dx = e.touches[0].clientX - tX, dy = e.touches[0].clientY - tY;
-          if (tAxis === null && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) tAxis = (Math.abs(dx) > Math.abs(dy)) ? "h" : "v";
-          if (tAxis === "v") e.preventDefault();   // take over VERTICAL only (one peer per firm gesture). HORIZONTAL is left
-          // to the carousel's native scroll-snap so the card tracks the finger live and snaps on release (scroll-snap-stop:
-          // always still limits it to one deployment) — no wait-for-release-then-animate.
-        }, { passive: false });
-        pager.addEventListener("touchend", function (e) {
-          if (!tOwn || tAxis !== "v") return;   // horizontal already handled natively (finger-tracked + snapped)
-          var dt = Date.now() - tT;
-          var dy = e.changedTouches[0].clientY - tY, vel = Math.abs(dy) / Math.max(1, dt);
-          if (Math.abs(dy) > 85 || (Math.abs(dy) > 45 && vel > 0.7)) stepConfig(dy < 0 ? 1 : -1);   // FIRM swipe only
-        }, { passive: false });
-        var wAcc = 0, wT = 0, hAcc = 0, hT = 0;
-        // Firefox reports wheel deltas in LINES (deltaMode 1) or PAGES (2), not pixels like Chrome — so the raw
-        // deltas are tiny and never reach the 120px step threshold, blocking scroll entirely. Normalise to pixels.
-        function wpx(d, e) { return e.deltaMode === 1 ? d * 16 : e.deltaMode === 2 ? d * (pager.clientHeight || 800) : d; }
-        pager.addEventListener("wheel", function (e) {
-          if (scrollableUnder(e.target)) return;
-          e.preventDefault();
-          if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {   // horizontal wheel → step ONE deployment (no fling-skip)
-            var nx = Date.now(); if (nx - hT > 180) hAcc = 0; hT = nx;
-            hAcc += wpx(e.deltaX, e);
-            if (Math.abs(hAcc) > 120) { stepCell(hAcc > 0 ? 1 : -1); hAcc = 0; }
-            return;
-          }
-          var now = Date.now(); if (now - wT > 180) wAcc = 0; wT = now;
-          wAcc += wpx(e.deltaY, e);
-          if (Math.abs(wAcc) > 120) { stepConfig(wAcc > 0 ? 1 : -1); wAcc = 0; }
-        }, { passive: false });
-      }
+      // ── VERTICAL paging (phone) is NATIVE scroll-snap, exactly like the horizontal deployment rail. Both axes
+      //    are `scroll-snap-type: mandatory` + `scroll-snap-stop: always`, so the content tracks the finger live
+      //    and a fling still lands exactly ONE peer / ONE deployment on. This used to be a JS takeover that
+      //    preventDefault()ed the vertical axis and stepped a peer on touchend past a distance/velocity
+      //    threshold — one peer per gesture, but nothing moved under the finger and a soft swipe did nothing at
+      //    all. `scroll-snap-stop: always` gives the same one-per-gesture guarantee for free (measured: it held
+      //    to one card across every velocity from a slow drag to a 3-frame fling), so the takeover is gone and
+      //    the two axes now behave identically. WHEEL is still stepped by hand below — a wheel/trackpad emits a
+      //    long burst of small deltas that snap alone chains straight through. ──
+      var scrollableUnder = function (node) {   // a config-text box that itself needs scrolling — let it, don't page
+        for (var n = node; n && n !== pager; n = n.parentNode) {
+          if (n.classList && n.classList.contains("cfgtext") && n.scrollHeight > n.clientHeight + 2) return true;
+        }
+        return false;
+      };
+      // Whether the PAGER is the scroll container is decided per EVENT, not once here: at this point in render
+      // the whole panel is still `hidden`, and a display:none box reports overflow "visible" — so a one-shot test
+      // read the wrong answer and never attached the handler at all (it only came alive after a theme/lang
+      // rebuild, which re-renders with the panel visible). Re-testing per event also survives a rotation, which
+      // flips the answer long after render. Landscape/desktop scrolls the WINDOW → leave the wheel native.
+      var wAcc = 0, wT = 0, hAcc = 0, hT = 0;
+      // Firefox reports wheel deltas in LINES (deltaMode 1) or PAGES (2), not pixels like Chrome — so the raw
+      // deltas are tiny and never reach the 120px step threshold, blocking scroll entirely. Normalise to pixels.
+      function wpx(d, e) { return e.deltaMode === 1 ? d * 16 : e.deltaMode === 2 ? d * (pager.clientHeight || 800) : d; }
+      pager.addEventListener("wheel", function (e) {
+        if (getComputedStyle(pager).overflowY === "visible") return;   // window-scrolled layout → native wheel is right
+        if (scrollableUnder(e.target)) return;
+        e.preventDefault();
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {   // horizontal wheel → step ONE deployment (no fling-skip)
+          var nx = Date.now(); if (nx - hT > 180) hAcc = 0; hT = nx;
+          hAcc += wpx(e.deltaX, e);
+          if (Math.abs(hAcc) > 120) { stepCell(hAcc > 0 ? 1 : -1); hAcc = 0; }
+          return;
+        }
+        var now = Date.now(); if (now - wT > 180) wAcc = 0; wT = now;
+        wAcc += wpx(e.deltaY, e);
+        if (Math.abs(wAcc) > 120) { stepConfig(wAcc > 0 ? 1 : -1); wAcc = 0; }
+      }, { passive: false });
 
       document.getElementById("state").hidden = true;
       wrap.hidden = false;

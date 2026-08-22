@@ -14,16 +14,23 @@
   --brand-2: #5FE2EC;
   --brand-ink: #06222a;
   --radius: 16px;
+  /* ── the turn mark (see rowIcon()). Each theme gets its OWN palette, not one palette contrast-corrected:
+     the ring stays periwinkle everywhere, but the spikes and speed lines swap roles between grounds. ── */
+  --turn-ink: #EEF0FF;     /* inner node — near-white on this dark ground */
+  --turn-spike: #EF4444;   /* DARK: red spikes… */
+  --turn-dash: #22D3EE;    /* …and cyan speed lines */
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --bg: #eef2f7; --panel: #ffffff; --panel-2: #f4f7fb; --line: #d9e1ec;
     --ink: #16202e; --ink-2: #33424F; --muted: #5a6a80; --brand-ink: #06222a;
+    --turn-ink: #3F42C8; --turn-spike: #000000; --turn-dash: #EF4444;   /* LIGHT: black spikes, red lines */
   }
 }
 :root[data-theme="light"] {
   --bg: #eef2f7; --panel: #ffffff; --panel-2: #f4f7fb; --line: #d9e1ec;
   --ink: #16202e; --ink-2: #33424F; --muted: #5a6a80; --brand-ink: #06222a;
+    --turn-ink: #3F42C8; --turn-spike: #000000; --turn-dash: #EF4444;   /* LIGHT: black spikes, red lines */
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }   /* no grey/blue square flash behind tapped buttons (esp. the round START orb) */
@@ -60,6 +67,9 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .brand-name span { color: var(--ink-2); font-weight: 600; }
 .who { color: var(--ink); font-weight: 700; font-size: clamp(17px, 5vw, 21px); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who:empty { display: none; }
+/* The username and its "Connections" button. Wide layout only (portrait keeps a button per page). */
+.who-row { display: flex; align-items: center; justify-content: center; width: 100%; max-width: 100%; }
+.who-switch { display: flex; align-items: center; }
 
 /* top-right controls: language (EN/RU) + light/dark — solid, high-contrast, comfortable tap targets */
 .topctl { position: fixed; top: calc(10px + env(safe-area-inset-top)); right: 12px; z-index: 30; display: flex; gap: 8px; }
@@ -86,13 +96,17 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; padding: 32px 24px; color: var(--muted); }
 .state[hidden] { display: none; }   /* the class sets display:flex, which would otherwise defeat the hidden attribute */
 .state-msg { margin: 0; font-size: 19px; font-weight: 700; color: var(--ink); }
-.state-sub { margin: 0 auto; max-width: 34em; }
+/* pre-line so the blocked/expired copy breaks where the string says it does — two deliberate lines —
+   while still wrapping on its own if a narrow screen needs it. */
+.state-sub { margin: 0 auto; max-width: 34em; white-space: pre-line; }
 /* BLOCKED / EXPIRED. Whole-sub: the status word (red) sits under the header username, above the text. Per-peer:
    a dead cell shows the peer name + the same word + text where the QR/config would be. One red for both states. */
-.state-word { margin: 0; text-transform: uppercase; letter-spacing: .12em; font-weight: 800; font-size: clamp(26px, 9vw, 40px); line-height: 1.05; color: #e5484d; }
+.state-word { margin: clamp(26px, 7vh, 54px) 0 clamp(16px, 4vh, 32px); text-transform: uppercase; letter-spacing: .12em; font-weight: 800; font-size: clamp(26px, 9vw, 40px); line-height: 1.05; color: #e5484d; }
 .peer-dead { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; margin: auto; padding: 24px 16px; max-width: 34em; }
 .peer-dead-name { margin: 0; font-weight: 700; font-size: clamp(15px, 4.6vw, 19px); color: var(--ink); overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-.peer-dead .state-word { font-size: clamp(22px, 8vw, 34px); }
+/* The status word is the whole point of this screen, so give it real air — and more above than below,
+   so it reads as belonging to the device name above it rather than floating between the two. */
+.peer-dead .state-word { font-size: clamp(22px, 8vw, 34px); margin: clamp(26px, 7vh, 54px) 0 clamp(16px, 4vh, 32px); }
 .peer-dead .state-sub { color: var(--muted); }
 .spin { width: 34px; height: 34px; margin: 0 auto 16px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -127,14 +141,21 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 /* the peer-title header and the per-cell server name are placed by JS (syncVHints) so the whole
    [ name · up-arrow · content · down-arrow · buttons ] stack stays balanced whatever the box size */
 .ppage-head { position: absolute; left: 0; right: 0; top: 0; z-index: 4; flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 4px 16px 0; }
-.ppage-title { font-weight: 700; font-size: clamp(15px, 4.6vw, 19px); text-align: center; max-width: 92%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ppage-srv { font-weight: 700; }   /* "· edge-1" — colour set per deployment (server/iface colour) */
+/* one row: [device name] [· server] [caret]. Only the NAME truncates — the server changes as you swipe the rail
+   and the caret is the picker's affordance, so neither may be the part that falls off the end. */
+.ppage-title { display: flex; align-items: baseline; justify-content: center; gap: .34em; font-weight: 700; font-size: clamp(15px, 4.6vw, 19px); text-align: center; max-width: 92%; overflow: hidden; white-space: nowrap; }
+.ppage-name { min-width: 0; flex-shrink: 999; overflow: hidden; text-overflow: ellipsis; }   /* the name absorbs the squeeze… */
+.ppage-srv { font-weight: 700; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }   /* …so "· edge-1" only truncates once the name has nothing left. Colour set per deployment. */
 .ppage-dots { display: flex; gap: 8px; align-items: center; }
 .pdot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); transition: background .15s, transform .15s; cursor: pointer; }
 .pdot.on { background: var(--brand); transform: scale(1.4); }
 
 /* horizontal swipe row of a peer's servers */
-.srow { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; touch-action: pan-x; }
+/* touch-action must allow BOTH axes: the row covers nearly the whole screen, so `pan-x` alone left a
+   vertical drag over the card with nowhere to go (it was the reason up/down needed a JS takeover). The
+   row itself can't scroll vertically (overflow-y: hidden), so a pan-y drag chains straight to the pager
+   and pages one peer — same native scroll-snap that makes left/right feel instant. */
+.srow { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; }
 .srow::-webkit-scrollbar { display: none; }
 .scell { position: relative; flex: 0 0 100%; min-width: 0; scroll-snap-align: center; scroll-snap-stop: always; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 0 16px 6px; }
 
@@ -207,6 +228,132 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
   border: 1px solid rgba(255, 255, 255, .35); background: rgba(255, 255, 255, .12); color: #fff; font-size: 25px;
   line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
 .ih-close:hover { background: rgba(255, 255, 255, .22); }
+
+/* ── Jump picker — the index over every config on the subscription (tap a device, tap a connection, land).
+   Deliberately NOT a card: the rows float on the same dimmed page the instruction screens use, separated by
+   hairlines rather than boxes, so it reads as an index over what's behind it rather than a second screen on
+   top of it. Every label is the card's own vocabulary — the badge is literally the card's badge, cloned. ── */
+/* The scrim is the PAGE's own background, dimmed — not the instruction screens' fixed black. Those screens are
+   self-contained white-on-black cards; this one clones live, theme-tuned colour off the cards (fork tags, server
+   names, the dots), so it has to sit in the same theme they were coloured for. A black scrim under a light theme
+   left every one of them unreadable. */
+.cp-overlay { position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, .38);
+  display: flex; align-items: center; justify-content: center; padding: 70px 14px; overflow: hidden; }
+/* the close button sits in the BOX's own header row — it belongs to the picker, not to the page behind it */
+.cp-close { flex: none; width: 34px; height: 34px; margin-right: -4px; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: 1px solid transparent; cursor: pointer; font: inherit;
+  font-size: 23px; line-height: 1; color: var(--muted); transition: color .12s, background .12s, border-color .12s; }
+.cp-close:active { background: color-mix(in srgb, var(--ink) 12%, transparent); }
+@media (hover: hover) and (pointer: fine) {
+  .cp-close:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 8%, transparent); border-color: var(--line); }
+}
+/* A box: the list sits on its own surface, lifted off the dimmed page by a wide, soft, dark glow. Sized to
+   its content (see .cp-list) with a margin all round — the overlay's padding — so it never reads as full-bleed.
+   The glow is deliberately broad and low-contrast rather than a tight drop shadow: it should fade out slowly
+   into the dimmed page instead of drawing a hard edge. */
+.cp-panel { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 430px; max-height: 100%;
+  min-height: 0; padding: 10px 10px 6px; border-radius: var(--radius);
+  background: var(--panel); border: 1px solid var(--line);
+  box-shadow: 0 0 46px 10px rgba(0, 0, 0, .30), 0 26px 64px rgba(0, 0, 0, .42); will-change: transform; }
+.cp-head { flex: none; display: flex; align-items: center; gap: 8px; min-height: 24px; padding: 0 1px; }
+/* the title is rebuilt on every level switch; the close button is a sibling so it survives */
+.cp-title { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+/* Both levels' headers are TITLES, one step larger than the rows they head (19 vs 17px) and set in sentence
+   case. This started as an uppercase micro-label borrowed from the card tags, but caps at a label's size read
+   as SMALLER than the 17px names underneath, which is backwards for a heading. */
+.cp-eyebrow { font-size: 18px; font-weight: 700; color: var(--muted); min-height: 44px; display: flex; align-items: center;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the back row names the device you drilled into — same size as the other level's header */
+.cp-back { display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0; min-height: 44px;
+  padding: 4px 0; text-align: left;
+  background: none; border: 0; cursor: pointer; font: inherit; color: var(--brand);
+  font-size: 18px; font-weight: 700; border-radius: 10px; transition: background .12s; }
+.cp-back:active { background: color-mix(in srgb, var(--ink) 9%, transparent); }
+@media (hover: hover) and (pointer: fine) { .cp-back:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); } }
+/* the glyph's own side-bearing and baseline sit it low and inset — nudge it back onto the label's optical line */
+.cp-back-ar { font-size: 20px; line-height: 1; font-weight: 700; margin-left: -3px; transform: translateY(-1.5px); }
+.cp-back-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* `flex: 0 1 auto` — the list takes its natural height and only shrinks (into scrolling) when the panel hits
+   its cap. `flex: 1` would stretch it to fill, which is what made the picker read as a full screen. */
+.cp-list { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none;
+  -webkit-overflow-scrolling: touch; border-top: 1px solid var(--line); }
+.cp-list::-webkit-scrollbar { display: none; }
+.cp-row:last-child { border-bottom: 0; }
+.cp-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; min-height: 50px; padding: 9px 6px 9px 8px; text-align: left;
+  background: none; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; font: inherit;
+  color: var(--ink-2); transition: background .12s, color .12s; }
+/* pointer devices only — a phone keeps :hover latched on the last row tapped, which reads as a wrong selection */
+@media (hover: hover) and (pointer: fine) {
+  .cp-row:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink); }
+}
+/* mixed from --ink, not a white wash: on the light theme a white overlay over a near-white scrim is invisible */
+.cp-row:active { background: color-mix(in srgb, var(--ink) 11%, transparent); }
+/* where you are now: a brand edge on the row, never a fill — the row you're on shouldn't out-shout the rest */
+.cp-row.on { color: var(--ink); }
+.cp-row.on::before { content: ""; position: absolute; left: -6px; top: 8px; bottom: 8px; width: 3px;
+  border-radius: 0 3px 3px 0; background: var(--brand); }
+.cp-name { font-size: 17px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-row.on .cp-name { font-weight: 700; }
+/* one dot per connection, in that server's colour — a miniature of the rail this row leads to */
+.cp-dots { flex: none; display: flex; align-items: center; gap: 5px; }
+/* full strength — these are identity colours (fork / interface), not a density ramp, so dimming them just
+   made every device's row read as the same muddy green */
+.cp-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.cp-dot.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px currentColor; }
+/* connection rows: [protocol mark + the cloned card badge] on the left, the server on the right */
+.cp-lead { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 auto; }
+/* the brand mark, full colour, on no chip at all — these logos carry their own colour and a tint behind them
+   only muddied it. `color` feeds the turn mark's inner node (its one currentColor tone). */
+.cp-ico { flex: none; width: 28px; height: 28px; display: inline-flex; color: var(--turn-ink); }
+.cp-ico svg, .cp-ico img { width: 100%; height: 100%; display: block; object-fit: contain; }
+.cp-row .scell-srv { justify-content: flex-start; flex: 0 1 auto; min-width: 0; gap: 6px; }
+/* a notch smaller than on the card: the longest fork+app labels wrapped to a second line here, which made an
+   index that should scan in one pass ragged. Still the same micro-label idiom, just sized for a list. */
+.cp-row .scell-tag, .cp-row .scell-role { font-size: 11.5px; letter-spacing: .7px; }
+/* the app's AUTHOR ("by MYSOREZ") is provenance, not a way to tell two connections apart — it only pushed these
+   rows onto a second line. It's still on the card you land on. */
+.cp-row .scell-tag-by { display: none; }
+/* nor the interface/kind word — the row LEADS with the protocol mark, so "… PRIMARY WG" said it twice. And
+   only BACKUP is worth a word: primary IS the default, so naming it just adds a tag to nearly every row. That
+   also drops any role that was nothing but the interface word. */
+.cp-row .scell-role-if { display: none; }
+.cp-row .scell-role:not(.scell-backup) { display: none; }
+.cp-row .scell-backup { color: var(--muted); }
+.cp-dead { color: #e5484d; }
+/* ── The two ways into the picker ──────────────────────────────────────────────────────────────────────
+   The device NAME (what you'd instinctively tap) and the labelled "Connections" button on the chevron line
+   (what you'd look for). The name carries no mark of its own — no caret, no underline: it is the page's title
+   first, and the button is the affordance that has to be seen. */
+.ppage-title.pickable, .peer-dead-name.pickable { cursor: pointer; }
+/* No focus BOX, ever — clicking the title and pressing Esc used to leave a rectangle around it. Keyboard focus
+   is still shown as the brand colour rather than an outline. */
+.pickable:focus, .pickable:focus-visible, .pswitch:focus, .pswitch:focus-visible { outline: none; }
+.pickable:focus-visible { color: var(--brand); }
+@media (hover: hover) and (pointer: fine) {
+  .ppage-title.pickable:hover, .peer-dead-name.pickable:hover { color: var(--brand); }
+}
+
+/* "Connections" — the picker's labelled entry point. It wears the SELECTED protocol tab's treatment (panel
+   fill, brand border + ring) so it reads as the same class of control as those. syncVHints puts it on the
+   chevron's line, right-aligned to the same 12px inset as the header controls, at the same y on every page. */
+.pswitch { position: absolute; top: calc(50% + 133px); right: 12px; z-index: 5; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center; padding: 8px 14px; border-radius: 12px;
+  background: var(--panel); border: 1.5px solid var(--brand); box-shadow: 0 0 0 1px var(--brand);
+  cursor: pointer; font: inherit; white-space: nowrap;
+  font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--brand);
+  transition: box-shadow .15s, transform .1s; }
+.pswitch[hidden] { display: none; }
+.pswitch-head { display: none; }   /* wide layout only — see the landscape block */
+.pswitch:active { transform: translateY(-50%) scale(.96); }
+.pswitch:focus-visible { box-shadow: 0 0 0 1px var(--brand), 0 0 0 5px color-mix(in srgb, var(--brand) 30%, transparent); }
+/* Hover INVERTS it: brand ground, ground-coloured text. The old treatment tinted the fill to brand 15% and
+   ringed it with brand 20% — near enough the same colour that the two merged into one thick blurry halo. */
+@media (hover: hover) and (pointer: fine) {
+  .pswitch:hover { background: var(--brand); color: var(--brand-ink); border-color: var(--brand);
+    box-shadow: 0 0 0 1px var(--brand); }
+}
 /* brief "link copied" toast */
 .sub-toast { position: fixed; left: 50%; bottom: 22%; transform: translateX(-50%); z-index: 95; max-width: 88vw;
   background: rgba(18, 24, 33, .96); color: #fff; font-size: 14px; font-weight: 700; text-align: center;
@@ -399,6 +546,11 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .vhint svg { width: 27px; height: 27px; display: block; }
 .vhint-u { top: calc(50% - 120px); transform: translateX(-50%); animation: vhintU 1.7s ease-in-out infinite; }
 .vhint-d { top: calc(50% + 120px); transform: translateX(-50%); animation: vhintD 1.7s ease-in-out infinite; }
+/* A blocked/expired page runs no layout pass (syncVHints only handles config pages), so its chevrons sit at
+   their CSS default. That box is much taller than a QR card once the status word has its air, and at
+   +/-120px the up-chevron landed on top of the device name — push them out to clear it. */
+.ppage[data-mode="dead"] .vhint-u { top: calc(50% - 170px); }
+.ppage[data-mode="dead"] .vhint-d { top: calc(50% + 170px); }
 @keyframes vhintU { 0%, 100% { transform: translate(-50%, 1px); } 50% { transform: translate(-50%, -3px); } }
 @keyframes vhintD { 0%, 100% { transform: translate(-50%, -1px); } 50% { transform: translate(-50%, 3px); } }
 
@@ -526,7 +678,22 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
     -webkit-backdrop-filter: blur(10px); box-shadow: 0 1px 0 var(--line);
   }
   body.scrolled .bar .brand-mark { width: 30px; }
-  body.scrolled .bar .who { position: absolute; left: 50%; transform: translateX(-50%); }   /* keep the username's own size */
+  /* ONE button for the whole screen, not one per page: the wide layout scrolls every page as a single
+     document, so the per-page buttons would repeat all the way down it. */
+  .ppage .pswitch { display: none; }
+  .pswitch-head { display: inline-flex; position: static; top: auto; right: auto; transform: none;
+    padding: 6px 12px; font-size: 11.5px; }
+  .pswitch-head:active { transform: scale(.96); }
+  /* At the top of the page there's room to breathe: the button sits UNDER the username, both centred. */
+  .who-row { flex-direction: column; gap: 12px; }
+
+  /* Collapsed into the sticky bar there is no room for a second line, so the button moves BESIDE the name.
+     The slot goes ZERO-WIDTH there: the name must stay centred on the VIEWPORT, so the button has to
+     contribute nothing to the centring and simply overflow to its right. */
+  body.scrolled .bar .who-row { position: absolute; left: 50%; transform: translateX(-50%); width: auto;
+    flex-direction: row; gap: 0; }
+  body.scrolled .who-switch { flex: 0 0 0; width: 0; overflow: visible; }
+  body.scrolled .pswitch-head { margin-left: 14px; }
   body.scrolled .topctl { z-index: 40; top: 0; height: 66px; align-items: center; }         /* centre the controls on the taller bar */
   body.scrolled #app { padding-top: 66px; }                             /* clear the fixed bar */
   body.scrolled .modebar {
