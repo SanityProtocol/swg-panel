@@ -584,15 +584,36 @@ export const SVC_UNIT  = { sub: "swg-sub", netctl: "swg-netctl", update: "swg-up
 // Built on first use — T() only answers after loadLang() (same rule as ui.js's label tables).
 let _svcKind = null;
 export const SVC_KINDWORD = new Proxy({}, { get: (_, k) => (_svcKind || (_svcKind = { missing: T("not installed"), down: T("not running"), disabled: T("won’t survive a reboot") }))[k] });
+// The subscription server's CERTIFICATE, direct-TLS only. swg-sub keeps serving on its port without one, so
+// the panel reports it healthy while every subscriber gets a TLS handshake failure (Cloudflare 525) — the
+// failure is invisible from here unless we say it. The server sends {} under a reverse proxy: there the proxy
+// terminates TLS and the cert is the admin's to manage, so there is nothing for us to assert. Independent of
+// the systemd unit probe, which is why it lives in its own function — see serviceIssues.
+function subCertIssue(out) {
+  const sc = Store.subCert || {};
+  if (!sc.needs_issue || !subFeatureOn()) return;
+  out.push({ id: "subcert", sev: "critical", kind: sc.present ? "wrong" : "missing",
+             label: T("Subscription certificate"), unit: SVC_UNIT.sub,
+             msg: sc.present
+               ? T("the subscription server's certificate doesn't match {v1}", { v1: T("{v1} — subscribers get a TLS error", { v1: sc.domain }) })
+               : T("the subscription server has no certificate for {v1}", { v1: T("{v1} — subscribers get a TLS error", { v1: sc.domain }) }) });
+}
+
 export function serviceIssues() {
   const ps = Store.panelServices || {};
-  if (!ps || !Object.keys(ps).length) return [];
   // Not while the host is mid-convert / re-install / update: services legitimately stop and restart during
   // those, so the probe catches a real-but-transient gap and raises a CRITICAL modal for it — observed on a
   // docker→bare-metal convert, where swg-sub was down for seconds and the alert then outlived the cause by
   // hours. An operation in flight already has its own status surface; this one only adds noise to it.
   if (inProc(Store.hostProc)) return [];
   const out = [], add = (id, sev, kind, msg) => out.push({ id, sev, kind, msg, label: SVC_LABEL[id], unit: SVC_UNIT[id] });
+  // EVERY check below this point reads Store.panelServices, which is a bare-metal systemd probe — a docker
+  // panel reports {} and none of them can say anything. The CERTIFICATE check is the exception: it has its own
+  // source (Store.subCert, from the panel's own view of the cert file) and is just as true in a container. It
+  // used to sit below the early return, so enabling the server-side check for docker changed nothing visible —
+  // the panel reported needs_issue and the SPA dropped it here, one line before it could be read.
+  subCertIssue(out);
+  if (!Object.keys(ps).length) return out;
   const gone = u => u && !u.present;
   const down = u => u && u.present && u.active !== "active";
   const unen = u => u && u.present && u.enabled && u.enabled !== "enabled" && u.enabled !== "static";
@@ -606,14 +627,6 @@ export function serviceIssues() {
   // the panel reports it healthy while every subscriber gets a TLS handshake failure (Cloudflare 525) — the
   // failure is invisible from here unless we say it. The server sends {} under a reverse proxy: there the proxy
   // terminates TLS and the cert is the admin's to manage, so there is nothing for us to assert.
-  const sc = Store.subCert || {};
-  if (sc.needs_issue && subFeatureOn()) {
-    out.push({ id: "subcert", sev: "critical", kind: sc.present ? "wrong" : "missing",
-               label: T("Subscription certificate"), unit: SVC_UNIT.sub,
-               msg: sc.present
-                 ? T("the subscription server's certificate doesn't match {v1}", { v1: T("{v1} — subscribers get a TLS error", { v1: sc.domain }) })
-                 : T("the subscription server has no certificate for {v1}", { v1: T("{v1} — subscribers get a TLS error", { v1: sc.domain }) }) });
-  }
   const np = ps.netctl_path, nt = ps.netctl_timer;    // path OR timer covers the helper; collapse to one record
   if (gone(np) || gone(nt))       add("netctl", "warn", "missing", T("Panel URL and address changes can’t be applied until it’s restored"));
   else if (down(np) && down(nt))  add("netctl", "warn", "down", T("Panel URL and address changes can’t be applied right now"));
