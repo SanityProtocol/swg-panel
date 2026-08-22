@@ -1193,6 +1193,10 @@ else:
     e.setdefault("stats_file", "stats-%s.json" % name); e.setdefault("created", 0)
     if not validates(e.get("token_hash", ""), token):   # token changed (e.g. a new -key) → refresh in place
         e["token_hash"] = tok_hash(token)
+        # token_sha indexes the PREVIOUS token, and find_node_by_token skips the pbkdf2 fallback for any entry
+        # that has one — leaving it here beside a new hash locks the node out for good ("invalid node token" on
+        # every sync). Drop it and let the panel re-index on the node's first sync.
+        e.pop("token_sha", None)
 json.dump(nodes, open(path, "w"), indent=2)
 PY
   then chmod 600 "$ndir/nodes.json" 2>/dev/null || true
