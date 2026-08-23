@@ -9,7 +9,7 @@
 # ONE list, shared by every installer/updater copy site — the four images were allow-listed by the server but
 # absent from all four copy loops, so `_a/import-hint.png` (and the client logos) 404'd on every install since
 # they were added. Keep this in sync with STATIC in swg-sub; nothing else needs touching when an asset is added.
-SUB_WEB="sub.html sub.js sub.css turn-artifacts.js import-hint.png amneziavpn.svg amneziawg.png wireguard.svg"
+SUB_WEB="sub.html sub.js sub.css turn-artifacts.js amneziavpn.svg amneziawg.png wireguard.svg"
 
 # pretty protocol name for interface listings: awg → AmneziaWG, wg → Wireguard (anything else passes through)
 proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
