@@ -36,7 +36,6 @@
       dlOpenPage: "Open {host}({app}) downloads page", dlLatest: "Latest release · {ver}",
       start: "Start", startOpen: "Start — opens {app}", startGet: "Start — installs {app} if you don't have it",
       startHow: "Open the app, or install it?", startOpenApp: "Open {app}", startHaveIt: "I already have it", startGetApp: "Get {app}", startNeedIt: "Install it",
-      importHint1: "Once the app opens:", importHint2: "1. Go to ", importHint3: "2. Tap ", appOpening: "App is opening in {n}…",
       vpnCopied: "Link copied — paste it into Amnezia VPN",
       cmdCopied: "Command copied", vkCopied: "VK link copied — paste it in the app",
       pasteStep1: "1. Open ", pasteStep2: "2. Paste the copied connection link", pasteStep3: "3. Click ",
@@ -95,7 +94,6 @@
       dlOpenPage: "Открыть страницу загрузок {host}({app})", dlLatest: "Последняя версия · {ver}",
       start: "Старт", startOpen: "Старт — откроет {app}", startGet: "Старт — установит {app}, если его нет",
       startHow: "Открыть приложение или установить?", startOpenApp: "Открыть {app}", startHaveIt: "Уже установлено", startGetApp: "Установить {app}", startNeedIt: "Установить",
-      importHint1: "Когда приложение откроется:", importHint2: "1. Откройте ", importHint3: "2. Нажмите ", appOpening: "Приложение откроется через {n}…",
       vpnCopied: "Ссылка скопирована — вставьте её в Amnezia VPN",
       cmdCopied: "Команда скопирована", vkCopied: "Ссылка VK скопирована — вставьте её в приложении",
       pasteStep1: "1. Откройте ", pasteStep2: "2. Вставьте скопированную ссылку", pasteStep3: "3. Нажмите ",
@@ -493,7 +491,7 @@
   // OTHER means (×/Esc/backdrop/outside) pops that entry itself (disarmOverlayBack) so history stays balanced. Only one
   // hint is open at a time, and a transition (choice → walkthrough) REUSES the one entry (arm is idempotent) — no churn.
   var _ovArmed = false;
-  function closeAllHints() { clearFit(); closeImportHint(); closePasteHint(); closeWgTurnHint(); closeLinkImportHint(); closeVktgzChoice(); closeVktgzHint(); closeCliHint(); closeConfigPicker(); }
+  function closeAllHints() { clearFit(); closePasteHint(); closeWgTurnHint(); closeLinkImportHint(); closeVktgzChoice(); closeVktgzHint(); closeCliHint(); closeConfigPicker(); }
   function _ovOnPop() { _ovArmed = false; window.removeEventListener("popstate", _ovOnPop); closeAllHints(); }
   // This page owns its scroll position (the pager in portrait, the document in landscape) and the only history
   // entries it ever pushes are the overlay ones. Leaving restoration on `auto` meant closing an overlay ran a
@@ -516,7 +514,7 @@
   // FIT-TO-SCREEN — every instruction card opens centered and is scaled AS A WHOLE to fill a comfortable share of the
   // viewport: bigger on large screens, smaller on phones so it never scrolls or clips. Capped by CEIL so a huge monitor
   // can't blow the text up, floored so it stays readable. Scaling the whole card (not per-element font tweaks) keeps ONE
-  // consistent type scale across all six overlays. A ResizeObserver re-fits when the natural size changes (an image
+  // consistent type scale across every one of them. A ResizeObserver re-fits when the natural size changes (an image
   // loads, a download panel expands — transform never affects the observed box, so there's no feedback loop); window
   // resize re-fits on rotation.
   var _fitInner = null, _fitRO = null;
@@ -810,8 +808,6 @@
   // "Ask on tap" choice popover (Safari-on-iOS): Open the app (deliberate scheme fire) vs Get the app (store/TestFlight).
   var _startChoice = null;
   var _schemeFiredAt = {};
-  var IMPORT_HINT_IMG = "_a/import-hint.png";   // anton48 iOS "Settings → Import" hint (screenshot, server details blurred)   // hasAppKey → last no-fallback scheme fire time, for stale-"installed"-flag recovery (a quick re-tap = it didn't open)
-  var _ihPreload = new Image(); _ihPreload.src = IMPORT_HINT_IMG;   // warm it on load (keep the ref so it isn't GC'd before the fetch) → tapping Start shows the hint instantly, no download then
   function closeStartChoice() {
     if (!_startChoice) return;
     _startChoice.remove(); _startChoice = null;
@@ -848,43 +844,6 @@
     }, 0);
   }
 
-  // Import-hint popover (anton48 iOS): after the app opens, its "Import Connection Link?" prompt only shows once you
-  // reach Settings → Import (app-side quirk). Show a reminder + a screenshot (server details blurred) so the user knows
-  // where to tap when they return to the browser. Dismisses on tap-outside / Esc / a short auto-timeout.
-  var _importHint = null, _importPending = 0, _importCd = null, _cdTimer = 0;
-  function closeImportHint() {
-    if (!_importHint) return;
-    clearTimeout(_importPending); _importPending = 0;   // closing before the app opens cancels the pending open
-    clearInterval(_cdTimer); _cdTimer = 0; _importCd = null;   // stop the "App is opening in N…" countdown
-    _importHint.remove(); _importHint = null;
-    document.removeEventListener("keydown", _ihKey, true);
-  }
-  function _ihKey(e) { if (e.key === "Escape") dismissHints(); }
-  function showImportHint() {
-    closeImportHint();
-    // full-screen overlay (like the enlarged QR): dimmed backdrop, centred instruction + the screenshot; tap/Esc closes.
-    var ov = el("div", "ih-overlay");
-    var inner = el("div", "ih-inner");
-    _importCd = el("div", "ih-countdown"); _importCd.style.display = "none"; inner.appendChild(_importCd);   // "App is opening in N…" — driven by fireScheme's 5s countdown, hidden once the app opens
-    var txt = el("div", "ih-text");
-    txt.appendChild(el("div", "ih-line ih-lead", t("importHint1")));   // first line a bit bigger
-    // "Settings" / "Import" are DELIBERATELY hard-coded English, not table strings: anton48's iOS app ships in English
-    // only, so these must read exactly as they appear on the user's screen. Don't "fix" this by translating them — the
-    // labels elsewhere (TURN Proxy's *«Настройки»* / *«Импорт»*) are translated precisely because those apps ARE localised.
-    var l2 = el("div", "ih-line"); l2.appendChild(document.createTextNode(t("importHint2"))); l2.appendChild(el("b", null, "Settings")); txt.appendChild(l2);
-    var l3 = el("div", "ih-line"); l3.appendChild(document.createTextNode(t("importHint3"))); l3.appendChild(el("b", null, "Import")); txt.appendChild(l3);
-    inner.appendChild(txt);
-    var img = el("img", "ih-img"); img.src = IMPORT_HINT_IMG; img.alt = ""; inner.appendChild(img);
-    ov.appendChild(inner);
-    var x = el("button", "ih-close"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.textContent = "×";
-    x.onclick = dismissHints; ov.appendChild(x);
-    ov.onclick = function (e) { if (e.target === ov) dismissHints(); };   // only the dark backdrop closes — no auto-dismiss
-    document.body.appendChild(ov);
-    _importHint = ov; openFit(inner);
-    attachSwipeClose(ov, dismissHints);
-    setTimeout(function () { document.addEventListener("keydown", _ihKey, true); }, 0);
-    armOverlayBack();
-  }
 
   // WG/AWG Amnezia VPN on a desktop with no vpn:// handler (Windows/Linux): the link is already copied, so show a
   // full-screen "paste it in" card (like the anton48 hint) — app icon, the three steps, and a "download the app" link
@@ -914,7 +873,7 @@
     return b;
   }
   function showPasteHint(c) {
-    closePasteHint(); closeImportHint();
+    closePasteHint();
     var ov = el("div", "ih-overlay ph-overlay");
     var inner = el("div", "ih-inner ph-inner");
     var copied = el("div", "ph-copied"); copied.appendChild(iconEl("checks")); copied.appendChild(el("span", null, t("linkCopied")));
@@ -975,7 +934,7 @@
     return b;
   }
   function showWgTurnHint(c) {
-    closeWgTurnHint(); closePasteHint(); closeImportHint();
+    closeWgTurnHint(); closePasteHint();
     var ov = el("div", "ih-overlay ph-overlay");
     var inner = el("div", "ih-inner ph-inner");
     var done = el("div", "ph-copied"); done.appendChild(iconEl("checks")); done.appendChild(el("span", null, t("wtDownloaded")));
@@ -1022,7 +981,7 @@
   }
   function _liKey(e) { if (e.key === "Escape") dismissHints(); }
   function showLinkImportHint(c) {
-    closeLinkImportHint(); closeWgTurnHint(); closePasteHint(); closeImportHint();
+    closeLinkImportHint(); closeWgTurnHint(); closePasteHint();
     var app = (c && c.app) || (c && c.dlAppName) || t("theApp");
     var ov = el("div", "ih-overlay ph-overlay");
     var inner = el("div", "ih-inner ph-inner");
@@ -2386,19 +2345,13 @@
     // fallback here is what loaded TestFlight BEHIND the app in in-app browsers (Telegram) that don't fire the
     // visibility/blur events we'd use to cancel it. If the app doesn't open, a quick re-tap recovers (below).
     function fireScheme(c) {
-      var go = function () { _schemeFiredAt[hasAppKey(c)] = Date.now(); try { window.location.href = c.openUri; } catch (_) {} };
-      if (/^vkturnproxy:/i.test(c.openUri || "")) {   // anton48: show the "Settings → Import" screenshot FIRST, then open the app after 5s so the user can read it
-        showImportHint();
-        if (_importCd) {   // count "App is opening in 5… 4… 3… 2… 1…" down to the open, then hide the line
-          var _n = 5; _importCd.style.display = ""; _importCd.textContent = t("appOpening").replace("{n}", _n);
-          _cdTimer = setInterval(function () {
-            _n -= 1;
-            if (_n <= 0) { clearInterval(_cdTimer); _cdTimer = 0; if (_importCd) _importCd.style.display = "none"; }
-            else if (_importCd) _importCd.textContent = t("appOpening").replace("{n}", _n);
-          }, 1000);
-        }
-        _importPending = setTimeout(go, 5000);
-      } else { go(); }
+      // Straight to the app. anton48's iOS build used to import a config ONLY from Settings → Import, so this
+      // showed a screenshot of that screen and held the open back 5s behind a countdown so the user could read it.
+      // v1.0-build350 imports from the main screen, so the whole detour is gone — for BOTH ways in: the remembered
+      // "app is installed" path (the centre button opens it directly) and the deliberate "Open the app" button of
+      // the two-button ask shown when the app has never been opened. Both call here, so both open immediately.
+      _schemeFiredAt[hasAppKey(c)] = Date.now();
+      try { window.location.href = c.openUri; } catch (_) {}
     }
     // Fire the deep-link, then fall back to the download if nothing handled it — for the AUTO-fire path on browsers
     // that fail silently (Chrome/Firefox on iOS, Android, desktop). If the app opens, the page goes hidden → cancel.
