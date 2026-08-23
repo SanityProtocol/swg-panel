@@ -18,6 +18,11 @@ earlier releases predate the changelog — see the git history. · Русски�
   ever disagree.
 
 ### Changed
+- **On iPhone, VK TURN Proxy now opens the moment you tap.** Its app used to accept a connection only from
+  Settings → Import, so the page showed a screenshot of that screen and held the app back five seconds behind
+  a countdown so you had time to read it. The app imports from its main screen as of build 350, so the wait and
+  the screenshot are gone — both when the page already knows you have the app, and when you pick "Open" from
+  the two buttons it offers the first time.
 - **Up and down now feel like left and right on the subscription page.** Moving between devices tracks your
   finger and lands on exactly one device per swipe, the same way moving between a device's servers always
   has. A soft swipe used to do nothing at all.
