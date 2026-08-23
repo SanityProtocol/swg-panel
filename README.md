@@ -4,11 +4,13 @@
 
 <!-- WHATS-NEW:START -->
 > **What's new in 1.7.15-beta** — [full changelog](CHANGELOG.md)
-> - **Any connection in two taps on the subscription page** — tap a device name or the new **Connections** button for an index of the whole subscription, then tap a device and a connection to land straight on it. Moving between devices now tracks your finger and lands on exactly one per swipe, the way moving between a device's servers always has.
+> - **Any connection in two taps on the subscription page** — tap a device name or the new **Connections** button for an index of the whole subscription, then tap a device and a connection to land straight on it. Moving between devices now tracks your finger and lands on exactly one per swipe, the way moving between a device's servers always has. Special thanx to @GoSSy4691 for ideas.
 > - **The subscription page could go down exactly when its certificate arrived** — the signal meaning "the certificate is ready" had no handler yet and killed the server waiting to serve it. On Docker the certificate problem was invisible twice over: the check was switched off, and once on it was discarded before it could be shown. The alert now offers Reissue certificate instead of an update that cannot fix it.
 > - **Re-running an installer no longer costs you the fleet** — a master re-install unenrolled every other node, and a Docker node re-installed with a new key locked itself out with "invalid node token" for ever.
 > - **Taking over an AmneziaVPN container no longer breaks its clients** — the interface came up with obfuscation settings they knew nothing about, so the server looked healthy while traffic silently stopped. Uninstalling now gives the container back instead of leaving the machine with no server at all.
 > - **Updating from the command line stopped raising a false CRITICAL** about the AmneziaWG module it was itself rebuilding, next to a button that started a second update on top of the first.
+> - **A WDTT or csqtt server installed in Docker is no longer read as a different install** — such a server keeps its settings inside its own container, but the node looked for them on the host, where a machine that had ever run one directly had an unrelated install at the very same path. The panel offered to adopt the containerised server while showing the other one's users, and taking it over would have seeded the wrong identity and broken every client of both. Taking one over now also stops the container rather than only the process, which used to come straight back and hold the port.
+> - **An unattended uninstall no longer throws away the keys and peers it offered to keep** — every keep-by-default question silently answered "no" wherever there was no terminal to ask on, so the one path that runs without a human was the one that discarded the most.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -190,14 +192,20 @@ If you chose **Master** above, you already have your first VPN server — you ca
    configure any VPN — you do that in the panel, where you can see what you’re doing.
 
 If that server was **already running** WireGuard, AmneziaWG, WDTT or csqtt, those show up on its page in the
-panel as cards offering **Adopt** or **Ignore**. Adopting takes a server over exactly as it is — same
-keys, same port, same users — so everyone’s existing configs keep working and nothing goes down.
-
+panel as cards offering **Adopt** or **Ignore** — or **Take over**, when something is still running it.
+Either way the server is taken over exactly as it is — same keys, same port, same users — so
+everyone’s existing configs keep working and nothing goes down.
 That includes a server run by the **AmneziaVPN** app in its own Docker container. The panel can see it
 even though it lives in a separate network namespace, shows you its subnet, port and users first, and
 **Take over** stands the same server up natively — same key, same port, same obfuscation — so the
 configs already on your users’ phones keep working. Its users come across with the names you gave them
 in Amnezia. That container is only stopped, never deleted: start it again to go back.
+
+The same goes for a **WDTT or csqtt** server installed in Docker — every fork ships that option. The panel
+reads such a server’s settings from inside its container, so a machine that also ran one directly on the
+box (both sitting at the same default path) can’t have the two mixed up. Taking one over copies its
+identity and its users from the container and stops the **container**, not just the program inside it: one
+set to restart would otherwise come straight back and fight the new server for the port.
 
 The new server reaches out to the panel on its own — **you never have to open special access to it**,
 no inbound ports, no SSH keys shared around. Within a few seconds it shows up in your Nodes list.

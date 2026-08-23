@@ -10,6 +10,7 @@ earlier releases predate the changelog — see the git history. · Русски�
   be a dozen swipes away. Tap the device name, or the new **Connections** button, to get an index of every
   device on the subscription; tap a device, tap a connection, and the page is already there. Levels with
   nothing to choose are skipped, and a subscription holding a single config doesn't show the button at all.
+  Special thanx to @GoSSy4691 for ideas.
 - **An update now tells you when your `docker-compose.yml` is older than the release.** Compose is patched
   key by key rather than replaced, because it carries settings nothing else records — so anything added to
   the shipped file reaches only fresh installs. The update now names the difference instead of leaving you
