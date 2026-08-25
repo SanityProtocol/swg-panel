@@ -13,7 +13,7 @@
  */
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
-import { esc, portOf, ipOf, ipPickerVal, seen, ago, dur, fmtBytes, rate, isWdttIface, isCsqttIface, isSelfContainedKind } from "./util.js";
+import { esc, portOf, ipOf, ipPickerVal, seen, ago, dur, fmtBytes, rate, isSelfContainedKind } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
@@ -21,6 +21,7 @@ import {
   forkSupportsAwg, turnColor, turnClientColor, turnClientAuthor,
 } from "./turn-catalog.js";
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnProxiesFor, wdttOn,
+         isWdttName, isSelfContainedName, turnIfaceNameError,
          suggestPort, portHolder, portErrMsg, nextWdttName, cidrNet, subnetsOverlap, subnetFleetConflict,
          subnetServerAddr, suggestSubnet, ghostIface } from "./model.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
@@ -28,7 +29,7 @@ import { EgressPicker, egressInit, egressError, egressBody, ifTrafficBadge, Bloc
 import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount } from "./views.js";
 import { IfaceThroughput, RangedHistory } from "./charts.js";
 import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, turnClientsFor, subFeatureOn,
-         wdttResealForNode } from "./crypto.js";
+         ensureVaultUnlocked, wdttResealForNode } from "./crypto.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -167,7 +168,7 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   // WDTT iface, which owns its own transport). With none on the node there is nothing to forward to, so hide the
   // button rather than open a sheet with an empty target list. Inline, not isSysName(): that is a local of the
   // node screen, and calling it here throws at render and takes the whole panel down.
-  const _canFrontTurn = Object.entries(metas).some(([n, b]) => (b || {}).listen_port && !((b || {}).system || String(n).startsWith("swg_") || isWdttIface(n)));
+  const _canFrontTurn = Object.entries(metas).some(([n, b]) => (b || {}).listen_port && !((b || {}).system || String(n).startsWith("swg_") || isSelfContainedName(n)));
   const cards = iface ? turnProxiesFor(node, iface) : orderById(all, nrec.turn_order, tp => tp.service);
   // WDTT forks are self-contained turn-family servers (own their interface) — rendered as cards in THIS section
   // (node view only; a WDTT instance doesn't "forward to" an iface, so it never appears in the per-iface subset).
@@ -206,8 +207,14 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
         <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
       </div></div>`; };
   return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length + wdttInsts.length + csqttInsts.length}
-      actions=${nrec.turn_manage ? html`<${Fragment}><button class="btn btn-mini ico" title=${T("Turn-proxy settings in Settings → Turn proxies")} onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button>${_canFrontTurn && !(iface && isWdttIface(iface)) ? html`<button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? T("Unavailable while the node is down / converting") : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> ${T("Setup new proxy")}</button>` : null}<//>` : null}>
-    ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>${Trich("Turn-proxy management is *off* on this node — no Docker socket was mounted at install (*TURN_MANAGE=manual*), so these are read-only here. Add, edit or restart them on the box directly.")}</span></div>` : null}
+      actions=${nrec.turn_manage ? html`<${Fragment}><button class="btn btn-mini ico" title=${T("Turn-proxy settings in Settings → Turn proxies")} onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button>${_canFrontTurn && !(iface && isSelfContainedName(iface)) ? html`<button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? T("Unavailable while the node is down / converting") : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> ${T("Setup new proxy")}</button>` : null}<//>` : null}>
+    ${/* The REASON is not universal, though the symptom is. "No Docker socket was mounted" is the
+          bare-metal-installer answer; on a declaratively-managed node it is simply false, and an
+          operator sent looking for a socket mount they never made loses an afternoon. Key the reason
+          off `platform` — T-P1 shipped it INSTEAD of the `managed_by` field the plan first named. */""}
+    ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>${nrec.declarative
+      ? Trich("Turn-proxy management is *off* on this node — its configuration has it off (*turnManage*), so these are read-only here. Turn it on there and rebuild, or manage them on the box directly.")
+      : Trich("Turn-proxy management is *off* on this node — no Docker socket was mounted at install (*TURN_MANAGE=manual*), so these are read-only here. Add, edit or restart them on the box directly.")}</span></div>` : null}
     <div class="ifgrid" ...${iface ? {} : tReorder.container()}>${iface
       ? html`<${Fragment}>
           ${wdttInsts.map(w => html`<${WdttCard} key=${"wdtt:" + w.iface} node=${node} w=${w} reorder=${null}/>`)}
@@ -353,7 +360,7 @@ export function TurnManageSheet({ node, tp }) {
   const [lport, setLport] = useState(lp);
   const tperr = portErrMsg(node, lport, [lp]);   // live listen-port collision check (this proxy's own port doesn't count)
   const allIfaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isWdttIface(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isSelfContainedName(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
   // this proxy's fork is fixed here; a WireGuard-only fork can't front an AmneziaWG interface → hide awg ones
   const fork = turnFork(svc);
@@ -1341,7 +1348,7 @@ export function SetupTurnSheet({ node, forwardIface }) {
   const snap = Store.stats[node] || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";
   const allIfaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isWdttIface(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isSelfContainedName(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
   // launched from an interface's page → pre-select it as the forwards-to (and, if it's AmneziaWG, start on a fork that can front it)
   const fwdPre = forwardIface ? allIfaces.find(i => i.name === forwardIface) : null;
@@ -1494,7 +1501,7 @@ export function WdttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail })
   const used = (() => {
     const ifaces = new Set(), subs = new Set(), ports = new Set();
     Object.entries(snap.interfaces || {}).forEach(([n, b]) => {
-      if (isWdttIface(n)) ifaces.add(n);
+      if (isWdttName(n)) ifaces.add(n);
       const p = parseInt((b.meta || {}).listen_port, 10); if (p) ports.add(p);
     });
     (snap.turn_proxies || []).forEach(tp => { const p = parseInt(String(tp.listen || "").split(":").pop(), 10); if (p) ports.add(p); });
@@ -1515,7 +1522,7 @@ export function WdttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail })
   const [adv, setAdv] = useState(false);
   const wgperr = portErrMsg(node, wgPort, []);   // live internal-WG-port collision check (new interface → no own port)
   saveRef.current = async (lhost, lport) => {
-    if (!isWdttIface(iface.trim())) return fail(T("Interface must be wdtt0–wdtt999."));
+    const _ne = turnIfaceNameError(node, iface, "wdtt"); if (_ne) return fail(_ne);
     if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail(T("Subnet must be an IPv4 CIDR (e.g. 10.66.66.1/24)."));
     if (!/^\d+$/.test(String(wgPort).trim())) return fail(T("Internal WG port must be a number."));
     if (wgperr) return fail(wgperr);   // caught in the browser (never a node-side "FAILED TO APPLY")
@@ -1759,6 +1766,16 @@ export async function wdttRestoreIdentity(node, iface) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const kb = (nrec.wdtt_vault || {})[iface];
   if (!kb) return toast(T("No escrowed identity is stored for this server."), "err");
+  // ASK for the key, don't just report that it is missing. The escrowed identity can only be opened with the
+  // operator's vault key, so a locked vault is the NORMAL state at the moment they press this — and "Unlock the
+  // Encryption Vault first" sent them somewhere else to do it, with nothing to click and no way back. Every
+  // other action that needs the key raises this prompt; this one is where the cost of not having it is highest,
+  // because the alternative on offer beside it is Recreate fresh, which every user then has to re-import.
+  if (!(await ensureVaultUnlocked({
+        title: T("Unlock to restore this server's identity"),
+        reason: T("This server's original keypair and owner password are escrowed under your encryption key — the panel only ever held the ciphertext. Unlock it to bring the server back exactly as it was, with every existing user config still working."),
+        consequence: T("nothing is restored. The server stays down until you unlock the key, or you can Recreate fresh instead — which mints a new server key and makes every user re-import."),
+      }))) return;
   try {
     const sealed = await wdttResealForNode(node, kb);
     const r = await api.wdttRestore({ node, iface, sealed_identity: sealed });
@@ -1897,7 +1914,7 @@ export function CsqttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail }
   const [subnet, setSubnet] = useState(nextSubnet);
   const [adv, setAdv] = useState(false);
   saveRef.current = async (lhost, lport) => {
-    if (!isCsqttIface(iface.trim())) return fail(T("Interface must be csqtt0–csqtt9999."));
+    const _ne = turnIfaceNameError(node, iface, "csqtt"); if (_ne) return fail(_ne);
     if (!/^\d{1,3}(\.\d{1,3}){3}\/24$/.test(subnet.trim())) return fail(T("Subnet must be an IPv4 /24 CIDR (e.g. 10.66.67.1/24)."));
     setBusy(true); setMsg({ k: "work", t: T("creating csqtt server… (the node installs it on its next sync)") });
     const r = await api.csqttSet({ node, iface: iface.trim(), tun_addr: subnet.trim(), listen: lhost + ":" + lport, max_passwords: 500, stopped: false });

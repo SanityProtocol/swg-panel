@@ -9,7 +9,7 @@
  */
 
 import {
-  ago, dur, fmtBytes, isWdttIface, isCsqttIface, rate, seen,
+  ago, dur, fmtBytes, rate, seen,
 } from "./util.js";
 import { T, Trich, plural, pluralWord, srvVerb, srvDetail } from "./i18n.js";
 import {
@@ -450,8 +450,9 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const fLive = {};   // fork → { rx, tx, on, tot } aggregated across every node/instance of that fork
   if (turnOn) sPeers.forEach(p => p.targets.forEach(t => {
     if (!sel.has(t.node)) return;
-    const isCS = t.type === "csqtt" || isCsqttIface(t.iface);
-    const isSC = t.type === "wdtt" || isWdttIface(t.iface) || isCS;   // self-contained VK-turn servers (WDTT/csqtt) are ON the server (no viaTurn) → fork = the instance's fork
+    const _tk = targetType(t);                    // authoritative per-target kind (roster type → live set → name)
+    const isCS = _tk === "csqtt";
+    const isSC = _tk === "wdtt" || isCS;   // self-contained VK-turn servers (WDTT/csqtt) are ON the server (no viaTurn) → fork = the instance's fork
     let fk;
     if (isSC) { const kind = isCS ? "csqtt" : "wdtt"; const inst = ((Store.stats[t.node] || {})[kind] || []).find(x => x && x.iface === t.iface); fk = (inst && inst.fork) || (isCS ? "csqtt" : "amurcanov"); }
     else if (t.viaTurn) fk = turnFork(t.viaTurn);

@@ -293,7 +293,10 @@ function App() {
     if (ht && Store.env && ("docker" in Store.env)) {
       const dk = !!Store.env.docker;
       ht.className = "tport " + (dk ? "docker" : "baremetal");
-      ht.textContent = dk ? T("kind|docker") : T("kind|bare-metal");
+      // Say which runtime it really is. The pill is about THIS panel, and a podman-hosted one used to
+      // read DOCKER — the same lie the node cards told before they learned to ask.
+      ht.textContent = dk ? (Store.env.runtime === "podman" ? T("kind|podman") : T("kind|docker"))
+                          : T("kind|bare-metal");
       ht.hidden = false;
     }
     const slot = $("#updslot");

@@ -43,6 +43,15 @@
   --sel-ink:var(--brand);   /* text colour for a SELECTED brand-tinted control (Online pill, etc.); darkened on light */
   --dd-hover:color-mix(in srgb,var(--brand) 14%,transparent); --dd-sel:color-mix(in srgb,var(--brand) 22%,transparent);   /* ONE hover/selected tint for every dropdown row app-wide */
   --tport-bare:#7DC4F0; --tport-dock:#A974F2;   /* deploy-method pills (bare-metal blue / docker purple) */
+  --tport-nix:#7EB6D9;   /* the PLATFORM pill, which sits BESIDE a deploy pill rather than replacing one — a
+                            NixOS host running our image is a container AND declaratively managed. Cooler and
+                            lower-chroma than either deploy colour on purpose: it qualifies that pill, it does
+                            not compete with it. */
+  --tport-os:#6FB3A8;    /* …and the same pill on a host the panel CAN still touch. Teal, because it is the one
+                            hue this palette had left: blue is the bare-metal pill, violet the docker one, and
+                            green/amber/rose all carry status meaning. Held at the platform pill's low chroma so
+                            it still qualifies the deploy pill rather than competing — the HUE says declarative
+                            or not, the restraint says "this is a label". */
   --sans:"Hanken Grotesk",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
   --r:11px; --r-sm:8px; --shadow:0 24px 60px -14px rgba(0,0,0,.62);
@@ -67,6 +76,7 @@
   --partial-r:#D65468; --dangling:#D63A55; --orphan:#8A5CC4; --unknown:#5E7085; --removing:#B07A16;
   --smart:#D6247E;
   --tport-bare:#2472C4; --tport-dock:#8B45D0;   /* deploy pills deepened for white (point 6) */
+  --tport-nix:#2E6C93; --tport-os:#2C7A6E;   /* …and both platform pills with them */
   --sel-ink:color-mix(in srgb, var(--brand) 58%, #000);   /* a SELECTED control's text is a darker shade of the theme on white */
 }
 /* LIGHT-mode component tweaks that a variable swap can't express. */
@@ -461,6 +471,22 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
   padding:2px 7px;border-radius:6px;margin-left:2px}   /* same shape as the wg/awg .iftype badge; colour per .docker/.baremetal */
 .tport.baremetal{color:var(--tport-bare);background:color-mix(in srgb,var(--tport-bare) 14%,transparent)}
 .tport.docker{color:var(--tport-dock);background:color-mix(in srgb,var(--tport-dock) 16%,transparent)}
+.tport.nix{color:var(--tport-nix);background:color-mix(in srgb,var(--tport-nix) 13%,transparent)}   /* platform, beside the deploy pill — never instead of it */
+/* the same platform pill on a node whose installation the panel CAN still touch. Every node reports its distro
+   now, so the pill can no longer double as "this host is declarative" the way it did when only NixOS had one —
+   that meaning moves to the colour, and the muted one is just a label. */
+.tport.os{color:var(--tport-os);background:color-mix(in srgb,var(--tport-os) 13%,transparent)}
+/* the node's OS bubble: the distribution's own name as the header, then label/value rows. A two-column grid so
+   the values line up whatever the labels translate to — the reason this is not just a `title`. It rides a
+   Popover rather than the CSS-only .turnbub because the node card clips (see platformPill). */
+/* keeps .deppop's standard 5px outer padding and 8px row inset — same frame as every other hover
+   bubble (deprow / cpu-row / onpop-h); only the header stays a tone-coloured title, not an eyebrow. */
+.osbub{min-width:210px;display:flex;flex-direction:column;gap:1px}
+.osbub-h{padding:4px 8px 6px;font-weight:600;font-size:12px;letter-spacing:.01em}
+.osbub-r{display:grid;grid-template-columns:max-content 1fr;gap:12px;align-items:baseline;padding:4px 8px;border-radius:6px}
+.osbub-k{color:var(--muted);font-size:11px}
+.osbub-v{color:var(--ink);font-family:var(--mono);font-size:11.5px;text-align:right}
+.platwrap{display:inline-flex;align-items:center}
 /* panel-header deploy tag keeps the bordered livepill pill geometry (overrides the node-badge look above) */
 #host-tport{font-size:11px;letter-spacing:.08em;border-radius:99px;padding:5px 11px;margin-left:0;border:1px solid var(--line-solid)}
 #host-tport.baremetal{border-color:color-mix(in srgb,var(--tport-bare) 40%,transparent);background:color-mix(in srgb,var(--tport-bare) 9%,transparent)}
@@ -748,9 +774,27 @@ a.ifcard.candidate.ignored:hover{opacity:.85;border-color:var(--brand)}
 .targetopt.missing{border-color:color-mix(in srgb,var(--dangling) 34%,var(--line-solid));background:color-mix(in srgb,var(--dangling) 5%,transparent)}
 .topt-missing{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--dangling);border:1px solid color-mix(in srgb,var(--dangling) 34%,transparent);border-radius:99px;padding:1px 6px}
 .targetopt .tg{flex:none;margin-right:2px}   /* wg/awg type tag sits just before the address */
+/* The row's right-hand controls as ONE fixed-width, LEFT-ANCHORED column, so the first thing in it starts at
+   the same x on every row — the ★ in the edit sheet's Deployments list, the protocol badge in the picker.
+   The row was a plain right-packed flex, which only lines up while every row carries the same controls: a
+   self-contained turn row has two badges, no address box and no gear, so it is a different width than a
+   wg/awg row and its badge landed in its own place. Now a row with less in it leaves slack on the RIGHT
+   instead of dragging its leading badge out of line. Width = a full wg/awg row: badge 44 + address 130 +
+   gear 28 + three 10px gaps; `hasprim` adds the ★ toggle and its gap. */
+.targetopt .topt-right{flex:none;display:flex;align-items:center;gap:10px;width:222px}
+.targetopt .topt-right.hasprim{width:262px}
+.targetopt .topt-right > .tg{min-width:44px;justify-content:center;margin-right:0}   /* uniform badge width, so the column after it lines up too */
+.targetopt .topt-right .tgt-front{min-width:0;overflow:hidden}                       /* a long proxy title shrinks rather than shoving the row */
 .targetopt .topt-ip{width:130px;flex:none;padding:5px 8px;font-size:12.5px}
+.targetopt .topt-right .topt-ip.faint{width:auto;padding-left:2px}                    /* "auto" is a word, not a field — it needs no address-box width */
 .targetopt .topt-ip.existing{display:inline-flex;align-items:center;justify-content:flex-end;font-family:var(--mono);color:var(--ink-2);text-align:right}   /* already-deployed address, read-only */
 .targetopt .topt-ip[readonly]{color:var(--ink-2);text-align:right;font-family:var(--mono)}
+/* Per-deployment settings (DNS/MTU/routing) live behind this gear — see TargetSettingsSheet. It sits after the
+   address box on wg/awg rows only; a wdtt/csqtt row has no client config, and that missing gear is the tell.
+   `.on` = this deployment differs from its interface's defaults, so a row's customisation is visible unopened. */
+.targetopt .topt-gear{flex:none;width:28px;height:28px;padding:0;color:var(--faint)}
+.targetopt .topt-gear:hover{color:var(--ink)}
+.targetopt .topt-gear.on{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 40%,transparent);background:color-mix(in srgb,var(--brand) 10%,transparent)}
 .targetpick.scroll{max-height:232px}   /* Add-peers carousel grid: scroll after ~5 rows */
 
 /* Add-peers — two grids (this user's peers · unassigned pool). Each peer is a bordered block; a multi-deployment
@@ -1144,6 +1188,11 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .cmdrow{display:flex;gap:8px;align-items:stretch}
 .cmdrow .tokenbox{flex:1}
 .tokenbox{font-family:var(--mono);font-size:12.5px;color:var(--ink);background:var(--bg);border:1px solid var(--line-solid);border-radius:var(--r-sm);padding:11px 13px;word-break:break-all;user-select:all;line-height:1.55}
+/* A config BLOCK rather than a one-liner (the NixOS enrolment snippet): it keeps its own line breaks,
+   and a line too long for the sheet scrolls INSIDE the box. `min-width:0` is the load-bearing half —
+   a flex item will not shrink below its max-content width without it, so one long line pushes the
+   whole modal wider instead. Measured on the enrolment sheet: 638 → 748px, and back to 638 with this. */
+.tokenbox.block{white-space:pre;word-break:normal;min-width:0;overflow-x:auto}
 .copyaction{flex:none;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:var(--r-sm);color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:6px;font-size:12px;padding:0 13px;white-space:nowrap;transition:all .15s var(--ease)}
 .copyaction:hover{color:var(--ink);border-color:var(--brand)}
 .copyaction svg{flex:none}
@@ -1843,6 +1892,17 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rltab-cap{flex:1;min-width:0;padding-bottom:8px;color:var(--ink);font-size:15px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rltab-cap b{font-weight:700;font-size:16px}
 .rltab-group{display:flex;gap:4px;margin-left:auto}
+/* the declarative install's two arms, right-aligned ON the tab row: a switch, not a second tablist.
+   Each side carries its run-model's own colour — the same tokens the bare-metal / docker pills use. */
+.armsw{display:inline-flex;margin-left:auto;align-self:center;margin-bottom:7px;border:1px solid var(--line);
+  border-radius:20px;overflow:hidden;background:var(--surface-2)}
+.armsw button{appearance:none;border:0;background:transparent;font:inherit;font-size:11.5px;font-weight:700;
+  padding:5px 13px;color:var(--muted);cursor:pointer;white-space:nowrap;transition:color .12s,background .12s}
+.armsw button + button{border-left:1px solid var(--line)}
+.armsw button:hover{color:var(--ink)}
+.armsw button.on.bare{color:var(--tport-bare);background:color-mix(in srgb,var(--tport-bare) 16%,transparent)}
+.armsw button.on.ctr{color:var(--tport-dock);background:color-mix(in srgb,var(--tport-dock) 16%,transparent)}
+@media (max-width:560px){.armsw button{font-size:11px;padding:5px 9px}}
 .rltab-note{display:flex;gap:7px;align-items:flex-start;margin:-4px 0 16px;color:var(--faint);font-size:12px;line-height:1.5}
 .rltab-note svg{flex:0 0 auto;width:14px;height:14px;margin-top:1px;opacity:.8}
 .rltab-warn{display:flex;gap:7px;align-items:flex-start;margin:-11px 0 16px;color:var(--partial);font-size:12px;line-height:1.5}
@@ -2658,10 +2718,21 @@ a.tg:hover{filter:brightness(1.25)}
 .fieldrow > .field{flex:1;min-width:140px;margin:0}
 /* Access & TLS */
 .mt8{margin-top:8px}
+/* declarative host: a config block that can be copied out, and the one-line chooser above it. Wide
+   Nix lines scroll inside the block — the settings card must not scroll sideways. */
+.nixblock{white-space:pre;overflow-x:auto;padding:10px 12px;border-radius:8px;border:1px solid var(--line);
+  background:var(--code-bg,rgba(127,127,127,.09));margin:0 0 8px;font-size:.85em;line-height:1.5}
+.segrow{display:flex;gap:6px;margin:0 0 10px}
+.seg{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;font-size:12px;
+  font-weight:700;padding:5px 13px;border-radius:20px;cursor:pointer}
+.seg:hover{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 55%,var(--line-solid))}
+.seg.on{background:color-mix(in srgb,var(--brand) 16%,transparent);border-color:var(--brand);color:var(--brand)}
 .subaddr{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--card-2,rgba(127,127,127,.05))}
 .subaddr-row{display:flex;gap:12px;align-items:baseline}
 .subaddr-k{flex:0 0 96px;color:var(--muted);font-size:12.5px}
 .subaddr-v{flex:1;min-width:0;word-break:break-all;font-size:13px}
+.subaddr.wide .subaddr-k{flex-basis:158px}   /* named services, not one-word labels */
+@media (max-width:520px){.subaddr-row{flex-direction:column;gap:2px}.subaddr.wide .subaddr-k{flex-basis:auto}}
 .ci{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;
   font-size:11px;font-weight:700;font-style:normal;color:var(--brand-ink);background:var(--warn,#e0a030);cursor:help;vertical-align:middle}
 /* inline "port not reachable" hint — exclamation-in-triangle in the warn colour (no circle background).
@@ -2817,6 +2888,13 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 /* fleet-wide column: server name (left) + interface tag (right) on one line */
 .peergrid .srvcell{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
 .peergrid .srv-name{font-family:var(--mono);font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* The badge in this cell — an interface name, or a GROUPED row's "4 interfaces" count — never shrinks;
+   only the node name beside it may ellipsize, and only when the column genuinely runs out. Without this
+   the wider count badge squeezed the name to "msk-m…" in a column that had room for both. */
+.peergrid .srvcell > .tg,.peergrid .srvcell .tgt-frontpop{flex:none}
+/* The grouped IF badge's bubble: one deployment per line. It reuses .deppop's row styling, so it needs
+   no layout of its own — only the room .tgt-frontbub would otherwise constrain. */
+.iflistbub{min-width:230px;width:max-content}
 /* user cell is a link to the user screen — blue (matches the upload total) so admins know it navigates away */
 .peergrid .namecell{color:var(--ready);justify-content:space-between;width:100%} .peergrid .namecell:hover{text-decoration:underline}   /* Live/Users lists: username is plain text, not a link */
 .peergrid .namecell svg{width:14px;height:14px;color:var(--ready);flex:none;opacity:0;transition:opacity .12s;position:relative;top:3px}   /* nudge down to sit on the text's baseline */

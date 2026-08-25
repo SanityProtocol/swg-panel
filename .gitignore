@@ -18,6 +18,10 @@ tasks.txt
 # have pushed them. The rule belongs with the repo, not with one machine's config.
 .campaign/
 docs/
+# ⚠️ `tests/` has no leading slash, so it matches at ANY depth — `nix/tests/` included. A flake
+# builds from the GIT TREE, so a VM test written there would reach `nix build` as ABSENT, the
+# same way amneziawg.png would have (below). The shipped VM tests live in `nix/checks/`, which
+# is also what the flake output is called. Do not create `nix/tests/`.
 tests/
 .claude/settings.local.json
 .claude/settings.local.json.bak
@@ -28,3 +32,8 @@ access_harness.py
 # …except the README screenshots (committed, referenced by the README files)
 !screenshots/
 !screenshots/*.png
+# …and except the client logo swg-sub SERVES. It is a shipped asset, not a screenshot: it is in
+# SUB_WEB, in the Dockerfile's COPY and in swg-sub's own allow-list. It survives today only because
+# it was tracked before the *.png rule existed — `git add -A` in a fresh clone would drop it, and a
+# flake builds from the GIT TREE, so the derivation would then fail to evaluate (measured).
+!amneziawg.png

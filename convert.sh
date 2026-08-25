@@ -15,6 +15,9 @@
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers (dl_turn_bin + validators)
+# Refuse on a declaratively managed host BEFORE anything is written — a bare↔docker conversion laid down here would
+# be invisible to the host's own tooling. Defined in lib/common.sh, above; a `--dry-run` still runs.
+refuse_on_declarative_host 'services.swg-node = { enable = true; ... };'
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 if { [ -t 1 ] || [ -n "${SWG_FORCE_COLOR:-}" ]; } && [ -z "${NO_COLOR:-}" ]; then C_BLUE=$'\033[38;5;39m'; C_BL=$'\033[38;5;33m'; C_BROWN=$'\033[38;5;130m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; RESET=$'\033[0m'; BOLD=$'\033[1m'
 else C_BLUE=""; C_BL=""; C_BROWN=""; C_RED=""; C_GREEN=""; RESET=""; BOLD=""; fi

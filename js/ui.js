@@ -199,6 +199,12 @@ export function pushModal(node) { _applyStack([..._stack, node]); }
 function _blurActive() { requestAnimationFrame(() => { const a = document.activeElement; if (a && a.blur && a.tagName !== "BODY") a.blur(); }); }
 export function closeModal() { _applyStack(_stack.slice(0, -1)); _blurActive(); }   // drop the focus ring the trigger regains on ESC/close
 export function closeAllModals() { _applyStack([]); _blurActive(); }
+// Close the top `n` frames. Deleting a thing has to take down every modal that is ABOUT that thing and no
+// more: the peer view you deleted from is a view of something that no longer exists, but the user's-peers
+// modal underneath it is a list that is still perfectly valid — and closing that too dumped the operator
+// back to the screen after every single delete. `closeAllModals` is the blunt version of this and stays for
+// the cases that really do mean "empty the stack".
+export function closeModals(n) { _applyStack(_stack.slice(0, Math.max(0, _stack.length - Math.max(1, n | 0)))); _blurActive(); }
 let _sheetStack = [];   // mounted Sheet tokens (LIFO) — only the topmost handles Esc/Enter/Tab
 
 // Row activation: a single click runs `fn` after a short delay; a double click cancels that and runs `dbl`
@@ -228,6 +234,24 @@ export function Portal({ children }) {
 // <body> so it floats above sibling cards regardless of their stacking contexts.
 // hoverOnly: no click-to-pin — clicks fall through to whatever the trigger sits inside (e.g. a card link),
 // so a badge can show a hover bubble AND still navigate on click.
+// While a custom bubble is open the browser must not ALSO pop its native tooltip. The trigger usually
+// sits inside something that carries one — a peer row's "Double-click for QR / configs" — and often
+// carries its own as well; both are redundant beside the bubble and the native one covers it. A title
+// cannot be suppressed in CSS, so park every `title` on the trigger's ancestors AND inside its own
+// subtree for as long as the bubble shows, and put them all back when it closes.
+function useNoNativeTitle(ref, active) {
+  useEffect(() => {
+    if (!active || !ref.current) return;
+    const parked = [];
+    const park = el => {
+      if (el && el.hasAttribute && el.hasAttribute("title")) { parked.push([el, el.getAttribute("title")]); el.removeAttribute("title"); }
+    };
+    for (let el = ref.current; el && el !== document.body; el = el.parentElement) park(el);
+    ref.current.querySelectorAll("[title]").forEach(park);
+    return () => parked.forEach(([el, v]) => { try { el.setAttribute("title", v); } catch (_) { /* gone with the row */ } });
+  }, [active]);
+}
+
 export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly, autoOpen, flipFit, clickOnly }) {
   const [open, setOpen] = useState(false), [pinned, setPinned] = useState(!!autoOpen), [pos, setPos] = useState(null);
   const ref = useRef(null), popRef = useRef(null), closeT = useRef(null);
@@ -253,6 +277,7 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); };
   }, [show, pinned]);
   useEffect(() => () => clearTimeout(closeT.current), []);
+  useNoNativeTitle(ref, show);
   return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
     onClick=${hoverOnly ? null : (e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
     onMouseEnter=${clickOnly ? null : () => { cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
@@ -719,6 +744,26 @@ export function turnProxyTitle(node, service) {
 export function gridIfaceTag(t) {
   return html`<${Tag} kind=${targetType(t)} label=${t.iface} muted=${!t.online}/>`;
 }
+// …and for a GROUPED row, which stands for several deployments at once. Naming just the representative's
+// interface there is simply wrong — the row is the peer, not that one deployment — so a peer on more than
+// one interface gets a count instead, in the PRIMARY deployment's protocol colour, and lit whenever ANY of
+// them is online (dimming it because the representative happens to be down would misreport a live peer).
+// The full list is on hover, the same shape the turn-proxy badge uses.
+export function gridIfacesTag(prim, all) {
+  const ds = (all || []).filter(Boolean);
+  if (ds.length < 2) return gridIfaceTag(prim);
+  // The rows go straight into the popover (which is a `.deppop`), NOT inside `.tgt-frontlist` — that class
+  // is a WRAPPING FLEX ROW meant for a handful of chips, and it laid the deployments out side by side.
+  // One deployment per line, same as the +N bubble this sits beside.
+  return html`<${Popover} hoverOnly cls="tgt-frontpop" popCls="iflistbub"
+    trigger=${html`<${Tag} kind=${targetType(prim)} label=${T("{n} interfaces", { n: ds.length })} muted=${!ds.some(d => d.online)}/>`}>
+    <span class="tgt-frontlbl">${T("This peer's interfaces")}</span>
+    ${ds.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
+      <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
+      <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online}/>
+      <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
+  <//>`;
+}
 // Status badge for a peer-grid row. A peer ONLINE through a turn-proxy takes the fork colour on its status
 // badge with a glowing animated dot, plus a "Connected via <fork> <title>" hover bubble — consistent in
 // every grid regardless of which columns are shown. Otherwise the normal Badge.
@@ -743,14 +788,14 @@ export function gridStatusBadge(t, p, re) {
     : (p.reason || statusReason(st))) || "";
   if (t.online && t.viaTurn) {
     const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
-    return html`<span class="turnwrap">
+    return html`<span class="turnwrap" title="">
       <span class="badge b-turn" style=${"--tfc:" + tc}><span class="sdot"></span>${statusLabel(st)}</span>
       <span class="turnbub">${T("Connected via")} <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
   }
   // A pinned action failure (e.g. "node hasn't reported <iface> yet") rides the status as a hover bubble —
   // not a persistent inline chip cluttering the row. Dismiss from inside the bubble.
   if (re) {
-    return html`<span class="turnwrap">
+    return html`<span class="turnwrap" title="">
       <${Badge} s=${st}/>
       <span class="turnbub statusbub err"><span class="statusbub-h" style="color:var(--dangling)"><${Ic} i="err"/>${T("Error")}</span>${re.msg}</span></span>`;
   }
@@ -758,7 +803,7 @@ export function gridStatusBadge(t, p, re) {
   // of a native title, colour-headed with the status colour so the *why* reads at a glance.
   if ((st === "blocked" || st === "faulty") && reason) {
     const bc = "var(--fault)";
-    return html`<span class="turnwrap">
+    return html`<span class="turnwrap" title="">
       <${Badge} s=${st}/>
       <span class="turnbub statusbub"><span class="statusbub-h" style=${"color:" + bc}><${Ic} i="warn"/>${st === "blocked" ? "Restricted" : "Faulty"}</span>${reason}</span></span>`;
   }
@@ -769,7 +814,7 @@ export function gridStatusBadge(t, p, re) {
 export function badgeWithReason(st, reason) {
   reason = reason || statusReason(st);
   if ((st === "blocked" || st === "faulty") && reason) {
-    return html`<span class="turnwrap"><${Badge} s=${st}/>
+    return html`<span class="turnwrap" title=""><${Badge} s=${st}/>
       <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${st === "blocked" ? "Restricted" : "Faulty"}</span>${reason}</span></span>`;
   }
   return html`<${Badge} s=${st} title=${reason}/>`;
@@ -780,7 +825,7 @@ export function badgeWithReason(st, reason) {
 export function connDot(r) {
   if (r.online && r.viaTurn) {
     const tn = turnLabel(r.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(r.node, r.viaTurn);
-    return html`<span class="turnwrap">
+    return html`<span class="turnwrap" title="">
       <span class="condot turn" style=${"--tfc:" + tc}></span>
       <span class="turnbub">${T("Connected via")} <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
   }
@@ -800,7 +845,7 @@ export function endpointCell(t) {
     const tn = t.viaTurn ? turnLabel(t.viaTurn) : null;
     const tc = tn ? turnColor(tn) : "var(--dim)";
     const ptitle = t.viaTurn ? turnProxyTitle(t.node, t.viaTurn) : null;
-    return html`<span class="turnwrap">
+    return html`<span class="turnwrap" title="">
       <span class=${"addr turnep" + (t.online ? "" : " off")} style=${"color:" + (t.online ? tc : "var(--dim)")}>${T("turn-proxy")}</span>
       <span class="turnbub">${t.online ? T("Connected via") : T("Last connected via")} ${tn
           ? html`<span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>`
@@ -847,6 +892,7 @@ export function DepBadge({ others }) {
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); };
   }, [show, pinned]);
   useEffect(() => () => clearTimeout(closeT.current), []);
+  useNoNativeTitle(ref, show);
   return html`<span class=${"depmore" + (show ? " on" : "")} ref=${ref}
     onClick=${e => { e.stopPropagation(); setPinned(p => !p); }}
     onMouseEnter=${() => { cancelClose(); setOpen(true); }} onMouseLeave=${scheduleClose}>+${others.length}
@@ -1213,15 +1259,24 @@ export function paintThemeBtn(b) {
 
 export function StoreOffBanner() {
   if (Store.storeConfigs) return null;
+  // A declaratively-managed panel owns fleet.json through its configuration — a `sed` on it would not
+  // survive the next rebuild, and the file may be read-only. Point at the module option instead, the
+  // same way the Update and Access hints do. `declarative` is the panel's OWN flag (not a node's).
+  const declarative = !!(Store.env && Store.env.declarative);
   const docker = !!(Store.env && Store.env.docker);
   const fp = (Store.env && Store.env.fleet_path) || "/etc/swg-panel/fleet.json";
   const sed = `sed -i -E 's/("store_configs":[[:space:]]*)false/\\1true/' ${fp}`;
-  const cmd = docker
+  const cmd = declarative
+    ? `services.swg-panel.storeConfigs = true;`
+    : docker
     ? `docker exec swg-panel ${sed} && docker restart swg-panel`
     : `sudo ${sed} && sudo systemctl restart swg-panel-server`;
+  const intro = declarative
+    ? T("This panel is managed declaratively, so its config-storage setting comes from its configuration. Set this and rebuild (existing peers then need a one-time Rotate-keys to capture a config):")
+    : T("Client configs (with their private keys) aren't kept on the panel, so QR codes and downloads only work right after a peer is created — existing peers can't be re-shared. Run this on the {host} to enable it (existing peers then need a one-time Rotate-keys to capture a config):",
+        { host: docker ? T("Docker host") : T("panel host") });
   return html`<div class="banner warn"><${Ic} i="warn"/><div class="banner-body">
-    <b>${T("Config storage is off.")}</b> ${T("Client configs (with their private keys) aren't kept on the panel, so QR codes and downloads only work right after a peer is created — existing peers can't be re-shared. Run this on the {host} to enable it (existing peers then need a one-time Rotate-keys to capture a config):",
-      { host: docker ? T("Docker host") : T("panel host") })}
-    <div class="cmdrow"><div class="tokenbox">${cmd}</div><button class="copyaction" onClick=${() => copy(cmd, T("Command copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>
+    <b>${T("Config storage is off.")}</b> ${intro}
+    <div class="cmdrow"><div class=${"tokenbox" + (declarative ? " block" : "")}>${cmd}</div><button class="copyaction" onClick=${() => copy(cmd, T("Command copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>
   </div></div>`;
 }

@@ -154,14 +154,28 @@ def load_conf():
     return cfg
 
 
+# ⚠️ Keep this list a SUPERSET of install-host.sh's find_acme(). The two diverged: the installer
+# searched /root/.acme.sh, $HOME/.acme.sh and `command -v acme.sh`, while this searched
+# /root/.acme.sh, /opt/acme.sh and ~/.acme.sh — neither a superset of the other. So an acme.sh on
+# PATH (a distro package, or a custom install) was found at INSTALL time and then not at RUNTIME,
+# and the panel's issue-cert button failed on a box the installer had called ready. `shutil.which`
+# is the missing arm; /opt stays because only this side ever had it.
+_ACME_CANDIDATES = ("/root/.acme.sh/acme.sh", "/opt/acme.sh/acme.sh",
+                    os.path.expanduser("~/.acme.sh/acme.sh"))
+
+
 def find_acme():
-    for a in ("/root/.acme.sh/acme.sh", "/opt/acme.sh/acme.sh",
-              os.path.expanduser("~/.acme.sh/acme.sh")):
+    for a in _ACME_CANDIDATES:
         if os.path.isfile(a) and os.access(a, os.X_OK):
             return a
+    onpath = shutil.which("acme.sh")           # what install-host.sh's find_acme() also accepts
+    if onpath:
+        return onpath
     if DRYRUN:
         return "/root/.acme.sh/acme.sh"      # so the argv is visible without a live install
-    raise Reject("acme.sh not found (looked in /root/.acme.sh, /opt/acme.sh)")
+    # Name every place actually looked. The old message listed two of the three paths it tried,
+    # so an operator with acme.sh in ~/.acme.sh was told it had not been looked for there.
+    raise Reject("acme.sh not found (looked in %s, and on PATH)" % ", ".join(_ACME_CANDIDATES))
 
 
 def reload_cmd_for(service):

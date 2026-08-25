@@ -421,6 +421,84 @@ export function nginxServerBlock(publicUrl, upstreamHost, upstreamPort) {
   L.push("}");
   return L.join("\n");
 }
+// ── NixOS: a working configuration for the address this panel is already running ────────────────
+// On a declarative host Settings → Access is read-only, so the operator's next move is in another
+// file. Showing the module options alone answers "where is this set" but not "what do I write" —
+// these render the two arrangements that actually work, with THIS panel's domain, path and internal
+// port already in them, so the block can be pasted rather than adapted. The generated Nix is file
+// text, never UI copy: it is not translated, exactly like the nginx block above.
+export function nixUpstream(host) {
+  const h = String(host || "").trim();
+  return (h && h !== "0.0.0.0" && h !== "::") ? h : "127.0.0.1";   // a wildcard bind is dialled on loopback
+}
+function _nixLoc(base) {
+  const b = String(base || "").replace(/\/+$/, "");
+  return (b && b !== "/") ? b + "/" : "/";
+}
+export function nixProxyBlock(kind, hosts) {
+  // ONE block for however many virtual hosts this panel needs — the panel, and the subscription page
+  // when it has an address of its own. Two separate blocks would each carry `services.nginx = { … }`
+  // and `security.acme.acceptTerms`, and Nix REFUSES a second definition of the same attribute: an
+  // operator pasting both would get an eval error out of a screen that said "a working configuration".
+  const hs = (hosts || []).filter(h => h && h.domain);
+  if (!hs.length) return "";
+  const L = [];
+  // A host we are SUGGESTING an address for (subscriptions are on, but nothing has published the
+  // page yet) carries the module option that gives it one — a vhost for a domain the panel does not
+  // advertise would be a proxy to a page whose links are still empty.
+  const sug = hs.filter(h => h.suggest);
+  if (sug.length) {
+    for (const h of sug) L.push('services.swg-panel.sub.domain = "' + h.domain + '";');   // i18n-keys: generated Nix — file text, copied verbatim
+    L.push("");
+  }
+  if (kind === "caddy") {
+    L.push("services.caddy = {");   // i18n-keys: generated Nix — file text, copied verbatim
+    L.push("  enable = true;");
+    for (const h of hs) {
+      const loc = _nixLoc(h.base);
+      L.push('  virtualHosts."' + h.domain + '".extraConfig = ' + "''");
+      L.push("    reverse_proxy " + (loc === "/" ? "" : loc + "* ") + nixUpstream(h.host) + ":" + (parseInt(h.port, 10) || 8443));
+      L.push("  " + "'';");
+    }
+    L.push("};");
+  } else {
+    L.push("services.nginx = {");   // i18n-keys: generated Nix — file text, copied verbatim
+    L.push("  enable = true;");
+    L.push("  recommendedProxySettings = true;");
+    for (const h of hs) {
+      L.push('  virtualHosts."' + h.domain + '" = {');
+      L.push("    enableACME = true;");
+      L.push("    forceSSL = true;");
+      L.push('    locations."' + _nixLoc(h.base) + '".proxyPass = "http://' + nixUpstream(h.host) + ":" + (parseInt(h.port, 10) || 8443) + '";');
+      L.push("  };");
+    }
+    L.push("};");
+  }
+  L.push("");
+  L.push("security.acme.acceptTerms = true;");
+  L.push('security.acme.defaults.email = "you@example.org";');
+  L.push("networking.firewall.allowedTCPPorts = [ 80 443 ];");
+  return L.join("\n");
+}
+export function nixDirectTlsBlock(domain, port, base) {
+  const dom = String(domain || "").trim() || "panel.example.org";
+  const prt = parseInt(port, 10) || 8443;
+  const b = String(base || "").replace(/\/+$/, "");
+  const L = [];
+  L.push("services.swg-panel = {");   // i18n-keys: generated Nix — file text, copied verbatim
+  L.push('  host = "0.0.0.0";');
+  L.push("  port = " + prt + ";");
+  L.push('  domain = "' + dom + '";');
+  if (b && b !== "/") L.push('  basePath = "' + b + '";');
+  L.push('  useACMEHost = "' + dom + '";');
+  L.push("};");
+  L.push("");
+  L.push("security.acme.acceptTerms = true;");
+  L.push('security.acme.certs."' + dom + '" = { email = "you@example.org"; };');
+  L.push("networking.firewall.allowedTCPPorts = [ " + prt + " ];");
+  return L.join("\n");
+}
+
 export function subBaseUrl() {
   const ps = Store.panelSettings || {};
   const sub = (ps.access || {}).sub || {};

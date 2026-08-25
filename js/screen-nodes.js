@@ -8,12 +8,12 @@
  * above any mount.
  */
 
-import { $, esc, seen, dur, ago, rate, fmtBytes, niceScaleCeil, tkey, ipOf, portOf, listenAddr, isWdttIface, isCsqttIface } from "./util.js";
+import { $, esc, seen, dur, ago, rate, fmtBytes, niceScaleCeil, tkey, ipOf, portOf, listenAddr } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
-         turnProxiesFor, ifaceIsAwg } from "./model.js";
+         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName } from "./model.js";
 import { turnFork, turnLabel, turnColor, turnForkList, forkProduct } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
@@ -23,7 +23,7 @@ import {
   orderById, rowSingle, rowDouble, rowNoSelect, RowError, goSettings, ifaceReady, ifaceWasBusy, ifaceFlash, adoptSeen,
   trackIfaceOps, StoreOffBanner, ifaceColor, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
 } from "./ui.js";
-import { T, Tsplit, plural, srvText } from "./i18n.js";
+import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
          RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, histTime, ChartHover, IfaceThroughput,
          RANGE_CAP } from "./charts.js";
@@ -55,6 +55,23 @@ function autoUpdateIntro(side) {
   const [c, d] = [r2.split("{repairs}")[0], r2.split("{repairs}").slice(1).join("{repairs}")];
   return html`<${Fragment}>${a}<b>${T("automatic update of SWG components only")}</b>${b}<b>${T("Update now")}</b>${c}<b>${T("repairs")}</b>${d}<//>`;
 }
+// The declarative pair. Deliberately does NOT promise the repairs the bootstrap updater performs
+// (reinstall what is missing, re-enable services, rebuild the datapath) — a rebuild does none of
+// that, it re-realises what the configuration already says, and claiming otherwise is how an
+// operator ends up believing a repair ran.
+function declUpdateIntro(side, hasCmd) {
+  // Without a command to show, the sentence must not end by promising one. That case is real: an
+  // operator can declare a host managed without this panel knowing WHAT manages it, and printing the
+  // bootstrap command there is the one thing that must never happen.
+  const [a, b] = hasCmd
+    ? Tsplit("This box's installation comes from its {what}, so an update is a rebuild of it — run this on the {side} box:", "what", { side })
+    : Tsplit("This box's installation comes from its {what}, so an update is a rebuild of it — do that on the {side} box, however that configuration is applied.", "what", { side });
+  return html`<${Fragment}>${a}<b>${T("own configuration")}</b>${b}<//>`;
+}
+function declAutoIntro(auto) {
+  if (!auto) return html`<${Fragment}>${Trich("There is no rebuild wired to this button on this host, so it can't start one — that is deliberate: a button that reported success and changed nothing would be worse. Set the module's *selfUpdate* option to wire it, or run the command above.")}<//>`;
+  return html`<${Fragment}>${Trich("*Update now* asks this host to rebuild itself from that configuration. What it lands on is whatever the configuration's lock pins, so refresh the swg input first if you want a newer version — and the rebuild's own errors come back here if it fails.")}<//>`;
+}
 function updatedFromTo(from, to) {
   const one = T("The panel was updated from {from} to {to}.");
   const [a, r1] = [one.split("{from}")[0], one.split("{from}").slice(1).join("{from}")];
@@ -71,6 +88,30 @@ function entryServersRun() {
 function goneSentence(text, ok, verdict) {
   const [before, after] = [text.split("{verdict}")[0], text.split("{verdict}").slice(1).join("{verdict}")];
   return html`<${Fragment}>${before}<span class=${ok ? "mi-ok" : "mi-bad"}>${verdict}</span>${after}<//>`;
+}
+
+// The platform pill and what it says on hover. Two render sites (the node header and the Nodes list) share it
+// so they cannot drift. A native `title` was the first version and it was the wrong idiom: it takes about a
+// second to appear, cannot be styled, and puts four unrelated facts on one line. This is the app's own bubble
+// (.turnwrap/.turnbub), the same one the peer status and "connected via" chips use.
+function platformPill(nrec) {
+  if (!nrec || !nrec.platform) return null;
+  const decl = !!nrec.declarative, i = nrec.platform_info || {};
+  const tone = decl ? "nix" : "os";
+  const head = i.name || (platformLabel(nrec.platform) + (i.version ? " " + i.version : ""));
+  // Popover, not the CSS-only .turnbub: the node card is `overflow:hidden`, so a bubble anchored inside it is
+  // CLIPPED — measured, two thirds of it cut off. Popover portals out and positions against the viewport, which
+  // is what it exists for. hoverOnly, because this is a label to read, not a menu to operate.
+  //
+  // The bubble states FACTS about the host and nothing else. "This installation is owned by its own
+  // configuration" used to sit under them, and it was explaining NixOS to the only people who ever saw it. The
+  // pill's COLOUR already carries that distinction, which is the whole reason it has two.
+  return html`<${Popover} hoverOnly cls="platwrap" popCls="osbub" trigger=${html`
+      <span class=${"tport " + tone}>${platformLabel(nrec.platform)}</span>`}>
+    <span class="osbub-h" style=${"color:var(--tport-" + tone + ")"}>${head}</span>
+    ${i.kernel ? html`<span class="osbub-r"><span class="osbub-k">${T("Kernel")}</span><span class="osbub-v">${i.kernel}</span></span>` : null}
+    ${nrec.arch ? html`<span class="osbub-r"><span class="osbub-k">${T("Architecture")}</span><span class="osbub-v">${nrec.arch}</span></span>` : null}
+  <//>`;
 }
 
 export function HealthDot({ issues }) {
@@ -146,7 +187,7 @@ export function NodeDetail({ node: rawName }) {
     <${NodeRail} active=${name}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? T("kind|docker") : T("kind|bare-metal")}</span>` : null}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}<${HealthDot} issues=${nrec.issues}/></div>
+      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${kindLabel(nrec.kind, nrec.runtime)}</span>` : null}${platformPill(nrec)}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}<${HealthDot} issues=${nrec.issues}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version && !nrec.uninstalled ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? T("Node is running a newer version than the panel — update the panel to catch up") : ""}>v${nrec.version}</span>` : null}
@@ -194,9 +235,19 @@ export function NodeDetail({ node: rawName }) {
         const muted = lk === "down" || reprov;
         const carried = reprov ? [] : userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer);   // user iface NAMES forwarded whole (cascade) out through THIS link
         const smartCarried = reprov ? [] : userKeys.filter(k => meta[k].egress_mode === "smart" && (meta[k].routing || []).some(r => r.action === "exit" && r.node === peer));   // ifaces SMART-routing some destinations out via THIS link
+        // What the NODE said about this link's interface. The dot could only ever say "down"; the reason
+        // ("Address already in use", a port clash) sat in cmd_errors where only the interface cards showed it,
+        // so a broken mesh link read as an unexplained 0/3 on the Nodes list. Same CmdErr the other cards use.
+        const _lkErr = ifn ? (nrec.cmd_errors || {})[ifn] : null;
         const canOpen = !reprov && !!ifn && !blocked;   // node unavailable (converting / down / mid-proc) → dim + not editable, matching the interface/turn cards
         return html`<div key=${peer} class=${"ifcard tp" + (canOpen ? " clickable" : "") + (muted ? " down" : "") + (blocked ? " locked" : "")} onClick=${canOpen ? () => openConnectionEdit(name, ifn) : null}>
-          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${smartCarried.length ? html`<span class="egb egb-smart" title=${T("Smart cascade: routes selected destinations out via {node}", { node: Store.nodeName(peer) })}><${Ic} i="cascade"/>${T("smart cascade")}</span>` : carried.length ? html`<span class="egb egb-cascade" title=${T("Cascade: relays {v1} out via {v2}", { v1: plural(carried.length, "interface"), v2: Store.nodeName(peer) })}><${Ic} i="cascade"/>${T("tag|cascade")}</span>` : null}${reprov ? html`<span class="tg tg-busy" title=${T("Rebuilding this node's mesh link — it reconnects in a few seconds")}><${Ic} i="clock"/>${T("tag|re-provisioning")}</span>` : html`<span class=${"lkdot " + lk} title=${lkTitle}></span>`}</div>
+          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${smartCarried.length ? html`<span class="egb egb-smart" title=${T("Smart cascade: routes selected destinations out via {node}", { node: Store.nodeName(peer) })}><${Ic} i="cascade"/>${T("smart cascade")}</span>` : carried.length ? html`<span class="egb egb-cascade" title=${T("Cascade: relays {v1} out via {v2}", { v1: plural(carried.length, "interface"), v2: Store.nodeName(peer) })}><${Ic} i="cascade"/>${T("tag|cascade")}</span>` : null}${_lkErr ? html`<${CmdErr} err=${_lkErr}/>` : null}${(!reprov && !blocked && (_lkErr || lk === "down")) ? html`<button class="mi-restore" title=${T("Rebuild this link under a new interface name — for a name, address or port that clashes with something else on that server")}
+              onClick=${e => { e.preventDefault(); e.stopPropagation(); openConfirm({
+                title: T("Re-provision this node's mesh links?"), confirmLabel: T("Re-provision"), warn: true,
+                body: T("{v1} will briefly drop off the mesh (and any cascade/smart traffic routed through it pauses) until every peer pulls the new config and reconnects — usually a few seconds. Other nodes' links to each other are unaffected.", { v1: Store.nodeName(name) }),
+                onConfirm: async () => { const r = await api.nodeRemesh({ id: name });
+                  toast(r && r.ok ? T("Rebuilding this node's mesh links…") : (srvText(r) || T("Couldn't re-provision the mesh links.")), r && r.ok ? "ok" : "err");
+                  if (r && r.ok) await Store.poll(); } }); }}><${Ic} i="refresh"/> ${T("Re-provision")}</button>` : null}${reprov ? html`<span class="tg tg-busy" title=${T("Rebuilding this node's mesh link — it reconnects in a few seconds")}><${Ic} i="clock"/>${T("tag|re-provisioning")}</span>` : html`<span class=${"lkdot " + lk} title=${lkTitle}></span>`}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("col|Endpoint")}</span><span class="r addr">${(m && m.peer_endpoint) || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Tunnel")}</span><span class="r addr">${(m && m.subnet) || "—"}</span></div>
@@ -422,7 +473,7 @@ export function NodeDetail({ node: rawName }) {
                 wctr
                 ? html`<div class="ifrow"><span class="l">${T("Container")}</span><span class="r addr">${wctr}</span></div>`
                 : html`<div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${(cd.conf ? cd.conf.replace(/\/[^/]*$/, "") : ((cd.wdtt || {}).config_dir || "")) || html`<span class="faint">—</span>`}</span></div>`}
-              <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${listenAddr(nrec.endpoint_host, cd.listen_port)}</span></div>
+              <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${listenAddr(nrec.endpoint_host, candDialPort(cd))}</span></div>
               <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${cd.address || "—"}</span></div>
               ${/* A WDTT server's accounts are NOT its device peers: the fork programs a kernel peer at CONNECT
                     time and drops it when a password expires, so a server with five users can show one peer —
@@ -533,7 +584,7 @@ export function NodeDetail({ node: rawName }) {
         title=${T("Why this can't be taken over")}/>` : html`<button class="mi-restore" title=${T("Take this interface over: stop that container and run the same server here, keeping its key, port and peers")}
                 onClick=${e => { e.preventDefault(); e.stopPropagation(); openConfirm({
                   title: T("Take over {v1}", { v1: x.name }), confirmLabel: T("Take it over"), warn: true,
-                  body: T("swgPanel will STOP the container {v1} and run {v2} here instead — same key, same port, same obfuscation, so the configs already on your users' devices keep working, and its peers are imported. That container is only stopped, never deleted: if anything goes wrong the node starts it again, and you can start it yourself to go back. It will not come back on its own afterwards.", { v1: x.container, v2: x.name }),
+                  body: T("swgPanel will STOP the container {v1} and run {v2} here instead — same key, same port, same obfuscation, so the configs already on your users' devices keep working, and its peers are imported. That container is only stopped, never deleted: if anything goes wrong the node starts it again, and you can start it yourself to go back. It will not come back on its own afterwards. Give it up to a minute: the container gets a grace period to shut down cleanly, and its runtime takes a moment to clear it away.", { v1: x.container, v2: x.name }),
                   onConfirm: async () => {
                     Store.ctrAdopt[_ck(x)] = { at: Date.now() }; Store.apply();   // show it NOW, not on the next poll
                     const r = await api.containerAdopt({ node: name, container: x.container, iface: x.name });
@@ -843,7 +894,7 @@ export function nodeIfaces(node, { gone = false } = {}) {
     const w = wdtt.get(ifn), cc = csqtt.get(ifn), m = meta[ifn];
     return {
       ifn, wdtt: !!w, csqtt: !!cc,
-      type: (w || isWdttIface(ifn)) ? "wdtt" : (cc || isCsqttIface(ifn)) ? "csqtt" : (m && m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg",
+      type: (w || scKindByName(ifn) === "wdtt") ? "wdtt" : (cc || scKindByName(ifn) === "csqtt") ? "csqtt" : (m && m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg",
       muted: nodeStale(node) || (w ? (w.active !== "active" && !w.await_restore) : cc ? (cc.active !== "active") : ifaceNotUp(node, ifn)),
     };
   });
@@ -1002,25 +1053,48 @@ export function openUpdateDone(from, to) {
 }
 // One consistent update modal for both a node and the panel header: the full (third-party-included) command to
 // run by hand, plus an "Update now" button that kicks off the automatic swg-only update.
-export function openUpdateModal({ title, side, onConfirm }) {
-  const full = "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update";
+// `declarative` is not a styling flag here. The command in this dialog is shown BEFORE anything is
+// clicked, and on a host whose installation comes from its configuration the bootstrap one-liner is
+// not merely inert: it appears to work, writes into /opt, and leaves an install the configuration
+// cannot see. So the command comes from the server (env.update_cmd) and the surrounding prose says
+// what an update actually is there. `auto` says whether "Update now" can do anything at all.
+export function openUpdateModal({ title, side, onConfirm, declarative, cmd, auto }) {
+  // `cmd` undefined = "no opinion, use the default"; cmd === "" = "there is no command I can honestly
+  // print here", which is not the same thing and must not fall back to the bootstrap one.
+  const full = cmd === undefined ? "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update" : cmd;
   const go = async () => { closeModal(); await onConfirm(); };
   openModal(html`<${Sheet} title=${title}
-    foot=${footRow({ onCancel: closeModal, onAction: go, action: T("Update now") })}>
-    <div class="iface-intro" style="font-size:14px;line-height:1.55"><div>${fullUpdateIntro(side)}</div></div>
-    <div class="field"><div class="ipk-field"><span class="ipk-val" style="text-align:left">${full}</span><button class="copybtn" onClick=${() => copy(full, T("Command copied"))}><${Ic} i="copy"/></button></div></div>
-    <div class="iface-intro" style="font-size:14px;line-height:1.55;margin-top:26px;margin-bottom:2px"><div>${autoUpdateIntro(side)}</div></div>
+    foot=${declarative && !auto
+      ? footRow({ onCancel: closeModal, cancelLabel: T("Close") })
+      : footRow({ onCancel: closeModal, onAction: go, action: T("Update now") })}>
+    <div class="iface-intro" style="font-size:14px;line-height:1.55"><div>${declarative ? declUpdateIntro(side, !!full) : fullUpdateIntro(side)}</div></div>
+    ${full ? html`<div class="field"><div class="ipk-field"><span class="ipk-val" style="text-align:left">${full}</span><button class="copybtn" onClick=${() => copy(full, T("Command copied"))}><${Ic} i="copy"/></button></div></div>` : null}
+    <div class="iface-intro" style="font-size:14px;line-height:1.55;margin-top:26px;margin-bottom:2px"><div>${declarative ? declAutoIntro(auto) : autoUpdateIntro(side)}</div></div>
   <//>`);
 }
 export function updateNode(n) {
+  // The panel knows this node is declaratively managed, and knows from `update_auto` whether its
+  // Update button can do anything — but it does NOT know its flake ref, so the command is the
+  // generic one its own daemon names when it refuses. A declarative node whose platform we cannot
+  // name gets no command block at all rather than the bootstrap one, which on such a host appears
+  // to work and leaves an install the configuration cannot see.
+  const cmd = n.declarative ? (n.platform === "nixos" ? "sudo nixos-rebuild switch" : "") : undefined;
   openUpdateModal({
     title: T("Update {name}", { name: n.name }), side: T("node's"),
-    onConfirm: async () => { const r = await api.nodeSelfUpdate({ node: n.id }); if (r.ok) { await Store.poll(); toast(T("Update requested — applies on the node's next sync."), "ok"); } else toast(srvText(r) || T("Failed to request update."), "err"); },
+    declarative: !!n.declarative, cmd, auto: n.update_auto !== false,
+    onConfirm: async () => {
+      const r = await api.nodeSelfUpdate({ node: n.id });
+      if (!r.ok) return toast(srvText(r) || T("Failed to request update."), "err");
+      if (r.data && r.data.manual) return toast(srvText(r) || T("This node can't be updated from the panel — run the command shown in the dialog on the box."), "err");
+      await Store.poll(); toast(T("Update requested — applies on the node's next sync."), "ok");
+    },
   });
 }
 export function updateHost() {
+  const env = Store.env || {};
   openUpdateModal({
     title: T("Update this server"), side: T("panel's"),
+    declarative: !!env.declarative, cmd: env.update_cmd, auto: !!env.update_auto,
     onConfirm: async () => {
       const r = await api.hostUpdate();
       if (!r.ok) return toast(srvText(r) || T("Failed to start update."), "err");
@@ -1180,7 +1254,8 @@ export function NodeCard({ n, reorder }) {
     <div class="nc-name">
       ${!n.uninstalled && (n.outdated || (n.local && Store.panelOutdated)) && !n.updating ? html`<span class="upd-dot" title=${T("Update available — open the node to update")}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
       <span class="nname">${n.name}</span>
-      ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? T("kind|docker") : T("kind|bare-metal")}</span>` : null}
+      ${n.kind ? html`<span class=${"tport " + n.kind}>${kindLabel(n.kind, n.runtime)}</span>` : null}
+      ${platformPill(n)}
       ${n.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>`
         : st === "online" ? html`<span class="reporting">${T("reporting")}</span>`
         : st === "offline" ? html`<span class="nstat offline"><${Ic} i="info"/> ${T("tag|offline")}</span>`

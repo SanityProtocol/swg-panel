@@ -18,7 +18,7 @@ import { targetType, nodeStale, ghostIface, ifaceIsAll, ifaceMatch, tgtXfer, tgt
 import {
   Ic, Tag, Badge, Dropdown, SearchBox, secTitle, footRow, Popover, toast, openModal, openConfirm,
   rowSingle, rowDouble, rowNoSelect, RowError, connDot, endpointCell, rateCell, xferCell, DepBadge,
-  gridIfaceTag, gridStatusBadge, badgeWithReason, lifecycleIcon, statusLabel, dlul, rowError, statusReason,
+  gridIfaceTag, gridIfacesTag, gridStatusBadge, badgeWithReason, lifecycleIcon, statusLabel, dlul, rowError, statusReason,
   Portal,
 } from "./ui.js";
 import {
@@ -41,9 +41,13 @@ const html = htm.bind(h);
 // `live` (the Live monitor): status is the animated connDot (not the pill badge), an Endpoint column is added
 // (turn peers show "Local turn-proxy"), the row actions + assign-to-user dropdown are dropped (read-only).
 // `sort`/`dir`/`onSort` make every column header a clickable order-by.
-export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live, sort, dir, onSort }) {
+export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live, grouped, sort, dir, onSort }) {
   const arrow = c => sort === c ? (dir < 0 ? "↓ " : "↑ ") : "";
   const th = (c, label, cls) => onSort ? html`<th class=${(cls ? cls + " " : "") + "clk"} onClick=${() => onSort(c)}>${arrow(c)}${label}</th>` : html`<th class=${cls || ""}>${label}</th>`;
+  // A GROUPED row stands for the peer's deployments THAT THIS VIEW MATCHES, so its count badge must too:
+  // under "All AmneziaWG" a peer on awg0 + wdtt3 is one awg deployment here, not two interfaces. The
+  // peer's other deployments are not lost — they are what the +N beside the address already covers.
+  const matchedOf = p => (p.targets || []).filter(d => (node === "*" || d.node === node) && ifaceMatch(d.iface, iface, d));
   return html`<div class="tablewrap"><table class=${"peergrid" + (live ? " live" : "") + (loc ? " loc" : "")}>
     <thead><tr>${th("status", live ? "" : T("col|Status"), "h-status")}${loc
       ? html`${hideUser ? null : th("user", T("col|User"), "h-user")}${th("title", T("col|Title"), "h-title")}${live ? th("endpoint", T("col|Endpoint"), "h-ep") : null}${th("address", T("col|Address"), "h-addr")}${th("server", T("col|Node"), "h-node")}`
@@ -62,12 +66,12 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             if (!live) return html`${gridStatusBadge(t, p, re)}${ifaceB}`;
             const dot = html`<span class=${"condot " + (t.status === "faulty" ? "faulty" : t.status === "blocked" ? "blocked" : t.online ? "on" : "off")}></span>`;
             if (re) {
-              return html`<span class="turnwrap">${dot}${ifaceB}
+              return html`<span class="turnwrap" title="">${dot}${ifaceB}
                 <span class="turnbub statusbub err"><span class="statusbub-h" style="color:var(--dangling)"><${Ic} i="err"/>${T("Error")}</span>${re.msg}</span></span>`;
             }
             // faulty / blocked → the "why" bubble on hovering the dot OR the interface badge (same as the peer-grid badge)
             if (t.status === "faulty" || t.status === "blocked") {
-              return html`<span class="turnwrap">${dot}${ifaceB}
+              return html`<span class="turnwrap" title="">${dot}${ifaceB}
                 <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${t.status === "blocked" ? T("status|Restricted") : T("status|Faulty")}</span>${statusReason(t.status)}</span></span>`;
             }
             return html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? "online" : "offline"}></span>${ifaceB}`;
@@ -89,7 +93,7 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             if (loc) return html`${userCell}${titleCell}${live ? epCell : null}${addrCell}${nodeCell}`;
             const srvAgg = agg ? html`<td data-label=${node === "*" ? T("col|Node") : T("col|IF")}><div class="srvcell">
               ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
-              ${ifaceIsAll(iface) ? gridIfaceTag(t) : null}
+              ${ifaceIsAll(iface) ? (grouped ? gridIfacesTag(t, matchedOf(p)) : gridIfaceTag(t)) : null}
             </div></td>` : null;
             return html`${userCell}${titleCell}${srvAgg}${addrCell}${live ? epCell : null}`;
           })()}
@@ -155,7 +159,7 @@ export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideTool
   if (collapse) {
     // one row PER PEER (a representative deployment); the peer's other interfaces surface as a +N badge
     for (const p of peers) {
-      let ts = p.targets.filter(t => (node === "*" || t.node === node) && ifaceMatch(t.iface, iface));
+      let ts = p.targets.filter(t => (node === "*" || t.node === node) && ifaceMatch(t.iface, iface, t));
       if (onlineOnly) ts = ts.filter(t => t.online);   // Online filter → only the peer's online deployments
       if (!ts.length) continue;
       if (!searchMatch((p.title || "") + " " + (p.name || "") + " " + p.targets.map(t => (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).join(" "), q)) continue;
@@ -166,7 +170,7 @@ export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideTool
   } else {
     for (const p of peers) for (const t of p.targets) {
       if (node !== "*" && t.node !== node) continue;
-      if (!ifaceMatch(t.iface, iface)) continue;
+      if (!ifaceMatch(t.iface, iface, t)) continue;
       if (onlineOnly && !t.online) continue;
       rows.push({ p, t });
     }

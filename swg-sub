@@ -68,8 +68,7 @@ CTYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8"
 # Static assets are served under this prefix so a bare "/<token>" is unambiguous.
 ASSET_PREFIX = "/_a/"
 STATIC = {"sub.js": "sub.js", "sub.css": "sub.css", "qrcode.js": "vendor/qrcode.js",
-          "turn-artifacts.js": "turn-artifacts.js",
-          "amneziavpn.svg": "amneziavpn.svg", "amneziawg.png": "amneziawg.png", "wireguard.svg": "wireguard.svg"}
+          "turn-artifacts.js": "turn-artifacts.js"}
 
 # Reverse-proxy mount base, e.g. "/swgsub" (empty = served at root), mirroring the panel's SWG_PANEL_BASE. Set
 # once at startup from SWG_SUB_BASE or the panel-written serve.base, and stripped off every request path so the
@@ -504,6 +503,12 @@ def read_data(state, token):
             turn = [{"service": tp.get("service"), "listen": tp.get("listen"), "wrap_key": tp.get("wrap_key")}
                     for tp in (nd.get("turn") or []) if isinstance(tp, dict) and lp and _port_of(tp.get("connect")) == lp]
             _wgty = "awg" if awg else (t.get("type") or "wg")
+            # THIS deployment's client-config customisation first, then the peer-wide one. A peer may now span
+            # several interfaces, and the settings that describe how a client reaches one of them (DNS / MTU /
+            # AllowedIPs / keepalive) belong to that deployment; `ov` stays the fallback so every peer written
+            # before per-target settings existed renders exactly as it did.
+            _tov = t.get("overrides") if isinstance(t.get("overrides"), dict) else {}
+            _tov = {**ov, **_tov}
             if "turn" in _hide:
                 turn = []                       # keep the direct config, drop its proxy variants
             if _wgty in _hide:
@@ -518,11 +523,11 @@ def read_data(state, token):
                 "type": "awg" if awg else (t.get("type") or "wg"),
                 "ip": t.get("ip"),
                 "endpoint": meta.get("endpoint"), "server_pubkey": meta.get("public_key"),
-                "dns": (ov["dns"] if isinstance(ov.get("dns"), list) else (meta.get("dns") or [])),
+                "dns": (_tov["dns"] if isinstance(_tov.get("dns"), list) else (meta.get("dns") or [])),
                 "subnet": meta.get("subnet"),
-                "mtu": ov.get("mtu") or meta.get("mtu") or 1280,
-                "allowed": ov.get("allowed") or "0.0.0.0/0, ::/0",
-                "keepalive": (ov["keepalive"] if isinstance(ov.get("keepalive"), int) else 25),
+                "mtu": _tov.get("mtu") or meta.get("mtu") or 1280,
+                "allowed": _tov.get("allowed") or "0.0.0.0/0, ::/0",
+                "keepalive": (_tov["keepalive"] if isinstance(_tov.get("keepalive"), int) else 25),
                 "awg": awg,
                 "turn": turn,
                 **({} if not _direct_off else {"direct": False}),   # its own kind is hidden: only the proxy variants publish

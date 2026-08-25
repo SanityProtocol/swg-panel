@@ -19,18 +19,21 @@
   --turn-ink: #EEF0FF;     /* inner node — near-white on this dark ground */
   --turn-spike: #EF4444;   /* DARK: red spikes… */
   --turn-dash: #22D3EE;    /* …and cyan speed lines */
+  --turn-accent: #7C5CFF;  /* the panel's turn-proxy violet — see modeColor("turn") in sub.js */
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --bg: #eef2f7; --panel: #ffffff; --panel-2: #f4f7fb; --line: #d9e1ec;
     --ink: #16202e; --ink-2: #33424F; --muted: #5a6a80; --brand-ink: #06222a;
     --turn-ink: #3F42C8; --turn-spike: #000000; --turn-dash: #EF4444;   /* LIGHT: black spikes, red lines */
+    --turn-accent: #6D4AF0;   /* a shade deeper than the dark theme's — it has to carry on a white ground */
   }
 }
 :root[data-theme="light"] {
   --bg: #eef2f7; --panel: #ffffff; --panel-2: #f4f7fb; --line: #d9e1ec;
   --ink: #16202e; --ink-2: #33424F; --muted: #5a6a80; --brand-ink: #06222a;
     --turn-ink: #3F42C8; --turn-spike: #000000; --turn-dash: #EF4444;   /* LIGHT: black spikes, red lines */
+    --turn-accent: #6D4AF0;   /* a shade deeper than the dark theme's — it has to carry on a white ground */
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }   /* no grey/blue square flash behind tapped buttons (esp. the round START orb) */
@@ -513,6 +516,23 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .pbtn.ico { transition: border-color .15s, box-shadow .15s; }
 .pbtn.ico:hover { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand), 0 2px 10px rgba(0, 0, 0, .18); }   /* mouseover highlight */
 .pbtn.ico:active { transform: scale(.94); }
+/* Connections — the picker's entry point, and the one control here that goes somewhere rather than acting on
+   the config in front of you. It wears the turn-proxy violet so it reads as a different KIND of button than
+   the neutral utilities beside it, and its glyph paints one arrow per protocol family in that family's own
+   colour (connIconEl), so the button itself previews what is behind it. */
+.pbtn.ico.pbtn-conn { border-color: color-mix(in srgb, var(--turn-accent) 62%, var(--line));
+  background: color-mix(in srgb, var(--turn-accent) 12%, var(--panel));
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .18), 0 0 0 1px color-mix(in srgb, var(--turn-accent) 22%, transparent); }
+@media (hover: hover) and (pointer: fine) {
+  .pbtn.ico.pbtn-conn:hover { border-color: var(--turn-accent);
+    background: color-mix(in srgb, var(--turn-accent) 20%, var(--panel));
+    box-shadow: 0 0 0 1px var(--turn-accent), 0 2px 12px color-mix(in srgb, var(--turn-accent) 34%, transparent); }
+}
+/* Four arrows in one 24-unit box need a finer line than a single-glyph icon: at the bar's 2.5 the heads
+   thicken until the corners read as blobs. Pinned to the weight the glyph was drawn at. */
+.pbtn.ico.pbtn-conn svg { stroke-width: 2.2; }
+.pbtn.ico.pbtn-conn:focus-visible { outline: none;
+  box-shadow: 0 0 0 1px var(--turn-accent), 0 0 0 5px color-mix(in srgb, var(--turn-accent) 32%, transparent); }
 /* ── the signature START button: a glowing brand orb (SVG face), round, 1.5× the icon buttons, brand-coloured glow.
    Deep-links into the app if installed, else downloads it. The utility icons stay small, centred on its centre. ── */
 .pbtn-start { flex: 0 0 auto; appearance: none; border: 0; padding: 0; margin: 0 4px; background: none; cursor: pointer;

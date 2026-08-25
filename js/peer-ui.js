@@ -13,14 +13,14 @@
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPrimaryTarget,
-         useStableOrder, isSelfContainedKind, isSelfContainedTarget } from "./util.js";
+         useStableOrder, isSelfContainedKind } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
-import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor, tgtXfer } from "./model.js";
+import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor, tgtXfer, isSelfContainedTgt } from "./model.js";
 import { go } from "./router.js";
 import { turnFork, turnLabel, turnColor, turnClientColor, turnClientAuthor, turnForkList } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
-  Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm,
+  Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
   openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, rowSingle, rowDouble, rowNoSelect, RowError,
   useAnchoredList, goSettings, LogBody, rateCell,
 } from "./ui.js";
@@ -229,7 +229,12 @@ export function SubLinkActions({ user }) {
 export function UserPeerCard({ peer, onOpen }) {
   useStore();   // re-render on each poll so the status badge (looked up live below) tracks block/unblock, like TargetCard
   const targets = peer.targets || [];
-  const t = targets[0] || {};
+  // The peer's PRIMARY deployment represents it here. `targets[0]` was whichever happened to be written first,
+  // which on a peer spanning several kinds picked one arbitrarily to stand for the whole peer — and the card
+  // then claimed a single protocol badge for a peer that may hold four. orderedTargets puts the primary first,
+  // and where the peer spans more than one KIND the deployment count names them instead of hiding the rest.
+  const t = orderedTargets(targets)[0] || {};
+  const kinds = [...new Set(targets.map(targetType))];
   const col = Store.nodeColor(t.node);
   const dnode = Store.nodeName(t.node);
   const ltype = targetType(t);
@@ -238,7 +243,7 @@ export function UserPeerCard({ peer, onOpen }) {
   const lt = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets || []).find(d => d.node === t.node && d.iface === t.iface) || t;
   const head = html`<div class="upc-head">
     <div class="upc-l1"><span class="upc-nm">${nm}</span><span class="grow"></span><${Badge} s=${lt.status}/></div>
-    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps">${plural(targets.length, "deployment")}</span>` : null}</div>
+    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps" title=${kinds.join(" · ")}>${kinds.length > 1 ? kinds.join(" · ") : plural(targets.length, "deployment")}</span>` : null}</div>
   </div>`;
   // Only a MULTI-config peer opens its own modal (a single-config peer has nothing extra to show — it's already
   // fully presented here). When it does: the whole card opens it EXCEPT the QR image (enlarges) and the action
@@ -288,7 +293,7 @@ export function vkOwnHash(peer, user) {
 // config needs.
 export function targetsWantVk(targets) {
   if (turnEnabled() && (targets || []).some(t => turnProxiesFor(t.node, t.iface).length > 0)) return true;
-  return (targets || []).some(isSelfContainedTarget);
+  return (targets || []).some(isSelfContainedTgt);
 }
 const _VK_CALL_RE = /^https:\/\/(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)\/call\/join\/[\w-]+/i;
 // let the operator paste a VK link with or without the scheme — add https:// when it's missing
@@ -649,6 +654,7 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
 // Inline-editable peer title (optimistic). The operator's label to tell a user's devices apart.
 
 export function UserEditCard({ user, done }) {
+  useStore();          // re-render on poll, so the Block/Unblock button flips after the action without reopening
   const [name, setName] = useState(user.name || "");
   const [tag, setTag] = useState(user.tag || "");
   const [note, setNote] = useState(user.note || "");
@@ -672,7 +678,9 @@ export function UserEditCard({ user, done }) {
   const del = () => openConfirm({ title: T("Delete user · {name}", { name: user.name }), confirmLabel: T("Delete user"), danger: true, back: done,
     body: T("Their peers are revoked and become unassigned.") + " " + T("This can't be undone."),
     // Delete closes the editor it was opened from — see confirmDeletePeer for why `back` is not enough.
-    onConfirm: () => { closeAllModals();
+    // Two frames, not the whole stack: the confirm and this editor. Identical when the editor is the only
+    // thing open (the usual case), and correct rather than lucky when something opened it.
+    onConfirm: () => { closeModals(2);
       return mutate({ key: "user:" + user.id,
         patch: s => { delete s.roster.users[user.id]; for (const p of Object.values(s.roster.peers)) if (p.user_id === user.id) p.user_id = null; },
         call: () => api.userDelete({ id: user.id }) }); } });

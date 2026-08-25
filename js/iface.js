@@ -11,14 +11,14 @@
  */
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
-import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, portOf, listenAddr, ipPickerVal, isWdttIface, isCsqttIface, V } from "./util.js";
+import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, portOf, listenAddr, ipPickerVal, V } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, toThemed, IFACE_COLOR_DEFAULTS } from "./theme.js";
 import {
   kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnProxiesFor,
   suggestIface, suggestSubnet, suggestPort, portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr,
-  cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg,
+  cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg, candDialPort, turnIfaceNameError,
 } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkPickLabel } from "./turn-catalog.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm } from "./ui.js";
@@ -104,7 +104,7 @@ export function IgnoredIfacesCard() {
       // nothing no matter what was ignored. (Same trap the turn-button comment above warns about.)
       if (cd && cd.name && !Store.ifaceIsSystem(n.id, cd.name) && !Store.ifaceMeta(n.id, cd.name))
         rows.push({ n, id: cd.name, name: cd.name,
-                    info: (cd.wdtt_hint ? "WDTT" : (cd.address || "—")) + (cd.listen_port ? " · :" + cd.listen_port : ""),
+                    info: (cd.wdtt_hint ? "WDTT" : (cd.address || "—")) + (candDialPort(cd) ? " · :" + candDialPort(cd) : ""),
                     adopt: () => openModal(html`<${AdoptIfaceSheet} node=${n.id} iface=${cd.name} cand=${cd} nrec=${n}/>`) });
     // A dismissed DORMANT WDTT install belongs here too — it is the same decision about the same kind of thing,
     // and it is addressed by its config dir because a stopped server has no interface name to be listed under.
@@ -233,7 +233,7 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm, c
             : ctr
             ? html`<button class="btn btn-mini btn-primary" onClick=${() => openConfirm({
                 title: T("Take over {v1}", { v1: ctr.name }), confirmLabel: T("Take it over"), warn: true,
-                body: T("swgPanel will STOP the container {v1} and run {v2} here instead — same key, same port, same obfuscation, so the configs already on your users' devices keep working, and its peers are imported. That container is only stopped, never deleted: if anything goes wrong the node starts it again, and you can start it yourself to go back. It will not come back on its own afterwards.", { v1: ctr.container, v2: ctr.name }),
+                body: T("swgPanel will STOP the container {v1} and run {v2} here instead — same key, same port, same obfuscation, so the configs already on your users' devices keep working, and its peers are imported. That container is only stopped, never deleted: if anything goes wrong the node starts it again, and you can start it yourself to go back. It will not come back on its own afterwards. Give it up to a minute: the container gets a grace period to shut down cleanly, and its runtime takes a moment to clear it away.", { v1: ctr.container, v2: ctr.name }),
                 onConfirm: async () => {
                   const k = node + "|" + ctr.container + ":" + ctr.name;
                   Store.ctrAdopt[k] = { at: Date.now() }; Store.apply();
@@ -266,7 +266,7 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm, c
               <div class="ig-item"><span class="ig-l">${T("Server identity")}</span><span class="ig-v"><span class="mi-ok">${T("tag|present")}</span></span></div>
             <//>`
           : html`<${Fragment}>
-              <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${listenAddr(ctr ? (ctr.host_port ? (nrec || {}).endpoint_host : "") : (nrec || {}).endpoint_host, (ctr && ctr.host_port) || cand.listen_port)}</span></div>
+              <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${listenAddr(ctr ? (ctr.host_port ? (nrec || {}).endpoint_host : "") : (nrec || {}).endpoint_host, (ctr && ctr.host_port) || candDialPort(cand))}</span></div>
               <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${cand.address || "—"}</span></div>
               ${ctr ? html`<div class="ig-item"><span class="ig-l">${T("Container")}</span><span class="ig-v">${ctr.container}</span></div>` : null}
               ${ctr ? null : html`<div class="ig-item"><span class="ig-l">${T("Found at")}</span><span class="ig-v">${cand.conf || ((cand.wdtt || {}).config_dir) || html`<span class="faint">—</span>`}</span></div>`}
@@ -982,7 +982,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
     } else if (isWdtt) {
       // WDTT interface: ONE record — this writes the same /api/wdtt/set the Turn-proxies card edits.
       const nm = iface.trim();
-      if (!/^wdtt\d{1,3}$/.test(nm)) return fail(T("WDTT interface name must be wdtt0–wdtt999."));
+      const _ne = turnIfaceNameError(node, nm, "wdtt"); if (_ne) return fail(_ne);
       if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail(T("Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24."));
       if (wgPort.trim() && !/^\d+$/.test(wgPort.trim())) return fail(T("Internal WG port must be a number."));
       // Endpoint host/IP + Listen port = the turn-proxy (DTLS) side → compose the WDTT server's -listen from them
@@ -995,7 +995,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       // csqtt interface: ONE record — writes the same /api/csqtt/set the Turn-proxies card edits. Raw-TUN, so no
       // internal WG port and no fork; takes the SUBNET like wg/awg (server .1 derived), a UDP DTLS listen, a pw cap.
       const nm = iface.trim();
-      if (!/^csqtt\d{1,4}$/.test(nm)) return fail(T("csqtt interface name must be csqtt0–csqtt9999."));
+      const _ne = turnIfaceNameError(node, nm, "csqtt"); if (_ne) return fail(_ne);
       if (!/\/24$/.test(subnet.trim())) return fail(T("csqtt needs a /24 tunnel subnet, e.g. 10.66.67.0/24."));
       if (maxPw.trim() && !/^\d+$/.test(maxPw.trim())) return fail(T("Max passwords must be a number."));
       const _lHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";

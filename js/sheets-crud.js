@@ -15,7 +15,7 @@ import { NODE_COLOR_DEFAULT, NODE_CREATE_DEFAULT, toThemed } from "./theme.js";
 import { go } from "./router.js";
 import { targetType, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
-         turnProxiesFor, tgtXfer, tgtSeenAge } from "./model.js";
+         turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel } from "./model.js";
 import { turnFork, turnColor, turnForkList } from "./turn-catalog.js";
 import { Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm } from "./ui.js";
 import {
@@ -142,12 +142,21 @@ export function allTargets() {
   const out = [];
   for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {}))
     if (!Store.ifaceIsSystem(node, iface)) out.push({ node, iface });   // never offer a mesh link (swg_*) as a peer target
-  // WDTT servers own their interface, which isn't a panel-managed WG iface (so it's absent from `describe`) — add
-  // each from the node's WDTT readback so it's selectable as a (keyless) peer target.
-  for (const node of Object.keys(Store.stats || {})) for (const w of ((Store.stats[node] || {}).wdtt || []))
-    if (w && w.iface && !out.some(t => t.node === node && t.iface === w.iface)) out.push({ node, iface: w.iface });
-  for (const node of Object.keys(Store.stats || {})) for (const c of ((Store.stats[node] || {}).csqtt || []))
-    if (c && c.iface && !out.some(t => t.node === node && t.iface === c.iface)) out.push({ node, iface: c.iface });
+  // WDTT/csqtt servers own their interface, which isn't a panel-managed WG iface (so it's absent from
+  // `describe`) — add each so it is selectable as a (keyless) peer target.
+  //
+  // ⚠️ From the PANEL'S OWN instance map, not the node's live readback. A node can be running an instance
+  // this panel knows nothing about — a box that moved fleets carries its old panel's servers across — and
+  // the password set is derived per instance FROM THAT MAP (desired_wdtt_for_node), so a peer deployed to
+  // one is inert: no password is ever shipped, while the deployment reports Ready because a keyless target
+  // has no wg peer to observe. Offering it was offering a dead end. Such an instance has to be adopted
+  // first; the panel's map is also populated the moment one is created, so nothing legitimate is lost.
+  for (const n of (Store.nodes || [])) {
+    for (const iface of Object.keys(n.wdtt_cfg || {}))
+      if (!out.some(t => t.node === n.id && t.iface === iface)) out.push({ node: n.id, iface });
+    for (const iface of Object.keys(n.csqtt_cfg || {}))
+      if (!out.some(t => t.node === n.id && t.iface === iface)) out.push({ node: n.id, iface });
+  }
   return out;
 }
 
@@ -230,6 +239,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
     else allocIp(node, iface);
   };
   const setIp = (k, v) => setSel(s => s[k] ? { ...s, [k]: { ...s[k], ip: v } } : s);
+  const setOpts = (k, v) => setSel(s => s[k] ? { ...s, [k]: { ...s[k], opts: v } } : s);
   const seeded = useRef(false);
   useEffect(() => {                                  // seed already-deployed targets (their assigned IP, read-only)
     if (seeded.current || !initial || !initial.length || !all.length) return;
@@ -251,9 +261,11 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
   if (!targets.length) return html`<div class="hint">${T("No interfaces available — is a node online?")}</div>`;
   // Steady order — by node, then interface. Ticking a target does NOT move its row (an on-the-fly "checked rows jump
   // to the top" reshuffle read as confusing); the arrangement stays put while you pick, and re-sorts only on re-open.
-  const _sv = Object.values(sel);
-  const lockType = _sv.length ? iTypeOf(_sv[0].node, _sv[0].iface) : null;   // a peer is one protocol — hide the other kind once one is ticked
-  const ordered = [...targets].filter(t => t.missing || !lockType || iTypeOf(t.node, t.iface) === lockType).sort((a, b) =>
+  // Every interface stays listed whatever is already ticked. A peer used to be locked to ONE kind here —
+  // ticking awg0 hid every wg, wdtt and csqtt row — which was a product rule, not a technical limit: the peer
+  // record has always held the three credentials side by side and the node reply builders have always been
+  // target-driven. One peer may now span wg + awg + wdtt + csqtt, and each row carries its own settings.
+  const ordered = [...targets].sort((a, b) =>
     (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "")
     || (a.iface || "").localeCompare(b.iface || ""));
   return html`<div class="targetpick">${ordered.map(t => {
@@ -265,14 +277,17 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
         <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
         <span class="tp">${t.iface}</span>
         ${t.missing ? html`<span class="topt-missing" title=${T("This interface is gone from the node — uncheck to remove this deployment from the peer")}>${T("tag|missing")}</span>` : null}</label>
-      ${(pubPeer && pubHave.has(k)) ? html`<${PubTag} peer=${pubPeer} src=${ity} label=${ity}/>` : html`<${Tag} kind=${ity} label=${ity}/>`}
-      ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${(pubPeer && pubHave.has(k)) ? pubPeer : null}/>`}
-      ${(s && (s.wdtt || s.csqtt || isSelfContainedKind(ity)))
-        // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
-        // target is seeded straight from the peer, so it never went through toggle and rendered an editable
-        // address box for a self-contained server — which mints the client IP itself on connect and can't be told one.
-        ? html`<span class="topt-ip faint" title=${T("The server assigns the address on connect")}>${T("val|auto")}</span>`
-        : (s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? T("not a valid IPv4 address") : ""} onInput=${e => setIp(k, e.target.value)}/>` : null)}
+      <div class="topt-right">
+        ${(pubPeer && pubHave.has(k)) ? html`<${PubTag} peer=${pubPeer} src=${ity} label=${ity}/>` : html`<${Tag} kind=${ity} label=${ity}/>`}
+        ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${(pubPeer && pubHave.has(k)) ? pubPeer : null}/>`}
+        ${(s && (s.wdtt || s.csqtt || isSelfContainedKind(ity)))
+          // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
+          // target is seeded straight from the peer, so it never went through toggle and rendered an editable
+          // address box for a self-contained server — which mints the client IP itself on connect and can't be told one.
+          ? html`<span class="topt-ip faint" title=${T("The server assigns the address on connect")}>${T("val|auto IP")}</span>`
+          : (s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? T("not a valid IPv4 address") : ""} onInput=${e => setIp(k, e.target.value)}/>` : null)}
+        ${(s && !t.missing) ? html`<${TargetGear} node=${t.node} iface=${t.iface} kind=${ity} opts=${s.opts} onSave=${v => setOpts(k, v)} readOnly=${!!s.existing}/>` : null}
+      </div>
     </div>`;
   })}</div>`;
 }
@@ -281,39 +296,68 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
 // takes a functional updater so an async IP allocation merges against the LATEST selection. `lockExisting` keeps
 // already-deployed rows checked + read-only (removing a live deployment isn't done here). Scrolls past 5 rows.
 
-// Advanced client-config fields (DNS / MTU / keepalive / AllowedIPs) — shared by the
-// peer-minting sheets. `v` is a {dns,mtu,keepalive,allowed,dnsTouched} ref-ish object.
-export function AdvancedFields({ st, startOpen }) {
-  const [open, setOpen] = useState(!!startOpen);
-  const errs = configErrors(st);
-  const fld = (k, fallback) => (errs[k] ? html`<div class="hint err">${errs[k]}</div>` : html`<div class="hint">${fallback}</div>`);
-  return html`<${Fragment}>
-    <button class="advtoggle" onClick=${() => setOpen(o => !o)}><span>${open ? "▾" : "▸"}</span> ${T("Advanced")}${Object.keys(errs).length ? html` <span class="advbad">${plural(Object.keys(errs).length, "issue")}</span>` : ""}</button>
-    ${open ? html`<div class="adv open">
-      <div class="field" style="margin-top:8px"><label>${T("Client allowed IPs (routing)")}</label>
-        <input class=${errs.allowed ? "bad" : ""} value=${st.allowed} onInput=${e => st.set("allowed", e.target.value)}/>${fld("allowed", T("Full tunnel by default. Narrow for split tunnel."))}</div>
-      <div class="field"><label>DNS</label>
-        <input class=${errs.dns ? "bad" : ""} value=${st.dns} onInput=${e => { st.dnsTouched.current = true; st.set("dns", e.target.value); }} placeholder=${T("from server, or e.g. 1.1.1.1")}/>${fld("dns", T("Comma-separated IPs. Blank = no DNS line."))}</div>
-      <div class="row2">
-        <div class="field"><label>MTU</label><input class=${errs.mtu ? "bad" : ""} value=${st.mtu} onInput=${e => { if (st.mtuTouched) st.mtuTouched.current = true; st.set("mtu", e.target.value); }} placeholder="1280"/>${fld("mtu", "Blank = 1280.")}</div>
-        <div class="field"><label>${T("Persistent keepalive (s)")}</label><input class=${errs.keepalive ? "bad" : ""} value=${st.keepalive} onInput=${e => st.set("keepalive", e.target.value)} placeholder="25"/>${fld("keepalive", T("0 disables · blank = 25."))}</div>
-      </div></div>` : null}
+// ── ONE DEPLOYMENT's client-config settings ─────────────────────────────────────────────────────
+// AllowedIPs / DNS / MTU / keepalive used to be ONE block at the bottom of the peer sheet, applying to the
+// whole peer. That worked only while a peer was all of one kind. Now that a peer can hold wg + awg + wdtt +
+// csqtt at once, a single block would show fields that are meaningless for some of that same peer's
+// deployments — WDTT and csqtt mint the client address on connect and have no client config at all — so the
+// settings moved to where they were always true: the individual deployment, behind the gear on its row.
+// wdtt/csqtt rows have no gear, which is the whole confusion designed out. A side effect worth having: two
+// deployments of one peer can now route differently (full tunnel on one interface, split on another).
+export const tgtDefaults = (meta) => ({
+  dns: ((meta || {}).dns || []).join(", "), mtu: String((meta || {}).mtu || 1280),
+  keepalive: "25", allowed: "0.0.0.0/0, ::/0",
+});
+// Does this deployment differ from its interface's defaults? Drives the gear's "customised" dot, so an
+// operator can see which rows carry settings without opening each one.
+export const tgtCustomised = (opts, meta) => !!(opts && Object.keys(configOverrides(opts, meta)).length);
+
+export function openTargetSettings({ node, iface, opts, meta, onSave, readOnly }) {
+  pushModal(html`<${TargetSettingsSheet} node=${node} iface=${iface} opts=${opts} meta=${meta} onSave=${onSave} readOnly=${readOnly}/>`);
+}
+export function TargetSettingsSheet({ node, iface, opts, meta, onSave, readOnly }) {
+  const d = tgtDefaults(meta);
+  const [dns, setDns] = useState((opts && opts.dns != null) ? opts.dns : d.dns);
+  const [mtu, setMtu] = useState((opts && opts.mtu != null) ? opts.mtu : d.mtu);
+  const [keepalive, setKa] = useState((opts && opts.keepalive != null) ? opts.keepalive : d.keepalive);
+  const [allowed, setAllowed] = useState((opts && opts.allowed != null) ? opts.allowed : d.allowed);
+  const cur = { dns, mtu, keepalive, allowed };
+  const errs = configErrors(cur);
+  const awgOn = !!(meta && meta.awg_params && Object.keys(meta.awg_params).length);
+  const fld = (k, fallback) => html`<div class=${"hint" + (errs[k] ? " err" : "")}>${errs[k] || fallback}</div>`;
+  const save = () => { if (Object.keys(errs).length) return; onSave(cur); closeModal(); };
+  return html`<${Sheet} title=${T("Settings — {v1}", { v1: iface })} width=${560} onBack=${closeModal}
+    foot=${readOnly ? footRow({ onCancel: closeModal, cancelLabel: T("Close"), action: null })
+      : footRow({ left: html`<button class="btn btn-ghost" onClick=${() => { setDns(d.dns); setMtu(d.mtu); setKa(d.keepalive); setAllowed(d.allowed); }}>${T("Reset to interface defaults")}</button>`,
+                  onCancel: closeModal, onAction: save, action: T("Apply"), disabled: !!Object.keys(errs).length })}>
+    <div class="hint" style="margin-bottom:10px">${T("These apply to this deployment only — {v1} on {v2}. The peer's other deployments keep their own.", { v1: iface, v2: Store.nodeName(node) })}</div>
+    <div class="field"><label>${T("Client allowed IPs (routing)")}</label>
+      <input class=${errs.allowed ? "bad" : ""} disabled=${readOnly} value=${allowed} onInput=${e => setAllowed(e.target.value)}/>${fld("allowed", T("Full tunnel by default. Narrow for split tunnel."))}</div>
+    <div class="field"><label>DNS</label>
+      <input class=${errs.dns ? "bad" : ""} disabled=${readOnly} value=${dns} onInput=${e => setDns(e.target.value)} placeholder=${T("from server, or e.g. 1.1.1.1")}/>${fld("dns", T("Comma-separated IPs. Blank = no DNS line."))}</div>
+    <div class="row2">
+      <div class="field"><label>MTU</label><input class=${errs.mtu ? "bad" : ""} disabled=${readOnly} value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/>${fld("mtu", "Blank = 1280.")}</div>
+      <div class="field"><label>${T("Persistent keepalive (s)")}</label><input class=${errs.keepalive ? "bad" : ""} disabled=${readOnly} value=${keepalive} onInput=${e => setKa(e.target.value)} placeholder="25"/>${fld("keepalive", T("0 disables · blank = 25."))}</div>
+    </div>
+    <div class="hint">${awgOn
+      ? T("AmneziaWG obfuscation parameters come from the interface itself and are the same for every client on it — change them in the interface's settings.")
+      : T("This is a plain WireGuard interface, so it carries no AmneziaWG obfuscation parameters.")}</div>
   <//>`;
+}
+// The gear that opens the sheet above, for ONE wg/awg row. Returns null for a self-contained kind — WDTT and
+// csqtt have no client config to open, and that absence IS the affordance.
+export function TargetGear({ node, iface, kind, opts, onSave, readOnly }) {
+  if (isSelfContainedKind(kind)) return null;
+  const meta = Store.ifaceMeta(node, iface);
+  const on = tgtCustomised(opts, meta);
+  return html`<button type="button" class=${"btn btn-mini ico topt-gear" + (on ? " on" : "")}
+    title=${on ? T("Settings for this deployment (customised)") : T("Settings for this deployment (DNS, MTU, routing)")}
+    onClick=${e => { e.preventDefault(); e.stopPropagation(); openTargetSettings({ node, iface, opts, meta, onSave, readOnly }); }}><${Ic} i="gear"/></button>`;
 }
 
 // Mint ONE peer per chosen target (own keypair + PSK each), assigned to userId. Builds each
 // config in-browser, stashes it in sessionConfigs (so the QR shows), and creates the peer via
 // the Phase-2 endpoint. Returns { ok, made, fails:[...] }.
-
-// Shared client-config field state (DNS / MTU / keepalive / AllowedIPs) for the peer sheets.
-export function useConfigFields() {
-  const [dns, setDns] = useState(""); const [mtu, setMtu] = useState("1280");
-  const [keepalive, setKeepalive] = useState("25"); const [allowed, setAllowed] = useState("0.0.0.0/0, ::/0");
-  const dnsTouched = useRef(false); const mtuTouched = useRef(false);
-  const setters = { dns: setDns, mtu: setMtu, keepalive: setKeepalive, allowed: setAllowed };
-  return { dns, mtu, keepalive, allowed, dnsTouched, mtuTouched, setDns, setMtu, set: (k, v) => setters[k](v),
-           opts: () => ({ dns, mtu, keepalive, allowed }) };
-}
 
 // New peer (mint a fresh keypair) deployed to one OR MORE (node,iface) targets as ONE
 // credential (redundancy / failover). For per-interface devices, use a user's "Add peers".
@@ -321,69 +365,64 @@ export function openCreatePeer(prefill, child) { (child ? pushModal : openModal)
 export function CreatePeerSheet({ prefill }) {
   const [chosen, setChosen] = useState([]);
   const [title, setTitle] = useState("");
-  const cf = useConfigFields();
   const [userId, setUserId] = useState(prefill.user_id || "");
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {   // default DNS + MTU from the first chosen interface until the operator edits them
-    if (!chosen.length) return;
-    const m = Store.ifaceMeta(chosen[0].node, chosen[0].iface); if (!m) return;
-    if (!cf.dnsTouched.current) cf.setDns((m.dns || []).join(", "));
-    if (!cf.mtuTouched.current && m.mtu) cf.setMtu(String(m.mtu));
-  }, [chosen]);
-
-  const wdttMode = chosen.some(t => t.wdtt);   // the TargetPicker locks a peer to one kind, so any wdtt target ⇒ all wdtt
-  const csqttMode = chosen.some(t => t.csqtt);   // …likewise csqtt
-  const keylessMode = wdttMode || csqttMode;   // self-contained kinds: no address, no client-config fields
+  // One peer, ANY mix of kinds. Each chosen target is classified on its own and gets what IT needs: a wg/awg
+  // target an address, a client config and the shared keypair; a wdtt/csqtt target neither (its server mints
+  // the address on connect, and the panel-owned access password is its whole credential). The client-config
+  // fields that used to sit at the bottom of this sheet now live behind each wg/awg row's gear — see
+  // TargetSettingsSheet for why a peer that may not be wholly WireGuard can't have one shared block.
+  const kindFor = t => (t.wdtt ? "wdtt" : t.csqtt ? "csqtt" : iTypeOf(t.node, t.iface));
+  const keyed = chosen.filter(t => !isSelfContainedKind(kindFor(t)));
 
   const validate = () => {
     if (!chosen.length) return T("Pick at least one target.");
-    if (keylessMode) return null;   // self-contained targets carry no address (minted on connect) + no client-config fields
-    const badIp = chosen.find(t => !V.ipv4(String(t.ip).trim()));
+    const badIp = keyed.find(t => !V.ipv4(String(t.ip || "").trim()));
     if (badIp) return T("Invalid address for {v1}.", { v1: Store.nodeName(badIp.node) + "/" + badIp.iface });
-    const ce = configErrors(cf); const k = Object.keys(ce)[0];
-    if (k) return ce[k];
+    for (const t of keyed) {                      // each deployment's own settings, validated on its own
+      const ce = configErrors(t.opts || tgtDefaults(Store.ifaceMeta(t.node, t.iface)));
+      const k = Object.keys(ce)[0];
+      if (k) return T("{v1}: {v2}", { v1: t.iface, v2: ce[k] });
+    }
     return null;
   };
 
   const create = async () => {
     const err = validate(); if (err) return setMsg({ k: "err", t: err });
-    if (keylessMode) {   // keyless self-contained peer — the panel mints the access password; the server mints the client address on connect. One roster peer, one link per targeted server.
-      setBusy(true); setMsg({ k: "work", t: csqttMode ? T("adding csqtt user…") : T("adding WDTT user…") });
-      const body = { user_id: userId || null, title: title.trim(), targets: chosen.map(t => ({ node: t.node, iface: t.iface })) };
-      const r = await (csqttMode ? api.csqttPeerCreate(body) : api.wdttPeerCreate(body));
-      if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: srvText(r) || T("Request failed.") }); }
-      closeModal();
-      if (prefill.lock && prefill.node && prefill.iface) go("#/node/" + encodeURIComponent(prefill.node) + "/" + encodeURIComponent(prefill.iface));
-      else if (userId) revealUser(userId, (r.data && r.data.id) || "");
-      Store.apply(); await Store.poll();
-      return toast(csqttMode ? T("csqtt user added — their connect link is on the assigned subscription.") : T("WDTT user added — their connect link is on the assigned subscription."), "ok");
-    }
-    setBusy(true); setMsg({ k: "work", t: T("generating key…") });
-    let keys, pskV, tgts, configs, body;
+    setBusy(true); setMsg({ k: "work", t: keyed.length ? T("generating key…") : T("creating peer…") });
+    let keys = null, pskV = "", tgts, configs, body;
     try {                                            // browser-side crypto/config build is the only awaited part
-      keys = await genKeys();
-      pskV = genPSK();   // PSK is panel-owned & auto-minted; change it via a peer's Rotate keys
-      const dnsArr = cf.dns.split(",").map(s => s.trim()).filter(Boolean);
+      if (keyed.length) {
+        keys = await genKeys();
+        pskV = genPSK();   // PSK is panel-owned & auto-minted; change it via a peer's Rotate keys
+      }
       tgts = []; configs = {};
       for (const t of chosen) {
+        const kind = kindFor(t);
+        if (isSelfContainedKind(kind)) {            // no address, no key, no client config — the server owns all three
+          tgts.push({ node: t.node, iface: t.iface, ip: "", type: kind });
+          continue;
+        }
         const m = Store.ifaceMeta(t.node, t.iface); if (!m) continue;
         const ipClean = String(t.ip).trim().split("/")[0];
-        tgts.push({ node: t.node, iface: t.iface, ip: ipClean, type: (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg" });
-        configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: ipClean + "/32", dns: dnsArr, mtu: cf.mtu.trim() || 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk: pskV, endpoint: m.endpoint, allowed: cf.allowed.trim() || "0.0.0.0/0, ::/0", keepalive: cf.keepalive.trim() });
+        const o = t.opts || tgtDefaults(m);
+        const tg = { node: t.node, iface: t.iface, ip: ipClean, type: (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg" };
+        const ov = configOverrides(o, m);           // only what differs from THIS interface's defaults is stored
+        if (Object.keys(ov).length) tg.overrides = ov;
+        tgts.push(tg);
+        configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: ipClean + "/32", dns: o.dns.split(",").map(x => x.trim()).filter(Boolean), mtu: String(o.mtu).trim() || 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk: pskV, endpoint: m.endpoint, allowed: String(o.allowed).trim() || "0.0.0.0/0, ::/0", keepalive: String(o.keepalive).trim() });
       }
-      body = { user_id: userId || null, title: title.trim(), pubkey: keys.pub, psk: pskV, targets: tgts };
-      const _ov = configOverrides(cf.opts(), Store.ifaceMeta(chosen[0].node, chosen[0].iface));
-      if (Object.keys(_ov).length) body.overrides = _ov;
+      body = { user_id: userId || null, title: title.trim(), pubkey: keys ? keys.pub : "", psk: pskV, targets: tgts };
       // No plaintext to the server: the key stays in the browser (session config for the immediate QR) and is
       // encrypted into the blob by subMaybePublish (below, after the create POST succeeds).
     } catch (e) { setBusy(false); return setMsg({ k: "err", t: T("Error: {v1}", { v1: e.message })}); }
     // Optimistic: stash the config, drop a "creating" peer onto the grid, close the modal NOW, and let
     // the create POST run in the background (mutate reverts + toasts on failure; the next poll supersedes).
-    Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, configs);
-    const tempId = "tmp_" + keys.pub.slice(0, 14);
-    const optimistic = { id: tempId, pubkey: keys.pub, user_id: userId || null, title: title.trim(), psk: pskV,
+    if (keys) Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, configs);
+    const tempId = "tmp_" + (keys ? keys.pub.slice(0, 14) : String(Math.random()).slice(2, 16));
+    const optimistic = { id: tempId, pubkey: keys ? keys.pub : "", user_id: userId || null, title: title.trim(), psk: pskV,
       targets: tgts.map(t => ({ node: t.node, iface: t.iface, ip: t.ip, type: t.type })),
       created_at: Math.floor(Date.now() / 1000), _creating: true };
     closeModal();
@@ -393,7 +432,7 @@ export function CreatePeerSheet({ prefill }) {
       patch: s => { s.roster.peers[tempId] = optimistic; },        // shows instantly with status "creating"
       call: () => api.peerCreate(body),
       onOk: r => { if (r && r.data && r.data.id) { Store.recentlyCreated[r.data.id] = Date.now();
-        subPublishOrPrompt(userId || null, r.data.id, keys.priv, pskV); } },   // encrypt {k,p} → blob (prompt to unlock if locked)
+        if (keys) subPublishOrPrompt(userId || null, r.data.id, keys.priv, pskV); } },   // encrypt {k,p} → blob (prompt to unlock if locked)
     });
   };
 
@@ -405,13 +444,9 @@ export function CreatePeerSheet({ prefill }) {
       <${UserPicker} value=${userId} allowUnassigned=${true} onChange=${setUserId}/></div>`}
     <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional, to tell devices apart")}</span></label>
       <input value=${title} onInput=${e => setTitle(e.target.value)} maxlength="64" placeholder=${T("iPhone, Router, Laptop…")}/></div>
-    <div class="field"><label>${T("Targets")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— one, or several for redundancy (same key)")}</span></label>
-      <${TargetPicker} prefill=${prefill} onChange=${setChosen}/></div>
-    ${csqttMode
-      ? html`<div class="hint">${T("csqtt server — the panel mints this user's access password and csqtt mints their address on connect, so there's no key or client config to set here. The user's VK link (from their subscription) is the TURN credential.")}</div>`
-      : wdttMode
-      ? html`<div class="hint">${T("WDTT server — the panel mints this user's access password and WDTT mints their WireGuard key + IP on connect, so there's no key or client config to set here. The user's VK link (from their subscription) is the TURN credential.")}</div>`
-      : html`<${AdvancedFields} st=${cf}/>`}
+    <div class="field"><label>${T("Targets")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— one, or several for redundancy (same credential)")}</span></label>
+      <${TargetPicker} prefill=${prefill} onChange=${setChosen}/>
+      ${keyed.length ? html`<div class="hint">${T("Use the gear on a row for that deployment's DNS, MTU and routing.")}</div>` : null}</div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -448,20 +483,36 @@ export function AddTargetSheet({ peer, back, child }) {
   const added = chosen.filter(c => !haveKeys.has(tkey(c.node, c.iface)));         // newly checked
   const removed = peer.targets.filter(t => !chosenKeys.has(tkey(t.node, t.iface))); // unchecked existing
   const ipChanged = chosen.filter(c => haveKeys.has(tkey(c.node, c.iface)) && c.ip && String(c.ip).split("/")[0] !== origIp[tkey(c.node, c.iface)]);  // existing whose address was edited
-  const badIp = added.concat(ipChanged).some(c => !c.ip || !V.ipv4(String(c.ip).split("/")[0]));
+  // A peer may now hold a mix of kinds, so a newly-ticked row is only asked for an address when its interface
+  // HAS one to give — a wdtt/csqtt server mints the client address on connect.
+  const kindFor = c => (c.wdtt ? "wdtt" : c.csqtt ? "csqtt" : iTypeOf(c.node, c.iface));
+  const needsIp = c => !isSelfContainedKind(kindFor(c));
+  const badIp = added.concat(ipChanged).filter(needsIp).some(c => !c.ip || !V.ipv4(String(c.ip).split("/")[0]));
   const nochange = !added.length && !removed.length && !ipChanged.length;
 
   const doSave = async () => {
     setBusy(true); setMsg({ k: "work", t: "applying…" });
     const fails = [];
     for (const t of added) {
+      const kind = kindFor(t);
+      if (isSelfContainedKind(kind)) {
+        // A keyless deployment brings no address and no client config; if this is the peer's first of that
+        // kind, the panel mints its access password server-side (mint_keyless_secrets).
+        const r = await api.peerAddTarget({ peer_id: peer.id, target: { node: t.node, iface: t.iface, ip: "", type: kind } });
+        if (!r.ok) fails.push(Store.nodeName(t.node) + "/" + T("{v1} (add)", { v1: t.iface }));
+        continue;
+      }
       const info = Store.ifaceMeta(t.node, t.iface);
       const ipClean = String(t.ip || "").split("/")[0];
+      const o = t.opts || null;                  // settings the operator set behind this row's gear
       let conf = null;
-      if (srcConf) { const s = parseFullConf(srcConf); conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive }); }
-      const body = { peer_id: peer.id, target: { node: t.node, iface: t.iface, ip: ipClean, type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" } };
+      if (srcConf) { const s = parseFullConf(srcConf);
+        conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: o ? String(o.dns).split(",").map(x => x.trim()).filter(Boolean) : s.dns, mtu: o ? (String(o.mtu).trim() || 1280) : s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: o ? (String(o.allowed).trim() || "0.0.0.0/0, ::/0") : s.allowed, keepalive: o ? String(o.keepalive).trim() : s.keepalive }); }
+      const target = { node: t.node, iface: t.iface, ip: ipClean, type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" };
+      const ov = o ? configOverrides(o, info) : {};
+      if (Object.keys(ov).length) target.overrides = ov;
       // Same key as the existing deployments → the peer's blob already covers it; no plaintext to the server.
-      const r = await api.peerAddTarget(body);
+      const r = await api.peerAddTarget({ peer_id: peer.id, target });
       if (r.ok) { if (conf) (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(t.node, t.iface)] = conf; }
       else fails.push(Store.nodeName(t.node) + "/" + T("{v1} (add)", { v1: t.iface }));
     }
@@ -561,7 +612,7 @@ export function PeerViewSheet({ pid, node, iface }) {
         ? html`<button class="btn btn-ghost" disabled title=${T("Fix or remove the problem interface first — see the note above")}><${Ic} i="pencil"/> ${T("Edit")}</button>`
         : html`<button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null)}><${Ic} i="pencil"/> ${T("Edit")}</button>`}
       ${peerBlockBtn(p)}
-      ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p)}>${T("Delete")}</button>`
+      ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, null, true)}>${T("Delete")}</button>`
         : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p)}>${T("Unassign")}</button>`}<//>`}>
     ${u ? html`<${PeerStatusLine} peer=${p} pos="bar"/>` : null}
     <div class="pv-head">
@@ -621,8 +672,10 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const setIpFor = (k, v) => setIps(m => ({ ...m, [k]: v }));
   const [loaded, setLoaded] = useState(false);
   const [confs, setConfs] = useState({});            // "node|iface" -> conf text (those we can rebuild)
-  const [dns, setDns] = useState(""); const [mtu, setMtu] = useState("1280");
-  const [keepalive, setKeepalive] = useState("25"); const [allowed, setAllowed] = useState("0.0.0.0/0, ::/0");
+  // "node|iface" -> {dns,mtu,keepalive,allowed} for THAT deployment. Was one set for the whole peer, which
+  // stopped being expressible once a peer could span kinds — see TargetSettingsSheet.
+  const [topts, setTopts] = useState({});
+  const setOptsFor = (k, v) => setTopts(m => ({ ...m, [k]: v }));
   const [userId, setUserId] = useState(peer.user_id || "");   // staged owner (applied on Save for an unassigned peer)
   const [expDate, setExpDate] = useState(expiryInputVal(peer.ownExpiry || 0));   // this peer's OWN expiry (blank = inherit the subscription's)
   const [msg, setMsg] = useState(flash || null); const [busy, setBusy] = useState(false);
@@ -643,10 +696,13 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       for (const t of (live.targets || peer.targets)) { const c = await getConfig(_pk, t.node, t.iface); if (c) found[tkey(t.node, t.iface)] = c; }
       if (!ok) return;
       setConfs(found); setLoaded(true);
-      const first = found[tkey(focus && focus.node, focus && focus.iface)] || Object.values(found)[0];
-      if (first) { const s = parseFullConf(first); const _d = (s.dns || []).join(", "), _m = String(s.mtu), _k = String(s.keepalive);
-        setDns(_d); setMtu(_m); setKeepalive(_k); setAllowed(s.allowed);
-        setOrig({ dns: _d, mtu: _m, keepalive: _k, allowed: s.allowed }); }   // baseline for the "anything changed?" Save gate
+      // Each deployment's own config is the source of its own fields. The old code read ONE config (the focused
+      // target's, else whichever came first) and applied its values to every target on Save — so opening the
+      // sheet on one interface and saving quietly pushed that interface's DNS/MTU onto all the others.
+      const seed = {};
+      for (const k of Object.keys(found)) { const c = parseFullConf(found[k]);
+        seed[k] = { dns: (c.dns || []).join(", "), mtu: String(c.mtu), keepalive: String(c.keepalive), allowed: c.allowed }; }
+      setTopts(seed); setOrig(seed);   // baseline for the "anything changed?" Save gate
     })();
     return () => { ok = false; };
   }, [peer.id, live && live.pubkey, Store.configEpoch]);   // LIVE pubkey / epoch change (e.g. after Rotate) re-reads the now-available config
@@ -655,23 +711,24 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const ipChangedFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && v !== (t.ip || "").split("/")[0]; };
   const ipBadFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && !V.ipv4(v.split("/")[0]); };
   const anyIpBad = peer.targets.some(ipBadFor);
-  const errs = editable ? configErrors({ dns, mtu, keepalive, allowed }) : {};
+  const optsErr = Object.keys(topts).map(k => { const e = configErrors(topts[k]); const f = Object.keys(e)[0];
+    return f ? { k, msg: T("{v1}: {v2}", { v1: k.split("|")[1], v2: e[f] }) } : null; }).find(Boolean);
+  const optsChanged = k => !!orig && !!orig[k] && JSON.stringify(topts[k]) !== JSON.stringify(orig[k]);
   // Save is only offered when something would actually change — otherwise it rewrites the peer with identical
   // values (and, for a user change, walks the operator into a confirm for a no-op).
   const _dirty = (title.trim() !== (peer.title || "").trim())
     || ((userId || "") !== (peer.user_id || ""))
     || (expDate !== expiryInputVal(peer.ownExpiry || 0))
     || (live.targets || []).some(ipChangedFor)
-    || (editable && !!orig && (dns !== orig.dns || mtu !== orig.mtu || keepalive !== orig.keepalive || allowed !== orig.allowed));
+    || Object.keys(topts).some(optsChanged);
   const ownerExp = userId ? +(((Store.recon.users || []).find(u => u.id === userId) || {}).expiry || 0) : 0;
   const save = async () => {
     if (anyIpBad) return setMsg({ k: "err", t: T("Each address must be a valid IPv4.") });
-    const ek = Object.keys(errs)[0]; if (ek) return setMsg({ k: "err", t: errs[ek] });
+    if (optsErr) return setMsg({ k: "err", t: optsErr.msg });
     const expSec = expiryFromInput(expDate);
     // A peer can't outlive its subscription (the server enforces it too — check here for a clean message).
     if (expSec && ownerExp && expSec > ownerExp) return setMsg({ k: "err", t: T("Expiry can't be later than the subscription's (") + fmtDate(ownerExp) + ")." });
     setBusy(true); setMsg({ k: "work", t: T("saving…") });
-    const dnsArr = dns.split(",").map(s => s.trim()).filter(Boolean);
     let fails = 0;
     try {
       if (title.trim() !== (peer.title || "")) {
@@ -681,30 +738,33 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         const r = await api.peerUpdate({ peer_id: peer.id, expiry: expSec }); if (!r.ok) { fails++; if (r.error) setMsg({ k: "err", t: srvText(r) }); }
       }
       // persist the roster copy of the non-secret overrides (custom DNS/MTU/AllowedIPs/keepalive), so a
-      // blob-only render (encrypted store / the sub page) reproduces this peer's config faithfully.
-      if (editable) {
-        const _meta0 = Store.ifaceMeta(peer.targets[0].node, peer.targets[0].iface);
-        const ovNew = configOverrides({ dns, mtu, allowed, keepalive }, _meta0);
-        if (JSON.stringify(ovNew) !== JSON.stringify(peer.overrides || {})) {
-          const r = await api.peerUpdate({ peer_id: peer.id, overrides: ovNew }); if (!r.ok) fails++;
-        }
+      // blob-only render (encrypted store / the sub page) reproduces this peer's config faithfully. Written
+      // per DEPLOYMENT now: each target carries its own, and the peer-wide block stays only as the fallback
+      // for peers written before per-target settings existed.
+      for (const t of (live.targets || peer.targets)) {
+        const k = tkey(t.node, t.iface);
+        if (!topts[k] || !optsChanged(k)) continue;
+        const ovNew = configOverrides(topts[k], Store.ifaceMeta(t.node, t.iface));
+        const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, overrides: ovNew });
+        if (!r.ok) fails++;
       }
       // staged assignment of a previously-unassigned peer — keep the key, just set the owner
       if (peer.unassigned && userId && userId !== (peer.user_id || "")) {
         const r = await api.peerUpdate({ peer_id: peer.id, user_id: userId }); if (!r.ok) fails++;
       }
       // rebuild + persist each target's config; any target whose address changed moves on its iface
-      for (const t of peer.targets) {
+      for (const t of (live.targets || peer.targets)) {
         const k = tkey(t.node, t.iface); const cur = confs[k];
         const changed = ipChangedFor(t);
         const newIP = (ips[k] || "").trim().split("/")[0];
-        if (!cur) {                                  // no config to rebuild — IP can still move
+        if (!cur) {                                  // no config to rebuild (or a keyless deployment) — IP can still move
           if (changed) { const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, ip: newIP }); if (!r.ok) fails++; }
           continue;
         }
         const s = parseFullConf(cur);
+        const o = topts[k] || { dns: (s.dns || []).join(", "), mtu: String(s.mtu), keepalive: String(s.keepalive), allowed: s.allowed };
         const addr = (changed ? newIP : (s.address || "").split("/")[0]) + "/32";
-        const conf = buildConf({ privkey: s.privkey, address: addr, dns: editable ? dnsArr : s.dns, mtu: (mtu.trim() || 1280), awg_params: s.awg_params, server_pubkey: s.server_pubkey, psk: s.psk, endpoint: s.endpoint, allowed: (allowed.trim() || "0.0.0.0/0, ::/0"), keepalive: keepalive.trim() });
+        const conf = buildConf({ privkey: s.privkey, address: addr, dns: String(o.dns).split(",").map(x => x.trim()).filter(Boolean), mtu: (String(o.mtu).trim() || 1280), awg_params: s.awg_params, server_pubkey: s.server_pubkey, psk: s.psk, endpoint: s.endpoint, allowed: (String(o.allowed).trim() || "0.0.0.0/0, ::/0"), keepalive: String(o.keepalive).trim() });
         (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[k] = conf;
         // No plaintext to the server: the address moves via the roster, and the DNS/MTU/AllowedIPs edits are
         // persisted as roster overrides (the peerUpdate above); the key is unchanged, so the blob still holds it.
@@ -724,10 +784,38 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
     done(); await Store.poll();
   };
 
-  const isWdttPeer = !!peer.wdtt_password || (peer.targets || []).some(t => t.type === "wdtt");
-  const isCsqttPeer = !!peer.csqtt_password || (peer.targets || []).some(t => t.type === "csqtt");
-  const isKeyless = isWdttPeer || isCsqttPeer;   // self-contained turn peers: panel-owned password, no browser keypair
+  // A peer can hold a MIX of kinds, so "is this a WDTT peer?" is no longer one question with one answer.
+  // What each control actually needs is narrower: does this peer HAVE a wdtt deployment (→ offer Rotate link),
+  // a csqtt one, and does it have any KEYED deployment at all (→ offer Rotate keys / QR). The old `isKeyless`
+  // read "has any keyless deployment", which on a mixed peer hid its WireGuard addresses and its QR.
+  const hasWdtt = !!peer.wdtt_password || (live.targets || []).some(t => targetType(t) === "wdtt");
+  const hasCsqtt = !!peer.csqtt_password || (live.targets || []).some(t => targetType(t) === "csqtt");
+  const hasKeyed = (live.targets || []).some(t => !isSelfContainedKind(targetType(t)));
+  const isKeyless = !hasKeyed;   // EVERY deployment is self-contained: panel-owned password, no browser keypair
+  const isWdttPeer = hasWdtt, isCsqttPeer = hasCsqtt;   // (rotate-link wording below)
   const rotate = () => {
+    // A MIXED peer holds several independent credentials — a keypair for its wg/awg deployments and one access
+    // password per keyless kind — so rotating it means rotating all of them, cumulatively (the same shape the
+    // bulk rotate in peer-actions.js uses). The single-kind cases below are what that reduces to.
+    if (hasKeyed && (hasWdtt || hasCsqtt)) {
+      openConfirm({ title: T("Rotate credentials"), confirmLabel: T("Rotate credentials"), warn: true,
+        body: T("This peer holds several credentials — a WireGuard keypair and an access password per turn server. All of them are replaced: every config, QR and link this peer already handed out stops working and must be re-imported."),
+        onConfirm: () => {
+          setRotating(true);
+          (async () => {
+            try {
+              if (hasCsqtt) await api.csqttPeerRotate({ peer_id: peer.id });
+              if (hasWdtt) await api.wdttPeerRotate({ peer_id: peer.id });
+              await rotatePeerKeys(peer);   // LAST: this changes the pubkey, and the two above address by id
+              await Store.poll();
+              const re = Store.rowErrors["peer:" + peer.id];
+              toast(re ? (re.msg || T("Rotate failed.")) : T("Credentials rotated — send the user their new QR and links; the old ones no longer work."), re ? "err" : "ok");
+            } catch (e) { toast(T("Rotate failed."), "err"); }
+            finally { setRotating(false); }
+          })();
+        } });
+      return;
+    }
     if (isKeyless) {   // keyless turn peer: no browser keypair — rotate the panel-owned access password (revokes the old link)
       // Called ON the api object, never pulled off it: these are shorthand methods that do `this.post(...)`, so a
       // detached reference loses `this` and the call throws SYNCHRONOUSLY — before .then/.catch are attached, so
@@ -792,9 +880,12 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       ? html`<button class="btn btn-ghost restore" onClick=${() => confirmRestoreDeployment(_rp, _fixT)}><${Ic} i="refresh"/> ${T("Restore interface")}</button>`
       : (_fixT && _fixT.correctable)
         ? html`<button class="btn btn-ghost correct" onClick=${() => confirmCorrectDeployment(_rp, _fixT)}><${Ic} i="check"/> ${T("Fix address")}</button>`
-        : html`<button class="btn btn-ghost" disabled=${rotating} onClick=${rotate}><${Ic} i="key"/> ${rotating ? (isKeyless ? T("Rotating link…") : T("Rotating keys…")) : (isKeyless ? T("Rotate link") : T("Rotate keys"))}</button>`;
+        : html`<button class="btn btn-ghost" disabled=${rotating} onClick=${rotate}><${Ic} i="key"/> ${
+            (hasKeyed && (hasWdtt || hasCsqtt)) ? (rotating ? T("Rotating credentials…") : T("Rotate credentials"))
+            : isKeyless ? (rotating ? T("Rotating link…") : T("Rotate link"))
+            : (rotating ? T("Rotating keys…") : T("Rotate keys"))}</button>`;
   return html`<${Sheet} title=${T("Edit peer")} width=${700} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
-    foot=${footRow({ left: html`${editable && !isKeyless ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/>QR</button>` : null}${isKeyless ? null : html`<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> ${T("Targets")}</button>`}${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
+    foot=${footRow({ left: html`${editable && hasKeyed ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/>QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> ${T("Targets")}</button>${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
     <${PeerStatusLine} peer=${peer} pos="bar"/>
     <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder=${T("e.g. iPhone, Work laptop")}/></div>
     <div class="field"><label>${T("col|User")}</label>
@@ -808,42 +899,34 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
     <div class="field"><label>${T("Access expires")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— this peer only; blank = {fallback}", { fallback: ownerExp ? T("follows the subscription") : T("never") })}</span></label>
       <div class="daterow"><input type="date" class="datein" max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
       <div class=${"hint"}>${T("On this date the peer stops working (it reappears if you extend it).")}${ownerExp ? T(" Can't be later than the subscription's expiry ({v1}).", { v1: fmtDate(ownerExp) }) : ""}</div></div>
-    ${isKeyless ? html`<div class="field"><label>${T("Servers")}</label>
-      <div class="targetpick">${targetsOrdered.map(t => html`<div class="targetopt sel locked" key=${tkey(t.node, t.iface)}>
-        <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
-        <${TargetFrontBadge} node=${t.node} iface=${t.iface}/>
-        <span class="topt-ip faint" title=${isCsqttPeer ? T("csqtt assigns the address on connect") : T("WDTT assigns the address on connect")}>${T("val|auto")}</span>
-      </div>`)}</div>
-      <div class="hint">${isCsqttPeer
-        ? T("csqtt servers this user reaches. csqtt assigns each server's address on connect; the user's link per server is on their subscription. No client config (key/DNS/MTU) — csqtt owns the datapath.")
-        : T("WDTT servers this user reaches. WDTT assigns each server's address on connect; the user's link per server is on their subscription. No client config (key/DNS/MTU) — WDTT owns the datapath.")}</div>
-    </div>` : html`<${Fragment}>
-    <div class="field"><label>${T("Addresses")}</label>
+    <div class="field"><label>${T("label|Deployments")}</label>
       <div class="targetpick">${targetsOrdered.map(t => {
         const k = tkey(t.node, t.iface);
-        const im = (Store.describe[t.node] || {})[t.iface] || {};
-        const ity = (im.awg_params && Object.keys(im.awg_params).length) ? "awg" : "wg";
+        // ONE list for every kind. It used to be two mutually-exclusive lists chosen by whether the peer was
+        // "a WDTT peer", which on a mixed peer showed only one of its halves. Each row now asks its OWN kind
+        // what it should offer: an address box and a settings gear for wg/awg, "auto" and no gear for a
+        // self-contained server that mints the address on connect.
+        const ity = targetType(t);
+        const sc = isSelfContainedKind(ity);
         return html`<div class="targetopt sel locked" key=${k}>
           <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
-          <${PrimaryToggle} peer=${peer} t=${t} compact=${true}/>
-          <${PubTag} peer=${live} src=${targetType(t)} label=${ity} dim=${!t.online}/>
-          <${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${live}/>
-          <input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>
+          <div class="topt-right hasprim">
+            <${PrimaryToggle} peer=${peer} t=${t} compact=${true}/>
+            <${PubTag} peer=${live} src=${ity} label=${ity} dim=${!t.online}/>
+            <${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${live}/>
+            ${sc
+              ? html`<span class="topt-ip faint" title=${ity === "csqtt" ? T("csqtt assigns the address on connect") : T("WDTT assigns the address on connect")}>${T("val|auto IP")}</span>`
+              : html`<input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>`}
+            ${(!sc && confs[k]) ? html`<${TargetGear} node=${t.node} iface=${t.iface} kind=${ity} opts=${topts[k]} onSave=${v => setOptsFor(k, v)}/>` : null}
+          </div>
         </div>`;
       })}</div>
-      <div class="hint">${T("Changing an address moves the peer on that interface.")}</div>
+      <div class="hint">${hasKeyed
+        ? T("Changing an address moves the peer on that interface. The gear holds that deployment's DNS, MTU and routing.")
+        : T("These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.")}</div>
     </div>
-    ${!loaded ? html`<div class="loading"><span class="spin"></span>${T("loading config…")}</div>`
-      : !editable ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The client's private key isn't available, so DNS / MTU / routing can't be rebuilt")}${Store.storeConfigs ? "" : T(" (enable store_configs, or edit right after creating)")}${T(". Title and address can still change.")}</span></div>`
-      : html`<${Fragment}>
-        <div class="field"><label>${T("Client allowed IPs (routing)")}</label><input class=${errs.allowed ? "bad" : ""} value=${allowed} onInput=${e => setAllowed(e.target.value)}/><div class=${"hint" + (errs.allowed ? " err" : "")}>${errs.allowed || T("Full tunnel by default. Narrow for split tunnel.")}</div></div>
-        <div class="field"><label>DNS</label><input class=${errs.dns ? "bad" : ""} value=${dns} onInput=${e => setDns(e.target.value)} placeholder=${T("e.g. 1.1.1.1, 1.0.0.1")}/><div class=${"hint" + (errs.dns ? " err" : "")}>${errs.dns || T("Comma-separated IPs. Blank = no DNS line.")}</div></div>
-        <div class="row2">
-          <div class="field"><label>MTU</label><input class=${errs.mtu ? "bad" : ""} value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class=${"hint" + (errs.mtu ? " err" : "")}>${errs.mtu || "Blank = 1280."}</div></div>
-          <div class="field"><label>${T("Persistent keepalive (s)")}</label><input class=${errs.keepalive ? "bad" : ""} value=${keepalive} onInput=${e => setKeepalive(e.target.value)} placeholder="25"/><div class=${"hint" + (errs.keepalive ? " err" : "")}>${errs.keepalive || T("0 disables · blank = 25.")}</div></div>
-        </div>
-      <//>`}
-    <//>`}
+    ${(hasKeyed && !loaded) ? html`<div class="loading"><span class="spin"></span>${T("loading config…")}</div>` : null}
+    ${(hasKeyed && loaded && !editable) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The client's private key isn't available, so DNS / MTU / routing can't be rebuilt")}${Store.storeConfigs ? "" : T(" (enable store_configs, or edit right after creating)")}${T(". Title and address can still change.")}</span></div>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -903,22 +986,160 @@ export function NodeCreateSheet() {
   <//>`;
 }
 export const BOOTSTRAP_URL = "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh";
-export function NodeTokenSheet({ name, token, isNew, kind }) {
+
+/* Enrolment for a node whose installation is its configuration's. NOT a command — the installer is
+   the wrong shape here twice over: it would write into /opt on a host whose own tooling cannot see
+   that, and re-running it is not how such a node is re-enrolled anyway.
+
+   ⚠️ The token is NOT in the snippet, and that is the point rather than an omission. A Nix option's
+   value lands in the world-readable store, so the module takes a PATH to a file it reads at runtime
+   and asserts against a path literal for exactly this reason. Printing `environmentFile = "…"` beside
+   the token, with the token shown separately, is the only shape that stays true to that. */
+/* The declarative install as a copy-paste SEQUENCE of commands, not a lone config block with
+   comments nobody can act on. Each entry is [label, code]; a fresh node gets all three steps, a
+   recovery just re-writes the token file and rebuilds (its flake already exists).
+
+   ⚠️ The token goes into a FILE by command (step 1), so the config only ever names a PATH — a value
+   written into a Nix option lands in the world-readable store. That is what the old "# NODE_TOKEN"
+   comment was trying, and failing, to convey. The flake names its config `swg` and points
+   `selfUpdate.flakeRef` at it, so the panel's Update button works with nothing else to set. */
+function nixNodeSteps(host, endpoint, token, recovery, mode) {
+  const ep = endpoint || "203.0.113.10";
+  const podman = mode === "podman";
+  // Native takes the raw token via LoadCredential; the container arm reads NODE_TOKEN= from an env
+  // file, because a host credential cannot cross into a container (node.nix's tokenFile assertion).
+  const tokenCmd = podman ? [
+    "sudo install -d -m 700 /etc/swg-secrets",
+    `printf 'NODE_TOKEN=%s\\n' '${token}' | sudo tee /etc/swg-secrets/swg-node.env >/dev/null`,
+    "sudo chmod 600 /etc/swg-secrets/swg-node.env",
+  ].join("\n") : [
+    "sudo install -d -m 700 /etc/swg-secrets",
+    `printf %s '${token}' | sudo tee /etc/swg-secrets/swg-node-token >/dev/null`,
+    "sudo chmod 600 /etc/swg-secrets/swg-node-token",
+  ].join("\n");
+  // The one block that differs between the arms — the engine + which token option. The container arm
+  // runs the published image via podman (nixpkgs flags the docker package insecure; podman is not),
+  // and everything else it needs (the runtime, host sysctls, tmpfiles) the module turns on itself.
+  // ⚠️ native REQUIRES delivery = "native": tokenFile is rejected on the container default, so
+  // omitting it is a build failure, not a silent fallback.
+  const svc = podman ? [
+    "        { services.swg-node = {",
+    "            enable = true;",
+    '            delivery = "container";',
+    "            # nixpkgs flags docker insecure on 25.11",
+    '            backend = "podman";',
+    `            panelUrl = "${host}";`,
+    `            endpoint = "${ep}";   # the public IP CLIENTS dial`,
+    '            environmentFile = "/etc/swg-secrets/swg-node.env";',
+    '            selfUpdate.flakeRef = "/etc/nixos#swg";',
+    "        }; }",
+  ] : [
+    "        { services.swg-node = {",
+    "            enable = true;",
+    '            delivery = "native";',
+    `            panelUrl = "${host}";`,
+    `            endpoint = "${ep}";   # the public IP CLIENTS dial`,
+    '            tokenFile = "/etc/swg-secrets/swg-node-token";',
+    '            selfUpdate.flakeRef = "/etc/nixos#swg";',
+    "        }; }",
+  ];
+  const flake = [
+    "{",
+    '  inputs.nixpkgs.url   = "github:NixOS/nixpkgs/nixos-25.11";',
+    '  inputs.swg-panel.url = "github:SanityProtocol/swg-panel";',
+    "  outputs = { self, nixpkgs, swg-panel }: {",
+    "    nixosConfigurations.swg = nixpkgs.lib.nixosSystem {",
+    '      system = "x86_64-linux";',
+    "      modules = [",
+    "        ./configuration.nix",
+    "        swg-panel.nixosModules.swg-node",
+    ...svc,
+    "      ];",
+    "    };",
+    "  };",
+    "}",
+  ].join("\n");
+  const buildCmd = podman ? [
+    "cd /etc/nixos && sudo git init -q -b main && sudo git add -A",
+    "sudo nixos-rebuild switch --flake /etc/nixos#swg",
+  ].join("\n") : [
+    "cd /etc/nixos && sudo git init -q -b main && sudo git add -A",
+    "sudo nixos-rebuild switch --flake /etc/nixos#swg",
+    "sudo reboot   # once, so the AmneziaWG kernel module loads",
+  ].join("\n");
+  if (recovery) return [
+    [T("① Replace the token file on the node"), tokenCmd],
+    [T("② Rebuild to pick it up"), "sudo nixos-rebuild switch --flake /etc/nixos#swg"],
+  ];
+  return [
+    [T("① Save the enrolment token on the node"), tokenCmd],
+    [T("② Create /etc/nixos/flake.nix"), flake],
+    [podman ? T("③ Build and switch") : T("③ Build, switch, then reboot for the kernel datapath"), buildCmd],
+  ];
+}
+
+export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint }) {
   const host = `${location.origin}${BASE}`;
   const bare = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s node -key ${token} -host ${host}`;
   const docker = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s docker node -key ${token} -host ${host}`;
-  // recover/rotate of an existing node → show ONLY its method's command (a docker box re-installed as
-  // bare, or vice-versa, would NOT carry its turn-proxies over — that's a deliberate convert, not this).
-  const cmds = kind === "docker" ? [[T("kind|docker"), docker, "#c084e8"]]
-    : kind === "baremetal" ? [[T("kind|bare-metal"), bare, "#60a5fa"]]
-    : [[T("kind|bare-metal"), bare, "#60a5fa"], [T("kind|docker"), docker, "#c084e8"]];
+  const nixos = platform === "nixos";
+  const fresh = !kind && !nixos;                       // brand-new node → offer BOTH styles as tabs
+  const [tab, setTab] = useState(nixos ? "nix" : "std");
+  const [nmode, setNmode] = useState("native");   // Declarative tab: which arm — kernel (native) or the published image via podman
+  const nixSteps = nixNodeSteps(host, endpoint, token, !!kind, nmode);
+
+  const copyBlock = (label, code, block) => html`<div class="field"><label>${label}</label>
+    <div class="cmdrow"><div class=${"tokenbox" + (block ? " block" : "")}>${code}</div>
+      <button class="copyaction" onClick=${() => copy(code, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div></div>`;
+
+  // The imperative install — bare-metal / Docker, a one-line command each.
+  const runLabel = (col, l) => html`${T("Run on the node —")} <span style=${"color:" + col + ";font-weight:700"}>${l}</span>`;
+  const standardTab = html`<${Fragment}>
+    ${copyBlock(runLabel("#60a5fa", kindLabel("baremetal")), bare, false)}
+    ${copyBlock(runLabel("#c084e8", kindLabel("docker")), docker, false)}
+    <div class="hint">${T("Pick the one this node runs. Each fetches the installer and prompts for the endpoint.")}</div>
+  <//>`;
+
+  // The declarative install — a command sequence for NixOS.
+  // The declarative install differs by arm in more than one line — delivery, the token file, and
+  // whether a reboot is needed — so it gets its own switch rather than a single flake with a caveat.
+  // The two arms ride on the tab row itself, right-aligned — they are a property OF the declarative
+  // install, not a second choice of equal weight, and a second full-width tablist under the first read
+  // as one. Each side wears the colour its run-model wears everywhere else in the panel (the bare-metal
+  // and docker pills), so the switch says which datapath it means before the label is read.
+  const armSwitch = html`<div class="armsw" role="tablist" aria-label=${T("Delivery")}>
+    <button role="tab" aria-selected=${nmode === "native"} class=${"bare" + (nmode === "native" ? " on" : "")} onClick=${() => setNmode("native")}>${T("Bare-metal (kernel)")}</button>
+    <button role="tab" aria-selected=${nmode === "podman"} class=${"ctr" + (nmode === "podman" ? " on" : "")} onClick=${() => setNmode("podman")}>${T("Podman (container)")}</button>
+  </div>`;
+  const nixTab = html`<${Fragment}>
+    ${nixSteps.map(([label, code]) => copyBlock(label, code, true))}
+    <div class="hint">${kind
+      ? T("This node's configuration already declares it — the two steps above just refresh the token and rebuild.")
+      : nmode === "podman"
+        ? T("Runs the published image via podman (nixpkgs flags the docker package insecure; podman is not), no reboot. Replace the endpoint with this server's public IP — the panel's Update button then works with nothing else to set.")
+        : T("Fresh box shown; if you already use a flake, add the swg-panel input and the services.swg-node block to yours instead. Replace the endpoint with this server's public IP — the panel's Update button then works with nothing else to set.")}</div>
+  <//>`;
+
   return html`<${Sheet} title=${(isNew ? T("Node created") : T("New token")) + " · " + name}
     foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
     <div class="notice warn"><${Ic} i="warn"/><span><b>${T("Shown once.")}</b> ${T("This token authenticates the node to the panel — copy it now. You can rotate it later if it leaks.")}</span></div>
-    ${kind ? html`<div class="hint" style="margin-top:9px">${recoversAs(name, kind === "docker" ? T("kind|docker") : T("kind|bare-metal"))}</div>` : null}
+    ${kind ? html`<div class="hint" style="margin-top:9px">${recoversAs(name, kindLabel(kind))}</div>` : null}
     <div class="field" style="margin-top:15px"><label>${T("Enrollment token")}</label><div class="cmdrow"><div class="tokenbox">${token}</div><button class="copyaction" onClick=${() => copy(token, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div></div>
-    ${cmds.map(([label, cmd, color]) => html`<div class="field"><label>${T("Run on the node —")} <span style=${"color:" + color + ";font-weight:700"}>${label}</span></label><div class="cmdrow"><div class="tokenbox">${cmd}</div><button class="copyaction" onClick=${() => copy(cmd, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div></div>`)}
-    ${kind ? null : html`<div class="hint">${T("Pick one. Both fetch the installer and prompt for the node's endpoint.")}</div>`}
+    ${nixos ? html`<${Fragment}>
+          <div class="rltabs" style="margin:18px 0 14px;gap:0">${armSwitch}</div>
+          ${nixTab}
+        <//>`
+      : (kind === "docker" || kind === "baremetal") ? copyBlock(runLabel(kind === "docker" ? "#c084e8" : "#60a5fa", kindLabel(kind)), kind === "docker" ? docker : bare, false)
+      : html`<${Fragment}>
+          <div class="rltabs" role="tablist" style="margin-top:18px;gap:0">
+            <div class="rltab-group" style="margin-left:0">
+              <button role="tab" aria-selected=${tab === "std"} class=${"rltab" + (tab === "std" ? " on" : "")} onClick=${() => setTab("std")}>${T("Standard")}</button>
+              <button role="tab" aria-selected=${tab === "nix"} class=${"rltab" + (tab === "nix" ? " on" : "")} onClick=${() => setTab("nix")}>${T("Declarative (NixOS)")}</button>
+            </div>
+            ${tab === "nix" ? armSwitch : null}
+          </div>
+          ${tab === "std" ? standardTab : nixTab}
+        <//>`}
   <//>`;
 }
 export function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`); }
@@ -980,7 +1201,7 @@ export function NodeEditSheet({ node }) {
 }
 export function openNodeRecover(node) { openModal(html`<${NodeRecoverSheet} node=${node}/>`); }
 export function NodeRecoverSheet({ node }) {
-  const go = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(srvText(r) || T("couldn't generate a recovery command"), "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false} kind=${node.kind}/>`); };
+  const go = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(srvText(r) || T("couldn't generate a recovery command"), "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false} kind=${node.kind} platform=${node.platform} endpoint=${node.endpoint_host}/>`); };
   return html`<${Sheet} title=${T("Recover node · {v1}", { v1: node.name })}
     foot=${footRow({ onCancel: closeModal, onAction: go, action: T("Generate recovery command") })}>
     <div class="notice"><${Ic} i="info"/><span>${recoverSameNode(node.name)}</span></div>
@@ -989,7 +1210,7 @@ export function NodeRecoverSheet({ node }) {
 }
 export function openNodeRotate(node) { openModal(html`<${NodeRotateSheet} node=${node}/>`); }
 export function NodeRotateSheet({ node }) {
-  const go2 = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(srvText(r) || T("rotate failed"), "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false} kind=${node.kind}/>`); };
+  const go2 = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(srvText(r) || T("rotate failed"), "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false} kind=${node.kind} platform=${node.platform} endpoint=${node.endpoint_host}/>`); };
   return html`<${Sheet} title=${T("Rotate token · {v1}", { v1: node.name })}
     foot=${footRow({ onCancel: closeModal, onAction: go2, action: T("Rotate") })}>
     <div class="notice warn"><${Ic} i="warn"/><span>${T("The current token stops working immediately. Re-enroll the node with the new token or it will go offline.")}</span></div>
@@ -1039,7 +1260,15 @@ export function NodeRemoveSheet({ node }) {
   const note = !here.length ? T("No peers reference it.")
     : onlyHere ? T("{v1} reference it; {n} live only here and will be dropped.", { v1: plural(here.length, "peer"), n: onlyHere })
     : T("{v1} reference it.", { v1: plural(here.length, "peer") });
-  const uninstall = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s uninstall`;
+  // A declaratively-managed node cannot be uninstalled by `bootstrap.sh uninstall` — that command
+  // REFUSES on such a host (it would write into /opt the configuration cannot see). And removing the
+  // module does NOT tell the panel (nothing calls /api/node/goodbye), so the node does not sign off
+  // on its own — it lingers until Force-removed here. Both facts change the instructions below.
+  const declarative = !!node.declarative;
+  const nixos = node.platform === "nixos";
+  const uninstall = declarative
+    ? (nixos ? "services.swg-node.enable = false;   # then: sudo nixos-rebuild switch" : "")
+    : `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s uninstall`;
   const flag = () => { setFlagged(true); mutate({
     key: "node:" + node.id,
     patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) n.removing = true; },
@@ -1052,9 +1281,11 @@ export function NodeRemoveSheet({ node }) {
       <button class="btn btn-danger" onClick=${force}>${T("Force remove now")}</button></>`}>
     ${flagged
       ? html`<div class="notice"><${Ic} i="info"/><span>${flaggedForRemoval()}</span></div>`
-      : html`<div class="notice"><${Ic} i="info"/><span>${T("Clean removal: flag the node, then run the uninstall command on the server. The node keeps serving its {v1} until it confirms, then drops itself from the panel.", { v1: plural(here.length, "peer") })} ${note}</span></div>`}
-    <div class="field" style="margin-top:14px"><label>${T("Run on the node to uninstall + sign off")}</label>
-      <div class="cmdrow"><div class="tokenbox">${uninstall}</div><button class="copyaction" onClick=${() => copy(uninstall, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>
-      <div class="hint">${T("Removes swg-noded / swg-agent and tells the panel it's gone. Force remove is for when the server is unreachable.")}</div></div>
+      : html`<div class="notice"><${Ic} i="info"/><span>${declarative
+          ? T("This node is managed declaratively. Remove it from the configuration that declares it and rebuild — it won't sign off on its own, so Force-remove it here afterwards. It keeps serving its {v1} until then.", { v1: plural(here.length, "peer") })
+          : T("Clean removal: flag the node, then run the uninstall command on the server. The node keeps serving its {v1} until it confirms, then drops itself from the panel.", { v1: plural(here.length, "peer") })} ${note}</span></div>`}
+    ${uninstall ? html`<div class="field" style="margin-top:14px"><label>${declarative ? T("Set in the node's configuration, then rebuild") : T("Run on the node to uninstall + sign off")}</label>
+      <div class="cmdrow"><div class=${"tokenbox" + (declarative ? " block" : "")}>${uninstall}</div><button class="copyaction" onClick=${() => copy(uninstall, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>
+      <div class="hint">${declarative ? T("Removing the module stops swg-noded / swg-agent but does not tell the panel — Force remove clears it here.") : T("Removes swg-noded / swg-agent and tells the panel it's gone. Force remove is for when the server is unreachable.")}</div></div>` : null}
   <//>`;
 }

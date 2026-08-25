@@ -376,6 +376,9 @@ case "$ROLE" in ""|master|host) ;; *) die "role must be master|host";; esac
 $DRYRUN && { info "DRY RUN — .env renders under ./dryrun, no Docker commands run."; rm -rf "$PREFIX"; }
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, turn_repo_owner, dl_turn_bin
+# Refuse on a declaratively managed host BEFORE anything is written — the docker path laid down here would
+# be invisible to the host's own tooling. Defined in lib/common.sh, above; a `--dry-run` still runs.
+refuse_on_declarative_host 'services.swg-node = { enable = true; delivery = "container"; ... };   # or services.swg-panel'
 # A docker PANEL runs in a container but uses HOST memory — a low-RAM/zero-swap host OOM-kills it on a resolve spike
 # just like bare-metal. Provision swap on the HOST (never inside the container). Panel roles only; a node never resolves.
 if [ "$PROFILE" != node ]; then ensure_swap; fi
@@ -1071,7 +1074,7 @@ SUB_DOMAIN=${SUB_DOMAIN:-}
 SWG_UPDATE_TRIGGER=$_UPD_TRIG
 NODE_UPDATE_TRIGGER=$_NODE_UPD_TRIG
 SWG_HOST_HOSTNAME=$(hostname 2>/dev/null)   # host hostname → lets the panel recognise a master's co-located node (which reports the host hostname via host-networking)
-HOST_IPS=$(host_bindable_ips)   # the HOST's bindable addresses → Access & TLS "Listen IP" picker; a bridged panel container can only see the compose network's 172.x (and has no `ip` binary at all)
+HOST_IPS=$(host_bindable_ips)   # the HOST's bindable addresses → Access & TLS "Listen IP" picker; a bridged panel container can only see the compose network's 172.x (and has no ip binary of its own)
 
 # ───────── Node (profiles: node, master) ─────────
 PANEL_URL=$PANEL_URL

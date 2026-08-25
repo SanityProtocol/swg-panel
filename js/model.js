@@ -31,15 +31,93 @@ export function wdttOn(node, iface) {
   const n = (Store.nodes || []).find(x => x.id === node);
   return !!(n && (n.wdtt_cfg || {})[iface]);
 }
+// The csqtt sibling of wdttOn, and for the same reason: ASK THE NODE before guessing from the name. Without
+// it `kindOf` fell from an explicit `type` straight to `/^csqtt\d{1,4}$/`, so an ADOPTED instance — whose name
+// the operator or the foreign install chose, not us (`csqttx`, `csqfbm`) — matched nothing, was not in
+// `describe` either (csqtt owns its own raw TUN and has no wg/awg conf), and came back classified as plain
+// WireGuard anywhere no roster target supplied the type. WDTT never had that hole because it had wdttOn.
+export function csqttOn(node, iface) {
+  if (!node || !iface) return false;
+  if (((Store.stats[node] || {}).csqtt || []).some(c => c && c.iface === iface)) return true;
+  const n = (Store.nodes || []).find(x => x.id === node);
+  return !!(n && (n.csqtt_cfg || {})[iface]);
+}
+// ── NAME → kind, asked of the FLEET ───────────────────────────────────────────────────────────────
+// Several call sites (dropdown groups, interface filters, NIC lists) hold only an interface NAME — no node,
+// no roster target — and so could only ever ask the two regexes "is it called wdtt<N> / csqtt<N>?". That
+// question stopped being the same as "what kind is it?" the moment adoption started taking foreign servers
+// under their own names (`wdttx`, `csqfbm2`), and creation may now choose a name too. So ask the fleet: scan
+// every node's live readback and the panel's own instance config for an interface by that name, and fall back
+// to the pattern only for a name nothing in the fleet claims. Cheap — the maps are small and already in memory.
+export function scKindByName(name) {
+  if (!name) return null;
+  for (const nid of Object.keys(Store.stats || {})) {
+    if (wdttOn(nid, name)) return "wdtt";
+    if (csqttOn(nid, name)) return "csqtt";
+  }
+  for (const n of (Store.nodes || [])) {
+    if ((n.wdtt_cfg || {})[name]) return "wdtt";
+    if ((n.csqtt_cfg || {})[name]) return "csqtt";
+  }
+  return isWdttIface(name) ? "wdtt" : isCsqttIface(name) ? "csqtt" : null;
+}
+// Does this roster TARGET land on a self-contained turn instance? The authoritative form of util.js's
+// isSelfContainedTarget: targetType consults the roster `type`, then the node's live set, then the name.
+export const isSelfContainedTgt = (t) => !!t && (targetType(t) === "wdtt" || targetType(t) === "csqtt");
+export const isWdttName = (name) => scKindByName(name) === "wdtt";
+export const isCsqttName = (name) => scKindByName(name) === "csqtt";
+export const isSelfContainedName = (name) => !!scKindByName(name);
+
 export function kindOf(node, iface, type) {
   if (type === "wdtt" || wdttOn(node, iface) || isWdttIface(iface)) return "wdtt";
-  if (type === "csqtt" || isCsqttIface(iface)) return "csqtt";   // raw-TUN self-contained kind (not in describe; keyed by name/type)
+  if (type === "csqtt" || csqttOn(node, iface) || isCsqttIface(iface)) return "csqtt";   // raw-TUN self-contained kind (not in describe; keyed by the live set, then name/type)
   const m = (Store.describe[node] || {})[iface];
   if (m) return (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
   return (String(type || "wg").toLowerCase() === "awg") ? "awg" : "wg";
 }
+/* ── how a node was DEPLOYED, and what OWNS that installation ──────────────────────────────────
+   Two different facts, and a NixOS host running our image answers BOTH: it is a container for every
+   behavioural purpose (`kind`) and its installation belongs to its configuration (`platform`).
+   Rendering only one of them is what made the old label wrong.
+
+   Through a MAP, never the two-way ternary this replaces: `kind === "docker" ? docker : bare-metal`
+   printed "bare-metal" for every value it did not recognise, so a run model this panel has never
+   heard of read as a confident lie. Unknown now renders the raw value, which is at least true.
+
+   Built on each call, not at import: modules load before loadLang() resolves, so a T() evaluated at
+   module scope freezes in English whatever the catalog says. */
+export const kindLabel = (kind, runtime) => (kind === "docker" && runtime === "podman")
+  ? T("kind|podman")
+  : (({ docker: T("kind|docker"), baremetal: T("kind|bare-metal") })[kind] || kind || "");
+
+/* The platform pill's text. Platform names are proper nouns — "NixOS" is spelt the same in every
+   language — so this is a display map, not a translation: an unknown platform renders as reported. */
+const PLATFORM_NAMES = {
+  nixos: "NixOS", ubuntu: "Ubuntu", debian: "Debian", fedora: "Fedora", arch: "Arch", alpine: "Alpine",
+  centos: "CentOS", rhel: "RHEL", rocky: "Rocky", almalinux: "AlmaLinux", opensuse: "openSUSE",
+  "opensuse-leap": "openSUSE Leap", "opensuse-tumbleweed": "openSUSE Tumbleweed", sles: "SLES",
+  raspbian: "Raspberry Pi OS", devuan: "Devuan", gentoo: "Gentoo", void: "Void", manjaro: "Manjaro",
+  linuxmint: "Linux Mint", pop: "Pop!_OS", kali: "Kali", amzn: "Amazon Linux", ol: "Oracle Linux",
+  freebsd: "FreeBSD", openwrt: "OpenWrt", talos: "Talos",
+};
+// Distribution names are proper nouns — "Ubuntu" is spelt the same in every language — so this is a display
+// map, not a translation, and anything unknown renders as the node reported it (capitalised) rather than
+// vanishing. Same rule the NixOS-only version of this followed; it just has company now.
+export const platformLabel = p => PLATFORM_NAMES[p] || (p ? p.charAt(0).toUpperCase() + p.slice(1) : "");
+
 export const iTypeOf = (node, iface) => kindOf(node, iface, null);   // by (node, iface) — the TargetPicker's one-kind lock + peer-create dispatch key off it
 export const targetType = t => t ? kindOf(t.node, t.iface, t.type) : "wg";   // by roster TARGET — every protocol tag/colour uses this
+// The port a CLIENT dials for an adoption candidate. For wg/awg that is the interface's own listen port; for a
+// running WDTT server it is NOT — the fork's DTLS listener is what clients dial, and the candidate's listen_port
+// is the tunnel's own internal WG port, which nothing outside ever connects to. Reporting that as "Listen" put a
+// port on the card that no client uses, contradicting both the adopt sheet (which labels the two separately) and
+// the card the same interface becomes once adopted. The node's DORMANT rows already report it this way; this is
+// the running case catching up. Same distinction the Users-vs-Peers row on that card already makes.
+export const candDialPort = cd => {
+  const l = ((cd || {}).wdtt || {}).listen;
+  const p = l ? Number(String(l).split(":").pop()) : 0;
+  return p || (cd || {}).listen_port || 0;
+};
 // interface type for the grouped dropdowns — awg if any node's interface of this name carries AmneziaWG params
 export function ifaceIsAwg(iface) {
   for (const n of Object.keys(Store.describe || {})) { const m = (Store.describe[n] || {})[iface]; if (m && Object.keys(m.awg_params || {}).length) return true; }
@@ -47,12 +125,18 @@ export function ifaceIsAwg(iface) {
 }
 // interface-filter dropdown values: "" / "*" = all · "*awg" / "*wg" / "*wdtt" = all of one type · else an exact name.
 export const ifaceIsAll = v => !v || v === "*" || v === "*awg" || v === "*wg" || v === "*wdtt" || v === "*csqtt";   // an aggregate (multi-iface) filter value
-export function ifaceMatch(iface, filter) {                                       // does an interface name pass the filter value?
+// Does an interface pass the filter value? Pass the roster TARGET as `t` wherever there is one (every caller
+// has one): its `type` is authoritative, so a wdtt/csqtt deployment on an operator-named interface is filtered
+// as its real kind instead of falling through the negative "*wg" test into the WireGuard bucket. Without a
+// target this asks the fleet by name (scKindByName), which is still far better than the bare pattern.
+export function ifaceMatch(iface, filter, t) {
   if (!filter || filter === "*") return true;
-  if (filter === "*wdtt") return isWdttIface(iface);
-  if (filter === "*csqtt") return isCsqttIface(iface);
-  if (filter === "*awg") return ifaceIsAwg(iface) && !isSelfContainedIface(iface);
-  if (filter === "*wg") return !ifaceIsAwg(iface) && !isSelfContainedIface(iface);   // WDTT/csqtt own their own iface — never lump under WireGuard
+  const sc = t ? (kind => kind === "wdtt" || kind === "csqtt" ? kind : null)(targetType(t)) : scKindByName(iface);
+  if (filter === "*wdtt") return sc === "wdtt";
+  if (filter === "*csqtt") return sc === "csqtt";
+  const awg = t ? targetType(t) === "awg" : ifaceIsAwg(iface);
+  if (filter === "*awg") return awg && !sc;
+  if (filter === "*wg") return !awg && !sc;   // WDTT/csqtt own their own iface — never lump under WireGuard
   return iface === filter;
 }
 
@@ -305,6 +389,23 @@ export function nextCsqttName(node) {
                         ...(nrec.iface_candidates || []).map(c => c && c.name)].filter(Boolean));
   for (let i = 1; i < 10000; i++) if (!used.has("csqtt" + i)) return "csqtt" + i;   // csqtt0-9999; start at 1
   return "csqtt1";
+}
+
+// Why a name can't be a NEW self-contained instance on this node, or "". Mirrors the server's
+// turn_iface_name_error. Creation used to demand `wdtt<N>` / `csqtt<N>`; that pattern was never the node's
+// requirement (adoption has always taken foreign names as found) and the panel no longer reads kind off the
+// name, so an operator may name their own servers. These are the checks the pattern was standing in for.
+export function turnIfaceNameError(node, name, kind) {
+  const nm = String(name || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$/.test(nm))
+    return T("Name: letters, digits, - and _ (max 15, starting with a letter or digit).");
+  if (/^swg_/.test(nm)) return T("Names starting with swg_ are reserved for system mesh links.");
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const other = kind === "wdtt" ? "csqtt" : "wdtt";
+  if ((nrec[other + "_cfg"] || {})[nm]) return T("{v1} is already a {v2} instance on this node.", { v1: nm, v2: other.toUpperCase() });
+  if ((nrec[kind + "_cfg"] || {})[nm]) return "";                     // editing one we already manage
+  if ((Store.describe[node] || {})[nm]) return T("{v1} is already a WireGuard interface on this node.", { v1: nm });
+  return "";
 }
 
 // ── what a peer publishes to its subscription ────────────────────────────────────────────────────

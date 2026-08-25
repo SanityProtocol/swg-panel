@@ -212,12 +212,30 @@ export const srvVerb = v => (v ? T(v) : "");
 /* A counted noun. English gets two forms from the noun itself; every other language consults its own
    table, because the rule is not derivable — Russian picks between three by the last digit, with a
    correction for the teens. */
+/* The English plural of a noun the catalog does not list — which in ENGLISH is every noun, because
+   `PLURALS` is only ever populated by a translation catalog and English has none. So this rule is not
+   a rare fallback: it is what the English UI actually prints, for all 27 nouns the panel pluralises.
+   A bare `+ "s"` got four of them wrong ("2 proxys", "2 addresss", "2 prefixs", "2 broken addresss").
+
+   Two orthography rules cover every one of them, and neither can touch the other 23: a consonant
+   before a final `y` takes `-ies`, and a sibilant ending takes `-es`. Lowercase-only on purpose —
+   an acronym like "IP" must stay "IPs", not become "IPes".
+
+   Only the HEAD noun inflects: "broken address" → "broken addresses", "new host" → "new hosts". */
+function enPlural(w) {
+  const at = w.lastIndexOf(" ") + 1, head = w.slice(at);
+  const p = /[^aeiou]y$/.test(head) ? head.slice(0, -1) + "ies"
+    : /(s|x|z|ch|sh)$/.test(head) ? head + "es"
+      : head + "s";
+  return w.slice(0, at) + p;
+}
+
 export function plural(n, noun) {
   const forms = PLURALS[noun];
   // A noun may carry a context prefix for the same reason a key does — "cap|Peer" is the badge's
   // capitalised English, distinct from the "peer" that appears mid-sentence. English falls back through
   // the same stripCtx as T(), so an unlisted noun still reads correctly rather than printing the prefix.
-  if (!forms) { const w = stripCtx(noun); return n + " " + (n === 1 ? w : w + "s"); }
+  if (!forms) { const w = stripCtx(noun); return n + " " + (n === 1 ? w : enPlural(w)); }
   if (LANG === "ru") {
     const a = Math.abs(n) % 100, d = a % 10;
     const i = (a > 10 && a < 20) ? 2 : (d > 1 && d < 5) ? 1 : (d === 1) ? 0 : 2;

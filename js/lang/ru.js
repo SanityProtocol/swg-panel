@@ -198,8 +198,8 @@ export const STR = {
     "Перенять {v1}",
   "Take it over":
     "Перенять",
-  "swgPanel will STOP the container {v1} and run {v2} here instead — same key, same port, same obfuscation, so the configs already on your users' devices keep working, and its peers are imported. That container is only stopped, never deleted: if anything goes wrong the node starts it again, and you can start it yourself to go back. It will not come back on its own afterwards.":
-    "swgPanel ОСТАНОВИТ контейнер {v1} и поднимет {v2} здесь — тот же ключ, тот же порт, та же обфускация, поэтому конфигурации, уже стоящие на устройствах ваших пользователей, продолжат работать, а его пиры будут импортированы. Контейнер только останавливается, но не удаляется: если что-то пойдёт не так, нода запустит его снова, и вы сами можете запустить его, чтобы вернуться назад. Сам по себе он больше не поднимется.",
+  "swgPanel will STOP the container {v1} and run {v2} here instead — same key, same port, same obfuscation, so the configs already on your users' devices keep working, and its peers are imported. That container is only stopped, never deleted: if anything goes wrong the node starts it again, and you can start it yourself to go back. It will not come back on its own afterwards. Give it up to a minute: the container gets a grace period to shut down cleanly, and its runtime takes a moment to clear it away.":
+    "swgPanel ОСТАНОВИТ контейнер {v1} и поднимет {v2} здесь — тот же ключ, тот же порт, та же обфускация, поэтому конфигурации, уже стоящие на устройствах ваших пользователей, продолжат работать, а его пиры будут импортированы. Контейнер только останавливается, но не удаляется: если что-то пойдёт не так, нода запустит его снова, и вы сами можете запустить его, чтобы вернуться назад. Сам по себе он больше не поднимется. Дайте до минуты: контейнеру отводится время на корректное завершение, и его среде выполнения нужен момент, чтобы его убрать.",
   "Taking it over — the node does this on its next sync.":
     "Перенимаем — нода сделает это на следующей синхронизации.",
   "Couldn't start the take-over.":
@@ -237,6 +237,8 @@ export const STR = {
     "{i} в {c} обслуживает {s}, а эта подсеть пересекается с {o}, которая уже есть на этой ноде. В своём контейнере это нормально — у каждого своё сетевое пространство имён, — но перенос переносит интерфейс сюда, где одну подсеть нельзя обслуживать дважды. Перенесите только один из них или сначала смените адресацию у другого. Ничего не изменено.",
   "{i} in {c} is {p}, and this node does not have the {p} tools ({t} and {t}-quick) to stand it up. Install them, then take it over again — {c} was not touched and is still serving.":
     "{i} в {c} — это {p}, а на этой ноде нет инструментов {p} ({t} и {t}-quick), чтобы его поднять. Установите их и повторите перенос — {c} не тронут и продолжает обслуживать клиентов.",
+  "AmneziaWG tools are not installed on this node, and this node's installation is managed declaratively — re-running an installer would not survive its next rebuild. Add the AmneziaWG tools to the system configuration that declares this node and rebuild it, then this interface creates itself on the next sync.":
+    "На этой ноде не установлены инструменты AmneziaWG, а установка этой ноды описана декларативно — повторный запуск установщика не переживёт следующую пересборку. Добавьте инструменты AmneziaWG в конфигурацию системы, которая описывает эту ноду, и пересоберите её — интерфейс создастся сам на следующей синхронизации.",
   "AmneziaWG tools are not installed on this node. Re-run the swgPanel node installer — it builds them from source on any distribution, and falls back to the userspace datapath where the kernel module cannot load. Then this interface creates itself on the next sync.":
     "На этой ноде не установлены инструменты AmneziaWG. Запустите установщик ноды swgPanel заново — он соберёт их из исходников на любом дистрибутиве, а там, где модуль ядра не поднимается, перейдёт на датапас в пользовательском пространстве. После этого интерфейс создастся сам на следующей синхронизации.",
   "AmneziaWG is only half-installed on this node: awg is present but awg-quick is missing. Re-run the swgPanel node installer — it builds both from source — then this interface creates itself on the next sync.":
@@ -290,7 +292,6 @@ export const STR = {
   "a take-over is already pending on this node": "на этой ноде уже есть незавершённый перенос",
   "bad container name": "неверное имя контейнера",
   "at least one csqtt target is required": "нужна хотя бы одна цель csqtt",
-  "invalid iface (csqtt0..csqtt9999)": "неверный интерфейс (csqtt0..csqtt9999)",
   "invalid iface (letters, digits, - and _; max 15)": "неверное имя интерфейса (буквы, цифры, - и _; не длиннее 15)",
   "no free RAW subnet left in 10.70.0.0/16": "в 10.70.0.0/16 не осталось свободных RAW-подсетей",
   "sub_hide must be a list": "sub_hide должен быть списком",
@@ -387,6 +388,8 @@ export const STR = {
   "Theme: Dark — click for Auto": "Тема: тёмная — нажмите для авто",
 
   // ── config-storage banner (js/ui.js StoreOffBanner) ────────────────────────────────────────────
+  "This panel is managed declaratively, so its config-storage setting comes from its configuration. Set this and rebuild (existing peers then need a one-time Rotate-keys to capture a config):":
+    "Эта панель управляется декларативно, поэтому настройка хранения конфигов задаётся её конфигурацией. Задайте это и пересоберите (существующим пирам затем нужна разовая смена ключей, чтобы конфиг сохранился):",
   "Config storage is off.": "Хранение конфигов выключено.",
   "Client configs (with their private keys) aren't kept on the panel, so QR codes and downloads only work right after a peer is created — existing peers can't be re-shared. Run this on the {host} to enable it (existing peers then need a one-time Rotate-keys to capture a config):":
     "Конфиги клиентов (с приватными ключами) не хранятся на панели — QR и загрузка работают только сразу после создания пира, переотправить существующие нельзя. Чтобы включить, выполните на {host} (существующим пирам затем понадобится однократная смена ключей, чтобы конфиг сохранился):",
@@ -687,6 +690,49 @@ export const STR = {
   "https://panel.example.com  or  https://example.com/swgpanel": "https://panel.example.com  или  https://example.com/swgpanel",
   "Subscription address": "Адрес подписок",
   "https://sub.example.com  or  https://example.com/swgsub": "https://sub.example.com  или  https://example.com/swgsub",
+  "*This panel's address is managed declaratively.* Its URL, listen address, mount path and certificate come from the configuration that built this machine, so they are shown here rather than edited here — change them there and rebuild. Everything the panel is *for* is unaffected: peers, interfaces, routing and subscriptions all work exactly as they do anywhere else.":
+    "*Адрес этой панели задан декларативно.* Её URL, адрес прослушивания, путь монтирования и сертификат берутся из конфигурации, которая собрала эту машину, поэтому здесь они показаны, а не редактируются — измените их там и пересоберите. На то, *ради чего* панель существует, это не влияет: пиры, интерфейсы, маршрутизация и подписки работают ровно так же, как везде.",
+  "Where this panel's address is set": "Где задаётся адрес этой панели",
+  "These options carry what this panel is running right now — where it listens, the hostname it advertises, the path it is mounted at. Edit them in your configuration, rebuild, and this screen follows.":
+    "В этих опциях — то, с чем панель работает прямо сейчас: где она слушает, какое имя хоста объявляет, по какому пути смонтирована. Измените их в своей конфигурации, пересоберите — и этот экран последует за ними.",
+  "the panel's address options": "опции адреса панели",
+  "Where a TLS terminator sends traffic": "Куда TLS-терминатор шлёт трафик",
+  "Panel": "Панель",
+  "Subscription page": "Страница подписок",
+  "(inert until subscriptions are on)": "(бездействует, пока подписки выключены)",
+  "This box's own node": "Нода этой машины",
+  "(plain HTTP, never proxied)": "(обычный HTTP, не проксируется)",
+  "Internal addresses on this host. Changing the public URL, the path or the certificate never moves them, so a proxy pointed here keeps working.":
+    "Внутренние адреса на этой машине. Смена публичного URL, пути или сертификата их не двигает — прокси, настроенный сюда, продолжит работать.",
+  "A sample configuration": "Пример конфигурации",
+  "Two arrangements, both with this panel's own domain, path and port already filled in. Pick one, paste it beside the options above, and rebuild.":
+    "Два варианта, в обоих уже подставлены домен, путь и порт этой панели. Выберите один, вставьте рядом с опциями выше и пересоберите.",
+  "Terminate TLS in front of the panel": "Терминировать TLS перед панелью",
+  "recommended": "рекомендуется",
+  "the reverse-proxy configuration": "конфигурацию обратного прокси",
+  "Two virtual hosts: the panel, and the subscription page — a *separate service* on its own port.":
+    "Два виртуальных хоста: панель и страница подписок — *отдельный сервис* на своём порту.",
+  "The subscription page is off. Turn it on in Subscriptions and give it `sub.domain`, and a virtual host for it appears here.":
+    "Страница подписок выключена. Включите её в разделе «Подписки» и задайте `sub.domain` — виртуальный хост для неё появится здесь.",
+  "Two virtual hosts: the panel, and the subscription page — a *separate service* on its own port. Subscriptions are on but the page has no address yet, so this gives it `{v1}`; change that to whatever you want to publish it as.":
+    "Два виртуальных хоста: панель и страница подписок — *отдельный сервис* на своём порту. Подписки включены, но у страницы ещё нет адреса, поэтому здесь ей задан `{v1}` — замените на тот, под которым будете её публиковать.",
+  "Leave the panel on its loopback address in this arrangement — the proxy is the only thing that should be reachable from outside.":
+    "В этом варианте оставьте панель на loopback-адресе: снаружи должен быть доступен только прокси.",
+  "Terminate TLS in the panel itself": "Терминировать TLS в самой панели",
+  "no proxy": "без прокси",
+  "the direct-TLS configuration": "конфигурацию прямого TLS",
+  "The panel reads a certificate `security.acme` already manages and is reloaded when it renews. Declare the certificate itself however you validate it (HTTP-01, DNS-01) — but *don't set its `group`*: this module puts it in `swg` so the panel can read the key, and a second `group` fights it.":
+    "Панель читает сертификат, которым уже управляет `security.acme`, и перечитывает его при обновлении. Сам сертификат объявите так, как проходите проверку (HTTP-01, DNS-01), но *не задавайте ему `group`*: модуль кладёт его в группу `swg`, чтобы панель могла прочитать ключ, и второй `group` этому мешает.",
+  "The subscription page still needs its own terminator — it is a separate service on `{v1}`, and this option covers the panel only.":
+    "Странице подписок всё равно нужен свой терминатор — это отдельный сервис на `{v1}`, а эта опция покрывает только панель.",
+  "Managed outside the panel (it is served here, not issued here)": "Управляется вне панели (отдаётся здесь, выпускается не здесь)",
+  "Not set — give it sub.domain or sub.publicUrl": "Не задан — укажите sub.domain или sub.publicUrl",
+  "Proxy to": "Прокси на",
+  "This page's address comes from the configuration that built this machine — `services.swg-panel.sub.domain`, `sub.basePath`, `sub.publicUrl` and `sub.port`.":
+    "Адрес этой страницы задаётся конфигурацией, которая собрала эту машину: `services.swg-panel.sub.domain`, `sub.basePath`, `sub.publicUrl` и `sub.port`.",
+  "{v1} shows them beside a virtual host you can paste.": "{v1} показывает их рядом с готовым виртуальным хостом.",
+  "This panel is managed declaratively, so its address and certificate belong to the configuration that built it, not to this screen. Edit them there and rebuild — nothing here was changed.":
+    "Эта панель управляется декларативно, поэтому её адрес и сертификат принадлежат конфигурации, которая её собрала, а не этому экрану. Измените их там и пересоберите — здесь ничего не изменилось.",
   "Checking…": "Проверяю…",
   "Client configs → Encryption": "Конфиги клиентов → Шифрование",
   "*Escrow interface server keys* — each entry server seals its interface private key to your browser-held *Encryption Vault* key (the panel only ever stores ciphertext). Lets you *restore an interface cleanly after a full wipe / lost box*, with no client re-import. Off ⇒ a wiped node's interfaces can only be recreated with new keys, and every client on them re-imports.":
@@ -974,6 +1020,8 @@ export const STR = {
     "Ведёт на порт, за которым нет управляемого интерфейса — похоже на ошибку настройки.",
   "Assigned — waiting for the node to pick it up and install it": "Назначен — ждём, пока нода подхватит и установит",
   "Turn-proxy settings in Settings → Turn proxies": "Настройки turn-прокси — в «Настройки → Turn-прокси»",
+  "Turn-proxy management is *off* on this node — its configuration has it off (*turnManage*), so these are read-only here. Turn it on there and rebuild, or manage them on the box directly.":
+    "Управление turn-прокси *выключено* на этой ноде — так задано в её конфигурации (*turnManage*), поэтому здесь они только для чтения. Включите там и пересоберите — или управляйте ими прямо на сервере.",
   "Turn-proxy management is *off* on this node — no Docker socket was mounted at install (*TURN_MANAGE=manual*), so these are read-only here. Add, edit or restart them on the box directly.":
     "Управление turn-прокси на этой ноде *выключено* — при установке не был примонтирован сокет Docker (*TURN_MANAGE=manual*), поэтому здесь они только для чтения. Добавляйте, правьте и перезапускайте их прямо на ноде.",
 
@@ -1793,8 +1841,25 @@ export const STR = {
   // budget-ok: bold run inside wrapping prose
   "automatic update of SWG components only": "автоматического обновления только компонентов SWG",
   "repairs": "чинит",
+  // ── the declarative pair: this host's installation comes from its configuration (NixOS) ──
+  "This box's installation comes from its {what}, so an update is a rebuild of it — do that on the {side} box, however that configuration is applied.":
+    "Установка этого сервера берётся из {what}, поэтому обновление — это его пересборка. Сделайте это на сервере {side} — тем способом, которым применяется эта конфигурация.",
+  "This node can't be updated from the panel — run the command shown in the dialog on the box.":
+    "Эту ноду нельзя обновить из панели — выполните на сервере команду из диалога.",
+  "This node's installation is owned by its own configuration, not by the panel":
+    "Установка этой ноды принадлежит её собственной конфигурации, а не панели",
+  "This box's installation comes from its {what}, so an update is a rebuild of it — run this on the {side} box:":
+    "Установка этого сервера берётся из {what}, поэтому обновление — это его пересборка. Выполните это на сервере {side}:",
+  // budget-ok: bold run inside wrapping prose
+  "own configuration": "собственной конфигурации",
+  "There is no rebuild wired to this button on this host, so it can't start one — that is deliberate: a button that reported success and changed nothing would be worse. Set the module's *selfUpdate* option to wire it, or run the command above.":
+    "К этой кнопке на этом хосте не подключена пересборка, поэтому запустить её она не может — и это намеренно: кнопка, которая отчиталась об успехе и ничего не изменила, была бы хуже. Включите в модуле опцию *selfUpdate*, чтобы подключить её, или выполните команду выше.",
+  "*Update now* asks this host to rebuild itself from that configuration. What it lands on is whatever the configuration's lock pins, so refresh the swg input first if you want a newer version — and the rebuild's own errors come back here if it fails.":
+    "*Обновить сейчас* просит хост пересобрать себя из этой конфигурации. Соберётся то, что зафиксировано в её lock-файле, поэтому сначала обновите input swg, если нужна более новая версия, — а ошибки самой пересборки вернутся сюда, если она не удастся.",
   // budget-ok: toast, wraps
   "Update requested — applies on the node's next sync.": "Обновление запрошено — применится на следующей синхронизации ноды.",
+  "{v1} skipped — turn-proxy management is off there, or their architecture has no published build.":
+    "{v1} пропущено — там выключено управление turn-прокси, либо для их архитектуры нет опубликованной сборки.",
   "Automatic update isn't wired on this install — run the command shown in the dialog on the host.":
     "Автообновление на этой установке не подключено — выполните на хосте команду из диалога.",
   "Update started — the panel will restart shortly.": "Обновление запущено — панель скоро перезапустится.",
@@ -1853,16 +1918,19 @@ export const STR = {
   "Client allowed IPs (routing)": "AllowedIPs клиента (маршрутизация)",
   "Persistent keepalive (s)": "Keepalive (с)",
   "0 disables · blank = 25.": "0 отключает · пусто = 25.",
-  "WDTT user added — their connect link is on the assigned subscription.":
-    "Пользователь WDTT добавлен — ссылка для подключения на его подписке.",
   // budget-ok: label suffix, wraps with the label
   "— optional, to tell devices apart": "— необязательно, чтобы различать устройства",
   "iPhone, Router, Laptop…": "iPhone, роутер, ноутбук…",
   "Targets": "Цели",
-  "— one, or several for redundancy (same key)": "— одна или несколько для резерва (тот же ключ)",
+  "— one, or several for redundancy (same credential)": "— одна или несколько для резерва (тот же ключ)",
   "— check to deploy, uncheck to remove": "— отметить = развернуть, снять = убрать",
-  "WDTT server — the panel mints this user's access password and WDTT mints their WireGuard key + IP on connect, so there's no key or client config to set here. The user's VK link (from their subscription) is the TURN credential.":
-    "Сервер WDTT — панель выпускает пароль доступа этого пользователя, а WDTT выдаёт ключ WireGuard и IP при подключении, поэтому здесь нечего задавать: ни ключа, ни клиентского конфига. Учётные данные TURN — это ссылка VK пользователя (с его подписки).",
+  // A peer holding several kinds holds several independent credentials — rotating it rotates all of them.
+  "Rotate credentials": "Сменить данные",
+  "Rotating credentials…": "Меняем данные…",
+  "This peer holds several credentials — a WireGuard keypair and an access password per turn server. All of them are replaced: every config, QR and link this peer already handed out stops working and must be re-imported.":
+    "У этого пира несколько учётных данных — пара ключей WireGuard и по паролю доступа на каждый turn-сервер. Заменяются все: каждый выданный конфиг, QR и ссылка перестанут работать, их нужно переимпортировать.",
+  "Credentials rotated — send the user their new QR and links; the old ones no longer work.":
+    "Данные сменены — отправьте пользователю новый QR и ссылки; старые больше не работают.",
   "Peer targets updated.": "Цели пира обновлены.",
   "Delete this peer?": "Удалить этого пира?",
   "Yes, delete": "Да, удалить",
@@ -1902,11 +1970,39 @@ export const STR = {
   "— this peer only; blank = {fallback}": "— только этот пир; пусто = {fallback}",
   "follows the subscription": "как у подписки",
   "never": "никогда",
-  "Servers": "Серверы",
-  "WDTT servers this user reaches. WDTT assigns each server's address on connect; the user's link per server is on their subscription. No client config (key/DNS/MTU) — WDTT owns the datapath.":
-    "Серверы WDTT, до которых достаёт этот пользователь. WDTT выдаёт адрес на каждом сервере при подключении; ссылка на каждый сервер — на подписке пользователя. Клиентского конфига (ключ/DNS/MTU) нет — датапас у WDTT.",
-  "Addresses": "Адреса",
-  "Changing an address moves the peer on that interface.": "Смена адреса переносит пира на этом интерфейсе.",
+  // ONE list for every kind — a peer may hold wg/awg + WDTT + csqtt at once, so the old pair of
+  // mutually-exclusive "Servers" / "Addresses" lists (and their per-kind hints) is gone.
+  "label|Deployments": "Развёртывания",
+
+  // Naming a NEW self-contained turn instance. Creation used to demand wdtt<N> / csqtt<N>; the operator
+  // picks the name now, so these are the checks that pattern was standing in for.
+  "Name: letters, digits, - and _ (max 15, starting with a letter or digit).":
+    "Имя: буквы, цифры, - и _ (не больше 15, начинается с буквы или цифры).",
+  "Names starting with swg_ are reserved for system mesh links.":
+    "Имена, начинающиеся с swg_, зарезервированы за служебными связями сети.",
+  "{v1} is already a {v2} instance on this node.": "{v1} на этой ноде уже занят экземпляром {v2}.",
+  "{v1} is already a WireGuard interface on this node.": "{v1} на этой ноде уже занят интерфейсом WireGuard.",
+  "Changing an address moves the peer on that interface. The gear holds that deployment's DNS, MTU and routing.":
+    "Смена адреса переносит пира на этом интерфейсе. За шестерёнкой — DNS, MTU и маршрутизация этого развёртывания.",
+  "These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.":
+    "Эти серверы выдают адрес при подключении; ссылка на каждый сервер — на подписке пользователя. Клиентского конфига (ключ/DNS/MTU) нет — датапас у сервера.",
+
+  // Per-deployment settings (the gear on a wg/awg row) — see TargetSettingsSheet.
+  "Settings — {v1}": "Настройки — {v1}",
+  "These apply to this deployment only — {v1} on {v2}. The peer's other deployments keep their own.":
+    "Действуют только на это развёртывание — {v1} на {v2}. У остальных развёртываний пира свои.",
+  "Reset to interface defaults": "Сбросить к настройкам интерфейса",
+  "Apply": "Применить",
+  "Settings for this deployment (customised)": "Настройки этого развёртывания (изменены)",
+  "Settings for this deployment (DNS, MTU, routing)": "Настройки этого развёртывания (DNS, MTU, маршруты)",
+  "Use the gear on a row for that deployment's DNS, MTU and routing.":
+    "Шестерёнка в строке — DNS, MTU и маршрутизация этого развёртывания.",
+  "AmneziaWG obfuscation parameters come from the interface itself and are the same for every client on it — change them in the interface's settings.":
+    "Параметры обфускации AmneziaWG задаются самим интерфейсом и одинаковы для всех его клиентов — меняйте их в настройках интерфейса.",
+  "This is a plain WireGuard interface, so it carries no AmneziaWG obfuscation parameters.":
+    "Это обычный интерфейс WireGuard, параметров обфускации AmneziaWG у него нет.",
+  // "iface: message" — prefixes a field error with the deployment it belongs to.
+  "{v1}: {v2}": "{v1}: {v2}",
 
   // Node create / recover / remove
   "Node colour": "Цвет ноды",
@@ -1915,13 +2011,39 @@ export const STR = {
   "Shown once.": "Показывается один раз.",
   "This token authenticates the node to the panel — copy it now. You can rotate it later if it leaks.":
     "Этот токен подтверждает ноду перед панелью — скопируйте его сейчас. Позже его можно сменить, если он утечёт.",
+  "Pick the one this node runs. Each fetches the installer and prompts for the endpoint.":
+    "Выберите то, на чём работает эта нода. Каждая команда скачает установщик и спросит эндпоинт.",
+  "① Save the enrolment token on the node":
+    "① Сохраните токен подключения на ноде",
+  "② Create /etc/nixos/flake.nix":
+    "② Создайте /etc/nixos/flake.nix",
+  "③ Build, switch, then reboot for the kernel datapath":
+    "③ Соберите, переключитесь и перезагрузитесь ради ядерного датапата",
+  "③ Build and switch":
+    "③ Соберите и переключитесь",
+  "Bare-metal (kernel)":
+    "Bare-metal (ядро)",
+  "Podman (container)":
+    "Подман (контейнер)",
+  "Runs the published image via podman (nixpkgs flags the docker package insecure; podman is not), no reboot. Replace the endpoint with this server's public IP — the panel's Update button then works with nothing else to set.":
+    "Запускает опубликованный образ через podman (nixpkgs помечает пакет docker небезопасным, podman — нет), без перезагрузки. Замените endpoint на публичный IP этого сервера — кнопка «Обновить» в панели затем работает без дополнительной настройки.",
+  "① Replace the token file on the node":
+    "① Замените файл токена на ноде",
+  "② Rebuild to pick it up":
+    "② Пересоберите, чтобы применить",
+  "This node's configuration already declares it — the two steps above just refresh the token and rebuild.":
+    "Конфигурация этой ноды уже её объявляет — два шага выше лишь обновляют токен и пересобирают.",
+  "Fresh box shown; if you already use a flake, add the swg-panel input and the services.swg-node block to yours instead. Replace the endpoint with this server's public IP — the panel's Update button then works with nothing else to set.":
+    "Показан свежий сервер; если у вас уже есть flake, добавьте вход swg-panel и блок services.swg-node в него. Замените endpoint на публичный IP этого сервера — кнопка «Обновить» в панели затем работает без дополнительной настройки.",
+  "Standard":
+    "Обычный",
+  "Declarative (NixOS)":
+    "Декларативно (NixOS)",
   "Enrollment token": "Токен подключения",
   // budget-ok: toast, wraps
   "Copied": "Скопировано",
-  "Run on the node —": "Выполните на ноде —",
-  "Pick one. Both fetch the installer and prompt for the node's endpoint.":
-    "Выберите любой. Оба скачивают установщик и спросят эндпоинт ноды.",
-  "This recovers {name} as {method} — the method it was already running, so its turn-proxies and interfaces are kept. To switch methods, convert the node instead.":
+      "Run on the node —": "Выполните на ноде —",
+    "This recovers {name} as {method} — the method it was already running, so its turn-proxies and interfaces are kept. To switch methods, convert the node instead.":
     "Восстановит {name} как {method} — тем же способом, которым нода уже работала, так что её turn-прокси и интерфейсы сохранятся. Чтобы сменить способ, переведите ноду.",
   "Re-provision this node's mesh links?": "Перевыпустить меш-линки этой ноды?",
   "Re-provision": "Перевыпустить",
@@ -1961,6 +2083,12 @@ export const STR = {
     "{flagged} Выполните команду ниже на ноде — она отпишется и исчезнет отсюда сама. Если доступа к серверу нет, воспользуйтесь {force}.",
   "Flagged for removal.": "Помечена на удаление.",
   // budget-ok: sheet-foot button, foot has a grow spacer
+  "Set in the node's configuration, then rebuild":
+    "Задайте в конфигурации ноды и пересоберите",
+  "Removing the module stops swg-noded / swg-agent but does not tell the panel — Force remove clears it here.":
+    "Удаление модуля остановит swg-noded / swg-agent, но не сообщит панели — «Принудительно удалить» очистит запись здесь.",
+  "This node is managed declaratively. Remove it from the configuration that declares it and rebuild — it won't sign off on its own, so Force-remove it here afterwards. It keeps serving its {v1} until then.":
+    "Эта нода управляется декларативно. Удалите её из конфигурации, которая её объявляет, и пересоберите — сама она не отметится об уходе, поэтому потом удалите её здесь через «Принудительно удалить». До этого она продолжает обслуживать свои {v1}.",
   "Force remove now": "Удалить принудительно",
   "Run on the node to uninstall + sign off": "Выполните на ноде, чтобы удалить и отписаться",
 
@@ -2597,6 +2725,14 @@ export const STR = {
   "What clients dial · currently {v1}": "Куда стучатся клиенты · сейчас {v1}",
   "System {v1}": "Системный {v1}",
   "Applied to the node (currently {v1})": "Применится на ноде (сейчас {v1})",
+  "Rebuild this link under a new interface name — for a name, address or port that clashes with something else on that server": "Пересобрать этот линк под новым именем интерфейса — если имя, адрес или порт конфликтуют с чем-то ещё на этом сервере",
+  "Kernel": "Ядро",
+  "Architecture": "Архитектура",
+  "Rebuild links": "Пересобрать линки",
+  "Re-provision now": "Пересобрать сейчас",
+  "Rebuilds this node's links under new interface names, with the settings above. Use it when a link won't come up — a name, address or port clashing with something else on that server. It cannot help two nodes that share one machine: their link is a single interface name that would have to exist twice there.": "Пересобирает линки этого узла под новыми именами интерфейсов, с настройками выше. Пригодится, когда линк не поднимается: имя, адрес или порт конфликтуют с чем-то ещё на этом сервере. Двум узлам на одной машине это не поможет — их линк это одно имя интерфейса, которое должно было бы существовать там дважды.",
+  "Rebuilding this node's mesh links…": "Пересобираем линки этого узла…",
+  "Couldn't re-provision the mesh links.": "Не удалось пересобрать линки.",
   "Set a public base URL in {v1} to build the link.": "Задайте публичный адрес в {v1}, чтобы собрать ссылку.",
   "Which {v1} proxy": "Какой прокси {v1}",
   "Not available with {v1}": "Не работает с {v1}",
@@ -2632,7 +2768,6 @@ export const STR = {
   "No {v1} app for {v2} yet": "{v1} для {v2} пока нет",
   "{v1} — mesh": "{v1} — меш",
   "{v1} — egress": "{v1} — выходы",
-  "Advanced": "Подробно",
   "Deployments · {n}": "Развёрнуто · {n}",
   "On this date the peer stops working (it reappears if you extend it).":
     "В этот день пир перестанет работать (продлите — и он вернётся).",
@@ -2726,7 +2861,6 @@ export const STR = {
   "Enter the absolute path to the server's config directory (the one holding wg-keys.dat).":
     "Укажите полный путь к каталогу настроек сервера (тому, где лежит wg-keys.dat).",
   "Enter the absolute path to the interface's .conf.": "Укажите полный путь к файлу .conf интерфейса.",
-  "WDTT interface name must be wdtt0–wdtt999.": "Интерфейс WDTT называется от wdtt0 до wdtt999.",
   "Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24.": "Укажите подсеть туннеля в виде CIDR, например 10.8.0.0/24.",
   "Internal WG port must be a number.": "Внутренний порт WG должен быть числом.",
   "Interface name is required (no spaces or /).": "Нужно имя интерфейса (без пробелов и «/»).",
@@ -3076,8 +3210,9 @@ export const STR = {
   // budget-ok: a message bar / notice — full width, wraps, nothing beside it
   "Pick at least one target.": "Выберите хотя бы одно назначение.",
   // budget-ok: a message bar / notice — full width, wraps, nothing beside it
-  "adding WDTT user…": "добавляем пользователя WDTT…",
   "generating key…": "создаём ключ…",
+  // an all-keyless peer mints no keypair — its credential is the panel-owned access password
+  "creating peer…": "создаём пира…",
   "A target has an invalid address.": "У одного из назначений неверный адрес.",
   "Apply these changes?": "Применить изменения?",
   "This peer's private key isn't available here, so newly-added targets get the same key + PSK but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config.":
@@ -3144,7 +3279,6 @@ export const STR = {
   "No forks enabled — turn them on in Panel settings → Turn proxies.":
     "Ни одна сборка не включена — включите их в «Настройках панели → Turn-прокси».",
   // budget-ok: a message bar / notice — full width, wraps, nothing beside it
-  "Interface must be wdtt0–wdtt999.": "Интерфейс должен быть от wdtt0 до wdtt999.",
   "Subnet must be an IPv4 CIDR (e.g. 10.66.66.1/24).": "Подсеть задаётся как IPv4 CIDR, например 10.66.66.1/24.",
   "The DTLS listen port and internal WG port must differ.": "Порт DTLS и внутренний порт WG должны различаться.",
   "creating WDTT server… (the node installs it on its next sync)":
@@ -3202,7 +3336,6 @@ export const STR = {
   "{v1} reference it.": "На него ссылаются {v1}.",
   "Invalid targets: {list}": "Неверные назначения: {list}",
   "Invalid target: {list}": "Неверное назначение: {list}",
-  "e.g. 1.1.1.1, 1.0.0.1": "например 1.1.1.1, 1.0.0.1",
   "This reconfigures the interface on the node. Existing peers will NOT be able to connect using their old configs — you'll need to re-issue and re-distribute the QR codes. The interface's keys and peers are kept.":
     "Интерфейс на ноде будет перенастроен. Прежние конфиги пиров работать НЕ будут — QR придётся перевыпустить и раздать заново. Ключи интерфейса и сами пиры сохранятся.",
   "VK links cleared.": "Ссылки VK удалены.",
@@ -3330,9 +3463,19 @@ export const STR = {
   "tag|faulty": "сбой",
   "tag|untitled": "без имени",
   "val|auto": "авто",
+  // Peers toolbar: collapse each peer's deployments into one row. Own keys — the bare words are
+  // used elsewhere as nouns; these are the switch's two states.
+  "btn|Group": "Объединить",
+  "btn|Grouped": "Объединено",
+  // the grouped row's IF badge: the row stands for several deployments, so it counts them
+  "{n} interfaces": "{n} интерф.",
+  "This peer's interfaces": "Интерфейсы этого пира",
+  "Collapse each peer's deployments into one row": "Свернуть развёртывания каждого пира в одну строку",
+  "One row per peer — its other deployments are behind the +N": "По строке на пира — остальные его развёртывания за +N",
+  // the address column on a self-contained turn row: its server mints the client IP on connect
+  "val|auto IP": "авто IP",
   "tag|unbound": "не привязан",
   // ── csqtt (amurcanov's Rust rewrite of WDTT — self-contained raw-TUN VK-turn server) ──
-  "csqtt interface name must be csqtt0–csqtt9999.": "Интерфейс csqtt называется от csqtt0 до csqtt9999.",
   "csqtt needs a /24 tunnel subnet, e.g. 10.66.67.0/24.": "csqtt нужна подсеть туннеля /24, например 10.66.67.0/24.",
   "Max passwords must be a number.": "Максимум паролей должен быть числом.",
   "What clients dial (over the VK relay)": "Куда звонят клиенты (через реле VK)",
@@ -3353,18 +3496,10 @@ export const STR = {
   "Self-contained csqtt server — owns its own raw-TUN interface (not a WG/AWG front)":
     "Самодостаточный сервер csqtt — владеет своим raw-TUN интерфейсом (не надстройка над WG/AWG)",
   "The server assigns the address on connect": "Адрес назначает сервер при подключении",
-  "adding csqtt user…": "добавляем пользователя csqtt…",
-  "csqtt user added — their connect link is on the assigned subscription.":
-    "Пользователь csqtt добавлен — ссылка для подключения на назначенной подписке.",
-  "csqtt server — the panel mints this user's access password and csqtt mints their address on connect, so there's no key or client config to set here. The user's VK link (from their subscription) is the TURN credential.":
-    "Сервер csqtt — панель выпускает пароль доступа этого пользователя, а csqtt выдаёт адрес при подключении, поэтому здесь нечего задавать: ни ключа, ни клиентского конфига. Учётные данные TURN — это ссылка VK пользователя (с его подписки).",
   "A fresh access password is generated. The current csqtt link stops working — send the user their new link (from the subscription page) to re-import.":
     "Будет выпущен новый пароль доступа. Текущая ссылка csqtt перестанет работать — отправьте пользователю новую (со страницы подписки), чтобы он переимпортировал.",
   "csqtt assigns the address on connect": "Адрес назначает csqtt при подключении",
-  "csqtt servers this user reaches. csqtt assigns each server's address on connect; the user's link per server is on their subscription. No client config (key/DNS/MTU) — csqtt owns the datapath.":
-    "Серверы csqtt, до которых достаёт этот пользователь. Адрес на каждом сервере csqtt выдаёт при подключении; ссылка на каждый сервер — на подписке пользователя. Клиентского конфига (ключ/DNS/MTU) нет — трактом владеет csqtt.",
   "csqtt fields aren't ready yet.": "Поля csqtt ещё не готовы.",
-  "Interface must be csqtt0–csqtt9999.": "Интерфейс должен быть от csqtt0 до csqtt9999.",
   "Subnet must be an IPv4 /24 CIDR (e.g. 10.66.67.1/24).": "Подсеть должна быть IPv4 /24 CIDR (например 10.66.67.1/24).",
   "creating csqtt server… (the node installs it on its next sync)":
     "создаём сервер csqtt… (нода установит его на следующей синхронизации)",
@@ -3803,7 +3938,6 @@ export const STR = {
   "invalid service name": "неверное имя службы",
   "invalid service or title": "неверная служба или название",
   "invalid username or password": "неверный логин или пароль",
-  "invalid iface (wdtt0..wdtt999)": "неверный интерфейс (wdtt0..wdtt999)",
   "name is required": "нужно имя",
   "name cannot be empty": "имя не может быть пустым",
   "name must be 1–40 chars: letters, digits, - or _": "имя: от 1 до 40 знаков — буквы, цифры, «-» или «_»",
@@ -4007,12 +4141,26 @@ export const STR = {
   "target.{v1} is required": "нужно поле target.{v1}",
   "unknown node {v1}": "неизвестная нода {v1}",
   "unknown node(s): {v1}": "неизвестные ноды: {v1}",
-  "{v1} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer":
-    "{v1} — интерфейс WDTT: пользователей туда добавляют через WDTT, а не как пира WireGuard",
   "{v1} is a system mesh link — not a peer interface": "{v1} — служебная связь сети, а не интерфейс для пиров",
+  // A peer may hold a mix of kinds; these three replace the flat "that's a WDTT interface" refusal.
+  "{v1} is a self-contained turn server — add its users from the peer sheet, not by adopting a WireGuard key":
+    "{v1} — самодостаточный turn-сервер: его пользователей добавляют из карточки пира, а не принятием ключа WireGuard",
+  "{v1} needs a client key — this peer has none (rotate its keys first)":
+    "{v1} нужен клиентский ключ, а у этого пира его нет (сначала смените ему ключи)",
+  "{v1} assigns the client address on connect — it can't be set here":
+    "{v1} выдаёт адрес клиенту при подключении — здесь его не задать",
+  "nothing to change (send ip and/or overrides)": "нечего менять (передайте ip и/или overrides)",
   "{v1} is already used on {v2}": "{v1} уже занят на {v2}",
   "kind|bare-metal": "Железо",
   "kind|docker": "Докер",
+  "kind|podman": "Подман",
+  "Unlock to restore this server's identity": "Разблокируйте, чтобы восстановить личность сервера",
+  "This server's original keypair and owner password are escrowed under your encryption key — the panel only ever held the ciphertext. Unlock it to bring the server back exactly as it was, with every existing user config still working.":
+    "Исходная пара ключей сервера и пароль владельца хранятся под вашим ключом шифрования — панель держала только шифртекст. Разблокируйте его, чтобы вернуть сервер ровно таким, каким он был: все текущие конфигурации пользователей продолжат работать.",
+  "nothing is restored. The server stays down until you unlock the key, or you can Recreate fresh instead — which mints a new server key and makes every user re-import.":
+    "ничего не восстановится. Сервер останется выключенным, пока вы не разблокируете ключ; либо пересоздайте заново — тогда будет выпущен новый ключ сервера и всем пользователям придётся переимпортировать ссылку.",
+  "take-over failed: {e}": "не удалось взять под управление: {e}",
+  "Delivery": "Способ установки",
   // budget-ok: a tooltip on an icon button — its own bubble
   "Switch to {name}": "Переключить на {name}",
   "request failed": "запрос не прошёл",

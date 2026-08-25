@@ -47,7 +47,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote, quote
 
 FLEET_PATH = os.environ.get("SWG_PANEL_FLEET", "/etc/swg-panel/fleet.json")
-IN_DOCKER  = os.path.exists("/.dockerenv")   # so the UI can show the right "enable store_configs" command
+# Container detection. NOT just a UI hint any more: it also decides whether the internal loopback
+# listener binds 0.0.0.0 (reachable through a published port) or 127.0.0.1 (reachable only inside
+# the container's own netns). Podman writes /run/.containerenv and NO /.dockerenv, so checking only
+# the latter left a podman-hosted panel bound to its own loopback while still telling co-located
+# nodes to dial it — measured: bind 127.0.0.1, published port refuses, and the startup log claims
+# success either way. swg-agent / swg-noded / swg-passwd already test both; this was the odd one out.
+IN_DOCKER  = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+# …and WHICH runtime, when it is one. Same markers, same reason as the node's: this panel is labelled in
+# its own header, and a panel running under podman was told it was docker — pointing its operator at a
+# runtime their host does not have. Each runtime drops its own marker and only its own.
+PANEL_RUNTIME = ("podman" if os.path.exists("/run/.containerenv")
+                 else ("docker" if os.path.exists("/.dockerenv") else ""))
+# THIS panel host's own equivalents of what a node reports (see swg-noded's NODE_PLATFORM /
+# NODE_DECLARATIVE). `platform` is a presentation label; `declarative` means this installation is
+# owned elsewhere — a NixOS module, a config-management run — so the panel must not offer to mutate
+# it. What that gates is installation state only: self-update, the recovery one-liner, the address
+# and TLS machinery. Everything the product is FOR — peers, routing, interfaces — stays mutable.
+# SWG_DECLARATIVE is shared with the node deliberately: on a master both processes run on the same
+# host, so the module sets one variable and both read it.
+PANEL_PLATFORM = re.sub(r"[^a-z0-9_-]", "", (os.environ.get("SWG_PANEL_PLATFORM") or "").strip().lower())[:32]
+PANEL_DECLARATIVE = (os.environ.get("SWG_DECLARATIVE") or "").strip().lower() in ("1", "true", "yes", "on")
 WEB_DIR    = os.environ.get("SWG_PANEL_WEB", os.path.dirname(os.path.abspath(__file__)))
 BIND_HOST  = os.environ.get("SWG_PANEL_HOST", "127.0.0.1")
 BIND_PORT  = int(os.environ.get("SWG_PANEL_PORT", "8088"))
@@ -166,13 +186,41 @@ def _detect_versions():
 # /api/state polls don't re-shell every time. Bare-metal only: a docker panel is a container with its own
 # health path (deferred), and `systemctl` there wouldn't see the host's units anyway. Raw state only — the
 # browser derives severity (config-aware: e.g. sub down while subscriptions are disabled isn't critical).
-_PANEL_UNITS = (("panel", "swg-panel-server.service"), ("sub", "swg-sub.service"),
+# Which of THIS host's own units the health probe should expect, as `key:unit` pairs. The default is
+# exactly the set the bare-metal installer lays down, so nothing changes for an ordinary install.
+#
+# A declaratively-managed host names its own instead, because the module decides what exists there and
+# the panel guessing would make every module change a panel bug. On NixOS the differences are not
+# cosmetic: there is no `swg-netctl` at all (nothing the panel can do reaches its queue, so the helper
+# is not installed), and one-click update is a `.path` unit rather than a `.timer`, and only when it
+# has been switched on. Left to the default, a native Nix panel would report three permanently missing
+# services and raise a "needs attention" row nobody can ever clear.
+#
+# An OMITTED key is simply not checked: every predicate in the SPA's serviceIssues() is `u && …`, so an
+# absent entry raises nothing. An EMPTY value means "check nothing".
+def _panel_units():
+    raw = os.environ.get("SWG_PANEL_UNITS")
+    if raw is None:
+        return (("panel", "swg-panel-server.service"), ("sub", "swg-sub.service"),
                 ("netctl_path", "swg-netctl.path"), ("netctl_timer", "swg-netctl.timer"),
                 ("update", "swg-update.timer"))
+    out = []
+    for part in raw.split(","):
+        key, _, unit = part.strip().partition(":")
+        if key.strip() and unit.strip():
+            out.append((key.strip(), unit.strip()))
+    return tuple(out)
+
+
+_PANEL_UNITS = _panel_units()
 _PANEL_SVC = {"at": 0.0, "data": {}}
 def panel_service_health(ttl=20):
     if IN_DOCKER:
         return {}                                    # container: host units aren't ours to probe (deferred path)
+    if not _PANEL_UNITS:
+        return {}                                    # nothing declared to expect — and `systemctl show` with no
+                                                     # unit shows the MANAGER, which would parse as junk
+
     now = time.time()
     if _PANEL_SVC["data"] and now - _PANEL_SVC["at"] < ttl:
         return _PANEL_SVC["data"]                     # fresh enough → skip the re-shell (many tabs poll every 5s)
@@ -428,11 +476,23 @@ def _changelog_entries(lang="en"):
     if entries:
         cache["at"] = now; cache["entries"] = entries
     return entries
-# In-place updater — swg programs only (--no-components leaves wg/awg/turn-proxies alone), unattended.
-UPDATE_CMD = os.environ.get(
-    "SWG_UPDATE_CMD",
+# The command an operator runs BY HAND when this panel cannot update itself: no root updater wired,
+# a container that cannot recreate itself, or a host whose installation is owned elsewhere. In-place,
+# swg programs only (--no-components leaves wg/awg/turn-proxies alone), unattended.
+#
+# Env-overridable so whatever INSTALLED the panel names its own updater rather than this one — the
+# NixOS module sets it to a `nixos-rebuild`, where the curl-pipe-bash line below is not merely wrong
+# but actively harmful (it appears to work, writes into /opt, and leaves an install `nixos-rebuild`
+# cannot see). Until now this was defined and never read, while the literal it holds lived a second
+# time at the /api/host/update site; that copy is gone.
+# ⚠️ On a declarative host with NOTHING set here, the answer is the EMPTY STRING, not the bootstrap
+# line. `declarative` can be set by hand (a config-management run, not only our module), and there is
+# no command this panel could honestly print for a setup it knows nothing about — while the one below
+# is actively harmful there. The UI shows the reason and no command, rather than a command that would
+# leave an install the host's own tooling cannot see.
+UPDATE_CMD = os.environ.get("SWG_UPDATE_CMD") or ("" if PANEL_DECLARATIVE else
     "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh"
-    " | bash -s update -y --no-components")
+    " | sudo bash -s update -y --no-components")
 # Touching this file path-activates a root systemd updater (swg-update.path → swg-update.service),
 # which runs in its OWN cgroup so restarting the panel mid-update doesn't kill it. Set by the installer.
 UPDATE_TRIGGER = os.environ.get("SWG_UPDATE_TRIGGER")
@@ -866,6 +926,19 @@ def _turn_autoupdate_tick():
     for nid, snap in snaps.items():
         if nid not in nodes or not isinstance(snap, dict):
             continue
+        # ⚠️ CAPABILITY FIRST. This loop runs on a timer with no UI in front of it, so nothing else
+        # stops it staging work a node cannot perform — and a node that cannot perform it does not
+        # ignore the request, it FAILS it: `apply_turn` returns "turn management off" for every key,
+        # which lands as a red cmd_error, and the pending request never clears (the node never
+        # reports the new version), so the tag is permanent and the operator never asked for any of
+        # it. The operator-driven paths are gated by the SPA hiding their controls on the same two
+        # flags; this one had nothing in front of it at all.
+        #
+        # `turn_manage` false is an explicit "I cannot"; `turn_capable` false is an explicit "there
+        # is no build for my architecture". Both are read as EXPLICIT signals, never as an absence —
+        # an older daemon that reports neither is left alone to behave exactly as it did before.
+        if snap.get("turn_manage") is False or snap.get("turn_capable") is False:
+            continue
         for tp in (snap.get("turn_proxies") or []):
             svc = (tp.get("service") or "").strip(); ver = (tp.get("version") or "").strip()
             if not svc or not ver:
@@ -1247,6 +1320,64 @@ def save_critical(path, text, mode=0o600, keep=8):
             with contextlib.suppress(OSError):
                 os.unlink(old)
 
+def _proc_cmdline(pid):
+    """argv of a pid as a list of str, or [] if it is gone / unreadable."""
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            return [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        return []
+
+
+def _flock_holder(path):
+    """Who holds the flock on `path` — asked of the KERNEL, not inferred from process names.
+
+    Returns (pid, state):
+        (int,  "held")     a FLOCK entry for this file, owned by that pid
+        (None, "held")     an entry exists but the kernel names no pid (an OFD lock)
+        (None, "free")     /proc/locks is readable and NOTHING holds this file
+        (None, "unknown")  we could not look
+
+    "free" and "unknown" must never be collapsed: one of them permits removing the lock file and the
+    other must not. Guessing wrong there re-creates the two-panels-on-one-state-dir clobber this lock
+    exists to prevent — which is how the previous version could steal a lock a live process held, by
+    scanning for a process NAMED swg-panel-server and deleting the lock when it found none.
+
+    Matched on INODE alone, deliberately. /proc/locks prints the device as hex major:minor, and on
+    btrfs, zfs and overlayfs a file's st_dev is a synthetic id that will not match it — so requiring
+    the device to agree would MISS real holders on exactly the filesystems people run, and missing a
+    holder is the dangerous direction. An inode collision with some other flocked file costs a
+    refusal, which is the safe one.
+    """
+    try:
+        ino = os.stat(path).st_ino
+    except OSError:
+        return None, "unknown"
+    try:
+        with open("/proc/locks") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None, "unknown"
+    for ln in lines:
+        parts = ln.split()
+        # `12: -> FLOCK …` is a process BLOCKED on the lock, not the one holding it. Skip those: the
+        # holder is the un-arrowed line for the same inode, and naming a waiter would accuse the
+        # wrong process. (The arrow is the SECOND token — the kernel prints the lock id first — which
+        # is why the first version of this check, looking at the first token, never fired at all.)
+        if len(parts) > 1 and parts[1] == "->":
+            continue
+        if len(parts) < 6 or parts[1] != "FLOCK":
+            continue
+        try:
+            pid = int(parts[4])
+            if int(parts[5].rsplit(":", 1)[-1]) != ino:
+                continue
+        except ValueError:
+            continue
+        return (pid if pid > 0 else None), "held"
+    return None, "free"
+
+
 def load_critical(path, default):
     try:
         with open(path) as f:
@@ -1332,12 +1463,42 @@ def stats_disk_ok(path, min_free_mb=64, min_pct=2):
 # swg-noded / swg-agent need no changes.
 
 ROSTER_VERSION = 1
+# What a stamp is FOR, and why only this file carries one.
+#
+# It was written and never read, which is worse than absent: `{"version": 1, …}` in the roster reads like
+# there is version handling behind it, and there was none. A stamp only ever protects the DOWNGRADE
+# direction — an older build meeting state a newer one wrote — and it can only do that if the older build
+# was ALREADY checking it before the incompatible change shipped. Adding the check at the same time as the
+# change is too late for every release in between. So the check lands now, while there is nothing to catch.
+#
+# Measured before writing this (1.7.15-beta panel, real 1.8.0-beta state): it starts clean, leaves
+# users.json and nodes.json BYTE-IDENTICAL, and keeps every key it does not know — Python round-trips the
+# unknown ones and the format has only ever grown. So a rollback today is safe, and this WARNS rather than
+# refusing: turning a currently-harmless operation into a hard failure to guard a hazard that does not exist
+# yet would cost more than it saves. When a genuinely incompatible change does land, this is what lets the
+# older panel say so instead of quietly misreading it.
+#
+# ⚠️ nodes.json deliberately has NO stamp. It is a FLAT map keyed by node id, and 15 call sites iterate it as
+# `for nid, n in nodes.items()` — a top-level "version" key would be walked as if it were a node. Stamping it
+# needs an envelope ({"version":…, "nodes":{…}}), which is itself the kind of incompatible change this
+# machinery exists to make safe, so it is not worth doing on its own. The panel writes both files at one
+# version, so the roster stamp is the state generation for both.
+STATE_FUTURE = {}     # {"file": …, "found": N, "known": N} when state came from a newer build — surfaced in /api/state
 
 
 def roster_load(path):
     r = load_critical(path, {})
     if not isinstance(r, dict):
         r = {}
+    _v = r.get("version")
+    if isinstance(_v, int) and _v > ROSTER_VERSION:
+        if not STATE_FUTURE:
+            print("state: %s was written by a NEWER build (roster schema v%d, this panel understands v%d). "
+                  "It is being read as-is — every field this build does not know is preserved untouched. If "
+                  "anything reads wrong, run the newer version again rather than saving over it."
+                  % (path, _v, ROSTER_VERSION), flush=True)
+        STATE_FUTURE.clear()
+        STATE_FUTURE.update({"file": os.path.basename(path), "found": _v, "known": ROSTER_VERSION})
     r.setdefault("version", ROSTER_VERSION)
     if not isinstance(r.get("users"), dict):
         r["users"] = {}
@@ -1643,8 +1804,14 @@ def peer_label(roster, p):
 
 
 def clean_target(t):
-    """Normalise one deployment target: {node, iface, ip, type, primary?}. `primary` marks the peer's
-    preferred connection (ordered first on the subscription page); at most one target carries it."""
+    """Normalise one deployment target: {node, iface, ip, type, primary?, overrides?}. `primary` marks the
+    peer's preferred connection (ordered first on the subscription page); at most one target carries it.
+
+    `overrides` is this ONE deployment's client-config customisation (DNS / MTU / AllowedIPs / keepalive).
+    It exists because a peer may now span interfaces that need different settings — and, more simply,
+    because those settings were never really a property of the peer: they describe how one client reaches
+    one interface. The peer-level `overrides` stays as the fallback (and is what every existing peer has),
+    so this is additive: a target without its own block renders exactly as before."""
     out = {
         "node": t.get("node", ""),
         "iface": t.get("iface", ""),
@@ -1653,6 +1820,9 @@ def clean_target(t):
     }
     if t.get("primary"):
         out["primary"] = True
+    ov = clean_overrides(t.get("overrides"))
+    if ov:
+        out["overrides"] = ov
     return out
 
 
@@ -1784,6 +1954,87 @@ def _is_self_contained_target(t):
     """Does this roster target land on ANY self-contained turn-family instance (WDTT or csqtt)? Both own their
     interface + key custody, so shared gates (ghost/missing/dangling skips, egress) key off this one predicate."""
     return _is_wdtt_target(t) or _is_csqtt_target(t)
+
+# ── THE kind authority ────────────────────────────────────────────────────────────────────────────
+# Every gate below used to ask `_WDTT_IFACE_RE.match(iface)` — "is it called wdtt<N>?" — and treat the
+# answer as the interface's KIND. That was only ever true while the panel chose every name. It no longer
+# does: adoption takes a foreign server's name as found (`wdttx`, `csqfbm2`, `vpn0`) and creates may now
+# choose one too, so the name has stopped being evidence. Ask what the panel actually KNOWS instead, in
+# descending order of authority, and keep the name as a last resort for a node that has never reported.
+def iface_kind(deps, nodes, snaps, node, iface, declared=""):
+    """"wg" | "awg" | "wdtt" | "csqtt" for one (node, iface). `declared` is a caller-supplied target `type`
+    (the roster writes an authoritative one) and wins when it names a self-contained kind — a target may
+    outlive the instance it points at, and a dangling wdtt target must not silently re-read as WireGuard."""
+    if declared in ("wdtt", "csqtt"):
+        return declared
+    n = nodes.get(node) or {}
+    if iface in (n.get("wdtt") or {}):            # the panel's own instance map — it created or adopted it
+        return "wdtt"
+    if iface in (n.get("csqtt") or {}):
+        return "csqtt"
+    snap = (snaps or {}).get(node) or {}
+    if any((w or {}).get("iface") == iface for w in (snap.get("wdtt") or [])):     # the node's live readback
+        return "wdtt"
+    if any((c or {}).get("iface") == iface for c in (snap.get("csqtt") or [])):
+        return "csqtt"
+    if ((snap.get("interfaces") or {}).get(iface)):                # a real wg/awg interface the node reports
+        return iface_type(snaps, node, iface)
+    if _WDTT_IFACE_RE.match(str(iface or "")):                     # last resort: a name only WE would have minted
+        return "wdtt"
+    if _CSQTT_IFACE_RE.match(str(iface or "")):
+        return "csqtt"
+    return declared if declared in ("wg", "awg") else iface_type(snaps, node, iface)
+
+
+def is_keyless_kind(kind):
+    """WDTT + csqtt own their interface and mint the client's address (and, for WDTT, its keypair) on connect,
+    so such a target carries NO browser keypair and NO client address — the panel-owned password IS the
+    credential. ONE predicate so every "does this target need a pubkey / an ip / a client config?" gate agrees."""
+    return kind in ("wdtt", "csqtt")
+
+
+def turn_iface_name_error(deps, nodes, snaps, nid, iface, kind):
+    """Why this name can't be a NEW self-contained instance on this node, or None.
+
+    Creation used to be gated to `wdtt0..wdtt999` / `csqtt0..csqtt9999`. That pattern was never the node's
+    requirement (it accepts any safe path component — which is why ADOPTION already takes foreign names as
+    found); it was standing in for the checks below, plus "the name alone tells you the kind". The panel no
+    longer infers kind from the name (see iface_kind), so the pattern bought nothing but a refusal to name
+    your own servers. These are the constraints that were actually load-bearing."""
+    if not _WDTT_ADOPT_IFACE_RE.match(iface or ""):     # the node builds a unit name + a directory from it
+        return "invalid interface name (letters, digits, - and _; max 15, must start alphanumeric)"
+    if is_system_iface(deps, nodes, nid, iface):
+        return f"{iface} is a system mesh link"
+    n = nodes.get(nid) or {}
+    other = "csqtt" if kind == "wdtt" else "wdtt"
+    if iface in (n.get(other) or {}):
+        return f"{iface} is already a {other.upper()} instance on this node"
+    if iface in (n.get(kind) or {}):
+        return None                                     # editing an instance we already manage — always allowed
+    if ((snaps.get(nid) or {}).get("interfaces") or {}).get(iface):
+        return f"{iface} is already a WireGuard interface on this node"
+    rc = reserved_conflict(deps, nodes, n, name=iface)   # takes the node RECORD, not its id
+    if rc:
+        return rc
+    return None
+
+
+def mint_keyless_secrets(targets, existing):
+    """The access passwords a target set CALLS FOR, minted only where the peer has none yet.
+
+    One password per keyless KIND, not per target: a peer deployed to wdtt1 AND wdtt2 presents the same
+    WDTT password to both (that is what makes them failover alternatives of one identity), and the same
+    peer's csqtt deployments share a second, independent one. Idempotent by design — this runs on create
+    AND on every path that can ADD a target later, and re-minting there would silently revoke the links
+    already in the operator's hands. Returns only the fields to write; {} when nothing new is needed."""
+    kinds = {t.get("type") for t in targets if is_keyless_kind(t.get("type"))}
+    out = {}
+    if "wdtt" in kinds and not (existing or {}).get("wdtt_password"):
+        out["wdtt_password"] = gen_wdtt_password()
+    if "csqtt" in kinds and not (existing or {}).get("csqtt_password"):
+        out["csqtt_password"] = gen_csqtt_password()
+    return out
+
 
 def _wdtt_net(cidr):
     """A WDTT instance's wg_addr (e.g. 10.66.73.1/24) → its network (10.66.73.0/24) — the source subnet that the
@@ -2208,9 +2459,19 @@ def write_sub_serve(deps, base_alt=""):
     asub = acc.get("sub") if isinstance(acc.get("sub"), dict) else {}
     amode = ((acc.get("tls") or {}).get("mode") or "")
     _legacy = subs.get("serve") if isinstance(subs.get("serve"), dict) else {}
+    # "skip" carries two meanings and only one of them is "no TLS here". On a reverse-proxied install it
+    # means the operator terminates upstream. On a declaratively managed host it means THIS panel terminates
+    # TLS with a certificate that is security.acme's to renew rather than ours to issue — and the module puts
+    # that same certificate at swg-sub's own path. Reading the two the same way left the subscription surface
+    # serving PLAIN HTTP with a valid certificate sitting unused beside it, while the panel next to it served
+    # HTTPS; the panel's own useACMEHost had the identical bug once. The fact that separates them is whether
+    # THIS process is terminating TLS: if we are, so should the surface beside us. Safe either way — swg-sub
+    # falls back to plain HTTP when the certificate is not actually there, so a proxied install that has none
+    # of its own is unchanged.
+    _tls_here = bool(TLS_CERT)
     serve = {"host": asub.get("host") or _legacy.get("host") or "0.0.0.0",
              "port": asub.get("port") or _legacy.get("port") or 8444,
-             "tls_mode": ("reverse-proxy" if amode in ("", "skip") else amode),
+             "tls_mode": ("reverse-proxy" if (amode in ("", "skip") and not _tls_here) else (amode or "skip")),
              # reverse-proxy mount path (from the sub public URL), so swg-sub can serve under a subpath like /swgsub
              "base": _sub_mount_base(asub),
              "base_alt": (base_alt or ""),   # transitional OLD base kept live during a path change (dual-base) — empty otherwise
@@ -2602,7 +2863,14 @@ def _reconcile_saved_ahead(deps, blessed_url):
         tls = (ps.get("access") or {}).get("tls") or {}
         saved_mode = str(tls.get("mode") or "")
         live_https = bool(TLS_CERT)
-        if (saved_mode not in ("", "skip")) != live_https:
+        # `skip` is a TLS-TERMINATING mode — this panel serves HTTPS, the certificate just isn't its to
+        # issue or renew (an operator-supplied cert; `security.acme` on a declarative host). Counting it
+        # with "" here read a perfectly consistent panel as inconsistent and re-inferred a mode from the
+        # certificate on the socket: a Nix panel whose module had just written `skip` came up saying
+        # "Let's Encrypt (HTTP-01 — needs port 80 reachable)" about a DNS-01 certificate it does not
+        # own, on a host where port 80 is not even open. The real gap this test exists for — blessed
+        # reverse-proxy, cert env never turned off — is `saved_mode == ""`, and still fires.
+        if (saved_mode != "") != live_https:
             _bl = load_json(_bless_path(deps), None)
             _bmode = _bl.get("mode") if isinstance(_bl, dict) else None
             if live_https:
@@ -2661,8 +2929,11 @@ def _reconcile_sub_listen_at_boot(deps):
     converter covers every way the drop-in can go missing (hand-removed, a re-install, a restored image), and the
     panel is the source of truth for the address either way.
 
-    Bare-metal only: in docker the published port is compose's, not a systemd drop-in's."""
-    if IN_DOCKER:
+    Bare-metal only: in docker the published port is compose's, not a systemd drop-in's. And nothing at
+    all on a declaratively-managed host: there IS no drop-in there and there never will be — the unit
+    carries the bind directly — so the drift check below would find a mismatch on every single boot and
+    enqueue a set-listen the guard then refuses, once per boot, forever."""
+    if IN_DOCKER or PANEL_DECLARATIVE:
         return
     ps = deps.get("panel_settings") or {}
     sub = ((ps.get("access") or {}).get("sub") or {})
@@ -3461,6 +3732,25 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk=""):
 
 # ───────────────────────── node snapshots → reads ─────────────────────────
 
+def _parse_port_ranges(spec):
+    """"51820-51899,443" -> [(51820, 51899), (443, 443)]. Junk entries are skipped, not guessed at.
+
+    Returns [] for an unparseable spec, and the caller treats [] as "nothing declared" — never as
+    "nothing allowed". A malformed range must not turn every interface on the node red."""
+    out = []
+    for part in str(spec or "").replace(" ", "").split(","):
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        if not lo.isdigit():
+            continue
+        a = int(lo)
+        b = int(hi) if hi.isdigit() else a
+        if 0 < a <= b <= 65535:
+            out.append((a, b))
+    return out
+
+
 def _node_issues(c, snap):
     """Health-check roll-up for one node: settings edited on the server (drift), an egress IP / WAN
     NIC the node no longer has, and turn-proxies that aren't running. Empty list = healthy."""
@@ -3488,6 +3778,20 @@ def _node_issues(c, snap):
     _dp = (snap.get("datapath") or {}).get("awg")   # bare-metal node's AmneziaWG kernel module — a broken DKMS build the updater rebuilds
     if _dp and _dp.get("needed") and not _dp.get("ok"):
         issues.append("AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it")
+    # A node whose firewall is DECLARED (a NixOS module, a config-management run) tells us which UDP
+    # ports it allows. We pick interface ports at runtime; that list is fixed at build time. Without
+    # this the mismatch is invisible in the worst way — the interface syncs, reports healthy and
+    # shows its peers, and no client can reach it. Say it here instead of leaving the operator to
+    # discover it from a connection that never handshakes.
+    _ranges = _parse_port_ranges(snap.get("udp_ports"))
+    if _ranges:
+        _spec = str(snap.get("udp_ports"))
+        for ifn, e in (snap.get("interfaces") or {}).items():
+            _lp = ((e.get("meta") or {}).get("listen_port"))
+            if isinstance(_lp, int) and _lp and not any(a <= _lp <= b for a, b in _ranges):
+                issues.append(ifn + ": listens on UDP " + str(_lp) + ", outside this node's declared "
+                              "firewall range (" + _spec + ") — clients cannot reach it until the range "
+                              "covers that port, or the interface moves inside it")
     return issues
 
 def _missing_ifaces(c, snap):
@@ -7872,6 +8176,23 @@ def api(method, path, qs, body, deps):
                         "arch": snap.get("arch"),                     # the node's canonical CPU arch (amd64 / arm64 / raw uname -m) — for the turn-proxy capability tooltip
                         "turn_arch_ok": (snap.get("turn_capable") is not False),   # grey out "Setup proxy" ONLY on an explicit "no build for this arch" from the node; absent/unknown → allow (never false-block; the node's own download is the real gate)
                         "turn_manage": bool(snap.get("turn_manage")),  # can the panel edit/restart this node's turn-proxies?
+                        # Can the Update button do anything on this node? EXPLICIT False only — absent
+                        # (an older daemon, or a node that has not reported since this panel booted) means
+                        # unknown, and unknown must never block. Same rule as turn_arch_ok above, for the
+                        # same reason: a false refusal is worse than a request the node declines with a
+                        # message. The node derives it from the branch it would actually take.
+                        "update_auto": (snap.get("update_auto") is not False),
+                        # What OWNS this node's installation — never how it RUNS (that is `kind`, above, and a
+                        # NixOS host running our image is a docker node for every behavioural purpose). `platform`
+                        # is a label; `declarative` hides the controls that would mutate an installation somebody
+                        # else's tooling owns. Both fall back to the last reported value like `kind` does, because
+                        # a node being DOWN is exactly when an operator reaches for Recover.
+                        "platform": snap.get("platform") or c.get("platform") or "",
+                        "platform_info": snap.get("platform_info") or c.get("platform_info") or {},   # {name,version,kernel} for the badge's tooltip
+                        "declarative": bool(snap.get("declarative") or c.get("declarative")),
+                        # WHICH container runtime, when `kind` is docker. A label only — the node behaves
+                        # identically either way — so that a podman node is not told to go and look at docker.
+                        "runtime": snap.get("runtime") or c.get("runtime") or "",
                         "ips": snap.get("node_ips") or [],             # the node's own IPs — candidates for a per-interface egress IP
                         "wan_ifaces": [w for w in (snap.get("node_ifaces") or []) if not _is_sysif(w)],   # the node's NICs — candidates for the egress WAN interface (no mesh links)
                         "ip_ifaces": [p for p in (snap.get("node_ip_ifaces") or []) if not _is_sysif((p or {}).get("iface"))], # (ip, iface) pairs — egress picker (no mesh links)
@@ -8060,8 +8381,19 @@ def api(method, path, qs, body, deps):
             "latest_remote_date": _latest_notes(_req_lang())[0],     # its changelog date + notes → the "update to …" hover bubble
             "latest_remote_notes": _latest_notes(_req_lang())[1],     # …in the reader's language (see _latest_notes)
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
-            "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
+            # Absent unless set, so /api/state on an ordinary panel carries exactly what it carried before.
+            "env": {"docker": IN_DOCKER, "runtime": PANEL_RUNTIME, "fleet_path": FLEET_PATH,
+                    **({"platform": PANEL_PLATFORM} if PANEL_PLATFORM else {}),
+                    # nix_access rides with the flag so the Access screen can render what the operator
+                    # edits INSTEAD of it, without a second endpoint. `update_cmd`/`update_auto` are here
+                    # for the same reason: the Update dialog shows a command BEFORE anything is clicked,
+                    # and on a declarative host the curl-pipe-bash one it otherwise shows is not merely
+                    # wrong, it leaves an install the configuration cannot see (D14 tier 1). Absent on
+                    # every other panel, so an ordinary /api/state carries exactly what it carried before.
+                    **({"declarative": True, "nix_access": _nix_access_snippet(deps),
+                        "update_cmd": UPDATE_CMD, "update_auto": bool(UPDATE_TRIGGER)} if PANEL_DECLARATIVE else {})},   # for UI hints (e.g. enable store_configs)
             "tls": dict(TLS_STATUS),                                  # cert expiry watch — surface a stalled renewal before it goes dark
+            **({"state_future": dict(STATE_FUTURE)} if STATE_FUTURE else {}),   # state written by a NEWER build — see ROSTER_VERSION
             "panel_services": panel_service_health(),                # THIS host's own swg units (active/enabled/present) → SPA "needs attention" (bare-metal only)
             "sub_cert": sub_cert_health(),                           # subscription TLS: present + covers the domain (direct-TLS only; {} behind a proxy)
             "datapath": host_datapath_health(),                      # THIS host's kernel datapath health (awg module loadable?) → healable "Fix" issue when a local node uses awg
@@ -8384,6 +8716,17 @@ def api(method, path, qs, body, deps):
                 p = (a or {}).get("panel") or {}; s = (a or {}).get("sub") or {}; t = (a or {}).get("tls") or {}
                 return (p.get("url"), p.get("host"), p.get("port"),
                         s.get("url"), s.get("host"), s.get("port"), t.get("mode"))
+            # A declaratively-managed panel: refuse the SAVE, not just the apply. The browser saves these
+            # settings first and applies second, so refusing only the apply would leave the persisted
+            # config ahead of the live panel — the settings-ahead-of-live trap the pending guard below
+            # exists to prevent, reached by a different road. Compare the same address-shaping fields
+            # plus the TLS block (certificates are security.acme's here, D7); an unrelated re-save, or an
+            # identical no-op, still passes.
+            def _acc_decl_sig(a):
+                t = (a or {}).get("tls") or {}
+                return _acc_addr_sig(a) + (t.get("email"), t.get("cf_token"), t.get("cf_origin_token"))
+            if PANEL_DECLARATIVE and _acc_decl_sig(_acc_clean) != _acc_decl_sig(cur.get("access")):
+                return _declarative_access_refusal(deps)
             with _APPLY["lock"]:
                 _acc_pending = _APPLY["pending"] is not None
             if _acc_pending and _acc_addr_sig(_acc_clean) != _acc_addr_sig(cur.get("access")):
@@ -8439,6 +8782,12 @@ def api(method, path, qs, body, deps):
                      "cooldown": {"secs": _cd[0], "reason": _cd[1]}}
 
     if method == "POST" and path == "/api/access/apply":
+        # Nothing below runs on a declaratively-managed panel: the bind, the mount base and the certificate
+        # are its configuration's, and every route out of here (live rebind, cert issuance, the drop-in that
+        # persists it) either mutates installation state or would leave the live panel somewhere the next
+        # rebuild puts back. Refused before the first of them.
+        if PANEL_DECLARATIVE:
+            return _declarative_access_refusal(deps)
         # Activate the panel's SAVED bind (access.panel) by dual-listening on the new address. If the URL's
         # domain changed and the current cert doesn't cover it, a new cert is issued FIRST (async, via the
         # root helper) and the new listener binds with it; an IP/port change reuses the current cert (sync).
@@ -9054,6 +9403,11 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "saved": True}
 
     if method == "POST" and path == "/api/access/apply-sub":
+        # Same as the panel's apply: on a declarative host swg-sub's bind and certificate are module
+        # options. Its RELOAD stays available — that is what a serve.json change uses, and it is not
+        # installation state — but that path does not run through here.
+        if PANEL_DECLARATIVE:
+            return _declarative_access_refusal(deps)
         # Activate the SAVED swg-sub bind (access.sub): issue its cert if the domain changed, persist the
         # bind, restart. No dual-listen/confirm — a swg-sub restart can't lock the admin out of the panel.
         acc = (deps.get("panel_settings") or {}).get("access") or {}
@@ -10316,54 +10670,63 @@ def api(method, path, qs, body, deps):
     # ─────────────── peers (credential + targets) ───────────────
 
     if method == "POST" and path == "/api/peers/create":
-        # Mint a NEW credential (own key + PSK) and deploy it to one or more targets in a
-        # single atomic write. Accepts targets:[{node,iface,ip}, ...]; a lone `target` is
-        # still honoured. Per-target client configs come in body.configs keyed "node|iface".
+        # Mint a NEW credential and deploy it to one or more targets in a single atomic write.
+        # Accepts targets:[{node,iface,ip}, ...]; a lone `target` is still honoured.
+        #
+        # ONE peer, ANY MIX OF KINDS. A peer used to be all-WireGuard or all-WDTT or all-csqtt, enforced
+        # here by rejecting a WDTT interface outright and sending the operator to a separate flow. That
+        # was a product rule, not a technical limit — the record already holds the three credentials side
+        # by side (`pubkey`/`psk`, `wdtt_password`, `csqtt_password`) and the node reply builders are
+        # target-driven — so it is gone: a peer may now hold wg + awg + wdtt + csqtt at once and gets
+        # exactly the credentials its target set calls for. A keyless target brings no address and no key.
         pubkey = (body.get("pubkey") or "").strip()
         targets = body.get("targets")
         if not isinstance(targets, list) or not targets:
             t = body.get("target")
             targets = [t] if t else []
-        if not pubkey:
-            return 400, {"ok": False, "error": "pubkey is required", "code": "bad_request"}
         if not targets:
             return 400, {"ok": False, "error": "at least one target is required", "code": "bad_request"}
         for t in targets:
-            for f in ("node", "iface", "ip"):
+            for f in ("node", "iface"):
                 if not (t or {}).get(f):
                     return 400, {"ok": False, **perr("target.{v1} is required", v1=f), "code": "bad_request"}
             if not known(t["node"]):
                 return 400, {"ok": False, **perr("unknown node {v1}", v1=repr(t["node"])), "code": "bad_request"}
             if is_system_iface(deps, nodes, t["node"], t["iface"]):
                 return 400, {"ok": False, **perr("{v1} is a system mesh link — not a peer interface", v1=t["iface"]), "code": "system_iface"}
-            if _WDTT_IFACE_RE.match(t["iface"] or "") or (t["iface"] or "") in ((nodes.get(t["node"]) or {}).get("wdtt") or {}):
-                return 400, {"ok": False, **perr("{v1} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", v1=t["iface"]), "code": "wdtt_iface"}
+            t["type"] = iface_kind(deps, nodes, snaps, t["node"], t["iface"], t.get("type") or "")
+            if is_keyless_kind(t["type"]):
+                t["ip"] = ""            # the server mints the client address on connect — there is none to assign
+            elif not t.get("ip"):
+                return 400, {"ok": False, **perr("target.{v1} is required", v1="ip"), "code": "bad_request"}
+        keyed = [t for t in targets if not is_keyless_kind(t["type"])]
+        if keyed and not pubkey:
+            return 400, {"ok": False, "error": "pubkey is required", "code": "bad_request"}
         seen = set()
         for t in targets:
             k = (t["node"], t["iface"])
             if k in seen:
                 return 400, {"ok": False, **perr("duplicate target {v1}", v1=f"{t['node']}/{t['iface']}"), "code": "bad_request"}
             seen.add(k)
-        be = bad_targets(targets)
+        be = bad_targets(keyed)         # only a keyed target carries an address to validate
         if be:
             return 400, {"ok": False, "error": be, "code": "bad_request"}
         roster = roster_load(roster_path)
-        if find_peer_by_pubkey(roster, pubkey):
+        if pubkey and find_peer_by_pubkey(roster, pubkey):
             return 409, {"ok": False, "error": "a peer with this key already exists "
                          "(use add-target to deploy it elsewhere)", "code": "exists"}
         uid = body.get("user_id")
         if uid and uid not in roster["users"]:
             return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
-        for t in targets:
-            if not t.get("type"):
-                t["type"] = iface_type(snaps, t["node"], t["iface"])
-        psk = body.get("psk") or gen_psk()      # PSK is panel-owned; auto-mint when the client omits one
+        psk = (body.get("psk") or gen_psk()) if keyed else ""   # PSK is panel-owned; auto-mint when the client omits one
+        fields = {"user_id": uid or None, "title": strip_ctrl(body.get("title", "")),
+                  "pubkey": pubkey, "psk": psk, "targets": targets,
+                  "overrides": body.get("overrides") or {}}
+        fields.update(mint_keyless_secrets(targets, {}))   # one access password per keyless KIND the set touches
         pid = gen_id()
         while pid in roster["peers"]:
             pid = gen_id()
-        p = peer_set(roster, pid, {"user_id": uid or None, "title": strip_ctrl(body.get("title", "")),
-                                   "pubkey": pubkey, "psk": psk, "targets": targets,
-                                   "overrides": body.get("overrides") or {}}, now())
+        p = peer_set(roster, pid, fields, now())
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Created peer", peer_label(roster, p),
                   f"{len(targets)} target{'' if len(targets) == 1 else 's'} · {targets[0]['node']}/{targets[0]['iface']}",
@@ -10378,20 +10741,26 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": p}
 
     if method == "POST" and path == "/api/peers/add-target":
-        # "Copy peer interface→interface" — SAME key + SAME PSK on a new (node, iface, ip).
+        # "Copy peer interface→interface" — SAME key + SAME PSK on a new (node, iface, ip). Since a peer may
+        # hold a mix of kinds, the new target can be a KEYLESS one (WDTT / csqtt): it brings no address, and
+        # if this is the peer's first deployment of that kind it also mints that kind's access password.
         pid = body.get("peer_id") or ""
         target = body.get("target") or {}
-        for f in ("node", "iface", "ip"):
+        for f in ("node", "iface"):
             if not target.get(f):
                 return 400, {"ok": False, **perr("target.{v1} is required", v1=f), "code": "bad_request"}
         if not known(target["node"]):
             return 400, {"ok": False, **perr("unknown node {v1}", v1=repr(target["node"])), "code": "bad_request"}
         if is_system_iface(deps, nodes, target["node"], target["iface"]):
             return 400, {"ok": False, **perr("{v1} is a system mesh link — not a peer interface", v1=target["iface"]), "code": "system_iface"}
-        if _WDTT_IFACE_RE.match(target["iface"] or ""):
-            return 400, {"ok": False, **perr("{v1} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", v1=target["iface"]), "code": "wdtt_iface"}
-        if not valid_addr(target["ip"]):
-            return 400, {"ok": False, **perr("invalid address {v1}", v1=repr(target["ip"])), "code": "bad_request"}
+        target["type"] = iface_kind(deps, nodes, snaps, target["node"], target["iface"], target.get("type") or "")
+        if is_keyless_kind(target["type"]):
+            target["ip"] = ""
+        else:
+            if not target.get("ip"):
+                return 400, {"ok": False, **perr("target.{v1} is required", v1="ip"), "code": "bad_request"}
+            if not valid_addr(target["ip"]):
+                return 400, {"ok": False, **perr("invalid address {v1}", v1=repr(target["ip"])), "code": "bad_request"}
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
@@ -10399,9 +10768,11 @@ def api(method, path, qs, body, deps):
         if any(t["node"] == target["node"] and t["iface"] == target["iface"] for t in p["targets"]):
             return 409, {"ok": False, "error": "peer already has a target on that node/interface",
                          "code": "exists"}
-        if not target.get("type"):
-            target["type"] = iface_type(snaps, target["node"], target["iface"])
-        p2 = peer_set(roster, pid, {"targets": p["targets"] + [target]}, now())
+        if not is_keyless_kind(target["type"]) and not p.get("pubkey"):
+            return 400, {"ok": False, **perr("{v1} needs a client key — this peer has none (rotate its keys first)", v1=target["iface"]), "code": "bad_request"}
+        _add = {"targets": p["targets"] + [target]}
+        _add.update(mint_keyless_secrets([target], p))   # first wdtt/csqtt deployment on this peer → its password
+        p2 = peer_set(roster, pid, _add, now())
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Added deployment", peer_label(roster, p2),
                   f"{target['node']}/{target['iface']}")
@@ -10504,31 +10875,53 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/update-target":
-        # Change a target's assigned address — a real connectivity change (its allowed_ips moves),
-        # reconciled to the node on the next sync. Validates the IP and guards against a collision
-        # with another peer on the same interface.
+        # Change ONE deployment's assigned address and/or its client-config overrides.
+        #   `ip`        — a real connectivity change (its allowed_ips moves), reconciled on the next sync.
+        #   `overrides` — that deployment's own DNS / MTU / AllowedIPs / keepalive (see clean_target). Sent
+        #                 alone when the operator edited only the settings behind a target row's gear.
+        # Each is optional; sending neither is rejected rather than silently rewriting the peer.
         pid = body.get("peer_id") or ""
         node = body.get("node") or ""; iface = body.get("iface") or ""
+        has_ip = bool((body.get("ip") or "").strip())
+        has_ov = "overrides" in body
+        if not has_ip and not has_ov:
+            return 400, {"ok": False, "error": "nothing to change (send ip and/or overrides)", "code": "bad_request"}
         ip = (body.get("ip") or "").split("/")[0].strip()
-        if not valid_addr(ip):
+        if has_ip and not valid_addr(ip):
             return 400, {"ok": False, **perr("invalid address {v1}", v1=repr(body.get("ip"))), "code": "bad_request"}
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
-        if not any(t["node"] == node and t["iface"] == iface for t in p["targets"]):
+        cur = next((t for t in p["targets"] if t["node"] == node and t["iface"] == iface), None)
+        if cur is None:
             return 404, {"ok": False, "error": "peer has no target on that node/interface", "code": "not_found"}
-        for op in roster["peers"].values():     # uniqueness within the (node, iface) subnet
-            if op.get("id") == pid:
-                continue
-            for t in op.get("targets", []):
-                if t.get("node") == node and t.get("iface") == iface and (t.get("ip") or "").split("/")[0] == ip:
-                    return 409, {"ok": False, **perr("{v1} is already used on {v2}", v1=ip, v2=f"{node}/{iface}"), "code": "exists"}
-        targets = [dict(t, ip=ip) if (t["node"] == node and t["iface"] == iface) else t for t in p["targets"]]
+        if has_ip and is_keyless_kind(iface_kind(deps, nodes, snaps, node, iface, cur.get("type") or "")):
+            return 400, {"ok": False, **perr("{v1} assigns the client address on connect — it can't be set here", v1=iface), "code": "bad_request"}
+        if has_ip:
+            for op in roster["peers"].values():     # uniqueness within the (node, iface) subnet
+                if op.get("id") == pid:
+                    continue
+                for t in op.get("targets", []):
+                    if t.get("node") == node and t.get("iface") == iface and (t.get("ip") or "").split("/")[0] == ip:
+                        return 409, {"ok": False, **perr("{v1} is already used on {v2}", v1=ip, v2=f"{node}/{iface}"), "code": "exists"}
+        def _upd(t):
+            if t["node"] != node or t["iface"] != iface:
+                return t
+            t = dict(t)
+            if has_ip:
+                t["ip"] = ip
+            if has_ov:
+                t["overrides"] = body.get("overrides") or {}   # {} clears back to the interface defaults
+            return t
+        targets = [_upd(t) for t in p["targets"]]
         p2 = peer_set(roster, pid, {"targets": targets}, now())
         roster_save(roster_path, roster)
         # the address is rendered live from the roster; nothing to persist and no plaintext to write.
-        ev_append(roster_path, "peer", pid, "Changed address", peer_label(roster, p2), f"{node}/{iface} → {ip}")
+        if has_ip:
+            ev_append(roster_path, "peer", pid, "Changed address", peer_label(roster, p2), f"{node}/{iface} → {ip}")
+        else:
+            ev_append(roster_path, "peer", pid, "Changed deployment settings", peer_label(roster, p2), f"{node}/{iface}")
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/delete":
@@ -10580,13 +10973,18 @@ def api(method, path, qs, body, deps):
         pid = body.get("peer_id") or ""
         uid = body.get("user_id") or ""
         pubkey = (body.get("pubkey") or "").strip()
-        if not pubkey:
-            return 400, {"ok": False, "error": "pubkey is required (reassignment mints a fresh key)",
-                         "code": "bad_request"}
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        # A peer whose every deployment is keyless (WDTT / csqtt) has no keypair to reissue — its credential
+        # is the panel-owned password, rotated by its own endpoint. Demanding a pubkey there refused a
+        # legitimate reassignment; demanding none where a WireGuard deployment exists would hand the new
+        # owner the previous owner's key. So the requirement follows the target set, not the endpoint.
+        if any(not is_keyless_kind(iface_kind(deps, nodes, snaps, t.get("node"), t.get("iface"), t.get("type") or ""))
+               for t in (p.get("targets") or [])) and not pubkey:
+            return 400, {"ok": False, "error": "pubkey is required (reassignment mints a fresh key)",
+                         "code": "bad_request"}
         if uid and uid not in roster["users"]:   # empty uid is allowed — rotate keeps it unassigned
             return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
         clash = find_peer_by_pubkey(roster, pubkey)
@@ -10619,16 +11017,20 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, **perr("unknown node {v1}", v1=repr(target["node"])), "code": "bad_request"}
         if is_system_iface(deps, nodes, target["node"], target["iface"]):
             return 400, {"ok": False, **perr("{v1} is a system mesh link — not a peer interface", v1=target["iface"]), "code": "system_iface"}
-        if _WDTT_IFACE_RE.match(target["iface"] or ""):
-            return 400, {"ok": False, **perr("{v1} is a WDTT interface — add WDTT users via the WDTT flow, not a WireGuard peer", v1=target["iface"]), "code": "wdtt_iface"}
+        # Adoption pulls in a pubkey the node OBSERVED on a WireGuard interface. A self-contained instance has
+        # no such orphans (it mints its own device keys behind its own password), so this stays a rejection —
+        # but it now asks the node/instance store what the interface IS instead of pattern-matching its name,
+        # which missed every adopted instance the operator named themselves.
+        _akind = iface_kind(deps, nodes, snaps, target["node"], target["iface"], target.get("type") or "")
+        if is_keyless_kind(_akind):
+            return 400, {"ok": False, **perr("{v1} is a self-contained turn server — add its users from the peer sheet, not by adopting a WireGuard key", v1=target["iface"]), "code": "wdtt_iface"}
         if not valid_addr(target["ip"]):
             return 400, {"ok": False, **perr("invalid address {v1}", v1=repr(target["ip"])), "code": "bad_request"}
         roster = roster_load(roster_path)
         uid = body.get("user_id")
         if uid and uid not in roster["users"]:
             return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
-        if not target.get("type"):
-            target["type"] = iface_type(snaps, target["node"], target["iface"])
+        target["type"] = _akind          # already resolved above (wg | awg), by the node, not the name
         existing = find_peer_by_pubkey(roster, pubkey)
         if existing:
             pid = existing["id"]
@@ -11467,8 +11869,9 @@ def api(method, path, qs, body, deps):
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
         iface = (body.get("iface") or "").strip()
-        if not _WDTT_IFACE_RE.match(iface):
-            return 400, {"ok": False, "error": "invalid iface (wdtt0..wdtt999)", "code": "bad_request"}
+        _ne = turn_iface_name_error(deps, nodes, snaps, nid, iface, "wdtt")   # free-form name; see the helper
+        if _ne:
+            return 400, {"ok": False, "error": _ne, "code": "bad_request"}
         _existing = (nodes[nid].get("wdtt") or {}).get(iface)
         inst = dict(_existing or {}); inst["iface"] = iface
         # NOT sha256/tag: `tag` is never read by the node (version selection goes through `ver`, which the panel
@@ -11793,8 +12196,9 @@ def api(method, path, qs, body, deps):
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
         iface = (body.get("iface") or "").strip()
-        if not _CSQTT_IFACE_RE.match(iface):
-            return 400, {"ok": False, "error": "invalid iface (csqtt0..csqtt9999)", "code": "bad_request"}
+        _ne = turn_iface_name_error(deps, nodes, snaps, nid, iface, "csqtt")   # free-form name; see the helper
+        if _ne:
+            return 400, {"ok": False, "error": _ne, "code": "bad_request"}
         # Never CREATE onto a name a server we don't manage already holds. Upstream csqtt hardcodes `csqtt1`, so
         # this is not a corner case — it is the first name the panel offers on a node that already runs one by
         # hand. The node would then find its TUN taken and, before the scan was fixed, delete it out from under
@@ -12303,6 +12707,20 @@ def api(method, path, qs, body, deps):
         nid = body.get("node") or ""
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        # A node that cannot act on this staged the request, failed it, and left a red tag the operator
+        # then has to dismiss — for something they were offered. Refuse where the node ALREADY says it
+        # would, and say what an update is there instead (D14 tier 1). Explicit False only: an older
+        # daemon does not report the field, and unknown must not block.
+        _nsnap = (deps.get("node_snaps") or {}).get(nid) or {}
+        if _nsnap.get("update_auto") is False:
+            if _nsnap.get("declarative"):
+                return 200, {"ok": True, "data": {"manual": True, "node": nid, "reason":
+                             "this node is managed declaratively — an update is a rebuild of its configuration",
+                             "cmd": "sudo nixos-rebuild switch"}}
+            return 200, {"ok": True, "data": {"manual": True, "node": nid, "reason":
+                         "this node runs in Docker with no host updater wired — a container can't recreate itself",
+                         "cmd": "cd /opt/swg-panel-docker && docker compose --profile node pull "
+                                "&& docker compose --profile node up -d"}}
         # capture the node's current version — we clear the request once it reports ANYTHING different
         # (it updates to latest, which can move past a docker panel's lagging-CI image version)
         frm = ((deps.get("node_snaps") or {}).get(nid) or {}).get("noded_version")
@@ -12342,8 +12760,7 @@ def api(method, path, qs, body, deps):
         # can't (and shouldn't) run the privileged updater itself. The installer wires a root systemd
         # updater that watches a trigger file; we just touch it. If that's not present (older install
         # or Docker), hand back the exact command to run on the host instead of failing silently.
-        manual_cmd = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
-                      "bootstrap.sh | sudo bash -s update -y --no-components")
+        manual_cmd = UPDATE_CMD
         # write the trigger whenever one is configured — bare-metal (root systemd swg-update.path) OR Docker
         # (install-docker wires the SAME host-side path-unit, watching the panel's data/lib/.update-request, since a
         # container can't recreate itself). No trigger configured → hand back the manual command below.
@@ -12384,7 +12801,11 @@ def api(method, path, qs, body, deps):
                 return 200, {"ok": True, "data": {"started": True}}
             except Exception as e:
                 return 500, {"ok": False, **perr("couldn't signal the updater: {v1}", v1=e), "code": "exec_failed"}
-        reason = ("this panel runs in Docker — a container can't recreate itself" if IN_DOCKER
+        # A declaratively-managed host is not "not set up" and is not Docker's problem either: updating it
+        # means rebuilding it, and that is a real command the operator runs — so say which one rather than
+        # offering an installer that would leave an install the configuration cannot see (D14 tier 1).
+        reason = ("this host is managed declaratively — an update is a rebuild of its configuration" if PANEL_DECLARATIVE
+                  else "this panel runs in Docker — a container can't recreate itself" if IN_DOCKER
                   else "automatic host update isn't set up on this install (update once on the host to enable it)")
         return 200, {"ok": True, "data": {"manual": True, "cmd": manual_cmd, "reason": reason}}
 
@@ -12398,6 +12819,32 @@ def api(method, path, qs, body, deps):
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Rotated node token", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name"), "token": token}}
+
+    if method == "POST" and path == "/api/nodes/remesh":
+        # Rebuild THIS node's mesh links, on demand. The machinery is `mesh_reprovision_node` + the
+        # reconcile that follows it, and it already existed — but only as a SIDE EFFECT of changing the
+        # node's mesh subnet / prefix / obfuscation, gated on the value actually differing. So an operator
+        # whose links are stuck with settings that are already correct had no way to ask for the rebuild:
+        # they had to change the subnet to something else, save, and change it back — two re-provisions to
+        # get one, with the mesh down in between.
+        #
+        # What it fixes: a link whose interface name, address or port collides with something else on that
+        # box, and a half-created link whose record and device have diverged. The generation bump gives new
+        # interface NAMES, so the rebuild is a clean delete-old + create-new rather than a same-name swap.
+        # What it cannot fix, by construction: two nodes that share one network namespace. Their link is one
+        # link_id, so it is one interface name that would have to exist twice in that namespace — no
+        # re-allocation reaches that. Nothing here pretends otherwise.
+        nid = body.get("id") or ""
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if len(nodes) < 2:
+            return 400, {"ok": False, "error": "there is no mesh to re-provision — this fleet has one node",
+                         "code": "bad_request"}
+        mesh_reprovision_node(nodes, nid)
+        reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Re-provisioned mesh links", nodes[nid].get("name", nid))
+        return 200, {"ok": True, "data": {"id": nid, "links": len((nodes[nid].get("links") or {}))}}
 
     if method == "POST" and path == "/api/nodes/flag-remove":
         # Soft removal: mark the node "removing" but keep it (and its peers) working until it
@@ -13254,6 +13701,24 @@ class Handler(BaseHTTPRequestHandler):
         if snap.get("kind") and node.get("kind") != snap["kind"]:   # remember the method persistently, so a DOWN node (no live snapshot) still knows it (Recover shows the right command)
             node["kind"] = snap["kind"]
             with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # …and the same for what OWNS the installation, for the same reason: Recover is reached for
+        # precisely when the node is not reporting, and handing a `curl | sudo bash` to a host whose
+        # installation is declared elsewhere is the wrong answer whether or not it is online now.
+        # CLEARED when a report stops carrying them — the module sets both from env on every start,
+        # so their absence means this host is no longer managed that way. Gated on `kind`, which every
+        # snapshot from every version of the daemon carries: that says "this is a real snapshot", so a
+        # malformed body cannot silently drop the flags. It is not a version check — the panel never
+        # branches on node version — and it does mean a node downgraded to a daemon that predates
+        # these fields forgets them until it is upgraded again.
+        if snap.get("kind"):
+            _own = {"platform": (snap.get("platform") or None), "declarative": (True if snap.get("declarative") else None),
+                    "runtime": (snap.get("runtime") or None),
+                    "platform_info": (snap.get("platform_info") or None)}   # persisted with them so a stale node still labels
+            if any(node.get(k) != v for k, v in _own.items()):
+                for k, v in _own.items():
+                    if v is None: node.pop(k, None)
+                    else:         node[k] = v
+                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
         # A convert is DONE the moment the node reports on its TARGET method (kind), even if the script's
         # terminal POST was lost (killed / power-cut / network) — otherwise "converting…" would hang until the
         # 10-min grace flips it to "failed", while the node is already reporting green. Staging keeps reporting
@@ -14155,7 +14620,16 @@ class Handler(BaseHTTPRequestHandler):
         # markers above: the node stops that container and stands the same server up natively, then reports
         # what it found so the peers can be imported. Sent only while the request is live.
         _adc = node.get("adopt_container") if isinstance(node.get("adopt_container"), dict) else None
+        # WHICH INTERFACES THIS PANEL OWNS — as a set, separate from `desired_ifaces`, which is a SPARSE map
+        # of settings still to apply (`if d:` below) and therefore silently omits every interface whose settings
+        # are already in sync. The node's self-heal read that map as "what the panel manages" and so could never
+        # re-adopt a live interface with nothing pending — the exact case it exists for (a container recreated,
+        # a run-model switched, a conf lost while the device kept running). It stayed MISSING, and the Restore
+        # offered instead is a CREATE, which refuses a name that is already on the box. Additive: older nodes
+        # ignore it and behave as before.
+        owned_ifaces = sorted((node.get("ifaces") or {}).keys())
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
+                                "owned_ifaces": owned_ifaces,
                                 **({"adopt_container": _adc} if _adc else {}),
                                 "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
                                 "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
@@ -14832,6 +15306,72 @@ def _cert_needs_issue(cert_path, domain, mode):
     return False
 
 
+# ── a declaratively-managed panel: what it may still do to its own installation (D9) ──────────────
+# The verbs a declarative host still answers. Everything else the root helper can do is INSTALLATION
+# state — the bind, the mount base, the certificate, install.conf — and on such a host that belongs to
+# the configuration that built it, not to this panel. `restart`/`reload` are not installation state:
+# they act on units the configuration already declared, so they stay, and swg-sub keeps picking up a
+# serve.json change the way it does everywhere else.
+#
+# An ALLOW-list, deliberately. A deny-list would pass any verb added later straight through to a host
+# that cannot honour it — which is the exact failure this guard exists to prevent, and the reason the
+# refusal lives at the ONE choke point every one of the 41 call sites goes through.
+NETCTL_LIFECYCLE_VERBS = frozenset(("restart", "reload"))
+
+# What the operator edits instead. Not translated: it is code, and the panel's server messages are
+# translated by KEY on the browser side — a snippet interpolated with live values has no key.
+def _nix_access_snippet(deps):
+    """This panel's CURRENT address and TLS, written as the module options that own them on a
+    declarative host. Built from what is live, so it can be pasted as-is and rebuilt."""
+    acc = (deps.get("panel_settings") or {}).get("access") or {}
+    domain = _url_host(_CONFIRMED_URL or _compute_public_url(deps) or "") or "panel.example.org"
+    sub_url = str((acc.get("sub") or {}).get("url") or "")
+    lines = ["services.swg-panel = {",
+             '  host = "%s";' % BIND_HOST,
+             "  port = %d;" % (BIND_PORT or 8443),
+             '  domain = "%s";' % domain]
+    if PANEL_BASE:
+        lines.append('  basePath = "%s";' % PANEL_BASE)
+    # Commented where it is NOT in use (an offer), live where it is — the block says it carries what this
+    # panel is running, and a panel that is plainly serving its own HTTPS should not show the option that
+    # does it as a suggestion. TLS_CERT is the evidence: the module sets it only from useACMEHost.
+    if TLS_CERT:
+        lines.append("  # this panel terminates TLS itself, with a certificate security.acme manages")
+        lines.append('  useACMEHost = "%s";' % domain)
+    else:
+        lines.append("  # terminate TLS here instead of in front of it:")
+        lines.append('  # useACMEHost = "%s";' % domain)
+    # ⚠️ Only what the panel knows FIRST-HAND. Its own host/port/base are its environment; the sub's
+    # public url is its own setting. Its BIND used to be neither — that is swg-sub's environment, which
+    # this process never sees — so `access.sub.port` was an unseeded 8444 that could contradict the
+    # module the operator is reading. The module now writes the address the sub is actually REACHED on
+    # (the published one on the container arm), so the port is first-hand too; print it only when it is
+    # not the module's own default, which is the case where an operator needs to see it.
+    _sp = int((acc.get("sub") or {}).get("port") or 0)
+    if _sp and _sp != 8444:
+        lines.append("  sub.port = %d;" % _sp)
+    _sd = _url_host(sub_url)
+    if _sd and _sd != domain:
+        lines.append('  sub.domain = "%s";' % _sd)
+    _sb = _sub_url_base(sub_url)
+    if _sb:
+        lines.append('  sub.basePath = "%s";' % _sb)
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _declarative_access_refusal(deps):
+    # The sentence is the translation KEY (srvText → T(r.error) in js/i18n.js), so it must match
+    # js/lang/ru.js character for character — and it is written inline, in exactly two adjacent
+    # literals, because that is the shape `.campaign/i18n-extract.mjs` can read. Bound to a constant
+    # and referenced here, it reads as an orphaned catalogue entry and someone eventually deletes a
+    # working translation.
+    return 409, {"ok": False, "code": "declarative",
+                 "error": "This panel is managed declaratively, so its address and certificate belong to the configuration "
+                          "that built it, not to this screen. Edit them there and rebuild — nothing here was changed.",
+                 "nix": _nix_access_snippet(deps)}
+
+
 def _netctl_wait(deps, rid, timeout=180):
     """Poll swg-netctl's status dir for the result of request `rid`. Returns (ok, message)."""
     if not rid:
@@ -14854,6 +15394,14 @@ def _netctl_wait(deps, rid, timeout=180):
 def _netctl_enqueue(deps, verb, args):
     """Drop a validated request for the root helper (swg-netctl) into its queue. Best-effort: no queue dir
     (dev rig / not installed) → no-op, and the live in-process change still holds until the next restart."""
+    # The declarative guard, at the one place every call site passes through. The API refuses an Access
+    # change up front (that is where the operator gets told why); this is what makes it structural — an
+    # internal caller, a boot reconcile, or a path added later cannot enqueue installation state onto a
+    # host that will never honour it and would report success for it.
+    if PANEL_DECLARATIVE and verb not in NETCTL_LIFECYCLE_VERBS:
+        print("access: refused '%s' — this panel is managed declaratively; its address, mount base and "
+              "certificate come from its configuration" % verb, flush=True)
+        return None
     qdir = os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "netctl", "queue")
     if not os.path.isdir(qdir):
         return None
@@ -15530,25 +16078,19 @@ def main():
     _turn_sums_load()
     _turn_holds_migrate()   # legacy per-service rollback holds → per (node, fork) (shared-binary fix)
     _lp = os.path.join(_statedir, ".panel.lock")
-    def _other_panel_pid():
-        # Any OTHER live swg-panel-server on this box? Scans /proc, matching PRECISELY (arg0 is the script, or python
-        # runs it) — so `grep swg-panel-server` / `systemctl restart swg-panel-server` / a py_compile don't count as a
-        # live holder and block the stale-lock self-heal.
-        _me = os.getpid()
-        for _d in os.listdir("/proc"):
-            if not _d.isdigit() or int(_d) == _me:
-                continue
-            with contextlib.suppress(Exception):
-                _args = [a for a in open("/proc/%s/cmdline" % _d, "rb").read().split(b"\0") if a]
-                if not _args:
-                    continue
-                _a0 = os.path.basename(_args[0])
-                if _a0 == b"swg-panel-server" or (_a0.startswith(b"python") and len(_args) > 1
-                                                  and os.path.basename(_args[1]) == b"swg-panel-server"):
-                    return int(_d)
-        return None
     def _grab_lock():
-        _fd = os.open(_lp, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            _fd = os.open(_lp, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        except OSError as _e:
+            # NOT contention — we could not even open the lock file, so every branch below (unlink it,
+            # look for a live holder, retry) is answering a question that was never asked. EACCES here is
+            # the signature of state carried from another machine: the files still hold the OLD machine's
+            # owner, and this host allocated its own uid for the panel's account. Diagnosing that as a
+            # stale lock sends the operator hunting a process that does not exist, which is what it did.
+            raise SystemExit(f"refusing to start: can't open {_lp} ({_e.strerror}) — the state dir {_statedir} "
+                             f"is not writable by this process (uid {os.getuid()}, gid {os.getgid()}). If you moved "
+                             f"this panel's state onto this machine, its files still carry the old machine's owner: "
+                             f"chown -R <panel user>:swg {_statedir}")
         try:
             fcntl.flock(_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -15557,22 +16099,45 @@ def main():
     try:
         _lockfd = _grab_lock()
     except OSError:
-        # flock is held. A REAL second panel must be refused; but a crashed/killed start on a slow box can leave the
-        # lock stuck (e.g. its Restart loop overlapping itself) with NO live holder — self-heal from that rather than
-        # crash-loop forever needing a manual `rm .panel.lock`. Only break it when no other swg-panel-server is alive.
-        _pid = _other_panel_pid()
-        if _pid is not None:
-            raise SystemExit(f"refusing to start: another swg-panel-server (pid {_pid}) already holds {_lp} (state dir "
-                             f"{_statedir}). Two panels on one state dir clobber nodes.json (desyncs node tokens → sync "
-                             f"401). Stop the other instance first, or point this one at a separate state dir.")
-        with contextlib.suppress(Exception):
-            os.unlink(_lp)
-        try:
-            _lockfd = _grab_lock()
-        except OSError:
-            raise SystemExit(f"refusing to start: couldn't acquire {_lp} (state dir {_statedir}) — a lock is held but no "
-                             f"swg-panel-server is running. Check for a stray process, or remove the file by hand.")
-        print("access: cleared a stale state-dir lock (no live swg-panel-server held it)", flush=True)
+        # We are here because flock() was refused (a failure to OPEN the file exits inside _grab_lock
+        # with its own message). So something holds it — ask the kernel WHICH process, rather than
+        # scanning /proc for anything named swg-panel-server. That scan was wrong twice over: it
+        # named a panel running on a DIFFERENT state dir (measured — it reported an unrelated local
+        # test panel as the holder of a lock another process held), and, finding none, it deleted the
+        # lock file and grabbed a fresh inode — leaving the real holder's lock intact on the old one
+        # and both panels running. That is precisely the clobber this lock exists to prevent.
+        _pid, _state = _flock_holder(_lp)
+        if _state == "free":
+            # The holder released between our attempt and the look — the crashed/restart-overlap case
+            # the old self-heal was written for. Retry, which is all that case ever needed: if nothing
+            # holds the file, the file was never the problem and deleting it achieves nothing.
+            try:
+                _lockfd = _grab_lock()
+            except OSError:
+                raise SystemExit(f"refusing to start: {_lp} (state dir {_statedir}) cannot be locked, yet the kernel "
+                                 f"reports no holder. Retry; if it persists, something is taking the lock repeatedly.")
+            print("access: the state-dir lock was released while starting — took it on the retry", flush=True)
+        elif _state == "unknown":
+            raise SystemExit(f"refusing to start: {_lp} (state dir {_statedir}) is locked and /proc/locks could not be "
+                             f"read, so the holder cannot be identified. Refusing rather than taking it: two panels on "
+                             f"one state dir clobber nodes.json (desyncs node tokens → sync 401). Check for another "
+                             f"swg-panel-server on this state dir; remove the lock file only if you are sure none runs.")
+        else:
+            _argv = _proc_cmdline(_pid) if _pid else []
+            _base = os.path.basename(_argv[0]) if _argv else ""
+            if _base.startswith("python") and len(_argv) > 1:
+                _base = os.path.basename(_argv[1])
+            if _base == "swg-panel-server":
+                _who = f"another swg-panel-server (pid {_pid})"
+            elif _argv:
+                _who = f"pid {_pid} (`{' '.join(_argv)[:80]}`)"
+            elif _pid:
+                _who = f"pid {_pid} (gone from /proc — another namespace, or it just exited)"
+            else:
+                _who = "another process the kernel does not name (an OFD lock)"
+            raise SystemExit(f"refusing to start: {_who} already holds {_lp} (state dir {_statedir}). Two panels on one "
+                             f"state dir clobber nodes.json (desyncs node tokens → sync 401). Stop that process first, "
+                             f"or point this one at a separate state dir.")
     os.ftruncate(_lockfd, 0); os.write(_lockfd, (str(os.getpid()) + "\n").encode())
     globals()["_STATE_LOCK_FD"] = _lockfd     # keep the fd open for the process lifetime → lock held until exit
     # After the state-dir lock (so two panels can't repair concurrently) and before serving: one-shot rebuild of

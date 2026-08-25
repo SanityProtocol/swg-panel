@@ -31,9 +31,9 @@ import {
   goSettings, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
 } from "./ui.js";
 import {
-  SUB_LANG_LIST, VaultPromptSheet, downloadConf, ivkSetEscrow, nginxServerBlock, normPublicUrl, qrDataURL,
-  runConfigMigration, subBaseUrl, subForget, subKeyB64, subRewrap, subSKCached, subUnlock, subVaultCreate,
-  urlPortOf, withUrlPort,
+  SUB_LANG_LIST, VaultPromptSheet, downloadConf, ivkSetEscrow, nginxServerBlock, nixDirectTlsBlock, nixProxyBlock,
+  nixUpstream, normPublicUrl, qrDataURL, runConfigMigration, subBaseUrl, subForget, subKeyB64, subRewrap, subSKCached, subUnlock,
+  subVaultCreate, urlPortOf, withUrlPort,
 } from "./crypto.js";
 import {
   AsnHint, BlockListPicker, CAT_PROVIDER_DEFAULTS, CatPicker, DescInfo, FleetAssign, HostHealth, ListInfo,
@@ -270,12 +270,25 @@ export const TLS_MODE_OPTS = () => (_tls_mode_opts || (_tls_mode_opts = [
   { value: "cf15", label: T("Cloudflare Origin certificate (15y — only valid behind Cloudflare)") },
   { value: "selfsigned", label: T("Self-signed") }]));
 
+// `skip` is a real mode but never an offered CHOICE — it means TLS is terminated by this panel with a
+// certificate somebody else issues and renews (an operator-supplied one; `security.acme` on a declarative
+// host). Reading it out of TLS_MODE_OPTS gave a bare "—" for a panel that is plainly serving HTTPS.
+export const tlsModeLabel = (mode) => (mode === "skip"
+  ? T("Managed outside the panel (it is served here, not issued here)")
+  : ((TLS_MODE_OPTS().find(o => o.value === (mode || "")) || {}).label || "—"));
+
 // The panel + swg-sub network address (bindable IP + port) and the ONE certificate config both derive from.
 // A change is applied LIVE: the panel dual-listens on the new address and only drops the old once the browser
 // confirms the new one works, so a bad value never locks the operator out. swg-sub just restarts.
 export function AccessTLSCard({ onChange }) {
   const acc = (Store.panelSettings || {}).access || {};
   const p0 = acc.panel || {}, s0 = acc.sub || {}, t0 = acc.tls || {};
+  // This host's installation is owned elsewhere (a NixOS module, a config-management run): the address,
+  // the mount path and the certificate are that configuration's, so this screen renders as a read-only
+  // view of what it decided. The server refuses the save AND the apply — this is the honest surface,
+  // never the enforcement.
+  const declarative = !!((Store.env || {}).declarative);
+  const nixAccess = String((Store.env || {}).nix_access || "");
   const subsOn = !!((Store.panelSettings || {}).subscriptions || {}).enabled;
   const localPort = Number(p0.local_port || 0);   // co-located node's loopback port (live, read-only) — 0/absent ⇒ no local node ⇒ hide the field
   const [pUrl, setPUrl] = useState(normPublicUrl(p0.url || "")); const [pHost, setPHost] = useState(p0.host || "0.0.0.0"); const [pPort, setPPort] = useState(String(p0.port || 443));
@@ -291,6 +304,8 @@ export function AccessTLSCard({ onChange }) {
   const [dockerRestart, setDockerRestart] = useState(null);   // Docker restart-safe change, step 1 (Save done): {nonce,url_changed,old_url,new_url,port,port_move,armUntil,error} — nodes now dual-connect to new_url; the operator reviews, then Confirm & restart (dry-run + recreate) or Revert (no-op). Nothing has recreated yet.
   const [drArmIn, setDrArmIn] = useState(0);          // seconds until the "Confirm & restart" button arms — a hold covering one node-sync so nodes LEARN the new address before the recreate (so it can't strand them)
   const [dockerFlipPort, setDockerFlipPort] = useState(0);   // >0 = the step-3 reconnect card is for a reverse-proxy INTERNAL-port move: show the new port to re-point the proxy at (the public url is unchanged), not a "reconnect at new address" link
+  const [nixRecipe, setNixRecipe] = useState("");    // declarative host: which worked example is open ("proxy" | "direct")
+  const [nixWeb, setNixWeb] = useState("nginx");    // …and which web server that example is written for
   const [confirmVerified, setConfirmVerified] = useState(true);   // false = the reachability gate FAILED-OPEN (revealed Confirm without proving the new address answers) → surface that so Confirm-appearing isn't mistaken for "reachable"
   const [rpSwap, setRpSwap] = useState(null);         // unified reverse-proxy swap in progress: {port_changed,url_changed,path_changed,old_url,new_url,old_host,old_port,new_host,new_port,nonce} — panel serves old+new ports/paths and advertises the new url as a node candidate until the operator re-points the proxy and confirms (no timeout). Any combination of port/url/path.
   const [rpArmIn, setRpArmIn] = useState(0);          // seconds until the rp-swap Confirm button ARMS — a deliberate 60s hold (with a confirm modal) so the operator can't reflexively drop the old address before verifying the proxy actually serves the new one
@@ -661,7 +676,7 @@ export function AccessTLSCard({ onChange }) {
 
   // Report state up to the settings footer (which owns the Save button + status line, like every other section).
   // Runs after each render; the parent only re-renders when a DISPLAYED bit actually changes (see onAccess).
-  useEffect(() => { if (onChange) onChange({ dirty: dirty() && !blocked && !cooldownActive, busy: busy || polling, msg, run: saveAndApply }); });
+  useEffect(() => { if (onChange) onChange({ dirty: dirty() && !blocked && !cooldownActive && !declarative, busy: busy || polling, msg, run: saveAndApply }); });
 
   // Abort a change that's still VERIFYING (not yet confirmed) — the server drops the un-confirmed listener /
   // restores the cert and rolls the saved url back. The only other option during verifying is to confirm it.
@@ -765,6 +780,77 @@ export function AccessTLSCard({ onChange }) {
       toast(T("Reverted — kept the current address."), "ok");
     } catch (_) { toast(T("Couldn't revert."), "err"); setBusy(false); }
   };
+  // ── declaratively managed → a READ-ONLY view, not a form with fifteen disabled inputs ─────────────
+  // The values the worked examples below are built from — this panel's own, so they can be pasted rather
+  // than adapted. A host of 0.0.0.0 is dialled on loopback (nixUpstream), and the subscription page only
+  // gets a virtual host once it HAS an address: with no sub.domain / sub.publicUrl the module writes no
+  // subscription base at all, and inventing the panel's own domain for it would be worse than an absence.
+  const _nixDom = (u => { try { return new URL(/^https?:\/\//i.test(u) ? u : "https://" + u).hostname; } catch (_) { return ""; } })(p0.url || "");
+  const _nixSubUrl = subBaseUrl();
+  const _nixSubHost = (u => { try { return new URL(/^https?:\/\//i.test(u) ? u : "https://" + u).hostname; } catch (_) { return ""; } })(_nixSubUrl);
+  const _nixSubBase = (u => { try { return new URL(/^https?:\/\//i.test(u) ? u : "https://" + u).pathname; } catch (_) { return ""; } })(_nixSubUrl);
+  // Subscriptions ON with no address yet is the common half-configured state, and "it has no address"
+  // is a diagnosis, not an answer: the page is being served on 8444 right now and the operator still
+  // has to invent a hostname, a vhost and the module option that ties them together. Suggest one —
+  // `sub.<panel domain>` — and mark it as a suggestion to replace rather than a value read from here.
+  const subSuggested = !_nixSubHost && subsOn && !!_nixDom;
+  const subVhostDom = _nixSubHost || (subSuggested ? "sub." + _nixDom : "");
+  const nixProxy = () => nixProxyBlock(nixWeb, [
+    { domain: _nixDom, base: p0.base, host: p0.host, port: p0.port || 8443 },
+    ...(subVhostDom ? [{ domain: subVhostDom, base: _nixSubBase, host: s0.host, port: s0.port || 8444,
+                         suggest: subSuggested }] : [])]);
+  const nixDirect = () => nixDirectTlsBlock(_nixDom, p0.port || 8443, p0.base);
+
+  // Disabling the fields would say "you may not touch this". The truth is different: the operator's next
+  // action is real, it is just in another file. So show the options that hold this panel's LIVE address
+  // and get out of the way — the server builds that snippet from the running process's own environment,
+  // which is why it is shown INSTEAD of the saved access settings rather than beside them: on a
+  // declarative host those settings were never seeded and would read 0.0.0.0:443 next to a panel that is
+  // actually on 127.0.0.1:8443. Safe as an early return because every hook in this component is above it.
+  if (declarative) return html`<div class="card acctls">
+    <div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
+      ${Trich("*This panel's address is managed declaratively.* Its URL, listen address, mount path and certificate come from the configuration that built this machine, so they are shown here rather than edited here — change them there and rebuild. Everything the panel is *for* is unaffected: peers, interfaces, routing and subscriptions all work exactly as they do anywhere else.")}
+    </div></div>
+    ${nixAccess ? html`<div class="seclabel" style="margin-top:0">${T("Where this panel's address is set")}</div>
+    <p class="hint" style="margin:0 0 12px">${T("These options carry what this panel is running right now — where it listens, the hostname it advertises, the path it is mounted at. Edit them in your configuration, rebuild, and this screen follows.")}</p>
+    <pre class="mono nixblock">${nixAccess}</pre>
+    <button class="btn btn-mini" onClick=${() => copy(nixAccess, T("the panel's address options"))}><${Ic} i="copy"/>${T("Copy")}</button>
+
+    ${/* The number an operator writing a vhost actually needs, and the one thing this screen used to make
+          them derive. Kept as plain rows rather than folded into the examples below: it is true whichever
+          web server they run, and it stays true when they run none. */""}
+    <div class="seclabel">${T("Where a TLS terminator sends traffic")}</div>
+    <div class="subaddr wide">
+      <div class="subaddr-row"><span class="subaddr-k">${T("Panel")}</span><span class="subaddr-v mono">${nixUpstream(p0.host)}:${p0.port || 8443}${(p0.base && p0.base !== "/") ? p0.base : ""}</span></div>
+      <div class="subaddr-row"><span class="subaddr-k">${T("Subscription page")}</span><span class="subaddr-v mono">${nixUpstream(s0.host)}:${s0.port || 8444}${(s0.base && s0.base !== "/") ? s0.base : ""}${subsOn ? "" : html` <span class="faint">${T("(inert until subscriptions are on)")}</span>`}</span></div>
+      ${localPort > 0 ? html`<div class="subaddr-row"><span class="subaddr-k">${T("This box's own node")}</span><span class="subaddr-v mono">127.0.0.1:${localPort} <span class="faint">${T("(plain HTTP, never proxied)")}</span></span></div>` : null}
+    </div>
+    <p class="hint" style="margin:6px 0 0">${T("Internal addresses on this host. Changing the public URL, the path or the certificate never moves them, so a proxy pointed here keeps working.")}</p>
+
+    <div class="seclabel">${T("A sample configuration")}</div>
+    <p class="hint" style="margin:0 0 12px">${T("Two arrangements, both with this panel's own domain, path and port already filled in. Pick one, paste it beside the options above, and rebuild.")}</p>
+    <${Disclosure} title=${T("Terminate TLS in front of the panel")} summary=${T("recommended")} sumCls="on"
+      open=${nixRecipe === "proxy"} onToggle=${() => setNixRecipe(r => r === "proxy" ? "" : "proxy")}>
+      <div class="segrow" role="radiogroup">
+        <button type="button" role="radio" aria-checked=${nixWeb === "nginx"} class=${"seg" + (nixWeb === "nginx" ? " on" : "")} onClick=${() => setNixWeb("nginx")}>nginx</button>
+        <button type="button" role="radio" aria-checked=${nixWeb === "caddy"} class=${"seg" + (nixWeb === "caddy" ? " on" : "")} onClick=${() => setNixWeb("caddy")}>Caddy</button>
+      </div>
+      ${subVhostDom ? html`<p class="hint" style="margin:0 0 8px">${subSuggested
+        ? Trich("Two virtual hosts: the panel, and the subscription page — a *separate service* on its own port. Subscriptions are on but the page has no address yet, so this gives it `{v1}`; change that to whatever you want to publish it as.", { v1: subVhostDom })
+        : Trich("Two virtual hosts: the panel, and the subscription page — a *separate service* on its own port.")}</p>` : null}
+      <pre class="mono nixblock">${nixProxy()}</pre>
+      <button class="btn btn-mini" onClick=${() => copy(nixProxy(), T("the reverse-proxy configuration"))}><${Ic} i="copy"/>${T("Copy")}</button>
+      ${subVhostDom ? null : html`<p class="hint" style="margin:12px 0 0">${Trich("The subscription page is off. Turn it on in Subscriptions and give it `sub.domain`, and a virtual host for it appears here.")}</p>`}
+      <div class="hint" style="margin-top:10px">${Trich("Leave the panel on its loopback address in this arrangement — the proxy is the only thing that should be reachable from outside.")}</div>
+    <//>
+    <${Disclosure} title=${T("Terminate TLS in the panel itself")} summary=${T("no proxy")}
+      open=${nixRecipe === "direct"} onToggle=${() => setNixRecipe(r => r === "direct" ? "" : "direct")}>
+      <pre class="mono nixblock">${nixDirect()}</pre>
+      <button class="btn btn-mini" onClick=${() => copy(nixDirect(), T("the direct-TLS configuration"))}><${Ic} i="copy"/>${T("Copy")}</button>
+      <div class="hint" style="margin-top:10px">${Trich("The panel reads a certificate `security.acme` already manages and is reloaded when it renews. Declare the certificate itself however you validate it (HTTP-01, DNS-01) — but *don't set its `group`*: this module puts it in `swg` so the panel can read the key, and a second `group` fights it.")}</div>
+      ${subVhostDom ? html`<div class="hint" style="margin-top:8px">${Trich("The subscription page still needs its own terminator — it is a separate service on `{v1}`, and this option covers the panel only.", { v1: nixUpstream(s0.host) + ":" + (s0.port || 8444) })}</div>` : null}
+    <//>` : null}
+  </div>`;
   let _confHost = confirmUrl; try { _confHost = new URL(confirmUrl).host; } catch (_) {}
   return html`<div class="card acctls">
     ${(busy || msg) ? html`<div class=${"notice acc-status" + (busy || (msg && msg.ok) ? "" : " warn")} style=${"margin:0 0 14px" + (busy || (msg && msg.ok) ? ";border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))" : "")}><${Ic} i=${busy ? "clock" : (msg && msg.ok ? "info" : "warn")}/><div style="min-width:0">
@@ -1020,6 +1106,7 @@ export function PanelSettingsScreen() {
   // and save() re-polls + reseeds. A node added/renamed mid-edit just won't reflect until you re-enter.
   const ps = Store.panelSettings || {};
   const idf = ps.interface_defaults || {}; const mir = ps.mirrors || {}; const adv = ps.advanced || {};
+  const declarative = !!((Store.env || {}).declarative);   // → the subscription address is a module option, not a field here
   const [dns, setDns] = useState((idf.dns || []).join(", "));
   const [mtu, setMtu] = useState(String(idf.mtu || 1280));
   const [ka, setKa] = useState(String(idf.keepalive || 25));
@@ -1192,29 +1279,42 @@ export function PanelSettingsScreen() {
     setTimeout(() => setTurnCheck(c => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v.status === "update" ? v : {}]))), 5000);   // T("up to date") clears after 5s; "update" persists
   };
   // update every deployed instance of a fork to `latest` — reinstall (re-download binary) on each (node,service)
+  // A node whose turn management is off does not IGNORE a request the panel stages — it fails it, and
+  // that lands as a red error tag on a node whose operator asked for nothing, with a pending that never
+  // clears (the node never reports a new version). Same for an architecture with no published build.
+  // Every control that offers this by hand is already gated on these two flags (js/turn.js, js/iface.js);
+  // this loop walks the SNAPSHOTS, which know nothing about either, so it has to ask.
+  const canTurnAct = nid => { const n = (Store.nodes || []).find(x => x.id === nid); return !!(n && n.turn_manage && n.turn_arch_ok !== false); };
+  const skipNote = skipped => { if (skipped) toast(T("{v1} skipped — turn-proxy management is off there, or their architecture has no published build.", { v1: plural(skipped, "node") }), "err"); };
   const updateFork = async (fid, latest) => {
     const fork = turnForkList().find(x => x.id === fid) || {};
     if (fork.kind === "wdtt") {   // WDTT: release each instance's hold → the node swaps its shared binary to the current published build
-      const wt = [];
-      for (const [nid, snap] of Object.entries(Store.stats || {})) for (const w of (snap.wdtt || [])) if (w && w.fork === fid && w.iface) wt.push({ node: nid, iface: w.iface });
-      if (!wt.length) return;
+      const all = [];
+      for (const [nid, snap] of Object.entries(Store.stats || {})) for (const w of (snap.wdtt || [])) if (w && w.fork === fid && w.iface) all.push({ node: nid, iface: w.iface });
+      const wt = all.filter(t => canTurnAct(t.node));
+      const wskip = new Set(all.filter(t => !canTurnAct(t.node)).map(t => t.node)).size;
+      if (!wt.length) { skipNote(wskip); return; }
       setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest } }));   // i18n-keys
       for (const t of wt) await api.wdttVersion({ node: t.node, iface: t.iface, ver: "" });
       await Store.poll();
       setTurnCheck(c => ({ ...c, [fid]: {} }));
       toast(T("Update requested on {v1} — each node applies it on its next sync.", { v1: plural(wt.length, "WDTT server") }), "ok");
+      skipNote(wskip);
       return;
     }
     const owner = fork.owner || "";
-    const targets = [];
-    for (const [nid, snap] of Object.entries(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid) targets.push({ node: nid, service: tp.service });
-    if (!targets.length) return;
+    const all = [];
+    for (const [nid, snap] of Object.entries(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid) all.push({ node: nid, service: tp.service });
+    const targets = all.filter(t => canTurnAct(t.node));
+    const skipped = new Set(all.filter(t => !canTurnAct(t.node)).map(t => t.node)).size;
+    if (!targets.length) { skipNote(skipped); return; }
     setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest } }));   // i18n-keys
     turnUpdateTarget[fid] = { ver: latest, until: Date.now() + 120000 };   // persists past the turnCheck reset so the bubble can show per-node updating→updated
     for (const t of targets) { turnUpdating[t.node + "|" + t.service] = Date.now() + 120000; await api.turnReinstall({ node: t.node, service: t.service, owner }); }
     await Store.poll();
     setTurnCheck(c => ({ ...c, [fid]: {} }));
     toast(T("Update requested on {v1} — each node applies it on its next sync.", { v1: plural(targets.length, "proxy") }), "ok");
+    skipNote(skipped);
   };
   // Security (panel login) — folded into the unified Save: credentials update on Save (if changed), and a
   // validation error blocks Save. Username is loaded from the server once on mount.
@@ -1791,7 +1891,7 @@ const sectionLabel = k => ({
               if (cs.status === "updating") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;   // i18n-keys
               if (cs.status === "update") return html`<button class="tf-chk upd tf-updbtn" title=${T("Update every deployed {v1} proxy to {v2}", { v1: f.label, v2: cs.latest })} onClick=${() => updateFork(f.id, cs.latest)}><${Ic} i="download"/> update to ${cs.latest}</button>`;
               return html`<span class="tf-chk ok"><${Ic} i="check"/> ${T("up to date")}</span>`; })()}
-            <span class="tf-plats">${turnForkPlatforms(f).map(p => html`<span key=${p.os} class="tf-platwrap turnwrap">
+            <span class="tf-plats">${turnForkPlatforms(f).map(p => html`<span key=${p.os} class="tf-platwrap turnwrap" title="">
               <button type="button" aria-disabled=${p.disabled ? "true" : null}
                 class=${"tf-plat" + (p.disabled || p.notOffered ? " off" : ((p.native ? " nat" : " cross") + (p.obf ? "" : " plain") + (p.isCli ? " cli" : "")))}
                 onClick=${() => { if (!p.disabled) openServerClients(f.id, p.os); }}><${Ic} i=${"os_" + p.os}/></button>
@@ -1987,12 +2087,18 @@ const sectionLabel = k => ({
           <p class="hint" style="margin:0 0 12px">${Trich("A subscription or peer with an expiry date shows an orange *about to expire* warning this many days ahead.")}</p>
           <div class="field" style="max-width:340px"><label>${T("Warn before expiry (days)")}</label><input type="text" inputmode="numeric" value=${warnDays} onDblClick=${e => e.target.select()} onInput=${e => { let v = e.target.value.replace(/[^0-9]/g, ""); if (+v > 365) v = "365"; setWarnDays(v); }} placeholder=${T("Default: 3 (0 = warn only once expired)")}/></div>
           <div class="seclabel">${T("Address & certificate")}</div>
-          <div class="subaddr">
-            <div class="subaddr-row"><span class="subaddr-k">${T("Public URL")}</span><span class="subaddr-v mono">${subBaseUrl() || html`<span class="faint">${T("Not set")}</span>`}</span></div>
-            <div class="subaddr-row"><span class="subaddr-k">${T("Listen")}</span><span class="subaddr-v mono">${(((ps.access || {}).sub || {}).host || "0.0.0.0")}:${(((ps.access || {}).sub || {}).port || 8444)}</span></div>
-            <div class="subaddr-row"><span class="subaddr-k">${T("Certificate")}</span><span class="subaddr-v mono">${(TLS_MODE_OPTS().find(o => o.value === (((ps.access || {}).tls || {}).mode || "")) || {}).label || "—"}</span></div>
+          <div class=${"subaddr" + (declarative ? " wide" : "")}>
+            <div class="subaddr-row"><span class="subaddr-k">${T("Public URL")}</span><span class="subaddr-v mono">${subBaseUrl() || html`<span class="faint">${declarative ? T("Not set — give it sub.domain or sub.publicUrl") : T("Not set")}</span>`}</span></div>
+            ${/* On a declarative host this row used to read 0.0.0.0:8444 — an unseeded default beside a
+                  surface that is actually on loopback, and the one number a hand-written vhost needs. The
+                  module now writes what it is really reached on, so name the row for what it is FOR. */""}
+            <div class="subaddr-row"><span class="subaddr-k">${declarative ? T("Proxy to") : T("Listen")}</span><span class="subaddr-v mono">${(((ps.access || {}).sub || {}).host || "0.0.0.0")}:${(((ps.access || {}).sub || {}).port || 8444)}</span></div>
+            <div class="subaddr-row"><span class="subaddr-k">${T("Certificate")}</span><span class="subaddr-v mono">${tlsModeLabel(((ps.access || {}).tls || {}).mode || "")}</span></div>
           </div>
-          <div class="hint" style="margin:6px 0 0">${Trich("The subscription page's URL, listen address and certificate are configured in {v1}.", { v1: html`<button class="linkbtn" onClick=${() => setSection("access")}>${T("Panel URL")}</button>` })}</div>
+          <div class="hint" style="margin:6px 0 0">${declarative
+            ? html`${Trich("This page's address comes from the configuration that built this machine — `services.swg-panel.sub.domain`, `sub.basePath`, `sub.publicUrl` and `sub.port`.")}
+                <div style="margin-top:5px">${Trich("{v1} shows them beside a virtual host you can paste.", { v1: html`<button class="linkbtn" onClick=${() => setSection("access")}>${T("Panel URL")}</button>` })}</div>`
+            : Trich("The subscription page's URL, listen address and certificate are configured in {v1}.", { v1: html`<button class="linkbtn" onClick=${() => setSection("access")}>${T("Panel URL")}</button>` })}</div>
           <div class="seclabel">${T("Languages")}</div>
           <div class="field"><label>${T("Offered on the subscription page")}</label>
             <div class="sublangs">${SUB_LANG_LIST.map(([id, name]) => html`<div class=${"sublang" + (subLangs.includes(id) ? " on" : "")} key=${id}>
@@ -2094,6 +2200,23 @@ export function NodeMeshForm({ node, vals, set }) {
           <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: genAwg() })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: {} })}>${T("Clear (auto)")}</button>` : null}</div>
         </div></div>`;
     })()}
+    ${/* The rebuild these settings trigger, available on its own. Until now it fired only as a SIDE EFFECT of
+          changing the subnet / prefix / AWG, gated on the value differing — so a node whose links are stuck
+          with settings that are already right had no way to ask for it, short of changing the subnet and
+          changing it back. Acts immediately (it is not part of the form's Save), so it confirms first, with
+          the same warning the change-driven path already shows. */ ""}
+    ${(Store.nodes || []).length > 1 ? html`<div class="field" style="margin-top:18px">
+      <label>${T("Rebuild links")}</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button type="button" class="btn btn-ghost" onClick=${() => openConfirm({
+            title: T("Re-provision this node's mesh links?"), confirmLabel: T("Re-provision"), warn: true,
+            body: T("{v1} will briefly drop off the mesh (and any cascade/smart traffic routed through it pauses) until every peer pulls the new config and reconnects — usually a few seconds. Other nodes' links to each other are unaffected.", { v1: node.name }),
+            onConfirm: async () => { const r = await api.nodeRemesh({ id: node.id });
+              toast(r && r.ok ? T("Rebuilding this node's mesh links…") : (srvText(r) || T("Couldn't re-provision the mesh links.")), r && r.ok ? "ok" : "err");
+              if (r && r.ok) await Store.poll(); } })}><${Ic} i="refresh"/> ${T("Re-provision now")}</button>
+      </div>
+      <div class="hint">${T("Rebuilds this node's links under new interface names, with the settings above. Use it when a link won't come up — a name, address or port clashing with something else on that server. It cannot help two nodes that share one machine: their link is a single interface name that would have to exist twice there.")}</div>
+    </div>` : null}
   </div>`;
 }
 

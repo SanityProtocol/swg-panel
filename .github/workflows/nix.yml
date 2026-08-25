@@ -1,0 +1,344 @@
+name: nix
+
+# Build every `checks.x86_64-linux.*` the flake declares, and prove that each VM scenario inside
+# them actually REPORTED — twice, against two different nixpkgs.
+#
+# WHY IT IS NOT ON `push`.
+#   Our own drift is caught before a commit by local gates (`shipped-assets-audit.mjs` walks the
+#   `.nix` import graph, `compose-nix-contract.mjs` holds the container contract in step with
+#   `docker-compose.yml`, `nix-path-audit.mjs` the paths). What nothing local can catch is *nixpkgs
+#   moving underneath us* — a kernel `linuxPackages.amneziawg` no longer builds against, a module
+#   option that changed shape. That only shows up on a day our tree did NOT change, so a cron is
+#   the only trigger that can see it at all.
+#   D17: Nix stays off the main CI path. This workflow never gates `docker.yml`, which is the
+#   release path, and nothing here blocks a release.
+#
+# THE TWO JOBS ARE NOT THE SAME BUILD, and that is the whole design:
+#   locked   the committed `flake.lock`. Deterministic, so it is the GATE on our own code. It is
+#            also, on its own, a green light that CANNOT fail: byte-identical inputs build
+#            byte-identically for ever. Correct for a gate, worthless as an early warning.
+#   channel  the same builds with the nixpkgs input FLOATED to the ref `flake.lock` records as its
+#            `original` (today `nixos-26.05`). This is the job that can go red on somebody else's
+#            commit — which is exactly why it is `continue-on-error`: a nixpkgs breakage is NEWS,
+#            not our regression. It is the early warning for G2 (nixpkgs owns the native datapath;
+#            the documented recovery is `services.swg-node.kernelModule = false`, after which
+#            `awg-quick` falls back to `amneziawg-go` on its own).
+#
+# `schedule` and `workflow_dispatch` only ever fire from the DEFAULT branch — `push` is the only
+# trigger that runs the version on the pushed branch. So this file does nothing at all until it
+# lands on `main`, which is expected: it lands with the Nix merge. Do not spend a run trying to
+# dispatch it from a topic branch.
+
+on:
+  schedule:
+    - cron: '23 5 * * 1'      # Mondays 05:23 UTC. Weekly: nixpkgs breakage is not a live incident,
+                              # and a daily run of a 20-minute VM suite buys nothing over a weekly one.
+  workflow_dispatch:
+    inputs:
+      channel_ref:
+        description: 'nixpkgs ref for the FLOATING job (default: the ref flake.lock records)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Two jobs, one set of steps. Written as a matrix rather than two hand-copied jobs on purpose:
+    # a duplicated build recipe is a second declaration of the same contract, which is this repo's
+    # most-repeated bug class.
+    name: ${{ matrix.mode }}
+    runs-on: ubuntu-24.04          # the pinned spelling of ubuntu-latest, matching docker.yml
+    timeout-minutes: 120           # fleet-native is ~250 s accelerated, ~3x that under TCG; the
+                                   # rest is substituting a cold nixpkgs closure
+    continue-on-error: ${{ matrix.float }}
+    strategy:
+      fail-fast: false             # a nixpkgs breakage must not cancel the run that gates our code
+      matrix:
+        include:
+          - { mode: locked,  float: false }
+          - { mode: channel, float: true  }
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A flake reads the GIT tree, and nix wants a real revision — a depth-1 clone has bitten
+          # enough projects that the two minutes this costs are not worth arguing about. It also
+          # means CI enforces V.6b for free: an untracked file that the flake references arrives
+          # ABSENT, exactly as it would from a clean clone.
+          fetch-depth: 0
+
+      # ── the cheap diagnostic that answers the last open assumption in the plan ────────────────
+      # `/dev/kvm` on a GitHub runner was deliberately never measured: `schedule`/`workflow_dispatch`
+      # fire only from the default branch, so measuring it early meant putting a throwaway probe on
+      # frozen `main`. It costs nothing to answer here, on the first real run, and the answer is a
+      # COST question rather than a viability one — measured on the rig, a nixosTest with no KVM at
+      # all still passes, 130 s vs 43 s (a silent `accel=kvm:tcg` fallback, 3x).
+      - name: Runner facts
+        shell: bash
+        run: |
+          if [ -e /dev/kvm ]; then
+            kvm_dev="$(ls -l /dev/kvm)"
+            if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+              kvm_state="present, r/w for $(id -un)"
+            else
+              kvm_state="present, NOT r/w for $(id -un) — see the next step"
+            fi
+          else
+            kvm_dev="(absent)"
+            kvm_state="ABSENT — the VM tests fall back to TCG, ~3x slower (measured 130 s vs 43 s)"
+          fi
+          {
+            echo "### runner facts — ${{ matrix.mode }}"
+            echo '```'
+            echo "image        : ${ImageOS:-?} / ${ImageVersion:-?}"
+            echo "kernel       : $(uname -sr)"
+            echo "cpus         : $(nproc)   virt flags in /proc/cpuinfo: $(grep -cE '^flags.*(vmx|svm)' /proc/cpuinfo || true)"
+            echo "memory       : $(free -h | awk '/^Mem:/{print $2" total, "$7" available"}')"
+            echo "disk /       : $(df -h / | awk 'NR==2{print $4" free of "$2}')"
+            echo "/dev/kvm     : ${kvm_dev}"
+            echo "kvm verdict  : ${kvm_state}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "/dev/kvm: ${kvm_state}"
+          # If a run ever dies out of disk, the remedy is the usual one — delete /usr/share/dotnet,
+          # /opt/ghc and $AGENT_TOOLSDIRECTORY before installing nix. Not done pre-emptively: the
+          # line above measures whether it is needed.
+
+      - name: Make /dev/kvm usable by the build sandbox
+        shell: bash
+        run: |
+          # The nix DAEMON runs as root, so it advertises the `kvm` system feature whenever the
+          # device merely EXISTS. The QEMU inside a build does not: it runs as an unprivileged
+          # nixbld user, so a root:kvm 0660 device silently drops the suite to TCG. Widen it only
+          # when it is not already open, and say which — so the first run measures the default
+          # rather than hiding it behind our own fix.
+          if [ ! -e /dev/kvm ]; then echo "no /dev/kvm — nothing to widen"; exit 0; fi
+          before="$(stat -c '%U:%G %a' /dev/kvm)"
+          if [ "$(stat -c %a /dev/kvm)" = "666" ]; then
+            echo "/dev/kvm is already ${before} — no change made"
+          else
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            echo "/dev/kvm was ${before}, now $(stat -c '%U:%G %a' /dev/kvm)"
+          fi
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            system-features = nixos-test benchmark big-parallel uid-range kvm
+      # ⚠️ `system-features` there is not cosmetic. A nixosTest derivation carries
+      # `requiredSystemFeatures = [ "kvm" "nixos-test" ]` (nixpkgs `nixos/lib/testing/run.nix`), and
+      # stock nix advertises `kvm` ONLY when /dev/kvm is accessible (nix
+      # `src/libstore/globals.cc:getDefaultSystemFeatures`). So on a runner with no /dev/kvm the
+      # build would be REFUSED outright — not merely slowed — and the workflow would report a
+      # missing feature where the honest answer is "runs, slower". NixOS itself advertises the
+      # feature unconditionally, which is precisely why the rig's no-KVM control still passed. We
+      # match NixOS; the step above reports which of the two we actually got.
+
+      - name: Nix facts
+        shell: bash
+        run: |
+          {
+            echo '```'
+            echo "nix          : $(nix --version)"
+            nix config show 2>/dev/null | grep -E '^(system-features|sandbox|max-jobs|cores) ' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          nix --version
+
+      - name: Resolve the nixpkgs this run builds against
+        id: pin
+        shell: bash
+        env:
+          # Through the environment, never interpolated into the script: a `${{ ... }}` expansion
+          # inside a shell body is a script-injection seam, even when only a repo writer can dispatch.
+          CHANNEL_REF_IN: ${{ github.event.inputs.channel_ref }}
+        run: |
+          # The floating ref is DERIVED from flake.lock's own `original` entry, never written out a
+          # second time here: the day the flake repins to nixos-26.11, this job follows without an
+          # edit. A hardcoded ref would go on floating a channel we no longer ship against, which
+          # is a green light that measures nothing.
+          owner=$(jq -r '.nodes.nixpkgs.original.owner' flake.lock)
+          repo=$(jq  -r '.nodes.nixpkgs.original.repo'  flake.lock)
+          ref=$(jq   -r '.nodes.nixpkgs.original.ref'   flake.lock)
+          locked=$(jq -r '.nodes.nixpkgs.locked.rev'    flake.lock)
+          want="${CHANNEL_REF_IN:-}"
+          [ -n "$want" ] || want="github:${owner}/${repo}/${ref}"
+
+          if [ '${{ matrix.float }}' = 'true' ]; then
+            echo "NIX_ARGS=--override-input nixpkgs ${want}" >> "$GITHUB_ENV"
+            tip=$(nix flake metadata --json --override-input nixpkgs "$want" 2>/dev/null \
+                  | jq -r '.locks.nodes.nixpkgs.locked.rev' || true)
+            [ "$tip" = "null" ] && tip=""      # jq prints `null` for a key it did not find
+            {
+              echo '```'
+              echo "mode         : channel (floating)"
+              echo "override     : ${want}"
+              echo "our lock     : ${locked}"
+              echo "channel tip  : ${tip:-<could not resolve>}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Worth saying out loud rather than reporting a green: if the tip has not moved past our
+            # lock, this job built byte-identical inputs and proved nothing this week.
+            if [ -n "$tip" ] && [ "$tip" = "$locked" ]; then
+              echo "::notice::the channel tip equals our locked rev — this run is identical to the locked job and measures nothing new"
+            fi
+          else
+            echo "NIX_ARGS=" >> "$GITHUB_ENV"
+            {
+              echo '```'
+              echo "mode         : locked (the gate)"
+              echo "nixpkgs rev  : ${locked}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ── the three builds, all of which have been RUN on the rig ───────────────────────────────
+      # `set -o pipefail` is not decoration: a pipeline's exit code is the LAST stage's, so without
+      # it `nix build | tee` reports tee's success and a failed build reads as green. (`shell: bash`
+      # already sets it; stated because this rig has paid for the trap.)
+      - name: Build the package
+        id: build_pkg
+        shell: bash
+        run: |
+          set -o pipefail
+          # A strict dependency of both VM tests, built alone first so that a packaging break — a
+          # shebang that no longer resolves, an asset that .gitignore swallowed — is reported as
+          # itself instead of as a VM that would not boot.
+          SECONDS=0
+          nix build -L --out-link result-package $NIX_ARGS .#checks.x86_64-linux.package 2>&1 | tee -a nix-build.log
+          echo "package built in ${SECONDS}s"
+
+      - name: Build and run fleet-native
+        id: build_fleet
+        shell: bash
+        run: |
+          set -o pipefail
+          SECONDS=0
+          nix build -L --out-link result-fleet $NIX_ARGS .#checks.x86_64-linux.fleet-native 2>&1 | tee -a nix-build.log
+          # `-L` streams the builder log, which is what makes a FAILURE readable in the run's own UI.
+          # It streams nothing for a derivation that was substituted or already built, though, and
+          # the scenario check below must not depend on which of those happened — so read the log
+          # back when the markers are absent. `nix log` works for a cached derivation too; this is
+          # the shape the rig's flake probe proved.
+          grep -qF 'T1-ASSERT' nix-build.log || nix log "$(readlink -f result-fleet)" >> nix-build.log 2>/dev/null || true
+          echo "FLEET_SECONDS=${SECONDS}" >> "$GITHUB_ENV"
+          echo "fleet-native in ${SECONDS}s"
+
+      - name: Build and run container-arm
+        id: build_ctr
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          SECONDS=0
+          nix build -L --out-link result-container $NIX_ARGS .#checks.x86_64-linux.container-arm 2>&1 | tee -a nix-build.log
+          grep -qF 'CA-ASSERT' nix-build.log || nix log "$(readlink -f result-container)" >> nix-build.log 2>/dev/null || true
+          echo "CTR_SECONDS=${SECONDS}" >> "$GITHUB_ENV"
+          echo "container-arm in ${SECONDS}s"
+
+      - name: Every scenario must have REPORTED
+        id: verify
+        if: always()
+        shell: bash
+        run: |
+          # A green `nix build` says only that the derivation succeeded — which is equally true of a
+          # suite whose scenarios were deleted. Every scenario prints one `T1-ASSERT <name> OK` /
+          # `CA-ASSERT <name> OK` line for exactly this reason; here is the harness that refuses a
+          # run missing one.
+          #
+          # The expected NAMES are read out of the check files themselves rather than listed here,
+          # so a rename cannot rot a copy of the list. What a derived list cannot catch is a
+          # DELETION — the expectation would shrink with the suite — so the floor below is the one
+          # thing hardcoded, and it is the shrink alarm. The two together are strictly stronger than
+          # either alone.
+          set -o pipefail
+          if [ ! -s nix-build.log ]; then
+            echo "::error::there is no build log at all — nothing ran"
+            exit 1
+          fi
+          fail=0
+          { echo "### scenarios — ${{ matrix.mode }}"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+
+          check() {
+            local label="$1" src="$2" prefix="$3" min="$4"
+            local -a names=() missing=()
+            local n line
+            mapfile -t names < <(grep -oE 'ok\("[a-z0-9-]+"' "$src" | sed -E 's/^ok\("//; s/"$//' | sort -u)
+            say "── ${label}: ${src} declares ${#names[@]} scenarios (floor ${min})"
+            if [ "${#names[@]}" -lt "$min" ]; then
+              echo "::error::${label} declares ${#names[@]} scenarios, below the floor of ${min} — the suite shrank"
+              fail=1
+            fi
+            for n in "${names[@]}"; do
+              line=$(grep -F -m1 "${prefix} ${n} OK" nix-build.log || true)
+              if [ -n "$line" ]; then
+                say "$(printf '   %-26s %s' "$n" "${line#*OK }")"
+              else
+                say "$(printf '   %-26s %s' "$n" '*** NEVER REPORTED ***')"
+                missing+=("$n")
+              fi
+            done
+            if [ "${#missing[@]}" -gt 0 ]; then
+              echo "::error::${label}: ${#missing[@]} scenario(s) never reported — ${missing[*]}"
+              fail=1
+            fi
+          }
+
+          check fleet-native  nix/checks/fleet.nix         T1-ASSERT 11
+          check container-arm nix/checks/container-arm.nix CA-ASSERT 7
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit $fail
+
+      - name: Verdict
+        if: always()
+        shell: bash
+        run: |
+          pkg='${{ steps.build_pkg.outcome }}'
+          fleet='${{ steps.build_fleet.outcome }}'
+          ctr='${{ steps.build_ctr.outcome }}'
+          ver='${{ steps.verify.outcome }}'
+          {
+            echo '```'
+            echo "package       : ${pkg}"
+            echo "fleet-native  : ${fleet}   ${FLEET_SECONDS:+(${FLEET_SECONDS}s)}"
+            echo "container-arm : ${ctr}   ${CTR_SECONDS:+(${CTR_SECONDS}s)}"
+            echo "scenarios     : ${ver}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ '${{ matrix.float }}' != 'true' ]; then
+            exit 0
+          fi
+          # The floating job never fails the workflow (`continue-on-error` on the job), so its news
+          # has to arrive some other way — an annotation on the run, and a line in the summary that
+          # says what to do about it. If this ever becomes a recurring signal, the next step is to
+          # have it open an issue; a warning nobody reads is the failure mode to watch for here.
+          if [ "$pkg" = failure ] || [ "$fleet" = failure ] || [ "$ctr" = failure ] || [ "$ver" = failure ]; then
+            echo "::warning::the FLOATING nixpkgs build failed. This is deliberately NOT a workflow failure — it is news about nixpkgs, not a regression in this repo (G2). Recovery for the native datapath is services.swg-node.kernelModule = false; docs/NIXOS.md carries it."
+            {
+              echo
+              echo "> **The floating nixpkgs build failed.** That is news about nixpkgs, not a regression here (G2)."
+              echo "> The native datapath's documented recovery is \`services.swg-node.kernelModule = false\` —"
+              echo "> \`awg-quick\` falls back to \`amneziawg-go\` on its own. The container arm is unaffected."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Keep the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-build-log-${{ matrix.mode }}
+          path: nix-build.log
+          if-no-files-found: warn
+          retention-days: 14

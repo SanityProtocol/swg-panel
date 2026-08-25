@@ -45,7 +45,40 @@ import urllib.request
 
 CONFIG_PATH = os.environ.get("SWG_AGENT_CONFIG", "/etc/swg-agent/config.json")
 STATE_DIR   = os.environ.get("SWG_NODED_STATE", "/var/lib/swg-noded")
-TURN_RECORD = os.environ.get("SWG_TURN_RECORD", "/etc/swg-agent/turn-proxy.json")
+
+
+def _shared_record(name, legacy, env):
+    """A record that survives a RUN-MODEL change, and the migration onto it.
+
+    These three records — turn proxies, WDTT and csqtt instances — used to live at a path chosen by the
+    run-model: /etc/swg-agent on bare-metal, the state dir in a container. So a box that switched (a
+    convert, a declarative delivery change, a restore onto the other model) ended up with TWO copies that
+    drift, and the switch made the OLDER one win: measured on a live master, an operator's turn-proxy port
+    change and its wrap key silently reverted, which breaks every client of that proxy.
+
+    STATE_DIR is the one directory every model already shares — bare-metal writes it directly, a container
+    bind-mounts it, convert.sh carries it across — so put them there and be done. An explicit env still
+    wins (compose and the Nix module both set these).
+
+    Migration is NOT a plain copy, because both files can exist and either can be the fresher one: a box
+    that ran as a container once has a shared copy that may be months stale. Newest mtime wins. The legacy
+    file is left exactly where it is — a rollback to an older build must still find its record."""
+    p = os.environ.get(env)
+    if p:
+        return p
+    new = os.path.join(STATE_DIR, name)
+    with contextlib.suppress(Exception):
+        _n = os.path.exists(new)
+        _l = os.path.exists(legacy)
+        if _l and (not _n or os.path.getmtime(legacy) > os.path.getmtime(new)):
+            os.makedirs(STATE_DIR, exist_ok=True)
+            shutil.copy2(legacy, new)
+            print("record: %s -> %s (the newer copy; records are shared across run-models now)"
+                  % (legacy, new), flush=True)
+    return new
+
+
+TURN_RECORD = _shared_record("turn-proxy.json", "/etc/swg-agent/turn-proxy.json", "SWG_TURN_RECORD")
 AWG_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
             "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
 
@@ -66,6 +99,92 @@ def _noded_version():
 NODED_VERSION = _noded_version()
 # bare-metal vs docker — reported so the panel can tag the node (containers carry /.dockerenv)
 NODE_KIND = "docker" if (os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")) else "baremetal"
+# …and WHICH container runtime, when it is one. `kind` stays "docker" for both — every behaviour in
+# this daemon is the same either way, and flipping ~54 branches to say podman would be a lie about how
+# it behaves. This is purely a LABEL, so the panel can call a podman node a podman node instead of
+# telling its operator to go and look at docker. Each runtime drops its own marker and only its own:
+# docker writes /.dockerenv, podman writes /run/.containerenv (which is also what made T-P7's
+# detection wrong before it looked for both).
+NODE_RUNTIME = ("podman" if os.path.exists("/run/.containerenv")
+                else ("docker" if os.path.exists("/.dockerenv") else ""))
+# ⚠️ NODE_KIND is deliberately NOT settable from the environment, and must not become so. It is the
+# RUN-MODEL discriminator: ~54 branches in this file read it to choose between host systemd and
+# supervised subprocesses, /opt and /var/lib, `docker run` siblings and host units — and the panel
+# and SPA read it the same way. A host that runs this daemon in our container image IS a docker node
+# for every one of those, whatever else is true about the machine. The two fields below carry
+# "what else is true" instead.
+#
+# platform      a label for the host's OS/management flavour, e.g. "nixos". Presentation only —
+#               nothing branches on it.
+# declarative   this host's INSTALLATION is owned elsewhere (a NixOS module, a config-management
+#               run), so the panel must not offer to mutate it: no self-update, no re-enrolment
+#               one-liner, no `curl | sudo bash` recovery. Peers, routing and interfaces stay fully
+#               mutable — that is the product; only installation state is off limits.
+#
+# Both come from the environment, because both delivery methods set them identically: our images
+# under `virtualisation.oci-containers` pass them as container env, our programs from the Nix store
+# get them from the unit's Environment=. Unset means ABSENT from the snapshot, so an ordinary node's
+# report is byte-identical to what it sent before these existed.
+NODE_PLATFORM = re.sub(r"[^a-z0-9_-]", "", (os.environ.get("SWG_NODE_PLATFORM") or "").strip().lower())[:32]
+# …and when nothing set it, work it out from the host's own /etc/os-release, so an ordinary Debian or Ubuntu
+# box says so too instead of the panel having a badge only NixOS ever earns.
+#
+# ⚠️ On a CONTAINER node /etc/os-release is the IMAGE's, not the host's — measured: our node image answers
+# "Debian GNU/Linux 13 (trixie)" while the box it runs on is NixOS 25.11. Reporting that would badge every
+# Docker node Debian, which is worse than an empty badge because it looks authoritative. So a container asks
+# the HOST through host_sh, and if it cannot reach the host it reports NOTHING rather than the image's answer.
+# The kernel is read locally either way — a container shares the host's.
+#
+# Computed ONCE, lazily, on the first snapshot: os-release does not change under a running node, and on the
+# docker path each host_sh spawns a privileged one-shot container.
+_PLATFORM = {"done": False, "id": "", "info": {}}
+
+
+def _osrel_parse(txt):
+    d = {}
+    for ln in (txt or "").splitlines():
+        k, _, v = ln.partition("=")
+        if k and v:
+            d[k.strip()] = v.strip().strip('"').strip("'")
+    return d
+
+
+def _platform_detect():
+    """(id, {name, version, kernel}) for the HOST's OS — '' when it cannot be established honestly."""
+    if _PLATFORM["done"]:
+        return _PLATFORM["id"], _PLATFORM["info"]
+    _PLATFORM["done"] = True
+    osr = {}
+    with contextlib.suppress(Exception):
+        if NODE_KIND == "docker":
+            r = host_sh("cat /etc/os-release 2>/dev/null || cat /usr/lib/os-release 2>/dev/null")
+            if r.returncode == 0 and (r.stdout or "").strip():
+                osr = _osrel_parse(r.stdout)
+        else:
+            for _p in ("/etc/os-release", "/usr/lib/os-release"):
+                if os.path.exists(_p):
+                    osr = _osrel_parse(open(_p).read()); break
+    pid = re.sub(r"[^a-z0-9_-]", "", (osr.get("ID") or "").strip().lower())[:32]
+    if not pid:
+        return "", {}
+    info = {"name": (osr.get("PRETTY_NAME") or osr.get("NAME") or "")[:80],
+            "version": (osr.get("VERSION_ID") or "")[:32]}
+    with contextlib.suppress(Exception):
+        info["kernel"] = os.uname().release[:40]      # a container shares the host's kernel — correct on both
+    _PLATFORM["id"], _PLATFORM["info"] = pid, {k: v for k, v in info.items() if v}
+    return _PLATFORM["id"], _PLATFORM["info"]
+NODE_DECLARATIVE = (os.environ.get("SWG_DECLARATIVE") or "").strip().lower() in ("1", "true", "yes", "on")
+# The UDP port range this host's firewall is DECLARED to allow, e.g. "51820-51899" or
+# "51820-51899,443". Reported so the panel can say when an interface it created listens outside it.
+#
+# The collision this exists for: interfaces get their ports from the PANEL, at any time, while a
+# declarative firewall is evaluated at BUILD time. NixOS filters INPUT by default, so a
+# panel-created interface on a stock node syncs, reports healthy, shows its peers — and is
+# unreachable from the internet. Measured: firewall at its default, no handshake at all; allow the
+# port, immediate handshake and a client routing TCP to the internet through the node. Nothing here
+# opens a port — a node rewriting its host's firewall is exactly what a declarative operator
+# objects to. It reports, and the panel makes the mismatch loud.
+NODE_UDP_PORTS = re.sub(r"[^0-9,\- ]", "", (os.environ.get("SWG_UDP_PORTS") or "").strip())[:200]
 # docker network mode (set by the installer via the compose env): "host" = every interface port is on
 # the host (no publishing); "bridge" = panel-created interface ports must be published. Bare-metal is
 # always "host"-like. The panel uses this to show port-publishing guidance only where it's needed.
@@ -684,13 +803,23 @@ def _read_units_live(svcs):
     return res
 
 def _list_turn_units():
-    """Bare-metal turn-proxy services present on disk (vk-turn-proxy-*.service in /etc/systemd/system).
-    None on a read error (so the caller keeps the record rather than wiping it); [] means genuinely none."""
-    try:
-        files = os.listdir("/etc/systemd/system")
-    except OSError:
-        return None
-    return [f[:-len(".service")] for f in files if f.startswith("vk-turn-proxy-") and f.endswith(".service")]
+    """Bare-metal turn-proxy services present on disk (vk-turn-proxy-*.service).
+    None on a read error (so the caller keeps the record rather than wiping it); [] means genuinely none.
+
+    BOTH unit directories, not just the probed one: on a host where /etc/systemd/system is read-only
+    our units live in /run, and a host that changed state between reboots can have them in either.
+    Scanning one dir would report "no turn proxies" for a node that plainly has them — the
+    found-nothing-vs-could-not-look trap, in the direction that silently wipes the record."""
+    seen, ok = [], False
+    for d in (UNIT_DIR_PERSIST, UNIT_DIR_RUNTIME):
+        try:
+            files = os.listdir(d)
+        except OSError:
+            continue
+        ok = True
+        seen += [f[:-len(".service")] for f in files
+                 if f.startswith("vk-turn-proxy-") and f.endswith(".service")]
+    return sorted(set(seen)) if ok else None
 
 TURN_PENDING_DIR = "/var/lib/swg-noded/turn-pending"   # an installer/convert drops "<svc>" here (listen\nconnect\nowner) WHILE setting a turn-proxy up
 def _turn_installing_markers():
@@ -2282,6 +2411,7 @@ def _ensure_doh_block(subnets, enable, res):
 
 
 MECH_NFT_TABLE = "swg_mech"     # per-interface FREE traffic/abuse mechanism drops (SMTP/QUIC/torrent-port-hint/port-scan)
+_MECH_ON = {"subs": 0}          # how many subnets run the free abuse tier — see _ensure_mech_block / smart_status
 
 def _mech_meter(subnet):
     return "psc_" + re.sub(r"[^0-9a-z]", "_", subnet.lower())   # valid nft id for the per-subnet port-scan rate meter
@@ -2311,6 +2441,10 @@ def _ensure_mech_block(mech, res):
             if "torrents" in cats: els += ["udp . 6881-6889", "tcp . 6881-6889"]   # FREE port-hint; the sig scan is a later measured tier
             if els:                portsets[S] = sorted(els)
             if "portscan" in cats: meters.append(S)
+        # Does this node run the FREE abuse tier at all? Recorded BEFORE the signature gate below, so a
+        # steady-state no-op still keeps it current. smart_status reads it to decide whether the blocking
+        # ACTIVITY is worth harvesting when the CONTENT table does not exist — see its early return.
+        _MECH_ON["subs"] = len(set(portsets) | set(meters))
         if not portsets and not meters:                           # nothing wanted → tear down ONLY our table (never touches others)
             if have.returncode == 0:
                 run(["nft", "delete", "table", "inet", MECH_NFT_TABLE]); res["changed"] += 1
@@ -2887,7 +3021,13 @@ def _block_activity():
         mech = run(["nft", "list", "table", "inet", "swg_mech"]).stdout or ""   # land there, so it's the REAL scanners (not every active
         for sub, fset in re.findall(r"ip saddr (" + IP + r")[^\n]*?add @(pscf_\S+)", mech):   # source) + their IPs → per-user attribution
             with contextlib.suppress(Exception):
-                sm = re.search(r"set " + re.escape(fset) + r" \{.*?elements = \{([^}]*)\}", mech, re.S)
+                # Bound the read to THIS set's own block. An empty set prints no `elements` line at all, so a
+                # search that just ran on from the set's name found the NEXT set's elements instead — and every
+                # quiet subnet was then reported as having the busy one's scanner, by IP. That IP is mapped to a
+                # peer and shown as "who", so the cost was naming an innocent user on another interface as the
+                # scanner. nft closes a set with `}` alone on its line; the elements line never is.
+                blk = re.search(r"set " + re.escape(fset) + r" \{(.*?)\n[ \t]*\}", mech, re.S)
+                sm = re.search(r"elements = \{([^}]*)\}", blk.group(1)) if blk else None
                 ips = re.findall(r"\d+\.\d+\.\d+\.\d+", sm.group(1)) if sm else []
                 out.setdefault(sub, {})["scan"] = len(ips)
                 if ips:
@@ -2947,7 +3087,14 @@ def smart_status():
     if _SMART_MODE.get("fill_gate"):                           # Force-DNS fill skipped over-budget categories → tell the panel
         base["fill_gate"] = _SMART_MODE["fill_gate"]
     if t["rc"] != 0:
-        return {**base, "active": False, "sets": {}, "rules": 0, "resets": 0}
+        # No CONTENT table — but the FREE abuse tier (swg_mech: smtp / torrent ports / port-scan) is a separate
+        # datapath that does not need one, and turning ONLY those on is an ordinary configuration. `block` used to
+        # live solely on the path below, so such a node harvested its torrent / scanner / drop counts and then
+        # reported none of them: the filters worked and the Protection card stayed empty for ever. Report them
+        # here too — gated on the tier actually being configured, so a node with NO blocking at all still pays
+        # nothing for the harvest (it shells out to iptables/nft/ipset).
+        return {**base, "active": False, "sets": {}, "rules": 0, "resets": 0,
+                **({"block": _block_activity()} if _MECH_ON["subs"] else {})}
     rules = len(re.findall(r"ip saddr \S+ ip daddr @\S+ meta mark set", t["out"]))
     resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\d+)", t["out"]))   # SNI first-hit RSTs
     return {**base, "active": rules > 0, "sets": dict(t["counts"]), "rules": rules,
@@ -3379,6 +3526,32 @@ def _wdtt_unit_of_pid(pid, host_ns=False):
     return ""
 
 
+# Which CLI talks to the OTHER containers on this host. `docker` when it is here — that is the case this
+# code was written for, and it is also what a DOCKER node has inside its own image, talking to the socket the
+# compose mounts. Otherwise `podman`: its `ps`/`exec`/`inspect`/`stop`/`start` take the same arguments, and a
+# host that runs containers under podman is not a rare shape — it is what the Nix container arm uses by
+# default, because nixpkgs flags the docker package insecure. Without this, discovery ran `docker ps`, got
+# "command not found", and reported NOTHING: a working AmneziaWG server in a podman container was invisible,
+# which reads as "the panel cannot see my server" rather than as a missing binary. Resolved once.
+_CTR_CLI = {"v": None}
+_CTR_CLI_DIRS = ("/run/current-system/sw/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/snap/bin")
+
+def _ctr_cli():
+    # PATH first, then a short list of absolute locations — because the PATH is not always ours to rely on.
+    # A native NixOS node runs with a PATH the module curates, and podman is deliberately NOT in it: it is a
+    # third-party runtime the operator may or may not have, and a node that hard-depends on it would refuse to
+    # build without it. `shutil.which` therefore answers "no" on the one host where podman is most likely to be
+    # the runtime, and discovery silently found nothing.
+    if _CTR_CLI["v"] is None:
+        _CTR_CLI["v"] = "docker"
+        for cli in ("docker", "podman"):
+            found = shutil.which(cli) or next((os.path.join(d, cli) for d in _CTR_CLI_DIRS
+                                               if os.access(os.path.join(d, cli), os.X_OK)), None)
+            if found:
+                _CTR_CLI["v"] = found
+                break
+    return _CTR_CLI["v"]
+
 _CTR_NAMES = {"at": 0.0, "map": {}}      # container id -> name; one `docker ps` shared by every candidate
 
 
@@ -3390,7 +3563,7 @@ def _ctr_name_map(timeout=15):
         return _CTR_NAMES["map"]
     m = {}
     with contextlib.suppress(Exception):
-        r = run(["docker", "ps", "--no-trunc", "--format", "{{.ID}} {{.Names}}"], timeout=timeout)
+        r = run([_ctr_cli(), "ps", "--no-trunc", "--format", "{{.ID}} {{.Names}}"], timeout=timeout)
         for ln in (r.stdout or "").splitlines():
             cid, _, nm = ln.strip().partition(" ")
             if cid and nm.strip():
@@ -3923,6 +4096,49 @@ def wdtt_foreign_probe(iface):
 _CTR_IF_TTL = 120                                  # discovery, not reconcile — see _container_ifaces
 _CTR_IF = {"at": 0.0, "rows": []}
 _CTR_ADOPT = {}          # last container take-over result, reported ONCE so the panel can import + clear
+# The take-over runs in its own thread (see the call site). One at a time, keyed by container: the panel only
+# ever asks for one, and a second request for the SAME container while the first is in flight must not start a
+# second stop.
+_CTR_JOB = {"container": "", "iface": "", "req_at": 0, "done": False, "res": None}
+_CTR_JOB_LOCK = threading.Lock()
+
+
+def _ctr_job_start(container, req_iface, req_at, node_cfg, agent, sudo):
+    """Begin a container take-over unless this exact request is already running or already answered."""
+    with _CTR_JOB_LOCK:
+        j = _CTR_JOB
+        if j["container"] == container and j["req_at"] == req_at and (j["res"] is not None or not j["done"]):
+            return                                   # in flight, or its answer is still waiting to be reported
+        if not j["done"] and j["container"]:
+            return                                   # another take-over is still running — never two stops at once
+        _CTR_JOB.update(container=container, iface=req_iface, req_at=req_at, done=False, res=None)
+
+    def _run():
+        res = {}
+        try:
+            res = container_iface_takeover(container, node_cfg, agent, sudo)
+        except Exception as e:
+            res = _ctr_err("take-over failed: {e}", e=str(e)[:140])
+        with _CTR_JOB_LOCK:
+            if _CTR_JOB["container"] == container and _CTR_JOB["req_at"] == req_at:
+                _CTR_JOB.update(done=True, res=res)
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _ctr_job_collect(node_cfg):
+    """Publish a finished take-over into the snapshot channel (once), on whichever pass sees it done."""
+    with _CTR_JOB_LOCK:
+        j = _CTR_JOB
+        if not (j["done"] and j["res"] is not None):
+            return
+        container, iface, req_at, res = j["container"], j["iface"], j["req_at"], j["res"]
+        _CTR_JOB.update(container="", iface="", req_at=0, res=None)
+    _CTR_ADOPT.clear()
+    _CTR_ADOPT.update({"container": container, "req_iface": iface,
+                       "req_at": req_at,          # which REQUEST this answers — see below
+                       "at": int(time.time()), **(res or {})})
+    if (res or {}).get("ok"):
+        _persist_config(node_cfg)                  # the interface is ours now — persist before anything else
 _OUR_CTRS = ("swg-node", "swg-panel", "swg-sub", "swg-turn-")   # ours; never reported as somebody else's
 # (container ID, tool) pairs where that image simply has no such binary — an mtproxy has neither wg nor awg, and
 # a plain-WireGuard Amnezia container has wg but not awg. Whether a binary exists is fixed for a container's life,
@@ -3957,7 +4173,7 @@ def _container_ifaces(timeout=15):
         return _CTR_IF["rows"]
     rows = []
     with contextlib.suppress(Exception):
-        r = run(["docker", "ps", "--format", "{{.ID}}\t{{.Names}}"], timeout=15)
+        r = run([_ctr_cli(), "ps", "--format", "{{.ID}}\t{{.Names}}"], timeout=15)
         if r.returncode == 0:
             _live_ids = set()
             for ln in (r.stdout or "").splitlines():
@@ -3965,12 +4181,22 @@ def _container_ifaces(timeout=15):
                 cid, name = cid.strip(), name.strip()
                 if not cid or name.startswith(_OUR_CTRS):
                     continue
+                # A container on the HOST's network namespace has no interfaces of its own — everything it
+                # shows is the host's, which this node already sees directly. Reporting them here made every
+                # local interface look like somebody else's: the panel offered to "take over" awg0 from a
+                # container that merely shares the namespace, and marked it NAME TAKEN because the node
+                # already runs it. Ours are excluded by name; anyone else's host-networked container (a
+                # monitoring agent, a proxy) would have done the same.
+                with contextlib.suppress(Exception):
+                    _nm = run([_ctr_cli(), "inspect", "-f", "{{.HostConfig.NetworkMode}}", cid], timeout=15)
+                    if (_nm.stdout or "").strip().lower() == "host":
+                        continue
                 _live_ids.add(cid)
                 for tool, proto in (("awg", "awg"), ("wg", "wg")):
                     if (cid, tool) in _CTR_NOTOOL:   # that image has no such binary — asking again cannot change it
                         continue
                     with contextlib.suppress(Exception):
-                        q = run(["docker", "exec", cid, tool, "show", "interfaces"], timeout=15)
+                        q = run([_ctr_cli(), "exec", cid, tool, "show", "interfaces"], timeout=15)
                         if q.returncode != 0:
                             # "executable file not found in $PATH" is the image telling us it has no such tool —
                             # a permanent answer, unlike a busy/erroring container, which must stay retryable.
@@ -3985,14 +4211,14 @@ def _container_ifaces(timeout=15):
                             # fact an operator needs to see whether it collides with anything of theirs
                             cidr = ""
                             with contextlib.suppress(Exception):
-                                a = run(["docker", "exec", cid, "ip", "-4", "-o", "addr", "show", ifn], timeout=timeout)
+                                a = run([_ctr_cli(), "exec", cid, "ip", "-4", "-o", "addr", "show", ifn], timeout=timeout)
                                 for tok in (a.stdout or "").split():
                                     if "/" in tok and tok[0].isdigit():
                                         cidr = tok
                                         break
                             port, plist = 0, []
                             with contextlib.suppress(Exception):
-                                d = run(["docker", "exec", cid, tool, "show", ifn, "dump"], timeout=timeout)
+                                d = run([_ctr_cli(), "exec", cid, tool, "show", ifn, "dump"], timeout=timeout)
                                 if d.returncode == 0:
                                     head, plist = parse_dump(d.stdout or "")
                                     if len(head) > 2 and str(head[2]).isdigit():
@@ -4031,6 +4257,15 @@ def _ctr_err(template, **vars):
     return {"error": template.format(**vars), "error_key": template, "error_vars": dict(vars)}
 
 
+def _ctr_running(container, timeout=20):
+    """Is this container actually running? The one question a failed `stop` cannot answer for itself."""
+    with contextlib.suppress(Exception):
+        r = run([_ctr_cli(), "inspect", "-f", "{{.State.Running}}", container], timeout=timeout)
+        if r.returncode == 0:
+            return (r.stdout or "").strip().lower().startswith("true")
+    return False        # cannot tell → treat as down: the caller only uses this to decide whether to give up
+
+
 def _ctr_published(container, port, timeout=15):
     """The HOST udp port this container publishes for `port`, or 0 if it publishes none.
 
@@ -4040,7 +4275,7 @@ def _ctr_published(container, port, timeout=15):
     own port is the host's.
     """
     with contextlib.suppress(Exception):
-        r = run(["docker", "inspect", "-f",
+        r = run([_ctr_cli(), "inspect", "-f",
                  "{{.HostConfig.NetworkMode}}\t{{json .NetworkSettings.Ports}}", container], timeout=timeout)
         if r.returncode != 0:
             return 0
@@ -4069,7 +4304,7 @@ def _ctr_is_awg(container, ifn, timeout=15):
     """
     with contextlib.suppress(Exception):
         pat = "^[[:space:]]*(Jc|Jmin|Jmax|S[1-4]|H[1-4]|I[1-5])[[:space:]]*="
-        q = run(["docker", "exec", container, "sh", "-c",
+        q = run([_ctr_cli(), "exec", container, "sh", "-c",
                  "grep -lE '%s' /opt/amnezia/awg/%s.conf /opt/amnezia/wireguard/%s.conf "
                  "/opt/amnezia/*/%s.conf /etc/wireguard/%s.conf /etc/amnezia/amneziawg/%s.conf 2>/dev/null"
                  % (pat, ifn, ifn, ifn, ifn, ifn)], timeout=timeout)
@@ -4089,12 +4324,12 @@ def _ctr_peer_names(container, conf_dir="", timeout=25):
     names = {}
     for d in ([conf_dir] if conf_dir else []) + ["/opt/amnezia/awg", "/opt/amnezia/wireguard", "/opt/amnezia"]:
         with contextlib.suppress(Exception):
-            t = run(["docker", "exec", container, "sh", "-c",
+            t = run([_ctr_cli(), "exec", container, "sh", "-c",
                      "for f in %s/*; do case \"$f\" in *.conf|*.key) ;; *) [ -f \"$f\" ] && echo \"$f\";; esac; done" % d],
                     timeout=timeout)
             for f in [x.strip() for x in (t.stdout or "").split() if x.strip()]:
                 with contextlib.suppress(Exception):
-                    b = run(["docker", "exec", container, "cat", f], timeout=timeout)
+                    b = run([_ctr_cli(), "exec", container, "cat", f], timeout=timeout)
                     doc = json.loads(b.stdout or "")
                     rows = doc if isinstance(doc, list) else (doc.get("clients") or [])
                     for row in rows if isinstance(rows, list) else []:
@@ -4132,7 +4367,7 @@ def container_iface_read(container, want_iface=None, timeout=25):
     out = {"peers": [], "named": 0}
     if not container:
         return _ctr_err("no container given")
-    r = run(["docker", "exec", container, "sh", "-c",
+    r = run([_ctr_cli(), "exec", container, "sh", "-c",
              "ls -1 /opt/amnezia/*/*.conf /opt/amnezia/*.conf 2>/dev/null"], timeout=timeout)
     paths = [p.strip() for p in (r.stdout or "").split() if p.strip().endswith(".conf")]
     if not paths:
@@ -4144,7 +4379,7 @@ def container_iface_read(container, want_iface=None, timeout=25):
     live = {}
     for tool in ("awg", "wg"):
         with contextlib.suppress(Exception):
-            q = run(["docker", "exec", container, tool, "show", "interfaces"], timeout=timeout)
+            q = run([_ctr_cli(), "exec", container, tool, "show", "interfaces"], timeout=timeout)
             if q.returncode == 0:
                 for n in (q.stdout or "").split():
                     live.setdefault(n, tool)
@@ -4162,7 +4397,7 @@ def container_iface_read(container, want_iface=None, timeout=25):
                         c=container, n=len(paths), names=", ".join(sorted(live)) or "no interface is up")
     out["running"] = os.path.basename(path)[:-5] in live
     out["live_tool"] = live.get(os.path.basename(path)[:-5], "")
-    c = run(["docker", "exec", container, "cat", path], timeout=timeout)
+    c = run([_ctr_cli(), "exec", container, "cat", path], timeout=timeout)
     if c.returncode != 0 or not (c.stdout or "").strip():
         return _ctr_err("could not read {p} in {c}", p=path, c=container)
     conf = c.stdout
@@ -4175,7 +4410,7 @@ def container_iface_read(container, want_iface=None, timeout=25):
     out["key_match"] = False
     with contextlib.suppress(Exception):
         _priv = (out["interface"].get("PrivateKey") or out["interface"].get("privatekey") or "").strip()
-        _live = (run(["docker", "exec", container, out.get("live_tool") or "wg", "show",
+        _live = (run([_ctr_cli(), "exec", container, out.get("live_tool") or "wg", "show",
                       out["iface"], "public-key"], timeout=timeout).stdout or "").strip()
         _mine = (run(["wg", "pubkey"], input_text=_priv + "\n", timeout=timeout).stdout or "").strip()
         out["key_match"] = bool(_live and _mine and _live == _mine)
@@ -4312,7 +4547,7 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
     # what the daemon will restore on failure
     pol = ""
     with contextlib.suppress(Exception):
-        pol = (run(["docker", "inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}", container],
+        pol = (run([_ctr_cli(), "inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}", container],
                    timeout=20).stdout or "").strip()
     # Tools BEFORE the stop. This used to be discovered inside create-iface, i.e. after their container was
     # already down — so a node missing the awg tools took a working VPN offline for the stop/fail/restart
@@ -4324,18 +4559,28 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
                         "stand it up. Install them, then take it over again — {c} was not touched and is "
                         "still serving.", i=iface, c=container, p=("AmneziaWG" if _need == "awg" else "WireGuard"),
                         t=_need)
-    if run(["docker", "update", "--restart=no", container], timeout=30).returncode != 0:
+    if run([_ctr_cli(), "update", "--restart=no", container], timeout=30).returncode != 0:
         return _ctr_err("could not clear the restart policy on {c} — nothing was changed", c=container)
-    if run(["docker", "stop", container], timeout=90).returncode != 0:
-        with contextlib.suppress(Exception):
-            run(["docker", "update", "--restart=" + (pol or "always"), container], timeout=30)
-        return _ctr_err("could not stop {c} — nothing was changed", c=container)
+    # `-t 10`: name the grace period rather than inheriting the runtime's (both default to 10 anyway). Two reasons, both measured on podman
+    # 5.7 against a container that ignores SIGTERM: the wait ran long enough to matter, and `stop` does not
+    # return when the process dies — it returns after the runtime has cleaned the container up, which took a
+    # further minute. The node's sync loop is BLOCKED for all of that (the take-over is deliberately
+    # synchronous), so an over-long stop is what makes the panel show the node as stale mid-adoption.
+    if run([_ctr_cli(), "stop", "-t", "10", container], timeout=60).returncode != 0:
+        # ⚠️ Do not conclude "nothing was changed" from a non-zero stop. Our own timeout expiring is not the
+        # container still running: podman answered late on exactly the container it had already killed, and the
+        # operator was told nothing had happened while their server was down. ASK before reporting.
+        if _ctr_running(container):
+            with contextlib.suppress(Exception):
+                run([_ctr_cli(), "update", "--restart=" + (pol or "always"), container], timeout=30)
+            return _ctr_err("could not stop {c} — nothing was changed", c=container)
+        print("container-takeover: %s reported no clean stop but is down — continuing" % container, flush=True)
 
     def _undo(why):
         with contextlib.suppress(Exception):
-            run(["docker", "update", "--restart=" + (pol or "always"), container], timeout=30)
+            run([_ctr_cli(), "update", "--restart=" + (pol or "always"), container], timeout=30)
         with contextlib.suppress(Exception):
-            run(["docker", "start", container], timeout=90)
+            run([_ctr_cli(), "start", container], timeout=90)
         _CTR_IF["at"] = 0.0
         print("container-takeover: %s failed (%s) — put %s back" % (iface, why, container), flush=True)
         return _ctr_err("{why} — {c} was restarted and is serving again, nothing was taken over",
@@ -4638,6 +4883,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "turn_capable": _turn_arch_ok(),   # false ONLY when this box's arch has no server-linux-<arch> build → panel greys out "Setup proxy" (never blocks on uncertainty)
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
+            "update_auto": update_auto(),   # can the panel's Update button do anything here? (see update_auto)
             # Informational, NOT failures: an adoption that succeeded but not from the source the operator named.
             # cmd_errors is the wrong channel for it (it renders as a failure and is cleared on success).
             "onboard_notes": dict(NODE_NOTES),
@@ -4649,6 +4895,26 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "transport_pub": transport_pub(),            # node re-seal target — the browser seals a restored key to this
             "iface_key_sealed": dict(_IVK_SEALED),       # {iface: {pub, eph, ct, mac}} interface keys sealed to the vault, pending upload
             "wdtt_key_sealed": dict(_WDTT_SEALED)}        # {iface: {pub(server_pub), ...}} WDTT server identities sealed to the vault, pending upload
+    # Added only when set, so a node with neither env var reports exactly what it reported before
+    # these fields existed. See NODE_PLATFORM / NODE_DECLARATIVE at the top: `kind` still says how
+    # this node RUNS; these say what owns its installation, and only the panel's UI reads them.
+    _pid, _pinfo = (NODE_PLATFORM, {}) if NODE_PLATFORM else ("", {})
+    if not _pid:
+        with contextlib.suppress(Exception):
+            _pid, _pinfo = _platform_detect()
+    elif NODE_PLATFORM:                                   # an explicit label still wins, but the DETAIL is worth having
+        with contextlib.suppress(Exception):
+            _pinfo = _platform_detect()[1]
+    if _pid:
+        snap["platform"] = _pid
+    if _pinfo:
+        snap["platform_info"] = _pinfo                    # {name, version, kernel} — presentation only, like platform
+    if NODE_DECLARATIVE:
+        snap["declarative"] = True
+    if NODE_RUNTIME:
+        snap["runtime"] = NODE_RUNTIME
+    if NODE_UDP_PORTS:
+        snap["udp_ports"] = NODE_UDP_PORTS
     snap["wdtt"] = wdtt_snapshot()                    # WDTT instances: active + server pubkey + per-password device/traffic (read-back for the panel; no privkeys)
     snap["csqtt"] = csqtt_snapshot()                  # csqtt instances (raw-TUN): active + per-password device/traffic + byte-delta online (no privkeys)
     with contextlib.suppress(Exception):              # VK-relay src-IPs for the self-contained turn servers (capture ensured in _attach_turn_src_ips, above)
@@ -5008,7 +5274,11 @@ def _reconstruct_conf(iface, cmd):
         if os.path.exists(path):          # never clobber a conf we already manage
             return path
         with open(path, "w") as f:
-            f.write("#swg:onboarded\n" + body + "\n")
+            # …and which protocol it is. A rebuilt conf lands in whichever directory THIS run-model uses,
+            # which is not the same one the next model will read it from — so the file has to carry the
+            # answer rather than let its location imply one (see the agent's writer for why the content
+            # cannot be probed for it).
+            f.write("#swg:onboarded\n#swg:cmd " + (cmd[0] if cmd else "awg") + "\n" + body + "\n")
         os.chmod(path, 0o600)
         return path
     return ""
@@ -5026,7 +5296,232 @@ def _live_wg_ifaces():
     return live
 
 
-def selfheal_ifaces(node_cfg, desired_ifaces):
+# ── what this box is carrying, and how it is running it ─────────────────────────────────────────
+# A node's RUN-MODEL can change underneath it: bare-metal ↔ docker (convert.sh), native ↔ container (a
+# declarative module), a container recreated, a box restored onto a different one. Each model keeps its
+# records in its OWN paths, so the next incarnation starts blind — and, worse, the previous one's fork
+# servers and turn proxies are still running, holding the tun devices and the ports the new one needs.
+# Measured on a live master: after a switch the old servers kept serving, unmanaged and invisible, while
+# the new ones died with "create TUN device".
+#
+# So write ONE record of what is here, in the one directory every run-model already shares (STATE_DIR:
+# bare-metal writes it directly, a container gets it bind-mounted, convert.sh carries it across), and
+# name every component the way THIS incarnation actually created it. A handover then stops exactly what
+# the record says — never a name pattern, which would eventually match somebody else's unit.
+NODE_INVENTORY = os.path.join(STATE_DIR, "node-inventory.json")
+_INV_LAST = {"sig": None}
+
+
+def _inventory_now(node_cfg):
+    inv = {"at": int(time.time()), "kind": NODE_KIND, "runtime": NODE_RUNTIME,
+           "ifaces": sorted((node_cfg.get("interfaces") or {}).keys()),
+           "units": [], "containers": []}
+    with contextlib.suppress(Exception):
+        _turn = [tp.get("service") for tp in load_turn_proxies() if tp.get("service")]
+        if NODE_KIND == "docker":
+            # This model runs turn proxies as SIBLING containers and the fork servers as its own children —
+            # the children die with it, so only the containers outlive this process.
+            inv["containers"] = sorted(_turn_cname(sv) for sv in _turn)
+        else:
+            inv["units"] = sorted([_wdtt_svc(i) for i in (_wdtt_load() or {})]
+                                  + [_csqtt_svc(i) for i in (_csqtt_load() or {})]
+                                  + list(_turn))
+    return inv
+
+
+def write_inventory(node_cfg):
+    """Keep the record current. Written only when it CHANGES — this runs on every sync."""
+    inv = _inventory_now(node_cfg)
+    sig = json.dumps({k: v for k, v in inv.items() if k != "at"}, sort_keys=True)
+    if sig == _INV_LAST["sig"]:
+        return
+    with contextlib.suppress(Exception):
+        os.makedirs(os.path.dirname(NODE_INVENTORY), exist_ok=True)
+        tmp = NODE_INVENTORY + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(inv, f, indent=2)
+        os.replace(tmp, NODE_INVENTORY)
+        _INV_LAST["sig"] = sig
+
+
+def handover_from_previous_runmodel():
+    """Stop what a PREVIOUS run-model left running here, by the names IT recorded. Once, at startup.
+
+    Interfaces are deliberately NOT touched: they are kernel state in the host namespace, they keep
+    serving across the change, and selfheal_ifaces takes them back on the first sync. What must stop are
+    the things that OWN a device or a port — fork servers and turn proxies — because two owners of one
+    tun device is not a state either of them can resolve.
+
+    Where we cannot reach them (a container node with no runtime socket), say exactly which units are
+    still up rather than failing quietly: that is a one-line fix for an operator and an invisible outage
+    otherwise."""
+    prev = None
+    with contextlib.suppress(Exception):
+        with open(NODE_INVENTORY) as f:
+            prev = json.load(f)
+    if not isinstance(prev, dict) or not prev.get("kind"):
+        return
+    if (prev.get("kind"), prev.get("runtime") or "") == (NODE_KIND, NODE_RUNTIME or ""):
+        return                                   # same model — its components are ours, not leftovers
+    units = [u for u in (prev.get("units") or []) if isinstance(u, str) and u]
+    ctrs = [c for c in (prev.get("containers") or []) if isinstance(c, str) and c]
+    if not (units or ctrs):
+        return
+    print("run-model changed (%s/%s -> %s/%s) — handing over %d unit(s), %d container(s) from the previous one"
+          % (prev.get("kind"), prev.get("runtime") or "-", NODE_KIND, NODE_RUNTIME or "-", len(units), len(ctrs)),
+          flush=True)
+    stuck = []
+    for u in units:
+        w = host_sh(sc_disable_now_stop(u), timeout=60)
+        if w.returncode != 0:
+            stuck.append(u)
+    for c in ctrs:
+        with contextlib.suppress(Exception):
+            if run([_ctr_cli(), "stop", "-t", "10", c], timeout=60).returncode != 0 and _ctr_running(c):
+                stuck.append(c)
+    _handover_fork_dirs()
+    _handover_turn()
+    if stuck:
+        NODE_ERRORS["handover"] = (
+            "This node changed run-model, and the previous one's servers are still running here: "
+            + ", ".join(sorted(stuck)[:6])
+            + ". They hold the interfaces and ports this one needs. Stop them on the box "
+              "(`systemctl disable --now <name>`), then this node takes over on its next sync.")
+        print("handover: could not stop " + ", ".join(sorted(stuck)), flush=True)
+    else:
+        NODE_ERRORS.pop("handover", None)
+        print("handover: the previous run-model's components are stopped", flush=True)
+
+
+def backfill_cmd_markers(node_cfg):
+    """Write `#swg:cmd` into the confs of interfaces we already manage, once.
+
+    The marker only lands on confs written from now on, which would leave every interface that already
+    exists exposed to the thing it prevents — a conf moving between directories and coming back as the
+    other protocol. So stamp what is here. The source is the LIVE DEVICE, not our record: the device is
+    what the interface actually IS today (a record can be a copy of an earlier wrong guess, which is
+    exactly how this failure propagates), and an interface that is not up is left alone rather than
+    guessed at. Never touches a conf that already carries a marker, and never one we do not manage."""
+    live = {}
+    for tool in ("awg", "wg"):
+        with contextlib.suppress(Exception):
+            r = run(_wgcmd([tool]) + ["show", "interfaces"])
+            if r.returncode == 0:
+                for n in (r.stdout or "").split():
+                    live.setdefault(n, tool)          # awg first: an amneziawg device answers only to awg
+    for iface, rec in (node_cfg.get("interfaces") or {}).items():
+        conf = (rec or {}).get("conf") or ""
+        tool = live.get(iface)
+        if not (conf and tool and os.path.isfile(conf)):
+            continue
+        with contextlib.suppress(Exception):
+            with open(conf) as f:
+                head = f.read()
+            if "#swg:cmd" in head.split("[Interface]")[0]:
+                continue
+            with open(conf, "w") as f:
+                f.write("#swg:cmd " + tool + "\n" + head)
+            print("conf: stamped %s as %s (so it keeps its protocol wherever it goes)" % (iface, tool), flush=True)
+
+
+def _handover_fork_dirs():
+    """Carry each WDTT/csqtt instance's own directory into the root THIS run-model uses.
+
+    The two models keep fork state in different places — /opt/swg-{wdtt,csqtt} on bare-metal, the mounted
+    state dir in a container — so a switch left the new model looking at an empty root and treating live
+    servers as absent. WDTT survived that because its identity is escrowed and it HELD rather than mint a
+    new key, which is the system working but still costs the operator an unlock; csqtt has no escrow and
+    simply came back with a new owner password. Neither is necessary: the directory is right there on the
+    same box, and the record (shared now) says which instances there are.
+
+    Copy the state, never the binary: `server` is a symlink into a per-root .bin, and the install path
+    rewrites it anyway. An existing directory in this root is left completely alone — it is either ours
+    already or something we must not overwrite."""
+    for root, other, load in ((WDTT_ROOT, ("/opt/swg-wdtt" if NODE_KIND == "docker" else "/var/lib/swg-noded/wdtt"), _wdtt_load),
+                              (CSQTT_ROOT, ("/opt/swg-csqtt" if NODE_KIND == "docker" else "/var/lib/swg-noded/csqtt"), _csqtt_load)):
+        insts = {}
+        with contextlib.suppress(Exception):
+            insts = load() or {}
+        for iface in insts:
+            src, dst = os.path.join(other, iface), os.path.join(root, iface)
+            if os.path.exists(dst) or not os.path.isdir(src):
+                continue
+            with contextlib.suppress(Exception):
+                os.makedirs(root, exist_ok=True)
+                shutil.copytree(src, dst, symlinks=False, ignore=shutil.ignore_patterns("server", "*.log"))
+                print("handover: carried %s's state from %s into %s" % (iface, src, dst), flush=True)
+
+
+def _turn_record_raw():
+    """The turn record AS WRITTEN, without the bare-metal reconcile in load_turn_proxies().
+
+    That reconcile makes the unit files the inventory — a proxy whose unit is gone drops out, which is
+    right when an operator deletes a unit and wrong the moment we are asking what the PREVIOUS run-model
+    was carrying: its proxies were containers, so this arm has no unit for any of them."""
+    with contextlib.suppress(Exception):
+        with open(TURN_RECORD) as f:
+            d = json.load(f)
+        return [t for t in ((d or {}).get("turn_proxies") or []) if isinstance(t, dict) and t.get("service")]
+    return []
+
+
+def _handover_turn():
+    """Stand the previous run-model's turn proxies up in THIS model's form.
+
+    The two models keep turn proxies in different shapes — host units on bare-metal, sibling containers on
+    docker — so a switch does not merely leave them stopped, it leaves them with no representation here at
+    all: the panel's cards vanish and the operator's config goes with them. The shared record is what makes
+    this possible; it holds listen/connect/params, which is everything an install needs except the fork,
+    and that comes from the record or from the binary's own repo.txt.
+
+    Only ever for a proxy this arm does not already have, and errors are reported rather than retried:
+    installing pulls a binary, and a loop that re-pulls one every five seconds is worse than a card the
+    operator can press Reinstall on."""
+    rec = _turn_record_raw()
+    if not rec:
+        return
+    have = set()
+    with contextlib.suppress(Exception):
+        have = {t.get("service") for t in (load_turn_proxies() or []) if t.get("service")}
+    for t in rec:
+        svc = t["service"]
+        if svc in have:
+            continue
+        owner = (t.get("owner") or "").strip()
+        if not owner:
+            for rp in (_turn_repo_path(svc), _turn_repo_path_legacy(svc)):
+                with contextlib.suppress(Exception):
+                    with open(rp) as f:
+                        owner = f.read().strip()
+                if owner:
+                    break
+        if not (owner and t.get("listen") and t.get("connect")):
+            NODE_ERRORS["turn:" + svc] = (
+                "This node changed run-model and " + svc + " did not come across — its record does not say "
+                "which fork it runs, so it cannot be rebuilt here. Re-create it from the panel.")
+            continue
+        req = {"owner": owner, "listen": t["listen"], "connect": t["connect"], "params": t.get("params") or ""}
+        err = (_dturn_install(svc, req)[0] if TURN_DOCKER else _turn_install(svc, req))
+        if err:
+            NODE_ERRORS["turn:" + svc] = ("Rebuilding " + svc + " after the run-model change failed: " + str(err)[:120])
+            print("handover: turn %s could not be rebuilt: %s" % (svc, str(err)[:120]), flush=True)
+        else:
+            NODE_ERRORS.pop("turn:" + svc, None)
+            print("handover: turn %s rebuilt in this run-model's form" % svc, flush=True)
+
+
+def sc_disable_now_stop(svc):
+    """Stop AND unlink a unit a previous run-model left behind, without caring which of the two works.
+
+    `disable --now` fails as a whole where units live in a read-only directory (a store-based OS), and the
+    STOP is the half that matters — a server that keeps holding a tun device is the problem, an orphaned
+    unit file is not."""
+    q = shlex.quote(svc)
+    return ("systemctl stop " + q + " >/dev/null 2>&1; systemctl disable " + q + " >/dev/null 2>&1; "
+            "systemctl is-active --quiet " + q + " && exit 1; exit 0")
+
+
+def selfheal_ifaces(node_cfg, desired_ifaces, owned=None):
     """Interfaces the PANEL manages that are live on this box but that we hold no config for → onboard them
     ourselves, as {iface: {cmd, conf}} for onboard_ifaces.
 
@@ -5040,7 +5535,12 @@ def selfheal_ifaces(node_cfg, desired_ifaces):
     different situation — it may need recreating from a key backup, which is a decision, not a repair — and it
     must not be retried every five seconds.
     """
-    want = set(desired_ifaces or {})
+    # `owned` is the panel's actual set of interfaces; `desired_ifaces` is only the ones with settings still
+    # to apply. Reading the sparse map as the owned set meant an interface whose settings were all in sync was
+    # invisible here — so the one thing this function exists for (a live device we hold no conf for) was never
+    # healed unless it happened to have a pending override. Older panels send no `owned`; fall back to the old
+    # source so their behaviour is unchanged.
+    want = set(owned) if owned else set(desired_ifaces or {})
     have = set((node_cfg.get("interfaces") or {}).keys())
     gap = want - have
     if not gap:
@@ -5119,10 +5619,19 @@ def onboard_ifaces(node_cfg, onboard):
         except Exception as e:
             res["errors"].append(f"{iface}: {e}"); continue
         ifaces[iface] = {"cmd": cmd, "conf": conf, "onboarded": True}   # add-only: never wipe its peers
-        try:                                            # persist the marker in the conf so a docker restart
+        try:                                            # persist the markers in the conf so a docker restart
             with open(conf) as _f: _t = _f.read()       # (config.json rebuilt from confs) keeps it add-only
-            if "#swg:onboarded" not in _t:
-                with open(conf, "w") as _f: _f.write("#swg:onboarded\n" + _t)
+            _pre = "" if "#swg:onboarded" in _t else "#swg:onboarded\n"
+            # …and which protocol it is. This conf is the OPERATOR's file, adopted where it lies, so unlike
+            # the rebuilt one (see _reconstruct_conf) nothing has stamped it. Its directory is not evidence:
+            # a container writes every conf to the AmneziaWG dir, so an adopted plain-WireGuard interface
+            # that goes through a convert or a run-model switch comes back up as `awg` — node-entrypoint's
+            # add_iface falls back to location precisely when this line is missing. backfill_cmd_markers
+            # would stamp it, but only at the NEXT node start, and a convert need not include one.
+            if "#swg:cmd" not in _t.split("[Interface]")[0]:
+                _pre += "#swg:cmd " + (cmd[0] if cmd else "awg") + "\n"
+            if _pre:
+                with open(conf, "w") as _f: _f.write(_pre + _t)
         except OSError:
             pass
         changed = True
@@ -5524,6 +6033,19 @@ def create_ifaces(node_cfg, create, agent, sudo):
                                     "awg_params": want.get("awg_params"),   # restore: original obfuscation (else agent randomizes)
                                     "mtu": want.get("mtu")})
         if not r.get("ok"):
+            # THE NAME IS TAKEN BY A DEVICE THAT IS ALREADY HERE. That is not a failure to report and retry
+            # for ever — it is the interface the panel is asking for, already running, with the key its clients
+            # use. It happens whenever the node's RECORD is lost while the datapath survives: a container
+            # recreated, a run-model switched, a restored box. Creating over it is impossible (and would mint a
+            # new key); the right answer is to take the live one back, which is exactly what the self-heal does
+            # a few lines later in this same pass. Hand it that name instead of an error nobody can act on.
+            if r.get("code") == "name_taken":
+                if _live is None:
+                    _live = _live_wg_ifaces()
+                if iface in _live:
+                    res.setdefault("heal", []).append(iface)
+                    print("create: %s is already live here — adopting it back instead of recreating" % iface, flush=True)
+                    continue
             res["errors"].append(f"{iface}: {r.get('error')}"); continue
         data = r.get("data") or {}
         conf = data.get("conf") or ""
@@ -5542,6 +6064,32 @@ def create_ifaces(node_cfg, create, agent, sudo):
         except Exception as e:
             res["errors"].append(f"persist config.json: {e}")
     return res
+
+
+def orphan_mesh_links(node_cfg, owned):
+    """Mesh links (`swg_*`) we manage that the CURRENT panel does not claim — leftovers from a previous one.
+
+    A mesh link belongs to whichever panel created it: the node never invents one. Two things leave one
+    behind. The panel drops the link when its PEER NODE is deleted from the fleet — the ordinary path sends
+    an explicit delete, and this is the backstop for when that request is missed. And re-pointing a node at a
+    DIFFERENT panel (moving a box between fleets) leaves the old panel's links here for ever — no panel will
+    ever mention them again, they keep the mesh /31 they were handed, and the NEW panel's link to the same peer
+    then fails to come up ("RTNETLINK answers: Address already in use") on every reconcile, so the node can
+    never mesh. The operator cannot clear it from the panel either: `swg_*` names are deliberately hidden from
+    the adopt/candidate grids (they are the panel's own plumbing, not something to classify), so no control for
+    it exists anywhere.
+
+    `owned_ifaces` is the panel stating which interfaces are ITS OWN, so a `swg_*` in our managed set that it
+    does not claim is, by construction, somebody else's. Guarded three ways, because acting on this deletes an
+    interface: the key must be PRESENT (an older panel omits it — reap nothing), and non-empty (a panel that
+    has lost its own record must not be able to tear the mesh down), and only `swg_*` names are considered —
+    a USER interface the panel does not own is an adoption candidate, which is a different answer entirely.
+    """
+    if not isinstance(owned, list) or not owned:
+        return []
+    have = set(owned)
+    return sorted(n for n in (node_cfg.get("interfaces") or {})
+                  if n.startswith("swg_") and n not in have)
 
 
 def delete_ifaces(node_cfg, delete, agent, sudo):
@@ -5575,7 +6123,104 @@ def delete_ifaces(node_cfg, delete, agent, sudo):
 # the same on the HOST via a privileged --pid=host helper through the mounted docker.sock (nsenter
 # into PID 1). Test on a real node before relying on it. The socket = root-on-host (opt-in install).
 HELPER_IMAGE = os.environ.get("HELPER_IMAGE") or "ghcr.io/sanityprotocol/swg-node:latest"
-TURN_UNIT_DIR = "/etc/systemd/system"
+# ── where host systemd units go ─────────────────────────────────────────────────────────────────
+# PROBED, never guessed from the distro. On a host that keeps its units in a read-only store —
+# NixOS, and any other immutable-OS layout — /etc/systemd/system is a symlink into that store and
+# refuses a write, while /run/systemd/system is tmpfs, sits in systemd's search path directly below
+# it, and takes precedence over /usr/lib. Units written there are lost at reboot, which is fine:
+# reconcile recreates them, and persisted interfaces come up from the node's own bootstrap.
+#
+# The probe goes through host_sh because host_sh is what WRITES the unit — on a docker node the
+# directory that matters is the HOST's, not the container's.
+UNIT_DIR_PERSIST = "/etc/systemd/system"
+UNIT_DIR_RUNTIME = "/run/systemd/system"
+_UNIT_DIR = {"dir": None, "persist": True, "asked": False}
+
+
+def _probe_unit_dir():
+    """Decide once, on first use.
+
+    ⚠️ A REAL write probe, never os.access(..., W_OK) and never `[ -w ]`. As root those report a
+    mode-555 directory WRITABLE, because root bypasses the mode check — measured on swgt. They do
+    honour a read-only MOUNT (measured on the NixOS VM: `[ -w /etc/systemd/system ]` is false
+    there), so on today's NixOS they happen to give the right answer — by accident of which
+    mechanism that host uses, not because the check is sound. A write is the only thing that
+    answers both. uninstall.sh's unit_dir_writable() is the same shape for the same reason.
+
+    ⚠️ And "the probe failed" is not "the directory is read-only". A docker node with no socket
+    (rc 126), a sudo that wants a password, a missing shell — all of those come back non-zero too,
+    and concluding read-only from them would silently drop `systemctl enable` on a perfectly
+    ordinary host, which loses every service at the next reboot. Only an explicit marker decides;
+    anything else leaves the answer unresolved and today's behaviour in place.
+    """
+    if _UNIT_DIR["asked"]:
+        return
+    _UNIT_DIR["asked"] = True          # ONCE per process, whatever the answer — a probe that keeps
+    _UNIT_DIR["dir"] = UNIT_DIR_PERSIST   # retrying is a sudo attempt (or a docker run) per call,
+    #                                       which is the Z-12 shape: one repeating line, forever.
+    probe = UNIT_DIR_PERSIST + "/.swg-noded-unit-probe"
+    # The probe must say which of THREE things happened, because two of them are not "read-only":
+    # a non-zero exit also comes back when the probe never ran at all — host_sh wraps in sudo when
+    # we are not root, and a sudo that wants a password fails exactly like an EROFS write. Reading
+    # that as "read-only" would quietly drop `systemctl enable` on an ordinary box and cost it
+    # every service at the next reboot. So the shell prints which branch it took, and no marker
+    # means we could not look.
+    # ⚠️ The write goes in a SUBSHELL, exactly as uninstall.sh's unit_dir_writable() does it, and
+    # that is not style. `:` is a POSIX SPECIAL built-in, so a redirection error on it makes the
+    # SHELL EXIT — in dash, which is /bin/sh on Debian and Ubuntu. Inside `{ ...; }` that killed the
+    # whole probe before either marker could be printed, and the answer came back "could not look"
+    # on a host that is plainly read-only. Measured on the NixOS VM after I "tidied" the parentheses
+    # into braces. The subshell contains the exit.
+    w = host_sh("( : > " + shlex.quote(probe) + " ) 2>/dev/null"
+                " && { rm -f " + shlex.quote(probe) + "; echo SWGUNITDIR-RW; }"
+                " || echo SWGUNITDIR-RO")
+    out = (w.stdout or "")
+    if "SWGUNITDIR-RW" in out:
+        _UNIT_DIR["dir"], _UNIT_DIR["persist"] = UNIT_DIR_PERSIST, True
+        return
+    if "SWGUNITDIR-RO" not in out:                # we could not look — keep today's behaviour
+        if w.returncode != 126:                   # 126 already logged its own one-time notice
+            print("units: could not probe %s (rc=%d) — assuming it is writable, which is what this "
+                  "did before there was a probe" % (UNIT_DIR_PERSIST, w.returncode), flush=True)
+        return
+    host_sh("mkdir -p " + shlex.quote(UNIT_DIR_RUNTIME))
+    _UNIT_DIR["dir"], _UNIT_DIR["persist"] = UNIT_DIR_RUNTIME, False
+    print("units: %s is read-only on this host — writing to %s instead. Units there are recreated "
+          "by reconcile after a reboot; interfaces come back from the node's own bootstrap."
+          % (UNIT_DIR_PERSIST, UNIT_DIR_RUNTIME), flush=True)
+
+
+def turn_unit_dir():
+    _probe_unit_dir()
+    return _UNIT_DIR["dir"] or UNIT_DIR_PERSIST
+
+
+def unit_dir_persists():
+    """True when a unit written here survives a reboot — i.e. when `systemctl enable` can work."""
+    _probe_unit_dir()
+    return bool(_UNIT_DIR["persist"])
+
+
+def sc_enable_now(svc):
+    """`systemctl enable --now <svc>` where units persist; plain `start` where they cannot.
+
+    Measured on NixOS 26.05: `enable` fails with `…/multi-user.target.wants/…: Read-only file
+    system` even for a unit living in /run — systemd resolves .wants into the SYSTEM scope wherever
+    the unit itself sits. `start` works there.
+
+    ⚠️ An early probe reported `enable` SUCCEEDING on a /run unit, and this nearly got deleted on
+    the strength of it. That probe's unit had no [Install] section, so `enable` had nothing to link
+    and returned 0 trivially. Do not re-derive this from a test that cannot fail.
+    """
+    return ("systemctl enable --now " if unit_dir_persists() else "systemctl start ") + shlex.quote(svc)
+
+
+def sc_disable_now(svc):
+    """The mirror of sc_enable_now — and on a read-only unit dir it is also what makes a FOREIGN
+    server's take-over work at all (a hand-installed WDTT/csqtt server we are adopting): there
+    `disable --now` fails before it ever reaches the stop, leaving the other server running and
+    holding the port, while `stop` succeeds."""
+    return ("systemctl disable --now " if unit_dir_persists() else "systemctl stop ") + shlex.quote(svc)
 TURN_MANAGE_ON = (NODE_KIND != "docker") or ((os.environ.get("TURN_MANAGE") or "manual").strip().lower() == "panel")
 NODE_PROGRESS = {} # request key (iface name / turn service) -> transient "what's happening right now" line
                    # (e.g. a slow GitHub download retrying) → cmd_progress on the snapshot → yellow card note.
@@ -5584,17 +6229,62 @@ NODE_ERRORS = {}   # request key (iface name / turn service / .service path) -> 
 NODE_NOTES = {}    # iface -> one-line note about HOW it was adopted (succeeded, but not from the named source);
                    # reported as "onboard_notes" and written to the activity log once by the panel
 
+_HOST_SH_CAP = {"ok": None, "warned": False}
+
+
+def _host_sh_available():
+    """Can we reach the host at all? Bare-metal: always. Docker: only through the mounted socket.
+
+    TURN_MANAGE=manual is the compose DEFAULT, so a node installed without the socket is the common
+    case, not the exotic one — and every host_sh call there used to spawn a `docker run` that failed
+    with "Cannot connect to the Docker daemon". The discovery scan runs on every reconcile, so that
+    was a failing container launch and a log line every few seconds, forever. Answer the question
+    once instead."""
+    if NODE_KIND != "docker":
+        return True
+    if _HOST_SH_CAP["ok"] is None:
+        _HOST_SH_CAP["ok"] = bool(shutil.which("docker")) and any(
+            os.path.exists(p) for p in ("/var/run/docker.sock", "/run/docker.sock"))
+    return _HOST_SH_CAP["ok"]
+
+
 def host_sh(cmd, timeout=90):
     """Run a shell command on the HOST. Bare-metal: directly. Docker: via a one-shot privileged
     --pid=host helper through the mounted docker socket — nsenter into PID 1 so the command runs in
-    the host's namespaces (its filesystem + systemd)."""
+    the host's namespaces (its filesystem + systemd).
+
+    Returns rc=126 without trying when there is no way to reach the host (see _host_sh_available).
+    126 is deliberately distinct from the 125 docker itself returns and from a command's own 127:
+    callers that today read an empty stdout as "the host has nothing" can tell "could not look"
+    apart from "looked and found none"."""
+    if not _host_sh_available():
+        if not _HOST_SH_CAP["warned"]:
+            _HOST_SH_CAP["warned"] = True
+            print("host_sh: no docker socket on this node (TURN_MANAGE=manual) — host-side reads, "
+                  "foreign-server discovery and unit management are unavailable; "
+                  "further attempts are skipped silently", flush=True)
+        class _R:
+            returncode = 126; stdout = ""; stderr = "host_sh unavailable: no docker socket mounted"
+        return _R()
     if NODE_KIND != "docker":
         args = ["sh", "-c", cmd] if os.geteuid() == 0 else ["sudo", "-n", "sh", "-c", cmd]
     else:
         # --entrypoint nsenter is REQUIRED: the swg-node image's entrypoint is node-entrypoint.sh
         # (it demands PANEL_URL + sets up wg) — passing nsenter as the command alone still runs it.
+        #
+        # Once inside the host's mount namespace the PATH we get is the host's, and on a
+        # declaratively managed host (NixOS and friends) nothing we call is where a normal distro
+        # puts it. Measured on NixOS 26.05: of the ten tools these commands actually invoke, NINE
+        # were unreachable — cat, systemctl, ip, wg, tar, base64, chmod, mkdir, pgrep — leaving only
+        # the shell builtin. The failure is quiet in the worst way: `sh -c` hands back the command's
+        # own 127, so a missing binary is indistinguishable from "the operation failed".
+        # Prefixing the system profile recovered all nine. Elsewhere the directory simply does not
+        # exist, so this is inert. Prepended with a NEWLINE, not "; ", so a cmd that opens with a
+        # comment or a heredoc is unaffected. Kept in its OWN variable so the failure logs below
+        # still show the caller's command, not 47 characters of prefix.
+        _wrapped = "export PATH=/run/current-system/sw/bin:$PATH\n" + cmd
         args = ["docker", "run", "--rm", "--privileged", "--pid=host", "--entrypoint", "nsenter",
-                HELPER_IMAGE, "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", cmd]
+                HELPER_IMAGE, "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", _wrapped]
     try:
         r = run(args, timeout=timeout)
     except Exception as e:                              # e.g. 'docker' not found, or a timeout
@@ -5607,7 +6297,7 @@ def host_sh(cmd, timeout=90):
     return r
 
 def _turn_unit_path(svc):
-    return TURN_UNIT_DIR + "/" + svc + ".service"
+    return turn_unit_dir() + "/" + svc + ".service"
 
 def _exec_of(unit_text):
     for ln in unit_text.splitlines():
@@ -6162,6 +6852,23 @@ def _dturn_bg_loop():   # background thread: keep turn-proxy containers up WITHO
 # Editing a turn-proxy then only rewrites turn.env + `systemctl restart` — systemd re-parsing EVERY unit
 # (daemon-reload) was the CPU spike. Old units (values baked into ExecStart) are migrated on first edit.
 def _turn_env_path(svc): return "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/turn.env"
+
+def _fork_unit_path_env():
+    """`Environment=PATH=…` for the fork systemd units (turn / wdtt / csqtt), or "" where it isn't needed.
+
+    The downloaded fork binaries shell out to iproute2 / wireguard tools — a WDTT server runs
+    `ip addr add` and EXITS 1 if it cannot find `ip`. On bare-metal those tools sit on systemd's default
+    unit PATH (`/usr/sbin:/sbin:…`), so nothing is needed and we add nothing — otherwise every existing
+    fork unit would drift and briefly bounce for no functional gain. On a store-based OS (NixOS) they are
+    NOT on that default PATH: they live in the store, on swg-noded's OWN PATH (which node.nix curates with
+    iproute2 / wireguard-tools / amneziawg-tools / iptables). Propagate that PATH — it already resolves
+    every tool here — and append the FHS dirs as a fallback. Detected by `/nix/store` being on our PATH;
+    docker forks run as child processes of this daemon and inherit the environment directly, so only the
+    systemd-unit path needs this at all."""
+    p = os.environ.get("PATH", "")
+    if "/nix/store" not in p:
+        return ""
+    return "Environment=PATH=" + p.strip(":") + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
 _WANIF_RE = re.compile(r"^[A-Za-z0-9._-]{1,15}$")
 def _safe_wan(w, fallback):
     """A WAN NIC name safe to splice into an iptables rule (which is later re-parsed from `iptables -S` and
@@ -6263,9 +6970,15 @@ def _turn_install(svc, req):
     envp = _turn_env_path(svc)
     unit = ("[Unit]\nDescription=vk-turn-proxy (" + owner + ") - " + listen + " -> " + connect + "\n"
             "After=network-online.target\nWants=network-online.target\n\n"
-            "[Service]\nEnvironmentFile=-" + envp + "\n"
+            "[Service]\n" + _fork_unit_path_env() + "EnvironmentFile=-" + envp + "\n"
             "ExecStart=" + binp + " -listen ${SWG_LISTEN} -connect ${SWG_CONNECT} $SWG_PARAMS\n"
-            "Restart=on-failure\nRestartSec=3\n" + TURN_UNIT_HARDENING + "\n"
+            # Same backoff as the wdtt/csqtt units (systemd <254 ignores both keys). A turn proxy's
+            # standing permanent failure is the one _turn_verify exists for — a -listen IP that is not an
+            # address on this host — and that bind fails identically for ever. Written on install and
+            # reinstall only: turn units can be ONBOARDED (_tp_from_unit reads a unit this daemon did not
+            # write, including the pre-EnvironmentFile form), so there is deliberately no drift-rewrite
+            # here to push our rendering over an operator's or an installer's unit.
+            "Restart=on-failure\nRestartSec=3\nRestartSteps=8\nRestartMaxDelaySec=300\n" + TURN_UNIT_HARDENING + "\n"
             "[Install]\nWantedBy=multi-user.target\n")
     pin_tag, want = _turn_pin(req.get("pin"))             # panel checksum gate: pin the immutable tag + expected sha256
     tag = pin_tag or _turn_resolve_tag(owner)
@@ -6281,7 +6994,7 @@ def _turn_install(svc, req):
            + ((" && printf %s " + shlex.quote(tag) + " > " + shlex.quote(fdir + "/version.txt")) if tag else "")
            + " && cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, extra) + "SWGENV\n"
            + "cat > " + shlex.quote(_turn_unit_path(svc)) + " <<'SWGEOF'\n" + unit + "SWGEOF\n"
-           + "systemctl daemon-reload && systemctl enable --now " + shlex.quote(svc) + " >/dev/null 2>&1")
+           + "systemctl daemon-reload && " + sc_enable_now(svc) + " >/dev/null 2>&1")
     w = host_sh(cmd, timeout=210)
     if w.returncode != 0:
         return (w.stderr or w.stdout or "install failed").strip()[:160]
@@ -6416,7 +7129,7 @@ def apply_turn(turn, turn_onboard):
                     changed = True; good(svc, "ins:" + svc)
                 continue
             if act == "delete":
-                w = host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "
+                w = host_sh(sc_disable_now(svc) + " >/dev/null 2>&1; "
                             "rm -f " + shlex.quote(up) + "; systemctl daemon-reload")
                 if w.returncode != 0:
                     fail(svc, (w.stderr or "remove failed").strip()[:120]); continue
@@ -6474,13 +7187,13 @@ def apply_turn(turn, turn_onboard):
                 tp = rec.get(svc)
                 if not tp:
                     fail(svc, "turn-proxy not in the node record"); continue
-                host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; systemctl stop " + shlex.quote(svc) + " >/dev/null 2>&1; true")
+                host_sh(sc_disable_now(svc) + " >/dev/null 2>&1; systemctl stop " + shlex.quote(svc) + " >/dev/null 2>&1; true")
                 tp["stopped"] = True; rec[svc] = tp; changed = True; good(svc, "stop:" + svc); continue
             if act == "start":                # re-enable + start the unit
                 tp = rec.get(svc)
                 if not tp:
                     fail(svc, "turn-proxy not in the node record"); continue
-                w = host_sh("systemctl enable --now " + shlex.quote(svc))
+                w = host_sh(sc_enable_now(svc))
                 if w.returncode != 0:
                     fail(svc, (w.stderr or "start failed").strip()[:120]); continue
                 tp.pop("stopped", None); rec[svc] = tp; changed = True
@@ -6557,7 +7270,7 @@ def apply_turn(turn, turn_onboard):
 # On docker /opt/... is the container's EPHEMERAL layer — a recreate would lose wg-keys.dat (the server identity) →
 # every GETCONF'd client breaks. Root WDTT state under the PERSISTED node volume (/var/lib/swg-noded → ./data/node)
 # so identity + the install record survive a container recreate, exactly like bare-metal's on-disk /opt.
-WDTT_RECORD = os.environ.get("SWG_WDTT_RECORD") or ("/var/lib/swg-noded/wdtt.json" if NODE_KIND == "docker" else "/etc/swg-agent/wdtt.json")
+WDTT_RECORD = _shared_record("wdtt.json", "/etc/swg-agent/wdtt.json", "SWG_WDTT_RECORD")
 WDTT_ROOT = "/var/lib/swg-noded/wdtt" if NODE_KIND == "docker" else "/opt/swg-wdtt"   # per-instance: <root>/<iface>/{server, wdtt.env, desired.json, passwords.json, wg-keys.dat}
 WDTT_BIN_DIR = WDTT_ROOT + "/.bin"               # per-fork/arch binary slot; our patched build
 WDTT_OWNER = "amurcanov/proxy-turn-vk-android"   # default fork's panel-mirror key
@@ -6594,8 +7307,7 @@ _WDTT_CIDR_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
 # filesystem, and only /var/lib/swg-noded is a mounted volume. Writing the record to /etc there meant every
 # container recreate lost the NODE-OWNED owner password (re-minted, silently rotating it out from under the
 # instance's own passwords.json) and any in-flight adoption's captured users.
-CSQTT_RECORD = os.environ.get("SWG_CSQTT_RECORD") or (
-    "/var/lib/swg-noded/csqtt.json" if NODE_KIND == "docker" else "/etc/swg-agent/csqtt.json")
+CSQTT_RECORD = _shared_record("csqtt.json", "/etc/swg-agent/csqtt.json", "SWG_CSQTT_RECORD")
 # Where an instance lives. On docker this MUST be inside the container: the server runs as a supervised child of
 # swg-noded there (no systemd), and its config-dir + password store have to be readable by the same process that
 # writes desired.json and reports the snapshot. Pointing at /opt/swg-csqtt on a docker node is what left the panel
@@ -6623,7 +7335,7 @@ _CSQTT_LASTBYTES = {}                            # iface -> {pw: (up+down, at)} 
 
 def _wdtt_svc(iface): return "swg-wdtt-" + iface
 def _wdtt_dir(iface): return WDTT_ROOT + "/" + iface
-def _wdtt_unit_path(iface): return TURN_UNIT_DIR + "/" + _wdtt_svc(iface) + ".service"
+def _wdtt_unit_path(iface): return turn_unit_dir() + "/" + _wdtt_svc(iface) + ".service"
 def _wdtt_bin_shared(fork): return WDTT_BIN_DIR + "/" + fork + "/" + _turn_arch() + "/wdtt-server"
 def _wdtt_keyfile(iface): return _wdtt_dir(iface) + "/wg-keys.dat"
 
@@ -6768,7 +7480,7 @@ def _wdtt_unit_text(iface, binp, cfgdir, fork):
         forkflags = " -password ${SWG_PASSWORD} -max-passwords ${SWG_MAXPW} -fixed-config"
     return ("[Unit]\nDescription=swg-wdtt (" + WDTT_FORK_OWNER.get(fork, WDTT_OWNER) + ") — " + iface + "\n"
             "After=network-online.target\nWants=network-online.target\n\n"
-            "[Service]\nType=simple\nEnvironmentFile=-" + cfgdir + "/wdtt.env\n"
+            "[Service]\nType=simple\n" + _fork_unit_path_env() + "EnvironmentFile=-" + cfgdir + "/wdtt.env\n"
             "ExecStart=" + binp + " -iface ${SWG_IFACE} -wg-addr ${SWG_WGADDR} -listen ${SWG_LISTEN}"
             " -wg-port ${SWG_WGPORT} -config-dir ${SWG_CFGDIR} -desired ${SWG_DESIRED} -no-nat"
             # Operator extra flags. MUST be $SWG_PARAMS, never ${SWG_PARAMS}: systemd treats the braced form as a
@@ -6777,7 +7489,13 @@ def _wdtt_unit_text(iface, binp, cfgdir, fork):
             # the default no-extra-flags case. The unbraced form splits on whitespace and empty contributes nothing
             # (this is also what the turn-proxy units use).
             + forkflags + " $SWG_RAWFLAGS $SWG_PARAMS\n"
-            "Restart=on-failure\nRestartSec=3\n"
+            # Restart, but with a BACKOFF. A server that cannot start at all (a missing tool on its PATH, a
+            # -listen address that is not on this host) used to respawn every 3s for ever — a dead loop that
+            # costs a small node real CPU and fills the journal, and that no reconcile pass interrupted. The
+            # delay grows 3s → 5 min over 8 steps, so a transient cause still recovers in seconds and a
+            # permanent one settles into one attempt per 5 min. Both keys are systemd ≥254; older systemd
+            # logs "Unknown key name" and ignores them, which is exactly today's behaviour.
+            "Restart=on-failure\nRestartSec=3\nRestartSteps=8\nRestartMaxDelaySec=300\n"
             "NoNewPrivileges=yes\nAmbientCapabilities=CAP_NET_ADMIN\nCapabilityBoundingSet=CAP_NET_ADMIN\n"
             "DeviceAllow=/dev/net/tun rw\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths=" + cfgdir + "\n"
             "ProtectControlGroups=yes\nProtectKernelModules=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n"
@@ -7319,7 +8037,7 @@ def _wdtt_adopt_seed(inst):
     # outright the moment ours stopped, handing clients back to the server we just replaced.
     _unit = _wdtt_unit_of_pid(probe["pid"], _host_pid)
     if _unit and not _unit.startswith("swg-wdtt-"):        # never our own supervisor
-        host_sh("systemctl disable --now " + shlex.quote(_unit) + " >/dev/null 2>&1; :")
+        host_sh(sc_disable_now(_unit) + " >/dev/null 2>&1; :")
     # A container is the OTHER kind of supervisor, and _wdtt_unit_of_pid cannot see it: every WDTT fork ships a
     # Docker install, and a foreign server running as its own container reads back as unsupervised. TERM/KILL
     # against `restart: unless-stopped` brings it straight back, ours never binds the port, and the take-over
@@ -7405,7 +8123,7 @@ def _wdtt_install(inst):
         with open(_wdtt_unit_path(iface), "w") as f: f.write(_wdtt_unit_text(iface, binp, cfgdir, fork))
     except Exception as e:
         return ("unit write failed: " + str(e))[:160]
-    w = host_sh("systemctl daemon-reload && systemctl enable --now " + shlex.quote(svc) + " >/dev/null 2>&1", timeout=120)
+    w = host_sh("systemctl daemon-reload && " + sc_enable_now(svc) + " >/dev/null 2>&1", timeout=120)
     if w.returncode != 0:
         return (w.stderr or w.stdout or "install failed").strip()[:160]
     return _wdtt_verify(svc)
@@ -7424,6 +8142,48 @@ def _wdtt_params_changed(prev, inst):
                 != str(inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or "")))
             or (prev.get("params") or "").strip() != (inst.get("params") or "").strip()   # extra ExecStart flags → rewrite unit + restart
             or _wdtt_raw(prev) != _wdtt_raw(inst))   # RAW listener turned on/off or moved → same treatment
+
+def _wdtt_unit_drifted(iface, inst, prev):
+    """True when the on-disk unit differs from what THIS build would write for the fork that is INSTALLED
+    (docker has no unit → never).
+
+    Why it exists: the unit is written on install and on a PARAMETER change, and nowhere else — so a fix to the
+    unit ITSELF never reached an instance that already existed. A WDTT server needs `ip` on its PATH, which a
+    systemd unit does not have on a store-based OS (see _fork_unit_path_env); every WDTT instance installed
+    before that fix crash-looped for ever, and reconcile SKIPPED it because the unit was present. Comparing the
+    rendered text heals those on the next sync after a node update. csqtt has had this since _csqtt_unit_drifted;
+    WDTT is the one that did not.
+
+    Why `prev` and not just `inst`: the unit is rendered PER FORK (each fork takes a different flag tail), and a
+    fork change is deliberately not a reconfigure — _wdtt_params_changed leaves it out so a live server is never
+    hot-swapped onto another author's binary and password-store format. Rendering the panel's fork here would
+    smuggle that swap back in through the drift path. So compare against the fork this node RECORDS as installed,
+    and skip entirely when the two disagree or when there is no record to trust.
+    """
+    if NODE_KIND == "docker":
+        return False
+    if not prev or _wdtt_fork(prev) != _wdtt_fork(inst):
+        return False
+    try:
+        with open(_wdtt_unit_path(iface)) as f:
+            have = f.read()
+    except OSError:
+        return False                       # missing unit is the install path's problem, not a drift
+    cfgdir = _wdtt_dir(iface)
+    return have.strip() != _wdtt_unit_text(iface, cfgdir + "/server", cfgdir, _wdtt_fork(inst)).strip()
+
+def _wdtt_write_unit(iface, inst):
+    """Write the unit + daemon-reload, and DON'T start anything. For a drifted unit on an instance the operator
+    has STOPPED: the fix has to reach the file (or the next start replays the old breakage), but starting a
+    server that was deliberately turned off is not a heal. '' on success else an error."""
+    cfgdir = _wdtt_dir(iface)
+    try:
+        with open(_wdtt_unit_path(iface), "w") as f:
+            f.write(_wdtt_unit_text(iface, cfgdir + "/server", cfgdir, _wdtt_fork(inst)))
+    except Exception as e:
+        return ("unit write failed: " + str(e))[:160]
+    host_sh("systemctl daemon-reload >/dev/null 2>&1")
+    return ""
 
 def _wdtt_reconfigure(inst):
     """Apply a transport-param change (listen / wg-port / max) to a RUNNING WDTT instance: rewrite wdtt.env + the
@@ -7531,9 +8291,9 @@ def _wdtt_apply_stopped(iface, stopped, inst=None):
         return
     svc = _wdtt_svc(iface)
     if stopped:
-        host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1")
+        host_sh(sc_disable_now(svc) + " >/dev/null 2>&1")
     else:
-        host_sh("systemctl enable --now " + shlex.quote(svc) + " >/dev/null 2>&1")
+        host_sh(sc_enable_now(svc) + " >/dev/null 2>&1")
 
 def _wdtt_del_iptables_comment(table, chain, tag):
     """Delete every rule in <table>/<chain> whose comment is EXACTLY `tag` (the trailing quote in the rendered
@@ -7553,7 +8313,7 @@ def _wdtt_remove(iface):
         with contextlib.suppress(Exception): shutil.rmtree(_wdtt_dir(iface))
     else:
         svc = _wdtt_svc(iface)
-        host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "
+        host_sh(sc_disable_now(svc) + " >/dev/null 2>&1; "
                 "rm -f " + shlex.quote(_wdtt_unit_path(iface)) + "; systemctl daemon-reload; "
                 "ip link del " + shlex.quote(iface) + " 2>/dev/null; "
                 "rm -rf " + shlex.quote(_wdtt_dir(iface)))
@@ -7759,7 +8519,19 @@ def reconcile_wdtt(want, remove=None):
                     if err:
                         res["errors"].append(iface + ": " + err); continue
                     res["changed"] += 1
-                if _wdtt_params_changed(prev, inst):        # listen/wg-addr/wg-port/max changed → rewrite unit + restart (identity kept)
+                # Heal a unit that no longer matches what this build writes — a fix to the unit itself (the PATH
+                # a store-based OS needs, the restart backoff) otherwise never reaches an instance that already
+                # exists, and a broken one crash-loops for ever because `present` is all reconcile looks at.
+                # Rendered-text comparison, so it fires once per real change and not on every 5s sync.
+                _drifted = _wdtt_unit_drifted(iface, inst, prev)
+                if _drifted and inst.get("stopped"):
+                    # deliberately down: the file gets the fix, the server stays stopped (see _wdtt_write_unit)
+                    _e = _wdtt_write_unit(iface, inst)
+                    if _e:
+                        res["errors"].append(iface + ": " + _e)
+                    else:
+                        res["changed"] += 1
+                elif _drifted or _wdtt_params_changed(prev, inst):   # listen/wg-addr/wg-port/max changed → rewrite unit + restart (identity kept)
                     # subnet MOVED → drop stale device-IP bindings first. Requires a previous subnet to have moved
                     # FROM: with no prior record (the first sync after an adopt, or a lost node record) every param
                     # reads as "changed", and resetting there threw away the device bindings — client IPs and the
@@ -7782,6 +8554,17 @@ def reconcile_wdtt(want, remove=None):
                     _wdtt_docker_start(inst)
                 else:
                     host_sh("systemctl restart " + shlex.quote(_wdtt_svc(iface)) + " >/dev/null 2>&1")   # operator-requested bounce (nonce acted on once)
+                res["changed"] += 1
+            # bare-metal: the same supervision, for the case systemd cannot cover. Restart=on-failure brings a
+            # server back from a CRASH, but not from a clean stop — a `systemctl stop` by hand, a unit left down
+            # by an arm switch or a converter — and reconcile skipped it because the unit was PRESENT. The panel
+            # says this instance should be running, so a node that has converged is one where it is. `activating`
+            # counts as running: it is what a backing-off restart looks like, and starting it again would only
+            # reset the backoff this build just added.
+            if (NODE_KIND != "docker" and _wdtt_present(iface) and not bool(inst.get("stopped"))
+                    and (host_sh("systemctl is-active " + shlex.quote(_wdtt_svc(iface)) + " 2>/dev/null").stdout or "").strip()
+                        not in ("active", "activating", "reloading")):
+                host_sh(sc_enable_now(_wdtt_svc(iface)) + " >/dev/null 2>&1")
                 res["changed"] += 1
             # docker: supervise — relaunch a server that died (crash / prior noded exit), the equivalent of systemd Restart=on-failure
             if NODE_KIND == "docker" and _wdtt_present(iface) and not bool(inst.get("stopped")) and not _wdtt_docker_alive(iface):
@@ -8003,12 +8786,20 @@ CSQTT_FORK_OWNER = {"csqtt": "amurcanov/csqtt"}
 def _csqtt_fork_unknown(inst):
     f = ((inst or {}).get("fork") or "").strip()
     return "" if (not f or f in CSQTT_FORK_OWNER) else f
-def _csqtt_unit_path(iface): return TURN_UNIT_DIR + "/" + _csqtt_svc(iface) + ".service"
+def _csqtt_unit_path(iface): return turn_unit_dir() + "/" + _csqtt_svc(iface) + ".service"
 def _csqtt_present(iface):
-    """Is this instance set up on THIS node? docker: its binary symlink is laid down. systemd: its unit exists."""
+    """Is this instance set up on THIS node? docker: its binary symlink is laid down. systemd: unit AND binary."""
     if NODE_KIND == "docker":
         return os.path.exists(_csqtt_dir(iface) + "/server")
-    return os.path.exists(_csqtt_unit_path(iface))
+    # bare-metal: the unit file AND a WORKING binary symlink must BOTH be laid down — the same rule
+    # _wdtt_present already enforces, which is why WDTT survived this and csqtt did not. A unit whose
+    # `server` symlink is missing or dangling is NOT "present": treating it as installed sends the
+    # reconcile down the update branch (_csqtt_reconfigure), which re-lays the symlink and restarts but
+    # NEVER fetches, so the instance sits in a 203/EXEC crash-loop reporting "starting" for ever — it
+    # only recovers if some OTHER instance's install happens to fetch the shared binary. os.path.exists
+    # follows the link, so a dangling one (binary not fetched yet, or /opt wiped under a unit that lives
+    # in /run) re-installs. Measured on the nix box: unit started 13:13:16, binary landed 13:17:21.
+    return os.path.exists(_csqtt_unit_path(iface)) and os.path.exists(_csqtt_dir(iface) + "/server")
 def _csqtt_subnet(cidr):
     try: return str(ipaddress.ip_network(cidr, strict=False))
     except Exception: return ""
@@ -8067,7 +8858,7 @@ def _csqtt_unit_text(iface, binp, cfgdir):
     # --desired. $SWG_PARAMS unbraced (word-split; empty contributes nothing) — same as WDTT.
     return ("[Unit]\nDescription=swg-csqtt (" + CSQTT_OWNER + ") — " + iface + "\n"
             "After=network-online.target\nWants=network-online.target\n\n"
-            "[Service]\nType=simple\nEnvironmentFile=-" + cfgdir + "/csqtt.env\n"
+            "[Service]\nType=simple\n" + _fork_unit_path_env() + "EnvironmentFile=-" + cfgdir + "/csqtt.env\n"
             # Same recovery as the docker path's _csqtt_clear_stale_tun: a TUN still holding this name makes the
             # server die on "create TUN device", and Restart=on-failure then retries against it forever. `-` so the
             # normal case, where there is nothing to delete, is not a startup failure.
@@ -8076,7 +8867,11 @@ def _csqtt_unit_text(iface, binp, cfgdir):
             " --password ${SWG_PASSWORD} --no-web"
             " --iface ${SWG_IFACE} --tun-addr ${SWG_TUNADDR} --desired ${SWG_DESIRED} --no-nat"
             " --max-passwords ${SWG_MAXPW} $SWG_PARAMS\n"
-            "Restart=on-failure\nRestartSec=3\n"
+            # Backs off like the WDTT unit: 3s → 5 min over 8 steps. csqtt's own history is the argument —
+            # the @io-uring syscall group that does not exist left every bare-metal instance restarting
+            # every 3s for ever. systemd <254 ignores both keys (today's behaviour). _csqtt_unit_drifted
+            # carries this to instances that already exist, at one restart each.
+            "Restart=on-failure\nRestartSec=3\nRestartSteps=8\nRestartMaxDelaySec=300\n"
             "NoNewPrivileges=yes\nAmbientCapabilities=CAP_NET_ADMIN\nCapabilityBoundingSet=CAP_NET_ADMIN\n"
             "DeviceAllow=/dev/net/tun rw\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths=" + cfgdir + "\n"
             "ProtectControlGroups=yes\nProtectKernelModules=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n"
@@ -8298,6 +9093,14 @@ def _csqtt_seccomp_autofix():
     """
     if NODE_KIND != "docker":
         return ""
+    # A DECLARATIVE host owns this container: there is no .env to edit and no compose to re-run, and
+    # both the write and the advice were nonsense there — the write failed on every sync (rc 3, one
+    # noisy host_sh line per 5s) and the message told a NixOS operator to run docker compose. Name the
+    # option that actually governs it instead, and touch nothing.
+    if NODE_DECLARATIVE:
+        return ("csqtt needs the io_uring syscalls, which this container's seccomp profile denies. "
+                "This node is managed declaratively, so set it there — `services.swg-node.seccomp = "
+                "\"unconfined\";` — and rebuild. csqtt starts on the next sync.")
     if os.path.exists(SECCOMP_MARK):
         return ("csqtt needs the io_uring syscalls, which this container's seccomp profile denies. "
                 "SWG_NODE_SECCOMP=unconfined was already applied here and csqtt still cannot start — "
@@ -8398,7 +9201,7 @@ def _csqtt_install(inst):
         with open(_csqtt_unit_path(iface), "w") as f: f.write(_csqtt_unit_text(iface, binp, cfgdir))
     except Exception as e:
         return ("unit write failed: " + str(e))[:160]
-    host_sh("systemctl daemon-reload; systemctl enable --now " + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
+    host_sh("systemctl daemon-reload; " + sc_enable_now(_csqtt_svc(iface)) + " >/dev/null 2>&1")
     return _csqtt_verify(iface)
 
 def _csqtt_reconcile_desired(iface, passwords):
@@ -8447,8 +9250,15 @@ def _csqtt_reconfigure(inst):
     """Apply a transport-param change (listen / tun-addr / max / params) to a running instance: rewrite csqtt.env
     + the unit and restart. The store (passwords.json) is preserved."""
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface); binp = cfgdir + "/server"
+    binshared = _csqtt_bin_shared()
+    if not os.path.exists(binshared):        # same-arch self-heal, mirroring _wdtt_reconfigure: without this
+        _e = _csqtt_fetch_bin(inst, binshared)   # a reconfigure lays a DANGLING symlink and restarts into 203/EXEC
+        if _e:
+            return _e
+        if not os.path.exists(binshared):
+            return "csqtt binary missing after a reportedly successful fetch — check free space on " + os.path.dirname(binshared)
     try:
-        _csqtt_write_cfgdir(inst, _csqtt_bin_shared(), binp, cfgdir)
+        _csqtt_write_cfgdir(inst, binshared, binp, cfgdir)
         if NODE_KIND != "docker":
             with open(_csqtt_unit_path(iface), "w") as f: f.write(_csqtt_unit_text(iface, binp, cfgdir))
     except Exception as e:
@@ -8472,7 +9282,7 @@ def _csqtt_remove(iface):
         _wdtt_del_iptables_comment("mangle", "FORWARD", "swg-egress-mss:" + iface)
         return
     svc = _csqtt_svc(iface)
-    host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "
+    host_sh(sc_disable_now(svc) + " >/dev/null 2>&1; "
             "rm -f " + shlex.quote(_csqtt_unit_path(iface)) + "; systemctl daemon-reload; "
             "ip link del " + shlex.quote(iface) + " 2>/dev/null; "
             "rm -rf " + shlex.quote(_csqtt_dir(iface)))
@@ -8698,7 +9508,7 @@ def _csqtt_stop_foreign(iface, cfgdir):
     pid, _f = hit
     unit = _wdtt_unit_of_pid(pid, _host)
     if unit and not unit.startswith(("swg-csqtt-", "swg-wdtt-")):     # never our own supervisor
-        host_sh("systemctl disable --now " + shlex.quote(unit) + " >/dev/null 2>&1; :")
+        host_sh(sc_disable_now(unit) + " >/dev/null 2>&1; :")
     cid = _csqtt_container_of(pid)
     if cid:
         # `docker stop`, never `rm`: this is someone else's container and their data. stop also settles the
@@ -8859,6 +9669,14 @@ def reconcile_csqtt(want, remove=None):
                 else:
                     host_sh("systemctl restart " + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
                 res["changed"] += 1
+            # bare-metal: start a present instance the panel wants running that is not (see the same block in
+            # reconcile_wdtt — Restart=on-failure does not come back from a clean stop, and `present` was all
+            # reconcile looked at).
+            if (NODE_KIND != "docker" and _csqtt_present(iface) and not bool(inst.get("stopped"))
+                    and (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null").stdout or "").strip()
+                        not in ("active", "activating", "reloading")):
+                host_sh(sc_enable_now(_csqtt_svc(iface)) + " >/dev/null 2>&1")
+                res["changed"] += 1
             # docker has no Restart=on-failure: a server that died since the last pass is relaunched here, which
             # is what makes the supervised model as durable as the systemd one.
             if (NODE_KIND == "docker" and not inst.get("stopped") and _csqtt_present(iface)
@@ -8958,6 +9776,46 @@ def run_self_update(node_cfg, want):
         return False
 
 
+UPDATE_RESULT_FILE = os.path.join(STATE_DIR, ".update-result")
+
+
+def update_auto():
+    """Can the panel's Update button actually do anything on this node?
+
+    ⚠️ MIRRORS THE BRANCH ORDER IN THE SYNC LOOP, and must keep mirroring it: a trigger wins outright;
+    without one a declarative host and a container both refuse — a container cannot recreate its own
+    image, and a declarative host's installation belongs to the configuration that built it. Reported
+    as a capability (like `turn_manage`) so the panel can refuse UP FRONT instead of staging a request
+    whose only possible outcome is a red tag on this node.
+
+    Unconditional in the snapshot, so it is a fact about every node and not a Nix-shaped exception."""
+    return bool(os.environ.get("SWG_UPDATE_TRIGGER")) or (not NODE_DECLARATIVE and NODE_KIND != "docker")
+
+
+def report_update_result(panel):
+    """Relay the outcome of an update this daemon could not watch.
+
+    On a declaratively-managed host the panel/node does not run the updater — it touches a trigger and a root
+    unit rebuilds the system. That rebuild can fail for reasons that have nothing to do with us (a broken
+    unrelated flake input, an out-of-tree kernel module against a new kernel), and it fails AFTER this process
+    has been restarted or replaced, so nothing here ever sees it. The unit writes its verdict to
+    `.update-result` — one line of state, then the command's output tail — and we forward it on the next sync
+    and delete it. That is the difference between "the button is broken" and "your kernel pin needs bumping".
+
+    Read-and-delete BEFORE the POST would lose the message if the panel is unreachable; delete after, and a
+    panel that never comes back leaves one small file behind. The second is the cheaper failure."""
+    try:
+        with open(UPDATE_RESULT_FILE) as f:
+            state = (f.readline() or "").strip()
+            err = f.read().strip()
+    except OSError:
+        return
+    if state:
+        report_proc(panel, state, err or None)
+    with contextlib.suppress(OSError):
+        os.unlink(UPDATE_RESULT_FILE)
+
+
 def report_proc(panel, state, err=None):
     """Best-effort POST of a lifecycle proc-status (e.g. 'update-failed' + reason) to the panel, so a failure
     that never reaches the normal script-side lifecycle reporting still surfaces as a red tag on the node."""
@@ -8991,6 +9849,48 @@ def _force_reverify():
             os.unlink(os.path.join(GEO_DIR, fn))
 
 _STATE_LOCK_FD = None          # held for the process lifetime → single-instance-per-state-dir guard
+def _proc_cmdline(pid):
+    """argv of a pid as a list of str, or [] if it is gone / unreadable."""
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            return [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        return []
+
+
+def _flock_holder(path):
+    """Who holds the flock on `path`, asked of the KERNEL (/proc/locks) rather than claimed.
+    (pid,"held") / (None,"held") for an unattributed lock / (None,"free") / (None,"unknown").
+
+    The panel carries the same helper for the same reason and with the same two decisions: a `-> `
+    line is a process BLOCKED on the lock, not its holder, and the match is on INODE alone because
+    /proc/locks prints a hex device that a btrfs/zfs/overlay st_dev never equals — so a device check
+    would MISS real holders on the filesystems people actually run."""
+    try:
+        ino = os.stat(path).st_ino
+    except OSError:
+        return None, "unknown"
+    try:
+        with open("/proc/locks") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None, "unknown"
+    for ln in lines:
+        parts = ln.split()
+        if len(parts) > 1 and parts[1] == "->":
+            continue
+        if len(parts) < 6 or parts[1] != "FLOCK":
+            continue
+        try:
+            pid = int(parts[4])
+            if int(parts[5].rsplit(":", 1)[-1]) != ino:
+                continue
+        except ValueError:
+            continue
+        return (pid if pid > 0 else None), "held"
+    return None, "free"
+
+
 def _lock_state_dir():
     """Refuse to start a SECOND swg-noded on the same state dir. Two nodeds sharing /var/lib/swg-noded fight over
     the reconcile/interface state (and, on a master, can clobber the panel's view) — the same class of bug as two
@@ -8999,12 +9899,37 @@ def _lock_state_dir():
     with contextlib.suppress(OSError):
         os.makedirs(STATE_DIR, exist_ok=True)
     lp = os.path.join(STATE_DIR, ".noded.lock")
+    # The open and the flock fail for unrelated reasons and used to share one message, which asserted
+    # "another swg-noded already holds" with no evidence for either. A state dir this process cannot
+    # write is the likelier of the two on a moved or read-only install, and it is not a second node.
     try:
         fd = os.open(lp, os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError as e:
+        sys.exit(f"refusing to start: can't open {lp} ({e.strerror}) — the state dir {STATE_DIR} is not writable "
+                 f"by this process (uid {os.getuid()}). If this node's state was moved onto this machine it still "
+                 f"carries the old owner (chown it back to root); if the path is read-only, point SWG_NODED_STATE "
+                 f"somewhere writable — this dir must persist.")
+    try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        sys.exit(f"refusing to start: another swg-noded already holds {lp} (state dir {STATE_DIR}). "
-                 f"Stop the other instance first, or point this one at a separate SWG_NODED_STATE dir.")
+        pid, state = _flock_holder(lp)
+        argv = _proc_cmdline(pid) if pid else []
+        base = os.path.basename(argv[0]) if argv else ""
+        if base.startswith("python") and len(argv) > 1:
+            base = os.path.basename(argv[1])
+        if base == "swg-noded":
+            who = f"another swg-noded (pid {pid})"
+        elif argv:
+            who = f"pid {pid} (`{' '.join(argv)[:80]}`)"
+        elif pid:
+            who = f"pid {pid} (gone from /proc — another namespace, or it just exited)"
+        elif state == "unknown":
+            who = "another process (/proc/locks could not be read, so it cannot be named)"
+        else:
+            who = "another process the kernel does not name"
+        sys.exit(f"refusing to start: {who} already holds {lp} (state dir {STATE_DIR}). Two nodeds on one state dir "
+                 f"fight over the reconcile and interface state. Stop that process first, or point this one at a "
+                 f"separate SWG_NODED_STATE dir.")
     os.ftruncate(fd, 0); os.write(fd, (str(os.getpid()) + "\n").encode())
     _STATE_LOCK_FD = fd
 
@@ -9038,6 +9963,12 @@ def main():
     update_started = False                          # spawn the self-updater at most once per process
     print(f"swg-noded: panel={panel['url']} interval={interval}s "
           f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}", flush=True)
+    # BEFORE the first sync: if a previous run-model left its servers running here, stop them by the names
+    # it recorded. No-op on an ordinary restart (same model), which is every start but the one after a switch.
+    with contextlib.suppress(Exception):
+        handover_from_previous_runmodel()
+    with contextlib.suppress(Exception):
+        backfill_cmd_markers(node_cfg)     # existing confs get the marker too — see backfill_cmd_markers
     if TURN_DOCKER:   # download + start turn-proxy containers in the BACKGROUND so the node appears on the
         threading.Thread(target=_dturn_bg_loop, daemon=True).start()   # panel immediately (cards show installing → up)
     while True:
@@ -9048,6 +9979,7 @@ def main():
             last_verify_t = t0
             print("reverify: re-asserting routing chains against live state", flush=True)
         try:
+            report_update_result(panel)             # a declarative rebuild finished while we were restarting — say how it went
             snap = build_snapshot(node_cfg, online_max, last_samples)
             use_ip = panel_ip if (panel_ip and panel_ip != bad_pip) else ""
             status, reply = post_json(url, token, {"snapshot": snap}, panel, source_ip=use_ip)
@@ -9096,6 +10028,21 @@ def main():
                             print("update trigger failed:", _e, flush=True)
                             report_proc(panel, "update-failed", f"swg-noded could not write the update trigger {_trig}: {_e}")
                             update_started = True   # reported the failure — don't retry the bad write every sync
+                    elif NODE_DECLARATIVE:
+                        # This node's installation is owned by its configuration. DEFAULT_UPDATE_CMD would run
+                        # `bootstrap.sh update` here, and on such a host that is not a no-op — it appears to work
+                        # (`/` is writable, `mkdir -p /opt/… && cp` succeeds), then fails on PATH/apt-get, leaving
+                        # an unmanaged install the configuration cannot see. So refuse and say what an update IS.
+                        # Checked BEFORE the docker branch on purpose: a NixOS host running our image is `kind ==
+                        # "docker"` for every behavioural purpose (T-P1), and that branch's remedy — a compose
+                        # pull on the box — is the wrong answer for it.
+                        print("update requested but this node is managed declaratively", flush=True)
+                        report_proc(panel, "update-failed",
+                                    "This node is managed declaratively, so an update is a rebuild of its "
+                                    "configuration — not something the panel can start. Update the swg input and "
+                                    "rebuild on the box (`nixos-rebuild switch`), or enable the module's "
+                                    "selfUpdate option to wire this button to that rebuild.")
+                        update_started = True
                     elif NODE_KIND == "docker":
                         # docker node with NO host updater wired: a container can't recreate its own image, so
                         # run_self_update can do nothing. Report a clear failure instead of silently no-op'ing.
@@ -9108,9 +10055,17 @@ def main():
                     else:
                         update_started = run_self_update(node_cfg, reply["update"])
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
-                dl = delete_ifaces(node_cfg, reply.get("delete"), agent, sudo)   # tear down deleted ones
+                # …plus any mesh link left behind by a panel this node used to sync with — see orphan_mesh_links.
+                _orph = orphan_mesh_links(node_cfg, reply.get("owned_ifaces"))
+                if _orph:
+                    print("mesh: dropping link(s) this panel does not claim (its peer node is gone, or "
+                          "this node moved panels): " + ", ".join(_orph), flush=True)
+                dl = delete_ifaces(node_cfg, list(reply.get("delete") or []) + _orph, agent, sudo)   # tear down deleted ones
                 apply_panel_settings(reply.get("panel"))      # Panel settings → mirrors / geo TTL / geo refetch
-                _heal = selfheal_ifaces(node_cfg, reply.get("desired_ifaces"))   # panel owns it, it is live here, we lost the conf
+                _heal = selfheal_ifaces(node_cfg, reply.get("desired_ifaces"),
+                                         reply.get("owned_ifaces"))   # panel owns it, it is live here, we lost the conf
+                for _hn in (cr.get("heal") or []):      # a create that found the device already here (see create_ifaces)
+                    _heal.setdefault(_hn, {"cmd": ["auto"], "conf": ""})
                 if _heal:
                     print("self-heal: adopting live interface(s) the panel manages but we hold no conf for: "
                           + ", ".join(sorted(_heal)), flush=True)
@@ -9120,18 +10075,22 @@ def main():
                 # Take over a wg/awg server from another container (Amnezia). One-shot and operator-driven:
                 # it stops somebody else's container, so it runs only while the panel is asking for it, and the
                 # answer — taken over, or refused and nothing changed — rides back in the next snapshot.
+                # ⚠️ IN A THREAD, not inline. Stopping somebody else's container is the one operation here whose
+                # duration another program decides: a container that ignores SIGTERM burns the whole grace period,
+                # and podman then does not return until it has cleaned the container up — measured at over a
+                # minute for one `stop`. Run inline, that is a minute in which this loop posts no snapshot, and
+                # the panel marks the node STALE in the middle of the operator's take-over. The result is picked
+                # up on a later pass exactly as before; the request stays pending at the panel meanwhile, which
+                # is what its own timeout is written for.
                 _adc = reply.get("adopt_container")
-                if isinstance(_adc, dict) and (_adc.get("container") or "").strip():
-                    _res = container_iface_takeover((_adc.get("container") or "").strip(),
-                                                    node_cfg, agent, sudo)
-                    _CTR_ADOPT.clear()
-                    _CTR_ADOPT.update({"container": (_adc.get("container") or "").strip(),
-                                       "req_iface": (_adc.get("iface") or "").strip(),
-                                       "req_at": _adc.get("at") or 0,   # which REQUEST this answers — see below
-                                       "at": int(time.time()), **_res})
-                    if _res.get("ok"):
-                        _persist_config(node_cfg)      # the interface is ours now — persist before anything else
+                _adc_name = (_adc.get("container") or "").strip() if isinstance(_adc, dict) else ""
+                if _adc_name:
+                    _ctr_job_start(_adc_name, (_adc.get("iface") or "").strip(), _adc.get("at") or 0,
+                                   node_cfg, agent, sudo)
+                _ctr_job_collect(node_cfg)
                 cq = reconcile_csqtt(reply.get("csqtt"), reply.get("csqtt_remove"))   # csqtt (raw-TUN): parallel to wdtt; removals ONLY from the explicit list
+                with contextlib.suppress(Exception):
+                    write_inventory(node_cfg)      # what this box carries + how it runs it (see NODE_INVENTORY)
                 r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
                 reconcile_dial_src(reply["desired"], r)        # Part 3: pin per-link outbound source IPs (folds into r)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)   # set-iface: write the new listen-port to the conf FIRST

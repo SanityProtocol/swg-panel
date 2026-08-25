@@ -15,6 +15,15 @@ log(){ printf '\033[0;36m[swg-node]\033[0m %s\n' "$*"; }
 rand32(){ od -An -N4 -tu4 /dev/urandom | tr -d ' '; }   # one unsigned 32-bit int
 
 : "${PANEL_URL:?PANEL_URL required (host-node: https://swg-panel:8443)}"
+# systemd's LoadCredential= puts the enrolment token in a per-unit tmpfs and exports its directory
+# here. Preferred over NODE_TOKEN when present, because an EnvironmentFile= token stays in this
+# process's environment for the life of the daemon and is inherited by every subprocess it spawns —
+# a credential is read once and gone. A no-op everywhere else: CREDENTIALS_DIRECTORY is unset in a
+# container, so the images and their compose contract are untouched (D15 — this file is shared
+# verbatim, and a fork of it would cost a sixth AWG params generator).
+if [ -n "${CREDENTIALS_DIRECTORY:-}" ] && [ -r "${CREDENTIALS_DIRECTORY}/token" ]; then
+  NODE_TOKEN="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY}/token")"
+fi
 : "${NODE_TOKEN:?NODE_TOKEN required (create the node in the Nodes screen)}"
 : "${NODE_ENDPOINT:?NODE_ENDPOINT required (public IP/host clients dial)}"
 AWG_DIR=/etc/amnezia/amneziawg
@@ -49,11 +58,25 @@ IFJSON=""; IFSEP=""                          # swg-agent interfaces map (built p
 # convert carries them over as-is. Every place that turns an interface NAME into a conf path has to know that,
 # or the interface silently drops out of the managed set on the next container start.
 iface_conf(){ [ -f "$AWG_DIR/$1.conf" ] && { printf '%s\n' "$AWG_DIR/$1.conf"; return; }; printf '%s\n' "${WG_DIR:-/etc/wireguard}/$1.conf"; }
+# WHICH TOOL DRIVES AN INTERFACE — the conf's own answer first, its location only as a fallback. Location is
+# not evidence: a container writes EVERY conf to the AmneziaWG directory, so a plain-WireGuard interface that
+# has been through one (a convert, a run-model switch) came back up as `awg`, silently changing what it is —
+# the panel re-badges it, `wg show` stops reading it, and setting obfuscation on it later would break every
+# client. The content cannot be probed either: an AmneziaWG conf with no obfuscation set looks exactly like a
+# WireGuard one. So swg-agent writes `#swg:cmd <tool>` when it creates the file.
+# ONE derivation, used by everything that needs the answer — the bring-up loop below used to repeat it from
+# the directory alone, so a marked plain-WireGuard conf in the AmneziaWG dir was handed to swg-noded as `wg`
+# and brought up with `awg-quick`: an amneziawg device that `wg show` cannot read, reported to the panel as
+# "cannot read interface" on every reconcile, for ever. The two answers must come from the same place.
+iface_cmd(){ # iface_cmd <conf-path> → wg | awg
+  _ic="$(sed -n 's/^#swg:cmd \{1,\}\([a-z]\{1,\}\).*/\1/p' "$1" 2>/dev/null | head -1)"
+  case "$_ic" in wg|awg) printf '%s\n' "$_ic"; return ;; esac
+  case "$1" in "${WG_DIR:-/etc/wireguard}"/*) printf 'wg\n' ;; *) printf 'awg\n' ;; esac
+}
 add_iface(){ # add_iface <name> <endpoint> [conf]  — record an interface + its own endpoint for the config
   MANAGED="$MANAGED $1"
-  # Confs under WG_DIR are plain-WireGuard kernel devices, driven with `wg`, not `awg`.
   _cf="${3:-$(iface_conf "$1")}"
-  _cmd="awg"; case "$_cf" in "${WG_DIR:-/etc/wireguard}"/*) _cmd="wg";; esac
+  _cmd="$(iface_cmd "$_cf")"
   _onb=""; grep -q '^#swg:onboarded' "$_cf" 2>/dev/null && _onb=', "onboarded": true'   # add-only adopted iface (keep its peers)
   IFJSON="$IFJSON$IFSEP    \"$1\": { \"cmd\": [\"$_cmd\"], \"conf\": \"$_cf\", \"endpoint_host\": \"${2:-$NODE_ENDPOINT}\"${_onb} }"
   IFSEP=",
@@ -183,8 +206,9 @@ for IFACE in $MANAGED; do
   dest="$(iface_conf "$IFACE")"
   # A plain-WireGuard conf is brought up with wg-quick; awg-quick would look for it under ITS OWN dir and fail
   # ("does not exist"), leaving an interface listed as managed but down. Pass the PATH, not the name, so
-  # neither tool re-resolves it against the wrong directory.
-  _q=awg-quick; case "$dest" in "${WG_DIR:-/etc/wireguard}"/*) _q=wg-quick;; esac
+  # neither tool re-resolves it against the wrong directory. Which tool: the SAME answer add_iface wrote into
+  # config.json — see iface_cmd.
+  _q="$(iface_cmd "$dest")-quick"
   log "bringing up $IFACE via $_q"
   # clear any leftover SAME-NAMED device first (host netns survives a container stop → plain `up` = "File exists").
   $_q down "$dest" 2>/dev/null || ip link del "$IFACE" 2>/dev/null || true
@@ -220,7 +244,7 @@ $IFJSON
     "token": "${NODE_TOKEN}",
     "verify": ${VERIFY}${FP}
   },
-  "node": { "interval": ${INTERVAL:-5}, "agent": "/opt/swg-agent/swg-agent", "sudo": false }
+  "node": { "interval": ${INTERVAL:-5}, "agent": "${SWG_AGENT_BIN:-/opt/swg-agent/swg-agent}", "sudo": false }
 }
 JSON
 chmod 600 /etc/swg-agent/config.json
@@ -231,4 +255,10 @@ touch "$BOOT_MARKER" 2>/dev/null || true
 # ───────── 4) sync loop: sample interfaces -> POST snapshot -> reconcile desired peers ─────────
 log "syncing to ${PANEL_URL} (interfaces:${MANAGED}, endpoint ${NODE_ENDPOINT})"
 export SWG_AGENT_CONFIG=/etc/swg-agent/config.json SWG_NODED_STATE=/var/lib/swg-noded
-exec /opt/swg-noded/swg-noded
+# The two overrides above and here are what let this same script bootstrap a node whose programs
+# live somewhere other than /opt — a Nix store path, say. Defaults unchanged, so every existing
+# container behaves exactly as before. This script is the node's bootstrap on BOTH delivery
+# methods: it generates config.json, brings up every persisted interface before the daemon starts,
+# and sets up NAT — which is also the answer to "what brings interfaces up at boot on a host where
+# `systemctl enable` cannot work".
+exec "${SWG_NODED_BIN:-/opt/swg-noded/swg-noded}"

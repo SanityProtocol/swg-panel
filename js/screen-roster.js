@@ -7,7 +7,7 @@
  */
 
 import {
-  ago, seen, tkey,
+  ago, seen, tkey, isPrimaryTarget,
 } from "./util.js";
 import { T, Tsplit, Trich, plural, srvVerb, srvDetail } from "./i18n.js";
 import {
@@ -69,12 +69,19 @@ export function PeersScreen() {
   const itype = (!agg && Store.ifaceMeta(node, iface) && Object.keys(Store.ifaceMeta(node, iface).awg_params || {}).length) ? "awg" : "wg";
 
   const q = peersView.q.toLowerCase();
-  // one row per matching (peer, target) deployment, so a fleet-wide view shows where each peer lives.
+  const grouped = !!peersView.group;
+  // one row per matching (peer, target) DEPLOYMENT, so a fleet-wide view shows where each peer lives —
+  // unless Group is on, which collapses to one row per PEER (its primary deployment, the rest as +N).
   let rows = [];
-  for (const p of Store.recon.peers) for (const t of p.targets) {
-    if (node !== "*" && t.node !== node) continue;
-    if (!ifaceMatch(t.iface, iface)) continue;
-    rows.push({ p, t });
+  for (const p of Store.recon.peers) {
+    const ts = p.targets.filter(t => (node === "*" || t.node === node) && ifaceMatch(t.iface, iface, t));
+    if (!ts.length) continue;
+    if (!grouped) { for (const t of ts) rows.push({ p, t }); continue; }
+    // The peer's PRIMARY deployment represents it — that is the one its subscription leads with, so the
+    // grouped row says the same thing the user's own page does. Falling back to an online one keeps the
+    // row informative when the primary happens to be down.
+    const rep = ts.find(t => isPrimaryTarget(p.targets, t)) || ts.find(t => t.online) || ts[0];
+    rows.push({ p, t: rep });
   }
   // freeze the order over this view's full row set (per node/iface), THEN apply search/status filters — so
   // filtering or editing never reshuffles the frozen rows
@@ -111,6 +118,9 @@ export function PeersScreen() {
   return html`<div class="screen">
     <${StoreOffBanner}/>
     <div class="toolbar">
+      <button class=${"onlbtn" + (grouped ? " on" : "")}
+        title=${grouped ? T("One row per peer — its other deployments are behind the +N") : T("Collapse each peer's deployments into one row")}
+        onClick=${() => { peersView.group = !peersView.group; peersView.page = 1; force(x => x + 1); }}>${grouped ? T("btn|Grouped") : T("btn|Group")}</button>
       <${SearchBox} placeholder=${T("Search title, user, address…")} value=${peersView.q} onInput=${e => { peersView.q = e.target.value; peersView.page = 1; force(x => x + 1); }}/>
       <select class="selwrap" value=${node} onChange=${e => { peersView.node = e.target.value; peersView.iface = ""; peersView.page = 1; force(x => x + 1); }}>
         ${multiServer ? html`<option value="*">${T("All nodes")}</option>` : (!fleet.length ? html`<option value="*">${T("No nodes")}</option>` : null)}
@@ -132,7 +142,7 @@ export function PeersScreen() {
       ${node !== "*" ? html`<${Tag} kind="iface" label=${Store.nodeName(node) || "—"} color=${Store.nodeColor(node)}/>` : null}
       ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface}/>` : null}
     </span><span class="count">${rows.length}</span></div>
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
     ${rows.length > 20 ? html`<div class="pager">
       <label class="pager-size">Rows per page
         <select class="selwrap" value=${pageSize} onChange=${e => { peersView.pageSize = +e.target.value; peersView.page = 1; force(x => x + 1); }}>
@@ -291,7 +301,7 @@ export function ConnectionsScreen() {
   let rows = [];
   for (const p of Store.recon.peers) for (const t of p.targets) {
     if (connView.node && t.node !== connView.node) continue;
-    if (!ifaceMatch(t.iface, connView.iface)) continue;
+    if (!ifaceMatch(t.iface, connView.iface, t)) continue;
     if (connView.online && !t.online) continue;                        // Online filter → only live connections
     rows.push({ p, t });
   }
@@ -354,7 +364,7 @@ export function UserRow({ user, live, onlineOnly, q }) {
           const sep = html`<span class="u-dot"> · </span>`;
           return live ? html`${onc}${sep}${pc}` : html`${pc}${user.peerCount ? html`${sep}${onc}` : null}`;
         })()}</span>
-        <span class="u-servers">${srvNodes.length ? html`<span class="turnwrap srvwrap" onClick=${e => e.stopPropagation()}>
+        <span class="u-servers">${srvNodes.length ? html`<span class="turnwrap srvwrap" title="" onClick=${e => e.stopPropagation()}>
           <span class="srvchips">
             ${srvNodes.length === 1 ? html`<span class="nsrv" style=${"--c:" + Store.nodeColor(srvNodes[0].node)}>${Store.nodeName(srvNodes[0].node)}</span>`
               : html`<span class="nsrv-agg"><${Ic} i="server"/>${plural(srvNodes.length, "cap|Node")}</span>`}

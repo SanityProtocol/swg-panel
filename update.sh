@@ -36,7 +36,17 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UPD_LOCK=/run/swg-update.lock; UPD_RUNNING=/run/swg-update.running
 # NB: `have` is defined further down — this runs before it, so test flock directly.
 if ! $DRYRUN && command -v flock >/dev/null 2>&1; then
-  exec 9>"$UPD_LOCK" 2>/dev/null || exec 9>/tmp/swg-update.lock
+  # ⚠️ This was `exec 9>"$UPD_LOCK" 2>/dev/null || exec 9>/tmp/swg-update.lock`, which did the exact
+  # opposite of what it reads as, BOTH ways round (measured, not reasoned):
+  #   · redirections are applied left to right, so `9>` fails BEFORE `2>/dev/null` is in effect — the
+  #     bash error it was written to hide printed anyway;
+  #   · and on the SUCCESS path `exec` makes the redirection PERMANENT, so `warn` and `die` — this
+  #     script's entire error channel, every one of them `>&2` — went to /dev/null from here to the
+  #     end of the run. A failing update printed its progress and then exited 1 in silence.
+  # So: probe in a SUBSHELL (a failed `exec` redirect is fatal in the current shell), pick a path
+  # that is known to work, and open it with no stderr redirect at all.
+  ( : > "$UPD_LOCK" ) 2>/dev/null || UPD_LOCK=/tmp/swg-update.lock
+  exec 9>"$UPD_LOCK"
   if ! flock -n 9; then
     echo "swg update: another update is already running on this host — leaving it to finish."
     exit 0
@@ -57,6 +67,9 @@ if { [ -t 1 ] || [ -n "${SWG_FORCE_COLOR:-}" ]; } && [ -z "${NO_COLOR:-}" ]; the
 else BOLD=""; RESET=""; C_CYAN=""; C_GREEN=""; C_YEL=""; C_RED=""; C_BLUE=""; C_BL=""; C_BROWN=""; fi
 
 . "$SRC/lib/common.sh"   # lc_* lifecycle helpers (shared with the installers)
+# Refuse on a declaratively managed host BEFORE anything is written — an in-place update laid down here would
+# be invisible to the host's own tooling. Defined in lib/common.sh, above; a `--dry-run` still runs.
+refuse_on_declarative_host 'services.swg-node = { enable = true; ... };'
 # signal "updating" → updated / aborted / failed for whichever this box is: a node (POST via its agent
 # config) and/or a panel host (host_proc file). Best-effort; armed only when there's something to tell.
 lc_emit_upd(){ [ -n "${LC_FILE:-}" ] && lc_emit_file "$1" "${2:-}"; [ -n "${LC_TOKEN:-}" ] && [ -n "${LC_URL:-}" ] && lc_emit_post "$1" "${2:-}"; return 0; }

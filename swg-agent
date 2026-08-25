@@ -18,6 +18,7 @@ prefix is configurable for future container support.
 """
 
 import contextlib
+import errno
 import fcntl
 import ipaddress
 import json
@@ -540,6 +541,31 @@ def op_set_iface(cfg, req):
     return out
 
 
+# ── egress rules: the up/down hooks a managed interface's conf carries ───────────────────────────
+# One rule, two shapes: the up REAPS THEN ADDS (so the chain ends with exactly one copy however many
+# were there), the down reaps. Both loops are BOUNDED — a `-D` that reports success without deleting
+# would wedge a tear-down for ever.
+#
+# ⚠️ Deliberately NOT `-C … || -A …`, which is the obvious way to write an idempotent add and is
+# WRONG here. Measured on a NixOS node, iptables 1.8.11 (nf_tables): `-C FORWARD -i zzz999 -o ens3
+# -j ACCEPT` returns 0 — for an interface that exists nowhere on the box — as does `-i zzz999 -o
+# zzz998`, while `-i zzz999 -j DROP` and a port check correctly return 1. A two-interface ACCEPT
+# check matches on shape, not on the names. A guard that says "already there" about a rule that is
+# not there SKIPS it, and the interface silently comes up without its forward rules. Delete-then-add
+# needs no such judgement: it converges from any starting state.
+_IPT_REAP_TRIES = 8
+
+def _ipt_reap(table, rule):
+    t = (table + " ") if table else ""
+    return ("for _n in " + " ".join(str(i) for i in range(1, _IPT_REAP_TRIES + 1))
+            + f"; do iptables {t}-D {rule} 2>/dev/null || break; done")
+
+def _ipt_set(table, rule):
+    """Exactly one copy of `rule`, whatever was there before."""
+    t = (table + " ") if table else ""
+    return _ipt_reap(table, rule) + f"; iptables {t}-A {rule} || true"
+
+
 def _wan_iface():
     out = run(["ip", "-4", "route", "get", "1.1.1.1"], check=False)
     m = re.search(r" dev (\S+)", out or "")
@@ -586,6 +612,17 @@ def _ensure_tool(tool):
         raise AgentError("no_tool", "AmneziaWG tools are missing from this node's container image. Update the "
                          "node (docker compose pull && docker compose up -d) so it runs a current swg-node "
                          "image, then this interface creates itself on the next sync.")
+    # "Re-run the installer" is the wrong instruction where the installation is declared elsewhere:
+    # there is no installer to re-run, and one that ran would be invisible to the next rebuild. The
+    # read-only unit directory is the signal — a capability, not a distro name (a host whose units we
+    # cannot write is a host whose packages we have no business telling anyone to install by hand).
+    # Fixed sentence with nothing interpolated, like its sibling above, so the panel can translate it.
+    if not _units_persist():
+        raise AgentError("no_tool", "AmneziaWG tools are not installed on this node, and this node's "
+                         "installation is managed declaratively — re-running an installer would not "
+                         "survive its next rebuild. Add the AmneziaWG tools to the system configuration "
+                         "that declares this node and rebuild it, then this interface creates itself on "
+                         "the next sync.")
     raise AgentError("no_tool", "AmneziaWG tools are not installed on this node. Re-run the swgPanel node "
                      "installer — it builds them from source on any distribution, and falls back to the "
                      "userspace datapath where the kernel module cannot load. Then this interface creates "
@@ -610,6 +647,52 @@ def _awg_obfuscation():
 # Same test swg-noded makes (NODE_KIND): the agent otherwise has no idea it is inside a container, and where a
 # conf may safely live depends entirely on that.
 _IN_CONTAINER = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+_UNIT_DIR = "/etc/systemd/system"
+_UNIT_PERSIST = {"v": None}
+
+
+def _units_persist():
+    """Can a unit enabled here survive a reboot — i.e. is the systemd unit directory writable?
+
+    On a host that keeps its units in a read-only store (NixOS, and any other immutable-OS layout)
+    it is not, and `systemctl enable awg-quick@<iface>` cannot work there however it is spelled:
+    systemd resolves the .wants symlink into the system scope, which is the read-only part.
+
+    ⚠️ A REAL write probe, and it reads errno. os.access(..., W_OK) is not enough: as root it calls
+    a mode-555 directory writable, because root bypasses the mode check. It does honour a read-only
+    mount, so on NixOS it would happen to be right — by accident of which mechanism that host uses.
+    A write answers both, and tells us WHY it failed, which is what the messages below turn on.
+
+    Boot persistence is not lost on those hosts: the node's own bootstrap walks the conf directory
+    and brings every persisted interface up before the daemon starts.
+    """
+    if _UNIT_PERSIST["v"] is None:
+        probe = os.path.join(_UNIT_DIR, ".swg-agent-unit-probe")
+        try:
+            with open(probe, "w"):
+                pass
+            os.unlink(probe)
+            _UNIT_PERSIST["v"] = True
+        except OSError as e:
+            # ⚠️ EROFS is the ONLY failure that means "this host's units are declared elsewhere".
+            # EACCES means we are not privileged — a different problem with a different fix, and an
+            # operator told to go edit their configuration.nix over it would be sent somewhere with
+            # nothing to find. ENOENT (no such directory, e.g. inside a container) is not it either.
+            # Anything but EROFS keeps today's behaviour: try, and let it fail harmlessly.
+            _UNIT_PERSIST["v"] = getattr(e, "errno", None) != errno.EROFS
+    return _UNIT_PERSIST["v"]
+
+
+def _iface_unit(action, tool, iface):
+    """enable/disable an interface's <tool>-quick@ unit, where that can mean anything.
+
+    Skipped outright on a read-only unit directory rather than fired and swallowed: the call cannot
+    succeed there, and a swallowed failure is the shape that gets read later as "we did it"."""
+    if not _units_persist():
+        return
+    with contextlib.suppress(Exception):
+        run(["systemctl", action, f"{tool}-quick@{iface}"], check=False)
 
 
 def op_create_iface(cfg, req):
@@ -667,14 +750,29 @@ def op_create_iface(cfg, req):
     # NAT is BEST-EFFORT (each step `|| true`) so the interface still comes up where iptables/nat
     # isn't available (e.g. some containers) — matching node-entrypoint.sh's non-fatal NAT. A failed
     # rule just means clients won't egress until NAT is sorted; it never blocks bring-up.
+    # ONE COPY, NOT ONE MORE. iptables appends without checking and wg-quick's
+    # PostDown deletes exactly one copy, so every bring-up that was not preceded by a matching
+    # tear-down — a container stopped, a bare↔docker convert, an `ip link del`, a crash — left a
+    # permanent extra copy, and a later delete could never clear more than one of them. Measured on a
+    # 45-day-old node: twelve MASQUERADE rules, for subnets whose interfaces were long gone, beside a
+    # box that had exactly one interface. Reaping on the way UP as well as down means a bring-up
+    # converges the chain from any state — including the pile an install made before this fix.
     up = (f"sysctl -q -w net.ipv4.ip_forward=1 || true; "
-          f"iptables -t nat -A POSTROUTING -s {net} -o {wan} -j MASQUERADE || true; "
-          f"iptables -A FORWARD -i %i -o {wan} -j ACCEPT || true; "
-          f"iptables -A FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT || true")
-    down = (f"iptables -t nat -D POSTROUTING -s {net} -o {wan} -j MASQUERADE || true; "
-            f"iptables -D FORWARD -i %i -o {wan} -j ACCEPT || true; "
-            f"iptables -D FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT || true")
-    body = (f"[Interface]\nPrivateKey = {priv}\nAddress = {addr}\nListenPort = {port}\nMTU = {mtu}\n"
+          f"{_ipt_set('-t nat', f'POSTROUTING -s {net} -o {wan} -j MASQUERADE')}; "
+          f"{_ipt_set('', f'FORWARD -i %i -o {wan} -j ACCEPT')}; "
+          f"{_ipt_set('', f'FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT')}")
+    down = (f"{_ipt_reap('-t nat', f'POSTROUTING -s {net} -o {wan} -j MASQUERADE')}; "
+            f"{_ipt_reap('', f'FORWARD -i %i -o {wan} -j ACCEPT')}; "
+            f"{_ipt_reap('', f'FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT')}; true")
+    # ⚠️ The conf SAYS WHICH PROTOCOL IT IS. Everything else that could answer is circumstantial: the
+    # directory is not (a container writes every conf to the AmneziaWG one, so a plain-WireGuard conf
+    # that has been through one comes back as `awg` and the panel re-badges it), and the content is not
+    # either — an AmneziaWG conf with no obfuscation set is byte-identical in shape to a WireGuard one,
+    # which is exactly the case that cannot be guessed. A comment line travels with the file, through a
+    # move, a convert, a run-model switch or a manual copy between boxes, and both wg-quick and
+    # awg-quick ignore it. Same shape as #swg:onboarded.
+    body = (f"#swg:cmd {tool}\n"
+            f"[Interface]\nPrivateKey = {priv}\nAddress = {addr}\nListenPort = {port}\nMTU = {mtu}\n"
             f"PostUp = {up}\nPostDown = {down}\n")
     if (req.get("table") or "").strip().lower() == "off":   # mesh link: cascade manages routing — wg-quick must
         body += "Table = off\n"                              # NOT install AllowedIPs routes (a /0 would hijack default)
@@ -738,13 +836,29 @@ def op_create_iface(cfg, req):
         # (can't apt-install), so translate the cryptic failure into the exact fix instead of blaming the port.
         if "Unknown device type" in msg or "Protocol not supported" in msg:
             kr = os.uname().release
+            mod = "amneziawg" if tool == "awg" else "wireguard"
+            # Same signal as _ensure_tool: where we cannot write a unit, the host's packages are
+            # declared somewhere else and an apt-get line is an instruction that cannot stick. The
+            # module has to come from the SAME kernel package set as the running kernel, which is
+            # the whole difficulty on such a host, so say that rather than a command that will not
+            # apply. This message interpolates (kernel release), so it is not catalogue-translated
+            # either way and adds no i18n key.
+            if not _units_persist():
+                raise AgentError("no_module",
+                                 f"the {mod} kernel module isn't built or loaded on this node (kernel {kr}), "
+                                 f"and this node's installation is managed declaratively. Add the module to the "
+                                 f"system configuration that declares this node — it must come from the same "
+                                 f"kernel package set as the running kernel (on NixOS: "
+                                 f"boot.extraModulePackages = [ config.boot.kernelPackages.{mod} ];) — and "
+                                 f"rebuild. The userspace datapath is the fallback if the module lags your "
+                                 f"kernel. Then the interface creates automatically on the next sync.")
             if tool == "awg":
                 how = (f"sudo apt-get install -y dkms linux-headers-{kr} && "
                        f"sudo apt-get install -y amneziawg && sudo modprobe amneziawg")
             else:
                 how = "sudo apt-get install -y wireguard && sudo modprobe wireguard"
             raise AgentError("no_module",
-                             f"the {'amneziawg' if tool == 'awg' else 'wireguard'} kernel module isn't built/loaded "
+                             f"the {mod} kernel module isn't built/loaded "
                              f"on this node (kernel {kr}) — its DKMS module needs matching linux-headers. Run on the "
                              f"node:  {how}  — then the interface creates automatically on the next sync. "
                              f"(Re-running the node installer, or swg-update, does this for you.)")
@@ -759,9 +873,37 @@ def op_create_iface(cfg, req):
                              f"It isn't managed here — adopt it instead (that keeps its current key, so its "
                              f"peers keep working), or remove the device first if you really want a new one.")
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed (port/subnet may be in use): {e}")
-    with contextlib.suppress(Exception):
-        run(["systemctl", "enable", f"{tool}-quick@{iface}"], check=False)
+    _iface_unit("enable", tool, iface)
     return {"iface": iface, "public_key": pub, "address": addr, "conf": conf, "cmd": cmd, "listen_port": port}
+
+
+_EGRESS_MASQ_RE = re.compile(r"-s (\S+) -o (\S+) -j MASQUERADE")
+
+def _reap_egress_rules(conf_text, iface):
+    """Delete EVERY copy of the egress rules this interface's conf installs, not just the one its
+    PostDown takes.
+
+    The hooks a conf carries are fixed when the interface is CREATED, so an install made before they
+    became idempotent keeps piling up a copy per unmatched bring-up and can never clear more than one
+    per tear-down — which is how a node ends up source-NATing subnets that have no interface. This is
+    code, not conf, so it reaches those installs on the next update: read the subnet and the WAN out
+    of the conf the interface actually used (never today's `ip route get`, which may name a different
+    NIC than the rules were written with), and delete until each rule is gone. Best-effort — a node
+    without iptables just has nothing to reap."""
+    m = _EGRESS_MASQ_RE.search(conf_text or "")
+    if not m:
+        return
+    net, wan = m.group(1), m.group(2)
+    for args in (["-t", "nat", "-D", "POSTROUTING", "-s", net, "-o", wan, "-j", "MASQUERADE"],
+                 ["-D", "FORWARD", "-i", iface, "-o", wan, "-j", "ACCEPT"],
+                 ["-D", "FORWARD", "-i", wan, "-o", iface, "-m", "state",
+                  "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]):
+        for _ in range(_IPT_REAP_TRIES):
+            try:
+                if subprocess.run(["iptables"] + args, capture_output=True, text=True).returncode != 0:
+                    break
+            except Exception:
+                break
 
 
 def op_delete_iface(cfg, req):
@@ -771,10 +913,13 @@ def op_delete_iface(cfg, req):
     iface = req["iface"]
     ic = iface_cfg(cfg, iface)            # raises if it isn't managed here
     tool = (ic.get("cmd") or ["awg"])[0]
+    conf_text = ""
+    with contextlib.suppress(Exception):
+        conf_text = read_conf(ic["conf"])          # read BEFORE the down — the reap needs the rules it wrote
     with contextlib.suppress(Exception):
         run([tool + "-quick", "down", iface])
-    with contextlib.suppress(Exception):
-        run(["systemctl", "disable", f"{tool}-quick@{iface}"], check=False)
+    _reap_egress_rules(conf_text, iface)           # the down hook takes one copy; this takes the rest
+    _iface_unit("disable", tool, iface)
     with contextlib.suppress(Exception):
         os.remove(ic["conf"])
     return {"iface": iface, "deleted": True}
@@ -803,8 +948,7 @@ def op_stop_iface(cfg, req):
     tool = (ic.get("cmd") or ["awg"])[0]
     with contextlib.suppress(Exception):
         run([tool + "-quick", "down", iface])
-    with contextlib.suppress(Exception):
-        run(["systemctl", "disable", f"{tool}-quick@{iface}"], check=False)
+    _iface_unit("disable", tool, iface)
     return {"iface": iface, "stopped": True}
 
 
@@ -817,8 +961,7 @@ def op_start_iface(cfg, req):
         run([tool + "-quick", "up", iface])
     except Exception as e:
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed: {e}")
-    with contextlib.suppress(Exception):
-        run(["systemctl", "enable", f"{tool}-quick@{iface}"], check=False)
+    _iface_unit("enable", tool, iface)
     return {"iface": iface, "started": True}
 
 

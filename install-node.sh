@@ -35,6 +35,9 @@ DRYRUN=false; [ "${1:-}" = "--dry-run" ] && DRYRUN=true
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, turn_repo_owner, dl_turn_bin
+# Refuse on a declaratively managed host BEFORE anything is written — a node laid down here would
+# be invisible to the host's own tooling. Defined in lib/common.sh, above; a `--dry-run` still runs.
+refuse_on_declarative_host 'services.swg-node = { enable = true; ... };'
 
 # ── colours / styling (honour NO_COLOR + non-tty) ──
 if { [ -t 1 ] || [ -n "${SWG_FORCE_COLOR:-}" ]; } && [ -z "${NO_COLOR:-}" ]; then
@@ -341,7 +344,19 @@ reconstruct_live_orphans(){
   # marked #swg:onboarded, listed in the summary as "managed", and would then be deleted by a later uninstall
   # (which removes /etc/wireguard/*.conf). The bare->docker direction had ALREADY reported that same interface
   # correctly as an adoption candidate, so only this path was claiming it.
-  [ "${SWG_CONVERT:-}" = 1 ] && _allow=" $(printf '%s' "${ADOPTED_IFACES:-}" | tr ', ' '  ') "
+  # …and OUTSIDE a convert there is no such list, because there is nothing to build one FROM: a fresh install
+  # is meeting this box for the first time. Rebuilding then claims whatever happens to be up — the operator's
+  # own wg server, a WARP/wgcf tunnel, WDTT-Plus's `wg-wdtt-exit`, a corporate VPN — writes it a conf marked
+  # #swg:onboarded, and hands the panel a Delete button for the box's own egress. Measured: a node installed
+  # on a box carrying four CLIENT tunnels adopted all four, pinning each one's EPHEMERAL source port into the
+  # conf as if it were a server ListenPort. The scope test below was already written for this; it was simply
+  # never armed on the path that needs it most, because the bug it was written for was found during a convert.
+  # The case this function exists for is covered better elsewhere now: swg-noded's self-heal re-adopts a live
+  # interface THE PANEL OWNS whose conf is gone (`owned_ifaces`) — the same repair, made with the panel's
+  # authority instead of a guess. So a convert reconstructs exactly what it is migrating, and nothing else
+  # reconstructs anything.
+  [ "${SWG_CONVERT:-}" = 1 ] || return 0
+  _allow=" $(printf '%s' "${ADOPTED_IFACES:-}" | tr ', ' '  ') "
   wan="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true)"; [ -n "$wan" ] || wan=eth0
   for tool in awg wg; do
     command -v "$tool" >/dev/null 2>&1 || continue
@@ -349,7 +364,7 @@ reconstruct_live_orphans(){
     for n in $("$tool" show interfaces 2>/dev/null || true); do
       [ -n "$n" ] || continue
       if [ -f "/etc/amnezia/amneziawg/$n.conf" ] || [ -f "/etc/wireguard/$n.conf" ]; then continue; fi   # already managed
-      [ -n "$_allow" ] && ! _in "$n" "$_allow" && continue   # not one of the interfaces THIS convert is migrating → leave it for the panel to offer as a candidate
+      _in "$n" "$_allow" || continue   # not one of the interfaces THIS convert is migrating → leave it for the panel to offer as a candidate
       sc="$("$tool" showconf "$n" 2>/dev/null || true)"; [ -n "$sc" ] || continue
       addr="$(ip -o -4 addr show "$n" 2>/dev/null | awk '{print $4; exit}' || true)"; [ -n "$addr" ] || continue
       sub="$(printf '%s' "${addr%/*}" | awk -F. '{print $1"."$2"."$3".0"}' || true)/${addr#*/}"

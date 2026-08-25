@@ -1,16 +1,16 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.7.15-beta</code></p>
+<p align="center"><code>1.8.0-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.7.15-beta** — [full changelog](CHANGELOG.md)
-> - **Any connection in two taps on the subscription page** — tap a device name or the new **Connections** button for an index of the whole subscription, then tap a device and a connection to land straight on it. Moving between devices now tracks your finger and lands on exactly one per swipe, the way moving between a device's servers always has. Special thanx to @GoSSy4691 for ideas.
-> - **The subscription page could go down exactly when its certificate arrived** — the signal meaning "the certificate is ready" had no handler yet and killed the server waiting to serve it. On Docker the certificate problem was invisible twice over: the check was switched off, and once on it was discarded before it could be shown. The alert now offers Reissue certificate instead of an update that cannot fix it.
-> - **Re-running an installer no longer costs you the fleet** — a master re-install unenrolled every other node, and a Docker node re-installed with a new key locked itself out with "invalid node token" for ever.
-> - **Taking over an AmneziaVPN container no longer breaks its clients** — the interface came up with obfuscation settings they knew nothing about, so the server looked healthy while traffic silently stopped. Uninstalling now gives the container back instead of leaving the machine with no server at all.
-> - **Updating from the command line stopped raising a false CRITICAL** about the AmneziaWG module it was itself rebuilding, next to a button that started a second update on top of the first.
-> - **A WDTT or csqtt server installed in Docker is no longer read as a different install** — such a server keeps its settings inside its own container, but the node looked for them on the host, where a machine that had ever run one directly had an unrelated install at the very same path. The panel offered to adopt the containerised server while showing the other one's users, and taking it over would have seeded the wrong identity and broken every client of both. Taking one over now also stops the container rather than only the process, which used to come straight back and hold the port.
-> - **An unattended uninstall no longer throws away the keys and peers it offered to keep** — every keep-by-default question silently answered "no" wherever there was no terminal to ask on, so the one path that runs without a human was the one that discarded the most.
+> **What's new in 1.8.0-beta** — [full changelog](CHANGELOG.md)
+> - **NixOS is now a first-class way to run swgPanel** — panel, node, subscription surface, or a master that is both. There is no installer to curl: your `configuration.nix` *is* the installation, and both delivery methods are equally supported — run the published images, or run the programs from your own Nix store. A panel never learns how a node was installed, so any panel still drives any node whatever the mix.
+> - **Moving an existing install onto NixOS keeps what your clients trust** — server identities and password stores are carried across, reusing the token the box already holds, because a re-minted one comes up as a second node and strips the first.
+> - **Podman is recognised as a container runtime** — a node under podman used to report itself as bare metal, so the panel offered it controls that could not work and every firewall rule the node writes failed for want of one capability Docker grants and podman does not.
+> - **A plain WireGuard interface stays plain WireGuard.** Config files are collected into one directory whenever a node changes how it runs, and the directory used to decide the protocol — so a converted or adopted WireGuard interface came back as AmneziaWG, and setting obfuscation on it later would have broken every client.
+> - **A convert to Docker carries the settings your servers actually have** — it read them from where they used to be kept, so a recent installation carried an out-of-date copy or none at all. For WDTT and csqtt that is the owner password, without which the server comes back rejecting every client it already had.
+> - **An interface's outbound NAT rule stops multiplying** — every restart added a copy and a delete removed only one, so deleting an interface left one behind, masquerading traffic for a subnet that no longer existed.
+> - **Moving a node to a different panel no longer leaves it unable to mesh**, and **blocking a user from their own editor now offers to unblock them**.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -47,6 +47,7 @@ subscription and no one else sitting in the middle of your traffic.
 - [Before you begin](#before-you-begin)
 - [The three roles (in plain words)](#the-three-roles-in-plain-words)
 - [Step 1 — Install the panel](#step-1--install-the-panel)
+  - [swgPanel on NixOS](nix/README.md)
 - [Step 2 — Add your servers](#step-2--add-your-servers)
 - [Step 3 — Add users and hand out access](#step-3--add-users-and-hand-out-access)
 - [Subscriptions & access control](#subscriptions--access-control)
@@ -121,6 +122,8 @@ plenty. It should have:
 
 - A **public IP address** (so your users can reach it).
 - A recent **Linux** (Ubuntu/Debian and most others are fine).
+  - **NixOS** is fully supported too — panel, node, or both. It does not take the command below; there
+    you declare swgPanel in your `configuration.nix` instead. See the [NixOS guide](nix/README.md).
 - **`sudo`/root** access, and a way to paste a command into it (SSH).
 
 That’s it. If you want a domain name (like `vpn.example.com`) you can point it at the server first — the
@@ -157,6 +160,11 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 > **Already `root`?** Many fresh Debian/VPS images log you in as root with **no `sudo` installed** — just drop
 > the `sudo` and run `… | bash -s`. (The same applies to every command below.)
+
+> **On NixOS?** This command refuses to run, on purpose — it would write into `/opt`, which
+> `nixos-rebuild` neither manages nor sees, and leave you an install your own configuration cannot
+> update or remove. Import this repo's flake and declare `services.swg-panel` instead:
+> [NixOS guide](nix/README.md).
 
 The **first question is how to run it** — **bare-metal** (directly on the host, best throughput) or
 **Docker** (in containers). The **second is the role**: choose **Master** to make this box your panel
@@ -354,6 +362,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 - **[Technical guide](README.technical.md)** — architecture, every install option and flag,
   Docker by hand, converting, smart routing, backups & security, and troubleshooting.
 - **[External API](API.md)** — the read-only REST surface, Prometheus metrics and webhooks.
+- **[NixOS](nix/README.md)** — the flake, both delivery methods, and moving a server you already run onto it.
 - **[Русский](README.ru.md)** · **[Техническое (RU)](README.technical.ru.md)**
 
 ## Special thanks

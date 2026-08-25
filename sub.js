@@ -330,17 +330,37 @@
   // falls back to the app's install page.
   // The WG/AWG client apps, per OS. Amnezia VPN is the one app with a `vpn://` browser one-tap import (Android only —
   // WireGuard/AmneziaWG register NO URL scheme on any OS), so it leads; the others import a .conf by file/QR.
+  // ── Vendor brand marks, inline ───────────────────────────────────────────────────────────────────
+  // These were three files swg-sub served (_a/wireguard.svg, _a/amneziavpn.svg, _a/amneziawg.png).
+  // Inline now, like the turn mark further down: a logo is one place in one file instead of an asset
+  // named in FOUR shipped-file lists (Dockerfile COPY, swg-sub's serve map, nix/package.nix subWeb,
+  // lib/common.sh SUB_WEB) whose omission breaks only a FRESH build, never a running box.
+  // FULL COLOUR on purpose — this is the download/picker-row set. The flat brand-tinted marks the
+  // protocol TABS use are PROTO_SVG, and they stay separate because those have to remain tintable.
+  var BRAND_SVG = {
+    wireguard: '<svg viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg"><path d="m 299.74526,145.56 c 0,0 6.9396,-145.56 -153.04,-145.56 C 5.2252602,0 0.80526022,139.63 0.80526022,139.63 c 0,0 -20.81100022,160.37 149.15999978,160.37 163.02,0 149.78,-154.44 149.78,-154.44 z" fill="#88171a" /><path fill="#ffffff" d="m 101.94526,94.697 c 30.017,-18.364 68.366,-7.1401 82.735,20.476 2.7233,5.2338 3.0694,13.291 1.3447,18.782 -5.9546,18.956 -20.014,29.587 -39.312,34.103 5.6892,-4.8707 10.218,-10.394 11.659,-18.025 a 26.402,26.402 0 0 0 -4.5425,-20.956 26.76,26.76 0 0 0 -30.811,-9.3892 c -11.881,4.5111 -18.389,15.354 -17.216,28.683 1.0898,12.381 10.484,20.405 28.061,23.453 -2.627,1.3904 -4.6503,2.4144 -6.6299,3.5172 a 63.918,63.918 0 0 0 -20.544,17.868 c -1.7839,2.4084 -3.0104,2.6024 -5.727,0.94116 -35.338,-21.61 -37.609,-75.844 0.98226,-99.453 z m -26.449,133.53 c -5.6769,1.441 -11.178,3.5742 -16.981,5.4775 2.8385,-19.151 25.265,-36.788 44.23,-34.776 a 48.881,48.881 0 0 0 -9.242,25.893 c -6.302,1.1606 -12.241,1.9414 -18.007,3.405 z m 120.79,-186.98 c 5.6099,0.20612 11.23,0.12091 16.844,0.25378 a 29.052,29.052 0 0 1 4.1674,0.58069 40.607,40.607 0 0 1 -4.2357,5.4332 c -2.007,1.8701 -4.2745,3.6986 -7.1661,0.856 -0.6955,-0.68372 -2.3386,-0.52679 -3.5487,-0.54272 -5.5823,-0.07336 -11.172,-0.25177 -16.746,-0.04132 a 104.04,104.04 0 0 0 -14.425,1.473 c -0.89368,0.16046 -2.2299,3.1315 -1.8191,4.227 0.9693,2.5853 2.3833,5.4363 4.4779,7.0898 7.7403,6.11 15.972,11.596 23.748,17.664 7.556,5.8966 14.589,12.358 18.875,21.253 5.5843,11.59 5.747,23.743 3.3388,35.95 -4.0203,20.378 -14.333,37.261 -31.032,49.524 -6.7288,4.941 -15.06,7.7451 -22.767,11.295 -6.778,3.1225 -13.755,5.8115 -20.549,8.9008 -12.249,5.5695 -19.133,18.865 -17.108,32.688 1.8585,12.685 12.987,23.271 25.735,25.456 15.292,2.6216 31.071,-7.3163 34.812,-22.86 4.2067,-17.478 -5.2898,-33.083 -23.065,-37.813 -0.78271,-0.20831 -1.5684,-0.40552 -3.2012,-0.8269 4.7549,-2.1245 8.8614,-3.6381 12.653,-5.7244 q 9.9213,-5.4594 19.481,-11.562 c 1.8742,-1.199 2.8868,-1.1996 4.4852,0.18225 12.225,10.57 19.518,23.718 21.563,39.839 3.3845,26.684 -9.2471,51.198 -33.072,63.762 -36.86,19.439 -81.965,-2.6864 -90.106,-43.552 -6.9738,-35.003 17.73,-66.754 47.462,-72.884 12.787,-2.6364 24.48,-7.9596 33.57,-17.807 5.8652,-6.3541 8.7084,-11.806 9.6772,-14.266 a 39.565,39.565 0 0 0 2.7211,-14.469 33.867,33.867 0 0 0 -2.9654,-12.398 c -3.104,-7.075 -14.995,-18.33 -17.939,-20.704 l -28,-21.921 c -0.98761,-0.81256 -2.0994,-0.75366 -4.5079,-0.59045 -2.8611,0.19391 -10.175,0.59888 -13.331,-0.22815 2.553,-1.9321 9.5132,-4.7451 12.502,-7.007 -9.0734,-6.1297 -19.43,-3.9158 -28.941,-5.7461 2.1992,-4.0959 13.081,-10.39 19.27,-11.091 a 91.533,91.533 0 0 0 -1.6876,-10.281 c -0.37781,-1.3917 -1.9312,-2.7408 -3.2864,-3.5355 -3.286,-1.9267 -6.7694,-3.5167 -10.549,-5.4327 a 21.936,21.936 0 0 1 11.332,-3.5055 42.316,42.316 0 0 1 11.348,1.1056 c 6.7422,1.5405 12.124,0.53491 17.488,-4.048 -4.222,-1.7002 -8.4435,-3.2535 -12.538,-5.0907 a 123.04,123.04 0 0 1 -11.779,-6.1583 c 10.622,1.4755 20.896,5.4585 31.757,4.0034 q 0.1387,-0.74048 0.27728,-1.4809 c -8.1194,-1.8899 -16.239,-3.7798 -25.229,-5.8724 15.04,-1.3769 29.042,-1.604 42.301,4.8541 3.731,1.8173 7.6348,3.3215 11.211,5.3972 1.7443,1.0124 2.9186,3.0078 4.3496,4.5594 1.1366,1.2325 2.0495,2.8837 3.446,3.6264 5.3,2.8184 11.134,2.9291 17.078,2.7879 0.0444,-0.67694 0.0861,-1.3114 0.1308,-1.9933 5.9821,1.8693 12.715,8.7679 12.704,13.806 -9.6911,0 -19.374,-0.037 -29.056,0.05389 -1.0348,0.0097 -2.0626,0.76563 -3.0936,1.1754 0.97986,0.57067 1.9428,1.5994 2.9423,1.6362 z" /><path fill="#88171a" d="m 183.78526,26.906 a 1.4806,1.4806 0 0 0 -0.18927,2.3686 2.2326,2.2326 0 0 0 3.0724,0.8219 c 0.9328,-0.47052 1.8478,-0.97137 2.975,-1.5665 -0.9079,-0.775 -1.6362,-1.4148 -2.3857,-2.0324 -1.318,-1.086 -2.411,-0.40386 -3.4724,0.40833 z" /></svg>',
+    amnezia: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M174.6 444.7c7.7-.6 18.2.3 17-12.5-5.1-1.9-10.6-3.8-15.4-6.1-.6-.3-1.3-.6-1.9-1-9.6 6.1-15.4 16.3-24.6 22.7-.3.6-1 1-1.3 1.6 1.6.3 3.5 1 5.4 1.6 7.4.4 13.8-5.3 20.8-6.3" fill="#fedaa5"/><path d="M0 388.4c.3.3.6.6 1 .3h.3v-2.9L0 387.1zm280.5-152.9c6.7-.3 13.4-.3 19.8 3.8 1 0 1.9-.3 2.6 0 16.3 10.2 7.7-7.7 7.7-8.6 0-2.9.3-5.4 1-7.7-2.2-4.2-4.2-8.3-5.8-12.5-4.2-11.5-7.7-23.3-11.5-34.9-4.2 9-8 18.2-11.2 27.8-.3.6-.6 1.3-1.3 1.9-2.2 2.6-6.7 2.6-10.9 1.9 2.6 5.4 4.8 10.9 6.7 16.6 1.6 3.7 2.6 7.9 2.9 11.7m28.2-90.2c-1.9 4.5-4.2 9-6.1 13.1 22.4 8.3 42.5 20.2 60.1 36.1 2.9 2.6 5.1 5.4 7.4 8.3 1.3 1.6 2.2 3.5 3.2 5.4 4.5.3 9.3 0 13.8-2.2 3.2-1.6 6.1-4.5 9-6.7 0 0-.3 0-.3-.3 5.4-7.7 12.8-14.7 16.6-22.7-2.6-1.9-5.1-3.8-8-5.4-2.6-1.6-3.8-4.5-2.6-7.4.3-.6.6-1.6 1.3-2.2 1-2.2.3-5.1-1.6-6.4-2.6-1.6-5.4-2.9-8.3-2.9-1.6 0-3.5-.3-4.8-1.6-8.6-7.7-16.3-15.7-24.9-22.4-12.2-9.6-24.6-18.6-37.1-27.5-4.5-3.2-9.9-4.5-15.7-4.5-4.8.3-9.6 0-14.1 0h-.6c1.9 5.1 4.5 9.9 5.1 15.4 1.2 12.2 12.7 22.7 7.6 33.9" fill="#fce8ec"/><path d="M127.6 472.5c-1.9 2.9-4.5 5.1-6.1 8.3-4.2 9-4.8-1.6-8-1.6h-3.2c-.6 2.6-1.3 5.4-1.6 8-.6 2.9-.6 6.1-1 9-.3 3.2 2.2 5.8 5.1 4.8 3.5-1.3 5.8-3.5 7.4-7 2.2-5.4 4.2-10.6 6.1-16-.3-1 1-3.5 1.3-5.5m328.2-251.4 1.6-1.6c14.1-12.8 30.4-21.7 47.7-29.4 2.2-1 4.5-2.2 6.7-3.2.3 0 .3-.6 0-.6h-.3c-9.6-1.3-18.2-.3-27.5 1.6-6.1 1.3-12.2 2.9-18.2 4.2-.3 2.2-1 4.8-1.9 7-2.7 7.6-5.2 15-8.1 22m-21.1 35.2c-2.2 3.5-4.2 7.7-6.7 11.2-3.2 4.5-7.7 8.3-15 8.6-2.9 0-6.4-2.6-9.3-2.2-.6 23.3-2.6 46.7-8.3 69.7-2.9 10.9-7 21.1-12.5 31.7-1.6 3.2-6.4 3.8-8.3 1-.3-.3-.3-.6-.6-1.3-6.1-13.1-12.2-25.9-17.3-39-.6-1.6-1-2.9-1.6-4.5l-4.8 4.8c-4.2 4.5-10.9 6.7-15.7 10.6-3.2 2.6-6.7 4.2-10.2 5.1 1.9 3.8 3.8 7.7 6.1 11.2 6.4 10.9 12.2 21.7 15.4 33.9 3.5 13.4 2.6 17-9.6 24-11.5 6.7-23.7 12.8-35.8 18.9-2.2 1.3-5.1 1.6-7.7 1.6-9.6.3-19.2 0-28.8 0-21.4.6-42.9.3-63.7-5.8-.6 13.4-12.8 19.8-21.4 24.6-1.3.6-2.2 1.3-2.9 1.9 2.6 1.3 4.8 2.6 7.4 3.5 1.3.6 2.6 1 3.8 1.3 5.4 1 10.9 1.3 16 2.2 16 2.6 31.7 6.1 47.7 8 16.6 1.9 33.3.6 49.3-5.4 14.4-5.4 29.1-10.6 43.5-15.7 7.4-2.6 15.4-3.5 23-3.5 1.9 0 3.8 1.3 4.8 3.2 1.3 2.2 2.9 3.5 6.7 5.1 1.3.6 2.2 1.6 2.9 2.6 1.6 3.8 3.5 7.7 5.1 11.5 4.2 8.6 9 17 17 22.7 1.3 1 2.9 1.6 4.8 2.2s4.2-.6 3.8-2.6c-1.3-10.9-2.2-21.4-4.5-32-2.9-12.8-6.1-25.6-7-39-.6-10.2 1.6-19.5 8.3-27.5 6.4-8 12.5-16 18.9-24 8-9.9 13.1-20.8 12.2-34.2-1-13.1-.6-25.9 3.5-38.7 2.9-8.6 5.4-17.3 11.5-24.6 3.8-4.8 6.4-10.2 7.4-16.3.3-2.9-1.9-5.1-4.8-5.1H444c-2.6 0-4.8-1.9-5.1-4.5v-.6c-.6 1-1.3 1.9-1.9 2.6-.7.6-1.7 1.9-2.3 2.8" fill="#f18928"/><path d="M97.9 250.9c2.2-.6 4.5-1 7-1.6.6-.3 1.3-.3 1.9-.6.3 0 .3 0 .6-.3 9.6-20.5 23.7-37.4 40-52.8 11.5-10.9 24-20.2 37.4-28.5 0-3.2.3-6.4 1.3-9.6 1.3-4.2 1.6-9 2.6-13.4 0-.6.3-1.3.3-1.9 0-.3 0-.6.3-1.3 3.2-10.2 5.1-20.5 6.1-30.7-14.1 4.2-27.8 8.6-42.2 12.5-4.8 1.3-7.7 3.8-10.2 8-5.4 9-11.5 17.6-17.6 26.2-1.3 1.9-2.9 3.2-4.5 4.8-1.3 1.3-3.5 1.3-4.8 0-1.6-1.6-4.5-1-5.4 1.3-1 2.6-1.9 5.1-3.2 7.4-2.2 3.8-3.2 9-7.4 10.6-1.9.6-3.8 1.6-4.8 3.5-6.7 14.4-13.4 28.5-20.2 42.5-4.2 10.2-8 19.5-11.2 29.1 9.3-.6 18.2-1.6 27.2-3.5 2.3-.4 4.5-1.1 6.8-1.7" fill="#80c9c1"/><path d="M221.3 218.3c-1.6 1.9-1.3 5.1-2.2 7.4.3 0 .3.3.6.3 1-2.6 1.6-5.4 2.6-8-.6-.4-1-.1-1 .3M189 142.4c-.3.6-.3 1.3-.6 1.9-1 4.5-1 9-2.6 13.4-1 3.2-1.3 6.4-1.3 9.6 1.3-.6 2.2-1.6 3.5-2.2 3.5-1.9 7-3.5 11.2-3.5 1.9 0 3.2 1.9 2.6 3.8-6.1 19.5-12.5 39-18.6 58.5 11.2-1.3 20.5-8.6 29.1-18.2l1-1c.6-.6 2.6-1.6 2.6-1.6 2.6 3.2 5.1 6.4 7.7 9.6 2.2-7 4.5-13.8 6.4-20.8 2.6-8 5.4-16 8.3-24 .6-1.6 1.3-3.5 2.2-4.8 1.9-2.9 4.8-2.9 6.7 0 8.3 14.7 17 29.1 24 44.5 4.2.6 8.6.6 10.9-1.9.3-.3.6-1 1-1.6 3.2-9.6 7-18.9 11.5-28.1-1.9-6.1-3.8-12.2-5.8-18.2v-.6l1-1c3.5.6 7.4 1 10.9 2.2.6.3 1.3.6 1.9.6 1.9-4.2 4.2-8.6 6.1-13.1 4.8-11.5-6.7-22.1-8-33.6-.6-5.4-3.2-10.6-5.4-15.7-11.8-.6-20.5-5.4-24.9-17-3.5-8.6-6.4-17.6-9.3-26.9-1-3.5-2.2-7-3.2-10.6-1 2.9-1 6.1-1.3 8.3-.3 6.4-4.5 9.6-6.1 14.7-.6-.3-1-.3-1.6-.3-5.1-.3-10.6 4.5-15.4 5.4-.3 2.6-.6 4.8-1 7.4-1.6 10.6-8.3 16-18.6 17.6-9.6 1.6-10.6 2.2-11.5 11.8 0 .6-1 1-1.6 1.3-1.9.6-3.8 1.3-5.8 1.9-1 10.2-2.6 20.8-6.1 30.7.5.9.1 1.2.1 1.5" fill="#95c7db"/><path d="M250.8 65.7c1.6-5.1 5.8-8.3 6.1-14.7 0-2.2.3-5.4 1.3-8.3-2.2-7-4.2-14.1-6.4-21.1-1-2.9-2.2-5.4-3.5-8s-4.5-3.8-6.7-1.6c-1.6 1.9-2.6 4.2-3.2 8-1 9-1.6 17.6-2.6 26.5-.6 8-1.3 16-2.2 24 4.8-1 10.2-5.8 15.4-5.4.8.3 1.1.6 1.8.6" fill="#87add4"/><path d="M409.7 205.5c-5.4 9-4.8 22.4-17 26.5-3.5 1.3-7 1.6-10.6 1.9-2.6.3-5.1.6-7.7 1-1 .3-1.6.3-2.6.6-12.8 3.5-20.2 12.8-30.1 19.2-2.9 1.9-6.4 2.6-9.6 3.8.6 11.5-2.9 22.4-8 32.3-1.9 3.5 1.6 9.6-1.9 11.8-.6.6-1.9 1-3.5 1-1.9 0-3.8.6-5.4 1 1.3 3.5 2.2 7 2.9 10.9 11.2-.6 21.4-3.8 30.7-9.3-1.9-6.1-3.8-12.2-5.8-17.9-1-2.6-1.3-5.1-1.6-7.7-1.3-7 0-9.6 6.4-13.1 11.5-6.7 23.7-11.2 36.5-14.4 5.8-1.6 11.8-2.2 17.9-3.5 1.3-.3 2.6 0 3.8 0 0 .6.3 1.3.3 1.9v2.9c2.2-7 6.4-13.4 14.4-19.8 13.4-10.2 23.7-23 28.8-38.1-5.4 1-10.2 0-14.7-3.5-2.6-1.9-5.4-4.2-7.7-6.1-.3-.3-1-.6-1.3-1-4.3 7.4-7.8 14.4-14.2 19.6" fill="#fedaa5"/><path d="M374.9 216.7c0 1.6-1.3 3.2-2.6 3.8-13.4 6.7-26.5 14.7-42.2 16.3-6.7.6-11.5-1.6-14.7-7-1.3-2.2-2.2-4.5-3.5-6.4-.6 2.2-1 4.8-1 7.7 0 1 8.6 18.9-7.7 8.6-.6-.3-1.6 0-2.6 0 10.6 6.4 20.8 13.1 31.3 19.5 3.2-1.3 6.7-1.9 9.6-3.8 9.9-6.1 17.3-15.7 30.1-19.2 1-.3 1.6-.3 2.6-.6 2.6-.6 5.1-1 7.7-1 3.5-.3 7-1 10.6-1.9 12.2-4.2 11.8-17.6 17-26.5l-.3.3c-3.8-1.9-8-3.8-11.8-5.8-.3-.3-.6-.3-1.3-.6-2.9 2.2-5.8 4.8-9 6.7-4.8 2.2-9.3 2.9-13.8 2.2.9 1.9 1.6 4.8 1.6 7.7" fill="#fff1cf"/><path d="M332 258.6c-10.6-6.4-20.8-13.1-31.3-19.5-6.1-4.2-12.8-3.8-19.8-3.8 0 .6.3 1.3.3 1.9 1 7-1.6 12.8-7.7 16.6-6.4 4.2-13.4 7.4-20.5 9.6.3 2.9.6 5.8 1 8.6.6 7 1.3 13.8 1.6 20.8 13.1-2.9 26.2-3.8 39.7-3.8 7 0 12.2 3.2 15.7 9.3 1 1.9 1.9 4.2 2.9 6.4 1.6-.6 3.5-1 5.4-1.3 1.6 0 2.6-.3 3.2-1 3.5-2.2.3-8.3 1.9-11.8 4.7-9.7 7.9-20.2 7.6-32" fill="#a29ea1"/><path d="M86.7 302.1c1.6 0 3.2.3 4.5.3h3.5c.6-8.6 1.6-17.3 3.5-25.6-13.4.3-26.9.6-40.3.3-1.9 8-3.5 16.3-4.5 24.6 11.2-.9 22.4-.6 33.3.4" fill="#797aaa"/><path d="M418 235.2c-8 6.1-12.2 12.8-14.4 19.8v18.6c2.9-.3 6.4 2.6 9.3 2.2 7.4-.3 11.5-3.8 15-8.3 2.6-3.5 4.5-7.4 6.7-11.2.6-1.3 1.6-2.2 2.6-3.5.6-.6 1.3-1.6 1.9-2.6 0-6.1 1.3-11.8 5.1-16.3 3.5-4.5 7.4-9 11.5-12.8 3.2-7 5.8-14.4 8-21.7.6-2.2 1.3-4.8 1.9-7-5.8 1.3-11.2 2.9-17 4.2-.6 0-1.3.3-1.6.3-5.3 15-15.5 28.1-29 38.3" fill="#f8b570"/><path d="M176.6 245.8c4.2.6 8 1.6 11.8 3.8 2.9.3 6.1 1 9 1.3 4.8 0 9.3.3 14.1.3 2.9-8.6 5.4-17.3 8.3-26.2-.3 0-.3-.3-.6-.3 1.3-2.2.6-5.4 2.2-7.4.3-.3.6-.3 1-.6.6-1.6 1-3.2 1.6-4.8-2.6-3.2-4.8-6.4-7.7-9.6 0 0-1.9 1-2.6 1.6l-1 1c-8.6 9.6-17.9 17-29.1 18.2-2.6 7.9-4.8 15.3-7 22.7" fill="#87add4"/><path d="M396.3 199.7c.3.3.6.3 1.3.6 3.8 1.9 8 3.8 11.8 5.8l.3-.3c6.4-5.1 9.9-12.2 13.4-19.5-3.5-3.2-6.7-6.4-10.2-9.3-3.8 8-11.2 15-16.6 22.7q0-.45 0 0" fill="#f8c9d1"/><path d="M2.6 388.4v-3.5l-1 1v2.9c.3-.1.6-.1 1-.4" fill="#9b8bc1"/><path d="M10.9 386.5c13.1-2.9 25.9-6.4 39-9 2.9-.6 5.4-.6 7.7-.3 2.2-1 4.2-2.2 6.1-3.5 10.9-9 23.7-10.9 36.8-11.2.3-3.2 2.6-5.8 5.1-8 7.4-6.4 16-8.6 25.6-9.6 3.2-.3 6.1 2.6 5.4 5.4 0 .6-.3 1.3-.3 1.6-1.3 4.2-2.2 8.3-3.5 12.8 3.8-1.9 8-3.2 12.8-1 7 3.5 15-.3 22.7 0 10.9-29.1 33.6-51.8 65.2-64.3-1-6.7-2.9-13.4-5.8-19.8-3.8-8.3-11.5-11.5-22.7-6.1-12.5 6.1-26.2 10.6-40 8-.3 1-.6 1.6-.6 2.6-.6 1.9-1.9 4.2-3.8 5.4-4.5 3.2-9 6.4-13.8 8.6-15.4 7.7-31 13.8-48 16.6-1.3.3-2.6.3-4.5.3 0-4.5.3-8.6.6-13.1h-3.5c-1.6 0-3.2 0-4.8-.3-10.9-1-22.1-1-32.9-.6-1.3 11.8-1.6 24-1 36.5 0 1.6-.6 3.5-1.6 4.8-5.4 5.4-10.9 10.9-16.6 15.7-9.6 8.3-19.8 16.3-29.4 24.3-1 .6-1.6 1.3-2.2 2.2v3.5c2.5-.2 5.1-.9 8-1.5" fill="#6e5ea6"/><path d="M238.3 297.6c5.4-1.9 11.2-3.5 17-4.5-.3-7-1-13.8-1.6-20.8-.3-2.9-.6-5.8-1-8.6-1.6.3-2.9 1-4.5 1.3-13.1 3.5-26.5 4.5-40 4.5-.6 0-1.3-.3-2.2-.3.3-1 .3-1.9.6-2.6 1.3-4.2 2.6-8.3 3.8-12.8-7-.6-12.5-1.6-13.4-2.9-2.9-.3-6.1-1-9-1.3-3.8-2.2-8-3.5-11.8-3.8-3.8 12.2-7.7 24-11.5 36.1 13.4 2.6 27.2-1.9 40-8 11.2-5.4 18.9-2.2 22.7 6.1 2.9 6.4 4.8 13.1 5.8 19.8 1.6-.9 3.5-1.6 5.1-2.2m-49.9-47.7c2.9.3 5.8 1 9 1.3-3.3-.3-6.1-1-9-1.3M124.1 405c5.8 1.6 11.8 1 17.3-2.6 6.4-4.2 13.1-8 20.2-10.6 1-9.9 3.2-19.2 6.4-28.1-7.7-.3-15.4 3.5-22.7 0-4.8-2.2-9-1-13.1 1-2.2 8-4.5 16-6.7 24-.3 1.3-1.3 2.6-2.6 2.9-2.6.6-4.8 0-7-1.3-9.3-6.1-13.8-15-15.7-25.6v-2.6c-13.1.3-25.6 2.2-36.8 11.2-1.6 1.3-3.8 2.6-5.8 3.5 4.8.6 9 2.9 12.2 8.6 5.1 9.3 12.8 17.3 20.5 24.6l2.6 2.6c6.9-7.6 18.7-11.1 31.2-7.6" fill="#797aaa"/><path d="M144.9 446.6c2.9-1.6 3.8-1 4.8 1.3 9-6.4 15-16.6 24.6-22.7-9-4.8-13.4-12.5-13.4-23.3 0-3.2.3-6.7.6-9.9-7 2.6-13.4 6.4-20.2 10.6-5.4 3.5-11.5 4.5-17.3 2.6-12.5-3.5-24.3 0-31 8 6.4 6.4 12.8 12.5 18.9 18.9 1 1 2.2 2.6 2.2 3.8 0 5.4.3 10.9 0 16.3 5.4 0 10.9-.3 16.6-.6 4.9-.5 9.7-2.4 14.2-5" fill="#a29ea1"/><path d="M350.6 335.3c1.6-1.6 2.9-3.2 4.5-4.8-2.9-8-5.4-15.7-8-23.7-9.3 5.4-19.5 8.6-30.7 9.3.3 1.6.3 3.5.3 5.4.3 10.6 3.2 20.5 7.7 29.7 3.5-1 7-2.6 10.6-5.4 4.7-3.8 11.4-6 15.6-10.5" fill="#f8b570"/><path d="M149.7 447.9c-1.3-2.2-2.2-2.9-4.8-1.3-4.5 2.6-9.3 4.5-14.1 4.8-5.4.3-10.9.3-16.6.6 0 3.2-.3 6.7-.6 9.9-.6 5.8-1.9 11.8-3.2 17.6h3.2c3.5 0 4.2 10.6 8 1.6 1.3-3.2 3.8-5.4 6.1-8.3.3-.3.6-.6 1-1.3 1-3.5 1.9-7 3.2-10.6 3.2-8.6 9-12.5 16.6-11.2.6-.8.9-1.5 1.2-1.8" fill="#b59259"/><path d="M200.2 435.1c-.6-.3-1.3-.3-1.9-.6-2.2-.6-4.5-1.3-6.7-2.2 1.3 12.8-9.3 11.8-17 12.5-7.4.6-13.4 6.7-20.8 6.4.3 0 .3 0 .6.3 7.4 3.2 14.4 7 21.4 10.6 1-.6 1.9-1.3 2.9-1.9 8.7-5.3 20.9-11.7 21.5-25.1m-72.6 37.4c-.6 2.2-1.6 4.5-1.3 6.1.6-1.3 1-2.9 1.6-4.2.3-1 .6-1.9 1-3.2-.3.4-1 .7-1.3 1.3" fill="#f8b570"/><path d="M98.5 276.1c1.6-7 3.5-13.8 6.1-20.5 1-2.6 1.9-4.8 3.2-7.4-.3 0-.3 0-.6.3-.6.3-1.3.3-1.9.6-2.6.6-4.8 1-7 1.6s-4.5 1-6.7 1.6c-9 1.9-17.9 2.9-27.2 3.5-2.2 6.7-4.2 13.8-5.8 20.5 12.7.5 26.2.5 39.9-.2" fill="#a29ea1"/><path d="M211.4 251.8c-4.8 0-9.3-.3-14.1-.3.6 1.3 6.4 2.2 13.4 2.9.1-1.3.4-1.9.7-2.6" fill="#7d89c1"/><path d="M197.3 251.2c-2.9-.3-5.8-1-9-1.3" fill="none"/></svg>'
+  };
+  // AmneziaWG's mark is the one with no vector to inline: a flat multi-colour raster. Re-sampled to
+  // 96px (it renders at 26 CSS px, so this is still 2x on a 3x screen) and palette-quantised —
+  // 2.5 kB against the 44 kB original, which is why it can sit in the file at all.
+  var AWG_PNG = "data:image/png;base64,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";
+  function svgUri(raw) { return "data:image/svg+xml," + encodeURIComponent(raw); }   // for an <img src>
+  function svgNode(raw) {   // for the DOM — no innerHTML, so the strict CSP is satisfied
+    return document.importNode(new DOMParser().parseFromString(raw, "image/svg+xml").documentElement, true);
+  }
+
   var WG_CLIENTS = {
-    amneziavpn: { name: "AmneziaVPN", autostart: true, logo: "_a/amneziavpn.svg", page: "https://amnezia.org/en/downloads",   // "— Autostart" (the vpn:// one-tap auto-import) only applies on Android
+    amneziavpn: { name: "AmneziaVPN", autostart: true, logo: svgUri(BRAND_SVG.amnezia), page: "https://amnezia.org/en/downloads",   // "— Autostart" (the vpn:// one-tap auto-import) only applies on Android
       android: "https://play.google.com/store/apps/details?id=org.amnezia.vpn",
       ios: "https://apps.apple.com/app/amneziavpn/id1600529900",
       macos: "https://apps.apple.com/app/amneziavpn/id1600529900",   // Apple-Silicon Macs run the iOS app from the App Store (same id) → "just tap open"
       windows: "https://amnezia.org/en/downloads", linux: "https://amnezia.org/en/downloads" },   // Win/Linux = .exe/.tar via the downloads page (no store)
-    amneziawg: { name: "AmneziaWG", logo: "_a/amneziawg.png", page: "https://github.com/amnezia-vpn/amneziawg-windows-client/releases",
+    amneziawg: { name: "AmneziaWG", logo: AWG_PNG, page: "https://github.com/amnezia-vpn/amneziawg-windows-client/releases",
       android: "https://play.google.com/store/apps/details?id=org.amnezia.awg",
       ios: "https://apps.apple.com/app/amneziawg/id6478942365", macos: "https://apps.apple.com/app/amneziawg/id6478942365",   // one App Store listing runs on iPhone/iPad + Mac
       windows: "https://github.com/amnezia-vpn/amneziawg-windows-client/releases", linux: "" },   // no standalone Linux app
-    wireguard: { name: "WireGuard", logo: "_a/wireguard.svg", page: "https://www.wireguard.com/install/",
+    wireguard: { name: "WireGuard", logo: svgUri(BRAND_SVG.wireguard), page: "https://www.wireguard.com/install/",
       android: "https://play.google.com/store/apps/details?id=com.wireguard.android",
       ios: "https://apps.apple.com/app/wireguard/id1441195209", macos: "https://apps.apple.com/app/wireguard/id1451685025",
       windows: "https://download.wireguard.com/windows-client/wireguard-installer.exe", linux: "https://www.wireguard.com/install/" }   // Linux = per-distro
@@ -856,7 +876,7 @@
   }
   function _phKey(e) { if (e.key === "Escape") dismissHints(); }
   function amneziaIcon() {   // the AmneziaVPN app logo
-    var img = el("img", "ph-icon"); img.src = (WG_CLIENTS.amneziavpn || {}).logo || "_a/amneziavpn.svg"; img.alt = ""; return img;
+    var img = el("img", "ph-icon"); img.src = (WG_CLIENTS.amneziavpn || {}).logo || svgUri(BRAND_SVG.amnezia); img.alt = ""; return img;
   }
   function amneziaDlPanel() {   // static (in-overlay) downloads bubble: header link + this-OS item, styled like .dl-bubble
     var os = subOs(), pageUrl = "https://amnezia.org/en/downloads", av = WG_CLIENTS.amneziavpn || {}, osUrl = av[os] || pageUrl;
@@ -1275,6 +1295,34 @@
     (ICONS[name] || []).forEach(function (spec) { var e = document.createElementNS(NS, spec[0]); for (var k in spec[1]) e.setAttribute(k, spec[1][k]); svg.appendChild(e); });
     return svg;
   }
+  // The Connections glyph: four arrows radiating from one point, one per protocol family, each drawn in
+  // that family's OWN colour — the same palette the cards' protocol tags use. It says "several kinds of
+  // connection live behind this button" without needing a legend, and because the colours come from
+  // ifaceColor() a panel-side palette override reaches the icon too. Built by hand rather than added to
+  // ICONS because that table paints every glyph in one currentColor.
+  // The four arrows form two OPPOSING axes, and the pairing follows the families: wg opposite awg (the two
+  // WireGuard kinds), wdtt opposite csqtt (the two self-contained turn kinds) — so no two arrows of one
+  // family ever sit next to each other. Listed NW · NE · SE · SW, which is why the order reads wg, wdtt,
+  // awg, csqtt rather than the canonical one.
+  var CONN_ARROWS = [
+    ["wg",    "M10 10L3.4 3.4M3.4 8.6V3.4H8.6"],
+    ["wdtt",  "M14 10L20.6 3.4M15.4 3.4H20.6V8.6"],
+    ["awg",   "M14 14L20.6 20.6M20.6 15.4V20.6H15.4"],
+    ["csqtt", "M10 14L3.4 20.6M8.6 20.6H3.4V15.4"],
+  ];
+  function connIconEl() {
+    var NS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke-width", "2.2");
+    svg.setAttribute("stroke-linecap", "round"); svg.setAttribute("stroke-linejoin", "round");
+    CONN_ARROWS.forEach(function (a) {
+      var e = document.createElementNS(NS, "path");
+      e.setAttribute("d", a[1]); e.setAttribute("stroke", ifaceColor(a[0]));
+      svg.appendChild(e);
+    });
+    return svg;
+  }
   function iconBtn(cls, name, label) {
     var b = el("button", cls); b.type = "button"; b.title = label; b.setAttribute("aria-label", label); b.appendChild(iconEl(name)); return b;
   }
@@ -1319,27 +1367,24 @@
   // Full-colour BRAND marks, not the flat brand-tinted set the protocol TABS use: those are 62px buttons
   // whose selected/unselected state is carried by colour, so they have to stay tintable. A picker row is a
   // 28px glance, and the real logos are what make it placeable without reading.
-  // wg/awg are the files swg-sub already serves; turn has no vendor logo, so it's ours — recoloured off the
+  // wg/awg are the vendor marks from BRAND_SVG above; turn has no vendor logo, so it's ours — recoloured off the
   // flat cyan into three tones: the ring + its ticks, lighter speed lines, and an inner node in currentColor
   // so it reads near-white on the dark theme and deep indigo on the light one (a fixed white would vanish),
   // The spikes and the speed lines are both tokens (--turn-spike / --turn-dash), so each theme gets its
   // OWN palette rather than one palette adjusted for contrast: black spikes + red lines on the light
   // ground, red spikes + cyan lines on the dark one.
-  var ROW_ICON_IMG = { wg: "_a/wireguard.svg", awg: "_a/amneziavpn.svg" };
+  var ROW_ICON_SVG = { wg: BRAND_SVG.wireguard, awg: BRAND_SVG.amnezia };
   var TURN_ROW_SVG = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M16.7 5.2 A8.7 8.7 0 1 0 16.7 18.8" fill="none" stroke="#7C7FF0" stroke-width="1.7" stroke-linecap="round"/><path d="M14.28 19.12 L13.1 21.43" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M12.53 19.68 L14.85 20.86" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M7.66 19.09 L5.12 19.67" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M6.1 18.11 L6.68 20.64" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M3.42 13.99 L1.35 12.43" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M3.17 12.17 L1.6 14.25" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M4.6 7.48 L4.47 4.88" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M5.83 6.11 L3.24 6.25" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M10.35 4.19 L12.25 2.42" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M12.19 4.26 L10.42 2.35" fill="none" style="stroke:var(--turn-spike)" stroke="#000" stroke-width="1.05" stroke-linecap="round"/><path d="M11 9.7 V12.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><path d="M11 12.4 L8.1 14.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><path d="M11 12.4 L13.9 14.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><circle cx="11" cy="7.7" r="2.0" fill="none" stroke="currentColor" stroke-width="1.35"/><circle cx="7.5" cy="15.4" r="1.5" fill="none" stroke="currentColor" stroke-width="1.35"/><circle cx="14.5" cy="15.4" r="1.5" fill="none" stroke="currentColor" stroke-width="1.35"/><path d="M18.4 10.6 H21.6" fill="none" style="stroke:var(--turn-dash)" stroke="#EF4444" stroke-width="1.25" stroke-linecap="round"/><path d="M18.4 12.4 H22.7" fill="none" style="stroke:var(--turn-dash)" stroke="#EF4444" stroke-width="1.25" stroke-linecap="round"/><path d="M18.4 14.2 H21.6" fill="none" style="stroke:var(--turn-dash)" stroke="#EF4444" stroke-width="1.25" stroke-linecap="round"/></svg>';
   function rowIcon(mode) {
-    if (ROW_ICON_IMG[mode]) { var im = document.createElement("img"); im.src = ROW_ICON_IMG[mode]; im.alt = ""; return im; }
-    if (mode !== "turn") return null;
-    var doc = new DOMParser().parseFromString(TURN_ROW_SVG, "image/svg+xml");
-    return document.importNode(doc.documentElement, true);
+    var raw = mode === "turn" ? TURN_ROW_SVG : ROW_ICON_SVG[mode];
+    return raw ? svgNode(raw) : null;
   }
   function protoIcon(mode) {
     var raw = PROTO_SVG[mode];
     if (!raw) return document.createElementNS("http://www.w3.org/2000/svg", "svg");
     var s = "_p" + (++_protoN);
     raw = raw.replace(/id="([^"]+)"/g, 'id="$1' + s + '"').replace(/url\(#([^)]+)\)/g, 'url(#$1' + s + ')');
-    var doc = new DOMParser().parseFromString(raw, "image/svg+xml");
-    return document.importNode(doc.documentElement, true);
+    return svgNode(raw);
   }
 
   // Shrink a config/link <pre> so it fits its box in BOTH axes without scrolling — down to a legible floor
@@ -1594,14 +1639,6 @@
   }
   // Copy / save the QR itself (a PNG) — used when the QR is the thing on screen, so Copy/Download act on
   // what you see, not the hidden config text.
-  function copyImage(url, btn, restore) {
-    function done(ok) { if (btn) { btn.textContent = ok ? t("copied") : t("copyFailed"); setTimeout(function () { btn.textContent = restore; }, 1400); } }
-    if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) return done(false);
-    try {
-      var blob = dataUrlToBlob(url), item = {}; item[blob.type] = blob;
-      navigator.clipboard.write([new ClipboardItem(item)]).then(function () { done(true); }, function () { done(false); });
-    } catch (_) { done(false); }
-  }
   function downloadImage(url, name) {
     var a = document.createElement("a");
     a.href = url; a.download = (name || "qr").replace(/\.(conf|txt|png)$/i, "") + ".png";
@@ -2074,12 +2111,9 @@
     titleEl.appendChild(nameEl); titleEl.appendChild(srvEl);
     titleEl.setAttribute("data-pick", "");   // the device name doubles as the jump picker's trigger (render wires it)
     head.appendChild(titleEl);
-    // The picker's LABELLED entry point, on the same line as the down-chevron and hard against the right edge.
-    // syncVHints places it on that line whether or not the chevron itself is shown, so it never moves between
-    // pages. Hidden by render when there's nothing to pick.
-    var switchEl = el("button", "pswitch", t("connections")); switchEl.type = "button"; switchEl.hidden = true;
-    switchEl.setAttribute("data-pick", "");
-    page.appendChild(switchEl);
+    // No floating "Connections" pill here any more — the action bar carries that button now, in a fixed slot
+    // beside the ones it belongs with. (The blocked/expired page still has its own: it renders no action bar,
+    // so the pill is the only way off a dead end there.)
     // deployment nav row (only when >1 deployment): the dots flanked by left/right hint arrows — the LEFT/RIGHT
     // SWIPE walks the deployments; the arrows are graphical hints (non-interactive), each fading at its end.
     var dotEls = [], sL, sR;
@@ -2107,16 +2141,24 @@
 
     var bar = el("div", "pbar");
     var toggle = iconBtn("pbtn ico", "doc", t("showConfig"));
-    var copyB = iconBtn("pbtn ico", "copy", t("copyConfig"));
     var dlB = iconBtn("pbtn ico", "download", t("download"));
     var shareB = iconBtn("pbtn ico", "share", t("share"));
+    // Connections — the picker's entry point, moved off the floating pill and into the bar's rightmost slot.
+    // `data-pick` is the picker's own wiring contract: render reveals and binds every trigger it finds.
+    var connB = el("button", "pbtn ico pbtn-conn"); connB.type = "button";
+    connB.title = t("connections"); connB.setAttribute("aria-label", t("pickOpen"));
+    connB.appendChild(connIconEl());
+    connB.setAttribute("data-pick", "");
+    // Not `hidden`: START is centred by the slots either side of it, so a subscription with nothing to pick
+    // must still leave this slot standing. The picker's wiring clears the visibility when there IS.
+    connB.style.visibility = "hidden";
     // The signature START button — deep-links into the app if installed, else downloads it (apk/exe/deb). Replaces the
     // old plain "Open in app" button: bigger, round, glowing. The utility icons stay small, centred on its centre.
     var startB = el("button", "pbtn-start"); startB.type = "button";
     startB.innerHTML = START_SVG; startB.setAttribute("aria-label", t("start"));
-    // START is the CENTRE slot — utilities split to its left (Config, Copy) and right (Download, Share). The toggle
-    // slot is only visibility-toggled (never removed), so START stays centred whether 3 or 4 utilities are visible.
-    bar.appendChild(toggle); bar.appendChild(copyB); bar.appendChild(startB); bar.appendChild(dlB); bar.appendChild(shareB);
+    // START is the CENTRE slot — utilities split to its left (Config, Download) and right (Share, Connections).
+    // Every slot is only visibility-toggled, never removed, so START stays centred whatever is available.
+    bar.appendChild(toggle); bar.appendChild(dlB); bar.appendChild(startB); bar.appendChild(shareB); bar.appendChild(connB);
     page.appendChild(bar);
 
     var curIdx = 0;
@@ -2146,7 +2188,6 @@
       if (window.matchMedia && window.matchMedia("(orientation: landscape)").matches) {
         head.style.top = ""; head.style.gap = ""; head.style.paddingTop = "";
         vUp.style.left = ""; vDown.style.left = ""; vUp.style.top = ""; vDown.style.top = "";
-        switchEl.style.top = "";   // landscape/desktop flows it in-document (CSS) — drop the portrait placement
         Array.prototype.forEach.call(srow.children, function (c) {   // clear ALL portrait inline positioning on every cell
           var st = c.querySelector(".scell-stage"); if (st) { st.style.alignItems = ""; st.style.paddingTop = ""; }
           var n = c.querySelector(".scell-node"); if (n) n.style.top = "";
@@ -2184,10 +2225,9 @@
       var vkH = hasVk ? vk.offsetHeight : 0;
       var cmdH = cmdEl ? cmdEl.offsetHeight : 0, hasCmd = cmdH > 0;
       var uShown = vUp.style.display !== "none", dShown = vDown.style.display !== "none";
-      // The bottom line is OCCUPIED whenever the chevron OR the Switch button is on it. Reserving it either way
-      // is what keeps Switch (and everything stacked above it) at the same y on every page — the last page draws
-      // no chevron, and without this the whole column redistributed and the button slid ~74px down.
-      var dLineShown = dShown || !switchEl.hidden;
+      // The bottom line is RESERVED whether or not the chevron is drawn on it. The last page draws none, and
+      // without this the whole column redistributed and everything stacked above slid ~74px down between pages.
+      var dLineShown = true;
       var barTop = bar.getBoundingClientRect().top - pr.top;
       var GAP_MIN = 8;
 
@@ -2246,10 +2286,6 @@
       var cr2 = configEl.getBoundingClientRect();
       var aCx = Math.round((cr2.left + cr2.right) / 2 - pr.left);
       vUp.style.left = aCx + "px"; vDown.style.left = aCx + "px";
-      // "Connections" sits ON the chevron's line (same y on every page — dLine is computed above whether or not
-      // the chevron is drawn), right-aligned to the same 12px inset as the header controls above it.
-      switchEl.style.top = Math.round(dLine + dH / 2) + "px";
-      switchEl.style.left = ""; switchEl.style.right = ""; switchEl.style.bottom = "";
       if (sL && sR) {
         var topRef = uShown ? (upTop + uH) : 0, botRef = dLineShown ? dLine : boxBottom;
         var midY = Math.round((topRef + botRef) / 2 + (botRef - topRef) * 0.1);   // a touch below centre
@@ -2283,7 +2319,7 @@
                 nx === "qr" ? t("showQR") : nx === "link" ? t("showLink") : (c.isLink ? t("showLink") : t("showConfig")));
       }
       var v = (c.ready && c.payload) ? "" : "hidden";
-      copyB.style.visibility = v; dlB.style.visibility = v; shareB.style.visibility = v;
+      dlB.style.visibility = v; shareB.style.visibility = v;   // Connections is not tied to the cell's payload
       // START: enabled whenever the cell is ready. Title reflects what it does — open the app (has a deep-link) or
       // get it (download only). "app" name falls back to a generic label.
       startB.style.visibility = c.ready ? "" : "hidden";
@@ -2302,16 +2338,12 @@
       if (c.vktgz && c.wgConf) return ["qr", "link", "config"];
       return (mode !== "turn" && c.openUri) ? ["qr", "link", "text"] : ["qr", "text"];
     }
-    function viewText(c) {   // what Copy/Download/Share act on
+    function viewText(c) {   // what Download/Share act on
       if (c.view === "config" && c.wgConf) return c.wgConf;
       return (c.view === "link" && c.openUri) ? c.openUri : c.payload;
     }
     toggle.onclick = function () { var c = cur(); if (!c.hasQR) return;
       var vs = cellViews(c), i = vs.indexOf(c.view); if (i < 0) i = 0; c.view = vs[(i + 1) % vs.length]; c.redraw(); syncBar(); };
-    copyB.onclick = function () { var c = cur();
-      if (c.view === "qr" && c.qrUrl) { copyImage(c.qrUrl, null); flashIcon(copyB, "copy", t("copyConfig")); }
-      else (navigator.clipboard ? navigator.clipboard.writeText(viewText(c)) : Promise.reject()).then(function () { flashIcon(copyB, "copy", t("copyConfig")); }, function () {});
-    };
     dlB.onclick = function () { var c = cur(); var nm = c.base;
       if (c.view === "qr" && c.qrUrl) downloadImage(c.qrUrl, nm);
       else if (c.view === "config" && c.wgConf) download(c.wgConf, nm, "conf");
@@ -2599,7 +2631,7 @@
       if (pickTotal > 1) {
         pages.forEach(function (pg) {
           Array.prototype.forEach.call(pg.querySelectorAll("[data-pick]"), function (trg) {
-            if (trg.tagName === "BUTTON") { trg.hidden = false; trg.onclick = openPicker; return; }
+            if (trg.tagName === "BUTTON") { trg.hidden = false; trg.style.visibility = ""; trg.onclick = openPicker; return; }
             trg.classList.add("pickable");                       // plain text → give it a button's semantics
             trg.setAttribute("role", "button");
             trg.setAttribute("tabindex", "0");

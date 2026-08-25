@@ -9,7 +9,75 @@
 # ONE list, shared by every installer/updater copy site — the four images were allow-listed by the server but
 # absent from all four copy loops, so `_a/import-hint.png` (and the client logos) 404'd on every install since
 # they were added. Keep this in sync with STATIC in swg-sub; nothing else needs touching when an asset is added.
-SUB_WEB="sub.html sub.js sub.css turn-artifacts.js amneziavpn.svg amneziawg.png wireguard.svg"
+SUB_WEB="sub.html sub.js sub.css turn-artifacts.js"
+
+# ── these installers must REFUSE on a declaratively managed host ────────────────────────────────
+# WHY: on NixOS `bootstrap.sh` APPEARS to work. `/` is writable and `nixos-rebuild` never touches
+# /opt, so `mkdir -p /opt/swg-noded && cp` succeeds; the run then fails somewhere later on PATH or a
+# package manager, leaving a half-install the host's own tooling cannot see, cannot update and will
+# not remove on `nixos-rebuild`. That is strictly worse than failing at the front door, and it is
+# the reason this guard exists rather than a nicer error message deeper in.
+#
+# Two signals, in this order and for different reasons:
+#   1. NixOS BY NAME (`/etc/NIXOS`, or `ID=nixos` in os-release) — so the refusal can point at the
+#      module the operator should be writing instead of describing a symptom.
+#   2. a READ-ONLY `/etc/systemd/system` — the general "something else owns this host's services"
+#      case, and the condition that actually breaks these scripts. `[ -w ]` is NOT enough: for root
+#      it reports the mode bits and ignores a read-only mount, so probe with a real write. The
+#      `( : > f )` SUBSHELL matters — `{ : > f; }` exits the whole script under dash.
+#
+# uninstall.sh carries its own copy of the write probe on purpose: it does not source this file, and
+# its question is narrower ("can I write units at all", asked so a failed `systemctl disable` cannot
+# lead to deleting /opt while the services keep running). Keep the two in step by intent, not by
+# sharing — that script's guard is about destruction, this one about installation.
+#
+# ⚠️ This one does NOT lean on the sourcing script's `die`, unlike the rest of this file. Four of the
+# five scripts source this file BEFORE they define `die` (measured: install-host 61 vs 99, node 37 vs
+# 76, update 59 vs 91, convert 17 vs 34) — so a guard that called it would die with "die: command not
+# found" on precisely the host it exists to protect, and nowhere else. It prints and exits itself,
+# and uses `die` only when one is already defined.
+declarative_host(){                  # 0 = managed declaratively; sets DECLARATIVE_KIND=nixos|declarative
+  DECLARATIVE_KIND=""
+  # ⚠️ anchored at BOTH ends: '^ID="?nixos"?' alone also matches `ID=nixosaurus`. Caught by the probe,
+  # not by reading — a loose match here would refuse to install on a distro that is not NixOS at all.
+  if [ -e /etc/NIXOS ] || grep -qsE '^ID="?nixos"?[[:space:]]*$' /etc/os-release; then DECLARATIVE_KIND="nixos"; return 0; fi
+  local sd="${SYSTEMD_DIR:-/etc/systemd/system}" p
+  [ -d "$sd" ] || return 1
+  p="$sd/.swg-install-probe.$$"
+  if ( : > "$p" ) 2>/dev/null; then rm -f "$p"; return 1; fi
+  DECLARATIVE_KIND="declarative"; return 0
+}
+# refuse_on_declarative_host <the whole declaration line to show, e.g. services.swg-node = { … };>
+refuse_on_declarative_host(){
+  # A dry run renders under ./dryrun/ and executes nothing, so it is useful here rather than harmful
+  # — it is how you see what the bare-metal install WOULD lay down, which is worth having on the box
+  # you are moving off.
+  if ${DRYRUN:-false}; then return 0; fi
+  declarative_host || return 0
+  # The caller passes the COMPLETE line rather than just an option name: the docker installer can be
+  # either module and needs `delivery = "container"` in there, which no template here could add.
+  # ⚠️ NOT `${1:-...}` with a default containing braces — `${1:-x}` ends at the first `}`, so the
+  # default's own `};` leaked into every message as a trailing `;}`. Caught by running it.
+  local opt="${1:-}"
+  [ -n "$opt" ] || opt='services.swg-node = { enable = true; ... };'
+  if [ "$DECLARATIVE_KIND" = "nixos" ]; then
+    _refuse "NixOS detected — this installer must not run here.
+    It writes into /opt and /etc/systemd/system, which nixos-rebuild neither manages nor sees: the
+    run would look like it worked and leave an install you cannot update or remove.
+
+    Declare the module instead — the panel's Nodes screen prints the whole block beside the token:
+        ${opt}
+    See nix/README.md. Moving an install that is already on this box? nix/adopt.sh carries it
+    over with its identity intact — re-minting a token strips every peer from the interface."
+  fi
+  _refuse "${SYSTEMD_DIR:-/etc/systemd/system} is read-only — this host's services are managed
+    declaratively, so an install written here would not survive its next rebuild. Describe swg-panel
+    in that configuration instead (see nix/README.md for the NixOS modules)."
+}
+_refuse(){
+  if command -v die >/dev/null 2>&1; then die "$1"; fi
+  printf '\033[31m✗ %s\033[0m\n' "$1" >&2; exit 1
+}
 
 # pretty protocol name for interface listings: awg → AmneziaWG, wg → Wireguard (anything else passes through)
 proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
@@ -207,11 +275,34 @@ summary_host_block(){   # <method> <converted?yes|no>
   fi
   summary_sub_block "$m"    # the subscription surface is part of what a panel install delivers — say where it stands
 }
-# WDTT servers on this node, from the record swg-noded keeps (bare-metal /etc/swg-agent, docker the mounted
+# WHERE A BARE-METAL NODE'S SHARED RECORD ACTUALLY IS. swg-noded moved its three run-model-independent records
+# (turn-proxy / wdtt / csqtt) into the state dir, because that is the one directory every run-model already shares
+# — see `_shared_record` there. /etc/swg-agent is kept ONLY so a rollback to an older build still finds a record,
+# and is never written again once the daemon has migrated it. Every shell reader that kept pointing at the legacy
+# path therefore read a file that was stale from the first write after the upgrade, or absent on a box installed
+# since: the install/convert summaries reported no WDTT/csqtt servers on boxes that had them, and — worse, because
+# it is silent and irreversible — a convert to docker carried a stale record, or skipped the copy entirely because
+# `[ -f ]` was false. For WDTT/csqtt that record holds the node-owned owner password and `pw_seen`, so losing it
+# re-mints a credential over a store that still holds the old one and every client stops connecting.
+# Newest mtime wins, decided exactly as the daemon decides it.
+lc_bare_record(){   # lc_bare_record <name.json> [legacy-override] → the path to READ
+  local n="$1" old="${2:-/etc/swg-agent/$1}" new="${SWG_NODED_STATE:-/var/lib/swg-noded}/$1"
+  if [ -f "$new" ] && [ -f "$old" ]; then
+    if [ "$old" -nt "$new" ]; then printf '%s\n' "$old"; else printf '%s\n' "$new"; fi
+    return 0
+  fi
+  if [ -f "$new" ]; then printf '%s\n' "$new"; else printf '%s\n' "$old"; fi
+  return 0; }
+# …and BOTH paths, for a writer or a remover: the state dir is what this build reads, the legacy path is what a
+# rollback would read, so a component being carried over must land in both and one being removed must leave neither.
+lc_bare_record_all(){   # lc_bare_record_all <name.json> [legacy-override] → both paths, space separated
+  printf '%s %s\n' "${SWG_NODED_STATE:-/var/lib/swg-noded}/$1" "${2:-/etc/swg-agent/$1}"; }
+
+# WDTT servers on this node, from the record swg-noded keeps (bare-metal the node state dir, docker the mounted
 # data dir). They own their interface (created by the server, so it has no .conf the interface scan could find)
 # AND act as a turn-family proxy — so the summary gives them their own section instead of splitting them.
 _sum_wdtt_rows(){   # <baremetal|docker>
-  local rec; if [ "$1" = docker ]; then rec="$_SUM_DDIR/data/node/wdtt.json"; else rec=/etc/swg-agent/wdtt.json; fi
+  local rec; if [ "$1" = docker ]; then rec="$_SUM_DDIR/data/node/wdtt.json"; else rec="$(lc_bare_record wdtt.json)"; fi
   [ -f "$rec" ] || return 0
   have python3 || return 0
   python3 -c 'import json,sys
@@ -234,7 +325,7 @@ EOS
 # csqtt servers, same section shape. Its record is a flat {iface: inst} map (WDTT's is a list under "wdtt"), and the
 # fork column is always csqtt — one implementation, no fork variance — so it reports the subnet's tun_addr instead.
 _sum_csqtt_rows(){   # <baremetal|docker>
-  local rec; if [ "$1" = docker ]; then rec="$_SUM_DDIR/data/node/csqtt.json"; else rec=/etc/swg-agent/csqtt.json; fi
+  local rec; if [ "$1" = docker ]; then rec="$_SUM_DDIR/data/node/csqtt.json"; else rec="$(lc_bare_record csqtt.json)"; fi
   [ -f "$rec" ] || return 0
   have python3 || return 0
   python3 -c 'import json,sys
@@ -563,6 +654,10 @@ lc_clear_convert_leftover(){
 # Paths:
 #     bare-metal : /opt/swg-wdtt/<iface>/…               record /etc/swg-agent/wdtt.json
 #     docker     : <docker_dir>/data/node/wdtt/<iface>/…  record …/data/node/wdtt.json  (→ container /var/lib/swg-noded)
+# The optional THIRD argument names that node dir outright, for a container run-model whose state does not live
+# under <docker_dir>/data/node — a Nix `services.swg-node.stateDir`, which defaults to bare-metal's own
+# /var/lib/swg-noded. Absent, it is <docker_dir>/data/node exactly as before, so every existing call is unchanged.
+# What must NOT happen is a third copy of this path map somewhere else; that duplication is what this ended.
 # Each instance's wg-keys.dat is the server IDENTITY; carrying it (+ the record's node-owned owner passwords, and
 # passwords.json / panel.db) is what keeps every GETCONF'd client working — a re-mint changes the server pubkey and
 # forces every client to reconnect. Copy-first (the source's units are stopped / the container torn down separately,
@@ -575,10 +670,11 @@ lc_clear_convert_leftover(){
 # run-model reads the carried symlink as dangling (paths differ) and rewrites all of it on install — a full copy is
 # both safe and simpler. Caller stops/tears down the source datapath separately (see lc_teardown_*).
 migrate_wdtt(){
-  local dir="$1" dd="${2:-/opt/swg-panel-docker}" src dst srec drec strip=no
+  local dir="$1" dd="${2:-/opt/swg-panel-docker}" nd="${3:-}" src dst srec drec _d strip=no
+  [ -n "$nd" ] || nd="$dd/data/node"
   case "$dir" in
-    to-docker)    src=/opt/swg-wdtt;        dst="$dd/data/node/wdtt"; srec=/etc/swg-agent/wdtt.json;  drec="$dd/data/node/wdtt.json";;
-    to-baremetal) src="$dd/data/node/wdtt"; dst=/opt/swg-wdtt;        srec="$dd/data/node/wdtt.json"; drec=/etc/swg-agent/wdtt.json; strip=yes;;
+    to-docker)    src=/opt/swg-wdtt;   dst="$nd/wdtt"; srec="$(lc_bare_record wdtt.json)"; drec="$nd/wdtt.json";;
+    to-baremetal) src="$nd/wdtt";      dst=/opt/swg-wdtt; srec="$nd/wdtt.json";       drec="$(lc_bare_record_all wdtt.json)"; strip=yes;;
     *) return 0;;
   esac
   [ -d "$src" ] || return 0
@@ -592,7 +688,9 @@ migrate_wdtt(){
     find "$dst/." -mindepth 2 -maxdepth 2 \( -type l -name server -o -type f \( -name server.pid -o -name server.log -o -name wdtt.env -o -name desired.json \) \) -delete 2>/dev/null || true
   fi
   if [ -z "$_bad" ] && [ -f "$srec" ]; then
-    mkdir -p "$(dirname "$drec")" && cp -a "$srec" "$drec" || _bad="couldn't copy the WDTT record $srec → $drec"
+    for _d in $drec; do    # to-baremetal lands in BOTH the state dir and the legacy path — see lc_bare_record_all
+      mkdir -p "$(dirname "$_d")" && cp -a "$srec" "$_d" || _bad="couldn't copy the WDTT record $srec → $_d"
+    done
   fi
   if [ -n "$_bad" ]; then
     warn "WDTT state was NOT carried over: $_bad"
@@ -609,6 +707,7 @@ migrate_wdtt(){
 # Paths:
 #     bare-metal : /opt/swg-csqtt/<iface>/…                record /etc/swg-agent/csqtt.json
 #     docker     : <docker_dir>/data/node/csqtt/<iface>/…   record …/data/node/csqtt.json  (→ container /var/lib/swg-noded)
+# Third argument: the node dir outright, as in migrate_wdtt above.
 # csqtt has NO server keypair — a password IS the credential — so nothing here can re-mint a server identity the way
 # WDTT can. What must survive is each instance's passwords.json (the store its clients authenticate against) and the
 # record's NODE-OWNED owner password + pw_seen. Lose the record and the node re-mints the owner password over a store
@@ -618,11 +717,13 @@ migrate_wdtt(){
 # the systemd unit doesn't crash-loop on them before the reconcile rewrites them. KEEP passwords.json and .bin
 # (depth 3, so the depth-2 sweep can't reach the binary cache).
 migrate_csqtt(){
-  local dir="$1" dd="${2:-/opt/swg-panel-docker}" src dst srec drec strip=no
-  local bare="${CSQTT_DIR:-/opt/swg-csqtt}" brec="${CSQTT_RECORD:-/etc/swg-agent/csqtt.json}"   # overridable, as in uninstall.sh
+  local dir="$1" dd="${2:-/opt/swg-panel-docker}" nd="${3:-}" src dst srec drec _d strip=no
+  local bare="${CSQTT_DIR:-/opt/swg-csqtt}" brec="${CSQTT_RECORD:-$(lc_bare_record csqtt.json)}" \
+        ball="${CSQTT_RECORD:-$(lc_bare_record_all csqtt.json)}"   # overridable, as in uninstall.sh
+  [ -n "$nd" ] || nd="$dd/data/node"
   case "$dir" in
-    to-docker)    src="$bare";               dst="$dd/data/node/csqtt"; srec="$brec";                   drec="$dd/data/node/csqtt.json";;
-    to-baremetal) src="$dd/data/node/csqtt"; dst="$bare";               srec="$dd/data/node/csqtt.json"; drec="$brec"; strip=yes;;
+    to-docker)    src="$bare";      dst="$nd/csqtt"; srec="$brec";          drec="$nd/csqtt.json";;
+    to-baremetal) src="$nd/csqtt";  dst="$bare";     srec="$nd/csqtt.json"; drec="$ball"; strip=yes;;
     *) return 0;;
   esac
   [ -d "$src" ] || return 0
@@ -633,7 +734,9 @@ migrate_csqtt(){
     find "$dst/." -mindepth 2 -maxdepth 2 \( -type l -name server -o -type f \( -name server.pid -o -name server.log -o -name .server.lock -o -name csqtt.env -o -name desired.json \) \) -delete 2>/dev/null || true
   fi
   if [ -z "$_bad" ] && [ -f "$srec" ]; then
-    mkdir -p "$(dirname "$drec")" && cp -a "$srec" "$drec" || _bad="couldn't copy the csqtt record $srec → $drec"
+    for _d in $drec; do    # to-baremetal lands in BOTH the state dir and the legacy path — see lc_bare_record_all
+      mkdir -p "$(dirname "$_d")" && cp -a "$srec" "$_d" || _bad="couldn't copy the csqtt record $srec → $_d"
+    done
   fi
   if [ -n "$_bad" ]; then
     warn "csqtt state was NOT carried over: $_bad"
@@ -642,6 +745,35 @@ migrate_csqtt(){
     return 0
   fi
   echo "    csqtt server state (passwords + config) → $dst"
+  return 0; }
+
+# migrate_turn_record <to-docker|to-baremetal> [docker_dir] [node_dir] — carry the turn-proxy RECORD, and only that.
+#     bare-metal : /etc/swg-agent/turn-proxy.json      docker : <node_dir>/turn-proxy.json
+# Deliberately NOT the sibling of migrate_wdtt/migrate_csqtt in what it promises. A turn-proxy has no identity to
+# lose — it is a stateless byte-shuffler, and its listen/connect/params ARE the record — so the whole carry is one
+# file. What differs is what each run-model does with it afterwards, and that difference is the reason this cannot
+# silently stand in for the convert's turn migration:
+#   to-docker    the record IS the config (load_turn_proxies returns it as-is on a container node) and swg-noded's
+#                background reconcile recreates each container from it, downloading the binary. Carrying it is enough.
+#   to-baremetal a bare node reads its turn set from the UNITS ON DISK and drops record entries with no unit, so the
+#                record alone shows nothing on the panel until each proxy is re-created. convert.sh's turn_to_bare
+#                writes those units (it downloads the binary per fork); this does not, and says so at the call site.
+migrate_turn_record(){
+  local dir="$1" dd="${2:-/opt/swg-panel-docker}" nd="${3:-}" src dst
+  [ -n "$nd" ] || nd="$dd/data/node"
+  case "$dir" in
+    to-docker)    src="$(lc_bare_record turn-proxy.json)"; dst="$nd/turn-proxy.json";;
+    to-baremetal) src="$nd/turn-proxy.json";               dst="$(lc_bare_record_all turn-proxy.json)";;
+    *) return 0;;
+  esac
+  [ -f "$src" ] || return 0
+  local _d
+  for _d in $dst; do
+    [ "$src" = "$_d" ] && continue
+    mkdir -p "$(dirname "$_d")" && cp -a "$src" "$_d" \
+      || { warn "the turn-proxy record was NOT carried over ($src -> $_d) — the panel will show no turn-proxies for this node until they are re-created"; continue; }
+    echo "    turn-proxy record (listen/connect/fork) -> $_d"
+  done
   return 0; }
 
 # stop_bare_csqtt — bring down every bare-metal csqtt server so it stops holding its port, TUN device and store.
@@ -912,7 +1044,7 @@ os.replace(tmp, p)
 PYACC
   return 0; }
 
-# migrate_node_state <to-docker|to-baremetal> [docker_dir] — carry the node's HOST-LOCAL derived state between the
+# migrate_node_state <to-docker|to-baremetal> [docker_dir] [node_dir] — carry the node's HOST-LOCAL derived state between the
 # two path conventions during a convert: the per-interface keypair backups (the server-key revert baseline) and the
 # routing lists pulled from the panel (geo/<cat>.doms + the geoip sets).
 #
@@ -923,12 +1055,15 @@ PYACC
 # indefinitely if the panel's manifest didn't re-offer the category. Carrying the files makes the converted node
 # come up already routing, exactly as it was before the move.
 migrate_node_state(){
-  local dir="$1" dd="${2:-/opt/swg-panel-docker}" src dst d
+  local dir="$1" dd="${2:-/opt/swg-panel-docker}" nd="${3:-}" src dst d
+  [ -n "$nd" ] || nd="$dd/data/node"
   case "$dir" in
-    to-docker)    src=/var/lib/swg-noded;      dst="$dd/data/node";;
-    to-baremetal) src="$dd/data/node";         dst=/var/lib/swg-noded;;
+    to-docker)    src=/var/lib/swg-noded; dst="$nd";;
+    to-baremetal) src="$nd";              dst=/var/lib/swg-noded;;
     *) return 0;;
   esac
+  [ "$src" = "$dst" ] && return 0        # same convention on both sides (a nix-container node keeping the
+                                         # bare-metal stateDir) — nothing to carry, and cp -a onto itself errors
   for d in iface-keys geo; do
     [ -d "$src/$d" ] || continue
     mkdir -p "$dst/$d" && cp -a "$src/$d/." "$dst/$d/" \
@@ -945,7 +1080,7 @@ migrate_node_state(){
 # Was three near-copies across install-host / install-node / install-docker, differing only in that lookup.
 wdtt_local(){
   local r="" p
-  for p in "$@" /etc/swg-agent/wdtt.json; do [ -f "$p" ] && { r="$p"; break; }; done
+  for p in "$@" "$(lc_bare_record wdtt.json)"; do [ -f "$p" ] && { r="$p"; break; }; done
   [ -n "$r" ] || return 0
   python3 - "$r" <<'PYWL' 2>/dev/null || true
 import json, sys

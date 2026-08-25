@@ -48,7 +48,54 @@ DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
 WDTT_DIR="${WDTT_DIR:-/opt/swg-wdtt}"     # WDTT servers: per-instance config-dir (identity + passwords) + .bin/<fork> shared binaries
 CSQTT_DIR="${CSQTT_DIR:-/opt/swg-csqtt}"  # csqtt servers: per-instance config-dir (password store) + .bin/<arch> shared binary
+# BOTH paths a shared record can live at. swg-noded keeps its three run-model-independent records (turn-proxy /
+# wdtt / csqtt) in the node state dir now — the one directory every run-model shares — and /etc/swg-agent only so
+# a rollback to an older build still finds one. Removing a component while leaving the state-dir copy behind is
+# not tidy-up left undone: the node reads that record on its next start and RE-INSTALLS the instance just removed,
+# with a fresh identity. This file deliberately does not source lib/common.sh, so the pair is spelled out here.
+rec_paths(){ printf '%s %s\n' "${SWG_NODED_STATE:-/var/lib/swg-noded}/$1" "/etc/swg-agent/$1"; }
 SD="${SYSTEMD_DIR:-/etc/systemd/system}"   # overridable for testing
+
+# A declaratively managed host (NixOS and friends) keeps /etc/systemd/system as a read-only symlink
+# into its store. Every `systemctl disable --now` below then fails — and this script deliberately
+# runs `set -uo pipefail` WITHOUT -e, so it would walk past the failure and delete /opt/swg-* and
+# /var/lib/swg-* WHILE THE SERVICES KEPT RUNNING. Measured on a read-only unit dir: disable exits 1
+# with "Access denied", `--now` never reaches the stop, and the unit stays active+enabled. A partial,
+# destructive uninstall is worse than refusing, so refuse.
+#
+# `[ -w ]` is NOT enough: for root it reports the mode bits and ignores a read-only mount. Probe with
+# a real write.
+unit_dir_writable(){ local p="$SD/.swg-uninstall-probe.$$"
+  ( : > "$p" ) 2>/dev/null || return 1; rm -f "$p"; return 0; }
+# A DRY RUN refuses too, unlike the installers'. There the exemption earns its keep — a dry run shows what the
+# bare-metal install WOULD lay down, which is worth seeing on a box you are migrating off. Nothing equivalent is
+# true of an uninstaller: the plan it printed here described deleting the node's interfaces and purging its
+# packages, and signed off with "re-run without --dry-run to apply" — an instruction that then refuses. A plan
+# for an operation that cannot happen is not a preview, it is a wrong answer, and it reads as "this tool handles
+# NixOS". The refusal below already names the paths to remove by hand, which is the only thing the plan could
+# honestly have offered.
+if [ -d "$SD" ] && ! unit_dir_writable; then
+  # Name NixOS when it IS NixOS. The generic message below is right about the mechanism and useless
+  # about the next action: on a declarative host the operator's move is an edit and a rebuild, and
+  # the two things they will otherwise trip on — which options to turn off, and that a node removed
+  # this way never signs off — are exactly what an uninstaller is expected to tell them.
+  if [ -e /etc/NIXOS ] || grep -qsE '^ID="?nixos"?[[:space:]]*$' /etc/os-release; then
+    die "NixOS detected — this uninstaller must not run here.
+    Every \`systemctl disable --now\` below fails on a read-only unit directory, and this script
+    keeps going without -e, so it would delete /opt/swg-* and /var/lib/swg-* while every service
+    kept running.
+
+    Turn them off in the configuration that declares them, and rebuild:
+        services.swg-panel.enable = false;   # and/or services.swg-node.enable = false;
+    Then remove whatever state you no longer want: /var/lib/swg-panel, /var/lib/swg-noded,
+    /etc/swg-panel, /etc/amnezia/amneziawg.
+    A node removed this way never signs off, so the panel keeps showing it — delete it there too.
+    See nix/README.md (\"Removing a node\")."
+  fi
+  die "$SD is read-only — this host's services are managed declaratively (NixOS?).
+    Remove the swg services from your system configuration and rebuild instead. Running this
+    uninstaller here would delete /opt/swg-* and /var/lib/swg-* while every service kept running."
+fi
 # docker data-dir fate — decided up front, applied after teardown. `:-` so an UNATTENDED run's preset survives:
 # a bare ="" clobbered the caller's DOCKER_DATA_DEL=y before ask_yn ever read it, so the data dir it was told to
 # delete was kept — the same silent-preset class as the [Yy] normalisation in ask_yn, one layer further out.
@@ -569,7 +616,7 @@ rm_turn(){ local unit="$1" name fork
   rmrf "$unit" "$TURN_DIR/$fork"; run systemctl daemon-reload
   ls $SD/vk-turn-proxy-"${fork%-*}"-*.service >/dev/null 2>&1 || rmrf "$TURN_DIR/.bin/${fork%-*}"   # fork's last instance → drop its shared binary
   # last one out removes the shared dir + the panel-facing record
-  ls $SD/vk-turn-proxy-*.service >/dev/null 2>&1 || rmrf "$TURN_DIR" /etc/swg-agent/turn-proxy.json
+  ls $SD/vk-turn-proxy-*.service >/dev/null 2>&1 || rmrf "$TURN_DIR" $(rec_paths turn-proxy.json)
   ok "turn-proxy ($fork) removed"
 }
 
@@ -602,7 +649,7 @@ rm_wdtt(){ local unit="$1" name iface fork
     ok "Kept $WDTT_DIR/$iface (server identity + passwords) for a future re-install"
   fi
   ls $SD/swg-wdtt-*.service >/dev/null 2>&1 || {          # last one out: shared per-fork binaries + the panel-facing record
-    rmrf "$WDTT_DIR/.bin" /etc/swg-agent/wdtt.json
+    rmrf "$WDTT_DIR/.bin" $(rec_paths wdtt.json)
     [ "${WDTT_DATA_DEL:-}" = yes ] && rmrf "$WDTT_DIR"   # :- — the per-instance answers live in WDTT_DATA_DEL_<iface>; this global is only ever set by an unattended run, so under `set -u` an interactive uninstall died right here
   }
   ok "WDTT server ($iface) removed"
@@ -629,7 +676,7 @@ rm_csqtt(){ local unit="$1" name iface
     ok "Kept $CSQTT_DIR/$iface (password store) for a future re-install"
   fi
   ls $SD/swg-csqtt-*.service >/dev/null 2>&1 || {          # last one out: shared binary + the panel-facing record
-    rmrf "$CSQTT_DIR/.bin" /etc/swg-agent/csqtt.json
+    rmrf "$CSQTT_DIR/.bin" $(rec_paths csqtt.json)
     [ "${CSQTT_DATA_DEL:-}" = yes ] && rmrf "$CSQTT_DIR"
   }
   ok "csqtt server ($iface) removed"

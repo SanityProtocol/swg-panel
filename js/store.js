@@ -122,6 +122,7 @@ export const api = {
   routingReset(b) { return this.post("/api/node/routing-reset", b); },   // per-node: wipe + rebuild + re-pull all smart-routing state
   asnCount(n) { return this.get("/api/asn?n=" + encodeURIComponent(n)); },   // resolve an ASN → prefix count (live editor feedback)
   nodeRotate(b) { return this.post("/api/nodes/rotate", b); },
+  nodeRemesh(b) { return this.post("/api/nodes/remesh", b); },   // rebuild THIS node's mesh links on demand
   nodeFlagRemove(b) { return this.post("/api/nodes/flag-remove", b); },
   nodeUnflagRemove(b) { return this.post("/api/nodes/unflag-remove", b); },
   nodeDelete(b) { return this.post("/api/nodes/delete", b); },
@@ -174,7 +175,7 @@ export const api = {
   wdttSet(b) { return this.post("/api/wdtt/set", b); },                      // create/update a WDTT instance on a node (declarative)
   wdttDelete(b) { return this.post("/api/wdtt/delete", b); },                // remove a WDTT instance
   wdttAdopt(b) { return this.post("/api/wdtt/adopt", b); },                  // adopt a FOREIGN WDTT server (seeded create: reuses its identity + passwords)
-  wdttPeerCreate(b) { return this.post("/api/wdtt-peer/create", b); },       // keyless WDTT peer (mints the WRAP password)
+  wdttPeerCreate(b) { return this.post("/api/wdtt-peer/create", b); },       // keyless WDTT peer (mints the WRAP password). UNUSED by the SPA since a peer may hold any mix of kinds — peerCreate takes a keyless target set and mints the password itself. The endpoint stays for API consumers.
   wdttPeerRotate(b) { return this.post("/api/wdtt-peer/rotate", b); },       // rotate a WDTT peer's password (revoke the old link)
   wdttRestore(b) { return this.post("/api/wdtt/restore", b); },              // restore a WDTT server's vaulted identity (owner pw + keypair)
   wdttRecreateFresh(b) { return this.post("/api/wdtt/recreate-fresh", b); }, // abandon the vaulted identity → mint a fresh key (users re-import)
@@ -184,7 +185,7 @@ export const api = {
   containerAdopt(b) { return this.post("/api/container/adopt", b); },   // take a wg/awg server over from another container (Amnezia)
   csqttAdopt(b) { return this.post("/api/csqtt/adopt", b); },                // adopt a FOREIGN csqtt server (its users come across)
   csqttDelete(b) { return this.post("/api/csqtt/delete", b); },              // remove a csqtt instance
-  csqttPeerCreate(b) { return this.post("/api/csqtt-peer/create", b); },     // keyless csqtt peer (mints the access password)
+  csqttPeerCreate(b) { return this.post("/api/csqtt-peer/create", b); },     // keyless csqtt peer (mints the access password). UNUSED by the SPA — see wdttPeerCreate above.
   csqttPeerRotate(b) { return this.post("/api/csqtt-peer/rotate", b); },     // rotate a csqtt peer's password (revoke the old link)
   rosterCheck() { return this.get("/api/turn/roster-check"); },              // client-app schema drift vs upstream GitHub (P1 ack-only clients)
   rosterAck(client) { return this.post("/api/turn/roster-ack", { client }); },   // acknowledge a client's current upstream as the baseline

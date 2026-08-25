@@ -3,6 +3,111 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.0-beta] — 2026-08-25
+
+### Added
+- **NixOS is now a first-class way to run swgPanel** — the panel, a node, the subscription surface, and a
+  master that is both. There is no installer to curl: your `configuration.nix` *is* the installation.
+  `services.swg-panel` and `services.swg-node` each offer two delivery methods that are equally supported —
+  `delivery = "container"` runs the published images, `delivery = "native"` runs the programs from your Nix
+  store — and a panel does not learn how a node was installed, so any panel still drives any node whatever
+  the mix. Ships as a flake (and a `default.nix` for channel users) with the module, the package, and a VM
+  test that stands a real panel and a real node up and watches them converge.
+- **The master role in a single rebuild.** One machine, one `nixos-rebuild`: the panel enrols its own node
+  from a token file you provide, and nothing is minted into the world-readable Nix store.
+- **The Update button works on a declarative host, as a rebuild.** Off unless you turn it on, honest about
+  being off, and when a rebuild fails the panel shows the reason instead of waiting for a version that never
+  arrives.
+- **The enrolment screen offers NixOS beside bare-metal and Docker** and hands you the config block to paste,
+  with the endpoint filled in — it has no default, so the block as it used to read failed the first rebuild.
+- **Moving an existing install onto NixOS keeps what your clients trust.** `nix/adopt.sh` reports what a box
+  carries, carries the server identities and password stores across, and releases the old units — reusing
+  the token the box already holds, because a re-minted one comes up as a second node and strips the first.
+- **The panel says what a node runs on.** A platform badge beside the run-model badge, a podman node that
+  says podman rather than Docker, and a declarative node whose controls stand down where the host owns them.
+- **One peer, any mix of protocols.** A peer used to be all WireGuard, or all WDTT, or all csqtt. It can now
+  hold wg, AmneziaWG, WDTT and csqtt deployments at once, and gets exactly the credentials its servers call
+  for — a keypair for the tunnels, one access password per turn family. A device that falls back from a
+  tunnel to a turn server is one entry in the roster now, not three that have to be kept in step by hand.
+- **Name your own WDTT and csqtt servers.** Creating one no longer forces `wdtt0`–`wdtt999` /
+  `csqtt0`–`csqtt9999`; any safe name works, as taking over someone else's server always has. That pattern
+  was standing in for "the name tells you what it is", and the panel no longer needs it to: what it knows
+  about an interface decides how it is treated, so a server you named yourself is no longer filed under
+  WireGuard in the filters, the dropdowns and the badges.
+- **Client settings belong to the deployment, not the peer.** DNS, MTU, allowed IPs and keepalive moved from
+  one block per peer to a gear on each WireGuard row — so two deployments of one peer can route differently,
+  and a peer that also has turn servers is no longer shown fields that mean nothing for them.
+- **A Group switch on the Peers screen** collapses the grid to one row per peer, its other deployments behind
+  the same +N the server and interface filters already produce. The grid lists deployments by default, which
+  is right when you are looking at where things run and wrong when you are looking for a device.
+- **The subscription page leads with Connections.** The picker moved off a floating pill into the action bar,
+  in turn-proxy colours, under a mark that draws one arrow per protocol in that protocol's own colour. Copy
+  went with it: Download and Share already cover the file and the text, and every config box on the page
+  keeps its own copy button.
+
+### Changed
+- **Access & TLS is a read-only view on a declaratively managed host** — it shows the address the module
+  gave the panel, and a sample reverse-proxy configuration built from this panel's own values, rather than
+  offering changes the next rebuild would undo.
+- **The installers refuse to run on a declaratively managed host** instead of laying down a second install
+  that host's own tooling cannot see. Uninstall refuses the same way, and refuses to delete state whose
+  services it could not actually stop.
+- **A node's turn-proxy, WDTT and csqtt records moved in with the rest of its state**, so changing how a node
+  runs no longer leaves two copies to drift apart — a change to a proxy's port or wrap key used to be
+  silently reverted by the older one, which breaks every client of that proxy.
+- **Stored client configs are on by default**, matching every other installation method.
+- **A hover bubble no longer competes with the browser's own tooltip.** Anything that opens one sits inside
+  something that carries a tooltip, and often carries its own — so both appeared, and the native one covered
+  the bubble it duplicated.
+
+### Fixed
+- **Podman is recognised as a container runtime.** A node running under podman reported itself as though it
+  were running on bare metal, so the panel offered it host-level controls that could not work, and every
+  firewall rule the node writes failed for want of one capability Docker grants and podman does not.
+- **A plain WireGuard interface stays plain WireGuard.** Config files are collected into one directory
+  whenever a node changes how it runs, and the directory used to decide the protocol — so a converted or
+  adopted WireGuard interface came back as AmneziaWG: the panel re-badged it, the tools stopped reading it,
+  and setting obfuscation on it later would have broken every client. Each config now says what it is.
+- **An interface the panel manages is no longer stranded as "missing" while it is running.** The panel now
+  states which interfaces it owns, so a node that has lost a config file re-adopts the live interface instead
+  of offering a Restore that refuses because the device already exists.
+- **Moving a node to a different panel no longer leaves it unable to mesh.** The previous panel's mesh link
+  stayed on the box for ever, holding the address the new panel's link needs, and nothing in the interface
+  gave you a way to remove it.
+- **An interface's outbound NAT rule stops multiplying.** Every restart added another copy and a delete
+  removed only one, so an interface could accumulate dozens and deleting it left one behind, silently
+  masquerading traffic for a subnet that no longer existed.
+- **Taking a server over from another container no longer takes the node offline while it happens**, no
+  longer reports "nothing was changed" about a container that is in fact down, and finds containers under
+  podman as well as Docker.
+- **A container that shares the host's network no longer offers the host's own interfaces for adoption.**
+- **A WDTT server whose service file drifted heals itself** instead of restarting every three seconds for
+  ever, and one the panel expects to be running is started rather than only watched.
+- **Blocking a user from their own editor now offers to unblock them.** The button kept saying Block and
+  re-ran the block; you had to close the editor and reopen it before Unblock existed at all.
+- **Updating from the command line can report its errors again.** Every warning and failure this script can
+  raise had been going to nowhere since its lock landed, so a failed update looked like a silent one.
+- **A state directory the panel cannot read is no longer reported as another copy of the panel holding a
+  lock** — it names the directory, the owner, and the command that fixes it.
+- **A convert to Docker carries the settings your servers actually have.** It was reading them from where
+  they used to be kept, so on a recent installation it carried an out-of-date copy, or none at all — and for
+  WDTT and csqtt that means the owner password, without which the server comes back up rejecting every
+  client it already had. Removing the last such server now clears its record too, instead of leaving one the
+  node reinstalls from with a fresh identity.
+- **Adoption records which tool an adopted interface needs**, so an interface you adopted survives a later
+  convert; before, it came back under the wrong tool and every operation on it failed.
+- **A comment in the generated `.env` was running a command on every Docker install**, printing what looked
+  like a real failure over the installer's output and losing the words it was trying to explain.
+- **The subscription page is offered an address when you turn subscriptions on**, instead of asking you to
+  enable something that cannot serve anything yet.
+- **A port outside the firewall range a declarative host declares now says so** rather than silently
+  refusing connections.
+- **Four English nouns are pluralised correctly** in the panel's own messages.
+- **A peer can no longer be deployed to a turn server the panel does not manage.** A node can be running a
+  WDTT or csqtt server this panel knows nothing about — a machine that changed fleets brings its old panel's
+  servers with it — and those were offered as targets. Nothing was ever sent to them, because the password
+  set is derived from what the panel manages, yet the deployment reported Ready. Take the server over first.
+
 ## [1.7.15-beta] — 2026-08-22
 
 ### Added

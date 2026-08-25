@@ -13,7 +13,8 @@
  */
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
-import { esc, seen, isSelfContainedIface } from "./util.js";
+import { esc, seen } from "./util.js";
+import { isSelfContainedName } from "./model.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed } from "./theme.js";
 import { Ic, Tag, Panel, Switch, Dropdown, Disclosure, autoGrow, Sheet, footRow, secTitle, SearchBox,
@@ -819,7 +820,7 @@ export function EgressPicker({ node, value, onChange, noRules }) {
   const ipIfaces = nrec.ip_ifaces || [];
   // Egress = a PHYSICAL exit NIC. Drop panel-managed tunnels — self-contained servers (WDTT + csqtt raw-TUN) and
   // mesh links — they're the INBOUND datapath, never a place to egress out of (and never the instance's own iface).
-  const nics = [...new Set(ipIfaces.map(p => p.iface))].filter(n => !isSelfContainedIface(n) && !n.startsWith("swg_"));
+  const nics = [...new Set(ipIfaces.map(p => p.iface))].filter(n => !isSelfContainedName(n) && !n.startsWith("swg_"));
   const others = (Store.nodes || []).filter(n => n.id !== node);
   const ifSel = value.mode === "smart" ? "smart" : value.mode === "forward" ? "forward|" + (value.node || "") : value.mode === "direct" ? "direct|" + (value.nic || "") : "auto";
   let ipOpts = [];

@@ -59,6 +59,9 @@ DRYRUN=false; [ "${1:-}" = "--dry-run" ] && DRYRUN=true
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, turn_repo_owner, dl_turn_bin
+# Refuse on a declaratively managed host BEFORE anything is written — the panel laid down here would
+# be invisible to the host's own tooling. Defined in lib/common.sh, above; a `--dry-run` still runs.
+refuse_on_declarative_host 'services.swg-panel = { enable = true; ... };'
 PALETTE=("#34d399" "#22d3ee" "#c084e8" "#f0913c" "#e8c04b" "#60a5fa" "#f0596b")
 
 # ── colours / styling (honour NO_COLOR + non-tty) ──
