@@ -14,14 +14,14 @@
   },
   "freeturn": {
    "samosvalishe/free-turn-proxy@master:docs/flags.md": {
-    "date": "2026-08-16T21:27:23Z",
-    "sha": "74241de764a428d9c3fee1aeae0d917851d1d542",
-    "url": "https://github.com/samosvalishe/free-turn-proxy/commit/74241de764a428d9c3fee1aeae0d917851d1d542"
+    "date": "2026-08-25T12:44:16Z",
+    "sha": "f7129099f711d627f6645fd18fd4c9be2b8a1437",
+    "url": "https://github.com/samosvalishe/free-turn-proxy/commit/f7129099f711d627f6645fd18fd4c9be2b8a1437"
    },
    "samosvalishe/free-turn-proxy@master:docs/uri.md": {
-    "date": "2026-08-16T21:27:23Z",
-    "sha": "74241de764a428d9c3fee1aeae0d917851d1d542",
-    "url": "https://github.com/samosvalishe/free-turn-proxy/commit/74241de764a428d9c3fee1aeae0d917851d1d542"
+    "date": "2026-08-25T12:44:16Z",
+    "sha": "f7129099f711d627f6645fd18fd4c9be2b8a1437",
+    "url": "https://github.com/samosvalishe/free-turn-proxy/commit/f7129099f711d627f6645fd18fd4c9be2b8a1437"
    }
   },
   "mysorez": {
@@ -122,6 +122,6 @@
    }
   }
  },
- "generated_at": 1787633499,
+ "generated_at": 1787674796,
  "schema": 1
 }
