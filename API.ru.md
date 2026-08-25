@@ -47,7 +47,7 @@
 ### `GET /api/v1/health`
 Живучесть + грубые счётчики. Без авторизации.
 ```json
-{ "status": "ok", "version": "1.7.14-beta",
+{ "status": "ok", "version": "1.8.1-beta",
   "nodes": { "total": 5, "online": 5 },
   "peers": { "total": 27, "online": 20 } }
 ```
@@ -58,7 +58,7 @@
 { "servers": [
   { "id": "1b8e0bcb0b4c", "name": "moscow-1",
     "status": "online", "online": true,          // status: online | offline | never_seen
-    "kind": "baremetal", "version": "1.7.14-beta",
+    "kind": "baremetal", "version": "1.8.1-beta",
     "hostname": "moscow-1", "endpoint_host": "203.0.113.11", "routing_mode": "kernel",
     "interfaces": ["awg0"],
     "peers": 10, "peers_online": 8,
@@ -97,7 +97,7 @@
 ### `GET /api/v1/summary`
 Итоги по флоту.
 ```json
-{ "version": "1.7.14-beta",
+{ "version": "1.8.1-beta",
   "nodes": { "total": 5, "online": 5 }, "peers": { "total": 27, "online": 20 },
   "throughput": { "rx_bytes_per_sec": 2082447, "tx_bytes_per_sec": 1249463 },
   "generated_at": 1783620181 }

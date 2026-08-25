@@ -4,7 +4,7 @@ Our patched build of the **qWDTT** server (`SpaceNeuroX/proxy-turn-vk-android`) 
 integrates as one more `kind:"wdtt"` fork, not a new interface type: DTLS + password-HKDF WRAP over its
 own userspace WireGuard, a `passwords.json` store, and *a peer is a password*. All the WDTT machinery
 (`reconcile_wdtt`, `wdtt_snapshot`, `WdttCard`, Users/Peers, collected relay IPs, overview) applies
-unchanged. See `docs/QWDTT-AND-TCP-TRANSPORT-PLAN.md`.
+unchanged.
 
 Upstream ships no server binary, so we build from a pinned commit and host the result (same pattern as
 `wdtt/`).

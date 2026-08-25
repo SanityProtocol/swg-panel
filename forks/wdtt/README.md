@@ -3,11 +3,11 @@
 Our patched build of the **WDTT** server (`amurcanov/proxy-turn-vk-android`, the Go server at
 `app/src/main/assets/linux-server`). WDTT is a self-contained, key-owning VPN (DTLS + password-HKDF
 WRAP obfuscation front over its own userspace WireGuard). swg-panel integrates it as a
-`kind:"self-contained"` turn-proxy server — see `docs/WDDT-INTEGRATION-PLAN.md` for the full design
-(custody, subscription artifacts, panel/node changes).
+`kind:"self-contained"` turn-proxy server: the panel owns the password custody and the
+subscription artifacts, the node runs the server.
 
 Upstream ships **no release binaries**, so we build from a pinned commit and apply a small patch, then
-host the result in our binary mirror (same pattern as the turn-proxy forks + [[turn-binary-cache-todo]]).
+host the result in our binary mirror (same pattern as the turn-proxy forks).
 
 ## Build
 

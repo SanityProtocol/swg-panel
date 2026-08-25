@@ -1,16 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.0-beta</code></p>
+<p align="center"><code>1.8.1-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.0-beta** — [full changelog](CHANGELOG.md)
-> - **NixOS is now a first-class way to run swgPanel** — panel, node, subscription surface, or a master that is both. There is no installer to curl: your `configuration.nix` *is* the installation, and both delivery methods are equally supported — run the published images, or run the programs from your own Nix store. A panel never learns how a node was installed, so any panel still drives any node whatever the mix.
-> - **Moving an existing install onto NixOS keeps what your clients trust** — server identities and password stores are carried across, reusing the token the box already holds, because a re-minted one comes up as a second node and strips the first.
-> - **Podman is recognised as a container runtime** — a node under podman used to report itself as bare metal, so the panel offered it controls that could not work and every firewall rule the node writes failed for want of one capability Docker grants and podman does not.
-> - **A plain WireGuard interface stays plain WireGuard.** Config files are collected into one directory whenever a node changes how it runs, and the directory used to decide the protocol — so a converted or adopted WireGuard interface came back as AmneziaWG, and setting obfuscation on it later would have broken every client.
-> - **A convert to Docker carries the settings your servers actually have** — it read them from where they used to be kept, so a recent installation carried an out-of-date copy or none at all. For WDTT and csqtt that is the owner password, without which the server comes back rejecting every client it already had.
-> - **An interface's outbound NAT rule stops multiplying** — every restart added a copy and a delete removed only one, so deleting an interface left one behind, masquerading traffic for a subnet that no longer existed.
-> - **Moving a node to a different panel no longer leaves it unable to mesh**, and **blocking a user from their own editor now offers to unblock them**.
+> **What's new in 1.8.1-beta** — [full changelog](CHANGELOG.md)
+> - **Operators stay signed in across a panel restart.** The panel could not read its own session-signing secret and quietly signed with a throwaway one instead — indistinguishable from healthy, except that everyone was logged out every time it restarted. It now reports the cause and the single command that fixes it.
+> - **Installing and uninstalling leave the panel's state directory owned correctly**, so a later reinstall cannot inherit a uid that belongs to nobody — the cause of the sign-outs above. On NixOS the module owns the whole directory rather than the three files it happened to name.
+> - **`AGENTS.md`, an operating contract for automation** — bare-metal, Docker and NixOS alike: the environment variable behind every installer prompt, health checks that need no credentials, and the state nothing should ever edit by hand.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -363,6 +359,8 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   Docker by hand, converting, smart routing, backups & security, and troubleshooting.
 - **[External API](API.md)** — the read-only REST surface, Prometheus metrics and webhooks.
 - **[NixOS](nix/README.md)** — the flake, both delivery methods, and moving a server you already run onto it.
+- **[For LLM agents](AGENTS.md)** — the unattended contract: the environment variable for every prompt,
+  health probes that need no credentials, and the handful of things an agent must never touch.
 - **[Русский](README.ru.md)** · **[Техническое (RU)](README.technical.ru.md)**
 
 ## Special thanks

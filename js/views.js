@@ -590,7 +590,7 @@ export const SVC_LABEL = new Proxy({}, { get: (_, k) => (_svcLabel || (_svcLabel
 export const SVC_UNIT  = { sub: "swg-sub", netctl: "swg-netctl", update: "swg-update", panel: "swg-panel-server", awg: "" };
 // Built on first use — T() only answers after loadLang() (same rule as ui.js's label tables).
 let _svcKind = null;
-export const SVC_KINDWORD = new Proxy({}, { get: (_, k) => (_svcKind || (_svcKind = { missing: T("not installed"), down: T("not running"), disabled: T("won’t survive a reboot") }))[k] });
+export const SVC_KINDWORD = new Proxy({}, { get: (_, k) => (_svcKind || (_svcKind = { missing: T("not installed"), down: T("not running"), disabled: T("won’t survive a reboot"), unwritable: T("can’t be saved") }))[k] });
 // The subscription server's CERTIFICATE, direct-TLS only. swg-sub keeps serving on its port without one, so
 // the panel reports it healthy while every subscriber gets a TLS handshake failure (Cloudflare 525) — the
 // failure is invisible from here unless we say it. The server sends {} under a reverse proxy: there the proxy
@@ -604,6 +604,17 @@ function subCertIssue(out) {
              msg: sc.present
                ? T("the subscription server's certificate doesn't match {v1}", { v1: T("{v1} — subscribers get a TLS error", { v1: sc.domain }) })
                : T("the subscription server has no certificate for {v1}", { v1: T("{v1} — subscribers get a TLS error", { v1: sc.domain }) }) });
+}
+
+// The panel could not persist its session-signing secret. Like subCertIssue this has its OWN source rather
+// than the systemd probe, so it is just as true in a container — and it sits ABOVE the bare-metal early
+// return for the same reason. Warn, not critical: sessions are lost, nothing else is.
+function sessionKeyIssue(out) {
+  const why = Store.sessionEphemeral;
+  if (!why) return;
+  out.push({ id: "sessionkey", sev: "warn", kind: "unwritable",
+             label: T("Session key"), unit: SVC_UNIT.panel,
+             msg: T("the panel can't save the key it signs sign-ins with ({v1}), so everyone is signed out whenever it restarts — its state directory is owned by another user", { v1: why }) });
 }
 
 export function serviceIssues() {
@@ -620,6 +631,7 @@ export function serviceIssues() {
   // used to sit below the early return, so enabling the server-side check for docker changed nothing visible —
   // the panel reported needs_issue and the SPA dropped it here, one line before it could be read.
   subCertIssue(out);
+  sessionKeyIssue(out);
   if (!Object.keys(ps).length) return out;
   const gone = u => u && !u.present;
   const down = u => u && u.present && u.active !== "active";

@@ -890,6 +890,14 @@ if [ -f "$SRC/swg-sub" ]; then
 fi
 for d in "$PANEL_DIR" "$ETC_DIR" "$STATE_DIR" "$STATS_DIR"; do mkdir -p "$PREFIX$d"; done
 run chown "$PANEL_USER:swg" "$STATE_DIR"; run chmod 750 "$STATE_DIR"   # group(swg) traverse → swg-sub can reach the files it may read
+# …and everything ALREADY in it. State outlives the service user: uninstall removes $PANEL_USER but keeps
+# this directory, so its files hold a numeric uid that belongs to nobody — and `useradd -r` hands that uid
+# to whichever service account is created first next time. Found in the field with $SUB_USER wearing the
+# old panel's uid, which made session.key (0600) unreadable BY THE PANEL: it then signed cookies with a
+# throwaway secret and logged every operator out on each restart. Chowning only the files we know by name
+# never reached the ones the panel creates at runtime. Anything with its own owner on purpose (netctl/status
+# is root:swg) is re-chowned after this, further down.
+run chown -R "$PANEL_USER:swg" "$STATE_DIR"
 # subs/ (vault + token map + blobs + serve.json) — group-traversable so swg-sub reaches the token map,
 # blobs, and serve.json; the vault inside stays 0600 (owner-only) so swg-sub still can't read it.
 mkdir -p "$PREFIX$STATE_DIR/subs/blobs"; run chown -R "$PANEL_USER:swg" "$STATE_DIR/subs"; run chmod 750 "$STATE_DIR/subs" "$STATE_DIR/subs/blobs"

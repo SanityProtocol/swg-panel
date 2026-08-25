@@ -3,6 +3,29 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.1-beta] — 2026-08-25
+
+### Added
+- **`AGENTS.md` — an operating contract for automation.** The installers ask their questions on `/dev/tty`,
+  so an agent that pipes the curl one-liner gets a prompt it cannot answer rather than an error. The new file
+  writes down the environment variable behind every question — bare-metal, Docker and NixOS alike — together
+  with health checks that need no credentials and the short list of state nothing should ever write by hand.
+
+### Fixed
+- **Every operator was signed out whenever the panel restarted.** The panel could not read its own
+  session-signing secret and fell back to a throwaway one without saying so, which is indistinguishable from
+  healthy. It now separates "no key yet" (first run) from "cannot read or replace it" (an error), reports the
+  second with the errno and a paste-able `chown`, and surfaces it in the panel's own service view.
+- **State outliving its service user.** An uninstall removes the panel's account but deliberately keeps
+  `/var/lib/swg-panel`, so its files were left holding a numeric uid that belongs to nobody — and the next
+  service account created on that box inherits it. Installing and uninstalling now leave the directory owned
+  correctly, which is what let the panel lose access to its own secret in the first place.
+- **On NixOS the panel owns its whole state directory**, not just the three files the module named. A box
+  whose state outlived a service user is handed the secret back on the next rebuild, and each file keeps its
+  own permissions.
+- **Two build notes under `forks/` pointed at design documents that are not published**, and one carried an
+  internal reference that meant nothing to a reader.
+
 ## [1.8.0-beta] — 2026-08-25
 
 ### Added

@@ -1218,35 +1218,85 @@ SESSION_TTL = 7 * 24 * 3600
 _B64PAD = lambda s: s + "=" * (-len(s) % 4)
 
 
+# Why THIS process is not signing with the secret on disk ("" = it is). Read by /api/state so the panel can
+# say it out loud; see load_session_secret for what goes wrong when it cannot.
+SESSION_KEY_EPHEMERAL = ""
+
+
 def load_session_secret(roster_path):
+    """The secret every session cookie is signed with, persisted so sessions survive a restart.
+
+    ⚠️ A failure here USED TO BE SILENT, and the symptom did not look like a permissions problem: the panel
+    came up fine and simply signed out every operator on each restart, with nothing in the journal. The
+    cause found in the field is that state OUTLIVES the service user. `uninstall.sh` removes swgpanel but
+    deliberately keeps /var/lib/swg-panel, so its files keep a numeric uid that no longer belongs to
+    anyone; `useradd -r` then hands that uid to whichever service account is created FIRST next time — on
+    the box where this was found, `swgsub` inherited the old panel's uid, and this 0600 file with it. The
+    panel could no longer read its own secret and quietly minted a throwaway one every start.
+
+    So: a MISSING file is first-run and creates one. A file we cannot read or replace is an error, said
+    plainly here and surfaced in the UI — never papered over.
+    """
+    global SESSION_KEY_EPHEMERAL
     p = os.path.join(os.path.dirname(roster_path) or ".", "session.key")
     try:
         with open(p, "rb") as f:
             s = f.read().strip()
         if len(s) >= 32:
+            SESSION_KEY_EPHEMERAL = ""
             return s
-    except OSError:
-        pass
+        why = "it is too short to be a signing secret"
+    except FileNotFoundError:
+        why = ""                                   # first run — creating it below IS the normal path
+    except OSError as e:
+        why = e.strerror or str(e)
     s = base64.b64encode(os.urandom(48))
-    with contextlib.suppress(OSError):
+    try:
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(s)
+        SESSION_KEY_EPHEMERAL = ""
+        if why:
+            print("session.key: replaced (%s)" % why, flush=True)
+    except OSError as e:
+        SESSION_KEY_EPHEMERAL = why or e.strerror or str(e)
+        print("session.key: cannot persist the session-signing secret (%s: %s). Sessions are being signed "
+              "with a throwaway secret, so EVERY signed-in operator is signed out each time the panel "
+              "restarts. It is almost always ownership: run  chown -R %s %s"
+              % (p, SESSION_KEY_EPHEMERAL, _proc_user_name(), os.path.dirname(p) or "."), flush=True)
     return s
+
+
+def _proc_user_name():
+    """This process's user, for an error message that can be pasted as a command."""
+    try:
+        import pwd
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except Exception:
+        return str(os.geteuid())
 
 
 def rotate_session_secret(roster_path):
     """Mint a NEW session-signing secret → every outstanding session cookie stops validating. Called on a
     password change so a captured cookie can't outlive the reset; the admin simply re-signs-in (the panel
     already documents 'you'll be asked to sign in again')."""
+    global SESSION_KEY_EPHEMERAL
     p = os.path.join(os.path.dirname(roster_path) or ".", "session.key")
     s = base64.b64encode(os.urandom(48))
-    with contextlib.suppress(OSError):
+    try:
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(s)
+        SESSION_KEY_EPHEMERAL = ""
+    except OSError as e:
+        # The in-memory secret rotates either way, so the captured cookie IS dead for this process — but the
+        # OLD secret is still on disk, and the next restart would bring it back to life. Never silent.
+        SESSION_KEY_EPHEMERAL = e.strerror or str(e)
+        print("session.key: could not write the rotated secret (%s: %s). The old one is still on disk and "
+              "would come back on the next restart. Run  chown -R %s %s"
+              % (p, SESSION_KEY_EPHEMERAL, _proc_user_name(), os.path.dirname(p) or "."), flush=True)
     return s
 
 
@@ -8395,6 +8445,10 @@ def api(method, path, qs, body, deps):
             "tls": dict(TLS_STATUS),                                  # cert expiry watch — surface a stalled renewal before it goes dark
             **({"state_future": dict(STATE_FUTURE)} if STATE_FUTURE else {}),   # state written by a NEWER build — see ROSTER_VERSION
             "panel_services": panel_service_health(),                # THIS host's own swg units (active/enabled/present) → SPA "needs attention" (bare-metal only)
+            # Non-empty when this process could not persist its session-signing secret: sessions then last
+            # only until the next restart. Journal-only would hide it — the operator sees the symptom (being
+            # signed out) with no way to connect it to a cause.
+            "session_ephemeral": SESSION_KEY_EPHEMERAL,
             "sub_cert": sub_cert_health(),                           # subscription TLS: present + covers the domain (direct-TLS only; {} behind a proxy)
             "datapath": host_datapath_health(),                      # THIS host's kernel datapath health (awg module loadable?) → healable "Fix" issue when a local node uses awg
         }}

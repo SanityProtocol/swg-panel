@@ -1002,6 +1002,14 @@ in
         "d ${etcDir} 2775 root swg -"
         "d ${etcDir}/tls 0750 root swg -"
         "d ${stateDir} 0750 swgpanel swg -"
+        # …and hand the CONTENTS to swgpanel too, on every boot. State outlives the service user: a box
+        # that ran the container arm (panel as root) or an older native one (a swgpanel with a different
+        # uid) leaves files this swgpanel cannot read — and a 0600 session.key it cannot read is the one
+        # that hurts, because the panel then signs cookies with a throwaway secret and logs every
+        # operator out on each restart. `Z` is the recursive form and the `-` mode leaves each file's own
+        # permissions alone, so users.json and session.key keep their 0600. Nothing under here is meant
+        # to belong to anyone else on this arm — there is no swg-netctl in the Nix module.
+        "Z ${stateDir} - swgpanel swg -"
         "d ${stateDir}/subs 0750 swgpanel swg -"
         "d ${stateDir}/subs/blobs 0750 swgpanel swg -"
         "d ${cfg.statsDir} 2775 swgpanel swg -"

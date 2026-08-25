@@ -145,6 +145,14 @@ rm_panel(){
       sub "  interface keys stay sealed."
     fi
   fi
+  # Hand any KEPT state back to root BEFORE the users go. State deliberately outlives an uninstall, and a
+  # deleted user leaves its files holding a numeric uid that belongs to nobody — which `useradd -r` then
+  # reissues to whichever service account is created first on the next install. That is how a panel ended up
+  # unable to read its own 0600 session.key (the sub user had inherited the old panel's uid), signing cookies
+  # with a throwaway secret and logging every operator out on each restart. root owns nothing by accident.
+  for _sd in /var/lib/swg-panel /var/lib/swg-noded; do
+    [ -d "$_sd" ] && run chown -R root:root "$_sd" 2>/dev/null || true
+  done
   if id swgpanel >/dev/null 2>&1; then run userdel swgpanel; fi
   if id swgsub >/dev/null 2>&1; then run userdel swgsub; fi   # swg-sub's dedicated read-only user
   REMOVED_PANEL=true; ok "swg-panel removed"

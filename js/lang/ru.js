@@ -3462,6 +3462,11 @@ export const STR = {
   "tag|restricted": "фильтр",
   "tag|faulty": "сбой",
   "tag|untitled": "без имени",
+  // Panel-service issue: the session-signing key could not be persisted.
+  "Session key": "Ключ сессий",
+  "can’t be saved": "не сохраняется",
+  "the panel can't save the key it signs sign-ins with ({v1}), so everyone is signed out whenever it restarts — its state directory is owned by another user":
+    "панель не может сохранить ключ, которым подписывает входы ({v1}), поэтому при каждом её перезапуске всех выкидывает из панели — каталогом её состояния владеет другой пользователь",
   "val|auto": "авто",
   // Peers toolbar: collapse each peer's deployments into one row. Own keys — the bare words are
   // used elsewhere as nouns; these are the switch's two states.

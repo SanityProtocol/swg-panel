@@ -247,6 +247,9 @@ export const Store = {
     this.panelSettings = d.panel_settings || this.panelSettings || {};
     this.subCert = d.sub_cert || {};              // subscription TLS health; {} behind a reverse proxy (admin's own)
     this.panelServices = d.panel_services || {};   // THIS host's own swg units (active/enabled/present) → service-health needs-attention. {} on docker/older panels
+    // Non-empty = the panel could not persist its session-signing secret, so every operator is signed
+    // out on each restart. "" on a healthy panel and on older ones that do not report it.
+    this.sessionEphemeral = d.session_ephemeral || "";
     this.datapath = d.datapath || {};              // THIS host's kernel datapath health (awg module loadable?) → healable "Fix" issue
     this.turnCatalog = d.turn_catalog || this.turnCatalog || null;   // single-source turn fork/client catalog (server-owned); turnForks() falls back to TURN_FORKS_FALLBACK when absent (mixed-version safe)
     this.turnHolds = d.turn_holds || this.turnHolds || {};   // {node: {fork: held_version}} → fork-row "held" flag
