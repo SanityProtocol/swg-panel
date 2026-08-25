@@ -15,6 +15,22 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # A push that changes ONLY prose does not change either image, so rebuilding four of them and
+    # republishing :latest at a new digest just makes every container node pull a functionally
+    # identical image and costs a GHCR retention slot. Skip those.
+    #
+    # ⚠️ These patterns are deliberately NOT `**.md`. The Dockerfile COPYies `js/` and `vendor/`
+    # WHOLESALE, so a markdown file placed under either would ship inside the image — and `**.md`
+    # would then skip the build that carries it, leaving the published image stale with nothing to
+    # say so. Every pattern here is anchored where image content cannot live, so the failure mode is
+    # "CI ran when it need not have", never "the image missed a change".
+    # `shipped-assets-audit.mjs` enforces that invariant and fails if any pattern below ever starts
+    # matching a file that ships inside an image.
+    paths-ignore:
+      - '*.md'            # AGENTS, API, CHANGELOG, README, THIRD-PARTY — all top level
+      - 'forks/**/*.md'   # per-fork build notes
+      - 'nix/**/*.md'     # the NixOS guide, both languages
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
