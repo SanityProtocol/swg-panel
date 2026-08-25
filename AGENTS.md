@@ -106,9 +106,12 @@ store is world-readable.
 Two things here return success without having done what you think, which is the failure mode this file
 exists to prevent:
 
-- **`nixos-rebuild switch` exits 0 without restarting `swg-noded`** on the native arm. A green rebuild is
-  not evidence the new code is running — check the process, and bounce it deliberately when you are ready
-  (`systemctl restart swg-noded`).
+- **`nixos-rebuild switch` exits 0 without restarting `swg-noded`** on the native arm — it prints
+  `NOT restarting the following changed units`. That is deliberate: a restart re-runs the bootstrap and
+  drops every connected client, which an unrelated config change has no business doing. So a green rebuild
+  is not evidence the new code is running; check the process and bounce it when you mean to
+  (`systemctl restart swg-noded`). The panel's own Update button already does this for you — the caveat
+  applies to a rebuild *you* run.
 - **Nix reads only git-*tracked* files.** A file written into `/etc/nixos` but never `git add`-ed arrives
   *absent*, and the rebuild succeeds against the older content with no warning.
 
