@@ -128,7 +128,7 @@ function reconcile(roster, stats, now, cfg) {
         else if (!inst) st = ((now - createdMs) <= cfg.graceMs) ? "creating" : "dangling";   // the server is gone
         else st = !dev ? (((now - createdMs) <= cfg.graceMs) ? "creating" : "ready")   // password not shipped yet
                        : (dev.online ? "online" : "ready");                            // shipped/provisioned = ready; recent traffic/handshake = online
-        return { node: t.node, iface: t.iface, ip: (dev && dev.ip) || "", type: t.type, primary: !!t.primary,
+        return { node: t.node, iface: t.iface, ip: (dev && dev.ip) || "", type: t.type, primary: t.primary || false,   // "primary" | "backup" | true (pre-backup rosters) | false
                  status: st, online: st === "online", observed: null, via: null, viaTurn: null,
                  // keyless per-peer speed (byte-delta the node computes per password) — no wg wire counter exists, so
                  // this is a SEPARATE field from `observed` (which carries wg semantics 8+ widgets read). Overview
@@ -201,7 +201,7 @@ function reconcile(roster, stats, now, cfg) {
         const svcs = (turnByPort[t.node] || {})[String(lp)] || [];
         viaTurn = bySport || (svcs.length ? svcs[0] : null);
       }
-      return { node: t.node, iface: t.iface, ip: t.ip, type: t.type, primary: !!t.primary,
+      return { node: t.node, iface: t.iface, ip: t.ip, type: t.type, primary: t.primary || false,   // "primary" | "backup" | true (pre-backup rosters) | false
                status: st, online: !!(obs && obs.online), observed: obs, via: via,
                viaTurn: viaTurn,   // the SPECIFIC turn-proxy service the peer came in through (one per connection)
                restorable: (st === "dangling") && _trip,   // this deployment's interface is gone long enough → offer Restore

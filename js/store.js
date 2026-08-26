@@ -139,7 +139,7 @@ export const api = {
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
   peerUpdateTarget(b) { return this.post("/api/peers/update-target", b); },
   peerRemoveTarget(b) { return this.post("/api/peers/remove-target", b); },
-  peerSetPrimary(b) { return this.post("/api/peers/set-primary", b); },
+  peerSetRole(b) { return this.post("/api/peers/set-role", b); },   // role: "primary" | "backup" | "" (clear)
   peerDelete(b) { return this.post("/api/peers/delete", b); },
   peerUnassign(b) { return this.post("/api/peers/unassign", b); },
   peerRekey(b) { return this.post("/api/peers/rekey", b); },

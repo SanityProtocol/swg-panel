@@ -1982,6 +1982,8 @@ export const STR = {
     "Имена, начинающиеся с swg_, зарезервированы за служебными связями сети.",
   "{v1} is already a {v2} instance on this node.": "{v1} на этой ноде уже занят экземпляром {v2}.",
   "{v1} is already a WireGuard interface on this node.": "{v1} на этой ноде уже занят интерфейсом WireGuard.",
+  "Changing an address moves the peer on that interface.":
+    "Смена адреса переносит пира на этом интерфейсе.",
   "Changing an address moves the peer on that interface. The gear holds that deployment's DNS, MTU and routing.":
     "Смена адреса переносит пира на этом интерфейсе. За шестерёнкой — DNS, MTU и маршрутизация этого развёртывания.",
   "These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.":
@@ -2196,7 +2198,6 @@ export const STR = {
   "Save settings": "Сохранить настройки",
   "Enable": "Включить",
   "Set": "Сделать",
-  "Make primary": "Сделать основной",
   // The doughnut ring labels are traffic DIRECTIONS, not the "Download" button in the vault sheet.
   "traffic|Download": "Приём",
   "traffic|Upload": "Отдача",
@@ -2228,7 +2229,14 @@ export const STR = {
   // budget-ok: icon-button tooltip, no box
   "Copy wrap key": "Скопировать ключ обёртки",
   "· key": "· ключ",
-  "Primary": "Основной",
+  "Primary connection — click to mark it a backup":
+    "Главное подключение — нажмите, чтобы сделать резервным",
+  "Backup connection — click to clear the label":
+    "Резервное подключение — нажмите, чтобы снять метку",
+  "Unmarked — click to make it the primary connection":
+    "Без метки — нажмите, чтобы сделать главным",
+  "label|Unmarked": "Без метки",
+  "Primary": "Главный",
   "Alternatives": "Другие варианты",
   "No client app for this device.": "Для этого устройства нет клиента.",
   "WDTT link unavailable — the server isn't reporting yet.": "Ссылка WDTT недоступна — сервер ещё не отчитался.",
@@ -2894,8 +2902,6 @@ export const STR = {
   "Peer was blocked": "Пир заблокирован",
   "User was blocked": "Доступ закрыт",
   "Assign to…": "Назначить…",
-  "Primary connection — the user's first choice": "Основное подключение — первое у пользователя",
-  "Make this the primary connection": "Сделать основным подключением",
   "Unassigned peer": "Пир без владельца",
   "Couldn't create the subscription link": "Не удалось создать ссылку на подписку",
   "Couldn't add the VK link": "Не удалось добавить ссылку VK",
@@ -4254,6 +4260,8 @@ export const STR = {
     "Параллельные TURN-потоки (#@wgt:StreamNum, в приложении 1–16).",
   "Parallel TURN streams (-n). Blank = the app's default (10).":
     "Параллельные TURN-потоки (-n). Пусто = умолчание приложения (10).",
+  "Name this connection takes in the FreeTurn app's list (the link's `name`). This setting covers every proxy of this fork, so use {fork}, {host} or {port} to vary it per server — «Frankfurt {port}» becomes «Frankfurt 56009». Blank = the app names it itself.":
+    "Имя, под которым это подключение попадёт в список приложения FreeTurn (поле `name` в ссылке). Настройка действует на все прокси этого форка, поэтому используйте {fork}, {host} или {port}, чтобы имя отличалось по серверам — «Frankfurt {port}» станет «Frankfurt 56009». Пусто = приложение назовёт само.",
   "Name this connection takes in the app's server list (build 179+, which keeps several named servers; older ones ignore it). Importing adds a server under this name and keeps the ones already there. This setting covers every proxy of this fork, so use {fork}, {host} or {port} to vary it per server — «Frankfurt {port}» becomes «Frankfurt 56005». Blank = the app names it ServerN.":
     "Имя, под которым это подключение попадёт в список серверов приложения (сборка 179+, где хранится несколько именованных серверов; более старые поле игнорируют). Импорт добавляет сервер с этим именем, уже добавленные остаются. Настройка общая для всех прокси этого форка, поэтому, чтобы имя различалось по серверам, используйте {fork}, {host} или {port} — «Frankfurt {port}» превратится в «Frankfurt 56005». Пусто = приложение само назовёт его ServerN.",
   "Pin fresh connections to a specific TURN relay (ip:port). Blank = the VK-returned relay.":
@@ -4352,8 +4360,8 @@ export const STR = {
     "Отсканируйте QR или откройте ссылку wdtt:// в WDTT-Plus.",
   "Scan the QR or open the wdtt:// link in the WDTT app (Android) or PWDTT (desktop).":
     "Отсканируйте QR или откройте ссылку wdtt:// в приложении WDTT (Android) или PWDTT (десктоп).",
-  "Scan the QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link — it now includes the VK call link(s). If your app doesn't pick them up, add them in the app manually.":
-    "Отсканируйте QR приложением FreeTurn (samosvalishe/turn-proxy-android) или вставьте ссылку freeturn:// — она уже содержит ссылки на звонки VK. Если приложение их не подхватит, добавьте вручную.",
+  "Scan the QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.":
+    "Отсканируйте QR приложением FreeTurn (samosvalishe/turn-proxy-android) или вставьте ссылку freeturn:// — она несёт ссылку на звонок VK и всю конфигурацию.",
   "Scan the QR with the WINGS V app, or paste the wingsv:// link (Settings → import from link).":
     "Отсканируйте QR приложением WINGS V или вставьте ссылку wingsv:// (Настройки → импорт из ссылки).",
   "This server needs a separate client binary. Scan the QR or import .conf into WireGuard/AmneziaWG, then run the client alongside it:":

@@ -316,7 +316,10 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
    only BACKUP is worth a word: primary IS the default, so naming it just adds a tag to nearly every row. That
    also drops any role that was nothing but the interface word. */
 .cp-row .scell-role-if { display: none; }
-.cp-row .scell-role:not(.scell-backup) { display: none; }
+/* The picker used to show a role only when it was a BACKUP — right when `primary` was the implicit
+   default and the word would have been noise on every row. It is an explicit choice now, so both show;
+   only a chip with no word at all stays hidden, which is what `scell-role-on` marks. */
+.cp-row .scell-role:not(.scell-role-on) { display: none; }
 .cp-row .scell-backup { color: var(--muted); }
 .cp-dead { color: #e5484d; }
 /* ── The two ways into the picker ──────────────────────────────────────────────────────────────────────
@@ -713,3 +716,11 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
     flex-direction: column; width: auto; padding: 0; gap: 12px;
   }
 }
+
+/* JetBrains Mono ships PROGRAMMING LIGATURES, and every mono surface in this panel shows something the reader
+   must be able to transcribe exactly — a DoH URL, a public key, a config line, a CLI command. A glyph that
+   draws two characters as one is therefore a correctness bug, not a style: `//` renders merged with a gap to
+   its left and reads as a space plus a single slash, which is how "https://1.1.1.1" was reported as
+   "https: /1.1.1.1" — the value was right the whole time, only the rendering lied. (`->`, `!=`, `::` and `www`
+   ligate too.) Turn them off wherever literal text is shown or typed; prose keeps its ordinary fi/fl. */
+input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0, "calt" 0; }

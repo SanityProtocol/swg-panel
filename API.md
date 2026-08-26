@@ -46,7 +46,7 @@ Plain-text `ok` — for uptime probes / load balancers. No auth.
 ### `GET /api/v1/health`
 Liveness + coarse counts. No auth.
 ```json
-{ "status": "ok", "version": "1.8.1-beta",
+{ "status": "ok", "version": "1.8.2-beta",
   "nodes": { "total": 5, "online": 5 },
   "peers": { "total": 27, "online": 20 } }
 ```
@@ -57,7 +57,7 @@ Every node with status + counts + throughput. Mesh-link interfaces are excluded 
 { "servers": [
   { "id": "1b8e0bcb0b4c", "name": "moscow-1",
     "status": "online", "online": true,          // status: online | offline | never_seen
-    "kind": "baremetal", "version": "1.8.1-beta",
+    "kind": "baremetal", "version": "1.8.2-beta",
     "hostname": "moscow-1", "endpoint_host": "203.0.113.11", "routing_mode": "kernel",
     "interfaces": ["awg0"],
     "peers": 10, "peers_online": 8,
@@ -96,7 +96,7 @@ deployed nodes (matching the panel's most-alive-wins view for multi-node peers).
 ### `GET /api/v1/summary`
 Fleet totals.
 ```json
-{ "version": "1.8.1-beta",
+{ "version": "1.8.2-beta",
   "nodes": { "total": 5, "online": 5 }, "peers": { "total": 27, "online": 20 },
   "throughput": { "rx_bytes_per_sec": 2082447, "tx_bytes_per_sec": 1249463 },
   "generated_at": 1783620181 }

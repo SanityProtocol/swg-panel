@@ -233,7 +233,7 @@
       return true;
     }).join("\n");
   }
-  function freeturnLink(tp, rawConf, vkLinks, cs) {
+  function freeturnLink(tp, rawConf, vkLinks, cs, fork) {
     var wg = freeturnConf(String(rawConf || "").replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 127.0.0.1:9000"));
     var cf = parseFullConf(rawConf);
     var o = { v: 1, provider: "vk", peer: tp.listen || "" };        // key order matches FreeturnLink.encode()
@@ -241,22 +241,43 @@
     // -link) and `links` = all URLs comma-joined (like -links, each its own stream pool). The Android app's current
     // share parser (FreeturnLink.parse) reads a fixed key set that DOESN'T include these, so an older app silently
     // ignores them — but the app shares the CLI core that DOES honour -link/-links, so this is worth testing on the app.
+    // `vk` carries the VK call link. We used to write `link` + `links`, mirroring the CLI's -link/-links —
+    // the app's share parser reads NEITHER, so the call link never arrived and the call dropped (issue #5).
+    // `vk` is what the client actually reads; confirmed on a real samosvalishe relay before changing this.
+    // One URL: the call link is per-client, so the primary is the one that belongs in this client's link.
     var vks = (vkLinks || []).map(function (s) { return (s || "").trim(); }).filter(Boolean);
-    if (vks.length) { o.link = vks[0]; o.links = vks.join(","); }
+    if (vks.length) o.vk = vks[0];
     // Client (app) knobs — omitted when default/blank so the link stays minimal (empty/default keys are dropped, per uri.md).
     var n = csNum(cs, "n", 0); if (n > 0) o.n = n;                   // parallel TURN streams (-n); omit → app default (10)
     var spc = csNum(cs, "spc", 0); if (spc > 0) o.spc = spc;        // streams per cached credential (-streams-per-cred); omit → default (10)
     var transport = String((cs || {}).transport || "").trim(); if (transport && transport !== "auto") o.transport = transport;   // -transport tcp|udp to the TURN relay (v2.1); auto → app default (udp)
-    // `mode` and `bond` used to ride here. free-turn-proxy removed -mode and -bond on 2026-08-16 (a `break!`
-    // commit) and deleted both keys from docs/uri.md, so writing them now describes flags the client does not
-    // have. `transport` below is the surviving control.
+    // `mode` selects what the tunnel CARRIES — `udp` = WireGuard, `tcp` = Xray/sing-box — and `kcp` tunes the
+    // ARQ that only tcp mode uses. Both are read off the RUNNING PROXY's own flags, exactly like the obfuscation
+    // profile above: a link naming a different mode than the server runs connects and then carries nothing, the
+    // same silent failure. Absent from the server's params → absent from the link, where the client's own default
+    // (udp) is already right for every WireGuard deployment we make, so our ordinary relays are unchanged.
+    // (These were dropped once on a note that upstream had removed -mode/-bond. `-mode` and all eight `-kcp-*`
+    // are present in the fork's own `-h`, which the node reports — so the note was wrong about `mode`. `bond`
+    // really is gone and stays gone.)
+    var srvParams = String((tp && tp.params) || "");
+    var srvMode = (srvParams.match(/-mode\s+(\S+)/) || [])[1];
+    if (srvMode && srvMode !== "udp") {
+      o.mode = srvMode;
+      var kcp = {};   // only meaningful under tcp; mirrored so the client's ARQ matches the relay's
+      srvParams.replace(/-kcp-([a-z]+)\s+(\S+)/g, function (_m, k, v) { kcp[k] = /^-?\d+$/.test(v) ? +v : v; return ""; });
+      if (Object.keys(kcp).length) o.kcp = kcp;
+    }
     var dnsMode = String((cs || {}).dns || "").trim(); if (dnsMode && dnsMode !== "auto") o.dns = dnsMode;   // plain|doh (auto = default → omit)
     var dnss = String((cs || {}).dnss || "").trim(); if (dnss) o.dnss = dnss;   // custom DNS servers (-dns-servers)
     if (csBool(cs, "mcap", false)) o.mcap = true;                   // manual VK captcha
     var key = (tp.wrap_key || "").trim();
-    if (key) { o.obf = "rtpopus"; o.key = key; }                    // omitted → server must also run obf none
+    if (key) { o.obf = obfProfileOf(cs, tp); o.key = key; }             // omitted → server must also run obf none
     // Stable per-peer Client ID for attribution. We run the server OPEN (no clients.json), so cid never gates auth;
     // deriving it from the peer's tunnel IP keeps it stable across regenerations and allowlist-ready for later.
+    // `name` labels the profile in the app's own list, exactly as the other forks' profiles are labelled —
+    // so it comes from the SAME per-(fork, OS) server-name setting rather than a second source. Blank → omitted.
+    var nm = expandServerName(String((cs || {}).serverName || "").trim(), fork, tp.listen || "");
+    if (nm) o.name = nm;
     var addr = String(cf.address || "").split("/")[0];
     o.cid = "swg-" + (addr || (tp.listen || "")).replace(/[^0-9A-Za-z]+/g, "-");
     o.wg = wg;
@@ -274,7 +295,7 @@
   // 127.0.0.1:9000 [-n N]` plus each enabled customFlag. So the SAME app drives a DIFFERENT core per server fork, and
   // the customFlags/linkArg must match THAT core's wire — cacggghp (plain), MYSOREZ (its own mzrtp, -password + captcha),
   // or a rtpopus core loaded as a universal launcher (Moroka8 -wrap-key / samosvalishe -obf-key). See the compat matrix.
-  function vktgzCoreFlags(fork, key, cs) {
+  function vktgzCoreFlags(fork, key, cs, tp) {
     var f = [], la = String((cs || {}).linkArgument || "").trim();
     if (fork === "MYSOREZ") {                     // MYSOREZ CORE v1.5.x (-vk/-password RTP-AEAD): VK-Calls anon bypass + VK-ID smart-captcha auto-solver. Needs the LATEST core (≤v1.4.2 is the old cacggghp-family -vk-link binary that can't pass VK-ID). NO cacggghp flags.
       la = la || "-vk";
@@ -288,7 +309,7 @@
       if (key) f.push({ id: "flag-wrap", label: "Wrap", argument: "-wrap -wrap-key " + key, enabled: true, deletable: true });
     } else if (fork === "samosvalishe") {         // free-turn CORE (rtpopus) loaded into the app: -obf-profile rtpopus -obf-key <K> (its link flag is -links; -link is deprecated)
       la = la || "-links";
-      if (key) f.push({ id: "flag-obf", label: "Obfuscation", argument: "-obf-profile rtpopus -obf-key " + key, enabled: true, deletable: true });
+      if (key) f.push({ id: "flag-obf", label: "Obfuscation", argument: "-obf-profile " + obfProfileOf(cs, tp) + " -obf-key " + key, enabled: true, deletable: true });
     } else {                                      // cacggghp CORE (plain) — the app's five built-in customFlags (AppPreferences.createDefaultConfig)
       la = la || "-vk-link";
       f = [{ id: "flag-udp",     label: "UDP",            argument: "-udp",             enabled: csBool(cs, "udp", true),            deletable: false },
@@ -303,7 +324,7 @@
   function vktgzProfile(cf, tp, vkList, cs, fork) {
     var listen = tp.listen || "";
     var addr = String(cf.address || "").split("/")[0];
-    var core = vktgzCoreFlags(fork, (tp.wrap_key || "").trim(), cs);
+    var core = vktgzCoreFlags(fork, (tp.wrap_key || "").trim(), cs, tp);
     var flags = core.flags;
     String((cs || {}).rawFlags || "").split(/[\r\n]+/).map(function (s) { return s.trim(); }).filter(Boolean)   // admin-added raw args (the app's Raw-mode flags box)
       .forEach(function (f, i) { flags.push({ id: "flag-raw-" + i, label: "Custom", argument: f, enabled: true, deletable: true }); });
@@ -374,6 +395,25 @@
   // they can just as easily run the same fork on the same port.
   // Anything else in braces is left EXACTLY as typed — an unrecognised brace is far more likely part of somebody's
   // name than a mistyped placeholder, and silently blanking it would file the server under a mangled name.
+  // The admin-set obfuscation profile for a WRAP-S (free-turn) server. `auto`/blank = the client's own
+  // default (rtpopus); newer relays run rtpopus2/rtpopus3. ONE declaration, read by the link, the flag chip
+  // and the CLI command alike: this used to be honoured only for the Android app profile and hardcoded
+  // "rtpopus" in the other three, so a server running rtpopus3 handed its client a link saying rtpopus and
+  // the client de-obfuscated with the wrong profile (issue #5).
+  function obfProfileOf(cs, tp) {
+    // THE SERVER'S OWN LAUNCH FLAGS ARE THE AUTHORITY. A client that de-obfuscates with a different
+    // profile than the server obfuscates with still completes its TURN allocations and brings the tunnel
+    // up — and then passes no traffic, which reads as "connects, but no internet" and blames everything
+    // except the profile. Reading `-obf-profile` straight off the running proxy makes the link incapable
+    // of disagreeing with the server it points at.
+    // `cs.obfProfile` remains the fallback for a proxy whose params we cannot see (one this panel did not
+    // launch, or a snapshot old enough to predate params); blank/auto → the client's own default.
+    var m = String((tp && tp.params) || "").match(/-obf-profile\s+([A-Za-z0-9._-]+)/);
+    if (m) return m[1];
+    var o = String((cs || {}).obfProfile || "").trim();
+    return (o && o !== "auto") ? o : "rtpopus";
+  }
+
   function expandServerName(tpl, fork, listen) {
     if (!tpl) return "";
     var l = String(listen || ""), host = l, port = "";
@@ -459,7 +499,7 @@
         useDTLS: true, useSrtp: (vkObf && !isWrapS && !tp.wrap_key), useUDP: csBool(cs, "useUDP", false),
         useWrap: (vkObf && !isWrapS && !!tp.wrap_key), wrapKeyHex: vkObf ? (tp.wrap_key || "") : "",
         useWrapA: csBool(cs, "useWrapA", false), useWrapS: isWrapS,   // WRAP-A = amurcanov (future); WRAP-S = free-turn cross-drive. Emitted explicitly (mode precedence useWrapA>useSrtp>useWrap)
-        obfProfile: (function () { var o = String((cs || {}).obfProfile || "").trim(); return (o && o !== "auto") ? o : "rtpopus"; })(),   // admin-set rtpopus2/3 for those servers; auto/blank → the app default rtpopus (unchanged)
+        obfProfile: obfProfileOf(cs, tp),   // read off the running proxy's own -obf-profile; admin setting is the fallback
         clientID: isWrapS ? stableCid(cf, tp) : "" };   // WRAP-S needs an allowlist-ready client-id; free-turn runs open so it is attribution-only
       // Keys the app's parser accepts but quick_link.py's CONFIG omits — emitted only when set (empty would clobber a device value):
       var wrapApw = String((cs || {}).wrapAPassword || "").trim(); if (wrapApw) s.wrapAPassword = wrapApw;   // amurcanov WRAP-A secret (future)
@@ -492,9 +532,9 @@
       // clients (turn-proxy-android + free-turn-proxy CLI) import a freeturn:// link — one scannable QR that
       // carries the proxy endpoint, the rtpopus obfuscation key, and the whole WG config.
       return { fork: fork, app: "FreeTurn", label: clientLabel(fork, "freeturn"), ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
-        vk: true, vkLinks: vkList,   // the freeturn:// link now CARRIES the VK links (link/links, like the CLI's -link/-links) — testing whether the app honours them; the sub still lists them as a fallback to paste in-app
-        hint: "Scan the QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link — it now includes the VK call link(s). If your app doesn't pick them up, add them in the app manually.",
-        text: freeturnLink(tp, baseConf, vkList, cs) };
+        vk: true, vkLinks: vkList, vkEmbedded: true,   // the freeturn:// link CARRIES the call link in `vk` (verified on a live relay), so the sub must not ask the reader to paste it too
+        hint: "Scan the QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.",
+        text: freeturnLink(tp, baseConf, vkList, cs, fork) };
     }
     // sidecar forks (cacggghp / Moroka8 / unknown): WG dials the local client on :9000
     var sidecar = baseConf.replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 127.0.0.1:9000");
@@ -511,7 +551,7 @@
       var link = (a === "MYSOREZ") ? " -vk " : (a === "samosvalishe") ? " -links " : " -vk-link ", obf = "";
       if (tp.wrap_key) {
         if (a === "Moroka8") obf = " -wrap -wrap-key " + tp.wrap_key;
-        else if (a === "samosvalishe") obf = " -obf-profile rtpopus -obf-key " + tp.wrap_key;
+        else if (a === "samosvalishe") obf = " -obf-profile " + obfProfileOf(cs, tp) + " -obf-key " + tp.wrap_key;
         else if (a === "MYSOREZ") obf = " -password " + tp.wrap_key + " -vk-anon-path vkcalls -captcha-mode auto -vk-auth anonymous";
       }
       return "./client -listen 127.0.0.1:9000 -peer " + listen + link + vkText + obf + (rawExtra ? " " + rawExtra : "");

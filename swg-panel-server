@@ -1868,24 +1868,21 @@ def clean_target(t):
         "ip": (t.get("ip", "") or "").split("/")[0],
         "type": t.get("type", "") or "wg",
     }
-    if t.get("primary"):
-        out["primary"] = True
+    # `primary` is the operator's LABEL for this deployment — "primary", "backup", or absent — and it decides
+    # both the word shown and the order (primary, then unmarked, then backups), because a peer's preferred
+    # connection and the word beside it are one fact. It stays in THIS field rather than a new one, so no
+    # roster needs migrating: a peer written before backups existed carries `True`, which still reads as
+    # primary. Deliberately NOT exclusive and never derived — a peer may carry several primaries (one per
+    # protocol family is the ordinary case, since a turn proxy is no fallback for a tunnel), several backups,
+    # or none at all.
+    _v = t.get("primary")
+    _role = _v.strip().lower() if isinstance(_v, str) else ("primary" if _v else "")
+    if _role in ("primary", "backup"):
+        out["primary"] = _role
     ov = clean_overrides(t.get("overrides"))
     if ov:
         out["overrides"] = ov
     return out
-
-
-def _one_primary(targets):
-    """Keep `primary` on at most ONE target (the first so flagged); a peer with none defaults to its first target."""
-    seen = False
-    for t in targets:
-        if t.get("primary"):
-            if seen:
-                t.pop("primary", None)
-            else:
-                seen = True
-    return targets
 
 
 def clean_overrides(raw):
@@ -2222,7 +2219,7 @@ def peer_set(roster, pid, fields, now):
         "title": (fields.get("title", p.get("title", "")) or "")[:64],   # operator label to tell devices apart
         "pubkey": fields.get("pubkey", p.get("pubkey", "")),
         "psk": fields.get("psk", p.get("psk", "")),
-        "targets": _one_primary([clean_target(t) for t in targets]),   # at most one target keeps `primary`
+        "targets": [clean_target(t) for t in targets],   # roles are per-deployment labels — no exclusivity to enforce
         "created_at": p.get("created_at", now),
         "modified_at": now,
     }
@@ -4947,13 +4944,18 @@ TURN_SERVERS = {
                                   {"key": "obf_key", "flag": "-obf-key", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Obfuscation key", "help": "64 hex chars — must match the FreeTurn client."}],
                      "client_settings": [{"key": "n", "type": "int", "default": "", "label": "Streams", "help": "Parallel TURN streams (-n). Blank = the app's default (10)."},
                                          {"key": "spc", "type": "int", "default": "", "label": "Streams per credential", "help": "Streams sharing one VK credential (-streams-per-cred). Blank = default (10)."},
-                                         # -mode (udp|tcp) and -bond were removed upstream on 2026-08-16
-                                         # ("break!: выпил tcp-режим туннеля"), which also deleted the mode/bond
-                                         # keys from docs/uri.md. -transport below survives and is the live control.
+                                         # -bond was removed upstream on 2026-08-16 ("break!: выпил tcp-режим
+                                         # туннеля") and stays gone. -mode did NOT go with it: it and all eight
+                                         # -kcp-* are in the fork's own -h (which nodes report in turn_flags), and
+                                         # docs/uri.md still lists both. Neither is offered here, because `mode`
+                                         # says what the tunnel CARRIES (udp = WireGuard, tcp = Xray/sing-box) —
+                                         # a property of the RELAY, not a client preference. The link mirrors it
+                                         # from the running proxy's params, exactly like the obfuscation profile.
                                          {"key": "transport", "type": "enum", "values": ["auto", "udp", "tcp"], "default": "auto", "label": "Relay transport", "help": "Transport to the TURN relay (-transport, free-turn-proxy v2.1). auto = the app default (udp); tcp helps where UDP is throttled or blocked."},
                                          {"key": "dns", "type": "enum", "values": ["auto", "plain", "doh"], "default": "auto", "label": "DNS mode", "help": "Resolver mode (-dns-mode). auto = the app decides."},
                                          {"key": "dnss", "type": "text", "default": "", "label": "Custom DNS", "help": "Comma-separated DNS servers (-dns-servers). Blank = the app's default."},
-                                         {"key": "mcap", "type": "bool", "default": False, "label": "Manual captcha", "help": "Solve the VK captcha manually in the app (-manual-captcha)."}]},
+                                         {"key": "mcap", "type": "bool", "default": False, "label": "Manual captcha", "help": "Solve the VK captcha manually in the app (-manual-captcha)."},
+                                         {"key": "serverName", "type": "text", "default": "", "label": "Server name", "help": "Name this connection takes in the FreeTurn app's list (the link's `name`). This setting covers every proxy of this fork, so use {fork}, {host} or {port} to vary it per server — «Frankfurt {port}» becomes «Frankfurt 56009». Blank = the app names it itself."}]},
     "Moroka8":      {"label": "Moroka8",      "owner": "Moroka8/vk-turn-proxy",          "wrap": "-wrap",                "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#E07A9A", "light": "#C24468"}, "clients": ["sidecar", "mysorez", "vkturnproxy"],    "reload": "restart",
                      "settings": [{"key": "wrap", "flag": "-wrap", "type": "bool", "default": True, "label": "WRAP"}, _TS_WRAPKEY]},
     "kiper292":     {"label": "kiper292",     "owner": "kiper292/vk-turn-proxy",         "wrap": "",                     "keyflag": "-wrap-key", "protocols": ["wg"],        "color": {"dark": "#6FD9A8", "light": "#12A46B"}, "clients": ["wgturn", "vkturnproxy", "sidecar"],     "reload": "restart",
@@ -10854,10 +10856,15 @@ def api(method, path, qs, body, deps):
                   f"{node}/{iface}")
         return 200, {"ok": True, "data": p2}
 
-    if method == "POST" and path == "/api/peers/set-primary":
-        # Mark one deployment as the peer's PRIMARY connection (ordered first on the subscription page).
+    if method == "POST" and path == "/api/peers/set-role":
+        # Set (or clear) ONE deployment's role label. Not exclusive: it touches only the named target and
+        # leaves every other row exactly as it was, because the role is a label the operator chooses per
+        # deployment, not a pointer to a single winner.
         pid = body.get("peer_id") or ""
         node = body.get("node") or ""; iface = body.get("iface") or ""
+        role = str(body.get("role") or "").strip().lower()
+        if role not in ("", "primary", "backup"):
+            return 400, {"ok": False, "error": "role must be primary, backup, or empty", "code": "bad_role"}
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
@@ -10866,9 +10873,11 @@ def api(method, path, qs, body, deps):
         for t in p.get("targets", []):
             t = dict(t)
             if t.get("node") == node and t.get("iface") == iface:
-                t["primary"] = True; found = True
-            else:
-                t.pop("primary", None)
+                found = True
+                if role:
+                    t["primary"] = role
+                else:
+                    t.pop("primary", None)
             tgts.append(t)
         if not found:
             return 404, {"ok": False, "error": "unknown target", "code": "not_found"}

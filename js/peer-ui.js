@@ -12,7 +12,7 @@
  */
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
-import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPrimaryTarget,
+import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPrimaryTarget, targetRole,
          useStableOrder, isSelfContainedKind } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor, tgtXfer, isSelfContainedTgt } from "./model.js";
@@ -34,7 +34,7 @@ import {
 import {
   confirmDeletePeer, confirmUnassign, confirmBlockPeer, confirmUnblockPeer, confirmBlockUser,
   confirmUnblockUser, peerBlockBtn, userBlockBtn, rotateAllUserKeys, PeerStatusLine, SubStatusLine,
-  fmtDate, expiryInputVal, expiryFromInput, expiryWarnDays, PrimaryToggle, UserCombo, UserPicker,
+  fmtDate, expiryInputVal, expiryFromInput, expiryWarnDays, RoleToggle, UserCombo, UserPicker,
   confirmReassign, assignPeerToUser, openRecreateRekey, confirmRestoreDeployment, confirmCorrectDeployment,
   now_s,
 } from "./peer-actions.js";
@@ -73,7 +73,7 @@ export function openPeerConfigs(peer, opts) {
     ${vkUser ? html`<${PeerStatusLine} peer=${peer} pos="bar"/>` : null}
     <${VaultUnlockPanel} need=${(peer.targets || []).some(t => !isSelfContainedKind(targetType(t)))}/>
     ${!hideVk && vkUser && targetsWantVk(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
-    <${QRRow} cards=${orderedTargets(peer.targets).map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && isPrimaryTarget(peer.targets, t)}/>`)}/>
+    <${QRRow} cards=${orderedTargets(peer.targets).map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 ? targetRole(t) : ""}/>`)}/>
   <//>`);
 }
 
@@ -793,7 +793,8 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   return html`<div class="deploy deploy-csqtt">
     ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind="csqtt" label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
     <div class=${"deploy-body" + (uri && !dc.qr ? " deploy-body-stack" : "")   /* no scanner → the link stacks, same as a WDTT link card */}>
-      ${primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
+      ${primary === "backup" ? html`<span class="qr-primary qr-backup">${T("Backup")}</span>`
+        : primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
       ${!uri ? html`<div class="qr-none">${T("csqtt link unavailable — the server isn't reporting yet.")}</div>`
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
         : html`<${LinkBox} uri=${uri}/>`}
@@ -855,7 +856,8 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
   return html`<div class="deploy deploy-wdtt">
     ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind="wdtt" label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
     <div class=${"deploy-body" + (uri && !dc.qr ? " deploy-body-stack" : "")   /* a QR sits BESIDE its meta (the body's default row); a LINK has to stack — see .deploy-body-stack */}>
-      ${primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
+      ${primary === "backup" ? html`<span class="qr-primary qr-backup">${T("Backup")}</span>`
+        : primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
       ${!uri ? html`<div class="qr-none">${T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
         : html`<${LinkBox} uri=${uri}/>`}
@@ -953,7 +955,8 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
   return html`<div class="deploy">
     ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
     <div class="deploy-body">
-      ${primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
+      ${primary === "backup" ? html`<span class="qr-primary qr-backup">${T("Backup")}</span>`
+        : primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
       ${conf ? html`<${QR} conf=${conf} label=${label}/>`
         : html`<div class="qr-none">${!loaded ? T("loading…")
             : Store.storeConfigs ? T("No stored config — re-issue this peer to enable its QR & download.")

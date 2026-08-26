@@ -670,7 +670,11 @@ export function TurnDefaultsForm({ schema, values, onSet, busy }) {
       ? html`<input type="number" value=${cur(d)} min=${d.min != null ? d.min : undefined} max=${d.max != null ? d.max : undefined} disabled=${busy} placeholder=${d.default === "" ? T("app default") : String(d.default)} onInput=${e => onSet(d.key, e.target.value)}/>`
       : d.type === "textarea"
       ? html`<textarea class="ta" rows="3" value=${cur(d) || ""} disabled=${busy} spellcheck="false" placeholder=${d.placeholder || ""} onInput=${e => onSet(d.key, e.target.value)}></textarea>`
-      : html`<input value=${cur(d)} disabled=${busy} onInput=${e => onSet(d.key, e.target.value)}/>`}
+      // A phone keyboard treats these as prose by default: autocapitalise, autocorrect and the space-insertion
+      // that fires on punctuation runs, which is how "https://" arrives as "https: /". These fields hold URLs,
+      // hostnames and templates, so turn all of it off — the hexkey branch above has always done the same.
+      : html`<input value=${cur(d)} disabled=${busy} spellcheck="false" autocomplete="off" autocorrect="off"
+          autocapitalize="off" onInput=${e => onSet(d.key, e.target.value)}/>`}
     ${d.help ? html`<div class="hint">${T(d.help)}</div>` : null}
   </div>`)}</div>`;
 }

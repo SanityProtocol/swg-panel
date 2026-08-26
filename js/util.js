@@ -26,17 +26,34 @@ export const url = p => BASE + p;
 export const tkey = (node, iface) => node + "|" + iface;          // session-config key for one target
 // A peer's targets ordered PRIMARY-first (the one flagged `primary`, else the first), then creation order.
 export function orderedTargets(targets) {
-  const ts = (targets || []).slice();
-  const pi = ts.findIndex(t => t && t.primary);
-  if (pi > 0) { const [pt] = ts.splice(pi, 1); ts.unshift(pt); }
-  return ts;
+  // primary first, unmarked next, backups last — the order the labels promise. Stable inside each band, so
+  // rows never reshuffle among themselves when an unrelated deployment is relabelled.
+  const rank = t => { const r = targetRole(t); return r === "primary" ? 0 : r === "backup" ? 2 : 1; };
+  return (targets || []).map((t, i) => [t, i])
+    .sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1])
+    .map(x => x[0]);
 }
 // Is this target the peer's primary? (explicit `primary`, else the first target is the implicit primary.)
+// A deployment's ROLE is a label the operator sets by hand — "primary", "backup", or nothing at all.
+// Nothing derives it, and it is not exclusive: several rows may be primary (one per protocol family is the
+// ordinary case) or several backup, or none. Legacy rosters carry `primary: true`, the old exclusive pointer;
+// read that as the primary role so a peer somebody already starred keeps its label.
+// It lives in the EXISTING `primary` field, which now carries "primary" | "backup" | nothing instead of a
+// bare boolean — no second field, and no migration: a roster written before backups existed says `true`, which
+// still reads as primary. One field decides both the label and the order, because a peer's preferred
+// connection and the word printed beside it are one fact, not two.
+export function targetRole(t) {
+  const v = (t || {}).primary;
+  if (v === "backup") return "backup";
+  return v ? "primary" : "";      // `true` is what rosters written before backups existed carry
+}
+
 export function isPrimaryTarget(targets, t) {
-  const ts = targets || [];
-  const pi = ts.findIndex(x => x && x.primary);
-  const idx = ts.findIndex(x => x && x.node === t.node && x.iface === t.iface);
-  return pi >= 0 ? idx === pi : idx === 0;
+  // "Does this deployment LEAD?" — i.e. is it the one ordering puts first. With roles non-exclusive that is
+  // the first primary if any exists, else simply the first row; either way it is whatever orderedTargets
+  // already decided, so the grid's representative row and the card order can never disagree.
+  const lead = orderedTargets(targets || [])[0];
+  return !!lead && lead.node === t.node && lead.iface === t.iface;
 }
 // Primary-first order FROZEN on first render (per component mount) — so toggling the primary ★ or picking targets
 // inside a modal never re-shuffles the rows under the operator's cursor; the order re-sorts only on the next open.

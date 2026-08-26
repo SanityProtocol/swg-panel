@@ -25,7 +25,7 @@ import {
 } from "./crypto.js";
 import {
   confirmDeletePeer, confirmUnassign, peerBlockBtn, userBlockBtn, PeerStatusLine, SubStatusLine,
-  fmtDate, expiryInputVal, expiryFromInput, UserCombo, UserPicker, PrimaryToggle, assignPeer,
+  fmtDate, expiryInputVal, expiryFromInput, UserCombo, UserPicker, RoleToggle, assignPeer,
   confirmReassign, confirmCorrectDeployment, confirmRestoreDeployment, openRecreateRekey, rotatePeerKeys, PubTag,
   pubState, pubCls,
 } from "./peer-actions.js";
@@ -631,7 +631,7 @@ export function PeerViewSheet({ pid, node, iface }) {
             ${turnEnabled() ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${p} dim=${!t.online}/>` : null}
           </span>
           <span class="grow"></span>
-          <${PrimaryToggle} peer=${p} t=${t}/>
+          <${RoleToggle} peer=${p} t=${t}/>
           ${(() => { const gh = ghostIface(t.node, t.iface); return (gh && gh.ripe)
             ? html`<button class="btn btn-ghost gh" title=${T("Recreate this interface with a NEW key and rekey every peer on it — clients re-import")} onClick=${() => openRecreateRekey(t.node, t.iface)}><${Ic} i="refresh"/> ${T("Recreate & rekey interface")}</button>`
             : t.restorable ? html`<button class="btn btn-ghost restore" title=${T("Recreate this missing interface with its original identity — recovers every peer on it")} onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/> ${T("Restore interface")}</button>`
@@ -911,7 +911,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         return html`<div class="targetopt sel locked" key=${k}>
           <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
           <div class="topt-right hasprim">
-            <${PrimaryToggle} peer=${peer} t=${t} compact=${true}/>
+            <${RoleToggle} peer=${peer} t=${t} compact=${true}/>
             <${PubTag} peer=${live} src=${ity} label=${ity} dim=${!t.online}/>
             <${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${live}/>
             ${sc
@@ -922,7 +922,12 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         </div>`;
       })}</div>
       <div class="hint">${hasKeyed
-        ? T("Changing an address moves the peer on that interface. The gear holds that deployment's DNS, MTU and routing.")
+        // The gear renders only where a stored config exists (`!sc && confs[k]`), so a keyed peer whose
+        // config we cannot rebuild used to be told about a control that was never drawn. `editable` is the
+        // same signal the warning below uses.
+        ? (editable
+            ? T("Changing an address moves the peer on that interface. The gear holds that deployment's DNS, MTU and routing.")
+            : T("Changing an address moves the peer on that interface."))
         : T("These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.")}</div>
     </div>
     ${(hasKeyed && !loaded) ? html`<div class="loading"><span class="spin"></span>${T("loading config…")}</div>` : null}

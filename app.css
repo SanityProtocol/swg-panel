@@ -1594,7 +1594,10 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 /* ★ primary-connection toggle on a peer's deployment cards */
 .primtog{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--line-solid);border-radius:999px;background:none;color:var(--muted);cursor:pointer;font-size:11px;font-weight:600;line-height:1.5;white-space:nowrap}
 .primtog:hover:not(:disabled){border-color:#E0B93E;color:#E0B93E}
-.primtog.on{border-color:#E0B93E;color:#E0B93E;cursor:default}
+.primtog.on{border-color:#E0B93E;color:#E0B93E}
+.primtog.bk{border-color:color-mix(in srgb,var(--partial) 55%,transparent);color:var(--partial)}
+.primtog.bk:hover:not(:disabled){border-color:var(--partial);color:var(--partial)}
+.primtog svg{width:13px;height:13px;flex:0 0 auto}
 .primtog:disabled{cursor:default}
 .primstar{font-size:13px;line-height:1}
 /* client-roster drift check modal */
@@ -2704,6 +2707,7 @@ a.tg:hover{filter:brightness(1.25)}
 /* Primary badge overlays the gap above the QR (peer modal): centered and tucked just above the QR, so it
    never pushes the QR down — the QR stays aligned with the sibling cards */
 .qr-primary{position:absolute;top:11px;left:50%;transform:translateX(-50%);z-index:1;font-family:var(--mono);font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--online);border:1px solid color-mix(in srgb,var(--online) 40%,transparent);border-radius:5px;padding:1px 6px;line-height:1.3;background:var(--surface)}
+.qr-backup{color:var(--partial);border-color:color-mix(in srgb,var(--partial) 40%,transparent)}
 /* "← Go back" in place of × (child modal opened from the user view) */
 .sheet-back{appearance:none;margin-left:auto;display:inline-flex;align-items:center;gap:5px;background:transparent;border:1px solid var(--line-solid);border-radius:8px;color:var(--ink);font:inherit;font-size:12.5px;font-weight:600;padding:5px 11px;cursor:pointer}
 .sheet-back:hover{background:var(--raise);border-color:var(--brand)}
@@ -3047,3 +3051,11 @@ body.has-oldaddr .appbar{margin-top:var(--oldaddr-h,40px);top:var(--oldaddr-h,40
 .tgt-frontlist{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
 .tgt-frontlist .tgt-front{max-width:18ch}
 .tgt-frontlbl{display:block;width:100%;font-size:10px;color:var(--dim);margin-bottom:2px}
+
+/* JetBrains Mono ships PROGRAMMING LIGATURES, and every mono surface in this panel shows something the reader
+   must be able to transcribe exactly — a DoH URL, a public key, a config line, a CLI command. A glyph that
+   draws two characters as one is therefore a correctness bug, not a style: `//` renders merged with a gap to
+   its left and reads as a space plus a single slash, which is how "https://1.1.1.1" was reported as
+   "https: /1.1.1.1" — the value was right the whole time, only the rendering lied. (`->`, `!=`, `::` and `www`
+   ligate too.) Turn them off wherever literal text is shown or typed; prose keeps its ordinary fi/fl. */
+input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0, "calt" 0; }

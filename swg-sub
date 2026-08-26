@@ -269,6 +269,17 @@ class State:
         return out
 
 
+def _role_of(t):
+    """The operator's label for one deployment: "primary", "backup", or "" — literal, never derived.
+
+    The only such field: the page both prints this word and orders by it (primary, then unmarked, then
+    backups). A peer nobody has labelled prints nothing at all, rather than calling its first deployment
+    primary and every other one a backup of it."""
+    v = (t or {}).get("primary")
+    r = v.strip().lower() if isinstance(v, str) else ("primary" if v else "")
+    return r if r in ("primary", "backup") else ""   # `True` is what pre-backup rosters carry
+
+
 def _port_of(hostport):
     """Trailing :port of a host:port string → int, else None (mirrors the SPA's portOf)."""
     s = str(hostport or "")
@@ -421,25 +432,11 @@ def read_data(state, token):
         sec = (blobs.get(pid) or {}).get("sec")        # None until the admin browser provisions it
         tgts_in = p.get("targets") or []
         # ── Which deployment is the PRIMARY one ──────────────────────────────────────────────────────
-        # Decided per PROTOCOL GROUP, not across the flat target list. It used to be "index 0 of the whole
-        # peer" — so on a peer whose first target was a WG/AWG tunnel, that tunnel took the only primary slot
-        # and EVERY turn proxy came through as a "backup" of a tunnel it is not a backup of. Primary/Backup is
-        # a failover relation between alternatives of the SAME kind, so every kind picks its own: wg among wg,
-        # awg among awg, wdtt among wdtt, csqtt among csqtt. wdtt and csqtt are NOT pooled even though they
-        # share the Turn group on the page — they are different products with different client apps, so one is
-        # not a fallback for the other, and pooling them left every csqtt deployment labelled a backup.
-        # A lone deployment still gets the flag; the page only renders the word when a group holds more than one.
-        # An explicit roster flag wins inside its own group. The panel has always let an operator mark a
-        # preferred deployment (_one_primary there) and this surface silently overwrote it.
-        _explicit = next((_i for _i, _t in enumerate(tgts_in)
-                          if isinstance(_t, dict) and _t.get("primary")), None)
-        _groups = {}
-        for _i, _t in enumerate(tgts_in):
-            if not isinstance(_t, dict):
-                continue
-            _gty = (_t.get("type") or "wg")
-            _groups.setdefault(_gty, []).append(_i)
-        _primary_idx = {(_explicit if _explicit in _idxs else _idxs[0]) for _idxs in _groups.values()}
+        # Roles are the operator's own labels now, so this surface reports them and derives nothing. It used to
+        # elect a primary per protocol group when the roster held none, which put the word "Primary" on a
+        # deployment nobody had chosen and called every other one a "Backup" of it. (That grouping insight still
+        # holds — a turn proxy is no fallback for a tunnel — but it is the operator who expresses it, by marking
+        # a primary in each family; the panel lets them, since roles are not exclusive.)
         # per-peer NON-secret overrides (custom DNS/MTU/AllowedIPs/keepalive) kept in the roster; absent
         # keys render live from the interface defaults, so a fleet-wide default change reaches this peer.
         ov = p.get("overrides") if isinstance(p.get("overrides"), dict) else {}
@@ -472,7 +469,7 @@ def read_data(state, token):
                              "dtls_port": dtls, "wg_port": str(inst.get("wg_port") or 56001), "tun_port": "9000",
                              "raw_port": str(inst.get("raw_port") or ""),   # RAW-IP mode, when this server accepts it
                              "vk_hash": (p.get("vk_hash") or "").strip()},
-                    "primary": (i in _primary_idx),
+                    "primary": _role_of(t),
                 })
                 continue
             if (t.get("type") or "") == "csqtt":
@@ -491,7 +488,7 @@ def read_data(state, token):
                                                 or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
                               "port": port,
                               "vk_hash": (p.get("vk_hash") or "").strip()},
-                    "primary": (i in _primary_idx),
+                    "primary": _role_of(t),
                 })
                 continue
             nd = describe.get(t.get("node")) or {}
@@ -531,7 +528,7 @@ def read_data(state, token):
                 "awg": awg,
                 "turn": turn,
                 **({} if not _direct_off else {"direct": False}),   # its own kind is hidden: only the proxy variants publish
-                "primary": (i in _primary_idx),        # preferred deployment of THIS protocol group
+                "primary": _role_of(t),
             })
         # A blocked/expired peer still appears on the page, but the cell shows a "BLOCKED"/"EXPIRED" placeholder
         # instead of its QR/config/buttons — so the holder sees WHY it stopped working. (A whole-user block/expiry

@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.1-beta</code></p>
+<p align="center"><code>1.8.2-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.1-beta** — [full changelog](CHANGELOG.md)
-> - **Operators stay signed in across a panel restart.** The panel could not read its own session-signing secret and quietly signed with a throwaway one instead — indistinguishable from healthy, except that everyone was logged out every time it restarted. It now reports the cause and the single command that fixes it.
-> - **Installing and uninstalling leave the panel's state directory owned correctly**, so a later reinstall cannot inherit a uid that belongs to nobody — the cause of the sign-outs above. On NixOS the module owns the whole directory rather than the three files it happened to name.
-> - **`AGENTS.md`, an operating contract for automation** — bare-metal, Docker and NixOS alike: the environment variable behind every installer prompt, health checks that need no credentials, and the state nothing should ever edit by hand.
+> **What's new in 1.8.2-beta** — [full changelog](CHANGELOG.md)
+> - **A deployment can be marked primary, backup, or neither.** The star is a three-state control now, and the labels are yours to set rather than guessed from position — a peer nobody has marked shows no role at all, where before its first deployment was called "Primary" and every other one a "Backup" of it. Several may share a role, which is the ordinary case when a peer spans protocols: a turn proxy is no fallback for a tunnel. Panel and subscription both order by it — primary first, unmarked next, backups last.
+> - **FreeTurn connections carry what they promised.** The VK call link now rides inside the link itself; it was being written under keys the app never reads, so the call dropped while the tunnel looked fine. The obfuscation profile is read off the relay that is actually running instead of a separate setting that could disagree with it — a mismatch there completes the connection and then passes no traffic at all. A server name labels the connection in the app, and a relay running a TCP tunnel now says so.
+> - **Text you have to read exactly is no longer prettified.** The mono font's programming ligatures drew `https://` as `https: /`, so a correct address looked corrupt and a correct key unreadable. They are off wherever a config, a key or a URL is shown or typed.
 <!-- WHATS-NEW:END -->
 
 ---

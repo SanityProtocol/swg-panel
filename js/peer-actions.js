@@ -13,7 +13,7 @@
  */
 
 import { T, Tsplit, plural } from "./i18n.js";
-import { tkey, seen, isPrimaryTarget } from "./util.js";
+import { tkey, seen, targetRole } from "./util.js";
 import { Store, api, useStore } from "./store.js";
 import { targetType, iTypeOf, ghostIface, ghostPeers, peerSubSources, subHidden, subHides, isSelfContainedTgt } from "./model.js";
 import { searchMatch, revealAssignedPeer } from "./views.js";
@@ -528,17 +528,45 @@ export function confirmReassign(peer, userId, back) {
 
 // A ★ toggle to mark one of a peer's deployments as PRIMARY (ordered first for the user). Persists immediately.
 // Hidden when the peer has a single connection (nothing to choose). Stop propagation so it never bubbles to a card link.
-export function PrimaryToggle({ peer, t, compact }) {
+// Three-state ROLE control, rotating on each click: unmarked → primary → backup → unmarked. The role is a
+// label only — it never changes which deployment leads, and it is not exclusive, so an operator can mark a
+// primary per protocol family (a turn proxy is no fallback for a tunnel) or leave every row unmarked.
+// useState runs BEFORE the "fewer than two deployments" bail-out: a peer that gains a second deployment while
+// this is mounted would otherwise change its hook count between renders.
+export function RoleToggle({ peer, t, compact }) {
   useStore();
   const targets = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets) || peer.targets || [];
-  if (targets.length < 2) return null;
-  const isP = isPrimaryTarget(targets, t);
-  const [busy, setBusy] = useState(false);
-  const set = async (ev) => { if (ev) ev.stopPropagation(); if (isP || busy) return; setBusy(true);
-    try { await api.peerSetPrimary({ peer_id: peer.id, node: t.node, iface: t.iface }); await Store.poll(); } catch (_) {} setBusy(false); };
-  return html`<button type="button" class=${"primtog" + (isP ? " on" : "")} disabled=${busy || isP}
-    title=${isP ? T("Primary connection — the user's first choice") : T("Make this the primary connection")} onClick=${set}>
-    <span class="primstar">${isP ? "★" : "☆"}</span>${compact ? null : html`<span>${isP ? T("Primary") : T("Make primary")}</span>`}</button>`;
+  if (targets.length < 2) return null;                       // a lone deployment has nothing to be primary OVER
+  const live = targets.find(x => x && x.node === t.node && x.iface === t.iface) || t;
+  const role = targetRole(live);
+  const next = role === "" ? "primary" : role === "primary" ? "backup" : "";
+  // OPTIMISTIC. The role is the operator's own choice, not a fact the fleet has to agree to, so the mark moves
+  // on the click rather than a round trip later — rotating three states through a 5s poll felt broken. mutate()
+  // applies the patch to the store at once, reverts it and says so if the call fails, and keeps it applied
+  // until the next poll carries the server's own copy. The button stays enabled: each click reads the role the
+  // patch already wrote, so clicking quickly rotates rather than racing.
+  const set = (ev) => {
+    if (ev) ev.stopPropagation();
+    mutate({
+      key: "peer:" + peer.id,
+      // Patch the ROSTER, not recon: apply() layers the overlays onto a pristine roster clone and only then
+      // re-derives recon from it, so a patch written into recon is wiped by the very same pass.
+      patch: (store) => {
+        const p = ((store.roster && store.roster.peers) || {})[peer.id];
+        const lt = p && (p.targets || []).find(x => x && x.node === t.node && x.iface === t.iface);
+        if (lt) lt.primary = next || false;                  // "" → false, i.e. unmarked
+      },
+      call: () => api.peerSetRole({ peer_id: peer.id, node: t.node, iface: t.iface, role: next }),
+    });
+  };
+  const title = role === "primary" ? T("Primary connection — click to mark it a backup")
+              : role === "backup"  ? T("Backup connection — click to clear the label")
+                                   : T("Unmarked — click to make it the primary connection");
+  const word  = role === "primary" ? T("Primary") : role === "backup" ? T("Backup") : T("label|Unmarked");
+  return html`<button type="button" class=${"primtog" + (role === "primary" ? " on" : role === "backup" ? " bk" : "")}
+    title=${title} onClick=${set}>
+    ${role === "backup" ? html`<${Ic} i="shield-fill"/>` : html`<span class="primstar">${role === "primary" ? "★" : "☆"}</span>`}
+    ${compact ? null : html`<span>${word}</span>`}</button>`;
 }
 
 // inline user assignment <select>

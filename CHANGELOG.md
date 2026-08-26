@@ -26,6 +26,46 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Two build notes under `forks/` pointed at design documents that are not published**, and one carried an
   internal reference that meant nothing to a reader.
 
+## [1.8.2-beta] — 2026-08-26
+
+### Added
+- **A deployment is primary, backup, or neither — and the order follows.** The star on each deployment is a
+  three-state control (unmarked → primary → backup → unmarked) and the label is the operator's, not something
+  derived from position: a peer nobody has marked now shows no role at all, where its first deployment used to
+  be called "Primary" and every other one a "Backup" of it. Roles are deliberately not exclusive — a peer that
+  spans protocols can carry a primary in each family, since a turn proxy is no fallback for a WireGuard tunnel.
+  The panel and the subscription both order by it: primary first, unmarked next, backups last. The mark moves
+  on the click rather than after a poll.
+- **A server name for samosvalishe relays.** It labels the connection in the FreeTurn app's own list, and takes
+  the same `{fork}` / `{host}` / `{port}` templates every other fork's name does — "Frankfurt {port}"
+  becomes "Frankfurt 56009". The link already carried the field; there was simply no setting to fill it.
+- **A relay running a TCP tunnel says so in its link.** `mode` (udp = WireGuard, tcp = Xray/sing-box) and the
+  `kcp` ARQ profile it implies are mirrored from the relay's own flags, so a client can no longer be told a
+  different mode than the server is running.
+
+### Fixed
+- **The VK call link never reached the FreeTurn app.** It was written under `link`/`links`, mirroring the CLI's
+  flags — keys the app's importer does not read — so the call dropped while the tunnel itself looked healthy.
+  It now rides in the field the client actually reads.
+- **A relay's obfuscation profile could disagree with the link it handed out.** The profile was fixed at
+  `rtpopus` in the link, the flag chip and the CLI command, while the setting that offered rtpopus2/rtpopus3
+  was honoured only for one app. A relay running rtpopus3 therefore gave its clients rtpopus, and the result
+  is the worst kind: the connection comes up, the tunnel reports healthy, and not one byte passes. The profile
+  now comes from the running relay itself.
+- **Only one of several identical relays was published.** Two samosvalishe relays fronting one interface are
+  two servers a user can choose between — different port, different key — but the subscription deduplicated by
+  fork and silently dropped all but the first. Where one fork appears more than once, its port now
+  distinguishes the entries.
+- **The subscription asked users to paste a VK link it had already sent them.**
+- **Switching theme or language on the subscription page threw the reader back to the first card.**
+- **The connections picker showed "Backup" but never "Primary"**, so a deployment marked primary looked
+  exactly like an unmarked one.
+- **The peer editor described a gear that was not there** when a peer's client config could not be rebuilt.
+- **Programming ligatures made correct text look wrong.** The mono font drew `https://` as `https: /` and
+  similar for `->`, `!=` and `::` — so a valid DoH URL read as corrupt and a key could not be transcribed by
+  eye. Ligatures are off wherever exact text is shown or typed, in the panel and the subscription page.
+- **URL and template fields no longer invite a phone keyboard to autocapitalise or autocorrect them.**
+
 ## [1.8.0-beta] — 2026-08-25
 
 ### Added

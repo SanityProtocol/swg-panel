@@ -86,7 +86,7 @@
     ru: {
       loading: "Загрузка…", noConfigs: "Пока нет конфигураций",
       noConfigsSub: "На этой подписке нет активных пиров. Новые появятся здесь автоматически.",
-      peer: "Пир", primary: "Основной", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать",
+      peer: "Пир", primary: "Главный", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать",
       copied: "Скопировано", copiedClip: "Скопировано в буфер обмена", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
       dlShort: "Скачать", enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
       getApp: "Установить {app}", getAppBy: "Скачать {app} от {author} вручную", getAppManual: "Установить {app} вручную",
@@ -171,11 +171,13 @@
   // whose app actually runs on the visitor's OS. NEVER falls back to a wrong-OS build (an iPhone must not be offered
   // WINGS V for Android): returns null when no client ships for this OS, so the cell just shows no get-app row.
   // platforms[os] may carry `url` (resolved latest asset) and/or `github` (releases page) — prefer the resolved asset.
-  // A peer's targets ordered PRIMARY-first (the one flagged `primary`, else the first), then creation order.
+  // A peer's deployments in the order its labels promise: primary first, unmarked next, backups last, and
+  // creation order inside each band. Same rule the panel uses — one field decides both the word and the place.
   function orderedTargets(targets) {
-    var ts = (targets || []).slice();
-    for (var i = 0; i < ts.length; i++) if (ts[i] && ts[i].primary) { ts.unshift(ts.splice(i, 1)[0]); break; }
-    return ts;
+    var rank = function (t) { var r = (t && t.primary) || ""; return r === "primary" ? 0 : r === "backup" ? 2 : 1; };
+    return (targets || []).map(function (t, i) { return [t, i]; })
+      .sort(function (a, b) { return rank(a[0]) - rank(b[0]) || a[1] - b[1]; })
+      .map(function (x) { return x[0]; });
   }
   // Rank a turn-proxy fork by the class of the client it resolves to for THIS visitor — matching the panel picker:
   // native app · friendly app · native sidecar · friendly sidecar · plain (so the "best" connection sorts first).
@@ -1488,8 +1490,12 @@
     var pager = document.querySelector("#peers .pager");
     if (!pager) return null;
     var pages = pager.children; if (!pages.length) return null;
-    var top = pager.getBoundingClientRect().top + 6, pi = pages.length - 1;
-    for (var i = 0; i < pages.length; i++) { if (pages[i].getBoundingClientRect().bottom > top) { pi = i; break; } }
+    // Which page the reader is on is ALREADY decided, correctly, by the pager's own curIndex(): it knows the
+    // PAGER scrolls in portrait but the WINDOW scrolls on desktop/landscape. This carried a copy of the
+    // portrait half only — and on desktop the pager's own top sits far ABOVE the viewport once you scroll, so
+    // page 0's bottom already cleared it and the loop matched 0 every single time. A lang or theme toggle
+    // therefore threw the reader from wherever they were back to the first card.
+    var pi = pager._cur ? pager._cur() : pages.length - 1;
     var pg = pages[pi], sub = (pg && pg._pos) ? pg._pos() : { cell: 0, view: null };
     return { page: pi, cell: sub.cell, view: sub.view };
   }
@@ -1688,8 +1694,9 @@
       ib.style.color = ic0;
       srvRow.appendChild(ib);
       if (multi) {
-        var isBk0 = !tgt.primary;
-        var role0 = el("span", "scell-role" + (isBk0 ? " scell-backup" : ""), tgt.primary ? t("primary") : t("backup"));
+        var rl0 = tgt.primary || "";
+        var isBk0 = rl0 === "backup";
+        var role0 = el("span", "scell-role" + (isBk0 ? " scell-backup" : "") + (rl0 ? " scell-role-on" : ""), rl0 ? t(rl0) : "");
         if (!isBk0) role0.style.color = ic0;
         srvRow.appendChild(role0);
       }
@@ -1822,9 +1829,10 @@
         ctag.appendChild(el("span", "scell-tag-sep", " · ")); var capp = el("span", null, cAppName); capp.style.color = cffork; ctag.appendChild(capp);
         if (cga && cga.author && cga.author !== csfork) ctag.appendChild(el("span", "scell-tag-by", " by " + cga.author));   // cross-author client only
         srvRow.appendChild(ctag);
-        var cBackup = multi && !tgt.primary;                                   // csqtt is its own protocol family → the "CSQTT" role chip, in the csqtt type colour
-        var crole = el("span", "scell-role" + (cBackup ? " scell-backup" : ""));
-        if (multi) crole.appendChild(document.createTextNode((tgt.primary ? t("primary") : t("backup")) + " "));
+        var crl = tgt.primary || "";
+        var cBackup = multi && crl === "backup";                                // csqtt is its own protocol family → the "CSQTT" role chip, in the csqtt type colour
+        var crole = el("span", "scell-role" + (cBackup ? " scell-backup" : "") + (multi && crl ? " scell-role-on" : ""));
+        if (multi && crl) crole.appendChild(document.createTextNode(t(crl) + " "));
         crole.appendChild(el("span", "scell-role-if", "CSQTT"));
         if (!cBackup) crole.style.color = cfc;
         srvRow.appendChild(crole);
@@ -1871,9 +1879,10 @@
         if (wHasApp) { wtag.appendChild(el("span", "scell-tag-sep", " · ")); var wapp = el("span", null, wAppName); wapp.style.color = wAppColor; wtag.appendChild(wapp);
           if (wga && wga.author && wga.author !== wfork) wtag.appendChild(el("span", "scell-tag-by", " by " + wga.author)); }   // app author (e.g. luminescq)
         srvRow.appendChild(wtag);
-        var wBackup = multi && !tgt.primary;                                    // WDTT is its own protocol family in the panel → the "WDTT" role chip (not the built-in WG), in the WDTT type colour
-        var wrole = el("span", "scell-role" + (wBackup ? " scell-backup" : ""));
-        if (multi) wrole.appendChild(document.createTextNode((tgt.primary ? t("primary") : t("backup")) + " "));
+        var wrl = tgt.primary || "";
+        var wBackup = multi && wrl === "backup";                                 // WDTT is its own protocol family in the panel → the "WDTT" role chip (not the built-in WG), in the WDTT type colour
+        var wrole = el("span", "scell-role" + (wBackup ? " scell-backup" : "") + (multi && wrl ? " scell-role-on" : ""));
+        if (multi && wrl) wrole.appendChild(document.createTextNode(t(wrl) + " "));
         wrole.appendChild(el("span", "scell-role-if", "WDTT"));
         if (!wBackup) wrole.style.color = ifaceColor("wdtt");
         srvRow.appendChild(wrole);
@@ -1938,7 +1947,10 @@
       ctrl.zoomTail = hasAppName ? appName : forkId;
       // Badge = "<server used> · <app>": the server chip in the used fork's colour, the app chip in its native fork's.
       var tag = el("span", "scell-tag");
-      var srvChip = el("span", null, forkId); srvChip.style.color = fc; tag.appendChild(srvChip);
+      // Two relays of the SAME fork on one deployment would otherwise render as two identical badges, leaving
+      // the reader to guess which is which. The port is the one thing that always separates them.
+      var srvName = it.dupFork ? (forkId + " :" + String(tp.listen || "").split(":").pop()) : forkId;
+      var srvChip = el("span", null, srvName); srvChip.style.color = fc; tag.appendChild(srvChip);
       if (hasAppName) {
         tag.appendChild(el("span", "scell-tag-sep", " · "));
         var appChip = el("span", null, appName); appChip.style.color = appColor; tag.appendChild(appChip);
@@ -1949,9 +1961,10 @@
       // The interface word is its OWN span (and the whole role is marked when that's all it says) so the jump
       // picker can drop it: there, the row already leads with the protocol icon and the fork name.
       var ifaceUp = (tgt.type === "awg") ? "AWG" : "WG";
-      var isBackup = multi && !tgt.primary;
-      var role = el("span", "scell-role" + (isBackup ? " scell-backup" : ""));
-      if (multi) role.appendChild(document.createTextNode((tgt.primary ? t("primary") : t("backup")) + " "));
+      var rl = tgt.primary || "";
+      var isBackup = multi && rl === "backup";
+      var role = el("span", "scell-role" + (isBackup ? " scell-backup" : "") + (multi && rl ? " scell-role-on" : ""));
+      if (multi && rl) role.appendChild(document.createTextNode(t(rl) + " "));
       role.appendChild(el("span", "scell-role-if", ifaceUp));
       if (!isBackup) role.style.color = ifaceColor(tgt.type);
       srvRow.appendChild(role);
@@ -1977,11 +1990,11 @@
         vkw2.appendChild(el("div", "scell-vkwarn-t", t("vkMissingT")));
         vkw2.appendChild(el("div", "scell-vkwarn-d", t("vkMissing").replace("{app}", t("theApp"))));
         cell.appendChild(vkw2);
-      } else if (art.vk && !ctrl.vktgz) {   // MYSOREZ: the VKTGZ profile already embeds the VK link → no separate "add this link" prompt
+      } else if (art.vk && !art.vkEmbedded && !ctrl.vktgz) {   // an artifact that CARRIES the call link (freeturn's `vk`, MYSOREZ's VKTGZ profile) must not also ask the reader to paste it
         // show only the PRIMARY VK call link (tap-to-copy). The config still embeds every link for forks that accept
         // several; the on-screen prompt just names the one to add so it stays simple.
         var vall = (art.vkLinks && art.vkLinks.length) ? art.vkLinks : ((vkLink || "").trim() ? [(vkLink || "").trim()] : []);
-        ctrl.vkPrimary = vall[0] || "";   // Start copies this — freeturn/samosvalishe apps can't auto-receive the VK link
+        ctrl.vkPrimary = vall[0] || "";   // Start copies this, for the forks whose artifact cannot carry the link itself
         var vlist = vall.slice(0, 1);
         var vkw = el("div", "scell-vk");
         var vkLbl = (appInfo.kind === "app") ? t("vkAddApp").replace("{app}", appInfo.app)
@@ -2086,12 +2099,19 @@
           items.push({ tgt: tt, csqtt: tt.csqtt || {} }); return;
         }
         var seen = {}, tps = [], isAwg = (tt.type === "awg");
-        (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return;
+        // Keyed on the PROXY, not its fork. Two samosvalishe relays fronting one interface are two servers the
+        // reader picks between — different port, different obfuscation key — and keying the dedupe on the fork
+        // published only whichever came first, silently. The fork still decides the app and the filters below.
+        (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service), k = tp.service || tp.listen;
+          if (seen[k]) return;
           if (isAwg && turnWgOnly(f)) return;   // a WireGuard-only fork can't front this AmneziaWG interface
           if (!turnGetApp(f)) return;           // no client app for the visitor's OS → hide this deployment entirely (no card, no dot)
-          seen[f] = 1; tps.push({ tp: tp, f: f }); });
-        tps.sort(function (a, b) { return turnCellRank(a.f) - turnCellRank(b.f) || forkRank(a.f) - forkRank(b.f); });   // client-priority, then canonical fork order
-        tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp }); });
+          seen[k] = 1; tps.push({ tp: tp, f: f }); });
+        // listen is the tiebreak so two relays of one fork keep a fixed order between polls instead of swapping.
+        tps.sort(function (a, b) { return turnCellRank(a.f) - turnCellRank(b.f) || forkRank(a.f) - forkRank(b.f)
+                 || String(a.tp.listen || "").localeCompare(String(b.tp.listen || "")); });   // client-priority, then canonical fork order
+        var nfork = {}; tps.forEach(function (x) { nfork[x.f] = (nfork[x.f] || 0) + 1; });
+        tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp, dupFork: nfork[x.f] > 1 }); });
       });
     } else {
       orderedTargets(peer.targets).forEach(function (tt) { if (isSelfContained(tt.type) || tt.direct === false) return; if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });   // WDTT + csqtt belong to the Turn group only — never the wg/awg lists; primary connection first
@@ -2670,6 +2690,8 @@
         for (var i = 0; i < pages.length; i++) { if (pages[i].getBoundingClientRect().bottom > top) return i; }
         return pages.length - 1;
       }
+      pager._cur = curIndex;   // capturePos() (outer scope) asks the pager itself, so the rule lives in ONE place
+
       // Step exactly ONE peer up/down (shared by the vertical swipe + wheel). A lock during the animation stops a
       // fling from chaining.
       function stepConfig(dir) {
