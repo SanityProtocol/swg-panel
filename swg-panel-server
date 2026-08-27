@@ -25,6 +25,7 @@ import fcntl
 import hashlib
 import heapq
 import hmac
+import inspect
 import ipaddress
 import json
 import os
@@ -86,6 +87,22 @@ MANAGED_KEY  = TLS_KEY  or os.path.join(_ETC_DIR, "tls", "key.pem")
 # TLS (direct-TLS) or binds a specific public IP, a DEDICATED 127.0.0.1:<LOCAL_PORT> HTTP listener is added so a
 # co-located node keeps a plain-HTTP loopback endpoint regardless of the public TLS posture. 0 = not configured.
 LOCAL_PORT = int(os.environ.get("SWG_PANEL_LOCAL_PORT", "0") or 0)
+# An ADDITIONAL public listener carrying the "node" door policy (see NODE_DOOR_GET): it serves only what a
+# node dials and 404s everything else. The primary is untouched, so nothing that works today stops working —
+# this only ADDS a second address the fleet may use. 0 = not configured. The Access & TLS screen drives this
+# from settings; the env var is what makes the door testable on its own.
+NODE_PORT = int(os.environ.get("SWG_PANEL_NODE_PORT", "0") or 0)
+NODE_HOST = os.environ.get("SWG_PANEL_NODE_HOST", "0.0.0.0")
+# A console port WIRED BY THE DEPLOYMENT (docker publishes it; the NixOS module opens it). It does not by
+# itself turn the console on — that stays access.console, written by the confirm — but where it is set it
+# is the ONLY port the console may use, because reachability was decided out here and the panel cannot
+# change it. Bare metal leaves it blank and the operator picks freely; there, binding IS reachability.
+CONSOLE_PORT = int(os.environ.get("SWG_PANEL_CONSOLE_PORT", "0") or 0)
+# The address the operator REACHES that port at. On docker the container must bind 0.0.0.0 (a publish
+# always targets the container's 0.0.0.0) while the publish carries the host restriction — so bind and
+# reach differ there, and only there. Everywhere else they are the same address.
+CONSOLE_HOST = os.environ.get("SWG_PANEL_CONSOLE_HOST", "127.0.0.1")
+_NODE_LID = None       # listener id of the dedicated node-role listener, when one is bound
 _INTERNAL_LID = None   # listener id of the dedicated internal loopback-HTTP listener, when one is bound
 _FLIP_REVERT = None    # a just-confirmed direct-TLS→reverse-proxy flip, still in grace → how to undo it (the old HTTPS
                        # bind kept alive, the pre-flip mode, the loopback listener to hand back as the internal one)
@@ -312,6 +329,57 @@ def _ver_behind(have, ref):
     """True only if `have` is a real version strictly older than `ref` (never on a newer node)."""
     h, r = _vtuple(have), _vtuple(ref)
     return bool(h != (0, 0, 0) and r != (0, 0, 0) and h < r)
+
+
+def _cascade_node_updates(deps, nodes, roster_path):
+    """Stage the SAME update on every node that can take it, when the panel updates itself.
+
+    An operator who presses Update on the panel means "bring this deployment up to date", not "bring
+    one box up to date" — and a fleet left on the old version is exactly the split the release matrix
+    exists to catch. So fan out. But only where it will actually land: a request a node cannot act on
+    stages a flag, fails, and leaves a red tag the operator has to dismiss for something they were
+    never offered (the same reasoning /api/node/update already applies one node at a time).
+
+    Skipped, and why:
+      local        the co-located node updates WITH the panel — update.sh does both. Staging the flag
+                   would trigger a SECOND, redundant self-update (see the note in /api/host/update).
+      never seen   no snapshot: it has not enrolled or has never reported.
+      stale        last sync older than the node-stale window: nobody is listening.
+      manual       update_auto is False — declarative, or docker with no host updater wired. Explicit
+                   False only: an older daemon omits the field, and unknown must not block.
+      current      not strictly behind the target. Never offer a downgrade.
+      in flight    an update was already staged inside the grace window.
+    Returns {"started": [...], "skipped": {reason: [...]}} — names, for the operator.
+    """
+    now = time.time()
+    _ps = deps.get("panel_settings") or {}
+    stale_s = max(5, int(((_ps.get("advanced") or {}).get("node_stale_ms") or 30000) / 1000)) * 2
+    # ⚠️ x2 ON PURPOSE. node_stale_ms is the UI's "show it greyed" threshold, deliberately tight so a
+    # blip is visible. A node one interval late is not a node that cannot update, and refusing it here
+    # would silently leave it behind — the exact outcome this whole change exists to prevent.
+    snaps = deps.get("node_snaps") or {}
+    seen = deps.get("node_seen") or {}
+    target = LATEST_REMOTE.get("version") or VERSIONS.get("panel") or ""
+    host_names = {os.uname().nodename, os.environ.get("SWG_HOST_HOSTNAME") or ""}
+    started, skipped = [], {}
+    def _skip(why, nm): skipped.setdefault(why, []).append(nm)
+    for nid, c in nodes.items():
+        nm = c.get("name") or nid
+        snap = snaps.get(nid) or {}
+        if not snap: _skip("never reported", nm); continue
+        if snap.get("hostname") and snap.get("hostname") in host_names: _skip("updates with the panel", nm); continue
+        if now - (seen.get(nid) or 0) > stale_s: _skip("stale", nm); continue
+        if snap.get("update_auto") is False: _skip("cannot self-update", nm); continue
+        if not _ver_behind(snap.get("noded_version"), target): _skip("already current", nm); continue
+        if c.get("update") and (now - ((c.get("update") or {}).get("at") or 0) <= PROC_GRACE):
+            _skip("already updating", nm); continue
+        c.pop("proc_status", None)
+        c["update"] = {"to": target, "from": snap.get("noded_version"), "at": int(now)}
+        started.append(nm)
+        with contextlib.suppress(Exception):
+            ev_append(roster_path, "node", nid, "Update requested", "with the panel")
+    return {"started": started, "skipped": skipped}
+
 
 def _ver_ahead(have, ref):
     """True if `have` is strictly newer than `ref` (e.g. a node updated past a lagging panel)."""
@@ -2685,6 +2753,30 @@ def _ensure_internal_listener():
     return None
 
 
+def _ensure_node_listener():
+    """Bind the optional node-ONLY public door (SWG_PANEL_NODE_PORT / _NODE_HOST), reusing the primary's cert.
+
+    Purely additive: the primary keeps serving everything it serves today, so a fleet dialling the old
+    address is unaffected. What this buys is a SECOND address that answers only node routes — which is what
+    lets an operator restrict, move or hide the console without touching a single node.
+
+    Never fatal. A port that is already held is a misconfiguration to report, not a reason to take the panel
+    (and with it the whole fleet's control plane) down."""
+    global _NODE_LID
+    if not NODE_PORT or _NODE_LID is not None:
+        return
+    cert = TLS_CERT if (TLS_CERT and TLS_KEY) else None
+    key = TLS_KEY if (TLS_CERT and TLS_KEY) else None
+    try:
+        _NODE_LID = LISTENERS.add(NODE_HOST, NODE_PORT, cert, key, role="node")
+    except OSError as e:
+        print("node door: could not bind %s:%d (%s) — the primary still serves nodes, so nothing is orphaned"
+              % (NODE_HOST, NODE_PORT, e), flush=True)
+        return
+    print("node-only door on %s://%s:%d (serves node routes, 404s everything else)"
+          % ("https" if cert else "http", NODE_HOST, NODE_PORT), flush=True)
+
+
 def _panel_local_port():
     """The port a CO-LOCATED node dials on 127.0.0.1 with PLAIN HTTP — loopback carries no adversary, so the internal
     interface never uses TLS. The DEDICATED stable internal listener's port when one is bound; in DOCKER the stable
@@ -3133,6 +3225,24 @@ def _clean_endpoint(inc, cur, default_port):
     return {"url": (str(pick("url", "") or "")).strip()[:300], "base": base, "host": host, "port": port}
 
 
+def _clean_console(block):
+    """Sanitize an `access.console` block to exactly {mode, host, port}. mode is "" (Same address) or "own";
+    anything else, or an un-bindable host, degrades to "" — the safe direction, because "" is the state in
+    which the public listener serves the console and nobody can be locked out."""
+    b = block if isinstance(block, dict) else {}
+    mode = (str(b.get("mode") or "")).strip().lower()
+    host = (str(b.get("host") or "127.0.0.1")).strip()[:120] or "127.0.0.1"
+    try:
+        port = max(0, min(65535, int(b.get("port") or 0)))
+    except (TypeError, ValueError):
+        port = 0
+    if not _is_ip(host):
+        host, mode = "127.0.0.1", ""
+    if mode != "own" or not port:
+        mode = ""
+    return {"mode": mode, "host": host, "port": port}
+
+
 def _dns_resolves(host):
     """True if `host` has a DNS record, False if it definitively doesn't (NXDOMAIN), None if unknown (a slow/hung
     resolver — we time out at 2s so a settings save can NEVER stall on DNS, and stay silent rather than false-warn)."""
@@ -3175,6 +3285,14 @@ def validate_access(incoming, current):
         return "" if v == "-" else v[:400]
     tls = {"mode": mode, "email": email,
            "cf_token": _secret("cf_token"), "cf_origin_token": _secret("cf_origin_token")}
+
+    # The console block is carried through from the stored value and an INCOMING one is ignored — always,
+    # including from the API. It records a console address that was proved reachable, not a preference: a
+    # settings write could otherwise persist `own` on an address nobody can open, and the next restart
+    # would bind it and drop the public door to role="node" with no confirm in between — the lockout this
+    # whole task exists to prevent, reached through the one door that has no reachability proof at all.
+    # /api/access/console-apply → /api/access/console-confirm is the only writer. D24.
+    console = _clean_console(cur.get("console"))
 
     # ── cross-field rules ──
     # Reject an out-of-range port up front (before the clamp in _clean_endpoint can hide it): _clean_endpoint pins the
@@ -3258,7 +3376,7 @@ def validate_access(incoming, current):
             warnings.append("%s: the domain %s has no DNS record — check the URL and its DNS, or the new address "
                             "won't be reachable." % (name, _h))
 
-    return {"panel": panel, "sub": sub, "tls": tls}, errors, warnings
+    return {"panel": panel, "sub": sub, "tls": tls, "console": console}, errors, warnings
 
 
 def _access_public_view(deps):
@@ -3275,6 +3393,14 @@ def _access_public_view(deps):
     else:
         panel.pop("local_port", None)
     return {"panel": panel, "sub": acc.get("sub") or {},
+            "console": _clean_console(acc.get("console")),   # {mode,host,port} — no secret in it, so it goes out whole
+            # Where this deployment WIRED a console port, the operator has no choice of address to make
+            # (docker published it; the Nix module opened it) — so the UI must state the address rather
+            # than offer fields that cannot move it. Absent = bare metal, where they pick freely.
+            "console_wired": (lambda w: {"host": w[2], "port": w[1]} if w else None)(_console_wired()),
+            # …and on docker with no wired port the preset is refusable up front, so the UI can say why
+            # instead of letting the operator fill in a form that will be turned down.
+            "console_docker_unwired": bool(IN_DOCKER and not CONSOLE_PORT),
             "tls": {"mode": tls.get("mode") or "", "email": tls.get("email") or "",
                     "has_cf_token": bool(tls.get("cf_token")),
                     "has_cf_origin_token": bool(tls.get("cf_origin_token"))}}
@@ -3502,6 +3628,182 @@ NODE_SIG_WINDOW = max(30, int(os.environ.get("SWG_PANEL_SIG_WINDOW", "300") or 3
 REQUIRE_NODE_SIG = os.environ.get("SWG_PANEL_REQUIRE_SIG", "").strip().lower() in ("1", "true", "yes", "on")
 _NODE_SIG_SEEN = {}                    # mac -> expiry epoch; a mac seen twice inside the window is a replay
 _NODE_SIG_LOCK = threading.Lock()
+
+
+
+# ───────────────────────── brute-force back-pressure ─────────────────────────
+# The panel answered bad logins as fast as it could parse them — measured at ~12/s with no throttle of
+# any kind. Against the password that is survivable; against the SECOND FACTOR it is not.
+# totp_verify(..., window=1) accepts 3 codes out of 10**6 at any moment, so 12/s is a break in HOURS.
+#
+# ⚠️ THIS IS NOT PER-IP, and that is a decision, not an omission (plan D27). This panel is usually
+# reached through a reverse proxy or Cloudflare, where every request carries the PROXY's address — so a
+# per-IP bucket is one bucket for everybody, and one attacker would lock the operator out of their own
+# panel and make the node routes look like a fleet outage. Trusting X-Forwarded-For instead just hands
+# the attacker the key: rotate the header, get unlimited attempts. And there is exactly ONE operator
+# account, so for /api/login the account already IS the bucket.
+#
+# ⚠️ THE INVARIANT: back-pressure applies to the FAILURE path only. The credential is checked first and
+# a caller holding a good one is served no matter what these counters say — so a node with a working
+# token can never be delayed, refused or stranded by anything here. That is the whole reason it is safe
+# to put in front of the fleet's own door.
+#
+# Consequence, stated so nobody "fixes" it later: this is brute-force back-pressure, NOT a DoS defence.
+# Verifying before throttling means an attacker can still make the panel do the work. Refusing BEFORE
+# the check is what would blunt that, and it is exactly the thing that can refuse a valid caller.
+#
+# The buckets are a fixed, named set — nothing keyed on anything a caller controls, so there is nothing
+# here to exhaust.
+AUTH_FAIL_FREE   = 5      # failures on a bucket before back-pressure starts at all
+AUTH_FAIL_DELAY  = 0.4    # seconds added to the first throttled attempt; doubles per failure after it
+AUTH_FAIL_MAX    = 4.0    # ...capped here. A cap is the point: the real operator who mistyped waits, never locks out
+AUTH_FAIL_WINDOW = 900    # a bucket idle this long is forgotten, so yesterday's typo costs nothing today
+TWOFA_FAIL_MAX   = 10     # HARD cap on wrong TOTP codes in the window — 6 digits is brute-forceable, and nobody
+                          # holding the authenticator needs eleven tries. Recovery codes (50-bit) are exempt.
+_AUTH_FAILS = {}                      # bucket -> [count, last_failure_ts]
+_AUTH_FAILS_LOCK = threading.Lock()
+
+
+def _authfail_state(bucket):
+    """(count, seconds_since_last) for `bucket`, forgetting anything older than the window."""
+    with _AUTH_FAILS_LOCK:
+        n, at = _AUTH_FAILS.get(bucket, (0, 0.0))
+        if n and (time.time() - at) > AUTH_FAIL_WINDOW:
+            _AUTH_FAILS.pop(bucket, None)
+            return 0, 0.0
+        return n, (time.time() - at if at else 0.0)
+
+
+def _authfail_note(bucket):
+    """Record one failed attempt. Returns the new count."""
+    with _AUTH_FAILS_LOCK:
+        n, at = _AUTH_FAILS.get(bucket, (0, 0.0))
+        if n and (time.time() - at) > AUTH_FAIL_WINDOW:
+            n = 0
+        n += 1
+        _AUTH_FAILS[bucket] = (n, time.time())
+        return n
+
+
+def _authfail_clear(bucket):
+    """A success wipes the bucket — the operator who mistyped once then got it right pays nothing."""
+    with _AUTH_FAILS_LOCK:
+        _AUTH_FAILS.pop(bucket, None)
+
+
+def _authfail_delay(bucket):
+    """Seconds to hold an attempt on `bucket` before answering. 0 until AUTH_FAIL_FREE failures, then
+    exponential to AUTH_FAIL_MAX. A DELAY, never a refusal: at the cap a brute-forcer gets a quarter of
+    an attempt per second and the operator who fat-fingered their password waits four seconds."""
+    n, _ = _authfail_state(bucket)
+    if n < AUTH_FAIL_FREE:
+        return 0.0
+    return min(AUTH_FAIL_MAX, AUTH_FAIL_DELAY * (2 ** (n - AUTH_FAIL_FREE)))
+
+
+def _twofa_locked():
+    """(locked, seconds_left) for the second factor. The ONE hard stop in here, because a 6-digit code
+    is the only credential this panel holds that brute force actually reaches — and unlike the password
+    it has an escape hatch that is exempt from this: a recovery code."""
+    n, since = _authfail_state("2fa")
+    if n < TWOFA_FAIL_MAX:
+        return False, 0
+    return True, max(1, int(AUTH_FAIL_WINDOW - since))
+
+
+# ───────────────────────── door policy: what a listener may serve ─────────────────────────
+# The panel has ONE surface and TWO audiences — the operator console and the fleet — so binding it
+# somewhere private orphans every node. A listener therefore carries a ROLE:
+#
+#   "full"  the panel as it has always been. The default everywhere, so this is opt-in and changes
+#           nothing until an operator asks for it.
+#   "node"  serves ONLY what a node dials, and 404s the rest. The console can then move to its own
+#           address or its own path WITHOUT the fleet moving.
+#
+# Which audience moves is not a toss-up: an operator locked out of their console recovers on the box,
+# a stranded fleet does not recover at all. So the console moves and the node door stays put.
+#
+# ⚠️ The allow-list is EXPLICIT and never `path.startswith("/api/node/")`. That prefix test is wrong
+# twice over: it would admit three OPERATOR routes (/api/node/{update,proc-clear,routing-reset}, which
+# live in api() behind _require_auth and only LOOK node-facing), and it would drop /healthz, which
+# install-node.sh probes to auto-detect the panel's TLS posture during enrollment.
+#
+# It is also not hand-copied: _assert_node_door() derives the real dispatch table from do_GET/do_POST
+# at startup and refuses to boot if the two have drifted. A node route added to the dispatch and not
+# to this list would 404 for the whole fleet — silently, and only for operators who turned the console
+# split on, which is precisely the bug class this file has been burned by before.
+NODE_DOOR_GET = frozenset({"/api/node/whoami", "/api/node/list", "/api/node/turn-binary", "/healthz"})
+NODE_DOOR_POST = frozenset({"/api/node/sync", "/api/node/goodbye", "/api/node/proc-status",
+                            "/api/node/rename", "/api/node/c"})
+# Entries that are legitimately in the lists above but are NOT `/api/node/*` literals in the dispatch:
+#   /healthz     real and dispatched, just not under the /api/node/ prefix.
+#   /api/node/c  RESERVED for the encrypted channel; nothing dispatches it yet, so it simply 404s.
+#                Naming it now keeps the door policy and the channel work independent of each other.
+_NODE_DOOR_RESERVED = frozenset({"/healthz", "/api/node/c"})
+
+
+def _door_ok(method, path):
+    """May the listener this request arrived on serve `path`?
+
+    The console split is DERIVED here, not carried on the listener. While a console listener is live,
+    every listener that is not the console, the internal loopback, or the dedicated node door IS a node
+    door — including one bound *after* the split was made.
+
+    That last clause is the whole reason this is a derivation. The door policy used to be a `role` field
+    set on the primary when the console moved off it; but an address change does not move a listener, it
+    BINDS A NEW ONE — at four sites, none of which passes a role — and then serves the whole console
+    there, on the address the fleet dials. A fifth site added later would forget in exactly the same way,
+    silently, and only for operators who turned the split on. Deriving makes every listener correct by
+    construction instead of by remembering. (T-R5; the reproduction and the four sites are in plan D26.)
+
+    ⚠️ _CONSOLE["lid"] ONLY — never _CONSOLE["pending"]. While a console change is unconfirmed every door
+    must keep serving the console, because the tab driving it needs /api/access/status and
+    /api/access/console-cancel to stay alive. Deriving from `pending` would reintroduce precisely the
+    lockout window D24 removed by moving the flip to the confirm.
+
+    ⚠️ _INTERNAL_LID is exempt on purpose: it is loopback-only, it is the co-located node's stable
+    endpoint, and it is the last-resort door for an operator who can no longer reach the console. It is
+    also what a reverse-proxy→direct-TLS flip promotes the OLD PRIMARY into (_keep_internal) — which
+    under the old stored-role scheme handed it a role="node" it was never meant to have.
+
+    _NODE_LID keeps its own explicit role="node": it is a node door whether or not a console split
+    exists, so that decision is its own and this derivation must not make it."""
+    if getattr(_REQ, "listener_role", "full") == "node":       # an explicitly-declared node door (_NODE_LID)
+        return path in (NODE_DOOR_GET if method == "GET" else NODE_DOOR_POST)
+    if _CONSOLE["lid"] is not None and getattr(_REQ, "listener_id", None) not in (_CONSOLE["lid"], _INTERNAL_LID):
+        return path in (NODE_DOOR_GET if method == "GET" else NODE_DOOR_POST)
+    return True
+
+
+def _assert_node_door():
+    """Refuse to start if the node-door allow-list and the real dispatch table have drifted apart.
+
+    The derivation is the point. EVERY `/api/node/*` literal in do_GET/do_POST is a node-token route —
+    the operator ones are in api(), behind session auth — so the dispatch table can be read straight
+    out of the handler source instead of being maintained by hand in two places."""
+    for meth, allowed, name in ((Handler.do_GET, NODE_DOOR_GET, "NODE_DOOR_GET"),
+                                (Handler.do_POST, NODE_DOOR_POST, "NODE_DOOR_POST")):
+        try:
+            src = inspect.getsource(meth)
+        except (OSError, TypeError):
+            return                       # frozen / no source (never true for this file, but never fatal either)
+        # Both dispatch forms: `if path == "/api/node/x":` and `if path in ("/api/node/x", ...):`. The tuple
+        # form appeared with /api/access/console-confirm (which shares /api/access/confirm's nonce plumbing),
+        # and a derivation that only knew the first would read a node route dispatched that way as ABSENT —
+        # then refuse to boot calling it a stray list entry, or, worse, miss it and 404 it for the fleet.
+        dispatched = set(re.findall(r'path == "(/api/node/[a-z0-9-]+)"', src))
+        for grp in re.findall(r'path in \(([^)]*)\)', src):
+            dispatched |= set(re.findall(r'"(/api/node/[a-z0-9-]+)"', grp))
+        missing = dispatched - allowed
+        if missing:
+            raise SystemExit("refusing to start: node route(s) %s are dispatched in %s but absent from %s. "
+                             "A node-role listener would 404 them for the whole fleet. Add them to %s."
+                             % (", ".join(sorted(missing)), meth.__name__, name, name))
+        stray = allowed - dispatched - _NODE_DOOR_RESERVED
+        if stray:
+            raise SystemExit("refusing to start: %s allows %s, which %s does not dispatch. Either the route "
+                             "moved (fix the list) or it is deliberate (add it to _NODE_DOOR_RESERVED)."
+                             % (name, ", ".join(sorted(stray)), meth.__name__))
 
 
 def _verify_node_sig(token_sha, ts, mac, body):
@@ -6886,6 +7188,14 @@ PANEL_SETTINGS_DEFAULTS = {
         "panel": {"url": "", "base": "/", "host": "0.0.0.0", "port": 443},
         "sub":   {"url": "", "base": "/", "host": "0.0.0.0", "port": 8444},
         "tls":   {"mode": "", "email": "", "cf_token": "", "cf_origin_token": ""},
+        # PRIVATE PANEL ACCESS, independently of where the fleet is served. mode "" (the default) is one
+        # door, exactly as it has always been. mode "own" binds a SECOND listener — on LOOPBACK, reached
+        # through an SSH tunnel (D28) — and drops the public one to role="node" (see NODE_DOOR_GET), so
+        # the address the fleet dials answers node routes and 404s everything else.
+        # This block is NOT an editable setting — validate_access ignores an incoming value and carries
+        # the stored one through. /api/access/console-confirm is its only writer, and it writes only a
+        # console address a browser has PROVED it can reach (see _console_apply). D24.
+        "console": {"mode": "", "host": "127.0.0.1", "port": 0},
     },
 }
 
@@ -8784,7 +9094,7 @@ def api(method, path, qs, body, deps):
             if PANEL_DECLARATIVE and _acc_decl_sig(_acc_clean) != _acc_decl_sig(cur.get("access")):
                 return _declarative_access_refusal(deps)
             with _APPLY["lock"]:
-                _acc_pending = _APPLY["pending"] is not None
+                _acc_pending = _APPLY["pending"] is not None or _CONSOLE["pending"] is not None
             if _acc_pending and _acc_addr_sig(_acc_clean) != _acc_addr_sig(cur.get("access")):
                 return 409, {"ok": False, "code": "cooldown",
                              "error": "an address change is still waiting to be confirmed — confirm it on the new "
@@ -8832,9 +9142,15 @@ def api(method, path, qs, body, deps):
                 _dp = _APPLY["pending"] or {}
             _pstat = dict(_pstat)
             _pstat["arm_secs"] = max(0, int(_dp.get("arm_at") or 0) - int(time.time()))
+        _cstat = _CONSOLE["status"]
+        with _APPLY["lock"]:
+            _cpend = _CONSOLE["pending"]
+        if _cpend is not None:                             # live remaining seconds on the confirm window, recomputed
+            _cstat = dict(_cstat)                          # each poll so the countdown is immune to browser clock skew
+            _cstat["expires_secs"] = max(0, int(_cpend.get("deadline") or 0) - int(time.time()))
         _cd = _access_cooldown()
         return 200, {"ok": True, "panel": _pstat, "sub": _SUBAPPLY["status"],
-                     "pending": bool(_APPLY["pending"]),
+                     "pending": bool(_APPLY["pending"]), "console": _cstat,
                      "cooldown": {"secs": _cd[0], "reason": _cd[1]}}
 
     if method == "POST" and path == "/api/access/apply":
@@ -8869,6 +9185,8 @@ def api(method, path, qs, body, deps):
             return 409, {"ok": False, "code": "cooldown", "cooldown_secs": _cd_secs, "reason": _cd_reason,
                          **(perr("a change is still waiting to be confirmed — confirm it on the new address, cancel it, or wait for it to revert")
                             if _cd_reason == "verifying" else
+                            perr("a console address change is still waiting to be confirmed — finish or cancel that first")
+                            if _cd_reason == "console" else
                             perr("the previous change is still settling ({v1}s) — you can only cancel until it finishes", v1=_cd_secs))}
         mode = (acc.get("tls") or {}).get("mode") or ""
         # a cert is needed only when we currently HAVE TLS and either the domain changed (current cert doesn't
@@ -9263,6 +9581,135 @@ def api(method, path, qs, body, deps):
         if r is not None:
             return r
         return 400, {"ok": False, "error": "the previous address is no longer serving — can't cancel instantly", "code": "not_cancelable"}
+
+    if method == "POST" and path == "/api/access/console-apply":
+        # Move the OPERATOR CONSOLE to its own address (or bring it back to the panel's own). Its own
+        # state machine — see _CONSOLE and plan D24 for why it is not a `kind` on the apply pipeline.
+        if PANEL_DECLARATIVE:
+            return _declarative_access_refusal(deps)
+        want = _clean_console(body)
+        _cd_secs, _cd_reason = _access_cooldown()
+        if _cd_secs > 0:
+            return 409, {"ok": False, "code": "cooldown", "cooldown_secs": _cd_secs, "reason": _cd_reason,
+                         **perr("a change is still waiting to be confirmed — finish or cancel it first")}
+        _lid, srv = LISTENERS.primary()
+        if srv is None:
+            return 500, {"ok": False, "error": "no primary listener", "code": "internal"}
+        if want["mode"] != "own":
+            # Back to Same address. NO confirm: this can only ever RESTORE access — it hands the console
+            # back to the listener the fleet already reaches. The one cost is that a browser sitting ON
+            # the console address loses it, so we say where the console went.
+            with _APPLY["lock"]:
+                _console_teardown(deps)
+            _console_status("saved", "the console is served on the panel's own address again")
+            return 200, {"ok": True, "applied": True, "mode": "",
+                         "panel_url": _compute_public_url(deps) or ""}
+        # ── Own address ──────────────────────────────────────────────────────────────────────────────
+        cur_c = _clean_console(((deps.get("panel_settings") or {}).get("access") or {}).get("console"))
+        wired = _console_wired()
+        if wired is not None:
+            # The deployment wired a console port (docker publishes it; the Nix module opens it), so THAT
+            # is the only one that can be reached and a submitted host/port is ignored — the SPA doesn't
+            # offer the fields at all. What is left here is genuinely a toggle.
+            bind_host, port, reach_host = wired
+        elif IN_DOCKER:
+            # A listener on an unpublished container port is unreachable from the host, and publishing one
+            # is a compose change. Say exactly that, and name the remedy this project already documents
+            # for a compose that predates a feature — rather than binding something nothing can open.
+            return 409, {"ok": False, "code": "console_not_published",
+                         **perr("this panel's container doesn't publish a console port, so a console bound inside it would be unreachable. Re-run the Docker installer to restage docker-compose.yml (it adds the port), then try again.")}
+        else:
+            # ⚠️ BARE METAL IS LOOPBACK, and a submitted host is ignored — the same shape a wired
+            # deployment already uses. Private access IS the SSH-tunnel arrangement (D28): binding a
+            # public address is what produced a door the panel could not put a valid certificate on,
+            # an address the UI could not name (a 0.0.0.0 bind has no hostname), and a firewall the
+            # operator had to remember. An operator who wants it reachable fronts 127.0.0.1 with their
+            # own reverse proxy, where the certificate is theirs and already correct.
+            bind_host, port, reach_host = "127.0.0.1", want["port"], "127.0.0.1"
+            _pm = srv._swg
+            _same = lambda a, b: a == b or "0.0.0.0" in (a, b) or "::" in (a, b)
+            if _same(bind_host, _pm["host"]) and port == int(_pm["port"] or 0):
+                return 400, {"ok": False, "code": "bad_request",
+                             **perr("the panel already listens on port {v1} — pick a different, free port for the tunnel", v1=port)}
+            _sub = ((deps.get("panel_settings") or {}).get("access") or {}).get("sub") or {}
+            if port == int(_sub.get("port") or 0) and _same(bind_host, str(_sub.get("host") or "0.0.0.0")):
+                return 400, {"ok": False, "code": "bad_request",
+                             **perr("port {v1} is the subscription server's — pick a different, free port for the console", v1=port)}
+            if LOCAL_PORT and port == LOCAL_PORT:
+                return 400, {"ok": False, "code": "bad_request",
+                             **perr("port {v1} is this box's own node loopback endpoint — pick a different, free port for the console", v1=port)}
+        cert, key = _console_scheme_cert(reach_host)
+        with _APPLY["lock"]:
+            if _APPLY["pending"] is not None or _CONSOLE["pending"] is not None:
+                return 409, {"ok": False, "error": "an address change is already pending", "code": "busy"}
+            # BIND FIRST, FLIP SECOND — a failed bind must never leave a node-only primary (see
+            # _ensure_console_listener). Until the flip below, nothing about the live panel has changed.
+            try:
+                new_lid = LISTENERS.add(bind_host, port, cert, key)
+            except OSError as e:
+                return 400, {"ok": False, "code": "bind_failed",
+                             **perr("couldn't bind {v1} — {v2}", v1="%s:%d" % (bind_host, port), v2=e)}
+            nonce = secrets.token_hex(12)
+            deadline = int(time.time()) + APPLY_TIMEOUT
+            # `host` is what the panel BINDS (and what _ensure_console_listener re-binds); `reach` is where
+            # the operator opens it. They differ on docker and nowhere else — the confirm redirect and the
+            # certificate decision both follow `reach`, never `host`.
+            _CONSOLE["pending"] = {"nonce": nonce, "lid": new_lid, "host": bind_host, "port": port,
+                                   "reach": reach_host, "https": bool(cert), "deadline": deadline,
+                                   "prev": cur_c, "prev_lid": _CONSOLE["lid"]}
+        # NOTHING ELSE CHANGES HERE. The primary keeps role="full" and both doors now serve the console;
+        # the flip waits for the confirm, which is proof the operator is holding the new one. Flipping
+        # here instead would 404 this very tab's /api/access/status and /api/access/console-cancel — it
+        # would disable the escape hatch the timer below exists to be. See plan D24.
+        threading.Timer(APPLY_TIMEOUT + 1, _console_timeout, args=(nonce, deps)).start()
+        _console_status("verifying", "open the new console address to confirm it", nonce=nonce,
+                        host=reach_host, port=port, https=bool(cert),
+                        base=(PANEL_BASE or ""), expires=deadline)
+        # The SPA builds the URL: only the browser knows the hostname it actually reached this panel on,
+        # which is the one thing a 0.0.0.0 console bind cannot tell us.
+        return 200, {"ok": True, "applied": False, "nonce": nonce, "host": reach_host, "port": port,
+                     "scheme": ("https" if cert else "http"), "base": PANEL_BASE or "", "expires": deadline}
+
+    if method == "POST" and path == "/api/access/console-confirm":
+        # The proof, and the ONLY one this machine takes: the operator's browser landed on the new console
+        # listener. Nonce-authorized (see do_POST) so it works on an origin their session cookie can't cover.
+        nonce = (str(body.get("nonce") or "")).strip()
+        here = getattr(_REQ, "listener_id", None)
+        with _APPLY["lock"]:
+            pend = _CONSOLE["pending"]
+            if not pend or not nonce or not hmac.compare_digest(pend["nonce"], nonce):
+                return 400, {"ok": False, "error": "no matching pending console change", "code": "bad_request"}
+            if here != pend["lid"]:
+                return 400, {"ok": False, "error": "confirm must be made on the new console address",
+                             "code": "wrong_listener"}
+            _CONSOLE["pending"] = None
+            _CONSOLE["lid"] = pend["lid"]
+            _prev_lid = pend.get("prev_lid")
+            if _prev_lid is not None and _prev_lid != pend["lid"]:
+                with contextlib.suppress(Exception):
+                    LISTENERS.remove(_prev_lid)      # own→own: the console we just moved off
+            # THE FLIP happened four lines up: setting _CONSOLE["lid"] IS the flip, because every door's
+            # policy is derived from it (see _door_ok). It runs on proof — this request arrived on the
+            # console listener, so the operator's browser is demonstrably holding the new console right
+            # now. Nothing between the apply and here could lock anyone out, because until that
+            # assignment the panel's own address was still serving the console too.
+        _reach = pend.get("reach") or pend["host"]     # where the operator opens it; pend["host"] is the bind
+        _console_save(deps, {"mode": "own", "host": pend["host"], "port": pend["port"]})
+        _console_status("saved", "the console is served on %s:%d" % (_reach, pend["port"]),
+                        host=_reach, port=pend["port"], https=pend.get("https"))
+        print("console: confirmed on %s:%d — the panel's own address serves node routes only"
+              % (_reach, pend["port"]), flush=True)
+        return 200, {"ok": True, "saved": True}      # `saved` is what mints the session on this origin (see do_POST)
+
+    if method == "POST" and path == "/api/access/console-cancel":
+        # Back out a console change that hasn't been confirmed — the same road the timer takes, one step early.
+        with _APPLY["lock"]:
+            pend = _CONSOLE["pending"]
+            if pend is None:
+                return 400, {"ok": False, "error": "no console change to cancel", "code": "bad_request"}
+            _CONSOLE["pending"] = None
+            _console_revert(deps, pend, "console change cancelled")
+        return 200, {"ok": True, "applied": True, "message": "cancelled"}
 
     if method == "POST" and path == "/api/access/confirm-proxy":
         # Drop the OLD port on a PURE port change (no public-url change). The internal port isn't browser-reachable, so
@@ -12808,6 +13255,12 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {}}
 
     if method == "POST" and path == "/api/update/check":
+        # ⚠️ ALSO DROP THE CHANGELOG CACHE. _check_latest_remote refreshes the version and the update
+        # bubble's notes, but _changelog_entries keeps its OWN ~1h per-language cache — so a changelog
+        # that was published wrong and then corrected stayed wrong in the version browser for up to an
+        # hour with no way to hurry it. This is the operator saying "go and look again"; honour that for
+        # everything the header can show, not just the version.
+        _CHANGELOG_CACHE.clear()
         reached = _check_latest_remote()             # synchronous one-off poll (for the header "check" icon)
         return 200, {"ok": True, "data": {
             "checked": reached,                      # did we actually reach the repo this time?
@@ -12860,8 +13313,17 @@ def api(method, path, qs, body, deps):
                             _c["proc_status"] = {"state": "updating", "at": int(time.time())}; _hit = True
                     if _hit:
                         nodes_save(deps["nodes_path"], nodes)
+                # FAN OUT. Updating the panel means updating the deployment — a fleet left on the old
+                # version is the split the release matrix exists to catch. _cascade_node_updates picks
+                # only the nodes that can actually take it (see its docstring for every skip reason);
+                # the co-located node is deliberately NOT among them, since update.sh does it already.
+                _casc = {"started": [], "skipped": {}}
+                with contextlib.suppress(Exception):
+                    _casc = _cascade_node_updates(deps, nodes, roster_path)
+                    if _casc["started"]:
+                        nodes_save(deps["nodes_path"], nodes)
                 ev_append(roster_path, "node", "host", "Host update started", "")
-                return 200, {"ok": True, "data": {"started": True}}
+                return 200, {"ok": True, "data": {"started": True, "nodes": _casc}}
             except Exception as e:
                 return 500, {"ok": False, **perr("couldn't signal the updater: {v1}", v1=e), "code": "exec_failed"}
         # A declaratively-managed host is not "not set up" and is not Docker's problem either: updating it
@@ -13423,6 +13885,10 @@ class Handler(BaseHTTPRequestHandler):
                 s = ext_summary(self.deps)
                 return self._send(200, {"status": "ok", "version": s["version"], "nodes": s["nodes"], "peers": s["peers"]})
             if not self._ext_authed(u):
+                _authfail_note("api")                 # same shape as the node door: the token was already
+                _d = _authfail_delay("api")           # resolved, so a valid integration is never delayed
+                if _d:
+                    time.sleep(_d)
                 return self._send(401, {"error": "unauthorized",
                                         "detail": "send a read-only API token as 'Authorization: Bearer <token>' "
                                                   "(mint one in Settings → Integrations, then enable the API)"})
@@ -13617,18 +14083,44 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "data": {"auth": False}})
         user = (body.get("username") or "").strip()
         pw = body.get("password") or ""
+        # Hold a throttled attempt BEFORE the pbkdf2, not after: the delay is the whole mechanism, and
+        # doing it here also stops a brute-forcer spending the panel's CPU as fast as it can connect.
+        # It is a delay and nothing else — the credential below is still checked, and a correct one is
+        # still accepted, so this can never lock the operator out of their own panel (D27).
+        _d = _authfail_delay("login")
+        if _d:
+            time.sleep(_d)
         if not (hmac.compare_digest(user, creds[0]) and verify_password(creds[1], pw)):
+            _authfail_note("login")
             return self._send(401, {"ok": False, "error": "invalid username or password", "code": "bad_login"})
+        _authfail_clear("login")                              # the password was right — forget the typos
         tf = load_2fa(Handler.deps.get("twofa_path"))
         if tf.get("enabled"):                                 # password OK — now the second factor
             code = (body.get("code") or "").strip()
             if not code:                                      # first submit → tell the SPA to ask for a code
                 return self._send(200, {"ok": False, "twofa_required": True})
-            ok2 = totp_verify(tf.get("secret", ""), code)
-            if not ok2 and recovery_consume(tf, code):        # a single-use recovery code
-                save_2fa(Handler.deps["twofa_path"], tf); ok2 = True
-            if not ok2:
-                return self._send(200, {"ok": False, "twofa_required": True, "error": "that code isn't valid"})
+            # RECOVERY CODES FIRST, and deliberately outside the cap below. They are 50-bit, so brute
+            # force is irrelevant — and keeping them exempt is what stops the cap from becoming a
+            # permanent lockout an attacker could arm on purpose by failing codes. (A recovery code can
+            # never be mistaken for a TOTP: totp_verify requires exactly six digits, these are base32.)
+            if recovery_consume(tf, code):                     # a single-use recovery code
+                save_2fa(Handler.deps["twofa_path"], tf)
+                _authfail_clear("2fa")
+            else:
+                # THE ONE HARD STOP. 6 digits with a ±1 step window is 3 codes in a million; at the rate
+                # this panel used to answer, that is a break in hours. Nobody holding the authenticator
+                # needs eleven tries, so the cap costs a legitimate operator nothing — and the sentence
+                # names the way back in, because a locked-out operator reading it has one.
+                _locked, _left = _twofa_locked()
+                if _locked:
+                    return self._send(429, {"ok": False, "twofa_required": True, "code": "twofa_throttled",
+                                            "retry_after": _left,
+                                            **perr("too many wrong codes — wait {v1} minutes, or sign in with one of your recovery codes",
+                                                   v1=max(1, _left // 60))})
+                if not totp_verify(tf.get("secret", ""), code):
+                    _authfail_note("2fa")
+                    return self._send(200, {"ok": False, "twofa_required": True, "error": "that code isn't valid"})
+                _authfail_clear("2fa")
         tok = make_session(creds[0], Handler.deps.get("session_secret"))
         data = {"username": creds[0]}
         # swg-passwd reset the Encryption Vault (its old-password wrap is gone) → tell the SPA to re-create it under
@@ -13671,6 +14163,14 @@ class Handler(BaseHTTPRequestHandler):
         nodes = nodes_load(Handler.deps["nodes_path"])
         nid, node = find_node_by_token(nodes, token)
         if not nid:
+            # ⚠️ THE ORDER IS THE SAFETY. The token is resolved FIRST and the delay is on this branch
+            # only, so a node holding a working token is NEVER held up — whatever anyone else is doing
+            # to this door. Throttling ahead of the lookup would be a rate limiter that can strand a
+            # fleet, which is the one thing this project will not trade for (D27).
+            _authfail_note("node")
+            _d = _authfail_delay("node")
+            if _d:
+                time.sleep(_d)
             self._send(401, {"error": "invalid node token"}); return None, None, None
         if token and not node.get("token_sha"):        # one-time upgrade of a legacy node → fast-lookup index (H3)
             with contextlib.suppress(Exception):
@@ -14940,11 +15440,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         _REQ.listener_id = getattr(self.server, "listener_id", None)   # which listener → the Access-apply confirm gate
+        _REQ.listener_role = (getattr(self.server, "_swg", None) or {}).get("role") or "full"   # door policy
         _REQ.lang = self.headers.get("X-SWG-Lang") or ""                # the browser's UI language (changelog only)
         u = urlparse(self.path)
         path = strip_base(u.path)
         if path is None:
             return self.send_error(404)
+        # ⚠️ The door gate runs BEFORE static_rel, deliberately. SPA assets are served ahead of auth so the
+        # login page can load, so a role check placed after it would happily hand /app.js out of a node door
+        # and the whole feature would silently do nothing.
+        if not _door_ok("GET", path):
+            return self.send_error(404)    # 404, not 401: a closed door should not confirm what is behind it
         if static_rel(path) is not None:   # SPA assets are public so the login page can load
             return self._static(path)
         if path == "/api/node/whoami":     # node-token auth (not a session) — lets a re-installer identify a leftover token
@@ -14971,10 +15477,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         _REQ.listener_id = getattr(self.server, "listener_id", None)   # which listener → the Access-apply confirm gate
+        _REQ.listener_role = (getattr(self.server, "_swg", None) or {}).get("role") or "full"   # door policy
         _REQ.lang = self.headers.get("X-SWG-Lang") or ""                # the browser's UI language (changelog only)
         _REQ.http_host = (self.headers.get("Host") or "").strip()      # the public host this request arrived on (proxy passes Host $host) → confirm-url proof
         u = urlparse(self.path)
         path = strip_base(u.path)
+        if not _door_ok("POST", path):     # see do_GET — 404, and a base mismatch (path None) closes too
+            return self.send_error(404)
         if path == "/api/node/sync":
             try:
                 return self._node_sync()
@@ -14991,12 +15500,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._login()
         if path == "/api/logout":
             return self._logout()
-        if path == "/api/access/confirm":
+        if path in ("/api/access/confirm", "/api/access/console-confirm"):
             # Authorized by the one-time NONCE, not a session: the nonce came from an authenticated /api/access/apply
             # and proves the operator initiated this exact change. So they can confirm on the NEW address even if they
             # aren't logged in THERE (a domain change to a domain their session cookie doesn't cover) — which is what
             # otherwise made the confirm time out while they logged in. The handler still checks the nonce + that the
             # request arrived on the new listener; it can only commit the change the operator already set up.
+            # /api/access/console-confirm shares this plumbing and nothing else: the console door is a different
+            # ORIGIN (a different port, often a different IP), so a session cookie provably cannot reach it, and the
+            # session mint below is the difference between "confirmed" and "confirmed, then stared at a login form
+            # while the auto-revert ran out". The state machines stay separate — see _CONSOLE and plan D24.
             length = self._body_len()
             if length is None:
                 return
@@ -15128,14 +15641,16 @@ class _Listeners:
     at runtime so Access & TLS can dual-listen during an address change."""
     def __init__(self):
         self._lock = threading.Lock(); self._by_id = {}; self._seq = 0
-    def add(self, host, port, cert, key, primary=False):
+    def add(self, host, port, cert, key, primary=False, role="full"):
         srv = _TLSServer((host, port), Handler)        # binds here — raises OSError if the port is taken
         if cert and key:
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(cert, key); srv.ssl_ctx = ctx
         with self._lock:
             self._seq += 1; lid = self._seq
             srv.listener_id = lid
-            srv._swg = {"host": host, "port": port, "cert": cert, "key": key, "primary": primary}
+            # `role` is the door policy (see NODE_DOOR_GET / _door_ok): "full" is the whole panel,
+            # "node" serves only what a node dials. Default "full" — every existing caller is unchanged.
+            srv._swg = {"host": host, "port": port, "cert": cert, "key": key, "primary": primary, "role": role}
             self._by_id[lid] = srv
         threading.Thread(target=srv.serve_forever, name="listener-%d" % lid, daemon=True).start()
         return lid
@@ -15212,12 +15727,193 @@ def _access_cooldown():
     verifying (unconfirmed pending) OR a just-confirmed/cancelled migration is still gracing out."""
     with _APPLY["lock"]:
         pend = _APPLY["pending"]
+        cpend = _CONSOLE["pending"]
     if pend is not None:
         return (max(1, int(pend.get("deadline", 0)) - int(time.time())) or 1), "verifying"
+    # A console change is the OTHER address machine (D24). It shares this cooldown so an address apply
+    # can't move the primary out from under a console revert that is about to restore that primary's
+    # role — and so the SPA's existing Save lock covers both without a second mechanism.
+    if cpend is not None:
+        return (max(1, int(cpend.get("deadline", 0)) - int(time.time())) or 1), "console"
     left = int(_MIGRATION_LOCK.get("until", 0)) - int(time.time())
     if left > 0:
         return left, "migrating"
     return 0, ""
+
+
+# ── The operator console door ──────────────────────────────────────────────────────────────────────
+# A SECOND state machine, deliberately not a `kind` on _APPLY's. Everything _APPLY does — the
+# reachability gate, the node-migration grace, set_primary, the cert paths, the proxy/url confirm
+# variants — answers a question about THE ADDRESS NODES DIAL. The console bind is not that address, so
+# it asks none of them, and threading it through as a mode flag would have been ~15 branches through
+# ~484 lines of the most scarred code here to reuse ~22 of them. (Plan D24 carries the measurement.)
+#
+# What IS shared, and only this: _APPLY["lock"] guards both, so the two can never interleave; and
+# _access_cooldown() reports a console change, so an address apply refuses during one and vice-versa.
+#
+# _gate_reachable is the one piece that looks reusable and is not. It probes the PUBLIC url with the new
+# port — for a console on 127.0.0.1 that is meaningless, and for a console on 0.0.0.0:9443 it probes
+# https://<public-domain>:9443, which can answer for the wrong reason and "prove" a door the operator
+# still cannot open. The console machine has no gate: the browser LANDING on the new console address is
+# the proof, and it is the only proof it takes.
+_CONSOLE = {"pending": None, "lid": None,
+            "status": {"state": "idle", "message": "", "at": 0}}
+
+
+def _console_reach(bind_host):
+    """The address an operator opens for a console BOUND at `bind_host`. Identical everywhere except
+    docker, where the container binds 0.0.0.0 and the compose publish carries the host restriction."""
+    w = _console_wired()
+    return w[2] if (w is not None and bind_host in ("0.0.0.0", "::")) else bind_host
+
+
+def _console_wired():
+    """(bind_host, port, reach_host) when this deployment WIRES a console port, else None.
+
+    Docker publishes it and NixOS opens it; both decided reachability at deploy time and the panel
+    cannot change it, so where this returns a pair it is the only console address available. Bare metal
+    returns None and the operator picks freely — there, binding is the whole of reachability."""
+    if not CONSOLE_PORT:
+        return None
+    return ("0.0.0.0" if IN_DOCKER else CONSOLE_HOST), CONSOLE_PORT, CONSOLE_HOST
+
+
+def _console_target(deps):
+    """(bind_host, port, reach_host) the console door SHOULD be served on, or None for "same address".
+
+    On/off is `access.console.mode`, written by the confirm — with one exception: on a DECLARATIVE host
+    `SWG_DECLARATIVE=1` already means the UI can never write that block, so a wired port there is the
+    machine's configuration saying yes. That is why this needs no third env var."""
+    saved = _clean_console(((deps.get("panel_settings") or {}).get("access") or {}).get("console"))
+    wired = _console_wired()
+    if wired is not None:
+        return wired if (saved["mode"] == "own" or PANEL_DECLARATIVE) else None
+    # ⚠️ NO wiring, and this deployment is one whose reachability is decided outside the panel: the
+    # console is OFF, whatever the saved block says. Falling back to it would bind an unpublished
+    # container port (or one no firewall rule opens) and flip the primary to a node door for it — the
+    # lockout, arrived at by an operator removing CONSOLE_PORT from .env and recreating. "The wiring is
+    # gone" must not be able to run the branch that takes the console away.
+    if IN_DOCKER or PANEL_DECLARATIVE:
+        return None
+    # Bare metal: the panel's own bind IS the whole of reachability, so the saved pair is authoritative.
+    if saved["mode"] != "own" or not saved["port"]:
+        return None
+    return saved["host"], saved["port"], saved["host"]
+
+
+def _console_status(state, message="", **extra):
+    s = {"state": state, "message": message, "at": int(time.time())}
+    s.update(extra)
+    _CONSOLE["status"] = s
+
+
+def _console_scheme_cert(reach_host):
+    """(cert, key) for a console listener the operator REACHES at `reach_host` — the primary's, or None
+    when that address is loopback.
+
+    Loopback carries no adversary, so the console served there is plain HTTP, exactly as
+    _ensure_internal_listener argues for the co-located node's endpoint. It also makes the SSH-tunnel
+    case work without a certificate-name warning on https://127.0.0.1:<port>, which is the whole point
+    of offering 127.0.0.1 as a preset.
+
+    ⚠️ The REACHABLE address decides, never the bind. On docker the container binds 0.0.0.0 while the
+    publish is loopback-only, so binding-side reasoning would hand a public certificate to a door
+    nothing outside the box can open — and give the operator a name mismatch on 127.0.0.1 for it."""
+    if _is_loopback(reach_host):
+        return None, None
+    _lid, srv = LISTENERS.primary()
+    m = getattr(srv, "_swg", {}) if srv is not None else {}
+    return (m.get("cert") or None), (m.get("key") or None)
+
+
+def _console_save(deps, block):
+    """Persist access.console. The ONLY caller is the confirm (and the tear-down back to Same address,
+    which can only ever restore access). Never called from the settings save — see validate_access."""
+    with contextlib.suppress(Exception):
+        ps = deps.get("panel_settings") or {}
+        ps.setdefault("access", {})["console"] = _clean_console(block)
+        deps["panel_settings"] = ps
+        save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+
+
+def _console_teardown(deps, save=True):
+    """Back to Same address: the primary serves the console again and the console listener goes.
+
+    ORDER IS THE POINT — clear the lid first, drop the socket second. Between the two the console is
+    served by BOTH doors, which is a superset of access. The reverse order's in-between state is a panel
+    that 404s the SPA everywhere with no console listener left, i.e. the lockout. Caller holds
+    _APPLY["lock"]."""
+    lid = _CONSOLE["lid"]
+    _CONSOLE["lid"] = None
+    if lid is not None:
+        with contextlib.suppress(Exception):
+            LISTENERS.remove(lid)
+    if save:
+        _console_save(deps, {"mode": "", "host": "127.0.0.1", "port": 0})
+
+
+def _console_revert(deps, pend, reason):
+    """T-R3 — the auto-revert. Undo an unconfirmed console change: drop the listener the operator never
+    reached and put the door policy back where it was. Caller holds _APPLY["lock"].
+
+    ⚠️ It must restore the ROLE, not just the bind. Dropping the console listener while the primary is
+    still role="node" is the lockout with extra steps — the operator is locked out of an address that is
+    up and answering 404. So the role is restored FIRST, and only then is the unconfirmed bind removed."""
+    prev = pend.get("prev") or {}
+    prev_lid = pend.get("prev_lid")
+    prev_live = prev_lid is not None and LISTENERS.get(prev_lid) is not None
+    # Put the console back where it was — which restores the door policy too, because the policy is
+    # DERIVED from this one value (see _door_ok). Previously this had to assert a `role` back onto the
+    # primary and log when it had to repair a drift; a derivation cannot drift, so there is nothing to
+    # repair and nothing to assert. Still ordered lid-then-socket: the in-between state is every door
+    # serving the console, never none of them.
+    _CONSOLE["lid"] = prev_lid if prev_live else None
+    with contextlib.suppress(Exception):
+        LISTENERS.remove(pend["lid"])
+    # Nothing to roll back in settings: access.console is written on CONFIRM only, so an unconfirmed
+    # change never reached the file and a restart here comes back exactly where it started (D24).
+    _console_status("reverted", reason,
+                    back_to=("own" if prev_live else "same"),
+                    host=(_console_reach(prev.get("host")) if prev_live else ""),
+                    port=(prev.get("port") if prev_live else 0))
+    print("console: %s; the console is served on %s"
+          % (reason, ("%s:%s" % (_console_reach(prev.get("host")), prev.get("port"))) if prev_live
+             else "the panel's own address"), flush=True)
+
+
+def _console_timeout(nonce, deps, reason="the new console address wasn't confirmed in time"):
+    """Fires APPLY_TIMEOUT after a console change if the operator never landed on the new address."""
+    with _APPLY["lock"]:
+        pend = _CONSOLE["pending"]
+        if not pend or pend.get("nonce") != nonce:
+            return                       # already confirmed, cancelled, or superseded
+        _CONSOLE["pending"] = None
+        _console_revert(deps, pend, reason)
+
+
+def _ensure_console_listener(deps):
+    """Bind the console door at boot from access.console, and drop the public listener to role="node".
+
+    The value is only ever in the file because a browser reached it and confirmed (D24), so this needs no
+    reachability check of its own.
+
+    ⚠️ BIND FIRST, FLIP SECOND. A console bind that fails must never leave a node-only primary — that is
+    the lockout, arrived at by a port that a reboot happened to find occupied. On failure the panel keeps
+    serving the console where it always did and says so."""
+    tgt = _console_target(deps)
+    if tgt is None:
+        return
+    bind_host, port, reach_host = tgt
+    cert, key = _console_scheme_cert(reach_host)
+    try:
+        lid = LISTENERS.add(bind_host, port, cert, key)               # role="full" — this IS the console
+    except OSError as e:
+        print("console door: could not bind %s:%d (%s) — the panel keeps serving the console on its own "
+              "address, so nothing is locked out" % (bind_host, port, e), flush=True)
+        return
+    _CONSOLE["lid"] = lid          # BIND FIRST, FLIP SECOND — this assignment IS the flip (see _door_ok)
+    print("operator console on %s://%s:%d — the panel's own address now serves node routes only"
+          % ("https" if cert else "http", reach_host, port), flush=True)
 
 
 def _sighup_reload(_sig, _frm):
@@ -15419,6 +16115,18 @@ def _nix_access_snippet(deps):
     _sb = _sub_url_base(sub_url)
     if _sb:
         lines.append('  sub.basePath = "%s";' % _sb)
+    # ⚠️ THE OPTION THAT MOVED THE DOOR belongs here more than any other. Where a console port is wired,
+    # `port` above no longer serves the panel at all — it answers what a node dials and 404s the rest —
+    # so a block that lists `port` and omits this one describes a panel the operator cannot reach, while
+    # its own prose promises "what this panel is running right now". Found by reading the rendered
+    # screen on a declarative host with consolePort set: the word "console" appeared nowhere on it.
+    _cw = _console_wired()
+    if _cw:
+        _cbind, _cport, _creach = _cw
+        lines.append("  # the operator console is served here; `port` above answers node routes only")
+        lines.append("  consolePort = %d;" % _cport)
+        if _creach and _creach != "127.0.0.1":
+            lines.append('  consoleHost = "%s";' % _creach)
     lines.append("};")
     return "\n".join(lines)
 
@@ -16120,6 +16828,7 @@ def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "passwd":   # host-side password reset, never starts the server
         return passwd_cmd(sys.argv)
+    _assert_node_door()   # the node-door allow-list must still match the real dispatch table (see _assert_node_door)
     fleet = load_json(FLEET_PATH, None)
     if fleet is None:
         raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
@@ -16326,6 +17035,8 @@ def main():
     LISTENERS.add(BIND_HOST, BIND_PORT, TLS_CERT if scheme == "https" else None,
                   TLS_KEY if scheme == "https" else None, primary=True)
     _ensure_internal_listener()   # add a plain-HTTP 127.0.0.1:<LOCAL_PORT> endpoint for co-located nodes when the primary is its own TLS / a specific public IP
+    _ensure_node_listener()       # add a node-ONLY public door (SWG_PANEL_NODE_PORT), so the console can move without the fleet
+    _ensure_console_listener(Handler.deps)   # access.console == "own" → serve the console on its own bind and drop the public one to role="node"
     print(f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
     with contextlib.suppress(KeyboardInterrupt):
         threading.Event().wait()             # the listeners serve in their own threads; block here forever

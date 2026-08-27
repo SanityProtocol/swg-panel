@@ -282,7 +282,7 @@ export const tlsModeLabel = (mode) => (mode === "skip"
 // confirms the new one works, so a bad value never locks the operator out. swg-sub just restarts.
 export function AccessTLSCard({ onChange }) {
   const acc = (Store.panelSettings || {}).access || {};
-  const p0 = acc.panel || {}, s0 = acc.sub || {}, t0 = acc.tls || {};
+  const p0 = acc.panel || {}, s0 = acc.sub || {}, t0 = acc.tls || {}, k0 = acc.console || {};
   // This host's installation is owned elsewhere (a NixOS module, a config-management run): the address,
   // the mount path and the certificate are that configuration's, so this screen renders as a read-only
   // view of what it decided. The server refuses the save AND the apply — this is the honest surface,
@@ -296,6 +296,15 @@ export function AccessTLSCard({ onChange }) {
   const [mode, setMode] = useState(t0.mode || ""); const [email, setEmail] = useState(t0.email || "");
   const [cfTok, setCfTok] = useState(""); const [cfOrig, setCfOrig] = useState("");
   const [hasCfTok, setHasCfTok] = useState(!!t0.has_cf_token); const [hasCfOrig, setHasCfOrig] = useState(!!t0.has_cf_origin_token);
+  // PRIVATE PANEL ACCESS. "" = the panel's own address, as it has always been; "own" = a loopback listener
+  // reached through an SSH tunnel, with the public address dropping to a node-only door. The saved block is
+  // written by the panel only once a browser has PROVED it can reach the new address, so it is safe to seed.
+  // `cHost` is no longer a control — private access IS loopback (D28), and the server forces it on apply.
+  // It stays in the form only so the baseline comparison and the wired-deployment path keep their shape.
+  const [cMode, setCMode] = useState(k0.mode || ""); const [cHost, setCHost] = useState("127.0.0.1");
+  const [cPort, setCPort] = useState(String(k0.port || 9443));
+  const [consolePend, setConsolePend] = useState(null);   // a console move awaiting its confirm: {nonce,host,port,scheme,base,expires} — the operator opens the new address and the change commits only there
+  const [consoleIn, setConsoleIn] = useState(0);          // seconds left on that confirm window, from the server's absolute deadline (so a reload continues the SAME countdown)
   const [ips, setIps] = useState([]); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const [polling, setPolling] = useState(false);
   const [confirmUrl, setConfirmUrl] = useState("");   // set while an address change is verifying → the operator confirms it by opening the new address in a new tab (we can't auto-navigate safely: an unreachable new address would strand them, and a cross-origin reachability probe is blocked by our own CSP)
@@ -319,7 +328,8 @@ export function AccessTLSCard({ onChange }) {
   // Baseline of what's currently live — the form is compared to this to decide what changed (and thus what needs
   // a live apply). Refreshed after a successful save so the button disables until the next edit.
   const [orig, setOrig] = useState({ pUrl: normPublicUrl(p0.url || ""), pHost: p0.host || "0.0.0.0", pPort: String(p0.port || 443),
-    sUrl: s0.url || "", sHost: s0.host || "0.0.0.0", sPort: String(s0.port || 8444), mode: t0.mode || "", email: t0.email || "" });
+    sUrl: s0.url || "", sHost: s0.host || "0.0.0.0", sPort: String(s0.port || 8444), mode: t0.mode || "", email: t0.email || "",
+    cMode: k0.mode || "", cHost: k0.host || "127.0.0.1", cPort: String(k0.port || 9443) });
   useEffect(() => { api.get("/api/access/ips").then(r => { if (r && r.ok) setIps(r.ips || []); }); }, []);
   // Recover an in-progress reverse-proxy swap after a page reload (server keeps the old address serving until confirmed).
   useEffect(() => { api.get("/api/access/status").then(r => { const p = r && r.ok && r.panel;
@@ -332,6 +342,12 @@ export function AccessTLSCard({ onChange }) {
     // The new container came up in "awaiting reachability" — THIS page reaching the panel here IS the proof, so commit
     // (clears the marker + stands the auto-revert timer down). If it can't reach the panel it never gets here → auto-revert.
     else if (p && p.state === "docker-awaiting" && p.nonce) api.post("/api/access/docker-commit", { nonce: p.nonce }).catch(() => {});
+    // Recover a console move awaiting its confirm. This tab is still fully alive during one — the panel's own
+    // address keeps serving the console until the confirm lands (that is the point) — so the card, its
+    // countdown and its Cancel all come back on a reload.
+    const k = r && r.ok && r.console;
+    if (k && k.state === "verifying" && k.nonce)
+      setConsolePend({ nonce: k.nonce, host: k.host, port: k.port, scheme: k.https ? "https" : "http", base: k.base || "", expires: k.expires });
     }).catch(() => {}); }, []);
   // The Confirm button is held disabled until rpSwap.armUntil (an absolute clock deadline), so the operator has time
   // to open the new address + verify their proxy first. Anchoring to a deadline (not a from-60 counter) means a page
@@ -344,6 +360,36 @@ export function AccessTLSCard({ onChange }) {
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   }, [rpSwap]);
+  // The URL the operator opens to confirm a console move. Composed HERE, not by the server, for one reason:
+  // a console bound to 0.0.0.0 has no hostname of its own, and only the browser knows which name it actually
+  // reached this panel on. A concrete bind (127.0.0.1, a public IP) is used verbatim.
+  const consoleUrl = (c) => {
+    if (!c) return "";
+    const raw = String(c.host || "");
+    const h = (raw === "0.0.0.0" || raw === "::" || !raw) ? location.hostname : (raw.includes(":") ? "[" + raw + "]" : raw);
+    return `${c.scheme || "https"}://${h}:${c.port}${c.base || ""}/?__applyconsole=${encodeURIComponent(c.nonce || "")}`;
+  };
+  // The console confirm window, anchored to the server's absolute deadline so a page reload continues the
+  // SAME countdown rather than restarting it. At 0 the panel has already put everything back on its own.
+  useEffect(() => {
+    if (!consolePend) { setConsoleIn(0); return; }
+    const tick = async () => {
+      const left = Math.max(0, Math.ceil(((consolePend.expires || 0) * 1000 - Date.now()) / 1000));
+      setConsoleIn(left);
+      if (left > 0) return;
+      setConsolePend(null);
+      // Which of the two endings was it? This tab can't be told: if the confirm DID land, this address is
+      // now a node-only door and every call from here 404s — including the one that would have said so. So
+      // ask, and read the silence correctly. Announcing "it wasn't confirmed" to a tab whose panel simply
+      // moved out from under it would be the one misleading sentence in the whole flow.
+      const still = await api.get("/api/access/status").catch(() => null);
+      if (still && still.ok) { resync(); setMsg({ ok: false, t: T("The tunnel wasn't confirmed in time, so the panel is still on its public address.") }); }
+      else setMsg({ ok: true, t: T("Private access is on — this address serves the nodes now. Carry on in the tab you confirmed from.") });
+    };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [consolePend]);
   // Docker-flip reconnect hold: tick down to 0, then the reconnect button arms (gives the container time to restart)
   useEffect(() => {
     if (dockerArm <= 0) return;
@@ -372,8 +418,11 @@ export function AccessTLSCard({ onChange }) {
     setPUrl(normPublicUrl(pp.url || "")); setPHost(pp.host || "0.0.0.0"); setPPort(String(pp.port || 443));
     setSUrl(ss.url || ""); setSHost(ss.host || "0.0.0.0"); setSPort(String(ss.port || 8444));
     setMode(tt.mode || ""); setEmail(tt.email || "");
+    const kk = a.console || {};
+    setCMode(kk.mode || ""); setCHost(kk.host || "127.0.0.1"); setCPort(String(kk.port || 9443));
     setOrig({ pUrl: normPublicUrl(pp.url || ""), pHost: pp.host || "0.0.0.0", pPort: String(pp.port || 443),
-      sUrl: ss.url || "", sHost: ss.host || "0.0.0.0", sPort: String(ss.port || 8444), mode: tt.mode || "", email: tt.email || "" });
+      sUrl: ss.url || "", sHost: ss.host || "0.0.0.0", sPort: String(ss.port || 8444), mode: tt.mode || "", email: tt.email || "",
+      cMode: kk.mode || "", cHost: kk.host || "127.0.0.1", cPort: String(kk.port || 9443) });
   };
   // poll the apply state machine while a change is in flight. When it's ready to confirm, we DON'T auto-navigate:
   // an unreachable new address would strand the operator, and a cross-origin reachability probe is blocked by our
@@ -480,6 +529,38 @@ export function AccessTLSCard({ onChange }) {
   // Direct TLS (not behind a proxy) → this service terminates its own TLS and is reached DIRECTLY, so a loopback
   // listen IP isn't publicly reachable (Cloudflare/clients can't hit 127.0.0.1) → 521. Only valid behind a proxy.
   const _isLoopback = (h) => /^(127\.\d|::1|localhost)/i.test((h || "").trim());
+  // The tunnel command, with the two things the panel CANNOT know left as placeholders. It knows its own
+  // hostname, but that is not necessarily the SSH one: behind Cloudflare `location.hostname` is the CDN,
+  // so filling it in would hand the operator a command that dials Cloudflare instead of their server.
+  const sshTunnelCmd = (port) => `ssh -L ${port}:127.0.0.1:${port} ssh_user@server_ip`;
+  // The address the panel is reached on today. panelPublicUrl is the CONFIRMED canonical one — the same
+  // value the fleet is told to dial — so it is the honest answer to "where is this reachable"; it only
+  // advances on a real confirm, never on an unsaved edit. Falls back to this tab's own origin, which is
+  // by definition an address that works: the operator is reading the page on it.
+  const panelHereUrl = () => {
+    const u = String((Store.panelPublicUrl || "")).trim().replace(/\/+$/, "");
+    if (u) return u;
+    return (location.origin + location.pathname).replace(/\/+$/, "") || location.origin;
+  };
+  // The one option that turns private access on, shown where the screen cannot offer a switch. Written
+  // as an ADDITION to the block above it rather than a whole services.swg-panel — the operator already
+  // has that block on screen, and a second complete one invites a paste that drops their other options.
+  const nixConsoleSample = () => [
+    "services.swg-panel = {",
+    "  # …your existing options…",
+    "  consolePort = 8445;",
+    "};"].join("\n");
+
+  // Docker published the console port, or the NixOS module opened it: the address is the deployment's,
+  // not this form's. Then the preset is a toggle and the fields would be a control that cannot move
+  // what it appears to move — so they go, and the address is stated instead.
+  const cWired = acc.console_wired || null;
+  const cDockerUnwired = !!acc.console_docker_unwired;
+  const _cReach = cWired ? cWired.host : cHost;
+  const _cPortN = () => (cWired ? cWired.port : (parseInt(cPort) || 0)) || 9443;
+  const _cLoopback = _isLoopback(_cReach);                     // a loopback console is served plain HTTP (no eavesdropper on loopback) and is reachable only through an SSH tunnel
+  const cPortBad = !cWired && cMode === "own" && (_portRangeBad(cPort) || !(parseInt(cPort) || 0));   // only gates Save in the mode that binds it — "Same address" leaves the field inert
+  const hasPanelCert = !behindProxy;                           // the panel terminates its own TLS → a non-loopback console inherits that certificate; behind a proxy it would be plain HTTP on a public port
   const pLoopbackDirect = !behindProxy && _isLoopback(pHost);
   const sLoopbackDirect = subsOn && !behindProxy && _isLoopback(sHost);
   // Crossing proxy → direct TLS: fold the internal port into the url, so the address the operator was already
@@ -493,12 +574,12 @@ export function AccessTLSCard({ onChange }) {
   const wasBehindProxy = (orig.mode === "" || orig.mode === "skip");
   const modeFlip = behindProxy !== wasBehindProxy;                      // the Type change crosses the reverse-proxy ↔ direct-TLS line (the panel's own socket flips HTTP↔HTTPS)
   const flipToTls = modeFlip && !behindProxy;                           // reverse proxy → direct TLS (panel starts terminating its own TLS)
-  const blocked = (hard && (pBad || sBad)) || pLoopbackDirect || sLoopbackDirect || pPortRangeBad || sPortRangeBad;
+  const blocked = (hard && (pBad || sBad)) || pLoopbackDirect || sLoopbackDirect || pPortRangeBad || sPortRangeBad || cPortBad || (cMode === "own" && cDockerUnwired);
   // ONE-AT-A-TIME cooldown: while a previous address change is verifying or gracing out, Save is locked — the
   // only allowed action is Cancel. Server-enforced too (a stray apply gets a 'cooldown' 409); this just mirrors it.
   const cooldown = Store.accessCooldown || { secs: 0, reason: "" };
   const cooldownActive = (cooldown.secs || 0) > 0;                          // Save is locked on EVERY tab during a change
-  const showCooldownNotice = cooldownActive && !confirmUrl && !rpSwap && !dockerRestart && !polling && !busy;   // only surface the notice where THIS tab isn't already driving the change — the driver shows its own progress ("Waiting…") then the confirm area, so confirm always wins the race over the generic cooldown
+  const showCooldownNotice = cooldownActive && !confirmUrl && !rpSwap && !dockerRestart && !consolePend && !polling && !busy;   // only surface the notice where THIS tab isn't already driving the change — the driver shows its own progress ("Waiting…") then the confirm area, so confirm always wins the race over the generic cooldown
 
   const ipField = (host, setHost, withLocal, bad) => {
     const val = presets.has(host) ? host : "__custom";
@@ -535,15 +616,21 @@ export function AccessTLSCard({ onChange }) {
   const subUrlChanged    = () => _canonUrl(sUrl) !== _canonUrl(orig.sUrl);   // the sub public URL's path is swg-sub's mount base → a change must restart it
   const certChanged      = () => mode !== (orig.mode || "") || email.trim() !== (orig.email || "") || !!cfTok || !!cfOrig;
   const urlChanged       = () => pUrl.trim() !== (orig.pUrl || "") || sUrl.trim() !== (orig.sUrl || "");
-  const dirty            = () => panelBindChanged() || subBindChanged() || certChanged() || urlChanged();
+  // The console preset. Only the fields that matter for the mode it is IN: with "Same address" the host and
+  // port are inert leftovers in the form, and comparing them would report a change that applies to nothing.
+  const consoleChanged   = () => (cMode || "") !== (orig.cMode || "") ||
+                                 (!cWired && cMode === "own" && (parseInt(cPort) || 0) !== (parseInt(orig.cPort) || 0));
+  const dirty            = () => panelBindChanged() || subBindChanged() || certChanged() || urlChanged() || consoleChanged();
   // Pull the CURRENT saved settings from the store (kept fresh by the /api/state poll) into the form + baseline —
   // like resync() but with no fetch. Used to silently correct a form whose baseline drifted behind the server.
   const _storeAccess = () => (((Store.panelSettings || {}).access) || {});
-  const _serverBaseline = () => { const a = _storeAccess(), pp = a.panel || {}, ss = a.sub || {}, tt = a.tls || {};
+  const _serverBaseline = () => { const a = _storeAccess(), pp = a.panel || {}, ss = a.sub || {}, tt = a.tls || {}, kk = a.console || {};
     return { pUrl: normPublicUrl(pp.url || ""), pHost: pp.host || "0.0.0.0", pPort: String(pp.port || 443),
-      sUrl: ss.url || "", sHost: ss.host || "0.0.0.0", sPort: String(ss.port || 8444), mode: tt.mode || "", email: tt.email || "" }; };
+      sUrl: ss.url || "", sHost: ss.host || "0.0.0.0", sPort: String(ss.port || 8444), mode: tt.mode || "", email: tt.email || "",
+      cMode: kk.mode || "", cHost: kk.host || "127.0.0.1", cPort: String(kk.port || 9443) }; };
   const resyncFromStore = () => { const b = _serverBaseline();
-    setPUrl(b.pUrl); setPHost(b.pHost); setPPort(b.pPort); setSUrl(b.sUrl); setSHost(b.sHost); setSPort(b.sPort); setMode(b.mode); setEmail(b.email); setOrig(b); };
+    setPUrl(b.pUrl); setPHost(b.pHost); setPPort(b.pPort); setSUrl(b.sUrl); setSHost(b.sHost); setSPort(b.sPort); setMode(b.mode); setEmail(b.email);
+    setCMode(b.cMode); setCHost(b.cHost); setCPort(b.cPort); setOrig(b); };
   // Detect the SAVED address settings changing out from under this open form — a rollback (an aborted combined
   // save, or the blessed-startup boot reconcile), or a change confirmed on another tab. A stale port/url left in
   // the fields would otherwise ride along on the next Save (exactly the phantom-port-change trap). If the form is
@@ -589,6 +676,14 @@ export function AccessTLSCard({ onChange }) {
     });
     if (blocked) return setMsg({ ok: false, t: T("Fix the highlighted port first.") });
     if (!dirty()) return;
+    // Moving the console is its own change on its own machine (it binds a second listener and rewrites the
+    // door policy), and the panel runs address changes strictly one at a time. Combining it with an address
+    // or certificate edit in one Save would just have the second half refused mid-flight, so say so first.
+    if (consoleChanged()) {
+      if (panelBindChanged() || panelUrlChanged() || certChanged() || subBindChanged() || subUrlChanged())
+        return setMsg({ ok: false, t: T("Change private access on its own — save the address and certificate changes first, then turn the tunnel on.") });
+      return applyConsole();
+    }
     // Trading ports between panel and sub can't be done in one shot on a single host — one must free its port
     // before the other can take it. Guide the operator through two saves instead of attempting a doomed order.
     if (subWantsPanelLive() || panelWantsSubLive()) {
@@ -678,6 +773,43 @@ export function AccessTLSCard({ onChange }) {
   // Runs after each render; the parent only re-renders when a DISPLAYED bit actually changes (see onAccess).
   useEffect(() => { if (onChange) onChange({ dirty: dirty() && !blocked && !cooldownActive && !declarative, busy: busy || polling, msg, run: saveAndApply }); });
 
+  // Move the operator console, or bring it back. Its own endpoint and its own state machine on the panel —
+  // the address pipeline's gate, grace and cert paths all answer questions about the address NODES dial, and
+  // this is not that address.
+  const applyConsole = async () => {
+    setBusy(true); setMsg({ ok: true, t: T("Setting up private access…") });
+    const r = await api.post("/api/access/console-apply", {
+      mode: cMode, host: cHost.trim() || "127.0.0.1", port: parseInt(cPort) || 0 }).catch(() => null);
+    setBusy(false);
+    // ⚠️ "no reply" and "refused" are different events and only one of them is the operator's to act on.
+    // Every refusal this endpoint can return carries its own sentence (port in use, port belongs to
+    // swg-sub, bind failed, cooldown, container publishes no port, declaratively managed), so the
+    // generic line only ever appeared when the request got NO answer — and then it said the panel had
+    // declined something it had never been asked. `!r` is `.catch(() => null)`: the panel was mid-move,
+    // restarting, or this tab is on an address that stopped serving. Say that, and say what to do.
+    if (!r) { await resync(); return setMsg({ ok: false, t: T("The panel didn't answer. It may be restarting, or this tab may be on an address that no longer serves it — reload the page to see where things stand.") }); }
+    if (r.ok === false) { await resync(); return setMsg({ ok: false, t: srvText(r) || T("Couldn't change private access.") }); }
+    if (r.applied) {   // back to the panel's own address — nothing to confirm, it can only ever restore access
+      await resync();
+      return setMsg({ ok: true, t: r.panel_url
+        ? T("The console is served at {v1} again, and the panel's own address answers everything once more.", { v1: r.panel_url })
+        : T("Private access is off — the panel is on its public address again.") });
+    }
+    setConsolePend({ nonce: r.nonce, host: r.host, port: r.port, scheme: r.scheme, base: r.base || "", expires: r.expires });
+    setMsg({ ok: true, t: T("Nothing has changed yet — open the tunnel and confirm you can reach the panel through it.") });
+  };
+  // Back out before the confirm. Everything the apply did was additive (a second listener; the panel's own
+  // address never stopped serving the console), so this is instant and cannot strand anyone.
+  const cancelConsole = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post("/api/access/console-cancel", {});
+      if (!r || r.ok === false) { toast(srvText(r) || T("Couldn't cancel the change."), "err"); setBusy(false); return; }
+      setConsolePend(null); await resync(); setBusy(false);
+      setMsg({ ok: true, t: T("Cancelled — the panel stays where it is.") });
+      toast(T("Cancelled — the panel stays where it is."), "ok");
+    } catch (_) { toast(T("Couldn't cancel the change."), "err"); setBusy(false); }
+  };
   // Abort a change that's still VERIFYING (not yet confirmed) — the server drops the un-confirmed listener /
   // restores the cert and rolls the saved url back. The only other option during verifying is to confirm it.
   const cancelChange = async () => {
@@ -827,6 +959,35 @@ export function AccessTLSCard({ onChange }) {
     </div>
     <p class="hint" style="margin:6px 0 0">${T("Internal addresses on this host. Changing the public URL, the path or the certificate never moves them, so a proxy pointed here keeps working.")}</p>
 
+    ${/* ── PRIVATE PANEL ACCESS, read-only ─────────────────────────────────────────────────────────
+          Shown ALWAYS, on or off. Off, this screen used to carry no sign the feature existed at all —
+          and it is the one platform where the console is the only way in, so an operator had nothing
+          to discover and nothing to copy. On, it now says the same things in the same order as every
+          other installation: the port, the tunnel command with its Copy button, and what happens to
+          the nodes. The only difference is the switch, which lives in the configuration here. */""}
+    <div class="seclabel">${T("Private panel access")}</div>
+    ${/* The pitch is for an operator who has NOT turned this on. Once it is on they are reading it
+          through the tunnel it describes, and the paragraph argues for a thing they already did. The
+          port gets no row of its own either: it is in the snippet above and in the command below, and
+          a third copy only invites the question of which one is authoritative. */""}
+    ${cWired ? null : html`<p class="hint" style="margin:0 0 12px">${Trich("Your nodes and your browser reach this panel through the same door today. They don't have to. Serve the panel *on the server itself* and reach it over an SSH tunnel — the public address then keeps the fleet running while answering *nothing else*: every panel page, every operator API call and the integration API return `404` there.")}</p>`}
+    ${cWired ? html`
+      <div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><div style="min-width:0">
+        ${Trich("*The panel is served on `127.0.0.1:{v1}` on the server*, which nothing outside that machine can open. It is plain HTTP on purpose: the traffic never crosses a network, and a certificate issued for your panel's domain would only mis-name itself on a loopback address.", { v1: String(cWired.port) })}
+        <div style="margin:10px 0 0">${T("Open the tunnel from your own machine:")}</div>
+        <div style="display:flex;gap:8px;align-items:center;margin:6px 0">
+          <button class="btn btn-mini" style="flex:none" onClick=${() => copy(sshTunnelCmd(cWired.port), T("SSH tunnel command"))}><${Ic} i="copy"/>${T("Copy")}</button>
+          <pre class="mono" style="flex:1;min-width:0;white-space:pre;overflow:auto;padding:10px;border-radius:6px;background:var(--code-bg, rgba(127,127,127,.09));margin:0;font-size:.85em">${`ssh -L ${cWired.port}:127.0.0.1:${cWired.port} `}<b>ssh_user</b>@<b>server_ip</b></pre>
+        </div>
+        <div class="hint" style="margin:0">${Trich("Put in the login and address you already use for SSH — `ssh_user` and `server_ip`.")}</div>
+        <div style="margin:10px 0 0">${Trich("When the tunnel is up, the panel will be accessible at {v1}", { v1: html`<a class="mono" style="color:var(--brand);font-weight:600" href=${"http://127.0.0.1:" + cWired.port + "/"} target="_blank" rel="noopener">${"http://127.0.0.1:" + cWired.port + "/"}</a>` })}</div>
+        <div class="hint" style="margin:8px 0 0">${Trich("*The nodes are unaffected*: they keep dialling the public address, which keeps answering exactly the routes they use.")}</div>
+      </div></div>`
+    : html`
+      <p class="hint" style="margin:0 0 12px">${Trich("This host's Access screen is read-only, so the option *is* the switch — there is nothing to turn on here. Give the panel a console port in your configuration and rebuild; the console moves there, and this section then shows the tunnel command for it.")}</p>
+      <pre class="mono nixblock">${nixConsoleSample()}</pre>
+      <button class="btn btn-mini" onClick=${() => copy(nixConsoleSample(), T("the private-access option"))}><${Ic} i="copy"/>${T("Copy")}</button>`}
+
     <div class="seclabel">${T("A sample configuration")}</div>
     <p class="hint" style="margin:0 0 12px">${T("Two arrangements, both with this panel's own domain, path and port already filled in. Pick one, paste it beside the options above, and rebuild.")}</p>
     <${Disclosure} title=${T("Terminate TLS in front of the panel")} summary=${T("recommended")} sumCls="on"
@@ -918,7 +1079,9 @@ export function AccessTLSCard({ onChange }) {
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn-primary" href=${confirmUrl} target="_blank" rel="noopener">${T("Open the new address to confirm ↗")}</a><button class="btn btn-ghost" onClick=${cancelChange}>${T("Cancel this change")}</button></div>
     </div></div>` : null}
     ${showCooldownNotice ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><div style="min-width:0">
-      <b>${T("Operation cooldown.")}</b> ${cooldown.reason === "verifying" ? T("An address change is still waiting to be confirmed.") : Trich("The previous change is still settling (*{v1}s* left).", { v1: cooldown.secs })} ${Trich("Address changes run *one at a time* — Save is locked until it finishes. If a change is in flight, you can still cancel it from the tab that started it.")}
+      <b>${T("Operation cooldown.")}</b> ${cooldown.reason === "verifying" ? T("An address change is still waiting to be confirmed.")
+        : cooldown.reason === "console" ? T("A private-access change is still waiting to be confirmed — finish or cancel it in the tab that started it.")
+        : Trich("The previous change is still settling (*{v1}s* left).", { v1: cooldown.secs })} ${Trich("Address changes run *one at a time* — Save is locked until it finishes. If a change is in flight, you can still cancel it from the tab that started it.")}
     </div></div>` : null}
     ${staleWarn ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><div style="min-width:0">
       ${Trich("*These settings changed elsewhere.* The panel's saved address settings were updated by the server (a rollback, a boot reconcile, or a change confirmed in another tab) while you have *unsaved edits* here — so a field below may be based on an *old* value. *Reload the page* before saving, or your change could re-apply a value the panel already reverted.")} <button class="btn btn-mini" style="margin-left:6px" onClick=${() => { resyncFromStore(); setStaleWarn(false); }}>${T("Discard my edits & refresh")}</button>
@@ -934,7 +1097,7 @@ export function AccessTLSCard({ onChange }) {
       <div class="hint">${Trich("Requests a 15-year Cloudflare Origin certificate — valid *only* behind Cloudflare's proxy. Stored on the panel only. Enter \"-\" to clear.")}</div></div>` : null}
     ${modeFlip ? flipNote() : null}
 
-    <div class="seclabel">${T("Panel address")}</div>
+    <div class="seclabel">${T("Public panel address")}</div>
     <p class="hint" style="margin:0 0 12px">${T("Where the panel itself is reached.")}${behindProxy
       ? T(" Your proxy fronts this URL and forwards to the internal address below — the two are independent.")
       : Trich(" The panel serves this address directly, so *the URL carries the port* (there is no separate internal port to set).")}</p>
@@ -957,6 +1120,74 @@ export function AccessTLSCard({ onChange }) {
       <button class="btn btn-mini" onClick=${() => copy(nginxServerBlock(pUrl, pHost, _pPortN()), T("panel nginx server block"))}><${Ic} i="copy"/>${T("Copy")}</button>
       <div class="hint" style="margin-top:6px">${Trich("Built from the domain, external port, path (from the Public URL) and the internal listen address above. Point `ssl_certificate` at your real cert, then `nginx -t && systemctl reload nginx`.")}</div>
     </details>` : null}
+
+    <div class="seclabel">${T("Private panel access")}</div>
+    ${/* ⚠️ GATED ON THE SAVED STATE (`k0.mode`), NOT ON THE TOGGLE (`cMode`). The paragraph argues for
+          moving the console, so it is for someone who has not moved it — once the change is CONFIRMED
+          the operator is reading it through the tunnel it describes. But the toggle here is a form
+          control, not the applied state: gating on it would make this text appear and vanish under the
+          cursor every time the operator flipped it while deciding, and while they are deciding the
+          public address is still serving the panel and the pitch is still the context for the choice.
+          The saved value is the honest signal, and it matches the declarative branch above, where
+          there is no toggle at all and "on" can only mean "already done". */""}
+    ${k0.mode === "own" ? null : html`<p class="hint" style="margin:0 0 12px">${Trich("Your nodes and your browser reach this panel through the same door today. They don't have to. Serve the panel *on the server itself* and reach it over an SSH tunnel — the public address then keeps the fleet running while answering *nothing else*: every panel page, every operator API call and the integration API return `404` there.")}</p>`}
+    ${/* The toggle and its port are one decision, so they share a row — and the port is a NORMAL field
+          (label above, full width of its column) so it reads like every other field on this screen.
+          align-items:flex-end bottom-aligns the single-line toggle with the input, not with its label. */ ""}
+    <div class="fieldrow" style="align-items:flex-end;margin:0 0 12px">
+      <label class="ivk-esc-row" style="flex:1;min-width:140px;align-items:center;margin:0 0 9px;cursor:pointer">
+        <${Switch} on=${cMode === "own"} onChange=${v => setCMode(v ? "own" : "")}/>
+        <span>${T("Access web panel via SSH tunnel")}</span></label>
+      ${(cMode === "own" && !cWired && !cDockerUnwired) ? html`<div class="field">
+        <label>${T("Tunnel port")}${cPortBad ? html` <span class="ciw" title=${T("Port must be a number between 1 and 65535")}><${Ic} i="warn"/></span>` : null}</label>
+        <input class=${cPortBad ? "bad" : ""} type="text" value=${cPort} onInput=${e => setCPort(e.target.value)}/></div>`
+        : html`<div class="field" style="visibility:hidden"><label>&nbsp;</label></div>`}
+    </div>
+    ${/* Where the panel is reached on its PUBLIC address. The section otherwise said nothing at all in
+          its resting state — a heading and a switch — so the one fact an operator wants before flipping
+          it (what am I about to change?) was the one fact missing.
+          ⚠️ Two independent things decide this line, and they are not the same thing:
+            • WHETHER to show it — the TOGGLE. Switched on, the operator is asking for the console to
+              move and the notice below already tells them where it lands; repeating the public address
+              beside it just competes with that.
+            • WHICH TENSE — the SAVED state. Off with public saved is the resting truth ("is"). Off with
+              private saved is a pending change back ("will be"), and saying "is" there would describe
+              an address that does not serve the panel yet.
+          Written as two literal Trich calls rather than one with a computed key: the i18n extractor
+          reads the literal argument, and a conditional inside it takes both sentences out of the
+          catalogue. */""}
+    ${cMode === "own" ? null : html`<div class="hint" style="margin:0 0 12px">${
+      k0.mode === "own"
+        ? Trich("The panel will be accessible at {v1}", { v1: html`<a class="mono" style="color:var(--brand);font-weight:600" href=${panelHereUrl()} target="_blank" rel="noopener">${panelHereUrl()}</a>` })
+        : Trich("The panel is accessible at {v1}", { v1: html`<a class="mono" style="color:var(--brand);font-weight:600" href=${panelHereUrl()} target="_blank" rel="noopener">${panelHereUrl()}</a>` })
+    }</div>`}
+    ${(cMode === "own" && cDockerUnwired) ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><div style="min-width:0">
+      ${Trich("*This panel's container doesn't publish a port for this*, so a listener inside it would be unreachable — there is nothing to fill in here yet. *Re-run the Docker installer* to restage `docker-compose.yml` (it adds the port), then come back.")}
+    </div></div>` : null}
+    ${(cMode === "own" && cWired) ? html`<div class="subaddr wide" style="margin:0 0 10px">
+      <div class="subaddr-row"><span class="subaddr-k">${T("Tunnel port")}</span><span class="subaddr-v mono">${cWired.port}</span></div></div>
+      <p class="hint" style="margin:0 0 12px">${Trich("This port is set where this panel is deployed, not here — so there is nothing to pick. Change it in `.env` (`CONSOLE_PORT`) and re-run the Docker installer, or in the NixOS option, then come back.")}</p>` : null}
+    ${(cMode === "own" && !cDockerUnwired) ? html`
+      <div class="notice" style="margin:8px 0 12px"><${Ic} i="info"/><div style="min-width:0">
+        ${Trich("*The panel will be served on `127.0.0.1:{v1}` on the server*, which nothing outside that machine can open. It is plain HTTP on purpose: the traffic never crosses a network, and a certificate issued for your panel's domain would only mis-name itself on a loopback address.", { v1: _cPortN() })}
+        <div style="margin:10px 0 0">${T("Open the tunnel from your own machine:")}</div>
+        <div style="display:flex;gap:8px;align-items:center;margin:6px 0">
+          <button class="btn btn-mini" style="flex:none" onClick=${() => copy(sshTunnelCmd(_cPortN()), T("SSH tunnel command"))}><${Ic} i="copy"/>${T("Copy")}</button>
+          <pre class="mono" style="flex:1;min-width:0;white-space:pre;overflow:auto;padding:10px;border-radius:6px;background:var(--code-bg, rgba(127,127,127,.09));margin:0;font-size:.85em">${`ssh -L ${_cPortN()}:127.0.0.1:${_cPortN()} `}<b>ssh_user</b>@<b>server_ip</b></pre>
+        </div>
+        <div class="hint" style="margin:0">${Trich("Put in the login and address you already use for SSH — `ssh_user` and `server_ip`.")}</div>
+        <div style="margin:10px 0 0">${Trich("When the tunnel is up, the panel will be accessible at {v1}", { v1: html`<a class="mono" style="color:var(--brand);font-weight:600" href=${"http://127.0.0.1:" + _cPortN() + "/"} target="_blank" rel="noopener">${"http://127.0.0.1:" + _cPortN() + "/"}</a>` })}</div>
+        <div class="hint" style="margin:8px 0 0">${Trich("*The nodes are unaffected*: they keep dialling the public address, which keeps answering exactly the routes they use.")}</div>
+        <div class="hint" style="margin:8px 0 0">${Trich("*To close the door further*, restrict the public panel port in your firewall to the addresses your nodes connect from. The panel can't list them for you — it never sees a node's source address, and behind a proxy it would only see the proxy — so use the addresses you know. ⚠️ Get that list wrong and the fleet stops syncing, so change it while you can still watch the Nodes screen.")}</div>
+      </div></div>` : null}
+    ${consolePend ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
+      ${Trich("*Nothing has changed yet.* The panel is now served *both* here and through the tunnel — open it through the tunnel to prove you can reach it. Only then does this address stop serving the panel.")}
+      <div class="hint" style="margin:6px 0 0">${Trich("If you don't, everything goes back on its own in *{n}s* — you cannot be locked out by not finishing.", { n: consoleIn })}</div>
+      <div class="hint" style="margin:4px 0 0">${Trich("Once it's confirmed, *this tab stops working*: this address will answer only what the nodes ask for. Carry on in the tunnelled one.")}</div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <a class="btn btn-primary" href=${consoleUrl(consolePend)} target="_blank" rel="noopener">${T("Open the panel through the tunnel to confirm ↗")}</a>
+        <button class="btn btn-ghost" disabled=${busy} onClick=${cancelConsole}>${T("Cancel this change")}</button></div>
+    </div></div>` : null}
 
     ${subsOn ? html`<div class="seclabel">${T("Subscription address")}</div>
       <p class="hint" style="margin:0 0 12px">${T("Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).")}${behindProxy
@@ -1556,11 +1787,11 @@ export function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: T("Delete custom list"), confirmLabel: T("Delete"), danger: true,
     body: Trich("Delete *{v1}*? It's removed from *every node* it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.", { v1: l.title || T("Untitled list") }),
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel URL"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Mesh & egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Mesh & egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
 /* Display names for SECTIONS. The array above stays the canonical key list (the value is the deep-link and
    the persisted section), so only the LABEL is translated — literal T() calls, same as evItemLabel. */
 const sectionLabel = k => ({
-  display: T("Display"), security: T("Authentication"), access: T("Panel URL"), configs: T("Client configs"),
+  display: T("Display"), security: T("Authentication"), access: T("Panel access"), configs: T("Client configs"),
   subs: T("Subscriptions"), mesh: T("Mesh & egress"), defaults: T("Interfaces"),
   turn: T("Turn proxies"), routing: T("Routing & Blocking"), geo: T("Geo data providers"),
   integrations: T("Integrations"),
@@ -2097,8 +2328,8 @@ const sectionLabel = k => ({
           </div>
           <div class="hint" style="margin:6px 0 0">${declarative
             ? html`${Trich("This page's address comes from the configuration that built this machine — `services.swg-panel.sub.domain`, `sub.basePath`, `sub.publicUrl` and `sub.port`.")}
-                <div style="margin-top:5px">${Trich("{v1} shows them beside a virtual host you can paste.", { v1: html`<button class="linkbtn" onClick=${() => setSection("access")}>${T("Panel URL")}</button>` })}</div>`
-            : Trich("The subscription page's URL, listen address and certificate are configured in {v1}.", { v1: html`<button class="linkbtn" onClick=${() => setSection("access")}>${T("Panel URL")}</button>` })}</div>
+                <div style="margin-top:5px">${Trich("{v1} shows them beside a virtual host you can paste.", { v1: html`<button class="linkbtn" onClick=${() => setSection("access")}>${T("Panel access")}</button>` })}</div>`
+            : Trich("The subscription page's URL, listen address and certificate are configured in {v1}.", { v1: html`<button class="linkbtn" onClick=${() => setSection("access")}>${T("Panel access")}</button>` })}</div>
           <div class="seclabel">${T("Languages")}</div>
           <div class="field"><label>${T("Offered on the subscription page")}</label>
             <div class="sublangs">${SUB_LANG_LIST.map(([id, name]) => html`<div class=${"sublang" + (subLangs.includes(id) ? " on" : "")} key=${id}>

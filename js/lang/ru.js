@@ -685,10 +685,66 @@ export const STR = {
   "Cloudflare Origin CA token": "Токен Cloudflare Origin CA",
   "Requests a 15-year Cloudflare Origin certificate — valid *only* behind Cloudflare's proxy. Stored on the panel only. Enter \"-\" to clear.":
     "Запрашивает сертификат Cloudflare Origin на 15 лет — действителен *только* за прокси Cloudflare. Хранится только на панели. Введите «-», чтобы очистить.",
-  "Panel address": "Адрес панели",
+  // Private panel access (D28): the panel served on loopback, reached over an SSH tunnel. "Консоль"
+  // is deliberately gone — the screen no longer uses that word in either language.
+  "Panel access": "Доступ к панели",
+  "Public panel address": "Публичный адрес панели",
+  "Private panel access": "Приватный доступ к панели",
+  "Access web panel via SSH tunnel": "Доступ к веб-панели через SSH-туннель",
+  "Tunnel port": "Порт туннеля",
+  "the panel already listens on port {v1} — pick a different, free port for the tunnel":
+    "панель уже слушает порт {v1} — выберите для туннеля другой свободный порт",
+  "Open the tunnel from your own machine:": "Откройте туннель со своей машины:",
+  "SSH tunnel command": "команда SSH-туннеля",
+  "Setting up private access…": "Настраиваем приватный доступ…",
+  "Couldn't change private access.": "Не удалось изменить приватный доступ.",
+  "Cancelled — the panel stays where it is.": "Отменено — панель осталась на прежнем адресе.",
+  "Private access is off — the panel is on its public address again.":
+    "Приватный доступ выключен — панель снова на публичном адресе.",
+  "Private access is on — this address serves the nodes now. Carry on in the tab you confirmed from.":
+    "Приватный доступ включён — этот адрес теперь обслуживает только ноды. Продолжайте во вкладке, где подтвердили.",
+  "The tunnel wasn't confirmed in time, so the panel is still on its public address.":
+    "Туннель не подтвердили вовремя, поэтому панель осталась на публичном адресе.",
+  "Nothing has changed yet — open the tunnel and confirm you can reach the panel through it.":
+    "Пока ничего не изменилось — откройте туннель и подтвердите, что панель через него доступна.",
+  "Change private access on its own — save the address and certificate changes first, then turn the tunnel on.":
+    "Меняйте приватный доступ отдельно — сначала сохраните адрес и сертификат, затем включайте туннель.",
+  "A private-access change is still waiting to be confirmed — finish or cancel it in the tab that started it.":
+    "Изменение приватного доступа ещё ждёт подтверждения — завершите или отмените его во вкладке, где оно начато.",
+  "Open the panel through the tunnel to confirm ↗": "Открыть панель через туннель для подтверждения ↗",
+  "When the tunnel is up, the panel will be accessible at {v1}": "Когда туннель поднят, панель будет доступна по адресу {v1}",
+  "Put in the login and address you already use for SSH — `ssh_user` and `server_ip`.":
+    "Подставьте логин и адрес, которыми вы уже пользуетесь для SSH, — `ssh_user` и `server_ip`.",
+  "Your nodes and your browser reach this panel through the same door today. They don't have to. Serve the panel *on the server itself* and reach it over an SSH tunnel — the public address then keeps the fleet running while answering *nothing else*: every panel page, every operator API call and the integration API return `404` there.":
+    "Сейчас ноды и ваш браузер приходят к панели в одну и ту же дверь. Так быть не обязано. Отдавайте панель *на самом сервере* и подключайтесь через SSH-туннель — публичный адрес продолжит обслуживать флот и не будет отвечать *ни на что другое*: все страницы панели, операторский API и интеграционный API вернут там `404`.",
+  "*The panel will be served on `127.0.0.1:{v1}` on the server*, which nothing outside that machine can open. It is plain HTTP on purpose: the traffic never crosses a network, and a certificate issued for your panel's domain would only mis-name itself on a loopback address.":
+    "*Панель будет отдаваться на `127.0.0.1:{v1}` на сервере* — снаружи этой машины её открыть нельзя. Это намеренно обычный HTTP: трафик не выходит в сеть, а сертификат, выписанный на домен панели, на localhost всё равно не совпал бы по имени.",
+  "*The nodes are unaffected*: they keep dialling the public address, which keeps answering exactly the routes they use.":
+    "*Ноды это не затрагивает*: они продолжают ходить на публичный адрес, который по-прежнему отвечает ровно на нужные им маршруты.",
+  "*To close the door further*, restrict the public panel port in your firewall to the addresses your nodes connect from. The panel can't list them for you — it never sees a node's source address, and behind a proxy it would only see the proxy — so use the addresses you know. ⚠️ Get that list wrong and the fleet stops syncing, so change it while you can still watch the Nodes screen.":
+    "*Чтобы закрыть дверь ещё плотнее*, ограничьте публичный порт панели в фаерволе адресами, с которых подключаются ноды. Панель не может составить этот список за вас — она не видит исходный адрес ноды, а за прокси видела бы только прокси, — поэтому используйте адреса, которые знаете сами. ⚠️ Ошибка в списке остановит синхронизацию флота, поэтому меняйте его, пока можете следить за экраном «Ноды».",
+  "*This panel's container doesn't publish a port for this*, so a listener inside it would be unreachable — there is nothing to fill in here yet. *Re-run the Docker installer* to restage `docker-compose.yml` (it adds the port), then come back.":
+    "*Контейнер этой панели не публикует для этого порт*, поэтому слушатель внутри него был бы недоступен — заполнять пока нечего. *Переустановите через Docker-инсталлятор*, чтобы он заново разложил `docker-compose.yml` (порт добавится), и вернитесь сюда.",
+  "This port is set where this panel is deployed, not here — so there is nothing to pick. Change it in `.env` (`CONSOLE_PORT`) and re-run the Docker installer, or in the NixOS option, then come back.":
+    "Этот порт задаётся там, где развёрнута панель, а не здесь — выбирать нечего. Измените его в `.env` (`CONSOLE_PORT`) и переустановите через Docker-инсталлятор, либо в опции NixOS, и вернитесь сюда.",
+  "*Nothing has changed yet.* The panel is now served *both* here and through the tunnel — open it through the tunnel to prove you can reach it. Only then does this address stop serving the panel.":
+    "*Пока ничего не изменилось.* Панель сейчас отдаётся *и* здесь, *и* через туннель — откройте её через туннель, чтобы подтвердить доступность. Только после этого текущий адрес перестанет её отдавать.",
+  "Once it's confirmed, *this tab stops working*: this address will answer only what the nodes ask for. Carry on in the tunnelled one.":
+    "После подтверждения *эта вкладка перестанет работать*: адрес будет отвечать только на запросы нод. Продолжайте в той, что открыта через туннель.",
   "Public URL": "Публичный URL",
   "https://panel.example.com  or  https://example.com/swgpanel": "https://panel.example.com  или  https://example.com/swgpanel",
   "Subscription address": "Адрес подписок",
+  // ── Operator console door ─────────────────────────────────────────────────────────────────────
+  // "Operator console" = операторская консоль — the panel's own UI as distinct from the node-sync
+  // surface. "Дверь" is kept for the door metaphor the English leans on; it reads naturally here and
+  // there is no established Russian term for a per-listener route policy.
+  "If you don't, everything goes back on its own in *{n}s* — you cannot be locked out by not finishing.":
+    "Если не подтвердите, через *{n} с* всё вернётся само — не доведя дело до конца, запереть себя снаружи невозможно.",
+  "The console is served at {v1} again, and the panel's own address answers everything once more.":
+    "Консоль снова обслуживается на {v1}, и собственный адрес панели опять отвечает на всё.",
+  "Console address confirmed": "Адрес консоли подтверждён",
+  "The operator console is served here now, and you're signed in. The panel's own address answers only what the nodes ask for — so close the other tab, it can't open the console any more.":
+    "Операторская консоль теперь обслуживается здесь, и вы уже вошли. Собственный адрес панели отвечает только на то, что спрашивают ноды, — так что закройте ту вкладку, консоль она больше не откроет.",
   "https://sub.example.com  or  https://example.com/swgsub": "https://sub.example.com  или  https://example.com/swgsub",
   "*This panel's address is managed declaratively.* Its URL, listen address, mount path and certificate come from the configuration that built this machine, so they are shown here rather than edited here — change them there and rebuild. Everything the panel is *for* is unaffected: peers, interfaces, routing and subscriptions all work exactly as they do anywhere else.":
     "*Адрес этой панели задан декларативно.* Её URL, адрес прослушивания, путь монтирования и сертификат берутся из конфигурации, которая собрала эту машину, поэтому здесь они показаны, а не редактируются — измените их там и пересоберите. На то, *ради чего* панель существует, это не влияет: пиры, интерфейсы, маршрутизация и подписки работают ровно так же, как везде.",
@@ -870,7 +926,6 @@ export const STR = {
   // budget-ok: field hint, wraps
   "Default: 3 (0 = warn only once expired)": "По умолчанию 3 (0 = предупреждать только после истечения)",
   "Address & certificate": "Адрес и сертификат",
-  "Panel URL": "Адрес панели",
   "Languages": "Языки",
   "Offered on the subscription page": "Предлагаются на странице подписки",
   "Load this language by default": "Загружать этот язык по умолчанию",
@@ -1863,6 +1918,7 @@ export const STR = {
   "Automatic update isn't wired on this install — run the command shown in the dialog on the host.":
     "Автообновление на этой установке не подключено — выполните на хосте команду из диалога.",
   "Update started — the panel will restart shortly.": "Обновление запущено — панель скоро перезапустится.",
+  "Update started — the panel will restart shortly. {v1} will update on their next sync.": "Обновление запущено — панель скоро перезапустится. {v1} обновятся при следующей синхронизации.",
   "Couldn't reach the repo to check for updates.": "Не удалось достучаться до репозитория за обновлениями.",
   "Loading changelog…": "Загружаю изменения…",
   "No changelog available.": "Список изменений недоступен.",
@@ -2405,6 +2461,12 @@ export const STR = {
   "Move cancelled — the panel stays on this address.": "Переезд отменён — панель остаётся на этом адресе.",
   "Couldn't cancel the move.": "Не удалось отменить переезд.",
   "You're on a previous panel address.": "Вы на прежнем адресе панели.",
+  "The panel is accessible at {v1}": "Панель доступна по адресу {v1}",
+  "The panel will be accessible at {v1}": "Панель будет доступна по адресу {v1}",
+  "The panel didn't answer. It may be restarting, or this tab may be on an address that no longer serves it — reload the page to see where things stand.": "Панель не ответила. Возможно, она перезапускается, либо эта вкладка открыта по адресу, который её больше не отдаёт — перезагрузите страницу, чтобы увидеть текущее состояние.",
+  "*The panel is served on `127.0.0.1:{v1}` on the server*, which nothing outside that machine can open. It is plain HTTP on purpose: the traffic never crosses a network, and a certificate issued for your panel's domain would only mis-name itself on a loopback address.": "*Панель отдаётся на `127.0.0.1:{v1}` на самом сервере*, и открыть этот адрес снаружи машины невозможно. Это намеренно обычный HTTP: трафик не выходит в сеть, а сертификат, выписанный на домен панели, на loopback-адресе только назвался бы чужим именем.",
+  "This host's Access screen is read-only, so the option *is* the switch — there is nothing to turn on here. Give the panel a console port in your configuration and rebuild; the console moves there, and this section then shows the tunnel command for it.": "Экран доступа на этом хосте только для чтения, поэтому сам параметр *и есть* переключатель — включать здесь нечего. Задайте панели порт консоли в своей конфигурации и пересоберите; консоль переедет туда, а этот раздел покажет команду для туннеля.",
+  "the private-access option": "параметр приватного доступа",
   "The panel is now reached at {addr}.": "Теперь панель доступна по адресу {addr}.",
   "Cancel the move — keep this address": "Отменить переезд — оставить этот адрес",
   "Go to the current address ↗": "Перейти на текущий адрес ↗",
@@ -3985,6 +4047,8 @@ export const STR = {
   "no auth file configured (SWG_PANEL_AUTH unset)": "файл входа не настроен (SWG_PANEL_AUTH не задан)",
   "enter a valid authenticator or recovery code": "введите код из приложения или запасной код",
   "that code isn't valid": "код не подходит",
+  "too many wrong codes — wait {v1} minutes, or sign in with one of your recovery codes":
+    "слишком много неверных кодов — подождите {v1} мин. или войдите с запасным кодом",
   "that code isn't valid — check the app and your device clock":
     "код не подходит — проверьте приложение и часы на устройстве",
   "awg_params must be an object": "awg_params должен быть объектом",
@@ -4055,6 +4119,19 @@ export const STR = {
   "at least one target is required": "нужно хотя бы одно назначение",
   "bad request signature ({v1})": "неверная подпись запроса ({v1})",
   "confirm must be made on the new address": "подтверждать нужно на новом адресе",
+  "confirm must be made on the new console address": "подтверждать нужно на новом адресе консоли",
+  "no matching pending console change": "подходящего запланированного изменения консоли нет",
+  "no console change to cancel": "отменять нечего — изменений консоли нет",
+  "a console address change is still waiting to be confirmed — finish or cancel that first":
+    "изменение адреса консоли всё ещё ждёт подтверждения — сначала завершите или отмените его",
+  "a change is still waiting to be confirmed — finish or cancel it first":
+    "изменение всё ещё ждёт подтверждения — сначала завершите или отмените его",
+  "port {v1} is the subscription server's — pick a different, free port for the console":
+    "порт {v1} занят сервером подписок — выберите для консоли другой свободный порт",
+  "port {v1} is this box's own node loopback endpoint — pick a different, free port for the console":
+    "порт {v1} — это loopback-точка собственной ноды этой машины; выберите для консоли другой свободный порт",
+  "this panel's container doesn't publish a console port, so a console bound inside it would be unreachable. Re-run the Docker installer to restage docker-compose.yml (it adds the port), then try again.":
+    "контейнер этой панели не публикует порт консоли, поэтому консоль, поднятая внутри него, будет недоступна. Перезапустите установщик Docker, чтобы пересобрать docker-compose.yml (он добавит порт), и попробуйте снова.",
   "couldn't bind {v1} — {v2}. If your reverse proxy still owns that port, stop it there first — the panel and the proxy can't both hold it.":
     "не удалось занять {v1} — {v2}. Если порт всё ещё держит ваш обратный прокси, освободите его там: панель и прокси не могут держать один порт вдвоём.",
   "hold on {v1}s — the nodes are still learning the new address so the restart won't strand them":

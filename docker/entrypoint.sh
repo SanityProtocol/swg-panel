@@ -139,8 +139,20 @@ fi
 #    selfsigned (default) | none | letsencrypt | letsencrypt-ip | cloudflare | cf15.  acme.sh state persists
 #    under /etc/swg-panel/acme (mounted volume), so a restart renews/reuses rather than re-issues.
 #    (ACME/acme() are defined at the top of this file, alongside the sub-cert helpers.)
-# reliable "is there an ISSUED cert?" check — `acme --info` returns 0 even with none, so check disk
-acme_has_cert(){ [ -s "$ACME_CFG/${PANEL_DOMAIN}_ecc/${PANEL_DOMAIN}.cer" ] || [ -s "$ACME_CFG/${PANEL_DOMAIN}/${PANEL_DOMAIN}.cer" ]; }
+# reliable "is there an ISSUED cert?" check — `acme --info` returns 0 even with none, so check disk.
+# ⚠️ It must test the file --install-cert READS (fullchain.cer) and that the leaf is really a PEM:
+# acme.sh ≤3.1.3 writes the CA's HTTP body to <domain>.cer unconditionally, so a 404 from the CA
+# leaves a JSON error blob that a bare -s test happily reports as a certificate. Here that turns the
+# `|| acme_has_cert` rescues below into false successes, and the panel then starts with no usable
+# TLS. The image pins acme.sh past that bug, but the acme state dir is a MOUNTED VOLUME — it can
+# still carry a blob written by an older image, so the predicate stays defensive.
+acme_has_cert(){
+  local d
+  for d in "$ACME_CFG/${PANEL_DOMAIN}_ecc" "$ACME_CFG/${PANEL_DOMAIN}"; do
+    [ -s "$d/fullchain.cer" ] || continue
+    head -1 "$d/${PANEL_DOMAIN}.cer" 2>/dev/null | grep -q 'BEGIN CERTIFICATE' && return 0
+  done
+  return 1; }
 # call after a failed acme run with its output — flag the common, confusing causes
 acme_hint(){ case "$1" in
   *"too many certificates"*|*"rateLimited"*|*"rate limit"*)

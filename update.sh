@@ -566,6 +566,7 @@ ensure_cert_perms(){   # HEAL (fix-if-wrong) TLS key ownership so the panel can 
                        note "TLS key perms: healed$fixed"; }
   return 0; }
 
+ACME_HOME_CANON="${ACME_HOME_CANON:-/root/.acme.sh}"   # the ONE acme store — see ensure_acme_home below
 ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-metal panel whose TLS needs it.
   # The cert and its renewal STATE live in /root/.acme.sh, but the PROGRAM is separate — and a docker→bare-metal
   # convert brings the state across without it, because in docker acme.sh lives inside the image. The result is a
@@ -575,14 +576,67 @@ ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-me
   local conf="${ETC_DIR:-/etc/swg-panel}/install.conf" mode=""
   [ -f "$conf" ] && mode="$(sed -n 's/^TLS_MODE=//p' "$conf" | head -1)"
   case "$mode" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 0;; esac
+  # ⚠️ present is not the same as USABLE. acme.sh ≤3.1.3 writes the CA's HTTP body to <domain>.cer
+  # even when that body is a 404, so a failed issuance is cached as a certificate and every later
+  # renewal/address change installs a JSON blob. This heal ran install-if-missing only, so a box
+  # carrying an ancient acme.sh never got past it. Upgrade it here too; never fatal.
+  local ACME_MIN=3.1.4
   local a; for a in /root/.acme.sh/acme.sh "${HOME:-/root}/.acme.sh/acme.sh" "$(command -v acme.sh 2>/dev/null || true)"; do
-    [ -n "$a" ] && [ -x "$a" ] && return 0
+    if [ -n "$a" ] && [ -x "$a" ]; then
+      local v; v="$("$a" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+      if [ -n "$v" ] && [ "$v" != "$ACME_MIN" ] \
+         && [ "$(printf '%s\n%s\n' "$v" "$ACME_MIN" | sort -V | head -1)" = "$v" ]; then
+        info "Upgrading acme.sh $v → $ACME_MIN or newer (older builds cache a failed issuance as a cert)"
+        # --home pins WHICH acme.sh gets upgraded. Without it the target is $HOME/.acme.sh, and this
+        # heal can run from a context whose HOME is not root's — upgrading a store nothing renews.
+        "$a" --home "$ACME_HOME_CANON" --upgrade >/dev/null 2>&1 && ok "acme.sh upgraded" || warn "couldn't upgrade acme.sh — staying on $v"
+      fi
+      return 0
+    fi
   done
   local email; email="$(sed -n 's/^ACME_EMAIL=//p' "$conf" 2>/dev/null | head -1)"
   info "Installing acme.sh (TLS mode $mode needs it; renewals and address changes were failing without it)"
   sh -c "curl -fsSL https://get.acme.sh | sh -s email=${email:-admin@localhost}" >/dev/null 2>&1 || true
   [ -x /root/.acme.sh/acme.sh ] && ok "acme.sh installed" \
     || warn "couldn't install acme.sh — renewals and address changes will keep failing until it is"
+  return 0; }
+
+# ⚠️ THE SECOND ACME STORE, and it silently stopped renewals. acme.sh keeps state in
+# $LE_WORKING_DIR, falling back to "$HOME/.acme.sh". swg-netctl runs from systemd with NO HOME, so it
+# operated on /.acme.sh (filesystem root) while the installer and acme's cron use /root/.acme.sh —
+# cron runs `--cron --home /root/.acme.sh` only. A certificate the PANEL issued at runtime (any
+# address change from the Access screen) therefore had no renewer at all and expired at 90 days,
+# with nothing logged. New installs pin LE_WORKING_DIR in the unit; this heals the boxes already out
+# there: give the unit the same pin, then move any domain the canonical store is MISSING into it.
+# Never deletes: a domain present in both is left alone (the canonical copy is the one cron renews)
+# and the stray tree is kept, so a bad merge is always reversible by hand.
+ensure_acme_home(){
+  local stray="${ACME_HOME_STRAY:-/.acme.sh}"   # overridable so the migration is testable off-box
+  # 1. pin the store on the helper, additively — a drop-in, never a rewrite of the shipped unit
+  if [ -f /etc/systemd/system/swg-netctl.service ]; then
+    local dd=/etc/systemd/system/swg-netctl.service.d
+    if ! grep -rqs "LE_WORKING_DIR=" "$dd" /etc/systemd/system/swg-netctl.service 2>/dev/null; then
+      mkdir -p "$dd"
+      printf '[Service]\nEnvironment=LE_WORKING_DIR=%s\n' "$ACME_HOME_CANON" > "$dd/acme-home.conf"
+      systemctl daemon-reload 2>/dev/null || true
+      ok "pinned the TLS helper's acme store to $ACME_HOME_CANON (it was following \$HOME)"
+    fi
+  fi
+  # 2. rescue any certificate that only ever existed in the stray store
+  [ -d "$stray" ] && [ "$stray" != "$ACME_HOME_CANON" ] || return 0
+  local d n moved=0 kept=0
+  # ⚠️ ONE glob. `"$stray"/*_ecc "$stray"/*.*` both match a domain dir (they contain dots), so every
+  # domain was visited twice and the counters double-reported. Caught by the migration's own control.
+  for d in "$stray"/*; do
+    [ -d "$d" ] || continue
+    n="$(basename "$d")"
+    case "$n" in ca|deploy|dnsapi|notify|http.header|account.conf) continue;; esac
+    [ -f "$d/$(basename "$n" _ecc).conf" ] || continue      # a real domain dir, not scaffolding
+    if [ -e "$ACME_HOME_CANON/$n" ]; then kept=$((kept+1)); continue; fi
+    mv "$d" "$ACME_HOME_CANON/$n" 2>/dev/null && moved=$((moved+1))
+  done
+  [ "$moved" -gt 0 ] && ok "moved $moved certificate(s) into $ACME_HOME_CANON — they had no renewer before"
+  [ "$kept" -gt 0 ] && warn "$kept certificate(s) exist in BOTH $stray and $ACME_HOME_CANON — kept the renewable one; $stray left in place for inspection"
   return 0; }
 
 ensure_update_unit(){   # HEAL (install-if-missing) the one-click self-update wiring on a bare-metal panel.
@@ -875,6 +929,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   ensure_netctl_helper   # swg-netctl privileged helper (+ queue dirs + trigger units)
   ensure_sub_server      # swg-sub subscription surface (user + binary + tls dir + unit)
   ensure_acme_client     # HEAL: the ACME client itself, when TLS_MODE needs it (a convert leaves the state, not the program)
+  ensure_acme_home       # HEAL: pin the helper's acme store + rescue certs stranded in /.acme.sh (no renewer)
                          # (ensure_cert_perms runs ABOVE, before the restart it protects — see the note there)
   ensure_update_unit     # one-click self-update wiring (wrappers + service/timer + trigger drop-in)
   ensure_access_seed     # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from install.conf

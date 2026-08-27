@@ -761,7 +761,16 @@ in
           done
           [ "$gone" = 1 ] || exit 0
 
-          for u in $(${pkgs.systemd}/bin/systemctl list-units --all --no-legend 'vk-turn-proxy-*.service' \
+          # ⚠️ THREE FAMILIES, NOT ONE. swg-noded names a turn-proxy unit `vk-turn-proxy-<fork>-<port>`
+          # but a WDTT or csqtt server `swg-wdtt-<iface>` / `swg-csqtt-<iface>` (_wdtt_svc / _csqtt_svc).
+          # Matching only the first left both of the others RUNNING after the node was removed —
+          # measured on the lab box: swg-wdtt-wdtt1 and swg-csqtt-csqtt1 still active, `disabled`, with
+          # no unit file at all, holding four PUBLIC UDP sockets. The operator believes they are gone.
+          # This arm is the only one exposed: a container node runs each WDTT server as a supervised
+          # CHILD of swg-noded (no host unit, dies with the container), and bare metal has
+          # uninstall.sh, which removes them by name. Here the reaper IS the removal path.
+          for u in $(${pkgs.systemd}/bin/systemctl list-units --all --no-legend \
+                     'vk-turn-proxy-*.service' 'swg-wdtt-*.service' 'swg-csqtt-*.service' \
                      2>/dev/null | ${pkgs.gawk}/bin/awk '{print $1}'); do
             ${pkgs.systemd}/bin/systemctl disable --now "$u" >/dev/null 2>&1 || true
           done

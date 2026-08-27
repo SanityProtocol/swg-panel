@@ -1291,6 +1291,10 @@ Environment=SWG_PANEL_USER=${PANEL_USER}
 Environment=SWG_PANEL_GROUP=swg
 Environment=SWG_STATE_DIR=${STATE_DIR}
 Environment=SWG_ETC_DIR=${ETC_DIR}
+# ⚠️ WITHOUT THIS the helper inherits no HOME from systemd and acme.sh falls back to "\$HOME/.acme.sh"
+# = /.acme.sh — a SECOND store that acme's cron (--home ${ACME_HOME}) never renews, so every cert the
+# panel issued at runtime expired silently at 90 days. Pin it; do not rely on HOME.
+Environment=LE_WORKING_DIR=${ACME_HOME}
 EOF
   writef /etc/systemd/system/swg-netctl.path 644 <<EOF
 [Unit]
@@ -1429,11 +1433,55 @@ PYAUTH
 cert_perms(){ run chown root:swg "$TLS_DIR/fullchain.pem" "$TLS_DIR/key.pem" 2>/dev/null || true
   chmod 644 "$PREFIX$TLS_DIR/fullchain.pem" 2>/dev/null || true; chmod 640 "$PREFIX$TLS_DIR/key.pem" 2>/dev/null || true; }
 san_for(){ case "$1" in *[a-zA-Z]*) echo "DNS:$1";; *) echo "IP:$1";; esac; }
+# ⚠️ THE PROGRAM AND ITS STORE ARE TWO DIFFERENT THINGS, and conflating them cost us a silent
+# renewal failure. acme.sh keeps state in $LE_WORKING_DIR, falling back to "$HOME/.acme.sh" — so the
+# SAME binary reads a different store depending on who runs it. swg-netctl runs from systemd with no
+# HOME, so it was operating on /.acme.sh (filesystem root) while the installer and acme's own cron
+# used /root/.acme.sh. A cert the PANEL issued at runtime therefore had no renewer at all: cron runs
+# `--cron --home /root/.acme.sh` only, so it expired silently after 90 days. Pin the store here, pass
+# it to every acme call, and hand it to swg-netctl as LE_WORKING_DIR — never inherit it from HOME.
+ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
 find_acme(){ ACME=""; local a; for a in /root/.acme.sh/acme.sh "${HOME:-/root}/.acme.sh/acme.sh" "$(command -v acme.sh 2>/dev/null || true)"; do [ -n "$a" ] && [ -x "$a" ] && { ACME="$a"; return 0; }; done; return 1; }
+# every acme.sh invocation goes through this, so none of them can pick up an ambient store
+acme(){ run "$ACME" --home "$ACME_HOME" "$@"; }
 # does acme.sh actually hold an ISSUED cert for <domain>?  (`--info` returns 0 even with no cert,
 # e.g. on a clean box right after --register-account — so check the cert file on disk instead)
-acme_has_cert(){ local h; h="$(dirname "${ACME:-/root/.acme.sh/acme.sh}")"; [ -s "$h/${1}_ecc/${1}.cer" ] || [ -s "$h/${1}/${1}.cer" ]; }
-ensure_acme(){ find_acme && return 0
+# ⚠️ THIS PREDICATE GATES THE SELF-SIGNED FALLBACK, so it has to answer the question the callers
+# actually ask — "can --install-cert succeed?" — not the weaker "does a file exist?". acme.sh ≤3.1.3
+# writes the CA's HTTP body to <domain>.cer UNCONDITIONALLY, so a 404 from the CA lands a JSON error
+# blob there and produces NO fullchain.cer. A bare -s test then reports a certificate we do not have:
+# the installer announces "a cert already exists", skips the fallback, and --install-cert dies on the
+# missing fullchain — aborting the run half-built (swg-netctl never compiled, TLS never wired, so a
+# proxied panel answers 525). 3.1.4 added the guard upstream; this keeps us right on every version.
+# Require the file --install-cert reads, and require the leaf to actually be a PEM certificate.
+acme_has_cert(){
+  # ⚠️ NOT `dirname $ACME`. find_acme accepts `command -v acme.sh`, so on a box with a packaged or
+  # custom acme.sh that resolved to /usr/local/bin — and this looked for the cert in /usr/local/bin,
+  # never found one, and re-issued on every run. The store is ACME_HOME; the binary's location is
+  # unrelated to it.
+  local h d; h="$ACME_HOME"
+  for d in "$h/${1}_ecc" "$h/${1}"; do
+    [ -s "$d/fullchain.cer" ] || continue
+    head -1 "$d/${1}.cer" 2>/dev/null | grep -q 'BEGIN CERTIFICATE' && return 0
+  done
+  return 1; }
+# ⚠️ acme.sh was install-once-never-upgrade: `find_acme && return 0` meant a box provisioned years
+# ago kept whatever acme.sh it got then, forever. That matters because ≤3.1.3 caches a failed
+# issuance AS a certificate (see acme_has_cert above) and reports the CA's real complaint as an
+# empty "Signing failed:" — the defect is silent and the diagnosis expensive. Upgrade past the floor
+# when we find an older one. Best-effort by design: a box that cannot reach GitHub still installs.
+ACME_MIN=3.1.4
+acme_version(){ "$1" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
+ensure_acme(){
+  if find_acme; then
+    local v; v="$(acme_version "$ACME")"
+    if [ -n "$v" ] && [ "$v" != "$ACME_MIN" ] \
+       && [ "$(printf '%s\n%s\n' "$v" "$ACME_MIN" | sort -V | head -1)" = "$v" ]; then
+      info "acme.sh $v is older than $ACME_MIN — upgrading (older builds record a failed issuance as a cert)"
+      acme --upgrade || warn "acme.sh upgrade failed — continuing on $v"
+    fi
+    return 0
+  fi
   info "Installing acme.sh"; run sh -c "curl -fsSL https://get.acme.sh | sh -s email=${ACME_EMAIL:-admin@$PANEL_DOMAIN}"
   find_acme && return 0; $DRYRUN && { ACME=/root/.acme.sh/acme.sh; return 0; }
   die "acme.sh not found after install — install it manually or use TLS=selfsigned/skip"; }
@@ -1455,7 +1503,7 @@ ensure_renewer_for_reuse(){
 # for $PANEL_DOMAIN, drop any OTHER acme entry whose install path is under $TLS_DIR.
 prune_stale_acme_installs(){
   $DRYRUN && return 0
-  local h conf d rp ecc; h="$(dirname "${ACME:-/root/.acme.sh/acme.sh}")"
+  local h conf d rp ecc; h="$ACME_HOME"   # same store as acme_has_cert — see the note there
   for conf in "$h"/*/*.conf; do
     [ -f "$conf" ] || continue
     d="$(sed -n "s/^Le_Domain='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"
@@ -1464,7 +1512,7 @@ prune_stale_acme_installs(){
     case "$rp" in "$TLS_DIR"/*)
       ecc=""; case "$(dirname "$conf")" in *_ecc) ecc="--ecc";; esac
       warn "removing stale acme entry $(b "$d") — it also installs into $TLS_DIR and would clobber $(b "$PANEL_DOMAIN")'s cert"
-      run "$ACME" --remove -d "$d" $ecc || true
+      acme --remove -d "$d" $ecc || true
       rm -rf "$(dirname "$conf")" ;;
     esac
   done
@@ -1545,13 +1593,13 @@ obtain_cert_internal(){
         fi
         info "Issuing $PANEL_DOMAIN via Let's Encrypt — HTTP-01 (acme standalone needs :80 free)…"
       fi
-      [ -n "$ACME_EMAIL" ] && { run "$ACME" --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
+      [ -n "$ACME_EMAIL" ] && { acme --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
       # Re-run? acme.sh already holds a cert for this domain → install it instead of re-issuing.
       # Renewals run from acme's cron. (First install on a clean box has no cert → issue below.)
       if ! $DRYRUN && acme_has_cert "$PANEL_DOMAIN"; then
         ok "acme.sh already has a cert for $PANEL_DOMAIN — installing it (auto-renews via acme's cron)"
       else
-        local rc=0; run "$ACME" "${args[@]}" || rc=$?
+        local rc=0; acme "${args[@]}" || rc=$?
         # acme.sh exit 2 = RENEW_SKIP (a valid cert already exists, not due for renewal) — that's fine.
         if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
           if $DRYRUN || acme_has_cert "$PANEL_DOMAIN"; then
@@ -1563,8 +1611,15 @@ obtain_cert_internal(){
       fi
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
       prune_stale_acme_installs
-      run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
-          --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl restart swg-panel-server"
+      # ⚠️ NOT allowed to abort the run. Under `set -e` a failing --install-cert killed the installer
+      # right here — after the panel unit exists but before swg-netctl is compiled and the TLS paths
+      # are written — leaving a box that looks installed, serves plain HTTP, and 525s behind a proxy.
+      # Whatever went wrong with the CA, a self-signed cert is a working panel the operator can fix.
+      if ! acme --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
+          --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl restart swg-panel-server"; then
+        warn "acme.sh could not install the certificate for $PANEL_DOMAIN — falling back to a self-signed cert."
+        mk_selfsigned; return
+      fi
       cert_perms; ok "issued + installed certificate via $TLS_MODE (auto-renews)";;
     *) die "TLS must be cloudflare|letsencrypt|letsencrypt-ip|selfsigned|skip";;
   esac
@@ -1605,20 +1660,25 @@ setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to 
         info "Issuing $PANEL_DOMAIN via Let's Encrypt — DNS-01 challenge through Cloudflare (can take ~30–60s while DNS propagates)…"
       elif [ "$SERVE_MODE" = nginx ]; then args+=(--webroot "$ACME_WEBROOT")    # nginx already serves :80 for the challenge
       else args+=(--standalone); fi                                            # caddy not up yet → acme can hold :80
-      [ -n "$ACME_EMAIL" ] && { run "$ACME" --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
+      [ -n "$ACME_EMAIL" ] && { acme --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
       local reload="systemctl reload nginx"; [ "$SERVE_MODE" = caddy ] && reload="systemctl reload caddy"
       # Re-run? install the existing cert instead of re-issuing. First install → no cert → issue.
       if ! $DRYRUN && acme_has_cert "$PANEL_DOMAIN"; then
         ok "acme.sh already has a cert for $PANEL_DOMAIN — installing it (auto-renews via acme's cron)"
       else
-        local rc=0; run "$ACME" "${args[@]}" || rc=$?
+        local rc=0; acme "${args[@]}" || rc=$?
         if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && ! { $DRYRUN || acme_has_cert "$PANEL_DOMAIN"; }; then
           warn "issuance failed (acme.sh exit $rc) — proxy will serve plain HTTP."; CERT_FULLCHAIN=""; CERT_KEY=""; return 0
         fi
       fi
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
       prune_stale_acme_installs
-      run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" --reloadcmd "$reload"
+      # same rule as the internal-serve block above: a failed install must not abort the installer.
+      # Here the proxy is the TLS terminator, so degrade exactly as issuance failure does — plain HTTP.
+      if ! acme --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" --reloadcmd "$reload"; then
+        warn "acme.sh could not install the certificate for $PANEL_DOMAIN — proxy will serve plain HTTP."
+        CERT_FULLCHAIN=""; CERT_KEY=""; return 0
+      fi
       cert_perms; ok "issued + installed certificate via $TLS_MODE";;
     *) die "TLS must be cloudflare|letsencrypt|letsencrypt-ip|selfsigned|skip";;
   esac

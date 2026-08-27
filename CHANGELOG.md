@@ -3,6 +3,76 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.3-beta] — 2026-08-27
+
+### Added
+- **Private panel access — the console moves behind an SSH tunnel, and the fleet never notices.** Settings →
+  Panel URL can now serve the operator console on a loopback port you reach over `ssh -L`, leaving the public
+  address answering **node routes only**: a browser hitting it gets a 404 where the panel used to be, while
+  every node keeps syncing across the change. This is the answer to *"switch 0.0.0.0 to 127.0.0.1 without
+  hurting the nodes"* — the UI disappears from the internet without a second certificate, a second hostname
+  or a firewall rule, and nothing about the node connection changes. The move is **confirm-or-revert**: the
+  panel binds the new console alongside the old one, and unless your browser lands on it and confirms, the
+  timer puts everything back. A wrong port, a tunnel that never came up and a forgotten firewall rule are all
+  the same case, and none of them can lock you out.
+- **Docker and NixOS can wire the console port up front.** A fresh Docker install publishes
+  `127.0.0.1:8445` for it (set `CONSOLE_BIND`/`CONSOLE_PORT` in `.env`), and the NixOS module gains
+  `consolePort` / `consoleHost`. ⚠️ An **updated** Docker panel keeps its existing compose and therefore has
+  no console port — the panel says so in as many words and tells you to re-run the installer, which restages
+  `docker-compose.yml`.
+
+- **Updating the panel updates the fleet with it.** Update the panel from its own Update button and every
+  node that can update itself is asked to follow in the same pass, instead of you visiting each server.
+  Nodes that cannot are skipped with the reason said out loud: one that shares the box with the panel
+  updates *with* it, one may be already current, one may not have reported recently, and a declarative or
+  container node's installation belongs to the configuration that built it. Nothing is ever staged whose
+  only possible outcome is a red tag.
+  ⚠️ **This first takes effect on your _next_ update.** The sweep is run by the panel you are updating
+  **from**, and 1.8.2 does not have it — so updating *to* 1.8.3 still leaves each node to be updated on its
+  own, from that node's Update button. Updating 1.8.3 → 1.8.4 is the first one that carries the fleet along.
+### Security
+- **Brute force now costs the attacker time, and never costs you your panel.** Repeated failures on
+  `/api/login`, on a node token or on the external API token draw a growing, capped delay. The credential is
+  checked **first**, so a caller holding a working one is served no matter what the counters say — a node with
+  a valid token can never be delayed, refused or stranded by this, whatever else is happening to the panel.
+  The second factor is the one that is genuinely breakable by guessing, so it is hard-capped; recovery codes
+  are exempt, which is what stops the cap from becoming a lockout an attacker could arm on purpose. It is
+  deliberately **not** per-IP: most panels sit behind a reverse proxy or Cloudflare, where every request
+  carries the proxy address, so a per-IP bucket would be one bucket for everybody and a single attacker could
+  lock the operator out of their own panel.
+
+### Fixed
+- **NixOS: removing a node left its WDTT and csqtt servers running.** On the native arm,
+  `services.swg-node.enable = false` followed by `nixos-rebuild switch` removed the node and left every WDTT
+  and csqtt server it managed still running and still bound to its public port — the reaper that stops them
+  knew only the turn-proxy unit names. Nothing was exposed that had not been exposed before, but the operator
+  had been told those servers were gone. The container arm was never affected (those run as children of the
+  node container and go with it), and bare metal is handled by the uninstaller.
+- **Certificates the panel issued itself had no renewer and expired silently at 90 days.** acme.sh keeps its
+  state under `$HOME`, and the panel's TLS helper runs from systemd with no `HOME` — so a certificate issued
+  from the Access screen went into a second store that the renewal cron never looked at. Every address change
+  made from the panel produced a certificate nothing would renew, and nothing said so. There is now one store,
+  pinned explicitly, and updating moves any domain the canonical store is missing into it. Nothing is deleted:
+  a domain present in both is left alone and the stray tree is kept, so a bad merge is reversible by hand.
+  ⚠️ **If you ever changed the panel's address from the Access screen, this update is what gives that
+  certificate a renewer.**
+- **A failed certificate order could be stored as though it had succeeded, and abort an install half-way.**
+  acme.sh 3.1.3 and older write the certificate authority's reply into the certificate file even when that
+  reply is an error, so a failed issuance left behind something shaped like a certificate. The installer
+  believed it, skipped the self-signed fallback it would otherwise have used, and then died on the chain that
+  was never there — leaving TLS unwired and a proxied panel answering 525. The check now insists on a real
+  certificate, a failed install step no longer aborts the run, and both the installer and the Docker image
+  require acme.sh 3.1.4 or newer.
+- **Reverting an address change could not be retried.** Dropping a certificate kept the domain registered, so
+  the second attempt was refused while the dialog told you to try again.
+- **On Docker, the check that reports how a certificate turned out gave up before the certificate arrived.**
+  It allowed a few seconds; a DNS-01 issuance takes a minute or more. It now waits for the mode it is watching.
+- **A hover bubble on a phone was a trap.** The node deployment bubble opened on tap and had no way out — no
+  Update button of its own and nothing to dismiss it but reloading. It now carries the action it describes and
+  closes when you tap outside it. The `+N` bubble also grew the row it was meant to float above.
+- **The update dialog could show a stale changelog.** A corrected release note could not reach the operator
+  until the panel restarted; checking for updates now refetches it.
+
 ## [1.8.2-beta] — 2026-08-26
 
 ### Added

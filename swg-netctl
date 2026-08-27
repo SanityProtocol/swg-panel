@@ -164,6 +164,20 @@ _ACME_CANDIDATES = ("/root/.acme.sh/acme.sh", "/opt/acme.sh/acme.sh",
                     os.path.expanduser("~/.acme.sh/acme.sh"))
 
 
+# ⚠️ THE STORE IS NOT THE BINARY'S DIRECTORY, and it is not $HOME either. acme.sh keeps state in
+# $LE_WORKING_DIR and falls back to "$HOME/.acme.sh" — and this process is a systemd oneshot with no
+# HOME, so it silently operated on /.acme.sh (filesystem root) while acme's own cron renewed
+# `--home /root/.acme.sh`. Every certificate the panel issued at runtime therefore had NO renewer and
+# expired at 90 days. The unit now sets LE_WORKING_DIR, but do not depend on the unit alone: pass
+# --home on every call, so a hand-run, an old unit, or a drop-in that lost the variable cannot
+# resurrect the split.
+ACME_HOME = os.environ.get("LE_WORKING_DIR") or "/root/.acme.sh"
+
+
+def acme_argv(acme, *args):
+    return [acme, "--home", ACME_HOME] + list(args)
+
+
 def find_acme():
     for a in _ACME_CANDIDATES:
         if os.path.isfile(a) and os.access(a, os.X_OK):
@@ -401,7 +415,7 @@ def _issue_selfsigned(svc, domains):
 def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
     acme = find_acme()
     env = dict(os.environ)
-    issue = [acme, "--issue", "--server", "letsencrypt", "--keylength", "ec-256"]
+    issue = acme_argv(acme, "--issue", "--server", "letsencrypt", "--keylength", "ec-256")
     for d in domains:                   # one -d per SAN; the FIRST is the primary acme.sh installs/renews by
         issue += ["-d", d]
     if mode == "cloudflare":
@@ -414,13 +428,13 @@ def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
     else:  # letsencrypt (HTTP-01)
         issue += ["--standalone"]
     if creds["email"]:
-        run([acme, "--register-account", "-m", creds["email"], "--server", "letsencrypt"], env=env)
+        run(acme_argv(acme, "--register-account", "-m", creds["email"], "--server", "letsencrypt"), env=env)
     rc, out = run(issue, env=env)
     # acme.sh: 0 = issued, 2 = RENEW_SKIP (a still-valid cert already exists). Else a failure.
     if rc not in (0, 2) and not DRYRUN:
         raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, ",".join(domains), out.strip()[-400:]))
-    inst = [acme, "--install-cert", "-d", domains[0], "--ecc",   # install/renew keyed by the primary -d
-            "--key-file", svc["key"], "--fullchain-file", svc["cert"]]
+    inst = acme_argv(acme, "--install-cert", "-d", domains[0], "--ecc",   # install/renew keyed by the primary -d
+                     "--key-file", svc["key"], "--fullchain-file", svc["cert"])
     if reloadcmd:                       # renewals reload the running service; a live-apply must NOT (the old
         inst += ["--reloadcmd", reload_cmd_for(service)]   # listener keeps the old cert until the change confirms)
     rc, out = run(inst, env=env)
@@ -548,9 +562,22 @@ def do_drop_cert(service, domain):
     v_service(service)
     v_domain(domain)
     acme = find_acme()
-    rc, out = run([acme, "--remove", "-d", domain, "--ecc"])
+    rc, out = run(acme_argv(acme, "--remove", "-d", domain, "--ecc"))
     if rc:
         raise Reject("acme --remove failed (rc %d): %s" % (rc, out.strip()[-200:]))
+    # ⚠️ --remove DROPS THE RENEWAL CONFIG AND KEEPS THE KEY ("You can remove them by yourself"), and
+    # that stranded key makes the domain un-reissuable: the next --issue stops at "Domain key exists,
+    # do you want to overwrite it? If so, add --force". An address change that reverts once could
+    # therefore NEVER be retried to the same address, while the dialog told the operator to try again.
+    # --force is not the answer: swg-netctl relies on rc 2 = RENEW_SKIP, and --force re-issues on every
+    # apply, burning Let's Encrypt's 5-per-week duplicate limit. We have just declared we do not want
+    # this certificate, so drop its directory — the same thing install-host.sh's
+    # prune_stale_acme_installs already does for a superseded entry.
+    for _d in ("%s_ecc" % domain, domain):
+        _p = os.path.join(ACME_HOME, _d)
+        # only ever a domain directory directly under the store we own, and only one acme just removed
+        if os.path.dirname(os.path.realpath(_p)) == os.path.realpath(ACME_HOME) and os.path.isdir(_p):
+            shutil.rmtree(_p, ignore_errors=True)
     return "stopped auto-renewing %s" % (domain,)
 
 

@@ -2933,6 +2933,19 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .hub-title{justify-self:start;min-width:0}
 .hub-h > .hub-nav-group{justify-self:center}
 .hub-h > .hub-date{justify-self:end}
+/* ⚠️ THE BUBBLE'S OWN ACTION EXISTS FOR TOUCH. Once this bubble opens it covers the badge that opened
+   it, and a phone has no mouseout — so without a control in here the only exit is a tap elsewhere,
+   which used to close the update modal underneath instead. Top-right, beside the date, so it reads as
+   the header's action rather than a row in the notes. min-height keeps it tappable in a dense bubble. */
+/* ⚠️ grid-column:3 EXPLICITLY. .hub-h is `1fr auto 1fr`, and this bubble has neither nav buttons nor
+   a date — so as the second child the button was auto-placed into the MIDDLE column and sat against
+   the title. Naming the column pins it to the right edge whatever else the header does or doesn't hold. */
+.hub-h > .hub-end{grid-column:3;justify-self:end;display:inline-flex;align-items:center;gap:9px}
+.hub-act{appearance:none;border:1px solid var(--brand);background:color-mix(in srgb,var(--brand) 14%,transparent);
+  color:var(--brand);cursor:pointer;border-radius:6px;padding:3px 12px;min-height:26px;font-size:11px;font-weight:700;
+  line-height:1.4;flex:0 0 auto;white-space:nowrap;display:inline-flex;align-items:center}
+.hub-act:hover{background:var(--brand);color:var(--brand-ink)}
+.hub-act:active{transform:translateY(1px)}
 .hub-title{font-size:13px;font-weight:600;color:var(--ink)}
 .hub-title b{color:var(--ready);font-weight:700}
 .hub-date{flex:none;font-family:var(--mono);font-size:10.5px;color:var(--faint);font-weight:400}

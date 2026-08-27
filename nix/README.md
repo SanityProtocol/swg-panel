@@ -832,6 +832,25 @@ These are written into the panel's own settings on **every start**, so a `nixos-
 address changes — including the confirmed-address baseline, which everywhere else only ever advances
 through a browser confirm that cannot be performed here.
 
+**The operator console can have its own port, and here that is the only way to move it.** Elsewhere
+an operator flips this in Access & TLS and confirms it in a browser; that screen is read-only here, so
+the option *is* the switch — set a port and the console moves there, leave it 0 and there is one door
+as before.
+
+```nix
+services.swg-panel.consolePort = 8445;      # 0 = off, the default
+services.swg-panel.consoleHost = "127.0.0.1";   # loopback: reached over an SSH tunnel, nothing exposed
+```
+
+`port` then answers only what a node dials and returns **404** for everything else — the console pages,
+the operator API and `/api/v1/*` and `/metrics` all move to the tunnel port with you. Nothing about the
+fleet changes: nodes keep dialling the same address, which keeps answering the same routes.
+
+Nothing opens the firewall for you. Left on loopback the console is reachable only from the box —
+`ssh -L 8445:127.0.0.1:8445 <this host>`, then `http://localhost:8445` — and is served over plain HTTP,
+because loopback carries no eavesdropper. Widen `consoleHost` and it is served with the panel's own
+certificate and the firewall rule is yours to write.
+
 **TLS is subtracted, not ported.** The panel image bundles acme.sh and the bare-metal installer
 drives it; neither runs here. `security.acme` and your reverse proxy own certificates — which is
 what every comparable nixpkgs module does.

@@ -1099,7 +1099,14 @@ export function updateHost() {
       const r = await api.hostUpdate();
       if (!r.ok) return toast(srvText(r) || T("Failed to start update."), "err");
       if (r.data && r.data.manual) return toast(T("Automatic update isn't wired on this install — run the command shown in the dialog on the host."), "err");
-      setHostUpdating(); toast(T("Update started — the panel will restart shortly."), "ok");
+      setHostUpdating();
+      // The panel now fans the update out to every node that can take it, so SAY so — an operator
+      // told only about the panel has no reason to think the fleet moved, and would go and press
+      // Update on each node by hand.
+      const _n = ((r.data || {}).nodes || {}).started || [];
+      toast(_n.length
+        ? T("Update started — the panel will restart shortly. {v1} will update on their next sync.", { v1: plural(_n.length, "node") })
+        : T("Update started — the panel will restart shortly."), "ok");
     },
   });
 }
@@ -1121,16 +1128,37 @@ export async function checkForUpdate(e, nodeId) {
     else { Store.updFlash = Date.now() + 15000; Store.apply(); setTimeout(() => Store.apply(), 15100); }   // panel up to date + healthy → T("up to date") pill (clickable to re-run/repair) for 15s
   } finally { if (btn) btn.classList.remove("checking"); if (!nodeId) { Store.hostChecking = false; Store.apply(); } }
 }
+// ⚠️ TOUCH HAS NO MOUSEOUT, AND THESE BUBBLES ONLY HID ON ONE. On a phone the tap that opens the
+// update badge can never be undone: the bubble is body-level and covers the update modal, and the
+// only way out — a tap elsewhere — lands on the sheet's own backdrop, which closes the MODAL and
+// leaves you with neither. So the topmost layer must CONSUME the dismissing tap: hide the bubble and
+// swallow the click that follows it, so whatever is underneath survives to be used.
+// Returns a detach function; every caller must run it when the bubble goes away, or the listener
+// outlives the element it was guarding.
+function dismissOnOutsideTap(el, anchor, hide) {
+  const onDown = ev => {
+    if (el.contains(ev.target) || (anchor && anchor.contains(ev.target))) return;
+    hide();
+    // pointerdown is not what the overlay listens to — eat the click it precedes, exactly once, and
+    // never leave that armed (a pointerdown with no click, e.g. a scroll, must not swallow the next one).
+    const eat = e2 => { e2.stopPropagation(); e2.preventDefault(); };
+    document.addEventListener("click", eat, true);
+    setTimeout(() => document.removeEventListener("click", eat, true), 350);
+  };
+  document.addEventListener("pointerdown", onDown, true);
+  return () => document.removeEventListener("pointerdown", onDown, true);
+}
 // Rich hover bubble for the innerHTML header update widget (no Preact there) — right-aligned under the anchor;
 // contentFn() returns HTML (empty string → no bubble). Replaces the plain title= tooltip.
-export function hostHoverBubble(anchor, contentFn) {
+export function hostHoverBubble(anchor, contentFn, onAction) {
   // SINGLETON, self-hiding bubble. The header is innerHTML-driven and re-renders every poll, replacing `anchor` —
   // so the anchor's own mouseleave can't be trusted to clean up. Guard against orphans (remove any stray bubble
   // before showing) and hide when the pointer leaves the BUBBLE too, so it never gets stuck or stacks a glow.
-  let bub = null, t = null;
+  let bub = null, t = null, detach = null;
+  const drop = () => { if (detach) { detach(); detach = null; } if (bub) { bub.remove(); bub = null; } };
   const hide = () => {                                   // a poll re-render removes the anchor → its mouseleave fires; if the
     if (bub && bub.matches(":hover")) { later(); return; }   // pointer is actually over the BUBBLE, keep it (don't vanish mid-read)
-    clearTimeout(t); if (bub) { bub.remove(); bub = null; }
+    clearTimeout(t); drop();
   };
   const later = () => { clearTimeout(t); t = setTimeout(hide, 140); };   // grace to travel between anchor and bubble
   const show = () => {
@@ -1148,6 +1176,12 @@ export function hostHoverBubble(anchor, contentFn) {
     bub.style.transform = "translateX(-100%)";   // right edge aligns under the button
     bub.addEventListener("mouseenter", () => clearTimeout(t));
     bub.addEventListener("mouseleave", later);
+    // the in-bubble primary action (e.g. Update) — the whole point on touch, where the anchor's own
+    // click is unreachable once the bubble covers it
+    if (onAction) bub.querySelectorAll(".hub-act").forEach(b => b.addEventListener("click", ev => {
+      ev.stopPropagation(); ev.preventDefault(); clearTimeout(t); drop(); onAction();
+    }));
+    detach = dismissOnOutsideTap(bub, anchor, () => { clearTimeout(t); drop(); });
   };
   anchor.addEventListener("mouseenter", show);
   anchor.addEventListener("mouseleave", later);
@@ -1155,11 +1189,20 @@ export function hostHoverBubble(anchor, contentFn) {
 // Panel-version changelog bubble — an EXACT copy of the update-to-version hover bubble (same .hub-* markup + the same
 // self-hiding, hover-safe singleton mechanism, so it stays open while the pointer is over it), plus ‹ older / › newer
 // buttons to browse releases. Changelog fetched once and cached.
+// ⚠️ THIS USED TO BE FETCHED ONCE PER PAGE LOAD AND NEVER AGAIN. `if (!_changelogCache) fetch()` meant
+// that whatever text was live when you first opened the bubble was the text you saw for the rest of the
+// session — so a changelog published wrong and then corrected stayed wrong until a hard reload, which
+// looks exactly like "the panel only ever pulled once". A short TTL fixes it at no cost: the refetch is
+// one request to OUR OWN panel (which does its own ~1h upstream caching), and only when an operator
+// actually opens the bubble. Nothing polls in the background.
+const CHANGELOG_TTL = 5 * 60 * 1000;
 let _changelogCache = null;   // {entries:[{version,date,notes[]}], current}
+let _changelogAt = 0;         // when it was fetched — stale after CHANGELOG_TTL
 let _changelogIdx = 0;
 export function versionHoverBubble(anchor) {
-  let bub = null, t = null;
-  const hide = () => { if (bub && bub.matches(":hover")) { later(); return; } clearTimeout(t); if (bub) { bub.remove(); bub = null; } };
+  let bub = null, t = null, detach = null;
+  const drop = () => { if (detach) { detach(); detach = null; } if (bub) { bub.remove(); bub = null; } };
+  const hide = () => { if (bub && bub.matches(":hover")) { later(); return; } clearTimeout(t); drop(); };
   const later = () => { clearTimeout(t); t = setTimeout(hide, 140); };
   const paint = () => {
     if (!bub) return;
@@ -1184,9 +1227,11 @@ export function versionHoverBubble(anchor) {
     bub.style.left = Math.round(r.left) + "px";
     bub.addEventListener("mouseenter", () => clearTimeout(t));
     bub.addEventListener("mouseleave", later);
+    detach = dismissOnOutsideTap(bub, anchor, () => { clearTimeout(t); drop(); });   // see the note there — touch has no mouseout
     paint();
-    if (!_changelogCache) api.changelog().then(res => {
+    if (!_changelogCache || Date.now() - _changelogAt > CHANGELOG_TTL) api.changelog().then(res => {
       _changelogCache = (res && res.ok) ? res.data : { entries: [] };
+      _changelogAt = Date.now();
       const i = (_changelogCache.entries || []).findIndex(x => x.version === (_changelogCache.current || ""));
       _changelogIdx = i >= 0 ? i : 0;
       if (bub) paint();
@@ -1208,18 +1253,30 @@ export function noteLead(n) {
 }
 // ONE renderer for the changelog hover bubbles — the update-to-version pill AND the panel-version bubble show the
 // SAME changelog, so they share this. opts.nav={older,newer} adds ‹ older / › newer; opts.footer adds a CTA row.
-export function hubEntryHtml({ titleHtml, date, notes, emptyNote, footer, nav }) {
+export function hubEntryHtml({ titleHtml, date, notes, emptyNote, footer, nav, action }) {
   const rows = (notes && notes.length) ? notes.map(n => { const [lead, rest] = noteLead(n);
       return `<div class="hub-row"><span class="hub-bul"></span><span class="hub-txt"><b>${esc(lead)}</b>${rest ? " " + esc(rest) : ""}</span></div>`; }).join("")
     : `<div class="hub-row faint"><span class="hub-txt">${esc(emptyNote || T("No notes for this release."))}</span></div>`;
   const navGroup = nav ? `<span class="hub-nav-group"><button class="hub-nav" data-nav="1"${nav.older ? "" : " disabled"} title="${esc(T("Older release"))}">${esc(T("‹ Prev"))}</button><button class="hub-nav" data-nav="-1"${nav.newer ? "" : " disabled"} title="${esc(T("Newer release"))}">${esc(T("Next ›"))}</button></span>` : "";
-  return `<div class="hub-h"><span class="hub-title">${titleHtml}</span>${navGroup}${date ? `<span class="hub-date">${esc(date)}</span>` : ""}</div>`
+  // The header's end cell normally holds just the date. With an action it holds both, so the button
+  // sits in the top-right corner — reachable on touch, where the anchor underneath the bubble is not.
+  const dateHtml = date ? `<span class="hub-date">${esc(date)}</span>` : "";
+  const endCell = action
+    ? `<span class="hub-end">${dateHtml}<button class="hub-act" data-act="1" title="${esc(action.title || action.label)}">${esc(action.label)}</button></span>`
+    : dateHtml;
+  return `<div class="hub-h"><span class="hub-title">${titleHtml}</span>${navGroup}${endCell}</div>`
     + `<div class="hub-list">${rows}</div>`
     + (footer ? `<div class="hub-foot">${esc(footer)}</div>` : "");
 }
 export function updBubbleHtml() {
+  // ⚠️ no `footer` here any more. It read "Click to update this server." — which described the ANCHOR,
+  // and the anchor is exactly what this bubble covers on a phone. The button says what it does.
   return hubEntryHtml({ titleHtml: `What's new in <b>${esc(Store.latestRemote || "?")}</b>`, date: Store.latestRemoteDate,
-    notes: Store.latestRemoteNotes || [], emptyNote: T("See the changelog for what's new."), footer: T("Click to update this server.") });
+    notes: Store.latestRemoteNotes || [], emptyNote: T("See the changelog for what's new."),
+    // reuse the keys the catalogue already carries — "Update now" and "Update this server" are both
+    // translated, and keeping the wording identical to the rest of the update flow matters more than
+    // saving a word in a header ([[panel-i18n-plan]]: sentence = key, so a new phrasing = a new key).
+    action: { label: T("Update now"), title: T("Update this server") } });
 }
 export function fixBubbleHtml() {
   const iss = serviceIssues(); if (!iss.length) return "";

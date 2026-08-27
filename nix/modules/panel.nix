@@ -392,6 +392,34 @@ in
       '';
     };
 
+    consolePort = mkOption {
+      type = types.port;
+      default = 0;
+      example = 8445;
+      description = ''
+        Serve the OPERATOR CONSOLE on its own port. `port` above then answers only what a node
+        dials and returns 404 for everything else — the console pages, the operator API and the
+        integration API all move here with you.
+
+        0 (the default) keeps one door, exactly as before. Because this host's Access screen is
+        read-only, setting a port here IS the switch: there is no second option to turn it on.
+
+        Open it in your firewall yourself, or leave `consoleHost` on loopback and reach it over an
+        SSH tunnel — `ssh -L 8445:127.0.0.1:8445 <this host>`, then `http://localhost:8445`.
+      '';
+    };
+
+    consoleHost = mkOption {
+      type = types.str;
+      default = "127.0.0.1";
+      description = ''
+        The address `consolePort` is reachable at. Loopback by default, which is the arrangement
+        that exposes nothing: the console is served over plain HTTP because loopback carries no
+        eavesdropper, and you reach it through an SSH tunnel. Widen it and the console is served
+        with the panel's own certificate, and the firewall becomes yours to write.
+      '';
+    };
+
     basePath = mkOption {
       type = types.str;
       default = "";
@@ -782,6 +810,18 @@ in
             address change never moves.
           '';
         }
+        {
+          # The console gets its own listener (and, on the container arm, its own publish), so a port
+          # it shares with anything else here fails at bind — and on the container arm it fails the
+          # whole `podman run`, taking the panel down for a door that is meant to be additive.
+          assertion = cfg.consolePort == 0
+            || (cfg.consolePort != cfg.port && cfg.consolePort != cfg.localPort);
+          message = ''
+            services.swg-panel.consolePort (${toString cfg.consolePort}) must differ from `port`
+            (${toString cfg.port}) and `localPort` (${toString cfg.localPort}). Each is its own
+            listener, so sharing a number just fails to bind.
+          '';
+        }
         # ⚠️ There is deliberately NO assertion that `useACMEHost` names a declared certificate.
         # It cannot be written: this module sets `reloadServices` on that cert, which CREATES the
         # attribute, so any `certs ? <name>` test would be true because we made it true. A check
@@ -892,6 +932,12 @@ in
           TLS = if useACME then "mounted" else "none";
           SWG_PANEL_BASE = cfg.basePath;
           SWG_PANEL_LOCAL_PORT = toString cfg.localPort;
+          # The console door. 0 = off, and then the publish below is not added either. On this arm the
+          # panel binds 0.0.0.0 inside the container (a publish always targets the container's 0.0.0.0)
+          # while the publish carries the host restriction — so it is told BOTH: the port it may use and
+          # the address you actually reach it at, which is what decides plain HTTP vs the certificate.
+          SWG_PANEL_CONSOLE_PORT = toString cfg.consolePort;
+          SWG_PANEL_CONSOLE_HOST = cfg.consoleHost;
           # ⚠️ In a container os.uname().nodename is the container id. Without the HOST's hostname a
           # master's co-located node is never recognised as local, and its update stops being tied
           # to the panel's.
@@ -929,7 +975,11 @@ in
           # The stable endpoint a co-located node dials. Host port == container port on purpose, so
           # a public address change never moves it.
           "127.0.0.1:${toString cfg.localPort}:${toString cfg.localPort}"
-        ];
+        ] ++ optional (cfg.consolePort != 0)
+          # Same rule again for the console: host port == container port, so the number the panel
+          # reports is the number you dial. Published only when the console is actually switched on —
+          # unlike compose, which cannot branch, this arm can simply not add it.
+          "${cfg.consoleHost}:${toString cfg.consolePort}:${toString cfg.consolePort}";
         volumes = [
           "${etcDir}:/etc/swg-panel"
           "${stateDir}:/var/lib/swg-panel"
@@ -1063,6 +1113,11 @@ in
           SWG_PANEL_HOST = cfg.host;
           SWG_PANEL_PORT = toString cfg.port;
           SWG_PANEL_LOCAL_PORT = toString cfg.localPort;
+          # The console door; 0 = off. No container here, so the panel binds this address directly and
+          # bind and reach are the same thing — but the panel is told both, so the two arms take the
+          # same road through _console_wired() rather than each having their own.
+          SWG_PANEL_CONSOLE_PORT = toString cfg.consolePort;
+          SWG_PANEL_CONSOLE_HOST = cfg.consoleHost;
           SWG_PANEL_AUTH = "${etcDir}/auth";
           SWG_PANEL_BASE = cfg.basePath;
           SWG_PANEL_TLS_CERT = optionalString useACME "${certDir}/fullchain.pem";

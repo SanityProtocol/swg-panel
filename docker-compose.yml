@@ -42,6 +42,15 @@ services:
       # NEVER moves, so a master's local node dials http://127.0.0.1:<PANEL_LOCAL_PORT> and can't strand. Host-loopback
       # only. Distinct from the public port. (Harmless spare listener on a host-only panel with no co-located node.)
       - "127.0.0.1:${PANEL_LOCAL_PORT:-8088}:${PANEL_LOCAL_PORT:-8088}"
+      # The OPERATOR CONSOLE's own port, for Settings → Panel URL → "Its own address": the console moves
+      # here and the public port above answers only what a node dials. Host port == container port, like
+      # PANEL_LOCAL_PORT — the number shown in the panel is the number you reach. LOOPBACK by default, so
+      # nothing new is exposed and you reach it over an SSH tunnel:
+      #     ssh -L 8445:127.0.0.1:8445 <this box>   →   http://localhost:8445
+      # Set CONSOLE_BIND=0.0.0.0 (or a host IP) in .env and recreate to publish it, and firewall it.
+      # Published unconditionally and harmless while the console is off: nothing listens behind it until
+      # you turn it on in the panel, and turning it on then needs no recreate.
+      - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_PORT:-8445}:${CONSOLE_PORT:-8445}"
     environment:
       PANEL_USER: "${PANEL_USER:-admin}"
       PANEL_PASSWORD: "${PANEL_PASSWORD:?set PANEL_PASSWORD in .env}"
@@ -62,6 +71,13 @@ services:
       # host. A bridged panel container can only see the compose network's 172.x, so without this the Access &
       # TLS "Listen IP" picker has nothing real to offer and shows only 0.0.0.0 / 127.0.0.1.
       SWG_HOST_IPS: "${HOST_IPS:-}"
+      # The console port this deployment WIRED (the publish above). Tells the panel which port it may use
+      # for its own console door — it does not turn the console on; that stays a choice in Settings.
+      SWG_PANEL_CONSOLE_PORT: "${CONSOLE_PORT:-8445}"
+      # …and where you REACH it. The container must bind 0.0.0.0 (a publish always targets the container's
+      # 0.0.0.0), so this is the only way the panel can know the address to send you to, and whether that
+      # address is loopback (plain HTTP is then correct) or public (it serves the panel's certificate).
+      SWG_PANEL_CONSOLE_HOST: "${CONSOLE_BIND:-127.0.0.1}"
       SWG_PANEL_LOCAL_PORT: "${PANEL_LOCAL_PORT:-8088}"   # the panel binds a dedicated 0.0.0.0:<this> plain-HTTP listener → reached ONLY via the 127.0.0.1:<this> publish above; the STABLE loopback endpoint a co-located node dials
       SWG_UPDATE_TRIGGER: "${SWG_UPDATE_TRIGGER:-}"   # set by install-docker when it wires the host one-click updater (swg-update.path watches data/lib/.update-request); blank = manual update only
       SWG_HOST_HOSTNAME: "${SWG_HOST_HOSTNAME:-}"     # the HOST's hostname (install-docker sets it) — lets the panel recognise a master's co-located node, which reports the host hostname via host-networking (the panel container's own hostname is a random id)

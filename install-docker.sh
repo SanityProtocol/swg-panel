@@ -35,7 +35,7 @@ set -euo pipefail
 # reverted to its default on a re-install or on the node stage of a master convert. PANEL_PORT only escaped
 # because its default is empty. Observed: the panel stage wrote SUB_PORT=2087, the node stage rewrote it 8444.
 for _k in PANEL_URL NODE_TOKEN NODE_ENDPOINT PANEL_USER PANEL_PASSWORD PANEL_DOMAIN PANEL_PORT PANEL_BASE \
-          PANEL_LOCAL_PORT SUB_PORT SUB_DOMAIN PANEL_BIND SUB_BIND SUB_TRUST_XFF \
+          PANEL_LOCAL_PORT SUB_PORT SUB_DOMAIN PANEL_BIND SUB_BIND SUB_TRUST_XFF CONSOLE_PORT CONSOLE_BIND \
           NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET TURN_MANAGE DNS TLS_VERIFY \
           ACME_EMAIL CF_TOKEN CF_ORIGIN_TOKEN; do
   eval "_GIVEN_$_k=\"\${$_k:-}\""
@@ -59,6 +59,8 @@ CF_ORIGIN_TOKEN="${CF_ORIGIN_TOKEN:-${CF_ORIGIN_KEY:-}}"  # cf15: API token with
 PANEL_PORT="${PANEL_PORT:-}"           # host-published port; blank = derive from URL, else 443 (Step 1)
 PANEL_LOCAL_PORT="${PANEL_LOCAL_PORT:-8088}"   # dedicated STABLE plain-HTTP loopback port a co-located node dials (a public flip never moves it)
 SUB_PORT="${SUB_PORT:-8444}"           # swg-sub host port (bound to loopback in reverse-proxy/TLS=none mode)
+CONSOLE_PORT="${CONSOLE_PORT:-8445}"   # the OPERATOR CONSOLE's own port when Settings → Panel URL moves it off the public one (host port == container port)
+CONSOLE_BIND="${CONSOLE_BIND:-127.0.0.1}"   # loopback by default: reached over an SSH tunnel, nothing new exposed. 0.0.0.0/a host IP publishes it
 SUB_DOMAIN="${SUB_DOMAIN:-}"           # subscription page hostname, for the printed reverse-proxy config (TLS=none)
 PANEL_BIND="${PANEL_BIND:-0.0.0.0}"    # host bind for the panel publish; 127.0.0.1 in reverse-proxy mode
 SUB_BIND="${SUB_BIND:-0.0.0.0}"        # host bind for the swg-sub publish; 127.0.0.1 in reverse-proxy mode
@@ -395,7 +397,7 @@ EXISTING_DOCKER=no; EXIST_TLS=""
 if [ -f "$INSTALL_DIR/.env" ]; then
   EXISTING_DOCKER=yes
   for _k in PANEL_URL NODE_TOKEN NODE_ENDPOINT PANEL_USER PANEL_PASSWORD PANEL_DOMAIN PANEL_PORT PANEL_BASE \
-            SUB_PORT SUB_DOMAIN PANEL_BIND SUB_BIND SUB_TRUST_XFF \
+            SUB_PORT SUB_DOMAIN PANEL_BIND SUB_BIND SUB_TRUST_XFF CONSOLE_PORT CONSOLE_BIND \
             NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET TURN_MANAGE DNS TLS_VERIFY \
             ACME_EMAIL CF_TOKEN CF_ORIGIN_TOKEN; do
     _g="_GIVEN_$_k"; [ -n "${!_g:-}" ] && continue      # an explicit flag/env wins — checked against the PRE-DEFAULT snapshot
@@ -850,6 +852,10 @@ case "$PROFILE" in
     # This bites the DEFAULT reverse-proxy install: TLS=none sets PANEL_PORT=8088 (ask_panel_tls), the same as the
     # loopback default 8088. Bump it clear, exactly like install-host.sh does for the bare-metal SWG_PANEL_LOCAL_PORT.
     while [ "$PANEL_LOCAL_PORT" = "$PANEL_PORT" ] || [ "$PANEL_LOCAL_PORT" = "$SUB_PORT" ]; do PANEL_LOCAL_PORT=$((PANEL_LOCAL_PORT + 1)); done
+    # Same again for the operator console's port: compose publishes it unconditionally, so a collision with
+    # any other publish fails `up` outright and takes the panel down with it — for a port that is inert until
+    # the operator turns the console on. Bump it clear of all three.
+    while [ "$CONSOLE_PORT" = "$PANEL_PORT" ] || [ "$CONSOLE_PORT" = "$SUB_PORT" ] || [ "$CONSOLE_PORT" = "$PANEL_LOCAL_PORT" ]; do CONSOLE_PORT=$((CONSOLE_PORT + 1)); done
     if [ "$PROFILE" = master ]; then
       PANEL_URL="https://swg-panel:8443"   # placeholder; manage_node_ifaces (below) resets it to the STABLE loopback (http://127.0.0.1:$PANEL_LOCAL_PORT for host-net, http://swg-panel:$PANEL_LOCAL_PORT for bridge) — the port a public flip never moves
       TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
@@ -1067,6 +1073,8 @@ CF_ORIGIN_TOKEN=$CF_ORIGIN_TOKEN
 PANEL_PORT=$PANEL_PORT
 PANEL_BIND=${PANEL_BIND:-0.0.0.0}
 PANEL_LOCAL_PORT=${PANEL_LOCAL_PORT:-8088}   # dedicated STABLE plain-HTTP loopback port for a co-located node (published on 127.0.0.1; a public flip never moves it)
+CONSOLE_PORT=${CONSOLE_PORT:-8445}     # the operator console's own port (Settings → Panel URL → "Its own address"); inert until you turn it on
+CONSOLE_BIND=${CONSOLE_BIND:-127.0.0.1}   # loopback → reach the console over an SSH tunnel; 0.0.0.0/a host IP publishes it (then firewall it)
 SUB_PORT=${SUB_PORT:-8444}
 SUB_BIND=${SUB_BIND:-0.0.0.0}
 SUB_TRUST_XFF=${SUB_TRUST_XFF:-0}
@@ -1280,10 +1288,19 @@ fi
 
 # ── surface the cert outcome (don't let a silent self-signed fallback hide as a Cloudflare 526) ──
 if [ "$PROFILE" != node ] && [ "$TLS" != none ] && ! $DRYRUN && have openssl; then
-  iss=""; for _i in 1 2 3 4 5 6; do
+  # ⚠️ THE WAIT MUST OUTLAST THE ISSUANCE IT REPORTS ON. This was 6 tries x 2s — about twelve seconds.
+  # A cloudflare (DNS-01) issuance waits on DNS propagation, and 60-120s is entirely normal, so the
+  # panel is not listening yet, $iss stays empty, and the guard whose whole purpose is to catch a
+  # silent fallback silently does nothing — on the one TLS mode most likely to need it. Scale the
+  # budget to the mode actually chosen.
+  _cert_wait=30
+  case "$TLS" in cloudflare) _cert_wait=180;; letsencrypt|letsencrypt-ip) _cert_wait=90;; esac
+  iss=""; _cert_t0="$(date +%s)"
+  while [ "$(( $(date +%s) - _cert_t0 ))" -lt "$_cert_wait" ]; do
     # NB: '|| true' — a failed openssl pipeline must NOT abort the script under set -o pipefail
     iss="$(echo | openssl s_client -connect "127.0.0.1:$PANEL_PORT" -servername "$PANEL_DOMAIN" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)"
-    [ -n "$iss" ] && break; sleep 2 || true
+    [ -n "$iss" ] && break
+    sleep 3 || true
   done
   case "$iss" in
     *"CN=$PANEL_DOMAIN"|*"CN = $PANEL_DOMAIN")   # issuer == the domain ⇒ self-signed
@@ -1293,7 +1310,12 @@ if [ "$PROFILE" != node ] && [ "$TLS" != none ] && ! $DRYRUN && have openssl; th
         echo "         letsencrypt needs :80 reachable (breaks behind Cloudflare); behind the orange cloud use"
         echo "         $(b cloudflare) (DNS-01) or $(b cf15), and set Cloudflare SSL/TLS to $(b 'Full (strict)')."
       } ;;
-    "") : ;;   # couldn't read it (port not up yet) — skip
+    "") # ⚠️ NEVER EXIT QUIET. This used to `: ;` — "port not up yet, skip" — which is indistinguishable
+        # from a clean pass to anyone reading the install. If we could not read the certificate we do
+        # not know whether issuance succeeded, and saying so is actionable where silence is not.
+        warn "couldn't read the panel's certificate on 127.0.0.1:$PANEL_PORT within ${_cert_wait}s — it may still be issuing."
+        echo "         This is NOT a failure on its own, but the cert was not verified. Check with:"
+        echo "         $(b "$COMPOSE -f $INSTALL_DIR/docker-compose.yml logs swg-panel | grep -i cert")" ;;
     *) ok "panel is serving a real certificate (issuer:${iss#*=})" ;;
   esac
 fi

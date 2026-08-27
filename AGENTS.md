@@ -161,6 +161,11 @@ A node's own health is local: `systemctl is-active swg-noded` (bare-metal / nati
 `update.sh` auto-detects every installed shape (bare-metal or Docker, panel/master/node) and preserves
 config and state. `uninstall.sh` walks component by component and removes nothing without a yes.
 
+⚠️ **A command-line update is one machine.** Updating through the panel — the Update button, or the
+host-update API — also asks every node that can update itself to follow, in the same pass. Running
+`update.sh` on the panel host does not: it updates that host and its co-located node only, so a fleet
+updated this way needs each remaining node updated in turn.
+
 ---
 
 ## Where to read more

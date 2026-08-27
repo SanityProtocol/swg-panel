@@ -1,9 +1,9 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.2-beta</code></p>
+<p align="center"><code>1.8.3-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.2-beta** — [full changelog](CHANGELOG.md)
+> **What's new in 1.8.3-beta** — [full changelog](CHANGELOG.md)
 > - **A deployment can be marked primary, backup, or neither.** The star is a three-state control now, and the labels are yours to set rather than guessed from position — a peer nobody has marked shows no role at all, where before its first deployment was called "Primary" and every other one a "Backup" of it. Several may share a role, which is the ordinary case when a peer spans protocols: a turn proxy is no fallback for a tunnel. Panel and subscription both order by it — primary first, unmarked next, backups last.
 > - **FreeTurn connections carry what they promised.** The VK call link now rides inside the link itself; it was being written under keys the app never reads, so the call dropped while the tunnel looked fine. The obfuscation profile is read off the relay that is actually running instead of a separate setting that could disagree with it — a mismatch there completes the connection and then passes no traffic at all. A server name labels the connection in the app, and a relay running a TCP tunnel now says so.
 > - **Text you have to read exactly is no longer prettified.** The mono font's programming ligatures drew `https://` as `https: /`, so a correct address looked corrupt and a correct key unreadable. They are off wherever a config, a key or a URL is shown or typed.
@@ -150,7 +150,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 | section | prompt | meaning |
 |---|---|---|
 | Panel · 1 | **Role** | `master` (default — panel + this box is an entry server) or `host` (panel only) |
-| Panel · 2 | **Panel URL** | IP, host, or host with a subpath (`vpn.example.com/swg`) to mount the panel under an existing site. Default is this host's public IP. |
+| Panel · 2 | **Panel access** | IP, host, or host with a subpath (`vpn.example.com/swg`) to mount the panel under an existing site. Default is this host's public IP. |
 | Panel · 3 | **TLS** | `letsencrypt` (default, needs a domain) · `letsencrypt-ip` (default when the panel URL is a public IP) · `cloudflare` · `cf15` · `selfsigned` · `skip` |
 | Panel · 4 | **Serve mode** | `internal` (default, self-contained) · `nginx` · `caddy` · `skip` |
 | Panel | **Port / admin** | port (default **443** for `internal`; the unit adds the bind capability for ports < 1024) and the web login — suggests `admin` + 3 digits; changeable later under **Settings → Authentication** |
@@ -270,7 +270,7 @@ By hand the `master` profile does **not** auto-enroll the local node — add it 
 
 Configure via `.env`:
 
-- **Panel:** `PANEL_PASSWORD` (required), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (optional subpath, e.g. `/swg`), `PANEL_PORT`, and `TLS` — `letsencrypt` · `letsencrypt-ip` · `cloudflare` · `cf15` · `selfsigned` · `none`, issued in-container by the bundled `acme.sh` exactly like bare-metal (set `ACME_EMAIL` / `CF_TOKEN` / `CF_ORIGIN_TOKEN` as the chosen mode needs; see [TLS](#installing-the-panel)).
+- **Panel:** `PANEL_PASSWORD` (required), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (optional subpath, e.g. `/swg`), `PANEL_PORT`, `CONSOLE_PORT` / `CONSOLE_BIND` (the operator console's own port when you move it off the public one — published on loopback by default, so you reach it over an SSH tunnel and nothing new is exposed; it stays inert until you switch the console over in the panel), and `TLS` — `letsencrypt` · `letsencrypt-ip` · `cloudflare` · `cf15` · `selfsigned` · `none`, issued in-container by the bundled `acme.sh` exactly like bare-metal (set `ACME_EMAIL` / `CF_TOKEN` / `CF_ORIGIN_TOKEN` as the chosen mode needs; see [TLS](#installing-the-panel)).
 - **Node:** `PANEL_URL` (for a `master` on bridge use `https://swg-panel:8443`; host networking uses loopback), `NODE_TOKEN` (from the Nodes screen), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `NODE_MTU`, `NODE_PLAIN_WG`, `NODE_NET` (`host` · `bridge`), `TLS_VERIFY`, `TLS_FINGERPRINT`, `DNS`, and `SWG_NODE_SECCOMP=unconfined` (only on a node that runs **csqtt** — its `io_uring` dataplane is blocked by Docker's default seccomp profile).
 - **Subscriptions:** the `swg-sub` container runs from the same `swg-panel` image under the `host`/`master` profiles — `SUB_PORT` (host port, default `8444`), `SUB_DOMAIN`, `SUB_BIND`, `SUB_TRUST_XFF`. It stays idle until you enable subscriptions in the panel.
 - **Both:** `PULL_POLICY` (`missing` default; `always` re-pulls `:latest`), `PANEL_BIND` (`127.0.0.1` to keep the panel behind your own reverse proxy).
@@ -363,6 +363,7 @@ A node can serve several interfaces — list them all under `interfaces`; each p
 A **read-only** REST + Prometheus surface plus outbound **webhooks**, for wiring the panel into external monitoring and automation — Grafana, Uptime Kuma, Prometheus, Terraform/Ansible, or your own scripts. It exposes state the panel already collects from node syncs; it **never changes the fleet**.
 
 - **Read-only.** No token is accepted on any mutating endpoint — a leaked token can observe, never modify.
+- **It follows the panel, not the fleet.** If you turn on private panel access (**Settings → Panel access**), `/api/v1/*` and `/metrics` move onto the tunnelled address with it — the address your nodes dial then answers node routes only and 404s both. Point your scrapers through the tunnel, not at the fleet address.
 - **Panel-only.** Nodes are untouched; they sync exactly as before. The API is served from the same in-memory snapshots + roster the panel already keeps — no extra load on nodes, no change to the sync loop.
 - **Cheap.** Off the SPA's poll path; the whole-fleet view is cached ~3s and shared by every endpoint and scrape, so an aggressive Prometheus/Grafana setup can't degrade the panel.
 
@@ -462,6 +463,7 @@ Full reference, with a response body for every endpoint: **[API.md](API.md)**.
 ## Security
 
 - **Transport & panel identity:** nodes only ever connect *out* to the panel over TLS. A **real-CA** panel is verified against the system trust store; a **self-signed** one is **auto-pinned (trust-on-first-use)** at enrollment, so a man-in-the-middle can't impersonate it. If the panel later moves (host/port), a node **auto-re-points** to the new address only when it still presents the pinned/trusted cert.
+- **Private access / node door:** each of the panel's listeners carries a **role**. Under **Settings → Panel access** the panel's own pages can be moved onto a loopback listener reached over an SSH tunnel; the public one then drops to `role="node"` and serves *exactly* what a node dials — `GET /api/node/{whoami,list,turn-binary}`, `POST /api/node/{sync,goodbye,proc-status,rename,c}` and `/healthz` — and **404s everything else**, the SPA, `/api/state`, `/metrics` and `/api/v1/*` included. So **your integration API follows the console, not the fleet**: move the console and that is where Prometheus and the REST surface are. The allow-list is derived from the real dispatch table and asserted at startup, so a node route cannot silently fall off it and 404 for the whole fleet. `/healthz` stays on the node door only because `install-node.sh` probes it during enrollment — that door is quieter, not silent. Turning it on is **confirm-or-revert**: both addresses serve until you open the panel **through the tunnel** and confirm there, and the door policy puts itself back if you don't — so a forgotten firewall rule, a wrong port or a tunnel that never came up all leave the panel exactly where it was.
 - **Request signing (replay-resistant):** every node→panel request carries `X-SWG-TS` + `X-SWG-MAC` = HMAC-SHA256(the node's `token_sha`, `ts`·sha256(body)); the panel verifies it inside a short time window (rejecting replays) and looks the node up by a per-node `token_sha` index — constant-time, so a bogus token can't force pbkdf2 amplification.
 - **Node tokens** authenticate a node to the panel. They are shown once, stored only as a hash, and can be rotated. Treat the node's `config.json` (which holds the live token) as a secret — it is mode `600`.
 - **PSKs** are generated per peer and stored in the roster so every node stays consistent; keep `/var/lib/swg-panel` readable only by the panel user.

@@ -13,7 +13,10 @@ name: docker
 
 on:
   push:
-    branches: [main]
+    # `dev` builds too, so a release can be TESTED from real published images before it reaches main.
+    # It publishes strictly less than main does: `latest` is gated on `enable={{is_default_branch}}`
+    # below, so a dev push produces only `sha-<short>` and can never move the tag users pull.
+    branches: [main, dev]
     tags: ['v*']
     # A push that changes ONLY prose does not change either image, so rebuilding four of them and
     # republishing :latest at a new digest just makes every container node pull a functionally
@@ -136,7 +139,17 @@ jobs:
       # Retention: keep only the 3 newest tagged releases of this package (+ their per-arch child
       # blobs) and prune older. Multi-arch-aware — never deletes a child a kept tag still points to,
       # so `latest` can't break. Runs every publish → the package self-maintains. Never fails the push.
+      # ⚠️ TWO GUARDS, DELIBERATELY BELT AND BRACES, because this is the one step that can delete the
+      # image real users pull — and it is `continue-on-error`, so if it ever went wrong it would do so
+      # SILENTLY, without failing the push.
+      #   1. main only. Every `dev` push adds a `sha-<short>` tag; with keep-n-tagged: 3 a few dev
+      #      pushes would age `latest` out of the newest three and prune it.
+      #   2. exclude-tags: latest. Even on main, `latest` is never a prune candidate.
+      # Verified against the action's own action.yml (v1) that `exclude-tags` is a real input — an
+      # unknown key here would be accepted and ignored, which is exactly the silent failure being
+      # guarded against.
       - name: Prune old GHCR versions (keep newest 3)
+        if: github.ref == 'refs/heads/main'
         uses: dataaxiom/ghcr-cleanup-action@v1
         continue-on-error: true
         with:
@@ -144,5 +157,6 @@ jobs:
           owner: ${{ github.repository_owner }}
           packages: ${{ matrix.image }}
           keep-n-tagged: 3
+          exclude-tags: latest
           delete-untagged: true
           delete-partial-images: true

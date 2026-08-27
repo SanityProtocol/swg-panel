@@ -9,9 +9,14 @@
 FROM public.ecr.aws/docker/library/python:3.12-slim
 
 # acme.sh is pinned + installed from its release tarball (not the piped get.acme.sh installer,
-# which exits 0 even when its own download fails — silently shipping an image with no acme.sh).
+# which exits 0 even when its own download fails — silently shipping an image with no acme.sh;
+# it also serves master, currently 3.1.5, which is NOT a tagged release).
 # Download is retried, then `acme.sh --version` VERIFIES it landed so a bad fetch fails the build.
-ARG ACME_VERSION=3.1.3
+# ⚠️ FLOOR, not just a pin: 3.1.4 is the first release that refuses to write the CA's HTTP body to
+# <domain>.cer when that body is not a certificate. On 3.1.3 and older a 404 from the CA is stored
+# AS the cert, with no fullchain.cer beside it — the container then treats a failed issuance as a
+# success and serves no usable TLS. Do not lower this below 3.1.4.
+ARG ACME_VERSION=3.1.4
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl ca-certificates curl socat tar \
  && rm -rf /var/lib/apt/lists/* \

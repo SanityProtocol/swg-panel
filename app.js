@@ -145,6 +145,16 @@ function oldAddrCurrent() {   // → the current canonical addr {host,scheme,por
   const c = _parseAddr(Store.panelPublicUrl); if (!c) return null;
   const scheme = location.protocol.replace(":", "");
   const hereBase = location.pathname.replace(/\/+$/, "");
+  // ⚠️ THE CONSOLE ADDRESS IS NOT A STALE ONE. With private access on, the panel's public url is
+  // deliberately NOT where the console lives — that address answers node routes and 404s these pages —
+  // so a tab on the console differs from `panelPublicUrl` by design, on every load, for as long as the
+  // feature is on. Left to the plain comparison the ribbon fires permanently and its "Go to the current
+  // address" button sends the operator to a 404. Measured on a declarative host, where the console is
+  // the only way in at all.
+  const _acc = (Store.panelSettings || {}).access || {};
+  const _cw = _acc.console_wired || null;
+  const _cport = String((_cw && _cw.port) || ((_acc.console || {}).mode === "own" ? (_acc.console || {}).port : "") || "");
+  if (_cport && _effPort(scheme, location.port) === _cport) return null;   // this IS the console door
   if (location.hostname === c.host && _effPort(scheme, location.port) === c.port && hereBase === c.base) return null;   // on the current address (host + port + mount PATH)
   const showPort = !((c.scheme === "https" && c.port === "443") || (c.scheme === "http" && c.port === "80"));
   return { ...c, label: c.scheme + "://" + c.host + (showPort ? ":" + c.port : "") + c.base };
@@ -219,9 +229,10 @@ function App() {
   // Here we only report the OUTCOME once App is up: success (we reloaded, carrying our login onto this address)
   // or failure (confirm didn't match a pending change).
   useEffect(() => {
-    let ok = false, fail = null;
+    let ok = false, fail = null, console_ok = false;
     try {
-      ok = sessionStorage.getItem("__apply_ok") === "1"; if (ok) sessionStorage.removeItem("__apply_ok");
+      const _ov = sessionStorage.getItem("__apply_ok");
+      ok = _ov === "1" || _ov === "console"; console_ok = _ov === "console"; if (ok) sessionStorage.removeItem("__apply_ok");
       fail = sessionStorage.getItem("__apply_fail"); if (fail) sessionStorage.removeItem("__apply_fail");
     } catch (_) {}
     if (!ok && !fail) return;
@@ -229,7 +240,10 @@ function App() {
     if (location.hash !== "#/panel/settings") location.hash = "#/panel/settings";
     // defer past any hashchange (its handler resets the modal stack) so the outcome modal survives
     setTimeout(() => {
-      if (ok) openModal(html`<${ConfirmSheet} title=${T("New address confirmed")} confirmLabel=${T("Got it")}
+      if (console_ok) openModal(html`<${ConfirmSheet} title=${T("Console address confirmed")} confirmLabel=${T("Got it")}
+        back=${() => { gotoSettingsSection("access"); closeModal(); }}
+        body=${T("The operator console is served here now, and you're signed in. The panel's own address answers only what the nodes ask for — so close the other tab, it can't open the console any more.")}/>`);
+      else if (ok) openModal(html`<${ConfirmSheet} title=${T("New address confirmed")} confirmLabel=${T("Got it")}
         back=${() => { gotoSettingsSection("access"); closeModal(); }}
         body=${T("This is now the address the panel is reached at, and you're signed in here. You can close the other tab — it's on the previous address.")}/>`);
       else openModal(html`<${ConfirmSheet} title=${T("Couldn’t confirm the new address")} warn=${true} confirmLabel=${T("OK")}
@@ -308,6 +322,12 @@ function App() {
       const _hl = esc((hostUpdRepairing && ({ updating: T("repairing"), updated: T("repaired"), "update-failed": T("repair failed") }[Store.hostProc]))
                       || procLabel(Store.hostProc) || "");   // a Fix/re-run reads as "repairing…" / "repaired", not "updating"
       const _healN = serviceIssues().length;   // self-healable issues (missing/broken swg units + AmneziaWG datapath) → the updater repairs them
+      // ⚠️ THE CHECK BUTTON IS "Check status", NOT "check for updates" — it calls checkUpdate() AND
+      // Store.poll(), so it re-reads service issues as well as the version, and it toasts about the
+      // repairable ones. It was the LAST branch of this chain, so it vanished the moment the panel went
+      // outdated — a state that lasts days — leaving no on-demand refresh anywhere in the product exactly
+      // when an operator most wants one. It now rides ALONGSIDE the steady-state badges.
+      const _checkBtn = `<button class="iconbtn lg" id="upd-check" title="${esc(T("Check status"))}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
       if (inProc(Store.hostProc)) body = `<span class="hostproc-tag ${procInClass(Store.hostProc)}">${UPD_SPIN_SVG} ${_hl}</span>`;
       else if (procSuccess(Store.hostProc)) body = `<span class="hostproc-tag ok">${CHECK_SVG} ${_hl}</span>`;   // green, auto-clears (no ×)
       else if (procAborted(Store.hostProc)) body = `<span class="hostproc-tag aborted">${INFO_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="${esc(T("Dismiss"))}">${X_SVG}</button></span>`;
@@ -318,9 +338,13 @@ function App() {
       else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd">${esc(T("update to"))} <b>${esc(Store.latestRemote || "?")}</b></button>`;
       else if (_healN > 0) body = `<button class="livepill updpill fixpill" id="host-fix">${WARN_SVG} ${esc(fixLabel(_healN))}</button>`;
       else if (Store.updFlash && Date.now() < Store.updFlash) body = `<button class="livepill upd-uptodate" id="host-repair" title="${esc(T("On the latest version — click to re-run the updater anyway (repairs this box: reinstalls missing pieces, re-enables services, rebuilds the datapath / AmneziaWG kernel module)"))}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> ${esc(T("up to date"))}</button>`;
-      else body = `<button class="iconbtn lg" id="upd-check" title="${esc(T("Check status"))}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
+      else body = _checkBtn;
+      // Steady = a badge you can act on. NOT the in-flight tags (updating / checking / proc): re-polling
+      // there is meaningless or already happening, and the header would flicker spinner↔button. Derived
+      // from what the chain PRODUCED, so the chain stays one untouched if/else-if run.
+      if (/id="host-(upd|fix|repair)"/.test(body)) body += _checkBtn;
       slot.innerHTML = body;
-      const b = $("#host-upd"); if (b) { b.onclick = updateHost; hostHoverBubble(b, updBubbleHtml); }   // version + date + changelog on hover
+      const b = $("#host-upd"); if (b) { b.onclick = updateHost; hostHoverBubble(b, updBubbleHtml, updateHost); }   // version + date + changelog on hover; the bubble's own Update button runs the SAME action (on touch the anchor is underneath it)
       const rp = $("#host-repair"); if (rp) rp.onclick = updateHost;   // up-to-date → still allow a re-run/repair (heals the datapath even with no new version)
       const fx = $("#host-fix"); if (fx) { fx.onclick = () => openModal(html`<${ServiceIssueSheet} issues=${serviceIssues()}/>`); hostHoverBubble(fx, fixBubbleHtml); }   // the issue(s) on hover; click = review + run the repair
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
@@ -483,15 +507,21 @@ async function maybeConfirmApply() {
   // is the direct/rebind confirm (new listener). Both are nonce-authorized (not a session) and carry our login onto
   // this address, so they MUST run before anything auth-gated (a domain change lands where our cookie doesn't cover).
   const mu = /[?&]__applyurl=([A-Za-z0-9]+)/.exec(location.search);
-  const m = mu || /[?&]__apply=([A-Za-z0-9]+)/.exec(location.search);
+  // ?__applyconsole=<nonce> — the OPERATOR CONSOLE moving to its own address. We were opened on the new
+  // console listener, and arriving here at all is the panel's proof the operator can reach it — which is
+  // why the panel's own address only drops to a node-only door once this lands. Same nonce authorization
+  // and the same reason it must run pre-auth, only more so: the console door is a different ORIGIN, so a
+  // session cookie provably cannot reach it and we would otherwise stare at a login while the timer ran out.
+  const mc = /[?&]__applyconsole=([A-Za-z0-9]+)/.exec(location.search);
+  const m = mu || mc || /[?&]__apply=([A-Za-z0-9]+)/.exec(location.search);
   if (!m) return false;
   // strip the query so a reload can't re-fire, and land on Access & TLS — presetting the hash HERE (before the
   // reload) means App's outcome effect doesn't have to change it, so the hashchange handler can't wipe the modal.
   history.replaceState(null, "", location.pathname + "#/panel/settings");
   let r = null;
-  const endpoint = mu ? "/api/access/confirm-url" : "/api/access/confirm";
+  const endpoint = mu ? "/api/access/confirm-url" : (mc ? "/api/access/console-confirm" : "/api/access/confirm");
   try { r = await api.post(endpoint, { nonce: m[1] }); } catch (_) { r = null; }   // never throws us to login: confirm is pre-auth
-  if (r && r.ok) { try { sessionStorage.setItem("__apply_ok", "1"); } catch (_) {} location.reload(); return true; }
+  if (r && r.ok) { try { sessionStorage.setItem("__apply_ok", mc ? "console" : "1"); } catch (_) {} location.reload(); return true; }
   try { sessionStorage.setItem("__apply_fail", srvText(r) || "1"); } catch (_) {}   // shown by App once it mounts (if we're authed here)
   return false;
 }

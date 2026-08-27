@@ -1,9 +1,9 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.2-beta</code></p>
+<p align="center"><code>1.8.3-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.2-beta** — [full changelog](CHANGELOG.md)
+> **What's new in 1.8.3-beta** — [full changelog](CHANGELOG.md)
 > - **A deployment can be marked primary, backup, or neither.** The star is a three-state control now, and the labels are yours to set rather than guessed from position — a peer nobody has marked shows no role at all, where before its first deployment was called "Primary" and every other one a "Backup" of it. Several may share a role, which is the ordinary case when a peer spans protocols: a turn proxy is no fallback for a tunnel. Panel and subscription both order by it — primary first, unmarked next, backups last.
 > - **FreeTurn connections carry what they promised.** The VK call link now rides inside the link itself; it was being written under keys the app never reads, so the call dropped while the tunnel looked fine. The obfuscation profile is read off the relay that is actually running instead of a separate setting that could disagree with it — a mismatch there completes the connection and then passes no traffic at all. A server name labels the connection in the app, and a relay running a TCP tunnel now says so.
 > - **Text you have to read exactly is no longer prettified.** The mono font's programming ligatures drew `https://` as `https: /`, so a correct address looked corrupt and a correct key unreadable. They are off wherever a config, a key or a URL is shown or typed.
@@ -244,7 +244,7 @@ put them on another server and it simply appears there. Here's one:
    encrypted configs, so this comes first.
 2. **Settings → Subscriptions → On.** Switch on **Auto-generate subscription links for new users** if
    you'd like every new person to get one without you asking.
-3. **Settings → Panel URL** — set the address the page is served on. If the panel tells you the
+3. **Settings → Panel access** — set the address the page is served on. If the panel tells you the
    subscription server isn't installed, re-run the install command from
    [Step 1](#step-1--install-the-panel) — that adds the missing piece and keeps everything you already have.
 
@@ -349,6 +349,12 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   You set that key up once, under **Settings → Client configs**. Want nothing kept at all? Switch the same
   setting to **off** and the panel keeps only the public parts (public key, address, preshared key); the
   secret key is then shown **once** and never stored anywhere.
+- **Your control panel can be kept off the internet entirely.** By default your servers and your
+  browser arrive through the same door. Under **Settings → Panel access** you can switch the panel's
+  pages to **your server only**, reached over an SSH tunnel — and the address your servers use then
+  answers **only what a server asks for** and nothing else. Your servers don't notice.
+  Neither can it lock you out: both addresses keep working until you open the new one and confirm it,
+  and everything goes back on its own if you don't.
 - **A hiccup won’t lock anyone out.** If the panel is briefly unreachable, your servers keep running with
   the access they already have and catch up on the next check-in.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.

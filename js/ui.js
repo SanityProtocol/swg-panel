@@ -275,10 +275,19 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
   useEffect(() => {
     if (!show) return; place();
     const onMove = () => place();
-    const onDoc = e => { const t = e.target; if (!((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)))) { setPinned(false); setOpen(false); } };
+    // ⚠️ THE DISMISSING TAP MUST NOT ALSO REACH WHAT IS UNDERNEATH. A pinned popover inside a
+    // modal is the top layer; if the tap that closes it also lands on the sheet backdrop the
+    // operator loses both at once. Eat the click this pointerdown precedes, once.
+    const onDoc = e => { const t = e.target;
+      if ((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t))) return;
+      setPinned(false); setOpen(false);
+      const eat = e2 => { e2.stopPropagation(); e2.preventDefault(); };
+      document.addEventListener("click", eat, true);
+      setTimeout(() => document.removeEventListener("click", eat, true), 350);
+    };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    if (pinned) document.addEventListener("mousedown", onDoc, true);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); };
+    if (pinned) document.addEventListener("pointerdown", onDoc, true);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); };
   }, [show, pinned]);
   useEffect(() => () => clearTimeout(closeT.current), []);
   useNoNativeTitle(ref, show);
@@ -890,23 +899,38 @@ export function DepBadge({ others }) {
   useEffect(() => {
     if (!show) return; place();
     const onMove = () => place();
-    const onDoc = e => { if (!(ref.current && ref.current.contains(e.target))) { setPinned(false); setOpen(false); } };
+    // ⚠️ THE DISMISSING TAP MUST NOT ALSO REACH WHAT IS UNDERNEATH. A pinned popover inside a
+    // modal is the top layer; if the tap that closes it also lands on the sheet backdrop the
+    // operator loses both at once. Eat the click this pointerdown precedes, once.
+    const onDoc = e => { const t = e.target;
+      if ((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t))) return;
+      setPinned(false); setOpen(false);
+      const eat = e2 => { e2.stopPropagation(); e2.preventDefault(); };
+      document.addEventListener("click", eat, true);
+      setTimeout(() => document.removeEventListener("click", eat, true), 350);
+    };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    if (pinned) document.addEventListener("mousedown", onDoc, true);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); };
+    if (pinned) document.addEventListener("pointerdown", onDoc, true);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); };
   }, [show, pinned]);
   useEffect(() => () => clearTimeout(closeT.current), []);
   useNoNativeTitle(ref, show);
   return html`<span class=${"depmore" + (show ? " on" : "")} ref=${ref}
     onClick=${e => { e.stopPropagation(); setPinned(p => !p); }}
     onMouseEnter=${() => { cancelClose(); setOpen(true); }} onMouseLeave=${scheduleClose}>+${others.length}
-    ${show && pos ? html`<div class="deppop" style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
+    ${/* ⚠️ PORTALED, like every other bubble here — not merely for stacking contexts (Portal's own
+          reason) but because this trigger is an INLINE span inside a table cell. A block-level child of
+          an inline box splits it, and `position:fixed` does not save you: measured in the peers grid,
+          hovering took the badge from 18px to 38.8px tall and the row from 49.5px to 60px, leaving a
+          stray fragment of the split inline box under the cell. Rendering at <body> keeps the span a
+          single unbroken inline box, so the row does not move at all. */""}
+    ${show && pos ? html`<${Portal}><div class="deppop" style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>
       ${others.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
         <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
         <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online}/>
         <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
-    </div>` : null}
+    </div><//>` : null}
   </span>`;
 }
 
@@ -947,8 +971,8 @@ export function Dropdown({ value, onChange, options, className, placeholder, dis
     const onDoc = e => { const t = e.target; if (!((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)))) setOpen(false); };
     const onKey = e => { if (e.key === "Escape") { setOpen(false); blurActive(); } };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey); };
+    document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); document.removeEventListener("keydown", onKey); };
   }, [open]);
   const opt = o => html`<button type="button" disabled=${o.disabled} class=${"ddopt" + (String(o.value) === String(value) ? " sel" : "") + (o.disabled ? " off" : "")}
     onClick=${() => { if (o.disabled) return; onChange(o.value); setOpen(false); }}>${o.label}</button>`;
@@ -1133,8 +1157,8 @@ export function useAnchoredList(open, setOpen, deps) {
     const onDoc = e => { const t = e.target;   // close when the click is outside BOTH the input and the portaled list
       if (!((wrapRef.current && wrapRef.current.contains(t)) || (listRef.current && listRef.current.contains(t)))) setOpen(false); };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    document.addEventListener("mousedown", onDoc, true);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); };
+    document.addEventListener("pointerdown", onDoc, true);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); };
   }, [open, ...(deps || [])]);
   return { wrapRef, listRef, pos, popStyle: pos ? ("left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + pos.width + "px") : "" };
 }
