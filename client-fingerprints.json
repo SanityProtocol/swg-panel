@@ -2,9 +2,9 @@
  "clients": {
   "csqttapp": {
    "amurcanov/csqtt@main:app/src/main/java/com/csqtt/client/SettingsStore.kt": {
-    "date": "2026-08-16T13:36:00Z",
-    "sha": "f56f0ed360de5aeafc29151ba46fd6f1e7e074cf",
-    "url": "https://github.com/amurcanov/csqtt/commit/f56f0ed360de5aeafc29151ba46fd6f1e7e074cf"
+    "date": "2026-08-28T17:50:47Z",
+    "sha": "7cad9a1c9750817b1492675b8b0c1d4c3076053e",
+    "url": "https://github.com/amurcanov/csqtt/commit/7cad9a1c9750817b1492675b8b0c1d4c3076053e"
    },
    "amurcanov/csqtt@main:app/src/main/java/com/csqtt/client/ui/utils/UiUtils.kt": {
     "date": "2026-08-16T13:36:00Z",
@@ -69,9 +69,9 @@
   },
   "qwdttleg": {
    "lebrit/qwdtt-legacy-android@main:app/src/main/java/com/wdtt/client/SettingsStore.kt": {
-    "date": "2026-08-10T09:58:52Z",
-    "sha": "61de6b15af710c0d89f4cadd6d37a6188227f612",
-    "url": "https://github.com/lebrit/qwdtt-legacy-android/commit/61de6b15af710c0d89f4cadd6d37a6188227f612"
+    "date": "2026-08-19T10:29:57Z",
+    "sha": "4a97b763bfea4d8fb76af444020fff11d113e202",
+    "url": "https://github.com/lebrit/qwdtt-legacy-android/commit/4a97b763bfea4d8fb76af444020fff11d113e202"
    }
   },
   "sidecar": {
@@ -104,9 +104,9 @@
   },
   "wingsv": {
    "WINGS-N/WINGSV_DeX@main:external/wingsv-proto/wingsv.proto": {
-    "date": "2026-07-08T13:19:18Z",
-    "sha": "25c08b7f04f50966f9a371b097bbaa73c9b20650",
-    "url": "https://github.com/WINGS-N/WINGSV_DeX/commit/25c08b7f04f50966f9a371b097bbaa73c9b20650"
+    "date": "2026-08-29T03:39:29Z",
+    "sha": "7ed14910e051c5e9fa9ee8eab7f56a6b8707d3df",
+    "url": "https://github.com/WINGS-N/WINGSV_DeX/commit/7ed14910e051c5e9fa9ee8eab7f56a6b8707d3df"
    }
   },
   "xxcipher": {
@@ -122,6 +122,6 @@
    }
   }
  },
- "generated_at": 1787934955,
+ "generated_at": 1788001362,
  "schema": 1
 }
