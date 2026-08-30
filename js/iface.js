@@ -11,7 +11,7 @@
  */
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
-import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, portOf, listenAddr, ipPickerVal, V } from "./util.js";
+import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, ipChoices, portOf, listenAddr, ipPickerVal, V } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, toThemed, IFACE_COLOR_DEFAULTS } from "./theme.js";
@@ -23,11 +23,11 @@ import {
 import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkPickLabel } from "./turn-catalog.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm } from "./ui.js";
 import { RangedHistory, IfaceThroughput } from "./charts.js";
-import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, subSKCached } from "./crypto.js";
+import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCached } from "./crypto.js";
 import { EgressPicker, egressInit, egressError, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules,
          SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog } from "./routing.js";
 import { orphCount, OnlinePeersTag, peersView, searchMatch } from "./views.js";
-import { confirmRestoreInterface, confirmRestoreAllInterfaces, openRecreateRekey, fmtDate } from "./peer-actions.js";
+import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
          enabledTurnForks } from "./turn.js";
@@ -413,7 +413,7 @@ export function AdoptDormantWdttSheet({ node, d, nrec }) {
       <div class="field"><label>${T("Interface name")}</label><input class=${nameErr ? "bad" : ""} value=${iface} onInput=${e => setIface(e.target.value)} placeholder="wdtt1"/>${nameErr ? html`<div class="hint err">${nameErr}</div>` : null}</div>
     </div>
     <div class="row2">
-      <div class="field"><label>${T("Endpoint host / IP")}</label><${NodeIpPick} ips=${nrec.ips || []} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname"/><div class="hint">${T("What clients dial")}</div></div>
+      <div class="field"><label>${T("Endpoint host / IP")}</label><${NodeIpPick} ips=${ipChoices(nrec)} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname"/><div class="hint">${T("What clients dial")}</div></div>
       <div class="field"><label>${T("Tunnel subnet (CIDR)")}</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.66.0.1/24"/></div>
     </div>
     <div class="row2">
@@ -541,7 +541,7 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
         <select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select>
         <div class="hint">${w.fork ? Trich("Detected *{v1}*{v2} — change only if wrong", { v1: w.fork, v2: w.store ? " (" + w.store + ")" : "" }) : T("Pick the fork this server runs")}</div>
       </div>` : null}
-      <div class="field"><label>${T("Endpoint host / IP")}</label><${NodeIpPick} ips=${nrec.ips || []} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname"/><div class="hint">${T("What clients dial")}</div></div>
+      <div class="field"><label>${T("Endpoint host / IP")}</label><${NodeIpPick} ips=${ipChoices(nrec)} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname"/><div class="hint">${T("What clients dial")}</div></div>
       ${type === "wdtt" ? null
         : html`<div class="field"><label>${T("Listen port")}</label><input class=${iperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(cand.listen_port || "")}/>${iperr ? html`<div class="hint err">${iperr}</div>` : html`<div class="hint">${T("Currently {v1}", { v1: cand.listen_port || "—" })}</div>`}</div>`}
     </div>
@@ -661,7 +661,15 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
       <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${missIf ? html`<span class="nstat down"><${Ic} i="warn"/> ${T("tag|missing")}</span>` : ghostIf ? html`<span class="nstat down"><${Ic} i="warn"/> ${T("tag|ghost")}</span>` : istopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : idown ? html`<span class="nstat down" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || (T("down on the node — {v1}", { v1: idown }))} onClick=${() => openConfirm({ title: T("Interface down on the node"), log: (nrec.cmd_errors || {})[iface] || (T("down on the node — {v1}", { v1: idown })), confirmLabel: T("Close") })}><${Ic} i="warn"/> ${T("tag|down")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>
     </div>
-    ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>${ifaceDownNote((nrec.cmd_errors || {})[iface] || idown)}</span></div>` : null}
+    ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>${ifaceDownNote((nrec.cmd_errors || {})[iface] || idown)}</span>
+      ${/* The repair, on the card the operator is already looking at. A down interface whose DEVICE is gone
+            used to be a dead end: it is reported, so it never reaches missing_ifaces, /api/iface/recreate
+            refused it, and the node retried a doomed set-iface every 5s in silence (§7.5). It is the same
+            repair as a missing interface and deliberately the same flow. */
+        (() => { const bi = brokenIface(node, iface); return bi ? html`<button class="btn btn-mini restore" style="margin-left:auto;flex:none" disabled=${!bi.ripe}
+          title=${bi.ripe ? T("The device is gone from the node — rebuild it from the saved config with its original server key") : T("Confirming it's really down (a couple of minutes) before Rebuild is offered")}
+          onClick=${() => confirmRebuildInterface(node, iface, bi)}><${Ic} i="refresh"/> ${T("Rebuild interface")}</button>` : null; })()}
+      </div>` : null}
 
     ${missIf ? html`<${Fragment}>
         <div class="notice warn"><${Ic} i="warn"/><span>${ifaceGoneNote(iface, dname, missIf.key_source
@@ -735,6 +743,46 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
 
 // A WDTT interface's detail page: the self-contained server (info + lifecycle) + its users (the shared PeerGrid).
 // One record — the server's turn-half is edited from its Turn-proxies card; here we manage the interface + peers.
+// A turn-family server the node still holds that this panel has no record of. Confirming rather than acting
+// straight away, because the operator needs two facts before they can judge it: how many users are in its
+// store (they are kept, and that is the whole reason not to just delete it and start again), and which
+// subnet it will come back on — the reported one can be unusable, since a server installed long ago may sit
+// on a range something else in the fleet has taken since, and mesh routes by subnet.
+export function ReclaimSheet({ node, iface, w, family, onBusy }) {
+  const isCsq = family === "csqtt";
+  const reported = (isCsq ? w.tun_addr : w.wg_addr) || "";
+  const [subnet, setSubnet] = useState(reported);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const users = Object.keys(w.passwords || {}).length;
+  const go = async () => {
+    setBusy(true); setErr(""); if (onBusy) onBusy(true);
+    const body = { node, family, iface };
+    if (subnet.trim() && subnet.trim() !== reported) body.subnet = subnet.trim();
+    const r = await api.turnReclaim(body);
+    setBusy(false); if (onBusy) onBusy(false);
+    if (r && r.ok) {
+      const n = ((r.data || {}).users) || 0;
+      closeModal();
+      toast(n ? T("Reclaimed {v1} — {v2} user(s) kept", { v1: iface, v2: String(n) })
+              : T("Reclaimed {v1}", { v1: iface }), "ok");
+      await Store.poll();
+    } else setErr(srvText(r) || T("Couldn't reclaim {v1}", { v1: iface }));
+  };
+  return html`<${Sheet} title=${T("Reclaim {v1}", { v1: iface })} width=${520} onClose=${closeModal}
+    foot=${footRow({ onCancel: closeModal, onAction: go, action: busy ? T("Reclaiming…") : T("Reclaim"), busy })}>
+    <p class="hint" style="margin:0 0 12px">${Trich("The node still runs this server, but this panel holds no record of it — so nothing starts it and nothing manages its users. Reclaiming writes the record back from what the node reports.")}</p>
+    <div class="field"><label>${T("Users in its store")}</label>
+      <div class="ro-field"><span class="mono">${String(users)}</span></div>
+      <div class="hint">${users ? T("They are imported as peers, so reclaiming does not disconnect them.") : T("This server has no users yet.")}</div></div>
+    <div class="field"><label>${T("Subnet")}</label>
+      <input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.66.70.1/24"/>
+      <div class="hint">${T("Must be free across the fleet. Both kinds hand out client addresses at runtime, so changing it does not invalidate anyone's credentials.")}</div></div>
+    ${err ? html`<div class="formmsg err">${err}</div>` : null}
+  <//>`;
+}
+
+
 export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   useStore();
   const [q, setQ] = useState("");
@@ -743,6 +791,13 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   const live = Store.recon.nodeStatus[node] === "live";
   const blocked = !live || inProc(nrec.proc_status);
   const cfg = (isCsq ? (nrec.csqtt_cfg || {}) : (nrec.wdtt_cfg || {}))[iface] || {};
+  // The node says it holds this server and that THIS panel does not claim it (see swg-noded's _CLAIMED).
+  // Older nodes never send the flag; fall back to "we hold no record", which is the same fact seen from
+  // this side — the flag exists because only the node can tell that apart from a report we simply lost.
+  const unclaimed = w ? (w.unclaimed === true || (w.unclaimed === undefined && !Object.keys(cfg).length)) : false;
+  const [reclaiming, setReclaiming] = useState(false);
+  const reclaim = () => pushModal(html`<${ReclaimSheet} node=${node} iface=${iface} w=${w}
+    family=${isCsq ? "csqtt" : "wdtt"} onBusy=${setReclaiming}/>`);
   const fork = w.fork || cfg.fork || (isCsq ? "csqtt" : "amurcanov");
   const active = w.active === "active";
   // `missing` = the node doesn't report this server at all. Treat it exactly like await_restore: the identity is
@@ -798,6 +853,15 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
           : adopting
           // Take-over in flight: Stop/Restart/Edit/Delete would all act on a server that is being replaced.
           ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("The node applies the take-over on its next sync")}/>`
+          : unclaimed
+          // ⚠️ OWNERLESS: the node still holds this server, this panel has no record of it, and so nothing
+          // will ever start it — a node runs only what the panel desires. Offering Start here was worse than
+          // useless: with no record to submit, it posted an empty instance and came back "wg_addr must be an
+          // IPv4 CIDR", which reads as a corrupt server rather than a missing record. Reclaim writes the
+          // record from what the node reports, keeping the users already in its store.
+          ? html`<button class="btn btn-mini btn-primary" disabled=${blocked || reclaiming} onClick=${reclaim}
+              title=${T("Take this server back under the panel, keeping the users in its store")}><${Ic} i="check"/>${
+              reclaiming ? T("Reclaiming…") : T("Reclaim")}</button>`
           : html`<${Fragment}>${opFlash}${(op && op.phase === "busy") || awaiting ? null : notup
           ? html`<button class="btn btn-mini" disabled=${blocked || awaiting} title=${blocked ? T("Unavailable while the node is down") : (isCsq ? T("Bring this csqtt server up on the node") : T("Bring this WDTT server up on the node"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "start")}><${Ic} i="play"/> ${T("Start service")}</button>`
           : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${(isCsq ? T("Take this csqtt server down (stays down until started)") : T("Take this WDTT server down (stays down until started)"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "stop")}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-mini" disabled=${blocked} title=${(isCsq ? T("Bounce this csqtt server on the node") : T("Bounce this WDTT server on the node"))} onClick=${() => (isCsq ? startOrRestartCsqtt : startOrRestartWdtt)(node, iface, "restart")}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}<button class="btn btn-mini" disabled=${blocked || awaiting || (op && op.phase === "busy")} title=${blocked ? T("Unavailable while the node is down") : ""} onClick=${() => (isCsq ? openEditCsqtt(node, iface) : openEditWdtt(node, iface))}><${Ic} i="pencil"/>${T("Edit interface")}</button><button class="btn btn-mini danger" disabled=${blocked || (op && op.phase === "busy")} title=${(isCsq ? T("Stop + remove this csqtt server and disconnect its users") : T("Stop + remove this WDTT server and disconnect its users"))} onClick=${() => openModal(isCsq ? html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>` : html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button><//>`}>
@@ -908,7 +972,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const _idf = (Store.panelSettings || {}).interface_defaults || {};   // panel-wide new-interface defaults
   const [dns, setDns] = useState((_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String(_idf.mtu || 1280)); const [ka, setKa] = useState(String(_idf.keepalive || 25));
   const [conf, setConf] = useState("");
-  const ips = nrec.ips || []; const [eg, setEg] = useState(() => egressInit({}));
+  const ips = ipChoices(nrec); const [eg, setEg] = useState(() => egressInit({}));
   const [blk, setBlk] = useState(() => defaultBlockFor(node));   // Filters & abuse — seeded from each category's default_on once the catalog loads
   const blkSeeded = useRef(false);
   useEffect(() => { loadBlockCatalog().then(() => { if (blkSeeded.current) return; blkSeeded.current = true; setBlk(defaultBlockFor(node)); }); }, []);
@@ -1321,20 +1385,45 @@ export function EditIfaceSheet({ node, iface }) {
       // node reported a backup that can't restore it (a re-created node whose backup IS the new key) → hide
       // Restore, steer to Adopt. Unknown (old node not reporting a backup pubkey) → keep offering Restore.
       const canRestore = meta.drift_restorable !== false;
+      // ⚠️ T-22 ②: and when the BOX cannot restore it, the VAULT still can. This is the state a migration
+      // lands in — the node minted a key on its first sync and backed THAT up, so reverting to the backup
+      // is a no-op, while the original sits in the operator's Encryption Vault, openable. Until now the
+      // panel hid Restore here and steered to Adopt, i.e. re-key every client, with the real key in reach.
+      const vaultRestore = !canRestore && !!meta.drift_key_blob;
+      const vaultAct = html`<div class="kd-act">
+        <button type="button" class="kd-btn kd-restore" onClick=${async () => {
+          // Unseal with the vault, RE-seal to this node's transport key, relay ciphertext — the exact path
+          // /api/iface/recreate has always used for a wiped box. The panel never sees the key.
+          let sealed;
+          try {
+            await ensureVaultUnlocked();
+            sealed = await ivkResealForNode(node, { key_source: "vault", key_blob: meta.drift_key_blob });
+          } catch (e) { return toast((e && e.message) || T("Failed"), "err"); }
+          if (!sealed) return toast(T("No escrowed key is stored for this interface."), "err");
+          const r = await api.ifaceRestore({ node, iface, key: "public_key", sealed_key: sealed });
+          if (!r.ok) return toast(srvText(r) || T("Failed"), "err");
+          setDriftDone("restoring"); await Store.poll();
+        }}>${T("Restore from the vault")}</button>
+        <span class="faint kd-hint">${T("Puts the original key back from your Encryption Vault — existing clients keep working, no re-distribution.")}</span>
+      </div>`;
       const restoreAct = html`<div class="kd-act">
         <button type="button" class="kd-btn kd-restore" onClick=${async () => { const r = await api.ifaceRestore({ node, iface, key: "public_key" }); if (!r.ok) return toast(srvText(r) || T("Failed"), "err"); setDriftDone("restoring"); await Store.poll(); openConfirm({ title: T("Restoring the original key"), confirmLabel: T("Got it"), body: T("The node is reverting this interface to its backed-up original server key on its next sync. Existing clients keep working — no re-distribution needed.") }); }}>${T("Restore original key")}</button>
         <span class="faint kd-hint">${T("Reverts to the backed-up key — existing clients keep working, no re-distribution.")}</span>
       </div>`;
       const adoptAct = html`<div class="kd-act">
         <button type="button" class="kd-btn kd-adopt" onClick=${() => pushModal(html`<${ConfirmSheet} title=${T("Adopt the new server key?")} confirmLabel=${T("Adopt new key")} warn=${true} body=${T("Every client on this interface will stop connecting with their current config. You must re-issue and re-distribute every QR code / config. The original key is discarded.")} onConfirm=${async () => { const r = await api.ifaceAdopt({ node, iface, key: "public_key" }); if (!r.ok) return toast(srvText(r) || T("Failed"), "err"); setDriftDone("adopted"); await Store.poll(); openModal(html`<${ConfirmSheet} title=${T("New server key adopted")} confirmLabel=${T("Got it")} note=${html`<${SubAutoNote}/>`} body=${T("The node's new server key is now the panel's key for this interface. Every client's existing config / QR for this interface has stopped working — re-issue and re-distribute the new QR codes / configs to them.")}/>`); }}/>`)}>${T("Adopt new key")}</button>
-        <span class="faint kd-hint">${canRestore ? T("Accept the node's new key — you'll re-distribute every QR.") : T("The node was re-created and no longer holds the original key, so Restore can't recover it — Adopt is the only option. You'll re-distribute every QR.")}</span>
+        <span class="faint kd-hint">${canRestore ? T("Accept the node's new key — you'll re-distribute every QR.")
+            : vaultRestore ? T("Accept the node's new key instead of restoring the original — you'll re-distribute every QR.")
+            : T("The node was re-created and no longer holds the original key, so Restore can't recover it — Adopt is the only option. You'll re-distribute every QR.")}</span>
       </div>`;
       return html`<div class="notice warn">
         <${Ic} i="warn"/><span>${rerr
           ? restoreFailed(rerr)
-          : html`${Trich("*Server key changed on the node.* This interface's server keypair was rotated directly on the server, so *every client's existing config / QR for this interface no longer connects*.")} ${canRestore ? T("The node kept a backup of the original key.") : Trich("*The node no longer holds the original key* (it was re-created), so it can't be restored — only adopted.")}`}
-          <div class=${"keydrift-acts" + (canRestore ? "" : " one")}>
-            ${canRestore ? restoreAct : null}
+          : html`${Trich("*Server key changed on the node.* This interface's server keypair was rotated directly on the server, so *every client's existing config / QR for this interface no longer connects*.")} ${canRestore ? T("The node kept a backup of the original key.")
+             : vaultRestore ? Trich("*The box no longer holds the original key* (it was re-created), but your *Encryption Vault does* — restore it from there and every existing config keeps working.")
+             : Trich("*The node no longer holds the original key* (it was re-created), so it can't be restored — only adopted.")}`}
+          <div class=${"keydrift-acts" + ((canRestore || vaultRestore) ? "" : " one")}>
+            ${canRestore ? restoreAct : vaultRestore ? vaultAct : null}
             ${adoptAct}
           </div>
         </span></div>`;
@@ -1348,7 +1437,7 @@ export function EditIfaceSheet({ node, iface }) {
     <div class="field ipk-field subnet-row"><label>${T("Host tunnel IP")}</label><span class="ipk-val"><b>${(meta.address || "").split("/")[0] || meta.subnet || "—"}</b> <span class="faint">${T("(set at creation — delete & recreate to change)")}</span></span></div>
     <div class="row2">
       <div class="field"><label>${T("Endpoint host / IP")}</label>
-        <${NodeIpPick} ips=${nrec.ips || []} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname — e.g. vpn.example.com"/>
+        <${NodeIpPick} ips=${ipChoices(nrec)} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname — e.g. vpn.example.com"/>
         <div class="hint">${T("What clients dial — config-facing only")}</div></div>
       <div class="field"><label>${T("Listen port")}</label><input class=${iperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/>${iperr ? html`<div class="hint err">${iperr}</div>` : html`<div class="hint">${T("Applied to the node (currently {v1})", { v1: meta.listen_port || "—" })}</div>`}</div>
     </div>

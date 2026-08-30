@@ -168,6 +168,47 @@ pan_seen=no; nod_seen=no; doc_seen=no
 # "updating…" waiting for a version that could not change. (Seen on a converted master running 1.7.1-beta.)
 #
 # The RUNNING CONTAINERS are the ground truth; the marker is the fallback for a stack that is currently down.
+# Is $DOCKER_DIR a LIVE docker install, or just files an earlier convert/uninstall left behind?
+# A directory with a docker-compose.yml in it used to be the whole test, and that is not evidence: a
+# bare-metal box carrying a leftover /opt/swg-panel-docker took the DOCKER path through this whole
+# script and the update failed on compose networking errors, having never touched the panel that was
+# actually installed. Observed on a box with 19 such leftovers from repeated convert cycles.
+#
+# Deliberately one-directional: we only ever DISPROVE liveness, and only from positive evidence —
+# docker answers, and NONE of our containers exist in any state. If docker is missing or its daemon is
+# unreachable we cannot tell, so we behave exactly as before rather than skipping someone's real
+# install. The verdict is computed once; the explanation prints once.
+_DSTACK=""            # "" not asked yet · yes · no
+docker_stack_live(){
+  [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ] || return 1
+  case "$_DSTACK" in yes) return 0;; no) return 1;; esac
+  if ! have docker || ! docker info >/dev/null 2>&1; then _DSTACK=yes; return 0; fi   # cannot tell → unchanged
+  # `created` is NOT evidence: an aborted conversion allocates the containers and never starts them, and
+  # those leftovers outlive the compose dir they came from. Anything that has actually run counts.
+  if docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null \
+       | grep -E '^(swg-panel|swg-node|swg-sub)\|' | grep -qv '|created$'; then
+    _DSTACK=yes; return 0
+  fi
+  # No containers — and that on its own is NOT proof of a leftover. An operator who ran
+  # `docker compose down` has a real install with none, and this branch is exactly what would bring it
+  # back (`compose pull` + `up -d --force-recreate`). Skipping them would be a silent no-op update on a
+  # box that had every right to expect one.
+  #
+  # What actually tells the two apart is whether a BARE-METAL install is also on this box: a machine is
+  # one shape or the other, never both, so a compose directory sitting next to a bare-metal panel or node
+  # is the residue of a conversion, while one sitting alone is somebody's stack that happens to be down.
+  if [ ! -f "$PANEL_DIR/swg-panel-server" ] && [ ! -f "$NODED_DIR/swg-noded" ] && [ ! -f "$AGENT_DIR/swg-agent" ]; then
+    _DSTACK=yes; return 0          # nothing else is installed here — this IS the install, bring it back up
+  fi
+  _DSTACK=no
+  warn "$(b "$DOCKER_DIR") has a docker-compose.yml but no containers, and this box has a bare-metal
+       install — treating the directory as a leftover from an earlier convert/uninstall and updating what
+       is actually installed instead.
+       If that is wrong, start the stack ($(b "cd $DOCKER_DIR && docker compose up -d")) and re-run;
+       if it is right, the directory is safe to move aside or delete."
+  return 1
+}
+
 docker_profile(){
   local names sniff="" mark
   if have docker; then
@@ -190,7 +231,7 @@ docker_profile(){
 HAVE_BPAN=no; { ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; } && HAVE_BPAN=yes
 HAVE_BNODE=no; { [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; } && HAVE_BNODE=yes
 HAVE_DOCK=no; DOCK_PROF=""
-if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
+if ! $NODE_ONLY && docker_stack_live; then
   HAVE_DOCK=yes
   DOCK_PROF="$(docker_profile)"
 fi
@@ -537,6 +578,132 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   else
     DID_FAIL=yes; warn "AmneziaWG could not be installed on this node — awg interfaces cannot be created or taken over. See the log above for the failing step"
   fi
+}
+
+ensure_awg_quick_unit(){   # HEAL (install-if-missing) the awg-quick@ TEMPLATE unit on a bare-metal node.
+  # `systemctl enable awg-quick@<iface>` instantiates a TEMPLATE — awg-quick@.service. Where that template
+  # does not exist the enable cannot work however it is spelled, and swg-agent used to swallow the error, so
+  # the panel, the node and the operator all believed an interface was boot-persistent while nothing on the
+  # box could start it. One cause, one shape: awg tools built from source by an installer that passed
+  # WITH_SYSTEMDUNITS=no (now removed from lib/common.sh). That fix cannot reach a box whose tools are
+  # ALREADY installed, because ensure_awg_datapath above returns early the moment awg + awg-quick + the
+  # module are all present — which is exactly the state such a box is in. So heal it here instead.
+  #
+  # Measured on a Debian 12 node: no awg-quick@.service, no .wants symlink, awg0 down after every reboot
+  # until an operator pressed Start in the panel. Ubuntu boxes never saw it — the PPA's .deb ships the
+  # template. Plain WireGuard never saw it either: wg-quick@.service comes from the distro's wireguard-tools.
+  #
+  # HEAL CONTRACT: write ONLY when systemd knows no template at all, and never overwrite one. Step aside if
+  # a packaged template later appears — ours lives in /etc, which OUTRANKS /usr/lib, so leaving it in place
+  # would silently shadow the tools' own unit for ever.
+  [ "$HAVE_BNODE" = yes ] || return 0
+  have systemctl || return 0
+  local unit=/etc/systemd/system/awg-quick@.service pkg="" c awgq ifaces n tool
+  # Steps 1-2 are about the AmneziaWG template and need its tools; step 3 enables what this node manages and
+  # is tool-agnostic — a box with only plain WireGuard has no awg-quick and must still reach it.
+  have awg-quick || { _enable_managed_ifaces; return 0; }
+  for c in /usr/lib/systemd/system/awg-quick@.service /lib/systemd/system/awg-quick@.service; do
+    if [ -f "$c" ]; then pkg="$c"; break; fi
+  done
+
+  # 1. the package caught up → drop our stand-in, it can only shadow the real one from here on.
+  if [ -n "$pkg" ] && [ -f "$unit" ] && grep -q '^# Written by swgPanel' "$unit" 2>/dev/null; then
+    info "the AmneziaWG package now ships awg-quick@.service — removing our stand-in so theirs is used"
+    run rm -f "$unit"
+    run systemctl daemon-reload || true
+    DID_UPDATE=yes
+  fi
+
+  # 2. no template anywhere → write a minimal one. MIRRORS swg-agent's _QUICK_UNIT — keep the two in step.
+  #    ExecReload is deliberately absent: upstream's needs bash for process substitution, and nothing ever
+  #    reloads these (every change goes through swg-agent's own ops).
+  if ! systemctl cat awg-quick@.service >/dev/null 2>&1; then
+    info "healing boot persistence for AmneziaWG (awg-quick@.service is missing — no awg interface can start at boot)"
+    if $DRYRUN; then
+      echo "    [skip] install ${unit}"
+    else
+      awgq="$(command -v awg-quick)"
+      cat > "$unit" <<EOF
+# Written by swgPanel: awg-quick@.service was missing on this host, so no awg interface could survive a
+# reboot. Safe to delete once the AmneziaWG tools' own package provides one.
+[Unit]
+Description=AmneziaWG via awg-quick(8) for %I
+After=network-online.target nss-lookup.target
+Wants=network-online.target nss-lookup.target
+Documentation=man:awg-quick(8)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${awgq} up %i
+ExecStop=${awgq} down %i
+Environment=WG_ENDPOINT_RESOLUTION_RETRIES=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+      chmod 644 "$unit"
+      systemctl daemon-reload || true
+    fi
+    DID_UPDATE=yes
+  fi
+
+  # 3. Enable what this node actually manages. The template alone changes nothing: the .wants symlink is
+  #    PER-INTERFACE, and every interface created while the template was missing has none. Read the managed
+  #    set from config.json, and skip any the operator deliberately stopped from the panel (swg-noded records
+  #    those in iface-stopped.json) — re-enabling one would quietly undo their decision.
+  _enable_managed_ifaces
+}
+
+_enable_managed_ifaces(){
+  # Enable every interface this node manages, UNDER ITS OWN TOOL. This used to read `awg` only, and the panel
+  # reported the consequence without being able to fix it: a plain-WireGuard interface that nothing had enabled
+  # sat for ever behind "will not start after a reboot — update this node to repair it", while the update it
+  # named skipped it by construction. Seen on a wg interface the mesh reaper had registered: conf on disk,
+  # wg-quick@ disabled, and no update could ever clear the line.
+  # Each tool has its own template (awg-quick@ / wg-quick@); enable only into one systemd actually knows —
+  # `systemctl enable` on a missing template is the exact silent failure this whole function exists to stop.
+  local ifaces n tool
+  have systemctl || return 0
+  ifaces="$(python3 -c '
+import json
+try:
+    cfg = json.load(open("/etc/swg-agent/config.json"))
+except Exception:
+    raise SystemExit(0)
+try:
+    stopped = set(json.load(open("/var/lib/swg-noded/iface-stopped.json")))
+except Exception:
+    stopped = set()
+for name, ic in (cfg.get("interfaces") or {}).items():
+    if name in stopped:
+        continue
+    t = (ic.get("cmd") or ["awg"])[0]
+    if t in ("awg", "wg"):          # the two tools with a *-quick@ template; anything else is not ours to enable
+        print("%s %s" % (name, t))
+' 2>/dev/null || true)"
+  # NOT a pipeline: `... | while read` runs the loop in a SUBSHELL, and DID_UPDATE/DID_FAIL set in there
+  # would never reach the summary — the update would report "nothing changed" having just enabled units.
+  while read -r n tool; do
+    [ -n "$n" ] && [ -n "$tool" ] || continue
+    # no template for this tool → `systemctl enable` would fail in exactly the silent way this function exists
+    # to prevent. awg's is healed above; wg's ships with the distro's wireguard-tools.
+    if ! systemctl cat "${tool}-quick@.service" >/dev/null 2>&1; then
+      $DRYRUN || warn "${tool}-quick@.service is missing — ${n} cannot be made to start at boot"
+      continue
+    fi
+    if systemctl is-enabled --quiet "${tool}-quick@${n}" 2>/dev/null; then continue; fi
+    if run systemctl enable --quiet "${tool}-quick@${n}"; then
+      DID_UPDATE=yes
+      # `run` is a no-op under --dry-run, so do not report in the past tense there — the [skip] line above
+      # already says what would happen, and "it will start at boot now" would be the exact class of claim
+      # this whole function exists to stop making.
+      $DRYRUN || { ok "${tool}-quick@${n} will start at boot now (it would not have)"
+                   note "$([ "$tool" = awg ] && echo AmneziaWG || echo WireGuard): ${n} set to start at boot"; }
+    else
+      DID_FAIL=yes; warn "couldn't enable ${tool}-quick@${n} — it will not come back after a reboot"
+    fi
+  done <<< "$ifaces"
 }
 
 ensure_cert_perms(){   # HEAL (fix-if-wrong) TLS key ownership so the panel can still read its key after a restart.
@@ -950,10 +1117,11 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   else note "bare-metal swg-node: unchanged (${nold})"; fi
   ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
   ensure_awg_datapath    # HEAL: install AmneziaWG if missing, rebuild its module, else userspace
+  ensure_awg_quick_unit  # HEAL: the awg-quick@ template + the per-interface enable, so awg survives a reboot
 fi
 
 # ───────────────────────── Docker (host / node / master) ─────────────────────────
-if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
+if ! $NODE_ONLY && docker_stack_live; then
   found=1; doc_seen=yes
   # which profile is running? prefer the marker install-docker.sh wrote into .env, else sniff containers
   prof="$(docker_profile)"
@@ -1052,6 +1220,88 @@ PYSC
         && note ".env: SWG_NODE_SECCOMP=unconfined (this node runs csqtt — its io_uring dataplane needs it)"
     fi ;;
   esac
+  # 3) Image tag. `image:` lines were baked LITERAL (…/swg-panel:latest) before SWG_IMAGE_TAG existed, and an
+  #    update patches this file key by key instead of replacing it — so the knob shipped, .env documented it,
+  #    and on every already-installed box it did nothing at all. Rewrite the three image lines to read the
+  #    variable, and give the node the turn-proxy image so its turn containers follow the same tag.
+  #    BEHAVIOUR-PRESERVING BOTH WAYS: a literal `latest` becomes `${SWG_IMAGE_TAG:-latest}`, which resolves
+  #    to latest exactly as before; a literal tag that is NOT latest is somebody's deliberate pin, so it is
+  #    carried into .env as SWG_IMAGE_TAG first and the interpolation then resolves to that same tag. Nothing
+  #    on this box changes image until the operator sets the variable themselves.
+  #    ⚠️ BACK IT UP FIRST. This is the one file an update EDITS IN PLACE rather than replaces, it is the
+  #    accumulated result of every update the box has ever had — so no two copies are quite alike, and only
+  #    some of those shapes have ever been seen here. The first version of the SWG_TURN_IMAGE pattern below
+  #    matched nothing at all because of a trailing comment; the next surprise gets a file to go back to.
+  #    The backup is kept ONLY when something actually changed, so a box that needs no migration collects
+  #    no litter on every future update.
+  if ! $DRYRUN && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
+    _cbak="$DOCKER_DIR/docker-compose.yml.bak-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
+    cp -p "$DOCKER_DIR/docker-compose.yml" "$_cbak" 2>/dev/null || _cbak=""
+    if python3 - "$DOCKER_DIR/docker-compose.yml" "$DOCKER_DIR/.env" <<'PYTAG'
+
+import re, sys
+comp, envf = sys.argv[1], sys.argv[2]
+text = orig = open(comp).read()
+TURN = ('      SWG_TURN_IMAGE: "${SWG_TURN_IMAGE:-ghcr.io/sanityprotocol/swg-node:${SWG_IMAGE_TAG:-latest}}"'
+        '  # image swg-noded runs each turn-proxy container from')
+
+# a) the service images themselves
+pat = re.compile(r'^(\s*image:\s*ghcr\.io/sanityprotocol/swg-(?:panel|node)):([^\s$]+)\s*$', re.M)
+pins = {m.group(2) for m in pat.finditer(text)}
+text = pat.sub(lambda m: m.group(1) + ":${SWG_IMAGE_TAG:-latest}", text)
+
+# b) the turn image the NODE is handed. An older compose hardcodes `:latest` as the DEFAULT here, which is
+#    why a node moved to a new tag kept starting its turn proxies from main: the variable it reads never
+#    followed the tag. Rewrite the stale default; a value the operator set explicitly in .env still wins.
+# the trailing comment is part of the shipped line, so the pattern has to tolerate one
+tpat = re.compile(r'^\s*SWG_TURN_IMAGE:\s*"?\$\{SWG_TURN_IMAGE:-ghcr\.io/sanityprotocol/swg-node:(?!\$)[^}"]*\}"?[^\n]*$', re.M)
+text = tpat.sub(TURN, text)
+
+# c) ...or add it, when the compose predates the variable entirely
+if "SWG_TURN_IMAGE" not in text:
+    out = []
+    for l in text.split("\n"):
+        out.append(l)
+        if "SWG_HOST_NODE_DIR:" in l:
+            out.append(TURN)
+    text = "\n".join(out)
+
+if text == orig:
+    raise SystemExit(1)          # nothing to migrate — stay quiet
+open(comp, "w").write(text)
+# carry a deliberate pin across, so the interpolation resolves to what was baked in
+pins.discard("latest")
+if len(pins) == 1:
+    pin = pins.pop()
+    try:    env = open(envf).read()
+    except OSError: env = ""
+    if not re.search(r'^SWG_IMAGE_TAG=', env, re.M):
+        with open(envf, "a") as f:
+            f.write(("" if env.endswith("\n") or not env else "\n") + "SWG_IMAGE_TAG=%s\n" % pin)
+PYTAG
+    then note "docker-compose.yml: image tags now follow SWG_IMAGE_TAG (was baked literal)${_cbak:+ — backup: $(basename "$_cbak")}"
+    else [ -n "$_cbak" ] && rm -f "$_cbak"; true      # nothing migrated → nothing to roll back to
+    fi
+  fi
+  # 1b) The pre-release channel knob. A bare-metal panel can be pointed at another branch's VERSION with a
+  #     systemd drop-in; a docker one could not be pointed anywhere, because the panel service's environment
+  #     block is explicit and had no passthrough — so its update bubble could only ever track main. Blank
+  #     default, so an install that never sets it behaves exactly as before.
+  if ! $DRYRUN && ! grep -q 'SWG_LATEST_URL' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
+    python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYLU' && note "docker-compose.yml: added SWG_LATEST_URL (lets a docker panel track a pre-release channel)"
+import sys
+f = sys.argv[1]
+text = open(f).read()
+if "SWG_LATEST_URL" in text:
+    raise SystemExit(1)          # self-guarding: a second run must not append a duplicate key
+o = []
+for l in text.split("\n"):
+    if "SWG_UPDATE_TRIGGER:" in l and "${SWG_UPDATE_TRIGGER" in l:
+        o.append('      SWG_LATEST_URL: "${SWG_LATEST_URL:-}"')
+    o.append(l)
+open(f, "w").write("\n".join(o))
+PYLU
+  fi
   # 2) Log caps. docker's json-file driver keeps a container's output FOREVER by default; one runaway server
   #    wrote 9.6G of a single repeated line and filled a disk. Same anchor + per-service reference the shipped
   #    file uses, so a migrated install and a fresh one end up identical.

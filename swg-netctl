@@ -19,6 +19,7 @@ caller can't escape (callers pass only "panel"/"sub", never a unit name or file 
                                           the drop-in just makes it survive the next restart)
     issue-cert  <panel|sub> <domain>      acme.sh issue+install to that service's cert path (+ SIGHUP reload hook)
     drop-cert   <panel|sub> <domain>      stop auto-renewing one domain (after a confirmed domain switch)
+    adopt-cert  <panel|sub> <cert> <key>  install an operator-supplied cert pair (TLS mode `skip`)
     restart     <panel|sub>               restart one service unit
 
 Security model:
@@ -39,7 +40,9 @@ import json
 import os
 import pwd
 import shutil
+import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 import re
 import stat
@@ -190,6 +193,58 @@ def find_acme():
     # Name every place actually looked. The old message listed two of the three paths it tried,
     # so an operator with acme.sh in ~/.acme.sh was told it had not been looked for there.
     raise Reject("acme.sh not found (looked in %s, and on PATH)" % ", ".join(_ACME_CANDIDATES))
+
+
+# ⚠️ AN ACME ENTRY WITH NO CERTIFICATE IS A TRAP, NOT STATE WORTH KEEPING — and it is self-perpetuating.
+# acme.sh writes <domain>.key BEFORE it ever contacts the CA, and leaves it behind when the order fails.
+# The next --issue then dies at "Domain key exists, do you want to overwrite it? ... add '--force'", so the
+# FIRST failure's real cause (port 80 unreachable, a bad DNS token, a rate limit) is masked for ever and
+# every retry reports the mask instead. It cannot heal itself: issue() calls createDomainKey only when the
+# requested keylength differs from Le_Keylength in the domain conf, and that value is written ONLY on a
+# successful key creation — so a failed run leaves a conf without it, the 2048 default never matches our
+# ec-256, and the next run walks straight back into the same refusal. Measured on a live box: the same
+# error, to the letter, two hours and several attempts apart. (acme.sh 3.1.4: issue():5044, createDomainKey():1669.)
+#
+# --force is the WRONG cure: _issue_acme relies on rc 2 = RENEW_SKIP, and forcing re-issues on every apply,
+# burning Let's Encrypt's 5-duplicates-per-week. Drop the useless entry instead — the same thing
+# do_drop_cert already does after a --remove, and install-host.sh's prune does for a superseded one.
+def _acme_ecc_dir(domain):
+    """The store directory OUR issuance uses for `domain` — we always issue --keylength ec-256, and acme.sh
+    puts EC certs in `<domain>_ecc`. Only ever a directory sitting DIRECTLY under the store we pin: never a
+    symlink pointing out of it, and never the RSA `<domain>` entry beside it, which on a shared box may
+    belong to another tool entirely. Returns None when there is nothing of ours there."""
+    p = os.path.join(ACME_HOME, "%s_ecc" % domain)
+    if os.path.isdir(p) and os.path.dirname(os.path.realpath(p)) == os.path.realpath(ACME_HOME):
+        return p
+    return None
+
+
+def _acme_entry_usable(d, domain):
+    """Does this entry hold a certificate `--install-cert` could actually install? Ask for the file it READS
+    (fullchain.cer) and require the leaf to really be a PEM — acme.sh ≤3.1.3 writes the CA's HTTP body to
+    <domain>.cer unconditionally, so a 404 lands a JSON blob there that a bare size test calls a certificate."""
+    try:
+        if os.path.getsize(os.path.join(d, "fullchain.cer")) <= 0:
+            return False
+        with open(os.path.join(d, "%s.cer" % domain)) as f:
+            return "BEGIN CERTIFICATE" in f.readline()
+    except OSError:
+        return False
+
+
+def _acme_clear_unusable(domain):
+    """Drop `domain`'s entry when it holds no usable certificate, so issuance can start clean.
+
+    A directory with a key and no certificate is worth nothing to anyone. One that HAS a certificate is
+    never touched: --issue RENEW_SKIPs it (rc 2), and a multi-SAN change re-issues from it happily because
+    a successful entry carries the matching Le_Keylength, so createDomainKey is never even reached."""
+    d = _acme_ecc_dir(domain)
+    if d is None or DRYRUN or _acme_entry_usable(d, domain):
+        return False
+    shutil.rmtree(d, ignore_errors=True)
+    log("cleared a failed acme entry for %s (a domain key with no certificate) — it would have masked "
+        "every re-issue with \"Domain key exists\"" % domain)
+    return True
 
 
 def reload_cmd_for(service):
@@ -415,6 +470,9 @@ def _issue_selfsigned(svc, domains):
 def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
     acme = find_acme()
     env = dict(os.environ)
+    # BEFORE the order, not after: a leftover from a previous failure would refuse THIS attempt too, and the
+    # operator would read "Domain key exists" instead of the reason issuance is actually failing on this box.
+    _acme_clear_unusable(domains[0])
     issue = acme_argv(acme, "--issue", "--server", "letsencrypt", "--keylength", "ec-256")
     for d in domains:                   # one -d per SAN; the FIRST is the primary acme.sh installs/renews by
         issue += ["-d", d]
@@ -432,6 +490,8 @@ def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
     rc, out = run(issue, env=env)
     # acme.sh: 0 = issued, 2 = RENEW_SKIP (a still-valid cert already exists). Else a failure.
     if rc not in (0, 2) and not DRYRUN:
+        # …and again on the way out, so the NEXT attempt meets the real error rather than this one's residue.
+        _acme_clear_unusable(domains[0])
         raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, ",".join(domains), out.strip()[-400:]))
     inst = acme_argv(acme, "--install-cert", "-d", domains[0], "--ecc",   # install/renew keyed by the primary -d
                      "--key-file", svc["key"], "--fullchain-file", svc["cert"])
@@ -558,6 +618,121 @@ def do_clear_backup(service):
     return "cleared %s cert backup" % service
 
 
+# ── adopt an operator-supplied certificate (TLS mode `skip`) ──────────────────────
+# The operator already HAS a certificate — issued by certbot, handed over by a hoster, carried from
+# another box — and wants this panel to serve it. We COPY it into the managed path rather than pointing
+# the unit at their file, because everything else in the TLS machinery is built around that one path:
+# backup-cert/restore-cert, the .applyback self-heal, the expiry watch, SIGHUP reload, and swg-sub's
+# InaccessiblePaths mask. A second source of truth would have to be threaded through all of it.
+#
+# ⚠️ ROOT IS ABOUT TO READ A PATH THE UNPRIVILEGED PANEL NAMED, and copy it somewhere group `swg` can
+# read. The validation below is not only there to give a good error message — it is the boundary. The
+# pair must LOAD as a certificate + matching private key, which is what keeps this from being a way to
+# surface /etc/shadow, an SSH key, or an env file into the panel's cert directory. What remains, and is
+# inherent to the feature rather than a hole in it: an operator (or a compromised panel) can make a TLS
+# key pair that already exists on this host become the panel's certificate. The panel must be able to
+# read the key it serves — that is what terminating TLS means — so no arrangement of permissions avoids
+# it. Both paths are validated here; NEITHER file's CONTENT ever rides the request queue, which is
+# group-readable (see the header): the queue carries paths, and paths are not secrets.
+_MAX_PEM = 512 * 1024          # a chain plus a key; larger than this is not what we were pointed at
+
+
+def _v_srcpath(p, what):
+    p = (p or "").strip()
+    if not p.startswith("/") or "\x00" in p or len(p) > 4096:
+        raise Reject("%s: %r is not an absolute path" % (what, p[:120]))
+    rp = os.path.realpath(p)
+    # a symlink into the kernel's file systems is not a certificate, whatever it resolves to
+    if rp.startswith(("/proc/", "/sys/", "/dev/")) or rp in ("/proc", "/sys", "/dev"):
+        raise Reject("%s: %s is not a file this can read" % (what, p))
+    try:
+        st = os.stat(rp)
+    except OSError as e:
+        raise Reject("%s: cannot read %s (%s)" % (what, p, e.strerror or e))
+    if not stat.S_ISREG(st.st_mode):
+        raise Reject("%s: %s is not a regular file" % (what, p))
+    if st.st_size <= 0 or st.st_size > _MAX_PEM:
+        raise Reject("%s: %s is empty or far too large to be a PEM file" % (what, p))
+    return rp
+
+
+def _cert_names(path):
+    """Every name the certificate answers to — DNS SANs plus the subject CN."""
+    names = set()
+    with contextlib.suppress(Exception):
+        info = ssl._ssl._test_decode_cert(path)
+        for typ, val in info.get("subjectAltName", ()):
+            if typ == "DNS":
+                names.add(str(val).lower())
+        for rdn in info.get("subject", ()):
+            for k, v in rdn:
+                if k == "commonName":
+                    names.add(str(v).lower())
+    return names
+
+
+def _cert_covers_host(path, host):
+    d = (host or "").lower()
+    for n in _cert_names(path):
+        if n == d or (n.startswith("*.") and d.split(".", 1)[-1:] == [n[2:]]):
+            return True
+    return False
+
+
+def _service_host(service):
+    """The name THIS service is configured to answer to. Read HERE, from the panel's settings and then
+    install.conf — never taken from the request: a caller that could name both the file and the name it
+    must match would be checking its own homework."""
+    host = ""
+    with contextlib.suppress(OSError, ValueError):
+        with open(os.path.join(STATE_DIR, "panel-settings.json")) as f:
+            url = (((json.load(f).get("access") or {}).get(service) or {}).get("url") or "").strip()
+        if url:
+            host = urllib.parse.urlsplit(url if "://" in url else "https://" + url).hostname or ""
+    if not host:
+        cfg = load_conf()
+        host = (cfg.get("SUB_DOMAIN") if service == "sub" else cfg.get("PANEL_DOMAIN")) or ""
+    return host.strip().lower()
+
+
+def do_adopt_cert(service, cert_src, key_src, reload="reload"):
+    svc = SERVICES[v_service(service)]
+    if reload not in ("reload", "noreload"):
+        raise Reject("bad reload flag %r" % (reload,))
+    c = _v_srcpath(cert_src, "certificate")
+    k = _v_srcpath(key_src, "private key")
+    # THE pair test: the same call the service itself will make when it binds. A pass here means the
+    # listener comes up; it rejects a non-PEM, a key that does not match the leaf, and a passphrase-
+    # protected key (which would otherwise hang a service that has no terminal to ask on).
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(c, k, password=lambda: b"")
+    except Exception as e:
+        raise Reject("%s and %s are not a usable certificate + private key pair: %s"
+                     % (cert_src, key_src, str(e).strip()[-200:] or e.__class__.__name__))
+    host = _service_host(service)
+    if host and not _cert_covers_host(c, host):
+        raise Reject("that certificate does not cover %s — it names %s"
+                     % (host, ", ".join(sorted(_cert_names(c))) or "no host at all"))
+    with contextlib.suppress(Exception):
+        left = int((ssl.cert_time_to_seconds(ssl._ssl._test_decode_cert(c)["notAfter"]) - time.time()) // 86400)
+        if left < 0:
+            raise Reject("that certificate expired %d day(s) ago" % -left)
+    if DRYRUN:
+        log("would install %s + %s as the %s certificate" % (cert_src, key_src, service)); return "dry-run"
+    os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
+    for src, dst in ((c, svc["cert"]), (k, svc["key"])):
+        if os.path.realpath(src) == os.path.realpath(dst):
+            continue                      # already the file we serve (the operator pointed at it) — nothing to copy
+        tmp = dst + ".adopting"           # write beside the target and rename: never a half-written cert on disk
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+    _fix_cert_perms(svc)
+    if reload == "reload":
+        with contextlib.suppress(Exception):
+            run(["systemctl", "kill", "-s", "HUP", svc["unit"]])
+    return "installed the certificate from %s for %s" % (cert_src, service)
+
+
 def do_drop_cert(service, domain):
     v_service(service)
     v_domain(domain)
@@ -658,6 +833,7 @@ VERBS = {
     "set-local-port": (do_set_local_port, 2),   # panel internal loopback-HTTP port (co-located nodes, direct-TLS)
     "issue-cert": (do_issue_cert, (2, 3)),      # optional 3rd arg: reload | noreload (live-apply uses noreload)
     "drop-cert": (do_drop_cert, 2),
+    "adopt-cert": (do_adopt_cert, (3, 4)),
     "backup-cert": (do_backup_cert, 1),
     "restore-cert": (do_restore_cert, 1),
     "clear-backup": (do_clear_backup, 1),

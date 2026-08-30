@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.3-beta</code></p>
+<p align="center"><code>1.8.4-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.3-beta** — [full changelog](CHANGELOG.md)
-> - **A deployment can be marked primary, backup, or neither.** The star is a three-state control now, and the labels are yours to set rather than guessed from position — a peer nobody has marked shows no role at all, where before its first deployment was called "Primary" and every other one a "Backup" of it. Several may share a role, which is the ordinary case when a peer spans protocols: a turn proxy is no fallback for a tunnel. Panel and subscription both order by it — primary first, unmarked next, backups last.
-> - **FreeTurn connections carry what they promised.** The VK call link now rides inside the link itself; it was being written under keys the app never reads, so the call dropped while the tunnel looked fine. The obfuscation profile is read off the relay that is actually running instead of a separate setting that could disagree with it — a mismatch there completes the connection and then passes no traffic at all. A server name labels the connection in the app, and a relay running a TCP tunnel now says so.
-> - **Text you have to read exactly is no longer prettified.** The mono font's programming ligatures drew `https://` as `https: /`, so a correct address looked corrupt and a correct key unreadable. They are off wherever a config, a key or a URL is shown or typed.
+> **What's new in 1.8.4-beta** — [full changelog](CHANGELOG.md)
+> - **A dead server no longer takes its interfaces with it.** The panel — not the box — holds a node's identity, so a node can be rebuilt onto new hardware with the same public keys: every config and QR code already in someone's hands keeps working. You see exactly what the rebuild will change before the token rotates, and interfaces the panel never held a key for are named up front instead of quietly coming back empty.
+> - **A node can be moved to another panel, and moved back.** Transfer carries the whole node across — its interfaces, its peers with their titles and users, the subscription tokens that keep existing links opening, and each stored config byte-for-byte. One transfer token authorises it, and a node that comes home returns as itself, with the same id.
+> - **AmneziaWG interfaces survive a reboot now.** On any box that built the tools from source, nothing could start them again — and every screen showed them healthy right up until the reboot. The panel reports boot persistence per interface, and an interface that is down is repairable from the panel instead of being a grey card with no reason and no button.
 <!-- WHATS-NEW:END -->
 
 ---

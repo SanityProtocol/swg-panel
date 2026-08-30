@@ -1102,8 +1102,55 @@ export function RowError({ k }) {
 // IP picker: only the node's PUBLIC (internet-routable) IPs are listed; internal/private IPs are hidden.
 // A "Use custom IP…" entry reveals a free-text field for any address not in the list (also how an already-set
 // private/custom value is shown — preserved, editable). value "" = the Auto option.
+/* ── DOES THIS HOST LAND ON THIS BOX? ──────────────────────────────────────────────────────────
+   For any field the node must BIND, a hostname is a perfectly good answer — but only if it resolves
+   to an address this node actually has, or the service dies with `bind: cannot assign requested
+   address`. The old test was membership in the node's IP list, which is not that question: it flags
+   EVERY hostname, correct ones included, and so trained the operator to ignore it. It also stayed
+   silent on the case that actually bites — a name that used to point here and now points at the box
+   this node was migrated away from.
+
+   So ask. The browser cannot resolve, the panel can; the answer is compared against the addresses the
+   node reports. Returns "" (nothing to say), "checking", "ok" or "bad" — callers warn only on "bad".
+   Debounced, because it runs on every keystroke of a hand-typed host. */
+const _resolveCache = new Map();
+export function useHostOnNode(host, ips) {
+  const [state, setState] = useState("");
+  useEffect(() => {
+    const h = String(host || "").trim().toLowerCase().replace(/\.$/, "");
+    const have = (ips || []).filter(Boolean);
+    if (!h) { setState(""); return; }
+    if (/^[\d.]+$/.test(h) || h.includes(":")) {        // an IP literal answers itself
+      setState(have.includes(h) || ["0.0.0.0", "::", "*"].includes(h) ? "ok" : "bad");
+      return;
+    }
+    if (!have.length) { setState(""); return; }          // nothing to compare against yet — say nothing
+    if (_resolveCache.has(h)) {
+      const got = _resolveCache.get(h);
+      setState(got.some(ip => have.includes(ip)) ? "ok" : "bad");
+      return;
+    }
+    setState("checking");
+    let dead = false;
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.resolveHost(h);
+        const got = ((r && r.data && r.data.ips) || []);
+        _resolveCache.set(h, got);
+        if (!dead) setState(got.some(ip => have.includes(ip)) ? "ok" : "bad");
+      } catch (_) { if (!dead) setState(""); }            // can't tell → don't cry wolf
+    }, 450);
+    return () => { dead = true; clearTimeout(t); };
+  }, [String(host || ""), (ips || []).join(",")]);
+  return state;
+}
+
 export function NodeIpPick({ ips, value, onChange, auto, customPlaceholder, disabled }) {
-  const pub = (ips || []).filter(ip => !isPrivIp(ip));
+  // A WILDCARD bind is not an address you choose off a list — it is the deliberate "listen on everything",
+  // and the operator who typed it should see it back where they typed it. Keeping it out of the options
+  // makes `valIsCustom` below true for it, so the picker opens on Custom with the value in the box instead
+  // of silently resolving to the node's detected address (which is a DIFFERENT bind).
+  const pub = (ips || []).filter(ip => !isPrivIp(ip) && !["0.0.0.0", "::", "*"].includes(ip));
   const valIsCustom = !!value && !pub.includes(value);
   const [custom, setCustom] = useState(valIsCustom);
   const sel = (custom || valIsCustom) ? "__custom__" : (value || "");

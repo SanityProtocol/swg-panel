@@ -706,6 +706,21 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .ifrow{display:flex;justify-content:space-between;gap:10px;font-size:12px}
 .ifrow .l{color:var(--dim)} .ifrow .r{font-family:var(--mono);color:var(--ink-2)}
 .ifrow .r.addr{font-size:11px}
+/* A row whose label is a SENTENCE: it takes the full width and what it applies to sits under it, rather
+   than wrapping to two lines beside a single name marooned in the right-hand column. */
+/* Section headings INSIDE a notice box: the shared .seclabel underlines itself, which puts a rule between
+   a heading and its own rows — the two things that belong together — while the boundary that matters, one
+   section ending and the next beginning, had no line at all. So: no underline here, and a divider above a
+   heading that FOLLOWS another section's rows. */
+.notice .seclabel{border-bottom:none;padding-bottom:0;margin:14px 0 6px}
+.notice .seclabel:first-child{margin-top:6px}
+.notice .ifcard-rows + .seclabel{border-top:1px solid var(--line);padding-top:12px}
+/* a changed address: what it belongs to on the left, the mapping on the right, both mono so the two
+   columns line up down the list and neither has to wrap */
+.addrrow{gap:14px;font-family:var(--mono);font-size:12px}
+.addrrow .l{color:var(--ink-2)} .addrrow .r{white-space:nowrap}
+.ifrow-stack{display:block}
+.ifrow-stack .r{display:block;margin-top:3px}
 .iftype{font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:6px}
 .iftype.wg{background:rgba(63,216,154,.14);color:var(--online)}
 .iftype.awg{background:rgba(31,200,214,.15);color:var(--brand)}
@@ -780,11 +795,17 @@ a.ifcard.candidate.ignored:hover{opacity:.85;border-color:var(--brand)}
    self-contained turn row has two badges, no address box and no gear, so it is a different width than a
    wg/awg row and its badge landed in its own place. Now a row with less in it leaves slack on the RIGHT
    instead of dragging its leading badge out of line. Width = a full wg/awg row: badge 44 + address 130 +
-   gear 28 + three 10px gaps; `hasprim` adds the ★ toggle and its gap. */
+   gear 28 + two 10px gaps. `hasprim` adds a FRONT badge (and, on a mixed-kind peer, the ★ toggle): 232 for
+   chip+address+gear+gaps, plus ~64 of badge before it starts to ellipsis. */
 .targetopt .topt-right{flex:none;display:flex;align-items:center;gap:10px;width:222px}
-.targetopt .topt-right.hasprim{width:262px}
+.targetopt .topt-right.hasprim{width:296px}   /* fits the full row: kind chip + front badge + address + gear */
 .targetopt .topt-right > .tg{min-width:44px;justify-content:center;margin-right:0}   /* uniform badge width, so the column after it lines up too */
-.targetopt .topt-right .tgt-front{min-width:0;overflow:hidden}                       /* a long proxy title shrinks rather than shoving the row */
+.targetopt .topt-right .tgt-front{min-width:0;flex:0 1 auto;overflow:hidden}         /* a long proxy title shrinks rather than shoving the row —
+   `flex:0 1 auto` is load-bearing: `.targetopt .tg` sets flex:none, so the min-width:0 alone never let it give
+   way and the row overflowed its fixed-width box instead (the gear fell off the right edge as soon as a rotate
+   made it appear). It also overrides the 44px floor one line up: that floor exists to line the ADDRESS column
+   up across rows, which the fixed-width box already guarantees — the front badge is the one item here whose
+   width is content, so it is the one that yields when a row carries ★ + chip + badge + address + gear. */
 .targetopt .topt-ip{width:130px;flex:none;padding:5px 8px;font-size:12.5px}
 .targetopt .topt-right .topt-ip.faint{width:auto;padding-left:2px}                    /* "auto" is a word, not a field — it needs no address-box width */
 .targetopt .topt-ip.existing{display:inline-flex;align-items:center;justify-content:flex-end;font-family:var(--mono);color:var(--ink-2);text-align:right}   /* already-deployed address, read-only */
@@ -964,6 +985,12 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .notice{display:flex;gap:9px;align-items:flex-start;padding:11px 14px;border-radius:var(--r-sm);font-size:12.5px;margin-bottom:16px}   /* consistent gap below every notice; :last-child trims it */
 .notice:last-child{margin-bottom:0}
 .notice.warn{background:rgba(232,192,75,.08);border:1px solid rgba(232,192,75,.25);color:var(--pending)}
+/* Insecure context: the panel is on plain http, so Web Crypto is absent and every key operation fails.
+   A full-width bar above the app chrome — not a toast (it must not be dismissible or time out) and not a
+   blocking screen (monitoring still works; only crypto does not). Same warn palette as .notice.warn. */
+.insecure-banner{padding:9px 16px;font-size:13px;line-height:1.45;color:var(--pending);
+  background:rgba(232,192,75,.10);border-bottom:1px solid rgba(232,192,75,.28)}
+.insecure-banner b{margin-right:6px}
 .notice svg{flex:none;margin-top:1px}
 /* error/log modal body — captured installer output / command errors, shown line-by-line, scrollable */
 .logview{font-family:var(--mono);font-size:12.5px;line-height:1.55;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line-solid);border-radius:var(--r-sm);padding:10px 12px;max-height:48vh;overflow:auto}
@@ -1137,6 +1164,18 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .nstat.procuninstall{color:var(--dangling)} .nstat.procuninstall::before{display:none}  /* uninstalling: RED */
 .nstat.enroll{color:#F0913C} .nstat.enroll::before{display:none}   /* awaiting enroll: ORANGE clock (node hasn't checked in yet) */
 .nstat.uninst{color:var(--unknown)} .nstat.uninst::before{display:none}   /* uninstalled: GREY (kept for re-install; recover with the same token) */
+/* migrated: the OLD box is still alive and still serving its peers, locked out of the panel by a rotated
+   token and nothing else. YELLOW because it is a half-finished state, not a fault — and on the node's own
+   page the tag is a BUTTON (the rollback / "it's gone" door), because a badge nobody can act on stops
+   being read. The button resets only the UA chrome; its colour still comes from .nstat.superseded. */
+.nstat.superseded{color:var(--partial)} .nstat.superseded::before{display:none}
+/* T-10: the same badge one operation over. PENDING borrows .superseded — both mean "there is a live
+   thing out there this panel no longer fully owns". DONE is neutral rather than green: the node moving
+   away is a completed fact, not a health state, and colouring it like an OK would read as an all-clear
+   about a node this panel has stopped controlling. */
+.nstat.xferdone{color:var(--unknown)} .nstat.xferdone::before{display:none}
+button.nstat.asbtn{background:none;border:0;padding:0;cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+button.nstat.asbtn:hover{text-decoration:underline}
 .nstat.procok{color:var(--online)} .nstat.procok::before{display:none}        /* success: green ✓, auto-clears after ~5s (no ×) */
 .nstat.procaborted{color:var(--unknown)} .nstat.procaborted::before{display:none}   /* aborted: grey, dismissable via × */
 .nstat.procfail{color:var(--dangling)} .nstat.procfail::before{display:none}   /* failed: red, error popup + dismissable × */

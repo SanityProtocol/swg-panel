@@ -184,10 +184,19 @@ _sum_node_ep(){ local ep; ep="$(python3 -c 'import json;print((json.load(open("/
 # the host:port the NODE actually dials for the panel — its agent's panel.url (127.0.0.1:443 for a local node,
 # the public URL for a remote one). Distinct from the panel's own public URL.
 _sum_node_purl(){ local u; u="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url") or "")' 2>/dev/null || true)"; [ -n "$u" ] || u="$(_sum_get "$_SUM_DDIR/.env" PANEL_URL)"; printf '%s' "$u"; }
+# Is <name> a container of a REAL docker install? A bare NAME match is not enough. An aborted conversion
+# leaves containers in state `created` — allocated, never started, no compose dir behind them — and matching
+# those made a bare-metal master print a Docker summary with "URL https:///" and "TLS ?", because every value
+# was then read from an .env that does not exist. Two pieces of positive evidence instead: the container has
+# actually run at some point, and the compose environment it would have come from is still there.
+_sum_dctr(){ have docker || return 1
+  [ -f "$_SUM_DDIR/.env" ] || return 1
+  docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null \
+    | grep -q "^$1|" && ! docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null | grep -qx "$1|created"; }
 _sum_detect(){ local hm="" nm=""   # echoes "<host_method> <node_method>", each ∈ baremetal|docker|"" (none)
-  if have docker && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then hm=docker
+  if _sum_dctr swg-panel; then hm=docker
   elif [ -f /etc/systemd/system/swg-panel-server.service ] || [ -x /opt/swg-panel/swg-panel-server ]; then hm=baremetal; fi
-  if have docker && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then nm=docker
+  if _sum_dctr swg-node; then nm=docker
   elif [ -f /etc/systemd/system/swg-noded.service ] || [ -f /etc/swg-agent/config.json ]; then nm=baremetal; fi
   printf '%s %s' "$hm" "$nm"; }
 _sum_note(){ case "$1" in docker) echo "$(b 'newly converted') (was bare-metal)";; *) echo "$(b 'newly converted') (was docker)";; esac; }
@@ -1309,7 +1318,20 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # Tools first and unconditionally: `awg` + `awg-quick` are what the panel needs to write and bring up a
   # conf, and they build anywhere with a compiler — no distro repo involved. WITH_WGQUICK=yes is what
   # produces awg-quick; without it you get the confusing half-installed state (`awg` present, awg-quick
-  # missing) that reads from the panel as "not installed at all". Same recipe as Dockerfile.node.
+  # missing) that reads from the panel as "not installed at all".
+  #
+  # ⚠️ WITH_SYSTEMDUNITS is deliberately NOT passed. Upstream auto-detects it (yes when the systemd unit
+  # directory exists) and installs `awg-quick@.service` + `awg-quick.target`, which is exactly what a
+  # bare-metal node needs: without that template `systemctl enable awg-quick@<iface>` cannot work however
+  # it is spelled, so no awg interface survives a reboot. This line used to carry `WITH_SYSTEMDUNITS=no`,
+  # copied from Dockerfile.node where it is correct (a container has no systemd and brings its interfaces
+  # up from node-entrypoint.sh). On a VPS it silently removed boot persistence from every AmneziaWG
+  # interface on every box that took this route — i.e. all of Debian, since the PPA is Ubuntu-only.
+  # Measured on a Debian 12 node: awg-quick@.service absent, no .wants symlink, and the interface down
+  # after every reboot until an operator pressed Start in the panel. Plain WireGuard was unaffected
+  # because its template comes from the distro's own wireguard-tools.
+  #
+  # This alone does NOT heal a box that already has the tools — see ensure_awg_quick_unit in update.sh.
   local w; w="$(mktemp -d)"
   if ! have awg || ! have awg-quick; then
     info "building AmneziaWG tools from source (the amnezia PPA is Ubuntu-only)…"
@@ -1322,7 +1344,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
     fi
     { run git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-tools "$w/tools" \
         && run make -C "$w/tools/src" \
-        && run make -C "$w/tools/src" install PREFIX=/usr WITH_BASHCOMPLETION=no WITH_SYSTEMDUNITS=no \
+        && run make -C "$w/tools/src" install PREFIX=/usr WITH_BASHCOMPLETION=no \
                 WITH_WGQUICK=yes; } >"$w/build.log" 2>&1 || true
   fi
   $DRYRUN && { rm -rf "$w"; return 0; }

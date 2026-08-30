@@ -27,6 +27,16 @@ cert_covers_host(){ local host="$2" dns base pre
     esac
   done
   return 1; }
+# Days until a certificate FILE expires; empty when it cannot be read (no openssl, no file, odd date).
+# Empty is never treated as a fault by the caller — "could not tell" must not become "renewal is broken".
+cert_days_left(){
+  local end epoch now
+  [ -s "${1:-}" ] || return 0
+  end="$(openssl x509 -in "$1" -noout -enddate 2>/dev/null | cut -d= -f2)"; [ -n "$end" ] || return 0
+  epoch="$(date -d "$end" +%s 2>/dev/null)" || return 0
+  [ -n "$epoch" ] || return 0
+  now="$(date +%s)"; echo $(( (epoch - now) / 86400 ))
+}
 SUB_TLS_DIR="/etc/swg-sub/tls"; SC="$SUB_TLS_DIR/fullchain.pem"; SK="$SUB_TLS_DIR/key.pem"
 sub_selfsigned(){ mkdir -p "$SUB_TLS_DIR"
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$SK" -out "$SC" \
@@ -153,6 +163,23 @@ acme_has_cert(){
     head -1 "$d/${PANEL_DOMAIN}.cer" 2>/dev/null | grep -q 'BEGIN CERTIFICATE' && return 0
   done
   return 1; }
+# ⚠️ A FAILED ORDER LEAVES A TRAP THAT NO RESTART CAN CLEAR. acme.sh writes <domain>.key before it ever
+# contacts the CA and keeps it when the order fails; every later --issue then stops at "Domain key exists,
+# do you want to overwrite it? ... add '--force'" instead of reaching the CA. So the real reason (port 80
+# unreachable behind a proxy, a bad DNS token, a rate limit) is masked for ever, and because this container
+# re-runs issuance on every start, it prints the mask on every start too — the [acme] lines below stop
+# naming the cause. It cannot heal itself: issue() only calls createDomainKey when the requested keylength
+# differs from Le_Keylength in the domain conf, and that is written ONLY on a successful key creation.
+# NOT --force (it re-issues on every restart and burns Let's Encrypt's 5-duplicates-per-week): drop the
+# entry. Scoped to the _ecc entry our --keylength ec-256 issuance uses, and only when it holds no usable
+# cert. The twin of swg-netctl's _acme_clear_unusable() and install-host.sh's acme_clear_unusable().
+# The acme state dir is a MOUNTED VOLUME, so this also clears a trap left by an older image.
+acme_clear_unusable(){
+  local d="$ACME_CFG/${PANEL_DOMAIN}_ecc"
+  [ -d "$d" ] || return 0
+  if [ -s "$d/fullchain.cer" ] && head -1 "$d/${PANEL_DOMAIN}.cer" 2>/dev/null | grep -q 'BEGIN CERTIFICATE'; then return 0; fi
+  log "clearing a failed acme entry for $PANEL_DOMAIN (a domain key with no certificate) — it would mask every re-issue with \"Domain key exists\""
+  rm -rf "$d"; }
 # call after a failed acme run with its output — flag the common, confusing causes
 acme_hint(){ case "$1" in
   *"too many certificates"*|*"rateLimited"*|*"rate limit"*)
@@ -226,36 +253,39 @@ elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
     letsencrypt)
       [ -n "${ACME_EMAIL:-}" ] && acme --register-account -m "$ACME_EMAIL" --server letsencrypt >/dev/null 2>&1 || true
       log "issuing $PANEL_DOMAIN via Let's Encrypt (HTTP-01 standalone on :80)…"
+      acme_clear_unusable        # a previous failure's leftover would refuse this order too
       # capture acme's full output so a failure shows WHY in 'docker logs' (don't hide it in /dev/null)
       if _out="$(acme --issue -d "$PANEL_DOMAIN" --standalone --server letsencrypt --keylength ec-256 2>&1)" || acme_has_cert; then
         acme_install; log "Let's Encrypt cert installed"
       else
         printf '%s\n' "$_out" | sed 's/^/[acme] /'
         log "WARNING: letsencrypt issuance FAILED (see [acme] lines above). HTTP-01 needs port 80 reachable from the internet and breaks behind Cloudflare's proxy — use TLS=cloudflare (DNS-01) or cf15. Falling back to self-signed."
-        acme_hint "$_out"; selfsigned
+        acme_hint "$_out"; acme_clear_unusable; selfsigned
       fi ;;
     letsencrypt-ip)
       [ -n "${ACME_EMAIL:-}" ] && acme --register-account -m "$ACME_EMAIL" --server letsencrypt >/dev/null 2>&1 || true
       log "issuing a short-lived (~6 day) Let's Encrypt IP certificate for $PANEL_DOMAIN (HTTP-01 standalone on :80)…"
+      acme_clear_unusable        # a previous failure's leftover would refuse this order too
       # IP certs must use the shortlived profile; --days 3 → the 12h renew loop re-issues ~2 days in (≈4-day buffer)
       if _out="$(acme --issue -d "$PANEL_DOMAIN" --standalone --server letsencrypt --keylength ec-256 --certificate-profile shortlived --days 3 2>&1)" || acme_has_cert; then
         acme_install; log "Let's Encrypt IP cert installed (short-lived; auto-renews every 12h)"
       else
         printf '%s\n' "$_out" | sed 's/^/[acme] /'
         log "WARNING: letsencrypt-ip issuance FAILED (see [acme] lines above). Needs port 80 reachable, a PUBLIC IP, and a direct hit (not behind Cloudflare's proxy). Falling back to self-signed."
-        acme_hint "$_out"; selfsigned
+        acme_hint "$_out"; acme_clear_unusable; selfsigned
       fi ;;
     cloudflare)
       [ -n "${CF_TOKEN:-}" ] || { log "WARNING: TLS=cloudflare but CF_TOKEN unset — falling back to self-signed"; selfsigned; }
       if [ -n "${CF_TOKEN:-}" ]; then
         [ -n "${ACME_EMAIL:-}" ] && acme --register-account -m "$ACME_EMAIL" --server letsencrypt >/dev/null 2>&1 || true
         log "issuing $PANEL_DOMAIN via Let's Encrypt (DNS-01 through Cloudflare)…"
+        acme_clear_unusable      # a previous failure's leftover would refuse this order too
         if _out="$(CF_Token="$CF_TOKEN" acme --issue -d "$PANEL_DOMAIN" --dns dns_cf --server letsencrypt --keylength ec-256 2>&1)" || acme_has_cert; then
           acme_install; log "Cloudflare DNS-01 cert installed"
         else
           printf '%s\n' "$_out" | sed 's/^/[acme] /'
           log "WARNING: cloudflare (DNS-01) issuance FAILED (see [acme] lines above) — check the token has Zone:DNS:Edit + Zone:Read and that $PANEL_DOMAIN is on that account. Falling back to self-signed."
-          acme_hint "$_out"; selfsigned
+          acme_hint "$_out"; acme_clear_unusable; selfsigned
         fi
       fi ;;
     cf15)
@@ -362,9 +392,40 @@ case "${TLS:-selfsigned}" in
     # Don't silence failures — a stalled renewal must be visible in the logs (the panel also watches its own
     # cert expiry and warns in the UI, but a loud log line is the first breadcrumb). On failure, retry sooner
     # (1h) instead of waiting a full 12h, so we get more attempts inside the renewal buffer.
+    # Record the outcome where the PANEL can read it. A loud log line is only ever seen by someone who goes
+    # looking in `docker logs`; renewal can then fail hourly for weeks while the console shows a healthy
+    # certificate, because the panel's own watch is an EXPIRY watch and says nothing until 14 days out.
+    #
+    # ⚠️ HEALTH IS ABOUT *THIS PANEL'S* CERTIFICATE — NEVER --cron's EXIT CODE. `acme.sh --cron` walks every
+    # entry in the store and fails if ANY of them fails, and the store is a mounted volume that a convert
+    # carries over wholesale from the old host: observed with SEVEN unrelated domains in it, none of which
+    # resolve here any more, so --cron returned non-zero for ever while our own certificate was renewing
+    # perfectly well. Keying the status file to that exit code would have pinned a permanent false alarm to
+    # the operator's screen — worse than the silence it was meant to fix.
+    #
+    # Two things can be wrong with OUR certificate, and neither needs acme's opinion of anyone else's:
+    #   · the run reported an error naming our own domain, or
+    #   · the certificate is inside its renewal window and STILL old — renewal had its chance and did not take.
     ( while :; do
-        if out=$(acme --cron 2>&1); then sleep 43200
-        else log "WARNING: TLS auto-renewal failed — retrying in 1h. last: $(printf '%s' "$out" | tail -1)"; sleep 3600; fi
+        out="$(acme --cron 2>&1)" || true
+        _bad=no; _why=""
+        if printf '%s' "$out" | grep -qiE "error.*(renew|issu).*${PANEL_DOMAIN}"; then
+          _bad=yes; _why="$(printf '%s' "$out" | grep -iE "error.*${PANEL_DOMAIN}" | tail -1)"
+        else
+          _left="$(cert_days_left "$SWG_PANEL_TLS_CERT")"
+          if [ -n "$_left" ] && [ "$_left" -le 20 ]; then
+            _bad=yes; _why="certificate has ${_left} day(s) left and has not been renewed"
+          fi
+        fi
+        if [ "$_bad" = no ]; then
+          printf 'ok %s\n' "$(date +%s)" > "$ACME_CFG/.renew-status" 2>/dev/null || true
+          sleep 43200
+        else
+          # keep the FIRST failure time across iterations — "failing since" is the fact worth having
+          _since="$(sed -n 's/^failing \([0-9]*\).*/\1/p' "$ACME_CFG/.renew-status" 2>/dev/null | head -1)"
+          printf 'failing %s %s\n' "${_since:-$(date +%s)}" "$_why" > "$ACME_CFG/.renew-status" 2>/dev/null || true
+          log "WARNING: TLS auto-renewal failed for $PANEL_DOMAIN — retrying in 1h. last: $_why"; sleep 3600
+        fi
       done ) &
     log "TLS auto-renewal enabled (acme.sh --cron every 12h; 1h retry on failure; reload via SIGHUP)" ;;
 esac

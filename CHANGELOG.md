@@ -3,6 +3,98 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.4-beta] — 2026-08-30
+
+### Added
+- **A node can be rebuilt onto a new box, because the panel — not the box — holds its identity.** A server
+  that died, or that you are replacing on purpose, no longer takes its interfaces with it. The panel keeps
+  every interface's keypair, address and peer set, shows you **what the rebuild will change before the token
+  rotates**, and puts the identity back on the new machine: the same public keys, so every client config and
+  QR already in someone's hands keeps working. Interfaces the panel escrowed keys for come back *as
+  themselves*; ones it never held a key for are listed as such, up front, instead of quietly reappearing
+  empty. The old box, if it is still out there, is marked — a rebuild is not a thing you should have to
+  guess the state of.
+- **A node can be moved to another panel, and moved back.** Transfer hands the whole node across: its
+  record, its interfaces, its peers with their titles and users, the subscription token map that keeps
+  existing sub links opening, and each peer's stored config byte-for-byte. The receiving panel gets a
+  **fingerprint baseline** so it can diff its own capture against where the node came from. The far panel
+  can hand it back, and it comes home *as itself* — same node id, so nothing keyed on it moves. What
+  travels is authorised by a **transfer token**: one value to paste, not a whole enrolment command, and a
+  panel refuses a bundle for a node it already holds.
+- **Reclaim a turn-family server the node is still running and no panel claims.** After a migration or a
+  re-enrolment, a WDTT/csqtt server could be live on the box with no record anywhere. It is now adoptable
+  from the panel, **with its users**, instead of being invisible until something collided with it.
+- **Mesh egress — which of a node's own addresses it dials the rest of the fleet from.** A box with several
+  addresses no longer leaves this to the kernel's default. It is set per node in Network settings, and a box
+  with a `/32` address and an onlink gateway can pin a source too.
+- **A node can answer to more than one name.** "Hostnames for this node" takes the extra names a node is
+  reachable at, and every address picker in the panel offers them.
+
+### Changed
+- **The node record mirrors what the node manages, instead of being a hand-kept list.** Onboarding an
+  interface brings its peers with it, the turn family mirrors too, and a mesh link a previous panel left
+  behind is no longer invisible just because the registry is new.
+- **An interface's kind is asked of the kernel.** The panel used to believe whatever the record said, which
+  is how obfuscation parameters ended up written into a plain-WireGuard conf and how a `wg` interface could
+  wear an AWG badge. The kernel is now the answer, and the agent skips obfuscation on anything that is not
+  AmneziaWG.
+
+### Fixed
+- **Interfaces built from source did not survive a reboot** — on any box that compiled the tools, nothing
+  on the machine could start them again, and every screen showed them healthy right up until the reboot.
+  This hit both AmneziaWG and plain-WireGuard interfaces. The panel now reports boot persistence per
+  interface, each interface is enabled under its own tool, and a down interface is repairable from the panel
+  instead of being a grey card with no reason and no button.
+- **A queued peer removal could be cancelled by a sync that mentioned no interfaces.** A node that reported
+  nothing — briefly, for any reason — cleared work the panel had queued. Absence of an interface is not
+  evidence about its peers, and is no longer treated as any.
+- **The installer refused a bare port.** Answering `8443` where it asked for an address was read as a
+  hostname. A bare port is now a port.
+- **A Docker install published `:80` blind and could take the panel down at switch-over** on any box whose
+  port 80 was already someone's. It checks first; `SWG_FORCE_PORT80=1` overrides.
+- **TLS, four ways.** The subscription surface can need a certificate of its own; `skip` meant two things
+  and four places read only one of them; "Existing certificate files" now covers a certificate the panel
+  serves but does not issue; and a failed order left behind a key that refused every retry.
+- **`SWG_PANEL_WEB=.` served nothing but 403s**, and a panel on plain HTTP said so instead of throwing a
+  `TypeError`.
+- **A panel following a pre-release branch downgraded itself on every update.** The one-click update fetched
+  the right branch's installer and then installed the *stable* branch from it, because the branch lived only
+  in the URL and nothing read it back out. The ref is now taken from the address the installer came from.
+- **A leftover directory could send a bare-metal box down the Docker path.** An `/opt/swg-panel-docker` left
+  behind by an earlier conversion was treated as an installation, and the update failed on container
+  networking having never touched the panel that was actually there. Both the update and the closing summary
+  now want real evidence — containers that have actually run, and the environment they came from — so an
+  aborted conversion's remains stop outranking the install beside them. The same summary no longer reports a
+  bare-metal master as a Docker host with a blank address and an unknown certificate.
+- **Turn proxies stayed on the image they were first started from.** A node moved to a different build left
+  them running the old one indefinitely — the node checked that they were running, never what they were
+  running. A proxy on the wrong build is now noticed and restarted onto the right one.
+- **A failed certificate renewal was invisible until the certificate was nearly gone.** Renewal could fail
+  every hour for weeks while the console showed a healthy certificate, because the panel watched only the
+  expiry date — and the result it did compute was never shown anywhere. Renewal health is now reported in
+  Settings → Panel access, and it is judged on *this* panel's certificate: a store carried over from another
+  host can hold domains that have nothing to do with the panel, and one of those failing is not this
+  panel's problem. A converted panel also no longer floods its log with errors from the previous host's
+  paths on every renewal attempt.
+- **An unreachable panel could talk you into re-issuing a working peer.** A momentary connection failure
+  made the QR/config sheet report "No stored config — re-issue this peer" for a peer whose config was on
+  disk the whole time, and it *persisted* that verdict — it survived a reload, and the only thing that
+  cleared it was the very re-issue the message recommended, which destroys the config it was wrong about.
+  The sheet now tells "could not reach the panel" apart from "this peer has no config", records nothing for
+  a request it never completed, and the false markers an earlier build wrote are cleared once on upgrade.
+- **A full uninstall could leave pieces of the panel running.** On a bare-metal master it left the Docker
+  network-control units behind — one of them a *running* timer, polling for a panel that no longer existed —
+  along with an orphaned enablement symlink systemd then reported for ever, and our container images
+  (removal matched a single tag, not the repository). And an unattended Docker uninstall kept the panel data
+  and node configs it had been told to delete, because a local default shadowed the preset before it was
+  read. All of these are now cleared.
+
+### Security
+- **A sealed key is only escrow if the *current* vault can open it — and the browser now proves that.** The
+  panel stops asking nodes to seal keys it could never store, records the proof when a vault opens one, and
+  a re-install no longer severs the link to a key the panel holds escrow for. The check covers the WDTT
+  family too, which the first pass left behind.
+
 ## [1.8.3-beta] — 2026-08-27
 
 ### Added

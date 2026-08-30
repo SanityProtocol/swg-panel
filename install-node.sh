@@ -663,6 +663,32 @@ $DRYRUN || { have python3 || die "python3 (>= 3.7) is required — install it wi
     || die "this box's python3 ($(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo '?')) is too old — swg-noded needs Python >= 3.7; install a newer python3 and re-run"; }
 $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; rm -rf "$PREFIX"; }
 
+# ⚠️ THIS BOX ALREADY RUNS THE DOCKER NODE. Every docker-aware branch in this script is gated on
+# SWG_CONVERT=1, which only convert.sh sets — so run bare-metal by hand on a box whose `swg-node`
+# container is up and nothing here notices. The result is two daemons holding the SAME token and node
+# id, both reconciling the same desired state through different run models: one inside the container's
+# netns against its volume, one on the host. They fight over the interfaces, and the panel's `kind`
+# flips with whichever snapshot arrived last, because it adopts the run model the node reports.
+#
+# bootstrap.sh ALREADY guards this: reaching it through the panel's own command finds the other method
+# installed and offers convert / keep / abort. This is the same guard one layer down, for the path that
+# skips it — anything invoking install-node.sh directly, which includes every hand-rolled installer built
+# from this repo. A refusal rather than a warning: there is no reading of "install the other run model
+# beside the one already running" that is what the operator meant. FORCE_ALONGSIDE exists for the one
+# case a rule cannot judge: a container that is somebody else's, or is on its way out.
+if [ "${SWG_CONVERT:-}" != 1 ] && [ "${FORCE_ALONGSIDE:-}" != 1 ] && ! $DRYRUN \
+     && command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
+  die "this box already runs the swg-node CONTAINER, and a bare-metal install beside it would leave two
+     daemons syncing the same node id and fighting over the same interfaces.
+
+     Run the panel's command through bootstrap.sh instead of calling this script directly: it detects the
+     docker install and offers to CONVERT it (settings, users and peers preserved) or to re-install it as
+     docker — which is the choice this script, on its own, cannot offer.
+
+     To install a NODE here anyway (the container is somebody else's, or is on its way out), re-run with
+     FORCE_ALONGSIDE=1."
+fi
+
 # convert.sh (docker→bare) re-enters here AFTER migrating the existing turn-proxies, to offer the same
 # "add more?" step interfaces get — reusing this script's turn menu instead of duplicating the fork list
 # in convert.sh. choose_turn_proxy lists what's already installed (incl. the just-migrated units), lets

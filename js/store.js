@@ -31,6 +31,8 @@ export const hooks = {
   rekeyGhosts: null,      // maybeRekeyGhosts  — phase 2 of a ghost recreate
   vaultKeyCached: null,   // subSKCached       — is the encryption vault unlocked this session?
   vaultAutoHeal: null,    // subAutoHeal       — re-issue blobs after an unlock
+  ifaceKeyAutoRestore: null,  // ifaceKeyAutoRestore — put a migrated interface's escrowed key back (T-22)
+  escrowAutoVerify: null,     // escrowAutoVerify — prove an unstamped escrow blob opens, which only the browser can
 };
 
 let _on401 = () => { throw new Error("unauthorized"); };   // i18n-keys: a control-flow sentinel, never displayed
@@ -98,6 +100,10 @@ export const api = {
   nodes() { return this.get("/api/nodes"); },
   nodeCreate(b) { return this.post("/api/nodes/create", b); },
   nodeUpdate(b) { return this.post("/api/nodes/update", b); },
+  nodeArrivedClear(b) { return this.post("/api/nodes/arrived/clear", b); },   // dismiss the "arrived here" note
+  turnReclaim(b) { return this.post("/api/turn/reclaim", b); },   // a wdtt/csqtt server the node holds and no panel claims
+  escrowVerified(b) { return this.post("/api/iface/escrow/verified", b); },   // the browser opened the blob: it is for THIS vault
+  resolveHost(h) { return this.get("/api/resolve?host=" + encodeURIComponent(h)); },   // does this name land on this node?
   connectionUpdate(b) { return this.post("/api/connection/update", b); },
   panelSettings(b) { return this.post("/api/panel/settings", b); },
   subVault() { return this.get("/api/sub/vault"); },
@@ -122,7 +128,23 @@ export const api = {
   routingReset(b) { return this.post("/api/node/routing-reset", b); },   // per-node: wipe + rebuild + re-pull all smart-routing state
   asnCount(n) { return this.get("/api/asn?n=" + encodeURIComponent(n)); },   // resolve an ASN → prefix count (live editor feedback)
   nodeRotate(b) { return this.post("/api/nodes/rotate", b); },
+  // Restore / migrate: arms the rebuild (baseline, interface restores, turn capture, mesh re-provision)
+  // and rotates the token, which is BOTH the handle for the new box and the lockout of the old one.
+  // NOT nodeRotate — that rotates a token and nothing else. See the plan's §3.1.
+  nodeRebuild(b) { return this.post("/api/nodes/rebuild", b); },
+  // T-11: the SAME analysis, read-only and before the token rotates. It writes nothing, so the confirm
+  // sheets can show what a rebuild would do while the operator can still decide not to.
+  nodeRebuildPreflight(nid) { return this.get("/api/nodes/rebuild/preflight?node=" + encodeURIComponent(nid)); },
+  nodeRebuildRollback(b) { return this.post("/api/nodes/rebuild/rollback", b); },   // {discard:true} = forget the old box instead
   nodeRemesh(b) { return this.post("/api/nodes/remesh", b); },   // rebuild THIS node's mesh links on demand
+  // T-10 — Transfer to ANOTHER panel. One endpoint in two modes so the preview and the act cannot answer
+  // different questions: the pre-flight parses the paste, reaches the target and reports what would move;
+  // the commit does the same and then pushes. Neither touches the box.
+  nodeTransferPreflight(b) { return this.post("/api/nodes/transfer/preflight", b); },
+  nodeTransfer(b) { return this.post("/api/nodes/transfer", b); },
+  // "is it Reporting on the target panel yet" — asked OF the target, not inferred from our silence.
+  nodeTransferStatus(nid) { return this.get("/api/nodes/transfer/status?node=" + encodeURIComponent(nid)); },
+  nodeTransferCancel(b) { return this.post("/api/nodes/transfer/cancel", b); },   // withdraw the candidate; the node never left
   nodeFlagRemove(b) { return this.post("/api/nodes/flag-remove", b); },
   nodeUnflagRemove(b) { return this.post("/api/nodes/unflag-remove", b); },
   nodeDelete(b) { return this.post("/api/nodes/delete", b); },
@@ -267,6 +289,8 @@ export const Store = {
     this.catSizes = d.cat_sizes || this.catSizes || {};   // {cat:{ip,host}} resolved-list record counts → list-size display
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
+    this.tls = d.tls || this.tls || {};   // cert expiry + renewal health → the Access & TLS card
+
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
     if ("latest_remote_date" in d) this.latestRemoteDate = d.latest_remote_date || "";   // update-bubble: release date + changelog notes
     if ("latest_remote_notes" in d) this.latestRemoteNotes = d.latest_remote_notes || [];
@@ -281,6 +305,31 @@ export const Store = {
         ? (Object.keys(this.roster.peers || {}).length + ":" + Object.keys(this.roster.users || {}).length)
         : "off";
       if (hk !== this._healKey) { this._healKey = hk; if (hk !== "off") hooks.vaultAutoHeal && hooks.vaultAutoHeal(); }
+    } catch (_) {}
+    // T-22: and the same net for a MIGRATED node's server keys. Its own signature — the set of interfaces
+    // any node is holding for the vault — because that set changes on a migration, not on a roster edit,
+    // and it must not be gated on `storeMode === "encrypted"`: the interface-key vault is a separate thing
+    // and is commonly on when subscription encryption is not.
+    try {
+      const heldList = [];
+      for (const n of (this.nodes || [])) {
+        for (const i of (n.awaiting_key || [])) heldList.push(n.id + "|" + i);
+        for (const w of (((this.stats[n.id] || {}).wdtt) || [])) if (w && w.await_restore && w.iface) heldList.push(n.id + "|w:" + w.iface);
+      }
+      const held = heldList.sort().join(",");
+      if (held !== this._heldKey) { this._heldKey = held; if (heldList.length) hooks.ifaceKeyAutoRestore && hooks.ifaceKeyAutoRestore(); }
+      // …and escrow the panel is holding but cannot classify. Keyed on the SET of unverified interfaces,
+      // not on the ciphertext: an unstamped node re-seals every five seconds, so the blob changes
+      // constantly while the thing worth acting on — which interfaces are unproved — does not.
+      const unver = [];
+      for (const n of (this.nodes || [])) {
+        const ifs = (this.describe || {})[n.id] || {};
+        for (const [ifn, m] of Object.entries(ifs)) if (m && m.escrow_unverified) unver.push(n.id + "|i|" + ifn);
+        // …and the WDTT twin, which is escrowed the same way and would otherwise never wake this
+        for (const ifn of Object.keys(n.wdtt_escrow_unverified || {})) unver.push(n.id + "|w|" + ifn);
+      }
+      const uk = unver.sort().join(",");
+      if (uk !== this._unverKey) { this._unverKey = uk; if (unver.length) hooks.escrowAutoVerify && hooks.escrowAutoVerify(); }
     } catch (_) {}
   },
   // Re-derive everything the UI reads from a PRISTINE copy of server data + the optimistic
@@ -325,7 +374,14 @@ export const Store = {
         for (const ifn of Object.keys(gi)) { const k = n.id + "|g|" + ifn; _seen.add(k);   // ghosts get the SAME grace (a briefly-lost iface isn't a ghost yet)
           if (!this._missIfSince[k]) this._missIfSince[k] = _now;
           gi[ifn].problemMs = _now - this._missIfSince[k];
-          gi[ifn].ripe = gi[ifn].problemMs >= _grace; } }
+          gi[ifn].ripe = gi[ifn].problemMs >= _grace; }
+        // BROKEN (reported but down) gets the same grace for the same reason: an interface is briefly down
+        // during any restart, and a Repair button that flashes on every bounce is one nobody trusts.
+        const bi = n.broken_ifaces || {};
+        for (const ifn of Object.keys(bi)) { const k = n.id + "|b|" + ifn; _seen.add(k);
+          if (!this._missIfSince[k]) this._missIfSince[k] = _now;
+          bi[ifn].problemMs = _now - this._missIfSince[k];
+          bi[ifn].ripe = bi[ifn].problemMs >= _grace; } }
       for (const k of Object.keys(this._missIfSince)) if (!_seen.has(k)) delete this._missIfSince[k]; }
     // a rotation is "done" once the new key shows up live (or after a 45s safety cap) — drop the marker
     for (const id of Object.keys(this.rotating)) {

@@ -29,8 +29,7 @@ import {
   anySessionConf, rerenderConf, effectiveClientParams, turnArtifact, turnClientsFor, turnClientSettingsFor,
   subFeatureOn, subSKCached, subBaseUrl, subUsersMap, useSubRec, ensureVaultUnlocked, subUrlFor,
   subEnableUser, subRotateUser, subBackfillUser, subKeyB64, VaultPromptSheet, ensurePeerBlob,
-  subPersistOn, subSetPersist, subUnlock, subRecover, subUsersForget,
-} from "./crypto.js";
+  subPersistOn, subSetPersist, subUnlock, subRecover, subUsersForget, confWasUnreachable} from "./crypto.js";
 import {
   confirmDeletePeer, confirmUnassign, confirmBlockPeer, confirmUnblockPeer, confirmBlockUser,
   confirmUnblockUser, peerBlockBtn, userBlockBtn, rotateAllUserKeys, PeerStatusLine, SubStatusLine,
@@ -959,6 +958,11 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
         : primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
       ${conf ? html`<${QR} conf=${conf} label=${label}/>`
         : html`<div class="qr-none">${!loaded ? T("loading…")
+            // ⚠️ Say which of the two it is. "No stored config — re-issue this peer" is a claim about what
+            // is ON DISK, and it was being printed whenever the panel merely could not be reached — telling
+            // an operator their config was gone, and recommending the one action that would actually destroy it.
+            : confWasUnreachable(peer.pubkey, t.node, t.iface)
+              ? T("Couldn't reach the panel just now, so this peer's stored config could not be read. It has not been lost — try again in a moment.")
             : Store.storeConfigs ? T("No stored config — re-issue this peer to enable its QR & download.")
             : T("Config shown right after creation, or enable store_configs to keep it.")}</div>`}
       ${bare ? null : html`<div class="dmeta">

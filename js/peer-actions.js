@@ -150,10 +150,15 @@ function _missingIface(node, iface) {
 // this shared confirm is opened both from a peer row/modal and from the node's interface list, so the copy
 // stays consistent and always frames it as an interface, not a peer. `problemMs` drives the gate line; `mi` is
 // the node's missing-interface record (null => the panel never captured a config, so it can't recreate).
-function _openRestoreInterface({ node, iface, mi, problemMs, rowKey, back }) {
-  if (ghostIface(node, iface)) return openRecreateRekey(node, iface, back);   // lost + keyless → can't restore, redirect to recreate + rekey
+/* `broken` = the node still REPORTS this interface but its device is gone (down). Same repair — recreate
+   from the saved config with the original key — but not the same sentence: calling it "missing" in front of
+   an operator looking at a card the node is actively reporting is how a correct dialog reads as a bug. */
+function _openRestoreInterface({ node, iface, mi, problemMs, rowKey, back, broken }) {
+  if (!broken && ghostIface(node, iface)) return openRecreateRekey(node, iface, back);   // lost + keyless → can't restore, redirect to recreate + rekey
   const where = Store.nodeName(node) + " · " + iface;
-  const gate = T("This isn't a brief hiccup or a peer still being created — the interface has stayed missing for {dur}.", { dur: _durText(problemMs) });
+  const gate = broken
+    ? T("This isn't a brief bounce — the interface has been down on the node for {dur}.", { dur: _durText(problemMs) })
+    : T("This isn't a brief hiccup or a peer still being created — the interface has stayed missing for {dur}.", { dur: _durText(problemMs) });
   const clean = !!(mi && mi.key_source);                 // "backup" | "vault" → original key recoverable
   const vault = !!(mi && mi.key_source === "vault");     // key gone from the node → recover from the operator vault (full wipe)
   const src = vault ? T("the operator vault") : T("the node's own backup");
@@ -161,11 +166,17 @@ function _openRestoreInterface({ node, iface, mi, problemMs, rowKey, back }) {
   const vars = { iface, node: Store.nodeName(node), src, gate };
   const body = !mi
     ? T("The panel has no saved configuration for interface {iface} on {node} yet, so it can't be recreated automatically. {gate}", vars)
+    : broken
+      ? (clean
+        ? T("Rebuild the down interface {iface} on {node} with its ORIGINAL server key (from {src}) and saved settings. The device is gone from the node, so there is nothing left to restart — this recreates it. Every peer on {iface} re-converges over the next few syncs and existing clients keep working (no new QR / config to distribute). {unlock}{gate}",
+            { ...vars, unlock: lockedVault ? T("You'll be asked to unlock the vault first to release the escrowed key. ") : "" })
+        : T("Rebuild the down interface {iface} on {node} with its saved settings. The device is gone from the node, so there is nothing left to restart. Its original server key can't be recovered, so the interface comes back with a NEW key — every client on {iface} must re-import a fresh QR / config. {gate}", vars))
     : clean
       ? T("Recreate the missing interface {iface} on {node} with its ORIGINAL server key (from {src}) and saved settings. This restores the INTERFACE, not a single peer — every peer that lives on {iface} re-converges over the next few syncs, and existing clients keep working (no new QR / config to distribute). {unlock}{gate}",
           { ...vars, unlock: lockedVault ? T("You'll be asked to unlock the vault first to release the escrowed key. ") : "" })
       : T("Recreate the missing interface {iface} on {node} with its saved settings. This restores the INTERFACE, not a single peer. The original server key can't be recovered, so the interface gets a NEW key — every client on {iface} must re-import a fresh QR / config. {gate}", vars);
-  openConfirm({ title: T("Restore interface · {where}", { where }), confirmLabel: mi ? T("Restore interface") : T("Close"), danger: !!mi && !clean, back, body,
+  openConfirm({ title: (broken ? T("Rebuild interface · {where}", { where }) : T("Restore interface · {where}", { where })),
+    confirmLabel: mi ? (broken ? T("Rebuild interface") : T("Restore interface")) : T("Close"), danger: !!mi && !clean, back, body,
     note: (mi && clean) ? html`<${SubAutoNote}/>` : null,
     onConfirm: mi ? (async () => {
       let sealed = null;
@@ -180,6 +191,18 @@ export function confirmRestoreDeployment(peer, t, back) {
 }
 export function confirmRestoreInterface(node, iface, mi, back) {
   _openRestoreInterface({ node, iface, mi, problemMs: (mi && mi.problemMs) || 0, rowKey: "iface:" + node + "|" + iface, back });
+}
+// The same repair for an interface the node still reports but whose device is gone (`broken_ifaces`).
+// One flow, because the vault re-seal and the "does this cost the clients a re-import" question are
+// identical — writing a second one is how the two answers start disagreeing.
+export function confirmRebuildInterface(node, iface, bi, back) {
+  _openRestoreInterface({ node, iface, mi: bi, problemMs: (bi && bi.problemMs) || 0, broken: true,
+                          rowKey: "iface:" + node + "|" + iface, back });
+}
+export function brokenIface(node, iface) {
+  const nr = (Store.nodes || []).find(n => n.id === node) || {};
+  const b = (nr.broken_ifaces || {})[iface];
+  return (b && b.repair === "recreate") ? b : null;   // repair:"" = no saved config, nothing to rebuild from
 }
 
 // ── GHOST interface: lost + KEYLESS — recreate FRESH + rekey every peer ───────────────────────────────

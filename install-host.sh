@@ -207,6 +207,26 @@ detect_public_ip(){ # best public IPv4: default-route source, then first hostnam
   printf '%s' "$ip"; }
 detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
 
+# ⚠️ A BARE PORT IS A PORT, not a hostname. `v_url 8443` returns TRUE — digits are legal host characters —
+# so an operator answering the ":443 is in use" prompt with `8443`, which is exactly what that prompt's own
+# example suggests, set the HOST to "8443", left the port at 443, hit the same conflict and got the same
+# message again with no error. Reported from the field on 1.8.3-beta: six identical prompts, no way out but
+# ^C or `force` (which keeps the port that is busy). Read it the way it was meant — keep the host and the
+# subpath, change the port — and answer both shapes.
+answer_to_url(){ # answer_to_url <answer> -> echoes a URL, or nothing if the answer is neither
+  local a="$1"
+  case "$a" in
+    ''|*[!0-9]*) ;;                # has a non-digit → judge it as a host/URL below
+    # ALL DIGITS: the operator is answering with a port, so it is a port or it is nothing. Falling through
+    # to v_url here is the whole bug — it would take `99999` as a hostname just as readily as `8443`, and
+    # loop again on the same conflict. Out of range is an error worth saying out loud.
+    *) v_port "$a" && { printf '%s:%s%s' "${PANEL_HOST_NOPORT:-localhost}" "$a" "${PANEL_BASE:-}"; return 0; }
+       return 1;;
+  esac
+  if v_url "$a"; then printf '%s' "$a"; return 0; fi
+  return 1
+}
+
 parse_panel_url(){ # parse_panel_url <input> -> sets PANEL_HOST_NOPORT, PANEL_BASE, URL_PORT
   local u="$1" hostport rest
   u="${u#http://}"; u="${u#https://}"; u="${u%/}"
@@ -675,7 +695,8 @@ while :; do
     case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
       force|FORCE) _forced="$_pp";;
       "") :;;
-      *) if v_url "$_url_ans"; then PANEL_DOMAIN="$_url_ans"; else warn "‘$_url_ans’ isn't a valid host/URL — try again."; fi;;
+      *) if _u="$(answer_to_url "$(printf '%s' "$_url_ans" | tr -d '[:space:]')")"; then PANEL_DOMAIN="$_u"
+         else warn "‘$_url_ans’ is neither a port (1-65535) nor a host/URL — try again."; fi;;
     esac
     continue
   fi
@@ -690,8 +711,8 @@ while :; do
   read -r _url_ans 2>/dev/null </dev/tty || _url_ans=proceed
   case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
     proceed|"") break;;                                           # keep the current port
-    *) if v_url "$_url_ans"; then PANEL_DOMAIN="$_url_ans"        # adopt the new URL; loop re-parses + re-checks
-       else warn "‘$_url_ans’ isn't a valid host/URL — try again."; fi ;;
+    *) if _u="$(answer_to_url "$(printf '%s' "$_url_ans" | tr -d '[:space:]')")"; then PANEL_DOMAIN="$_u"   # adopt it; loop re-parses + re-checks
+       else warn "‘$_url_ans’ is neither a port (1-65535) nor a host/URL — try again."; fi ;;
   esac
 done
 PANEL_DOMAIN="$PANEL_HOST_NOPORT"
@@ -1465,6 +1486,25 @@ acme_has_cert(){
     head -1 "$d/${1}.cer" 2>/dev/null | grep -q 'BEGIN CERTIFICATE' && return 0
   done
   return 1; }
+# ⚠️ A FAILED ORDER LEAVES A TRAP THAT NO RE-RUN CAN CLEAR. acme.sh writes <domain>.key before it ever
+# contacts the CA and keeps it when the order fails; every later --issue then stops at "Domain key exists,
+# do you want to overwrite it? ... add '--force'" instead of reaching the CA — so the real reason (port 80
+# unreachable, a bad DNS token, a rate limit) is masked for ever, and re-running the installer reproduces
+# the mask, never the cause. It cannot heal itself either: issue() only calls createDomainKey when the
+# requested keylength differs from Le_Keylength in the domain conf, and that is written ONLY on a successful
+# key creation — so each failure leaves a conf without it and the next run repeats verbatim.
+# NOT --force (it re-issues on every run and burns Let's Encrypt's 5-duplicates-per-week): drop the entry.
+# Scoped to the _ecc entry, which is the one our --keylength ec-256 issuance uses — an RSA `<domain>` entry
+# beside it may belong to another tool on this box and is never touched. The twin of swg-netctl's
+# _acme_clear_unusable(); keep the two in step.
+acme_clear_unusable(){
+  $DRYRUN && return 0
+  local d="$ACME_HOME/${1}_ecc"
+  [ -d "$d" ] || return 0
+  # usable = the file --install-cert READS, plus a leaf that really is a PEM (≤3.1.3 caches a CA 404 as the cert)
+  if [ -s "$d/fullchain.cer" ] && head -1 "$d/${1}.cer" 2>/dev/null | grep -q 'BEGIN CERTIFICATE'; then return 0; fi
+  warn "clearing a failed acme entry for $(b "$1") — a domain key with no certificate, which would make every re-issue fail with \"Domain key exists\""
+  rm -rf "$d"; }
 # ⚠️ acme.sh was install-once-never-upgrade: `find_acme && return 0` meant a box provisioned years
 # ago kept whatever acme.sh it got then, forever. That matters because ≤3.1.3 caches a failed
 # issuance AS a certificate (see acme_has_cert above) and reports the CA's real complaint as an
@@ -1599,12 +1639,14 @@ obtain_cert_internal(){
       if ! $DRYRUN && acme_has_cert "$PANEL_DOMAIN"; then
         ok "acme.sh already has a cert for $PANEL_DOMAIN — installing it (auto-renews via acme's cron)"
       else
+        acme_clear_unusable "$PANEL_DOMAIN"       # a previous failure's leftover would refuse this order too
         local rc=0; acme "${args[@]}" || rc=$?
         # acme.sh exit 2 = RENEW_SKIP (a valid cert already exists, not due for renewal) — that's fine.
         if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
           if $DRYRUN || acme_has_cert "$PANEL_DOMAIN"; then
             warn "acme.sh exit $rc, but a cert for $PANEL_DOMAIN already exists — installing it."
           else
+            acme_clear_unusable "$PANEL_DOMAIN"   # leave nothing that would mask this error next time
             warn "issuance failed (acme.sh exit $rc) — falling back to a self-signed cert."; mk_selfsigned; return
           fi
         fi
@@ -1666,8 +1708,10 @@ setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to 
       if ! $DRYRUN && acme_has_cert "$PANEL_DOMAIN"; then
         ok "acme.sh already has a cert for $PANEL_DOMAIN — installing it (auto-renews via acme's cron)"
       else
+        acme_clear_unusable "$PANEL_DOMAIN"       # a previous failure's leftover would refuse this order too
         local rc=0; acme "${args[@]}" || rc=$?
         if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && ! { $DRYRUN || acme_has_cert "$PANEL_DOMAIN"; }; then
+          acme_clear_unusable "$PANEL_DOMAIN"     # leave nothing that would mask this error next time
           warn "issuance failed (acme.sh exit $rc) — proxy will serve plain HTTP."; CERT_FULLCHAIN=""; CERT_KEY=""; return 0
         fi
       fi

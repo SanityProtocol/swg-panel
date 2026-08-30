@@ -26,7 +26,7 @@ services:
   swg-panel:
     # Pulls the prebuilt multi-arch image from GHCR (no local build, no Docker Hub limit).
     # To build from source instead, comment `image:` and uncomment the `build:` block.
-    image: ghcr.io/sanityprotocol/swg-panel:latest
+    image: ghcr.io/sanityprotocol/swg-panel:${SWG_IMAGE_TAG:-latest}
     # build: .
     pull_policy: ${PULL_POLICY:-missing}
     container_name: swg-panel
@@ -79,6 +79,13 @@ services:
       # address is loopback (plain HTTP is then correct) or public (it serves the panel's certificate).
       SWG_PANEL_CONSOLE_HOST: "${CONSOLE_BIND:-127.0.0.1}"
       SWG_PANEL_LOCAL_PORT: "${PANEL_LOCAL_PORT:-8088}"   # the panel binds a dedicated 0.0.0.0:<this> plain-HTTP listener → reached ONLY via the 127.0.0.1:<this> publish above; the STABLE loopback endpoint a co-located node dials
+      # Which VERSION file the panel treats as "latest" for its own update bubble. Blank = the panel's
+      # own default (main), so an install that never sets it behaves exactly as before. It exists because
+      # a bare-metal panel can be pointed at a pre-release branch with a systemd drop-in and a docker one
+      # could not be pointed anywhere at all — the explicit environment block below has no passthrough.
+      # ⚠️ On docker this is only HALF of following a pre-release: it tells the panel a newer build
+      # exists, while SWG_IMAGE_TAG decides which image is actually pulled. Both, or neither.
+      SWG_LATEST_URL: "${SWG_LATEST_URL:-}"
       SWG_UPDATE_TRIGGER: "${SWG_UPDATE_TRIGGER:-}"   # set by install-docker when it wires the host one-click updater (swg-update.path watches data/lib/.update-request); blank = manual update only
       SWG_HOST_HOSTNAME: "${SWG_HOST_HOSTNAME:-}"     # the HOST's hostname (install-docker sets it) — lets the panel recognise a master's co-located node, which reports the host hostname via host-networking (the panel container's own hostname is a random id)
     volumes:
@@ -97,7 +104,7 @@ services:
   # internet-facing surface yields only ciphertext (the unlock key rides in the URL fragment and
   # never reaches the server), never the fleet. OFF until you enable it in Settings → Subscriptions.
   swg-sub:
-    image: ghcr.io/sanityprotocol/swg-panel:latest
+    image: ghcr.io/sanityprotocol/swg-panel:${SWG_IMAGE_TAG:-latest}
     # build: .
     pull_policy: ${PULL_POLICY:-missing}
     container_name: swg-sub
@@ -136,7 +143,7 @@ services:
   swg-node:
     # Prebuilt image from GHCR. To build the userspace AmneziaWG datapath from source
     # instead, comment `image:` and uncomment the `build:` block.
-    image: ghcr.io/sanityprotocol/swg-node:latest
+    image: ghcr.io/sanityprotocol/swg-node:${SWG_IMAGE_TAG:-latest}
     # build:
     #   context: .
     #   dockerfile: Dockerfile.node
@@ -174,7 +181,9 @@ services:
       NODE_ENDPOINT: "${NODE_ENDPOINT:?public IP/host clients dial for this node}"
       NODE_NET: "${NODE_NET:-host}"        # host (this container uses network_mode: host) or bridge — reported to the panel so it shows port-publishing guidance only for bridge
       TURN_MANAGE: "${TURN_MANAGE:-manual}"  # panel = the installer mounted docker.sock so swg-noded can run turn-proxy CONTAINERS; manual = no socket
-      SWG_TURN_IMAGE: "${SWG_TURN_IMAGE:-ghcr.io/sanityprotocol/swg-node:latest}"  # image swg-noded runs each turn-proxy container from
+      # …and the turn-proxy containers follow the same tag, so a node testing a pre-release does not run
+      # `latest` for its proxies while running the pre-release everywhere else. Still overridable outright.
+      SWG_TURN_IMAGE: "${SWG_TURN_IMAGE:-ghcr.io/sanityprotocol/swg-node:${SWG_IMAGE_TAG:-latest}}"  # image swg-noded runs each turn-proxy container from
       SWG_HOST_NODE_DIR: "${SWG_HOST_NODE_DIR:-}"   # absolute HOST path of ./data/node — for bind-mounting the turn binary into its container
       SWG_TURN_MIRROR: "${SWG_TURN_MIRROR:-}"   # OPT-IN: space-separated GitHub proxy prefix(es) to fall back to if the direct release download fails (you must trust them to serve the right binary)
       # Interfaces are OPTIONAL — by default the node comes up with none and is managed from the panel

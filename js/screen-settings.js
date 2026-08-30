@@ -12,7 +12,7 @@
 
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import {
-  BASE, ago, seen, url,
+  BASE, ago, ipChoices, seen, url,
 } from "./util.js";
 import {
   LEAVE_MSG, clearUnsavedGuard, setUnsavedGuard,
@@ -29,6 +29,7 @@ import {
 import {
   ConfirmSheet, Disclosure, Dropdown, Ic, NodeIpPick, Popover, Sheet, Switch, ThemedSwatch, autoGrow, closeModal, copy,
   goSettings, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
+  useHostOnNode,
 } from "./ui.js";
 import {
   SUB_LANG_LIST, VaultPromptSheet, downloadConf, ivkSetEscrow, nginxServerBlock, nixDirectTlsBlock, nixProxyBlock,
@@ -268,14 +269,17 @@ export const TLS_MODE_OPTS = () => (_tls_mode_opts || (_tls_mode_opts = [
   { value: "letsencrypt", label: T("Let's Encrypt (HTTP-01 — needs port 80 reachable)") },
   { value: "cloudflare", label: T("Let's Encrypt via Cloudflare DNS (no port 80; needs a token)") },
   { value: "cf15", label: T("Cloudflare Origin certificate (15y — only valid behind Cloudflare)") },
-  { value: "selfsigned", label: T("Self-signed") }]));
+  { value: "selfsigned", label: T("Self-signed") },
+  // `skip` — this panel TERMINATES TLS with a certificate it does not issue or renew. It was always a real
+  // mode and never an offered choice, so the only way into it was a config file; an operator who already
+  // had a certificate had to place the files by hand and edit install.conf to stop the panel re-issuing
+  // over them. It is a choice now, and the paths below are what makes it one. It also stays the mode a
+  // declarative host (NixOS, where security.acme owns the certificate) is put into by its module, which
+  // names no paths — hence one label that reads true for both.
+  { value: "skip", label: T("Existing certificate files (issued and renewed outside the panel)") }]));
 
-// `skip` is a real mode but never an offered CHOICE — it means TLS is terminated by this panel with a
-// certificate somebody else issues and renews (an operator-supplied one; `security.acme` on a declarative
-// host). Reading it out of TLS_MODE_OPTS gave a bare "—" for a panel that is plainly serving HTTPS.
-export const tlsModeLabel = (mode) => (mode === "skip"
-  ? T("Managed outside the panel (it is served here, not issued here)")
-  : ((TLS_MODE_OPTS().find(o => o.value === (mode || "")) || {}).label || "—"));
+export const tlsModeLabel = (mode) =>
+  ((TLS_MODE_OPTS().find(o => o.value === (mode || "")) || {}).label || "—");
 
 // The panel + swg-sub network address (bindable IP + port) and the ONE certificate config both derive from.
 // A change is applied LIVE: the panel dual-listens on the new address and only drops the old once the browser
@@ -295,6 +299,12 @@ export function AccessTLSCard({ onChange }) {
   const [sUrl, setSUrl] = useState(s0.url || ""); const [sHost, setSHost] = useState(s0.host || "0.0.0.0"); const [sPort, setSPort] = useState(String(s0.port || 8444));
   const [mode, setMode] = useState(t0.mode || ""); const [email, setEmail] = useState(t0.email || "");
   const [cfTok, setCfTok] = useState(""); const [cfOrig, setCfOrig] = useState("");
+  // paths, not secrets — they round-trip from the server, so the fields keep what was saved
+  const [certPath, setCertPath] = useState(t0.cert_path || ""); const [keyPath, setKeyPath] = useState(t0.key_path || "");
+  // the subscription surface may sit on a domain of its own, and then it needs its own certificate —
+  // the issuing modes have always produced two. Blank = serve it the panel's, which covers the usual
+  // case of one hostname on two ports.
+  const [subCertPath, setSubCertPath] = useState(t0.sub_cert_path || ""); const [subKeyPath, setSubKeyPath] = useState(t0.sub_key_path || "");
   const [hasCfTok, setHasCfTok] = useState(!!t0.has_cf_token); const [hasCfOrig, setHasCfOrig] = useState(!!t0.has_cf_origin_token);
   // PRIVATE PANEL ACCESS. "" = the panel's own address, as it has always been; "own" = a loopback listener
   // reached through an SSH tunnel, with the public address dropping to a node-only door. The saved block is
@@ -329,6 +339,8 @@ export function AccessTLSCard({ onChange }) {
   // a live apply). Refreshed after a successful save so the button disables until the next edit.
   const [orig, setOrig] = useState({ pUrl: normPublicUrl(p0.url || ""), pHost: p0.host || "0.0.0.0", pPort: String(p0.port || 443),
     sUrl: s0.url || "", sHost: s0.host || "0.0.0.0", sPort: String(s0.port || 8444), mode: t0.mode || "", email: t0.email || "",
+    cert_path: t0.cert_path || "", key_path: t0.key_path || "",
+    sub_cert_path: t0.sub_cert_path || "", sub_key_path: t0.sub_key_path || "",
     cMode: k0.mode || "", cHost: k0.host || "127.0.0.1", cPort: String(k0.port || 9443) });
   useEffect(() => { api.get("/api/access/ips").then(r => { if (r && r.ok) setIps(r.ips || []); }); }, []);
   // Recover an in-progress reverse-proxy swap after a page reload (server keeps the old address serving until confirmed).
@@ -418,10 +430,14 @@ export function AccessTLSCard({ onChange }) {
     setPUrl(normPublicUrl(pp.url || "")); setPHost(pp.host || "0.0.0.0"); setPPort(String(pp.port || 443));
     setSUrl(ss.url || ""); setSHost(ss.host || "0.0.0.0"); setSPort(String(ss.port || 8444));
     setMode(tt.mode || ""); setEmail(tt.email || "");
+    setCertPath(tt.cert_path || ""); setKeyPath(tt.key_path || "");
+    setSubCertPath(tt.sub_cert_path || ""); setSubKeyPath(tt.sub_key_path || "");
     const kk = a.console || {};
     setCMode(kk.mode || ""); setCHost(kk.host || "127.0.0.1"); setCPort(String(kk.port || 9443));
     setOrig({ pUrl: normPublicUrl(pp.url || ""), pHost: pp.host || "0.0.0.0", pPort: String(pp.port || 443),
       sUrl: ss.url || "", sHost: ss.host || "0.0.0.0", sPort: String(ss.port || 8444), mode: tt.mode || "", email: tt.email || "",
+      cert_path: tt.cert_path || "", key_path: tt.key_path || "",
+      sub_cert_path: tt.sub_cert_path || "", sub_key_path: tt.sub_key_path || "",
       cMode: kk.mode || "", cHost: kk.host || "127.0.0.1", cPort: String(kk.port || 9443) });
   };
   // poll the apply state machine while a change is in flight. When it's ready to confirm, we DON'T auto-navigate:
@@ -614,7 +630,9 @@ export function AccessTLSCard({ onChange }) {
   const panelUrlChanged  = () => _canonUrl(pUrl) !== _canonUrl(orig.pUrl);   // the public address everyone dials — a change is verified (confirm) before it takes over
   const subBindChanged   = () => (sHost.trim() || "0.0.0.0") !== (orig.sHost || "0.0.0.0") || _sPortN() !== _origSPortN();
   const subUrlChanged    = () => _canonUrl(sUrl) !== _canonUrl(orig.sUrl);   // the sub public URL's path is swg-sub's mount base → a change must restart it
-  const certChanged      = () => mode !== (orig.mode || "") || email.trim() !== (orig.email || "") || !!cfTok || !!cfOrig;
+  const certChanged      = () => mode !== (orig.mode || "") || email.trim() !== (orig.email || "") || !!cfTok || !!cfOrig
+                                 || certPath.trim() !== (orig.cert_path || "") || keyPath.trim() !== (orig.key_path || "")
+                                 || subCertPath.trim() !== (orig.sub_cert_path || "") || subKeyPath.trim() !== (orig.sub_key_path || "");
   const urlChanged       = () => pUrl.trim() !== (orig.pUrl || "") || sUrl.trim() !== (orig.sUrl || "");
   // The console preset. Only the fields that matter for the mode it is IN: with "Same address" the host and
   // port are inert leftovers in the form, and comparing them would report a change that applies to nothing.
@@ -707,7 +725,9 @@ export function AccessTLSCard({ onChange }) {
     const r = await api.panelSettings({ access: {
       panel: { url: npUrl, host: pHost.trim() || "0.0.0.0", port: _pPortN() },
       sub: { url: nsUrl, host: sHost.trim() || "0.0.0.0", port: _sPortN() },
-      tls: { mode, email: email.trim(), cf_token: cfTok, cf_origin_token: cfOrig } } });
+      tls: { mode, email: email.trim(), cf_token: cfTok, cf_origin_token: cfOrig,
+             cert_path: certPath.trim(), key_path: keyPath.trim(),
+             sub_cert_path: subCertPath.trim(), sub_key_path: subKeyPath.trim() } } });
     if (!r || r.ok === false) { setBusy(false); return setMsg({ ok: false, t: (r && (srvText(r) || (r.errors || []).join("; "))) || T("Save failed.") }); }
     const rtls = ((r.data || {}).access || {}).tls || {};        // redacted echo → refresh the "(set)" markers
     setHasCfTok(!!rtls.has_cf_token); setHasCfOrig(!!rtls.has_cf_origin_token); setCfTok(""); setCfOrig("");
@@ -716,7 +736,9 @@ export function AccessTLSCard({ onChange }) {
     if (needPanel) rollbackRef.current = { url: orig.pUrl, host: orig.pHost || "0.0.0.0", port: +orig.pPort || 443 };
     setConfirmUrl(""); setDockerFlip(""); setDockerArm(0); setDockerFlipPort(0);
     setOrig({ pUrl: npUrl, pHost: pHost.trim() || "0.0.0.0", pPort: String(_pPortN()),
-      sUrl: nsUrl, sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode, email: email.trim() });
+      sUrl: nsUrl, sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode, email: email.trim(),
+      cert_path: certPath.trim(), key_path: keyPath.trim(),
+      sub_cert_path: subCertPath.trim(), sub_key_path: subKeyPath.trim() });
     // subscription server first (a background restart — it can never lock you out of the panel). Don't start
     // polling yet: the panel apply below arms its pending, and we want the very first poll tick to already see
     // it (so the confirm-redirect fires immediately, not after a wasted interval).
@@ -1089,12 +1111,37 @@ export function AccessTLSCard({ onChange }) {
 
     <div class="seclabel" style="margin-top:0">${T("Certificate")}</div>
     <p class="hint" style="margin:0 0 12px">${T("How TLS is terminated — this decides which ports are valid below. One choice issues both certificates (the panel's and swg-sub's, always separate keys).")}</p>
+    ${(() => {
+      // Renewal health, said where the certificate is configured. The panel has always WATCHED its own
+      // cert, but nothing rendered the result: a renewal failing every hour for a month was visible only
+      // to someone reading the server log, while this screen showed a healthy certificate the whole time.
+      const ts = Store.tls || {};
+      const d = Number(ts.days_left);
+      if (ts.renew_ok === false) return html`<div class="notice warn" style="margin:0 0 12px" title=${ts.renew_last || ""}><${Ic} i="warn"/><div style="min-width:0">
+        ${Trich("*Automatic renewal is failing.* The certificate is still valid for *{v1}* more day(s), but nothing is renewing it — check that this host is reachable by the validation method above.", { v1: isFinite(d) ? d : "?" })}
+      </div></div>`;
+      if (!ts.self_signed && isFinite(d) && d <= 21) return html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><div style="min-width:0">
+        ${Trich("*This certificate expires in {v1} day(s).*", { v1: d })}
+      </div></div>`;
+      return null;
+    })()}
     <div class="field"><label>${T("Type")}</label><${Dropdown} value=${mode} onChange=${setModeLinked} options=${TLS_MODE_OPTS()}/></div>
     ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>${T("Account email")}</label><input type="text" placeholder=${T("admin@example.com")} value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}
     ${mode === "cloudflare" ? html`<div class="field"><label>${T("Cloudflare API token")}</label><input type="password" placeholder=${hasCfTok ? T("•••••••• (set — leave blank to keep)") : T("Zone:DNS:Edit token")} value=${cfTok} onInput=${e => setCfTok(e.target.value)}/>
       <div class="hint">${T("Used for DNS-01 validation. Stored on the panel only; never sent to the browser. Enter \"-\" to clear.")}</div></div>` : null}
     ${mode === "cf15" ? html`<div class="field"><label>${T("Cloudflare Origin CA token")}</label><input type="password" placeholder=${hasCfOrig ? T("•••••••• (set — leave blank to keep)") : T("Zone:SSL and Certificates:Edit token")} value=${cfOrig} onInput=${e => setCfOrig(e.target.value)}/>
       <div class="hint">${Trich("Requests a 15-year Cloudflare Origin certificate — valid *only* behind Cloudflare's proxy. Stored on the panel only. Enter \"-\" to clear.")}</div></div>` : null}
+    ${mode === "skip" ? html`<div class="field"><label>${T("Full-chain certificate")}</label>
+      <input type="text" placeholder="/etc/letsencrypt/live/example.com/fullchain.pem" value=${certPath} onInput=${e => setCertPath(e.target.value)}/>
+      <div class="hint">${T("An absolute path on the panel host — the certificate with its chain. It must cover the panel's public address.")}</div></div>
+    <div class="field"><label>${T("Private key")}</label>
+      <input type="text" placeholder="/etc/letsencrypt/live/example.com/privkey.pem" value=${keyPath} onInput=${e => setKeyPath(e.target.value)}/>
+      <div class="hint">${T("Absolute path too, and the key must not have a passphrase. Both files are copied into place and re-checked every few hours, so a renewal written over them is picked up on its own. Leave both blank if a certificate is already installed and nothing here should touch it.")}</div></div>` : null}
+    ${mode === "skip" ? html`<div class="field"><label>${T("Subscription certificate")}</label>
+      <input type="text" placeholder="/etc/letsencrypt/live/subs.example.net/fullchain.pem" value=${subCertPath} onInput=${e => setSubCertPath(e.target.value)}/></div>
+    <div class="field"><label>${T("Subscription private key")}</label>
+      <input type="text" placeholder="/etc/letsencrypt/live/subs.example.net/privkey.pem" value=${subKeyPath} onInput=${e => setSubKeyPath(e.target.value)}/>
+      <div class="hint">${T("Only needed when the subscription page answers to a different name than the panel. Leave both blank and it is served the certificate above — which is what you want when the two share a hostname, or one certificate covers both.")}</div></div>` : null}
     ${modeFlip ? flipNote() : null}
 
     <div class="seclabel">${T("Public panel address")}</div>
@@ -1612,7 +1659,8 @@ export function PanelSettingsScreen() {
   const eq = (a, b) => { const c = v => v == null ? "" : Array.isArray(v) ? JSON.stringify([...v].sort()) : typeof v === "object" ? JSON.stringify(Object.keys(v).sort().reduce((o, k) => (o[k] = v[k], o), {})) : String(v); return c(a) === c(b); };
   const nFields = n => ({ routing_mode: n.routing_mode || "kernel", ip_learning: n.ip_learning !== false, endpoint_host: n.endpoint_host || "",
     mesh_subnet: n.mesh_subnet || "", mesh_port: n.mesh_port ? String(n.mesh_port) : "", mesh_prefix: n.mesh_prefix || "",
-    default_egress_ip: n.default_egress_ip || "", panel_ip: n.panel_ip || "",
+    default_egress_ip: n.default_egress_ip || "", panel_ip: n.panel_ip || "", mesh_egress_ip: n.mesh_egress_ip || "",
+    endpoint_hosts: [...(n.endpoint_hosts || [])],
     enabled_categories: (n.enabled_categories && n.enabled_categories.length) ? [...n.enabled_categories] : null,   // null = all built-ins enabled for this node
     catalog_cats: [...(n.catalog_cats || [])],   // provider-catalog categories opted into on this node (node-lens; separate from the 26 built-ins)
     mesh_awg: (n.mesh_awg_set && Object.keys(n.mesh_awg_set).length) ? { ...n.mesh_awg_set } : {} });   // per-node mesh obfuscation override ({} = inherit/auto)
@@ -1693,6 +1741,8 @@ export function PanelSettingsScreen() {
         mesh_port: (e.mesh_port || "").trim() === dPort ? "" : (e.mesh_port || "").trim(),
         mesh_prefix: (e.mesh_prefix || "").trim() === dPfx ? "" : (e.mesh_prefix || "").trim(),
         default_egress_ip: e.default_egress_ip || "", panel_ip: e.panel_ip || "",
+        mesh_egress_ip: e.mesh_egress_ip || "",
+        endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
         enabled_categories: e.enabled_categories || [], catalog_cats: e.catalog_cats || [], mesh_awg: e.mesh_awg || {} });
       if (!nr.ok) nerr = srvText(nr) || (T("Couldn't save {v1}", { v1: n.name }));
     }
@@ -1749,12 +1799,14 @@ export function PanelSettingsScreen() {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
       if (!eq(e.routing_mode, o.routing_mode)) fl.push(T("mode → {v1}", { v1: e.routing_mode }));
       if (!eq(e.ip_learning !== false, o.ip_learning !== false)) fl.push(T("IP learning → {v1}", { v1: e.ip_learning !== false ? T("val|on") : T("val|off") }));
-      if (!eq(e.endpoint_host, o.endpoint_host)) fl.push(T("ingress IP → {v1}", { v1: e.endpoint_host || T("val|auto") }));
+      if (!eq(e.endpoint_host, o.endpoint_host)) fl.push(T("ingress address → {v1}", { v1: e.endpoint_host || T("val|auto") }));
       if (!eq(e.mesh_subnet, o.mesh_subnet)) fl.push(T("mesh subnet → {v1}", { v1: e.mesh_subnet || T("val|default") }));
       if (!eq(e.mesh_port, o.mesh_port)) fl.push(T("mesh port → {v1}", { v1: e.mesh_port || T("val|default") }));
       if (!eq(e.mesh_prefix, o.mesh_prefix)) fl.push(T("prefix → {v1}", { v1: e.mesh_prefix || T("val|default") }));
       if (!eq(e.default_egress_ip, o.default_egress_ip)) fl.push(T("egress IP → {v1}", { v1: e.default_egress_ip || T("val|auto") }));
       if (!eq(e.panel_ip, o.panel_ip)) fl.push(T("panel IP → {v1}", { v1: e.panel_ip || T("val|auto") }));
+      if (!eq(e.mesh_egress_ip, o.mesh_egress_ip)) fl.push(T("mesh egress IP → {v1}", { v1: e.mesh_egress_ip || T("val|auto") }));
+      if (!eq((e.endpoint_hosts || []).filter(Boolean), (o.endpoint_hosts || []).filter(Boolean))) fl.push(T("other names"));
       if (!eq(e.enabled_categories, o.enabled_categories)) fl.push(T("enabled lists"));
       if (!eq(e.catalog_cats, o.catalog_cats)) fl.push(T("catalog categories"));
       if (!eq(e.mesh_awg, o.mesh_awg)) fl.push(T("mesh AWG params"));
@@ -1787,12 +1839,12 @@ export function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: T("Delete custom list"), confirmLabel: T("Delete"), danger: true,
     body: Trich("Delete *{v1}*? It's removed from *every node* it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.", { v1: l.title || T("Untitled list") }),
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Mesh & egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Network"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
 /* Display names for SECTIONS. The array above stays the canonical key list (the value is the deep-link and
    the persisted section), so only the LABEL is translated — literal T() calls, same as evItemLabel. */
 const sectionLabel = k => ({
   display: T("Display"), security: T("Authentication"), access: T("Panel access"), configs: T("Client configs"),
-  subs: T("Subscriptions"), mesh: T("Mesh & egress"), defaults: T("Interfaces"),
+  subs: T("Subscriptions"), mesh: T("Network"), defaults: T("Interfaces"),
   turn: T("Turn proxies"), routing: T("Routing & Blocking"), geo: T("Geo data providers"),
   integrations: T("Integrations"),
 }[k] || k);   // i18n-keys
@@ -1832,7 +1884,7 @@ const sectionLabel = k => ({
   const customOnNode = (l, nid) => !(l.disabled_nodes || []).includes(nid);
   const setCustomOnNode = (l, nid, on) => persistLists(lists.map(x => x._rid === l._rid ? { ...x, disabled_nodes: on ? (x.disabled_nodes || []).filter(z => z !== nid) : [...new Set([...(x.disabled_nodes || []), nid])] } : x));
   // dirty tracking — per global section + per node-per-section, drives the rail dots and badge glow
-  const SECF = { routing: ["routing_mode", "ip_learning", "enabled_categories", "catalog_cats"], mesh: ["endpoint_host", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip"] };
+  const SECF = { routing: ["routing_mode", "ip_learning", "enabled_categories", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
@@ -2369,12 +2421,18 @@ const sectionLabel = k => ({
               through ANOTHER node, and that path rides the mesh. One section, two sub-blocks. */""}
         ${section === "mesh" ? html`<div class="card">
           ${nodeRec ? html`<${Fragment}>
-            <div class="seclabel" style="margin-top:0">${T("{v1} — mesh", { v1: nodeRec.name })}</div>
-            <${NodeMeshForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>
+            ${/* T-25: THREE sections, not two. The ingress address lived under "mesh" and its own hint
+                  apologised for it — "despite living under Mesh, this is also the host in every client
+                  config" — which is a label admitting it is in the wrong place. In / out / between is how
+                  an operator thinks about a node's connectivity, and each is now findable by its name. */""}
+            <div class="seclabel" style="margin-top:0">${T("{v1} — ingress", { v1: nodeRec.name })}</div>
+            <${NodeIngressForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>
             <div class="seclabel">${T("{v1} — egress", { v1: nodeRec.name })}</div>
             <${NodeEgressForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>
+            <div class="seclabel">${T("{v1} — mesh", { v1: nodeRec.name })}</div>
+            <${NodeMeshForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>
           <//>`
-            : html`<p class="hint" style="margin:0">${T("No nodes yet — enroll a node to configure its mesh and egress.")}</p>`}
+            : html`<p class="hint" style="margin:0">${T("No nodes yet — enroll a node to configure how it is reached, how it exits, and how it links.")}</p>`}
         </div>` : null}
         <div class="setfoot">
           ${section === "access"
@@ -2410,6 +2468,50 @@ export function CustomListSheet({ list, onSave, onClose }) {
   <//>`;
 }
 
+// Per-node INGRESS: the one address everything outside dials to reach this node (T-25). It used to sit
+// inside the mesh form, where its own hint had to begin "despite living under Mesh…" — a label apologising
+// for its own placement is the clearest possible sign the grouping was wrong.
+function NodeHostRow({ node, value, onChange, onRemove }) {
+  const state = useHostOnNode(value, node.ips || []);
+  return html`<div style="display:flex;gap:8px;align-items:flex-start;margin-top:6px">
+    <div style="flex:1;min-width:0">
+      <input value=${value} placeholder=${T("vpn.example.com")} onInput=${e => onChange(e.target.value)}/>
+      ${state === "bad" ? html`<div class="hint err">${T("This doesn't resolve to an address on this node.")}</div>` : null}
+    </div>
+    <button class="btn btn-mini ico" title=${T("Remove")} onClick=${onRemove}><${Ic} i="trash"/></button>
+  </div>`;
+}
+
+export function NodeHostList({ node, value, onChange }) {
+  const hosts = value || [];
+  const set = (i, v) => onChange(hosts.map((h, k) => (k === i ? v : h)));
+  return html`<div class="field">
+    <label>${T("Hostnames for this node")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— offered wherever a host is asked for")}</span></label>
+    ${hosts.map((h, i) => html`<${NodeHostRow} key=${i} node=${node} value=${h}
+        onChange=${v => set(i, v)} onRemove=${() => onChange(hosts.filter((_, k) => k !== i))}/>`)}
+    <button class="btn btn-ghost btn-mini" style="margin-top:8px" onClick=${() => onChange([...hosts, ""])}>
+      <${Ic} i="plus"/> ${T("Add a name")}</button>
+    <div class="hint">${T("Every picker that asks for a host offers these — interfaces, turn proxies, WDTT and csqtt. They do not change what clients dial; the ingress address above does that.")}</div>
+  </div>`;
+}
+
+export function NodeIngressForm({ node, vals, set }) {
+  const v = vals || {};
+  return html`<div>
+    <p class="hint" style="margin:0 0 12px">${Trich("How peers, clients and turn-proxy links reach *{v1}*.", { v1: node.name })}</p>
+    <div class="field"><label>${T("Ingress address")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— what peers and clients dial to reach this node")}</span></label>
+      <${NodeIpPick} ips=${ipChoices(node)} value=${v.endpoint_host || ""} onChange=${ip => set({ endpoint_host: ip })} auto=${T("Auto (public IP)")} customPlaceholder=${T("Hostname or IP — e.g. node.example.com")}/>
+      <div class="hint">${T("This is the host in every client config and turn-proxy link for this node. Prefer a hostname: moving the box then costs one DNS change, and nothing a client already holds has to be re-issued.")}</div></div>
+    ${/* OTHER NAMES THIS NODE ANSWERS TO. Not a second Endpoint — a peer carries exactly one, so this
+          cannot mean "use them all". It is the pool every host picker offers: a second domain, or the new
+          name during a DNS move, typed once here instead of retyped from memory into the interface, the
+          two turn-proxy and the WDTT/csqtt fields (and mistyped into one of them). Each is checked the
+          same way a bind is — against what it actually resolves to — because a name in this list that
+          lands somewhere else is the failure it exists to prevent. */ null}
+    <${NodeHostList} node=${node} value=${v.endpoint_hosts || []} onChange=${hs => set({ endpoint_hosts: hs })}/>
+  </div>`;
+}
+
 // Per-node mesh overrides, edited in Panel settings → System mesh (keyed by node, so it re-inits on badge switch)
 export function NodeMeshForm({ node, vals, set }) {
   const rsv = (Store.panelSettings || {}).reserved || {};
@@ -2417,8 +2519,6 @@ export function NodeMeshForm({ node, vals, set }) {
   const v = vals || {};
   return html`<div>
     <p class="hint" style="margin:0 0 12px">${Trich("Overrides for *{v1}* — blank inherits the default. Changing the subnet, prefix, or AWG re-provisions this node's links on Save (it briefly drops off the mesh while peers reconnect with the new config).", { v1: node.name })}</p>
-    <div class="field"><label>${T("Mesh Ingress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— the address peers dial to reach this node")}</span></label>
-      <${NodeIpPick} ips=${node.ips || []} value=${v.endpoint_host || ""} onChange=${ip => set({ endpoint_host: ip })} auto=${T("Auto (public IP)")}/></div>
     <div class="row2"><div class="field"><label>${T("Mesh subnet")}</label><input value=${v.mesh_subnet || ""} onInput=${e => set({ mesh_subnet: e.target.value })} placeholder=${dSub}/></div>
       <div class="field"><label>${T("Mesh port")}</label><input value=${v.mesh_port || ""} onInput=${e => set({ mesh_port: e.target.value })} placeholder=${dPort}/></div></div>
     <div class="field"><label>${T("Interface name prefix")}</label><input value=${v.mesh_prefix || ""} onInput=${e => set({ mesh_prefix: e.target.value })} placeholder=${dPfx}/></div>
@@ -2460,6 +2560,9 @@ export function NodeEgressForm({ node, vals, set }) {
       <${NodeIpPick} ips=${ips} value=${v.default_egress_ip || ""} onChange=${ip => set({ default_egress_ip: ip })} auto=${T("Auto (MASQUERADE)")}/></div>
     <div class="field"><label>${T("Panel egress connection IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to reach the panel")}</span></label>
       <${NodeIpPick} ips=${ips} value=${v.panel_ip || ""} onChange=${ip => set({ panel_ip: ip })} auto=${T("Auto (default route)")}/></div>
+    <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>
+      <${NodeIpPick} ips=${ips} value=${v.mesh_egress_ip || ""} onChange=${ip => set({ mesh_egress_ip: ip })} auto=${T("Auto (default route)")}/>
+      <div class="hint">${T("Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.")}</div></div>
   </div>`;
 }
 

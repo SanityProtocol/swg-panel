@@ -29,8 +29,8 @@ import {
   setQrZoomProbe, toast, trackIfaceOps,
 } from "./js/ui.js";
 import {
-  lockVault, looksLikeVaultKey, qrZoomEl, subAutoHeal, subBootRestore, subForget, subRewrap, subSKCached,
-  subUnlock, subUnlockWithKey, subVaultCreate,
+  cryptoReady, ifaceKeyAutoRestore, escrowAutoVerify, lockVault, looksLikeVaultKey, qrZoomEl, subAutoHeal, subBootRestore, subForget, subRewrap,
+  subSKCached, subUnlock, subUnlockWithKey, subVaultCreate,
 } from "./js/crypto.js";
 import {
   OnlineUsersTag, onlineUserRows, serviceIssues,
@@ -73,6 +73,8 @@ Object.assign(storeHooks, {
   rekeyGhosts: () => maybeRekeyGhosts(),
   vaultKeyCached: () => subSKCached(),
   vaultAutoHeal: () => subAutoHeal(),
+  ifaceKeyAutoRestore: () => ifaceKeyAutoRestore(),
+  escrowAutoVerify: () => escrowAutoVerify(),
 });
 setUnauthorizedHandler(() => require401());
 setQrZoomProbe(() => !!qrZoomEl);   // Esc inside a Sheet must collapse an open QR enlargement, not close the sheet
@@ -550,6 +552,17 @@ function paintChrome() {
 (async () => {
   await loadLang();         // before the first render: T() is synchronous, and a late catalog would paint English then flip
   paintChrome();            // the static app bar, which loaded before any of this
+  // INSECURE CONTEXT. Web Crypto is exposed only over https:// (or http on localhost/127.0.0.1); anywhere
+  // else `crypto.subtle` is undefined and peer creation, the Encryption Vault and every config/QR fail with
+  // a bare TypeError that reads as a panel bug. Warn, do NOT block: unlike swgSub — whose whole purpose is
+  // decrypting configs, so it stops dead — the panel's nodes, traffic and health views work fine without it,
+  // and an operator watching a fleet over a LAN address should keep them.
+  if (!cryptoReady()) {
+    const b = document.createElement("div");
+    b.className = "insecure-banner";
+    b.innerHTML = `<b>${esc(T("Not a secure connection"))}</b> ${esc(T("Your browser only provides Web Crypto over https:// (or http://localhost), so creating peers, unlocking the Encryption Vault and showing configs or QR codes will not work here. Monitoring is unaffected."))}`;
+    document.body.insertBefore(b, document.body.firstChild);
+  }
   await subBootRestore();   // restore the config-encryption convenience cache from sessionStorage (post-login reload)
   if (await maybeConfirmApply()) return;   // confirmed → reloading; stop this boot pass
   try { await Store.init(); }

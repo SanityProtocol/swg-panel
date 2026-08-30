@@ -24,7 +24,19 @@ set -euo pipefail
 # Step into a guaranteed-present directory before doing anything.
 cd / 2>/dev/null || cd "${TMPDIR:-/tmp}" 2>/dev/null || true
 REPO="${SWG_REPO:-https://github.com/SanityProtocol/swg-panel}"
-REF="${SWG_REF:-main}"
+# Which ref to install. SWG_REF wins; otherwise INFER IT FROM THE URL WE WERE FETCHED FROM.
+# Without the inference, `SWG_BOOTSTRAP_URL=.../dev/bootstrap.sh | bash` fetched the dev bootstrap and
+# then installed `main` from it — a panel tracking a pre-release branch SILENTLY DOWNGRADED itself on
+# every one-click update, and the version it landed on was the one it had just been told not to use.
+# The URL is the only thing that knows; nothing else on the box records the branch.
+_ref_from_url(){   # https://raw.githubusercontent.com/<owner>/<repo>/<ref>/bootstrap.sh  → <ref>
+  printf '%s' "${1:-}" | sed -nE \
+    -e 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/([^/]+)/.*#\1#p' \
+    -e 's#^https?://[^/]+/[^/]+/[^/]+/raw/([^/]+)/.*#\1#p' | head -1
+}
+REF="${SWG_REF:-}"
+[ -z "$REF" ] && REF="$(_ref_from_url "${SWG_BOOTSTRAP_URL:-}")"
+REF="${REF:-main}"
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; C_BL=$'\033[38;5;33m'; C_BROWN=$'\033[38;5;130m'; C_RED=$'\033[31m'; else BOLD=""; RESET=""; C_BLUE=""; C_BL=""; C_BROWN=""; C_RED=""; fi
 b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
@@ -126,7 +138,32 @@ fi
 
 # ── fetch the repo ──
 need(){ command -v "$1" >/dev/null 2>&1; }
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+# ⚠️ THIS TRAP NEVER FIRED. Every dispatch below used `exec`, which REPLACES this process, and traps
+# do not survive that — so each run abandoned its ~17 MB checkout in /tmp permanently (one box that
+# had been installed and converted a few dozen times was holding 89 of them, 1.5 GB). `run_script`
+# calls the installer as a CHILD and exits with its status: identical contract to whoever invoked
+# us, except the trap now gets to run.
+# ⚠️ A DRY RUN IS THE ONE THING NOT TO SWEEP. install-host.sh renders its preview into `$(pwd)/dryrun`,
+# which is INSIDE this checkout — deleting it would throw away exactly what the user asked to see.
+# Keep the tree in that case, and say where it is rather than leaving them to guess.
+_keep_tmp=0
+_cleanup_tmp(){
+  if [ "$_keep_tmp" = 1 ] && [ -d "${TMP:-}" ]; then
+    printf '\n  dry-run preview kept at %s\n  remove it with: rm -rf %s\n' "$TMP/swg-panel/dryrun" "$TMP"
+  elif [ -n "${TMP:-}" ]; then
+    rm -rf "$TMP"
+  fi
+  return 0
+}
+run_script(){   # run_script <script> [args…] — dispatch as a child, so the EXIT trap can clean up
+  local _s="$1"; shift
+  local _a
+  for _a in "$@"; do if [ "$_a" = --dry-run ]; then _keep_tmp=1; fi; done
+  local _rc=0
+  bash "./$_s" "$@" || _rc=$?    # `|| _rc=$?` because set -e would otherwise exit before we do
+  exit $_rc
+}
+TMP="$(mktemp -d)"; trap '_cleanup_tmp' EXIT
 info "fetching $REPO @ $REF"
 if need git; then
   git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"
@@ -142,7 +179,7 @@ cd "$TMP/swg-panel"
 # ── update / uninstall: no method/role ──
 if [ -n "$ACTION" ]; then
   SCRIPT="update.sh"; [ "$ACTION" = uninstall ] && SCRIPT="uninstall.sh"
-  info "running $SCRIPT"; exec bash "./$SCRIPT" ${PASS[@]+"${PASS[@]}"}
+  info "running $SCRIPT"; run_script "$SCRIPT" ${PASS[@]+"${PASS[@]}"}
 fi
 
 # only a node carries an enrollment key — infer the role from -key
@@ -202,7 +239,7 @@ if [ -f /var/lib/swg-recovery ]; then
     _ans=yes; ask_yn "Resume the conversion now" y _ans
     if [ "$_ans" = yes ]; then
       info "resuming the $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion…"; echo
-      exec bash "./convert.sh" "$SWG_RV_FROM" "$SWG_RV_TO" "$SWG_RV_ROLE" ${PASS[@]+"${PASS[@]}"}
+      run_script convert.sh "$SWG_RV_FROM" "$SWG_RV_TO" "$SWG_RV_ROLE" ${PASS[@]+"${PASS[@]}"}
     fi
     info "keeping the node on $(mlabel "$SWG_RV_FROM") — the unfinished $(mlabel "$SWG_RV_TO") copy is inert and gets auto-removed."
     rm -f /var/lib/swg-recovery 2>/dev/null || true
@@ -271,7 +308,7 @@ if [ -n "$CONFLICT" ]; then
         if bash "./convert.sh" --check "$OTHER" "$METHOD" "$ROLE"; then
           echo
           _ans=no; ask_yn "No conflicts found, do you want to proceed with the conversion" y _ans
-          [ "$_ans" = yes ] && exec bash "./convert.sh" "$OTHER" "$METHOD" "$ROLE" ${PASS[@]+"${PASS[@]}"}
+          [ "$_ans" = yes ] && run_script convert.sh "$OTHER" "$METHOD" "$ROLE" ${PASS[@]+"${PASS[@]}"}
         fi
         ;;   # conflicts (or 'no' at the confirm) → loop the menu again
     esac
@@ -453,4 +490,4 @@ case "$METHOD-$ROLE" in
   *) die "unknown method/role: '$METHOD' / '$ROLE'" ;;
 esac
 info "running $SCRIPT"
-exec bash "./$SCRIPT" ${PASS[@]+"${PASS[@]}"}
+run_script "$SCRIPT" ${PASS[@]+"${PASS[@]}"}

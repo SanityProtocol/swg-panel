@@ -24,7 +24,17 @@ import htm from "htm";
 const html = htm.bind(h);
 
 // ───────────────────────── crypto + config (in-browser; private key never leaves) ─────────────────────────
+// Web Crypto exists only in a SECURE CONTEXT — https://, or http:// on localhost/127.0.0.1. Anywhere else
+// `crypto.subtle` is undefined, and every key operation below dies with a bare
+// "can't access property generateKey, crypto.subtle is undefined", which reads as a panel bug rather than
+// "you are on plain http". swgSub has guarded this since it shipped; the panel never did. One named check
+// here covers every call site, because they all start by needing subtle.
+export function cryptoReady() { return !!(window.crypto && window.crypto.subtle); }
+export function assertCrypto() {
+  if (!cryptoReady()) throw new Error(T("This panel needs a secure connection: your browser only provides the Web Crypto it uses to generate keys over https:// (or http://localhost). Reach the panel over https://, or tunnel it to http://127.0.0.1."));
+}
 export async function genKeys() {
+  assertCrypto();
   const kp = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
   const raw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
   const pk8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
@@ -609,6 +619,19 @@ export async function subFlushPending() {
 // them just re-floods the console with 404s on every heal pass / reload. Remember them keyed by PUBKEY, so a
 // rekey / re-issue (which changes the pubkey) transparently re-probes. Persisted so a reload doesn't repeat the
 // whole sweep — the whole point is to stop the recurring flood, not just the in-session repeat.
+// ⚠️ DISCARD MARKERS WRITTEN BEFORE THE UNREACHABLE FIX. Until CONF_UNREACHABLE existed, a panel that was
+// merely unreachable got recorded here as "this peer has no config" — and getConfig() consults this map
+// BEFORE it probes, so a poisoned entry keeps the QR blank for ever. The entry is cleared only by a pubkey
+// change, i.e. by re-issuing the peer: the one destructive act the wrong message recommended. So the fix is
+// incomplete without dropping what the old code already wrote. This is an optimisation cache, never truth —
+// a peer that really has no config is simply re-marked on its next probe, once.
+const _NOCONF_V = "2";
+try {
+  if (localStorage.getItem("swg-sub-noconf-v") !== _NOCONF_V) {
+    localStorage.removeItem("swg-sub-noconf");
+    localStorage.setItem("swg-sub-noconf-v", _NOCONF_V);
+  }
+} catch (_) { /* private mode */ }
 const _subNoConf = new Map((() => { try { return Object.entries(JSON.parse(localStorage.getItem("swg-sub-noconf") || "{}")); } catch (_) { return []; } })());
 function _saveSubNoConf() { try { localStorage.setItem("swg-sub-noconf", JSON.stringify(Object.fromEntries(_subNoConf))); } catch (_) {} }
 export function subNoConfSet(pid, pubkey) { if (_subNoConf.get(pid) !== pubkey) { _subNoConf.set(pid, pubkey); _saveSubNoConf(); } }
@@ -739,6 +762,108 @@ const _healTried = {};   // uid → the exact blob deficit we last attempted wit
                          // published, so re-probing them every heal is wasted work + console 404 noise at fleet
                          // scale. Attempt a given gap once; retry only when the deficit changes (a peer added, or
                          // one got published elsewhere). Cleared for a user the moment they're fully covered.
+/* ── T-22 · a migrated node heals its own identities ──────────────────────────────────────────────
+   The owner's point, and it is the right one: needing to go and press Restore per interface after a
+   migration contradicts what "migration" means. A migrated node should be a MIRROR, and an operator should
+   not have to know that the server keypair is the one part of it that arrives by a different road.
+
+   It cannot be done at ARM time — a sealed key is sealed to the NODE's transport key, which a brand-new
+   box does not have until it first reports — so it is done at the first moment it CAN be: the node comes
+   up, holds rather than minting (T-22 ①), and this puts the key back without anyone asking. G5's
+   "one click from the user, the rest the panel does automatically (unless it needs to ask to unlock the
+   vault)" — this is the half that never needed asking, when the vault is already open.
+
+   Silent by design: no prompt, no toast on the ordinary path. If the vault is LOCKED this does nothing and
+   the interface keeps its "needs the vault" card, which is the one click G5 allows for. Modelled on
+   subAutoHeal down to the tried-map, so a node that cannot be healed is not re-probed on every poll. */
+let _ikRunning = false;
+const _ikTried = {};
+/* ── ESCROW THE PANEL CANNOT VOUCH FOR ─────────────────────────────────────────────────────────
+   A sealed interface key names the vault it opens with. A node too old to stamp one leaves the panel
+   holding ciphertext it cannot classify — and it must not assume, because "matches the blessed key"
+   is equally true of a blob left behind by a RESET vault, which opens for nobody. So the panel asks
+   for a re-seal on every sync, the node obliges (with a fresh `eph` each time, so the ask never
+   converges), and the operator is told to go and update a node by hand.
+
+   Only the browser can settle it: the vault private key is here and nowhere else. Try the unseal. It
+   succeeding is proof — nothing else could have opened it — and the panel records that this node seals
+   to this vault, stamps what it holds, and stops asking. It failing is proof of the opposite, and the
+   blob is left exactly as it was for the operator to deal with; we simply stop retrying this session.
+
+   Silent and idempotent, like every other auto-heal here: no toast for something the operator never
+   knew was broken. */
+const _evTried = {};
+let _evRunning = false;
+export async function escrowAutoVerify() {
+  if (_evRunning || !subSKCached()) return;        // vault locked → nothing to prove it with
+  _evRunning = true;
+  try {
+    let priv = null;
+    for (const n of (Store.nodes || [])) {
+      /* Both families, because a WDTT server identity is escrowed exactly like an interface key. Leaving
+         the twin out meant a node too old to stamp `vault` healed its interfaces and went on telling the
+         operator its WDTT servers had "no usable escrow — recreating it re-keys every user", which is the
+         same untrue sentence for the same reason. One list to walk instead of one. */
+      const ifs = (Store.describe || {})[n.id] || {};
+      const targets = [
+        ...Object.entries(ifs).map(([ifn, m]) => [ifn, "iface", m && m.escrow_unverified]),
+        ...Object.entries(n.wdtt_escrow_unverified || {}).map(([ifn, b]) => [ifn, "wdtt", b]),
+      ];
+      for (const [ifn, family, blob] of targets) {
+        if (!blob || !blob.ct) continue;
+        const k = n.id + "|" + family + "|" + ifn;
+        if (_evTried[k]) continue;                 // one attempt per (node, instance) per session
+        _evTried[k] = 1;
+        try {
+          if (!priv) priv = await ivkVaultPriv();
+          const opened = await ivkUnseal(priv, blob);
+          if (opened) await api.escrowVerified({ node: n.id, iface: ifn, family });
+        } catch (_) {
+          /* Either the blob is for a different vault (the honest answer — leave it, the panel keeps
+             asking and the node keeps re-sealing, which is how it recovers) or the vault key was not
+             readable yet. Both mean: do nothing, and do not retry this one this session. */
+        }
+      }
+    }
+  } finally { _evRunning = false; }
+}
+
+export async function ifaceKeyAutoRestore() {
+  if (_ikRunning || !subSKCached()) return;      // vault locked → the card's button is the door
+  _ikRunning = true;
+  try {
+    for (const n of (Store.nodes || [])) {
+      for (const ifn of (n.awaiting_key || [])) {
+        const k = n.id + "|" + ifn;
+        if (_ikTried[k]) continue;               // one attempt per (node, iface) per session
+        _ikTried[k] = 1;
+        const mi = (n.missing_ifaces || {})[ifn];
+        if (!mi || mi.key_source !== "vault" || !mi.key_blob) continue;
+        try {
+          const sealed = await ivkResealForNode(n.id, mi);
+          if (sealed) await api.ifaceRecreate({ node: n.id, iface: ifn, sealed_key: sealed });
+        } catch (_) { delete _ikTried[k]; }      // transport key not reported yet, say → let a later poll retry
+      }
+      /* …and the turn-family twin, which has HELD since long before interfaces did — and until now waited
+         for a human to press its Restore button. Leaving that one manual would answer the owner's question
+         with "a migrated node is a mirror, except for the WDTT server", which is not an answer. Same key
+         material, same relay, same one-shot. */
+      for (const w of ((Store.stats[n.id] || {}).wdtt || [])) {
+        if (!w || !w.await_restore || !w.iface) continue;
+        const k = n.id + "|wdtt|" + w.iface;
+        if (_ikTried[k]) continue;
+        _ikTried[k] = 1;
+        const kb = (n.wdtt_vault || {})[w.iface];
+        if (!kb || !kb.ct) continue;             // nothing escrowed → the operator must recreate it fresh
+        try {
+          const sealed = await wdttResealForNode(n.id, kb);
+          if (sealed) await api.wdttRestore({ node: n.id, iface: w.iface, sealed_identity: sealed });
+        } catch (_) { delete _ikTried[k]; }
+      }
+    }
+  } finally { _ikRunning = false; }
+}
+
 export async function subAutoHeal() {
   if (Store.storeMode !== "encrypted" || !subSKCached() || _autoHealRunning) return;
   _autoHealRunning = true;
@@ -859,9 +984,10 @@ export function parseFullConf(text) {
 
 // Sparse per-peer NON-secret overrides for the roster: only the fields the operator set to something
 // OTHER than the interface's live default (so a peer left on defaults stores nothing and keeps tracking
-// fleet-wide changes). `opts` = {dns (string), mtu, allowed, keepalive}; `meta` = the (first) target's
-// interface meta. Mirrors the server's clean_overrides / effective_client_params so panel + sub + roster
-// agree. dns=[] is kept as an explicit "no DNS line" when the interface default is non-empty.
+// fleet-wide changes). `opts` = {dns (string), mtu, allowed, keepalive}; `meta` = the interface meta of the
+// deployment being saved. The exact inverse of effectiveClientParams above (and of the server's
+// clean_overrides), so panel + sub + roster agree: what this declines to store is what that one puts back.
+// dns=[] is kept as an explicit "no DNS line" when the interface default is non-empty.
 export function configOverrides(opts, meta) {
   const ov = {}; meta = meta || {};
   const dnsArr = String(opts.dns || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -872,7 +998,8 @@ export function configOverrides(opts, meta) {
   const allowed = String(opts.allowed || "").trim();
   if (allowed && guardAllowed(allowed) !== "0.0.0.0/0, ::/0") ov.allowed = allowed;
   const ka = String(opts.keepalive || "").trim();
-  if (ka !== "" && ka !== "25") ov.keepalive = +ka;
+  const defKa = String(meta.keepalive != null ? meta.keepalive : 25);
+  if (ka !== "" && ka !== defKa) ov.keepalive = +ka;   // differs from the INTERFACE's, not from a fixed 25
   return ov;
 }
 
@@ -1025,17 +1152,33 @@ export function rerenderConf(text, node, iface) {
   }
   return out;
 }
-// Per-peer render params — the peer's stored overrides where set, else the interface's LIVE defaults.
-// Mirrors the server's effective_client_params so a blob-only render matches what the sub page produces.
-export function effectiveClientParams(peer, meta) {
-  const ov = (peer && peer.overrides) || {}; meta = meta || {};
+// The four non-secret render parameters for ONE deployment of one peer (DNS / MTU / AllowedIPs / keepalive):
+// the interface's LIVE defaults, under the peer-wide overrides, under THIS target's own. Byte-for-byte the
+// same rule as swg-panel-server's effective_client_params — see that docstring for why the rule lives in one
+// place and is copied rather than paraphrased. `target` is the peer's {node,iface,...} entry being rendered:
+// this used to take only (peer, meta), so it could not do the per-target merge swg-sub does, and a peer with
+// a per-target MTU rendered one config in this panel's QR and a different one on its own subscription page.
+export function effectiveClientParams(peer, target, meta) {
+  const pov = (peer && peer.overrides) || {}, tov = (target && target.overrides) || {};
+  const ov = { ...pov, ...tov };                       // the deployment's own setting wins, field by field
+  meta = meta || {};
+  // no per-peer/per-deployment keepalive -> the interface's, else 25
+  const ka = (typeof ov.keepalive === "number") ? ov.keepalive
+           : ((typeof meta.keepalive === "number") ? meta.keepalive : 25);
   return {
-    dns: ("dns" in ov) ? ov.dns : (meta.dns || []),
+    // dns=[] is meaningful — an explicit "no DNS line" — so the test is "is there a list", not "is it truthy"
+    dns: Array.isArray(ov.dns) ? ov.dns.slice() : ((meta.dns || []).slice()),
     mtu: ov.mtu || meta.mtu || 1280,
     allowed: ov.allowed || "0.0.0.0/0, ::/0",
-    keepalive: ("keepalive" in ov) ? ov.keepalive : 25,
+    keepalive: ka,
   };
 }
+
+// "We could not ask" — distinct from "we asked and there is none". Returned by blobConfig and consumed by
+// getConfig, which must not record a miss (nor persist a no-config marker) for a peer it never reached.
+export const CONF_UNREACHABLE = Symbol("conf-unreachable");
+const _confUnreach = new Map();   // "pubkey|node|iface" -> when the last lookup could not reach the panel
+export function confWasUnreachable(pubkey, node, iface) { return _confUnreach.has(pubkey + "|" + node + "|" + iface); }
 
 // The ENCRYPTED-AT-REST config path: fetch the peer's ciphertext blob, decrypt it in-browser with the
 // user's unlock-key (recovered from the vault), and rebuild the config LIVE from the decrypted {k,p} +
@@ -1049,17 +1192,24 @@ export async function blobConfig(peer, node, iface) {
   let sec, unlockKey;
   try {
     const r = await api.subBlobGet(peer.id);
-    if (!r || !r.ok || !r.data || !r.data.sec) return null;
+    // ⚠️ A TRANSPORT FAILURE IS NOT AN ANSWER. `r` is null/!ok when the panel could not be reached at all
+    // (restarting, proxy blip, tab offline). Collapsing that into the same `null` as "this peer has no
+    // blob" made the sheet state, flatly, "No stored config — re-issue this peer" for a peer whose
+    // ciphertext was sitting on disk the whole time — and getConfig() then PERSISTED that verdict to
+    // localStorage, so it survived a reload and was cleared only by a rekey, which is the very
+    // destructive act the message recommends. Observed on a live panel mid-restart.
+    if (!r || r.ok === false) return CONF_UNREACHABLE;
+    if (!r.data || !r.data.sec) return null;
     sec = r.data.sec;
     const buid = r.data.user_id || peer.user_id || SUB_ORPHAN;   // decrypt with the key of the bucket the blob is IN
     const rec = (await subUsersMap())[buid];
     if (!rec || !rec.unlock_by_sk) return null;
     unlockKey = await subRecoverUnlock(rec);   // unlock-key only (works whether or not the user is subscribed)
-  } catch (_) { return null; }
+  } catch (_) { return CONF_UNREACHABLE; }     // fetch threw → we did not learn anything about this peer
   try {
     const secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec)));   // GCM auth fails on a wrong key
     if (!secret || !secret.k) return null;
-    const eff = effectiveClientParams(peer, meta);
+    const eff = effectiveClientParams(peer, t, meta);
     return buildConf({ privkey: secret.k, address: (t.ip || "").split("/")[0] + "/32",
       dns: eff.dns, mtu: eff.mtu, awg_params: meta.awg_params, server_pubkey: meta.public_key,
       psk: secret.p || peer.psk, endpoint: meta.endpoint, allowed: eff.allowed, keepalive: eff.keepalive });
@@ -1093,6 +1243,8 @@ export function getConfig(pubkey, node, iface) {
   const hit = () => { _configMiss.delete(mk); if (peer) subNoConfClear(peer.id); };
   // encrypted-at-rest blob first (assigned peer + vault unlocked); else the transitional plaintext store.
   return blobConfig(peer, node, iface).then(c => {
+    if (c === CONF_UNREACHABLE) { _confUnreach.set(mk, Date.now()); return null; }   // learned nothing — do NOT miss()
+    _confUnreach.delete(mk);
     if (c) { hit(); return c; }
     // /api/config is the LEGACY plaintext endpoint; in the (normal) encrypted-at-rest steady state there are no
     // plaintext files, so it 404s for every peer. Only probe it while legacy files still await migration —

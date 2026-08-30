@@ -176,14 +176,14 @@ export const STR = {
 
   // ── node/panel install lifecycle (js/ui.js procLabel) ──────────────────────────────────────────
   "re-installing": "переустановка",
-  "converting to bare-metal": "перевод на bare-metal",
-  "converting to docker": "перевод на docker",
+  "converting to bare-metal": "конвертация в bare-metal",
+  "converting to docker": "конвертация в docker",
   "updating": "обновление",
   "uninstalling": "удаление",
   "re-installed": "переустановлен",
   "re-installed and updated": "переустановлен и обновлён",
-  "converted to bare-metal": "переведён на bare-metal",
-  "converted to docker": "переведён на docker",
+  "converted to bare-metal": "конвертирован в bare-metal",
+  "converted to docker": "конвертирован в docker",
   "updated": "обновлён",
   "changed": "изменился",
   "couldn't check": "не удалось проверить",
@@ -333,14 +333,19 @@ export const STR = {
     "Отслеживаемый файл не удалось получить — проверка не выполнялась.",
   "up to date": "актуален",
   "re-install aborted": "переустановка прервана",
-  "convert aborted": "перевод прерван",
+  "convert aborted": "конвертация прервана",
   // 1 char over budget: the four aborted states each need their own noun to stay distinguishable, and
   // this tag sits alone on a node card with room beside it.
   // budget-ok: alone on a node card, measured
   "update aborted": "обновление прервано",
   "uninstall aborted": "удаление прервано",
   "re-install failed": "ошибка переустановки",
-  "convert failed": "ошибка перевода",
+  "convert failed": "ошибка конвертации",
+  "Not a secure connection": "Соединение не защищено",
+  "Your browser only provides Web Crypto over https:// (or http://localhost), so creating peers, unlocking the Encryption Vault and showing configs or QR codes will not work here. Monitoring is unaffected.":
+    "Браузер выдаёт Web Crypto только по https:// (или http://localhost), поэтому здесь не будут работать создание пиров, разблокировка Хранилища шифрования и показ конфигов и QR-кодов. На мониторинг это не влияет.",
+  "This panel needs a secure connection: your browser only provides the Web Crypto it uses to generate keys over https:// (or http://localhost). Reach the panel over https://, or tunnel it to http://127.0.0.1.":
+    "Панели нужно защищённое соединение: браузер выдаёт Web Crypto, которым генерируются ключи, только по https:// (или http://localhost). Откройте панель по https:// или пробросьте её на http://127.0.0.1.",
   "update failed": "ошибка обновления",
   "uninstall failed": "ошибка удаления",
   "take-over failed": "не удалось перенять сервер",
@@ -419,7 +424,7 @@ export const STR = {
   "Click to open this user's details": "Открыть карточку пользователя",
   "Assign this peer to a user": "Назначить пира пользователю",
   "Show QR / configs": "Показать QR и конфиги",
-  "Unavailable while the node is down / converting": "Недоступно, пока нода не в строю или переводится",
+  "Unavailable while the node is down / converting": "Недоступно, пока нода не в строю или конвертируется",
   "Edit peer": "Изменить пира",
   "Delete peer": "Удалить пира",
   "Unassign peer": "Отвязать пира",
@@ -484,6 +489,22 @@ export const STR = {
   // budget-ok: sheet title, 620px wide
   "Restore interface · {where}": "Восстановление интерфейса · {where}",
   "Restore interface": "Восстановить интерфейс",
+  // The same repair for an interface the node still REPORTS but whose device is gone. "Пересобрать", not
+  // "восстановить": the operator is looking at a card the node is actively reporting, and calling that
+  // "missing" reads as the panel being confused rather than as a diagnosis.
+  "Rebuild interface · {where}": "Пересборка интерфейса · {where}",
+  // budget-ok: sheet-foot button, foot has a grow spacer
+  "Rebuild interface": "Пересобрать интерфейс",
+  "The device is gone from the node — rebuild it from the saved config with its original server key":
+    "Устройство исчезло с ноды — пересоберите интерфейс из сохранённой конфигурации с его исходным ключом сервера",
+  "Confirming it's really down (a couple of minutes) before Rebuild is offered":
+    "Убеждаемся, что он действительно лежит (пара минут), прежде чем предлагать пересборку",
+  "This isn't a brief bounce — the interface has been down on the node for {dur}.":
+    "Это не короткий перезапуск — интерфейс лежит на ноде уже {dur}.",
+  "Rebuild the down interface {iface} on {node} with its ORIGINAL server key (from {src}) and saved settings. The device is gone from the node, so there is nothing left to restart — this recreates it. Every peer on {iface} re-converges over the next few syncs and existing clients keep working (no new QR / config to distribute). {unlock}{gate}":
+    "Пересобрать лежащий интерфейс {iface} на {node} с ИСХОДНЫМ ключом сервера (из {src}) и сохранёнными настройками. Устройство исчезло с ноды, перезапускать нечего — интерфейс будет создан заново. Все пиры на {iface} сойдутся за несколько синхронизаций, а уже розданные клиентам конфиги продолжат работать (перевыпускать QR не нужно). {unlock}{gate}",
+  "Rebuild the down interface {iface} on {node} with its saved settings. The device is gone from the node, so there is nothing left to restart. Its original server key can't be recovered, so the interface comes back with a NEW key — every client on {iface} must re-import a fresh QR / config. {gate}":
+    "Пересобрать лежащий интерфейс {iface} на {node} с сохранёнными настройками. Устройство исчезло с ноды, перезапускать нечего. Исходный ключ сервера восстановить неоткуда, поэтому интерфейс вернётся с НОВЫМ ключом — каждому клиенту на {iface} придётся заново импортировать конфиг или QR. {gate}",
   // budget-ok: toast, wraps
   "Vault restore failed: {err}": "Не удалось восстановить из хранилища: {err}",
   "Restoring interface {iface} on {node} — its peers re-converge over the next syncs.":
@@ -781,7 +802,19 @@ export const STR = {
     "Панель читает сертификат, которым уже управляет `security.acme`, и перечитывает его при обновлении. Сам сертификат объявите так, как проходите проверку (HTTP-01, DNS-01), но *не задавайте ему `group`*: модуль кладёт его в группу `swg`, чтобы панель могла прочитать ключ, и второй `group` этому мешает.",
   "The subscription page still needs its own terminator — it is a separate service on `{v1}`, and this option covers the panel only.":
     "Странице подписок всё равно нужен свой терминатор — это отдельный сервис на `{v1}`, а эта опция покрывает только панель.",
-  "Managed outside the panel (it is served here, not issued here)": "Управляется вне панели (отдаётся здесь, выпускается не здесь)",
+  "Existing certificate files (issued and renewed outside the panel)": "Готовые файлы сертификата (выпуск и продление — вне панели)",
+  "Full-chain certificate": "Сертификат с полной цепочкой",
+  "Private key": "Приватный ключ",
+  "An absolute path on the panel host — the certificate with its chain. It must cover the panel's public address.": "Абсолютный путь на хосте панели — сертификат вместе с цепочкой. Он должен покрывать публичный адрес панели.",
+  "Absolute path too, and the key must not have a passphrase. Both files are copied into place and re-checked every few hours, so a renewal written over them is picked up on its own. Leave both blank if a certificate is already installed and nothing here should touch it.": "Тоже абсолютный путь, и ключ должен быть без пароля. Оба файла копируются на место и перепроверяются каждые несколько часов, поэтому продление, записанное поверх них, подхватывается само. Оставьте оба поля пустыми, если сертификат уже установлен и трогать его не нужно.",
+  "Subscription private key": "Приватный ключ подписок",
+  "Only needed when the subscription page answers to a different name than the panel. Leave both blank and it is served the certificate above — which is what you want when the two share a hostname, or one certificate covers both.": "Нужно только если страница подписок отвечает на другое имя, чем панель. Оставьте оба поля пустыми — и ей отдадут сертификат выше, что и требуется, когда у них общее имя хоста или один сертификат покрывает оба.",
+  "The subscription certificate needs BOTH paths — the full-chain certificate and its private key.": "Для сертификата подписок нужны ОБА пути — сертификат с полной цепочкой и приватный ключ к нему.",
+  "The subscription certificate paths must be absolute (start with /) — they are read on the panel host, not in your browser.": "Пути к сертификату подписок должны быть абсолютными (начинаться с /) — они читаются на хосте панели, а не в браузере.",
+  "Existing certificate files isn't available on Docker yet — mount your certificate over the panel's cert path instead (see docker-compose.yml).": "Готовые файлы сертификата пока недоступны в Docker — примонтируйте свой сертификат поверх пути к сертификату панели (см. docker-compose.yml).",
+  "Existing certificate files needs BOTH paths — the full-chain certificate and its private key.": "Для готовых файлов сертификата нужны ОБА пути — сертификат с полной цепочкой и приватный ключ к нему.",
+  "The certificate path must be absolute (start with /) — it is read on the panel host, not in your browser.": "Путь к сертификату должен быть абсолютным (начинаться с /) — он читается на хосте панели, а не в браузере.",
+  "The private key path must be absolute (start with /) — it is read on the panel host, not in your browser.": "Путь к приватному ключу должен быть абсолютным (начинаться с /) — он читается на хосте панели, а не в браузере.",
   "Not set — give it sub.domain or sub.publicUrl": "Не задан — укажите sub.domain или sub.publicUrl",
   "Proxy to": "Прокси на",
   "This page's address comes from the configuration that built this machine — `services.swg-panel.sub.domain`, `sub.basePath`, `sub.publicUrl` and `sub.port`.":
@@ -892,10 +925,6 @@ export const STR = {
   "Key escrow & recovery": "Депонирование ключей и восстановление",
   "Authentication": "Вход в панель",
   // Settings section names — the rail is a narrow left column, so these stay short.
-  "Mesh & egress": "Меш и выходы",
-  "No nodes yet — enroll a node to configure its mesh and egress.":
-    "Нод пока нет — подключите ноду, чтобы настроить её меш и выходы.",
-  // budget-ok: settings rail entry — the rail sizes to its widest label and the column has room
   "Routing & Blocking": "Политики",
   "Geo data providers": "Провайдеры гео-данных",
   "Integrations": "Интеграции",
@@ -1148,10 +1177,6 @@ export const STR = {
   "64 hex chars — blank = a fresh key per proxy": "64 hex-символа — пусто = свежий ключ на каждый прокси",
   "Bridge node: the proxy binds `0.0.0.0` inside the container and this port is published, so enter the node's *public* IP/host (what clients dial) here.":
     "Нода на bridge: прокси слушает `0.0.0.0` внутри контейнера, а порт публикуется, поэтому укажите здесь *публичный* IP или хост ноды (куда звонят клиенты).",
-  "This isn't a detected address on the node. The proxy *binds* to this address — it must be a real IP on the server, or it dies with `bind: cannot assign requested address`.":
-    "Это не обнаруженный на ноде адрес. Прокси *привязывается* к нему, поэтому это должен быть настоящий IP на сервере, иначе он упадёт с `bind: cannot assign requested address`.",
-  "This isn't a detected address on the node. The proxy *binds* to it, so it must be a real IP on the server — otherwise it dies with `bind: cannot assign requested address`.":
-    "Это не обнаруженный на ноде адрес. Прокси *привязывается* к нему, поэтому это должен быть настоящий IP на сервере — иначе он упадёт с `bind: cannot assign requested address`.",
   "This forwards to a port with no managed interface behind it. Make sure a wg/awg interface is really listening there, or clients reach the proxy but get no tunnel.":
     "Он ведёт на порт, за которым нет управляемого интерфейса. Убедитесь, что там действительно слушает интерфейс wg/awg, иначе клиенты дойдут до прокси, но туннеля не получат.",
   "This *stops, disables and removes* the turn-proxy service *{label}* on the node. Clients pointed at it stop connecting. This can't be undone. (To keep the service running and only unlink it from the panel, use *Disconnect*.)":
@@ -1732,7 +1757,6 @@ export const STR = {
   "Tunnel": "Туннель",
   "Carrying": "Несёт",
   "Listen": "Слушает",
-  "Subnet": "Подсеть",
   // budget-ok: Panel heading on its own line
   "User interfaces": "Интерфейсы",
   "Interfaces": "Интерфейсы",
@@ -1812,7 +1836,7 @@ export const STR = {
     "Убеждаемся, что он действительно пропал (пара минут), прежде чем предлагать пересоздание",
   // budget-ok: hover caption on a drag grip
   "Drag to reorder": "Перетащите, чтобы изменить порядок",
-  "The node is converting between bare-metal and docker": "Нода переводится между bare-metal и docker",
+  "The node is converting between bare-metal and docker": "Нода конвертируется между bare-metal и docker",
   // budget-ok: hover caption
   "Server wiped — its identity is escrowed; open to Restore or Recreate fresh":
     "Сервер стёрт — его идентичность в хранилище; откройте, чтобы восстановить или пересоздать заново",
@@ -1872,8 +1896,6 @@ export const STR = {
   // budget-ok: hover caption
   "Rotate token (re-enroll / re-install)": "Сменить токен (переподключение / переустановка)",
   // budget-ok: hover caption
-  "Recover this node — rotate its token and get a fresh paste-on-the-server install command (the node keeps its peers)":
-    "Восстановить ноду — сменить её токен и получить свежую команду установки для сервера (пиры сохранятся)",
   "Panel updated": "Панель обновлена",
   "Reload now": "Перезагрузить",
   "The panel was updated from {from} to {to}.": "Панель обновлена с {from} до {to}.",
@@ -1941,8 +1963,6 @@ export const STR = {
   "Reassign": "Переназначить",
   // budget-ok: confirm sheet title, 620px wide
   "Reassign peer": "Переназначить пира",
-  // budget-ok: sheet-foot button, foot has a grow spacer
-  "Generate recovery command": "Сгенерировать команду восстановления",
   "Log out": "Выйти",
   "Are you sure you want to logout?": "Точно выйти?",
   // budget-ok: confirm sheet title, 480px wide
@@ -2102,7 +2122,7 @@ export const STR = {
   "Copied": "Скопировано",
       "Run on the node —": "Выполните на ноде —",
     "This recovers {name} as {method} — the method it was already running, so its turn-proxies and interfaces are kept. To switch methods, convert the node instead.":
-    "Восстановит {name} как {method} — тем же способом, которым нода уже работала, так что её turn-прокси и интерфейсы сохранятся. Чтобы сменить способ, переведите ноду.",
+    "Восстановит {name} как {method} — тем же способом, которым нода уже работала, так что её turn-прокси и интерфейсы сохранятся. Чтобы сменить способ, конвертируйте ноду.",
   "Re-provision this node's mesh links?": "Перевыпустить меш-линки этой ноды?",
   "Re-provision": "Перевыпустить",
   "Rotate key": "Сменить ключ",
@@ -2118,16 +2138,63 @@ export const STR = {
     "С этого IP нода выходит в интернет по умолчанию. Он применяется там, где свой IP выхода не задан — к любому интерфейсу этой ноды и к трафику, пришедшему с других нод. Если у интерфейса задан свой IP выхода, используется он. Трафик, который уходит в интернет через другую ноду, это не затрагивает.",
   "Panel egress connection IP": "IP для связи с панелью",
   "— source to reach the panel": "— источник для доступа к панели",
+  "This doesn't resolve to an address on this node. The proxy *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.": "Это имя не разрешается в адрес этого узла. Прокси *привязывается* к нему, поэтому оно должно указывать на эту машину, иначе он падает с `bind: cannot assign requested address`.",
+  "This doesn't resolve to an address on this node. The server *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.": "Это имя не разрешается в адрес этого узла. Сервер *привязывается* к нему, поэтому оно должно указывать на эту машину, иначе он падает с `bind: cannot assign requested address`.",
+  "Transfer token": "Токен переноса",
+  "— to move an existing node here": "— чтобы перенести сюда узел",
+  "Carries this panel's address and this token together. On the panel that has the node now: its Transfer window, and paste this — nothing is installed.": "Содержит адрес этой панели и этот токен вместе. На панели, где сейчас узел, откройте «Перенос» и вставьте это — ничего не устанавливается.",
+  "The other panel's transfer token": "Токен переноса другой панели",
+  "On the other panel: Nodes → Add node, then copy its Transfer token — it carries that panel's address and the new node's key together. An enrolment command still works if you have one; nothing is ever run.": "На другой панели: «Узлы» → «Добавить узел», затем скопируйте её токен переноса — он содержит адрес той панели и ключ нового узла. Команда установки тоже подойдёт, если она у вас есть; ничего не запускается.",
+  "Escrowed server keys — re-sealed to the other panel's vault, not carried": "Депонированные ключи серверов — перезапечатываются в хранилище другой панели, а не переносятся",
+  "These users have peers on other nodes here too — only this node moves, so those peers stay": "У этих пользователей есть пиры и на других узлах этой панели — переносится только этот узел, остальные пиры остаются",
+  "Worth knowing before you do this": "Что стоит знать перед переносом",
+  "Nothing here disconnects anybody — every peer keeps working. It is what the other panel will not know about, so you know where to look afterwards.": "Ничто из этого никого не отключает — все пиры продолжают работать. Это то, о чём не будет знать другая панель, чтобы вы знали, где искать потом.",
+  "Hostnames for this node": "Имена (hostnames) этого узла",
+  "— offered wherever a host is asked for": "— предлагаются везде, где нужен хост",
+  "Add a name": "Добавить имя",
+  "vpn.example.com": "vpn.example.com",
+  "This doesn't resolve to an address on this node.": "Это имя не разрешается в адрес этого узла.",
+  "Every picker that asks for a host offers these — interfaces, turn proxies, WDTT and csqtt. They do not change what clients dial; the ingress address above does that.": "Эти имена предлагаются везде, где спрашивают хост — интерфейсы, turn-прокси, WDTT и csqtt. Они не меняют то, что набирают клиенты: за это отвечает адрес входа выше.",
+  "other names": "другие имена",
+  "Use a different token": "Другой токен",
+  "Transferred here": "Перенесён сюда",
+  "Arrived from *{v1}* on *{v2}*.": "Прибыл с *{v1}* — *{v2}*.",
+  "{date} at {time}": "{date} в {time}",
+  "an unrecorded time": "неизвестно когда",
+  "It was called «{v1}» there.": "Там он назывался «{v1}».",
+  "Anything from before that — its history, its stored baselines — is still on that panel. Clearing this only removes the note here; the node is not touched.": "Всё, что было до этого — история, сохранённые слепки — осталось на той панели. Очистка убирает только эту заметку; сам узел не затрагивается.",
+  "Clearing…": "Очищаем…",
+  "Couldn't clear it.": "Не удалось очистить.",
+  "The panel changes these for you when the node comes back. An address of the old box cannot be bound on the new one, and its address is not known yet — so a listener becomes 0.0.0.0, which is every address the new box turns out to have, and a source address becomes auto. Clients are unaffected either way: a wildcard listener is what tells the panel to advertise this node's ingress name, exactly as a wg/awg interface already does. Anything not listed keeps what it has.": "Панель меняет это за вас, когда узел вернётся. Адрес старой машины нельзя занять на новой, а её адрес пока неизвестен — поэтому слушатель становится 0.0.0.0, то есть всеми адресами, какие у новой машины окажутся, а исходящий адрес — «авто». Клиентов это никак не задевает: 0.0.0.0 как раз и означает, что панель объявляет имя входа этого узла — ровно так же, как уже делает интерфейс wg/awg. Всё, чего нет в списке, сохраняется как есть.",
+  "word|endpoint": "endpoint",
+  "word|egress": "egress",
+  "word|panel source": "источник к панели",
+  "word|mesh source": "источник к узлам",
+  "What was armed": "Что подготовлено",
+  "The command below carries a token that authenticates the node to this panel — copy the command now. You can rotate the token later if it leaks.": "Команда ниже содержит токен, которым узел подтверждает себя этой панели — скопируйте команду сейчас. Токен потом можно сменить, если он утечёт.",
+  "Either works: the first is what this node runs today, and the panel follows whichever the new box reports.": "Подойдёт любая: первая — то, на чём узел работает сегодня. Но панель следует той модели, о которой сообщит новая машина.",
+  "Reclaim": "Вернуть",
+  "Reclaim {v1}": "Вернуть {v1}",
+  "Subnet": "Подсеть",
+  "Users in its store": "Юзеров в хранилище",
+  "This server has no users yet.": "Пользователей пока нет.",
+  "They are imported as peers, so reclaiming does not disconnect them.": "Они импортируются как пиры, поэтому возврат их не отключает.",
+  "Must be free across the fleet. Both kinds hand out client addresses at runtime, so changing it does not invalidate anyone's credentials.": "Должна быть свободна во всём флоте. Оба вида выдают адреса клиентам во время работы, поэтому её смена не делает недействительными ничьи учётные данные.",
+  "The node still runs this server, but this panel holds no record of it — so nothing starts it and nothing manages its users. Reclaiming writes the record back from what the node reports.": "Узел всё ещё держит этот сервер, но в панели нет записи о нём — поэтому его никто не запускает и его пользователями никто не управляет. Возврат восстановит запись из того, что сообщает узел.",
+  "This panel holds no record of this {v1} server, though the node still has it — so nothing starts it, its users aren't in the roster, and a rebuild can't bring it back. Open it and Reclaim it to take it back, users and all.": "В панели нет записи об этом сервере {v1}, хотя узел его держит — поэтому его никто не запускает, его пользователей нет в ростере, а пересборка его не вернёт. Откройте его и нажмите «Вернуть», чтобы забрать его вместе с пользователями.",
+  "Reclaiming…": "Возврат…",
+  "Reclaimed {v1}": "{v1} возвращён",
+  "Reclaimed {v1} — {v2} user(s) kept": "{v1} возвращён, юзеров: {v2}",
+  "Couldn't reclaim {v1}": "Не удалось вернуть {v1}",
+  "Take this server back under the panel, keeping the users in its store": "Вернуть этот сервер под управление панели, сохранив пользователей из его хранилища",
+  "Mesh egress IP": "IP для mesh",
+  "— source to dial other nodes": "— источник для других узлов",
+  "Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.": "С какого из адресов этого узла он подключается к mesh-связям других узлов. Отдельное соединение может переопределить это на своей карточке.",
+  "mesh egress IP → {v1}": "IP для mesh → {v1}",
   "Source IP this node uses to reach the panel. Ignored on same-server installs; falls back to auto if it can't connect.":
     "Адрес источника, с которого нода обращается к панели. На установках на одном сервере игнорируется; при неудаче — авто.",
-  "Mesh settings (ingress IP, subnet, port, prefix, AWG) for this node are configured in {where} — select this node there.":
-    "Настройки меша (входящий IP, подсеть, порт, префикс, AWG) для этой ноды задаются в {where} — выберите там эту ноду.",
-  "Panel settings → Mesh & egress": "Настройки панели ▸ Меш и выходы",
-  "This node isn't reporting. Generating a recovery command rotates its token and gives you a one-line command to paste on the server — it re-installs/recovers {name} as the {same}, so its interfaces and peers come straight back (no need to find the old token).":
-    "Нода не отчитывается. Генерация команды восстановления сменит её токен и выдаст однострочную команду для сервера — она переустановит и восстановит {name} как {same}, так что интерфейсы и пиры вернутся сразу (искать старый токен не нужно).",
-  "same node": "ту же ноду",
-  "The node's current token stops working immediately — use this only when the node is genuinely down or you've lost its install command.":
-    "Текущий токен ноды перестанет работать сразу — делайте это, только если нода действительно недоступна или команда установки потеряна.",
+  "Mesh settings (ingress address, subnet, port, prefix, AWG) for this node are configured in {where} — select this node there.":
+    "Настройки меша (адрес входа, подсеть, порт, префикс, AWG) для этой ноды задаются в {where} — выберите там эту ноду.",
   "The current token stops working immediately. Re-enroll the node with the new token or it will go offline.":
     "Текущий токен перестанет работать сразу. Переподключите ноду с новым токеном, иначе она уйдёт в офлайн.",
   "This cuts {name} off {now} without waiting for it to confirm — {dropped}. Use this only when the server is unreachable. This can't be undone.":
@@ -2627,6 +2694,10 @@ export const STR = {
     "Смены адреса идут *по одной* — «Сохранить» заблокировано до конца. Если смена уже запущена, отменить её можно во вкладке, где она началась.",
   "*These settings changed elsewhere.* The panel's saved address settings were updated by the server (a rollback, a boot reconcile, or a change confirmed in another tab) while you have *unsaved edits* here — so a field below may be based on an *old* value. *Reload the page* before saving, or your change could re-apply a value the panel already reverted.":
     "*Эти настройки изменились не здесь.* Сохранённые адреса обновил сам сервер (откат, сверка при старте или подтверждение в другой вкладке), а у вас тут *несохранённые правки* — значит, поле ниже может опираться на *старое* значение. *Обновите страницу* перед сохранением, иначе вернёте то, что панель уже откатила.",
+  "*Automatic renewal is failing.* The certificate is still valid for *{v1}* more day(s), but nothing is renewing it — check that this host is reachable by the validation method above.":
+    "*Автоматическое обновление не проходит.* Сертификат ещё действует *{v1}* дн., но обновлять его некому — проверьте, что этот хост доступен для выбранного выше способа проверки.",
+  "*This certificate expires in {v1} day(s).*":
+    "*Этот сертификат истекает через {v1} дн.*",
   "How TLS is terminated — this decides which ports are valid below. One choice issues both certificates (the panel's and swg-sub's, always separate keys).":
     "Где завершается TLS — от этого зависит, какие порты ниже допустимы. Один выбор выпускает оба сертификата (панели и swg-sub, ключи всегда разные).",
   "This box's own node reaches the panel on {v1} — a dedicated plain-HTTP loopback port, served at the root. It's set at install and a public address, port, path, or certificate change never moves it, so the co-located node never loses the panel.":
@@ -2768,8 +2839,9 @@ export const STR = {
   "All settings saved": "Все настройки сохранены",
   "Overrides for *{v1}* — blank inherits the default. Changing the subnet, prefix, or AWG re-provisions this node's links on Save (it briefly drops off the mesh while peers reconnect with the new config).":
     "Параметры для *{v1}* — пустое поле берёт значение по умолчанию. Смена подсети, префикса или параметров AWG пересоберёт подключения этой ноды при сохранении (она ненадолго выпадет из сети, пока соседи переподключаются).",
-  "Mesh Ingress IP": "Адрес входа в сеть",
-  "— the address peers dial to reach this node": "— по нему пиры подключаются к этой ноде",
+  "Ingress address": "Адрес входа",
+  "— what peers and clients dial to reach this node": "— по нему к этой ноде подключаются и пиры, и клиенты",
+  "Hostname or IP — e.g. node.example.com": "Имя хоста или IP — например node.example.com",
   "(auto)": "(авто)",
   "Obfuscation for the mesh links that terminate on *{v1}* — any node connecting to it adopts these and reconnects on Save. Blank = auto (a fresh set per link).":
     "Маскировка для связей сети, которые приходят на *{v1}* — каждый подключающийся нода примет её и переподключится при сохранении. Пусто — авто (свой набор на связь).",
@@ -2980,6 +3052,8 @@ export const STR = {
   "Show config": "Конфиг",
   "Show QR": "QR",
   "Show link": "Ссылка",
+  "Couldn't reach the panel just now, so this peer's stored config could not be read. It has not been lost — try again in a moment.":
+    "Сейчас не удалось связаться с панелью, поэтому сохранённый конфиг этого пира прочитать не вышло. Он не потерян — попробуйте ещё раз через минуту.",
   "No stored config — re-issue this peer to enable its QR & download.":
     "Конфиг не сохранён — перевыпустите пира, чтобы включить QR и загрузку.",
   "Config shown right after creation, or enable store_configs to keep it.":
@@ -3312,7 +3386,6 @@ export const STR = {
   "New token": "Новый токен",
   "A label for this node — rename anytime, nothing else changes. The swatches set its colour per theme.":
     "Название ноды — переименование ничего больше не меняет. Образцы задают цвет для каждой темы.",
-  "couldn't generate a recovery command": "не удалось собрать команду восстановления",
   // budget-ok: a note under the removal steps — its own block
   "No peers reference it.": "На него не ссылается ни один пир.",
   "the panel didn't respond in time": "панель не ответила вовремя",
@@ -3512,7 +3585,6 @@ export const STR = {
   "tag|adopting": "подключение",
   "tag|uninstalled": "удалён",
   "tag|offline": "не на связи",
-  "tag|recover": "вернуть",
   "tag|re-provisioning": "пересборка",
   "tag|flagged for removal": "помечен к удалению",
   "tag|restarted": "перезапущен",
@@ -3811,7 +3883,7 @@ export const STR = {
   "Client configs → {v1}": "Конфиги клиентов → {v1}",
   "val|encrypted": "шифруются",
   "IP learning → {v1}": "Память адресов → {v1}",
-  "ingress IP → {v1}": "адрес входа → {v1}",
+  "ingress address → {v1}": "адрес входа → {v1}",
   "mesh subnet → {v1}": "подсеть сети → {v1}",
   "mesh port → {v1}": "порт сети → {v1}",
   "prefix → {v1}": "префикс → {v1}",
@@ -3859,7 +3931,159 @@ export const STR = {
   "Changing the mesh subnet / port / prefix of {v1} rebuilds all of its node-to-node links with the new settings.":
     "Смена подсети, порта или префикса сети у {v1} пересоберёт все её связи с другими нодами по новым настройкам.",
   "Node settings · {v1}": "Настройки ноды · {v1}",
-  "Recover node · {v1}": "Возврат ноды · {v1}",
+  // ── restore / migrate (node rebuild) ────────────────────────────────────────────────────────────
+  // One verb, two doors. "нода" throughout for the panel's record of the server, "машина" for the
+  // physical box it runs on — the whole feature turns on that distinction (one node, two boxes), and
+  // Russian sysadmin usage keeps them apart the same way.
+  "Restore or migrate": "Восстановить/перенести",
+  "Migrate": "Перенести",
+  "tag|old box alive": "старый сервер жив",
+  "recently": "недавно",
+  "Addresses": "Адреса",
+  "Run this on the box": "Выполните это на машине",
+  "Preparing…": "Подготовка…",
+  // budget-ok: sheet-foot buttons, foot has a grow spacer
+  "Prepare the command": "Подготовить команду",
+  "Prepare the migration": "Подготовить перенос",
+  "Roll back to it": "Вернуться на неё",
+  "It's gone — forget it": "Её больше нет — забыть",
+  "Restore or migrate · {v1}": "Восстановление/перенос · {v1}",
+  "Migrate · {v1}": "Перенос · {v1}",
+  "The old box · {v1}": "Старая машина · {v1}",
+  "couldn't prepare the command": "не удалось подготовить команду",
+  "couldn't roll back": "не удалось вернуться",
+  "Old box forgotten.": "Старая машина забыта.",
+  "Rolled back — the old box resumes on its next sync.":
+    "Откат — старая машина вернётся на следующей синхронизации.",
+  "Rebuild this node from what the panel holds — a paste-on-the-server command that brings back its interfaces, keys and turn-proxies, on this box or a new one":
+    "Пересобрать ноду из того, что хранит панель — команда для вставки на сервере вернёт её интерфейсы, ключи и turn-прокси, на этой машине или на новой",
+  "Move this node to another server — the panel gives you a command that rebuilds it there from what it holds":
+    "Перенести ноду на другой сервер — панель выдаст команду, которая пересоберёт её там из того, что хранит панель",
+  "Forget the old box's token — the badge goes away and this panel keeps the new box":
+    "Забыть токен старой машины — плашка исчезнет, панель останется на новой машине",
+  "Migrated {v1}. The old server is still running and still serving its peers — it's locked out of this panel by a rotated token, nothing else. Roll back to it in one click, or tell the panel it's gone.":
+    "Миграция {v1}. Старый сервер продолжает работать и обслуживать свои пиры — от панели его отрезал только смененный токен, больше ничего. Можно вернуться на него одним кликом или сказать панели, что его больше нет.",
+  // Tsplit sentences — the {markers} are split points, so every one of them has to survive translation.
+  "This gives you a one-line command to run on the {newbox}. It pulls everything the panel holds for {name} — its interfaces with their original keys and settings, its turn-proxies, its place in the mesh — so the node comes back as itself.":
+    "Панель выдаст команду в одну строку для запуска на {newbox}. Она заберёт всё, что панель хранит для {name} — интерфейсы с их исходными ключами и настройками, turn-прокси, место в меше — так что нода вернётся сама собой.",
+  // budget-ok: a bolded run INSIDE a notice paragraph (Tsplit), not a label — it wraps with the sentence
+  "new box": "новой машине",
+  "{name} isn't reporting. This gives you a one-line command that rebuilds it from what the panel holds — run it on the {either}. Either way the node comes back as itself, with its interfaces, keys and turn-proxies.":
+    "{name} не отчитывается. Панель выдаст команду в одну строку, которая пересоберёт ноду из того, что хранит панель — выполните её на {either}. В любом случае нода вернётся сама собой: со своими интерфейсами, ключами и turn-прокси.",
+  "same box, a damaged one, or a brand-new one": "той же машине, на повреждённой или совсем новой",
+  "{name} was migrated {when}. The old box is still running and still serving the peers it had — it simply stopped syncing with this panel. Nothing on it was changed.":
+    "{name} перенесена {when}. Старая машина продолжает работать и обслуживать доставшиеся ей пиры — она просто перестала синхронизироваться с этой панелью. На ней ничего не менялось.",
+  // the outcome of an arming — what comes back, what does not, and what it costs
+  // WDTT/csqtt are declarative — the panel ships their config every sync and their users come from the
+  // roster — so the honest line is a reassurance, not a warning. "сами" carries that better than a passive.
+  "The old box keeps running and keeps serving its peers — it just stops syncing here. One click rolls this panel back to it, from the badge on the node, for as long as you keep it.":
+    "Старая машина продолжает работать и обслуживать свои пиры — она лишь перестаёт синхронизироваться здесь. Пока она у вас есть, панель возвращается на неё одним кликом — с плашки на ноде.",
+  "No rollback point was kept: this node wasn't reporting, so there was nothing running to roll back to. The command below is the way back.":
+    "Точка отката не сохранена: нода не отчитывалась, возвращаться было не на что. Путь назад — команда ниже.",
+  "The node's current token stops working immediately — so if the box is only briefly unreachable rather than broken, wait for it instead. The command below is then the only way it gets back in.":
+    "Текущий токен ноды перестанет работать сразу же — если машина просто ненадолго недоступна, а не сломана, лучше дождаться её. Иначе вернуться в панель она сможет только по команде ниже.",
+  "This node is reporting, so the box it runs on now is left alone: it keeps running, keeps its peers connected, and only stops syncing with this panel. You can roll back to it in one click until you tell the panel it's gone.":
+    "Нода отчитывается, поэтому машину, на которой она работает сейчас, никто не трогает: она продолжит работать, пиры на ней останутся подключёнными, прекратится только синхронизация с этой панелью. Вернуться на неё можно одним кликом — пока вы не скажете панели, что её больше нет.",
+  "Nothing is destroyed and nothing is sent to either box — the panel can only hand you a command to run. Prepare it, then run it on the new server.":
+    "Ничего не уничтожается и ни на одну из машин ничего не отправляется — панель может только выдать команду. Подготовьте её и выполните на новом сервере.",
+  "Transferred here from {v1} {v2}. Anything from before that — its history, its stored baselines — is still on that panel.":
+    "Передана сюда из {v1} {v2}. Всё, что было до этого — история, сохранённые слепки — осталось на той панели.",
+  "Transferred here from {v1} {v2}, where it was called «{v3}». Anything from before that — its history, its stored baselines — is still on that panel.":
+    "Передана сюда из {v1} {v2}, там она называлась «{v3}». Всё, что было до этого — история, сохранённые слепки — осталось на той панели.",
+  "Rotate token — and get a one-line command that fixes only the credential":
+    "Сменить токен — и получить команду, которая чинит только его",
+  "Only fix the credential — no re-install":
+    "Починить только токен — без переустановки",
+  "Run this when the node is healthy and only its token is wrong — after a rotate that landed somewhere unexpected, say. It changes the token and restarts the node; it installs nothing, touches no interface, and leaves the panel address and TLS settings exactly as they are.":
+    "Выполните это, если с нодой всё в порядке и неверен только токен — например, после смены токена не на той ноде. Команда меняет токен и перезапускает ноду: ничего не устанавливает, интерфейсы не трогает, адрес панели и настройки TLS оставляет как есть.",
+  "no record here — neither it nor its {v1} come back":
+    "нет записи в панели — не вернётся ни он, ни его {v1}",
+  "no record here — it does not come back":
+    "нет записи в панели — не вернётся",
+  "no record here — it comes back only if the box's own configuration recreates it":
+    "нет записи в панели — вернётся, только если его пересоздаст конфигурация самой машины",
+  "the panel never captured a config for it — it can only be recreated fresh":
+    "панель не сохранила его конфигурацию — только создать заново",
+  "unknown fork or unreadable bind — re-add this proxy by hand":
+    "неизвестный форк или нечитаемый bind — добавьте прокси заново вручную",
+  "no usable escrow for its identity — it comes back holding, and recreating it re-keys every user":
+    "нет рабочего эскроу для его идентичности — вернётся в ожидании, а пересоздание сменит ключ всем пользователям",
+  "no escrow and no key backup — it comes back with a new key, so its clients re-import":
+    "нет ни эскроу, ни резервной копии ключа — вернётся с новым ключом, клиентам понадобится новый конфиг",
+  "its escrowed key opens for nobody — re-seal it before the box is wiped":
+    "его ключ в эскроу никто не может открыть — перезапечатайте до того, как машину сотрут",
+  "Accept the node's new key instead of restoring the original — you'll re-distribute every QR.":
+    "Принять новый ключ ноды вместо восстановления исходного — QR придётся раздать заново.",
+  "*The box no longer holds the original key* (it was re-created), but your *Encryption Vault does* — restore it from there and every existing config keeps working.":
+    "*На машине исходного ключа больше нет* (её пересоздали), но *он есть в хранилище шифрования* — восстановите оттуда, и все существующие конфиги продолжат работать.",
+  "tag|needs the vault":
+    "нужно хранилище",
+  "The node is waiting rather than minting a new key: unlock the Encryption Vault and restore this interface, and every existing client config keeps working":
+    "Нода ждёт, а не создаёт новый ключ: разблокируйте хранилище шифрования и восстановите интерфейс — все существующие конфиги клиентов продолжат работать",
+  "waiting for the Encryption Vault — its original key is escrowed":
+    "ждёт хранилище шифрования — исходный ключ в эскроу",
+  "Restore from the vault":
+    "Восстановить из хранилища",
+  "Puts the original key back from your Encryption Vault — existing clients keep working, no re-distribution.":
+    "Вернёт исходный ключ из хранилища шифрования — существующие клиенты продолжат работать, ничего раздавать заново не нужно.",
+  "tag|migrating":
+    "переезжает",
+  "This node is being migrated — it comes back with this interface as it was. Nothing to do until it reports.":
+    "Нода переезжает — интерфейс вернётся таким, каким был. Пока она не отчитается, делать ничего не нужно.",
+  "This node is being migrated — the server comes back with it.":
+    "Нода переезжает — сервер вернётся вместе с ней.",
+  "This node is being migrated — its mesh links are rebuilt automatically":
+    "Нода переезжает — связи в меше пересоберутся сами",
+  "it comes back with the node — nothing to do":
+    "вернётся вместе с нодой — делать ничего не нужно",
+  "it comes back with the node":
+    "вернётся вместе с нодой",
+  "its identity is escrowed — it comes back unchanged, no user re-imports":
+    "идентичность в эскроу — вернётся без изменений, пользователям не нужен новый конфиг",
+  "Network":
+    "Сеть",
+  "Panel settings → Network":
+    "Настройки панели → Сеть",
+  "{v1} — ingress":
+    "{v1} — вход",
+  "How peers, clients and turn-proxy links reach *{v1}*.":
+    "Как пиры, клиенты и ссылки turn-прокси попадают на *{v1}*.",
+  "This is the host in every client config and turn-proxy link for this node. Prefer a hostname: moving the box then costs one DNS change, and nothing a client already holds has to be re-issued.":
+    "Это тот хост, который попадает в каждый клиентский конфиг и в каждую ссылку turn-прокси этой ноды. Лучше указать имя хоста: тогда переезд машины стоит одной записи DNS, и ничего из того, что уже есть у клиентов, переиздавать не придётся.",
+  "No nodes yet — enroll a node to configure how it is reached, how it exits, and how it links.":
+    "Нод пока нет — заведите ноду, чтобы настроить вход, выход и связи.",
+  "Listen (local)":
+    "Слушает (локально)",
+  "Mesh links":
+    "Связи в меше",
+  "comes back without its {v1}":
+    "вернётся без параметра {v1}",
+  "forwards to {v1}, which is not coming back":
+    "ведёт на {v1}, а он не вернётся",
+  "The node runs this interface, but this panel holds no record of it: nothing here manages its peers or its settings, and a rebuild can't bring it back. Adopt it from Create new interface, giving it this exact name — the node then adds it to what it manages without touching the peers already on it.":
+    "Нода поднимает этот интерфейс, но в панели о нём нет записи: ни пиры, ни настройки отсюда не управляются, и пересборка его не вернёт. Принять его можно через «Создать интерфейс», указав ровно это имя — нода добавит его к тому, чем управляет, не трогая уже поднятые на нём пиры.",
+  "MTU":
+    "MTU",
+  "port":
+    "порт",
+  "address":
+    "адрес",
+  "obfuscation":
+    "обфускация",
+  "What the panel can't bring back":
+    "Что панель не сможет вернуть",
+  "What comes back as it is":
+    "Что вернётся как есть",
+  "The configs your users already have keep working — nothing has to be re-sent.":
+    "Конфиги, которые уже есть у пользователей, продолжат работать — ничего пересылать не нужно.",
+  "Checking what this would do…":
+    "Проверяем, что это сделает…",
+  "Couldn't check what this would do. The rebuild still works — it reports the same list once it runs.":
+    "Не удалось проверить, что это сделает. Восстановление всё равно работает — оно покажет тот же список после запуска.",
+  "Rolling back hands this panel back to the old box: its own token starts working again and it picks up on its next sync, peers and all. Whatever you installed on the new box stops syncing instead — nothing on it is touched, and you can migrate again whenever you like.":
+    "Откат возвращает панель на старую машину: её собственный токен снова начинает работать, и на следующей синхронизации она подхватывает всё, включая пиры. То, что установлено на новой машине, вместо этого перестаёт синхронизироваться — на ней ничего не трогается, и перенос можно повторить в любой момент.",
+  "If the migration went fine and the old server is decommissioned, forget it instead — that only drops the panel's copy of its old token.":
+    "Если перенос прошёл нормально и старый сервер выведен из эксплуатации, вместо отката забудьте его — это лишь удалит хранящуюся в панели копию его старого токена.",
   "Rotate token · {v1}": "Смена токена · {v1}",
   "Force remove · {v1}": "Снести · {v1}",
   "Turn-proxy · {v1}": "Turn-прокси · {v1}",
@@ -3913,6 +4137,9 @@ export const STR = {
   // ── the panel's own sentences: activity verbs (stored English, translated on display) ──
   "Added deployment": "Добавлено развёртывание",
   "Adopted from the live interface": "Принято с живого интерфейса",
+  "Recorded an interface the node reports": "Интерфейс ноды взят в панель",
+  "Recorded a server the node runs": "Сервер ноды взят в панель",
+  "Imported peer from an onboarded interface": "Пир импортирован с принятого интерфейса",
   "Adopted peer": "Пир принят",
   "Adopting WDTT server": "Подключаем сервер WDTT",
   "Assigned peer": "Пир присвоен",
@@ -3945,6 +4172,10 @@ export const STR = {
   "Onboarding turn-proxy": "Подключаем turn-прокси",
   "Re-ported mesh links (live)": "Связи сети переведены на новый порт (на лету)",
   "Re-provisioned mesh links": "Связи сети пересобраны",
+  // activity verbs for the rebuild adapter (ev_append writes English; the browser looks the sentence up)
+  "Rebuild armed": "Пересборка подготовлена",
+  "Rolled back to the superseded box": "Откат на прежнюю машину",
+  "Superseded box discarded": "Прежняя машина забыта",
   "Recreate WDTT server (fresh identity)": "Пересоздать сервер WDTT (новые ключи)",
   "Removed WDTT instance": "Сервер WDTT убран",
   "Removed deployment": "Развёртывание убрано",
@@ -4136,8 +4367,11 @@ export const STR = {
     "не удалось занять {v1} — {v2}. Если порт всё ещё держит ваш обратный прокси, освободите его там: панель и прокси не могут держать один порт вдвоём.",
   "hold on {v1}s — the nodes are still learning the new address so the restart won't strand them":
     "подождите {v1} с — ноды ещё узнают новый адрес, чтобы перезапуск их не отрезал",
-  "interface is already present on the node — nothing to recreate":
-    "интерфейс на ноде уже есть — пересоздавать нечего",
+  // the recreate guard's refusals — "present" alone is no longer the reason one is declined (T-8)
+  "interface is already present and healthy on the node with the key its clients use — nothing to recreate":
+    "интерфейс на ноде уже есть, поднят и работает с тем ключом, который используют его клиенты — пересоздавать нечего",
+  "interface is up but serving a different server key — restore the key instead (Adopt/Restore on the interface), which keeps every client working":
+    "интерфейс поднят, но отдаёт другой ключ сервера — вместо пересоздания восстановите ключ (Принять/Восстановить на интерфейсе): так все клиенты продолжат работать",
   "interface isn't reporting a subnet (is it present and online?)":
     "интерфейс не сообщает подсеть (он вообще есть и поднят?)",
   "its subnet {v1} is already used elsewhere in the fleet ({v2}) — adopting it would black-hole one of them":
@@ -4454,6 +4688,107 @@ export const STR = {
   "{v1} — scans a QR code": "{v1} — сканирует QR-код",
   "{v1} — imports a pasted link": "{v1} — импортирует скопированную ссылку",
 
+  // ── T-10 · Transfer: this node moves to ANOTHER PANEL, and the server itself is not touched ─────
+  // "Передача" (handover), never "миграция" — Migrate already owns that word here and means the opposite
+  // thing (a new box, the same panel). The distinction is the whole feature, so it is carried by the verb.
+  "Transfer": "Передать",
+  "Transfer · {v1}": "Передача · {v1}",
+  "Transfer to {v1}": "Передать на {v1}",
+  "Transferring…": "Передаём…",
+  "Check the other panel": "Проверить ту панель",
+  "Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead":
+    "Передать ноду другой панели — сервер продолжает работать как есть и начинает синхронизироваться с ней",
+  "This hands {name} to another panel. The server itself is {untouched} — same box, same interfaces, same addresses — it just starts syncing over there. Its users, their peers and their stored configs go with it.":
+    "{name} переходит к другой панели. Сам сервер {untouched} — та же машина, те же интерфейсы, те же адреса — он просто начинает синхронизироваться с новой панелью. Его пользователи, их пиры и сохранённые конфиги уезжают вместе с ним.",
+  "not touched at all": "не трогаем вообще",
+  "Reached {v1} — over plain HTTP. Everything in this transfer, the other panel's token included, crosses unencrypted, and the node will dial it the same way.":
+    "Связь с {v1} есть, но по обычному HTTP. Всё, что уходит при передаче, включая токен той панели, идёт незашифрованным — и нода будет обращаться туда так же.",
+  "Reached {v1} — its certificate is publicly trusted, and the node will check the same thing before it moves.":
+    "Связь с {v1} есть, сертификат подтверждён публичным CA — нода перед переездом проверит то же самое.",
+  "Reached {v1}. Its certificate is self-signed, so the node will accept it only if it presents the exact certificate this panel just saw.":
+    "Связь с {v1} есть. Сертификат самоподписанный, поэтому нода примет её, только если та предъявит ровно тот сертификат, который сейчас увидела эта панель.",
+  "couldn't reach that panel": "нет связи с той панелью",
+  "the transfer didn't start": "передача не началась",
+
+  // The two boxes. Order matters: what STAYS is first, because it is the half nobody would think to ask
+  // about — nothing here disconnects a user, and all of it is invisible until someone needs it.
+  "Peers on the panel-wide call link — the other panel resolves its own":
+    "Пиры на общей ссылке панели — та панель подставит свою",
+  "Never set up through this panel — nothing to hand over":
+    "Никогда не создавалось через эту панель — передавать нечего",
+  "Subscription links keep this panel's address in them":
+    "В ссылках подписки остаётся адрес этой панели",
+  "Managed by its own configuration — it will point itself back":
+    "Управляется своей конфигурацией — она вернёт ноду обратно",
+  "update panelUrl and the token file there too": "обновите там panelUrl и файл с токеном",
+
+  "What moves to the other panel": "Что переезжает на другую панель",
+  "The node keeps running throughout — it is not reinstalled, its addresses don't change, and nothing your users hold has to be re-sent.":
+    "Нода всё это время работает — её не переустанавливают, адреса не меняются, и ничего из того, что уже есть у пользователей, пересылать не нужно.",
+  "Interfaces, with their keys and settings": "Интерфейсы, с их ключами и настройками",
+  "WDTT / csqtt servers, with their configuration": "Серверы WDTT / csqtt, с их конфигурацией",
+  "Users, and every peer deployed here": "Пользователи и все их пиры на этой ноде",
+  "Stored configs — the links your users already hold keep opening them":
+    "Сохранённые конфиги — ссылки, которые уже есть у пользователей, продолжат их открывать",
+  "Users' encryption keys — re-wrapped there the next time you unlock the vault":
+    "Ключи шифрования пользователей — перешифруются там при следующей разблокировке хранилища",
+  "Mesh links — the other panel builds its own": "Связи меша — та панель поднимет свои",
+
+  // The wait. It is not a progress bar: the node decides when it moves, and until it does this panel is
+  // still its panel — so every line here is written to make "nothing has happened yet" reassuring.
+  "Waiting for {v1} to appear on {v2}. It learns the new address on its next sync, checks that panel's identity, and only then moves — so until it does, it is still fully yours.":
+    "Ждём, когда {v1} появится на {v2}. Нода узнает новый адрес на ближайшей синхронизации, проверит подлинность той панели и только потом переедет — до этого она полностью ваша.",
+  "The other panel isn't answering this panel right now ({v1}). The node will keep trying; nothing is lost while it can't get through.":
+    "Та панель сейчас не отвечает этой ({v1}). Нода продолжит попытки; пока связи нет, ничего не теряется.",
+  "{v1} is now reporting on {v2}. This panel has discarded the token it was given, and this node's record here is yours to keep or remove.":
+    "{v1} теперь отчитывается на {v2}. Эта панель удалила выданный ей токен, а запись ноды здесь можно оставить для справки или удалить.",
+  "Withdrawing takes the address back. The node never left, so there is nothing to roll back — it simply stops being offered somewhere else.":
+    "Отзыв забирает адрес обратно. Нода никуда не уходила, откатывать нечего — ей просто перестают предлагать переезд.",
+  "Withdraw the transfer": "Отозвать передачу",
+  "Transfer withdrawn — the node stays on this panel.": "Передача отозвана — нода остаётся на этой панели.",
+  "Clear this": "Убрать",
+  "Cleared.": "Убрано.",
+  "couldn't cancel": "не удалось отменить",
+  "another panel": "другая панель",
+  "the other panel": "другая панель",
+
+  // The badges. Pending borrows the superseded colour — both mean "something out there this panel no
+  // longer fully owns"; done is neutral.
+  "tag|transferring": "передаётся",
+  "tag|transferred": "передана",
+  "tag|arrived here": "пришла сюда",
+  "tag|unclaimed": "нет записи",
+  "Being handed to {v1}. It keeps syncing here until that panel answers it, so nothing has moved yet.":
+    "Передаётся на другую панель: {v1}. Пока та панель не ответит, нода синхронизируется здесь — ничего ещё не переехало.",
+  "This node now reports to {v1}. Its record here no longer controls it — keep it for reference, or remove it.":
+    "Нода теперь синхронизируется с другой панелью: {v1}. Запись здесь ею больше не управляет — оставьте для справки или удалите.",
+
+  // ── T-10, server side ───────────────────────────────────────────────────────────────────────────
+  "that is a declarative (NixOS) enrolment — it writes the token to a file and carries no -key, so there is nothing here to read. On the target panel add a NEW node: its Add node screen gives a one-line command that carries both the address and the token.":
+    "это декларативное (NixOS) подключение — токен пишется в файл, а -key в команде нет, так что читать здесь нечего. Добавьте на той панели НОВУЮ ноду: её экран «Добавить ноду» даёт однострочную команду с адресом и токеном.",
+  "that command enrols a node on THIS panel — paste the one the OTHER panel shows under Add node":
+    "эта команда подключает ноду к ЭТОЙ панели — вставьте ту, которую показывает ДРУГАЯ панель в «Добавить ноду»",
+  "a transfer of this node is already in flight — cancel it first":
+    "передача этой ноды уже идёт — сначала отмените её",
+  "this node isn't reporting, so there is no way to tell it where to go. Bring it back first, or use Restore or migrate to rebuild it.":
+    "нода не выходит на связь, поэтому сообщить ей новый адрес нечем. Сначала верните её в строй или пересоберите через «Восстановить или перенести».",
+  "no transfer in flight for this node": "для этой ноды нет активной передачи",
+  "no transfer to cancel": "отменять нечего",
+  "the target panel presented a different certificate than the one this transfer started against":
+    "та панель предъявила не тот сертификат, с которого началась эта передача",
+  "that token belongs to a node that is already set up here — add a NEW node on this panel and transfer to that one":
+    "этот токен принадлежит ноде, которая здесь уже настроена — добавьте на этой панели НОВУЮ ноду и передавайте на неё",
+  "a different node with the same id already exists on this panel — it cannot take this one's place":
+    "нода с таким id на этой панели уже есть, и занять её место нельзя",
+  "the bundle names no node": "в пакете не указана нода",
+  "unsupported transfer format": "неподдерживаемый формат передачи",
+  "this panel can't reach {v1}: {v2}": "эта панель не может связаться с {v1}: {v2}",
+  "the target panel refused the transfer: {v1}": "та панель отклонила передачу: {v1}",
+  "this node's users, peers and stored configs come to {v1} MB, which is more than a panel will accept in one transfer. Move some of its peers to another node first, or transfer with config storage turned off.":
+    "пользователи, пиры и сохранённые конфиги этой ноды занимают {v1} МБ — больше, чем панель примет за одну передачу. Перенесите часть её пиров на другую ноду или передавайте с выключенным хранением конфигов.",
+  "this panel already holds different records under {v1}":
+    "на этой панели уже есть другие записи с идентификаторами {v1}",
+
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the
@@ -4461,6 +4796,7 @@ export const STR = {
    Order: [1 пир, 2 пира, 5 пиров]. */
 export const PLURALS = {
   peer: ["пир", "пира", "пиров"],
+  link: ["связь", "связи", "связей"],
   node: ["нода", "ноды", "нод"],
   user: ["пользователь", "пользователя", "пользователей"],
   interface: ["интерфейс", "интерфейса", "интерфейсов"],
@@ -4485,5 +4821,7 @@ export const PLURALS = {
   group: ["группа", "группы", "групп"],   // reads after "исправить" (accusative): исправить 1 проблему / 5 проблем
   minute: ["минуты", "минут", "минут"],          // reads after "больше" (genitive): больше 1 минуты / 5 минут
   address: ["адрес", "адреса", "адресов"],
+  "sub link": ["ссылка", "ссылки", "ссылок"],   // a subscription URL — NOT `link`, which is a mesh link ("связь")
   "broken address": ["неверный адрес", "неверных адреса", "неверных адресов"],
+  config: ["конфиг", "конфига", "конфигов"],   // T-10's transfer summary counts stored client configs
 };

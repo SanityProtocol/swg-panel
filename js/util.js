@@ -86,6 +86,16 @@ export const listenAddr = (host, port) => (port ? ((host ? host : "0.0.0.0") + "
 
 export function portOf(hostport) { if (!hostport) return ""; const s = String(hostport); const i = s.lastIndexOf(":"); return i < 0 ? "" : s.slice(i + 1); }
 export const ipPickerVal = (sel, custom) => sel === "__custom__" ? (custom || "").trim() : sel;
+// The addresses an IpPicker should offer for a node: whatever is already set, the node's configured
+// INGRESS host, then the addresses the box reports. The ingress host is the one an operator actually
+// wants — set it once in Panel settings → Network and every picker should propose it — and it was
+// missing from four of the six pickers, so the turn-proxy modal offered `msk-main.sanitygate.net` while
+// the interface and WDTT/csqtt ones made you retype it under "Custom". One list, one place.
+export const ipChoices = (nrec, ...first) =>
+  [...new Set([...first, ((nrec || {}).endpoint_host || "").trim(),
+               ...((nrec || {}).endpoint_hosts || []),      // the other names this node answers to
+               ...((nrec || {}).ips || [])]
+              .map(x => (x || "").trim()).filter(Boolean))];
 
 export function ago(sec) {
   if (sec == null) return "—";

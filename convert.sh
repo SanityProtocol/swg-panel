@@ -390,6 +390,12 @@ PY
   # point its stored reload command at the container (kill -HUP 1) instead of the systemd unit, so renewals reload.
   for _ah in /root/.acme.sh "${HOME:-/root}/.acme.sh"; do [ -d "$_ah" ] && { mkdir -p "$DOCKER_DIR/data/etc/acme"; cp -a "$_ah/." "$DOCKER_DIR/data/etc/acme/" 2>/dev/null || true; break; }; done
   find "$DOCKER_DIR/data/etc/acme" -name '*.conf' -exec sed -i "s#^Le_ReloadCmd=.*#Le_ReloadCmd='kill -HUP 1'#" {} + 2>/dev/null || true
+  # ...and its LOG_FILE, which is an ABSOLUTE path to the home it was written on. Left alone, every acme run
+  # in the container writes to a directory that does not exist there and each one prints a shell error per
+  # line it tried to log — observed as ~20 "No such file or directory" lines on every single renewal pass,
+  # burying the one line that actually said what failed.
+  sed -i "s#^LOG_FILE=.*#LOG_FILE='/etc/swg-panel/acme/acme.sh.log'#" \
+    "$DOCKER_DIR/data/etc/acme/account.conf" 2>/dev/null || true
   sub "staged roster + nodes + login + $(b "$PTLS") cert + ${_rrd_dst:-0} health graph(s) (+ acme renewal) → $DOCKER_DIR/data"
 
   # MASTER: the local node's interfaces + turn-proxies are migrated in the NODE STAGE (the install-docker node
@@ -564,6 +570,7 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   if [ -d "$ETC/acme" ]; then
     mkdir -p /root/.acme.sh; cp -a "$ETC/acme/." /root/.acme.sh/ 2>/dev/null || true
     find /root/.acme.sh -name '*.conf' -exec sed -i "s#^Le_ReloadCmd=.*#Le_ReloadCmd='systemctl restart swg-panel-server'#" {} + 2>/dev/null || true
+    sed -i "s#^LOG_FILE=.*#LOG_FILE='/root/.acme.sh/acme.sh.log'#" /root/.acme.sh/account.conf 2>/dev/null || true   # same trap, other direction
   fi
   # write the bare install.conf so install-host.sh's prompts DEFAULT to the preserved settings (Enter accepts)
   # ROLE_SEL is what a LATER re-install defaults to, so it must be the deployment's real role. Hardcoding

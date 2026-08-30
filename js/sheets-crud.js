@@ -306,7 +306,10 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
 // deployments of one peer can now route differently (full tunnel on one interface, split on another).
 export const tgtDefaults = (meta) => ({
   dns: ((meta || {}).dns || []).join(", "), mtu: String((meta || {}).mtu || 1280),
-  keepalive: "25", allowed: "0.0.0.0/0, ::/0",
+  // keepalive reads the interface like dns/mtu do. It used to be a hardcoded "25", so the gear seeded 25
+  // over an interface set to something else and configOverrides then stored that 25 as a customisation.
+  keepalive: String((meta || {}).keepalive != null ? (meta || {}).keepalive : 25),
+  allowed: "0.0.0.0/0, ::/0",   // an interface has no AllowedIPs to inherit — routing belongs to the client
 });
 // Does this deployment differ from its interface's defaults? Drives the gear's "customised" dot, so an
 // operator can see which rows carry settings without opening each one.
@@ -946,14 +949,194 @@ function recoversAs(name, method) {
   return html`<${Fragment}>${a}<b>${name}</b>${b}<b>${method}</b>${c}<//>`;
 }
 function meshElsewhere() {
-  const [a, b] = Tsplit("Mesh settings (ingress IP, subnet, port, prefix, AWG) for this node are configured in {where} — select this node there.", "where");
-  return html`<${Fragment}>${a}<a href="#/panel/settings">${T("Panel settings → Mesh & egress")}</a>${b}<//>`;
+  const [a, b] = Tsplit("Mesh settings (ingress address, subnet, port, prefix, AWG) for this node are configured in {where} — select this node there.", "where");
+  return html`<${Fragment}>${a}<a href="#/panel/settings">${T("Panel settings → Network")}</a>${b}<//>`;
 }
-function recoverSameNode(name) {
-  const [a, r1] = Tsplit("This node isn't reporting. Generating a recovery command rotates its token and gives you a one-line command to paste on the server — it re-installs/recovers {name} as the {same}, so its interfaces and peers come straight back (no need to find the old token).", "name");
-  const [b, c] = [r1.split("{same}")[0], r1.split("{same}").slice(1).join("{same}")];
-  return html`<${Fragment}>${a}<b>${name}</b>${b}<b>${T("same node")}</b>${c}<//>`;
+function migrateIntro(name) {
+  const [a, r1] = Tsplit("This gives you a one-line command to run on the {newbox}. It pulls everything the panel holds for {name} — its interfaces with their original keys and settings, its turn-proxies, its place in the mesh — so the node comes back as itself.", "newbox");
+  const [b, c] = [r1.split("{name}")[0], r1.split("{name}").slice(1).join("{name}")];
+  return html`<${Fragment}>${a}<b>${T("new box")}</b>${b}<b>${name}</b>${c}<//>`;
 }
+/* T-10's opening line, and it exists to say the one thing that surprises people: NOTHING HAPPENS TO THE
+   BOX. Migrate rebuilds the node somewhere else; Transfer leaves it exactly where it is and changes only
+   which panel it answers to. */
+function transferIntro(name) {
+  const [a, r1] = Tsplit("This hands {name} to another panel. The server itself is {untouched} — same box, same interfaces, same addresses — it just starts syncing over there. Its users, their peers and their stored configs go with it.", "name");
+  const [b, c] = [r1.split("{untouched}")[0], r1.split("{untouched}").slice(1).join("{untouched}")];
+  return html`<${Fragment}>${a}<b>${name}</b>${b}<b>${T("not touched at all")}</b>${c}<//>`;
+}
+function restoreOrMigrateIntro(name) {
+  const [a, r1] = Tsplit("{name} isn't reporting. This gives you a one-line command that rebuilds it from what the panel holds — run it on the {either}. Either way the node comes back as itself, with its interfaces, keys and turn-proxies.", "name");
+  const [b, c] = [r1.split("{either}")[0], r1.split("{either}").slice(1).join("{either}")];
+  return html`<${Fragment}>${a}<b>${name}</b>${b}<b>${T("same box, a damaged one, or a brand-new one")}</b>${c}<//>`;
+}
+function oldBoxLive(name, when) {
+  // ⚠️ no `vars` here: passing {when} through T would interpolate it, leaving nothing to split on — the
+  // whole remainder becomes `b` and the value renders TWICE. A marker is either a variable or a split point.
+  const [a, r1] = Tsplit("{name} was migrated {when}. The old box is still running and still serving the peers it had — it simply stopped syncing with this panel. Nothing on it was changed.", "name");
+  const [b, c] = [r1.split("{when}")[0], r1.split("{when}").slice(1).join("{when}")];
+  return html`<${Fragment}>${a}<b>${name}</b>${b}<b>${when}</b>${c}<//>`;
+}
+
+/* What the arming actually did, shown ABOVE the command that must not be run until it has been read.
+   There is no dry-run: arming IS how these lists are computed, so this is the only moment they exist —
+   after the token is rotated and before the box is wiped, which is exactly when they are useful.
+   `no_escrow` is the one that costs a user something, so it is the one that shouts. (T-11 refines the
+   presentation; it does not own whether the operator is told.) */
+export function RebuildOutcome({ d, preview }) {
+  /* TWO BLOCKS, and every line names the thing before its fate.
+     The first version wrote each fact as a sentence ending in a list of names — "The panel holds no config
+     for these …: awg9, awg1, wg0" — which never said what the names WERE, and folded three different
+     reasons into one wording that fitted none of them. So: what will not survive, then what will, each as
+     labelled rows in the `ifrow` form this sheet already uses for addresses. The label is the category and
+     the value is the thing it happened to, which is the question an operator actually has.
+
+     `preview` = shown by T-11's pre-flight, before anything is armed. Every line reads as a prediction
+     either way; only the rollback block below is past tense, and both confirm sheets already say that in
+     their own words, so the preview drops it rather than repeating it wrongly. */
+  if (!d) return null;
+  const armed = d.armed || [], ne = d.no_escrow || [], un = d.unrestorable || [];
+  const turn = d.turn || [], addr = (d.address || []).filter(a => a && a.action);
+  const fam = d.turn_family || [];
+  const orph = d.orphan_escrow || [], incomp = d.incomplete || [], tdead = d.turn_dead || [];
+  const row = (label, value) => html`<div class="ifrow"><span class="l">${label}</span><span class="r">${value}</span></div>`;
+
+  /* WHAT COMES BACK — three rows, named the way the node names them. The first cut had six, and they were
+     six ANSWERS to questions nobody asked: which keys came out of the vault, that csqtt regenerates its own
+     owner password, that a WDTT server takes its config from the panel and its users from the roster. All
+     true, all mechanism, and between them they buried the only thing an operator is reading this box for —
+     WHICH INTERFACES COME BACK. A turn-family server is an interface here because that is what it is on the
+     node page and on the box; splitting it out was the panel explaining its own internals. */
+  const kept = [
+    (armed.length || fam.length)
+      ? [T("Interfaces"), [...armed, ...fam.map(x => x.iface)].join(", ")] : null,
+    turn.length ? [T("Turn proxies"), turn.join(", ")] : null,
+    /* Names, not "2 links" — a count is the one row that cannot be matched to anything on the box. */
+    (d.mesh_ifaces || []).length ? [T("Mesh links"), (d.mesh_ifaces || []).join(", ")] : null,
+  ].filter(Boolean);
+
+  /* WHAT DOESN'T — the same three sections, but per ITEM and with the reason, because here the reason is
+     the whole message. One name can carry several (unrestorable AND no escrow AND missing its MTU), so
+     they are collected by name and joined rather than listed as three separate rows about one interface. */
+  const FIELD = { mtu: T("MTU"), listen_port: T("port"), address: T("address"), awg_params: T("obfuscation") };
+  const lostBy = new Map();      // name -> { proxy: bool, why: [reason, ...] }
+  const note = (name, why, proxy) => {
+    if (!name || !why) return;
+    const e = lostBy.get(name) || { proxy: !!proxy, why: [] };
+    if (proxy) e.proxy = true;
+    if (!e.why.includes(why)) e.why.push(why);
+    lostBy.set(name, e);
+  };
+  /* The reason is phrased HERE, from the structured fields, not taken from the server's `why`. Two reasons,
+     and the second is the one that decided it: these render beside a name, so they have to be a clause and
+     not a paragraph — the server's `why` is a full explanation written for the API; and the server's copy
+     is not translatable (the i18n extractor cannot take `"why":` wholesale, because the same key carries
+     the fingerprint diff's `%s`-formatted diagnostics, which its own gate rejects). An unknown shape still
+     falls back to `why`, so a category added server-side reads as English rather than vanishing. */
+  const famNames = new Set(fam.map(x => x && x.iface));
+  const REASON = {
+    unrecorded_turn: x => (x.users
+      ? T("no record here — neither it nor its {v1} come back", { v1: plural(x.users, "user") })
+      : T("no record here — it does not come back")),
+    unrecorded: () => T("no record here — it comes back only if the box's own configuration recreates it"),
+    no_config: () => T("the panel never captured a config for it — it can only be recreated fresh"),
+    turn: () => T("unknown fork or unreadable bind — re-add this proxy by hand"),
+  };
+  for (const x of un) {
+    if (!x || !x.iface) continue;
+    note(x.iface, (REASON[x.kind] || (() => x.why))(x), x.kind === "turn");
+  }
+  for (const x of ne) {
+    note(x && x.iface, famNames.has(x && x.iface)
+      ? T("no usable escrow for its identity — it comes back holding, and recreating it re-keys every user")
+      : T("no escrow and no key backup — it comes back with a new key, so its clients re-import"));
+  }
+  for (const x of orph) note(x && x.iface, T("its escrowed key opens for nobody — re-seal it before the box is wiped"));
+  for (const x of incomp) {
+    note(x && x.iface, T("comes back without its {v1}", {
+      v1: (x.missing || []).map(f => FIELD[f] || f).join(", ") }));
+  }
+  for (const x of tdead) {
+    note(x && x.service, T("forwards to {v1}, which is not coming back", { v1: x && x.iface }), true);
+  }
+  const lostRows = kind => [...lostBy.entries()].filter(([, e]) => !!e.proxy === kind)
+    .map(([name, e]) => html`<div class="ifrow" style="align-items:baseline">
+      <span class="l" style="font-weight:600;white-space:nowrap">${name}</span>
+      <span class="r" style="text-align:left;opacity:.85">${e.why.join(" · ")}</span></div>`);
+  const lostIf = lostRows(false), lostTp = lostRows(true);
+  const lost = lostIf.length || lostTp.length;
+
+  /* Two boxes, and the colour is still the summary: DANGER when something comes back re-keyed or a server
+     the panel never recorded does not come back at all — the two cases with a guaranteed cost to the people
+     using them. */
+  const danger = ne.length || un.some(x => x && x.kind === "unrecorded_turn");
+  const box = (cls, icon, heading, rows, tail) => html`<div class=${"notice " + cls}>
+    <${Ic} i=${icon}/>
+    <div style="flex:1;min-width:0">
+      <b>${heading}</b>
+      <div class="ifcard-rows" style="margin-top:7px">${rows.map(([l, v]) => row(l, v))}</div>
+      <div style="margin-top:8px">${tail}</div>
+    </div>
+  </div>`;
+  const sect = (title, rows) => (rows.length ? html`<${Fragment}>
+      <div class="seclabel" style="margin:10px 0 4px">${title}</div>
+      <div class="ifcard-rows">${rows}</div><//>` : null);
+  /* ADDRESSES BELONG IN HERE, not in a bare section of their own below the green box. They are the same
+     KIND of thing as the rows above them — something to notice before you go, not a blocker — and putting
+     them outside every box left them reading as body text nobody had classified, after two boxes that had
+     been. The heading follows the tone: a genuine loss still says so. */
+  /* ONE ROW PER THING, but only the things that CHANGE — which is what makes naming them worth the room
+     again. Everything derived (a hostname endpoint, a wildcard bind, an auto source) is silent, so a row
+     here is always an address somebody typed. Name it, put the port with the name where it never changes,
+     and keep the mapping to hosts alone. The earlier version fought a dotted record path against a quoted
+     sentence in two columns and both wrapped; the one before this collapsed to the address and lost which
+     server it belonged to. */
+  const hostOf = v => String(v == null ? "" : v).replace(/:\d+$/, "");
+  const portOfAddr = v => { const m = String(v == null ? "" : v).match(/:(\d+)$/); return m ? ":" + m[1] : ""; };
+  const addrLabel = a => {
+    const p = String(a.path || "").split(".");
+    const port = portOfAddr(a.from);
+    const svc = n => String(n || "").replace(/^vk-turn-proxy-/, "").replace(/-\d+$/, "");
+    if (p[0] === "turn" && p.length >= 3) return svc(p.slice(1, -1).join(".")) + port + " " + T("word|endpoint");
+    if ((p[0] === "wdtt" || p[0] === "csqtt") && p.length >= 3) return p[1] + port + " " + T("word|endpoint");
+    if (p[0] === "ifaces" && p[2] === "endpoint_host") return p[1] + port + " " + T("word|endpoint");
+    if (p[0] === "ifaces" && p[2] === "egress_ip") return p[1] + " " + T("word|egress");
+    return { default_egress_ip: T("this node") + " " + T("word|egress"),
+             panel_ip: T("word|panel source"),
+             mesh_egress_ip: T("word|mesh source"),
+             endpoint_host: T("this node") + " " + T("word|endpoint") }[a.path] || a.path;
+  };
+  const addrRows = (addr || []).map(a => html`<div class="ifrow addrrow">
+    <span class="l addr">${addrLabel(a)}</span>
+    <span class="r addr">${a.from !== undefined
+      ? html`${hostOf(a.from) || T("val|auto")} <span class="faint">→</span> ${hostOf(a.to) || T("val|auto")}`
+      : a.action}</span></div>`);
+  const lostBody = html`<div style="margin-top:2px">
+    ${sect(T("Interfaces"), lostIf)}${sect(T("Turn proxies"), lostTp)}${sect(T("Addresses"), addrRows)}
+    ${addr.length ? html`<div style="margin-top:6px">${T("The panel changes these for you when the node comes back. An address of the old box cannot be bound on the new one, and its address is not known yet — so a listener becomes 0.0.0.0, which is every address the new box turns out to have, and a source address becomes auto. Clients are unaffected either way: a wildcard listener is what tells the panel to advertise this node's ingress name, exactly as a wg/awg interface already does. Anything not listed keeps what it has.")}</div>` : null}
+  </div>`;
+  return html`<${Fragment}>
+    ${lost || addr.length ? html`<div class=${"notice " + (danger ? "danger" : "warn")}>
+      <${Ic} i="warn"/>
+      <div style="flex:1;min-width:0">
+        <b>${danger ? T("What the panel can't bring back") : T("Worth knowing before you do this")}</b>
+        ${lostBody}
+        ${/* No closing sentence. Every row already carries its own reason — that is what made a blanket
+              one wrong twice over: it first claimed nothing could be restored while the list above it said
+              otherwise, and then, reworded, restated what each line had just said. A description in this
+              box belongs to a SECTION, in the box's own colour; there is nothing left to say about all of
+              them at once. */''}
+      </div>
+    </div>` : null}
+    ${kept.length ? box("ok", "check", T("What comes back as it is"), kept,
+        T("The configs your users already have keep working — nothing has to be re-sent.")) : null}
+
+    ${preview ? null : d.superseded
+      ? html`<div class="notice"><${Ic} i="info"/><span>${T("The old box keeps running and keeps serving its peers — it just stops syncing here. One click rolls this panel back to it, from the badge on the node, for as long as you keep it.")}</span></div>`
+      : html`<div class="notice warn"><${Ic} i="warn"/><span>${T("No rollback point was kept: this node wasn't reporting, so there was nothing running to roll back to. The command below is the way back.")}</span></div>`}
+  <//>`;
+}
+
 /* The count is bold and its clause changes with the number, so English needs two whole sentences (a plural
    table cannot fix "1 peers is dropped"); Russian gets its three forms from plural() inside one of them. */
 function forceRemoveWarn(name, onlyHere) {
@@ -1083,19 +1266,80 @@ function nixNodeSteps(host, endpoint, token, recovery, mode) {
   ];
 }
 
-export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint }) {
+/* THE TRANSFER TOKEN. One value carrying the two things a transfer needs — this panel's address and a
+   token valid here — so the other panel's Transfer window can ask for ONE thing instead of "the whole
+   enrolment command". The command was always the wrong artifact to ask for: it is a carrier for these
+   two values, and for a declarative (NixOS) node there is no `-key` in it at all, so an operator had
+   nothing to copy and no way to tell which of the offered commands was the right kind.
+
+   Minted here, in the browser, from `location.origin` — deliberately the same source the commands use,
+   so the address in the token is whatever address the operator actually reached this panel on.
+
+   It does NOT replace the enrolment token, and the commands below are byte-identical to before: every
+   bootstrap.sh already published passes `-key` through verbatim, so a compound value there would fail
+   authentication on every existing installer. Two fields, two jobs. */
+function transferToken(host, token) {
+  const json = JSON.stringify({ u: host, t: token, k: "" });
+  const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(json)));
+  return "swgx1_" + b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint, rebuild }) {
   const host = `${location.origin}${BASE}`;
   const bare = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s node -key ${token} -host ${host}`;
   const docker = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s docker node -key ${token} -host ${host}`;
   const nixos = platform === "nixos";
   const fresh = !kind && !nixos;                       // brand-new node → offer BOTH styles as tabs
+  /* …and so does a MIGRATION, which is the one moment changing run model is free. The command used to be
+     pinned to the kind the node has now — right for a rotate (same box, same install) and needlessly
+     narrow here: a migration installs onto a DIFFERENT box, nothing in what it carries is run-model
+     specific (keys, peers, escrow, turn identities all restore either way), and the panel adopts whatever
+     the new node reports on its first sync. So offer both, with the current kind preselected. Declarative
+     hosts keep their own arm: a bash install there would fight the configuration that owns the box. */
+  const bothWays = !nixos && !!rebuild;
   const [tab, setTab] = useState(nixos ? "nix" : "std");
+  const [armedOpen, setArmedOpen] = useState(false);   // the pre-flight, folded — see below
+  /* THREE SHEETS SHARE THIS ONE, and they do not ask the same question:
+       create   — a node that does not exist yet: how do I install it?
+       migrate  — a node that exists: how do I stand it up on a NEW box? (rebuild is armed)
+       rotate   — a node that exists and is fine: its credential changed, how do I tell it?
+     Only the last one has an answer that is not an install command, and it was being shown the install
+     commands anyway — under a sentence about "restoring" a node nobody is restoring. */
+  const rotate = !isNew && !rebuild;
   const [nmode, setNmode] = useState("native");   // Declarative tab: which arm — kernel (native) or the published image via podman
   const nixSteps = nixNodeSteps(host, endpoint, token, !!kind, nmode);
 
   const copyBlock = (label, code, block) => html`<div class="field"><label>${label}</label>
     <div class="cmdrow"><div class=${"tokenbox" + (block ? " block" : "")}>${code}</div>
       <button class="copyaction" onClick=${() => copy(code, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div></div>`;
+
+  /* T-20 — THE CREDENTIAL ALONE. Every command on this sheet re-installs the node; none of them just fixes
+     its token. Measured the hard way twice in one session: a rotate landed on the wrong node and on the
+     wrong panel, and both times the only doors were a full re-install or "Restore or migrate", which arms a
+     rebuild — a baseline, a create request per interface, a mesh re-provision — for a box that is perfectly
+     healthy and merely holding the wrong credential.
+
+     Per run-model, because where the token LIVES differs and nothing detects it reliably from inside a
+     one-liner: bare-metal swg-noded reads /etc/swg-agent/config.json directly, while docker and NixOS launch
+     through node-entrypoint.sh, which prefers the /var/lib/swg-noded/panel-token mirror — and that mirror is
+     on the bind mount (survives a container recreate) and outranks the flake's token file (survives a
+     nixos-rebuild), which is exactly why the entrypoint reads it first.
+
+     It changes the TOKEN and nothing else. Not the URL, not `verify`, not the pinned fingerprint: the node
+     is already reaching this panel on that posture, and rewriting it is how you turn a locked-out node into
+     an unreachable one. A node that must move to a different ADDRESS is a re-point, which has its own verb. */
+  const fixBare = `sudo python3 -c 'import json,sys;p="/etc/swg-agent/config.json";c=json.load(open(p));c.setdefault("panel",{})["token"]=sys.argv[1];json.dump(c,open(p,"w"),indent=2)' ${token} && sudo systemctl restart swg-noded`;
+  const fixCtr = `sudo docker exec swg-node sh -c 'printf %s "$1" > /var/lib/swg-noded/panel-token; chmod 600 /var/lib/swg-noded/panel-token' sh ${token} && sudo docker restart swg-node`;
+  const fixNix = `sudo sh -c 'printf %s "$1" > /var/lib/swg-noded/panel-token; chmod 600 /var/lib/swg-noded/panel-token' sh ${token} && sudo systemctl restart swg-noded`;
+  const fixCmd = nixos ? fixNix : kind === "docker" ? fixCtr : fixBare;
+  /* …and NOT on a migration. "Fix only the credential" repairs a node whose install is fine and whose
+     token is stale — which is not the situation on a box that does not have the node yet. It was the last
+     thing on the screen and the longest command on it, answering a question this step never asks. */
+  const fixBlock = ((kind || nixos) && !rebuild) ? html`<div class="field"><label>${T("Only fix the credential — no re-install")}</label>
+    <div class="cmdrow"><div class="tokenbox">${fixCmd}</div>
+      <button class="copyaction" onClick=${() => copy(fixCmd, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>
+    <div class="hint">${T("Run this when the node is healthy and only its token is wrong — after a rotate that landed somewhere unexpected, say. It changes the token and restarts the node; it installs nothing, touches no interface, and leaves the panel address and TLS settings exactly as they are.")}</div>
+  </div>` : null;
 
   // The imperative install — bare-metal / Docker, a one-line command each.
   const runLabel = (col, l) => html`${T("Run on the node —")} <span style=${"color:" + col + ";font-weight:700"}>${l}</span>`;
@@ -1125,14 +1369,60 @@ export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint })
         : T("Fresh box shown; if you already use a flake, add the swg-panel input and the services.swg-node block to yours instead. Replace the endpoint with this server's public IP — the panel's Update button then works with nothing else to set.")}</div>
   <//>`;
 
-  return html`<${Sheet} title=${(isNew ? T("Node created") : T("New token")) + " · " + name}
+  return html`<${Sheet} title=${(isNew ? T("Node created")
+      : rebuild ? (rebuild.was_reporting ? T("Migrate") : T("Restore or migrate"))
+      : T("New token")) + " · " + name}
     foot=${html`<button class="btn btn-primary" onClick=${closeModal}>${T("Done")}</button>`}>
-    <div class="notice warn"><${Ic} i="warn"/><span><b>${T("Shown once.")}</b> ${T("This token authenticates the node to the panel — copy it now. You can rotate it later if it leaks.")}</span></div>
-    ${kind ? html`<div class="hint" style="margin-top:9px">${recoversAs(name, kindLabel(kind))}</div>` : null}
-    <div class="field" style="margin-top:15px"><label>${T("Enrollment token")}</label><div class="cmdrow"><div class="tokenbox">${token}</div><button class="copyaction" onClick=${() => copy(token, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div></div>
-    ${nixos ? html`<${Fragment}>
+    ${/* THE SUBJECT OF THIS STEP IS THE COMMAND. Everything below used to arrive at once: the whole
+          pre-flight again, the enrolment token, the transfer token, both commands and the credential-only
+          repair — on a screen whose one job is "run this on the new box". The operator read the outcome on
+          the previous step and pressed Prepare; repeating it in full pushed the command off the fold.
+          It stays reachable, folded, because it is the record of what was armed. */ null}
+    ${rebuild ? html`<${Disclosure} title=${T("What was armed")} open=${armedOpen} onToggle=${() => setArmedOpen(!armedOpen)}>
+        <${RebuildOutcome} d=${rebuild}/><//>
+      <div class="seclabel">${T("Run this on the box")}</div>` : null}
+    ${/* …and the warning says what to copy. With the standalone token field gone from a migration, "copy
+          it now" pointed at nothing on screen; the token is inside the command below, so that is what has
+          to leave this sheet with the operator. */ null}
+    <div class="notice warn"><${Ic} i="warn"/><span><b>${T("Shown once.")}</b> ${rebuild && !nixos
+      ? T("The command below carries a token that authenticates the node to this panel — copy the command now. You can rotate the token later if it leaks.")
+      : T("This token authenticates the node to the panel — copy it now. You can rotate it later if it leaks.")}</span></div>
+    ${/* `recoversAs` said "restores this node as <method> — to change it, convert the node". A ROTATE
+          restores nothing, and a MIGRATION now offers both methods a few lines below, so the sentence
+          contradicted the screen it was on in both places. The hint under the two commands says the true
+          version of it in one line. */ null}
+    ${/* …and the token by itself only where something actually needs it typed: the declarative arm writes
+          it into a tokenFile. Everywhere else the command below carries it, so the field was a second copy
+          of a secret for no one. */ null}
+    ${/* Both credentials, and each only where it is the answer to something.
+          · the ENROLMENT token by itself: only the declarative arm needs it typed (into a tokenFile).
+            Everywhere else the command below already carries it, so the field was a second copy of a
+            secret for nobody.
+          · the TRANSFER token: for handing this node to ANOTHER PANEL. On a migration — a new box, same
+            panel — it answers a question nobody asked, and it is the longest string on the screen. */ null}
+    ${nixos || !rebuild ? html`<div class="field" style="margin-top:15px"><label>${T("Enrollment token")}</label><div class="cmdrow"><div class="tokenbox">${token}</div><button class="copyaction" onClick=${() => copy(token, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div></div>` : null}
+    ${/* …and the transfer token only where a record is WAITING TO RECEIVE one. It says "this panel, and a
+          node key valid here", which is an invitation — meaningful for a record nothing is running behind
+          yet, and meaningless on a live node, where accepting it would mean pushing somebody else's node
+          into a record that already has interfaces and peers. `kind` is the discriminator: the panel only
+          learns it from a node that has actually reported. So: Add node, yes; a rotate on a placeholder
+          whose token was lost, yes — that is the one rotate where this is the point; a rotate on a running
+          node, no; a migration, no (it has reported, by definition). */ null}
+    ${(kind || rebuild) ? null : html`<div class="field"><label>${T("Transfer token")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— to move an existing node here")}</span></label>
+      <div class="cmdrow"><div class="tokenbox">${transferToken(host, token)}</div>
+        <button class="copyaction" onClick=${() => copy(transferToken(host, token), T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>
+      <div class="hint">${T("Carries this panel's address and this token together. On the panel that has the node now: its Transfer window, and paste this — nothing is installed.")}</div></div>`}
+    ${rotate && !nixos ? null
+      : nixos ? html`<${Fragment}>
           <div class="rltabs" style="margin:18px 0 14px;gap:0">${armSwitch}</div>
           ${nixTab}
+        <//>`
+      : bothWays ? html`<${Fragment}>
+          ${copyBlock(runLabel(kind === "docker" ? "#c084e8" : "#60a5fa", kindLabel(kind || "baremetal")),
+                      kind === "docker" ? docker : bare, false)}
+          ${copyBlock(runLabel(kind === "docker" ? "#60a5fa" : "#c084e8", kindLabel(kind === "docker" ? "baremetal" : "docker")),
+                      kind === "docker" ? bare : docker, false)}
+          <div class="hint">${T("Either works: the first is what this node runs today, and the panel follows whichever the new box reports.")}</div>
         <//>`
       : (kind === "docker" || kind === "baremetal") ? copyBlock(runLabel(kind === "docker" ? "#c084e8" : "#60a5fa", kindLabel(kind)), kind === "docker" ? docker : bare, false)
       : html`<${Fragment}>
@@ -1145,6 +1435,7 @@ export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint })
           </div>
           ${tab === "std" ? standardTab : nixTab}
         <//>`}
+    ${fixBlock}
   <//>`;
 }
 export function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`); }
@@ -1161,6 +1452,7 @@ export function NodeEditSheet({ node }) {
   const [meshPrefix, setMeshPrefix] = useState(node.mesh_prefix || dPfx);
   const [defEgress, setDefEgress] = useState(node.default_egress_ip || "");
   const [panelIp, setPanelIp] = useState(node.panel_ip || "");
+  const [meshEgress, setMeshEgress] = useState(node.mesh_egress_ip || "");
   const ips = node.ips || [];
   const ovSub = meshSubnet.trim() === dSub ? "" : meshSubnet.trim();   // normalized overrides (default → inherit)
   const ovPort = meshPort.trim() === dPort ? "" : meshPort.trim();
@@ -1173,8 +1465,9 @@ export function NodeEditSheet({ node }) {
     closeAllModals();   // close the sheet AND any re-provision confirm stacked on top; optimistic — the card reflects the change immediately
     mutate({
       key: "node:" + node.id,
-      patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.name = name.trim(); n.color = color; n.endpoint_host = ingress; n.mesh_port = ovPort; n.mesh_subnet = ovSub; n.mesh_prefix = ovPfx; n.default_egress_ip = defEgress; n.panel_ip = panelIp; } },
-      call: () => api.nodeUpdate({ id: node.id, name: name.trim(), color, endpoint_host: ingress, mesh_port: ovPort, mesh_subnet: ovSub, mesh_prefix: ovPfx, default_egress_ip: defEgress, panel_ip: panelIp }),
+      patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.name = name.trim(); n.color = color; n.endpoint_host = ingress; n.mesh_port = ovPort; n.mesh_subnet = ovSub; n.mesh_prefix = ovPfx; n.default_egress_ip = defEgress; n.panel_ip = panelIp; n.mesh_egress_ip = meshEgress; } },
+      call: () => api.nodeUpdate({ id: node.id, name: name.trim(), color, endpoint_host: ingress, mesh_port: ovPort,
+        mesh_egress_ip: meshEgress, mesh_subnet: ovSub, mesh_prefix: ovPfx, default_egress_ip: defEgress, panel_ip: panelIp }),
     });
   };
   const save = async () => {
@@ -1188,7 +1481,16 @@ export function NodeEditSheet({ node }) {
   };
   const [showAwg, setShowAwg] = useState(false);
   return html`<${Sheet} title=${T("Node settings · {v1}", { v1: node.name })}
-    foot=${footRow({ left: html`<button class="btn btn-ghost" title=${T("Rotate this node's enrollment token (re-enroll / re-install)")} onClick=${() => openNodeRotate(node)}><${Ic} i="key"/> ${T("Rotate key")}</button>`, onCancel: closeModal, onAction: save, action: T("Save") })}>
+    foot=${footRow({ left: html`<${Fragment}>
+        <button class="btn btn-ghost" title=${T("Rotate this node's enrollment token (re-enroll / re-install)")} onClick=${() => openNodeRotate(node)}><${Ic} i="key"/> ${T("Rotate key")}</button>
+        ${/* §3.1: the door for a node that IS reporting — the old box is alive, so this one supersedes it
+              and keeps a rollback point. The other door ("Restore or migrate") lives on the details header
+              and only appears when the node is silent. T-10's Transfer lands next to this one. */
+          node.status === "online" ? html`<${Fragment}>
+          <button class="btn btn-ghost" title=${T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(node)}><${Ic} i="server"/> ${T("Migrate")}</button>
+          <button class="btn btn-ghost" title=${T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead")} onClick=${() => (node.transfer ? openNodeTransferWatch(node) : openNodeTransfer(node))}><${Ic} i="link"/> ${T("Transfer")}</button>
+          <//>` : null}
+      <//>`, onCancel: closeModal, onAction: save, action: T("Save") })}>
     <div class="field"><label>${T("Name")}</label>
       <div class="namerow"><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/>
         <${ThemedSwatch} val=${color} title=${T("Node colour")} onChange=${setColor} sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 16%,transparent);color:" + c}>${name.trim() || node.name || "node"}</span>`}/></div>
@@ -1200,17 +1502,320 @@ export function NodeEditSheet({ node }) {
     <div class="field"><label>${T("Panel egress connection IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to reach the panel")}</span></label>
       <${NodeIpPick} ips=${ips} value=${panelIp} onChange=${setPanelIp} auto=${T("Auto (default route)")}/>
       <div class="hint">${T("Source IP this node uses to reach the panel. Ignored on same-server installs; falls back to auto if it can't connect.")}</div></div>
+    ${/* The third outbound role, beside the other two rather than under Mesh: an operator asking "which of
+          this box's addresses does it go OUT from?" wants all three answers in one place. It is a node-level
+          DEFAULT because the per-connection override cannot be one — re-provisioning wipes `links` wholesale
+          and rebuilds them without it, so a value set on a single card is dropped by the next migration. */ null}
+    <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>
+      <${NodeIpPick} ips=${ips} value=${meshEgress} onChange=${setMeshEgress} auto=${T("Auto (default route)")}/>
+      <div class="hint">${T("Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.")}</div></div>
     <div class="hint" style="margin-top:14px">${meshElsewhere()}</div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
+/* ── Restore / migrate: one verb, two doors ──────────────────────────────────────────────────────────
+   The DOOR is the answer to the one question nobody can answer for the operator — "is the old box still
+   alive?" — so neither sheet asks it (plan §3.1):
+
+     reporting      -> "Migrate", from the node's settings. The old box keeps running and is marked
+                       superseded, which is what makes the one-click rollback possible.
+     not reporting  -> "Restore or migrate", from the details header. No marker: there may be nothing
+                       out there to supersede, and the sheet says so rather than implying a way back.
+
+   Both emit the same thing — a rotated token and a paste-on-the-server command that pulls whatever the
+   panel holds. "or migrate" is load-bearing: not reporting is not the same as gone for good.
+
+   NOT api.nodeRotate. That rotates a token and nothing else — no baseline, no armed interface restores,
+   no turn capture, no rollback point. §3.1 called this "already mostly built" back when rotation was all
+   there was; the rebuild adapter is what makes the command mean "be this node again". */
+async function armRebuild(node) {
+  const r = await api.nodeRebuild({ node: node.id });
+  if (!r.ok) { toast(srvText(r) || T("couldn't prepare the command"), "err"); return; }
+  await Store.poll();               // the node row picks up its superseded badge before the sheet swaps
+  openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false}
+    kind=${node.kind} platform=${node.platform} endpoint=${node.endpoint_host} rebuild=${r.data}/>`);
+}
+/* T-11 — the PRE-FLIGHT. Both doors ask the panel what this rebuild WOULD do and show it while the
+   operator can still walk away. T-9 shipped these lists but could only show them AFTER the token had
+   rotated, which is a report about a decision that can no longer be taken: `nixos/wdtt2` is a live example
+   — a WDTT server whose identity cannot be unsealed, worth knowing BEFORE the box is wiped, not after.
+
+   The answer comes from `rebuild_plan` on the server, the same call the arming applies, so the preview and
+   the act cannot disagree. A pre-flight that FAILS never blocks the rebuild: the box may be broken, which
+   is exactly when this is needed most, so it degrades to a note and the button still works. */
+function useRebuildPreflight(node) {
+  const [pf, setPf] = useState(undefined);          // undefined = still asking · null = unavailable
+  useEffect(() => {
+    let live = true;
+    api.nodeRebuildPreflight(node.id)
+      .then(r => { if (live) setPf(r && r.ok ? r.data : null); })
+      .catch(() => { if (live) setPf(null); });
+    return () => { live = false; };
+  }, [node.id]);
+  return pf;
+}
+function PreflightBlock({ pf }) {
+  if (pf === undefined) return html`<div class="hint">${T("Checking what this would do…")}</div>`;
+  if (!pf) return html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Couldn't check what this would do. The rebuild still works — it reports the same list once it runs.")}</span></div>`;
+  return html`<${Fragment}>
+    ${/* No heading of its own: RebuildOutcome now brings its own two, and "What this will do" stacked
+          straight on top of "What the panel can't bring back" was two headings saying one thing.
+          §4's limit — that this predicts the PANEL's half and nothing has been asked of the box — used to
+          be a sentence here. It was meta-commentary an operator has to decode, and the block headings now
+          carry it concretely: "What the panel can't bring back" IS the limit, said about actual names. */''}
+    <${RebuildOutcome} d=${pf} preview=${true}/>
+  <//>`;
+}
 export function openNodeRecover(node) { openModal(html`<${NodeRecoverSheet} node=${node}/>`); }
 export function NodeRecoverSheet({ node }) {
-  const go = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(srvText(r) || T("couldn't generate a recovery command"), "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false} kind=${node.kind} platform=${node.platform} endpoint=${node.endpoint_host}/>`); };
-  return html`<${Sheet} title=${T("Recover node · {v1}", { v1: node.name })}
-    foot=${footRow({ onCancel: closeModal, onAction: go, action: T("Generate recovery command") })}>
-    <div class="notice"><${Ic} i="info"/><span>${recoverSameNode(node.name)}</span></div>
-    <div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${T("The node's current token stops working immediately — use this only when the node is genuinely down or you've lost its install command.")}</span></div>
+  const [busy, setBusy] = useState(false);
+  const pf = useRebuildPreflight(node);
+  const go = async () => { if (busy) return; setBusy(true); try { await armRebuild(node); } finally { setBusy(false); } };
+  return html`<${Sheet} title=${T("Restore or migrate · {v1}", { v1: node.name })}
+    foot=${footRow({ onCancel: closeModal, onAction: go, disabled: busy, action: busy ? T("Preparing…") : T("Prepare the command") })}>
+    <div class="notice"><${Ic} i="info"/><span>${restoreOrMigrateIntro(node.name)}</span></div>
+    <div class="notice warn"><${Ic} i="warn"/><span>${T("The node's current token stops working immediately — so if the box is only briefly unreachable rather than broken, wait for it instead. The command below is then the only way it gets back in.")}</span></div>
+    <${PreflightBlock} pf=${pf}/>
+  <//>`;
+}
+export function openNodeMigrate(node) { openModal(html`<${NodeMigrateSheet} node=${node}/>`); }
+export function NodeMigrateSheet({ node }) {
+  const [busy, setBusy] = useState(false);
+  const pf = useRebuildPreflight(node);
+  const go = async () => { if (busy) return; setBusy(true); try { await armRebuild(node); } finally { setBusy(false); } };
+  return html`<${Sheet} title=${T("Migrate · {v1}", { v1: node.name })}
+    foot=${footRow({ onCancel: closeModal, onAction: go, disabled: busy, action: busy ? T("Preparing…") : T("Prepare the migration") })}>
+    <div class="notice"><${Ic} i="info"/><span>${migrateIntro(node.name)}</span></div>
+    <div class="notice warn"><${Ic} i="warn"/><span>${T("This node is reporting, so the box it runs on now is left alone: it keeps running, keeps its peers connected, and only stops syncing with this panel. You can roll back to it in one click until you tell the panel it's gone.")}</span></div>
+    <${PreflightBlock} pf=${pf}/>
+    <div class="hint">${T("Nothing is destroyed and nothing is sent to either box — the panel can only hand you a command to run. Prepare it, then run it on the new server.")}</div>
+  <//>`;
+}
+
+/* ── T-10 · Transfer: hand this node to ANOTHER panel ────────────────────────────────────────────
+   The other half of §3's pair, and the opposite operation to Migrate in every way that matters:
+   Migrate moves a node to a new BOX and the panel under it never changes; Transfer moves the PANEL
+   and the box never changes. Nothing is installed, no address moves, and the only thing that happens
+   on the node is that it starts dialling somewhere else.
+
+   The operator pastes the TRANSFER TOKEN the other panel shows under Add node — one value carrying that
+   panel's address and a node key valid there. It used to ask for the whole enrolment command, which is a
+   carrier for those same two values and a confusing one: for a declarative (NixOS) node the command has
+   no `-key` in it at all, so there was nothing to copy, and with two commands offered there was no way to
+   know which kind was even wanted. Nothing is installed by a transfer, so the kind never mattered. A
+   pasted command is still accepted, for anyone who already has one.
+
+   This panel reaches that address, pushes everything the node needs, and then offers it to the node as a
+   CANDIDATE. The node keeps syncing HERE until the far panel answers it, so
+   a wrong or unreachable target costs a wait rather than a server. */
+export function TransferOutcome({ d, preview }) {
+  if (!d) return null;
+  const strip = d.strip || [], split = d.split || [], un = d.unrestorable || d.unrecorded || [];
+  const vkfb = d.vk_fallback || [], fam = d.turn_family || [], ifaces = d.ifaces || [];
+  const users = d.users || [], subs = d.sub_links || [], esc = d.escrow || [];
+  const names = xs => xs.map(x => (typeof x === "string" ? x : (x.iface || x.title || x.peer))).join(", ");
+  /* A row is label-left / value-right, which is right for "5 configs" and wrong for a sentence: the
+     sentence wraps to two lines while one name sits alone in the right-hand column. Such a row STACKS —
+     the sentence on its own line, what it applies to underneath — by passing a third element. */
+  const row = (label, value, stack) => html`<div class=${"ifrow" + (stack ? " ifrow-stack" : "")}><span class="l">${label}</span><span class="r">${value}</span></div>`;
+
+  /* WHAT STAYS BEHIND. Every row is something no field list would have caught, which is why each is
+     named rather than summarised: an escrow sealed to THIS panel's vault, a user whose peers straddle
+     two panels, an interface this panel never recorded, a call link that is the operator's and not the
+     node's. None of them stops a client connecting; all of them are things an operator has to know
+     BEFORE the roster is on someone else's panel. */
+  const lost = [
+    split.length ? [T("These users have peers on other nodes here too — only this node moves, so those peers stay"),
+                    [...new Set(split.map(x => x.user_name || x.user))].join(", "), "stack"] : null,
+
+    vkfb.length ? [T("Peers on the panel-wide call link — the other panel resolves its own"), names(vkfb)] : null,
+    un.length ? [T("Never set up through this panel — nothing to hand over"), names(un)] : null,
+    subs.length ? [T("Subscription links keep this panel's address in them"), plural(subs.length, "sub link")] : null,
+    d.declarative ? [T("Managed by its own configuration — it will point itself back"),
+                     T("update panelUrl and the token file there too")] : null,
+  ].filter(Boolean);
+
+  const kept = [
+    ifaces.length ? [T("Interfaces, with their keys and settings"), ifaces.join(", ")] : null,
+    fam.length ? [T("WDTT / csqtt servers, with their configuration"), names(fam)] : null,
+    users.length ? [T("Users, and every peer deployed here"),
+                    plural(users.length, "user") + " · " + plural(d.peers || 0, "peer")] : null,
+    d.blobs ? [T("Stored configs — the links your users already hold keep opening them"),
+               plural(d.blobs, "config")] : null,
+    esc.length ? [T("Users' encryption keys — re-wrapped there the next time you unlock the vault"),
+                  plural(esc.length, "user")] : null,
+    d.mesh_links ? [T("Mesh links — the other panel builds its own"), plural(d.mesh_links, "link")] : null,
+    /* ⚠️ ESCROW BELONGS HERE, not in the red box it used to sit in. The ciphertext genuinely cannot
+       travel — a blob is sealed to THIS panel's vault, so the far panel would hold something openable by
+       nobody, which is why transfer_strip clears it. But the ESCROW is not lost with it: the identity
+       (`public_key`) does travel, the box is not touched and still holds its own key backups, so the far
+       panel asks for a sealed copy on its first syncs and the node seals one to ITS vault. Listing that
+       under "what stays with this panel — only you can put right there" described a repair the operator
+       neither has to make nor can make, next to a genuine one (a split user), which is what made a
+       healthy transfer read as damage. */
+    strip.length ? [T("Escrowed server keys — re-sealed to the other panel's vault, not carried"),
+                    names(strip)] : null,
+  ].filter(Boolean);
+
+  const box = (cls, icon, heading, rows, tail) => html`<div class=${"notice " + cls}>
+    <${Ic} i=${icon}/>
+    <div style="flex:1;min-width:0">
+      <b>${heading}</b>
+      <div class="ifcard-rows" style="margin-top:7px">${rows.map(([l, v, st]) => row(l, v, st))}</div>
+      <div style="margin-top:8px">${tail}</div>
+    </div>
+  </div>`;
+  return html`<${Fragment}>
+    ${/* Always the WARN tone. This box used to turn red exactly when it held a split user — the mildest
+          row in it, and a consequence of transferring one node out of several rather than a fault. These
+          are things to be aware of before the roster is on someone else's panel, not damage. */ null}
+    ${lost.length ? box("warn", "warn", T("Worth knowing before you do this"), lost,
+        T("Nothing here disconnects anybody — every peer keeps working. It is what the other panel will not know about, so you know where to look afterwards.")) : null}
+    ${kept.length ? box("ok", "check", T("What moves to the other panel"), kept,
+        T("The node keeps running throughout — it is not reinstalled, its addresses don't change, and nothing your users hold has to be re-sent.")) : null}
+  <//>`;
+}
+
+export function openNodeTransfer(node) { openModal(html`<${NodeTransferSheet} node=${node}/>`); }
+export function NodeTransferSheet({ node }) {
+  const [paste, setPaste] = useState("");
+  const [pf, setPf] = useState(null);          // the checked target + what would move
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState("");
+
+  /* TWO STEPS, deliberately. The paste is an address this panel has never spoken to, so "check" is a
+     real action with a real answer — it reaches the target, proves the token works there, and reports
+     what would move — and only then is there anything to confirm. Checking writes nothing. */
+  const check = async () => {
+    if (busy) return;
+    setBusy("check"); setMsg(null);
+    const r = await api.nodeTransferPreflight({ node: node.id, paste });
+    setBusy("");
+    if (!r.ok) { setPf(null); return setMsg({ k: "err", t: srvText(r) || T("couldn't reach that panel") }); }
+    setPf(r.data);
+  };
+  const go = async () => {
+    if (busy || !pf) return;
+    setBusy("go"); setMsg(null);
+    const r = await api.nodeTransfer({ node: node.id, paste });
+    setBusy("");
+    if (!r.ok) return setMsg({ k: "err", t: srvText(r) || T("the transfer didn't start") });
+    await Store.poll();
+    openModal(html`<${NodeTransferWatch} node=${node}/>`);
+  };
+
+  const tgt = (pf || {}).target || {};
+  return html`<${Sheet} title=${T("Transfer · {v1}", { v1: node.name })}
+    foot=${footRow({ onCancel: closeModal, disabled: !!busy || (pf && !paste.trim()),
+      onAction: pf ? go : check,
+      action: busy === "check" ? T("Checking…") : busy === "go" ? T("Transferring…")
+              : pf ? T("Transfer to {v1}", { v1: tgt.name || tgt.url }) : T("Check the other panel") })}>
+    <div class="notice"><${Ic} i="info"/><span>${transferIntro(node.name)}</span></div>
+    ${/* ONLY WHILE IT IS STILL BEING ASKED. Once the pre-flight has run, the token has served its whole
+          purpose — the panel it names has been reached and answered, and the box below says so by name.
+          Leaving the field up made the confirm step re-present its own input, above three boxes that had
+          already moved past it. Editing it resets the pre-flight (that is what onInput does), so the way
+          back is to change it — which the link below the result offers explicitly. */ null}
+    ${!pf ? html`<div class="field"><label>${T("The other panel's transfer token")}</label>
+      <textarea class="ta" rows="3" spellcheck="false" autocomplete="off" value=${paste}
+        placeholder=${"swgx1_…"}
+        onInput=${e => { setPaste(e.target.value); setPf(null); setMsg(null); }}></textarea>
+      <div class="hint">${T("On the other panel: Nodes → Add node, then copy its Transfer token — it carries that panel's address and the new node's key together. An enrolment command still works if you have one; nothing is ever run.")}</div></div>` : null}
+    ${pf ? html`<${Fragment}>
+      ${/* THREE postures, not two. The first version said "self-signed" for anything not CA-verified, which
+            over a plain-HTTP address is simply false — there is no certificate at all there, and the one
+            thing an operator must be told is that the token and every config cross in the clear. Found by
+            pasting an http:// address at it. */''}
+      ${(() => {
+        const plain = /^http:\/\//i.test(tgt.url || "");
+        const cls = plain ? "danger" : tgt.verified ? "ok" : "warn";
+        const icon = plain ? "warn" : tgt.verified ? "check" : "shield";
+        const text = plain
+          ? T("Reached {v1} — over plain HTTP. Everything in this transfer, the other panel's token included, crosses unencrypted, and the node will dial it the same way.", { v1: tgt.url })
+          : tgt.verified
+          ? T("Reached {v1} — its certificate is publicly trusted, and the node will check the same thing before it moves.", { v1: tgt.url })
+          : T("Reached {v1}. Its certificate is self-signed, so the node will accept it only if it presents the exact certificate this panel just saw.", { v1: tgt.url });
+        return html`<div class=${"notice " + cls}><${Ic} i=${icon}/><span>${text}</span></div>`;
+      })()}
+      <${TransferOutcome} d=${pf} preview=${true}/>
+      <button class="btn btn-ghost btn-mini" style="margin-top:10px"
+        onClick=${() => { setPf(null); setMsg(null); }}>${T("Use a different token")}</button>
+    <//>` : null}
+    ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  <//>`;
+}
+
+/* The wait, and it is a real one. The node learns the new address on its next sync, verifies it, and
+   only then moves; until it does, this panel is still its panel and nothing has been lost. So the
+   question this screen answers is the one G1 asks — "is it Reporting on the target panel?" — and it
+   answers it by ASKING that panel, not by noticing our own silence, which cannot tell a node that moved
+   from a node that died. */
+export function openNodeTransferWatch(node) { openModal(html`<${NodeTransferWatch} node=${node}/>`); }
+export function NodeTransferWatch({ node }) {
+  const [st, setSt] = useState(undefined);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true, timer = 0;
+    const tick = async () => {
+      const r = await api.nodeTransferStatus(node.id);
+      if (!live) return;
+      setSt(r && r.ok ? r.data : null);
+      if (!(r && r.ok && r.data && r.data.state === "done")) timer = setTimeout(tick, 4000);
+      else Store.poll();
+    };
+    tick();
+    return () => { live = false; clearTimeout(timer); };
+  }, [node.id]);
+  const done = (st || {}).state === "done";
+  const drop = async () => {
+    if (busy) return;
+    setBusy(true);
+    const r = await api.nodeTransferCancel({ node: node.id });
+    setBusy(false);
+    if (!r.ok) { toast(srvText(r) || T("couldn't cancel"), "err"); return; }
+    await Store.poll();
+    toast(done ? T("Cleared.") : T("Transfer withdrawn — the node stays on this panel."), "ok");
+    closeModal();
+  };
+  return html`<${Sheet} title=${T("Transfer · {v1}", { v1: node.name })}
+    foot=${footRow({ left: html`<button class="btn btn-ghost" disabled=${busy} onClick=${drop}>
+        ${done ? T("Clear this") : T("Withdraw the transfer")}</button>`,
+      onCancel: closeModal, cancelLabel: T("Close") })}>
+    ${done
+      ? html`<div class="notice ok"><${Ic} i="check"/><span>${T("{v1} is now reporting on {v2}. This panel has discarded the token it was given, and this node's record here is yours to keep or remove.", { v1: node.name, v2: (st || {}).url || T("the other panel") })}</span></div>`
+      : html`<${Fragment}>
+        <div class="notice"><${Ic} i="clock"/><span>${T("Waiting for {v1} to appear on {v2}. It learns the new address on its next sync, checks that panel's identity, and only then moves — so until it does, it is still fully yours.", { v1: node.name, v2: (st || {}).url || T("the other panel") })}</span></div>
+        ${st && st.reachable === false ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The other panel isn't answering this panel right now ({v1}). The node will keep trying; nothing is lost while it can't get through.", { v1: st.error || "" })}</span></div>` : null}
+      <//>`}
+    <div class="hint">${T("Withdrawing takes the address back. The node never left, so there is nothing to roll back — it simply stops being offered somewhere else.")}</div>
+  <//>`;
+}
+
+/* The other end of the migration: the old box is still out there, and both of the operator's decisions
+   about it are one click. Rolling back puts its own unmodified token back — it needs no shell on either
+   box. Discarding forgets the credential, so the badge stops claiming a box that no longer exists;
+   removing the old box was never the panel's call to make (G14). */
+export function openNodeRollback(node) { openModal(html`<${NodeRollbackSheet} node=${node}/>`); }
+export function NodeRollbackSheet({ node }) {
+  const [busy, setBusy] = useState("");
+  const at = (node.superseded_box || {}).at;
+  const run = async (discard) => {
+    if (busy) return;
+    setBusy(discard ? "forget" : "back");
+    const r = await api.nodeRebuildRollback(discard ? { node: node.id, discard: true } : { node: node.id });
+    if (!r.ok) { toast(srvText(r) || T("couldn't roll back"), "err"); setBusy(""); return; }
+    await Store.poll();
+    toast(discard ? T("Old box forgotten.") : T("Rolled back — the old box resumes on its next sync."), "ok");
+    closeModal();
+  };
+  return html`<${Sheet} title=${T("The old box · {v1}", { v1: node.name })}
+    foot=${footRow({
+      left: html`<button class="btn btn-ghost" disabled=${!!busy} title=${T("Forget the old box's token — the badge goes away and this panel keeps the new box")} onClick=${() => run(true)}>${busy === "forget" ? T("Working…") : T("It's gone — forget it")}</button>`,
+      onCancel: closeModal, disabled: !!busy, onAction: () => run(false),
+      action: busy === "back" ? T("Working…") : T("Roll back to it") })}>
+    <div class="notice"><${Ic} i="info"/><span>${oldBoxLive(node.name, at ? T("{ago} ago", { ago: seen(Math.floor(Date.now() / 1000 - at)) }) : T("recently"))}</span></div>
+    <div class="notice warn"><${Ic} i="warn"/><span>${T("Rolling back hands this panel back to the old box: its own token starts working again and it picks up on its next sync, peers and all. Whatever you installed on the new box stops syncing instead — nothing on it is touched, and you can migrate again whenever you like.")}</span></div>
+    <div class="hint">${T("If the migration went fine and the old server is decommissioned, forget it instead — that only drops the panel's copy of its old token.")}</div>
   <//>`;
 }
 export function openNodeRotate(node) { openModal(html`<${NodeRotateSheet} node=${node}/>`); }

@@ -506,8 +506,8 @@ def set_awg_in_conf(path, awg):
 
 
 def op_set_iface(cfg, req):
-    """Change the interface's UDP listen port and/or AmneziaWG obfuscation params on the live
-    interface + its .conf. Peers (keys / AllowedIPs) are untouched; existing client tunnels
+    """Change the interface's UDP listen port, link MTU and/or AmneziaWG obfuscation params on the
+    live interface + its .conf. Peers (keys / AllowedIPs) are untouched; existing client tunnels
     reconnect via the panel-rendered Endpoint / new params."""
     iface = req["iface"]
     ic = iface_cfg(cfg, iface)
@@ -523,7 +523,33 @@ def op_set_iface(cfg, req):
             run(ic["cmd"] + ["set", iface, "listen-port", str(port)])   # live, best-effort (iface may be DOWN)
         set_listen_port_in_conf(ic["conf"], port)                        # persist ALWAYS — applies on next bring-up
         out["listen_port"] = port
+    if req.get("mtu") is not None:
+        # The link MTU. Unlike a port change this is NOT disruptive: `ip link set mtu` retunes the live
+        # interface without dropping a single peer or forcing a re-dial, so an MTU correction converges
+        # silently. Persist regardless of whether the live set worked — the interface may be DOWN, and
+        # wg/awg-quick reads MTU from the conf on the next bring-up.
+        try:
+            mtu = int(req.get("mtu"))
+        except (TypeError, ValueError):
+            raise AgentError("bad_request", "mtu must be a number")
+        if not (576 <= mtu <= 9200):
+            raise AgentError("bad_request", "mtu out of range (576-9200)")
+        with contextlib.suppress(Exception):
+            run(["ip", "link", "set", "dev", iface, "mtu", str(mtu)])    # live, best-effort (iface may be DOWN)
+        set_iface_fields_in_conf(ic["conf"], {"MTU": mtu})
+        out["mtu"] = mtu
     awg = req.get("awg_params")
+    if isinstance(awg, dict) and awg and (ic.get("cmd") or [""])[0] != "awg":
+        # ⚠️ Obfuscation belongs to AmneziaWG ONLY — the same gate create-iface states ("only genuine
+        # AmneziaWG gets obfuscation params"), which this path never had. Writing S/H/I lines into a PLAIN
+        # WireGuard conf fails in a way nothing reports: the live `wg set … jc 4` errors and is suppressed,
+        # so the datapath is untouched, but the lines land in the FILE — after which the node reports them,
+        # the panel blesses them into its record, and the interface reads as AmneziaWG everywhere in the UI
+        # while the wire stays plain WG. Measured on `msk-main/wg0`, taken over from a plain-WG container:
+        # it wore an AWG badge for a device `awg show` cannot see. Skip, and SAY so rather than 500-ing —
+        # the rest of the request (MTU, listen port) is legitimate and must still apply.
+        out["awg_params_skipped"] = "not an AmneziaWG interface"
+        awg = None
     if isinstance(awg, dict) and awg:
         awg = {k: str(awg[k]) for k in AWG_KEYS if k in awg and str(awg.get(k, "")) != ""}
         if awg:
@@ -684,15 +710,101 @@ def _units_persist():
     return _UNIT_PERSIST["v"]
 
 
+# The <tool>-quick@ TEMPLATE unit — the thing `systemctl enable awg-quick@<iface>` instantiates. It is not
+# ours: it ships with the tools (wireguard-tools carries wg-quick@.service on every distro, amneziawg-tools
+# carries awg-quick@.service upstream). We write it in exactly one case, and only when the host has none at
+# all: awg tools built from source by an installer that passed WITH_SYSTEMDUNITS=no. That flag is gone from
+# lib/common.sh, but the fix cannot reach a box whose tools are ALREADY installed — ensure_awg_datapath
+# returns early when awg + awg-quick + the module are present, so the build is never re-run there.
+#
+# Deliberately NOT a copy of upstream's unit: its ExecReload is
+#     /bin/bash -c 'exec awg syncconf %i <(exec awg-quick strip %i)'
+# which needs bash for process substitution. Nothing asks these units to reload — every change goes through
+# the agent's own ops — so the dependency buys nothing and a minimal box may not have bash at all.
+_QUICK_UNIT_MARK = "# Written by swgPanel"
+_QUICK_UNIT = """\
+{mark}: {tool}-quick@.service was missing on this host, so no {tool} interface could survive a
+# reboot. Safe to delete once the {label} tools' own package provides one.
+[Unit]
+Description={label} via {tool}-quick(8) for %I
+After=network-online.target nss-lookup.target
+Wants=network-online.target nss-lookup.target
+Documentation=man:{tool}-quick(8)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={bin} up %i
+ExecStop={bin} down %i
+Environment=WG_ENDPOINT_RESOLUTION_RETRIES=infinity
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _unit_known(unit):
+    """Does systemd know this unit — anywhere in its search path, ours or a package's?"""
+    try:
+        return subprocess.run(["systemctl", "cat", unit], capture_output=True, text=True).returncode == 0
+    except Exception:
+        return False
+
+
+def _ensure_quick_unit(tool):
+    """Make sure the <tool>-quick@ template exists, writing a minimal one if the host has NONE.
+
+    Never overwrites: if systemd can already see a template — from the distro package, from a NixOS
+    store path, from a previous run of this — we leave it exactly as it is and say so. The write is
+    therefore unreachable on any box whose tools were packaged, which is every box but the one this
+    exists for."""
+    unit = tool + "-quick@.service"
+    if _unit_known(unit):
+        return True
+    bin_ = shutil.which(tool + "-quick")
+    if not bin_:
+        return False                       # no tool → nothing to point a unit at; not our problem to report here
+    try:
+        with open(os.path.join(_UNIT_DIR, unit), "w") as f:
+            f.write(_QUICK_UNIT.format(mark=_QUICK_UNIT_MARK, tool=tool, bin=bin_,
+                                       label=("AmneziaWG" if tool == "awg" else "WireGuard")))
+        os.chmod(os.path.join(_UNIT_DIR, unit), 0o644)
+    except OSError:
+        return False
+    with contextlib.suppress(Exception):
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, text=True)
+    return _unit_known(unit)               # confirm systemd actually picked it up — never assume the write was enough
+
+
 def _iface_unit(action, tool, iface):
-    """enable/disable an interface's <tool>-quick@ unit, where that can mean anything.
+    """enable/disable an interface's <tool>-quick@ unit. True = it took, False = it did not,
+    None = not applicable on this host (units are declared elsewhere; see _units_persist).
 
     Skipped outright on a read-only unit directory rather than fired and swallowed: the call cannot
-    succeed there, and a swallowed failure is the shape that gets read later as "we did it"."""
-    if not _units_persist():
-        return
-    with contextlib.suppress(Exception):
-        run(["systemctl", action, f"{tool}-quick@{iface}"], check=False)
+    succeed there, and a swallowed failure is the shape that gets read later as "we did it".
+
+    ⚠️ It was ALSO swallowed on a host where the template unit does not exist at all, which is a
+    different failure with the same shape and a much wider blast radius: `systemctl enable
+    awg-quick@awg0` answers "Unit file awg-quick@awg0.service does not exist", the error goes into
+    contextlib.suppress, and every layer above believes the interface is boot-persistent while
+    nothing on the box can start it. Measured on a Debian node: three consecutive reboots, the
+    interface down each time, 392 log lines about it, and no signal anywhere an operator looks.
+    So: ensure the template first, and RETURN what happened instead of dropping it."""
+    # No systemctl at all — a node CONTAINER (python:3.12-slim carries /etc/systemd/system but no
+    # systemd) — is the same answer as a read-only unit directory, not a failure: units are simply not
+    # how this host starts interfaces, node-entrypoint.sh is. Testing the DIRECTORY alone is not enough,
+    # because that image HAS the directory and it is writable, so the probe says "units persist here"
+    # and we would write a template into a container that can never read it, then report False for a
+    # host that is working exactly as designed.
+    if not _units_persist() or not shutil.which("systemctl"):
+        return None
+    if action == "enable" and not _ensure_quick_unit(tool):
+        return False
+    try:
+        return subprocess.run(["systemctl", action, f"{tool}-quick@{iface}"],
+                              capture_output=True, text=True).returncode == 0
+    except Exception:
+        return False
 
 
 def op_create_iface(cfg, req):
@@ -873,8 +985,12 @@ def op_create_iface(cfg, req):
                              f"It isn't managed here — adopt it instead (that keeps its current key, so its "
                              f"peers keep working), or remove the device first if you really want a new one.")
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed (port/subnet may be in use): {e}")
-    _iface_unit("enable", tool, iface)
-    return {"iface": iface, "public_key": pub, "address": addr, "conf": conf, "cmd": cmd, "listen_port": port}
+    # `unit_enabled`: True it took, False it did not (nothing will start this after a reboot), None the
+    # host declares its units elsewhere and its own bootstrap brings interfaces up. Reported rather than
+    # dropped — see _iface_unit. Nothing consumes it yet; it exists so a caller CAN know.
+    _unit = _iface_unit("enable", tool, iface)
+    return {"iface": iface, "public_key": pub, "address": addr, "conf": conf, "cmd": cmd,
+            "listen_port": port, "unit_enabled": _unit}
 
 
 _EGRESS_MASQ_RE = re.compile(r"-s (\S+) -o (\S+) -j MASQUERADE")
@@ -961,8 +1077,8 @@ def op_start_iface(cfg, req):
         run([tool + "-quick", "up", iface])
     except Exception as e:
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed: {e}")
-    _iface_unit("enable", tool, iface)
-    return {"iface": iface, "started": True}
+    _unit = _iface_unit("enable", tool, iface)      # see op_create_iface for what the three values mean
+    return {"iface": iface, "started": True, "unit_enabled": _unit}
 
 
 def op_restore_iface_key(cfg, req):

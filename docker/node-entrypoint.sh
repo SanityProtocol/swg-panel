@@ -37,6 +37,25 @@ if [ -f /var/lib/swg-noded/panel-url ]; then
     log "using self-learned panel URL $_pu (was ${PANEL_URL})"; PANEL_URL="$_pu"
   fi
 fi
+# ...and the CREDENTIAL and TLS posture that go with it. A same-panel address swap only ever moves the URL,
+# which is why this used to be one file. A TRANSFER to a DIFFERENT panel (T-10) moves the token too, and can
+# move the posture: without these three, a container recreate — or a nixos-rebuild, which runs this same
+# script on the native arm — would restore the OLD panel's token from the environment and the node would 401
+# against its new panel for ever, while that panel reported a completed transfer.
+if [ -f /var/lib/swg-noded/panel-token ]; then
+  _pt="$(head -n1 /var/lib/swg-noded/panel-token 2>/dev/null | tr -d '[:space:]')"
+  if [ -n "$_pt" ] && [ "$_pt" != "$NODE_TOKEN" ]; then
+    log "using self-learned panel token (transferred to another panel)"; NODE_TOKEN="$_pt"
+  fi
+fi
+if [ -f /var/lib/swg-noded/panel-verify ]; then
+  _pv="$(head -n1 /var/lib/swg-noded/panel-verify 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$_pv" ] && TLS_VERIFY="$_pv"
+fi
+if [ -f /var/lib/swg-noded/panel-fp ]; then
+  _pf="$(head -n1 /var/lib/swg-noded/panel-fp 2>/dev/null | tr -d '[:space:]')"
+  TLS_FINGERPRINT="$_pf"
+fi
 # First boot seeds the NODE_IFACES bootstrap; after that, ./data/node-confs is the SINGLE source of
 # truth — a bootstrap interface deleted from the panel must NOT be regenerated on the next reboot.
 BOOT_MARKER=/var/lib/swg-noded/.bootstrapped   # persisted with ./data/node

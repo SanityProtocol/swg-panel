@@ -112,20 +112,73 @@ rm_panel(){
   if [ -e $SD/swg-panel-server.service ]; then run systemctl disable --now swg-panel-server; fi
   # swg-sub (the subscription surface) is a companion of the panel — remove it alongside
   if [ -e $SD/swg-sub.service ]; then run systemctl disable --now swg-sub; fi
-  # swg-netctl (the panel's privileged network/TLS helper: .service + .path + .timer) — a companion of the panel
-  for _nc in swg-netctl.path swg-netctl.timer swg-netctl.service; do [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true; done
-  # one-click self-update bits the panel installed (mk_update_unit): units, wrapper, and the env drop-in
-  for _su in swg-update.timer swg-update.path; do [ -e "$SD/$_su" ] && run systemctl disable --now "$_su" 2>/dev/null || true; done
+  # swg-netctl (the panel's privileged network/TLS helper: .service + .path + .timer) — a companion of the panel.
+  # ⚠️ BOTH FAMILIES, exactly as rm_netctl does. The standalone netctl component is offered ONLY when there is
+  # no bare panel ("rm_panel would otherwise sweep them"), so this sweep is the only thing that reaps them on a
+  # box that has one — and it listed just the bare trio. A box carrying leftover swg-netctl-docker.* from an
+  # earlier conversion therefore kept them through an uninstall, with the .path waiting and the .timer RUNNING,
+  # polling a queue for a panel that no longer existed. Measured on a bare-metal master: 4 swg units survived.
+  for _nc in swg-netctl.path swg-netctl.timer swg-netctl.service \
+             swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
+    run systemctl disable --now "$_nc" 2>/dev/null || true; done   # unguarded, same reason as swg-update below
+  # one-click self-update bits the panel installed (mk_update_unit): units, wrapper, and the env drop-in.
+  # Not gated on the fragment existing — disabling something already gone is harmless.
+  for _su in swg-update.timer swg-update.path; do run systemctl disable --now "$_su" 2>/dev/null || true; done
   rmrf $SD/swg-panel-server.service $SD/swg-panel-server.service.d $SD/swg-sub.service $SD/swg-sub.service.d \
        $SD/swg-netctl.service $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl \
+       $SD/swg-netctl-docker.service $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer \
        $SD/swg-update.service $SD/swg-update.path $SD/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
+  # ⚠️ A DANGLING ENABLEMENT SYMLINK OUTLIVES ITS UNIT FILE, and `systemctl disable` CANNOT clear it: it
+  # reads [Install] from the FRAGMENT to learn which symlinks to drop, so once the fragment is gone the link
+  # in multi-user.target.wants/ is orphaned and systemd reports that name for ever as "not-found inactive
+  # dead" — a swg unit no uninstall can remove. Observed on a bare-metal master, left by an earlier partial
+  # removal. Delete ours by name, and only where the target is genuinely gone.
+  for _l in "$SD"/*.wants/swg-*.service "$SD"/*.wants/swg-*.path "$SD"/*.wants/swg-*.timer; do
+    { [ -L "$_l" ] && [ ! -e "$_l" ]; } && rmrf "$_l"
+  done
   run systemctl daemon-reload
   rmrf /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf \
        /etc/nginx/conf.d/swg-panel.conf /etc/nginx/.htpasswd-swg
   command -v nginx >/dev/null 2>&1 && { run nginx -t && run systemctl reload nginx || warn "reload nginx manually if it's running"; }
+  # ⚠️ TWO FAULTS LIVED IN THIS BLOCK, one aimed outward and one inward.
+  # (1) NEIGHBOUR SAFETY. `--remove` ran unconditionally on whatever domain we were installed under, so
+  #     uninstalling US stopped the renewal of a certificate something else on this box may still serve
+  #     under the same name (an nginx vhost, another panel). Only ever touch an entry that actually
+  #     installs into OUR cert paths — the same test prune_stale_acme_installs uses.
+  # (2) `--remove` DROPS THE RENEWAL CONF AND KEEPS THE KEY ("You can remove them by yourself"), and that
+  #     stranded key makes the domain un-reissuable: a later re-install stops at "Domain key exists, do you
+  #     want to overwrite it? ... add '--force'" instead of reaching the CA, and it cannot heal itself,
+  #     because Le_Keylength is written only on a successful key creation and the conf is now gone. So an
+  #     uninstall+reinstall — the exact thing an operator does when something looks wrong — left a box that
+  #     could never issue a certificate again. Drop the directory, don't just deregister it.
   if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "_" ]; then
-    for a in /root/.acme.sh/acme.sh "${HOME:-/root}/.acme.sh/acme.sh" "$(command -v acme.sh 2>/dev/null || true)"; do
-      [ -n "$a" ] && [ -x "$a" ] && { info "Removing acme.sh renewal for $DOMAIN"; run "$a" --remove -d "$DOMAIN" --ecc; break; }
+    local _acme="" _a _h _conf _dom _rp _dir
+    for _a in /root/.acme.sh/acme.sh "${HOME:-/root}/.acme.sh/acme.sh" "$(command -v acme.sh 2>/dev/null || true)"; do
+      [ -n "$_a" ] && [ -x "$_a" ] && { _acme="$_a"; break; }
+    done
+    # every store this box might keep, including the stray /.acme.sh a HOME-less helper used to write
+    for _h in /root/.acme.sh "${HOME:-/root}/.acme.sh" /.acme.sh; do
+      [ -d "$_h" ] || continue
+      for _conf in "$_h"/*/*.conf; do
+        [ -f "$_conf" ] || continue
+        _dom="$(sed -n "s/^Le_Domain='\{0,1\}\([^']*\).*/\1/p" "$_conf" | head -1)"
+        [ "$_dom" = "$DOMAIN" ] || continue
+        _rp="$(sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$_conf" | head -1)"
+        case "$_rp" in /etc/swg-panel/tls/*|/etc/swg-sub/tls/*) ;;
+          *) warn "keeping the acme entry for $DOMAIN in $_h — it installs into ${_rp:-somewhere else}, so it is not ours to remove"; continue;; esac
+        _dir="$(dirname "$_conf")"
+        info "Removing acme.sh renewal for $DOMAIN (it installs into $_rp)"
+        case "$_dir" in *_ecc) [ -n "$_acme" ] && run "$_acme" --home "$_h" --remove -d "$DOMAIN" --ecc || true;;
+                        *)     [ -n "$_acme" ] && run "$_acme" --home "$_h" --remove -d "$DOMAIN" || true;; esac
+        rmrf "$_dir"
+      done
+      # …and the residue of an issuance that never succeeded: a key with no certificate, which carries no
+      # conf to identify it by, and which is exactly what would trap the next install.
+      _dir="$_h/${DOMAIN}_ecc"
+      if [ -d "$_dir" ] && ! { [ -s "$_dir/fullchain.cer" ] && head -1 "$_dir/${DOMAIN}.cer" 2>/dev/null | grep -q 'BEGIN CERTIFICATE'; }; then
+        info "Removing a failed acme entry for $DOMAIN in $_h (a domain key with no certificate)"
+        rmrf "$_dir"
+      fi
     done
   fi
   rmrf /opt/swg-panel /opt/swg-sub /etc/swg-panel /etc/swg-sub /var/www/wgstats /var/www/acme   # /etc/swg-sub = swg-sub's OWN tls dir; it was never referenced, so it survived every uninstall
@@ -385,12 +438,23 @@ docker_cleanup_if_last(){   # shared bits (network/images/data dir) — only onc
     # activate every profile so `down` stops profile-gated services too (swg-sub); plain `down` skips them and --remove-orphans won't (it's in the compose file, not an orphan)
     [ -n "$DC" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ] && run sh -c "cd '$DOCKER_DIR' && COMPOSE_PROFILES=host,master,node,host-node $DC down --remove-orphans >/dev/null 2>&1 || true"   # drop the network + any straggler
     local RMI="${REMOVE_DOCKER_IMAGES:-}"; echo; ask_yn "  Remove the pulled swg-panel / swg-node images too?" n RMI
-    [ "$RMI" = yes ] && run sh -c 'docker rmi ghcr.io/sanityprotocol/swg-panel:latest ghcr.io/sanityprotocol/swg-node:latest swg-panel-docker-swg-panel swg-panel-docker-swg-node >/dev/null 2>&1 || true'
+    # ⚠️ BY REPOSITORY, NOT BY TAG. This named `:latest` explicitly, which was every box until
+    # SWG_IMAGE_TAG started reaching existing installs — a box pinned to `sha-<short>` then kept every
+    # image it had, while the uninstaller reported having removed them. Measured on a pinned box: six
+    # images, 1.5 GB, still present after an uninstall that was told REMOVE_DOCKER_IMAGES=y.
+    [ "$RMI" = yes ] && run sh -c 'docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null \
+        | grep -E "^(ghcr\.io/sanityprotocol/swg-(panel|node)|swg-panel-docker-swg-(panel|node)):" \
+        | xargs -r docker rmi >/dev/null 2>&1 || true'
   fi
   apply_full_data_fate
 }
 rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
-  local DELP=""
+  # ⚠️ INHERIT THE PRESET. `local DELP=""` unconditionally SHADOWED any environment answer, so ask_yn
+  # saw an empty variable, fell through to its default (n) and an unattended run KEPT the panel data it
+  # was told to delete — silently, while printing "Kept the panel data". Exactly the defect ask_yn's own
+  # comment documents for the preset path, one layer up, and `local RMI="${REMOVE_DOCKER_IMAGES:-}"`
+  # three lines below is the same idea done right. Same question as the bare-metal path, same variable.
+  local DELP="${PANEL_DATA_DEL:-}"
   if docker_running swg-node; then    # node stays → only the panel's OWN data is in play (decide now)
     ask_yn "  Delete the panel data (login, roster (users+peers), nodes, certs)? The node's interface configs are kept." n DELP
   else ask_full_data_fate; fi         # panel is the last container → the whole data dir
@@ -402,7 +466,7 @@ rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
   ok "swg-panel container removed"; }
 rm_docker_node(){  info "Removing Docker node container (swg-node)"
   docker_node_uninstalling   # flash a red "uninstalling" tag on the panel before we tear down
-  local KNODE=""
+  local KNODE="${DOCKER_KEEP_CONFS:-}"   # same shadowing bug as DELP above — inherit, do not blank
   if docker_running swg-panel; then   # master/panel stays → only the NODE's own data is in play (decide now)
     ask_yn "  Keep the node's interface configs (peers)? Leaves data/node-confs so a future install can re-onboard them." y KNODE
   else ask_full_data_fate; fi         # node is the last container → the whole data dir

@@ -265,6 +265,26 @@ def derive_pubkey(cmd, priv):
         return None
 
 
+def _link_kind(iface):
+    """What the KERNEL says this device is: "awg" (amneziawg), "wg" (wireguard), or "" if it cannot say.
+
+    Strictly stronger than "which CLI answered". On a box whose amneziawg module backs everything, `awg show`
+    lists plain WireGuard devices and `wg show` lists AmneziaWG ones — the false positive _ctr_is_awg
+    documents, and the reason a self-healed interface's recorded `cmd` is an inference, not a fact: the
+    adopt loop simply takes the first tool that answers. The link type is the datapath's own answer about
+    itself. Empty for a DOWN interface (no device to ask), where the caller falls back to the record.
+    """
+    with contextlib.suppress(Exception):
+        r = run(["ip", "-d", "link", "show", iface])
+        if r.returncode == 0:
+            toks = (r.stdout or "").split()
+            if "amneziawg" in toks:
+                return "awg"
+            if "wireguard" in toks:
+                return "wg"
+    return ""
+
+
 def build_meta(iface_line, conf_text, endpoint_host, dns, cmd=None, iface=None):
     info = parse_interface_section(conf_text)
     addr = info.get("Address", "").split(",")[0].strip()
@@ -282,16 +302,42 @@ def build_meta(iface_line, conf_text, endpoint_host, dns, cmd=None, iface=None):
     return {
         "public_key": pub,
         "listen_port": port,
+        # the LINK MTU, live first and the .conf as the fallback — same rule as listen_port above, and for the
+        # same reason: a DOWN interface still has a desired value, and the panel converges to it either way.
+        # The panel needs this reported to tell "not applied yet" from "the operator changed it on the box".
+        "mtu": iface_mtu(iface, info),
         "endpoint": (f"{endpoint_host}:{port}" if endpoint_host and port else None),
         "address": addr or None,
         "subnet": subnet,
         "awg_params": awg_params(info),
+        # WHICH TOOL actually drives this interface. The panel used to infer wg-vs-awg from the presence of
+        # obfuscation params, which is an inference about the FILE, not the datapath: a plain-WG conf that
+        # picked up S/H/I lines reads as AmneziaWG while `awg show` cannot even see the device. The node is
+        # the only one who knows, so it says so. (Older panels ignore the field; older nodes omit it, and the
+        # panel keeps the old inference for them.)
+        "tool": (_link_kind(iface) if iface else "") or (cmd or ["wg"])[0],
         "dns": dns or [],
         # the pubkey of the node's on-disk key backup for this iface — lets the panel tell whether a
         # "Restore" can actually recover the blessed key (backup == blessed) or is futile (a re-seeded node
         # whose backup is the CURRENT key, so the original is gone). Absent-key => None (old node / no backup).
         "backup_public_key": ((read_iface_backup(iface) or {}).get("public_key") if iface else None),
     }
+
+
+def iface_mtu(iface, info=None):
+    """The interface's MTU: the live link's, else the .conf's `MTU =`, else None. `info` is an already
+    parsed [Interface] section (build_meta has one); pass it to avoid re-reading the conf."""
+    if iface:
+        try:
+            r = run(["ip", "-o", "link", "show", "dev", iface])
+            if r.returncode == 0:
+                m = re.search(r"\bmtu (\d+)\b", r.stdout or "")
+                if m:
+                    return int(m.group(1))
+        except Exception:
+            pass
+    v = str((info or {}).get("MTU", "")).strip()
+    return int(v) if v.isdigit() else None
 
 
 # ───────── interface keypair backup (the node keeps a copy of each iface's blessed identity) ─────────
@@ -445,8 +491,16 @@ def ivk_process(vault_pub, want):
             priv = (rec.get("private_key") or "").strip()
             if not priv: continue
             cur = _IVK_SEALED.get(ifn)
-            if cur and cur.get("pub") == rec.get("public_key"): continue   # already sealed THIS key
-            blob = ivk_seal(_IVK_VAULT_PUB, priv.encode()); blob["pub"] = rec.get("public_key") or ""
+            # ⚠️ "Already sealed THIS key" is only half the question — the other half is WHICH VAULT it was
+            # sealed to. Without `vault` here, an operator who resets the panel's encryption keeps every
+            # existing blob for ever: the interface key did not change, so nothing re-seals, and the panel
+            # goes on reporting escrow as healthy over ciphertext whose private half no longer exists.
+            # Stamping it makes the staleness visible to both ends and re-seals on the next pass.
+            if cur and cur.get("pub") == rec.get("public_key") and cur.get("vault") == _IVK_VAULT_PUB:
+                continue
+            blob = ivk_seal(_IVK_VAULT_PUB, priv.encode())
+            blob["pub"] = rec.get("public_key") or ""
+            blob["vault"] = _IVK_VAULT_PUB
             _IVK_SEALED[ifn] = blob
 
 
@@ -682,15 +736,26 @@ def run(args, input_text=None, timeout=20):
 # schedule so it self-heals the moment the condition clears. Cleared on the first success. In-memory by design —
 # a restart re-attempts once (cheap) and re-quarantines if still broken.
 _OP_BACKOFF = {}   # key -> [fail_count, next_attempt_monotonic]
+# ...and WHY it failed, so a quarantined op can keep reporting the reason instead of "retrying later".
+# A skipped attempt still has to answer the operator's question, and that question is never "is it being
+# retried" — it is "what is wrong". Measured: with only the generic text, the panel showed
+# `awg1: retrying later (repeated failure)` for a missing conf file, which is the same dead end §7.5 found,
+# one sentence further along.
+_OP_LASTERR = {}
 def _op_ready(key):
     st = _OP_BACKOFF.get(key)
     return (not st) or time.monotonic() >= st[1]
-def _op_fail(key, base=5.0, cap=300.0):
+def _op_fail(key, base=5.0, cap=300.0, err=None):
     st = _OP_BACKOFF.get(key) or [0, 0.0]
     st[0] += 1; st[1] = time.monotonic() + min(base * (2 ** min(st[0], 8)), cap)   # 10s,20s,…→cap 5min
-    _OP_BACKOFF[key] = st; return st[0]
+    _OP_BACKOFF[key] = st
+    if err:
+        _OP_LASTERR[key] = str(err)
+    return st[0]
+def _op_err(key):
+    return _OP_LASTERR.get(key) or ""
 def _op_ok(key):
-    _OP_BACKOFF.pop(key, None)
+    _OP_BACKOFF.pop(key, None); _OP_LASTERR.pop(key, None)
 _OP_LASTCFG = {}   # key -> last-attempted desired config; a CHANGE clears the backoff so a corrected desired state
 def _op_cfg_changed(key, cfg):
     """Self-heal: if an op's DESIRED config changed since its last attempt, reset its backoff so the corrected
@@ -2578,7 +2643,16 @@ def reconcile_dial_src(desired_by_iface, res):
             if mdev:
                 cmd += ["dev", mdev.group(1)]
             cmd += ["src", ds]
-            if run(cmd).returncode != 0:
+            _rc = run(cmd).returncode
+            if _rc != 0 and mvia:
+                # Some providers hand the box a /32 and a gateway OUTSIDE it, so the gateway is on no
+                # connected subnet and the default route works only because it carries `onlink`. A route
+                # rebuilt from `ip route get` (which does not report the flag) is then rejected outright:
+                # "Nexthop has invalid gateway". Measured on a live node — enp0s3 77.221.143.174/32 with
+                # `default via 10.0.0.1 dev enp0s3 onlink`. Retry it the way the box's own default is
+                # written. An ordinary subnet succeeds on the first attempt and never reaches this.
+                _rc = run(cmd + ["onlink"]).returncode
+            if _rc != 0:
                 res["errors"].append("dial-src " + ip + ": route failed")
             elif prev.get(ip) != ds:
                 res["changed"] = res.get("changed", 0) + 1
@@ -4823,6 +4897,41 @@ def iface_candidates(node_cfg):
         out.append(ent)
     return out
 
+# ── boot persistence: is this interface actually wired to come back after a reboot? ──────────────
+# The thing that starts an interface at boot is a systemd .wants symlink to <tool>-quick@<iface>.
+# Nothing reported whether that symlink exists, so an interface could be UP and healthy on every
+# screen while being one reboot away from vanishing — which is exactly what a whole class of nodes
+# was (see swg-agent's _iface_unit: the enable was fired into contextlib.suppress and its failure
+# went nowhere). This closes the loop by OBSERVING the state each sync rather than trusting what
+# some earlier enable returned: an operator `systemctl disable`, a wiped /etc, a half-restored box
+# all show up here, and a one-shot return value would have missed every one.
+#
+# True = enabled, False = NOT enabled and it should be, None = this host does not start interfaces
+# from units at all, so the question is meaningless:
+#   · no systemctl — a node CONTAINER; node-entrypoint.sh brings its interfaces up.
+#   · units declared elsewhere (NixOS and other immutable layouts) — unit_dir_persists() is False,
+#     sc_enable_now() there uses `start`, not `enable`, so nothing is EVER enabled by design and a
+#     False would be a permanent false alarm on a perfectly healthy node.
+_BOOT_PERSIST = {}          # iface -> (checked_at, value)
+_BOOT_PERSIST_TTL = 300     # it changes about never; do not spawn a systemctl per interface per 5s sync
+
+
+def iface_boot_persists(iface, cmd, now=None):
+    now = now or time.time()
+    hit = _BOOT_PERSIST.get(iface)
+    if hit and now - hit[0] < _BOOT_PERSIST_TTL:
+        return hit[1]
+    val = None
+    if shutil.which("systemctl") and unit_dir_persists():
+        tool = (cmd or ["awg"])[0]
+        try:
+            val = run(["systemctl", "is-enabled", "%s-quick@%s" % (tool, iface)]).returncode == 0
+        except Exception:
+            val = None                      # could not ask → say nothing, never guess False
+    _BOOT_PERSIST[iface] = (now, val)
+    return val
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -4839,11 +4948,18 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                     conf_text = ""
                 _meta = build_meta([], conf_text, ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
                                    node_cfg.get("dns", []), cmd, iface)
+                # `onboarded` on every branch (T-19): the panel needs it to tell an ADD-ONLY interface — one
+                # whose foreign peers SURVIVE, and are therefore its to import — from a normal one, whose
+                # strays it reaps within a sync. Reported even when there is nothing to import, because the
+                # panel gates on the field being PRESENT: absent means "an old node", not "not add-only".
+                _bp = iface_boot_persists(iface, ic.get("cmd"), now)
                 if iface in stopped_set:            # the operator stopped it — a choice, not a failure (no error)
-                    interfaces[iface] = {"peers": [], "meta": _meta, "stopped": True}
+                    interfaces[iface] = {"peers": [], "meta": _meta, "stopped": True,
+                                         "onboarded": bool(ic.get("onboarded")), "boot_persist": _bp}
                 else:
                     interfaces[iface] = {"peers": [], "meta": _meta,
-                        "down": ((_r.stderr or "").strip() or "interface is not up")[:140]}
+                        "down": ((_r.stderr or "").strip() or "interface is not up")[:140],
+                        "onboarded": bool(ic.get("onboarded")), "boot_persist": _bp}
                 ensure_iface_backup(iface, conf_text, cmd)
                 continue
             dump = _r.stdout
@@ -4862,6 +4978,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 "meta": build_meta(iface_line, conf_text,
                                    ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
                                    node_cfg.get("dns", []), cmd, iface),
+                "onboarded": bool(ic.get("onboarded")),   # add-only: its peers are the panel's to import (T-19)
+                "boot_persist": iface_boot_persists(iface, ic.get("cmd"), now),   # will it come back after a reboot?
             }
             if iface in stopped_set:               # it's up again (e.g. brought up outside the panel) → clear the stopped mark
                 _set_iface_stopped(iface, False)
@@ -4892,6 +5010,13 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status(),
             "datapath": node_datapath_health(),          # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal)
             "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
+            "ifaces_awaiting_key": sorted(_AWAIT_KEY),   # held for the vault, NOT missing — see _AWAIT_KEY
+            # ⚠️ CAN this node put a vault-relayed key back? A build older than T-22 ignores `sealed_key`
+            # on a restore and silently reverts from its on-disk backup instead — which after a migration
+            # IS the minted key, so the restore "succeeds" and changes nothing. The panel must not offer a
+            # door the node cannot walk through, so it asks rather than guessing from a version string
+            # (which is stamped independently of content and has false-passed here before).
+            "iface_key_vault_restore": True,
             "transport_pub": transport_pub(),            # node re-seal target — the browser seals a restored key to this
             "iface_key_sealed": dict(_IVK_SEALED),       # {iface: {pub, eph, ct, mac}} interface keys sealed to the vault, pending upload
             "wdtt_key_sealed": dict(_WDTT_SEALED)}        # {iface: {pub(server_pub), ...}} WDTT server identities sealed to the vault, pending upload
@@ -4917,6 +5042,19 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         snap["udp_ports"] = NODE_UDP_PORTS
     snap["wdtt"] = wdtt_snapshot()                    # WDTT instances: active + server pubkey + per-password device/traffic (read-back for the panel; no privkeys)
     snap["csqtt"] = csqtt_snapshot()                  # csqtt instances (raw-TUN): active + per-password device/traffic + byte-delta online (no privkeys)
+    # ⚠️ An instance WE hold that the panel does not claim. Nothing will ever start it: the node only runs
+    # what the panel desires, and removals are explicit — so it sits installed, stopped and ownerless, while
+    # the card reads "starting" for ever because our own record says it was not deliberately stopped. Seen on
+    # a live node: a WDTT and a csqtt server, both disabled for three days, both still holding their users,
+    # and the only offered action (Start) could not work because the panel had no record to submit. Say so,
+    # and the panel can offer to reclaim it — with its users — instead of showing a server nobody owns.
+    for _fam in ("wdtt", "csqtt"):
+        _cl = _CLAIMED.get(_fam)
+        if _cl is None:                      # never had a valid reply → claim nothing about claims
+            continue
+        for _e in (snap.get(_fam) or []):
+            if _e and _e.get("iface") not in _cl:
+                _e["unclaimed"] = True
     with contextlib.suppress(Exception):              # VK-relay src-IPs for the self-contained turn servers (capture ensured in _attach_turn_src_ips, above)
         _cmap = _turn_peer_ips()
         for _x in (snap.get("wdtt") or []) + (snap.get("csqtt") or []):
@@ -5029,6 +5167,15 @@ def current_listen_port(node_cfg, iface):
         return None
 
 
+def _conf_text(node_cfg, iface):
+    ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
+    try:
+        with open(ic["conf"]) as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
 def current_awg(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     try:
@@ -5039,8 +5186,8 @@ def current_awg(node_cfg, iface):
 
 
 def reconcile_ifaces(node_cfg, desired_ifaces, agent, sudo):
-    """Apply the panel's desired interface config (listen port and/or AmneziaWG params). Only
-    ever called on a valid sync reply; converges the live interface to the panel's target."""
+    """Apply the panel's desired interface config (listen port, link MTU and/or AmneziaWG params).
+    Only ever called on a valid sync reply; converges the live interface to the panel's target."""
     res = {"changed": 0, "errors": []}
     for iface, want in (desired_ifaces or {}).items():
         if iface not in (node_cfg.get("interfaces") or {}):
@@ -5051,19 +5198,38 @@ def reconcile_ifaces(node_cfg, desired_ifaces, agent, sudo):
             cur = current_listen_port(node_cfg, iface)
             if cur is not None and int(cur) != int(port):
                 payload["listen_port"] = int(port)
+        mtu = want.get("mtu")
+        if mtu:
+            cur_mtu = iface_mtu(iface, parse_interface_section(_conf_text(node_cfg, iface)))
+            if cur_mtu is None or int(cur_mtu) != int(mtu):
+                payload["mtu"] = int(mtu)
         awg = want.get("awg_params")
         if isinstance(awg, dict) and awg:
             cur_awg = current_awg(node_cfg, iface) or {}
             want_s = {k: str(v) for k, v in awg.items()}
             if any(str(cur_awg.get(k)) != v for k, v in want_s.items()):
                 payload["awg_params"] = awg
+        akey = "setiface|" + iface
         if len(payload) <= 2:                 # only op + iface — nothing differs
+            _op_ok(akey)                      # nothing left to apply IS convergence: drop any prior backoff
+            continue
+        # ⚠️ BACKOFF, LIKE EVERY OTHER AGENT OP. This one was outside it, and outside NODE_ERRORS with it,
+        # so a set-iface that cannot succeed — an interface whose conf is gone is the ordinary case —
+        # re-spawned the agent every 5 seconds for ever while the panel showed the operator nothing at all
+        # (measured live, §7.5 of the rebuild plan: the same failure logged for minutes with cmd_errors
+        # empty). Both halves are this omission: the churn AND the silence. `_op_cfg_changed` keeps the
+        # self-heal — a corrected desired state retries on the next sync instead of waiting out the
+        # exponential — and the error is still reported while quarantined, which is the contract the
+        # backoff's own comment states.
+        _op_cfg_changed(akey, json.dumps(payload, sort_keys=True))
+        if not _op_ready(akey):
+            res["errors"].append(f"set-iface {iface}: {_op_err(akey) or 'repeated failure'} (retrying)")
             continue
         r = run_agent(agent, sudo, payload)
         if r.get("ok"):
-            res["changed"] += 1
+            _op_ok(akey); res["changed"] += 1
         else:
-            res["errors"].append(f"set-iface {iface}: {r.get('error')}")
+            _op_fail(akey, err=r.get("error")); res["errors"].append(f"set-iface {iface}: {r.get('error')}")
     return res
 
 
@@ -5728,14 +5894,36 @@ def apply_iface_keys(node_cfg, iface_key, agent, sudo):
                 if rec:
                     write_iface_backup(iface, rec); res["done"].append(iface)
             elif action == "restore":
-                bak = read_iface_backup(iface)
-                if not bak or not bak.get("private_key"):
+                bak = read_iface_backup(iface) or {}
+                # ⚠️ THE VAULT FIRST (T-22 ②). Reverting from the on-disk backup is right after a hand
+                # re-key on this box and USELESS after a migration, where the backup is the freshly minted
+                # key and restoring it is a no-op. When the panel relays a sealed copy, that is the ORIGINAL
+                # identity and it wins; the backup stays the fallback for the same-box case.
+                priv = ""
+                if (req or {}).get("sealed_key"):
+                    with contextlib.suppress(Exception):
+                        priv = ivk_unseal(transport_priv(), req["sealed_key"]).decode().strip()
+                    if not priv:
+                        res["errors"].append(iface + ": the relayed key could not be unsealed on this node"); continue
+                if not priv:
+                    priv = (bak.get("private_key") or "").strip()
+                if not priv:
                     res["errors"].append(iface + ": no keypair backup to restore from"); continue
                 r = run_agent(agent, sudo, {"op": "restore-iface-key", "iface": iface, "conf": ic["conf"],
-                                            "private_key": bak["private_key"], "listen_port": bak.get("listen_port"),
+                                            "private_key": priv, "listen_port": bak.get("listen_port"),
                                             "address": bak.get("address")})
                 if r.get("ok"):
                     res["done"].append(iface)
+                    # …and re-baseline, so the on-disk backup stops disagreeing with the identity that is
+                    # now live. Without this the box keeps a backup of the key we just replaced, and the
+                    # NEXT restore would revert to it — the very trap this branch exists to escape.
+                    with contextlib.suppress(Exception):
+                        _ct = ""
+                        with contextlib.suppress(OSError):
+                            _ct = open(ic["conf"]).read()
+                        _rec = harvest_iface_backup(_ct, cmd) if _ct else None
+                        if _rec:
+                            write_iface_backup(iface, _rec)
                 else:
                     res["errors"].append(iface + ": " + str(r.get("error")))
         except Exception as e:
@@ -5809,6 +5997,34 @@ def _persist_panel_url(node_cfg, new_url):
         with open(tmp, "w") as f:
             f.write(new_url + "\n")
         os.replace(tmp, os.path.join(STATE_DIR, "panel-url"))
+
+
+def _persist_panel_auth(panel):
+    """Mirror the CREDENTIAL and TLS posture beside the learned URL, for the same reason the URL is
+    mirrored — and it is the same three lines because it is the same failure.
+
+    ⚠️ Measured by reading `docker/node-entrypoint.sh`, which is the bootstrap on BOTH the container arm
+    and the NixOS native arm: it regenerates /etc/swg-agent/config.json from the environment on every
+    start and honours exactly ONE self-learned value, `panel-url`. An address swap only ever changes the
+    URL, so that was enough. A TRANSFER changes the token — and can change the posture — so a container
+    recreate (or a nixos-rebuild) would put the OLD panel's token back and the node would 401 against the
+    new one for ever, while the panel that sent it reported a completed transfer.
+
+    Written 0600: `panel-token` is a working credential."""
+    for name, val in (("panel-token", panel.get("token") or ""),
+                      ("panel-verify", "yes" if panel.get("verify") else "no"),
+                      ("panel-fp", (panel.get("fingerprint") or ""))):
+        with contextlib.suppress(Exception):
+            path = os.path.join(STATE_DIR, name)
+            if not val:
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+                continue
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(val + "\n")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
 
 
 # The pending reverse-proxy address swap's CANDIDATE — the NEW address the panel is advertising ALONGSIDE our blessed
@@ -5897,6 +6113,118 @@ def _failover_candidate(panel, node_cfg):
         print("_failover_candidate:", e, flush=True)
     return None
 
+
+# ── T-10: a TRANSFER to another panel ────────────────────────────────────────────────────────────
+# Not the same thing as the address swap above, and deliberately not folded into it. That one follows ONE
+# panel to a new address with OUR token under OUR trust anchor. This one hands us to a DIFFERENT panel: a
+# different token, a different certificate, a different fleet.
+#
+# ⚠️ IT IS A CANDIDATE, NOT A SWITCH. The blessed panel stays blessed and keeps getting our snapshots the
+# whole time. We promote only once the far panel answers `whoami` with the token it sent, so a wrong or
+# unreachable target costs a wait rather than a server — the operator's panel reports "did not re-point"
+# instead of discovering later that a node has vanished into nowhere. `_verify_panel` is untouched: its
+# threat is a URL we found OURSELVES, and this one arrives inside the blessed panel's authenticated reply
+# from a panel that already dictates our entire desired peer set.
+# Interfaces the panel asked us to restore and whose ORIGINAL key only the operator vault can supply, so
+# we are waiting rather than minting a stranger (T-22). Reported every snapshot: "missing on the node" is
+# the label the panel would otherwise show, and it would send the operator looking for a fault instead of
+# for their vault password.
+_AWAIT_KEY = set()
+
+_XFER_PATH = os.path.join(STATE_DIR, "panel-transfer.json")
+_XFER = {"cand": None}
+
+
+def _load_transfer():
+    """The pending candidate, re-read at startup — a transfer must survive a restart mid-flight, the same
+    property the address-swap candidate has and for the same reason (an external node has no loopback
+    backstop to fall back on)."""
+    try:
+        with open(_XFER_PATH) as f:
+            d = json.load(f)
+        if isinstance(d, dict) and d.get("url") and d.get("token"):
+            _XFER["cand"] = d
+    except Exception:
+        pass
+
+
+def _persist_transfer(cand):
+    _XFER["cand"] = cand or None
+    try:
+        if cand:
+            tmp = _XFER_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(cand, f)
+            os.chmod(tmp, 0o600)                       # it holds a token for the far panel
+            os.replace(tmp, _XFER_PATH)
+        else:
+            with contextlib.suppress(OSError):
+                os.unlink(_XFER_PATH)
+    except Exception as e:
+        print("_persist_transfer:", e, flush=True)
+
+
+def _learn_transfer(panel, reply):
+    """Remember (do NOT switch to) a transfer candidate the blessed panel is advertising. Cleared the
+    moment it stops advertising one — an operator who cancels the transfer on the panel must not leave a
+    node quietly holding another fleet's credential."""
+    try:
+        t = reply.get("transfer") if isinstance(reply.get("transfer"), dict) else None
+        cand = None
+        if t and (t.get("url") or "").strip() and (t.get("token") or "").strip():
+            cand = {"url": (t.get("url") or "").strip().rstrip("/"),
+                    "token": (t.get("token") or "").strip(),
+                    "fp": (t.get("fp") or "").replace(":", "").lower().strip(),
+                    "verify": bool(t.get("verify"))}
+            if _norm_url(cand["url"]) == _norm_url((panel.get("url") or "").rstrip("/")):
+                cand = None                            # "transfer to where we already are" is a no-op
+        if (cand or {}).get("url") != (_XFER["cand"] or {}).get("url") or \
+           (cand or {}).get("token") != (_XFER["cand"] or {}).get("token"):
+            _persist_transfer(cand)
+    except Exception as e:
+        print("_learn_transfer:", e, flush=True)
+
+
+def _promote_transfer(panel, node_cfg):
+    """Try to move to the transfer candidate. Returns the new sync url if we moved, else None.
+
+    VERIFIED-THEN-PINNED, in that order:
+
+      1. a CA-verified `whoami` with the far panel's token. If that answers, the address is who it says it
+         is by public trust and we need no pin at all.
+      2. otherwise a `whoami` pinned to the certificate FINGERPRINT PANEL A SAW when it pushed the bundle.
+         Self-signed is the normal case for this project, and this is strictly stronger than the trust-on-
+         first-use the installer does: the identity was fixed by a party we already trust, before we dialled.
+
+    Anything else and we stay exactly where we are. A candidate is never "tried until it works": each pass
+    is one cheap GET, and the panel that offered it is the one that reports the wait."""
+    cand = _XFER["cand"]
+    if not cand:
+        return None
+    url, token = cand["url"], cand["token"]
+    posture = None
+    if _verify_panel(url, token, {"verify": True}):
+        posture = {"verify": True, "fingerprint": ""}
+    elif cand.get("fp") and _verify_panel(url, token, {"fingerprint": cand["fp"]}):
+        posture = {"verify": False, "fingerprint": cand["fp"]}
+    if posture is None:
+        return None
+    panel["url"] = url
+    panel["token"] = token
+    panel["verify"] = posture["verify"]
+    if posture["fingerprint"]:
+        panel["fingerprint"] = posture["fingerprint"]
+    else:
+        panel.pop("fingerprint", None)
+    _persist_transfer(None)
+    _persist_candidate("")                             # an address swap from the OLD panel is meaningless now
+    _persist_panel_url(node_cfg, url)
+    _persist_panel_auth(panel)
+    how = "CA-verified" if posture["verify"] else "pinned to the certificate the previous panel saw"
+    print("transferred to %s (%s) — syncing there from now on" % (url, how), flush=True)
+    return url.rstrip("/") + "/api/node/sync"
+
+
 def apply_panel_hints(panel, node_cfg, reply):
     """On a VALID sync: (1) opportunistically adopt a cert pin if we're currently UNVERIFIED (TOFU upgrade over an
     already-unverified channel — strictly better); (2) re-point to a new panel URL, pin-gated. Returns the new
@@ -5914,6 +6242,10 @@ def apply_panel_hints(panel, node_cfg, reply):
         # _failover_candidate). This is what keeps a node on BOTH addresses during the transition, settling on the
         # survivor: confirm drops the old → blessed dies → fail over to new; cancel drops the new → blessed lives on.
         _learn_candidate(panel, reply)
+        # (a2) …and the TRANSFER candidate, which is a different panel rather than a different address for
+        # this one. Learned here and promoted by the caller, so the whole "where do we sync" decision stays
+        # in one place instead of being made twice with two different notions of what is blessed.
+        _learn_transfer(panel, reply)
         # (b) CANONICAL adopt: the panel's CONFIRMED dial url advanced. Internal links never adopt the public url
         # (meaningless to a co-located node — they follow the listen PORT via the candidate path). An EXTERNAL node
         # adopts it once it verifies as the same panel — the graceful path when the old address still serves at confirm.
@@ -6002,19 +6334,61 @@ def create_ifaces(node_cfg, create, agent, sudo):
     for iface, want in create.items():
         if iface in ifaces:
             # Already ours. Normally this is just the panel not having seen our report yet — say nothing.
-            # But if we hold a record for a device that is NOT on this box, creating it is exactly what the
-            # panel is asking for and we are about to decline: skipping in silence leaves it asking every five
-            # seconds for ever, with the card stuck on "creating" and no reason anywhere. Recreating it here
-            # would mint a NEW server key and break every client config, so that stays a decision (Restore,
-            # which can use the key backup) — but the operator has to be told there is one to make.
             if _live is None:
                 _live = _live_wg_ifaces()
-            if iface not in _live:
+            if iface in _live:
+                continue
+            # WE HOLD A RECORD FOR A DEVICE THAT IS NOT ON THIS BOX. This used to decline with advice —
+            # "Restore it (that reuses its original server key)" — naming an op that cannot do it:
+            # restore-iface-key EDITS an existing conf, and in this state the conf is exactly what is gone.
+            # So the panel asked every five seconds for ever and the interface stayed dead (measured live,
+            # §7.5 of the rebuild plan: a damaged interface was unrepairable from any direction).
+            #
+            # A RESTORE request is the operator asking for precisely this, and it is safe to honour: the
+            # stale record is a pointer to a conf that no longer exists, and the ORIGINAL key comes back
+            # from the on-disk backup a few lines below — which is untouched here, because it is the thing
+            # the restore reads. Drop the dead record and fall through to the create.
+            #
+            # Without `restore` we still decline: a plain create would mint a NEW server key under a name
+            # whose clients are all configured against the old one, and that stays a decision, not a
+            # side effect.
+            if not want.get("restore"):
                 res["errors"].append(
                     f"{iface}: this node already has a record for {iface} but no such interface exists here — "
                     f"it cannot be created again under that name. Restore it (that reuses its original server "
                     f"key, so existing clients keep working), or delete it and create it under a free name.")
-            continue
+                continue
+            # ...including a conf left behind by whatever killed the device. `create-iface` refuses to
+            # write over an existing conf ("exists"), so without this the two damage shapes diverge:
+            # device+conf gone repairs, device-gone-conf-left does not — and the second would end up
+            # WORSE than it started, record dropped and create refused. The path we remove is the one
+            # THIS node recorded for THIS managed interface, its device is not running, and the operator
+            # has asked for the restore; the key backup, which is what the restore actually reads, is
+            # never touched.
+            _stale = (ifaces.get(iface) or {}).get("conf")
+            if _stale and os.path.exists(_stale):
+                with contextlib.suppress(OSError):
+                    os.unlink(_stale)
+            print("create: %s is recorded here but its device is gone — dropping the stale record and "
+                  "restoring it with its original key" % iface, flush=True)
+            ifaces.pop(iface, None)
+            changed = True
+        elif iface.startswith("swg_"):
+            # A MESH LINK we do not manage, whose conf is nevertheless on disk: the leftover of an earlier
+            # create that wrote the conf and then failed to bring the device up (a re-enrolled box whose
+            # /31 was still held by the previous panel's link, say). `create-iface` refuses to write over an
+            # existing conf, so the retry failed on "already exists" from then on — the address conflict
+            # cleared and the link still never came up. Only `swg_*`: those are the panel's own plumbing,
+            # created by nobody else, and it is asking for this one right now. A USER interface with a conf
+            # we do not manage is an adoption candidate — a decision, and emphatically not ours to delete.
+            if _live is None:
+                _live = _live_wg_ifaces()
+            _orphconf = "" if iface in _live else _cand_conf(iface)
+            if _orphconf:
+                with contextlib.suppress(OSError):
+                    os.unlink(_orphconf)
+                print("create: %s had a leftover conf and no device — removed it so the link can be "
+                      "created" % iface, flush=True)
         cmd = want.get("cmd") or ["awg"]
         # RESTORE of a vanished interface: recreate it with its ORIGINAL server key so no client re-imports.
         # Key source, in order: a sealed_key the browser re-sealed to THIS node's transport key from the operator
@@ -6026,6 +6400,22 @@ def create_ifaces(node_cfg, create, agent, sudo):
                 priv = ivk_unseal(transport_priv(), want["sealed_key"]).decode().strip()   # vault key, delivered sealed
         if not priv and want.get("restore"):
             priv = ((read_iface_backup(iface) or {}).get("private_key") or "").strip()
+        # ⚠️⚠️ HOLD, DO NOT MINT (T-22). With `hold_key` the panel is saying: I hold escrow for this
+        # interface's ORIGINAL identity, and only a browser can open it. Falling through to genkey here
+        # invents a stranger — the interface comes up serving a key no client config names, and the escrow
+        # that could have put the real one back is then unreachable, because the on-disk backup this node
+        # writes is of the minted key. Measured on a real migration: both interfaces came back re-keyed on
+        # the FIRST sync, before any operator could act.
+        #
+        # This is exactly what a WDTT server has always done with its own key_blob hold; it was never
+        # extended to interfaces. Waiting costs an interface that stays DOWN until the vault is unlocked —
+        # against one that is UP and unusable, and unrecoverable. The wait is the recoverable half.
+        if not priv and want.get("hold_key"):
+            _AWAIT_KEY.add(iface)
+            print("create: %s HOLDING — the panel holds its escrowed key; unlock the vault and restore it "
+                  "(minting here would re-key every client)" % iface, flush=True)
+            continue
+        _AWAIT_KEY.discard(iface)
         r = run_agent(agent, sudo, {"op": "create-iface", "iface": iface, "cmd": cmd,
                                     "subnet": want.get("subnet"), "listen_port": want.get("listen_port"),
                                     "address": want.get("address"),   # explicit addr (mesh /31 ends)
@@ -6088,8 +6478,40 @@ def orphan_mesh_links(node_cfg, owned):
     if not isinstance(owned, list) or not owned:
         return []
     have = set(owned)
-    return sorted(n for n in (node_cfg.get("interfaces") or {})
-                  if n.startswith("swg_") and n not in have)
+    ifaces = node_cfg.setdefault("interfaces", {})
+    out = {n for n in ifaces if n.startswith("swg_") and n not in have}
+    _added = False
+    # …and the ones that are LIVE here but in no registry of ours. A RE-ENROLLED box gets a fresh config
+    # whose `interfaces` map is empty, so the walk above sees nothing and this healed exactly nothing in the
+    # case the docstring describes — moving a box between panels is precisely when its registry is new.
+    # Measured on a migration test box: four leftover `swg_*` devices from earlier rounds, two of them
+    # holding the very /31s the new links needed, and every reconcile failed "Address already in use" for
+    # ever. Register what we find (tool + conf, as onboarding does) so the ordinary teardown can act: the
+    # agent refuses to delete an interface that is not managed here, which is the guard that made the
+    # simple "just list them" version a silent no-op.
+    for _tool in (["awg"], ["wg"]):
+        with contextlib.suppress(Exception):
+            r = run(_wgcmd(_tool) + ["show", "interfaces"])
+            if r.returncode != 0:
+                continue
+            for n in (r.stdout or "").split():
+                if not n.startswith("swg_") or n in have or n in ifaces:
+                    continue
+                _cf = _cand_conf(n)
+                if not _cf:
+                    continue        # no conf to clean up: leave it rather than guess at what it is
+                ifaces[n] = {"cmd": list(_tool), "conf": _cf}
+                out.add(n)
+                _added = True
+    if _added:
+        # PERSIST before the caller's teardown runs. swg-agent resolves "is this interface managed here?"
+        # against the config ON DISK, not our in-memory copy, so registering without writing left it
+        # refusing every delete ("interface 'swg_...' is not managed") while the reconcile that followed
+        # had already started treating them as ours — peer removals against an interface nothing could act
+        # on, once per pass, for ever.
+        with contextlib.suppress(Exception):
+            _persist_config(node_cfg)
+    return sorted(out)
 
 
 def delete_ifaces(node_cfg, delete, agent, sudo):
@@ -6567,6 +6989,32 @@ def _dturn_netns_current(svc):
     r = run(["docker", "inspect", "-f", "{{.HostConfig.NetworkMode}}", _turn_cname(svc)])
     return (r.stdout or "").strip().startswith("container:" + socket.gethostname())
 
+_TURN_IMG_FIXED = {}   # svc -> the SWG_TURN_IMAGE we already recreated for (see below)
+
+def _dturn_image_current(svc):
+    """Is the (running) turn container on the image this node runs turns FROM? Updating a docker node to a new
+    image tag leaves its turn containers on the old one: docker reports them 'running', nothing looks wrong, and
+    they quietly serve a different build than the node beside them — observed on a node moved to a pre-release
+    tag whose two turn proxies stayed on :latest, i.e. main-branch binaries running next to a dev node.
+    Same shape as the netns twin above: notice the drift, and let the ordinary recreate path fix it.
+
+    FAIL-SAFE, deliberately. A comparison that can never be satisfied would tear the container down on every
+    single pass, for ever, and a turn proxy that is merely on the wrong tag still WORKS — so a mismatch is
+    acted on AT MOST ONCE per target image. If docker still disagrees after we rebuilt for that exact target
+    (a normalised name, a digest pin, anything we did not anticipate), we stop and leave the proxy running."""
+    if not SWG_TURN_IMAGE:
+        return True                       # nothing to compare against → never churn
+    r = run(["docker", "inspect", "-f", "{{.Config.Image}}", _turn_cname(svc)])
+    cur = (r.stdout or "").strip()
+    if not cur or cur == SWG_TURN_IMAGE:  # match, or docker could not say → leave it alone
+        _TURN_IMG_FIXED.pop(svc, None)
+        return True
+    if _TURN_IMG_FIXED.get(svc) == SWG_TURN_IMAGE:
+        return True                       # already rebuilt for this target once — do not loop on it
+    _TURN_IMG_FIXED[svc] = SWG_TURN_IMAGE
+    return False
+
+
 def _dturn_verify(svc):
     time.sleep(1.5)
     r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
@@ -6777,11 +7225,16 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
         _TURN_INSTALLING.discard(svc)
         return
     r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
-    if (r.stdout or "").strip() == "true" and _dturn_netns_current(svc):   # running AND (bridge) joined to our LIVE netns
-        _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc); _TURN_ATTEMPTS.pop(svc, None); NODE_PROGRESS.pop(svc, None)
-        return
-    if (r.stdout or "").strip() == "true":                                 # running but on a stale netns (post-recreate) → rebuild into ours
-        print("swg-noded: turn %s on a stale netns after a node recreate — rebuilding into the current one" % svc, flush=True)
+    if (r.stdout or "").strip() == "true":
+        _ns_ok = _dturn_netns_current(svc)      # (bridge) joined to our LIVE netns
+        _img_ok = _dturn_image_current(svc)     # ...and on the image this node runs turns from
+        if _ns_ok and _img_ok:
+            _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc); _TURN_ATTEMPTS.pop(svc, None); NODE_PROGRESS.pop(svc, None)
+            return
+        # running, but not as it should be → fall through to the recreate path, saying which of the two it is
+        print("swg-noded: turn %s %s — recreating it" %
+              (svc, "is on a stale netns after a node recreate" if not _ns_ok
+                    else "runs an image this node no longer uses (want %s)" % SWG_TURN_IMAGE), flush=True)
     if _TURN_ATTEMPTS.get(svc, 0) >= TURN_MAX_ATTEMPTS and not os.path.exists(_turn_bin_local(svc)):
         _TURN_FAILED.add(svc); _TURN_INSTALLING.discard(svc); NODE_PROGRESS.pop(svc, None)   # given up — "install failed" (a manual Reinstall resets the counter)
         return
@@ -8359,12 +8812,14 @@ def wdtt_vault_process(vault_pub, want):
             if not srvpub:
                 continue
             cur = _WDTT_SEALED.get(ifn)
-            if cur and cur.get("pub") == srvpub:
-                continue                                          # already sealed THIS identity
+            if cur and cur.get("pub") == srvpub and cur.get("vault") == _IVK_VAULT_PUB:
+                continue                                          # already sealed THIS identity, to THIS vault
             with open(keypath, "rb") as f:
                 raw = f.read()
             payload = json.dumps({"password": pw, "wg_keys": base64.b64encode(raw).decode()}).encode()
-            blob = ivk_seal(_IVK_VAULT_PUB, payload); blob["pub"] = srvpub
+            blob = ivk_seal(_IVK_VAULT_PUB, payload)
+            blob["pub"] = srvpub
+            blob["vault"] = _IVK_VAULT_PUB
             _WDTT_SEALED[ifn] = blob
 
 def _wdtt_unseal_identity(sealed):
@@ -8375,12 +8830,21 @@ def _wdtt_unseal_identity(sealed):
             return d
     return None
 
+# What the PANEL currently claims, per turn family — recorded from the last VALID sync reply and nothing
+# else. `None` means "we have never had one", which is not the same as "it claims nothing": a node that has
+# only ever seen a network error must not start calling its own instances unclaimed. Same discipline as the
+# reconcile invariant it sits beside.
+_CLAIMED = {"wdtt": None, "csqtt": None}
+
+
 def reconcile_wdtt(want, remove=None):
     """Declarative WDTT reconcile (continuous, like desired_ifaces). want = {iface: inst}. Installs missing,
     writes desired.json + SIGHUPs on password change, applies stop/start, and removes ONLY the instances the panel
     explicitly listed in `remove` — never one that is merely missing from `want`."""
     res = {"changed": 0, "errors": []}
     want = want or {}
+    if isinstance(want, dict):
+        _CLAIMED["wdtt"] = set(want)      # the panel has spoken: anything of ours NOT in here is unclaimed
     if not isinstance(want, dict):
         # The removal loop below runs FIRST and `iface in want` happily walks a list (or substring-matches a
         # string), so a malformed reply used to delete instances and only then raise on want.items(). Same guard
@@ -8767,6 +9231,13 @@ def wdtt_snapshot():
                     "raw_port": (inst.get("raw_port") or "") if _rawon else "",   # RAW listener (empty = off)
                     "raw_iface": _rawinfo[1] if _rawon else "", "raw_addr": _rawinfo[2] if _rawon else "",
                     "version": _wdtt_installed_ver(inst.get("fork", "amurcanov")),   # installed build version (version board + rollback)
+                    # T-18: the two TRANSPORT params _wdtt_params_changed compares that nothing else reported.
+                    # Without them the panel cannot describe a running instance completely, so a record mirrored
+                    # from this report reads as a parameter change on the next sync and rewrites the unit +
+                    # RESTARTS a live server. Reported so the mirror can be lossless — and so the panel can tell
+                    # a complete report from an old node's partial one and decline to mirror the partial.
+                    "max_passwords": inst.get("max_passwords") or "",
+                    "params": inst.get("params") or "",
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a foreign server at take-over, for the panel to adopt into the roster.
                     # Reported until it has them (reconcile_wdtt drops the record once they appear in `desired`),
@@ -9565,6 +10036,8 @@ def reconcile_csqtt(want, remove=None):
     Mirrors reconcile_wdtt minus the adoption/vault machinery (deferred to A7)."""
     res = {"changed": 0, "errors": []}
     want = want or {}
+    if isinstance(want, dict):
+        _CLAIMED["csqtt"] = set(want)      # the panel has spoken: anything of ours NOT in here is unclaimed
     if not isinstance(want, dict):
         res["errors"].append("panel sent a malformed csqtt set (%s) — ignored" % type(want).__name__)
         return res
@@ -9595,6 +10068,19 @@ def reconcile_csqtt(want, remove=None):
             _pw_seen = bool(prev.get("pw_seen") or (inst.get("passwords") or {}))
             if _pw_seen:
                 inst["pw_seen"] = True
+            # ⚠️ …AND HAND THEM UP, which is the half csqtt never had (T-18). WDTT does this for ANY instance
+            # the panel has never held a password for; csqtt only ever did it inside `adopt_foreign` below. So a
+            # csqtt the panel starts managing without a take-over — a record restored from an older nodes.json,
+            # or T-18's mirror of an instance this node already runs — kept its users (pw_seen protects them)
+            # and never told the panel they existed: invisible in the roster for ever, un-migratable, and the
+            # first panel-created user flips pw_seen and reaps every original one. Same rule as the twin: a wipe
+            # needs positive intent, and a user the panel cannot see is a user it cannot intend to keep.
+            if not _pw_seen and not inst.get("adopt_users"):
+                _pre = _csqtt_adopted_users(_csqtt_dir(iface))
+                if _pre:
+                    inst["adopt_users"] = _pre
+                    inst["adopt_users_at"] = int(time.time())
+                    _au = _pre
             # ADOPT a foreign csqtt: take its users, stop it, and run ours in its place. There is no server key
             # to preserve (csqtt has none) — the password store IS the server's identity to a client, so copying
             # it and serving it through the hand-off is the whole of a take-over.
@@ -9740,6 +10226,10 @@ def csqtt_snapshot():
                     # csqtt fork known here, the same assumption _csqtt_fork_unknown already makes.
                     "fork": (inst.get("fork") or "").strip() or next(iter(CSQTT_FORK_OWNER)),
                     "version": (inst.get("ver") or "").strip(),   # A3 wires CSQTT_BUILDS + a version board; record-tracked for now
+                    # T-18, the csqtt twin: the two params _csqtt_params_changed compares that nothing else
+                    # reported. See the WDTT report for why a mirror without them restarts a live server.
+                    "max_passwords": inst.get("max_passwords") or "",
+                    "params": inst.get("params") or "",
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a taken-over server, offered UP so the panel can recreate each as a
                     # roster peer. Present only while the hand-off is open; the panel clears it by importing.
@@ -9943,7 +10433,12 @@ def main():
         sys.exit("config needs a 'panel' block with url + token")
     globals()["_TURN_PANEL"] = panel   # so the turn-binary MIRROR pull (apply_turn + docker bg reconcile) can reach the panel
     url = panel["url"].rstrip("/") + "/api/node/sync"
-    token = panel["token"]
+    # ⚠️ NOT captured. `token = panel["token"]` here was invisible for as long as a re-point only ever meant
+    # a new ADDRESS for the same panel — the credential never changed, so a stale copy of it was still
+    # correct. A TRANSFER changes both, and the loop followed the url while posting the old panel's token:
+    # measured on the live fleet, where svo-im promoted cleanly ("transferred to … CA-verified") and then
+    # 401'd against its new panel every 5 seconds. Read it from `panel` at the point of use, so the same
+    # mistake cannot be made again by whoever adds the next re-point.
     interval = nd.get("interval", 5)
     online_max = nd.get("online_max", 180)
     agent = nd.get("agent", "/opt/swg-agent/swg-agent")
@@ -9960,6 +10455,7 @@ def main():
         panel_ip = open(PANEL_IP_FILE).read().strip()
     with contextlib.suppress(OSError):              # resume a mid-swap candidate after a restart (external nodes have no loopback _heal)
         _SWAP["cand"] = open(os.path.join(STATE_DIR, "panel-url-cand")).read().strip()
+    _load_transfer()                                # …and a mid-flight TRANSFER candidate, same reason
     update_started = False                          # spawn the self-updater at most once per process
     print(f"swg-noded: panel={panel['url']} interval={interval}s "
           f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}", flush=True)
@@ -9982,10 +10478,10 @@ def main():
             report_update_result(panel)             # a declarative rebuild finished while we were restarting — say how it went
             snap = build_snapshot(node_cfg, online_max, last_samples)
             use_ip = panel_ip if (panel_ip and panel_ip != bad_pip) else ""
-            status, reply = post_json(url, token, {"snapshot": snap}, panel, source_ip=use_ip)
+            status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel, source_ip=use_ip)
             if status == 0 and use_ip:              # fail-safe: a bound source couldn't reach the panel → retry unbound + stop binding that IP
                 bad_pip = use_ip
-                status, reply = post_json(url, token, {"snapshot": snap}, panel)
+                status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel)
             if status == 200:                       # adopt the panel-chosen connection IP (persist; reset bad-flag if it changed)
                 want_pip = ((reply.get("node_egress") or {}).get("panel_ip") or "").strip()
                 if want_pip != panel_ip:
@@ -10005,6 +10501,10 @@ def main():
                 _CTR_ADOPT.clear()
             if status == 200 and isinstance(reply.get("desired"), dict):
                 _newurl = apply_panel_hints(panel, node_cfg, reply)   # pin-gated auto-repoint on a panel host/port change
+                # T-10: and a TRANSFER to a different panel entirely, promoted only once that panel answers
+                # `whoami` with the token it sent. Tried AFTER the hints, on the same valid sync that
+                # learned it, so a candidate is acted on within one interval rather than one interval late.
+                _newurl = _promote_transfer(panel, node_cfg) or _newurl
                 if _newurl:
                     url = _newurl                                     # dial the new address from the next sync on
                 ivk_process(reply.get("iface_vault_pub"), reply.get("iface_vault_want"))   # seal interface keys the panel wants for the operator vault (blob rides the next snapshot)
@@ -10118,10 +10618,19 @@ def main():
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name — INCLUDING
                 # keypair restore/rebaseline (ik): a failed Restore (e.g. awg-quick up failed) is reported so the
                 # panel can show "restore failed" + the reason instead of hanging on "restoring".
+                # `ri` (set-iface) joins the request-driven blocks here. It was the only reconcile block
+                # that could fail for ever and say so ONLY to the log — see reconcile_ifaces. Its errors are
+                # keyed "set-iface <iface>: …", so they are re-keyed to the bare iface name like the rest,
+                # and cleared below by the same convergence sweep.
                 for blk in (cr, dl, ob, rs, sp, sa, ik, wd, cq):
                     for e in blk["errors"]:
                         k, _, m = e.partition(": ")
                         NODE_ERRORS[k] = m or e
+                _ri_failed = set()
+                for e in ri["errors"]:
+                    _k, _, _m = e.partition(": ")
+                    _k = _k.replace("set-iface ", "", 1)
+                    NODE_ERRORS[_k] = _m or e; _ri_failed.add(_k)
                 for _n in ob.get("notes", []):                 # kept until the panel stops asking (pruned below)
                     _k, _, _m = _n.partition(": ")
                     NODE_NOTES[_k] = _m or _n
@@ -10135,6 +10644,14 @@ def main():
                           | set(reply.get("iface_stop") or []) | set(reply.get("iface_start") or [])
                           | set(reply.get("iface_key") or {})
                           | set(reply.get("turn_onboard") or []) | set(reply.get("wdtt") or {}) | set(reply.get("csqtt") or {}))
+                # ⚠️ AND THE SET-IFACE FAILURES FROM THIS PASS. Without this the two lines above would pop
+                # them again in the very same pass — `desired_ifaces` is not in `active` — and the fix would
+                # be a silent no-op that looks correct in the diff. Folding ALL of `desired_ifaces` in would
+                # be wrong the other way: it is sent for every managed interface on every sync, so it would
+                # keep stale create/delete errors alive too. Only what actually failed this pass is added,
+                # which is self-limiting: while the condition holds, reconcile_ifaces reports it every pass
+                # (including "retrying later" while quarantined), and the moment it converges it stops.
+                active |= _ri_failed
                 for k in list(NODE_ERRORS):
                     if k not in active:
                         NODE_ERRORS.pop(k, None)

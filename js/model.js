@@ -72,6 +72,11 @@ export function kindOf(node, iface, type) {
   if (type === "wdtt" || wdttOn(node, iface) || isWdttIface(iface)) return "wdtt";
   if (type === "csqtt" || csqttOn(node, iface) || isCsqttIface(iface)) return "csqtt";   // raw-TUN self-contained kind (not in describe; keyed by the live set, then name/type)
   const m = (Store.describe[node] || {})[iface];
+  // The TOOL the node reports wins. "Carries obfuscation params" is a fact about the conf FILE, and the two
+  // can disagree: `msk-main/wg0`, taken over from a plain-WG container, picked up S/H/I lines from an
+  // ungated set-iface and wore an AWG badge for a device `awg show` cannot see. A node too old to report
+  // `tool` omits it, and those keep the old inference.
+  if (m && (m.tool === "wg" || m.tool === "awg")) return m.tool;
   if (m) return (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
   return (String(type || "wg").toLowerCase() === "awg") ? "awg" : "wg";
 }

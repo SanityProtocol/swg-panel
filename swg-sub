@@ -138,6 +138,7 @@ def node_describe(snapshot):
             "public_key": meta.get("public_key"), "listen_port": meta.get("listen_port"),
             "endpoint": meta.get("endpoint"), "address": meta.get("address"),
             "subnet": meta.get("subnet"), "awg_params": meta.get("awg_params", {}),
+            "mtu_reported": meta.get("mtu"),   # the node's ACTUAL link MTU (None from a node too old to report it)
             "dns": meta.get("dns", []),
         }
     return interfaces
@@ -161,9 +162,10 @@ def node_public_host(snap):
 
 
 def apply_iface_meta(node_cfg, interfaces):
-    """Overlay the panel-side per-interface overrides (public endpoint host/port, DNS,
-    MTU, AmneziaWG obfuscation) onto node-reported metadata — exactly what the panel emits
-    into client configs. Read-only: never touches the node or any file. Returns interfaces."""
+    """Overlay the panel-side per-interface overrides (public endpoint host/port, DNS, MTU, keepalive,
+    AmneziaWG obfuscation) onto node-reported metadata — exactly what the panel emits into client configs,
+    field for field with swg-panel-server's apply_iface_meta. Read-only: never touches the node or any
+    file. Returns interfaces."""
     node_ep = (node_cfg or {}).get("endpoint_host")
     ifov = (node_cfg or {}).get("ifaces") or {}
     for ifn, ifc in interfaces.items():
@@ -177,12 +179,40 @@ def apply_iface_meta(node_cfg, interfaces):
         if ov.get("dns") is not None:
             d = ov["dns"]
             ifc["dns"] = d if isinstance(d, list) else [s.strip() for s in str(d).split(",") if s.strip()]
-        ifc["mtu"] = ov.get("mtu") or 1280
+        # Same rule as swg-panel-server's apply_iface_meta, and the same reason the render params live in
+        # one function: this page and the panel must hand a peer the identical config. The panel override is
+        # the desired MTU (the node converges to it), so rendering follows it rather than the reported one.
+        ifc["mtu"] = ov.get("mtu") or ifc.get("mtu_reported") or 1280
+        if ov.get("keepalive") is not None:
+            ifc["keepalive"] = ov["keepalive"]        # client PersistentKeepalive for this interface
         ovawg = ov.get("awg_params")
         if isinstance(ovawg, dict) and ovawg:
             rep_awg = dict(ifc.get("awg_params") or {})
             ifc["awg_params"] = {**rep_awg, **{k: ovawg[k] for k in ovawg if ovawg[k] not in (None, "")}}
     return interfaces
+
+
+def effective_client_params(peer, target, meta):
+    """The four non-secret render parameters for ONE deployment of one peer (DNS / MTU / AllowedIPs /
+    keepalive): the interface's live defaults, under the peer-wide `overrides`, under THIS target's own.
+    Byte-for-byte the same rule as swg-panel-server's effective_client_params — see that docstring for why
+    the rule lives in one place and is copied rather than paraphrased. Absent keys render live from the
+    interface defaults, so a fleet-wide default change still reaches a peer that never customised."""
+    _pov = peer.get("overrides") if isinstance(peer, dict) and isinstance(peer.get("overrides"), dict) else {}
+    _tov = target.get("overrides") if isinstance(target, dict) and isinstance(target.get("overrides"), dict) else {}
+    ov = {**_pov, **_tov}                               # the deployment's own setting wins, field by field
+    meta = meta if isinstance(meta, dict) else {}
+    _ka = ov.get("keepalive")
+    _ika = meta.get("keepalive")
+    if not (isinstance(_ka, int) and not isinstance(_ka, bool)):          # no per-peer/per-deployment value…
+        _ka = _ika if isinstance(_ika, int) and not isinstance(_ika, bool) else 25   # …so the interface's, else 25
+    return {
+        # dns=[] is meaningful — an explicit "no DNS line" — so the test is "is there a list", not "is it truthy"
+        "dns": list(ov["dns"]) if isinstance(ov.get("dns"), list) else list(meta.get("dns") or []),
+        "mtu": ov.get("mtu") or meta.get("mtu") or 1280,
+        "allowed": ov.get("allowed") or "0.0.0.0/0, ::/0",
+        "keepalive": _ka,
+    }
 
 
 # ── the subscription state (all read-only; the panel owns writes) ──
@@ -437,9 +467,6 @@ def read_data(state, token):
         # deployment nobody had chosen and called every other one a "Backup" of it. (That grouping insight still
         # holds — a turn proxy is no fallback for a tunnel — but it is the operator who expresses it, by marking
         # a primary in each family; the panel lets them, since roles are not exclusive.)
-        # per-peer NON-secret overrides (custom DNS/MTU/AllowedIPs/keepalive) kept in the roster; absent
-        # keys render live from the interface defaults, so a fleet-wide default change reaches this peer.
-        ov = p.get("overrides") if isinstance(p.get("overrides"), dict) else {}
         tgts = []
         # Per-peer published SOURCES. The operator can hide a kind (say the turn-proxy configs) from THIS peer's
         # subscription without touching its deployments — the panel still shows them all, the sub just narrows.
@@ -500,12 +527,11 @@ def read_data(state, token):
             turn = [{"service": tp.get("service"), "listen": tp.get("listen"), "wrap_key": tp.get("wrap_key")}
                     for tp in (nd.get("turn") or []) if isinstance(tp, dict) and lp and _port_of(tp.get("connect")) == lp]
             _wgty = "awg" if awg else (t.get("type") or "wg")
-            # THIS deployment's client-config customisation first, then the peer-wide one. A peer may now span
-            # several interfaces, and the settings that describe how a client reaches one of them (DNS / MTU /
-            # AllowedIPs / keepalive) belong to that deployment; `ov` stays the fallback so every peer written
-            # before per-target settings existed renders exactly as it did.
-            _tov = t.get("overrides") if isinstance(t.get("overrides"), dict) else {}
-            _tov = {**ov, **_tov}
+            # THIS deployment's client-config customisation over the peer-wide one over the interface's live
+            # defaults. A peer may span several interfaces, and the settings that describe how a client reaches
+            # one of them (DNS / MTU / AllowedIPs / keepalive) belong to that deployment; the peer-wide block
+            # stays the fallback so every peer written before per-target settings existed renders as it did.
+            eff = effective_client_params(p, t, meta)
             if "turn" in _hide:
                 turn = []                       # keep the direct config, drop its proxy variants
             if _wgty in _hide:
@@ -520,11 +546,11 @@ def read_data(state, token):
                 "type": "awg" if awg else (t.get("type") or "wg"),
                 "ip": t.get("ip"),
                 "endpoint": meta.get("endpoint"), "server_pubkey": meta.get("public_key"),
-                "dns": (_tov["dns"] if isinstance(_tov.get("dns"), list) else (meta.get("dns") or [])),
+                "dns": eff["dns"],
                 "subnet": meta.get("subnet"),
-                "mtu": _tov.get("mtu") or meta.get("mtu") or 1280,
-                "allowed": _tov.get("allowed") or "0.0.0.0/0, ::/0",
-                "keepalive": (_tov["keepalive"] if isinstance(_tov.get("keepalive"), int) else 25),
+                "mtu": eff["mtu"],
+                "allowed": eff["allowed"],
+                "keepalive": eff["keepalive"],
                 "awg": awg,
                 "turn": turn,
                 **({} if not _direct_off else {"direct": False}),   # its own kind is hidden: only the proxy variants publish

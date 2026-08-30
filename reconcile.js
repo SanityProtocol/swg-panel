@@ -3,8 +3,8 @@
 // Inputs:
 //   roster (desired) — the users.json envelope:
 //     { version, users:{ "<uid>": {id,name,tag,note,...} },
-//                peers:{ "<pid>": {id,user_id,pubkey,psk,
-//                                  targets:[{node,iface,ip,type}], created_at} } }
+//                peers:{ "<pid>": {id,user_id,pubkey,psk,overrides?,
+//                                  targets:[{node,iface,ip,type,overrides?}], created_at} } }
 //   stats  (observed) — node snapshots keyed by node:
 //     { "<node>": { generated_at, interfaces:{ "<iface>":{ peers:[
 //         { public_key, online, handshake_age, endpoint, allowed_ips } ] } },
@@ -202,6 +202,10 @@ function reconcile(roster, stats, now, cfg) {
         viaTurn = bySport || (svcs.length ? svcs[0] : null);
       }
       return { node: t.node, iface: t.iface, ip: t.ip, type: t.type, primary: t.primary || false,   // "primary" | "backup" | true (pre-backup rosters) | false
+               // THIS deployment's non-secret render overrides, carried through untouched (not derived — the
+               // roster's own). effectiveClientParams needs them to rebuild a config from the encrypted blob,
+               // and dropping them here is what made the panel's QR disagree with the peer's subscription page.
+               overrides: t.overrides || null,
                status: st, online: !!(obs && obs.online), observed: obs, via: via,
                viaTurn: viaTurn,   // the SPECIFIC turn-proxy service the peer came in through (one per connection)
                restorable: (st === "dangling") && _trip,   // this deployment's interface is gone long enough → offer Restore
@@ -295,6 +299,7 @@ function reconcile(roster, stats, now, cfg) {
       name: user ? (user.name || "") : "", tag: user ? (user.tag || "") : "",
       unassigned: !user,
       sub_hide: Array.isArray(p.sub_hide) ? p.sub_hide : [],   // config kinds the operator keeps OFF this peer's subscription page
+      overrides: p.overrides || null,   // peer-wide render overrides (the fallback under each target's own) — see the target field
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,
       presentCount: present.length, liveCount: live.length,
