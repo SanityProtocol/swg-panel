@@ -3,6 +3,75 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.5-beta] — 2026-09-02
+
+### Added
+
+- **The panel now tells you when a proxy on a node is behind, not just the panel itself.** The header update
+  bubble covers the whole fleet: which forks have a newer build, which nodes are running the old one, and —
+  before you press anything — exactly which servers will restart. Updates are grouped by fork rather than
+  listed once per node, so a fleet of ten servers no longer produces ten rows saying the same thing, and a
+  node's own page says when that node in particular has servers behind.
+
+### Changed
+
+- **Every client app a fork can actually drive is now offered.** Which apps a proxy can hand out is decided
+  by one table — the compatibility matrix — instead of a second, hand-kept list beside it. The practical
+  effect is more choice where it was silently missing: the legacy qWDTT client on the four WDTT forks, and
+  FreeTurn on WINGS-N, Moroka8 and anton48. Apps are ordered by how well they fit: a fork's own app first,
+  then compatible apps, then command-line builds, with connections that work but lose obfuscation last.
+- **Forks are named by their author and their product, never by an internal id.** "SpaceNeuroX" tells you
+  who maintains a server and "qWDTT" tells you what is running; neither on its own is enough, and the raw id
+  was leaking into places meant for a name. Update lists sort by that name too, so the order matches what
+  you are reading rather than a key you cannot see.
+- **A node sizes its UDP buffers to the machine and keeps them across a reboot.** Proxy handshakes were
+  being dropped under load because the kernel's socket ceiling was left at its default; the node now raises
+  it against what the box can actually give and how many listeners it is running.
+
+### Fixed
+
+- **A config could be issued for a different vendor's app that shares a name.** Two different clients are
+  both called "PWDTT" — one from luminescq, one shipped inside ildarmaga's own release — and they take
+  different link formats. The panel handed ildarmaga users the wrong one, and their app rejected it outright
+  as corrupt. A fork's own app is now always offered and preferred, on the panel and on subscription pages
+  alike.
+- **An app was offered on the one proxy that cannot run it, and hidden on the one that can.** The VK TURN app
+  by MYSOREZ loads a fork's own core, so it only works where that core exists. It was listed for anton48,
+  which has no such core, and withheld from samosvalishe, which ships one — the obfuscated Android path that
+  fork is best used with.
+- **A RAW peer flickered between online and ready.** Liveness was judged on instantaneous byte movement, so
+  an idle-but-connected peer read as offline every time it stopped sending. It now gets the same grace period
+  a WireGuard peer has always had, and a RAW peer's tunnel address reaches the panel instead of being dropped
+  on the way.
+- **A peer's QR code could be squeezed to nothing.** The note about the panel's fallback VK link sat beside
+  the code in the same row and took its width; it is now a footnote under the config, and it no longer tells
+  an unassigned peer about a subscription page it does not have.
+- **Clients using encrypted DNS were disconnected instead of being named.** Forced DNS treated DoH and DoT as
+  something to break; it now identifies those clients and says so, keeps its status badges legible on the
+  live view, and no longer lets a client's own DNS cache outlive the routing decision that changed.
+- **A stored config could stay silent about a key that no longer opens it.** Re-keying the vault left older
+  entries unreadable with nothing said, a locked vault was reported as a missing config rather than a locked
+  one, and a key that had stopped working simply produced nothing. Each of those now states what happened.
+- **An update could be offered that changed nothing, or a newer build could be called out of date.** One
+  version was advertised over another that differed only in formatting, and a proxy running something newer
+  than the published release was reported as behind. The update check also pins its version and changelog
+  fetch to an immutable commit, so a moving branch cannot change what it reports.
+- **A mesh link showed as up with only one end reporting.** Both ends are required in the link card, matching
+  what the map already did.
+- **The provider catalogue sat on the request path and remembered failures.** A lookup that failed once kept
+  answering from that failure; it is now off the request path and a failed fetch is not cached.
+- **A routing category's address list was discarded instead of treated as a floor.** Rebuilding a category
+  could shrink it below the addresses it is defined to contain.
+- **A traffic rate and its unit were split across a line break** in the proxy chart, so a number could be read
+  against the wrong scale.
+- **Two messages had no Russian translation** and rendered in English.
+
+### Security
+
+- **An unreadable panel pin silently disabled pinning.** A node that could not read its stored certificate pin
+  carried on without one rather than refusing to sync — a downgrade that looked exactly like a healthy node.
+  It now fails closed and says why.
+
 ## [1.8.4-beta] — 2026-08-30
 
 ### Added
