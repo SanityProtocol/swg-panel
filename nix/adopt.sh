@@ -202,8 +202,13 @@ for r in /opt/swg-wdtt "$DOCKER_DIR/data/node/wdtt"; do
 done
 for r in /opt/swg-csqtt "$DOCKER_DIR/data/node/csqtt"; do
   [ -d "$r" ] || continue
-  for d in "$r"/*/; do [ -f "$d/passwords.json" ] || continue
-    sub "csqtt $(b "$(basename "$d")")  password store $d/passwords.json"; done
+  for d in "$r"/*/; do
+    # csqtt <=2.0.1 stored passwords.json; 2.1.5 migrated it into SQLite csqtt.db and REMOVED the JSON, so a
+    # json-only test skipped every upgraded instance — silently, which is the worst way to miss one here.
+    if   [ -f "$d/passwords.json" ]; then _st="$d/passwords.json"
+    elif [ -f "$d/csqtt.db" ];      then _st="$d/csqtt.db"
+    else continue; fi
+    sub "csqtt $(b "$(basename "$d")")  password store $_st"; done
 done
 if [ -n "$NTOK" ]; then
   sub "node token        $(mask "$NTOK")   from $TOKSRC"

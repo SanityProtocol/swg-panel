@@ -718,13 +718,15 @@ migrate_wdtt(){
 #     docker     : <docker_dir>/data/node/csqtt/<iface>/…   record …/data/node/csqtt.json  (→ container /var/lib/swg-noded)
 # Third argument: the node dir outright, as in migrate_wdtt above.
 # csqtt has NO server keypair — a password IS the credential — so nothing here can re-mint a server identity the way
-# WDTT can. What must survive is each instance's passwords.json (the store its clients authenticate against) and the
+# WDTT can. What must survive is each instance's STORE — passwords.json (csqtt <=2.0.1) or csqtt.db + its -wal/-shm
+# sidecars (2.1.5+), which its clients authenticate against — and the
 # record's NODE-OWNED owner password + pw_seen. Lose the record and the node re-mints the owner password over a store
 # that still holds the old one; lose the store and every client on that server stops connecting.
 # STRIP (to-baremetal only): identical reasoning to WDTT — drop the source run-model's runtime files (the `server`
 # symlink + server.pid / server.log / .server.lock / csqtt.env / desired.json, all pointing at container paths) so
-# the systemd unit doesn't crash-loop on them before the reconcile rewrites them. KEEP passwords.json and .bin
-# (depth 3, so the depth-2 sweep can't reach the binary cache).
+# the systemd unit doesn't crash-loop on them before the reconcile rewrites them. The strip is a DELETE-list, so
+# anything not named survives — the store keeps working whether it is passwords.json or the csqtt.db trio — as
+# does .bin (depth 3, so the depth-2 sweep can't reach the binary cache).
 migrate_csqtt(){
   local dir="$1" dd="${2:-/opt/swg-panel-docker}" nd="${3:-}" src dst srec drec _d strip=no
   local bare="${CSQTT_DIR:-/opt/swg-csqtt}" brec="${CSQTT_RECORD:-$(lc_bare_record csqtt.json)}" \

@@ -203,6 +203,8 @@ export const api = {
   wdttRecreateFresh(b) { return this.post("/api/wdtt/recreate-fresh", b); }, // abandon the vaulted identity → mint a fresh key (users re-import)
   wdttVersions(q) { return this.get("/api/wdtt/versions?node=" + encodeURIComponent(q.node || "") + "&iface=" + encodeURIComponent(q.iface || "") + "&fork=" + encodeURIComponent(q.fork || "")); },   // our published builds (rollback targets) + any hold
   wdttVersion(b) { return this.post("/api/wdtt/version", b); },              // roll a WDTT instance to a build (ver) or release the hold (ver="")
+  csqttVersions(q) { return this.get("/api/csqtt/versions?node=" + encodeURIComponent(q.node || "")); },   // our published csqtt builds (rollback targets) + any hold. One binary per node → no fork/iface in the key
+  csqttVersion(b) { return this.post("/api/csqtt/version", b); },            // roll a node's csqtt to a build (ver) or release the hold (ver="")
   csqttSet(b) { return this.post("/api/csqtt/set", b); },                    // create/update a csqtt instance on a node (declarative)
   containerAdopt(b) { return this.post("/api/container/adopt", b); },   // take a wg/awg server over from another container (Amnezia)
   csqttAdopt(b) { return this.post("/api/csqtt/adopt", b); },                // adopt a FOREIGN csqtt server (its users come across)
@@ -292,6 +294,7 @@ export const Store = {
     this.tls = d.tls || this.tls || {};   // cert expiry + renewal health → the Access & TLS card
 
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
+    this.turnUpdates = d.turn_updates || this.turnUpdates || [];   // [{fork,kind,node,installed,latest,ids}] — deployed turn-family servers behind their newest build, one row per (fork, node). Held forks are already excluded server-side.
     if ("latest_remote_date" in d) this.latestRemoteDate = d.latest_remote_date || "";   // update-bubble: release date + changelog notes
     if ("latest_remote_notes" in d) this.latestRemoteNotes = d.latest_remote_notes || [];
     if (s && s.ok) { this.hostProc = d.host_proc || null; this.hostProcErr = d.host_proc_err || null; }   // only on a clean poll → the tag HOLDS through the panel's own re-install downtime

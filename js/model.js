@@ -155,6 +155,26 @@ export function turnProxiesFor(node, iface) {
 // a node is "stale" when its last snapshot is older than the staleness window (reconcile.js) — we can't
 // trust any live state then, so cross-reference badges grey out (don't claim "active" on a node gone dark).
 export function nodeStale(node) { return Store.recon.nodeStatus[node] !== "live"; }
+
+// Is THIS deployment's client resolving over encrypted DNS (DoT/DoH) right now? The node records the source
+// address of every such attempt in a self-expiring nft set, so a hit means "currently", not "once did".
+//
+// Why it matters enough to take the peer's status pill: Force-DNS classifies by WATCHING plain DNS, so a peer
+// the node cannot observe is never matched against a category — its traffic leaves by the local exit whatever
+// the routing rules say. The node deliberately no longer BLOCKS it for that (dropping DoT black-holed every
+// lookup and killed such clients outright), which makes saying so the entire remedy. It is a property of the
+// PEER, not of the node, which is why it reads here and not in the node's health roll-up.
+export function peerUncategorised(t) {
+  const ip = String((t && t.ip) || "").split("/")[0];
+  // Store.nodes, NOT Store.node(): the latter reads Store.fleet, which is a deliberately slim
+  // {id,name,color,transport} projection — `doh_peers` is not in it, so this silently answered
+  // "no" for every peer and the badge could never appear anywhere. Full records live on Store.nodes.
+  const nrec = (Store.nodes || []).find(n => n.id === t.node) || {};
+  // PRESENCE, not the count. The value is an attempt counter and the entry self-expires, so being in the map
+  // at all is the signal — `!!map[ip]` would read a zero-count entry as "not on encrypted DNS", which is the
+  // one case where the node is telling us the opposite.
+  return !!ip && Object.prototype.hasOwnProperty.call(nrec.doh_peers || {}, ip);
+}
 export function ifaceNotUp(node, ifn) { const s = (((Store.stats[node] || {}).interfaces) || {})[ifn] || {}; return !!s.down || !!s.stopped; }  // down OR stopped → grey chips
 export function turnDown(tp) { return tp && tp.running === false; }
 

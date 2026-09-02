@@ -38,6 +38,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -2005,18 +2006,24 @@ def _panel_list_refresh(manifest, sched, panel, res):
                         os.remove(os.path.join(GEO_DIR, fn))
 
 
-def _nft_load_set(setname, cidrs):
-    """Atomically replace an nft interval set's elements (flush + chunked add via `nft -f`). Overlapping or
+def _nft_load_set(setname, cidrs, replace=True):
+    """Load an nft interval set's elements (chunked add via `nft -f`). Overlapping or
     adjacent ranges are COLLAPSED first — an `interval` set without auto-merge rejects an overlapping add and
     the whole load fails (this is why the large, overlap-heavy Russia list never loaded), so we merge them in
-    Python (collapse also fixes adjacency)."""
+    Python (collapse also fixes adjacency).
+
+    replace=True flushes first (atomic replace — the right thing for a set only we write).
+    replace=False ADDS without flushing, for a set dnsmasq also fills: the flush is what made a geoip tier and a
+    domain tier unable to share a set, and the workaround for that was to throw the geoip tier away entirely
+    (see _smart_geo_refresh). auto-merge collapses a learned /32 into a loaded /22 rather than duplicating it,
+    which is exactly what the flag was added for. Same shape as _smart_load_cidrs, which already does this."""
     import ipaddress
     try:
         cidrs = [str(n) for n in ipaddress.collapse_addresses(
             ipaddress.ip_network(c.strip(), strict=False) for c in cidrs if c.strip())]
     except Exception:
         pass   # bad entry → fall back to the raw list (best-effort; nft will reject the offending chunk only)
-    lines = [f"flush set inet {SMART_NFT_TABLE} {setname}"]
+    lines = [f"flush set inet {SMART_NFT_TABLE} {setname}"] if replace else []
     for i in range(0, len(cidrs), 2000):
         lines.append(f"add element inet {SMART_NFT_TABLE} {setname} {{ {', '.join(cidrs[i:i + 2000])} }}")
     path = os.path.join(GEO_DIR, "." + setname + ".nft")
@@ -2025,30 +2032,44 @@ def _nft_load_set(setname, cidrs):
     rc = run(["nft", "-f", path]).returncode
     with contextlib.suppress(OSError):
         os.unlink(path)
-    return rc
+    # Read the count back from nft rather than reporting len(cidrs). nft's auto-merge collapses FURTHER than
+    # Python can: adjacent 91.108.4.0/22 + 91.108.8.0/21 become the single range 91.108.4.0-91.108.15.255,
+    # which is not expressible as a CIDR so collapse_addresses leaves it as two. Reporting the Python count
+    # would make the caller's `live >= mcount` gate permanently false and reload the set on every 5s sync.
+    return rc, (_nft_set_count(setname) if rc == 0 else 0)
 
 
-def _smart_demote_geo(cat, res):
-    """A category that's now domain-filled but was geoip-loaded before (e.g. after an upgrade that moved it to
-    the domain tier): flush its set ONCE and drop the geo cache, so only dnsmasq's resolved IPs remain — else a
-    provider's whole IP range would re-merge the split apart. Keyed on the .loaded marker, so it runs a single
-    time per transition and never wipes dnsmasq's accumulated fill afterwards."""
-    lp = os.path.join(GEO_DIR, "." + cat + ".loaded")
-    if not os.path.exists(lp):
-        return
-    run(["nft", "flush", "set", "inet", SMART_NFT_TABLE, _smart_setname(cat)])
-    for p in (lp, os.path.join(GEO_DIR, "." + cat + ".attempt"), os.path.join(GEO_DIR, cat + ".txt")):
-        with contextlib.suppress(OSError):
-            os.unlink(p)
-    res["changed"] += 1
+def _nft_set_count(setname):
+    """Live element count of one set — counted exactly like _smart_table's parse, so the two agree."""
+    out = (run(["nft", "list", "set", "inet", SMART_NFT_TABLE, setname]).stdout or "")
+    m = re.search(r"elements = \{([^}]*)\}", out, re.S)
+    return len([x for x in m.group(1).split(",") if x.strip()]) if m else 0
 
 
-def _smart_geo_refresh(categories, set_counts, res, skip=()):
+# _smart_demote_geo lived here. It flushed a dual-tier category's set and DELETED its <cat>.txt the moment a
+# domain list arrived, handing the set to dnsmasq for good. That was a workaround for _nft_load_set flushing —
+# not a routing decision — and it cost the IP tier outright. Measured on a live node: Telegram's canonical
+# AS62041 prefixes were loaded, routed correctly for one pass, then flushed and unlinked; the panel re-shipped
+# telegram.txt (it is still in list_manifest), the node re-pulled it, and it sat unused while the set stayed
+# empty and every packet went out the local exit. MTProto voice/media never does a DNS lookup, so the domain
+# tier alone can never route it — which is exactly why the preset carries AS62041 ("voice/media route by IP
+# too"), and meta and github say the same. The loader now adds without flushing, so both tiers share the set.
+
+
+def _smart_geo_refresh(categories, set_counts, res, additive=()):
     """Ensure each needed category's CIDR list is cached + fresh and loaded into its nft set. Fetches only
     when the cache is missing/stale (TTL-gated, so most syncs do nothing); reloads the set when the data
     changed OR the live set is empty (e.g. after a reboot — nft sets aren't persistent). Failures leave the
-    set as-is (inert / last-good) and retry next TTL. `skip` = domain-filled categories (dnsmasq owns those
-    sets — geo-fetch must never touch them, else a provider's whole IP range would re-merge the split apart)."""
+    set as-is (inert / last-good) and retry next TTL.
+
+    `additive` = categories that ALSO have a domain tier, so dnsmasq is filling the same set. Those load
+    without a flush: the geoip list is a FLOOR the service is always routable by, and dnsmasq adds precision
+    on top. They used to be skipped entirely and their list deleted, which left a service with no IP coverage
+    at all whenever DNS never named it — the case that broke Telegram voice/media in the field.
+
+    A CONTENT CHANGE still does one full replace even for those, so a prefix dropped upstream actually leaves
+    the set; the dnsmasq-learned entries it takes with it are re-learned on the next answer, and the freshly
+    loaded floor covers the gap in the meantime."""
     if not categories:
         return
     try:
@@ -2058,9 +2079,6 @@ def _smart_geo_refresh(categories, set_counts, res, skip=()):
     for cat in categories:
         if cat == "all":
             continue                                           # catch-all → no set
-        if cat in skip:                                        # domain-filled → dnsmasq owns it; clear any stale geoip once
-            _smart_demote_geo(cat, res)
-            continue
         try:                                                   # one bad category must never crash the sync loop
             sn = _smart_setname(cat)
             path = os.path.join(GEO_DIR, cat + ".txt")         # CIDR list, pulled from the panel by _panel_list_refresh
@@ -2073,23 +2091,40 @@ def _smart_geo_refresh(categories, set_counts, res, skip=()):
             marker = ""
             with contextlib.suppress(OSError):
                 marker = open(lp).read().strip()
-            msig, mhash = marker.split("|", 1) if "|" in marker else ("", marker)   # legacy marker held the hash alone
-            if msig == sig and set_counts.get(sn, 0) > 0:      # file unchanged AND set populated → nothing to do (skip read/regex/hash)
+            # marker: "<sig>|<hash>|<n>" — n = how many collapsed prefixes the floor put in the set. Older markers
+            # carry sig|hash (or the bare hash); n is then unknown (0), which makes the gate below do the work once
+            # and rewrite the marker in the new shape. Nothing has to migrate.
+            _mp = marker.split("|")
+            msig, mhash = (_mp[0], _mp[1]) if len(_mp) >= 2 else ("", marker)
+            mcount = int(_mp[2]) if len(_mp) > 2 and _mp[2].isdigit() else 0
+            live = set_counts.get(sn, 0)
+            is_add = cat in additive
+            # Non-additive: "set populated" is proof our floor is there, because nothing else writes that set.
+            # Additive: it is NOT — dnsmasq writes the same set, so a non-zero count can be entirely learned IPs
+            # with no floor at all. That is the exact state found in the field: one dnsmasq-learned /32 present,
+            # the whole AS62041 floor missing. Compare against the floor's own size instead.
+            floor_present = (live >= mcount > 0) if is_add else (live > 0)
+            if msig == sig and floor_present:                  # file unchanged AND floor in place → nothing to do (skip read/regex/hash)
                 continue
             cidrs = [ln.strip() for ln in open(path).read().splitlines() if _CIDR4_RE.match(ln.strip())]
             if not cidrs:
                 continue
             h = hashlib.sha256(("\n".join(cidrs)).encode()).hexdigest()
-            if mhash != h or set_counts.get(sn, 0) == 0:       # content changed, or set empty (post-reboot) → (re)load
-                if _nft_load_set(sn, cidrs) == 0:
+            content_changed = mhash != h
+            if content_changed or not floor_present:           # content changed, or the floor isn't in the set → (re)load
+                # A content change REPLACES even for an additive category, so a prefix dropped upstream actually
+                # leaves the set. That takes dnsmasq's learned entries with it — they are re-learned on the next
+                # answer, and the freshly loaded floor covers the service meanwhile. Otherwise: add, never flush.
+                rc, n = _nft_load_set(sn, cidrs, replace=(content_changed or not is_add))
+                if rc == 0:
                     with contextlib.suppress(OSError):
-                        open(lp, "w").write(sig + "|" + h)
+                        open(lp, "w").write("%s|%s|%d" % (sig, h, n))
                     res["changed"] += 1
                 else:
                     res["errors"].append("smart geo load " + cat + " failed")
             else:                                              # mtime touched but content identical → just refresh the sig
                 with contextlib.suppress(OSError):
-                    open(lp, "w").write(sig + "|" + h)
+                    open(lp, "w").write("%s|%s|%d" % (sig, h, mcount))
         except Exception as e:
             res["errors"].append("smart geo " + cat + ": " + str(e)[:120])
 
@@ -2247,6 +2282,9 @@ def _smart_domain_refresh(cats, res):
 #    — the same set the marking chain matches. Managed from the sync loop (configured/started/torn down each
 #    pass, self-healing like the nft rules). The set fills as clients browse; no static IP list to go stale.
 SMART_DNS_PORT = 5354                                           # dnsmasq listens here on loopback (system :53 untouched)
+SMART_DNS_MAX_TTL = 60   # seconds a CLIENT may cache an answer we served (see the dnsmasq conf builder).
+                         # Low enough that a rule added now takes effect within a minute; dnsmasq still holds
+                         # the real TTL internally, so the extra queries never reach upstream.
 DNSMASQ_BIN  = "dnsmasq"
 DNSMASQ_CONF = os.path.join(STATE_DIR, "smart-dnsmasq.conf")
 DNSMASQ_PID  = os.path.join(STATE_DIR, "smart-dnsmasq.pid")
@@ -2340,7 +2378,16 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False):
         return                                                 # inputs unchanged + dnsmasq alive → skip the O(n) config rebuild
     conf = ["# managed by swg-noded — domain-tier smart routing (do not edit)",
             "port=" + str(SMART_DNS_PORT), "listen-address=127.0.0.1", "bind-interfaces",
-            "no-resolv", "no-hosts", "cache-size=2000", "pid-file=" + DNSMASQ_PID]
+            "no-resolv", "no-hosts", "cache-size=2000", "pid-file=" + DNSMASQ_PID,
+            # CAP WHAT CLIENTS CACHE. Force-DNS routes by WATCHING lookups: dnsmasq writes the resolved address
+            # into the category's nft set as it answers, so the set is populated before the client connects. A
+            # client holding its own cached answer never asks, so the node never learns, and the rule silently
+            # does not apply — measured in the field, where a phone with a cached name kept exiting the local
+            # node while its rule pointed elsewhere. Adding a rule AFTER a client resolved through us has the
+            # same shape: the stale entry outlives the routing decision by the whole upstream TTL, which is
+            # commonly hours. dnsmasq keeps the TRUE ttl in its own cache and only clamps what it hands
+            # downstream, so this costs re-queries that we answer locally, not upstream traffic.
+            "max-ttl=" + str(SMART_DNS_MAX_TTL)]
     conf += ["server=1.1.1.1", "server=8.8.8.8"]
     # PER-DOMAIN, not per-category. dnsmasq applies only the FIRST nftset directive that lists a given domain, so a
     # domain shared by several categories (e.g. google.com in BOTH a custom list and the built-in Google set) would
@@ -2396,6 +2443,20 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False):
 #    (routing_mode == forcedns) — NOT applied in kernel mode (geoip needs no DNS) or sni mode (Phase C is
 #    DoH-proof without forcing DNS). Own inet table `swg_doh`, reconciled/torn-down like the smart table.
 DOH_NFT_TABLE = "swg_doh"
+DOH_SEEN_TTL = 900      # how long a peer stays listed as "on encrypted DNS" after its last attempt. Short enough
+                        # that the panel reads as CURRENT state rather than history, long enough to survive the
+                        # gaps between a client's lookups.
+_DOH_SEEN = {}          # {peer_ip: attempts} — refreshed from the swg_doh render on every reconcile
+
+
+def _parse_doh_seen(out):
+    """{peer_ip: attempts} from a `doh_seen` dynamic-set render. Elements look like
+    `10.8.0.2 counter packets 12 bytes 900 expires 59m59s996ms`. Scoped to the doh_seen block so the doh4
+    interval set above it can never be mistaken for peers."""
+    m = re.search(r"set doh_seen \{.*?elements = \{(.*?)\}", out, re.S)
+    if not m:
+        return {}
+    return {ip: int(n) for ip, n in re.findall(r"([0-9]{1,3}(?:\.[0-9]{1,3}){3}) counter packets (\d+)", m.group(1))}
 # DoH-resolver IPs to drop on :443. DELIBERATELY a small CURATED list of the major providers' DEDICATED
 # resolver anycast IPs — NOT a big crowd-sourced feed (e.g. dibdot/DoH-IP-blocklists). Those feeds resolve DoH
 # *hostnames*, and many DoH services sit behind SHARED CDNs (Cloudflare 104.21/172.67/162.159…); dropping :443
@@ -2425,20 +2486,42 @@ def _doh_ips():
     return DOH_IPS
 
 
-def _ensure_doh_block(subnets, enable, res):
-    """(Re)build or tear down the `swg_doh` drop table. Signature-gated (subnets + DoH-IP set), so steady state
-    is a no-op and a list refresh re-applies. Built atomically via `nft -f`. Never raises into the sync loop."""
+def _ensure_doh_block(observe, strict, res):
+    """(Re)build or tear down the `swg_doh` table. Signature-gated (subnets + DoH-IP set), so steady state is a
+    no-op and a list refresh re-applies. Built atomically via `nft -f`. Never raises into the sync loop.
+
+    TWO TIERS, and the difference matters more than it looks:
+
+    `strict`  — the operator switched the per-interface "doh" block mechanism ON. They asked for enforcement,
+                so these subnets get a verdict.
+    `observe` — Force-DNS's automatic blanket. It used to enforce too, and that silently destroyed working
+                clients: a proxy client whose ONLY resolver is DoT (sing-box/Throne with tls://…) had every
+                lookup black-holed, so nothing resolved and no traffic flowed at all. Diagnosed in the field
+                from a client log full of `context deadline exceeded` against 8.8.8.8:853. Nobody asked for
+                that blanket, its guarantee was never real anyway (a custom CDN-hosted DoH resolver cannot be
+                IP-blocked — see DOH_IPS), and the cost of enforcing it is a dead VPN rather than degraded
+                routing. So it now COUNTS and ATTRIBUTES without a verdict, and the operator is told which peer
+                is bypassing the DNS-based fill instead of that peer simply losing the internet.
+
+    Either tier records the SOURCE ADDRESS in the `doh_seen` dynamic set, so the panel can name the actual peer
+    ("this one is on encrypted DNS right now") rather than only the interface. The set self-expires, so it
+    reads as a CURRENT state, not a lifetime tally."""
     try:
         have = run(["nft", "list", "table", "inet", DOH_NFT_TABLE])
-        if not (enable and subnets):                           # disabled / no smart subnets → drop our table
+        # FREE: this render is fetched every sync anyway (above, before the signature gate), so the per-peer
+        # state rides along at no extra cost — no second nft invocation on the sync path.
+        _DOH_SEEN.clear()
+        _DOH_SEEN.update(_parse_doh_seen(have.stdout or ""))
+        want_src = sorted(set(observe) | set(strict))
+        if not want_src:                                       # nothing to watch or block → drop our table
             if have.returncode == 0:
                 run(["nft", "delete", "table", "inet", DOH_NFT_TABLE]); res["changed"] += 1
             with contextlib.suppress(OSError):
                 os.unlink(os.path.join(GEO_DIR, ".doh.sig"))
             return
         ips = _doh_ips()
-        want_src = sorted(subnets)
-        sig = hashlib.sha256((";".join(want_src) + "|" + ";".join(ips)).encode()).hexdigest()
+        strict_s = sorted(set(strict))
+        sig = hashlib.sha256((";".join(want_src) + "|" + ";".join(strict_s) + "|" + ";".join(ips)).encode()).hexdigest()
         sigf = os.path.join(GEO_DIR, ".doh.sig")
         cur = ""
         with contextlib.suppress(OSError):
@@ -2450,12 +2533,22 @@ def _ensure_doh_block(subnets, enable, res):
             lines.append("delete table inet " + DOH_NFT_TABLE)
         lines.append("table inet " + DOH_NFT_TABLE + " {")
         lines.append("  set doh4 { type ipv4_addr; flags interval; auto-merge; elements = { " + ", ".join(ips) + " } }")
+        # Per-PEER attribution, self-expiring: an address is in here while it is actually doing encrypted DNS.
+        lines.append("  set doh_seen { type ipv4_addr; flags dynamic; counter; timeout " + str(DOH_SEEN_TTL) + "s; }")
         lines.append("  chain forward { type filter hook forward priority filter; policy accept;")
         for S in want_src:
-            lines.append("    ip saddr " + S + " udp dport 853 drop")    # DoQ
-            lines.append("    ip saddr " + S + " tcp dport 853 drop")    # DoT
-            lines.append("    ip saddr " + S + " ip daddr @doh4 udp dport 443 drop")   # DoH3 / QUIC
-            lines.append("    ip saddr " + S + " ip daddr @doh4 tcp dport 443 drop")   # DoH
+            _rec = "update @doh_seen { ip saddr } counter"
+            _is_strict = S in set(strict_s)
+            # A verdict must apply to EVERY packet, so strict rules carry no ct-state test. Observe rules do:
+            # matching only the first packet of a connection is enough to attribute it, counts connections
+            # rather than packets, and keeps the @doh4 set lookup off the hot path for established traffic.
+            _new = "" if _is_strict else "ct state new "
+            _rej_t = " reject with tcp reset" if _is_strict else ""
+            _rej_u = " reject" if _is_strict else ""
+            lines.append("    ip saddr " + S + " " + _new + "udp dport 853 " + _rec + _rej_u)             # DoQ
+            lines.append("    ip saddr " + S + " " + _new + "tcp dport 853 " + _rec + _rej_t)             # DoT
+            lines.append("    ip saddr " + S + " " + _new + "ip daddr @doh4 udp dport 443 " + _rec + _rej_u)   # DoH3 / QUIC
+            lines.append("    ip saddr " + S + " " + _new + "ip daddr @doh4 tcp dport 443 " + _rec + _rej_t)   # DoH
         lines += ["  }", "}"]
         with contextlib.suppress(OSError):
             os.makedirs(GEO_DIR, exist_ok=True)
@@ -2812,7 +2905,14 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _apply_routing_reset((smart or {}).get("routing_reset"), res, (smart or {}).get("routing_reset_learned"))   # operator resets: full wipe+re-pull, or learned-IPs-only
     ip_learning = (smart or {}).get("ip_learning", True)       # False → keep the node "fresh": learned SNI IPs expire fast (short TTL)
     learn_ttl = 3600 if ip_learning else 120                   # learned-IP lifetime (s) — kernel-SNI ipset AND Hybrid-SNI catl_ set
-    _CAT_CAPS.clear(); _CAT_CAPS.update((smart or {}).get("cat_caps") or {})   # panel-shipped caps → host-tier seeding + kernel greying
+    # Panel-shipped caps → host-tier seeding + kernel greying. ABSENT ≠ EMPTY: the panel omits this key when it
+    # holds no provider catalog (it could not look the caps up), and sends it — possibly empty — when it could.
+    # Clearing on absent would strip every provider category's caps the first time the panel restarted without a
+    # warm catalog, silently stopping their host-tier fill. Same shape as _panel_list_refresh's GC, which already
+    # prunes only on a NON-empty manifest for exactly this reason.
+    _caps_in = (smart or {}).get("cat_caps")
+    if _caps_in is not None:
+        _CAT_CAPS.clear(); _CAT_CAPS.update(_caps_in)
     # PROVIDER lists: pull each routed one from the PANEL (not GitHub) when its version changed — writes the same
     # <cat>.txt / <cat>.doms the loaders below consume. New cat → now; changed cat → only in the quiet window.
     _panel_list_refresh((smart or {}).get("list_manifest") or {}, (panel_cfg or {}).get("geo_update") or {},
@@ -2873,7 +2973,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # cycle, so cache the enriched dict on a CHEAP signature of the inputs — subnets + the raw panel bundles (small)
     # + each fetched cat's geo-file (mtime,size) — never touching the big lists. Unchanged inputs reuse the enriched
     # dict AND tell _ensure_smart_dnsmasq to skip its (equally expensive) config rebuild. This keeps domains[cat]
-    # populated either way, so the geoip↔domain split below (skip=...) stays correct.
+    # populated either way, so the geoip↔domain split below (additive=...) stays correct.
     _host_cats = [c for c in domains if _CAT_CAPS.get(c, {}).get("host")]
     if host_engine == "dns":                                   # Force-DNS loads full lists into the per-domain dnsmasq
         _admit = set(_forcedns_admit(_host_cats, res))         # map → memory-gate it; over-budget cats stay off (reported)
@@ -2894,11 +2994,12 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         for cat, fl in _fetched.items():
             domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))
         _DOMTIER_CACHE["v"] = (dom_sig, domains)
-    # GEOIP cats fill from cached CIDR lists (TTL-gated); domain cats are owned by dnsmasq → skip them here. A
-    # cat is demoted from geoip only once it actually HAS domains, so a geoip-only cat (ru_net) never demotes and a
-    # domain-capable cat stays geoip until its upstream domain list lands rather than going briefly empty.
+    # GEOIP cats fill from cached CIDR lists (TTL-gated). A cat that ALSO has domains shares its set with dnsmasq:
+    # it loads ADDITIVELY (geoip floor + dnsmasq precision on top) instead of being handed over wholesale. It used
+    # to be skipped and its list deleted, which left services that connect by IP without DNS — Telegram voice/media
+    # above all — with no coverage whatsoever.
     if smart_cats:
-        _smart_geo_refresh(smart_cats, set_counts or {}, res, skip={c for c, v in domains.items() if v})
+        _smart_geo_refresh(smart_cats, set_counts or {}, res, additive={c for c, v in domains.items() if v})
     _smart_load_cidrs((smart or {}).get("cidrs") or {}, set_counts or {}, res)   # custom-rule raw IPs/CIDRs → into the set
     _subs = sorted({e["subnet"] for e in smart_e})
     _mech = (smart or {}).get("mech") or {}                   # {subnet: [mechanism ids]} → FREE L4/rate drops (mode-independent)
@@ -2924,10 +3025,13 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # Encrypted-DNS (DoH/DoT) guard: forcedns AUTO-blocks every smart subnet (so the dnsmasq domain fill can't be
     # bypassed); SNI modes leave the client's DNS untouched by default — but an explicit per-interface DoH-block
     # mechanism blocks it in ANY mode. Union the two; empty → the swg_doh table is torn down (never-wipe, our table only).
-    _doh_subs = set(_doh_mech)
+    # STRICT = the operator turned the per-interface "doh" mechanism on. OBSERVE = Force-DNS's automatic
+    # blanket, which no longer enforces (it killed clients whose only resolver is DoT) but still attributes.
+    _doh_strict = set(_doh_mech)
+    _doh_observe = set()
     if host_engine not in ("sni_user", "sni_kernel") and (smart or {}).get("block_doh"):
-        _doh_subs |= set(_subs)
-    _ensure_doh_block(sorted(_doh_subs), bool(_doh_subs), res)
+        _doh_observe |= set(_subs)
+    _ensure_doh_block(sorted(_doh_observe - _doh_strict), sorted(_doh_strict), res)
     _ensure_mech_block(_mech, res)                            # FREE traffic/abuse L4/rate drops (smtp/quic/torrents-porthint/portscan)
     _ensure_torrent_sig(sorted({s for s, cats in _mech.items() if "torrents" in (cats or [])}), res)   # Phase 3: bounded signature drop (any-port), where xt_string is capable
     return res
@@ -3386,9 +3490,21 @@ def sample_catk():
 
 def node_datapath_health():
     """This node's kernel-datapath health for the panel's self-heal check: is the AmneziaWG kernel module loadable
-    when the node uses awg? Bare-metal only — a docker node runs the userspace amneziawg-go datapath (no kernel
-    module, so the "Unknown device type" DKMS class can't happen) → {}. Mirrors the panel's host_datapath_health."""
+    when the node uses awg? Mirrors the panel's host_datapath_health. Nothing to report for a docker node —
+    see below."""
     if NODE_KIND == "docker":
+        # Nothing to report — but NOT for the reason this used to give. The old comment said "a docker node runs
+        # the userspace amneziawg-go datapath, so the Unknown-device-type class can't happen", and that premise
+        # is wrong: a container cannot LOAD a module but it USES one the host has already loaded, so with
+        # NET_ADMIN `ip link add type amneziawg` succeeds the moment the host has it. Measured on a live
+        # host-networked docker node — `ip -d link show` reports `amneziawg`, not `tun`, with no amneziawg-go
+        # running. Which datapath a docker node uses is decided by its HOST.
+        #
+        # It is still {} because there is no fault here to report and no repair to offer: the userspace fallback
+        # works, and it is not even slower — measured on a 1-vCPU node, same params, four runs: kernel
+        # 1232–1299 Mbit/s vs userspace 1297–1503 Mbit/s. The module would have to go on the host, which a
+        # container cannot do for itself and which leaves kernel devices outliving the container holding their
+        # ListenPorts. If something ever needs the kernel/userspace distinction, report it THEN, with a consumer.
         return {}
     out = {}
     try:
@@ -3975,9 +4091,13 @@ def _wdtt_cfg_probe(cfg, pid=None):
 # Flags that only ONE fork's server has, so seeing one in a foreign argv (or in its -h) names the fork outright.
 # qWDTT is the case that forced this: it stores passwords.json and wg-keys.dat exactly like the amurcanov family,
 # so the layout check below cannot tell them apart and every foreign qWDTT was adopted labelled "amurcanov" —
-# which then hides its RAW-IP capability and manages it with the wrong fork's binary. `-listen-raw` and
-# `-listen-direct` are UPSTREAM qWDTT flags (not ours), and no other fork has either.
-_WDTT_FORK_BY_FLAG = (("listen-raw", "qwdtt"), ("listen-direct", "qwdtt"), ("admin-addr", "ildarmaga"), ("no-panel", "wdttplus"))
+# which then hides its RAW-IP capability and manages it with the wrong fork's binary.
+#
+# ⚠️ `-listen-raw` USED TO BE ON THIS LIST and no longer is: our ildarmaga build now takes the same flag, so a
+# patched ildarmaga would have matched the first entry and been adopted as qwdtt — precisely the mislabelling
+# this table exists to prevent, and the match is FIRST-WINS so ildarmaga's own discriminator never got a look.
+# `-listen-direct` is still qWDTT-only, `-admin-addr` still ildarmaga-only (qWDTT spells its `-admin-listen`).
+_WDTT_FORK_BY_FLAG = (("listen-direct", "qwdtt"), ("admin-addr", "ildarmaga"), ("no-panel", "wdttplus"))
 
 
 def _wdtt_guess_fork(exe, cfgdir, flags=None, pid=None):
@@ -5008,6 +5128,10 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "quarantined": op_quarantined(),   # ops in repeated-failure backoff — visible, not silently churning
             "node_ips": list_node_ips(_addrs), "node_ifaces": list_node_ifaces(_addrs),
             "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status(),
+            # {peer_ip: attempts} currently using encrypted DNS (DoT/DoH). Self-expiring, so presence means NOW.
+            # Force-DNS classifies by watching plain DNS, so these peers are NOT being classified — the panel
+            # names them instead of the traffic silently going out the local exit with nobody the wiser.
+            "doh_peers": dict(_DOH_SEEN),
             "datapath": node_datapath_health(),          # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal)
             "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
             "ifaces_awaiting_key": sorted(_AWAIT_KEY),   # held for the vault, NOT missing — see _AWAIT_KEY
@@ -7751,11 +7875,13 @@ def _wdtt_fork_unknown(inst):
 _WDTT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$")
 _WDTT_CIDR_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
 
-# ── csqtt (amurcanov/csqtt — the Rust rewrite; raw-IP TUN, io_uring, NO WireGuard) ────────────────────────────
+# ── csqtt (amurcanov/csqtt — the Rust rewrite; raw-IP TUN, NO WireGuard) ──────────────────────────────────────
 # A SELF-CONTAINED, password-credential proxy like the WDTT family, but a raw-IP datapath (no wg handshake). Run
 # as a PARALLEL kind (own record / service names / reply channel) so the proven WDTT path is never threaded
 # through — zero regression risk (the same tactic WDTT used vs the turn path). Both run-models are supported;
-# io_uring is blocked by docker's DEFAULT seccomp profile, so a docker node needs SWG_NODE_SECCOMP=unconfined.
+# ⚠️ VERSION-DEPENDENT: csqtt <=2.0.1 ran an io_uring dataplane, which docker's DEFAULT seccomp profile blocks —
+# those builds need SWG_NODE_SECCOMP=unconfined on a docker node. 2.1.5 moved to Tokio/epoll and needs no such
+# exemption; the allowance stays only because 2.0.1 is still a rollback target.
 # The record follows the run-model, exactly like WDTT_RECORD: on docker /etc is the container's own ephemeral
 # filesystem, and only /var/lib/swg-noded is a mounted volume. Writing the record to /etc there meant every
 # container recreate lost the NODE-OWNED owner password (re-minted, silently rotating it out from under the
@@ -7766,7 +7892,8 @@ CSQTT_RECORD = _shared_record("csqtt.json", "/etc/swg-agent/csqtt.json", "SWG_CS
 # writes desired.json and reports the snapshot. Pointing at /opt/swg-csqtt on a docker node is what left the panel
 # reporting csqtt servers as active with ZERO passwords — the store was on the host, invisible from in here.
 CSQTT_ROOT = ("/var/lib/swg-noded/csqtt" if NODE_KIND == "docker"
-              else "/opt/swg-csqtt")            # per-instance: <root>/<iface>/{server, csqtt.env, desired.json, passwords.json}
+              else "/opt/swg-csqtt")            # per-instance: <root>/<iface>/{server, csqtt.env, desired.json,
+                                                #   + the store: passwords.json (<=2.0.1) or csqtt.db (2.1.5+)
 CSQTT_BIN_DIR = CSQTT_ROOT + "/.bin"             # per-arch binary slot; our swg-panel-patched build
 CSQTT_OWNER = "amurcanov/csqtt"                  # panel-mirror owner key
 CSQTT_WEBUSER = "swgpanel"                       # csqtt's own admin panel login (node-owned; a strong random pw is minted)
@@ -7831,7 +7958,8 @@ _IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 def _wdtt_raw(inst):
     """(listen, iface, addr) for an instance's RAW-IP listener, or None when raw is off.
 
-    Raw is qWDTT-only and opt-in: the operator picks a port, the panel derives the TUN name + subnet
+    Raw is opt-in and capability-gated (TURN_SERVERS[fork]["raw"] — qWDTT and ildarmaga today): the panel
+    fixes the port at WDTT_RAW_PORT and derives the TUN name + subnet
     (the fork's own defaults are process-global constants, so siblings would fight over one TUN — see
     forks/qwdtt/README.md). Anything malformed reads as OFF rather than as a half-configured listener."""
     port = str((inst or {}).get("raw_port") or "").strip()
@@ -8837,6 +8965,118 @@ def _wdtt_unseal_identity(sealed):
 _CLAIMED = {"wdtt": None, "csqtt": None}
 
 
+# ── socket-buffer caps for the turn family (the -no-nat counterpart) ─────────────────────────────────
+# Every turn-family server we ship runs with -no-nat, which makes the NODE the owner of host sysctls. The
+# forks' own enableBBR() is therefore skipped — correctly, because it also flips tcp_congestion_control and
+# default_qdisc, which are the operator's call and not a VPN server's. But that function ALSO raised
+# net.core.{r,w}mem_max, and those are NOT TCP-only: they cap the buffer any UDP socket may request. Skipping
+# the whole function left them at the distro default (208 KiB) with nothing else to set them.
+#
+# Measured on a live node: a public DTLS listener asks for a large receive buffer with plain SO_RCVBUF, so it
+# was silently clamped to ~416 KiB. Under a client opening ~18 concurrent streams the buffer overran, handshake
+# datagrams were dropped, and the server logged "Handshake failed: context deadline exceeded" for 53% of
+# attempts. Raising the cap and restarting took that to 10% at the same client load — a 5x drop.
+#
+# This is node-wide on purpose, not per fork: EVERY public listener measured was clamped — all four WDTT forks'
+# DTLS ports, csqtt's, and the turn-proxies'. Only the internal wireguard-go sockets escape it, because they
+# use SO_RCVBUFFORCE (CAP_NET_ADMIN) and ignore the cap entirely.
+TURN_SOCK_BUF_MAX = 25165824      # 24 MiB — what the forks' own enableBBR() asked for; an upper bound, not a target
+TURN_SOCK_BUF_MIN = 4194304       # 4 MiB — below this the cap is not worth writing; the default 208 KiB is the bug
+SOCK_BUF_CONF = "/etc/sysctl.d/99-swg-turn.conf"
+_SOCK_BUF_NOTED = set()
+
+def _turn_sock_target(listeners=1):
+    """How large a per-socket cap this box can afford, given how many turn-family listeners it runs.
+
+    net.ipv4.udp_mem's third value is a HARD ceiling on the memory ALL udp sockets may hold, auto-tuned from RAM
+    at boot — the honest per-box budget. Two things have to be true of the per-socket cap:
+
+      - it must not let ONE listener claim the whole budget. A cap is a permission, and a listener whose reader
+        stalls will fill whatever it was permitted; on a node running 30 forks that is 29 other servers starved
+        by one, which is a worse failure than the clamping this exists to fix.
+      - it must leave room for everything else on the box that speaks UDP (DNS, WireGuard, the panel).
+
+    So: half the budget is reserved, and the other half is split across the listeners actually deployed. The
+    divisor never drops below 8, so a node with one or two servers is sized as if it had four — leaving headroom
+    for the operator to add more without every existing socket needing a restart to be re-sized.
+
+    The floor wins on a very dense node (30 listeners on a small box lands under it). That is deliberate: 4 MiB
+    is still ~20x the 208 KiB default that dropped handshakes, and a box that dense is CPU-bound long before its
+    socket buffers matter."""
+    try:
+        udp_max_pages = int(open("/proc/sys/net/ipv4/udp_mem").read().split()[2])
+    except (OSError, ValueError, IndexError):
+        return TURN_SOCK_BUF_MIN                       # cannot read the budget → claim the modest floor, not the max
+    per = udp_max_pages * 4096 // max(8, 2 * max(1, int(listeners or 1)))
+    return max(TURN_SOCK_BUF_MIN, min(TURN_SOCK_BUF_MAX, per))
+
+
+def _turn_sock_bufs(listeners=1):
+    """RAISE net.core.{r,w}mem_max to what a turn-family listener needs, and PERSIST it.
+
+    Only ever raises: an operator who tuned these higher keeps their value. Congestion control and the qdisc are
+    left alone — that part of the forks' enableBBR() genuinely belongs to the host.
+
+    ⚠️ THE RUNTIME WRITE ALONE IS NOT ENOUGH, and that is the whole reason this also writes a sysctl.d drop-in.
+    A socket's buffer cap is read WHEN THE SOCKET IS CREATED. swg-noded and the turn servers share the same
+    `After=network-online.target` ordering, so after a reboot the servers can start, claim a clamped buffer, and
+    only then does this run — the fix would silently stop working on every reboot, which is exactly the failure
+    mode it was written to remove. systemd-sysctl applies /etc/sysctl.d well before multi-user.target, so the
+    drop-in is what makes it hold across a restart of the box."""
+    want = _turn_sock_target(listeners)
+    for key in ("rmem_max", "wmem_max"):
+        path = "/proc/sys/net/core/" + key
+        try:
+            cur = int(open(path).read().strip() or 0)
+        except (OSError, ValueError):
+            continue                                   # no /proc (odd container) → nothing to do, nothing to say
+        if cur < want:
+            run(["sysctl", "-q", "-w", "net.core.%s=%d" % (key, want)])
+            try:                                       # read back: in a container /proc/sys is usually read-only
+                new = int(open(path).read().strip() or 0)   # and `sysctl -w` no-ops in SILENCE
+            except (OSError, ValueError):
+                new = cur
+            if key not in _SOCK_BUF_NOTED:
+                _SOCK_BUF_NOTED.add(key)
+                if new >= want:
+                    print("net.core.%s: %d -> %d (turn-family listeners; applies on their next restart)"
+                          % (key, cur, new), flush=True)
+                else:
+                    print("net.core.%s is %d and could not be raised (read-only /proc/sys?) — turn-family DTLS "
+                          "handshakes may fail under load" % (key, cur), flush=True)
+    _turn_sock_persist(want)
+
+
+def _turn_sock_persist(want):
+    """Write the drop-in so the cap is in place BEFORE any server opens its socket after a reboot. Rewrites only
+    on drift, so this is a no-op on every pass but the first. A read-only or absent /etc/sysctl.d (containers,
+    immutable images) is not an error: the runtime write above still covers this boot, and the node says so once
+    rather than failing where nobody would look."""
+    body = ("# swg-panel: socket-buffer caps for turn-family listeners (WDTT forks / csqtt / turn-proxies).\n"
+            "# They run with -no-nat, so the NODE owns host sysctls; the servers' own enableBBR() is skipped.\n"
+            "# Sized from net.ipv4.udp_mem, not fixed — see _turn_sock_target in swg-noded.\n"
+            "net.core.rmem_max = %d\nnet.core.wmem_max = %d\n" % (want, want))
+    with contextlib.suppress(Exception):
+        if os.path.exists(SOCK_BUF_CONF) and open(SOCK_BUF_CONF).read() == body:
+            return
+    try:                                               # same tmp+replace idiom the rest of this file uses
+        os.makedirs(os.path.dirname(SOCK_BUF_CONF), exist_ok=True)
+        tmp = SOCK_BUF_CONF + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(body)
+        os.replace(tmp, SOCK_BUF_CONF)
+    except OSError as e:
+        if "persist" not in _SOCK_BUF_NOTED:
+            _SOCK_BUF_NOTED.add("persist")
+            print("could not write %s (%s) — the cap holds until this box reboots, then reverts"
+                  % (SOCK_BUF_CONF, e), flush=True)
+        return
+    if "persist-ok" not in _SOCK_BUF_NOTED:
+        _SOCK_BUF_NOTED.add("persist-ok")
+        print("wrote %s (net.core.{r,w}mem_max = %d) so the cap survives a reboot" % (SOCK_BUF_CONF, want),
+              flush=True)
+
+
 def reconcile_wdtt(want, remove=None):
     """Declarative WDTT reconcile (continuous, like desired_ifaces). want = {iface: inst}. Installs missing,
     writes desired.json + SIGHUPs on password change, applies stop/start, and removes ONLY the instances the panel
@@ -9133,6 +9373,32 @@ def _wdtt_iface_traffic(iface):
     return (rxb, txb, int(rs), int(ts))
 
 _WDTT_PW_BYTES = {}   # iface -> {pw: (up, down, t)} for per-password speed (keyless servers have no per-peer wire counter)
+# ── liveness for a datapath with no handshake (WDTT raw TUN, csqtt) ──────────────────────────────────────
+# A wg peer is "online" for RAW_ONLINE_GRACE after its last handshake, and wireguard rehandshakes on its own
+# every ~2min, so an idle-but-connected peer stays online. A raw peer has no handshake at all: the only signal
+# is whether bytes moved since the last sync. Reading that INSTANTANEOUSLY — online = speed > 0 — made a
+# connected peer flap to "ready" the moment it went quiet for one interval, which is most of the time for an
+# idle phone. Same grace, so the two kinds age out alike and a raw peer stops blinking.
+RAW_ONLINE_GRACE = 180                # seconds — deliberately the WG handshake window used above
+_RAW_SEEN = {}                        # "kind:iface" -> {pw: last time bytes actually moved}
+
+def _raw_online(key, pw, rs, ts, now, alive=None):
+    """Byte-delta liveness, held for RAW_ONLINE_GRACE. `alive` (when given) is the set of passwords the server
+    still has, used to drop entries for ones that are gone so this cannot grow without bound.
+
+    After a node restart the map is empty, so an idle peer reads `ready` until it next moves a byte. That is
+    honest — we have no handshake to reconstruct from — and it is what this path already did every interval."""
+    seen = _RAW_SEEN.setdefault(key, {})
+    if alive is not None and len(seen) > len(alive):
+        for gone in [k for k in seen if k not in alive]:
+            seen.pop(gone, None)
+    if rs or ts:
+        seen[pw] = now
+        return True
+    t = seen.get(pw)
+    return bool(t and (now - t) < RAW_ONLINE_GRACE)
+
+
 def _pw_speed(cache, pw, up, dn, now):
     """Per-password rx/tx speed (B/s) from cumulative byte deltas: up = client→server = server rx, down = the reverse
     = tx. `cache` is the per-iface {pw: (up, down, t)} dict. This byte-delta IS the per-peer speed the Overview
@@ -9189,7 +9455,12 @@ def wdtt_snapshot():
             devs = {}
             for did, d in (pj.get("devices") or {}).items():
                 d = d or {}
-                devs[did] = {"ip": d.get("ip", ""), "pub_key": d.get("pub_key", "")}   # NO priv_key
+                # This projection exists to drop priv_key before anything leaves the node — but it was also
+                # dropping raw_ip, so the `_pe["raw_ip"] = _dev.get("raw_ip", "")` below could only ever read
+                # "" and a RAW peer's address never reached the panel. Copy the fields we actually publish,
+                # explicitly, so adding one is a deliberate act and the private key still cannot ride along.
+                devs[did] = {"ip": d.get("ip", ""), "pub_key": d.get("pub_key", ""),
+                             "raw_ip": d.get("raw_ip", "")}   # NEVER priv_key
         # per-password online = the bound device's pubkey has a RECENT WG handshake. Docker: read the UAPI socket
         # directly ({pubkey_b64: last_handshake_sec}) since `awg show dump` can't read a plain wireguard-go socket.
         hs = {}
@@ -9214,10 +9485,10 @@ def wdtt_snapshot():
             _pe["raw_ip"] = _dev.get("raw_ip", "")   # its RAW-datapath address, when the instance runs one
             _pe["rx_speed"], _pe["tx_speed"] = _pw_speed(_WDTT_PW_BYTES.setdefault(iface, {}), _pw, _pe.get("up_bytes"), _pe.get("down_bytes"), _nowt)   # per-peer speed for the Overview talkers
             # A RAW peer has no WireGuard handshake to read — the wg check above can only ever say "offline" for
-            # it. Fall back to the same byte-delta liveness csqtt uses (moving bytes now = connected now), and
-            # only for instances that actually run raw, so a wg-only peer's status logic is untouched.
-            if _rawon and not _pe["online"] and (_pe["rx_speed"] or _pe["tx_speed"]):
-                _pe["online"] = True
+            # it. Fall back to byte-delta liveness, HELD for the same grace the wg window gives (see
+            # _raw_online), and only for instances that actually run raw so a wg-only peer's logic is untouched.
+            if _rawon and not _pe["online"]:
+                _pe["online"] = _raw_online("wdtt:" + iface, _pw, _pe["rx_speed"], _pe["tx_speed"], _nowt, pwds)
         srvpub = _wdtt_server_pub(iface)
         _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # interface aggregate throughput → panel graphs it like a wg iface
         # RAW traffic crosses a SECOND TUN, so the wg interface's counters can't see it. Read that TUN too and
@@ -9251,6 +9522,26 @@ def wdtt_snapshot():
 def _csqtt_svc(iface): return "swg-csqtt-" + iface
 def _csqtt_dir(iface): return CSQTT_ROOT + "/" + iface
 def _csqtt_bin_shared(): return CSQTT_BIN_DIR + "/" + _turn_arch() + "/csqtt-server"
+def _csqtt_ver_path():      # the INSTALLED build version, stamped beside the shared binary
+    return os.path.dirname(_csqtt_bin_shared()) + "/version.txt"
+def _csqtt_installed_ver():
+    """What is actually on disk — read from the stamp, never from the panel's desired `ver`. The snapshot used to
+    echo inst["ver"] back, which reports whatever the panel ASKED for even when the node never fetched it: a fleet
+    would claim an upgrade that never happened. This is the observation half."""
+    try:
+        with open(_csqtt_ver_path()) as f:
+            return f.read().strip()[:40]
+    except Exception:
+        return ""
+def _csqtt_write_ver(ver):
+    with contextlib.suppress(Exception):
+        p = _csqtt_ver_path(); os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            f.write((ver or "").strip())
+        os.replace(tmp, p)
+def _csqtt_ifaces(want):    # every desired iface — one shared binary, so a version swap restarts them all
+    return list((want or {}).keys())
 # csqtt ships one implementation today; the instance still records WHICH fork, so a second one can never be
 # silently substituted the way an unknown WDTT fork used to be (see _wdtt_fork_unknown).
 CSQTT_FORK_OWNER = {"csqtt": "amurcanov/csqtt"}
@@ -9322,8 +9613,10 @@ def _csqtt_env_text(inst):
                 inst.get("max_passwords") or 500, (inst.get("params") or "").strip()))
 
 def _csqtt_unit_text(iface, binp, cfgdir):
-    # csqtt = raw-IP TUN + io_uring: needs CAP_NET_ADMIN + /dev/net/tun AND the io_uring syscall set, which is NOT
-    # in @system-service by default → allow @io-uring explicitly or the dataplane seccomp-dies. --no-nat: the NODE
+    # csqtt = raw-IP TUN: needs CAP_NET_ADMIN + /dev/net/tun. The io_uring syscall set is NOT in @system-service by
+    # default, so it is allowed explicitly — required by <=2.0.1, whose dataplane was io_uring and had no fallback;
+    # 2.1.5 is Tokio/epoll and does not need it, but the allowance stays while 2.0.1 is a rollback target. The
+    # extra syscalls are only ever PERMITTED, never required. --no-nat: the NODE
     # owns MASQUERADE/forward for the csqtt subnet (reconcile_egress). --no-web: run headless — csqtt's own admin
     # panel (binds 0.0.0.0) + its DPI/syscalls monitor sockets are unused surfaces since the panel owns state via
     # --desired. $SWG_PARAMS unbraced (word-split; empty contributes nothing) — same as WDTT.
@@ -9408,9 +9701,11 @@ def _csqtt_fetch_bin(inst, binshared):
     ver = (inst.get("ver") or "").strip()
     want = (inst.get("sha256") or "").strip()
     if _csqtt_panel_fetch(binshared, want, ver or "csqtt") and os.path.exists(binshared):
+        _csqtt_write_ver(ver)      # stamp what we actually installed — the version board reads this, not the request
         return ""
     okd, why = _swg_release_get(("csqtt-" + ver) if ver else "", arch, binshared, want, "csqtt")
     if okd:
+        _csqtt_write_ver(ver)
         return ""
     return ("couldn't fetch the csqtt binary for " + arch + (" " + ver if ver else "")
             + " — the panel's mirror had none, and " + why
@@ -9422,6 +9717,35 @@ def _csqtt_panel_fetch(dest, want_sha, tag="csqtt"):
     with contextlib.suppress(Exception):
         return _turn_panel_fetch(CSQTT_OWNER, tag or "csqtt", _turn_arch(), dest, want_sha)
     return False
+
+def _csqtt_update_binary(inst, ver, ifaces):
+    """Swap the shared csqtt binary to a different published build. Re-fetch (atomic replace — a running process
+    keeps the old inode), stamp the version, then restart every instance so they exec the new one. Mirrors
+    _wdtt_update_binary; csqtt has ONE binary for the whole node, so every iface restarts together. '' on success.
+
+    Without this, publishing a new CSQTT_BUILDS moved nothing: both _csqtt_fetch_bin call sites are guarded by
+    `if not os.path.exists(binshared)`, so a node that already had a binary kept its old one for ever and only a
+    fresh install ever saw the new build."""
+    binshared = _csqtt_bin_shared()
+    _e = _csqtt_fetch_bin(dict(inst, ver=ver), binshared)
+    if _e or not os.path.exists(binshared):
+        return _e or ("csqtt binary missing after a reportedly successful fetch — check free space on "
+                      + os.path.dirname(binshared))
+    _csqtt_write_ver(ver)
+    if NODE_KIND == "docker":                     # container: restart each supervised child so it execs the new binary
+        with contextlib.suppress(Exception): os.chmod(binshared, 0o755)
+        insts = _csqtt_load(); err = ""
+        for i in (ifaces or [inst["iface"]]):
+            it = dict(insts.get(i) or {}); it["iface"] = i
+            if not it.get("stopped"):
+                e = _csqtt_docker_start(it)
+                if e: err = i + ": " + e
+        return err
+    host_sh("chmod 755 " + shlex.quote(binshared))
+    for i in (ifaces or [inst["iface"]]):
+        host_sh("systemctl restart " + shlex.quote(_csqtt_svc(i)) + " >/dev/null 2>&1")
+    return _csqtt_verify(inst["iface"])
+
 
 def _csqtt_write_cfgdir(inst, binshared, binp, cfgdir):
     """Lay down the config-dir (binary symlink + csqtt.env + desired.json) natively — a partial failure RAISES
@@ -9640,12 +9964,12 @@ def _csqtt_verify(iface):
             time.sleep(0.5)
             if _csqtt_docker_pid(iface):
                 return ""
-        return "server did not stay up — see " + _csqtt_dir(iface) + "/server.log (io_uring/seccomp?)"
+        return "server did not stay up — see " + _csqtt_dir(iface) + "/server.log"
     for _ in range(8):
         time.sleep(0.5)
         if (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null").stdout or "").strip() == "active":
             return ""
-    return "service did not become active — check `journalctl -u " + _csqtt_svc(iface) + "` (io_uring/seccomp?)"
+    return "service did not become active — check `journalctl -u " + _csqtt_svc(iface) + "`"
 
 def _csqtt_install(inst):
     _unk = _csqtt_fork_unknown(inst)
@@ -9719,7 +10043,8 @@ def _csqtt_unit_drifted(iface, inst):
 
 def _csqtt_reconfigure(inst):
     """Apply a transport-param change (listen / tun-addr / max / params) to a running instance: rewrite csqtt.env
-    + the unit and restart. The store (passwords.json) is preserved."""
+    + the unit and restart. The store (passwords.json <=2.0.1 / csqtt.db 2.1.5+) is preserved — the whole
+    config-dir is left in place and only csqtt.env + the unit are rewritten."""
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface); binp = cfgdir + "/server"
     binshared = _csqtt_bin_shared()
     if not os.path.exists(binshared):        # same-arch self-heal, mirroring _wdtt_reconfigure: without this
@@ -9747,7 +10072,7 @@ def _csqtt_remove(iface):
         _csqtt_docker_stop(iface)
         with contextlib.suppress(Exception): run(["ip", "link", "delete", "dev", iface])
         with contextlib.suppress(Exception): shutil.rmtree(_csqtt_dir(iface), ignore_errors=True)
-        _CSQTT_LASTBYTES.pop(iface, None)
+        _CSQTT_LASTBYTES.pop(iface, None); _RAW_SEEN.pop("csqtt:" + iface, None)
         _wdtt_del_iptables_comment("nat", "POSTROUTING", "swg-egress:" + iface)
         _wdtt_del_iptables_comment("filter", "FORWARD", "swg-egress-acl:" + iface)
         _wdtt_del_iptables_comment("mangle", "FORWARD", "swg-egress-mss:" + iface)
@@ -9757,7 +10082,7 @@ def _csqtt_remove(iface):
             "rm -f " + shlex.quote(_csqtt_unit_path(iface)) + "; systemctl daemon-reload; "
             "ip link del " + shlex.quote(iface) + " 2>/dev/null; "
             "rm -rf " + shlex.quote(_csqtt_dir(iface)))
-    _CSQTT_LASTBYTES.pop(iface, None)
+    _CSQTT_LASTBYTES.pop(iface, None); _RAW_SEEN.pop("csqtt:" + iface, None)
     # node-owned egress rules (reconcile_egress won't drop them — the iface is already gone from the record)
     _wdtt_del_iptables_comment("nat", "POSTROUTING", "swg-egress:" + iface)
     _wdtt_del_iptables_comment("filter", "FORWARD", "swg-egress-acl:" + iface)
@@ -9771,10 +10096,52 @@ def _csqtt_remove(iface):
 # snapshot, and paying a privileged one-shot container for each of those would be ruinous.
 _CSQTT_STOREPROBE = {}         # cfgdir -> (at, (users, store_found))
 _CSQTT_STORE_MAX = 8 << 20     # a probe, not a backup — a store bigger than this is answered after adoption
+_CSQTT_DB_FILES = ("csqtt.db", "csqtt.db-wal", "csqtt.db-shm")   # WAL mode: the store is three files, never one
+
+def _csqtt_read_store(cfgdir):
+    """The csqtt runtime store, in the passwords.json SHAPE {"passwords": {...}, "devices": {...}}.
+
+    csqtt <=2.0.1 kept passwords.json. 2.1.5 moved to SQLite `csqtt.db` (WAL) and, on first start, imports the
+    JSON and DELETES it — so a node that only knew the JSON reported an empty store for every instance the
+    moment the server was upgraded, which reads as "all peers vanished". Read whichever exists: JSON first, so
+    an older server and the brief pre-migration window keep working untouched, else the DB.
+
+    Same reader pattern as _wdtt_read_paneldb (ildarmaga's panel.db) — sqlite3 is stdlib, so this adds no
+    dependency. Returns the same shape both ways, so the caller does not branch. NEVER returns a private key.
+    Read-only in practice, but opened normally like panel.db: for OUR instances csqtt is the sole writer and
+    SQLite handles the concurrent reader; a FOREIGN server's store is never opened here at all (the adoption
+    path stages a copy first — see _csqtt_store_probe)."""
+    jp = os.path.join(cfgdir, "passwords.json")
+    if os.path.isfile(jp):
+        with contextlib.suppress(Exception):
+            with open(jp) as f:
+                return json.load(f) or {}
+        return {}
+    dbp = os.path.join(cfgdir, "csqtt.db")
+    if not os.path.isfile(dbp):
+        return {}
+    pwds, devs = {}, {}
+    with contextlib.suppress(Exception):
+        import sqlite3
+        c = sqlite3.connect(dbp, timeout=5)
+        try:
+            for pw, did, exp, up, dn, deact, name, vkh in c.execute(
+                    "SELECT password, device_id, expires_at, up_bytes, down_bytes, is_deactivated, name, vk_hash "
+                    "FROM passwords"):
+                pwds[str(pw)] = {"device_id": did or "", "expires_at": exp or 0,
+                                 "up_bytes": up or 0, "down_bytes": dn or 0,
+                                 "is_deactivated": bool(deact), "name": name or "", "vk_hash": vkh or ""}
+            for did, ip, pub in c.execute("SELECT device_id, ip, pub_key FROM devices"):
+                devs[str(did)] = {"ip": ip or "", "pub_key": pub or ""}   # NO priv_key
+        finally:
+            c.close()
+    return {"passwords": pwds, "devices": devs}
+
 
 def _csqtt_users_from_text(raw):
-    """Parse a csqtt passwords.json body → {password: {vk_hash, expires_at, is_deactivated, comment}}. csqtt keeps
-    ONE store shape, unlike the WDTT family's two — same fields, so the panel's importer treats both identically."""
+    """Parse a csqtt passwords.json body → {password: {vk_hash, expires_at, is_deactivated, comment}}. Same fields
+    as the WDTT stores, so the panel's importer treats them identically. csqtt used to keep ONE store shape; from
+    2.1.5 it has two (passwords.json was replaced by SQLite csqtt.db) — _csqtt_users_from_db is the other half."""
     out = {}
     with contextlib.suppress(Exception):
         data = json.loads(raw)
@@ -9790,6 +10157,72 @@ def _csqtt_users_from_text(raw):
                                 # without it every imported peer is titled "adopted" and they cannot tell them apart
                                 "comment": str(e.get("name") or e.get("comment") or "").strip()[:80]}
     return out
+
+
+def _csqtt_users_from_db(dbpath):
+    """(users, ok) from a csqtt.db (2.1.5+) — the SQLite half of _csqtt_users_from_text.
+
+    csqtt.db is WAL mode, so it is NOT one file: the base alone can be an arbitrarily stale checkpoint. This is
+    the same trap that emptied ildarmaga's wdtt_users table on adoption (see _wdtt_adopt_seed) — take the
+    trio through a scratch copy so the WAL replays and the FOREIGN original is never opened for writing.
+    `ok` is store_found: it says we READ the store, which is not the same question as "it has users"."""
+    stage = None
+    try:
+        stage = tempfile.mkdtemp(prefix="csqttdb-")
+        for _f in _CSQTT_DB_FILES:
+            _src = os.path.join(os.path.dirname(dbpath), _f)
+            if os.path.isfile(_src):
+                shutil.copy2(_src, os.path.join(stage, _f))
+        return _csqtt_db_users(stage)
+    except Exception:
+        return {}, False
+    finally:
+        if stage:
+            shutil.rmtree(stage, ignore_errors=True)
+
+
+def _csqtt_users_from_db_tar(blob):
+    """(users, ok) from a tar of the csqtt.db trio — the docker arm, where the store lives in another mount
+    namespace and comes back over host_sh as one archive rather than a readable path."""
+    stage = None
+    try:
+        stage = tempfile.mkdtemp(prefix="csqttdb-")
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:") as tf:
+            for m in tf.getmembers():
+                # never let an archive we did not build write outside the staging dir
+                if m.isfile() and os.path.basename(m.name) in _CSQTT_DB_FILES:
+                    m.name = os.path.basename(m.name)
+                    tf.extract(m, stage)
+        return _csqtt_db_users(stage)
+    except Exception:
+        return {}, False
+    finally:
+        if stage:
+            shutil.rmtree(stage, ignore_errors=True)
+
+
+def _csqtt_db_users(stage):
+    """(users, ok) from an already-staged csqtt.db trio. Opening the STAGED copy writably is what replays the
+    WAL; the original is never touched."""
+    dbp = os.path.join(stage, "csqtt.db")
+    if not os.path.isfile(dbp):
+        return {}, False
+    try:
+        import sqlite3
+        c = sqlite3.connect(dbp, timeout=10)
+        try:
+            out = {}
+            for pw, vkh, exp, deact, name in c.execute(
+                    "SELECT password, vk_hash, expires_at, is_deactivated, name FROM passwords"):
+                if not pw:
+                    continue
+                out[str(pw)] = {"vk_hash": str(vkh or "").strip(), "expires_at": int(exp or 0),
+                                "is_deactivated": bool(deact), "comment": str(name or "").strip()[:80]}
+            return out, True
+        finally:
+            c.close()
+    except Exception:
+        return {}, False
 
 
 def _csqtt_store_probe(cfgdir, fresh=False, pid=None):
@@ -9817,10 +10250,13 @@ def _csqtt_store_probe(cfgdir, fresh=False, pid=None):
     res = ({}, False)
     _cfgr = _root + cfgdir
     pj = os.path.join(_cfgr, "passwords.json")
+    _dbp = os.path.join(_cfgr, "csqtt.db")
     if os.path.isfile(pj):                      # bare metal, or a store mounted into THIS container
         with contextlib.suppress(Exception):
             with open(pj) as f:
                 res = (_csqtt_users_from_text(f.read()), True)
+    elif os.path.isfile(_dbp):                  # csqtt >=2.1.5: the migration consumed passwords.json
+        res = _csqtt_users_from_db(_dbp)
     elif NODE_KIND == "docker":
         # The trailing `; :` holds the exit status at 0 whatever happens: this is a QUESTION, not an assertion, and
         # "no such dir" exiting 1 every 45s would bury the real log lines (the same lesson as _wdtt_cfg_probe).
@@ -9831,13 +10267,23 @@ def _csqtt_store_probe(cfgdir, fresh=False, pid=None):
             _pfxsh = ("R=''; P=%s; [ -n \"$P\" ] && [ -e /proc/$P/ns/mnt ] && "
                       "[ \"$(readlink /proc/$P/ns/mnt)\" != \"$(readlink /proc/1/ns/mnt)\" ] && R=/proc/$P/root; "
                       % shlex.quote(str(int(pid)) if pid else ""))
-            _cmd = _pfxsh + ("cd \"$R\"%s 2>/dev/null && { [ -f passwords.json ] || exit 0; printf 'F:'; "
-                    "[ $(stat -c %%s passwords.json) -le %d ] && base64 -w0 < passwords.json; }; :"
-                    % (shlex.quote(cfgdir), _CSQTT_STORE_MAX))
+            # 'F:' = passwords.json (<=2.0.1), 'D:' = a tar of the csqtt.db trio (2.1.5+). The DB arm sends
+            # three files because WAL mode means the base file alone can be an arbitrarily stale checkpoint —
+            # shipping only csqtt.db would hand the operator a partial user list to adopt on.
+            _cmd = _pfxsh + ("cd \"$R\"%s 2>/dev/null || exit 0; "
+                    "if [ -f passwords.json ]; then printf 'F:'; "
+                    "[ $(stat -c %%s passwords.json) -le %d ] && base64 -w0 < passwords.json; "
+                    "elif [ -f csqtt.db ]; then printf 'D:'; "
+                    "[ $(stat -c %%s csqtt.db) -le %d ] && { for f in csqtt.db csqtt.db-wal csqtt.db-shm; do "
+                    "[ -f \"$f\" ] && echo \"$f\"; done | tar -cf - -T - 2>/dev/null | base64 -w0; }; fi; :"
+                    % (shlex.quote(cfgdir), _CSQTT_STORE_MAX, _CSQTT_STORE_MAX))
             raw = (host_sh(_cmd, timeout=40).stdout or "").strip()
             if raw.startswith("F:"):
                 b64 = raw[2:].strip()
                 res = ((_csqtt_users_from_text(base64.b64decode(b64).decode("utf-8", "replace")) if b64 else {}), True)
+            elif raw.startswith("D:"):
+                b64 = raw[2:].strip()
+                res = (_csqtt_users_from_db_tar(base64.b64decode(b64)) if b64 else ({}, True))
     _CSQTT_STOREPROBE[_ck] = (now, res)
     return res
 
@@ -10122,6 +10568,22 @@ def reconcile_csqtt(want, remove=None):
                     res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                 res["changed"] += 1
             else:
+                # Panel-published build moved → swap the shared binary. Both _csqtt_fetch_bin call sites are
+                # guarded by "binary absent", so without this a node that already had one kept it for ever and
+                # publishing a new build upgraded nothing.
+                #
+                # Deliberately NOT the WDTT shortcut: _wdtt_* stamps an unstamped binary as the current build on
+                # first sync, which is true THERE because versioning shipped when the unversioned binary was the
+                # current one. Here it is false — every existing node holds a pre-versioning binary while current
+                # has moved on, so blind-stamping would assert an upgrade that never happened, the exact lie this
+                # change exists to remove. Unstamped means UNKNOWN, so it re-fetches once and stamps the truth.
+                _want_ver = (inst.get("ver") or "").strip()
+                _inst_ver = _csqtt_installed_ver()
+                if _want_ver and _want_ver != _inst_ver:
+                    err = _csqtt_update_binary(inst, _want_ver, _csqtt_ifaces(want))
+                    if err:
+                        res["errors"].append(iface + ": " + err); have[iface] = inst; continue
+                    res["changed"] += 1
                 # NOTE the `have[iface] = inst` before each continue. Without it an error here DROPPED the
                 # instance from the node record — and _csqtt_save then persisted the loss, taking the
                 # node-owned owner password and the pw_seen flag with it. A transient failure (a server that
@@ -10181,7 +10643,8 @@ def reconcile_csqtt(want, remove=None):
 
 def csqtt_snapshot():
     """Read each csqtt instance's runtime state back for the panel: service active + per-password device binding
-    + traffic (from the csqtt store passwords.json — WDTT-shaped). Raw datapath has NO wg handshake, so `online`
+    + traffic (from the csqtt store — passwords.json <=2.0.1, csqtt.db from 2.1.5; see _csqtt_read_store). The raw
+    datapath has NO wg handshake, so `online`
     is a byte-delta heuristic (bytes moved since the last snapshot). Never returns any private key."""
     out = []
     insts = _csqtt_load()
@@ -10195,15 +10658,13 @@ def csqtt_snapshot():
         # was not running, beside an empty password store it could not read. Two wrong answers that agreed.
         active = ("active" if _csqtt_docker_pid(iface) else "inactive") if NODE_KIND == "docker" else \
                  (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null").stdout or "").strip()
-        pj = {}
-        with contextlib.suppress(Exception):
-            with open(_csqtt_dir(iface) + "/passwords.json") as f:
-                pj = json.load(f) or {}
+        pj = _csqtt_read_store(_csqtt_dir(iface))   # passwords.json (<=2.0.1) or csqtt.db (2.1.5+)
         pwds, devs = {}, {}
         for did, d in (pj.get("devices") or {}).items():
             d = d or {}
             devs[did] = {"ip": d.get("ip", ""), "pub_key": d.get("pub_key", "")}   # NO priv_key
         last = _CSQTT_LASTBYTES.setdefault(iface, {})
+        _alive = set(pj.get("passwords") or {})   # for _raw_online's prune: pwds is still being built below
         for pw, e in (pj.get("passwords") or {}).items():
             e = e or {}
             up, dn = int(e.get("up_bytes") or 0), int(e.get("down_bytes") or 0)
@@ -10212,7 +10673,7 @@ def csqtt_snapshot():
             # online signal — and the SAME delta is the per-peer speed the Overview top-talkers use (no per-peer wire
             # counter exists for a keyless server). `last` now holds (up, down, t) per password.
             _rs, _ts = _pw_speed(last, pw, up, dn, _nowt)
-            online = (_rs + _ts) > 0
+            online = _raw_online("csqtt:" + iface, pw, _rs, _ts, _nowt, _alive)   # held for the grace — see _raw_online
             pwds[pw] = {"device_id": e.get("device_id", ""), "up_bytes": up, "down_bytes": dn,
                         "is_deactivated": bool(e.get("is_deactivated")), "expires_at": e.get("expires_at", 0),
                         "ip": _dev.get("ip", ""), "online": online, "rx_speed": _rs, "tx_speed": _ts}
@@ -10225,7 +10686,10 @@ def csqtt_snapshot():
                     # "not yet used" while the node was running two of them. Absent on an old record = the single
                     # csqtt fork known here, the same assumption _csqtt_fork_unknown already makes.
                     "fork": (inst.get("fork") or "").strip() or next(iter(CSQTT_FORK_OWNER)),
-                    "version": (inst.get("ver") or "").strip(),   # A3 wires CSQTT_BUILDS + a version board; record-tracked for now
+                    # OBSERVED, not requested: the stamp beside the binary. Echoing inst["ver"] reported whatever
+                    # the panel asked for even when the node never fetched it — a fleet claiming an upgrade it had
+                    # not performed. "" = a pre-versioning binary of unknown build (the reconcile re-fetches it).
+                    "version": _csqtt_installed_ver(),
                     # T-18, the csqtt twin: the two params _csqtt_params_changed compares that nothing else
                     # reported. See the WDTT report for why a mirror without them restarts a live server.
                     "max_passwords": inst.get("max_passwords") or "",
@@ -10570,6 +11034,15 @@ def main():
                     print("self-heal: adopting live interface(s) the panel manages but we hold no conf for: "
                           + ", ".join(sorted(_heal)), flush=True)
                 ob = onboard_ifaces(node_cfg, {**(reply.get("onboard") or {}), **_heal})   # add panel-requested interfaces first
+                # Before any turn-family server is installed or restarted below — the cap is read at socket
+                # creation, so raising it first is what lets a (re)started listener actually claim the buffer.
+                # Count the listeners the panel actually wants here — the cap is sized against them so one
+                # server on a dense node can never claim the box's whole UDP budget.
+                _n_listen = sum(len(reply.get(k) or {}) for k in ("turn", "wdtt", "csqtt")
+                                if isinstance(reply.get(k), dict))
+                if _n_listen:
+                    with contextlib.suppress(Exception):
+                        _turn_sock_bufs(_n_listen)
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
                 wd = reconcile_wdtt(reply.get("wdtt"), reply.get("wdtt_remove"))   # install/desired.json+SIGHUP; removals ONLY from the explicit list
                 # Take over a wg/awg server from another container (Amnezia). One-shot and operator-driven:

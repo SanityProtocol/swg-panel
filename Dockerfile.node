@@ -1,10 +1,23 @@
 # swg-node — entry-server image: userspace AmneziaWG + agent + HTTPS sync daemon.
 #
-# A container can't load the host's wg/awg kernel module, so this builds the
-# userspace amneziawg-go plus the awg CLI tools, brings up the interface, and runs
-# swg-noded as a pull-only client (outbound HTTPS to the panel; peers reconciled
-# locally). Needs NET_ADMIN + /dev/net/tun. For best throughput, prefer a
-# bare-metal node (install-node.sh) with the kernel module.
+# A container can't LOAD a kernel module, so this builds the userspace amneziawg-go
+# plus the awg CLI tools, brings up the interface, and runs swg-noded as a pull-only
+# client (outbound HTTPS to the panel; peers reconciled locally). Needs NET_ADMIN +
+# /dev/net/tun.
+#
+# ⚠️ "Can't load" is not "can't use". A container USES a module the HOST has already
+# loaded: with NET_ADMIN, `ip link add type amneziawg` succeeds here whenever
+# /sys/module/amneziawg exists on the host, and awg-quick then takes the KERNEL
+# datapath — measured on a live node, where `ip -d link show` reports `amneziawg`,
+# not `tun`, with no amneziawg-go running. amneziawg-go is the FALLBACK for a host
+# without the module, not the datapath a docker node is stuck with.
+#
+# We do NOT install that module for you, and throughput is not a reason to want it:
+# measured on a 1-vCPU node, same params, four runs, kernel 1232–1299 Mbit/s vs
+# userspace 1297–1503 Mbit/s — amneziawg-go was never slower. A host module also
+# leaves kernel devices that OUTLIVE the container still holding their ListenPorts
+# (see the stale-device sweep in node-entrypoint.sh). If you want it anyway, it is
+# a host-side decision: install amneziawg-dkms there and recreate the container.
 
 FROM public.ecr.aws/docker/library/golang:1.25-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends git make build-essential \

@@ -15,9 +15,9 @@ import { NODE_COLOR_DEFAULT, NODE_CREATE_DEFAULT, toThemed } from "./theme.js";
 import { go } from "./router.js";
 import { targetType, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
-         turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel } from "./model.js";
+         turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised } from "./model.js";
 import { turnFork, turnColor, turnForkList } from "./turn-catalog.js";
-import { Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm } from "./ui.js";
+import { Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm } from "./ui.js";
 import {
   genKeys, genPSK, buildConf, parseFullConf, downloadConf, getConfig, configOverrides, QR, qrDataURL,
   subFeatureOn, subPublishOrPrompt, ensureVaultUnlocked, subSKCached, VaultPromptSheet, ensurePeerBlob,
@@ -277,7 +277,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
         <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
         <span class="tp">${t.iface}</span>
         ${t.missing ? html`<span class="topt-missing" title=${T("This interface is gone from the node — uncheck to remove this deployment from the peer")}>${T("tag|missing")}</span>` : null}</label>
-      <div class="topt-right">
+      <div class="topt-right hasprim">
         ${(pubPeer && pubHave.has(k)) ? html`<${PubTag} peer=${pubPeer} src=${ity} label=${ity}/>` : html`<${Tag} kind=${ity} label=${ity}/>`}
         ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${(pubPeer && pubHave.has(k)) ? pubPeer : null}/>`}
         ${(s && (s.wdtt || s.csqtt || isSelfContainedKind(ity)))
@@ -628,7 +628,12 @@ export function PeerViewSheet({ pid, node, iface }) {
       const xfer = tgtXfer(t);            // wire counters for wg/awg, per-password byte deltas for a keyless server
       const proto = targetType(t);
       return html`<div class=${"pv-dep" + (node === t.node && iface === t.iface ? " hl" : "")} key=${tkey(t.node, t.iface)}>
-        <div class="pv-dep-top">${badgeWithReason(t.status, t.status === "blocked" ? blockedReason(t.type) : statusReason(t.status))}
+        <div class="pv-dep-top">${peerUncategorised(t) && t.status !== "blocked" && t.status !== "faulty"
+          // same treatment as the grid and the QR card: the status word goes amber with a warning triangle and
+          // the bubble explains, rather than a green pill that says everything is fine about a peer whose
+          // traffic is not being category-routed.
+          ? uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(t.status)}</span>`)
+          : badgeWithReason(t.status, t.status === "blocked" ? blockedReason(t.type) : statusReason(t.status))}
           <span class="tags">
             <${PubTag} peer=${p} src=${proto} label=${proto} dim=${!t.online}/>
             ${turnEnabled() ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${p} dim=${!t.online}/>` : null}
@@ -642,7 +647,11 @@ export function PeerViewSheet({ pid, node, iface }) {
         <div class="pv-dep-grid">
           <span><span class="k">${T("col|Node")}</span> <span style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></span>
           <span><span class="k">${T("col|Interface")}</span> ${t.iface}</span>
-          <span><span class="k">${T("col|Address")}</span> <span class="addr">${t.ip || "—"}</span></span>
+          ${/* A qWDTT instance running RAW gives the peer a SECOND address, on its own TUN — it holds both at
+                once, so this sits BESIDE the wg address rather than replacing it. Absent for every other kind. */""}
+          <span class=${t.raw_ip ? "pv-addr-raw" : ""}><span class="k">${T("col|Address")}</span> <span class="addr">${t.ip || "—"}</span>${t.raw_ip
+            ? html` <span class="tg tg-raw" title=${T("This peer's address on the RAW datapath — it holds both at once")}>RAW ${t.raw_ip}</span>`
+            : null}</span>
           <span><span class="k">${T("col|Rate")}</span> ${rateCell(xfer ? xfer.rx_speed : 0, xfer ? xfer.tx_speed : 0)}</span>
           <span><span class="k">${T("col|Total")}</span> ${xferCell(...dlul(xfer ? xfer.rx_bytes : 0, xfer ? xfer.tx_bytes : 0))}</span>
           <span><span class="k">${T("col|Online")}</span> ${seen(tgtSeenAge(t))}</span>

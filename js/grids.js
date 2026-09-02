@@ -14,11 +14,11 @@
 import { esc, tkey, seen, dur, fmtBytes } from "./util.js";
 import { T } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
-import { targetType, nodeStale, ghostIface, ifaceIsAll, ifaceMatch, tgtXfer, tgtSeenAge } from "./model.js";
+import { targetType, nodeStale, ghostIface, ifaceIsAll, ifaceMatch, tgtXfer, tgtSeenAge, peerUncategorised } from "./model.js";
 import {
   Ic, Tag, Badge, Dropdown, SearchBox, secTitle, footRow, Popover, toast, openModal, openConfirm,
   rowSingle, rowDouble, rowNoSelect, RowError, connDot, endpointCell, rateCell, xferCell, DepBadge,
-  gridIfaceTag, gridIfacesTag, gridStatusBadge, badgeWithReason, lifecycleIcon, statusLabel, dlul, rowError, statusReason,
+  gridIfaceTag, gridIfacesTag, gridStatusBadge, uncatPop, badgeWithReason, lifecycleIcon, statusLabel, dlul, rowError, statusReason,
   Portal,
 } from "./ui.js";
 import {
@@ -68,6 +68,12 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             if (re) {
               return html`<span class="turnwrap" title="">${dot}${ifaceB}
                 <span class="turnbub statusbub err"><span class="statusbub-h" style="color:var(--dangling)"><${Ic} i="err"/>${T("Error")}</span>${re.msg}</span></span>`;
+            }
+            // Uncategorised: the live view has no pill to recolour, so the DOT carries it — amber and pulsing,
+            // "online, but not being category-routed". Same bubble as the grid badge, shared from ui.js so the
+            // sentence exists once. Ranked below a real fault: a faulty/blocked peer has a worse problem.
+            if (peerUncategorised(t) && t.status !== "faulty" && t.status !== "blocked") {
+              return uncatPop(html`<span class="condot uncat"></span>${ifaceB}`);
             }
             // faulty / blocked → the "why" bubble on hovering the dot OR the interface badge (same as the peer-grid badge)
             if (t.status === "faulty" || t.status === "blocked") {

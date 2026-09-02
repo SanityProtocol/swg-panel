@@ -1566,6 +1566,22 @@ export function PanelSettingsScreen() {
   const skipNote = skipped => { if (skipped) toast(T("{v1} skipped — turn-proxy management is off there, or their architecture has no published build.", { v1: plural(skipped, "node") }), "err"); };
   const updateFork = async (fid, latest) => {
     const fork = turnForkList().find(x => x.id === fid) || {};
+    if (fork.kind === "csqtt") {   // csqtt: one binary per NODE — release each node's hold and it takes the current build
+      const all = [];
+      for (const [nid, snap] of Object.entries(Store.stats || {})) for (const c of (snap.csqtt || [])) if (c && c.iface) all.push({ node: nid, iface: c.iface });
+      const ct = all.filter(t => canTurnAct(t.node));
+      const cskip = new Set(all.filter(t => !canTurnAct(t.node)).map(t => t.node)).size;
+      if (!ct.length) { skipNote(cskip); return; }
+      setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest } }));   // i18n-keys
+      turnUpdateTarget[fid] = { ver: latest, until: Date.now() + 120000 };
+      const seen = new Set();
+      for (const t of ct) { if (seen.has(t.node)) continue; seen.add(t.node); await api.csqttVersion({ node: t.node, iface: t.iface, ver: "" }); }
+      await Store.poll();
+      setTurnCheck(c => ({ ...c, [fid]: {} }));
+      toast(T("Update requested on {v1} — each node applies it on its next sync.", { v1: plural(seen.size, "node") }), "ok");
+      skipNote(cskip);
+      return;
+    }
     if (fork.kind === "wdtt") {   // WDTT: release each instance's hold → the node swaps its shared binary to the current published build
       const all = [];
       for (const [nid, snap] of Object.entries(Store.stats || {})) for (const w of (snap.wdtt || [])) if (w && w.fork === fid && w.iface) all.push({ node: nid, iface: w.iface });

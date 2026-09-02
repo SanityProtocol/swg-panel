@@ -17,7 +17,7 @@ import { esc, portOf, ipOf, ipChoices, ipPickerVal, seen, ago, dur, fmtBytes, ra
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
-  TURN_FORKS_FALLBACK, turnLabel, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel,
+  TURN_FORKS_FALLBACK, turnLabel, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel, forkPickLabel,
   forkSupportsAwg, turnColor, turnClientColor, turnClientAuthor,
 } from "./turn-catalog.js";
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnProxiesFor, wdttOn,
@@ -28,7 +28,7 @@ import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitl
 import { EgressPicker, egressInit, egressError, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules } from "./routing.js";
 import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount } from "./views.js";
 import { IfaceThroughput, RangedHistory } from "./charts.js";
-import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, turnClientsFor, subFeatureOn,
+import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, subFeatureOn,
          ensureVaultUnlocked, wdttResealForNode } from "./crypto.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
@@ -207,7 +207,15 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
         <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
       </div></div>`; };
   return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length + wdttInsts.length + csqttInsts.length}
-      actions=${nrec.turn_manage ? html`<${Fragment}><button class="btn btn-mini ico" title=${T("Turn-proxy settings in Settings → Turn proxies")} onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button>${_canFrontTurn && !(iface && isSelfContainedName(iface)) ? html`<button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? T("Unavailable while the node is down / converting") : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> ${T("Setup new proxy")}</button>` : null}<//>` : null}>
+      actions=${nrec.turn_manage ? html`<${Fragment}>${(() => {
+        // Servers on THIS node that are behind. The header badge speaks for the fleet; an operator looking at
+        // one node should not have to open it to find out whether this box is the one that is stale. Node view
+        // only (`!iface`): an update covers every instance of that fork on the node, so showing it on a single
+        // interface would imply a scope it does not have. The sheet opens filtered, so this count is the count
+        // you then see. Facts before verbs — it sits left of the gear and the setup button.
+        const _u = iface ? [] : (Store.turnUpdates || []).filter(r => r.node === node);
+        return _u.length ? html`<button class="btn btn-mini updbtn" title=${T("Deployed servers on this node are behind their newest build — review and update")} onClick=${() => openTurnUpdates(node)}><${Ic} i="download"/> ${plural(_u.length, "update")}</button>` : null;
+      })()}<button class="btn btn-mini ico" title=${T("Turn-proxy settings in Settings → Turn proxies")} onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button>${_canFrontTurn && !(iface && isSelfContainedName(iface)) ? html`<button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? T("Unavailable while the node is down / converting") : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> ${T("Setup new proxy")}</button>` : null}<//>` : null}>
     ${/* The REASON is not universal, though the symptom is. "No Docker socket was mounted" is the
           bare-metal-installer answer; on a declaratively-managed node it is simply false, and an
           operator sent looking for a socket mount they never made loses an afternoon. Key the reason
@@ -468,7 +476,7 @@ export function TurnManageSheet({ node, tp }) {
         ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
         <option value="__custom__">${T("Custom IP:Port…")}</option>
       </select>
-      ${hideAwg ? html`<div class="hint">${T("{v1} is WireGuard-only — AmneziaWG interfaces are hidden.", { v1: fork })}</div>` : null}
+      ${hideAwg ? html`<div class="hint">${T("{v1} is WireGuard-only — AmneziaWG interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
     </div>
     ${isCustom ? html`<${Fragment}>
       <div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>
@@ -1199,7 +1207,7 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
   useEffect(() => { let live = true; (async () => {
     const out = {};
     for (const nid of nids) {
-      if (csqtt) { out[nid] = []; }   // csqtt: version board wires with the published-build catalog; latest-only until then
+      if (csqtt) { const r = await api.csqttVersions({ node: nid }); if (r && r.ok) out[nid] = r.data.versions || []; }   // one binary per node → keyed by node alone, no iface/fork
       else if (wdtt) { const r = await api.wdttVersions({ node: nid, iface: running[nid].ids[0] || "", fork }); if (r && r.ok) out[nid] = r.data.versions || []; }
       else { const r = await api.turnVersions({ owner, node: nid, fork }); if (r && r.ok) out[nid] = (r.data.tags || []).map(t => t.tag); }
     }
@@ -1214,7 +1222,7 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
     for (const nid of nids) {
       const want = curSel(nid), cur = heldOf(nid);
       if (want === cur) continue;
-      if (csqtt) { continue; }   // csqtt: no pinnable builds yet — the dropdown is latest-only, nothing to apply
+      if (csqtt) { const r = await api.csqttVersion({ node: nid, iface: running[nid].ids[0] || "", ver: want }); if (r && !r.ok) errs.push(Store.nodeName(nid) + ": " + (srvText(r) || "failed")); }
       if (wdtt) { const r = await api.wdttVersion({ node: nid, iface: running[nid].ids[0], ver: want }); if (r && !r.ok) errs.push(Store.nodeName(nid) + ": " + (srvText(r) || "failed")); }
       else { for (const svc of running[nid].ids) { const r = await api.turnReinstall({ node: nid, service: svc, owner, ...(want ? { tag: want } : {}) }); if (r && !r.ok) { errs.push(Store.nodeName(nid) + ": " + (srvText(r) || "failed")); break; } } }
     }
@@ -1247,6 +1255,129 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
     </div>`; })}
   </div>`;
 }
+// Apply one row of Store.turnUpdates. The action differs by kind because the update UNIT differs: a
+// turn-proxy is reinstalled per service, while WDTT and csqtt share one binary per (fork,node) / per node —
+// there, releasing the hold is the update, and the node swaps the binary and restarts every instance itself.
+// Returns "" on success, else a human-readable error.
+export async function applyTurnUpdate(row) {
+  const { fork, kind, node, ids = [], latest } = row || {};
+  if (kind === "csqtt") { const r = await api.csqttVersion({ node, iface: ids[0] || "", ver: "" }); return (r && r.ok) ? "" : (srvText(r) || T("failed")); }
+  if (kind === "wdtt")  { const r = await api.wdttVersion({ node, iface: ids[0] || "", ver: "" });  return (r && r.ok) ? "" : (srvText(r) || T("failed")); }
+  const owner = (turnForkList().find(x => x.id === fork) || {}).owner || "";
+  for (const svc of ids) {   // one binary per service here — each is its own reinstall
+    const r = await api.turnReinstall({ node, service: svc, owner, ...(latest ? { tag: latest } : {}) });
+    if (r && !r.ok) return srvText(r) || T("failed");
+  }
+  return "";
+}
+
+// Review + apply the turn-family updates the header badge counts. One row per (fork, node) — the update unit,
+// so a row that covers three services says so rather than pretending to be three separate jobs.
+export function TurnUpdateSheet({ node }) {
+  // `node` scopes the sheet to one node — opened from that node's Turn-proxies panel, where the count on the
+  // button has to be the count in the sheet. Unset from the header badge, which speaks for the whole fleet.
+  const rows = (Store.turnUpdates || []).filter(r => !node || r.node === node);
+  const [busy, setBusy] = useState("");          // "" | fork|node key | "*" for Update all
+  const [done, setDone] = useState({});          // key -> "" (ok) | error text
+  const key = r => r.fork + "|" + r.node;
+  // What restarts, named. A turn-proxy's id is its service (vk-turn-proxy-<fork>-56006); the fork half just
+  // repeats the row's own label, so it shows as ":56006" — the same name:port convention turn-catalog.js
+  // documents. WDTT and csqtt ids are already the interface name.
+  const idLabel = (kind, id) => {
+    if (kind !== "turn") return id;
+    const m = String(id).match(/-(\d+)$/);
+    return m ? ":" + m[1] : id;
+  };
+  // `tok` names the control that owns this run, so a per-fork "Update all" shows its own progress instead of
+  // lighting up the sheet-wide one. Serial either way — two binaries swapping at once is two outages at once.
+  const run = async (list, tok) => {
+    for (const r of list) {
+      setBusy(tok || (list.length > 1 ? "*" : key(r)));
+      const err = await applyTurnUpdate(r);
+      setDone(d => ({ ...d, [key(r)]: err }));
+    }
+    setBusy(""); await Store.poll();
+  };
+  const pending = rows.filter(r => done[key(r)] === undefined);
+  const servers = rows.reduce((n, r) => n + (r.ids || []).length, 0);
+  const nodes = new Set(rows.map(r => r.node)).size;
+  // Grouped by FORK. A fleet of any size repeats the same fork and, almost always, the same version pair on
+  // every node — flat rows spent three lines saying "csqtt 2.0.1 → 2.1.5" and buried the node, the one thing
+  // that actually differed, in muted text mid-row. The pair moves up to the fork when every node agrees and
+  // drops to the node line when they do not, so a shared fact is stated once and a varying one stays visible.
+  const groups = [];
+  for (const r of rows) {
+    let g = groups.find(x => x.fork === r.fork);
+    if (!g) groups.push(g = { fork: r.fork, latest: r.latest, rows: [] });
+    g.rows.push(r);
+  }
+  // Ordered by what is READ, not by the key. The server sorts rows by fork id, which was the same string
+  // until labels arrived; now "qwdtt" prints as SpaceNeuroX and "wdttplus" as Ivan4537, so an id-ordered list
+  // looks shuffled — uppercase ids first, then authors in no visible order. Sorting on the rendered label puts
+  // the column back in reading order and keeps one author's servers adjacent (amurcanov · WDTT, · CSQTT).
+  groups.sort((a, b) => forkPickLabel(a.fork).localeCompare(forkPickLabel(b.fork), undefined, { sensitivity: "base" }));
+  for (const g of groups) {
+    g.same = g.rows.every(r => r.installed === g.rows[0].installed) ? g.rows[0].installed : "";
+    g.pend = g.rows.filter(r => done[key(r)] === undefined);   // the fork button disappears once its last node is done
+  }
+  const pair = (inst, latest) => html`<span class="mono">${inst}</span><span class="verarrow">→</span><span class="mono vernew">${latest}</span>`;
+  // The footer button is always there, and it always owns the WIDEST action on screen — so whatever that widest
+  // action is, it is not also drawn in the list. Two controls with one blast radius is the pair an operator
+  // reads twice and still guesses about; hoisting the top one to the fixed, primary position leaves each
+  // remaining button unambiguously narrower than the one below it.
+  //   many forks  → footer updates the fleet; every fork keeps its own button
+  //   one fork    → footer IS that fork's button; the head loses it, nodes keep theirs
+  //   one node    → footer IS that node's button; the row loses it and shows only its result
+  const solo = groups.length === 1 && groups[0].rows.length === 1 ? groups[0].rows[0] : null;
+  const forkHoisted = groups.length === 1 && groups[0].rows.length > 1;
+  // Result still belongs in the row even when the button was hoisted — that is where you look to see which
+  // node failed, and the footer has no room to say it.
+  const act = (r, hoisted) => { const st = done[key(r)]; return st === "" ? html`<span class="tf-chk ok"><${Ic} i="check"/> ${T("updated")}</span>`
+    : st ? html`<span class="tf-chk"><${Ic} i="warn"/> ${st}</span>`
+    : hoisted ? null
+      : html`<button class="btn btn-mini" disabled=${!!busy} onClick=${() => run([r])}>${busy === key(r) ? T("Updating…") : T("Update")}</button>`; };
+  return html`<${Sheet} title=${T("Server updates")} width=${640} onClose=${closeModal}
+      foot=${footRow({ cancelLabel: T("Close"), onCancel: closeModal,
+                       disabled: !!busy || !pending.length,
+                       onAction: () => run(pending, "*"),
+                       // "all" only when it really is more than one; a lone server gets the plain verb.
+                       action: busy === "*" ? T("Updating…") : solo ? T("Update") : T("Update all") })}>
+    <p class="hint" style="margin:2px 0 14px">${node
+      ? Trich("Each update swaps the server's binary and *restarts it*, which briefly drops that server's clients. This one covers {v1} on {v2} — pick a quiet moment, or update them one at a time.", { v1: plural(servers, "server"), v2: Store.nodeName(node) })
+      : Trich("Each update swaps the server's binary and *restarts it*, which briefly drops that server's clients. This one covers {v1} across {v2} — pick a quiet moment, or update them one at a time.", { v1: plural(servers, "server"), v2: plural(nodes, "prep|node") })}</p>
+    <div class="fvp">${groups.map(g => html`<div class="fvp-node" key=${g.fork} style=${"--tfc:" + turnColor(g.fork)}>
+      <div class="fvp-head">
+        <span class="fvp-dot" style="background:var(--tfc)"></span>
+        ${/* author · product, never the raw id: "csqtt" is the INTERNAL key for amurcanov's csqtt server, and
+              two of amurcanov's forks can be behind at once — one WDTT, one CSQTT. The id also mislabels
+              wdttplus (Ivan4537), xxcipherx (XXcipherX) and qwdtt (SpaceNeuroX). forkPickLabel is the panel's
+              one lookup for exactly this; see the note above forkLabel in turn-catalog.js. */""}
+        <b class="fvp-nm" style="color:var(--tfc)">${forkPickLabel(g.fork)}</b>
+        ${g.rows.length === 1
+          ? html`<span class="fvp-ver">${T("on")} ${Store.nodeName(g.rows[0].node)}<span class="verarrow">·</span>${pair(g.rows[0].installed, g.latest)}</span>`
+          : html`<span class="fvp-ver">${g.same ? pair(g.same, g.latest) : html`<span class="verarrow">→</span><span class="mono vernew">${g.latest}</span>`}</span>`}
+        <span class="grow"></span>
+        ${g.rows.length === 1 ? act(g.rows[0], !!solo)
+          : forkHoisted || !g.pend.length ? null
+            // Names its own scope. The footer one column away says "Update all" and means the whole fleet — two
+            // identical labels with different blast radii is exactly the button an operator presses at 2am and
+            // regrets. This one counts the nodes it will restart.
+            : html`<button class="btn btn-mini" disabled=${!!busy} onClick=${() => run(g.pend, "g:" + g.fork)}>${busy === "g:" + g.fork ? T("Updating…") : T("Update {v1}", { v1: plural(g.pend.length, "node") })}</button>`}
+      </div>
+      ${g.rows.length === 1
+        ? html`<div class="tus-ids">${(g.rows[0].ids || []).map(id => html`<span class="iftype tus-id" key=${id}>${idLabel(g.rows[0].kind, id)}</span>`)}</div>`
+        : html`<div class="tus-nodes">${g.rows.map(r => html`<div class="tus-node" key=${r.node}>
+            <span class="tus-nn"><span class="tus-ndot" style=${"background:" + (Store.nodeColor(r.node) || "var(--muted)")}></span>${Store.nodeName(r.node)}</span>
+            ${g.same ? null : html`<span class="fvp-ver">${pair(r.installed, g.latest)}</span>`}
+            <span class="tus-ids">${(r.ids || []).map(id => html`<span class="iftype tus-id" key=${id}>${idLabel(r.kind, id)}</span>`)}</span>
+            <span class="grow"></span>${act(r)}
+          </div>`)}</div>`}
+    </div>`)}</div>
+    ${!rows.length ? html`<div class="hint">${T("Everything is on its newest build.")}</div>` : null}
+  <//>`;
+}
+export function openTurnUpdates(node) { openModal(html`<${TurnUpdateSheet} node=${typeof node === "string" ? node : undefined}/>`); }
+
 export function openServerDefaults(fork) { pushModal(html`<${ServerDefaultsSheet} fork=${fork}/>`); }
 export function ServerDefaultsSheet({ fork }) {
   useStore();
@@ -1282,14 +1413,14 @@ export function ServerDefaultsSheet({ fork }) {
     toast(verDirty ? T("Version change requested — applies on each node's next sync.") : T("Server defaults saved — used when creating new {v1} proxies.", { v1: f.label || fork }), "ok");
     return true;
   };
-  return html`<${Sheet} title=${html`${T("Server defaults")} <span class="faint" style="text-transform:none;letter-spacing:0">— ${fork}</span>`} width=${680} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+  return html`<${Sheet} title=${html`${T("Server defaults")} <span class="faint" style="text-transform:none;letter-spacing:0">— ${forkPickLabel(fork)}</span>`} width=${680} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
       foot=${footRow({ left: flash ? html`<span class="vk-status ok savedmsg"><${Ic} i="check"/> ${flash}</span>` : null, cancelLabel: (savedOnce && !dirty) ? T("Close") : T("Cancel"), onCancel: closeModal, disabled: busy || !dirty, onAction: save, action: busy ? T("Saving…") : T("Save") })}>
     <p class="hint" style="margin:2px 0 14px">${isSelfContainedKind(f.kind)
       ? Trich("Extra command-line flags that *pre-fill* a new {v1} server. It's self-contained — its real config lives per interface — so there's little to default here beyond advanced flags.", { v1: f.label || fork })
-      : Trich("The ExecStart flags that *pre-fill* a new {v1} proxy. Nothing here changes proxies you've already deployed.", { v1: fork })}</p>
+      : Trich("The ExecStart flags that *pre-fill* a new {v1} proxy. Nothing here changes proxies you've already deployed.", { v1: f.label || fork })}</p>
     <${TurnServerFields} schema=${schema} vals=${vals} setV=${setV} extra=${extra} setExtra=${setExtra} listen="server_ip:port" connect="interface_ip:port" template=${true} wdtt=${isSelfContainedKind(f.kind)}/>
     <${Disclosure} title=${T("Version & rollback")} sumCls="route" open=${verOpen} onToggle=${() => setVerOpen(o => !o)}>
-      <p class="hint" style="margin:0 0 10px">${Trich("A {fork} server shares one binary per node, so the version is per node — every {fork} instance on a node moves together. Pinning an older version *holds* it (no auto-update); *Use latest* follows new releases.", { fork: f.label || fork })}</p>
+      <p class="hint" style="margin:0 0 10px">${Trich("{fork} servers share one binary per node, so the version is per node — every {fork} instance on a node moves together. Pinning an older version *holds* it (no auto-update); *Use latest* follows new releases.", { fork: f.kind === "csqtt" ? (f.product || fork) : (f.label || fork) })}</p>
       <${ForkVersionPanel} f=${f} commitRef=${verCommitRef} onDirty=${setVerDirty}/>
     <//>
   <//>`;
@@ -1487,7 +1618,7 @@ export function SetupTurnSheet({ node, forwardIface }) {
           ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
           <option value="__custom__">${T("Custom IP:Port…")}</option>
         </select>
-        ${hideAwg ? html`<div class="hint">${T("{v1} is WireGuard-only — AmneziaWG interfaces are hidden.", { v1: fork })}</div>` : null}
+        ${hideAwg ? html`<div class="hint">${T("{v1} is WireGuard-only — AmneziaWG interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
       <${Disclosure} title=${T("Server parameters")} summary=${forkSettings(fork).length ? null : html`<span class="faint">${T("val|none")}</span>`} open=${openSec === "server"} onToggle=${() => setOpenSec(s => s === "server" ? null : "server")}>
@@ -1659,7 +1790,9 @@ export function WdttManageSheet({ node, w: w0 }) {
   const hostOnNode = useHostOnNode(ipPickerVal(hostSel, hostCustom), ips);
   const [port, setPort] = useState(lport || "");
   const [msg, setMsg] = useState(null);
-  // RAW-IP mode — a SECOND listener on the same server, qWDTT-only and off unless the operator asks for it.
+  // RAW-IP mode — a SECOND listener on the same server, capability-gated (qWDTT + ildarmaga) and off unless
+  // the operator asks for it. One per listen ADDRESS across ALL forks: turning it on here takes it from
+  // whichever instance held it, because the app resolves one raw port for every server (see rawOwnerOn).
   // On/off only: the port is fixed at RAW_PORT because the app dials that one number and nothing else
   // (TunnelService resolves it from a single app-wide preference and REPLACES the link's port with it), so a
   // custom port would only ever reach users who hand-edit app settings. Same reason it is one per node.
@@ -1728,7 +1861,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting} title=${title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   return html`<${Sheet}
-    title=${html`WDTT-proxy · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: fork })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`}
+    title=${html`WDTT-proxy · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkPickLabel(fork) })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`}
     width=${664}
     headExtra=${w.service ? html`<${TurnIpsHeader} node=${node} svc=${w.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
@@ -2041,7 +2174,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked} title=${title} onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   return html`<${Sheet}
-    title=${html`csqtt-proxy · ${(title.trim() || iface)}${c.version ? html` <span class="sheet-ver">${c.version}</span>` : ""}`}
+    title=${html`csqtt-proxy · ${(title.trim() || iface)}${c.version ? html` <span class="sheet-ver">${c.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: "CSQTT" })} onClick=${() => openServerDefaults("csqtt")}><${Ic} i="gear"/></button>`}
     width=${664}
     headExtra=${c.service ? html`<${TurnIpsHeader} node=${node} svc=${c.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>

@@ -129,6 +129,10 @@ function reconcile(roster, stats, now, cfg) {
         else st = !dev ? (((now - createdMs) <= cfg.graceMs) ? "creating" : "ready")   // password not shipped yet
                        : (dev.online ? "online" : "ready");                            // shipped/provisioned = ready; recent traffic/handshake = online
         return { node: t.node, iface: t.iface, ip: (dev && dev.ip) || "", type: t.type, primary: t.primary || false,   // "primary" | "backup" | true (pre-backup rosters) | false
+                 // A qWDTT instance running RAW gives the peer a SECOND address on its own TUN. It is not an
+                 // alternative to `ip` — the peer holds both at once — so it rides alongside rather than
+                 // replacing it. "" whenever the instance runs no raw datapath.
+                 raw_ip: (dev && dev.raw_ip) || "",
                  status: st, online: st === "online", observed: null, via: null, viaTurn: null,
                  // keyless per-peer speed (byte-delta the node computes per password) — no wg wire counter exists, so
                  // this is a SEPARATE field from `observed` (which carries wg semantics 8+ widgets read). Overview

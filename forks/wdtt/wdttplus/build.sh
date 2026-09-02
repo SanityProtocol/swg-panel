@@ -3,7 +3,7 @@
 # Same model as forks/wdtt/build.sh: pinned upstream SHA + our patch, hosted in our mirror. Usage: ./build.sh [out]  Env: GOARCH
 set -euo pipefail
 UPSTREAM_REPO="https://github.com/Ivan4537/WDTT-Plus"
-UPSTREAM_SHA="10c6939b2ace8a56e203e163d4eea586127c8646"   # v14; re-ported 2026-08-16 (v14 added its own wgIface/Addr/CIDR consts → dropped our dup)
+UPSTREAM_SHA="3038b8ddc0306feb21d3c3624e2bc1c3c14639ad"   # v15, 2026-08-31; only re-anchor needed was the wdttServerVersion context line (14→15). Flag surface identical
 HERE="$(cd "$(dirname "$0")" && pwd)"; OUT="${1:-$HERE/wdtt-server}"; PATCH="$HERE/wdtt-wdttplus.patch"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 git clone --quiet "$UPSTREAM_REPO" "$WORK/src"; git -C "$WORK/src" checkout --quiet "$UPSTREAM_SHA"

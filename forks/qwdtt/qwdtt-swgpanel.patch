@@ -1,10 +1,49 @@
-diff --git a/server.go b/server.go
-index bf5df33..85f56e1 100644
---- a/server.go
-+++ b/server.go
-@@ -46,19 +46,29 @@ import (
- 	pionudp "github.com/pion/transport/v4/udp"
- )
+diff --git a/connections.go b/connections.go
+index 393a64c..69524d9 100644
+--- a/connections.go
++++ b/connections.go
+@@ -169,7 +169,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 			log.Printf("[WG] Отказ: пароль %s деактивирован, запрос от %s", maskPassword(password), deviceID)
+ 			dbMutex.Unlock()
+ 			return
+-		} else if valid && isGenPass && !entry.canConnectAndBind(deviceID) {
++		} else if valid && isGenPass && !fixedConfig && !entry.canConnectAndBind(deviceID) {
+ 			// Достигнут лимит устройств или привязано к другому устройству
+ 			clientConn.Write([]byte("DENIED:device_mismatch"))
+ 			log.Printf("[WG] Отказ: пароль %s достиг лимита устройств (%d), запрос от %s", maskPassword(password), entry.MaxDevices, deviceID)
+@@ -182,9 +182,12 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 			// Сохраняем БД, так как canConnectAndBind мог внести привязку нового устройства
+ 			saveDB()
+ 
+-			dev, exists := db.Devices[deviceID]
++			// swg-panel: under -fixed-config the config is keyed by the PASSWORD,
++			// so one generated password = one keypair + one IP for any device.
++			dkey := getconfDeviceKey(isGenPass, deviceID, password)
++			dev, exists := db.Devices[dkey]
+ 			if !exists {
+-				dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP()}
++				dev = &ClientDevice{DeviceID: dkey, IP: getNextIP()}
+ 				setDeviceOwner(dev, password)
+ 			}
+ 			// Устройство могло быть создано раньше только Raw-путём
+@@ -202,9 +205,9 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 				if keyErr == nil && dev.IP != "" {
+ 					dev.PrivKey = privB64
+ 					dev.PubKey = pubB64
+-					db.Devices[deviceID] = dev
++					db.Devices[dkey] = dev
+ 					saveDB()
+-					log.Printf("[WG] Сгенерированы ключи для устройства %s (IP: %s)", deviceID, dev.IP)
++					log.Printf("[WG] Сгенерированы ключи для устройства %s (IP: %s)", dkey, dev.IP)
+ 				} else {
+ 					dev = nil
+ 				}
+diff --git a/core.go b/core.go
+index b745846..f4ab175 100644
+--- a/core.go
++++ b/core.go
+@@ -1,18 +1,25 @@
+ package main
  
 +// swg-panel: interface identity is per-INSTANCE, so these are vars set from
 +// flags (see swgpanel.go). The values below are upstream's defaults, so an
@@ -30,16 +69,36 @@ index bf5df33..85f56e1 100644
 -	wgMTU                 = 1280
  	keepalive             = 25
  
- 	// Raw-IP роутер (без WireGuard) — отдельный TUN/подсеть/NAT, полностью
- 	// параллельно WG-пути. Подсеть намеренно не пересекается с wgServerCIDR.
+-	// Raw-IP роутер (без WireGuard) — отдельный TUN/подсеть/NAT, полностью
+-	// параллельно WG-пути. Подсеть намеренно не пересекается с wgServerCIDR.
 -	rawIfaceName  = "wdttraw0"
 -	rawServerAddr = "10.70.66.1"
 -	rawServerCIDR = rawServerAddr + "/16"
-+	// swg-panel: имя/подсеть вынесены в vars (см. ниже) — они ПЕР-ИНСТАНСНЫЕ.
  	// Raw-режим не несёт WG data header (~32 байта) — только RTP-obfs (12 байт
  	// заголовок + 16 байт AEAD tag + до 60 байт padding в video-режиме) и TURN
  	// ChannelData/Send Indication framing (4-24 байта). Даже в худшем случае
-@@ -166,11 +176,14 @@ var (
+diff --git a/database_bot.go b/database_bot.go
+index cf10a70..667eae9 100644
+--- a/database_bot.go
++++ b/database_bot.go
+@@ -125,6 +125,16 @@ func generatedOwnerEntryLocked(dev *ClientDevice, deviceID string) *PasswordEntr
+ 	if dev == nil {
+ 		return nil
+ 	}
++	// swg-panel: under -fixed-config the device key IS "pw:<password>", and the password
++	// entry's DeviceID/DeviceIDs are deliberately empty — so passwordEntryHasDevice below
++	// matches nothing and a fixed-config peer's traffic is never credited to its password.
++	// v1.4.3 moved this owner lookup out of the raw-flush loop into this helper, so the fix
++	// belongs here: it now covers BOTH crediting sites instead of only the raw one.
++	if strings.HasPrefix(deviceID, "pw:") {
++		if entry, ok := db.Passwords[deviceID[3:]]; ok && entry != nil {
++			return entry
++		}
++	}
+ 	if dev.OwnerID != "" {
+ 		for password, entry := range db.Passwords {
+ 			if wrapKeyID(password) == dev.OwnerID && passwordEntryHasDevice(entry, deviceID) {
+@@ -298,11 +308,14 @@ var (
  var serverWrapKeys = newWrapKeyStore()
  
  const (
@@ -54,10 +113,10 @@ index bf5df33..85f56e1 100644
 +// binary ourselves, for fleet-appropriate scale).
 +var maxGeneratedPasswords = 10
 +
- func generatePassword() string {
+ func generatePassword() (string, error) {
  	b := make([]byte, generatedPasswordLen)
  	randomBytes := make([]byte, len(b))
-@@ -471,6 +484,11 @@ func getNextIP() string {
+@@ -650,6 +663,11 @@ func getNextIP() string {
  	for _, dev := range db.Devices {
  		used[dev.IP] = true
  	}
@@ -69,7 +128,7 @@ index bf5df33..85f56e1 100644
  	for b3 := 0; b3 <= 255; b3++ {
  		for b4 := 1; b4 <= 254; b4++ {
  			ip := fmt.Sprintf("10.66.%d.%d", b3, b4)
-@@ -492,6 +510,11 @@ func getNextRawIP() string {
+@@ -671,6 +689,11 @@ func getNextRawIP() string {
  			used[dev.RawIP] = true
  		}
  	}
@@ -81,142 +140,22 @@ index bf5df33..85f56e1 100644
  	for b3 := 0; b3 <= 255; b3++ {
  		for b4 := 1; b4 <= 254; b4++ {
  			ip := fmt.Sprintf("10.70.%d.%d", b3, b4)
-@@ -1339,6 +1362,9 @@ func putBuf2048(b []byte) {
- // ==================== Оптимизация ====================
- 
- func enableBBR() {
-+	if noNat { // swg-panel: host sysctls belong to the node, not to us
-+		return
-+	}
- 	log.Println("[SYS] Оптимизация TCP...")
- 	out, _ := runCmd("bash", "-c", "sysctl net.ipv4.tcp_congestion_control")
- 	if strings.Contains(out, "bbr") {
-@@ -1438,6 +1464,16 @@ func flushRawDeviceTrafficLocked() {
- 			dev.UpBytes += c.up
- 			dev.DownBytes += c.down
- 		}
-+		// swg-panel: under -fixed-config the device key IS "pw:<password>", and the
-+		// password entry's DeviceID/DeviceIDs are deliberately empty — without this
-+		// the loop below matches nothing and a raw peer's traffic is never credited.
-+		if strings.HasPrefix(deviceID, "pw:") {
-+			if entry, ok := db.Passwords[deviceID[3:]]; ok && entry != nil {
-+				entry.UpBytes += c.up
-+				entry.DownBytes += c.down
-+				continue
-+			}
-+		}
- 		for _, entry := range db.Passwords {
- 			matched := entry.DeviceID == deviceID
- 			if !matched {
-@@ -1722,6 +1758,11 @@ generate:
- // ==================== NAT ====================
- 
- func setupFullConeNAT(wgIface string) error {
-+	if noNat { // swg-panel: the node owns NAT/forward/sysctls for this subnet
-+		natType = "отключён (-no-nat: NAT/forward/sysctl управляется узлом)"
-+		log.Printf("[NAT] %s", natType)
-+		return nil
-+	}
- 	log.Println("[NAT] ══════════════════════════════════════")
- 
- 	os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
-@@ -1762,6 +1803,10 @@ func setupNftNAT(extIface string) {
- // выше не трогаются), setupForwardRules переиспользуется как есть — она уже
- // параметризована только именем интерфейса.
- func setupRawNAT(rawIface string) error {
-+	if noNat { // swg-panel: the node owns NAT for the raw subnet too
-+		log.Println("[RAW-NAT] отключён (-no-nat)")
-+		return nil
-+	}
- 	extIface := getDefaultInterface()
- 	log.Printf("[RAW-NAT] Внешний: %s", extIface)
- 
-@@ -2274,6 +2319,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
- 	}
- 
- 	var assignedIP string
-+	dkey := swgRawKey(deviceID)   // swg-panel: fixed-config device key (AUTH workers resolve it via the alias)
- 
- 	if isGetConf {
- 		// Только этот воркер проверяет пароль и (при необходимости) создаёт
-@@ -2288,7 +2334,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
- 			clientConn.Write([]byte("DENIED:deactivated"))
- 			return
- 		}
--		if valid && isGenPass && !entry.canConnectAndBind(deviceID) {
-+		if valid && isGenPass && !fixedConfig && !entry.canConnectAndBind(deviceID) {
- 			dbMutex.Unlock()
- 			clientConn.Write([]byte("DENIED:device_mismatch"))
- 			return
-@@ -2306,10 +2352,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
- 			saveDB()
- 		}
- 
--		dev, exists := db.Devices[deviceID]
-+		// swg-panel: same key as the WG path, so ONE password = ONE device record
-+		// carrying both its wg IP and its raw IP (see swgRawRemember).
-+		dkey = getconfDeviceKey(isGenPass, deviceID, password)
-+		swgRawRemember(deviceID, dkey)
-+		dev, exists := db.Devices[dkey]
- 		if !exists {
--			dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP(), RawIP: getNextRawIP()}
--			db.Devices[deviceID] = dev
-+			dev = &ClientDevice{DeviceID: dkey, IP: getNextIP(), RawIP: getNextRawIP()}
-+			db.Devices[dkey] = dev
- 			saveDB()
- 		} else if dev.RawIP == "" {
- 			dev.RawIP = getNextRawIP()
-@@ -2331,7 +2381,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
- 		// (без верного пароля пакет не прошёл бы аутентификацию на уровне obfs),
- 		// нужен только IP устройства, чтобы зарегистрировать сессию в роутере.
- 		dbMutex.Lock()
--		dev, exists := db.Devices[deviceID]
-+		dev, exists := db.Devices[dkey]
- 		if exists && dev.RawIP == "" {
- 			dev.RawIP = getNextRawIP()
- 			saveDB()
-@@ -2347,19 +2397,19 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
- 		}
- 	}
- 
--	dlWorker := router.register(assignedIP, clientConn, deviceID)
-+	dlWorker := router.register(assignedIP, clientConn, dkey)
- 	defer router.unregister(assignedIP, dlWorker)
- 	log.Printf("[RAW] Сессия %s зарегистрирована (ip=%s, getConf=%v)", deviceID, assignedIP, isGetConf)
- 	defer log.Printf("[RAW] Сессия %s (ip=%s) завершена", deviceID, assignedIP)
- 
- 	activeDevicesMu.Lock()
--	activeDevices[deviceID]++
-+	activeDevices[dkey]++
- 	activeDevicesMu.Unlock()
- 	defer func() {
- 		activeDevicesMu.Lock()
--		activeDevices[deviceID]--
--		if activeDevices[deviceID] <= 0 {
--			delete(activeDevices, deviceID)
-+		activeDevices[dkey]--
-+		if activeDevices[dkey] <= 0 {
-+			delete(activeDevices, dkey)
- 		}
- 		activeDevicesMu.Unlock()
- 	}()
-@@ -2410,7 +2460,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
- 			return
- 		}
- 		atomic.AddInt64(&totalBytesFromClient, int64(nn))
--		addRawUplinkBytes(deviceID, int64(nn))
-+		addRawUplinkBytes(dkey, int64(nn))
- 		if wErr := router.writeUplink((*b)[:nn]); wErr != nil {
- 			if atomic.CompareAndSwapUint32(&router.uplinkErrLogged, 0, 1) {
- 				log.Printf("[RAW] Ошибка записи в TUN (ip=%s): %v", assignedIP, wErr)
-@@ -2580,13 +2630,16 @@ func main() {
- 	adminID := flag.String("admin", "", "Telegram Admin ID")
+diff --git a/main.go b/main.go
+index 7730d46..063c06c 100644
+--- a/main.go
++++ b/main.go
+@@ -38,8 +38,10 @@ func main() {
  	botToken := flag.String("bot-token", "", "Telegram Bot Token")
+ 	botTokenFile := flag.String("bot-token-file", "", "файл Telegram Bot Token")
  	dnsFlag := flag.String("dns", "8.8.8.8", "DNS серверы для клиентов")
 +	swgRegisterFlags() // swg-panel flags (see swgpanel.go)
  	flag.Parse()
  	dns = *dnsFlag
 +	swgApplyFlags()
+ 	mainPasswordValue, err := loadOptionalSecret(*mainPass, *mainPassFile)
+ 	if err != nil {
+ 		log.Fatalf("[CONFIG] Пароль владельца: %v", err)
+@@ -51,8 +53,9 @@ func main() {
  
  	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
  	log.Println("══════════════════════════════════════════")
@@ -227,7 +166,7 @@ index bf5df33..85f56e1 100644
  
  	ctx, cancel := context.WithCancel(context.Background())
  	defer cancel()
-@@ -2597,23 +2650,32 @@ func main() {
+@@ -63,23 +66,32 @@ func main() {
  	go func() {
  		for s := range sig {
  			if s == syscall.SIGHUP {
@@ -263,7 +202,7 @@ index bf5df33..85f56e1 100644
  				os.Exit(0)
  			}
  		}
-@@ -2633,31 +2695,43 @@ func main() {
+@@ -99,39 +111,53 @@ func main() {
  		log.Fatalf("[WG] Запуск: %v", err)
  	}
  	globalWgDev = wgDev
@@ -292,76 +231,198 @@ index bf5df33..85f56e1 100644
 +		go expiredPasswordJanitor(ctx, wgDev)
 +	}
 +	go desiredWatcher(ctx, wgDev)
- 	go botLoop(*botToken, *adminID, wgDev)
+ 	go botLoop(botTokenValue, *adminID, wgDev)
  
--	// Запуск HTTP Control API
 -	go func() {
 -		mux := http.NewServeMux()
+-		mux.HandleFunc("/api/profile/challenge", handleAPIProfileChallenge)
 -		mux.HandleFunc("/api/profile/status", handleAPIProfileStatus)
 -		mux.HandleFunc("/api/profile/unbind", handleAPIProfileUnbind)
--		registerAdminAPIRoutes(mux)
--
--		log.Printf("[API] Запуск HTTP API на %s (TCP)...", *listen)
--		if err := http.ListenAndServe(*listen, mux); err != nil {
--			log.Printf("[API] [ERR] Ошибка запуска HTTP API: %v", err)
--		}
--	}()
-+	// HTTP Control API. swg-panel: upstream bound this on the PUBLIC DTLS port
-+	// (`-listen`), which answers HTTP on the port that is supposed to look like a
-+	// VK call and exposes /admin + /api/profile to the internet. It is now OFF
-+	// unless an explicit -api-addr (use a loopback address) is given.
++	// swg-panel: upstream binds the profile API on the PUBLIC DTLS port (`-listen`) —
++	// it answers HTTP on the port that is supposed to look like a VK call. v1.4.3 moved
++	// the ADMIN routes behind its own -admin-listen (off by default, HTTPS + token), so
++	// we no longer gate those; /api/profile/* is still public, so it stays behind an
++	// explicit -api-addr (use a loopback address).
 +	if swgAPIAddr != "" {
 +		go func() {
 +			mux := http.NewServeMux()
++			mux.HandleFunc("/api/profile/challenge", handleAPIProfileChallenge)
 +			mux.HandleFunc("/api/profile/status", handleAPIProfileStatus)
 +			mux.HandleFunc("/api/profile/unbind", handleAPIProfileUnbind)
-+			registerAdminAPIRoutes(mux)
-+
+ 
+-		log.Printf("[API] Запуск HTTP API на %s (TCP)...", *listen)
+-		server := &http.Server{
+-			Addr:              *listen,
+-			Handler:           http.MaxBytesHandler(mux, 64<<10),
+-			ReadHeaderTimeout: 5 * time.Second,
+-			ReadTimeout:       10 * time.Second,
+-			WriteTimeout:      10 * time.Second,
+-			IdleTimeout:       30 * time.Second,
+-			MaxHeaderBytes:    16 << 10,
+-		}
+-		if err := server.ListenAndServe(); err != nil {
+-			log.Printf("[API] [ERR] Ошибка запуска HTTP API: %v", err)
+-		}
+-	}()
 +			log.Printf("[API] Запуск HTTP API на %s (TCP)...", swgAPIAddr)
-+			if err := http.ListenAndServe(swgAPIAddr, mux); err != nil {
++			server := &http.Server{
++				Addr:              swgAPIAddr,
++				Handler:           http.MaxBytesHandler(mux, 64<<10),
++				ReadHeaderTimeout: 5 * time.Second,
++				ReadTimeout:       10 * time.Second,
++				WriteTimeout:      10 * time.Second,
++				IdleTimeout:       30 * time.Second,
++				MaxHeaderBytes:    16 << 10,
++			}
++			if err := server.ListenAndServe(); err != nil {
 +				log.Printf("[API] [ERR] Ошибка запуска HTTP API: %v", err)
 +			}
 +		}()
 +	}
  
- 	addr, _ := net.ResolveUDPAddr("udp", *listen)
- 	cert, _ := selfsign.GenerateSelfSigned()
-@@ -2879,7 +2953,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
- 			clientConn.Write([]byte("DENIED:deactivated"))
- 			log.Printf("[WG] Отказ: пароль %s деактивирован, запрос от %s", maskPassword(password), deviceID)
- 			dbMutex.Unlock()
--		} else if valid && isGenPass && !entry.canConnectAndBind(deviceID) {
-+		} else if valid && isGenPass && !fixedConfig && !entry.canConnectAndBind(deviceID) {
- 			// Достигнут лимит устройств или привязано к другому устройству
- 			clientConn.Write([]byte("DENIED:device_mismatch"))
- 			log.Printf("[WG] Отказ: пароль %s достиг лимита устройств (%d), запрос от %s", maskPassword(password), entry.MaxDevices, deviceID)
-@@ -2892,9 +2966,12 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
- 				saveDB()
- 			}
+ 	if *adminListen != "" {
+ 		tokenBytes, tokenErr := os.ReadFile(*adminTokenFile)
+diff --git a/nat.go b/nat.go
+index cba9938..e4d1a58 100644
+--- a/nat.go
++++ b/nat.go
+@@ -10,6 +10,11 @@ import (
+ // ==================== NAT ====================
  
--			dev, exists := db.Devices[deviceID]
-+			// swg-panel: under -fixed-config the config is keyed by the PASSWORD,
-+			// so one generated password = one keypair + one IP for any device.
-+			dkey := getconfDeviceKey(isGenPass, deviceID, password)
-+			dev, exists := db.Devices[dkey]
- 			if !exists {
--				dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP()}
-+				dev = &ClientDevice{DeviceID: dkey, IP: getNextIP()}
- 			}
- 			// Устройство могло быть создано раньше только Raw-путём
- 			// (GETCONF_RAW, см. handleConnRaw) — там PrivKey/PubKey никогда
-@@ -2911,9 +2988,9 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
- 				if keyErr == nil && dev.IP != "" {
- 					dev.PrivKey = privB64
- 					dev.PubKey = pubB64
--					db.Devices[deviceID] = dev
-+					db.Devices[dkey] = dev
- 					saveDB()
--					log.Printf("[WG] Сгенерированы ключи для устройства %s (IP: %s)", deviceID, dev.IP)
-+					log.Printf("[WG] Сгенерированы ключи для устройства %s (IP: %s)", dkey, dev.IP)
- 				} else {
- 					dev = nil
- 				}
+ func setupFullConeNAT(wgIface string) error {
++	if noNat { // swg-panel: the node owns NAT/forward/sysctls for this subnet
++		natType = "отключён (-no-nat: NAT/forward/sysctl управляется узлом)"
++		log.Printf("[NAT] %s", natType)
++		return nil
++	}
+ 	log.Println("[NAT] ══════════════════════════════════════")
+ 
+ 	os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
+@@ -50,6 +55,10 @@ func setupNftNAT(extIface string) {
+ // выше не трогаются), setupForwardRules переиспользуется как есть — она уже
+ // параметризована только именем интерфейса.
+ func setupRawNAT(rawIface string) error {
++	if noNat { // swg-panel: the node owns NAT for the raw subnet too
++		log.Println("[RAW-NAT] отключён (-no-nat)")
++		return nil
++	}
+ 	extIface := getDefaultInterface()
+ 	log.Printf("[RAW-NAT] Внешний: %s", extIface)
+ 
+diff --git a/optimization.go b/optimization.go
+index 8d4024d..bef48ca 100644
+--- a/optimization.go
++++ b/optimization.go
+@@ -8,6 +8,9 @@ import (
+ // ==================== Оптимизация ====================
+ 
+ func enableBBR() {
++	if noNat { // swg-panel: host sysctls belong to the node, not to us
++		return
++	}
+ 	log.Println("[SYS] Оптимизация TCP...")
+ 	out, _ := runCmd("bash", "-c", "sysctl net.ipv4.tcp_congestion_control")
+ 	if strings.Contains(out, "bbr") {
+diff --git a/raw.go b/raw.go
+index d9e0554..f1c38b0 100644
+--- a/raw.go
++++ b/raw.go
+@@ -354,6 +354,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 	}
+ 
+ 	var assignedIP string
++	dkey := swgRawKey(deviceID) // swg-panel: fixed-config device key (AUTH workers resolve it via the alias)
+ 
+ 	if isGetConf {
+ 		// Только этот воркер проверяет пароль и (при необходимости) создаёт
+@@ -374,7 +375,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 			clientConn.Write([]byte("DENIED:device_mismatch"))
+ 			return
+ 		}
+-		if valid && isGenPass && !entry.canConnectAndBind(deviceID) {
++		if valid && isGenPass && !fixedConfig && !entry.canConnectAndBind(deviceID) {
+ 			dbMutex.Unlock()
+ 			clientConn.Write([]byte("DENIED:device_mismatch"))
+ 			return
+@@ -392,11 +393,15 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 			saveDB()
+ 		}
+ 
+-		dev, exists := db.Devices[deviceID]
++		// swg-panel: same key as the WG path, so ONE password = ONE device record
++		// carrying both its wg IP and its raw IP (see swgRawRemember).
++		dkey = getconfDeviceKey(isGenPass, deviceID, password)
++		swgRawRemember(deviceID, dkey)
++		dev, exists := db.Devices[dkey]
+ 		if !exists {
+-			dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP(), RawIP: getNextRawIP(), RawOwnerID: ownerID}
++			dev = &ClientDevice{DeviceID: dkey, IP: getNextIP(), RawIP: getNextRawIP(), RawOwnerID: ownerID}
+ 			setDeviceOwner(dev, password)
+-			db.Devices[deviceID] = dev
++			db.Devices[dkey] = dev
+ 			saveDB()
+ 		} else {
+ 			changed := false
+@@ -431,8 +436,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 		isMainPass := password != "" && password == db.MainPassword
+ 		entry, isGenPass := db.Passwords[password]
+ 		valid := isMainPass || (isGenPass && !isPasswordExpired(entry) && !entry.IsDeactivated)
+-		bound := isMainPass
+-		if valid && isGenPass {
++		// swg-panel: -fixed-config means one generated password IS one config — device-agnostic, so the
++		// entry's DeviceID/DeviceIDs are deliberately left empty. v1.4.3 added device-binding to the RAW path
++		// (v1.4.1 had none), and against an empty binding `bound` can never become true: every RAW DATA worker
++		// was denied with device_mismatch while the GETCONF worker, which does not take this branch, still
++		// registered. The session therefore came up, carried DNS, and delivered no downlink — the exact shape of
++		// "connected, no internet". Same exemption hunk the WG path already carries in handleConn.
++		bound := isMainPass || (fixedConfig && isGenPass)
++		if valid && isGenPass && !fixedConfig {
+ 			bound = entry.DeviceID == deviceID
+ 			if !bound {
+ 				for _, id := range entry.DeviceIDs {
+@@ -448,7 +459,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 			clientConn.Write([]byte("DENIED:device_mismatch"))
+ 			return
+ 		}
+-		dev, exists := db.Devices[deviceID]
++		dev, exists := db.Devices[dkey] // swg-panel: fixed-config key, as above
+ 		if exists && dev.OwnerID == "" {
+ 			setDeviceOwner(dev, password)
+ 		}
+@@ -469,19 +480,19 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 	untrackCredential := trackCredentialConnection(password, deviceID, clientConn)
+ 	defer untrackCredential()
+ 
+-	dlWorker := router.register(assignedIP, clientConn, deviceID)
++	dlWorker := router.register(assignedIP, clientConn, dkey)
+ 	defer router.unregister(assignedIP, dlWorker)
+ 	log.Printf("[RAW] Сессия %s зарегистрирована (ip=%s, getConf=%v)", deviceID, assignedIP, isGetConf)
+ 	defer log.Printf("[RAW] Сессия %s (ip=%s) завершена", deviceID, assignedIP)
+ 
+ 	activeDevicesMu.Lock()
+-	activeDevices[deviceID]++
++	activeDevices[dkey]++
+ 	activeDevicesMu.Unlock()
+ 	defer func() {
+ 		activeDevicesMu.Lock()
+-		activeDevices[deviceID]--
+-		if activeDevices[deviceID] <= 0 {
+-			delete(activeDevices, deviceID)
++		activeDevices[dkey]--
++		if activeDevices[dkey] <= 0 {
++			delete(activeDevices, dkey)
+ 		}
+ 		activeDevicesMu.Unlock()
+ 	}()
+@@ -536,7 +547,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+ 			continue
+ 		}
+ 		atomic.AddInt64(&totalBytesFromClient, int64(nn))
+-		addRawUplinkBytes(deviceID, int64(nn))
++		addRawUplinkBytes(dkey, int64(nn))
+ 		if wErr := router.writeUplink((*b)[:nn]); wErr != nil {
+ 			if atomic.CompareAndSwapUint32(&router.uplinkErrLogged, 0, 1) {
+ 				log.Printf("[RAW] Ошибка записи в TUN (ip=%s): %v", assignedIP, wErr)
 diff --git a/swgpanel.go b/swgpanel.go
 new file mode 100644
 index 0000000..afaa3a3

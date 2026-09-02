@@ -465,6 +465,55 @@ def _changelog_url(lang):
     return REMOTE_CHANGELOG_URL[:-len(".md")] + "." + lang + ".md"
 
 
+# ── pin the version/changelog fetch to an immutable commit, so a CDN can't serve them inconsistently ──
+# After a release, raw.githubusercontent's CDN can hand back a FRESH VERSION but a STALE CHANGELOG for a
+# window — they cache independently and a ?cb= query does not reliably bust it — so the update bubble showed
+# the PREVIOUS release's notes under the new version's heading (the recurring publish-day bug). The GitHub
+# API is authoritative for a ref's tip and is NOT that CDN, so we resolve the ref's current SHA there and
+# fetch both files from the IMMUTABLE /<sha>/ path: never stale, and always the SAME commit -> version and
+# notes can never disagree.
+def _ref_raw_parts(url):
+    """(owner, repo, ref) if `url` is a github raw URL we can pin to a commit; else None (a custom mirror)."""
+    m = re.match(r"^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/", url or "")
+    return (m.group(1), m.group(2), m.group(3)) if m else None
+
+
+_REF_SHA = {"at": 0, "ref": "", "sha": ""}
+def _resolve_release_sha():
+    """Current commit SHA of the release ref, from the GitHub API (not raw's CDN -> never a stale tip). '' when
+    the source is a non-github mirror or the API is unreachable/rate-limited -> callers fall back to the mutable
+    ref, guarded by the version-match check. Cached 60s (one update check makes several fetches)."""
+    parts = _ref_raw_parts(REMOTE_VERSION_URL)
+    if not parts:
+        return ""
+    owner, repo, ref = parts
+    now = int(time.time())
+    if _REF_SHA["sha"] and _REF_SHA["ref"] == ref and now - _REF_SHA["at"] < 60:
+        return _REF_SHA["sha"]
+    try:
+        api = "https://api.github.com/repos/%s/%s/commits/%s" % (owner, repo, ref)
+        req = urllib.request.Request(api, headers={"User-Agent": "swg-panel",
+                                                   "Accept": "application/vnd.github.sha"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            sha = r.read(80).decode("ascii", "replace").strip()
+        if re.fullmatch(r"[0-9a-f]{7,40}", sha):
+            _REF_SHA.update(at=now, ref=ref, sha=sha)
+            return sha
+    except Exception:
+        pass
+    return ""
+
+
+def _pinned(url, sha):
+    """Rewrite a github raw URL's ref to `sha` (immutable -> never CDN-stale). No-op for a non-github URL or an
+    empty sha (-> the mutable ref, which the version-match guard then protects)."""
+    p = _ref_raw_parts(url)
+    if not (p and sha):
+        return url
+    owner, repo, ref = p
+    return url.replace("/%s/%s/%s/" % (owner, repo, ref), "/%s/%s/%s/" % (owner, repo, sha), 1)
+
+
 # The panel has no fleet-wide language setting — js/i18n.js picks per browser (saved choice → navigator.language
 # → en). A crawler or a chat's preview fetcher runs none of that, so the shell's metadata mirrors the same rule on
 # the only signal a request carries: Accept-Language. Body text is still whatever the browser resolves; this is
@@ -506,10 +555,11 @@ def _req_lang():
     return v if re.fullmatch(r"[a-z]{2}", v or "") else "en"
 LATEST_REMOTE = {"version": None, "checked": 0, "date": "", "notes": []}
 
-def _fetch_latest_changelog(lang="en"):
-    """Fetch the remote changelog's TOP entry → (date, [bullet notes]) for the 'update to …' hover bubble.
-    Best-effort — ('', []) on any failure; markdown emphasis/code marks stripped from the bullets."""
-    base = _changelog_url(lang)
+def _fetch_latest_changelog(lang="en", sha=""):
+    """Fetch the remote changelog's TOP entry → (version, date, [bullet notes]) for the 'update to …' hover.
+    `sha` pins the fetch to an immutable commit (never CDN-stale); '' falls back to the mutable ref. Best-effort
+    — ('', '', []) on any failure; markdown emphasis/code marks stripped from the bullets."""
+    base = _pinned(_changelog_url(lang), sha)
     try:
         url = base + (("&" if "?" in base else "?") + "cb=" + str(int(time.time())))
         req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
@@ -517,8 +567,8 @@ def _fetch_latest_changelog(lang="en"):
             text = r.read(24000).decode("utf-8", "replace")
     except Exception:
         # a translated changelog may simply not be published yet → fall back to English rather than nothing
-        return ("", []) if lang == "en" else _fetch_latest_changelog("en")
-    date, notes, started, cur = "", [], False, []
+        return ("", "", []) if lang == "en" else _fetch_latest_changelog("en", sha)
+    version, date, notes, started, cur = "", "", [], False, []
     def _flush():
         if cur:
             b = re.sub(r"[*`]", "", " ".join(cur)).strip()   # join wrapped lines + drop **bold**/`code` marks
@@ -530,6 +580,9 @@ def _fetch_latest_changelog(lang="en"):
             if started:
                 break                                    # reached the NEXT version → stop
             started = True
+            mv = re.match(r"##\s*\[([^\]]+)\]", s)        # the version this entry is FOR (for the match-guard)
+            if mv:
+                version = mv.group(1).strip()
             m = re.search(r"—\s*(.+)$", s)               # "## [1.4.2-beta] — 2026-07-24"
             if m:
                 date = m.group(1).strip()
@@ -543,7 +596,7 @@ def _fetch_latest_changelog(lang="en"):
         elif cur:                                        # a wrapped continuation of the current bullet
             cur.append(s)
     _flush()
-    return date, notes[:8]
+    return version, date, notes[:8]
 
 _CHANGELOG_CACHE = {}          # lang -> {"at": …, "entries": […]}   (one cache per language)
 _LATEST_NOTES = {}             # lang -> {"at": …, "date": …, "notes": […]}   (the update bubble's top entry)
@@ -561,7 +614,7 @@ def _latest_notes(lang="en"):
     c = _LATEST_NOTES.get(lang)
     if c and now - c["at"] < 3600:
         return c["date"], c["notes"]
-    date, notes = _fetch_latest_changelog(lang)
+    _cv, date, notes = _fetch_latest_changelog(lang, LATEST_REMOTE.get("sha", ""))
     _LATEST_NOTES[lang] = {"at": now, "date": date, "notes": notes}
     return date, notes
 def _changelog_entries(lang="en"):
@@ -572,7 +625,7 @@ def _changelog_entries(lang="en"):
     if cache["entries"] and now - cache["at"] < 3600:
         return cache["entries"]
     try:
-        base = _changelog_url(lang)
+        base = _pinned(_changelog_url(lang), LATEST_REMOTE.get("sha", ""))
         url = base + (("&" if "?" in base else "?") + "cb=" + str(now))
         req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
         with urllib.request.urlopen(req, timeout=8) as r:
@@ -634,16 +687,26 @@ UPDATE_TRIGGER = os.environ.get("SWG_UPDATE_TRIGGER")
 def _check_latest_remote():
     ok = False                                       # True only if we actually reached the repo
     try:
-        # Bypass the CDN cache so a just-published release is seen promptly. A no-cache HEADER alone is NOT enough
-        # — raw.githubusercontent's Fastly edges can still serve a stale copy to a long-lived process — so append a
-        # unique ?cb= query: a distinct cache key forces a fresh origin fetch every time.
-        url = REMOTE_VERSION_URL + (("&" if "?" in REMOTE_VERSION_URL else "?") + "cb=" + str(int(time.time())))
+        # Pin the fetch to the release ref's CURRENT COMMIT, resolved from the GitHub API (authoritative for a
+        # ref's tip, and not raw's CDN). A /<sha>/ raw URL is immutable, so a just-published release is seen at
+        # once and VERSION + CHANGELOG always come from ONE commit — the bubble can never show the previous
+        # release's notes under the new version. '' sha -> the mutable ref, guarded below. (?cb= stays as a
+        # best-effort buster for that fallback; it does NOT reliably bust raw's CDN, which was the whole bug.)
+        sha = _resolve_release_sha()
+        LATEST_REMOTE["sha"] = sha                   # reused by _latest_notes / _changelog_entries -> same commit
+        vsrc = _pinned(REMOTE_VERSION_URL, sha)
+        url = vsrc + (("&" if "?" in vsrc else "?") + "cb=" + str(int(time.time())))
         req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
         with urllib.request.urlopen(req, timeout=8) as r:
             v = _short_ver(r.read(64).decode("utf-8", "replace").strip())
             if v:
                 LATEST_REMOTE["version"] = v
-                LATEST_REMOTE["date"], LATEST_REMOTE["notes"] = _fetch_latest_changelog()   # for the update-bubble
+                cv, cdate, cnotes = _fetch_latest_changelog(sha=sha)   # bubble notes, from the same commit
+                # Never pair a new version with the PREVIOUS release's notes. The SHA path cannot (one commit);
+                # this guards the ref FALLBACK, where a CDN lag can still return a mismatched pair — keep the
+                # last-good notes rather than publish a wrong one; the next check self-corrects.
+                if not (cnotes and cv and _short_ver(cv) != v):
+                    LATEST_REMOTE["date"], LATEST_REMOTE["notes"] = cdate, cnotes
                 ok = True
     except Exception:
         pass
@@ -722,12 +785,12 @@ WDTT_BUILDS = {                               # fork id -> [(author_version, our
     # that drops a blocked/rotated user's LIVE tunnel (it only denied new connections). The author version alone
     # can't express that, and the node only re-fetches when the version string changes.
     "amurcanov": [("1.2.4-2",  "wdtt-amurcanov-1.2.4-2")],
-    "ildarmaga": [("1.5.40",   "wdtt-ildarmaga-1.5.40")],
-    "wdttplus":  [("14",       "wdtt-wdttplus-14")],
-    "xxcipherx": [("2.0.0.68", "wdtt-xxcipherx-2.0.0.68")],
+    "ildarmaga": [("1.5.40-2", "wdtt-ildarmaga-1.5.40-2"), ("1.5.40",   "wdtt-ildarmaga-1.5.40")],
+    "wdttplus":  [("15",       "wdtt-wdttplus-15"),        ("14",       "wdtt-wdttplus-14")],
+    "xxcipherx": [("2.0.0.70", "wdtt-xxcipherx-2.0.0.70"), ("2.0.0.68", "wdtt-xxcipherx-2.0.0.68")],
     # qWDTT: built from SpaceNeuroX @854a72fe ("Release 1.4.1"), now a published release like the rest — a node
     # on a fresh install has no panel mirror to pull from, so mirror-only meant the fork simply did not work there.
-    "qwdtt":     [("1.4.1",    "wdtt-qwdtt-1.4.1")],
+    "qwdtt":     [("1.4.3",    "wdtt-qwdtt-1.4.3"),        ("1.4.1",    "wdtt-qwdtt-1.4.1")],
 }
 _WDTT_OWNER_FORK = {                          # catalog owner -> fork id (for owner-keyed callers like _turn_asset_url)
     "amurcanov/proxy-turn-vk-android": "amurcanov",
@@ -744,10 +807,19 @@ def _wdtt_current_version(fork):
     vs = _wdtt_versions(fork); return vs[0][0] if vs else ""
 
 # csqtt is built + hosted like the WDTT forks (one binary, no fork variance). CSQTT_BUILDS is the source of truth
-# [(author_version, our_release_tag)], newest first; empty until the A1 binary is published (A3b — the publish is
-# outward-facing + held, mirroring the WDTT publish policy). Empty → no `ver` injected → the node uses whatever it
-# has (the pre-placed A1 binary), so the reply path works before any release exists.
-CSQTT_BUILDS = [("2.0.1", "csqtt-2.0.1")]
+# [(author_version, our_release_tag)], newest first. Empty → no `ver` injected → the node uses whatever it has,
+# so the reply path works before any release exists.
+#
+# ⚠️ 2.1.5 IS BUILT AND PORTED BUT NOT ADVERTISED HERE, because this list is a promise that a binary EXISTS:
+# every entry resolves to https://github.com/<WDTT_BUILD_REPO>/releases/download/<tag>/server-linux-<arch>, and
+# the node's ONLY source for csqtt is that mirror. Listing 2.1.5 before the release is cut makes every fresh
+# install, every operator-triggered update and the auto-updater fetch a 404 — reported as "panel mirror has no
+# build yet", which reads like the panel is broken rather than like the release is missing. Add the entry back
+# in the SAME change that publishes the tag, never before.
+#   ready to ship: forks/csqtt/ is pinned to de7afc23 (v2.1.5) and the binaries are built + version-checked.
+# The 2.1.5 work elsewhere STAYS and is deliberately not reverted: swg-noded reads either store shape
+# (passwords.json <=2.0.1, SQLite csqtt.db from 2.1.5), so a node adopting a hand-placed 2.1.5 already works.
+CSQTT_BUILDS = [("2.1.9", "csqtt-2.1.9"), ("2.0.1", "csqtt-2.0.1")]
 def _csqtt_current_version():
     return CSQTT_BUILDS[0][0] if CSQTT_BUILDS else ""
 CSQTT_MIRROR_OWNER = "amurcanov/csqtt"        # the mirror KEY the node asks under — NOT where the binary lives
@@ -1016,9 +1088,111 @@ def turn_pin(owner, arches=None, wait=25, force=False):
     return pin
 
 
+TURN_LATEST = {"forks": {}, "checked": 0}   # fork id -> newest installable version (ours for what we build, upstream's tag otherwise)
+
+
+def _turn_hold_key(kind, fork):
+    """Rollback holds are keyed 'wdtt:<fork>' for the WDTT family and 'fork:<fork>' for everything else (csqtt
+    included — see _csqtt_reply). One helper so a caller never has to remember which."""
+    return ("wdtt:" + fork) if kind == "wdtt" else ("fork:" + fork)
+
+
+def _turn_deployed(deps):
+    """[(fork, kind, node, iface_or_service, installed_version)] for every turn-family server the fleet reports."""
+    out = []
+    for nid, snap in (deps.get("node_snaps") or {}).items():
+        if not isinstance(snap, dict):
+            continue
+        for c in (snap.get("csqtt") or []):
+            # WHICH csqtt fork, from the snapshot — not the literal "csqtt", which is only the id of the one
+            # that exists today. The node has always reported this field precisely so a second implementation
+            # can never be silently substituted (see CSQTT_FORK_OWNER in swg-noded); hardcoding it here threw
+            # that away, and would have merged two different servers into one row and offered BOTH amurcanov's
+            # build. Absent on an older snapshot = the single known fork, the same assumption the node makes.
+            if isinstance(c, dict) and c.get("iface"):
+                out.append(((c.get("fork") or "").strip() or "csqtt", "csqtt", nid, c["iface"], str(c.get("version") or "").strip()))
+        for w in (snap.get("wdtt") or []):
+            if isinstance(w, dict) and w.get("iface") and w.get("fork"):
+                out.append((w["fork"], "wdtt", nid, w["iface"], str(w.get("version") or "").strip()))
+        for tp in (snap.get("turn_proxies") or []):
+            if isinstance(tp, dict) and tp.get("service"):
+                out.append((turn_fork(tp["service"]), "turn", nid, tp["service"], str(tp.get("version") or "").strip()))
+    return out
+
+
+def _turn_latest_for(fork):
+    """The newest installable version of a fork. Same rule as /api/turn/check-updates — OUR published build for
+    the ones we compile, the upstream release tag otherwise — so the header badge and that screen can never
+    disagree about whether something is behind."""
+    if fork in WDTT_BUILDS:
+        return _wdtt_current_version(fork)
+    if fork == "csqtt":
+        return _csqtt_current_version()
+    owner = turn_fork_owner(fork)
+    return _resolve_turn_tag(owner) if owner and "/" in owner else ""
+
+
+def _check_turn_latest(deps):
+    """Refresh the latest-version cache for the DEPLOYED forks only. Each unknown fork costs a network round trip,
+    and one that is not deployed anywhere can never produce an actionable update — so the cost tracks the fleet,
+    not the catalogue. Returns True if anything resolved."""
+    got = {}
+    for fork in sorted({f for f, _, _, _, _ in _turn_deployed(deps) if f}):
+        with contextlib.suppress(Exception):
+            v = _turn_latest_for(fork)
+            if v:
+                got[fork] = v
+    TURN_LATEST["forks"] = got
+    TURN_LATEST["checked"] = int(time.time())
+    return bool(got)
+
+
+def _turn_behind(inst, latest):
+    """Is `inst` genuinely older than `latest`? Plain inequality was wrong: it reported a server running
+    something NEWER than the published release as "behind" and offered the downgrade — the mistake _ver_behind
+    exists to prevent for the panel's own version. That helper cannot be reused, because _vtuple rejects both
+    schemes that meet here: upstream tags carry a leading "v" ("v3.2.0"), and OUR rebuilds carry a build suffix
+    on an unchanged upstream version ("1.2.4" -> "1.2.4-2"), which the numeric triple alone cannot see.
+
+    So: compare the triple ignoring a leading "v", strictly-older only; if the triples match but the strings
+    differ, that IS one of our rebuilds; and if either side has no parseable triple, fall back to inequality —
+    we cannot order them, and staying silent would hide a real update behind an unusual tag."""
+    inst, latest = str(inst or "").strip(), str(latest or "").strip()
+    if not inst or not latest or inst == latest:
+        return False
+    a, b = _vtuple(inst.lstrip("vV")), _vtuple(latest.lstrip("vV"))
+    if a == (0, 0, 0) or b == (0, 0, 0):
+        return True
+    return a < b if a != b else True
+
+
+def turn_updates_view(deps):
+    """Actionable turn-family updates, ONE ROW PER (fork, node) — which is the real update unit: csqtt keeps one
+    binary per node and WDTT one per (fork, node), so every instance there restarts together. Counting
+    INTERFACES would promise work that does not exist (updating one csqtt server updates them all on that box).
+
+    A HELD fork is a deliberate not-latest and is never counted as behind, or the badge could never clear for an
+    operator who pinned on purpose. Comparison is plain inequality, matching the SPA's existing rule: the version
+    strings are not a single scheme ("1.2.4-2" ours, "v3.2.0" upstream) and ordering them would invent meaning."""
+    latest = TURN_LATEST.get("forks") or {}
+    rows = {}
+    for fork, kind, nid, ident, inst in _turn_deployed(deps):
+        lt = latest.get(fork) or ""
+        if not _turn_behind(inst, lt):
+            continue
+        if _turn_hold_get(nid, _turn_hold_key(kind, fork)):
+            continue
+        r = rows.setdefault((fork, nid), {"fork": fork, "kind": kind, "node": nid,
+                                          "installed": inst, "latest": lt, "ids": []})
+        r["ids"].append(ident)
+    return sorted(rows.values(), key=lambda r: (r["fork"], r["node"]))
+
+
 def _remote_version_loop():
     while True:
         _check_latest_remote()
+        with contextlib.suppress(Exception):
+            _check_turn_latest(getattr(Handler, "deps", None) or {})   # same cadence as the panel's own version
         time.sleep(60 * 60)   # every hour — the header reflects a freshly-published release within the hour (the "check" icon is still there for an instant, on-demand refresh)
 
 
@@ -3761,9 +3935,12 @@ def migrate_provider_defaults(nodes_path, panel_settings_path):
 
 
 def migrate_enabled_turn_forks(nodes_path, panel_settings_path, stats_dir):
-    """One-time: enabled_turn_forks (the install-a-fork picker filter) defaults to a small set for a fresh fleet.
-    An EXISTING fleet whose proxies are OTHER forks would, after an update, drop those forks out of the install
-    picker AND the Overview traffic-by-fork chart until re-enabled. Seed enabled_turn_forks with the forks a node
+    """One-time: keep a fork the fleet ALREADY runs from vanishing out of the install-a-fork picker.
+
+    enabled_turn_forks filters that picker AND the Overview traffic-by-fork chart. The built-in default is every
+    VISIBLE fork (the catalog minus TURN_HIDDEN_FORKS), so what this can still add is a HIDDEN fork — cacggghp or
+    kiper292 — that a node actually runs: without the seed those proxies would go on serving traffic while
+    disappearing from both the picker and the chart. Seed enabled_turn_forks with the forks a node
     ALREADY runs (from the persisted snapshot mirrors), unioned with the defaults, so nothing already deployed goes
     stale. This is purely a panel-UI setting — it NEVER touches deployed proxies, node desired sets, or any config a
     client has already imported. Idempotent + conservative: runs only when the key is genuinely unset in the SAVED
@@ -4273,7 +4450,7 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk=""):
         merged = dict(inst or {}); merged["iface"] = iface
         merged.pop("password", None); merged.pop("web_pass", None)   # node-owned secrets
         merged["passwords"] = derived.get(iface) or {}               # authoritative: roster-derived
-        _cver = _turn_hold_get(node_id, "csqtt") or _csqtt_current_version()
+        _cver = _turn_hold_get(node_id, "fork:csqtt") or _csqtt_current_version()   # normalised key — _turn_holds_migrate rewrites a bare "<nid>|csqtt" to "fork:csqtt" at startup, so the bare form never survives a restart
         if _cver:
             merged["ver"] = _cver
         out[iface] = merged
@@ -4358,6 +4535,15 @@ def _node_issues(c, snap, ivk_pub=""):
     _dp = (snap.get("datapath") or {}).get("awg")   # bare-metal node's AmneziaWG kernel module — a broken DKMS build the updater rebuilds
     if _dp and _dp.get("needed") and not _dp.get("ok"):
         issues.append("AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it")
+    # NOTE: peers on encrypted DNS are NOT reported here. Being un-category-routed is a property of the PEER,
+    # not of the node — a node with one such peer is otherwise healthy, and burying the fact in a node-level
+    # roll-up meant the operator could not see WHICH client it was without reading the line. It rides the peer's
+    # own status pill instead (see peerUncategorised / gridStatusBadge); `doh_peers` on the node record is what
+    # feeds it.
+    # NOTE: a docker node reports no `datapath` at all, so nothing above fires for one — deliberately. Whether
+    # it runs the kernel or the userspace datapath is decided by its HOST, it is not a failure either way
+    # (measured: userspace was never slower), and on a host that cannot build a module — LXC/OpenVZ, a kernel
+    # with no headers — a line here would be a warning that never clears and that the operator cannot act on.
     # A node whose firewall is DECLARED (a NixOS module, a config-management run) tells us which UDP
     # ports it allows. We pick interface ports at runtime; that list is fixed at build time. Without
     # this the mismatch is invisible in the worst way — the interface syncs, reports healthy and
@@ -7628,6 +7814,7 @@ CATALOG_PROVIDERS = {
 }
 CATALOG_PROVIDER_ORDER = ["mc", "v2", "ls", "rf", "bm"]
 CATALOG_TTL = 86400
+CATALOG_FAIL_TTL = 1800    # after a TOTAL provider failure, don't re-attempt for this long (see catalog_index)
 CATALOG_PATH = "/var/lib/swg-panel/catalog-index.json"          # overridden from the state dir in main()
 
 # ── Block-list catalog (content/abuse BLOCKING — parallel to the routing catalog above) ──────────────────────
@@ -7903,7 +8090,7 @@ TURN_SERVERS = {
                      "settings": [{"key": "wrap", "flag": "-wrap", "type": "bool", "default": True, "label": "Obfuscation (WRAP)", "help": "MYSOREZ mzrtp obfuscation (-wrap) — needs a password. Off = plain (VK throttles unobfuscated traffic)."},
                                   {"key": "password", "flag": "-password", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Password", "help": "Shared secret the core HKDFs to the AEAD key — must match the client. Required when WRAP is on. Auto-generated."}],
                      "client_settings": _MYSOREZ_CORE_CS},   # the VK TURN Proxy app loads the MYSOREZ CORE here → captcha/vk-auth/device knobs (the vktgz encoder emits -password + these)
-    "WINGS-N":      {"label": "WINGS-N",      "owner": "WINGS-N/vk-turn-proxy",          "wrap": "-wrap-mode on",        "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#C98BE0", "light": "#9B4FC7"}, "clients": ["wingsv", "vkturnproxy", "sidecar"],     "reload": "restart",
+    "WINGS-N":      {"label": "WINGS-N",      "owner": "WINGS-N/vk-turn-proxy",          "wrap": "-wrap-mode on",        "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#C98BE0", "light": "#9B4FC7"}, "clients": ["wingsv", "vkturnproxy", "sidecar", "freeturn", "wgturn"],     "reload": "restart",
                      "settings": [{"key": "wrap_mode", "flag": "-wrap-mode", "type": "enum", "values": ["on", "off"], "default": "on", "label": "Obfuscation"},
                                   {"key": "wrap_cipher", "flag": "-wrap-cipher", "type": "enum", "values": ["any", "srtp-aes-gcm", "srtp-chacha20-poly1305"], "default": "any", "label": "WRAP cipher", "help": "AEAD the server accepts for WRAP (-wrap-cipher, WINGS-N v2.1.0). any = accept either; or pin one — the client must offer it."},
                                   _TS_WRAPKEY],
@@ -7918,7 +8105,7 @@ TURN_SERVERS = {
                                          {"key": "restartOnNetworkChange", "type": "bool", "default": False, "label": "Restart on network change", "help": "Reconnect when the device network changes (Turn.restart_on_network_change). Off = the app's default."},
                                          {"key": "useUDP", "type": "bool", "default": True, "label": "UDP transport", "help": "Reach the TURN relay over UDP (Turn.use_udp). On by default."},
                                          {"key": "noObfuscation", "type": "bool", "default": False, "label": "Disable obfuscation", "help": "Turn off the app's traffic obfuscation (Turn.no_obfuscation). Off = the app's default (obfuscation on)."}]},
-    "samosvalishe": {"label": "samosvalishe", "owner": "samosvalishe/free-turn-proxy",   "wrap": "-obf-profile rtpopus", "keyflag": "-obf-key",  "protocols": ["wg"],        "color": {"dark": "#E0A85F", "light": "#C07A1E"}, "clients": ["freeturn", "vkturnproxy", "sidecar"],   "reload": "restart",
+    "samosvalishe": {"label": "samosvalishe", "owner": "samosvalishe/free-turn-proxy",   "wrap": "-obf-profile rtpopus", "keyflag": "-obf-key",  "protocols": ["wg"],        "color": {"dark": "#E0A85F", "light": "#C07A1E"}, "clients": ["freeturn", "mysorez", "vkturnproxy", "sidecar"],   "reload": "restart",
                      "settings": [{"key": "obf_profile", "flag": "-obf-profile", "type": "enum", "values": ["none", "rtpopus", "rtpopus2", "rtpopus3"], "default": "rtpopus", "label": "Obfuscation profile", "help": "rtpopus* dress the traffic as an RTP/Opus call; none = plain. Must match the FreeTurn client."},
                                   {"key": "obf_key", "flag": "-obf-key", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Obfuscation key", "help": "64 hex chars — must match the FreeTurn client."}],
                      "client_settings": [{"key": "n", "type": "int", "default": "", "label": "Streams", "help": "Parallel TURN streams (-n). Blank = the app's default (10)."},
@@ -7935,14 +8122,14 @@ TURN_SERVERS = {
                                          {"key": "dnss", "type": "text", "default": "", "label": "Custom DNS", "help": "Comma-separated DNS servers (-dns-servers). Blank = the app's default."},
                                          {"key": "mcap", "type": "bool", "default": False, "label": "Manual captcha", "help": "Solve the VK captcha manually in the app (-manual-captcha)."},
                                          {"key": "serverName", "type": "text", "default": "", "label": "Server name", "help": "Name this connection takes in the FreeTurn app's list (the link's `name`). This setting covers every proxy of this fork, so use {fork}, {host} or {port} to vary it per server — «Frankfurt {port}» becomes «Frankfurt 56009». Blank = the app names it itself."}]},
-    "Moroka8":      {"label": "Moroka8",      "owner": "Moroka8/vk-turn-proxy",          "wrap": "-wrap",                "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#E07A9A", "light": "#C24468"}, "clients": ["sidecar", "mysorez", "vkturnproxy"],    "reload": "restart",
+    "Moroka8":      {"label": "Moroka8",      "owner": "Moroka8/vk-turn-proxy",          "wrap": "-wrap",                "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#E07A9A", "light": "#C24468"}, "clients": ["sidecar", "mysorez", "vkturnproxy", "freeturn"],    "reload": "restart",
                      "settings": [{"key": "wrap", "flag": "-wrap", "type": "bool", "default": True, "label": "WRAP"}, _TS_WRAPKEY]},
     "kiper292":     {"label": "kiper292",     "owner": "kiper292/vk-turn-proxy",         "wrap": "",                     "keyflag": "-wrap-key", "protocols": ["wg"],        "color": {"dark": "#6FD9A8", "light": "#12A46B"}, "clients": ["wgturn", "vkturnproxy", "sidecar"],     "reload": "restart",
                      "settings": [],
                      "client_settings": [{"key": "streamNum", "type": "int", "default": 4, "label": "Streams", "help": "Parallel TURN streams (#@wgt:StreamNum, app range 1–16)."},
                                          {"key": "streamsPerCred", "type": "int", "default": 4, "label": "Streams per credential", "help": "Streams sharing one VK credential (#@wgt:StreamsPerCred)."},
                                          {"key": "watchdogTimeout", "type": "int", "default": "", "label": "Watchdog timeout", "help": "Reconnect after N seconds idle (#@wgt:WatchdogTimeout). Blank = off."}]},
-    "anton48":      {"label": "anton48",      "owner": "anton48/vk-turn-proxy",          "wrap": "-wrap-srtp",           "keyflag": "-wrap-key", "protocols": ["wg"],        "color": {"dark": "#D9CF5F", "light": "#8E8420"}, "clients": ["vkturnproxy", "mysorez", "sidecar"], "reload": "restart",
+    "anton48":      {"label": "anton48",      "owner": "anton48/vk-turn-proxy",          "wrap": "-wrap-srtp",           "keyflag": "-wrap-key", "protocols": ["wg"],        "color": {"dark": "#D9CF5F", "light": "#8E8420"}, "clients": ["vkturnproxy", "sidecar", "freeturn"], "reload": "restart",
                      "settings": [{"key": "srtp_mode", "type": "flagenum", "default": "wrap", "label": "SRTP mode",
                                    "help": "WRAP = keyed (the key must match the app's WRAP KEY field); SRTP = keyless.",
                                    "values": [{"value": "wrap", "flag": "-wrap-srtp", "label": "WRAP (keyed)"}, {"value": "plain", "flag": "-srtp", "label": "SRTP (keyless)"}]},
@@ -7962,15 +8149,20 @@ TURN_SERVERS = {
     # binary mirror (WDTT_BUILDS → our patched linux-server release). ALL FOUR forks patched + built + published
     # (wdtt-<fork> releases on WDTT_BUILD_REPO): amurcanov, ildarmaga, wdttplus (Ivan4537, server.go @ b3aad32),
     # xxcipherx (XXcipherX, assets/linux-server @ bc1ba26). Build tooling in wdtt/<fork>/build.sh.
-    "amurcanov":    {"label": "amurcanov",  "product": "WDTT",      "owner": "amurcanov/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#A78BFA", "light": "#7C3AED"}, "clients": ["wdttapp", "qwdtt", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+    "amurcanov":    {"label": "amurcanov",  "product": "WDTT",      "owner": "amurcanov/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#A78BFA", "light": "#7C3AED"}, "clients": ["wdttapp", "qwdtt", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
                      "settings": [], "client_settings": []},
-    "ildarmaga":    {"label": "ildarmaga",  "product": "WDTT",      "owner": "ildarmaga/wdtt",                  "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#5B8DEF", "light": "#2563EB"}, "clients": ["pwdtt", "wdttapp", "qwdtt", "wdttplus", "xxcipher", "vkturnproxy"], "reload": "sighup",
+    # ⚠️ ildarmaga is RAW-CAPABLE IN SOURCE but the flag stays OFF until wdtt-ildarmaga-1.5.40-2 is published.
+    # Our build teaches it -listen-raw/-raw-iface/-raw-addr; the RELEASED 1.5.40 predates them and exits
+    # 2/INVALIDARGUMENT on an unknown flag. Turning this on against that binary does not degrade — it kills the
+    # service outright, which is exactly what happened on the test node. Add `"raw": True,` back in the SAME
+    # change that publishes 1.5.40-2, never before. (Same rule as CSQTT_BUILDS; see the note there.)
+    "ildarmaga":    {"raw": True, "default_client": "pwdttilg", "label": "ildarmaga",  "product": "WDTT",      "owner": "ildarmaga/wdtt",                  "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#5B8DEF", "light": "#2563EB"}, "clients": ["pwdttilg", "pwdtt", "wdttapp", "qwdtt", "wdttplus", "xxcipher", "vkturnproxy", "qwdttleg"], "reload": "sighup",
                      # richer server: multi-user panel + subscription + Xray + Telegram bot; its native desktop client is the ildarmaga PWDTT build (sub-URL / base64)
                      "settings": [], "client_settings": []},
-    "wdttplus":     {"label": "Ivan4537",   "product": "WDTT-Plus", "owner": "Ivan4537/WDTT-Plus",              "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#F0705E", "light": "#D9432E"}, "clients": ["wdttplus", "wdttapp", "qwdtt", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+    "wdttplus":     {"label": "Ivan4537",   "product": "WDTT-Plus", "owner": "Ivan4537/WDTT-Plus",              "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#F0705E", "light": "#D9432E"}, "clients": ["wdttplus", "wdttapp", "qwdtt", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
                      # Ivan4537 fork: in-app admin + WARP alternate-exit IP; wire-compatible with amurcanov
                      "settings": [], "client_settings": []},
-    "xxcipherx":    {"label": "XXcipherX",  "product": "WDTT",      "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+    "xxcipherx":    {"label": "XXcipherX",  "product": "WDTT",      "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
                      # XXcipherX fork: video-masquerade obfuscation + no-captcha; audio mode is amurcanov-compatible
                      "settings": [], "client_settings": []},
     "qwdtt":        {"label": "SpaceNeuroX", "product": "qWDTT",    "raw": True, "default_client": "qwdtt", "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#FACC15", "light": "#A16207"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
@@ -9118,6 +9310,15 @@ def _http_retry(fn, tries=4, backoff=1.2):
             return fn()
         except Exception as e:
             last = e
+            # A REFUSAL IS NOT A BLIP. 401/403/429 mean "you are rate-limited / not allowed", and retrying makes
+            # it strictly worse: it spends more of the very quota that is exhausted. GitHub's unauthenticated
+            # API allows 60 requests/hour and one catalog build spends several, so retrying each of them four
+            # times turns a single limited build into ~4x the load and keeps the limit tripped for longer.
+            # Measured during development: five providers, all `HTTP Error 403: rate limit exceeded`, 66s spent
+            # entirely on retries that could not have succeeded. Transient failures (TLS EOF, timeout, 5xx) keep
+            # the full retry budget — that is what this function is for.
+            if getattr(e, "code", None) in (401, 403, 429):
+                raise
             time.sleep(backoff * (i + 1))
     raise last
 
@@ -9182,18 +9383,91 @@ def catalog_index(force=False):
                 _CATALOG.update(idx=d["idx"], at=int(d["at"]), err=""); return d["idx"]
         except Exception:
             pass
+    # A TOTAL failure must not be retried on every call. _catalog_build() is 5 providers x _http_retry(tries=4)
+    # x urlopen(timeout=30) — minutes of outbound work where GitHub is unreachable. Without this a box that
+    # cannot reach GitHub would re-attempt on every caller, forever. (The 24h `at` stamp used to provide that
+    # damping by accident, by caching the empty result — which is the data-loss bug fixed below.) `force`
+    # bypasses it: an operator pressing refresh has asked for the attempt.
+    if not force and _CATALOG.get("fail_at") and now - _CATALOG["fail_at"] < CATALOG_FAIL_TTL:
+        return _catalog_last_good()
     try:
         idx = _catalog_build()
     except Exception as ex:
+        idx = None
         _CATALOG["err"] = str(ex)[:200]
-        if _CATALOG["idx"]:                                     # keep serving last-good on a fetch failure
-            return _CATALOG["idx"]
-        try:    return json.load(open(CATALOG_PATH))["idx"]
-        except Exception: return {}
+    # ⚠️ EMPTY IS A FAILURE, NOT A RESULT. _catalog_build() catches each provider's exception into `perr` and
+    # RETURNS — it never raises when all of them fail. So a total outage used to land here as a successful
+    # build of {}, get stamped `at=now`, and be written to disk: an empty catalog served for 24 hours. In that
+    # window a node-settings save wipes the operator's catalog_cats, a rules save silently drops every
+    # provider-category rule, and catalog_cached() reports have=True. GitHub's unauthenticated API is 60 req/h,
+    # so one rate-limit window is enough to trigger it. Treat "built nothing" exactly like "raised".
+    if not idx:
+        _CATALOG["fail_at"] = now
+        _CATALOG["err"] = _CATALOG["err"] or "every catalog provider failed to fetch"
+        return _catalog_last_good()
     _CATALOG.update(idx=idx, at=now, err="")
+    _CATALOG.pop("fail_at", None)
     with contextlib.suppress(Exception):
         atomic_write(CATALOG_PATH, json.dumps({"idx": idx, "at": now}))
     return idx
+
+
+def _catalog_last_good():
+    """Whatever catalog we still hold — memory, else the on-disk copy regardless of TTL, else {}. Never fetches."""
+    if _CATALOG["idx"]:
+        return _CATALOG["idx"]
+    try:
+        return json.load(open(CATALOG_PATH))["idx"] or {}
+    except Exception:
+        return {}
+
+def catalog_cached():
+    """The catalog AS ALREADY HELD — memory, else the on-disk copy REGARDLESS of its TTL. NEVER fetches, so this
+    is the one that is safe to call from a request handler.
+
+    Returns (idx, have). `have` is a distinction that did not exist: catalog_index() returns {} BOTH when a fetch
+    failed with nothing cached AND when the catalog is legitimately empty, and no caller could tell them apart —
+    so a GitHub outage silently became "this node routes no categories", which is indistinguishable from the
+    operator having configured none. Any caller about to ship a catalog-DERIVED structure that makes a node clear
+    state must check `have` and omit the structure rather than send an empty one.
+
+    A STALE index still counts as have=True, deliberately: last-good beats nothing, and the only cost of
+    staleness is not yet knowing about a list added upstream since. An EMPTY one does NOT: `{} is not None`,
+    so testing for None alone reported "we hold a catalog, it happens to be empty" — have=True with nothing in
+    it — which is the precise case this function exists to distinguish. A build that yields nothing is a
+    failure (see catalog_index), and a released build could also have left an empty file on disk."""
+    if _CATALOG["idx"]:
+        return _CATALOG["idx"], True
+    try:
+        d = json.load(open(CATALOG_PATH))
+        idx = d.get("idx")
+        if idx:
+            # Adopt into memory but KEEP the original timestamp: reading the disk copy must not look like a fresh
+            # build, or the TTL would never expire and the background refresh would never re-fetch.
+            _CATALOG.update(idx=idx, at=int(d.get("at") or 0))
+            return idx, True
+    except Exception:
+        pass
+    return {}, False
+
+
+def _catalog_refresh_loop():
+    """Keep the provider catalog warm OFF the request path.
+
+    It used to be (re)built inside POST /api/node/sync — an endpoint every node hits every 5 seconds — so any cold
+    cache blocked a request thread on api.github.com. Measured 65s with GitHub perfectly reachable, and the cost
+    where it is NOT reachable is far worse: _http_retry(tries=4) x urlopen(timeout=30) plus backoff is ~127s per
+    provider, over five providers. On the networks this product is built for, that is a panel that stops answering
+    while its nodes retry every 5s — reported from the field as the panel nearly falling over the moment routing
+    was switched on, with the node logging `sync error: Connection refused`.
+
+    The retries themselves stay exactly as they are: _http_retry exists because these networks are flaky, and
+    trimming it would only trade panel latency for a catalog that fails to build more often. Here, nobody waits."""
+    while True:
+        with contextlib.suppress(Exception):
+            catalog_index()          # honours CATALOG_TTL: a real rebuild only when actually due
+        time.sleep(900)              # a failed build leaves `at` untouched, so this is also the retry cadence
+
 
 def catalog_label(cid):
     rid = cid.split(":", 1)[1] if ":" in cid else cid
@@ -9899,6 +10173,9 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=()):
     NOT stored (appended at compile time)."""
     if not isinstance(routing, list):
         return None, "routing must be a list of rules"
+    # Resolved ONCE per call, not per rule, and cache-only: this runs in a save handler, where a cold-cache
+    # rebuild through api.github.com would block the request for a minute.
+    _cat_idx, _cat_have = catalog_cached()
     clean = []
     for r in routing:
         if not isinstance(r, dict):
@@ -9931,8 +10208,15 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=()):
             tgt = (doms, cidrs)
         elif cat in custom_list_ids:
             pass                                           # a reusable custom list referenced by id (targets resolved at compile time)
-        elif cat in catalog_index():
+        elif cat in _cat_idx:
             pass                                           # a provider-catalog category (node fetches it from MetaCubeX via caps)
+        elif ":" in cat and not _cat_have:
+            pass                                           # ⚠️ a provider id we cannot VALIDATE right now (the catalog is
+                                                           # unavailable — one exhausted GitHub rate-limit window is enough).
+                                                           # The branch below PERSISTS its verdict, so treating "cannot look
+                                                           # it up" as "does not exist" silently deleted every provider rule
+                                                           # on the next save. Keep it; a real orphan is dropped once the
+                                                           # catalog is back and can actually answer.
         elif cat not in SMART_CATEGORIES:
             continue                                       # orphaned reference (e.g. a reusable custom list that was later
                                                            # deleted, or a category removed in an upgrade) → DROP the rule
@@ -11335,6 +11619,10 @@ def api(method, path, qs, body, deps):
                         "cmd_errors": (snap.get("cmd_errors") or {}),               # request key -> last host->node command error
                         "cmd_progress": (snap.get("cmd_progress") or {}),           # request key -> transient "what's happening now" (yellow card note)
                         "issues": _node_issues(c, snap, _ivk_now),                            # health-check roll-up: drift / missing egress / turn down
+                        # {peer_ip: attempts} on encrypted DNS right now (self-expiring on the node) → the peer's
+                        # own card badges itself, so the operator sees WHICH client is bypassing the DNS-based
+                        # classification rather than only that someone on the interface is.
+                        "doh_peers": (snap.get("doh_peers") or {}),
                         "datapath_broken": bool((((snap.get("datapath") or {}).get("awg")) or {}).get("needed") and not (((snap.get("datapath") or {}).get("awg")) or {}).get("ok")),   # awg kernel module unloadable → offer "repair node" (node self-update rebuilds it) even when up-to-date
                         # a node self-update can REPAIR: bare-metal → rebuild the awg DKMS module; docker → `compose pull && up`
                         # recreates a crashed container / userspace datapath. True when there's such an issue AND the node is up.
@@ -11434,7 +11722,11 @@ def api(method, path, qs, body, deps):
                         _inuse_cat.add(_c)
         _cat_caps_extra, _cat_labels_extra = {}, {}
         if _inuse_cat:
-            _cix = catalog_index()
+            # CACHE-ONLY: this is /api/state, which the SPA polls. catalog_index() rebuilds through
+            # api.github.com on a cold cache — 65s measured — which would hang the whole console on the first
+            # load after a restart. These caps only drive display grouping, so a cold cache costs a few badges
+            # until _catalog_refresh_loop warms it, and nothing else.
+            _cix, _ = catalog_cached()
             for _c in _inuse_cat:
                 if _c in _cix:
                     _cat_caps_extra[_c] = _cix[_c]
@@ -11480,6 +11772,7 @@ def api(method, path, qs, body, deps):
 
             "turn_catalog": turn_catalog_view(),         # single-source turn fork/client catalog (SPA reads this instead of a hardcoded TURN_FORKS)
             "turn_holds": _turn_holds_view(),            # {node: {fork: held_version}} → fork-row "held" flag (per node+fork rollback holds)
+            "turn_updates": turn_updates_view(deps),      # deployed turn-family servers behind their newest build, one row per (fork, node) — the header badge reads this as a READY FACT, the way panel_outdated is, instead of the SPA fanning out a network check per fork on every click
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
             "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)
@@ -12900,7 +13193,9 @@ def api(method, path, qs, body, deps):
         cat = (qs.get("cat") or [""])[0].strip()
         if ":" not in cat and cat not in CURATED_PRESETS:
             return 400, {"ok": False, "error": "bad cat", "code": "bad_request"}
-        caps = SMART_CAPS.get(cat) if cat in CURATED_PRESETS else (catalog_index().get(cat) or {})
+        # Cache-only: this fires on HOVER. A cold-cache rebuild here would hang the tooltip for a minute; an
+        # empty answer just shows nothing until _catalog_refresh_loop has warmed the index.
+        caps = SMART_CAPS.get(cat) if cat in CURATED_PRESETS else (catalog_cached()[0].get(cat) or {})
         out = {}
         for tier in ("host", "ip"):                             # Host first (house rule)
             if not caps.get(tier):
@@ -13006,6 +13301,31 @@ def api(method, path, qs, body, deps):
         _prev = load_sub_vault(deps)
         fresh = bool(body.get("fresh"))
         rec = {} if fresh else dict(_prev)
+        if fresh and _prev:
+            # ⚠️ EVERYTHING ELSE WRAPPED UNDER THE OLD SK DIES TOO — not just ivk_*. Each subscription bucket's
+            # unlock_by_sk in escrow.json is wrapped under the SK being replaced, and dropping only ivk_* left
+            # those behind: unwrappable by anyone, for ever. That is worse than having none, because
+            # ensureUserUnlockKey() takes its recovery branch *because* a key is present, fails to unwrap it and
+            # returns null — so the panel silently stops STORING new configs as well as reading old ones. With no
+            # key it would simply mint a fresh one and keep working.
+            #
+            # Cost us a real diagnosis: a vault reset orphaned the _orphan bucket, and every unassigned peer
+            # afterwards showed "No stored config — re-issue this peer" while its rekeyed config was never
+            # persisted at all. Nothing anywhere said why.
+            #
+            # Re-wrapping is impossible here by definition: `fresh` means the browser minted a new SK because the
+            # old one is gone. So drop the dead keys and their ciphertext, and let the next publish mint fresh
+            # ones. Nothing recoverable is lost — none of it could be decrypted again either way.
+            _esc = load_sub_escrow(deps)
+            _dropped = 0
+            for _uid, _e in list(_esc.items()):
+                if isinstance(_e, dict) and ("unlock_by_sk" in _e or "token_by_sk" in _e):
+                    _esc.pop(_uid, None); _dropped += 1
+                    drop_sub_blobs(deps, _uid)          # ciphertext under a key nobody can rebuild
+            if _dropped:
+                save_sub_escrow(deps, _esc)
+                print("sub vault: NEW encryption key — dropped %d escrow bucket(s) and their stored configs "
+                      "(they were wrapped under the replaced key and can never be read again)" % _dropped, flush=True)
         rec["salt"], rec["sk_by_pw"], rec["sk_check"] = salt, sk, chk
         rec["at"] = now()
         # sk_verify: preserve an existing one on a password re-wrap (the SK is unchanged), set it on first create.
@@ -14492,10 +14812,17 @@ def api(method, path, qs, body, deps):
         if "catalog_cats" in body:              # categories the operator opted THIS node into (node-lens): provider-catalog
             cc = body.get("catalog_cats")       # ids (<prov>:<id>) AND curated built-ins (bare id) — both first-class + pullable
             if isinstance(cc, list):
-                _cix = catalog_index()          # keep real catalog ids OR curated built-ins; drop unknown/"all"/custom_*
+                _cix, _ = catalog_cached()      # keep real catalog ids OR curated built-ins; drop unknown/"all"/custom_*
                 _was = set(nodes[nid].get("catalog_cats") or [])
+                # ⚠️ `c in _was` — NEVER DELETE A STORED ID WE MERELY CANNOT VALIDATE. This filter PERSISTS its
+                # result, so when the catalog was unavailable it silently erased every provider category the
+                # operator had selected for this node: saving an unrelated setting wiped their routing. The
+                # catalog going empty is not hypothetical — one exhausted GitHub rate-limit window does it, and
+                # it was hit during development just by testing. An id already stored survives a lookup we
+                # cannot perform; a genuinely NEW unknown id is still rejected, as before.
                 nodes[nid]["catalog_cats"] = [c for c in dict.fromkeys(cc)
-                                              if (c in _cix and c not in SMART_CATEGORIES) or (c in SMART_CATEGORIES and c != "all")]
+                                              if (c in _cix and c not in SMART_CATEGORIES) or (c in SMART_CATEGORIES and c != "all")
+                                              or (c in _was and c != "all")]
                 for _c in nodes[nid]["catalog_cats"]:          # newly opted-in → resolve now so its size/lists are ready (non-blocking)
                     if _c not in _was:
                         _caps = SMART_CAPS.get(_c, {}) if ":" not in _c else (_cix.get(_c) or {})
@@ -15040,6 +15367,12 @@ def api(method, path, qs, body, deps):
                 continue
             if fid in WDTT_BUILDS:                       # WDTT: our published build version, NOT the upstream Android tag
                 latest[fid] = _wdtt_current_version(fid)
+            elif fid == "csqtt":                         # csqtt is OURS to build too — same rule as WDTT above.
+                # Without this it fell to the owner branch below and resolved amurcanov/csqtt's UPSTREAM release
+                # tag ("v2.1.5"), which never equals our build string ("2.1.5") — so the row offered an update
+                # that was really a formatting difference, and the click did nothing (updateFork walks
+                # snap.turn_proxies, and a csqtt server is not in there).
+                latest[fid] = _csqtt_current_version()
             elif "/" in owner:
                 latest[fid] = _resolve_turn_tag(owner)
         return 200, {"ok": True, "data": {"latest": latest}}
@@ -15277,12 +15610,12 @@ def api(method, path, qs, body, deps):
         elif (_existing is None and (TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("raw")
               and (deps.get("panel_settings") or {}).get("wdtt_raw_default", True)
               and not _wdtt_raw_holder(nodes, nid, _wdtt_listen_ip(inst), iface)):
-            _raw_want = True                           # panel default: a NEW qWDTT server comes up with RAW,
+            _raw_want = True                           # panel default: a NEW raw-capable server comes up with RAW,
                                                        # unless another instance on this node already has it
         _raw_moved = ""
         if _raw_want is True:
             if not (TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("raw"):
-                return 400, {"ok": False, **perr("{v1} has no RAW-IP mode — it is a qWDTT feature", v1=((TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("label") or inst.get("fork") or "This fork")), "code": "bad_request"}
+                return 400, {"ok": False, **perr("{v1} has no RAW-IP mode — only some WDTT forks implement it", v1=((TURN_SERVERS.get(inst.get("fork") or "amurcanov") or {}).get("label") or inst.get("fork") or "This fork")), "code": "bad_request"}
             if str(WDTT_RAW_PORT) in (str(_dtls or ""), str(_wgp or "")):
                 return 400, {"ok": False, **perr("this server would need port {v1} for RAW, but it is already using it — move its listen or internal WG port first", v1=WDTT_RAW_PORT), "code": "bad_request"}
             _rc = _node_ports(deps, nodes, nid).get(WDTT_RAW_PORT)
@@ -16053,6 +16386,34 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, verb, iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "ver": ver or _wdtt_current_version(fork)}}
 
+    if method == "GET" and path == "/api/csqtt/versions":
+        # csqtt rollback picker, the WDTT one's twin: OUR published builds (newest first) + this node's hold.
+        # csqtt has ONE binary and no fork variance, so the hold is per NODE, not per (node, fork).
+        nid = (qs.get("node") or [""])[0]
+        held = _turn_hold_get(nid, "fork:csqtt") if nid else ""
+        return 200, {"ok": True, "data": {"fork": "csqtt", "current": _csqtt_current_version(),
+                                          "versions": [v for v, _ in CSQTT_BUILDS], "held": held}}
+
+    if method == "POST" and path == "/api/csqtt/version":
+        # Roll a node's csqtt to a specific published build (holds it — the auto-updater won't move it), or release
+        # the hold back to the current build (ver blank). The desired version rides the next sync via _csqtt_reply,
+        # and the node swaps the shared binary + restarts every instance (see _csqtt_update_binary).
+        nid = body.get("node") or ""; iface = (body.get("iface") or "").strip()
+        ver = (body.get("ver") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if iface and not ((nodes[nid].get("csqtt")) or {}).get(iface):
+            return 404, {"ok": False, "error": "unknown csqtt instance", "code": "not_found"}
+        if ver:
+            if not _csqtt_tag_for(ver):
+                return 400, {"ok": False, "error": "that version isn't a published csqtt build", "code": "bad_request"}
+            _turn_hold_set(nid, "fork:csqtt", ver)
+            verb = "Rolling back csqtt" if ver != _csqtt_current_version() else "Reinstalling csqtt"
+        else:
+            _turn_hold_clear(nid, "fork:csqtt"); verb = "Updating csqtt to latest"
+        ev_append(roster_path, "node", nid, verb, iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "ver": ver or _csqtt_current_version()}}
+
     if method == "POST" and path == "/api/wdtt-peer/create":
         # A keyless WDTT peer: the panel mints ONE per-peer WRAP password (its identity — WDTT mints the WG keypair
         # via GETCONF). Targets are one OR MORE wdtt* instances (multi-server failover, like a WG peer's targets — the
@@ -16266,6 +16627,8 @@ def api(method, path, qs, body, deps):
         # everything the header can show, not just the version.
         _CHANGELOG_CACHE.clear()
         reached = _check_latest_remote()             # synchronous one-off poll (for the header "check" icon)
+        with contextlib.suppress(Exception):
+            _check_turn_latest(deps)                 # the same click refreshes the turn-family badge
         return 200, {"ok": True, "data": {
             "checked": reached,                      # did we actually reach the repo this time?
             "latest_remote": LATEST_REMOTE.get("version"),
@@ -18901,7 +19264,10 @@ class Handler(BaseHTTPRequestHandler):
         _enabled_prov = _ps.get("providers") or {}
         _gu = _ps.get("geo_update") or {}
         _cadence = max(1, int(_gu.get("every_days") or 1)) * 86400   # panel re-resolve cadence (0/continuous → daily fetch is fine)
-        _cix = catalog_index()
+        # CACHE-ONLY, never a fetch: this is POST /api/node/sync, which every node hits every 5 seconds, and
+        # catalog_index() rebuilds through api.github.com when its cache is cold — 65s measured with GitHub
+        # reachable, minutes where it is not. _catalog_refresh_loop keeps this warm off the request path.
+        _cix, _cix_have = catalog_cached()
         # Content/IP block enforcement: fold each interface's block[] into the smart plan as DROP entries, PREPENDED
         # so a block wins over a routing exit for the same destination. Rides the existing smart @cat-drop +
         # list_manifest path (blk:<prov>:<list> sources use the SAME resolver) → zero node datapath change.
@@ -18938,6 +19304,19 @@ class Handler(BaseHTTPRequestHandler):
                     _ent[_tier] = _mt["v"]
             if _ent:
                 _list_manifest[_c] = _ent
+        # Per-category caps for the node. Curated cats come from the SMART_CAPS constant and are always right;
+        # provider cats can only come from the catalog. So when we hold NO catalog at all, this dict is not
+        # "the caps are empty" — it is "we could not look them up", and the two must not be sent identically:
+        # the node CLEARS and replaces _CAT_CAPS from whatever arrives, so shipping a lossy dict would strip
+        # the caps of every provider category and stop their host-tier fill. Send None → the key is omitted →
+        # the node keeps what it already had (see swg-noded, _CAT_CAPS). A stale catalog is still a catalog and
+        # takes the normal path; only a panel that has never managed to fetch one omits.
+        _smart_cats = {e["category"] for e in (my_plan.get("smart") or [])}
+        _cat_caps = {**{c: SMART_CAPS[c] for c in _smart_cats if c in SMART_CAPS},
+                     **{c: _cix[c] for c in _smart_cats if c in _cix and c not in SMART_CATEGORIES},
+                     **{c: {t: True} for c, t in _blk_srcs.items()}}
+        if not _cix_have and any(c not in SMART_CAPS and c not in _blk_srcs for c in _smart_cats):
+            _cat_caps = None            # catalog-dependent cats are in play and we have no catalog — say nothing
         # Interface-key vault: the operator vault's PUBLIC key (nodes seal their interface keys to it, for a
         # full-wipe restore) + the ifaces the panel still needs a CURRENT sealed key for (no blob, or the blob is
         # for an older/rotated key). Absent a vault → empty, so nodes seal nothing.
@@ -19059,11 +19438,10 @@ class Handler(BaseHTTPRequestHandler):
                                           # per-category caps {ip,host}: provider cats from the catalog index, built-ins from SMART_CAPS.
                                           # The node reads its <cat>.txt/.doms (pulled from the panel via list_manifest) using these — a
                                           # curated cat's host cap is what gets its pulled .doms loaded into dnsmasq (custom cats ship inline).
-                                          "cat_caps": {**{c: SMART_CAPS[c] for c in {e["category"] for e in (my_plan.get("smart") or [])}
-                                                          if c in SMART_CAPS},
-                                                       **{c: catalog_index().get(c) for c in {e["category"] for e in (my_plan.get("smart") or [])}
-                                                          if c in catalog_index() and c not in SMART_CATEGORIES},
-                                                       **{c: {t: True} for c, t in _blk_srcs.items()}},   # block feeds: their single tier drives the node's .txt/.doms fill
+                                          # built above as _cat_caps (block feeds: their single tier drives the node's .txt/.doms fill).
+                                          # OMITTED entirely when the panel holds no catalog and catalog-backed cats are in play —
+                                          # absent means "keep yours", empty would mean "you have none".
+                                          **({"cat_caps": _cat_caps} if _cat_caps is not None else {}),
                                           # domain tier: active bundles + custom-rule domain lists → node fills these via dnsmasq. ONLY for a
                                           # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
                                           "domains": ({**{c: DOMAIN_BUNDLES.get(c, []) for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in HOST_CATEGORIES},
@@ -21153,6 +21531,7 @@ def main():
     threading.Thread(target=_turn_update_loop, daemon=True).start()       # scheduled turn-proxy auto-update (opt-in)
     threading.Thread(target=_turn_warm_assets_loop, args=(Handler.deps,), daemon=True).start()   # resolve latest per-OS client download assets → serve.json
     threading.Thread(target=_node_watch_loop, args=(Handler.deps,), daemon=True).start()   # node online/offline → webhooks
+    threading.Thread(target=_catalog_refresh_loop, daemon=True).start()   # keep the routing catalog warm OFF the node-sync request path
     auth_note = "" if Handler.deps["auth"] else "  [no auth!]"
     LISTENERS.add(BIND_HOST, BIND_PORT, TLS_CERT if scheme == "https" else None,
                   TLS_KEY if scheme == "https" else None, primary=True)

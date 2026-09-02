@@ -29,11 +29,26 @@
 | Сервер | Апстрим | Лицензия | Зафиксированный коммит | Наш патч и рецепт | Релиз |
 |---|---|---|---|---|---|
 | WDTT (оригинал) | [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android) | **GPL-3.0** | `51057cc` (v1.2.4) | [`forks/wdtt/`](forks/wdtt/) | `wdtt-amurcanov-1.2.4-2` |
-| WDTT — ildarmaga | [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | см. репозиторий (лицензия SPDX не объявлена) | `ef697994` (v1.5.40) | [`forks/wdtt/ildarmaga/`](forks/wdtt/ildarmaga/) | `wdtt-ildarmaga-1.5.40` |
+| WDTT — ildarmaga | [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | **GPL-3.0** ‡ | `ef697994` (v1.5.40 ‡) | [`forks/wdtt/ildarmaga/`](forks/wdtt/ildarmaga/) | `wdtt-ildarmaga-1.5.40` |
 | WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `10c6939b` (v14) | [`forks/wdtt/wdttplus/`](forks/wdtt/wdttplus/) | `wdtt-wdttplus-14` |
 | WDTT — XXcipherX | [XXcipherX/proxy-turn-vk-android](https://github.com/XXcipherX/proxy-turn-vk-android) | **GPL-3.0** | `9a3a7b87` (v2.0.0.68) | [`forks/wdtt/xxcipherx/`](forks/wdtt/xxcipherx/) | `wdtt-xxcipherx-2.0.0.68` |
 | qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `854a72fe` (Release 1.4.1) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.1` |
-| csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `31114cb7` (v2.0.1) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.0.1` |
+| csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `de7afc23` (v2.1.5) † | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.0.1` † |
+
+† **Рецепт csqtt опережает релиз.** Каталог `forks/csqtt/` переведён на v2.1.5 (`de7afc23`) и собирает бинарник
+2.1.5, но этот релиз ещё не опубликован, поэтому текущий релиз — по-прежнему `csqtt-2.0.1`, собранный из
+апстрима `31114cb7` с патчем в том виде, в каком он был на коммите `929eddf8` этого репозитория. Во всех
+остальных строках рецепт и релиз описывают один и тот же бинарник; эта строка станет такой же, когда будет
+выпущен `csqtt-2.1.5`.
+
+‡ **ildarmaga: две вещи, которые не помещаются в ячейку.** Файл `LICENSE` в репозитории — это полный текст
+**GNU GPL v3**, перед которым добавлена шапка с копирайтом на сервер/панель WDTT и на вложенные бинарники
+клиента PWDTT. Собственный детектор GitHub показывает репозиторий как «Other» / `NOASSERTION` именно из-за этой
+шапки: файл перестаёт побайтово совпадать с шаблоном GPL — но сама лицензия в нём стандартная, поэтому
+публикуемый нами бинарник является GPL-бинарником, и предложение исходного кода ниже распространяется и на него.
+Отдельно: версия в скобках не является различающим идентификатором — теги апстрима с `v1.5.2` по `v1.5.40`
+**все указывают на коммит `ef697994`**, в сообщении которого написано «docs: changelog for v1.5.0». Сборку
+фиксирует именно коммит; имя тега — лишь то, как мы называем релиз.
 
 ### Исходники к бинарникам под GPL
 

@@ -14,7 +14,7 @@ import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
          turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName } from "./model.js";
-import { turnFork, turnLabel, turnColor, turnForkList, forkProduct } from "./turn-catalog.js";
+import { turnFork, turnLabel, turnColor, turnForkList, forkProduct, forkPickLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
   Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, openConfirm, ConfirmSheet,
@@ -120,7 +120,7 @@ export function HealthDot({ issues }) {
   const n = issues.length;
   const trigger = html`<span class="badge b-issue ic"><${Ic} i="warn"/>${n} issue${n > 1 ? "s" : ""}</span>`;
   return html`<${Popover} cls="onlinetag bare healthpop" trigger=${trigger}>
-    <div class="onpop-h">${T("{v1} on this node", { v1: plural(n, "issue") })}</div>
+    <div class="onpop-h">${T("{v1} on this node", { v1: plural(n, "nom|issue") })}</div>
     ${issues.map(it => html`<div class="onrow hrow"><span class="on-name">${it}</span></div>`)}
   </${Popover}>`;
 }
@@ -348,8 +348,13 @@ export function NodeDetail({ node: rawName }) {
         const col = Store.nodeColor(peer);
         const reprov = !!mp.reprovisioning || (!!ifn && !m);   // staged create, or iface not reported yet → re-provisioning
         // link health → one glowing dot: green up (recent handshake) · amber connecting (never handshook)
-        // · red down (handshook then went stale, or the node itself is dark). reprov takes over the card.
-        const lk = reprov ? "reprov" : nodeStale(name) ? "down" : (!m || m.handshake_age == null ? "connecting" : (m.handshake_age < 180 ? "up" : "down"));
+        // · red down (handshook then went stale, or either end is dark). reprov takes over the card.
+        // BOTH ends must be reporting, the same rule meshHealth() applies — this dot read only the node whose
+        // page you are on, so a live node showed a GREEN link to a peer the nodes list simultaneously called
+        // offline. Our own handshake age lags up to 180s behind a peer actually going away, so one end alone
+        // cannot assert the link is up: that is the exact bug meshHealth's comment records, fixed there and
+        // missed here.
+        const lk = reprov ? "reprov" : (nodeStale(name) || nodeStale(peer)) ? "down" : (!m || m.handshake_age == null ? "connecting" : (m.handshake_age < 180 ? "up" : "down"));
         const lkTitle = { up: T("Link up"), connecting: T("Connecting…"), down: T("Link down") }[lk];
         const muted = lk === "down" || reprov;
         const carried = reprov ? [] : userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer);   // user iface NAMES forwarded whole (cascade) out through THIS link
@@ -1302,14 +1307,31 @@ function dismissOnOutsideTap(el, anchor, hide) {
   document.addEventListener("pointerdown", onDown, true);
   return () => document.removeEventListener("pointerdown", onDown, true);
 }
+/* The bubble IS the caption, so nothing else may caption the same hover. A `title=` anywhere on the hover
+   path — the anchor, anything inside it, or any wrapper AROUND it — makes the browser raise its own tooltip a
+   second later, unstyled, on top of a bubble that already says strictly more. Two captions for one gesture.
+   Park them while the bubble is up and put them back on drop, so the tooltip still names the control for AT
+   and for any hover that produces no bubble at all.
+
+   This is the non-Preact twin of useNoNativeTitle in js/ui.js — same rule, same three places to look; these
+   header widgets are innerHTML-driven and have no ref/effect to hang it on. Keep the two in step. */
+function parkTitles(anchor) {
+  const parked = [];
+  const park = el => {
+    if (el && el.hasAttribute && el.hasAttribute("title")) { parked.push([el, el.getAttribute("title")]); el.removeAttribute("title"); }
+  };
+  for (let el = anchor; el && el !== document.body; el = el.parentElement) park(el);
+  anchor.querySelectorAll("[title]").forEach(park);
+  return () => parked.forEach(([el, v]) => { try { el.setAttribute("title", v); } catch (_) { /* gone with a re-render */ } });
+}
 // Rich hover bubble for the innerHTML header update widget (no Preact there) — right-aligned under the anchor;
 // contentFn() returns HTML (empty string → no bubble). Replaces the plain title= tooltip.
 export function hostHoverBubble(anchor, contentFn, onAction) {
   // SINGLETON, self-hiding bubble. The header is innerHTML-driven and re-renders every poll, replacing `anchor` —
   // so the anchor's own mouseleave can't be trusted to clean up. Guard against orphans (remove any stray bubble
   // before showing) and hide when the pointer leaves the BUBBLE too, so it never gets stuck or stacks a glow.
-  let bub = null, t = null, detach = null;
-  const drop = () => { if (detach) { detach(); detach = null; } if (bub) { bub.remove(); bub = null; } };
+  let bub = null, t = null, detach = null, untitle = null;
+  const drop = () => { if (untitle) { untitle(); untitle = null; } if (detach) { detach(); detach = null; } if (bub) { bub.remove(); bub = null; } };
   const hide = () => {                                   // a poll re-render removes the anchor → its mouseleave fires; if the
     if (bub && bub.matches(":hover")) { later(); return; }   // pointer is actually over the BUBBLE, keep it (don't vanish mid-read)
     clearTimeout(t); drop();
@@ -1319,7 +1341,8 @@ export function hostHoverBubble(anchor, contentFn, onAction) {
     clearTimeout(t);
     if (bub && bub.isConnected) return;                                   // already showing → don't stack
     document.querySelectorAll(".hostupd-bub").forEach(x => x.remove());   // kill any orphan left by a re-render
-    const inner = contentFn(); if (!inner) return;
+    const inner = contentFn(); if (!inner) return;   // no bubble → the anchor keeps its own tooltip
+    untitle = parkTitles(anchor);
     bub = document.createElement("div");
     bub.className = "deppop hostupd-bub";
     bub.innerHTML = inner;
@@ -1339,6 +1362,11 @@ export function hostHoverBubble(anchor, contentFn, onAction) {
   };
   anchor.addEventListener("mouseenter", show);
   anchor.addEventListener("mouseleave", later);
+  // Clicking the anchor takes the action the bubble was previewing — and usually opens a sheet over it. The
+  // anchor is then behind an overlay, so it never gets the mouseleave that would hide the bubble, and
+  // dismissOnOutsideTap does not fire for a tap on the anchor itself: the bubble hung above the sheet until
+  // the next re-render. Dropping it here closes that for every header badge.
+  anchor.addEventListener("click", () => { clearTimeout(t); drop(); });
 }
 // Panel-version changelog bubble — an EXACT copy of the update-to-version hover bubble (same .hub-* markup + the same
 // self-hiding, hover-safe singleton mechanism, so it stays open while the pointer is over it), plus ‹ older / › newer
@@ -1354,8 +1382,8 @@ let _changelogCache = null;   // {entries:[{version,date,notes[]}], current}
 let _changelogAt = 0;         // when it was fetched — stale after CHANGELOG_TTL
 let _changelogIdx = 0;
 export function versionHoverBubble(anchor) {
-  let bub = null, t = null, detach = null;
-  const drop = () => { if (detach) { detach(); detach = null; } if (bub) { bub.remove(); bub = null; } };
+  let bub = null, t = null, detach = null, untitle = null;
+  const drop = () => { if (untitle) { untitle(); untitle = null; } if (detach) { detach(); detach = null; } if (bub) { bub.remove(); bub = null; } };
   const hide = () => { if (bub && bub.matches(":hover")) { later(); return; } clearTimeout(t); drop(); };
   const later = () => { clearTimeout(t); t = setTimeout(hide, 140); };
   const paint = () => {
@@ -1374,6 +1402,7 @@ export function versionHoverBubble(anchor) {
     clearTimeout(t);
     if (bub && bub.isConnected) return;
     document.querySelectorAll(".hostupd-bub.verbub").forEach(x => x.remove());   // kill any orphan from a header re-render
+    untitle = parkTitles(anchor);
     bub = document.createElement("div"); bub.className = "deppop hostupd-bub verbub";
     document.body.appendChild(bub);
     const r = anchor.getBoundingClientRect();
@@ -1437,6 +1466,41 @@ export function fixBubbleHtml() {
   const head = `<div class="hub-h">${T("{v1} to fix", { v1: plural(iss.length, "issue") })}</div>`;
   const body = iss.map(i => `<div class="hub-row"><span class="hub-dot ${i.sev}"></span><span><b>${esc(i.label)}</b> — ${esc(i.msg)}</span></div>`).join("");
   return head + body + `<div class="hub-foot">${esc(T("Click to review & run the repair."))}</div>`;
+}
+// Hover content for the header's turn-family update badge. Same shape as fixBubbleHtml — one row per thing
+// you can act on, then what clicking does. A row is a (fork, node): csqtt and WDTT share one binary there, so
+// listing interfaces would show three lines for one action.
+export function turnUpdBubbleHtml() {
+  const rows = Store.turnUpdates || []; if (!rows.length) return "";
+  // Grouped by fork, one line each, so the bubble's height tracks how many FORKS are behind and not how big
+  // the fleet is — twenty nodes on one stale csqtt is one line here, and the node breakdown waits in the sheet.
+  const groups = [];
+  for (const r of rows) {
+    let g = groups.find(x => x.fork === r.fork);
+    if (!g) groups.push(g = { fork: r.fork, latest: r.latest, nodes: [], same: r.installed });
+    if (!g.nodes.includes(r.node)) g.nodes.push(r.node);
+    if (g.same !== r.installed) g.same = "";
+  }
+  // Ordered by what is READ, not by the key. The server sorts rows by fork id, which was the same string
+  // until labels arrived; now "qwdtt" prints as SpaceNeuroX and "wdttplus" as Ivan4537, so an id-ordered list
+  // looks shuffled — uppercase ids first, then authors in no visible order. Sorting on the rendered label puts
+  // the column back in reading order and keeps one author's servers adjacent (amurcanov · WDTT, · CSQTT).
+  groups.sort((a, b) => forkPickLabel(a.fork).localeCompare(forkPickLabel(b.fork), undefined, { sensitivity: "base" }));
+  const head = `<div class="hub-h">${esc(T("{v1} available", { v1: plural(groups.length, "update") }))}</div>`;
+  // The dot carries the FORK's own colour — the same cue the fork tags, iface cards and settings rows already
+  // use, so a row is identifiable before the name is read. A generic dot would spend that signal on nothing.
+  const body = groups.map(g => {
+    // Where it is, then what changes. One node is worth naming; several are worth counting, because a list of
+    // names in a hover bubble is unreadable and the sheet is one click away.
+    const where = g.nodes.length === 1 ? esc(Store.nodeName(g.nodes[0])) : esc(plural(g.nodes.length, "node"));
+    const ver = g.same
+      ? `<span class="mono">${esc(g.same)}</span><span class="verarrow">\u2192</span><span class="mono vernew">${esc(g.latest)}</span>`
+      : `<span class="verarrow">\u2192</span><span class="mono vernew">${esc(g.latest)}</span>`;
+    return `<div class="hub-row"><span class="hub-dot" style="background:${esc(turnColor(g.fork))}"></span><span><b style="color:${esc(turnColor(g.fork))}">${esc(forkPickLabel(g.fork))}</b> <span class="dim">${where}</span><span class="verarrow">\u00b7</span>${ver}</span></div>`;
+  }).join("");
+  // The foot IS the action, not an instruction about one — hostHoverBubble wires any .hub-act inside the
+  // bubble and drops the bubble on the way. It matters on touch especially, where the anchor sits underneath.
+  return head + body + `<button class="hub-foot hub-act hub-foot-act" data-act="1">${esc(T("Review & update"))}</button>`;
 }
 export function NodeCard({ n, reorder }) {
   const it = reorder ? reorder.item(n.id) : null;

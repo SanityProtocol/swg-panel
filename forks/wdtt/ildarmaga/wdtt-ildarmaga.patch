@@ -21,18 +21,36 @@ index e3fc46d..6de4721 100644
  		go func() {
  			if err := panel.Run(); err != nil {
 diff --git a/server/config.go b/server/config.go
-index ab78a82..891458d 100644
+index ab78a82..5dfab36 100644
 --- a/server/config.go
 +++ b/server/config.go
-@@ -4,6 +4,7 @@ import (
+@@ -4,6 +4,8 @@ import (
  	"flag"
  	"fmt"
  	"log"
++	"net"
 +	"path/filepath"
  	"strings"
  	"sync"
  	"time"
-@@ -49,7 +50,36 @@ func initServerFlags() {
+@@ -25,6 +27,16 @@ type ServerConfig struct {
+ 	MaxDTLSPerDevice int
+ }
+ 
++// swg-panel: the RAW listener address from -listen-raw. Empty = RAW OFF (see runServerOnce) — NOT upstream's
++// DTLS+3 default, which would bind a port the panel neither allocates nor reserves.
++var rawListenFlag string
++
++// swg-panel: whether -raw-iface AND -raw-addr were actually passed. They default to the STOCK values, so an
++// empty check cannot tell "not given" from "given as the default" — flag.Visit can. Without both, a RAW
++// listener would fall back to the process-global "wdtt-raw" name and 10.70.x subnet, which is exactly what
++// two instances on one node collide over; refusing is safer than guessing.
++var rawIdentityGiven bool
++
+ var (
+ 	serverFlagsOnce sync.Once
+ 	flagListen      *string
+@@ -49,7 +61,69 @@ func initServerFlags() {
  		flagHandshake = flag.Duration("handshake-timeout", 30*time.Second, "таймаут DTLS handshake")
  		flagAdminAddr = flag.String("admin-addr", "127.0.0.1:2861", "HTTP admin (localhost): /health, POST /admin/reload")
  		flagMaxDTLSDev = flag.Int("max-dtls-per-device", 0, "макс. параллельных GETCONF на device_id (0 = без лимита)")
@@ -43,6 +61,12 @@ index ab78a82..891458d 100644
 +		flagMaxUsers := flag.Int("max-users", 0, "max active passwords/users for this instance (0 = stock default; effective ceiling is the subnet size)")
 +		flagFixed := flag.Bool("fixed-config", false, "a generated password serves ONE keypair+IP to any device (wg/awg parity; device-agnostic)")
 +		flagDesired := flag.String("desired", "", "path to the node's desired.json (panel-owned password set; ingested + SIGHUP-reloaded)")
++		// RAW listener, per instance. Upstream has NO flag for any of this: the port is panel-DB only and
++		// defaults to DTLS+3, while the TUN name and subnet are process-global constants — so two instances on
++		// one node fight over "wdtt-raw". Flag names match qWDTT's, which is what swg-noded already emits.
++		flagListenRaw := flag.String("listen-raw", "", "RAW-IP listener address host:port (empty = upstream default, DTLS port + 3)")
++		flagRawIface := flag.String("raw-iface", rawIfaceName, "RAW TUN interface name (multi-instance per node)")
++		flagRawAddr := flag.String("raw-addr", rawServerCIDR, "RAW TUN address CIDR, e.g. 10.70.1.1/24")
  		flag.Parse()
 +		desiredPath = strings.TrimSpace(*flagDesired)
 +		if cd := strings.TrimSpace(*flagConfigDir); cd != "" {
@@ -61,6 +85,33 @@ index ab78a82..891458d 100644
 +			}
 +		}
 +		wgMTU = *flagMTU
++		// RAW identity, mirroring the wg block above: the CIDR carries the address, and the /16 default means
++		// the subnet must be derived from the mask the operator actually gave, not assumed.
++		if n := strings.TrimSpace(*flagRawIface); n != "" {
++			rawIfaceName = n
++		}
++		if a := strings.TrimSpace(*flagRawAddr); a != "" {
++			rawServerCIDR = a
++			addr := a
++			if i := strings.IndexByte(a, '/'); i > 0 {
++				addr = a[:i]
++			}
++			rawServerAddr = addr
++			if _, ipnet, err := net.ParseCIDR(a); err == nil && ipnet != nil {
++				rawSubnet = ipnet.String() // the NAT/masquerade source — must match the mask, not a hardcoded /16
++			}
++		}
++		rawListenFlag = strings.TrimSpace(*flagListenRaw)
++		var sawIface, sawAddr bool
++		flag.Visit(func(f *flag.Flag) {
++			switch f.Name {
++			case "raw-iface":
++				sawIface = true
++			case "raw-addr":
++				sawAddr = true
++			}
++		})
++		rawIdentityGiven = sawIface && sawAddr
 +		noNat = *flagNoNat
 +		fixedConfig = *flagFixed
 +		if *flagMaxUsers > 0 {
@@ -335,8 +386,58 @@ index 0000000..272cd25
 +		t.Fatalf("stock mode must key by deviceID")
 +	}
 +}
+diff --git a/server/rawpool_test.go b/server/rawpool_test.go
+new file mode 100644
+index 0000000..1065043
+--- /dev/null
++++ b/server/rawpool_test.go
+@@ -0,0 +1,44 @@
++package server
++
++import (
++	"net"
++	"testing"
++)
++
++func TestNthRawHostFollowsSubnet(t *testing.T) {
++	cases := []struct {
++		subnet, server string
++		want           int // how many of the first 400 allocations must be inside the subnet
++	}{
++		{"10.70.1.0/24", "10.70.1.1", 400},
++		{"10.70.0.0/16", "10.70.66.1", 400},
++		{"10.31.7.0/24", "10.31.7.1", 400},
++	}
++	for _, c := range cases {
++		rawSubnet, rawServerAddr = c.subnet, c.server
++		_, ipnet, _ := net.ParseCIDR(c.subnet)
++		in, seen := 0, map[string]bool{}
++		for n := uint64(1); n <= 400; n++ {
++			ip := nthRawHost(n)
++			if ip == "" {
++				t.Fatalf("%s: empty at n=%d", c.subnet, n)
++			}
++			p := net.ParseIP(ip).To4()
++			if p == nil || !ipnet.Contains(p) {
++				t.Fatalf("%s: %s is OUTSIDE the subnet — the exact bug this fixes", c.subnet, ip)
++			}
++			if p[3] == 0 || p[3] == 255 {
++				t.Fatalf("%s: %s uses a .0/.255 host", c.subnet, ip)
++			}
++			in++
++			seen[ip] = true
++		}
++		if in != c.want {
++			t.Fatalf("%s: %d/%d inside", c.subnet, in, c.want)
++		}
++		if len(seen) < 200 {
++			t.Fatalf("%s: only %d distinct addresses in 400 draws — pool collapses", c.subnet, len(seen))
++		}
++		t.Logf("%s -> %d draws, all inside, %d distinct", c.subnet, in, len(seen))
++	}
++}
 diff --git a/server/server.go b/server/server.go
-index 5f7877b..53c3595 100644
+index 5f7877b..0880201 100644
 --- a/server/server.go
 +++ b/server/server.go
 @@ -50,18 +50,40 @@ func rawDirectListenAddr(dtlsAddr string, rawPort int) (string, error) {
@@ -433,6 +534,33 @@ index 5f7877b..53c3595 100644
  	log.Printf("[CFG] Admin HTTP: %s (hot-reload /health, restart /admin/restart)", adminListenAddr)
  
  	if disabled {
+@@ -631,7 +667,25 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
+ 
+ 	rawAcceptDone := make(chan struct{})
+ 	close(rawAcceptDone) // default: no direct listener
+-	rawListen, err := rawDirectListenAddr(cfg.Listen, cfg.RawDirectPort)
++	// swg-panel: -listen-raw GATES the RAW listener — it is not an address override. Upstream derives DTLS+3
++	// and ALWAYS binds, which under the panel means (a) a UDP port nothing allocates or reserves, so a second
++	// instance can be handed it as its DTLS port, and (b) the stock "wdtt-raw" TUN name, which two instances on
++	// one node fight over. The panel's RAW toggle has to decide EXISTENCE, not just the address, and swg-noded
++	// already emits -listen-raw/-raw-iface/-raw-addr as ONE unit that is empty when RAW is off. So: no flag, no
++	// listener. WG/DTLS are untouched either way.
++	rawListen, err := "", error(nil)
++	switch {
++	case rawListenFlag == "":
++		err = errors.New("-listen-raw not set — RAW off (panel-managed)")
++	case !rawIdentityGiven:
++		err = errors.New("-listen-raw without -raw-iface/-raw-addr — refusing the stock TUN name/subnet")
++	default:
++		if _, _, splitErr := net.SplitHostPort(rawListenFlag); splitErr != nil {
++			err = fmt.Errorf("-listen-raw %q: %v", rawListenFlag, splitErr)
++		} else {
++			rawListen = rawListenFlag
++		}
++	}
+ 	if err != nil {
+ 		log.Printf("[RAW-DIRECT] address: %v — WG/DTLS продолжают работать", err)
+ 	} else {
 diff --git a/server/server_conn.go b/server/server_conn.go
 index b43ad24..911974e 100644
 --- a/server/server_conn.go
@@ -492,6 +620,125 @@ index b43ad24..911974e 100644
  					if err := persistDeviceSQLiteLocked(dev); err != nil {
  						log.Printf("[DB] regen keys save: %v", err)
  						persistFail()
+diff --git a/server/server_raw.go b/server/server_raw.go
+index 16fa8a4..8e24879 100644
+--- a/server/server_raw.go
++++ b/server/server_raw.go
+@@ -22,11 +22,18 @@ import (
+ 	"golang.org/x/sys/unix"
+ )
+ 
+-const (
++// swg-panel: the RAW identity is per-INSTANCE, so these are vars set from -raw-iface / -raw-addr.
++// Upstream keeps them process-global consts AND starts by running `ip link del wdtt-raw`, so a SECOND
++// instance on the same node deletes the first one's raw TUN and steals its subnet. The values below are
++// upstream's, so an unflagged binary behaves exactly as before.
++var (
+ 	rawIfaceName  = "wdtt-raw"
+ 	rawServerAddr = "10.70.66.1"
+ 	rawServerCIDR = "10.70.66.1/16" // qWDTT: /16, multi-IP на воркеры
+ 	rawSubnet     = "10.70.0.0/16"
++)
++
++const (
+ 	rawIPTComment = "WDTT_RAW_MANAGED"
+ 	rawDefaultMTU = 1280
+ 	rawTunFlags   = unix.IFF_TUN | unix.IFF_NO_PI
+@@ -202,6 +209,9 @@ func consumeRawDirectChallenge(firstStr string, remote net.Addr) bool {
+ }
+ 
+ func ensureRawDirectFirewall(listenAddr string) {
++	if noNat { // swg-panel: the node owns the firewall — a server must not open its own INPUT hole
++		return
++	}
+ 	_, portText, err := net.SplitHostPort(listenAddr)
+ 	if err != nil || portText == "" {
+ 		return
+@@ -418,6 +428,10 @@ func rawBlobServerLoop() {
+ }
+ 
+ func setupRawNAT(iface string) error {
++	if noNat { // swg-panel: the node owns NAT/forward/sysctls for the raw subnet, exactly as for wdtt0
++		log.Printf("[RAW-NAT] отключён (-no-nat: NAT/forward/sysctl управляется узлом)")
++		return nil
++	}
+ 	_ = os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
+ 	ext := getDefaultInterface()
+ 	log.Printf("[RAW-NAT] Внешний: %s", ext)
+@@ -462,11 +476,8 @@ func getNextRawIP() string {
+ 		return true
+ 	})
+ 	for attempt := 0; attempt < 65000; attempt++ {
+-		n := rawIPSeq.Add(1)
+-		b3 := int((n / 254) % 256)
+-		b4 := int(n%254) + 1 // 1..254
+-		ip := fmt.Sprintf("10.70.%d.%d", b3, b4)
+-		if ip == rawServerAddr || used[ip] {
++		ip := nthRawHost(uint64(rawIPSeq.Add(1)))
++		if ip == "" || ip == rawServerAddr || used[ip] {
+ 			continue
+ 		}
+ 		return ip
+@@ -474,6 +485,46 @@ func getNextRawIP() string {
+ 	return ""
+ }
+ 
++// swg-panel: the client pool follows the instance's -raw-addr, it is NOT the stock 10.70.x.y.
++//
++// Upstream hardcodes `fmt.Sprintf("10.70.%d.%d", ...)`, which is right for ITS defaults — the raw
++// side is a /16 (rawServerCIDR 10.70.66.1/16, rawSubnet 10.70.0.0/16), so walking the third octet
++// stays inside the TUN's own subnet. Under the panel each instance gets its own /24 (-raw-addr
++// 10.70.1.1/24), and that allocator kept handing out 10.70.0.2 — OUTSIDE the interface. The client
++// then sourced packets the kernel had no route for, so they died before conntrack: uplink counted,
++// nothing came back, "connected, no internet" with traffic moving one way only. Found by the first
++// real client on ildarmaga RAW, not by reading the code.
++//
++// So walk hosts inside rawSubnet instead. .0 and .255 are skipped in the last octet, which keeps a
++// /16 handing out exactly what upstream did, and a /24 yields .2 .. .254 with the server on .1.
++func nthRawHost(n uint64) string {
++	_, ipnet, err := net.ParseCIDR(rawSubnet)
++	if err != nil || ipnet == nil {
++		return ""
++	}
++	base := ipnet.IP.To4()
++	if base == nil {
++		return ""
++	}
++	ones, bits := ipnet.Mask.Size()
++	if bits != 32 || ones > 30 {
++		return "" // no usable host range
++	}
++	span := uint64(1) << uint(32-ones)
++	start := uint64(base[0])<<24 | uint64(base[1])<<16 | uint64(base[2])<<8 | uint64(base[3])
++	// try a few offsets so a .0/.255 landing does not consume the caller's attempt budget
++	for i := uint64(0); i < 4; i++ {
++		off := ((n + i - 1) % (span - 1)) + 1 // 1 .. span-1, never the network address
++		v := start + off
++		last := byte(v)
++		if last == 0 || last == 255 {
++			continue
++		}
++		return fmt.Sprintf("%d.%d.%d.%d", byte(v>>24), byte(v>>16), byte(v>>8), last)
++	}
++	return ""
++}
++
+ // getRawIPForDevice — один IP на device: все воркеры шарят его → multipath по TURN.
+ func getRawIPForDevice(deviceID string) string {
+ 	if deviceID == "" {
+@@ -1052,7 +1103,11 @@ func authorizeRawCredentials(clientConn net.Conn, deviceID, password string, wri
+ 		deny("DENIED:deactivated")
+ 		return false, false
+ 	}
+-	if valid && isGenPass && !isMainPass && !entryCanAcceptDevice(entry, deviceID) {
++	// swg-panel: under -fixed-config one generated password IS one config, device-agnostic — so the entry is
++	// left unbound on purpose. Upstream's slot check would let the FIRST raw device bind (1 slot free) and then
++	// refuse every other one, which is the opposite of what -fixed-config promises. The wg path is already
++	// exempted the same way in server_conn.go; raw was simply never covered.
++	if valid && isGenPass && !isMainPass && !fixedConfig && !entryCanAcceptDevice(entry, deviceID) {
+ 		deny("DENIED:device_mismatch")
+ 		return false, false
+ 	}
 diff --git a/server/server_util.go b/server/server_util.go
 index 45c39ae..ec18a9a 100644
 --- a/server/server_util.go

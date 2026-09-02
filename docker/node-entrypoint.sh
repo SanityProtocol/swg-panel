@@ -54,7 +54,24 @@ if [ -f /var/lib/swg-noded/panel-verify ]; then
 fi
 if [ -f /var/lib/swg-noded/panel-fp ]; then
   _pf="$(head -n1 /var/lib/swg-noded/panel-fp 2>/dev/null | tr -d '[:space:]')"
-  TLS_FINGERPRINT="$_pf"
+  # `[ -n ]`, like panel-verify above. An empty or truncated panel-fp used to blank TLS_FINGERPRINT, and a
+  # blank pin does not fail closed — it drops the check entirely and accepts ANY certificate, silently turning
+  # a pinned node into an unverified one. Falling back to the configured pin is the safe reading of a file we
+  # could not read.
+  if [ -n "$_pf" ]; then
+    # A learned pin OVERRIDES the configured one so a node that was re-pointed or transferred to another panel
+    # keeps working. That is right for an installed node, but on a DECLARATIVE host (NixOS) the operator edits
+    # the config, rebuilds, and nothing happens — the learned value quietly wins. Cost a 13h outage to find, so
+    # say it out loud rather than change the precedence, which transfer depends on.
+    if [ -n "$TLS_FINGERPRINT" ] && [ "$_pf" != "$TLS_FINGERPRINT" ]; then
+      # `printf %.16s`, not ${var:0:16}: this file is #!/bin/sh and /bin/sh is dash in the node image, where
+    # substring expansion is a fatal "Bad substitution" — it would kill the entrypoint at exactly the moment
+    # this warning fires, i.e. a re-pointed node would fail to BOOT instead of logging a line. It was the only
+    # such expansion in the file; verified under the image's own dash.
+    log "panel pin: using the LEARNED fingerprint $(printf %.16s "$_pf")… (from an earlier re-point/transfer), NOT the configured $(printf %.16s "$TLS_FINGERPRINT")…. To force the configured one, remove /var/lib/swg-noded/panel-fp and restart."
+    fi
+    TLS_FINGERPRINT="$_pf"
+  fi
 fi
 # First boot seeds the NODE_IFACES bootstrap; after that, ./data/node-confs is the SINGLE source of
 # truth — a bootstrap interface deleted from the panel must NOT be regenerated on the next reboot.
@@ -186,7 +203,10 @@ done
 
 [ -n "$MANAGED" ] || log "no interfaces yet — syncing anyway so the node still reports (add one from the panel: Interfaces → Load new interface)"   # do NOT exit: exiting makes the container restart-loop whenever the panel has removed every interface
 
-# ───────── 2) bring each up (userspace; no kernel module in a container) + NAT its subnet ─────────
+# ───────── 2) bring each up + NAT its subnet ─────────
+# Datapath is decided by the HOST, not by us: awg-quick tries the kernel first and uses it whenever the host
+# has the amneziawg module loaded (a NET_ADMIN container creates kernel devices fine — it just can't LOAD the
+# module), and falls back to amneziawg-go otherwise. WG_QUICK_USERSPACE_IMPLEMENTATION only names the fallback.
 export WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
 WAN="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1)"; WAN="${WAN:-eth0}"
 NATTED=""                                   # subnets already masqueraded (dedupe)

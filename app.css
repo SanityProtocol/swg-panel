@@ -185,6 +185,39 @@ button.upd-uptodate:hover{border-color:var(--online);background:color-mix(in srg
 .fixpill b{color:#b7791f}
 .fixpill svg{width:12px;height:12px;position:relative;top:-1px}
 .fixpill:hover{border-color:#e0a83a;background:color-mix(in srgb,#e0a83a 12%,transparent)}
+/* turn-family updates. Deliberately NOT the fixpill amber: amber in this product means something is broken and
+   wants attention, and a server merely being a build behind is neither. --ready is the palette's existing
+   "available" blue and adapts per theme, so the badge reads as an offer rather than an alarm. */
+/* A version pair reads as one movement, old → new. The arrow and the middot are separators, not data, so they
+   are muted and given room. They are set in the MONO face, like the numbers they sit between: in the body face
+   they carry different metrics, land off the digits' baseline and read as an underscore — which no amount of
+   nudging fixes, it only moves the mismatch around. The destination is what is being offered, so it keeps the
+   ink while the current version stays quiet. */
+.verarrow{padding:0 5px;color:var(--faint);font-family:var(--mono)}
+.vernew{color:var(--ink)}
+/* Which servers this row restarts, named. The sheet's whole warning is that an update drops that server's
+   clients — "2 servers" states the count and hides the one thing needed to judge whether now is a quiet
+   moment. Chips inherit --tfc from the row, so a glance ties them to their fork without repeating its name. */
+.tus-ids{display:flex;flex-wrap:wrap;gap:5px}
+.tus-id{background:color-mix(in srgb,var(--tfc,var(--muted)) 13%,transparent);color:var(--tfc,var(--dim))}
+/* One fork, several nodes: the sub-lines hang off a spine in the FORK's colour, and carry no fill of their
+   own. A tinted row background was the first attempt and it was wrong — a few percent of each fork colour
+   washed over the card reads as three different shades of grime rather than one system, and it fights the
+   node's own dot for the same job. The spine spends the fork colour once, in a place nothing else uses. */
+.tus-nodes{display:flex;flex-direction:column;margin:0 0 0 3px;
+  border-left:2px solid color-mix(in srgb,var(--tfc,var(--muted)) 55%,transparent)}
+.tus-node{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0 6px 11px}
+.tus-node + .tus-node{border-top:1px solid var(--line)}
+.tus-nn{display:inline-flex;align-items:center;gap:6px;font-weight:600;font-size:12.5px}
+.tus-ndot{width:7px;height:7px;border-radius:50%;flex:none}
+/* The bubble's foot IS its action, so it reads as a link rather than inheriting .hub-act's button chrome. */
+.hostupd-bub .hub-foot.hub-act{appearance:none;display:block;width:100%;text-align:left;border:0;
+  border-top:1px solid var(--line);border-radius:0;background:none;font:inherit;font-size:10.5px;
+  color:var(--brand);cursor:pointer;padding:8px 0 0;margin-top:12px}
+.hostupd-bub .hub-foot.hub-act:hover{color:var(--brand);text-decoration:underline}
+.turnpill{border-color:color-mix(in srgb,var(--ready) 45%,var(--line-solid));color:var(--ready)}
+.turnpill b{color:var(--ready)}
+.turnpill:hover{border-color:var(--ready);background:color-mix(in srgb,var(--ready) 12%,transparent)}
 :root[data-theme="dark"] .fixpill,:root[data-theme="dark"] .fixpill b{color:#e6b84f}
 
 .btn{cursor:pointer;border-radius:var(--r-sm);font-size:13px;border:1px solid transparent;transition:all .15s var(--ease);
@@ -606,6 +639,7 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .u-name .lc-ic{margin-right:0}
 .ifc-orph{color:#F0913C;font-weight:600}
 .b-issue{background:color-mix(in srgb,var(--partial) 15%,transparent);color:var(--partial)}
+.b-uncat{background:color-mix(in srgb,var(--partial) 15%,transparent);color:var(--partial)}   /* peer resolves over encrypted DNS → not category-routed. Amber: it works, it just isn't routed */
 
 /* ───── users / peers (first-class model) ───── */
 .tagchip{display:inline-flex;align-items:center;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600;
@@ -799,6 +833,12 @@ a.ifcard.candidate.ignored:hover{opacity:.85;border-color:var(--brand)}
    chip+address+gear+gaps, plus ~64 of badge before it starts to ellipsis. */
 .targetopt .topt-right{flex:none;display:flex;align-items:center;gap:10px;width:222px}
 .targetopt .topt-right.hasprim{width:296px}   /* fits the full row: kind chip + front badge + address + gear */
+/* BOTH pickers use hasprim. The narrow 222 has no room for a front badge, and .tgt-front is the only
+   shrinkable item in the row — so on a turn-fronted interface it was squeezed to 10px and its text ran
+   under the address box. Whether a row HAS a front badge cannot be known before render (TargetFrontBadge
+   decides from live turn/wdtt state), and widening only the rows that do would stagger the leading chip,
+   which is the misalignment the fixed width exists to prevent. Widening all of them costs slack on the
+   right of a bare row, which is exactly what the note above says is the acceptable trade. */
 .targetopt .topt-right > .tg{min-width:44px;justify-content:center;margin-right:0}   /* uniform badge width, so the column after it lines up too */
 .targetopt .topt-right .tgt-front{min-width:0;flex:0 1 auto;overflow:hidden}         /* a long proxy title shrinks rather than shoving the row —
    `flex:0 1 auto` is load-bearing: `.targetopt .tg` sets flex:none, so the min-width:0 alone never let it give
@@ -1290,6 +1330,9 @@ button.nstat.asbtn:hover{text-decoration:underline}
 .condot.turn{background:var(--tfc);color:var(--tfc);animation:sdotpulse 1.6s ease-in-out infinite}
 .condot.faulty{background:var(--fault);color:var(--fault);animation:sdotpulse 1.6s ease-in-out infinite}   /* orange, pulsing — handshake up but no data */
 .condot.blocked{background:var(--fault)}   /* orange, static — reaching but no handshake */
+/* online, but resolving over encrypted DNS: connected (so it pulses) yet not category-routed (so it is
+   amber, not green) — the live view's equivalent of the grid's amber status pill. */
+.condot.uncat{background:var(--partial);color:var(--partial);animation:sdotpulse 1.6s ease-in-out infinite}
 .condot.off{background:var(--faint)}
 
 /* ───── inline metadata tags (dense, colored row signature) ───── */
@@ -2412,7 +2455,13 @@ a.tg:hover{filter:brightness(1.25)}
 
 /* ───── throughput area chart ───── */
 .tp-wrap{display:flex;flex-direction:column;gap:8px}
-.tp-legend{display:flex;align-items:center;gap:14px;font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+/* A value and its unit are ONE reading: "124 K/s" must never break, or the number stacks over the unit and
+   momentarily reads as two figures. Flex items default to min-width:auto, whose min-content here is just the
+   longest token ("124"), so each stat could shrink and wrap internally — nowrap + no-shrink pins them whole.
+   When the row genuinely runs out of width (longer non-English labels beside the range control), the ROW wraps
+   and the control drops to its own line, which costs one line instead of mangling every number. */
+.tp-legend{display:flex;flex-wrap:wrap;align-items:center;gap:14px;row-gap:6px;font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+.tp-legend .tp-k,.tp-legend .tp-peak,.tp-legend .tp-scale{white-space:nowrap;flex:0 0 auto}
 .tp-legend .tp-k{display:inline-flex;align-items:center;gap:6px}
 .tp-legend .sw{width:10px;height:3px;border-radius:2px;display:inline-block}
 .tp-legend .sw.rx{background:var(--tp-rx)} .tp-legend .sw.tx{background:var(--tp-tx)}
@@ -2601,6 +2650,12 @@ a.tg:hover{filter:brightness(1.25)}
 /* Restore on the interface-detail (read-only) screen keeps the full 'Restore interface' btn-mini styling */
 .btn-mini.restore{color:var(--online);border-color:color-mix(in srgb,var(--online) 34%,var(--line-solid))}
 .btn-mini.restore:hover{color:var(--online);border-color:var(--online);background:color-mix(in srgb,var(--online) 10%,transparent)}
+/* "N updates" in the Turn-proxies panel head. Same --ready blue as the header's .turnpill, because it is the
+   same fact scoped to one node — an operator who has learned that colour in the header should not have to
+   learn it again here. Follows .restore's shape so the two attention buttons in a panel head read as a pair.
+   Beats .panel-head .btn-mini's brand colour on specificity (two classes), which is the point. */
+.btn-mini.updbtn{color:var(--ready);border-color:color-mix(in srgb,var(--ready) 40%,var(--line-solid))}
+.btn-mini.updbtn:hover{color:var(--ready);border-color:var(--ready);background:color-mix(in srgb,var(--ready) 10%,transparent)}
 /* Confirm-modal list of what's about to be restored/corrected */
 .restore-list{margin:10px 0 2px;padding-left:18px;max-height:200px;overflow:auto;font-size:13px;line-height:1.7}
 .restore-list li{color:var(--ink)}
@@ -2639,6 +2694,10 @@ a.tg:hover{filter:brightness(1.25)}
 .qrrow .deploy .qr,.qrrow .deploy .qr-none,.qrrow .deploy .qr-fail{flex:1;min-width:0}
 .qrrow .deploy .qr-none,.qrrow .deploy .qr-fail{width:auto;height:auto;aspect-ratio:1/1}
 .qrrow .deploy .qr .qrimg{width:100%}
+/* The VK-fallback note is a FOOTNOTE of the card, not a column in .deploy-body — see the note beside .tg-raw,
+   which is the same trap: prose inside that flex row is an unshrinkable sibling and the QR (min-width:0)
+   collapses to 0px beside it, so the card looks as though the note replaced the config. */
+.deploy > .vk-note{margin:0 15px 12px;color:#e0a545}
 .qrrow .deploy .acts{justify-content:center}
 /* equal-height carousel cards: stretch each to the tallest, pin the action row to the bottom so short cards fill */
 .qrrow{align-items:stretch}
@@ -3021,6 +3080,7 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .onlpop .on-name{font-size:12.5px;color:var(--ink)}
 .onlpop .on-ct{font-size:12px;color:var(--online);font-family:var(--mono)}
 .onlpop .on-user{font-size:11.5px}
+.uncatpop{width:262px;min-width:0}   /* one wrapping sentence — sized to read, not to fill */
 .onlpop .onpop-orph{display:block;font-size:12.5px;color:#F0913C;text-decoration:none;padding:8px 8px 4px;margin-top:3px;border-top:1px solid var(--line)}
 .onlpop a.onpop-orph:hover{color:#C7741E}
 .onlpop .onpop-viewall{display:block;font-size:11.5px;color:var(--brand);text-decoration:none;padding:7px 8px 4px;margin-top:3px;border-top:1px solid var(--line)}
@@ -3054,6 +3114,10 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .pv-dep-grid{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:8px 18px;font-family:var(--mono);font-size:12px;color:var(--ink-2)}
 .pv-dep-grid>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pv-dep-grid .k{color:var(--faint);font-size:9px;text-transform:uppercase;letter-spacing:.06em;margin-right:6px}
+/* A RAW peer carries TWO addresses and the cell is nowrap+ellipsis, so the second one was truncated to "…" —
+   the chip rendered and could not be read. Only this cell, only when a raw address exists: the card grows one
+   line for a RAW deployment and every other kind keeps the tight two-row grid. */
+.pv-dep-grid > span.pv-addr-raw{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.7}
 
 /* ───── Two-factor (TOTP) card — Settings → Authentication ───── */
 .btnrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}

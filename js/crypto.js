@@ -583,7 +583,15 @@ export async function subMaybePublish(userId, peerId, privkey, psk) {
     if (Store.storeMode !== "encrypted" || !peerId || !subSKCached()) return;
     const uid = userId || SUB_ORPHAN;                      // unassigned → the orphan bucket
     const unlockKey = await ensureUserUnlockKey(uid);
-    if (!unlockKey) return;
+    if (!unlockKey) {
+      // NOT silent. This returns before anything throws, so it skipped the very reporting the catch below
+      // exists for — the config is simply never stored, and the operator is told nothing. It is the path a
+      // bucket whose unlock_by_sk predates the CURRENT encryption key falls down (ensureUserUnlockKey takes
+      // its recovery branch *because* a key is present, fails to unwrap it, and returns null). Seen for real:
+      // every rekey of an unassigned peer reported success while its config reached no store at all, and the
+      // QR died with the tab that made it. Say so on the peer's row, like the sibling failure does.
+      throw new Error(T("its encryption bucket was sealed with a previous encryption key"));
+    }
     await subEncryptPeer(uid, peerId, privkey, psk, unlockKey);
   } catch (e) {
     // Best-effort stays best-effort: the peer itself is fine and this must never break the flow. But swallowing
@@ -1028,18 +1036,36 @@ export function turnArtifact(baseConf, tp, vkLink, vkLinks, asClient, os) {
   const cs = turnClientSettingsFor(fork, asClient || native, os);
   return SWGTurn.artifact(baseConf, tp, vkLink, cs, vkLinks, asClient);
 }
-// The client apps a server offers (from the catalog `clients` list) → {id, encoder, name, cross}. The server's
-// OWN app sorts first; a cross-fork app (shared-ancestor wire, another fork's client) follows it.
+// The client apps a server offers → {id, encoder, name, cls, plat, cross}, taken from the COMPAT MATRIX,
+// which is the one authority on whether a (fork, app) pairing connects at all — a client absent from it has
+// no usable connection and must never be offered. The per-fork `clients` list used to drive this, and drifted
+// from the matrix twice (ildarmaga hid its own native app; samosvalishe hid a working obfuscated pairing), so
+// membership now comes straight from the authority and the two can no longer disagree.
+// Ordered the way the sub page ranks, so both surfaces agree: native apps, friendly apps, then each band's
+// CLI, then plain last. The sort is stable, so within a band the catalog's authored order survives.
+// `clients` remains ONLY as the fallback for a legacy catalog that predates `compat` (an old serve.json) —
+// the same condition sub.js gates its own legacy fallback on.
 export function turnClientsFor(fork) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
-  const ids = ((turnForkList().find(x => x.id === fork) || {}).clients) || [];
+  const f = turnForkList().find(x => x.id === fork) || {};
+  const compat = f.compat || {};
+  const hasCompat = Object.keys(compat).length > 0;
+  const ids = hasCompat ? Object.keys(compat) : (f.clients || []);
   const native = (typeof SWGTurn.nativeEncoder === "function") ? SWGTurn.nativeEncoder(fork) : null;
   const PL = { android: "Android", ios: "iOS", windows: "Windows", linux: "Linux", macos: "macOS" };
+  const isCli = id => id === "sidecar" || (cmap[id] || {}).encoder === "sidecar";
+  const rank = id => { const cl = compat[id], cli = isCli(id);   // mirrors sub.js's rank(): apps before sidecars in each band, plain last
+    return cl === "native" ? (cli ? 3 : 1)
+      : (cl === "friendly" || cl === "friendly_core") ? (cli ? 4 : 2)
+      : cl === "plain" ? (cli ? 6 : 5) : 9; };
   const out = ids.map(id => {
     const c = cmap[id] || {}; const plat = Object.keys(c.platforms || {})[0];
-    return { id, encoder: c.encoder || id, name: c.name || id, plat: plat ? (PL[plat] || plat) : "", cross: (c.encoder || id) !== native };
+    return { id, encoder: c.encoder || id, name: c.name || id, cls: compat[id] || "",
+             plat: plat ? (PL[plat] || plat) : "", cross: (c.encoder || id) !== native };
   });
-  return out.sort((a, b) => (a.cross ? 1 : 0) - (b.cross ? 1 : 0));
+  // legacy catalog has no bands to rank by → keep the old "own app first" ordering
+  return hasCompat ? out.sort((a, b) => rank(a.id) - rank(b.id))
+                   : out.sort((a, b) => (a.cross ? 1 : 0) - (b.cross ? 1 : 0));
 }
 // A FUNCTION: a module-level T() is evaluated at import, before loadLang() resolves, and would freeze
 // this warning in English for the life of the page (same rule as ui.js's label tables).
@@ -1177,8 +1203,14 @@ export function effectiveClientParams(peer, target, meta) {
 // "We could not ask" — distinct from "we asked and there is none". Returned by blobConfig and consumed by
 // getConfig, which must not record a miss (nor persist a no-config marker) for a peer it never reached.
 export const CONF_UNREACHABLE = Symbol("conf-unreachable");
-const _confUnreach = new Map();   // "pubkey|node|iface" -> when the last lookup could not reach the panel
+// The blob EXISTS and the panel served it — but the bucket key that opens it was sealed under a previous
+// encryption key, so it can never be decrypted. Distinct from UNREACHABLE (a transport failure, retry later)
+// and from null (no config stored): this one is permanent, and the only way back is to re-issue the peer.
+export const CONF_SEALED_OLD = Symbol("conf-sealed-old");
+const _confUnreach = new Map();
+const _confSealed = new Map();   // pubkey|node|iface → seen-at; blob present but sealed under a replaced key   // "pubkey|node|iface" -> when the last lookup could not reach the panel
 export function confWasUnreachable(pubkey, node, iface) { return _confUnreach.has(pubkey + "|" + node + "|" + iface); }
+export function confWasSealedOld(pubkey, node, iface) { return _confSealed.has(pubkey + "|" + node + "|" + iface); }
 
 // The ENCRYPTED-AT-REST config path: fetch the peer's ciphertext blob, decrypt it in-browser with the
 // user's unlock-key (recovered from the vault), and rebuild the config LIVE from the decrypted {k,p} +
@@ -1204,7 +1236,14 @@ export async function blobConfig(peer, node, iface) {
     const buid = r.data.user_id || peer.user_id || SUB_ORPHAN;   // decrypt with the key of the bucket the blob is IN
     const rec = (await subUsersMap())[buid];
     if (!rec || !rec.unlock_by_sk) return null;
-    unlockKey = await subRecoverUnlock(rec);   // unlock-key only (works whether or not the user is subscribed)
+    // NOT inside the transport catch. Unwrapping is a CRYPTO step, and folding its failure into
+    // CONF_UNREACHABLE told the operator "couldn't reach the panel — try again in a minute" about a blob the
+    // panel had just served, for a key that will never open it however long they wait. Observed for real.
+    try {
+      unlockKey = await subRecoverUnlock(rec);   // unlock-key only (works whether or not the user is subscribed)
+    } catch (_) {
+      return CONF_SEALED_OLD;
+    }
   } catch (_) { return CONF_UNREACHABLE; }     // fetch threw → we did not learn anything about this peer
   try {
     const secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec)));   // GCM auth fails on a wrong key
@@ -1244,6 +1283,7 @@ export function getConfig(pubkey, node, iface) {
   // encrypted-at-rest blob first (assigned peer + vault unlocked); else the transitional plaintext store.
   return blobConfig(peer, node, iface).then(c => {
     if (c === CONF_UNREACHABLE) { _confUnreach.set(mk, Date.now()); return null; }   // learned nothing — do NOT miss()
+    if (c === CONF_SEALED_OLD) { _confSealed.set(mk, Date.now()); return null; }     // permanent: the key is gone, not the panel
     _confUnreach.delete(mk);
     if (c) { hit(); return c; }
     // /api/config is the LEGACY plaintext endpoint; in the (normal) encrypted-at-rest steady state there are no

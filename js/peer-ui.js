@@ -15,21 +15,21 @@ import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPrimaryTarget, targetRole,
          useStableOrder, isSelfContainedKind } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
-import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor, tgtXfer, isSelfContainedTgt } from "./model.js";
+import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor, tgtXfer, isSelfContainedTgt, peerUncategorised } from "./model.js";
 import { go } from "./router.js";
-import { turnFork, turnLabel, turnColor, turnClientColor, turnClientAuthor, turnForkList } from "./turn-catalog.js";
+import { turnFork, turnLabel, turnColor, turnClientColor, turnClientAuthor, turnForkList, forkLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
   Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
   openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, rowSingle, rowDouble, rowNoSelect, RowError,
-  useAnchoredList, goSettings, LogBody, rateCell,
+  useAnchoredList, goSettings, LogBody, rateCell, uncatPop,
 } from "./ui.js";
 import {
   QR, qrDataURL, qrZoom, copyQrImage, buildConf, parseFullConf, downloadConf, getConfig, configOverrides,
   anySessionConf, rerenderConf, effectiveClientParams, turnArtifact, turnClientsFor, turnClientSettingsFor,
   subFeatureOn, subSKCached, subBaseUrl, subUsersMap, useSubRec, ensureVaultUnlocked, subUrlFor,
   subEnableUser, subRotateUser, subBackfillUser, subKeyB64, VaultPromptSheet, ensurePeerBlob,
-  subPersistOn, subSetPersist, subUnlock, subRecover, subUsersForget, confWasUnreachable} from "./crypto.js";
+  subPersistOn, subSetPersist, subUnlock, subRecover, subUsersForget, confWasUnreachable, confWasSealedOld} from "./crypto.js";
 import {
   confirmDeletePeer, confirmUnassign, confirmBlockPeer, confirmUnblockPeer, confirmBlockUser,
   confirmUnblockUser, peerBlockBtn, userBlockBtn, rotateAllUserKeys, PeerStatusLine, SubStatusLine,
@@ -241,7 +241,11 @@ export function UserPeerCard({ peer, onOpen }) {
   const nm = peer.title || (oct ? T("Peer .{v1}", { v1: oct }) : T("Peer"));
   const lt = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets || []).find(d => d.node === t.node && d.iface === t.iface) || t;
   const head = html`<div class="upc-head">
-    <div class="upc-l1"><span class="upc-nm">${nm}</span><span class="grow"></span><${Badge} s=${lt.status}/></div>
+    <div class="upc-l1"><span class="upc-nm">${nm}</span><span class="grow"></span>${peerUncategorised(lt) && lt.status !== "blocked" && lt.status !== "faulty"
+      // This head is SHARED by every card kind in the configs modal, which is why fixing the deploy-head
+      // below did not reach it — that branch only renders when no head is passed, and one always is.
+      ? uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(lt.status)}</span>`)
+      : html`<${Badge} s=${lt.status}/>`}</div>
     <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps" title=${kinds.join(" · ")}>${kinds.length > 1 ? kinds.join(" · ") : plural(targets.length, "deployment")}</span>` : null}</div>
   </div>`;
   // Only a MULTI-config peer opens its own modal (a single-config peer has nothing extra to show — it's already
@@ -578,8 +582,7 @@ export function TurnConfigSheet({ peer, t, conf }) {
   const fi = Math.min(selFork, order.length - 1); const fork = order[fi];
   const list = byFork[fork]; const ii = Math.min(inst[fork] || 0, list.length - 1); const cur = list[ii];
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
-  const _fcompat = (turnForkList().find(x => x.id === fork) || {}).compat || {};
-  const allClients = turnClientsFor(fork).filter(c => _fcompat[c.id]);   // only apps the compat matrix rates for THIS fork — drops dead pairings (e.g. anton48 has no core → no VK-TURN-by-MYSOREZ), matching Settings + the sub page
+  const allClients = turnClientsFor(fork);   // already compat-matrix-only and compat-ranked (see turnClientsFor); it drops dead pairings such as anton48 + VK-TURN-by-MYSOREZ, matching Settings and the sub page
   const osOf = c => Object.keys((cmap[c.id] || {}).platforms || {});
   const osList = _OS_TABS.map(([o]) => o).filter(o => allClients.some(c => osOf(c).includes(o)));   // OSes this fork's apps cover
   const curOs = (selOs[fork] && osList.includes(selOs[fork])) ? selOs[fork] : (osList[0] || "");
@@ -590,9 +593,9 @@ export function TurnConfigSheet({ peer, t, conf }) {
   const clientOsName = c => (((cmap[c.id] || {}).platforms || {})[curOs] || {}).name || c.name;   // per-OS app name (WINGS V vs WINGS DeX)
   return html`<div class="turncfg">
     ${order.length > 1 ? html`<div class="turntabs">${order.map((f, k) => html`<button key=${f}
-      class=${"snbadge turntab" + (k === fi ? " on" : "")} style=${"--c:" + turnColor(f)} onClick=${() => setSelFork(k)}>${f}</button>`)}</div>` : null}
+      class=${"snbadge turntab" + (k === fi ? " on" : "")} style=${"--c:" + turnColor(f)} onClick=${() => setSelFork(k)}>${forkLabel(f)}</button>`)}</div>` : null}
     ${list.length > 1 ? html`<div class="turninst">
-      <label>${T("Which {v1} proxy", { v1: fork })}</label>
+      <label>${T("Which {v1} proxy", { v1: forkLabel(fork) })}</label>
       <select class="selwrap" value=${ii} onChange=${e => setInst(m => ({ ...m, [fork]: +e.target.value }))}>
         ${list.map((p, k) => html`<option value=${k}>${(p.listen || ("proxy " + (k + 1))) + (p.title ? " (" + p.title + ")" : "")}</option>`)}
       </select></div>` : null}
@@ -785,6 +788,16 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   const dc = csqttClientCfg(inp);
   // the link is complete, but only because the panel-wide fallback filled it in — see vkOwnHash
   const vkFallbackHere = !vkOwnHash(peer, (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null);
+  // An UNASSIGNED peer has no user, so the half of this note about "their subscription page" and "set a VK link
+  // on the user" names something that does not exist — it reads as an instruction the operator cannot follow.
+  // State the fact that still applies, and stop.
+  const vkUnassigned = peer.user_id == null;
+  const vkNote = (dc.art && dc.art.vkMissing)
+    ? html`<div class="hint vk-note">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>`
+    : vkFallbackHere
+      ? html`<div class="hint vk-note">${vkUnassigned ? T("Using the panel's fallback VK call link.")
+          : T("Using the panel's fallback VK call link — this user has none of their own. Their subscription page hands out a link without it, so set a VK link on the user before sending them there.")}</div>`
+      : null;
   const uri = dc.uri;
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
   const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
@@ -797,8 +810,6 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
       ${!uri ? html`<div class="qr-none">${T("csqtt link unavailable — the server isn't reporting yet.")}</div>`
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
         : html`<${LinkBox} uri=${uri}/>`}
-      ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>`
-          : vkFallbackHere ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("Using the panel's fallback VK call link — this user has none of their own. Their subscription page hands out a link without it, so set a VK link on the user before sending them there.")}</div>` : null}
       ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">${T("row|kind")}</span><span class="vv">${T("csqtt · keyless (server-minted address)")}</span></div>
         <div class="row"><span class="k">${T("row|endpoint")}</span><span class="vv">${inp.host || "—"}:${inp.port}</span></div>
@@ -806,15 +817,22 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
         <div class="row"><span class="k">${T("row|status")}</span><span class="vv"><${Badge} s=${lt.status}/></span></div>
       </div>`}
     </div>
+    ${/* A FOOTNOTE, below the body — never inside it. .deploy-body is a flex row and .qr is min-width:0, so a
+          sibling of prose collapsed the QR column to 0px and the note appeared to have REPLACED the config.
+          Same trap the RAW note hit (see the .tg-raw comment in app.css); same fix. */""}
+    ${vkNote}
     ${uri ? html`<div class="acts">
       <button class="btn btn-mini" onClick=${() => copy(uri, T("csqtt link copied"))}><${Ic} i="copy"/> ${T("Copy")}</button>
     </div>` : null}
   </div>`;
 }
 // The clients a WDTT fork can drive (catalog ids the SPA knows) + one client's encoded artifact.
+// Same authority and same order as every other client list — see turnClientsFor. This one matters twice
+// over: [0] is the client whose config the peer card shows by default, so it must be the fork's OWN app by
+// compat class rather than by whichever id happened to be authored first.
 export function wdttClientIds(fork) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
-  return (((typeof turnForkList === "function" && turnForkList().find(f => f.id === fork)) || {}).clients || []).filter(cid => cmap[cid]);
+  return turnClientsFor(fork).map(c => c.id).filter(cid => cmap[cid]);
 }
 export function wdttClientCfg(w, cid, fork, os) {
   const cl = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[cid] || {};
@@ -848,6 +866,16 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
   const dc = wdttClientCfg(w, clientIds[0] || "wdttapp", fork);
   // same as the csqtt card: complete-looking link, filled in from the panel-wide fallback — see vkOwnHash
   const vkFallbackHere = !vkOwnHash(peer, (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null);
+  // An UNASSIGNED peer has no user, so the half of this note about "their subscription page" and "set a VK link
+  // on the user" names something that does not exist — it reads as an instruction the operator cannot follow.
+  // State the fact that still applies, and stop.
+  const vkUnassigned = peer.user_id == null;
+  const vkNote = (dc.art && dc.art.vkMissing)
+    ? html`<div class="hint vk-note">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>`
+    : vkFallbackHere
+      ? html`<div class="hint vk-note">${vkUnassigned ? T("Using the panel's fallback VK call link.")
+          : T("Using the panel's fallback VK call link — this user has none of their own. Their subscription page hands out a link without it, so set a VK link on the user before sending them there.")}</div>`
+      : null;
   const uri = dc.uri;
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
   const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
@@ -860,15 +888,19 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
       ${!uri ? html`<div class="qr-none">${T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
         : html`<${LinkBox} uri=${uri}/>`}
-      ${dc.art && dc.art.vkMissing ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("No VK call link on this user — the link won't authenticate until one is set.")}</div>`
-          : vkFallbackHere ? html`<div class="hint" style="color:#e0a545;margin-top:6px">${T("Using the panel's fallback VK call link — this user has none of their own. Their subscription page hands out a link without it, so set a VK link on the user before sending them there.")}</div>` : null}
       ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">${T("row|kind")}</span><span class="vv">${T("WDTT · keyless (server-minted key)")}</span></div>
         <div class="row"><span class="k">${T("row|endpoint")}</span><span class="vv">${w.endpoint_host || "—"}:${w.dtls_port}</span></div>
-        <div class="row"><span class="k">${T("row|address")}</span><span class="vv">${lt.ip || "—"}<span class="faint" style="text-transform:none;letter-spacing:0"> ${T("— assigned on first connect")}</span></span></div>
+        <div class="row"><span class="k">${T("row|address")}</span><span class="vv">${lt.ip || "—"}${lt.raw_ip
+          ? html` <span class="tg tg-raw" title=${T("This peer's address on the RAW datapath — it holds both at once")}>RAW ${lt.raw_ip}</span>`
+          : html`<span class="faint" style="text-transform:none;letter-spacing:0"> ${T("— assigned on first connect")}</span>`}</span></div>
         <div class="row"><span class="k">${T("row|status")}</span><span class="vv"><${Badge} s=${lt.status}/></span></div>
       </div>`}
     </div>
+    ${/* A FOOTNOTE, below the body — never inside it. .deploy-body is a flex row and .qr is min-width:0, so a
+          sibling of prose collapsed the QR column to 0px and the note appeared to have REPLACED the config.
+          Same trap the RAW note hit (see the .tg-raw comment in app.css); same fix. */""}
+    ${vkNote}
     ${uri ? html`<div class="acts">
       <button class="btn btn-mini" onClick=${() => copy(uri, T("WDTT link copied"))}><${Ic} i="copy"/> ${T("Copy")}</button>
       ${clientIds.length > 1 ? html`<button class="btn btn-mini" onClick=${() => pushModal(html`<${WdttConfigSheet} peer=${peer} t=${t}/>`)}><${Ic} i="dots"/> ${T("Alternatives")}</button>` : null}
@@ -952,7 +984,9 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
     + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-${ltype}">${esc(t.iface)}</span>`;
 
   return html`<div class="deploy">
-    ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
+    ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span>${peerUncategorised(t) && lt.status !== "blocked" && lt.status !== "faulty"
+      ? uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(lt.status)}</span>`)
+      : html`<${Badge} s=${lt.status}/>`}</div>`}
     <div class="deploy-body">
       ${primary === "backup" ? html`<span class="qr-primary qr-backup">${T("Backup")}</span>`
         : primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
@@ -961,8 +995,19 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
             // ⚠️ Say which of the two it is. "No stored config — re-issue this peer" is a claim about what
             // is ON DISK, and it was being printed whenever the panel merely could not be reached — telling
             // an operator their config was gone, and recommending the one action that would actually destroy it.
+            : confWasSealedOld(peer.pubkey, t.node, t.iface)
+              // A THIRD state, and the honest one: the ciphertext is on the panel, but the key that opens it was
+              // replaced. No amount of unlocking or waiting brings it back — re-issuing is genuinely the answer
+              // here, which is exactly why it must not share wording with the two states where it is destructive.
+              ? T("This config was encrypted with a previous encryption key and can no longer be opened. Re-issue this peer to give it a fresh config and QR.")
             : confWasUnreachable(peer.pubkey, t.node, t.iface)
               ? T("Couldn't reach the panel just now, so this peer's stored config could not be read. It has not been lost — try again in a moment.")
+            : (Store.storeMode === "encrypted" && !subSKCached())
+              // A FOURTH state, found by testing the other three: the vault is merely LOCKED. blobConfig()
+              // returns null before it reads anything, so this fell through to "No stored config — re-issue",
+              // which recommends destroying a config that is intact and one unlock away. Same defect as the
+              // two above, and the one an operator meets most often — every fresh tab starts here.
+              ? T("The Encryption Vault is locked, so this peer's stored config can't be read. Unlock it to show the QR — the config has not been lost.")
             : Store.storeConfigs ? T("No stored config — re-issue this peer to enable its QR & download.")
             : T("Config shown right after creation, or enable store_configs to keep it.")}</div>`}
       ${bare ? null : html`<div class="dmeta">

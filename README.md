@@ -1,12 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.4-beta</code></p>
+<p align="center"><code>1.8.5-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.4-beta** — [full changelog](CHANGELOG.md)
-> - **A dead server no longer takes its interfaces with it.** The panel — not the box — holds a node's identity, so a node can be rebuilt onto new hardware with the same public keys: every config and QR code already in someone's hands keeps working. You see exactly what the rebuild will change before the token rotates, and interfaces the panel never held a key for are named up front instead of quietly coming back empty.
-> - **A node can be moved to another panel, and moved back.** Transfer carries the whole node across — its interfaces, its peers with their titles and users, the subscription tokens that keep existing links opening, and each stored config byte-for-byte. One transfer token authorises it, and a node that comes home returns as itself, with the same id.
-> - **AmneziaWG interfaces survive a reboot now.** On any box that built the tools from source, nothing could start them again — and every screen showed them healthy right up until the reboot. The panel reports boot persistence per interface, and an interface that is down is repairable from the panel instead of being a grey card with no reason and no button.
+> **What's new in 1.8.5-beta** — [full changelog](CHANGELOG.md)
+> - **A config could be issued for a different vendor's app that shares a name.** Two different clients are both called "PWDTT" — one from luminescq, one shipped inside ildarmaga's own release — and they take different link formats, so ildarmaga users were handed the wrong one and their app rejected it outright as corrupt. A fork's own app is now always offered and preferred, on the panel and on subscription pages alike.
+> - **Every client app a fork can actually drive is now offered.** Which apps a proxy can hand out is decided by one table — the compatibility matrix — instead of a second, hand-kept list beside it. Apps that were silently missing now appear, ordered by how well they fit: a fork's own app first, then compatible apps, then command-line builds, with connections that lose obfuscation last.
+> - **The panel now tells you when a proxy on a node is behind, not just the panel itself.** The header update bubble covers the whole fleet: which forks have a newer build, which nodes run the old one, and — before you press anything — exactly which servers will restart. Updates are grouped by fork rather than listed once per node.
 <!-- WHATS-NEW:END -->
 
 ---

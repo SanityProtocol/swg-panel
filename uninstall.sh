@@ -876,9 +876,20 @@ csqtt_detail(){  # <unit> -> "csqtt · 1.2.3.4:56006 · 10.12.0.1/24 · 4 passwo
   local unit="$1" n iface lis addr pw
   n="$(basename "$unit" .service)"; iface="${n#swg-csqtt-}"
   lis="$(csqtt_env "$iface" SWG_LISTEN)"; addr="$(csqtt_env "$iface" SWG_TUNADDR)"
-  pw="$(python3 -c 'import json,sys
-try: print(len(json.load(open(sys.argv[1])).get("passwords") or {}))
-except Exception: print("")' "$CSQTT_DIR/$iface/passwords.json" 2>/dev/null)"
+  # csqtt <=2.0.1 kept passwords.json; 2.1.5 migrated it into SQLite csqtt.db and removed it. Reading only the
+  # JSON reported "no password store" for a server holding users — on the screen that says what is about to be
+  # destroyed, which is the one place that must not understate it.
+  pw="$(python3 -c 'import json,os,sqlite3,sys
+d = sys.argv[1]
+try:
+    j = os.path.join(d, "passwords.json")
+    if os.path.isfile(j):
+        print(len(json.load(open(j)).get("passwords") or {}))
+    else:
+        c = sqlite3.connect(os.path.join(d, "csqtt.db"))
+        try: print(len(list(c.execute("SELECT 1 FROM passwords"))))
+        finally: c.close()
+except Exception: print("")' "$CSQTT_DIR/$iface" 2>/dev/null)"
   if [ -n "$pw" ]; then pw="$pw password(s) on disk"; else pw="no password store"; fi
   printf 'csqtt%s%s · %s' "${lis:+ · $lis}" "${addr:+ · $addr}" "$pw"
 }

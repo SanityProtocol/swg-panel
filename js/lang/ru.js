@@ -1252,8 +1252,8 @@ export const STR = {
   "Version & rollback": "Версия и откат",
   "Pinned to *{held}* but the node is still running *{inst}* — the version swap failed on the node (often a checksum mismatch). Check the proxy's status, then re-try or pick a different version.":
     "Закреплена *{held}*, но нода всё ещё работает на *{inst}* — смена версии на ноде не удалась (часто из-за несовпадения контрольной суммы). Проверьте состояние прокси, затем повторите или выберите другую версию.",
-  "A {fork} server shares one binary per node, so the version is per node — every {fork} instance on a node moves together. Pinning an older version *holds* it (no auto-update); *Use latest* follows new releases.":
-    "Сервер {fork} использует один бинарник на ноду, поэтому версия задаётся на ноду — все экземпляры {fork} на ноде переезжают вместе. Закрепление старой версии *удерживает* её (без автообновления); *Использовать последнюю* следует за новыми релизами.",
+  "{fork} servers share one binary per node, so the version is per node — every {fork} instance on a node moves together. Pinning an older version *holds* it (no auto-update); *Use latest* follows new releases.":
+    "Серверы {fork} используют один бинарник на ноду, поэтому версия задаётся на ноду — все экземпляры {fork} на ноде переезжают вместе. Закрепление старой версии *удерживает* её (без автообновления); *Использовать последнюю* следует за новыми релизами.",
 
   // Setup sheet
   "Source": "Источник",
@@ -1923,8 +1923,6 @@ export const STR = {
     "Установка этого сервера берётся из {what}, поэтому обновление — это его пересборка. Сделайте это на сервере {side} — тем способом, которым применяется эта конфигурация.",
   "This node can't be updated from the panel — run the command shown in the dialog on the box.":
     "Эту ноду нельзя обновить из панели — выполните на сервере команду из диалога.",
-  "This node's installation is owned by its own configuration, not by the panel":
-    "Установка этой ноды принадлежит её собственной конфигурации, а не панели",
   "This box's installation comes from its {what}, so an update is a rebuild of it — run this on the {side} box:":
     "Установка этого сервера берётся из {what}, поэтому обновление — это его пересборка. Выполните это на сервере {side}:",
   // budget-ok: bold run inside wrapping prose
@@ -3162,11 +3160,12 @@ export const STR = {
   "Failed to request update.": "Не удалось запросить обновление.",
   // budget-ok: a message bar / notice — full width, wraps, nothing beside it
   "Failed to start update.": "Не удалось запустить обновление.",
+  // Last-resort text in an update row when the server answered !ok with nothing to quote.
+  // Stands alone in a narrow cell, so it stays a bare verb rather than a sentence.
+  "failed": "не удалось",
   "Couldn't check for updates.": "Не удалось проверить обновления.",
   "No notes for this release.": "Описания у этого выпуска нет.",
   "See the changelog for what's new.": "Что нового — в списке изменений.",
-  // budget-ok: the update bubble's footer line — its own row
-  "Click to update this server.": "Нажмите, чтобы обновить этот сервер.",
   "Panel services need attention": "Службам панели нужно внимание",
   "Port scans": "Сканы портов",
   "Torrents caught": "Поймано торрентов",
@@ -3591,6 +3590,11 @@ export const STR = {
   "tag|pending": "ожидает",
   "tag|unsaved": "не сохр.",
   "tag|orphan": "сирота",
+  "hdr|Encrypted DNS": "Шифрованный DNS",
+  "The Encryption Vault is locked, so this peer's stored config can't be read. Unlock it to show the QR — the config has not been lost.": "Хранилище ключей заблокировано, поэтому сохранённый конфиг этого пира не прочитать. Разблокируйте его, чтобы показать QR — конфиг не потерян.",
+  "This config was encrypted with a previous encryption key and can no longer be opened. Re-issue this peer to give it a fresh config and QR.": "Этот конфиг зашифрован предыдущим ключом шифрования и больше не открывается. Перевыпустите пир, чтобы получить новый конфиг и QR.",
+  "its encryption bucket was sealed with a previous encryption key": "его хранилище запечатано предыдущим ключом шифрования",
+  "The node can't see this client's lookups, so nothing matches a category: routing rules don't apply and its traffic leaves by this node. Switch the client to plain DNS, or put this interface on SNI mode.": "Нода не видит DNS-запросы этого клиента, поэтому ничего не попадает в категории: правила маршрутизации не применяются, и трафик уходит через эту ноду. Переключите клиента на обычный DNS или переведите интерфейс в режим SNI.",
   "tag|unassigned": "свободен",
   "val|total": "всего",
   "val|online": "в сети",
@@ -3723,7 +3727,7 @@ export const STR = {
     "RAW нужен порт {v1}, а его занимает {v2} на этой ноде — сначала перенесите его",
   "this server would need port {v1} for RAW, but it is already using it — move its listen or internal WG port first":
     "Этому серверу нужен порт {v1} для RAW, но он сам его занимает — сначала перенесите его порт приёма или внутренний порт WG",
-  "{v1} has no RAW-IP mode — it is a qWDTT feature": "У {v1} нет режима RAW-IP — это возможность qWDTT",
+  "{v1} has no RAW-IP mode — only some WDTT forks implement it": "У {v1} нет режима RAW-IP — его реализуют не все форки WDTT",
   "no csqtt instance '{v1}' on node {v2}": "на ноде {v2} нет экземпляра csqtt «{v1}»",
   "this node already manages a csqtt instance on {v1}": "эта нода уже управляет экземпляром csqtt на {v1}",
   "this node doesn't report a csqtt server on {v1} — refresh and try again":
@@ -4297,6 +4301,7 @@ export const STR = {
   "mesh port must be 1–65535 (or blank)": "порт сети — от 1 до 65535 (или пусто)",
   "mesh subnet must be a CIDR (or blank)": "подсеть сети — CIDR (или пусто)",
   "mtu must be 576–9200": "MTU — от 576 до 9200",
+  "mtu out of range (576-9200)": "MTU вне диапазона (576–9200)",
   "mtu must be a number": "MTU должен быть числом",
   "n (AS number) required": "нужен номер AS",
   "order must be a list": "order должен быть списком",
@@ -4789,6 +4794,21 @@ export const STR = {
   "this panel already holds different records under {v1}":
     "на этой панели уже есть другие записи с идентификаторами {v1}",
 
+  // Russian leads with the predicate here — "3 обновления доступно" reads as a fragment, "Доступно 3 обновления" does not.
+  "{v1} available": "Доступно {v1}",
+  "Review & update": "Просмотреть и обновить",
+  "Server updates": "Обновления серверов",
+  "Update all": "Обновить все",
+  "This peer's address on the RAW datapath — it holds both at once": "Адрес этого пира в RAW-датапате — он держит оба одновременно",
+  "Using the panel's fallback VK call link.": "Используется запасная VK-ссылка панели.",
+  "Deployed servers on this node are behind their newest build — review and update": "Развёрнутые на этом узле серверы отстают от новейшей сборки — просмотреть и обновить",
+  "Each update swaps the server's binary and *restarts it*, which briefly drops that server's clients. This one covers {v1} on {v2} — pick a quiet moment, or update them one at a time.": "Каждое обновление подменяет бинарник сервера и *перезапускает его*, из-за чего клиенты этого сервера ненадолго отключаются. Здесь это {v1} на {v2} — выберите спокойное время или обновляйте по одному.",
+  "Update {v1}": "Обновить {v1}",   // the per-fork button: {v1} is already declined ("2 ноды")
+  "Update": "Обновить",
+  "Everything is on its newest build.": "Все серверы на новейшей сборке.",
+  "Each update swaps the server's binary and *restarts it*, which briefly drops that server's clients. This one covers {v1} across {v2} — pick a quiet moment, or update them one at a time.":
+    "Каждое обновление заменяет бинарник сервера и *перезапускает его*, что ненадолго отключает клиентов этого сервера. Здесь это {v1} на {v2} — выберите тихое время или обновляйте по одному.",
+
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the
@@ -4801,6 +4821,10 @@ export const PLURALS = {
   user: ["пользователь", "пользователя", "пользователей"],
   interface: ["интерфейс", "интерфейса", "интерфейсов"],
   server: ["сервер", "сервера", "серверов"],
+  update: ["обновление", "обновления", "обновлений"],
+  // Prepositional case — this slot sits after «на» ("на 1 ноде"), where the nominative "нода" is wrong.
+  // English has no entry, so plural() strips the prefix and still reads "1 node" / "2 nodes".
+  "prep|node": ["ноде", "нодах", "нодах"],
   record: ["запись", "записи", "записей"],
   "destination": ["назначение", "назначения", "назначений"],
   "new host": ["новый домен", "новых домена", "новых доменов"],
@@ -4818,6 +4842,7 @@ export const PLURALS = {
   rule: ["правило", "правила", "правил"],
   IP: ["IP", "IP", "IP"],   // indeclinable acronym: one form covers every count
   issue: ["проблему", "проблемы", "проблем"],
+  "nom|issue": ["проблема", "проблемы", "проблем"],   // SUBJECT ("1 проблема на этой ноде"); bare `issue` stays accusative for "исправить / можно починить"
   group: ["группа", "группы", "групп"],   // reads after "исправить" (accusative): исправить 1 проблему / 5 проблем
   minute: ["минуты", "минут", "минут"],          // reads after "больше" (genitive): больше 1 минуты / 5 минут
   address: ["адрес", "адреса", "адресов"],

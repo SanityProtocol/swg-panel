@@ -39,7 +39,7 @@ import {
   maybeRekeyGhosts, setLoadIfaceOpener,
 } from "./js/peer-actions.js";
 import {
-  trackTurnRestarts,
+  openTurnUpdates, trackTurnRestarts,
 } from "./js/turn.js";
 import {
   VaultKeySheet,
@@ -50,7 +50,7 @@ import {
 import {
   CHECK_SVG, INFO_SVG, NodeDetail, NodesScreen, UPD_SPIN_SVG, WARN_SVG, X_SVG, checkForUpdate, fixBubbleHtml,
   hostHoverBubble, hostUpdRepairing, hostUpdating, noteHostUpdateDone, openUpdateDone, pendingUpdateDone,
-  seenPanelVer, setSeenPanelVer, takePendingUpdateDone, updBubbleHtml, updateHost, versionHoverBubble,
+  seenPanelVer, setSeenPanelVer, takePendingUpdateDone, turnUpdBubbleHtml, updBubbleHtml, updateHost, versionHoverBubble,
 } from "./js/screen-nodes.js";
 import {
   Overview, ServiceIssueSheet, maybeAlertServices, recordDashTick, setAppReady,
@@ -302,7 +302,10 @@ function App() {
     // i.e. twice on the header. Holding it until host_proc settles makes that a single "updated".
     if (pendingUpdateDone && !inProc(Store.hostProc)) { const _u = takePendingUpdateDone(); openUpdateDone(_u[0], _u[1]); }
     if (el && v.panel) {        // panel version + info icon → the changelog hover bubble (reuses the update-bubble look)
-      el.innerHTML = `<span class="appver-wrap"><b>${esc(v.panel)}</b><span class="appver-info" title="${esc(T("Changelog"))}">${INFO_SVG}</span></span>`;
+      // aria-label, not title — the icon carries no text of its own so AT still needs a name, but the
+      // changelog bubble is what a sighted hover gets and a native tooltip would just cover it. Same
+      // reinstatement reason as the turn badge: this innerHTML is rewritten on every poll.
+      el.innerHTML = `<span class="appver-wrap"><b>${esc(v.panel)}</b><span class="appver-info" aria-label="${esc(T("Changelog"))}">${INFO_SVG}</span></span>`;
       if (!el._verWired) { el._verWired = true; versionHoverBubble(el); }   // wire once — #appver persists across polls
     }
     const ht = $("#host-tport");      // how the PANEL itself is deployed (docker / bare-metal)
@@ -345,10 +348,28 @@ function App() {
       // there is meaningless or already happening, and the header would flicker spinner↔button. Derived
       // from what the chain PRODUCED, so the chain stays one untouched if/else-if run.
       if (/id="host-(upd|fix|repair)"/.test(body)) body += _checkBtn;
+      // Turn-family updates are a DIFFERENT AXIS from this box's health, so they ride BESIDE the chain rather
+      // than inside it. Ranked above "fix" they would hide a broken unit behind a version bump; ranked below
+      // they would vanish for the days a panel sits outdated — the same disappearing act the check button's
+      // comment above records. Suppressed only while a host lifecycle/check is in flight, where the header is
+      // already busy and a second badge would just add noise.
+      // Counts FORKS, not (fork, node) rows: an operator thinks "csqtt has an update", not "csqtt-on-A and
+      // csqtt-on-B have updates", and the same grouping drives the bubble — so badge count == lines listed.
+      const _turnN = new Set((Store.turnUpdates || []).map(r => r.fork)).size;
+      const _turnBadge = (_turnN && !/hostproc-tag|upd-busy/.test(body))
+        // No `title=`: the hover bubble below IS this badge's caption, and it names the forks, the nodes and
+        // the versions rather than restating the label. A native tooltip would surface a second later, on top
+        // of it, saying less. (parkTitles in hostHoverBubble enforces that generally; the header rewrites this
+        // element every poll, so the attribute must not be here to be reinstated mid-hover.)
+        ? `<button class="livepill updpill turnpill" id="turn-upd">${esc(plural(_turnN, "update"))}</button>` : "";
+      // Left of the check button in BOTH layouts: the badges read as a row of things that are true, and the
+      // check is the verb that refreshes them — a verb belongs at the end of the row, not between two facts.
+      if (_turnBadge) body = body.includes(_checkBtn) ? body.replace(_checkBtn, _turnBadge + _checkBtn) : body + _turnBadge;
       slot.innerHTML = body;
       const b = $("#host-upd"); if (b) { b.onclick = updateHost; hostHoverBubble(b, updBubbleHtml, updateHost); }   // version + date + changelog on hover; the bubble's own Update button runs the SAME action (on touch the anchor is underneath it)
       const rp = $("#host-repair"); if (rp) rp.onclick = updateHost;   // up-to-date → still allow a re-run/repair (heals the datapath even with no new version)
       const fx = $("#host-fix"); if (fx) { fx.onclick = () => openModal(html`<${ServiceIssueSheet} issues=${serviceIssues()}/>`); hostHoverBubble(fx, fixBubbleHtml); }   // the issue(s) on hover; click = review + run the repair
+      const tu = $("#turn-upd"); if (tu) { tu.onclick = openTurnUpdates; hostHoverBubble(tu, turnUpdBubbleHtml, openTurnUpdates); }   // forks + versions on hover; the bubble's own foot is the action (and reachable on touch, where the anchor is underneath it)
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
       const hx = $("#hostproc-x"); if (hx) hx.onclick = e => { e.stopPropagation(); dismissHostProc(); };
       const htg = $("#hostproc-tag"); if (htg && Store.hostProcErr) htg.onclick = () => openConfirm({ title: procLabel(Store.hostProc), log: Store.hostProcErr, confirmLabel: T("Close") });

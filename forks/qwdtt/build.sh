@@ -14,8 +14,13 @@
 set -euo pipefail
 
 UPSTREAM_REPO="https://github.com/SpaceNeuroX/proxy-turn-vk-android"
-UPSTREAM_SHA="854a72fe"   # "Release 1.4.1", 2026-08-15; bump deliberately + re-test the patch
-SRC_SUBDIR="."            # server.go + admin_api.go live at the repo root
+UPSTREAM_SHA="fae121efc3ef57b633516601d3c0d6b1be1fde7c"   # v1.4.3, 2026-08-31; bump deliberately + re-test the patch
+# ⚠️ v1.4.3 MOVED the server out of the repo root into server/ and split it across a dozen files
+# (buffers/connections/core/nat/obfs/optimization/...). Our 9 hunks were untouched by that split and
+# apply unchanged from inside server/ — the only edit this bump needed was this path. The flag surface
+# only GAINED flags (admin-cert/-key/-listen/-token-file, bot-token-file, password-file), so a unit
+# written by an older node still parses.
+SRC_SUBDIR="server"       # was "." — server.go + admin_api.go moved here in v1.4.3
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HERE/qwdtt-server}"

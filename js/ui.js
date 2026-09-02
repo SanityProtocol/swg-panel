@@ -19,7 +19,7 @@ import { go } from "./router.js";
 import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText, srvVars } from "./i18n.js";
 import { IFACE_COLOR_DEFAULTS, THEME_COLOR_DEFAULT, THEME_COLOR_LIGHT_DEFAULT, THEME_MODES,
          clampBrand, hexLum, pickThemed, resolvedTheme, themeMode } from "./theme.js";
-import { targetType } from "./model.js";
+import { targetType, peerUncategorised } from "./model.js";
 import { turnColor, turnLabel, turnForkList } from "./turn-catalog.js";
 import { h, render, Fragment } from "preact";
 import { useState, useEffect, useRef } from "preact/hooks";
@@ -243,6 +243,8 @@ export function Portal({ children }) {
 // carries its own as well; both are redundant beside the bubble and the native one covers it. A title
 // cannot be suppressed in CSS, so park every `title` on the trigger's ancestors AND inside its own
 // subtree for as long as the bubble shows, and put them all back when it closes.
+/* See parkTitles in js/screen-nodes.js — the same rule for the innerHTML header bubbles, which have no ref
+   to hang an effect on. Keep the two in step. */
 function useNoNativeTitle(ref, active) {
   useEffect(() => {
     if (!active || !ref.current) return;
@@ -794,11 +796,32 @@ export const statusReason = s => STATUS_REASONS()[s] || "";
 // The protocol name is INTERPOLATED, not concatenated: it lands mid-sentence, and only one language puts it there.
 export function protoLabel(type) { return type === "awg" ? "AmneziaWG" : type === "wg" ? "Wireguard" : T("Wireguard or AmneziaWG"); }
 export function blockedReason(type) { return T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {proto} params", { proto: protoLabel(type) }); }
+// The "why" bubble for an Uncategorised peer, as a Popover rather than the CSS-only .turnbub: every peers
+// grid lives inside `.panel`, which is `overflow:hidden` to clip the table to its rounded corners, so a bubble
+// anchored inside it is CUT OFF at the panel's bottom edge — measured, 54px of a 112px bubble on the last row.
+// Popover portals out and positions against the viewport, and flipFit puts it ABOVE the badge when the room
+// below runs out. Same escape screen-nodes' platformPill already had to make, for the same reason.
+// Shared, because the LIVE monitor renders a dot instead of a pill and has to say exactly the same thing.
+export function uncatPop(trigger) {
+  return html`<${Popover} hoverOnly flipFit cls="turnwrap" popCls="uncatpop" trigger=${trigger}>
+    <div class="onpop-h" style="color:var(--partial)">${T("hdr|Encrypted DNS")}</div>
+    <div class="onrow hrow"><span class="on-name">${T("The node can't see this client's lookups, so nothing matches a category: routing rules don't apply and its traffic leaves by this node. Switch the client to plain DNS, or put this interface on SNI mode.")}</span></div>
+  <//>`;
+}
+
 export function gridStatusBadge(t, p, re) {
   const st = t.status || p.status;
   const reason = (t.down ? T("Interface {iface} is down — {why}", { iface: t.iface, why: t.down })
     : st === "blocked" ? blockedReason(t.type)   // name THIS deployment's datapath (wg / awg) in the "wrong params" hint
     : (p.reason || statusReason(st))) || "";
+  // UNCATEGORISED keeps the peer's real status word and recolours it, the same grammar `b-turn` uses for
+  // "online, but via a proxy". Replacing the word with "Uncategorised" threw away something true — the peer
+  // IS online — and only worked for peers that were; a Ready peer with a recent DoT hit would have been
+  // mislabelled. The amber + warning triangle carry the caveat, the bubble carries the why, and the status
+  // column keeps its width. Amber, not red: it works, it just isn't being category-routed.
+  if (peerUncategorised(t) && !re && st !== "blocked" && st !== "faulty") {
+    return uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(st)}</span>`);
+  }
   if (t.online && t.viaTurn) {
     const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
     return html`<span class="turnwrap" title="">

@@ -16,12 +16,19 @@ Upstream ships no server binary, so we build from a pinned commit and host the r
 GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate as turn)
 ```
 
-- Pinned upstream: **`854a72fe`** ("Release 1.4.1", 2026-08-15).
+- Pinned upstream: **`fae121ef`** (`v1.4.3`, 2026-08-31).
   ⚠️ **Pin a commit, never a tag** — `v1.3.8`/`v1.3.9`/`v1.4.0`/`v1.4.0-beta` all still point at the
   July commit `2dd5d37f`.
-- Static (`CGO_ENABLED=0`), ~8.8 MB, **Go 1.26** (upstream `go.mod`; the WDTT forks are Go 1.25).
-- Layout differs from amurcanov's: the server is one flat `server.go` (+`admin_api.go`) at the **repo
-  root**, not under `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.
+- Static (`CGO_ENABLED=0`), **Go 1.25** (upstream `go.mod`).
+- Layout differs from amurcanov's: the server lives under **`server/`** (`SRC_SUBDIR`), not under
+  `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.
+  ⚠️ **v1.4.3 split the server.** Up to v1.4.1 it was one flat `server.go` (3,413 lines) plus
+  `admin_api.go` at the repo ROOT; v1.4.3 moved it to `server/` and split it across 15 files
+  (`connections.go`, `raw.go`, `nat.go`, `core.go`, `database_bot.go`, `statistics.go`,
+  `optimization.go`, `buffers.go`, …), growing ~940 lines in the process. The patch was re-anchored
+  file-by-file. Note that `git apply --check` is USELESS for verifying that here: pointed at a tree
+  where the target file no longer exists it prints `Skipped patch` and exits **0**. Verify by running
+  `build.sh`, which uses `patch -p1` and fails loudly.
 
 ## What the patch adds (`qwdtt-swgpanel.patch` — one new file + hooks)
 
@@ -52,6 +59,17 @@ Three upstream behaviours the patch fixes:
   VK call answers HTTP. We default it **off** and require an explicit (loopback) `-api-addr`.
   *This is also what made qWDTT's `deploy.sh` open TCP on the DTLS port — an HTTP admin API, never a
   TCP data transport.*
+  ⚠️ **v1.4.3 also added device-binding to the RAW path** (v1.4.1 had none), which `-fixed-config` is
+  incompatible with by design: one generated password IS one config, so the entry's `DeviceID`/`DeviceIDs`
+  are deliberately empty and `bound` could never become true. Every RAW **data** worker was denied with
+  `device_mismatch` while the GETCONF worker — which does not take that branch — still registered. The
+  session came up, carried DNS, and delivered no downlink: "connected, no internet". The patch now exempts
+  fixed-config there, the same way it always did on the WG path in `handleConn`.
+
+  **Partly fixed upstream in v1.4.3**: the `/admin/*` routes moved behind upstream's own
+  `-admin-listen` (empty = off, HTTPS, token file), so we no longer gate those — that hunk was
+  dropped rather than re-anchored. `/api/profile/{challenge,status,unbind}` is still bound on
+  `-listen`, i.e. the public DTLS port, so `-api-addr` still governs it.
 - **Stop leak**: upstream's signal handler calls `os.Exit(0)`, skipping the deferred `ip link del`.
   The patch runs one idempotent teardown (interface + `WDTT_MANAGED` rules) before exit.
 - ⚠️ **Raw mode was single-instance, destructively.** `rawIfaceName`/`rawServerCIDR` are consts upstream

@@ -1,8 +1,25 @@
 diff --git a/app/src/main/assets/linux-server/db.go b/app/src/main/assets/linux-server/db.go
-index e7ef156..d2ce9d1 100644
+index e7ef156..7c787b1 100644
 --- a/app/src/main/assets/linux-server/db.go
 +++ b/app/src/main/assets/linux-server/db.go
-@@ -1006,7 +1006,7 @@ func getNextIP() string {
+@@ -761,9 +761,14 @@ func validatePersistentDatabase(database *Database) error {
+ 		if dev.DeviceID != deviceID {
+ 			return fmt.Errorf("device %q contains mismatched device_id %q", deviceID, dev.DeviceID)
+ 		}
++		// swg-panel: validate against THIS instance's pool, not upstream's hardcoded 10.66.66.0/24. The
++		// allocator below already builds every address as wgPoolPrefix + "." + n (from -wg-addr), so a server
++		// on any other subnet wrote records its OWN validator then rejected: it started fine while empty and
++		// refused to start ever again once a client had connected — the store it had just written was
++		// "invalid". Mirror the allocator exactly, so the two can never disagree again.
+ 		ip := net.ParseIP(dev.IP).To4()
+-		if ip == nil || ip[0] != 10 || ip[1] != 66 || ip[2] != 66 || ip[3] < 2 || ip[3] > 250 {
+-			return fmt.Errorf("device %q has invalid tunnel IP %q", deviceID, dev.IP)
++		if ip == nil || ip[3] < 2 || ip[3] > 250 || dev.IP != fmt.Sprintf("%s.%d", wgPoolPrefix, ip[3]) {
++			return fmt.Errorf("device %q has invalid tunnel IP %q (pool %s.0/24)", deviceID, dev.IP, wgPoolPrefix)
+ 		}
+ 		if previous, exists := usedIPs[dev.IP]; exists {
+ 			return fmt.Errorf("devices %q and %q share tunnel IP %s", previous, deviceID, dev.IP)
+@@ -1006,7 +1011,7 @@ func getNextIP() string {
  		used[dev.IP] = true
  	}
  	for i := 2; i <= 250; i++ {
@@ -11,7 +28,7 @@ index e7ef156..d2ce9d1 100644
  		if !used[ip] {
  			return ip
  		}
-@@ -1014,6 +1014,120 @@ func getNextIP() string {
+@@ -1014,6 +1019,120 @@ func getNextIP() string {
  	return ""
  }
  

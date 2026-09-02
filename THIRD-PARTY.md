@@ -24,11 +24,25 @@ recipe and the patch are in this repository, so any release can be reproduced an
 | Server | Upstream | Licence | Pinned commit | Our patch + recipe | Release |
 |---|---|---|---|---|---|
 | WDTT (original) | [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android) | **GPL-3.0** | `51057cc` (v1.2.4) | [`forks/wdtt/`](forks/wdtt/) | `wdtt-amurcanov-1.2.4-2` |
-| WDTT — ildarmaga | [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | see repo (no SPDX licence declared) | `ef697994` (v1.5.40) | [`forks/wdtt/ildarmaga/`](forks/wdtt/ildarmaga/) | `wdtt-ildarmaga-1.5.40` |
+| WDTT — ildarmaga | [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | **GPL-3.0** ‡ | `ef697994` (v1.5.40 ‡) | [`forks/wdtt/ildarmaga/`](forks/wdtt/ildarmaga/) | `wdtt-ildarmaga-1.5.40` |
 | WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `10c6939b` (v14) | [`forks/wdtt/wdttplus/`](forks/wdtt/wdttplus/) | `wdtt-wdttplus-14` |
 | WDTT — XXcipherX | [XXcipherX/proxy-turn-vk-android](https://github.com/XXcipherX/proxy-turn-vk-android) | **GPL-3.0** | `9a3a7b87` (v2.0.0.68) | [`forks/wdtt/xxcipherx/`](forks/wdtt/xxcipherx/) | `wdtt-xxcipherx-2.0.0.68` |
 | qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `854a72fe` (Release 1.4.1) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.1` |
-| csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `31114cb7` (v2.0.1) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.0.1` |
+| csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `de7afc23` (v2.1.5) † | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.0.1` † |
+
+† **csqtt's recipe is ahead of its release.** `forks/csqtt/` is ported to v2.1.5 (`de7afc23`) and builds the
+2.1.5 binary, but that release is not published yet, so the current release is still `csqtt-2.0.1` — built from
+upstream `31114cb7` with the patch as it stood at `929eddf8` in this repository. Every other row's recipe and
+release describe the same binary; this one will too once `csqtt-2.1.5` is cut.
+
+‡ **ildarmaga: two things this table cannot say in a cell.** The repository's `LICENSE` is the full text of
+the **GNU GPL v3**, with a copyright header for the WDTT server/panel and the bundled PWDTT client binaries
+prepended to it. GitHub's own detector reports the repository as "Other" / `NOASSERTION`, because that header
+stops the file matching the GPL template byte-for-byte — but the grant it carries is the standard one, so the
+binary we publish is a GPL binary and the source offer below covers it. Separately, the version in brackets is
+not a distinguishing identifier: upstream's tags `v1.5.2` through `v1.5.40` **all point at commit `ef697994`**,
+whose own message is "docs: changelog for v1.5.0". The commit is what pins our build; the tag name is only how
+we label the release.
 
 ### Source for the GPL binaries
 
