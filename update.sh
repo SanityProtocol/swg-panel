@@ -1220,6 +1220,39 @@ PYSC
         && note ".env: SWG_NODE_SECCOMP=unconfined (this node runs csqtt — its io_uring dataplane needs it)"
     fi ;;
   esac
+  # 2) The operator console's own port. Shipped in 1.8.3 as three lines — a ports publish plus two env keys —
+  #    and, being NEW compose content rather than a changed value, it reached only fresh installs. Every panel
+  #    installed before then has been told at each update that its file is behind and to restage, for a feature
+  #    it could simply have been given. The panel reads SWG_PANEL_CONSOLE_PORT with a default of 0, and 0 means
+  #    "off", so on those boxes Settings → Panel URL → "Its own address" does not work at all.
+  #    SAFE BY CONSTRUCTION: the publish is ${CONSOLE_BIND:-127.0.0.1} — LOOPBACK unless the operator sets
+  #    CONSOLE_BIND themselves — so this opens nothing to the network. Both anchor lines are byte-identical in
+  #    every shipped compose back to 1.8.2, which is as far back as this can matter.
+  case "$prof" in host|master|host-node)
+    if ! $DRYRUN && [ -f "$DOCKER_DIR/docker-compose.yml" ] \
+       && ! grep -q 'SWG_PANEL_CONSOLE_PORT' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null \
+       && ! grep -q 'SWG_PANEL_CONSOLE_HOST' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
+      python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYCON' && note "docker-compose.yml: added the operator console port (SWG_PANEL_CONSOLE_HOST/PORT + its loopback publish)"
+import sys
+f = sys.argv[1]
+lines = open(f).read().split("\n")
+out, did_port, did_env = [], False, False
+for l in lines:
+    out.append(l)
+    if not did_port and l.strip() == '- "127.0.0.1:${PANEL_LOCAL_PORT:-8088}:${PANEL_LOCAL_PORT:-8088}"':
+        out.append('      # The OPERATOR CONSOLE own port (Settings -> Panel URL -> "Its own address").')
+        out.append('      # LOOPBACK by default; set CONSOLE_BIND=0.0.0.0 (or a host IP) in .env to publish, then firewall it.')
+        out.append('      - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_PORT:-8445}:${CONSOLE_PORT:-8445}"')
+        did_port = True
+    elif not did_env and "SWG_PANEL_BASE:" in l and "${PANEL_BASE" in l:
+        out.append('      SWG_PANEL_CONSOLE_PORT: "${CONSOLE_PORT:-8445}"')
+        out.append('      SWG_PANEL_CONSOLE_HOST: "${CONSOLE_BIND:-127.0.0.1}"')
+        did_env = True
+# all three lines or none — a half-applied migration is worse than the warning it silences
+sys.exit(0 if (did_port and did_env and open(f, "w").write("\n".join(out)) is not None) else 1)
+PYCON
+    fi ;;
+  esac
   # 3) Image tag. `image:` lines were baked LITERAL (…/swg-panel:latest) before SWG_IMAGE_TAG existed, and an
   #    update patches this file key by key instead of replacing it — so the knob shipped, .env documented it,
   #    and on every already-installed box it did nothing at all. Rewrite the three image lines to read the
