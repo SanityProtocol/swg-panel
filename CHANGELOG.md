@@ -9,8 +9,8 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 - **A newer server build for every fork the panel builds, with the one you were on kept as a rollback
   target.** csqtt 2.1.9, qWDTT 1.4.3, WDTT-Plus 15, xxcipher 2.0.0.70 and ildarmaga 1.5.40-2, each published
-  for amd64 and arm64 — the arm64 halves are new, so an arm64 node could not install several of these before.
-  The version picker still lists the previous build, so an upgrade stays reversible.
+  for amd64 and arm64, as every fork build always has been. The version picker still lists the build you were
+  on, so an upgrade stays reversible.
 - **ildarmaga's RAW-IP datapath is now the panel's to place.** It used to derive its own listener from the
   DTLS port and always bind it, on a fixed interface name — a port the panel never allocated, and a name two
   servers on one machine would fight over. RAW is now an explicit choice per server, on the port the panel
