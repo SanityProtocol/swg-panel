@@ -2374,6 +2374,55 @@ def _ip_forward_ok():
         return None
 
 
+def _sysctl_ensure(key, want, ok=None):
+    """Set a kernel knob and return WHAT IT ACTUALLY IS afterwards — None if there is no /proc to ask.
+
+    Generalises what _turn_sock_bufs already does for net.core.*: read first, write only when the value is
+    wrong, then read BACK. The rest of this project writes `sysctl -q -w … || true` and discards the result,
+    which is how a container's read-only /proc/sys turned two separate outages into silence — the write
+    no-ops, the exit code is thrown away, and the node reports itself healthy while nothing routes.
+
+    Reading first also means fewer subprocesses, not more: the steady state is a read of a few bytes and no
+    fork at all, where the old shape spawned `sysctl` every time regardless.
+
+    `ok` overrides the "is it right" test for knobs whose effective value is not simply the one you wrote
+    (rp_filter takes max(all, <dev>), so a device can be fine because `all` already covers it)."""
+    path = "/proc/sys/" + key.replace(".", "/")
+    try:
+        cur = int(open(path).read().strip() or 0)
+    except (OSError, ValueError):
+        return None
+    if (ok or (lambda v: v == want))(cur):
+        return cur                                    # already right — no fork
+    run(["sysctl", "-q", "-w", "%s=%d" % (key, want)])
+    try:
+        return int(open(path).read().strip() or 0)    # the KERNEL is the answer, not sysctl's exit code
+    except (OSError, ValueError):
+        return cur
+
+
+# Source-address validation, as last observed by the cascade path. rp_filter=1 (strict) drops the RETURN half
+# of an asymmetric route, which is exactly what a cascade/exit entry creates — so a node that cannot loosen it
+# forwards a peer's packets out and silently discards the replies: connected, zero throughput, nothing said.
+_RPF = {"needed": False, "bad": []}
+
+
+def _rp_filter_val(dev):
+    """conf.<dev>.rp_filter as the kernel has it, or None when there is no such knob (device gone)."""
+    try:
+        return int(open("/proc/sys/net/ipv4/conf/%s/rp_filter" % dev).read().strip() or 0)
+    except (OSError, ValueError):
+        return None
+
+
+def _rp_effective(dev, all_val):
+    """What the kernel will ACTUALLY apply to <dev>: max(conf.all, conf.<dev>). Checking the device alone
+    reports a healthy node as broken whenever conf.all already covers it."""
+    v = _rp_filter_val(dev)
+    if v is None:
+        return None
+    return v if all_val is None else max(v, all_val)
+
 _IPF_FAILED_AT = {"t": 0.0}          # last self-heal attempt that did NOT take (see ip_forward_health)
 IPF_RETRY_S = 300                     # how long to wait before trying a heal that already failed
 
@@ -3005,15 +3054,38 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                         panel_conn, res)
     band = _live_band_prios()
     want_tables = {str(e["table"]) for e in (fwd + smart_exit + exit_)}
+    # rp_filter is WRITTEN only when the policy rules drift (below), but it is CHECKED on every routing
+    # reconcile — this function runs on a routing change, on interface churn, and otherwise every
+    # ROUTING_RECONCILE_EVERY_S. That matters because the write can fail once and nothing would ever revisit
+    # it: after a noded restart a node with a settled cascade would sit there dropping every reply and
+    # reporting itself healthy. Reads only, a few bytes of /proc per device (~8us each), no fork.
+    _RPF["needed"] = bool(fwd or smart_e or exit_)
+    if _RPF["needed"]:
+        _rall = _rp_filter_val("all")
+        _RPF["bad"] = sorted(d for d in {_detect_wan()} | {e["via_iface"] for e in (fwd + smart_exit + exit_)}
+                             if _rp_effective(d, _rall) not in (None, 2))
+    else:
+        _RPF["bad"] = []
     want_sig = _cascade_want_sig(fwd, exit_, smart_exit)   # only exit entries create fwmark→table policy routing
     live_sig = _cascade_live_sig({str(p) for p in band} | want_tables)
     # POLICY RULES/ROUTES — only touch them when they drift (avoids per-sync rule gaps).
     if want_sig != live_sig:
         if fwd or smart_e or exit_:                            # enable forwarding + loose rp_filter (asymmetric paths)
-            run(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"])
+            _sysctl_ensure("net.ipv4.ip_forward", 1)
             wan = _detect_wan()
+            # effective = max(all, <dev>), so `all` already at 2 covers a device sitting at 1 — test the
+            # EFFECTIVE value or a healthy node reports itself broken. Still written per device, exactly as
+            # before; the only change is that we now find out whether it took.
+            _all = _sysctl_ensure("net.ipv4.conf.all.rp_filter", 2)
+            _eff = lambda v: v if _all is None else max(v, _all)
+            _bad = []
             for dev in sorted({"all", wan} | {e["via_iface"] for e in (fwd + smart_exit + exit_)}):
-                run(["sysctl", "-q", "-w", f"net.ipv4.conf.{dev}.rp_filter=2"])   # effective = max(all,dev): lower BOTH
+                v = _all if dev == "all" else _sysctl_ensure("net.ipv4.conf.%s.rp_filter" % dev, 2,
+                                                             ok=lambda cur: _eff(cur) == 2)
+                if v is not None and _eff(v) != 2:
+                    _bad.append(dev)
+            _RPF["needed"] = True
+            _RPF["bad"] = sorted(_bad)
         for pri in band:                                       # teardown our whole band (rules + tables)
             for _ in range(8):                                 # del-until-absent (a priority may carry several rules)
                 if run(["ip", "rule", "del", "pref", str(pri)]).returncode != 0:
@@ -5221,6 +5293,9 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # Forwarding, READ BACK not assumed: off ⇒ peers still handshake and read "online" while
             # nothing they send leaves the node. A container cannot fix it for itself (read-only /proc/sys).
             "ip_forward": ip_forward_health(interfaces),
+            # Source-address validation, same shape. Only meaningful once a cascade/exit entry exists — an
+            # asymmetric route is what strict rp_filter drops the return half of.
+            "rp_filter": {"needed": bool(_RPF["needed"]), "bad": list(_RPF["bad"])},
             "datapath": node_datapath_health(),          # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal)
             "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
             "ifaces_awaiting_key": sorted(_AWAIT_KEY),   # held for the vault, NOT missing — see _AWAIT_KEY

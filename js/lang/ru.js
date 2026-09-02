@@ -1845,6 +1845,7 @@ export const STR = {
   "Stopped by you — open to Start it": "Остановлен вами — откройте, чтобы запустить",
   "Interface down on the node": "Интерфейс не поднят на ноде",
   // budget-ok: hover caption
+  "strict reverse-path filtering is still on for {v1} — replies to routed traffic are dropped, so a cascade or exit route carries packets out and nothing comes back. Set net.ipv4.conf.{v1}.rp_filter=2 on the host (a container can't set it for itself).": "строгая проверка обратного пути всё ещё включена для {v1} — ответы на маршрутизируемый трафик отбрасываются, поэтому каскад или маршрут через exit выпускает пакеты наружу, а обратно ничего не приходит. Установите net.ipv4.conf.{v1}.rp_filter=2 на хосте (контейнер не может сделать это сам).",
   "{v1}: edited directly on the server": "{v1}: изменено напрямую на сервере",
   "{v1}: the escrowed key hasn't been proved to open — unlock the vault and the panel checks it": "{v1}: депонированный ключ ещё не проверен на открытие — разблокируйте хранилище, и панель это проверит",
   "{v1}: egress IP {v2} is no longer on the node": "{v1}: исходящий IP {v2} больше не принадлежит ноде",

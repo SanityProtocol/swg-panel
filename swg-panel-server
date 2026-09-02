@@ -4550,6 +4550,16 @@ def _node_issues(c, snap, ivk_pub=""):
     if _ff.get("needed") and _ff.get("ok") is False:
         issues.append(perr("IP forwarding is off on this node — peers connect but nothing they send can leave it. "
                            "Set net.ipv4.ip_forward=1 on the host (a container can't set it for itself)."))
+    # Source-address validation. Strict rp_filter drops the RETURN half of an asymmetric route, which is
+    # precisely what a cascade or exit entry builds — so the peer's packets leave and the replies never come
+    # back. Reported per DEVICE, and only for the devices whose EFFECTIVE value (max of all/<dev>) is still
+    # strict, so a node covered by conf.all stays quiet.
+    _rp = snap.get("rp_filter") or {}
+    if _rp.get("needed") and _rp.get("bad"):
+        issues.append(perr("strict reverse-path filtering is still on for {v1} — replies to routed traffic are "
+                           "dropped, so a cascade or exit route carries packets out and nothing comes back. Set "
+                           "net.ipv4.conf.{v1}.rp_filter=2 on the host (a container can't set it for itself).",
+                           v1=", ".join(_rp["bad"])))
     # NOTE: peers on encrypted DNS are NOT reported here. Being un-category-routed is a property of the PEER,
     # not of the node — a node with one such peer is otherwise healthy, and burying the fact in a node-level
     # roll-up meant the operator could not see WHICH client it was without reading the line. It rides the peer's
