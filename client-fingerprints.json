@@ -2,9 +2,9 @@
  "clients": {
   "csqttapp": {
    "amurcanov/csqtt@main:app/src/main/java/com/csqtt/client/SettingsStore.kt": {
-    "date": "2026-08-28T17:50:47Z",
-    "sha": "7cad9a1c9750817b1492675b8b0c1d4c3076053e",
-    "url": "https://github.com/amurcanov/csqtt/commit/7cad9a1c9750817b1492675b8b0c1d4c3076053e"
+    "date": "2026-09-02T03:12:00Z",
+    "sha": "446293aa2e873ac5323ef6fd2316d9b81d966c11",
+    "url": "https://github.com/amurcanov/csqtt/commit/446293aa2e873ac5323ef6fd2316d9b81d966c11"
    },
    "amurcanov/csqtt@main:app/src/main/java/com/csqtt/client/ui/utils/UiUtils.kt": {
     "date": "2026-08-16T13:36:00Z",
@@ -122,6 +122,6 @@
    }
   }
  },
- "generated_at": 1788254575,
+ "generated_at": 1788332000,
  "schema": 1
 }
