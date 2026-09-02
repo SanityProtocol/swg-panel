@@ -1615,6 +1615,45 @@ def _smart_table():
     return _SMART_TABLE
 
 
+# ── one nft transaction per rebuild ─────────────────────────────────────────────────────────────────────────
+# The smart chains are re-asserted by flush+refill. Doing that as `nft flush chain` followed by one `nft add
+# rule` PROCESS PER RULE leaves the chain observably short for the whole refill: measured 1.4-1.9s on a
+# production node (720 rules across 4 hooked base chains, ~12ms per nft invocation), twice an hour on the
+# VERIFY_EVERY_S re-assert. Established flows survive it (the ct-mark restore rule is re-added first), but `pin`
+# mode decides ONCE at `ct state new` — a connection BORN in that window gets no category mark and keeps that
+# verdict for its whole lifetime. So render the rebuild once and hand it to a single `nft -f`: the kernel commits
+# the batch as ONE transaction, so a packet sees either the old chains or the new ones, never a partial refill,
+# and it costs 1 process instead of 720. Chain flushes only — NEVER `flush table`, which would destroy the geo
+# and swg-sni-learned sets. Named counters are table objects, so accounting survives a chain flush either way.
+class _NftBatch:
+    """Accumulated nft script lines (`flush chain …`, `add rule …`, …) applied as one atomic transaction."""
+
+    def __init__(self):
+        self.lines = []
+
+    def __len__(self):
+        return len(self.lines)
+
+    def add(self, *args):
+        self.lines.append(" ".join(str(a) for a in args))
+
+    def apply(self, res, what="smart nft"):
+        """Syntax-check with `nft -c -f -`, then apply with `nft -f -`. True when it landed. A rejected batch
+        never reaches the kernel (the check is offline, and a failing `nft -f` commits nothing), so on failure
+        the live chains keep their previous WORKING ruleset — the caller then leaves its sig unstamped and the
+        rebuild is retried next cycle, instead of the old behaviour of leaving a half-built chain behind. The
+        reason surfaces in res["errors"] rather than being swallowed."""
+        if not self.lines:
+            return True
+        script = "\n".join(self.lines) + "\n"
+        for argv, stage in ((["nft", "-c", "-f", "-"], "check"), (["nft", "-f", "-"], "apply")):
+            r = run(argv, input_text=script, timeout=60)
+            if r.returncode != 0:
+                res["errors"].append("%s %s: %s" % (what, stage, (r.stderr or "").strip().replace("\n", " ")[:160]))
+                return False
+        return True
+
+
 def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_mark=0, queue=True, learn_ttl=3600):
     """Phase 3 marking: keep an inet table `swg_smart` with one interval set per category (populated from
     shipped geo CIDR lists — see _smart_geo_refresh) and a prerouting chain that marks
@@ -1646,6 +1685,8 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     with contextlib.suppress(OSError):
         os.makedirs(GEO_DIR, exist_ok=True); open(_am, "w").write("1")
     have_sets = set(re.findall(r"set (\S+) {", body))
+    bat = _NftBatch()                                           # every chain flush + rule below lands here and is applied ONCE, at the end
+    stamps = []                                                 # (sig-file, value) to write only if that single apply succeeds
     for c in cats:                                              # one interval set per category ("all" is the catch-all → no set)
         if c == "all":
             continue
@@ -1685,7 +1726,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     fwd_ok = ((not v6f) or ("drop" in _cbody("forward"))) and ((not (pin and reset_mark)) or ("reject" in _cbody("forward")))
     if stored != sig or not chain_present or not pre_ok or not fwd_ok:   # drift-gate: signature change, or a chain was emptied externally
         stored = ""                                            # force the sig file to be rewritten below
-        run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "prerouting"])
+        bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "prerouting")
         if queue:                                              # apply an ip_learning TTL change to the learned sets (an nft set's
             _ttlm = os.path.join(GEO_DIR, ".catl-ttl")         # default timeout is immutable live → destroy+recreate; chain just
             _prev = ""                                         # flushed above so catl_ is now unreferenced. Marker-gated: stable TTL never churns.
@@ -1696,18 +1737,14 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                     if c == "all":
                         continue
                     ln = _smart_learnsetname(c)
-                    run(["nft", "delete", "set", "inet", SMART_NFT_TABLE, ln])   # ok if absent
-                    run(["nft", "add", "set", "inet", SMART_NFT_TABLE, ln,
-                         "{ type ipv4_addr; flags timeout; timeout " + str(learn_ttl) + "s; }"])
-                with contextlib.suppress(OSError):
-                    os.makedirs(GEO_DIR, exist_ok=True); open(_ttlm, "w").write(str(learn_ttl))
-        _ok = [True]                                            # a failed nft add must NOT persist the sig, so the rebuild retries next cycle
+                    if ln in have_sets:                        # only a PRE-EXISTING set can carry the old TTL, and deleting an
+                        bat.add("delete", "set", "inet", SMART_NFT_TABLE, ln)      # absent one would abort the whole transaction
+                        bat.add("add", "set", "inet", SMART_NFT_TABLE, ln,         # (one created above already has the new TTL)
+                                "{ type ipv4_addr; flags timeout; timeout " + str(learn_ttl) + "s; }")
+                stamps.append((_ttlm, str(learn_ttl)))         # like the sigs: only once the swap has actually landed,
+                #                                                else a rejected batch would mark a TTL change done that never happened
         def _add(*a):
-            r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting", *a])
-            if r.returncode != 0:
-                res["errors"].append("smart nft: " + (r.stderr or "").strip()[:120]); _ok[0] = False
-            else:
-                res["changed"] += 1
+            bat.add("add", "rule", "inet", SMART_NFT_TABLE, "prerouting", *a)
         if pin:
             # restore the per-connection pinned mark ONLY on the original direction (client→dst). Reply packets
             # (dst=a local client) must stay unmarked so they route via the main table back out the user iface —
@@ -1745,29 +1782,18 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         if want_fwd:
             if "forward" not in chains_now:
                 run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "forward", "{ type filter hook forward priority filter; policy accept; }"])
-            run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "forward"])
+            bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "forward")
             if pin and reset_mark:                         # SNI first-hit RST: swg-sni stamped the FIRST ClientHello to a
                 for S in subnets:                           # newly-learned dst with reset_mark → RST it so the client reconnects
-                    run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "forward", "ip", "saddr", S, "tcp", "dport", "443",
-                         "meta", "mark", hex(reset_mark), "counter", "reject", "with", "tcp", "reset"])   # counter = reset hit-rate (health); retry's SYN matches the set and routes correctly
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "ip", "saddr", S, "tcp", "dport", "443",
+                            "meta", "mark", hex(reset_mark), "counter", "reject", "with", "tcp", "reset")   # counter = reset hit-rate (health); retry's SYN matches the set and routes correctly
             for ifn in v6f:
-                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "iifname", ifn, "drop"])
-                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "oifname", ifn, "drop"])
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "iifname", ifn, "drop")
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "oifname", ifn, "drop")
         elif "forward" in chains_now:
-            run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "forward"])
-            run(["nft", "delete", "chain", "inet", SMART_NFT_TABLE, "forward"])
-        if _ok[0]:                                             # only stamp the sig when every rule landed → a transient nft failure retries next cycle
-            with contextlib.suppress(OSError):
-                os.makedirs(GEO_DIR, exist_ok=True)
-                open(_sigf, "w").write(sig)
-    # drop sets we no longer want (a category was un-ticked, or 'ru' was split into 'ru_net'/'ru_blocked'): after the
-    # chain rebuild above they're unreferenced, so delete them — else the stale set lingers with old IPs forever.
-    wanted_sn = {_smart_setname(c) for c in cats if c != "all"}
-    wanted_ln = {_smart_learnsetname(c) for c in cats if c != "all"}
-    for sn in have_sets:
-        if (sn.startswith("cat_") and sn not in wanted_sn) or (sn.startswith("catl_") and sn not in wanted_ln):
-            if run(["nft", "delete", "set", "inet", SMART_NFT_TABLE, sn]).returncode == 0:   # still-referenced → fails, retried next pass
-                res["changed"] += 1
+            bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "forward")
+            bat.add("delete", "chain", "inet", SMART_NFT_TABLE, "forward")
+        stamps.append((_sigf, sig))                            # stamped below only if the transaction lands → a transient nft failure retries next cycle
     # ── DESTINATION STATS: per-category named byte counters + their own FORWARD count chain (harvested free by
     # _smart_table). Named counters are TABLE OBJECTS → they survive the marking-chain rebuilds above (bytes accrue;
     # reset only on full-table teardown/reboot). Counting lives in the FORWARD hook (priority mangle, count-only,
@@ -1809,20 +1835,15 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             if not cc_present:
                 run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "catcount",
                      "{ type filter hook forward priority mangle; policy accept; }"])
-            run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "catcount"])
-            cok = True
+            bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "catcount")
             for (S, c) in catw:                                 # no `return` → a byte counts in EVERY category it matches
                 snm = _smart_setname(c); cn = "c_" + snm[4:]
-                r1 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "saddr", S, "ip", "daddr", "@" + snm, "counter", "name", cn + "_up"])
-                r2 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "daddr", S, "ip", "saddr", "@" + snm, "counter", "name", cn + "_dn"])
-                if r1.returncode or r2.returncode:
-                    cok = False
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "saddr", S, "ip", "daddr", "@" + snm, "counter", "name", cn + "_up")
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "daddr", S, "ip", "saddr", "@" + snm, "counter", "name", cn + "_dn")
                 if queue:                                       # Hybrid-SNI: swg-sni-learned dsts live in catl_<c> — tally them into the SAME
                     lnm = _smart_learnsetname(c)                # category counter, skipping any dst already in the geoip cat_ set (no double count)
-                    r3 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "saddr", S, "ip", "daddr", "@" + lnm, "ip", "daddr", "!=", "@" + snm, "counter", "name", cn + "_up"])
-                    r4 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "daddr", S, "ip", "saddr", "@" + lnm, "ip", "saddr", "!=", "@" + snm, "counter", "name", cn + "_dn"])
-                    if r3.returncode or r4.returncode:
-                        cok = False
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "saddr", S, "ip", "daddr", "@" + lnm, "ip", "daddr", "!=", "@" + snm, "counter", "name", cn + "_up")
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "daddr", S, "ip", "saddr", "@" + lnm, "ip", "saddr", "!=", "@" + snm, "counter", "name", cn + "_dn")
             # catany: FIRST-MATCH mirror — a client byte that matches NO populated category set falls through to
             # c_uncat → the "Uncategorised" bar. Categorised bytes `return` early (already tallied in catcount). Ordered
             # per subnet: up cat-returns, then the up uncat catch-all; then the same for down. Subnet-scoped like catcount
@@ -1830,39 +1851,53 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             if "catany" not in re.findall(r"chain (\S+) {", body):
                 run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "catany",
                      "{ type filter hook forward priority mangle; policy accept; }"])
-            run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "catany"])
+            bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "catany")
             subs = sorted({S for (S, _c) in catw})
             cats_here = sorted({c for (_S, c) in catw})
             for S in subs:
                 for c in cats_here:
                     snm = _smart_setname(c)
-                    r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ip", "daddr", "@" + snm, "return"])
-                    if r.returncode: cok = False
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ip", "daddr", "@" + snm, "return")
                     if queue:                                   # a learned dst IS categorised → return early so it isn't tallied as uncat
-                        r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ip", "daddr", "@" + _smart_learnsetname(c), "return"])
-                        if r.returncode: cok = False
+                        bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ip", "daddr", "@" + _smart_learnsetname(c), "return")
                 # Kernel-SNI categorises into swgk_<c> IPSETS (invisible to nft) but CONNMARKs the routed flow — so an
                 # exit-marked byte IS categorised even when no nft set matched it; exclude it from uncat (else double count).
-                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ct", "mark", "!=", "0x0", "return"])
-                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "counter", "name", "c_uncat_up", "return"])
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ct", "mark", "!=", "0x0", "return")
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "counter", "name", "c_uncat_up", "return")
                 for c in cats_here:
                     snm = _smart_setname(c)
-                    r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ip", "saddr", "@" + snm, "return"])
-                    if r.returncode: cok = False
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ip", "saddr", "@" + snm, "return")
                     if queue:
-                        r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ip", "saddr", "@" + _smart_learnsetname(c), "return"])
-                        if r.returncode: cok = False
-                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ct", "mark", "!=", "0x0", "return"])
-                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "counter", "name", "c_uncat_dn", "return"])
-            if cok:
-                with contextlib.suppress(OSError):
-                    open(_csigf, "w").write(csig)
+                        bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ip", "saddr", "@" + _smart_learnsetname(c), "return")
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ct", "mark", "!=", "0x0", "return")
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "counter", "name", "c_uncat_dn", "return")
+            stamps.append((_csigf, csig))
         elif not catw and cc_present:                           # no smart categories left → drop the count chains (counters can linger, harmless)
-            run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "catcount"])
-            run(["nft", "delete", "chain", "inet", SMART_NFT_TABLE, "catcount"])
+            bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "catcount")
+            bat.add("delete", "chain", "inet", SMART_NFT_TABLE, "catcount")
             if "catany" in re.findall(r"chain (\S+) {", body):
-                run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "catany"])
-                run(["nft", "delete", "chain", "inet", SMART_NFT_TABLE, "catany"])
+                bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "catany")
+                bat.add("delete", "chain", "inet", SMART_NFT_TABLE, "catany")
+    # ── ONE transaction for every chain touched above (see _NftBatch). All four chains land together, so the
+    # 30-min re-assert can no longer leave any of them short — and a rejected batch changes nothing at all. ──
+    _landed = bat.apply(res)
+    if _landed:
+        res["changed"] += len(bat)
+        for _f, _v in stamps:                                   # sigs stamped only now: a failed transaction must re-drive the rebuild next cycle
+            with contextlib.suppress(OSError):
+                os.makedirs(GEO_DIR, exist_ok=True)
+                open(_f, "w").write(_v)
+    # drop sets we no longer want (a category was un-ticked, or 'ru' was split into 'ru_net'/'ru_blocked'): after the
+    # chain rebuild above they're unreferenced, so delete them — else the stale set lingers with old IPs forever.
+    # AFTER the apply on purpose — the rules that reference them are only gone once the transaction has landed.
+    # Kept as individual calls (not in the batch): a still-referenced set must fail on its own and be retried, not
+    # abort the whole rebuild.
+    wanted_sn = {_smart_setname(c) for c in cats if c != "all"}
+    wanted_ln = {_smart_learnsetname(c) for c in cats if c != "all"}
+    for sn in have_sets:
+        if (sn.startswith("cat_") and sn not in wanted_sn) or (sn.startswith("catl_") and sn not in wanted_ln):
+            if run(["nft", "delete", "set", "inet", SMART_NFT_TABLE, sn]).returncode == 0:   # still-referenced → fails, retried next pass
+                res["changed"] += 1
     # per-set live element counts (so _smart_geo_refresh knows which need (re)loading — e.g. empty after a reboot).
     # Reuse the shared per-loop parse; if `body` was blanked above (auto-merge migration / table absent) the sets
     # were just dropped → report {} so every set is treated as empty and gets reloaded.
