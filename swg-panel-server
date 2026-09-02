@@ -4535,6 +4535,15 @@ def _node_issues(c, snap, ivk_pub=""):
     _dp = (snap.get("datapath") or {}).get("awg")   # bare-metal node's AmneziaWG kernel module — a broken DKMS build the updater rebuilds
     if _dp and _dp.get("needed") and not _dp.get("ok"):
         issues.append("AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it")
+    # IP FORWARDING, read back from /proc rather than assumed. Every install path sets it and nothing ever
+    # checked it stuck, so a host where it is off (dockerd --ip-forward=false, a hardened box, a dropped
+    # sysctl.d) produced the least helpful failure this panel can have: every peer ONLINE, zero traffic, and
+    # the only trace a `sysctl: permission denied` line in the node log that everyone has learned to ignore.
+    # `ok is False` — not falsy — on purpose: None means the node could not read it, which is not a fault.
+    _ff = snap.get("ip_forward") or {}
+    if _ff.get("needed") and _ff.get("ok") is False:
+        issues.append("IP forwarding is off on this node — peers connect but nothing they send can leave it. "
+                      "Set net.ipv4.ip_forward=1 on the host (a container can't set it for itself).")
     # NOTE: peers on encrypted DNS are NOT reported here. Being un-category-routed is a property of the PEER,
     # not of the node — a node with one such peer is otherwise healthy, and burying the fact in a node-level
     # roll-up meant the operator could not see WHICH client it was without reading the line. It rides the peer's

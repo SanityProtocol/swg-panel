@@ -2354,6 +2354,41 @@ def _dnsmasq_stop():
         os.unlink(DNSMASQ_CONF)                              # full teardown — no restart coming, drop the conf too
 
 
+def _ip_forward_ok():
+    """True/False as READ FROM THE KERNEL, None when /proc can't be read at all.
+
+    Every install path already SETS this — sysctl.d on bare metal, the HOST in a docker install, and
+    `net.ipv4.ip_forward` in the NixOS module — and wg-quick's PostUp retries it per interface. All of them
+    are writes nobody checks, and in a container /proc/sys is mounted read-only, so the write silently
+    no-ops (`sysctl: permission denied on key "net.ipv4.ip_forward"`). Nothing forwards then, and the failure
+    is invisible in the worst way: the handshake terminates HERE so it still completes, every peer reads
+    ONLINE, and not one packet they send ever leaves the box. Same shape as the route_localnet bug above,
+    which is why that one grew a readback too.
+
+    None, not False, when the file can't be read: a node-wide "nothing routes" alarm we did not actually
+    observe is worse than saying nothing.
+    """
+    try:
+        return open("/proc/sys/net/ipv4/ip_forward").read().strip() == "1"
+    except OSError:
+        return None
+
+
+def ip_forward_health(ifaces):
+    """{"needed": bool, "ok": True|False|None} — the shape node_datapath_health uses, so the panel gates it
+    the same way (`needed and ok is False`). `needed` is simply "this node manages interfaces": a node exists
+    to move other people's packets, mesh links included.
+
+    Self-heals first where it can. The re-read is the answer, NOT sysctl's exit code — every caller in this
+    project writes it as `sysctl -q -w … || true`, so the code has always been discarded, which is precisely
+    how this went unnoticed."""
+    ok = _ip_forward_ok()
+    if ok is False:
+        run(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"])
+        ok = _ip_forward_ok()
+    return {"needed": bool(ifaces), "ok": ok}
+
+
 def _route_localnet_ok():
     """True if net.ipv4.conf.all.route_localnet is enabled — REQUIRED for Force-DNS to DNAT a forwarded client's
     :53 to our loopback dnsmasq. In containers /proc/sys is usually read-only, so `sysctl -w` silently no-ops and
@@ -5167,6 +5202,9 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # Force-DNS classifies by watching plain DNS, so these peers are NOT being classified — the panel
             # names them instead of the traffic silently going out the local exit with nobody the wiser.
             "doh_peers": dict(_DOH_SEEN),
+            # Forwarding, READ BACK not assumed: off ⇒ peers still handshake and read "online" while
+            # nothing they send leaves the node. A container cannot fix it for itself (read-only /proc/sys).
+            "ip_forward": ip_forward_health(interfaces),
             "datapath": node_datapath_health(),          # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal)
             "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
             "ifaces_awaiting_key": sorted(_AWAIT_KEY),   # held for the vault, NOT missing — see _AWAIT_KEY
