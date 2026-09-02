@@ -165,15 +165,32 @@ run_script(){   # run_script <script> [args…] — dispatch as a child, so the 
 }
 TMP="$(mktemp -d)"; trap '_cleanup_tmp' EXIT
 info "fetching $REPO @ $REF"
+# ⚠️ GIT MUST NOT ASK FOR A PASSWORD, AND MUST NOT BE THE ONLY WAY IN. `git clone` answers a repo it
+# cannot read with an interactive "Username for 'https://github.com':", and it reads /dev/tty directly —
+# so it prompts even here, piped from curl, and the install simply stops at a login it does not need
+# (this repo is public). Seen in the field on a box whose github.com was unreachable while
+# raw.githubusercontent.com — which had served THIS script seconds earlier — was fine.
+#
+# Two changes, both small. GIT_TERMINAL_PROMPT=0 makes that case FAIL instead of hang. And the tarball
+# is now a fallback for git FAILING, not merely for git being ABSENT: the old shape reached it only
+# when git was missing, which is the one situation that box was not in. Nothing downstream reads .git
+# and there is no .gitattributes, so the archive is the same tree by another road.
+_fetched=""
 if need git; then
-  git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"
-elif need curl && need tar; then
-  curl -fsSL "$REPO/archive/refs/heads/$REF.tar.gz" | tar -xz -C "$TMP" \
-    || curl -fsSL "$REPO/archive/refs/tags/$REF.tar.gz" | tar -xz -C "$TMP"
-  mv "$TMP"/swg-panel-* "$TMP/swg-panel"
-else
-  die "need git, or curl+tar, to fetch the repo"
+  if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"; then
+    _fetched=git
+  else
+    rm -rf "$TMP/swg-panel"   # a failed clone can leave a partial dir, and the mv below would land INSIDE it
+    warn "git clone failed — falling back to the source tarball"
+  fi
 fi
+if [ -z "$_fetched" ] && need curl && need tar; then
+  if { curl -fsSL "$REPO/archive/refs/heads/$REF.tar.gz" | tar -xz -C "$TMP"; } \
+     || { curl -fsSL "$REPO/archive/refs/tags/$REF.tar.gz" | tar -xz -C "$TMP"; }; then
+    mv "$TMP"/swg-panel-* "$TMP/swg-panel" && _fetched=tar
+  fi
+fi
+[ -n "$_fetched" ] || die "could not fetch $REPO @ $REF — needs git, or curl+tar, and a reachable GitHub"
 cd "$TMP/swg-panel"
 
 # ── update / uninstall: no method/role ──

@@ -1338,13 +1338,18 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   if ! have awg || ! have awg-quick; then
     info "building AmneziaWG tools from source (the amnezia PPA is Ubuntu-only)…"
     # ca-certificates is NOT optional here: without it every https git clone below fails cert verification.
+    # GIT_TERMINAL_PROMPT=0 on each clone below: these are PUBLIC amnezia-vpn repos, so a credential
+    # prompt can only mean github.com is unreachable — and git asks on /dev/tty, which the `>log 2>&1`
+    # around these blocks does NOT capture, so an install would sit there waiting for a login with its
+    # explanation buried in a log file. Failing is handled (`|| true`, and the caller checks the result);
+    # hanging is not. Same defect bootstrap.sh had at the top of this very install.
     # Dockerfile.node never hit this because its golang base image ships them; a minimal Debian does not.
     have apt-get && run apt-get install -y --no-install-recommends git make build-essential ca-certificates >/dev/null 2>&1
     if ! have git || ! have make; then
       warn "cannot build AmneziaWG tools — git/make/compiler missing and no apt-get to add them"
       rm -rf "$w"; return 1
     fi
-    { run git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-tools "$w/tools" \
+    { run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-tools "$w/tools" \
         && run make -C "$w/tools/src" \
         && run make -C "$w/tools/src" install PREFIX=/usr WITH_BASHCOMPLETION=no \
                 WITH_WGQUICK=yes; } >"$w/build.log" 2>&1 || true
@@ -1362,7 +1367,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
   info "building the AmneziaWG kernel module for $(uname -r)…"
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
-  { run git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" \
+  { run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" \
       && run make -C "$w/mod/src" \
       && run make -C "$w/mod/src" install; } >"$w/mod.log" 2>&1 || true
   run depmod -a >/dev/null 2>&1 || true
@@ -1381,7 +1386,7 @@ ensure_awg_userspace(){ # last rung: the userspace datapath, so AWG works even w
   have go || { warn "no Go toolchain — install amneziawg-go by hand for a userspace AmneziaWG datapath"; return 1; }
   info "building the userspace AmneziaWG datapath (amneziawg-go)…"
   local w; w="$(mktemp -d)"
-  { run git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" \
+  { run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" \
       && ( cd "$w/go" && run go build -o /usr/local/bin/amneziawg-go . ); } >"$w/go.log" 2>&1 || true
   # Debian STABLE ships a Go far older than amneziawg-go asks for (bookworm: 1.19 vs a go.mod wanting 1.25),
   # and 1.19 predates Go fetching its own toolchain, so it cannot bootstrap out of it either. backports is
