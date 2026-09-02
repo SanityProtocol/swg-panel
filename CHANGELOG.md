@@ -7,6 +7,14 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Added
 
+- **A newer server build for every fork the panel builds, with the one you were on kept as a rollback
+  target.** csqtt 2.1.9, qWDTT 1.4.3, WDTT-Plus 15, xxcipher 2.0.0.70 and ildarmaga 1.5.40-2, each published
+  for amd64 and arm64 — the arm64 halves are new, so an arm64 node could not install several of these before.
+  The version picker still lists the previous build, so an upgrade stays reversible.
+- **ildarmaga's RAW-IP datapath is now the panel's to place.** It used to derive its own listener from the
+  DTLS port and always bind it, on a fixed interface name — a port the panel never allocated, and a name two
+  servers on one machine would fight over. RAW is now an explicit choice per server, on the port the panel
+  reserves, with its own interface and subnet.
 - **The panel now tells you when a proxy on a node is behind, not just the panel itself.** The header update
   bubble covers the whole fleet: which forks have a newer build, which nodes are running the old one, and —
   before you press anything — exactly which servers will restart. Updates are grouped by fork rather than
@@ -30,6 +38,14 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Fixed
 
+- **RAW mode refused to work with a portable config on qWDTT.** The server bound each generated password to
+  one device, which is exactly what a portable config is not, so every RAW data worker was turned away while
+  the one that fetches the config was let in. The tunnel came up and carried DNS and then delivered nothing —
+  "connected, but no internet".
+- **xxcipher stopped loading its own peers on any tunnel subnet but the default.** It re-checked stored
+  devices against a hardcoded address range, so records written for a different subnet were rejected on
+  startup and the server died — after the peer had connected once, which made it look like the server had
+  broken by itself.
 - **A config could be issued for a different vendor's app that shares a name.** Two different clients are
   both called "PWDTT" — one from luminescq, one shipped inside ildarmaga's own release — and they take
   different link formats. The panel handed ildarmaga users the wrong one, and their app rejected it outright
