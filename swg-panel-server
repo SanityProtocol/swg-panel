@@ -7643,6 +7643,17 @@ def reconcile_mesh(nodes, snaps, deps):
         pending = set(n.get("create") or {})
         for peer, lr in (n.get("links") or {}).items():
             ifc = lr.get("iface")
+            # ⚠️ The link MTU (`mesh_mtu`) used to be WRITE-ONCE: it was baked into the `create` request below
+            # and never revisited, so raising it moved NEW links only and every live link kept whatever it was
+            # born with — with no UI path either, because mesh links are filtered out of the client-facing
+            # interface view. Publish it as the interface override instead and the ordinary converge/confirm
+            # machine carries it the rest of the way: `desired_ifaces` -> reconcile_ifaces -> set-iface. Safe on
+            # a live link — `ip link set mtu` retunes it without dropping a peer or forcing a re-dial (see
+            # swg-agent's set-iface). Guarded on difference, so a steady fleet never rewrites nodes.json; and
+            # only ever UPDATES a record that already exists, so the re-stage below keeps owning creation.
+            _ov = (n.get("ifaces") or {}).get(ifc)
+            if isinstance(_ov, dict) and int(_ov.get("mtu") or 0) != int(mc["mtu"]):
+                _ov["mtu"] = int(mc["mtu"]); changed = True
             if ifc and ifc not in snap_ifs and ifc not in pending:
                 n.setdefault("create", {})[ifc] = {"cmd": ["awg"], "subnet": lr["subnet"],
                     "address": lr["address"] + "/31", "listen_port": lr["listen_port"], "mtu": mc["mtu"], "table": "off"}
