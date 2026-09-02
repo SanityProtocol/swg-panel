@@ -115,13 +115,20 @@ function platformPill(nrec) {
   <//>`;
 }
 
-export function HealthDot({ issues }) {
+export function HealthDot({ issues, i18n }) {
   if (!issues || !issues.length) return null;
   const n = issues.length;
-  const trigger = html`<span class="badge b-issue ic"><${Ic} i="warn"/>${n} issue${n > 1 ? "s" : ""}</span>`;
+  // The lines were rendered RAW, so the bubble read half-translated: its header went through T() while every
+  // sentence under it stayed English. They carry an interface name, so the panel now ships them perr-shaped
+  // ({v1} sentence + values) alongside the plain English, and srvText() — the same helper every other server
+  // sentence already uses — translates one. Falls back to the English list when the node record predates it.
+  const line = i => (i18n && i18n[i]) ? srvText(i18n[i]) : issues[i];
+  // plural(), not `issue${n>1?"s":""}` — the badge was the last English word in a bubble whose header and
+  // lines are both translated now, and Russian picks between three forms that an English -s cannot express.
+  const trigger = html`<span class="badge b-issue ic"><${Ic} i="warn"/>${plural(n, "nom|issue")}</span>`;
   return html`<${Popover} cls="onlinetag bare healthpop" trigger=${trigger}>
     <div class="onpop-h">${T("{v1} on this node", { v1: plural(n, "nom|issue") })}</div>
-    ${issues.map(it => html`<div class="onrow hrow"><span class="on-name">${it}</span></div>`)}
+    ${issues.map((it, i) => html`<div class="onrow hrow"><span class="on-name">${line(i)}</span></div>`)}
   </${Popover}>`;
 }
 const _CTR_PROC = new Set(["adopted-container", "adopt-container-failed"]);   // one interface's outcome, not the node's
@@ -1535,7 +1542,7 @@ export function NodeCard({ n, reorder }) {
         : st === "online" ? html`<span class="reporting">${T("reporting")}</span>`
         : st === "offline" ? html`<span class="nstat offline"><${Ic} i="info"/> ${T("tag|offline")}</span>`
         : html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>`}${procEff ? procTag(procEff, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, procErr(n), st !== "online" && st !== "offline") : null}
-      <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
+      <span style="margin-left:8px"><${HealthDot} issues=${n.issues} i18n=${n.issues_i18n}/></span>
       ${n.superseded_box ? html`<span style="margin-left:14px"><${SupersededTag} n=${n}/></span>` : null}
       ${n.transfer ? html`<span style="margin-left:14px"><${TransferTag} n=${n}/></span>` : null}
       ${removing ? html`<span class="nstat removing" style="margin-left:14px"><${Ic} i="trash"/> ${T("tag|flagged for removal")}</span>` : null}

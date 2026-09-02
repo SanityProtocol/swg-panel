@@ -4480,12 +4480,17 @@ def _parse_port_ranges(spec):
 
 def _node_issues(c, snap, ivk_pub=""):
     """Health-check roll-up for one node: settings edited on the server (drift), an egress IP / WAN
-    NIC the node no longer has, and turn-proxies that aren't running. Empty list = healthy."""
+    NIC the node no longer has, and turn-proxies that aren't running. Empty list = healthy.
+
+    Returns perr()-shaped dicts — {error, error_key, error_vars} — so the browser can translate a line whose
+    subject is an interface name it has never seen. The node card renders these through srvText(), the same
+    helper every other server sentence already goes through; the caller also ships the plain English list so
+    nothing that reads `issues` today has to change."""
     issues = []
     nips = snap.get("node_ips") or []; nifs = snap.get("node_ifaces") or []
     for ifn, ov in (c.get("ifaces") or {}).items():
         if ov.get("_drift"):
-            issues.append(ifn + ": edited directly on the server")
+            issues.append(perr("{v1}: edited directly on the server", v1=ifn))
         # ⚠️ ESCROW THAT OPENS FOR NOBODY (T-13, and F2's telling on the always-on surface). A blob whose
         # `vault` is not the one the operator holds now is ciphertext with no private half — the panel asks
         # for a re-seal on every sync, and until something proves the blob opens, the escrow is a promise it
@@ -4500,23 +4505,24 @@ def _node_issues(c, snap, ivk_pub=""):
         _kb = ov.get("key_blob") or {}
         if _kb.get("ct") and ivk_pub and not ov.get("system") \
                 and _kb.get("pub") == (ov.get("public_key") or "") and _kb.get("vault") != ivk_pub:
-            issues.append(ifn + ": the escrowed key hasn't been proved to open — unlock the vault and the panel checks it")
+            issues.append(perr("{v1}: the escrowed key hasn't been proved to open — unlock the vault and the panel checks it", v1=ifn))
         eg = ov.get("egress_ip")
         if eg and nips and eg not in nips:
-            issues.append(ifn + ": egress IP " + eg + " is no longer on the node")
+            issues.append(perr("{v1}: egress IP {v2} is no longer on the node", v1=ifn, v2=eg))
         wn = ov.get("wan_iface")
         if wn and nifs and wn not in nifs:
-            issues.append(ifn + ": WAN interface " + wn + " is no longer on the node")
+            issues.append(perr("{v1}: WAN interface {v2} is no longer on the node", v1=ifn, v2=wn))
     _broken = _broken_ifaces(c, snap, ivk_pub)
     for ifn, e in (snap.get("interfaces") or {}).items():
         if e.get("down"):                             # failed to come up
             # ...and if the panel can put it back, SAY SO. A down interface used to read as a dead end:
             # the node retried a doomed set-iface every 5s and the operator got a grey card with no reason
             # and no button (§7.5). The repair is now reachable, so the issue names it.
-            issues.append(ifn + ": interface down on the node"
-                          + (" (repair available)" if (_broken.get(ifn) or {}).get("repair") else ""))
+            issues.append(perr("{v1}: interface down on the node (repair available)", v1=ifn)
+                          if (_broken.get(ifn) or {}).get("repair") else
+                          perr("{v1}: interface down on the node", v1=ifn))
         elif e.get("stopped"):                        # stopped on the node — not serving, so it counts as an issue
-            issues.append(ifn + ": interface stopped")
+            issues.append(perr("{v1}: interface stopped", v1=ifn))
         elif e.get("boot_persist") is False:
             # UP right now, and one reboot from gone. Nothing used to report this, which is how a whole
             # class of nodes ran for months with no awg-quick@ template: the interface was healthy on
@@ -4526,15 +4532,15 @@ def _node_issues(c, snap, ivk_pub=""):
             # guess here would put a permanent false alarm on a perfectly healthy NixOS or docker node.
             # Deliberately in the elif chain: a down or stopped interface has a better line already, and
             # two lines about one interface is how two lists start disagreeing.
-            issues.append(ifn + ": will not start after a reboot — update this node to repair it")
+            issues.append(perr("{v1}: will not start after a reboot — update this node to repair it", v1=ifn))
     for tp in (snap.get("turn_proxies") or []):
         if tp.get("running") is False:
-            issues.append((tp.get("service") or "turn-proxy") + ": not running")
+            issues.append(perr("{v1}: not running", v1=(tp.get("service") or "turn-proxy")))
     for ifn in _missing_ifaces(c, snap, ivk_pub):
-        issues.append(ifn + ": interface missing on the node (restore available)")
+        issues.append(perr("{v1}: interface missing on the node (restore available)", v1=ifn))
     _dp = (snap.get("datapath") or {}).get("awg")   # bare-metal node's AmneziaWG kernel module — a broken DKMS build the updater rebuilds
     if _dp and _dp.get("needed") and not _dp.get("ok"):
-        issues.append("AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it")
+        issues.append(perr("AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it"))
     # IP FORWARDING, read back from /proc rather than assumed. Every install path sets it and nothing ever
     # checked it stuck, so a host where it is off (dockerd --ip-forward=false, a hardened box, a dropped
     # sysctl.d) produced the least helpful failure this panel can have: every peer ONLINE, zero traffic, and
@@ -4542,8 +4548,8 @@ def _node_issues(c, snap, ivk_pub=""):
     # `ok is False` — not falsy — on purpose: None means the node could not read it, which is not a fault.
     _ff = snap.get("ip_forward") or {}
     if _ff.get("needed") and _ff.get("ok") is False:
-        issues.append("IP forwarding is off on this node — peers connect but nothing they send can leave it. "
-                      "Set net.ipv4.ip_forward=1 on the host (a container can't set it for itself).")
+        issues.append(perr("IP forwarding is off on this node — peers connect but nothing they send can leave it. "
+                           "Set net.ipv4.ip_forward=1 on the host (a container can't set it for itself)."))
     # NOTE: peers on encrypted DNS are NOT reported here. Being un-category-routed is a property of the PEER,
     # not of the node — a node with one such peer is otherwise healthy, and burying the fact in a node-level
     # roll-up meant the operator could not see WHICH client it was without reading the line. It rides the peer's
@@ -4564,9 +4570,9 @@ def _node_issues(c, snap, ivk_pub=""):
         for ifn, e in (snap.get("interfaces") or {}).items():
             _lp = ((e.get("meta") or {}).get("listen_port"))
             if isinstance(_lp, int) and _lp and not any(a <= _lp <= b for a, b in _ranges):
-                issues.append(ifn + ": listens on UDP " + str(_lp) + ", outside this node's declared "
-                              "firewall range (" + _spec + ") — clients cannot reach it until the range "
-                              "covers that port, or the interface moves inside it")
+                issues.append(perr("{v1}: listens on UDP {v2}, outside this node's declared "
+                                   "firewall range ({v3}) — clients cannot reach it until the range "
+                                   "covers that port, or the interface moves inside it", v1=ifn, v2=_lp, v3=_spec))
     return issues
 
 # A DNS name as an operator may type it: labels of letters/digits/hyphens, at least one dot, or a bare
@@ -11486,6 +11492,10 @@ def api(method, path, qs, body, deps):
                            if isinstance(x, dict) and x.get("name") and x.get("container")]
             _claimed_wdtt_dirs = {(v or {}).get("adopt_config_dir") for v in _w.values() if (v or {}).get("adopt_config_dir")}
             _cands = [x for x in (snap.get("iface_candidates") or []) if isinstance(x, dict) and x.get("name")]
+            # ONE call: this walks every interface and calls _broken_ifaces/_missing_ifaces, and both wire
+            # shapes below are views of the same result — computing it twice would double that per node,
+            # on every /api/state build.
+            _iss = _node_issues(c, snap, _ivk_now)
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https", "mesh_awg": _mawg, "mesh_awg_set": c.get("mesh_awg") or {},   # actual (live) vs the per-node override the UI edits
                         "mesh_peers": _mesh_peers,
@@ -11638,7 +11648,12 @@ def api(method, path, qs, body, deps):
                         "turn_onboarding": list(c.get("turn_onboard") or []),       # .service paths pending onboard
                         "cmd_errors": (snap.get("cmd_errors") or {}),               # request key -> last host->node command error
                         "cmd_progress": (snap.get("cmd_progress") or {}),           # request key -> transient "what's happening now" (yellow card note)
-                        "issues": _node_issues(c, snap, _ivk_now),                            # health-check roll-up: drift / missing egress / turn down
+                        # Two shapes of the SAME list, the convention perr() already set: `issues` is the
+                        # interpolated English exactly as before (logs, /api/v1, an older cached SPA build
+                        # keep reading what they always read), `issues_i18n` carries the {v1} sentence and
+                        # its values so the browser can translate one. Built once, never two lists to drift.
+                        "issues": [_i["error"] for _i in _iss],
+                        "issues_i18n": _iss,                            # health-check roll-up: drift / missing egress / turn down
                         # {peer_ip: attempts} on encrypted DNS right now (self-expiring on the node) → the peer's
                         # own card badges itself, so the operator sees WHICH client is bypassing the DNS-based
                         # classification rather than only that someone on the interface is.

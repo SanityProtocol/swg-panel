@@ -1845,6 +1845,19 @@ export const STR = {
   "Stopped by you — open to Start it": "Остановлен вами — откройте, чтобы запустить",
   "Interface down on the node": "Интерфейс не поднят на ноде",
   // budget-ok: hover caption
+  "{v1}: edited directly on the server": "{v1}: изменено напрямую на сервере",
+  "{v1}: the escrowed key hasn't been proved to open — unlock the vault and the panel checks it": "{v1}: депонированный ключ ещё не проверен на открытие — разблокируйте хранилище, и панель это проверит",
+  "{v1}: egress IP {v2} is no longer on the node": "{v1}: исходящий IP {v2} больше не принадлежит ноде",
+  "{v1}: WAN interface {v2} is no longer on the node": "{v1}: WAN-интерфейс {v2} больше не существует на ноде",
+  "{v1}: interface down on the node": "{v1}: интерфейс опущен на ноде",
+  "{v1}: interface down on the node (repair available)": "{v1}: интерфейс опущен на ноде (доступно исправление)",
+  "{v1}: interface stopped": "{v1}: интерфейс остановлен",
+  "{v1}: will not start after a reboot — update this node to repair it": "{v1}: не поднимется после перезагрузки — обновите ноду, чтобы это исправить",
+  "{v1}: not running": "{v1}: не запущен",
+  "{v1}: interface missing on the node (restore available)": "{v1}: интерфейс отсутствует на ноде (доступно восстановление)",
+  "AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it": "Модуль ядра AmneziaWG не собран или не загружен — awg-интерфейсы не поднимутся; обновите ноду, чтобы пересобрать его",
+  "IP forwarding is off on this node — peers connect but nothing they send can leave it. Set net.ipv4.ip_forward=1 on the host (a container can't set it for itself).": "На этой ноде выключена IP-маршрутизация — пиры подключаются, но отправленный ими трафик не может уйти с сервера. Установите net.ipv4.ip_forward=1 на хосте (контейнер не может сделать это сам).",
+  "{v1}: listens on UDP {v2}, outside this node's declared firewall range ({v3}) — clients cannot reach it until the range covers that port, or the interface moves inside it": "{v1}: слушает UDP {v2} вне объявленного диапазона фаервола этой ноды ({v3}) — клиенты не смогут подключиться, пока диапазон не покроет этот порт или интерфейс не переедет внутрь него",
   "A setting was edited directly on the server — open to Adopt or Restore":
     "Настройку правили прямо на сервере — откройте, чтобы принять или вернуть",
 

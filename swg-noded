@@ -2374,18 +2374,34 @@ def _ip_forward_ok():
         return None
 
 
+_IPF_FAILED_AT = {"t": 0.0}          # last self-heal attempt that did NOT take (see ip_forward_health)
+IPF_RETRY_S = 300                     # how long to wait before trying a heal that already failed
+
+
 def ip_forward_health(ifaces):
     """{"needed": bool, "ok": True|False|None} — the shape node_datapath_health uses, so the panel gates it
     the same way (`needed and ok is False`). `needed` is simply "this node manages interfaces": a node exists
     to move other people's packets, mesh links included.
 
-    Self-heals first where it can. The re-read is the answer, NOT sysctl's exit code — every caller in this
-    project writes it as `sysctl -q -w … || true`, so the code has always been discarded, which is precisely
-    how this went unnoticed."""
+    Self-heals where it can, and the RE-READ is the answer rather than sysctl's exit code — every caller in
+    this project writes it as `sysctl -q -w … || true`, so the code has always been discarded, which is
+    precisely how this went unnoticed.
+
+    ⚠️ THE RETRY IS BACKED OFF, and it has to be. This runs on every snapshot, and the interval is 5s: a node
+    where the write cannot take (a container's read-only /proc/sys — the case this whole check exists for)
+    would otherwise fork `sysctl` 17k times a day, for ever, to be told the same thing. Measured at 1.67ms a
+    spawn, that is ~29s of CPU a day spent on a knob we already know is not ours to turn.
+
+    Backing off on FAILURE, not on every attempt, keeps the useful half instant: forwarding switched off on a
+    writable host is still healed on the very next pass (measured: back up in ~10s), because nothing failed
+    recently. Only a heal that already proved futile waits."""
     ok = _ip_forward_ok()
     if ok is False:
-        run(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"])
-        ok = _ip_forward_ok()
+        now = time.time()
+        if now - _IPF_FAILED_AT["t"] >= IPF_RETRY_S:
+            run(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"])
+            ok = _ip_forward_ok()
+            _IPF_FAILED_AT["t"] = 0.0 if ok else now     # took → clear the backoff; didn't → start it
     return {"needed": bool(ifaces), "ok": ok}
 
 
