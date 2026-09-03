@@ -15,7 +15,7 @@
  * re-derives the freeze, pagination happens after.
  */
 
-import { tkey } from "./util.js";
+import { tkey, seen } from "./util.js";
 import { lossColor } from "./charts.js";
 import { Store, bus } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
@@ -23,7 +23,7 @@ import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
 import { go } from "./router.js";
 import { statusLabel, Popover, Ic, Tag, inProc, setPendingSection } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
-import { T, plural, pluralWord } from "./i18n.js";
+import { T, plural, pluralWord, fmtNum } from "./i18n.js";
 import { h } from "preact";
 import { useState } from "preact/hooks";
 import htm from "htm";
@@ -434,11 +434,19 @@ export function MeshStat({ nodeId, mode }) {
     const lk = legOf(p), ll = lossOf(p);
     const loss = ll && typeof ll.loss === "number" ? ll.loss : null;
     const warn = loss != null && loss >= 0.05;   // show it at all; lossColor decides how loud
-    const legTitle = !ll ? (lk ? T("Round-trip latency to {v3}. Loss this way is measured by {v3}, which has not reported it.", { v3: n.name }) : "")
+    const legBase = !ll ? (lk ? T("Round-trip latency to {v3}. Loss this way is measured by {v3}, which has not reported it.", { v3: n.name }) : "")
       : legIsPeer(p) ? T("Leg measured from {v3}: {v1} of {v2} probe packets lost.",
                          { v1: ll.window_lost, v2: ll.window_sent, v3: n.name })
       : T("Leg measured from this node: {v1} of {v2} probe packets lost.",
           { v1: ll.window_lost, v2: ll.window_sent });
+    // A row inside this bubble cannot carry a bubble of its own — the outer one closes the moment the
+    // pointer leaves it for a portalled child — so the extra facts ride the native tooltip here. The mesh
+    // CARDS, which are not inside a popover, get the full LossPop instead.
+    const legTitle = [legBase,
+      ll && typeof ll.peak_loss === "number" && ll.peak_loss > (ll.loss || 0) ? T("Worst probe {v1}%.", { v1: ll.peak_loss }) : "",
+      ll && ll.last_loss_s != null ? T("Last loss {v1} ago.", { v1: seen(ll.last_loss_s) }) : "",
+      lk && lk.mdev_ms != null ? T("Jitter {v1}ms.", { v1: lk.mdev_ms.toFixed(1) }) : "",
+    ].filter(Boolean).join(" ");
     return html`<div class="mh-row" title=${legTitle}>
       <span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span>
       ${anyLoss ? html`<span class="mh-loss" style=${warn ? "color:" + lossColor(loss) : ""}>${warn ? loss + "%" : ""}</span>` : null}
@@ -452,6 +460,116 @@ export function MeshStat({ nodeId, mode }) {
   return html`<${Popover} cls="mh-pop" popCls=${"mh-bubble" + (anyLoss ? " has-loss" : "")} alignRight=${true} trigger=${trigger}>
     <div class="onpop-h">${mode === "in" ? T("Inbound links") : T("Mesh connections")}</div>
     ${ordered.map(row)}
+  </${Popover}>`;
+}
+
+// ───── interface drops: what the kernel counters can actually tell an operator ─────
+// The card shows one percentage. One percentage cannot be acted on: a node that cannot send fast enough,
+// a send that failed outright, and traffic refused on arrival are three different faults wearing the same
+// number. This bubble splits it the way the kernel already counts it, and adds the two things a rolling
+// mean hides — the worst single sample (bursts are what users feel; a 0.02% mean can be one 5% sample)
+// and whether it is happening NOW or is a scar from hours ago.
+//
+// Everything here is free: the node reads sysfs counters it was already reading. Fields are all optional,
+// because a node on an older build reports only pct/window_* and this must degrade to that quietly.
+const DROP_KINDS = [
+  { k: "tx_drop", dir: "out", lbl: () => T("queue full"),
+    hint: () => T("This node couldn't send fast enough and dropped from its own queue — local pressure, not the path.") },
+  { k: "tx_err",  dir: "out", lbl: () => T("failed"),
+    hint: () => T("Sends failed outright — no route out, or a peer whose endpoint this node doesn't know yet.") },
+  { k: "rx_drop", dir: "in",  lbl: () => T("refused"),
+    hint: () => T("Traffic arrived and wasn't accepted — typically a stale key, or a source outside the peer's allowed range.") },
+  { k: "rx_err",  dir: "in",  lbl: () => T("errors"),
+    hint: () => T("Malformed or truncated frames arrived on this interface.") },
+];
+
+// ───── mesh loss: the same treatment, for the number that comes off the probe ─────
+// ⚠️ THE HEADLINE PERCENTAGE OVERSTATES ITS OWN PRECISION. 20 packets a minute over a 30-probe window is
+// 600 packets, so the smallest non-zero loss the probe can express is 1/600 = 0.167% — and that is exactly
+// the figure an operator sees when ONE packet went missing, once, up to half an hour ago. The bubble's job
+// is to put that packet count in front of them, and to say when it happened, before they go rebuild a leg
+// that is fine. Everything here is measured already; none of it costs another probe.
+//
+// `l` = this end's reading, `pl` = the far end's reading of the same leg. Loss is directional — only the
+// receiving end can see what failed to arrive — so both are shown side by side rather than averaged.
+export function LossPop({ l, pl, peerName, trigger, alignRight }) {
+  if (!l && !pl) return trigger;
+  // ⚠️ EVERY QUALIFIER MUST FOLLOW THE DIRECTION IT BELONGS TO. The first cut anchored "worst probe",
+  // "last loss" and the RTT spread to whichever end reported first — in practice always the near one — so
+  // a leg losing 2.4% INBOUND, with 412ms of far-end bufferbloat, rendered "last loss: none in this
+  // window", "jitter 0.3ms", no worst-probe row at all. Every figure was true of the clean direction and
+  // read as a verdict on the leg. Same class of bug as the inbound bubble showing outbound loss: a number
+  // under the wrong label is worse than a blank cell, because a blank says "not measured".
+  const ends = [];
+  if (l && typeof l.loss === "number") ends.push({ dir: T("Out"), x: l });
+  if (pl && typeof pl.loss === "number") ends.push({ dir: T("In"), x: pl });
+  if (!ends.length) return trigger;
+  const both = ends.length > 1;
+  const tag = e => both ? html`<span class="dp-kind">${e.dir.toLowerCase()}</span>` : null;
+  const pick = (has, better) => { const c = ends.filter(has); return c.length ? c.reduce(better) : null; };
+  const worst = pick(e => typeof e.x.peak_loss === "number", (a, b) => b.x.peak_loss > a.x.peak_loss ? b : a);
+  const last  = pick(e => e.x.last_loss_s != null, (a, b) => b.x.last_loss_s < a.x.last_loss_s ? b : a);
+  const reportsLast = ends.some(e => "last_loss_s" in e.x);
+  // Round trip is symmetric, but each end SAMPLES it separately: one-way queueing shows up as a far-end
+  // max the near end never sees. Show both rows only when they actually disagree — otherwise it is one
+  // measurement printed twice.
+  const rtts = ends.filter(e => e.x.rtt_ms != null);
+  const spread = rtts.map(e => e.x.rtt_max != null ? e.x.rtt_max : e.x.rtt_ms);
+  const splitRtt = rtts.length > 1 && Math.max(...spread) > Math.min(...spread) * 1.25;
+  const rttRows = splitRtt ? rtts : rtts.slice(0, 1);
+  const one = ends.find(e => e.x.window_lost === 1);   // 1/600 = 0.167%: the probe's own resolution floor
+  return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
+    <div class="onpop-h">${T("Leg quality · {v1}", { v1: peerName })}</div>
+    ${ends.map(e => html`<div class="dp-row"><span class="dp-l">${e.dir}</span><span class="dp-v">
+      <b style=${"color:" + lossColor(e.x.loss)}>${e.x.loss}%</b>
+      <span class="dp-kind">${T("{v1} of {v2}", { v1: e.x.window_lost, v2: e.x.window_sent })}</span></span></div>`)}
+    ${rttRows.map(e => html`<div class="dp-row"><span class="dp-l">${T("Round trip")}</span><span class="dp-v">
+      <b>${Math.round(e.x.rtt_ms)}${T("unit|ms")}</b>${e.x.rtt_min != null && e.x.rtt_max != null
+        ? html`<span class="dp-kind">${T("min {v1} · max {v2}", { v1: Math.round(e.x.rtt_min), v2: Math.round(e.x.rtt_max) })}</span>` : null}${splitRtt ? tag(e) : null}</span></div>`)}
+    ${rttRows.filter(e => e.x.mdev_ms != null).map(e => html`<div class="dp-row"><span class="dp-l">${T("Jitter")}</span>
+      <span class="dp-v"><b>${e.x.mdev_ms.toFixed(1)}${T("unit|ms")}</b>${splitRtt ? tag(e) : null}</span></div>`)}
+    ${worst && worst.x.peak_loss > (worst.x.loss || 0) ? html`<div class="dp-row"><span class="dp-l">${T("Worst probe")}</span>
+      <span class="dp-v"><b style=${"color:" + lossColor(worst.x.peak_loss)}>${worst.x.peak_loss}%</b>${tag(worst)}</span></div>` : null}
+    ${last ? html`<div class="dp-row"><span class="dp-l">${T("Last loss")}</span><span class="dp-v">${
+        last.x.last_loss_s < 90 ? T("just now") : T("{v1} ago", { v1: seen(last.x.last_loss_s) })}${tag(last)}</span></div>`
+      : reportsLast ? html`<div class="dp-row"><span class="dp-l">${T("Last loss")}</span><span class="dp-v">${T("none in this window")}</span></div>` : null}
+    ${one ? html`<div class="dp-hint">${T("That is a single lost packet — the smallest amount this probe can measure. One is normal; watch whether it keeps happening.")}</div>` : null}
+    <div class="dp-foot">${ends[0].x.probes
+      ? T("{v1} probes of {v2} packets, one a minute, {v3}-byte payload", { v1: ends[0].x.probes, v2: 20, v3: ends[0].x.probe_size })
+      : T("measured by pinging the far end of this link")}</div>
+  </${Popover}>`;
+}
+
+export function DropsPop({ d, iface, trigger, alignRight }) {
+  if (!d) return trigger;
+  const has = k => typeof d[k] === "number";
+  const split = DROP_KINDS.filter(x => has(x.k));
+  // The dominant kind names the fault. Only when it is genuinely dominant (over half) — a 50/50 mix has no
+  // single explanation and inventing one would send the operator down the wrong path.
+  const top = split.slice().sort((a, b) => d[b.k] - d[a.k])[0];
+  const hint = top && d[top.k] > 0 && d[top.k] * 2 > d.window_bad ? top.hint() : null;
+  const rowsFor = dir => split.filter(x => x.dir === dir);
+  const pair = (dir, label) => {
+    const rs = rowsFor(dir);
+    if (!rs.length) return null;
+    return html`<div class="dp-row"><span class="dp-l">${label}</span><span class="dp-v">${rs.map(x => html`
+      <span class=${"dp-kind" + (d[x.k] ? "" : " zero")}>${x.lbl()} <b>${fmtNum(d[x.k])}</b></span>`)}</span></div>`;
+  };
+  return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
+    <div class="onpop-h">${T("Drops · {v1}", { v1: iface })}</div>
+    <div class="dp-head">
+      <b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>
+      <span class="dp-sub">${T("{v1} of {v2} packets", { v1: fmtNum(d.window_bad), v2: fmtNum(d.window_pkts) })}</span>
+    </div>
+    ${pair("out", T("Sending"))}
+    ${pair("in", T("Receiving"))}
+    ${has("peak") && d.peak > d.pct ? html`<div class="dp-row"><span class="dp-l">${T("Worst sample")}</span><span class="dp-v"><b style=${"color:" + lossColor(d.peak)}>${d.peak}%</b></span></div>` : null}
+    ${has("last_bad_s") || d.last_bad_s === null ? html`<div class="dp-row"><span class="dp-l">${T("Last drop")}</span><span class="dp-v">${
+      d.last_bad_s == null ? T("none in this window") : d.last_bad_s < 5 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
+    ${has("life_bad") ? html`<div class="dp-row"><span class="dp-l">${T("Since boot")}</span><span class="dp-v">${
+      T("{v1} of {v2}", { v1: fmtNum(d.life_bad), v2: fmtNum(d.life_pkts) })}</span></div>` : null}
+    ${hint ? html`<div class="dp-hint">${hint}</div>` : null}
+    <div class="dp-foot">${d.span_s ? T("measured over the last {v1}", { v1: seen(d.span_s) }) : T("this node's own queues and datapath, not the path to the client")}</div>
   </${Popover}>`;
 }
 

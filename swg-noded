@@ -5233,8 +5233,8 @@ MESH_PROBE_SIZE = 1200          # full-size: small packets can pass cleanly on a
 # window is 600 packets — enough to tell "clean" from "0.4%", not enough to split 0.1% from 0.2%. Say so in
 # the data (`window_sent`) rather than implying a precision that is not there.
 MESH_WINDOW = 30                # probes retained (30 x 60s = 30 min)
-_MESH_HEALTH = {}               # iface -> {peer, loss, rtt_ms, mdev_ms, window_sent, window_lost, at}
-_MESH_HIST = {}                 # iface -> [(sent, lost), ...] most recent last
+_MESH_HEALTH = {}               # iface -> {peer, loss, peak_loss, last_loss_s, rtt_min/ms/max, mdev_ms, window_*, at}
+_MESH_HIST = {}                 # iface -> [(at, sent, lost), ...] most recent last
 _MESH_LOCK = threading.Lock()
 
 
@@ -5271,6 +5271,11 @@ def _mesh_probe_once(iface):
     lost = round(float(loss.group(1)) / 100.0 * MESH_PROBE_COUNT)
     return {"peer": peer, "sent": MESH_PROBE_COUNT, "lost": lost,
             "rtt_ms": float(rtt.group(2)) if rtt else None,
+            # min/max were already on the line ping prints and were being discarded. max is the bufferbloat
+            # tell: avg 18ms with max 400ms is a queue filling up, and it reads identically to avg 18ms with
+            # max 22ms until you show both.
+            "rtt_min": float(rtt.group(1)) if rtt else None,
+            "rtt_max": float(rtt.group(3)) if rtt else None,
             "mdev_ms": float(rtt.group(4)) if rtt else None, "at": int(time.time())}
 
 
@@ -5283,13 +5288,22 @@ def _mesh_probe_loop(node_cfg):
                 if got:
                     with _MESH_LOCK:
                         h = _MESH_HIST.setdefault(iface, [])
-                        h.append((got["sent"], got["lost"]))
+                        h.append((got["at"], got["sent"], got["lost"]))
                         del h[:-MESH_WINDOW]
-                        sent = sum(a for a, _ in h) or 1
-                        lost = sum(b for _, b in h)
+                        sent = sum(a for _, a, _ in h) or 1
+                        lost = sum(b for _, _, b in h)
+                        # ⚠️ A 30-MINUTE WINDOW REMEMBERS A BLIP FOR 30 MINUTES. One packet lost once reads as
+                        # a steady 0.167% until it ages out, and an operator cannot tell that from a leg that
+                        # is losing packets right now. `last_loss_s` separates them, and `peak_loss` separates
+                        # "one packet, spread thin" from "one probe lost 20% and the mean hid it".
+                        lastl = [t for t, _, b in h if b]
                         _MESH_HEALTH[iface] = {
                             "peer": got["peer"], "rtt_ms": got["rtt_ms"], "mdev_ms": got["mdev_ms"],
+                            "rtt_min": got["rtt_min"], "rtt_max": got["rtt_max"],
                             "loss": round(lost * 100.0 / sent, 3),   # over the WINDOW, not the last probe
+                            "peak_loss": round(max(b * 100.0 / a for _, a, b in h if a), 3),
+                            "last_loss_s": (got["at"] - lastl[-1]) if lastl else None,
+                            "probes": len(h), "probe_every_s": MESH_PROBE_EVERY_S, "probe_size": MESH_PROBE_SIZE,
                             "window_sent": sent, "window_lost": lost, "at": got["at"]}
             with _MESH_LOCK:                        # drop links that no longer exist
                 for gone in [k for k in _MESH_HEALTH if k not in (node_cfg.get("interfaces") or {})]:
@@ -5315,7 +5329,7 @@ def mesh_health():
 # report the ratio, which is comparable across interfaces and directly colourable next to mesh loss.
 # Cost is a handful of small file reads per interface per sync: no subprocess, no probe traffic.
 IFACE_DROP_WINDOW = 60          # samples retained (60 x 5s sync = 5 min)
-_IFDROP = {}                    # iface -> {"prev": (pkts, bad), "hist": [(pkts, bad), ...]}
+_IFDROP = {}                    # iface -> {"prev": (pkts, rxd, rxe, txd, txe), "hist": [(t, dpkts, drxd, drxe, dtxd, dtxe), ...]}
 
 
 def _if_stat(ifn, key):
@@ -5324,26 +5338,57 @@ def _if_stat(ifn, key):
 
 
 def iface_drops(ifaces):
-    """{iface: {pct, window_pkts, window_bad}} — errored+dropped as a share of packets, over a rolling window."""
+    """{iface: {pct, window_*, per-kind deltas, peak, life_*}} — errored+dropped as a share of packets.
+
+    The window ratio is the headline; everything beside it exists because one percentage cannot tell an
+    operator what to DO. Direction and kind are different faults, not shades of one:
+
+      tx_drop  this node's own queue overflowed — it is being asked to send faster than the link accepts.
+      tx_err   a send failed outright: no route, or a peer whose endpoint is not known yet.
+      rx_drop  traffic arrived and could not be attributed — a stale key, or a source outside AllowedIPs.
+               On a wg/awg interface this is the security-shaped one: it counts packets we refused.
+      rx_err   malformed or truncated frames.
+
+    `peak` because a five-minute mean hides the bursts users actually feel — 0.02% average can be one 5%
+    sample. `last_bad_s` to separate "happening now" from "happened once". `life_*` because an operator who
+    remembers a big lifetime count needs to see it is NOT current: msk-shadow's mesh link carries 74k errors
+    since boot and zero in the last five minutes, and without both numbers the card looks like it is lying.
+    """
     out = {}
+    now = time.time()
     for ifn in ifaces:
         try:
             pkts = _if_stat(ifn, "rx_packets") + _if_stat(ifn, "tx_packets")
-            bad = (_if_stat(ifn, "rx_dropped") + _if_stat(ifn, "rx_errors")
-                   + _if_stat(ifn, "tx_dropped") + _if_stat(ifn, "tx_errors"))
+            kinds = (_if_stat(ifn, "rx_dropped"), _if_stat(ifn, "rx_errors"),
+                     _if_stat(ifn, "tx_dropped"), _if_stat(ifn, "tx_errors"))
         except (OSError, ValueError):
             continue                                    # interface gone mid-sample, or a datapath with no sysfs
+        cur = (pkts,) + kinds
         st = _IFDROP.setdefault(ifn, {"prev": None, "hist": []})
         if st["prev"] is not None:
-            dp, db = pkts - st["prev"][0], bad - st["prev"][1]
-            if dp >= 0 and db >= 0 and (dp or db):      # negative => counters reset (iface recreated): skip, don't invent a spike
-                st["hist"].append((dp, db))
+            d = tuple(cur[i] - st["prev"][i] for i in range(5))
+            if min(d) >= 0 and any(d):                  # negative => counters reset (iface recreated): skip, don't invent a spike
+                st["hist"].append((now,) + d)
                 del st["hist"][:-IFACE_DROP_WINDOW]
-        st["prev"] = (pkts, bad)
-        tp = sum(a for a, _ in st["hist"])
-        tb = sum(b for _, b in st["hist"])
-        if tp + tb:
-            out[ifn] = {"pct": round(tb * 100.0 / (tp + tb), 3), "window_pkts": tp, "window_bad": tb}
+        st["prev"] = cur
+        h = st["hist"]
+        if not h:
+            continue
+        tp = sum(r[1] for r in h)
+        part = [sum(r[i] for r in h) for i in (2, 3, 4, 5)]
+        tb = sum(part)
+        if not (tp + tb):
+            continue
+        bad_at = [r[0] for r in h if sum(r[2:])]
+        peak = max([sum(r[2:]) * 100.0 / (r[1] + sum(r[2:])) for r in h if r[1] + sum(r[2:])] or [0.0])
+        out[ifn] = {
+            "pct": round(tb * 100.0 / (tp + tb), 3), "window_pkts": tp, "window_bad": tb,
+            "rx_drop": part[0], "rx_err": part[1], "tx_drop": part[2], "tx_err": part[3],
+            "peak": round(peak, 3),
+            "span_s": int(now - h[0][0]),               # what "the window" actually covers right now
+            "last_bad_s": int(now - bad_at[-1]) if bad_at else None,
+            "life_pkts": cur[0], "life_bad": sum(kinds),
+        }
     for gone in [k for k in _IFDROP if k not in ifaces]:
         _IFDROP.pop(gone, None)
     return out

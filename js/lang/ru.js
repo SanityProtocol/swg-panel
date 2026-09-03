@@ -1452,12 +1452,50 @@ export const STR = {
   "Leg measured from {v3}: {v1} of {v2} probe packets lost.": "Замер с {v3}: потеряно {v1} из {v2} проб.",
   // budget-ok: popover row tooltip, wraps
   "Round-trip latency to {v3}. Loss this way is measured by {v3}, which has not reported it.": "Круговая задержка до {v3}. Потери в эту сторону меряет {v3} — она их пока не сообщила.",
-  // budget-ok: card row tooltip, wraps
-  "This node errored or dropped {v1} of {v2} packets on this interface — its own queues, not the path.":
-    "Нода отбросила или ошиблась на {v1} из {v2} пакетов этого интерфейса — это её очереди, а не путь.",
   "col|Drops": "Отброшено",
   "col|Latency": "Задержка",
   "(Loss {v1}%)": "(потери {v1}%)",
+  "Leg quality · {v1}": "Качество плеча · {v1}",
+  "Out": "Наружу",
+  "In": "Внутрь",
+  "Round trip": "Круговая",
+  "min {v1} · max {v2}": "мин {v1} · макс {v2}",
+  "Jitter": "Джиттер",
+  "Worst probe": "Худшая проба",
+  // budget-ok: bubble micro-label in a max-content column, measured 103px, no wrap or clip
+  "Last loss": "Последняя потеря",
+  // budget-ok: bubble hint, wraps
+  "That is a single lost packet — the smallest amount this probe can measure. One is normal; watch whether it keeps happening.": "Это один потерянный пакет — минимум, который эта проба вообще может измерить. Один — норма; смотрите, повторяется ли.",
+  // budget-ok: bubble footer, wraps
+  "{v1} probes of {v2} packets, one a minute, {v3}-byte payload": "{v1} проб по {v2} пакетов, раз в минуту, полезная нагрузка {v3} байт",
+  // budget-ok: bubble footer, wraps
+  "measured by pinging the far end of this link": "измеряется пингом дальнего конца этого канала",
+  // budget-ok: appended to a popover row tooltip, wraps
+  "Worst probe {v1}%.": "Худшая проба {v1}%.",
+  // budget-ok: appended to a popover row tooltip, wraps
+  "Last loss {v1} ago.": "Последняя потеря {v1} назад.",
+  // budget-ok: appended to a popover row tooltip, wraps
+  "Jitter {v1}ms.": "Джиттер {v1}мс.",
+  "Drops · {v1}": "Отброшено · {v1}",
+  "{v1} of {v2} packets": "{v1} из {v2} пакетов",
+  "{v1} of {v2}": "{v1} из {v2}",
+  "Sending": "Отправка",
+  "Receiving": "Приём",
+  "queue full": "очередь",
+  "refused": "отклонено",
+  "errors": "ошибки",
+  "Worst sample": "Худший замер",
+  // budget-ok: bubble micro-label in a max-content column, measured 103px, no wrap or clip
+  "Last drop": "Последняя потеря",
+  "none in this window": "нет за это окно",
+  "Since boot": "С загрузки",
+  "measured over the last {v1}": "замер за последние {v1}",
+  "this node's own queues and datapath, not the path to the client": "собственные очереди и тракт узла, а не путь до клиента",
+  "This node couldn't send fast enough and dropped from its own queue — local pressure, not the path.": "Узел не успевал отправлять и сбрасывал пакеты из своей очереди — это локальная нагрузка, а не путь.",
+  "Sends failed outright — no route out, or a peer whose endpoint this node doesn't know yet.": "Отправка не удалась совсем: нет маршрута наружу или пир, чей адрес узлу ещё неизвестен.",
+  "Traffic arrived and wasn't accepted — typically a stale key, or a source outside the peer's allowed range.": "Трафик пришёл, но не был принят — обычно устаревший ключ или источник вне разрешённого диапазона пира.",
+  "Malformed or truncated frames arrived on this interface.": "На интерфейс приходили повреждённые или обрезанные кадры.",
+  "This node hasn't reported drop counters for this interface yet.": "Узел ещё не прислал счётчики потерь по этому интерфейсу.",
   "unit|ms": "мс",
   "(set at creation — delete & recreate to change)": "(задаётся при создании — меняется пересозданием)",
 

@@ -27,7 +27,7 @@ import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
          RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, lossColor, histTime, ChartHover, IfaceThroughput,
          RANGE_CAP } from "./charts.js";
-import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, onlineUserRows, onlinePeerRows,
+import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsPop, LossPop, onlineUserRows, onlinePeerRows,
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES } from "./views.js";
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
          openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet } from "./turn.js";
@@ -387,14 +387,22 @@ export function NodeDetail({ node: rawName }) {
               // always (it is the link's defining fact); loss only when it is enough to matter — a "0.0%" row
               // on every healthy card is a row nobody reads, and then the one that matters reads like the rest.
               const _lk = m && m.link;
-              if (!_lk) return null;
+              if (!_lk || _lk.rtt_ms == null) return null;
               const _ls = typeof _lk.loss === "number" ? _lk.loss : null;
-              const _tip = T("Leg measured from this node: {v1} of {v2} probe packets lost.", { v1: _lk.window_lost, v2: _lk.window_sent });
-              if (_lk.rtt_ms == null) return null;
+              // The far end's reading of the SAME leg, for the inbound direction — only the receiving end can
+              // see what failed to arrive, so the bubble shows both rather than implying one covers both.
+              const _pl = ((meshHealth(name).peers.find(x => x.peer === peer)) || {}).plink || null;
               // One row, not two: latency is the link's defining fact and loss is a qualifier ON it, so the
               // card reads "18ms (0.4% loss)" rather than splitting one measurement across two label rows.
               const _warn = _ls != null && _ls >= 0.05;   // show it at all; lossColor decides how loud
-              return html`<div class="ifrow" title=${_tip}><span class="l">${T("col|Latency")}</span><span class="r addr">${Math.round(_lk.rtt_ms)}${T("unit|ms")}${_warn ? html` <span style=${"color:" + lossColor(_ls)}>${T("(Loss {v1}%)", { v1: _ls })}</span>` : null}</span></div>`;
+              const _val = html`<${Fragment}>${Math.round(_lk.rtt_ms)}${T("unit|ms")}${_warn
+                ? html` <span class="dp-num" style=${"color:" + lossColor(_ls)}>${T("(Loss {v1}%)", { v1: _ls })}</span>` : null}<//>`;
+              // 0.167% is ONE lost packet in half an hour and reads like a persistent fault; the bubble says
+              // which packet count, which direction and when. Card click opens the connection sheet, so the
+              // figure has to swallow its own click — Popover preventDefaults it.
+              return html`<div class="ifrow"><span class="l">${T("col|Latency")}</span><span class="r addr"
+                onClick=${e => { e.preventDefault(); e.stopPropagation(); }}><${LossPop} l=${_lk} pl=${_pl}
+                  peerName=${Store.nodeName(peer)} trigger=${_val}/></span></div>`;
             })()}
             ${carried.length ? html`<div class="ifrow"><span class="l">${T("Carrying")}</span><span class="r"><span class="carry-tags">${carried.map(k => html`<span class=${"tg tg-" + ((meta[k].awg_params && Object.keys(meta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`)}</span></span></div>` : null}
           </div></div>`;
@@ -930,7 +938,10 @@ export function NodeDetail({ node: rawName }) {
                     // the same thing wherever it appears in the panel.
                     const _d = m.drops;
                     if (!_d || !(_d.pct >= 0.05)) return null;
-                    return html`<div class="ifrow" title=${T("This node errored or dropped {v1} of {v2} packets on this interface — its own queues, not the path.", { v1: _d.window_bad, v2: _d.window_pkts })}><span class="l">${T("col|Drops")}</span><span class="r addr" style=${"color:" + lossColor(_d.pct)}>${_d.pct}%</span></div>`;
+                    // The figure carries a bubble: one percentage cannot say whether this is the node's own
+                    // send queue, a failed send, or traffic refused on arrival — three faults, three fixes.
+                    return html`<div class="ifrow"><span class="l">${T("col|Drops")}</span><span class="r addr"><${DropsPop} d=${_d} iface=${ifn}
+                      trigger=${html`<span class="dp-num" style=${"color:" + lossColor(_d.pct)}>${_d.pct}%</span>`}/></span></div>`;
                   })()}
                   <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${m.egress_mode === "forward" && m.egress_node
                     ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(m.egress_node)} title=${T("Exits via {v1}", { v1: Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "") })}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>`

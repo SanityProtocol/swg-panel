@@ -2378,6 +2378,28 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .mh-rar .mh-ar{font-size:13px}   /* small arrows, matching the line */
 .mh-rar .mh-ar.s-up{text-shadow:0 0 8px currentColor}   /* static glow only for up status — green (down) / blue (up); yellow + red get no glow */
 .deppop.mh-bubble{width:max-content;min-width:120px}   /* dynamic width — sized to the longest node name */
+
+/* ───── interface drops bubble ─────
+   Same vocabulary as the mesh bubble above (mono uppercase micro-labels, tabular numerals, 5px/8px rows,
+   6px radius, hover surface) so a percentage looks the same wherever the panel shows one. The dotted
+   underline on the trigger is the only affordance: the figure sits inside a link to the interface page,
+   and without it there is nothing to say the number itself holds more. */
+.dp-num{font-family:var(--mono);font-variant-numeric:tabular-nums;border-bottom:1px dotted color-mix(in srgb,currentColor 45%,transparent)}
+.drops-pop{display:inline-block;cursor:default}
+.deppop.dp-bubble{width:max-content;min-width:232px;max-width:376px}
+.dp-head{display:flex;align-items:baseline;gap:9px;padding:1px 8px 8px;margin-bottom:4px;border-bottom:1px solid var(--line)}
+.dp-pct{font-family:var(--mono);font-size:16px;line-height:1;font-variant-numeric:tabular-nums}
+.dp-sub{font-size:11px;color:var(--dim)}
+.dp-row{display:grid;grid-template-columns:max-content 1fr;gap:14px;align-items:baseline;padding:4px 8px;border-radius:6px;white-space:nowrap}
+.dp-row:hover{background:var(--surface)}
+.dp-l{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.dp-v{display:flex;justify-content:flex-end;gap:13px;font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+/* kind label dim, its count solid — the eye should land on the number that is not zero */
+.dp-kind{color:var(--dim)}
+.dp-kind b{margin-left:2px;font-weight:600;color:var(--ink-2)}
+.dp-kind.zero,.dp-kind.zero b{color:var(--faint);font-weight:400}
+.dp-hint{margin-top:4px;padding:8px 8px 3px;border-top:1px solid var(--line);font-size:11.5px;line-height:1.45;color:var(--ink-2);white-space:normal}
+.dp-foot{padding:5px 8px 1px;font-size:10.5px;line-height:1.4;color:var(--faint);white-space:normal}
 /* node↔node connection info card (NOC-style: status pill + protocol tag + labeled grid) */
 .conncard{border:1px solid var(--line);border-radius:12px;padding:15px 17px;background:color-mix(in srgb,var(--ink) 2.5%,transparent)}
 .conncard-top{display:flex;align-items:center;gap:9px;margin-bottom:16px}
