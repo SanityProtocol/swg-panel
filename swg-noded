@@ -505,8 +505,48 @@ def ivk_process(vault_pub, want):
             _IVK_SEALED[ifn] = blob
 
 
-def peer_view(peers, last, dt, online_max, now):
+# ── SESSION HEALTH: how often the tunnel is being REBUILT ────────────────────────────────────────────────
+# WireGuard rekeys a live session every REKEY_AFTER_TIME (120s) and a session expires at REJECT_AFTER_TIME
+# (180s) — which is why `online_max` is 180. So the interval between handshakes is a direct read on whether
+# a session is HOLDING: ~120s is a healthy peer renewing on schedule; a much shorter interval means the
+# session keeps collapsing and the client keeps rebuilding it, which is what a filtered/DPI'd tunnel looks
+# like from this end.
+#
+# Measured on a production node (154 peers, 266s): a healthy peer handshook at 124/124/121s, while two
+# broken ones handshook every 15-16s with a STABLE endpoint — 19 and 12 times, moving 1.6 KB and 14 KB.
+# Nothing sat in between, so this separates cleanly rather than needing a finely-tuned threshold.
+#
+# ⚠️ ENDPOINT CHANGES ARE NOT CHURN. A roaming client (wifi → cellular) rehandshakes legitimately, so the
+# endpoint-move count rides along and the panel excludes those.
+#
+# ⚠️ AND THIS IS WHY "no rx" CANNOT MEAN "faulty": the same measurement showed a re-handshaking peer moving
+# rx on 18 of its 19 handshakes — handshake traffic ITSELF advances rx_bytes. So "rx is flat" is exactly
+# equivalent to "the client is sending nothing at all", i.e. idle or gone. There is no third case for a
+# flat-rx rule to detect, which is why it only ever fired while a client was disconnecting.
+_PEERHS = {}                    # "iface|pubkey" -> {hs, gaps: [s,...], ep, ep_moves}
+PEERHS_GAPS = 8                 # handshake intervals retained per peer (~16 min healthy, ~2 min churning)
+
+
+def _session_health(key, hs, endpoint, now):
+    """{hs_gap_med, hs_seen, ep_moves} — the shape of this peer's handshake cadence."""
+    st = _PEERHS.setdefault(key, {"hs": None, "gaps": [], "ep": None, "ep_moves": 0})
+    if endpoint and endpoint != "(none)" and endpoint != st["ep"]:
+        if st["ep"] is not None:
+            st["ep_moves"] += 1
+        st["ep"] = endpoint
+    if hs and hs != st["hs"]:
+        if st["hs"] is not None and hs > st["hs"]:
+            st["gaps"].append(hs - st["hs"])
+            del st["gaps"][:-PEERHS_GAPS]
+        st["hs"] = hs
+    g = sorted(st["gaps"])
+    med = (g[len(g) // 2] if len(g) % 2 else (g[len(g) // 2 - 1] + g[len(g) // 2]) / 2.0) if g else None
+    return {"hs_gap_med": med, "hs_seen": len(g), "ep_moves": st["ep_moves"]}
+
+
+def peer_view(peers, last, dt, online_max, now, iface=""):
     out = []
+    seen = set()
     for p in peers:
         age = (now - p["last_handshake"]) if p["last_handshake"] else None
         prev = last.get(p["public_key"])
@@ -514,6 +554,8 @@ def peer_view(peers, last, dt, online_max, now):
         if prev and dt > 0:
             rs = max(0, p["rx_bytes"] - prev[0]) / dt
             ts = max(0, p["tx_bytes"] - prev[1]) / dt
+        key = iface + "|" + p["public_key"]
+        seen.add(key)
         out.append({
             "public_key": p["public_key"], "endpoint": p["endpoint"],
             "preshared_key": p.get("preshared_key"),   # so adoption can reuse the on-wire PSK (panel owns PSKs)
@@ -521,7 +563,13 @@ def peer_view(peers, last, dt, online_max, now):
             "rx_speed": rs, "tx_speed": ts,
             "last_handshake": p["last_handshake"] or None, "handshake_age": age,
             "online": age is not None and age <= online_max,
+            # Measured HERE, not in the browser: the panel's old rx-history lived in the SPA, so nothing was
+            # measured unless a tab happened to be open and every reload started from zero.
+            **_session_health(key, p["last_handshake"], p["endpoint"], now),
         })
+    if iface:
+        for gone in [k for k in _PEERHS if k.startswith(iface + "|") and k not in seen]:
+            _PEERHS.pop(gone, None)
     return out
 
 
@@ -5432,7 +5480,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 conf_text = ""
             st = last_samples.setdefault(iface, {"peers": {}, "t": now})
             dt = max(1e-6, now - st["t"])
-            peers = peer_view(raw, st["peers"], dt, online_max, now)
+            peers = peer_view(raw, st["peers"], dt, online_max, now, iface)
             st["peers"] = {p["public_key"]: (p["rx_bytes"], p["tx_bytes"]) for p in raw}
             st["t"] = now
             interfaces[iface] = {

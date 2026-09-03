@@ -784,7 +784,7 @@ export function gridIfacesTag(prim, all) {
 // every grid regardless of which columns are shown. Otherwise the normal Badge.
 const STATUS_REASONS = once(() => ({
   blocked: blockedReason(null),
-  faulty: T("connected, but no inbound data is flowing — likely a one-way block / DPI on the return path"),
+  faulty: T("the tunnel keeps collapsing and rebuilding — the session won't hold, which is what a filtered or DPI'd connection looks like"),
   broken: T("the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface"),
   disabled: T("access is blocked — removed from every server until unblocked"),
   expired: T("the access date has passed — removed from every server until the date is extended"),

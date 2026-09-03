@@ -155,15 +155,26 @@ function reconcile(roster, stats, now, cfg) {
       else if (obs) {
         if (obs.online) {
           st = "online";
-          // FAULTY: handshake is up but the node has received NO new bytes FROM the client for a while — the
-          // tunnel is established yet inbound data isn't flowing (one-way block / DPI / broken return path).
-          // Needs rx history across polls, kept by the caller in cfg.history (keyed like `observed`).
-          if (cfg.history) {
-            const h = cfg.history, rx = obs.rx_bytes || 0, prev = h[key];
-            if (!prev) h[key] = { rx: rx, flatSince: null };
-            else if (rx > prev.rx) { prev.rx = rx; prev.flatSince = null; }         // data flowing → healthy
-            else { if (prev.flatSince == null) prev.flatSince = now; if (cfg.detectFaulty !== false && (now - prev.flatSince) >= (cfg.faultyMs || 45000)) st = "faulty"; }
-          }
+          // FAULTY: the session will not HOLD. WireGuard renews a live session every 120s (REKEY_AFTER_TIME)
+          // and a session dies at 180s, which is what `online` is measured against. So the INTERVAL between
+          // handshakes reads directly on whether the tunnel is healthy: ~120s is a peer renewing on schedule,
+          // and a much shorter interval means the session keeps collapsing and the client keeps rebuilding it.
+          //
+          // ⚠️ THIS REPLACES A RULE THAT COULD ONLY EVER FIRE ON A FALSE POSITIVE. The old test was "handshake
+          // still valid but rx has been flat for 45s". WireGuard has no disconnect, so a client that closes its
+          // tunnel leaves a valid handshake behind for up to 180s with rx flat — the rule's exact signature.
+          // That produced the reported online → faulty → ready flicker on every single disconnect. Worse, it
+          // could not detect anything else: sampling a production node showed a re-handshaking peer moving rx
+          // on 18 of its 19 handshakes, so handshake traffic itself advances rx_bytes and "rx is flat" is
+          // exactly equivalent to "the client is sending nothing at all" — idle or gone, never a fault.
+          //
+          // The node measures the cadence now (see _session_health), so it works with no browser open and
+          // survives a reload; the browser-side rx history it replaces did neither. An older node sends no
+          // cadence, and then nothing is flagged — a missing measurement must never invent a fault.
+          if (cfg.detectFaulty !== false && obs.hs_gap_med != null
+              && obs.hs_seen >= (cfg.churnMin || 3)
+              && obs.hs_gap_med <= (cfg.churnGapS || 60)
+              && !obs.ep_moves) st = "faulty";   // a ROAMING client rehandshakes legitimately — its endpoint moved
         } else if (cfg.detectBlocked !== false && obs.endpoint && (obs.rx_bytes || 0) > 0
                    && obs.handshake_age == null && (now - createdMs) > cfg.graceMs) {
           // BLOCKED: the client IS sending packets (rx moved) but no handshake ever completed — it reaches the
@@ -229,7 +240,13 @@ function reconcile(roster, stats, now, cfg) {
     else if (present.length === 0) status = (live.length && live.every(d => d.status === "broken")) ? "broken"
                                             : ((now - createdMs) <= cfg.graceMs ? "creating" : "dangling");   // broken record vs gone interface
     else if (present.length < live.length) status = "partial";
-    else { status = "ready"; present.forEach(d => { if ((RANK[d.status] || 0) > (RANK[status] || 0)) status = d.status; }); }   // all present → best of the targets' states (online/faulty/blocked/ready)
+    // All present → the most-alive of the targets' states, so a peer that still works somewhere is not
+    // alarmed about a node it also lives on. ⚠️ SEEDED FROM A REAL TARGET, not from the literal "ready":
+    // `blocked` RANKS BELOW `ready` (it is a fault, not an aliveness level), so seeding "ready" meant a
+    // single-target peer whose one target was blocked rolled up to "ready" and the status could never be
+    // seen. That was the second, independent reason "restricted" never appeared in the UI — the condition
+    // could fire and the roll-up would still throw it away.
+    else { status = present[0].status; present.forEach(d => { if ((RANK[d.status] || 0) > (RANK[status] || 0)) status = d.status; }); }
 
     // a key rotation in flight: the new key isn't on the wire yet — show "rotating", not dangling
     if (cfg.rotating && cfg.rotating.has(pid) && (status === "dangling" || status === "creating" || status === "unknown")) status = "rotating";
@@ -279,7 +296,7 @@ function reconcile(roster, stats, now, cfg) {
       const proto = (bt.has("awg") && bt.has("wg")) ? "Wireguard or AmneziaWG" : bt.has("awg") ? "AmneziaWG" : bt.has("wg") ? "Wireguard" : "Wireguard or AmneziaWG";   // i18n-keys
       reason = T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {v1} params", { v1: proto });
     }
-    else if (status === "faulty") reason = T("connected, but no inbound data is flowing — likely a one-way block / DPI on the return path");
+    else if (status === "faulty") reason = T("the tunnel keeps collapsing and rebuilding — the session won't hold, which is what a filtered or DPI'd connection looks like");
     else if (status === "broken") reason = T("the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface");
     else if (status === "expired") reason = selfExpired ? T("this peer's access date has passed") : T("the subscription's access date has passed");
 

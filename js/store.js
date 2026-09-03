@@ -354,12 +354,11 @@ export const Store = {
       for (const ifn of Object.keys(this.describe[nid] || {}))
         if (this.describe[nid][ifn] && this.describe[nid][ifn].system) systemIfaces.add(nid + "|" + ifn);
     const _adv = (this.panelSettings || {}).advanced || {};   // operator-tunable stale/grace thresholds
-    // rx-history for FAULTY detection persists across polls (keyed node|iface|pubkey, like reconcile's `observed`)
-    this._rxHistory = this._rxHistory || {};
     this._probSince = this._probSince || {};   // {pid: firstProblemMs} — persists so Restore/Correct only offers after a real, sustained problem (not a hiccup / mid-create)
     const _sc = (this.panelSettings || {}).status_conditions || {};   // peer-health detection toggles (default on)
     this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)),
-      history: this._rxHistory, faultyMs: _adv.faulty_ms || 45000, probSince: this._probSince,
+      probSince: this._probSince,
+      ...(_adv.churn_gap_s ? { churnGapS: _adv.churn_gap_s } : {}), ...(_adv.churn_min ? { churnMin: _adv.churn_min } : {}),
       detectBlocked: _sc.blocked !== false, detectFaulty: _sc.faulty !== false,
       expiryWarnDays: (this.panelSettings || {}).expiry_warn_days,   // "about to expire" warn window (days) for the derived status
       ...(_adv.restore_grace_ms ? { restoreGraceMs: _adv.restore_grace_ms } : {}),

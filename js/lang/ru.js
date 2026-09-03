@@ -121,8 +121,6 @@ export const STR = {
   "reaching the server but the handshake never completes — likely DPI / MTU / wrong {proto} params":
     "доходит до сервера, но хендшейк не завершается — вероятно DPI / MTU / неверные параметры {proto}",
   "Wireguard or AmneziaWG": "Wireguard или AmneziaWG",
-  "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path":
-    "подключение есть, но входящий трафик не идёт — вероятно односторонняя блокировка / DPI на обратном пути",
   "the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface":
     "интерфейс поднят, но IP пира вне его подсети — исправить нужно запись, а не интерфейс",
   "access is blocked — removed from every server until unblocked":
@@ -1476,6 +1474,12 @@ export const STR = {
   "Last loss {v1} ago.": "Последняя потеря {v1} назад.",
   // budget-ok: appended to a popover row tooltip, wraps
   "Jitter {v1}ms.": "Джиттер {v1}мс.",
+  // budget-ok: status reason sentence, wraps
+  "the tunnel keeps collapsing and rebuilding — the session won't hold, which is what a filtered or DPI'd connection looks like": "туннель постоянно рвётся и пересобирается — сессия не держится, так выглядит фильтруемое или DPI-подавленное соединение",
+  // budget-ok: settings description, wraps
+  "The client's packets reach the server but no handshake has ever completed — blocked at the door (likely DPI / MTU / wrong Wireguard or AmneziaWG params).": "Пакеты клиента доходят до сервера, но рукопожатие ни разу не завершилось — блокировка на входе (вероятно DPI / MTU / неверные параметры Wireguard или AmneziaWG).",
+  // budget-ok: settings description, wraps
+  "The tunnel keeps collapsing and being rebuilt: handshakes far more often than the 120s a healthy session renews at, from an endpoint that isn't moving. A peer that simply has nothing to send is not flagged.": "Туннель постоянно рвётся и пересобирается: рукопожатия намного чаще, чем раз в 120 с, как обновляется здоровая сессия, и при этом адрес не меняется. Пир, которому просто нечего передавать, не помечается.",
   "Drops · {v1}": "Отброшено · {v1}",
   "{v1} of {v2} packets": "{v1} из {v2} пакетов",
   "{v1} of {v2}": "{v1} из {v2}",
@@ -2872,10 +2876,6 @@ export const STR = {
   "Interface colours": "Цвета интерфейсов",
   "The colour each protocol's tags take everywhere — a value per theme. Hover a swatch to preview it.":
     "Каким цветом метки каждого протокола показываются в панели. Наведите на образец для примерки к светлому и тёмному стилю.",
-  "Endpoint is reaching the server, but the handshake never completes (likely DPI / MTU / wrong Wireguard or AmneziaWG params).":
-    "Клиент до сервера достучался, но рукопожатие не завершается (похоже на DPI, MTU или неверные параметры WireGuard/AmneziaWG).",
-  "Handshake is up but no inbound data has flowed for a while — a one-way block / DPI on the return path. (This can't tell a genuinely-stuck peer from a simply-idle one, so turn it off if idle peers bother you.)":
-    "Рукопожатие есть, но входящих данных давно нет — похоже на одностороннюю блокировку или DPI на обратном пути. (Отличить застрявшего пира от просто простаивающего так нельзя, поэтому выключите, если простой мешает.)",
   "Applied when creating a new interface — you can still override per interface.":
     "Подставляется при создании интерфейса — у каждого можно задать своё.",
   "Backup each server's interface key so a wiped / rebuilt node restores its interfaces with their original identities.":
