@@ -28,6 +28,7 @@ import heapq
 import hmac
 import inspect
 import ipaddress
+import errno
 import json
 import os
 import random
@@ -1754,6 +1755,17 @@ def load_critical(path, default):
     except FileNotFoundError:
         return default                                                # legitimately absent → fresh install
     except (json.JSONDecodeError, OSError) as e:
+        # ⚠️ RUNNING OUT OF DESCRIPTORS IS NOT CORRUPTION. EMFILE/ENFILE arrive here as OSError, and the
+        # recovery below PROMOTES A BACKUP OVER THE PRIMARY — so a panel that merely leaked fds would
+        # overwrite a healthy node store with an older snapshot and call it a repair. Seen for real: the
+        # panel reported "nodes.json is corrupt and no good backup exists" while the file was perfect
+        # JSON; only the backups being unopenable TOO (same EMFILE) stopped it rewriting state that had
+        # two freshly-enrolled nodes in it. Say what actually happened and touch nothing.
+        if isinstance(e, OSError) and e.errno in (errno.EMFILE, errno.ENFILE):
+            raise RuntimeError(
+                "%s could not be opened: %s. This is a DESCRIPTOR exhaustion in the panel, not corrupt "
+                "state — the file has not been touched. Restart the panel; if it recurs, the fd watchdog "
+                "logs a thread dump naming what is holding them." % (path, e)) from e
         # ⚠️ "unreadable" covered two very different faults and named neither. A PERMISSION error means the
         # file is fine and we simply cannot open it — almost always because something wrote it as root while
         # the panel runs as its own user. Recovery then silently discards whatever that writer put there, and
@@ -21380,6 +21392,58 @@ def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
         _sub_selfheal(deps, prev, "internal error: %s" % (e,))
 
 
+def _raise_fd_limit():
+    """systemd hands this unit LimitNOFILE=524288 as the HARD limit but leaves the SOFT one at 1024, and
+    Python obeys the soft one — so the panel ran into a 1024-descriptor wall while the kernel was willing to
+    give it far more. Raise soft to hard (capped), which costs nothing and turns a hard outage into headroom."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        want = min(hard, 65536) if hard != resource.RLIM_INFINITY else 65536
+        if soft < want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+            sys.stderr.write("swg-panel: raised open-file limit %d -> %d\n" % (soft, want))
+    except Exception as e:
+        sys.stderr.write("swg-panel: could not raise the open-file limit (%s) — staying at the default\n" % e)
+
+
+_FD_WARNED = {"at": 0.0}
+
+
+def _fd_watchdog_loop():
+    """Descriptors are the panel's real ceiling, and hitting it is silent until EVERYTHING fails at once —
+    reads, writes, even loading the node store, which then gets misreported as corruption.
+
+    So watch the count, and when it crosses 60% of the limit DUMP EVERY THREAD'S STACK to the journal. The
+    outage this was written for left 1027 threads parked on a futex and 932 sockets in CLOSE-WAIT, and the
+    stacks — the one thing that would have named the holder — died with the restart that fixed it. Cheap: one
+    listdir of /proc/self/fd every 30s. SIGUSR1 dumps on demand too (`kill -USR1 <pid>`)."""
+    try:
+        import faulthandler, resource
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
+    except Exception:
+        faulthandler = None
+    while True:
+        try:
+            time.sleep(30)
+            soft = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+            try:
+                n = len(os.listdir("/proc/self/fd"))
+            except OSError:
+                continue                                   # no /proc (odd container) → nothing to watch
+            if soft and n > soft * 0.6 and time.time() - _FD_WARNED["at"] > 600:
+                _FD_WARNED["at"] = time.time()
+                sys.stderr.write("swg-panel: OPEN FILES %d of %d (%d threads) — dumping thread stacks so the "
+                                 "holder is named while it is still happening\n"
+                                 % (n, soft, threading.active_count()))
+                sys.stderr.flush()
+                if faulthandler:
+                    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                    sys.stderr.flush()
+        except Exception:
+            pass
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "passwd":   # host-side password reset, never starts the server
         return passwd_cmd(sys.argv)
@@ -21586,7 +21650,9 @@ def main():
     threading.Thread(target=_turn_update_loop, daemon=True).start()       # scheduled turn-proxy auto-update (opt-in)
     threading.Thread(target=_turn_warm_assets_loop, args=(Handler.deps,), daemon=True).start()   # resolve latest per-OS client download assets → serve.json
     threading.Thread(target=_node_watch_loop, args=(Handler.deps,), daemon=True).start()   # node online/offline → webhooks
-    threading.Thread(target=_catalog_refresh_loop, daemon=True).start()   # keep the routing catalog warm OFF the node-sync request path
+    threading.Thread(target=_catalog_refresh_loop, daemon=True).start()
+    _raise_fd_limit()
+    threading.Thread(target=_fd_watchdog_loop, daemon=True).start()   # name the fd hog BEFORE the wall, not after   # keep the routing catalog warm OFF the node-sync request path
     auth_note = "" if Handler.deps["auth"] else "  [no auth!]"
     LISTENERS.add(BIND_HOST, BIND_PORT, TLS_CERT if scheme == "https" else None,
                   TLS_KEY if scheme == "https" else None, primary=True)
