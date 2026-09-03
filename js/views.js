@@ -380,7 +380,11 @@ export function meshHealth(nodeId) {
     // can be asserted up: the surviving end's handshake age lags up to 180s behind the peer actually going away —
     // which showed an offline node ↓1/1 AND its still-online peer ↑1/1 to a node that's already gone. Zero both.
     const linkDown = nodeStale(nodeId) || nodeStale(peer);
-    return { peer,
+    // Leg quality as measured FROM THIS NODE (the node probes its own links). A handshake says the link is
+    // up; this says whether it carries traffic well — 0.4% loss caps a single cascaded TCP flow at a few
+    // Mbit/s while the same link moves hundreds in the other direction.
+    const link = (((Store.describe || {})[nodeId] || {})[iface] || {}).link || null;
+    return { peer, link,
       out: linkDown ? "down" : stat(nodeId, iface, reprovisioning),
       in:  linkDown ? "down" : stat(peer, pmp.iface, pmp.reprovisioning) };
   });
@@ -400,7 +404,14 @@ export function MeshStat({ nodeId, mode }) {
   const row = n => {   // node name FIRST, then the glowing arrow(s)
     const p = h.peers.find(x => x.peer === n.id);
     const nameCls = p.in === "up" ? "mh-bold" : p.in === "down" ? "mh-dim" : "";
-    return html`<div class="mh-row"><span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span><span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}</span></div>`;
+    // Leg quality, shown with restraint: RTT whenever known, loss ONLY when it is enough to matter. A
+    // "0.0%" on every healthy row is noise that teaches the eye to skip the column — which is precisely
+    // when the one row that matters gets skipped too.
+    const lk = p.link, loss = lk && typeof lk.loss === "number" ? lk.loss : null;
+    const bad = loss != null && loss >= 0.5, warn = loss != null && loss >= 0.05;
+    const legTitle = lk ? T("Leg measured from this node: {v1} of {v2} probe packets lost.",
+                            { v1: lk.window_lost, v2: lk.window_sent }) : "";
+    return html`<div class="mh-row"><span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span><span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}${lk ? html`<span class="faint" style="margin-left:.55rem;letter-spacing:0" title=${legTitle}>${Math.round(lk.rtt_ms)}${T("unit|ms")}</span>` : null}${warn ? html`<b class=${"mh-num " + (bad ? "mhn-bad" : "mhn-warn")} style="margin-left:.35rem" title=${legTitle}>${loss}%</b>` : null}</span></div>`;
   };
   const trigger = mode === "in"
     ? html`<span class="mh-tag mh-tag-hdr"><span class="mh-lbl-hdr">${T("This node's mesh status:")}</span> ${num(h.okIn, "mhn-down")}</span>`

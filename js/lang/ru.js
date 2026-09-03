@@ -1446,8 +1446,10 @@ export const STR = {
   "Default for new peers": "По умолчанию для новых пиров",
   // budget-ok: field <label>, own line
   "Host tunnel IP": "IP туннеля на хосте",
-  // budget-ok: faint suffix in a field row, wraps
-  "(set at creation — delete & recreate to change)": "(задаётся при создании — чтобы изменить, удалите и создайте заново)",
+  // budget-ok: popover row tooltip, wraps
+  "Leg measured from this node: {v1} of {v2} probe packets lost.": "Замер с этой ноды: потеряно {v1} из {v2} проб.",
+  "unit|ms": "мс",
+  "(set at creation — delete & recreate to change)": "(задаётся при создании — меняется пересозданием)",
 
   // Interface detail: down / gone / lost
   "This interface is *down* on the node — its config below is read from the *.conf* (not live). The node reported: {reason}. Use *Start interface* — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.":

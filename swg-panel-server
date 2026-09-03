@@ -11739,6 +11739,12 @@ def api(method, path, qs, body, deps):
             d = node_describe(snap)["data"]["interfaces"]
             apply_iface_meta(nodes.get(nid), d, _current_ivk_pub(deps),
                              bool((snap or {}).get("iface_key_vault_restore")))
+            # Per-leg link health (node's `mesh_health`) rides along on the mesh interface it describes, so
+            # the UI reads it exactly where it already reads that link's other facts. A handshake says the
+            # link is UP; `loss` says whether it is any good — the question a cascade actually depends on.
+            for _ifn, _h in ((snap or {}).get("mesh_health") or {}).items():
+                if _ifn in d and isinstance(d[_ifn], dict):
+                    d[_ifn]["link"] = _h
             out[nid] = d
         return out
 
