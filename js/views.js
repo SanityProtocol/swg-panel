@@ -41,7 +41,10 @@ export const peersView = { node: "", iface: "", q: "", sort: "status", dir: -1, 
 // dropdown can never drift from the badges it filters (that includes the two display remaps: the access-revoke
 // key `disabled` shows as Blocked, the DPI fault key `blocked` as Restricted).
 export const PEER_STATUS_KEYS = ["", "online", "ready", "unassigned", "disabled", "expired", "expiring", "blocking",
-  "restoring", "dangling", "broken", "partial", "blocked", "faulty", "pending", "unknown"];   // i18n-keys
+  "restoring", "dangling", "broken", "partial", "blocked", "pending", "unknown"];   // i18n-keys
+// ("faulty" is gone from this list: the flat-rx rule that produced it could only fire on a false positive,
+//  and the churn detector that replaced it raises "blocked"/Restricted. A filter that can never match is
+//  worse than no filter — it reads as "no faulty peers" rather than "this is not measured any more".)
 export const peerStatusFilters = () => PEER_STATUS_KEYS.map(k => [k, k ? statusLabel(k) : T("All statuses")]);
 // Prominent warning when the panel keeps no client configs at rest — QRs/downloads then only work
 // in the session a peer is created, and existing peers can't be re-shared. Shown on Overview + Peers.

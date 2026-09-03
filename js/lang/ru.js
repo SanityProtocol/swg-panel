@@ -1474,12 +1474,14 @@ export const STR = {
   "Last loss {v1} ago.": "Последняя потеря {v1} назад.",
   // budget-ok: appended to a popover row tooltip, wraps
   "Jitter {v1}ms.": "Джиттер {v1}мс.",
-  // budget-ok: status reason sentence, wraps
-  "the tunnel keeps collapsing and rebuilding — the session won't hold, which is what a filtered or DPI'd connection looks like": "туннель постоянно рвётся и пересобирается — сессия не держится, так выглядит фильтруемое или DPI-подавленное соединение",
   // budget-ok: settings description, wraps
   "The client's packets reach the server but no handshake has ever completed — blocked at the door (likely DPI / MTU / wrong Wireguard or AmneziaWG params).": "Пакеты клиента доходят до сервера, но рукопожатие ни разу не завершилось — блокировка на входе (вероятно DPI / MTU / неверные параметры Wireguard или AmneziaWG).",
   // budget-ok: settings description, wraps
   "The tunnel keeps collapsing and being rebuilt: handshakes far more often than the 120s a healthy session renews at, from an endpoint that isn't moving. A peer that simply has nothing to send is not flagged.": "Туннель постоянно рвётся и пересобирается: рукопожатия намного чаще, чем раз в 120 с, как обновляется здоровая сессия, и при этом адрес не меняется. Пир, которому просто нечего передавать, не помечается.",
+  // budget-ok: status reason sentence, wraps
+  "the tunnel keeps collapsing and being rebuilt — the session won't hold, which is what a filtered or DPI'd connection looks like": "туннель постоянно рвётся и пересобирается — сессия не держится, так выглядит фильтруемое или DPI-подавленное соединение",
+  // budget-ok: settings intro, wraps
+  "Two ways a peer can be under a filter, each independently switchable. Both raise the same {v1} badge — one is blocked at the door, the other gets in and can't stay. A peer that simply has nothing to send is never flagged.": "Два способа обнаружить фильтрацию пира, каждый включается отдельно. Оба поднимают один и тот же значок {v1}: в одном случае пира не пускают на входе, в другом он входит, но не может удержаться. Пир, которому просто нечего передавать, не помечается никогда.",
   "Drops · {v1}": "Отброшено · {v1}",
   "{v1} of {v2} packets": "{v1} из {v2} пакетов",
   "{v1} of {v2}": "{v1} из {v2}",
@@ -3668,7 +3670,6 @@ export const STR = {
   "tag|custom": "свой",
   "tag|heavy": "тяжёлый",
   "tag|restricted": "фильтр",
-  "tag|faulty": "сбой",
   "tag|untitled": "без имени",
   // Panel-service issue: the session-signing key could not be persisted.
   "Session key": "Ключ сессий",
@@ -3840,7 +3841,6 @@ export const STR = {
   "val|server": "сервер",
   "val|core": "ядро",
   "val|with": "с",
-  "val|orange": "оранжевым",
   "val|turn": "turn",
   "{v1} online": "{v1} в сети",
   "{v1} peers": "{v1} пиров",
@@ -4176,8 +4176,6 @@ export const STR = {
     "{v1} ненадолго выпадет из сети (и каскадный/умный трафик через неё замрёт), пока каждый пир не заберёт новые настройки и не переподключится — обычно это несколько секунд. Связи других нод между собой не затронуты.",
   "turn-proxy": "turn-прокси",
   "loading…": "загрузка…",
-  "Which failure conditions the panel flags on a peer. All on by default — untick one to stop it showing that status (the peer just reads online / ready instead). Both appear in {v1}.":
-    "Какие неполадки панель отмечает у пира. По умолчанию включено всё — снимите галочку, и этот статус показываться не будет (пир будет просто «в сети» или «готов»). Оба показываются {v1}.",
   "with {v1} core": "на ядре {v1}",
   "by {v1} with {v2} core": "от {v1}, ядро {v2}",
   "by {v1}": "от {v1}",

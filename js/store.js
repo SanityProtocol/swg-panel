@@ -359,7 +359,10 @@ export const Store = {
     this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)),
       probSince: this._probSince,
       ...(_adv.churn_gap_s ? { churnGapS: _adv.churn_gap_s } : {}), ...(_adv.churn_min ? { churnMin: _adv.churn_min } : {}),
-      detectBlocked: _sc.blocked !== false, detectFaulty: _sc.faulty !== false,
+      // Both detectors raise the SAME badge ("restricted") from different evidence, and each stays
+      // independently switchable. `_sc.faulty` keeps its stored name: it gated the flat-rx rule that the
+      // churn detector replaced, and renaming the key would silently re-enable it for anyone who turned it off.
+      detectBlocked: _sc.blocked !== false, detectChurn: _sc.faulty !== false,
       expiryWarnDays: (this.panelSettings || {}).expiry_warn_days,   // "about to expire" warn window (days) for the derived status
       ...(_adv.restore_grace_ms ? { restoreGraceMs: _adv.restore_grace_ms } : {}),
       ...(_adv.node_stale_ms ? { nodeStaleMs: _adv.node_stale_ms } : {}), ...(_adv.peer_grace_ms ? { graceMs: _adv.peer_grace_ms } : {}) });

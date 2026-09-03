@@ -150,7 +150,7 @@ function reconcile(roster, stats, now, cfg) {
       const key = t.node + "|" + t.iface + "|" + pubkey;
       managed[key] = true;
       const obs = observed[key] || null;
-      let st;
+      let st, faultKind = null;   // which RESTRICTED signature fired: "churn" (session won't hold) | "nohs" (never got in)
       if (nodeStatus[t.node] !== "live") st = "unknown";
       else if (obs) {
         if (obs.online) {
@@ -171,16 +171,16 @@ function reconcile(roster, stats, now, cfg) {
           // The node measures the cadence now (see _session_health), so it works with no browser open and
           // survives a reload; the browser-side rx history it replaces did neither. An older node sends no
           // cadence, and then nothing is flagged — a missing measurement must never invent a fault.
-          if (cfg.detectFaulty !== false && obs.hs_gap_med != null
+          if (cfg.detectChurn !== false && obs.hs_gap_med != null
               && obs.hs_seen >= (cfg.churnMin || 3)
               && obs.hs_gap_med <= (cfg.churnGapS || 60)
-              && !obs.ep_moves) st = "faulty";   // a ROAMING client rehandshakes legitimately — its endpoint moved
+              && !obs.ep_moves) { st = "blocked"; faultKind = "churn"; }   // a ROAMING client rehandshakes legitimately — its endpoint moved
         } else if (cfg.detectBlocked !== false && obs.endpoint && (obs.rx_bytes || 0) > 0
                    && obs.handshake_age == null && (now - createdMs) > cfg.graceMs) {
           // BLOCKED: the client IS sending packets (rx moved) but no handshake ever completed — it reaches the
           // server and the tunnel won't come up (DPI on the handshake, MTU, wrong params). The endpoint alone
           // does not prove that: a server conf can carry one, and then nothing has arrived at all.
-          st = "blocked";
+          st = "blocked"; faultKind = "nohs";
         } else st = "ready";
       }
       else {
@@ -221,7 +221,7 @@ function reconcile(roster, stats, now, cfg) {
                // roster's own). effectiveClientParams needs them to rebuild a config from the encrypted blob,
                // and dropping them here is what made the panel's QR disagree with the peer's subscription page.
                overrides: t.overrides || null,
-               status: st, online: !!(obs && obs.online), observed: obs, via: via,
+               status: st, fault: faultKind, online: !!(obs && obs.online), observed: obs, via: via,
                viaTurn: viaTurn,   // the SPECIFIC turn-proxy service the peer came in through (one per connection)
                restorable: (st === "dangling") && _trip,   // this deployment's interface is gone long enough → offer Restore
                correctable: (st === "broken") && _trip,     // this deployment's IP is out-of-subnet long enough → offer Correct
@@ -294,9 +294,12 @@ function reconcile(roster, stats, now, cfg) {
       const bt = new Set(targets.filter(d => d.status === "blocked").map(d => d.type));
       // datapath NAMES, not language — they are what the operator sees in wg/awg output   // i18n-keys
       const proto = (bt.has("awg") && bt.has("wg")) ? "Wireguard or AmneziaWG" : bt.has("awg") ? "AmneziaWG" : bt.has("wg") ? "Wireguard" : "Wireguard or AmneziaWG";   // i18n-keys
-      reason = T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {v1} params", { v1: proto });
+      // Two very different failures wear this badge, and they need different fixes: one never got in at all,
+      // the other gets in and cannot stay. Churn wins when both are present — it is the more specific finding.
+      reason = targets.some(d => d.fault === "churn")
+        ? T("the tunnel keeps collapsing and being rebuilt — the session won't hold, which is what a filtered or DPI'd connection looks like")
+        : T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {v1} params", { v1: proto });
     }
-    else if (status === "faulty") reason = T("the tunnel keeps collapsing and rebuilding — the session won't hold, which is what a filtered or DPI'd connection looks like");
     else if (status === "broken") reason = T("the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface");
     else if (status === "expired") reason = selfExpired ? T("this peer's access date has passed") : T("the subscription's access date has passed");
 

@@ -2323,12 +2323,12 @@ const sectionLabel = k => ({
               sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>CSQTT</span>`}/><span class="pallbl">CSQTT</span></span>
           </div>
           <div class="seclabel">${T("Peer health detection")}</div>
-          <p class="hint" style="margin:0 0 10px">${Trich("Which failure conditions the panel flags on a peer. All on by default — untick one to stop it showing that status (the peer just reads online / ready instead). Both appear in {v1}.", { v1: html`<span class="b-faulty" style="padding:1px 6px;border-radius:6px">${T("val|orange")}</span>` })}</p>
+          <p class="hint" style="margin:0 0 10px">${Trich("Two ways a peer can be under a filter, each independently switchable. Both raise the same {v1} badge — one is blocked at the door, the other gets in and can't stay. A peer that simply has nothing to send is never flagged.", { v1: html`<span class="b-blocked" style="padding:1px 6px;border-radius:6px">${T("tag|restricted")}</span>` })}</p>
           <div class="condrow"><${Switch} on=${statusConds.blocked} onChange=${v => setStatusConds(c => ({ ...c, blocked: v }))}/>
             <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>${T("tag|restricted")}</span></span>
             <span class="cond-t">${T("The client's packets reach the server but no handshake has ever completed — blocked at the door (likely DPI / MTU / wrong Wireguard or AmneziaWG params).")}</span></div>
           <div class="condrow"><${Switch} on=${statusConds.faulty} onChange=${v => setStatusConds(c => ({ ...c, faulty: v }))}/>
-            <span class="cond-b"><span class="badge b-faulty ic"><${Ic} i="warn"/>${T("tag|faulty")}</span></span>
+            <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>${T("tag|restricted")}</span></span>
             <span class="cond-t">${T("The tunnel keeps collapsing and being rebuilt: handshakes far more often than the 120s a healthy session renews at, from an endpoint that isn't moving. A peer that simply has nothing to send is not flagged.")}</span></div>
           <div class="seclabel">${T("Defaults")}</div>
           <p class="hint" style="margin:0 0 12px">${T("Applied when creating a new interface — you can still override per interface.")}</p>

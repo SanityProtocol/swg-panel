@@ -784,7 +784,6 @@ export function gridIfacesTag(prim, all) {
 // every grid regardless of which columns are shown. Otherwise the normal Badge.
 const STATUS_REASONS = once(() => ({
   blocked: blockedReason(null),
-  faulty: T("the tunnel keeps collapsing and rebuilding — the session won't hold, which is what a filtered or DPI'd connection looks like"),
   broken: T("the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface"),
   disabled: T("access is blocked — removed from every server until unblocked"),
   expired: T("the access date has passed — removed from every server until the date is extended"),
@@ -796,6 +795,9 @@ export const statusReason = s => STATUS_REASONS()[s] || "";
 // The protocol name is INTERPOLATED, not concatenated: it lands mid-sentence, and only one language puts it there.
 export function protoLabel(type) { return type === "awg" ? "AmneziaWG" : type === "wg" ? "Wireguard" : T("Wireguard or AmneziaWG"); }
 export function blockedReason(type) { return T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {proto} params", { proto: protoLabel(type) }); }
+// The other "restricted" signature: the handshake DOES complete, repeatedly, because the session will not
+// hold. Mirrors the dynamic reason reconcile.js sets peer-wide.
+export function churnReason() { return T("the tunnel keeps collapsing and being rebuilt — the session won't hold, which is what a filtered or DPI'd connection looks like"); }
 // The "why" bubble for an Uncategorised peer, as a Popover rather than the CSS-only .turnbub: every peers
 // grid lives inside `.panel`, which is `overflow:hidden` to clip the table to its rounded corners, so a bubble
 // anchored inside it is CUT OFF at the panel's bottom edge — measured, 54px of a 112px bubble on the last row.
@@ -812,7 +814,9 @@ export function uncatPop(trigger) {
 export function gridStatusBadge(t, p, re) {
   const st = t.status || p.status;
   const reason = (t.down ? T("Interface {iface} is down — {why}", { iface: t.iface, why: t.down })
-    : st === "blocked" ? blockedReason(t.type)   // name THIS deployment's datapath (wg / awg) in the "wrong params" hint
+    // "restricted" now covers two failures. `t.fault` says which one this deployment hit, so the bubble
+    // stops telling a peer whose session keeps collapsing that its handshake never completed.
+    : st === "blocked" ? (t.fault === "churn" ? churnReason() : blockedReason(t.type))   // name THIS deployment's datapath (wg / awg) in the "wrong params" hint
     : (p.reason || statusReason(st))) || "";
   // UNCATEGORISED keeps the peer's real status word and recolours it, the same grammar `b-turn` uses for
   // "online, but via a proxy". Replacing the word with "Uncategorised" threw away something true — the peer
@@ -841,7 +845,7 @@ export function gridStatusBadge(t, p, re) {
     const bc = "var(--fault)";
     return html`<span class="turnwrap" title="">
       <${Badge} s=${st}/>
-      <span class="turnbub statusbub"><span class="statusbub-h" style=${"color:" + bc}><${Ic} i="warn"/>${st === "blocked" ? "Restricted" : "Faulty"}</span>${reason}</span></span>`;
+      <span class="turnbub statusbub"><span class="statusbub-h" style=${"color:" + bc}><${Ic} i="warn"/>${statusLabel(st)}</span>${reason}</span></span>`;
   }
   return html`<${Badge} s=${st} title=${reason}/>`;
 }
@@ -851,7 +855,7 @@ export function badgeWithReason(st, reason) {
   reason = reason || statusReason(st);
   if ((st === "blocked" || st === "faulty") && reason) {
     return html`<span class="turnwrap" title=""><${Badge} s=${st}/>
-      <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${st === "blocked" ? "Restricted" : "Faulty"}</span>${reason}</span></span>`;
+      <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${statusLabel(st)}</span>${reason}</span></span>`;
   }
   return html`<${Badge} s=${st} title=${reason}/>`;
 }
