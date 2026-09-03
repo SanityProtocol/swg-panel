@@ -2355,10 +2355,25 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .mh-ar{font-family:var(--mono);line-height:1;font-size:12.5px}   /* identical to the throughput arrows: same MONO glyph, size + weight */
 .mh-ar.mh-down.s-up{color:var(--online)}
 .mh-ar.mh-up.s-up{color:var(--ready)}
-.mh-row{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:4px 14px 4px 8px}   /* name left (aligns title) · arrows right-aligned, inset a bit more than the names */
-.mh-rn{font-family:var(--mono);font-size:12.5px;flex:none}
+/* GRID, not flex: the leg columns have to line up down the bubble, and a per-row flex sizes each row on its
+   own contents — which is what made 2ms / 18ms / 1ms sit at three different x positions. Every row shares one
+   fixed template, so the columns align without the container needing to be the grid (which would cost the
+   per-row hover box). Same frame as the other bubbles' rows: 5px 8px, 6px radius, baseline alignment. */
+.mh-row{display:grid;grid-template-columns:1fr 5ch max-content;gap:12px;align-items:baseline;padding:5px 8px;border-radius:6px;white-space:nowrap}
+.mh-bubble.has-loss .mh-row{grid-template-columns:1fr 7ch 5ch max-content}   /* loss column only when a leg has loss */
+.mh-row:hover{background:var(--surface)}
+.mh-rn{font-family:var(--mono);font-size:12.5px}
 .mh-rn.mh-bold{font-weight:700} .mh-rn.mh-dim{opacity:.5}
-.mh-rar{display:inline-flex;gap:6px;flex:none}
+/* the numeric columns: same mono/size the other bubbles use for values (.onlpop .on-ct), right-aligned so
+   the digits stack rather than the words. */
+.mh-loss,.mh-rtt{font-family:var(--mono);font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
+.mh-rtt{color:var(--muted)}
+.mh-loss{color:var(--muted)}
+.mh-loss.mhn-warn{color:#F0913C} .mh-loss.mhn-bad{color:var(--dangling)}
+/* header: .onpop-h is scoped to .onlpop, so this bubble was rendering its title with no rule at all. Same
+   eyebrow as every other bubble rather than a second look. */
+.mh-bubble .onpop-h{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:4px 8px 6px}
+.mh-rar{display:inline-flex;gap:6px;justify-content:flex-end}
 .mh-rar .mh-ar{font-size:13px}   /* small arrows, matching the line */
 .mh-rar .mh-ar.s-up{text-shadow:0 0 8px currentColor}   /* static glow only for up status — green (down) / blue (up); yellow + red get no glow */
 .deppop.mh-bubble{width:max-content;min-width:120px}   /* dynamic width — sized to the longest node name */

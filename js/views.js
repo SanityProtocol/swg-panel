@@ -401,22 +401,33 @@ export function MeshStat({ nodeId, mode }) {
   // all-up → the arrow's colour (inbound green · outbound blue) · none up → red · partial → orange
   const num = (ok, dir) => html`<b class=${"mh-num " + (mode === "in" ? "mh-num-hdr " : "") + (ok >= h.total ? dir : ok === 0 ? "mhn-bad" : "mhn-warn")}>${ok}/${h.total}</b>`;
   const ordered = (Store.nodes || []).filter(n => h.peers.some(p => p.peer === n.id));
+  // The loss COLUMN exists only when some leg actually has loss — otherwise a healthy fleet pays for an
+  // empty gutter on every row. Layout stays stable while it is there, so a value appearing does not shift
+  // the columns beside it.
+  const anyLoss = h.peers.some(p => p.link && typeof p.link.loss === "number" && p.link.loss >= 0.05);
   const row = n => {   // node name FIRST, then the glowing arrow(s)
     const p = h.peers.find(x => x.peer === n.id);
     const nameCls = p.in === "up" ? "mh-bold" : p.in === "down" ? "mh-dim" : "";
-    // Leg quality, shown with restraint: RTT whenever known, loss ONLY when it is enough to matter. A
-    // "0.0%" on every healthy row is noise that teaches the eye to skip the column — which is precisely
-    // when the one row that matters gets skipped too.
+    // Leg quality in FIXED columns so they line up down the bubble, loss first because it is the alarm and
+    // sits closest to the name that owns it. Loss renders ONLY when it is enough to matter: a "0.0%" on
+    // every healthy row is noise that teaches the eye to skip the column, and then the one row that matters
+    // gets skipped with it. The column itself only exists when some leg has loss (see anyLoss), so a healthy
+    // fleet does not carry an empty gutter.
     const lk = p.link, loss = lk && typeof lk.loss === "number" ? lk.loss : null;
     const bad = loss != null && loss >= 0.5, warn = loss != null && loss >= 0.05;
     const legTitle = lk ? T("Leg measured from this node: {v1} of {v2} probe packets lost.",
                             { v1: lk.window_lost, v2: lk.window_sent }) : "";
-    return html`<div class="mh-row"><span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span><span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}${lk ? html`<span class="faint" style="margin-left:.55rem;letter-spacing:0" title=${legTitle}>${Math.round(lk.rtt_ms)}${T("unit|ms")}</span>` : null}${warn ? html`<b class=${"mh-num " + (bad ? "mhn-bad" : "mhn-warn")} style="margin-left:.35rem" title=${legTitle}>${loss}%</b>` : null}</span></div>`;
+    return html`<div class="mh-row" title=${legTitle}>
+      <span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span>
+      ${anyLoss ? html`<span class=${"mh-loss" + (bad ? " mhn-bad" : warn ? " mhn-warn" : "")}>${warn ? loss + "%" : ""}</span>` : null}
+      <span class="mh-rtt">${lk && lk.rtt_ms != null ? Math.round(lk.rtt_ms) + T("unit|ms") : ""}</span>
+      <span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}</span>
+    </div>`;
   };
   const trigger = mode === "in"
     ? html`<span class="mh-tag mh-tag-hdr"><span class="mh-lbl-hdr">${T("This node's mesh status:")}</span> ${num(h.okIn, "mhn-down")}</span>`
     : html`<span class="mh-tag"><span class="nm-l">${T("Mesh")}</span><span class="mh-grp"><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn, "mhn-down")}</span><span class="mh-grp"><span class="mh-ar mh-up s-up">↑</span>${num(h.okOut, "mhn-up")}</span></span>`;
-  return html`<${Popover} cls="mh-pop" popCls="mh-bubble" alignRight=${true} trigger=${trigger}>
+  return html`<${Popover} cls="mh-pop" popCls=${"mh-bubble" + (anyLoss ? " has-loss" : "")} alignRight=${true} trigger=${trigger}>
     <div class="onpop-h">${mode === "in" ? T("Inbound links") : T("Mesh connections")}</div>
     ${ordered.map(row)}
   </${Popover}>`;
