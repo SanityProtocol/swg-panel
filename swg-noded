@@ -5210,6 +5210,100 @@ def iface_boot_persists(iface, cmd, now=None):
     return val
 
 
+# ── PER-LEG LINK HEALTH ──────────────────────────────────────────────────────────────────────────────────
+# The mesh carries every cascaded byte, and until now the panel could see only whether a link HANDSHAKES.
+# That is not the same question. A leg can handshake perfectly and still be losing 0.4% of full-size packets,
+# which is enough to cap a single end-to-end TCP flow at a few Mbit/s (Mathis: MSS / (RTT * sqrt(p)) — at
+# 37ms and 0.4% that is ~4 Mbit/s no matter how much bandwidth exists) while the same link moves 200 Mbit/s
+# in the other direction. Measured on this fleet: one leg at 36.7ms/0.4% collapsed a client's upload from
+# 147 to 8 Mbit/s, and read 0% loss again hours later. Nothing in the panel showed either state.
+#
+# So: probe each mesh link and report loss + RTT alongside the handshake.
+#
+# ⚠️ THE PEER ADDRESS COMES FROM THE LOCAL /31, NOT FROM AllowedIPs. A link that is a cascade EXIT carries
+# `allowed-ips 0.0.0.0/0`, so reading the peer from there yields 0.0.0.0 and pings LOOPBACK — which answers
+# in 0.02ms with 0% loss and looks like a perfectly healthy leg. That false pass cost real time to spot.
+MESH_PROBE_EVERY_S = 60
+MESH_PROBE_COUNT = 20
+MESH_PROBE_SIZE = 1200          # full-size: small packets can pass cleanly on a leg that drops big ones
+# ⚠️ ONE PROBE IS NOT A LOSS MEASUREMENT. At 20 packets a 0.4% link loses 0.08 packets per probe: you see 0
+# almost every time and occasionally 1, which reads as 5%. Reporting the last probe would be reporting noise,
+# and anything automatic driven off it would flap. So accumulate: keep a rolling window of (sent, lost) and
+# report the RATIO OVER THE WINDOW, which is the quantity that actually converges. 20 pkts/60s over a 30-min
+# window is 600 packets — enough to tell "clean" from "0.4%", not enough to split 0.1% from 0.2%. Say so in
+# the data (`window_sent`) rather than implying a precision that is not there.
+MESH_WINDOW = 30                # probes retained (30 x 60s = 30 min)
+_MESH_HEALTH = {}               # iface -> {peer, loss, rtt_ms, mdev_ms, window_sent, window_lost, at}
+_MESH_HIST = {}                 # iface -> [(sent, lost), ...] most recent last
+_MESH_LOCK = threading.Lock()
+
+
+def _mesh_peer_ip(iface):
+    """The other end of the point-to-point mesh link, derived from OUR address. See the warning above."""
+    r = run(["ip", "-4", "-o", "addr", "show", iface])
+    if r.returncode != 0:
+        return ""
+    m = re.search(r"inet (\d+\.\d+\.\d+\.\d+/\d+)", r.stdout or "")
+    if not m:
+        return ""
+    try:
+        n = ipaddress.ip_interface(m.group(1))
+        if n.network.prefixlen >= 32:
+            return ""
+        return next((str(h) for h in n.network.hosts() if h != n.ip), "")
+    except ValueError:
+        return ""
+
+
+def _mesh_probe_once(iface):
+    peer = _mesh_peer_ip(iface)
+    if not peer:
+        return None
+    r = run(["ping", "-n", "-q", "-I", iface, "-c", str(MESH_PROBE_COUNT), "-i", "0.2",
+             "-s", str(MESH_PROBE_SIZE), "-W", "2", peer], timeout=MESH_PROBE_COUNT * 2 + 10)
+    if r.returncode not in (0, 1):                 # 1 = some loss, still a valid measurement
+        return None
+    out = r.stdout or ""
+    loss = re.search(r"([0-9.]+)% packet loss", out)
+    rtt = re.search(r"= ([0-9.]+)/([0-9.]+)/([0-9.]+)/([0-9.]+) ms", out)
+    if not loss:
+        return None
+    lost = round(float(loss.group(1)) / 100.0 * MESH_PROBE_COUNT)
+    return {"peer": peer, "sent": MESH_PROBE_COUNT, "lost": lost,
+            "rtt_ms": float(rtt.group(2)) if rtt else None,
+            "mdev_ms": float(rtt.group(4)) if rtt else None, "at": int(time.time())}
+
+
+def _mesh_probe_loop(node_cfg):
+    """Background, never in the sync path: a probe is seconds of wall-clock and the loop runs every 5s."""
+    while True:
+        try:
+            for iface in sorted(n for n in (node_cfg.get("interfaces") or {}) if n.startswith("swg_")):
+                got = _mesh_probe_once(iface)
+                if got:
+                    with _MESH_LOCK:
+                        h = _MESH_HIST.setdefault(iface, [])
+                        h.append((got["sent"], got["lost"]))
+                        del h[:-MESH_WINDOW]
+                        sent = sum(a for a, _ in h) or 1
+                        lost = sum(b for _, b in h)
+                        _MESH_HEALTH[iface] = {
+                            "peer": got["peer"], "rtt_ms": got["rtt_ms"], "mdev_ms": got["mdev_ms"],
+                            "loss": round(lost * 100.0 / sent, 3),   # over the WINDOW, not the last probe
+                            "window_sent": sent, "window_lost": lost, "at": got["at"]}
+            with _MESH_LOCK:                        # drop links that no longer exist
+                for gone in [k for k in _MESH_HEALTH if k not in (node_cfg.get("interfaces") or {})]:
+                    _MESH_HEALTH.pop(gone, None); _MESH_HIST.pop(gone, None)
+        except Exception:
+            pass                                    # a probe must never take the node down
+        time.sleep(MESH_PROBE_EVERY_S)
+
+
+def mesh_health():
+    with _MESH_LOCK:
+        return {k: dict(v) for k, v in _MESH_HEALTH.items()}
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -5297,6 +5391,9 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # asymmetric route is what strict rp_filter drops the return half of.
             "rp_filter": {"needed": bool(_RPF["needed"]), "bad": list(_RPF["bad"])},
             "datapath": node_datapath_health(),          # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal)
+            # Per-leg loss/RTT for every mesh link (see MESH_PROBE_EVERY_S). Handshake says the link is UP;
+            # this says whether it is any GOOD, which is the question a cascade actually depends on.
+            "mesh_health": mesh_health(),
             "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
             "ifaces_awaiting_key": sorted(_AWAIT_KEY),   # held for the vault, NOT missing — see _AWAIT_KEY
             # ⚠️ CAN this node put a vault-relayed key back? A build older than T-22 ignores `sealed_key`
@@ -11095,6 +11192,9 @@ def main():
         backfill_cmd_markers(node_cfg)     # existing confs get the marker too — see backfill_cmd_markers
     if TURN_DOCKER:   # download + start turn-proxy containers in the BACKGROUND so the node appears on the
         threading.Thread(target=_dturn_bg_loop, daemon=True).start()   # panel immediately (cards show installing → up)
+    # Per-leg link health. Background because a probe is seconds of wall clock and the sync loop runs every 5s;
+    # the snapshot reads the cache, so a slow or hung probe can never delay a sync.
+    threading.Thread(target=_mesh_probe_loop, args=(node_cfg,), daemon=True).start()
     while True:
         t0 = time.time()
         _LOOP["n"] += 1                             # new loop → per-loop caches (nft table render) refresh
