@@ -2376,8 +2376,8 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .mh-rar{display:inline-flex;gap:6px;justify-content:flex-end}
 /* leg quality on the mesh link CARDS — same amber/red the bubble uses, so one link reads the same wherever
    it is shown. Scoped to .ifrow .r so it beats the row's own colour without !important. */
-.ifcard .ifrow .r.lk-warn{color:#F0913C}
-.ifcard .ifrow .r.lk-bad{color:var(--dangling)}
+.ifcard .ifrow .r .lk-warn{color:#F0913C}
+.ifcard .ifrow .r .lk-bad{color:var(--dangling)}
 .mh-rar .mh-ar{font-size:13px}   /* small arrows, matching the line */
 .mh-rar .mh-ar.s-up{text-shadow:0 0 8px currentColor}   /* static glow only for up status — green (down) / blue (up); yellow + red get no glow */
 .deppop.mh-bubble{width:max-content;min-width:120px}   /* dynamic width — sized to the longest node name */
