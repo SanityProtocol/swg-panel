@@ -1377,6 +1377,31 @@ def _iface_is_mesh(node_cfg, iface, subnet):
     return False
 
 
+def _egress_des(egress, wan_ov, default_egress_ip, default_wan, subnet, rules, is_mesh=False):
+    """The egress rule ONE client tunnel should have, whatever kind of tunnel it is.
+
+    ⚠️ THIS EXISTS BECAUSE THE KINDS DIVERGED. wg/awg interfaces ran this ladder while the WDTT and csqtt
+    loops below hard-coded ("MASQUERADE", default_wan, "") — so a self-contained server ignored its own
+    `egress_ip` AND the node-level `default_egress_ip`, and left the source address to whatever the kernel
+    picks for the WAN: its primary address. On a box with five addresses that is not the operator's chosen
+    exit at all, and it silently WAS the address the server listens on. Measured on msk-shadow: every wg/awg
+    interface exited 217.26.30.152 (the node default, as configured) while csqtt1 exited 84.54.30.11 — its
+    own entrance IP. The panel had validated, stored and shipped `egress_ip` for these kinds all along.
+
+    Order matters: an explicit per-instance source beats the node default, which beats a pinned WAN, which
+    beats the healed baseline. Only the BASELINE defers to a foreign NAT — an explicit choice is not a gap
+    to fill in, it is an instruction."""
+    if egress:                                            # SNAT to a chosen source IP, out a chosen/auto WAN
+        return ("SNAT", wan_ov or default_wan, egress)
+    if default_egress_ip:                                 # node-level default direct egress IP (fallback)
+        return ("SNAT", wan_ov or default_wan, default_egress_ip)
+    if wan_ov:                                            # just pin the WAN egress interface
+        return ("MASQUERADE", wan_ov, "")
+    if not is_mesh and not _has_foreign_egress(subnet, rules):   # baseline: a client tunnel must egress
+        return ("MASQUERADE", default_wan, "")
+    return None
+
+
 def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
     """Per LOCAL interface, ensure its egress source-NAT, tagged 'swg-egress:<iface>' (inserted ahead of any
     default MASQUERADE), replaced on change, removed when cleared. Cases, in order:
@@ -1409,16 +1434,7 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
         is_mesh = _iface_is_mesh(node_cfg, iface, subnet)
         if not is_mesh:
             client_devs.append(iface)                         # client tunnels also get FORWARD-accept + MSS-clamp (below)
-        if egress:                                            # SNAT to a chosen source IP, out a chosen/auto WAN
-            des = ("SNAT", wan_ov or default_wan, egress)
-        elif default_egress_ip:                               # node-level default direct egress IP (fallback)
-            des = ("SNAT", wan_ov or default_wan, default_egress_ip)
-        elif wan_ov:                                          # just pin the WAN egress interface
-            des = ("MASQUERADE", wan_ov, "")
-        elif not is_mesh and not _has_foreign_egress(subnet, rules):   # baseline: a client interface must egress — heal a
-            des = ("MASQUERADE", default_wan, "")             #   plain MASQUERADE, but never a mesh link and never when the
-        else:                                                 #   subnet is already source-NATed (PostUp / cascade / hand)
-            des = None
+        des = _egress_des(egress, wan_ov, default_egress_ip, default_wan, subnet, rules, is_mesh)
         changed, err = _snat_reconcile_rule("swg-egress:" + iface, subnet, des, rules)
         if err:
             res["errors"].append("egress " + iface + ": " + err); continue
@@ -1431,7 +1447,8 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
         _wsub = _wdtt_subnet(_winst.get("wg_addr") or "")
         if not _wsub:
             continue
-        _wdes = ("MASQUERADE", default_wan, "") if not _has_foreign_egress(_wsub, rules) else None
+        _wdes = _egress_des((_winst.get("egress_ip") or "").strip(), _safe_wan(_winst.get("wan_iface"), ""),
+                            default_egress_ip, default_wan, _wsub, rules)
         changed, err = _snat_reconcile_rule("swg-egress:" + _wif, _wsub, _wdes, rules)
         if err:
             res["errors"].append("egress " + _wif + ": " + err); continue
@@ -1445,7 +1462,8 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
         if _wraw:
             _rsub = _wdtt_subnet(_wraw[2])
             if _rsub:
-                _rdes = ("MASQUERADE", default_wan, "") if not _has_foreign_egress(_rsub, rules) else None
+                _rdes = _egress_des((_winst.get("egress_ip") or "").strip(), _safe_wan(_winst.get("wan_iface"), ""),
+                                    default_egress_ip, default_wan, _rsub, rules)
                 changed, err = _snat_reconcile_rule("swg-egress:" + _wraw[1], _rsub, _rdes, rules)
                 if err:
                     res["errors"].append("egress " + _wraw[1] + ": " + err)
@@ -1459,7 +1477,8 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
         _csub = _csqtt_subnet(_cinst.get("tun_addr") or "")
         if not _csub:
             continue
-        _cdes = ("MASQUERADE", default_wan, "") if not _has_foreign_egress(_csub, rules) else None
+        _cdes = _egress_des((_cinst.get("egress_ip") or "").strip(), _safe_wan(_cinst.get("wan_iface"), ""),
+                            default_egress_ip, default_wan, _csub, rules)
         changed, err = _snat_reconcile_rule("swg-egress:" + _cif, _csub, _cdes, rules)
         if err:
             res["errors"].append("egress " + _cif + ": " + err); continue
