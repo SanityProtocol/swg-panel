@@ -85,6 +85,37 @@ export function cpuColor(v) {
   if (v <= 100) return mix(LOAD_O, LOAD_R, (v - 85) / 15);
   return mix(LOAD_R, LOAD_R, 0);
 }
+// Loss / drop colour ramp, in the panel's own status hues — NOT the CPU ramp's green. Green means "fine",
+// and a link losing packets is not fine, so the lowest band is BLUE: "measured, and not a problem".
+//
+// The blue is a FLOOR, not the first stop of the gradient. Interpolating out of blue lands on a grey-beige
+// right where the interesting values sit, and interpolating hue instead walks through green to get there —
+// the exact wrong signal. Above the floor the ramp runs warm only: partial (yellow) → fault (orange) →
+// dangling (red), three adjacent hues that stay saturated the whole way.
+//
+// Bands, chosen to under-warn rather than over-warn: blue to 0.5%, yellow→orange 0.5–2%, orange→red 2–5%,
+// full red past 5%. ⚠️ Known trade-off, recorded deliberately: 0.4% loss is enough to collapse a cascaded
+// upload (measured — 147 Mbit/s to 8 on this fleet) and under these bands it reads BLUE. That is the
+// operator's call and the right default for a panel nobody should learn to ignore; the number and its
+// sample count are always on the row for anyone reading closely. Tune here; no caller picks colours.
+const LOSS_FLOOR = 0.5;
+const LOSS_FLOOR_DARK = [79, 168, 240], LOSS_FLOOR_LIGHT = [43, 124, 211];        // --ready
+const LOSS_STOPS_DARK = [[0.5, [226, 200, 74]], [2, [242, 153, 74]], [5, [242, 107, 130]]];   // partial → fault → dangling
+const LOSS_STOPS_LIGHT = [[0.5, [176, 122, 22]], [2, [217, 119, 42]], [5, [214, 58, 85]]];
+export function lossColor(pct) {
+  const light = resolvedTheme() === "light";
+  const S = light ? LOSS_STOPS_LIGHT : LOSS_STOPS_DARK;
+  const rgb = a => "rgb(" + a.join(",") + ")";
+  if (!(pct > LOSS_FLOOR)) return rgb(light ? LOSS_FLOOR_LIGHT : LOSS_FLOOR_DARK);
+  for (let i = 1; i < S.length; i++) {
+    if (pct <= S[i][0]) {
+      const [lo, a] = S[i - 1], [hi, b] = S[i], t = (pct - lo) / (hi - lo);
+      return rgb(a.map((x, k) => Math.round(x + (b[k] - x) * t)));
+    }
+  }
+  return rgb(S[S.length - 1][1]);
+}
+
 export function MiniArea({ points, h, times, range, cap }) {
   const [hov, setHov] = useState(null);
   const wref = useRef(null);

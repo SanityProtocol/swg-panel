@@ -25,7 +25,7 @@ import {
 } from "./ui.js";
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
-         RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, histTime, ChartHover, IfaceThroughput,
+         RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, lossColor, histTime, ChartHover, IfaceThroughput,
          RANGE_CAP } from "./charts.js";
 import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, onlineUserRows, onlinePeerRows,
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES } from "./views.js";
@@ -393,8 +393,8 @@ export function NodeDetail({ node: rawName }) {
               if (_lk.rtt_ms == null) return null;
               // One row, not two: latency is the link's defining fact and loss is a qualifier ON it, so the
               // card reads "18ms (0.4% loss)" rather than splitting one measurement across two label rows.
-              const _bad = _ls != null && _ls >= 0.5, _warn = _ls != null && _ls >= 0.05;
-              return html`<div class="ifrow" title=${_tip}><span class="l">${T("col|Latency")}</span><span class="r addr">${Math.round(_lk.rtt_ms)}${T("unit|ms")}${_warn ? html` <span class=${_bad ? "lk-bad" : "lk-warn"}>${T("(Loss {v1}%)", { v1: _ls })}</span>` : null}</span></div>`;
+              const _warn = _ls != null && _ls >= 0.05;   // show it at all; lossColor decides how loud
+              return html`<div class="ifrow" title=${_tip}><span class="l">${T("col|Latency")}</span><span class="r addr">${Math.round(_lk.rtt_ms)}${T("unit|ms")}${_warn ? html` <span style=${"color:" + lossColor(_ls)}>${T("(Loss {v1}%)", { v1: _ls })}</span>` : null}</span></div>`;
             })()}
             ${carried.length ? html`<div class="ifrow"><span class="l">${T("Carrying")}</span><span class="r"><span class="carry-tags">${carried.map(k => html`<span class=${"tg tg-" + ((meta[k].awg_params && Object.keys(meta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`)}</span></span></div>` : null}
           </div></div>`;
@@ -923,6 +923,15 @@ export function NodeDetail({ node: rawName }) {
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${m.subnet || "—"}</span></div>
+                  ${(() => {
+                    // The node's OWN errored/dropped share for this interface — its queues and datapath, not
+                    // the path to the client. Free (kernel counters), and invisible until now. Shown only when
+                    // there is something to see, on the same colour ramp as mesh loss so a percentage means
+                    // the same thing wherever it appears in the panel.
+                    const _d = m.drops;
+                    if (!_d || !(_d.pct >= 0.05)) return null;
+                    return html`<div class="ifrow" title=${T("This node errored or dropped {v1} of {v2} packets on this interface — its own queues, not the path.", { v1: _d.window_bad, v2: _d.window_pkts })}><span class="l">${T("col|Drops")}</span><span class="r addr" style=${"color:" + lossColor(_d.pct)}>${_d.pct}%</span></div>`;
+                  })()}
                   <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${m.egress_mode === "forward" && m.egress_node
                     ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(m.egress_node)} title=${T("Exits via {v1}", { v1: Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "") })}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>`
                     : m.egress_mode === "smart"

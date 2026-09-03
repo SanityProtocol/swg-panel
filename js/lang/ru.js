@@ -1452,6 +1452,10 @@ export const STR = {
   "Leg measured from {v3}: {v1} of {v2} probe packets lost.": "Замер с {v3}: потеряно {v1} из {v2} проб.",
   // budget-ok: popover row tooltip, wraps
   "Round-trip latency to {v3}. Loss this way is measured by {v3}, which has not reported it.": "Круговая задержка до {v3}. Потери в эту сторону меряет {v3} — она их пока не сообщила.",
+  // budget-ok: card row tooltip, wraps
+  "This node errored or dropped {v1} of {v2} packets on this interface — its own queues, not the path.":
+    "Нода отбросила или ошиблась на {v1} из {v2} пакетов этого интерфейса — это её очереди, а не путь.",
+  "col|Drops": "Отброшено",
   "col|Latency": "Задержка",
   "(Loss {v1}%)": "(потери {v1}%)",
   "unit|ms": "мс",

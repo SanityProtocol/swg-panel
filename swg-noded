@@ -5304,6 +5304,51 @@ def mesh_health():
         return {k: dict(v) for k, v in _MESH_HEALTH.items()}
 
 
+# ── INTERFACE DROPS ──────────────────────────────────────────────────────────────────────────────────────
+# Free, and until now invisible: the kernel counts every packet an interface errored or dropped. That is not
+# path loss (the mesh probe answers that) — it is the node's OWN queues and datapath: a ring buffer overrun,
+# a malformed frame, a datapath that cannot keep up. Nothing in the panel showed it, so this class of fault
+# had no symptom other than a user saying it felt bad.
+#
+# Cumulative counters answer the wrong question — 40 errors since boot on a busy interface is nothing, and
+# 40 in the last minute is a fire. So keep the previous reading and accumulate DELTAS over a window, and
+# report the ratio, which is comparable across interfaces and directly colourable next to mesh loss.
+# Cost is a handful of small file reads per interface per sync: no subprocess, no probe traffic.
+IFACE_DROP_WINDOW = 60          # samples retained (60 x 5s sync = 5 min)
+_IFDROP = {}                    # iface -> {"prev": (pkts, bad), "hist": [(pkts, bad), ...]}
+
+
+def _if_stat(ifn, key):
+    with open("/sys/class/net/%s/statistics/%s" % (ifn, key)) as f:
+        return int(f.read().strip())
+
+
+def iface_drops(ifaces):
+    """{iface: {pct, window_pkts, window_bad}} — errored+dropped as a share of packets, over a rolling window."""
+    out = {}
+    for ifn in ifaces:
+        try:
+            pkts = _if_stat(ifn, "rx_packets") + _if_stat(ifn, "tx_packets")
+            bad = (_if_stat(ifn, "rx_dropped") + _if_stat(ifn, "rx_errors")
+                   + _if_stat(ifn, "tx_dropped") + _if_stat(ifn, "tx_errors"))
+        except (OSError, ValueError):
+            continue                                    # interface gone mid-sample, or a datapath with no sysfs
+        st = _IFDROP.setdefault(ifn, {"prev": None, "hist": []})
+        if st["prev"] is not None:
+            dp, db = pkts - st["prev"][0], bad - st["prev"][1]
+            if dp >= 0 and db >= 0 and (dp or db):      # negative => counters reset (iface recreated): skip, don't invent a spike
+                st["hist"].append((dp, db))
+                del st["hist"][:-IFACE_DROP_WINDOW]
+        st["prev"] = (pkts, bad)
+        tp = sum(a for a, _ in st["hist"])
+        tb = sum(b for _, b in st["hist"])
+        if tp + tb:
+            out[ifn] = {"pct": round(tb * 100.0 / (tp + tb), 3), "window_pkts": tp, "window_bad": tb}
+    for gone in [k for k in _IFDROP if k not in ifaces]:
+        _IFDROP.pop(gone, None)
+    return out
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -5394,6 +5439,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # Per-leg loss/RTT for every mesh link (see MESH_PROBE_EVERY_S). Handshake says the link is UP;
             # this says whether it is any GOOD, which is the question a cascade actually depends on.
             "mesh_health": mesh_health(),
+            # Per-interface errored/dropped share (see iface_drops). The node's own datapath, not the path.
+            "iface_drops": iface_drops(list((node_cfg.get("interfaces") or {}).keys())),
             "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
             "ifaces_awaiting_key": sorted(_AWAIT_KEY),   # held for the vault, NOT missing — see _AWAIT_KEY
             # ⚠️ CAN this node put a vault-relayed key back? A build older than T-22 ignores `sealed_key`

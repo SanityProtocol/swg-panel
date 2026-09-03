@@ -16,6 +16,7 @@
  */
 
 import { tkey } from "./util.js";
+import { lossColor } from "./charts.js";
 import { Store, bus } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
          isWdttName, isCsqttName, isSelfContainedName } from "./model.js";
@@ -432,7 +433,7 @@ export function MeshStat({ nodeId, mode }) {
     // fleet does not carry an empty gutter.
     const lk = legOf(p), ll = lossOf(p);
     const loss = ll && typeof ll.loss === "number" ? ll.loss : null;
-    const bad = loss != null && loss >= 0.5, warn = loss != null && loss >= 0.05;
+    const warn = loss != null && loss >= 0.05;   // show it at all; lossColor decides how loud
     const legTitle = !ll ? (lk ? T("Round-trip latency to {v3}. Loss this way is measured by {v3}, which has not reported it.", { v3: n.name }) : "")
       : legIsPeer(p) ? T("Leg measured from {v3}: {v1} of {v2} probe packets lost.",
                          { v1: ll.window_lost, v2: ll.window_sent, v3: n.name })
@@ -440,7 +441,7 @@ export function MeshStat({ nodeId, mode }) {
           { v1: ll.window_lost, v2: ll.window_sent });
     return html`<div class="mh-row" title=${legTitle}>
       <span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span>
-      ${anyLoss ? html`<span class=${"mh-loss" + (bad ? " mhn-bad" : warn ? " mhn-warn" : "")}>${warn ? loss + "%" : ""}</span>` : null}
+      ${anyLoss ? html`<span class="mh-loss" style=${warn ? "color:" + lossColor(loss) : ""}>${warn ? loss + "%" : ""}</span>` : null}
       <span class="mh-rtt">${lk && lk.rtt_ms != null ? Math.round(lk.rtt_ms) + T("unit|ms") : ""}</span>
       <span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}</span>
     </div>`;

@@ -2369,15 +2369,12 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .mh-loss,.mh-rtt{font-family:var(--mono);font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
 .mh-rtt{color:var(--muted)}
 .mh-loss{color:var(--muted)}
-.mh-loss.mhn-warn{color:#F0913C} .mh-loss.mhn-bad{color:var(--dangling)}
 /* header: .onpop-h is scoped to .onlpop, so this bubble was rendering its title with no rule at all. Same
    eyebrow as every other bubble rather than a second look. */
 .mh-bubble .onpop-h{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:4px 8px 6px}
 .mh-rar{display:inline-flex;gap:6px;justify-content:flex-end}
-/* leg quality on the mesh link CARDS — same amber/red the bubble uses, so one link reads the same wherever
-   it is shown. Scoped to .ifrow .r so it beats the row's own colour without !important. */
-.ifcard .ifrow .r .lk-warn{color:#F0913C}
-.ifcard .ifrow .r .lk-bad{color:var(--dangling)}
+/* loss/drop colour now comes from lossColor() (js/charts.js) as an inline value, so one ramp serves
+   every surface and there is no second copy of the thresholds living in CSS. */
 .mh-rar .mh-ar{font-size:13px}   /* small arrows, matching the line */
 .mh-rar .mh-ar.s-up{text-shadow:0 0 8px currentColor}   /* static glow only for up status — green (down) / blue (up); yellow + red get no glow */
 .deppop.mh-bubble{width:max-content;min-width:120px}   /* dynamic width — sized to the longest node name */

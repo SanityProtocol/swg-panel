@@ -11745,6 +11745,10 @@ def api(method, path, qs, body, deps):
             for _ifn, _h in ((snap or {}).get("mesh_health") or {}).items():
                 if _ifn in d and isinstance(d[_ifn], dict):
                     d[_ifn]["link"] = _h
+            # …and the node's own errored/dropped share for every interface, mesh or client-facing.
+            for _ifn, _h in ((snap or {}).get("iface_drops") or {}).items():
+                if _ifn in d and isinstance(d[_ifn], dict):
+                    d[_ifn]["drops"] = _h
             out[nid] = d
         return out
 
