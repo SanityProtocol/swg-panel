@@ -384,7 +384,11 @@ export function meshHealth(nodeId) {
     // up; this says whether it carries traffic well — 0.4% loss caps a single cascaded TCP flow at a few
     // Mbit/s while the same link moves hundreds in the other direction.
     const link = (((Store.describe || {})[nodeId] || {})[iface] || {}).link || null;
-    return { peer, link,
+    // …and the PEER's measurement of the same leg. Each node probes its OWN links, so "how is the traffic
+    // coming IN to this node" is a question only the other end can answer. The inbound bubble asks exactly
+    // that, and showing our own outbound figure there would answer a different question with a straight face.
+    const plink = (((Store.describe || {})[peer] || {})[pmp.iface] || {}).link || null;
+    return { peer, link, plink,
       out: linkDown ? "down" : stat(nodeId, iface, reprovisioning),
       in:  linkDown ? "down" : stat(peer, pmp.iface, pmp.reprovisioning) };
   });
@@ -404,7 +408,20 @@ export function MeshStat({ nodeId, mode }) {
   // The loss COLUMN exists only when some leg actually has loss — otherwise a healthy fleet pays for an
   // empty gutter on every row. Layout stays stable while it is there, so a value appearing does not shift
   // the columns beside it.
-  const anyLoss = h.peers.some(p => p.link && typeof p.link.loss === "number" && p.link.loss >= 0.05);
+  // DIRECTION MATTERS, AND IT MATTERS PER QUANTITY.
+  //
+  // RTT is a ROUND trip: measured from either end it crosses the same point-to-point tunnel out and back,
+  // so our own reading is a legitimate answer in an inbound view. LOSS IS NOT — it is per-direction, and
+  // only the far end can measure what arrives here. So the inbound bubble takes latency from whichever end
+  // has it and takes loss ONLY from the peer.
+  //
+  // The fallback used to cover both, which put this node's OUTBOUND loss under an "inbound" heading — the
+  // same figure the link cards already show for the other direction, wearing the opposite label. A number
+  // in the wrong direction is worse than a blank cell: the blank says "not measured", the number lies.
+  const legOf = p => (mode === "in" ? (p.plink || p.link) : p.link);
+  const legIsPeer = p => mode !== "in" || !!p.plink;
+  const lossOf = p => (mode === "in" ? p.plink : p.link);   // directional: never borrowed from the near end
+  const anyLoss = h.peers.some(p => { const l = lossOf(p); return l && typeof l.loss === "number" && l.loss >= 0.05; });
   const row = n => {   // node name FIRST, then the glowing arrow(s)
     const p = h.peers.find(x => x.peer === n.id);
     const nameCls = p.in === "up" ? "mh-bold" : p.in === "down" ? "mh-dim" : "";
@@ -413,10 +430,14 @@ export function MeshStat({ nodeId, mode }) {
     // every healthy row is noise that teaches the eye to skip the column, and then the one row that matters
     // gets skipped with it. The column itself only exists when some leg has loss (see anyLoss), so a healthy
     // fleet does not carry an empty gutter.
-    const lk = p.link, loss = lk && typeof lk.loss === "number" ? lk.loss : null;
+    const lk = legOf(p), ll = lossOf(p);
+    const loss = ll && typeof ll.loss === "number" ? ll.loss : null;
     const bad = loss != null && loss >= 0.5, warn = loss != null && loss >= 0.05;
-    const legTitle = lk ? T("Leg measured from this node: {v1} of {v2} probe packets lost.",
-                            { v1: lk.window_lost, v2: lk.window_sent }) : "";
+    const legTitle = !ll ? (lk ? T("Round-trip latency to {v3}. Loss this way is measured by {v3}, which has not reported it.", { v3: n.name }) : "")
+      : legIsPeer(p) ? T("Leg measured from {v3}: {v1} of {v2} probe packets lost.",
+                         { v1: ll.window_lost, v2: ll.window_sent, v3: n.name })
+      : T("Leg measured from this node: {v1} of {v2} probe packets lost.",
+          { v1: ll.window_lost, v2: ll.window_sent });
     return html`<div class="mh-row" title=${legTitle}>
       <span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span>
       ${anyLoss ? html`<span class=${"mh-loss" + (bad ? " mhn-bad" : warn ? " mhn-warn" : "")}>${warn ? loss + "%" : ""}</span>` : null}

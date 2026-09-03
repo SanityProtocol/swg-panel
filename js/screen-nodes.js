@@ -382,6 +382,19 @@ export function NodeDetail({ node: rawName }) {
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("col|Endpoint")}</span><span class="r addr">${(m && m.peer_endpoint) || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Tunnel")}</span><span class="r addr">${(m && m.subnet) || "—"}</span></div>
+            ${(() => {
+              // Leg quality, same measurement the mesh bubble shows, on the card that names the link. Latency
+              // always (it is the link's defining fact); loss only when it is enough to matter — a "0.0%" row
+              // on every healthy card is a row nobody reads, and then the one that matters reads like the rest.
+              const _lk = m && m.link;
+              if (!_lk) return null;
+              const _ls = typeof _lk.loss === "number" ? _lk.loss : null;
+              const _tip = T("Leg measured from this node: {v1} of {v2} probe packets lost.", { v1: _lk.window_lost, v2: _lk.window_sent });
+              return html`<${Fragment}>
+                ${_lk.rtt_ms != null ? html`<div class="ifrow" title=${_tip}><span class="l">${T("col|Latency")}</span><span class="r addr">${Math.round(_lk.rtt_ms)}${T("unit|ms")}</span></div>` : null}
+                ${_ls != null && _ls >= 0.05 ? html`<div class="ifrow" title=${_tip}><span class="l">${T("col|Loss")}</span><span class=${"r addr " + (_ls >= 0.5 ? "lk-bad" : "lk-warn")}>${_ls}%</span></div>` : null}
+              <//>`;
+            })()}
             ${carried.length ? html`<div class="ifrow"><span class="l">${T("Carrying")}</span><span class="r"><span class="carry-tags">${carried.map(k => html`<span class=${"tg tg-" + ((meta[k].awg_params && Object.keys(meta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`)}</span></span></div>` : null}
           </div></div>`;
       })}</div>

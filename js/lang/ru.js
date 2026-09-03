@@ -1448,6 +1448,12 @@ export const STR = {
   "Host tunnel IP": "IP туннеля на хосте",
   // budget-ok: popover row tooltip, wraps
   "Leg measured from this node: {v1} of {v2} probe packets lost.": "Замер с этой ноды: потеряно {v1} из {v2} проб.",
+  // budget-ok: popover row tooltip, wraps
+  "Leg measured from {v3}: {v1} of {v2} probe packets lost.": "Замер с {v3}: потеряно {v1} из {v2} проб.",
+  // budget-ok: popover row tooltip, wraps
+  "Round-trip latency to {v3}. Loss this way is measured by {v3}, which has not reported it.": "Круговая задержка до {v3}. Потери в эту сторону меряет {v3} — она их пока не сообщила.",
+  "col|Latency": "Задержка",
+  "col|Loss": "Потери",
   "unit|ms": "мс",
   "(set at creation — delete & recreate to change)": "(задаётся при создании — меняется пересозданием)",
 
