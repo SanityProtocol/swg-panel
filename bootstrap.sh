@@ -175,13 +175,31 @@ info "fetching $REPO @ $REF"
 # is now a fallback for git FAILING, not merely for git being ABSENT: the old shape reached it only
 # when git was missing, which is the one situation that box was not in. Nothing downstream reads .git
 # and there is no .gitattributes, so the archive is the same tree by another road.
+#
+# ⚠️ AND THE COMMONEST CAUSE IS NOT AN UNREACHABLE GITHUB — IT IS HTTP/2. On Ubuntu 22.04 (git 2.34 +
+# libcurl3-gnutls 7.81 + nghttp2 1.43) GitHub answers git's smart-HTTP POST /git-upload-pack with
+# `HTTP/2 401 … www-authenticate: Basic`, on a PUBLIC repo that the preceding GET /info/refs just served
+# 200. git then asks for a username and the install stops. Reproduced on svo-im: `ls-remote` fails by
+# default and succeeds verbatim under `-c http.version=HTTP/1.1`; Ubuntu 24.04 (git 2.43 / nghttp2 1.59)
+# is unaffected. Reported from the field, where 2 of 5 nodes could not update until forced to HTTP/1.1.
+#
+# So retry once over HTTP/1.1 before giving up on git. Order matters: HTTP/2 stays the fast path, the
+# retry rescues exactly the affected boxes, and the tarball remains the last resort. Diagnosing this as
+# "GitHub unreachable" and going straight to the tarball works, but silently costs every 22.04 node the
+# git path for ever — and hides a defect that is one flag from fixed.
 _fetched=""
 if need git; then
   if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"; then
     _fetched=git
   else
     rm -rf "$TMP/swg-panel"   # a failed clone can leave a partial dir, and the mv below would land INSIDE it
-    warn "git clone failed — falling back to the source tarball"
+    warn "git clone failed — retrying over HTTP/1.1 (Ubuntu 22.04 git/nghttp2 vs GitHub HTTP/2)"
+    if GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"; then
+      _fetched=git
+    else
+      rm -rf "$TMP/swg-panel"
+      warn "git clone failed over HTTP/1.1 too — falling back to the source tarball"
+    fi
   fi
 fi
 if [ -z "$_fetched" ] && need curl && need tar; then

@@ -1316,6 +1316,18 @@ host_bindable_ips(){
 # successful install. These two rungs close that. Order matters — the kernel module is materially
 # faster, so it is always tried first and userspace is only a fallback.
 
+# One clone, two transports. Full diagnosis in bootstrap.sh: on Ubuntu 22.04 (git 2.34 / libcurl3-gnutls
+# 7.81 / nghttp2 1.43) GitHub answers git's smart-HTTP `POST /git-upload-pack` over HTTP/2 with a 401 and a
+# Basic-auth challenge — on a PUBLIC repo whose `GET /info/refs` it served 200 a moment earlier. git then
+# asks for a username, which GIT_TERMINAL_PROMPT=0 turns into a clean failure rather than a hang. The
+# HTTP/1.1 retry turns it back into a working clone. Ubuntu 24.04 (git 2.43 / nghttp2 1.59) never sees it.
+# Costs nothing where HTTP/2 works: the retry is only ever reached after a failure.
+git_clone_depth1(){ # <url> <dest>
+  run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 "$1" "$2" && return 0
+  rm -rf "${2:?}"
+  run env GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth=1 "$1" "$2"
+}
+
 awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstream. 0 = tools AND module.
   # Tools first and unconditionally: `awg` + `awg-quick` are what the panel needs to write and bring up a
   # conf, and they build anywhere with a compiler — no distro repo involved. WITH_WGQUICK=yes is what
@@ -1349,7 +1361,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
       warn "cannot build AmneziaWG tools — git/make/compiler missing and no apt-get to add them"
       rm -rf "$w"; return 1
     fi
-    { run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-tools "$w/tools" \
+    { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-tools "$w/tools" \
         && run make -C "$w/tools/src" \
         && run make -C "$w/tools/src" install PREFIX=/usr WITH_BASHCOMPLETION=no \
                 WITH_WGQUICK=yes; } >"$w/build.log" 2>&1 || true
@@ -1367,7 +1379,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
   info "building the AmneziaWG kernel module for $(uname -r)…"
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
-  { run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" \
+  { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" \
       && run make -C "$w/mod/src" \
       && run make -C "$w/mod/src" install; } >"$w/mod.log" 2>&1 || true
   run depmod -a >/dev/null 2>&1 || true
@@ -1386,7 +1398,7 @@ ensure_awg_userspace(){ # last rung: the userspace datapath, so AWG works even w
   have go || { warn "no Go toolchain — install amneziawg-go by hand for a userspace AmneziaWG datapath"; return 1; }
   info "building the userspace AmneziaWG datapath (amneziawg-go)…"
   local w; w="$(mktemp -d)"
-  { run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" \
+  { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" \
       && ( cd "$w/go" && run go build -o /usr/local/bin/amneziawg-go . ); } >"$w/go.log" 2>&1 || true
   # Debian STABLE ships a Go far older than amneziawg-go asks for (bookworm: 1.19 vs a go.mod wanting 1.25),
   # and 1.19 predates Go fetching its own toolchain, so it cannot bootstrap out of it either. backports is
