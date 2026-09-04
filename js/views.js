@@ -550,6 +550,9 @@ export function LossPop({ l, pl, peerName, trigger, alignRight }) {
   </${Popover}>`;
 }
 
+// Two decimals is right for 4.44/min and ridiculous for 80561.65/min. Scale the precision to the number.
+export const dropRate = v => (v >= 100 ? fmtNum(Math.round(v)) : v >= 10 ? v.toFixed(1) : String(v));
+
 // ───── turn-proxy socket drops ─────
 // A proxy owns no interface, so this is not the same measurement as DropsPop and must not pretend to be:
 // there is no received-packet count on a UDP socket, so there is NO PERCENTAGE — only the count and the
@@ -563,7 +566,7 @@ export function ProxyDropsPop({ d, service, trigger, alignRight }) {
       <span class="dp-sub">${T("in the last {v1}", { v1: d.span_s ? seen(d.span_s) : "—" })}</span>
       <b class="dp-pct" style=${"color:" + lossColor(d.per_min > 0 ? Math.min(5, d.per_min / 20) : 0)}>${fmtNum(d.win_drops || 0)}</b>
     </div>
-    ${n(d.per_min) ? html`<div class="dp-row"><span class="dp-l">${T("Rate")}</span><span class="dp-v"><b>${d.per_min}</b><span class="dp-kind">${T("per minute")}</span></span></div>` : null}
+    ${n(d.per_min) ? html`<div class="dp-row"><span class="dp-l">${T("Rate")}</span><span class="dp-v"><b>${dropRate(d.per_min)}</b><span class="dp-kind">${T("per minute")}</span></span></div>` : null}
     ${n(d.rxq) ? html`<div class="dp-row"><span class="dp-l">${T("Backlog")}</span><span class="dp-v"><b>${fmtNum(d.rxq)}</b><span class="dp-kind">${T("bytes waiting")}</span></span></div>` : null}
     ${d.last_bad_s !== undefined ? html`<div class="dp-row"><span class="dp-l">${T("Last drop")}</span><span class="dp-v">${
       d.last_bad_s == null ? "—" : d.last_bad_s < 90 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
