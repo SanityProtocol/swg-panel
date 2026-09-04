@@ -1494,8 +1494,17 @@ export const STR = {
   "dropped": "отброшено",
   // budget-ok: bubble micro-label in a max-content column, measured 103px, no wrap or clip
   "Last drop": "Последняя потеря",
-  "none in this window": "нет за это окно",
   "Since boot": "С загрузки",
+  "unit|/min": "/мин",
+  "Dropped at the socket · {v1}": "Отброшено на сокете · {v1}",
+  "in the last {v1}": "за последние {v1}",
+  "Rate": "Темп",
+  "per minute": "в минуту",
+  "Backlog": "В очереди",
+  "bytes waiting": "байт ждут",
+  "Since it started": "С запуска",
+  // budget-ok: bubble footer, wraps
+  "Packets that reached this server and were discarded because the proxy wasn't reading its socket fast enough. They never reach an interface, so no interface counter can show them.": "Пакеты дошли до сервера и были отброшены, потому что прокси не успевал читать свой сокет. До интерфейса они не доходят, поэтому счётчики интерфейсов их не видят.",
   "Since reset": "С обнуления",
   "Reset ✓": "Сброшено ✓",
   "Resetting…": "Сброс…",

@@ -5518,6 +5518,105 @@ def iface_drops(ifaces):
     return out
 
 
+# ── TURN-PROXY SOCKET DROPS ──────────────────────────────────────────────────────────────────────────────
+# A turn-proxy owns no interface, so iface_drops has nothing to read for one — and that made its losses
+# invisible, not absent. It owns a SOCKET, and the kernel counts what it discarded there: packets that
+# reached the box fine (eth0 counted them received) and then died because the proxy process did not drain
+# its receive buffer in time. Nothing downstream ever sees them, so no interface counter can.
+#
+# Measured on msk-shadow before writing this: WINGS-N on 155.212.128.203:56002 had 32,023 drops over 29
+# days while the SAME fork on 84.54.30.11:56003 had 0 over 18; samosvalishe 49,392 on :56006 against 0 on
+# :56007 over the same 9 days. Real, one-sided, and completely unreported.
+#
+# ⚠️ NO PERCENTAGE. /proc/net/udp gives no received count, so there is no denominator and inventing one
+# would repeat the mistake `peak` already made. Report the COUNT and the RATE, which are facts.
+# ⚠️ TCP-mode proxies get nothing here: per-socket drops are not exposed for TCP (listen-queue overflow is
+# system-wide only). Absent is reported as absent, never as zero.
+PROXY_DROP_WINDOW = 60          # samples retained, same cadence as the interface counters
+_PXDROP = {}                    # service -> {"prev": (drops,), "hist": [(t, ddrops)], "life": n}
+
+
+def _hex_ip4(h):
+    """/proc/net/udp packs the v4 address little-endian per word: '0300A8C0' -> 192.168.0.3."""
+    try:
+        n = int(h, 16)
+        return "%d.%d.%d.%d" % (n & 0xFF, (n >> 8) & 0xFF, (n >> 16) & 0xFF, (n >> 24) & 0xFF)
+    except ValueError:
+        return ""
+
+
+def _udp_sockets():
+    """{(ip, port): (drops, rxq)} for every UDP socket the kernel holds, v4 and v6."""
+    out = {}
+    for path, v6 in (("/proc/net/udp", False), ("/proc/net/udp6", True)):
+        try:
+            with open(path) as f:
+                lines = f.read().splitlines()[1:]
+        except OSError:
+            continue
+        for ln in lines:
+            f_ = ln.split()
+            if len(f_) < 11:
+                continue
+            addr, _, port_hex = f_[1].partition(":")
+            try:
+                port = int(port_hex, 16)
+                drops = int(f_[-1])
+                rxq = int(f_[4].split(":")[1], 16)
+            except (ValueError, IndexError):
+                continue
+            ip = "" if v6 else _hex_ip4(addr)          # v6 rows match on port alone (incl. v4-mapped binds)
+            out[(ip, port)] = (drops, rxq)
+    return out
+
+
+def proxy_drops(proxies, now=None):
+    """{service: {win_drops, per_min, life_drops, rxq, span_s, last_bad_s}} — kernel drops on each
+    proxy's listen socket, windowed the same way the interface counters are."""
+    now = now or time.time()
+    socks = _udp_sockets()
+    out = {}
+    live = set()
+    for p in (proxies or []):
+        svc = (p or {}).get("service")
+        listen = ((p or {}).get("listen") or "").strip()
+        if not svc or ":" not in listen:
+            continue
+        host, _, port_s = listen.rpartition(":")
+        try:
+            port = int(port_s)
+        except ValueError:
+            continue
+        # exact (ip, port) first — two proxies can share a port across different addresses, and matching on
+        # the port alone would attribute one's losses to the other. Fall back to a wildcard/v6 bind.
+        hit = socks.get((host, port))
+        if hit is None:
+            hit = socks.get(("0.0.0.0", port)) or socks.get(("", port))
+        if hit is None:
+            continue                                    # not a UDP proxy (TCP mode), or not listening
+        drops, rxq = hit
+        live.add(svc)
+        st = _PXDROP.setdefault(svc, {"prev": None, "hist": []})
+        if st["prev"] is not None:
+            d = drops - st["prev"]
+            if d >= 0:                                  # negative => the proxy restarted; start over, do not invent a spike
+                st["hist"].append((now, d))
+                del st["hist"][:-PROXY_DROP_WINDOW]
+            else:
+                st["hist"] = []
+        st["prev"] = drops
+        h = st["hist"]
+        win = sum(x[1] for x in h)
+        span = int(now - h[0][0]) if len(h) > 1 else 0
+        bad_at = [t for t, d in h if d]
+        out[svc] = {"win_drops": win, "life_drops": drops, "rxq": rxq,
+                    "per_min": round(win * 60.0 / span, 2) if span else 0.0,
+                    "span_s": span, "last_bad_s": int(now - bad_at[-1]) if bad_at else None}
+    for gone in [k for k in _PXDROP if k not in live]:
+        _PXDROP.pop(gone, None)
+    return out
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -5583,6 +5682,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 _tflags[_fk] = _turn_discover_flags(_tp.get("service") or "")
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": _tps, "turn_flags": _tflags,
+            "turn_drops": proxy_drops(_tps),
             "arch": _turn_arch(),   # so the panel mirrors/pins ONLY this node's arch for a turn install (not both → no slow/failed cross-arch fetch)
             "turn_capable": _turn_arch_ok(),   # false ONLY when this box's arch has no server-linux-<arch> build → panel greys out "Setup proxy" (never blocks on uncertainty)
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,

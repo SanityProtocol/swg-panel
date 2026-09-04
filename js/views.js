@@ -535,7 +535,7 @@ export function LossPop({ l, pl, peerName, trigger, alignRight }) {
       <span class="dp-v"><b style=${"color:" + lossColor(worst.x.peak_loss)}>${worst.x.peak_loss}%</b>${tag(worst)}</span></div>` : null}
     ${last ? html`<div class="dp-row"><span class="dp-l">${T("Last loss")}</span><span class="dp-v">${
         last.x.last_loss_s < 90 ? T("just now") : T("{v1} ago", { v1: seen(last.x.last_loss_s) })}${tag(last)}</span></div>`
-      : reportsLast ? html`<div class="dp-row"><span class="dp-l">${T("Last loss")}</span><span class="dp-v">${T("none in this window")}</span></div>` : null}
+      : reportsLast ? html`<div class="dp-row"><span class="dp-l">${T("Last loss")}</span><span class="dp-v">${"—"}</span></div>` : null}
     ${one ? html`<div class="dp-hint">${T("That is a single lost packet — the smallest amount this probe can measure. One is normal; watch whether it keeps happening.")}</div>` : null}
     ${/* ⚠️ THIS BUBBLE MIXES TWO TIME SPANS AND USED TO NAME NEITHER. Loss is accumulated over the whole
           30-probe window (half an hour) because one probe of 20 packets cannot express 0.4%; latency,
@@ -547,6 +547,28 @@ export function LossPop({ l, pl, peerName, trigger, alignRight }) {
           { v1: seen((ends[0].x.probes || 0) * (ends[0].x.probe_every_s || 60)), v2: ends[0].x.probes,
             v3: 20, v4: ends[0].x.probe_size })
       : T("measured by pinging the far end of this link")}</div>
+  </${Popover}>`;
+}
+
+// ───── turn-proxy socket drops ─────
+// A proxy owns no interface, so this is not the same measurement as DropsPop and must not pretend to be:
+// there is no received-packet count on a UDP socket, so there is NO PERCENTAGE — only the count and the
+// rate, which are facts. Leading with a rate the data cannot support is the mistake `peak` already made.
+export function ProxyDropsPop({ d, service, trigger, alignRight }) {
+  if (!d) return trigger;
+  const n = v => typeof v === "number";
+  return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
+    <div class="onpop-h">${T("Dropped at the socket · {v1}", { v1: service })}</div>
+    <div class="dp-head">
+      <span class="dp-sub">${T("in the last {v1}", { v1: d.span_s ? seen(d.span_s) : "—" })}</span>
+      <b class="dp-pct" style=${"color:" + lossColor(d.per_min > 0 ? Math.min(5, d.per_min / 20) : 0)}>${fmtNum(d.win_drops || 0)}</b>
+    </div>
+    ${n(d.per_min) ? html`<div class="dp-row"><span class="dp-l">${T("Rate")}</span><span class="dp-v"><b>${d.per_min}</b><span class="dp-kind">${T("per minute")}</span></span></div>` : null}
+    ${n(d.rxq) ? html`<div class="dp-row"><span class="dp-l">${T("Backlog")}</span><span class="dp-v"><b>${fmtNum(d.rxq)}</b><span class="dp-kind">${T("bytes waiting")}</span></span></div>` : null}
+    ${d.last_bad_s !== undefined ? html`<div class="dp-row"><span class="dp-l">${T("Last drop")}</span><span class="dp-v">${
+      d.last_bad_s == null ? "—" : d.last_bad_s < 90 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
+    ${n(d.life_drops) ? html`<div class="dp-row"><span class="dp-l">${T("Since it started")}</span><span class="dp-v">${fmtNum(d.life_drops)}</span></div>` : null}
+    <div class="dp-foot">${T("Packets that reached this server and were discarded because the proxy wasn't reading its socket fast enough. They never reach an interface, so no interface counter can show them.")}</div>
   </${Popover}>`;
 }
 
@@ -603,7 +625,7 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
         : html`<b>${fmtNum(wb)}</b><span class="dp-kind">${T("dropped")}</span>`}</span></div>`;
     })()}
     ${has("last_bad_s") || d.last_bad_s === null ? html`<div class="dp-row"><span class="dp-l">${T("Last drop")}</span><span class="dp-v">${
-      d.last_bad_s == null ? T("none in this window") : d.last_bad_s < 5 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
+      d.last_bad_s == null ? "—" : d.last_bad_s < 5 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
     ${/* the ratio alone made the reader do the division — give them the rate too, at the row's own size */""}
     ${has("life_bad") ? html`<div class="dp-row"><span class="dp-l">${
       d.life_since ? T("Since reset") : T("Since boot")}</span><span class="dp-v">${

@@ -26,8 +26,8 @@ import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnProxi
          subnetServerAddr, suggestSubnet, ghostIface } from "./model.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
 import { EgressPicker, egressInit, egressError, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules } from "./routing.js";
-import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount } from "./views.js";
-import { IfaceThroughput, RangedHistory } from "./charts.js";
+import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop } from "./views.js";
+import { IfaceThroughput, RangedHistory, lossColor } from "./charts.js";
 import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, subFeatureOn,
          ensureVaultUnlocked, wdttResealForNode } from "./crypto.js";
 import { h, Fragment } from "preact";
@@ -153,6 +153,17 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
     <div class="ifcard-rows">
       <div class="ifrow"><span class="l">${T("Turn-proxy fork")}</span><span class="r">${turnFork(tp.service)}</span></div>
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${tp.listen || "—"}</span></div>
+      ${(() => {
+        // The proxy's OWN losses. It has no interface, so nothing else on this page can show them: these
+        // packets reached the box and died at the socket before any interface saw them. Shown only when
+        // there are some — a "0" on every healthy card is a row nobody reads. Absent (a TCP-mode proxy,
+        // where the kernel exposes no per-socket count) stays absent rather than reading as clean.
+        const _pd = ((Store.stats[node] || {}).turn_drops || {})[tp.service];
+        if (!_pd || !(_pd.win_drops > 0)) return null;
+        return html`<div class="ifrow"><span class="l">${T("col|Drops")}</span><span class="r addr"
+          onClick=${e => { e.preventDefault(); e.stopPropagation(); }}><${ProxyDropsPop} d=${_pd} service=${tp.service}
+            trigger=${html`<span class="dp-num" style=${"color:" + lossColor(Math.min(5, (_pd.per_min || 0) / 20))}>${_pd.per_min}${T("unit|/min")}</span>`}/></span></div>`;
+      })()}
       ${showForwards ? html`<div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + ((nodeStale(node) || ifaceNotUp(node, fronted)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
     </div></div>`;
 }
