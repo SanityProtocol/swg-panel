@@ -1451,6 +1451,7 @@ export const STR = {
   // budget-ok: popover row tooltip, wraps
   "Round-trip latency to {v3}. Loss this way is measured by {v3}, which has not reported it.": "Круговая задержка до {v3}. Потери в эту сторону меряет {v3} — она их пока не сообщила.",
   "col|Drops": "Отброшено",
+  "Drops": "Отброшено",
   "col|Latency": "Задержка",
   "(Loss {v1}%)": "(потери {v1}%)",
   "Leg quality · {v1}": "Качество плеча · {v1}",

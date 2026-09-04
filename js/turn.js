@@ -282,6 +282,23 @@ const _lastSeen = last => last ? T("{v1} ago", { v1: seen(Math.max(0, Math.floor
 // never dials a proxy directly — it goes through a VK TURN server which relays to us — so these are VK relays.
 // The active count comes from the live snapshot (no fetch); the hover bubble lists them (green dot = online) with
 // a Flush that drops the offline ones. `src_ips` is node-collected (nft); history persists on the panel.
+// Socket drops beside the Turn IPs control, on every sheet that fronts a listening server — turn-proxy,
+// WDTT and csqtt alike. Shown even at zero: this is a detail sheet an operator opened deliberately, and
+// "0" is the answer to "is it dropping?" — the scannable CARD is where a clean row would be noise.
+//
+// ⚠️ A RATE, NOT A PERCENTAGE. /proc/net/udp reports no received count, so there is no denominator, and
+// putting a "%" here would invent one — the exact mistake `peak` made with a 5-second sample. The bubble
+// carries the counts.
+export function ProxyDropsHeader({ node, svc }) {
+  useStore();
+  const d = ((Store.stats[node] || {}).turn_drops || {})[svc];
+  if (!d) return null;                 // no UDP socket found (TCP-mode, or not listening) → absent, never a false zero
+  const r = d.per_min || 0;
+  return html`<${ProxyDropsPop} d=${d} service=${svc} alignRight=${true}
+    trigger=${html`<span class="turnips-hd pxdrop-hd">${T("Drops")} · <b style=${"color:" + lossColor(Math.min(5, r / 20))}>${
+      r ? dropRate(r) + T("unit|/min") : "0"}</b></span>`}/>`;
+}
+
 export function TurnIpsHeader({ node, svc }) {
   const [data, setData] = useState(null);
   const load = () => api.turnIps().then(r => setData(r && r.ok ? ((r.data.nodes || {})[node] || {}) : {})).catch(() => setData({}));
@@ -452,7 +469,7 @@ export function TurnManageSheet({ node, tp }) {
     || _mConnect !== (tp.connect || "")
     || params.trim() !== origParams.trim()
     || title.trim() !== (tp.title || "");
-  return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: turnFork(svc) })} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`} width=${664} headExtra=${html`<${TurnIpsHeader} node=${node} svc=${svc}/>`}
+  return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: turnFork(svc) })} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`} width=${664} headExtra=${html`<${ProxyDropsHeader} node=${node} svc=${svc}/><${TurnIpsHeader} node=${node} svc=${svc}/>`}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${stopped
@@ -1874,7 +1891,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   return html`<${Sheet}
     title=${html`WDTT-proxy · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkPickLabel(fork) })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`}
     width=${664}
-    headExtra=${w.service ? html`<${TurnIpsHeader} node=${node} svc=${w.service}/>` : null}
+    headExtra=${w.service ? html`<${ProxyDropsHeader} node=${node} svc=${w.service}/><${TurnIpsHeader} node=${node} svc=${w.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", T("Start service"), T("Bring this WDTT server up on the node"))
@@ -2187,7 +2204,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   return html`<${Sheet}
     title=${html`csqtt-proxy · ${(title.trim() || iface)}${c.version ? html` <span class="sheet-ver">${c.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: "CSQTT" })} onClick=${() => openServerDefaults("csqtt")}><${Ic} i="gear"/></button>`}
     width=${664}
-    headExtra=${c.service ? html`<${TurnIpsHeader} node=${node} svc=${c.service}/>` : null}
+    headExtra=${c.service ? html`<${ProxyDropsHeader} node=${node} svc=${c.service}/><${TurnIpsHeader} node=${node} svc=${c.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", T("Start service"), T("Bring this csqtt server up on the node"))

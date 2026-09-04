@@ -5629,6 +5629,34 @@ def proxy_drops(proxies, now=None):
     return out
 
 
+def _measured_ifaces(node_cfg):
+    """Every interface on this node whose drops are ours to report — wg/awg AND the self-contained kinds,
+    which own a netdev each (a csqtt TUN, a WDTT tunnel, a qWDTT raw tunnel) and were measured by nothing."""
+    out = list((node_cfg.get("interfaces") or {}).keys())
+    for _wif, _w in _wdtt_load().items():
+        out.append(_wif)
+        _raw = _wdtt_raw(_w)
+        if _raw:
+            out.append(_raw[1])
+    out += list(_csqtt_load().keys())
+    return [i for i in dict.fromkeys(out) if i and os.path.isdir("/sys/class/net/" + i)]
+
+
+def _selfcontained_listeners():
+    """WDTT/csqtt instances shaped like a turn proxy for proxy_drops: they listen on a socket the same way,
+    and a packet the server never read is lost the same way. Keyed by `service` so the panel looks them up
+    exactly as it does a turn proxy."""
+    out = []
+    for _src, _svc in ((_wdtt_load(), _wdtt_svc), (_csqtt_load(), _csqtt_svc)):
+        for _if, _inst in (_src or {}).items():
+            listen = ((_inst or {}).get("listen") or "").strip()
+            if _if and ":" in listen:
+                # ⚠️ NOT (_inst).get("service") — the node's own store leaves that None. The name is DERIVED
+                # from the interface, exactly as the systemd unit is, and that is what the panel keys on.
+                out.append({"service": _svc(_if), "listen": listen})
+    return out
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -5694,7 +5722,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 _tflags[_fk] = _turn_discover_flags(_tp.get("service") or "")
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": _tps, "turn_flags": _tflags,
-            "turn_drops": proxy_drops(_tps),
+            "turn_drops": proxy_drops(_tps + _selfcontained_listeners()),
             "arch": _turn_arch(),   # so the panel mirrors/pins ONLY this node's arch for a turn install (not both → no slow/failed cross-arch fetch)
             "turn_capable": _turn_arch_ok(),   # false ONLY when this box's arch has no server-linux-<arch> build → panel greys out "Setup proxy" (never blocks on uncertainty)
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
@@ -5721,7 +5749,10 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # this says whether it is any GOOD, which is the question a cascade actually depends on.
             "mesh_health": mesh_health(),
             # Per-interface errored/dropped share (see iface_drops). The node's own datapath, not the path.
-            "iface_drops": iface_drops(list((node_cfg.get("interfaces") or {}).keys())),
+            # ⚠️ WDTT and csqtt OWN INTERFACES TOO. This list was node_cfg["interfaces"] alone — the wg/awg
+            # set — so csqtt1 and every WDTT tunnel sat in no drop measurement at all, exactly the way they
+            # sat outside reconcile_egress until that was fixed. A self-contained kind is still a datapath.
+            "iface_drops": iface_drops(_measured_ifaces(node_cfg)),
             "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
             "ifaces_awaiting_key": sorted(_AWAIT_KEY),   # held for the vault, NOT missing — see _AWAIT_KEY
             # ⚠️ CAN this node put a vault-relayed key back? A build older than T-22 ignores `sealed_key`

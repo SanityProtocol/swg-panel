@@ -936,6 +936,11 @@ export function NodeDetail({ node: rawName }) {
                     // the path to the client. Free (kernel counters), and invisible until now. Shown only when
                     // there is something to see, on the same colour ramp as mesh loss so a percentage means
                     // the same thing wherever it appears in the panel.
+                    // ⚠️ CARDS STAY QUIET ON PURPOSE — kept after being questioned, and deliberately NOT
+                    // aligned with the interface page, which shows the same figure with no threshold. The
+                    // card is scanned across a whole fleet, where a "0.000%" on every healthy interface is
+                    // a row the eye learns to skip — and then skips the one that matters. The detail page
+                    // is opened about ONE interface, where "we measure this, and it is clean" is the answer.
                     const _d = m.drops;
                     if (!_d || !(_d.pct >= 0.05)) return null;
                     // The figure carries a bubble: one percentage cannot say whether this is the node's own
