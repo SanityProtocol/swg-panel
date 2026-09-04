@@ -1800,6 +1800,18 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             with contextlib.suppress(Exception):
                 _prev = open(_ttlm).read().strip()
             if _prev != str(learn_ttl):
+                # ⚠️ EVERY CHAIN THAT CAN HOLD A REFERENCE MUST BE FLUSHED FIRST, not just prerouting.
+                # This relied on "prerouting was flushed above, so catl_ is now unreferenced" — true when
+                # prerouting was the only chain matching these sets, false since catcount and catany began
+                # matching them too. Those two are flushed much later in the batch, so when `delete set` ran
+                # they still referenced it: nft said "Device or resource busy" and, because the batch is ONE
+                # transaction, rejected the WHOLE rebuild. Seen on msk-shadow against a live catl_blku_host_
+                # set carrying 30 rules — smart routing silently stopped reconciling while looking healthy,
+                # because the last good ruleset simply stayed in place. Flushing here costs nothing: both
+                # chains are rebuilt or deleted further down regardless.
+                for _c in ("catcount", "catany", "forward"):
+                    if re.search(r"chain " + _c + r" \{", body):
+                        bat.add("flush", "chain", "inet", SMART_NFT_TABLE, _c)
                 for c in cats:
                     if c == "all":
                         continue
