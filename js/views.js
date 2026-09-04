@@ -17,13 +17,13 @@
 
 import { tkey, seen } from "./util.js";
 import { lossColor } from "./charts.js";
-import { Store, bus } from "./store.js";
+import { Store, api, bus } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
          isWdttName, isCsqttName, isSelfContainedName } from "./model.js";
 import { go } from "./router.js";
-import { statusLabel, Popover, Ic, Tag, inProc, setPendingSection } from "./ui.js";
+import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
-import { T, plural, pluralWord, fmtNum } from "./i18n.js";
+import { T, plural, pluralWord, fmtNum, srvText } from "./i18n.js";
 import { h } from "preact";
 import { useState } from "preact/hooks";
 import htm from "htm";
@@ -550,8 +550,18 @@ export function LossPop({ l, pl, peerName, trigger, alignRight }) {
   </${Popover}>`;
 }
 
-export function DropsPop({ d, iface, trigger, alignRight }) {
+export function DropsPop({ d, iface, node, trigger, alignRight }) {
+  const [reset, setReset] = useState("");
   if (!d) return trigger;
+  // Re-baseline on the NODE, not in the browser: the counters are the node's, and a page reload must not
+  // undo it. The panel writes a nonce the node acts on once, so a slow sync only means it lands late.
+  const doReset = async e => {
+    e.preventDefault(); e.stopPropagation();
+    setReset("busy");
+    const r = await api.ifaceUpdate({ node: node, iface: iface, drops_reset: 1 });
+    if (r && r.ok) { setReset("ok"); setTimeout(() => setReset(""), 2500); }
+    else { setReset(""); toast(srvText(r) || T("Couldn't reset the counters."), "err"); }
+  };
   const has = k => typeof d[k] === "number";
   const split = DROP_KINDS.filter(x => has(x.k));
   // The dominant kind names the fault. Only when it is genuinely dominant (over half) — a 50/50 mix has no
@@ -566,10 +576,15 @@ export function DropsPop({ d, iface, trigger, alignRight }) {
       <span class=${"dp-kind" + (d[x.k] ? "" : " zero")}>${x.lbl()} <b>${fmtNum(d[x.k])}</b></span>`)}</span></div>`;
   };
   return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
-    <div class="onpop-h">${T("Drops · {v1}", { v1: iface })}</div>
+    <div class="onpop-h dp-h">${T("Drops · {v1}", { v1: iface })}
+      ${node ? html`<button class=${"dp-reset" + (reset === "ok" ? " ok" : "")} disabled=${reset === "busy"}
+        title=${T("Zero the counters and start measuring again from now")}
+        onClick=${doReset}>${reset === "ok" ? T("Reset ✓") : reset === "busy" ? T("Resetting…") : T("Reset")}</button>` : null}</div>
+    ${/* The percentage is a VALUE, so it sits on the right where every other value in this bubble is,
+          instead of on the left among the labels. */""}
     <div class="dp-head">
-      <b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>
       <span class="dp-sub">${T("{v1} of {v2} packets", { v1: fmtNum(d.window_bad), v2: fmtNum(d.window_pkts) })}</span>
+      <b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>
     </div>
     ${pair("out", T("Sending"))}
     ${pair("in", T("Receiving"))}
@@ -589,8 +604,12 @@ export function DropsPop({ d, iface, trigger, alignRight }) {
     })()}
     ${has("last_bad_s") || d.last_bad_s === null ? html`<div class="dp-row"><span class="dp-l">${T("Last drop")}</span><span class="dp-v">${
       d.last_bad_s == null ? T("none in this window") : d.last_bad_s < 5 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
-    ${has("life_bad") ? html`<div class="dp-row"><span class="dp-l">${T("Since boot")}</span><span class="dp-v">${
-      T("{v1} of {v2}", { v1: fmtNum(d.life_bad), v2: fmtNum(d.life_pkts) })}</span></div>` : null}
+    ${/* the ratio alone made the reader do the division — give them the rate too, at the row's own size */""}
+    ${has("life_bad") ? html`<div class="dp-row"><span class="dp-l">${
+      d.life_since ? T("Since reset") : T("Since boot")}</span><span class="dp-v">${
+      T("{v1} of {v2}", { v1: fmtNum(d.life_bad), v2: fmtNum(d.life_pkts) })}${d.life_pkts
+        ? html`<span class="dp-life" style=${"color:" + lossColor(100 * d.life_bad / d.life_pkts)}>${
+            (100 * d.life_bad / d.life_pkts).toFixed(4)}%</span>` : null}</span></div>` : null}
     ${hint ? html`<div class="dp-hint">${hint}</div>` : null}
     <div class="dp-foot">${d.span_s ? T("measured over the last {v1}", { v1: seen(d.span_s) }) : T("this node's own queues and datapath, not the path to the client")}</div>
   </${Popover}>`;

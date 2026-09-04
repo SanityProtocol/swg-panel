@@ -2387,9 +2387,21 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .dp-num{font-family:var(--mono);font-variant-numeric:tabular-nums;border-bottom:1px dotted color-mix(in srgb,currentColor 45%,transparent)}
 .drops-pop{display:inline-block;cursor:default}
 .deppop.dp-bubble{width:max-content;min-width:232px;max-width:376px}
-.dp-head{display:flex;align-items:baseline;gap:9px;padding:1px 8px 8px;margin-bottom:4px;border-bottom:1px solid var(--line)}
+.dp-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:10px 8px 7px;margin-bottom:4px;border-bottom:1px solid var(--line)}
 .dp-pct{font-family:var(--mono);font-size:16px;line-height:1;font-variant-numeric:tabular-nums}
 .dp-sub{font-size:11px;color:var(--dim)}
+/* header carries the Reset action on its right — same mini-button grammar the panels use.
+   ⚠️ `.onlpop .onpop-h{display:block}` is 0,2,0; a bare `.dp-h` never won, so the button sat inline
+   against the title. Match the depth. */
+.onlpop .onpop-h.dp-h{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.dp-reset{flex:none;font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;
+  line-height:1;padding:3px 7px;border-radius:6px;cursor:pointer;color:var(--dim);
+  background:transparent;border:1px solid var(--line-solid);transition:color .12s,border-color .12s}
+.dp-reset:hover{color:var(--ink-2);border-color:color-mix(in srgb,var(--ink) 30%,transparent)}
+.dp-reset:disabled{opacity:.55;cursor:default}
+.dp-reset.ok{color:var(--online);border-color:color-mix(in srgb,var(--online) 45%,transparent)}
+/* the since-boot rate: the row's own size, not a headline — it qualifies the ratio beside it */
+.dp-life{font-size:12px;font-variant-numeric:tabular-nums}
 .dp-row{display:grid;grid-template-columns:max-content 1fr;gap:14px;align-items:baseline;padding:4px 8px;border-radius:6px;white-space:nowrap}
 .dp-row:hover{background:var(--surface)}
 .dp-l{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}

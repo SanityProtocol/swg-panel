@@ -940,7 +940,7 @@ export function NodeDetail({ node: rawName }) {
                     if (!_d || !(_d.pct >= 0.05)) return null;
                     // The figure carries a bubble: one percentage cannot say whether this is the node's own
                     // send queue, a failed send, or traffic refused on arrival — three faults, three fixes.
-                    return html`<div class="ifrow"><span class="l">${T("col|Drops")}</span><span class="r addr"><${DropsPop} d=${_d} iface=${ifn}
+                    return html`<div class="ifrow"><span class="l">${T("col|Drops")}</span><span class="r addr"><${DropsPop} d=${_d} iface=${ifn} node=${name}
                       trigger=${html`<span class="dp-num" style=${"color:" + lossColor(_d.pct)}>${_d.pct}%</span>`}/></span></div>`;
                   })()}
                   <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${m.egress_mode === "forward" && m.egress_node

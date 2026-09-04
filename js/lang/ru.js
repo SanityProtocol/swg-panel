@@ -1496,6 +1496,12 @@ export const STR = {
   "Last drop": "Последняя потеря",
   "none in this window": "нет за это окно",
   "Since boot": "С загрузки",
+  "Since reset": "С обнуления",
+  "Reset ✓": "Сброшено ✓",
+  "Resetting…": "Сброс…",
+  // budget-ok: button tooltip, wraps
+  "Zero the counters and start measuring again from now": "Обнулить счётчики и начать измерять заново с этого момента",
+  "Couldn't reset the counters.": "Не удалось сбросить счётчики.",
   "measured over the last {v1}": "замер за последние {v1}",
   "this node's own queues and datapath, not the path to the client": "собственные очереди и тракт узла, а не путь до клиента",
   "This node couldn't send fast enough and dropped from its own queue — local pressure, not the path.": "Узел не успевал отправлять и сбрасывал пакеты из своей очереди — это локальная нагрузка, а не путь.",

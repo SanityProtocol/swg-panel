@@ -15080,6 +15080,11 @@ def api(method, path, qs, body, deps):
                     ov.pop("awg_params", None)
             else:
                 return 400, {"ok": False, "error": "awg_params must be an object", "code": "bad_request"}
+        if body.get("drops_reset"):
+            # Re-baseline this interface's drop counters. A monotonic nonce the node acts on ONCE (the same
+            # shape as a WDTT/csqtt `restart`), not a command channel: if the node is down the reset simply
+            # lands whenever it comes back, and replaying an old desired set cannot re-fire it.
+            ov["drops_reset"] = int(time.time())
         if "egress_ip" in body:                          # per-interface source/egress IP ("" = clear → MASQUERADE)
             e = (body.get("egress_ip") or "").strip()
             if e:
@@ -18660,6 +18665,12 @@ class Handler(BaseHTTPRequestHandler):
                     d["egress_ip"] = ov.get("egress_ip") or ""
                 if "wan_iface" in ov:
                     d["wan_iface"] = ov.get("wan_iface") or ""
+            # Drop-counter re-baseline: a monotonic nonce, pushed like egress_ip (the node never reports it
+            # back, so there is nothing to drift-track). ⚠️ It belongs HERE, in the sync builder. Putting it in
+            # apply_iface_meta only decorated the UI's describe — the panel stored the nonce, the button said
+            # done, and the node never saw it.
+            if ov.get("drops_reset"):
+                d["drops_reset"] = ov["drops_reset"]
             if not synced:
                 ov.pop("_synced", None)
             if not drift:

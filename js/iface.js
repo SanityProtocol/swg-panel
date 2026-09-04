@@ -712,7 +712,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
             // Edit interface; this one changes minute to minute and had nowhere on this page to live.
             const d = meta.drops;
             return html`<div class="ig-item"><span class="ig-l">${T("col|Drops")}</span><span class="ig-v">${d
-              ? html`<${DropsPop} d=${d} iface=${iface} alignRight=${false}
+              ? html`<${DropsPop} d=${d} iface=${iface} node=${node} alignRight=${false}
                   trigger=${html`<span class="dp-num" style=${"color:" + lossColor(d.pct)}>${d.pct}%</span>`}/>`
               : html`<span class="faint" title=${T("This node hasn't reported drop counters for this interface yet.")}>—</span>`}</span></div>`;
           })()}

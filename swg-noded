@@ -5404,6 +5404,41 @@ IFACE_DROP_WINDOW = 60          # samples retained (60 x 5s sync = 5 min)
 # So the rate is computed only over samples big enough to express one, and the raw count rides alongside —
 # the count is what actually says "a burst happened", at any traffic level.
 IFACE_PEAK_MIN = 200            # packets in one sample below which a percentage is not a measurement
+# "Since boot" is a kernel counter, and an operator who has just FIXED something cannot clear it — the 74k
+# errors an interface gathered over four weeks keep sitting beside a clean window, and there is no way to
+# ask "is it happening again?" except by remembering the old number. So the panel can re-baseline: record
+# the counters at that moment and report the delta from there. Persisted, because a node restart is exactly
+# when someone wants that answer. Per interface, because the panel's per-iface overrides already reach the
+# node in desired_ifaces — a fleet-wide reset would have cost the same and answered a coarser question.
+DROPS_BASE_FILE = os.path.join(STATE_DIR, "drops-base.json")
+_IFDROP_BASE = None             # {iface: {nonce, bad, pkts, at}} — lazy-loaded
+_DROPS_RESET = {}               # iface -> the nonce the PANEL last asked for
+
+
+def _drops_base():
+    global _IFDROP_BASE
+    if _IFDROP_BASE is None:
+        try:
+            with open(DROPS_BASE_FILE) as f:
+                _IFDROP_BASE = json.load(f) or {}
+        except (OSError, ValueError):
+            _IFDROP_BASE = {}
+    return _IFDROP_BASE
+
+
+def _drops_base_save():
+    with contextlib.suppress(OSError, TypeError, ValueError):
+        tmp = DROPS_BASE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_drops_base(), f)
+        os.replace(tmp, DROPS_BASE_FILE)
+
+
+def note_drops_resets(desired_ifaces):
+    """Remember which reset the panel is asking for; acted on once, in iface_drops."""
+    for ifn, want in (desired_ifaces or {}).items():
+        if want.get("drops_reset"):
+            _DROPS_RESET[ifn] = want["drops_reset"]
 _IFDROP = {}                    # iface -> {"prev": (pkts, rxd, rxe, txd, txe), "hist": [(t, dpkts, drxd, drxe, dtxd, dtxe), ...]}
 
 
@@ -5440,6 +5475,14 @@ def iface_drops(ifaces):
             continue                                    # interface gone mid-sample, or a datapath with no sysfs
         cur = (pkts,) + kinds
         st = _IFDROP.setdefault(ifn, {"prev": None, "hist": []})
+        # A reset re-zeroes BOTH halves: the rolling window (so nobody reads the five minutes that led up to
+        # their fix) and the lifetime baseline. Acted on once per nonce.
+        _base = _drops_base()
+        _want = _DROPS_RESET.get(ifn)
+        if _want and (_base.get(ifn) or {}).get("nonce") != _want:
+            _base[ifn] = {"nonce": _want, "bad": sum(kinds), "pkts": pkts, "at": int(now)}
+            _drops_base_save()
+            st["prev"] = None; st["hist"] = []
         if st["prev"] is not None:
             d = tuple(cur[i] - st["prev"][i] for i in range(5))
             if min(d) >= 0 and any(d):                  # negative => counters reset (iface recreated): skip, don't invent a spike
@@ -5454,6 +5497,7 @@ def iface_drops(ifaces):
         tb = sum(part)
         if not (tp + tb):
             continue
+        _bb = _drops_base().get(ifn) or {}
         bad_at = [r[0] for r in h if sum(r[2:])]
         _rate = [sum(r[2:]) * 100.0 / (r[1] + sum(r[2:])) for r in h if (r[1] + sum(r[2:])) >= IFACE_PEAK_MIN]
         peak = max(_rate) if _rate else None          # None = no sample was big enough to express a rate
@@ -5464,7 +5508,10 @@ def iface_drops(ifaces):
             "peak": (round(peak, 3) if peak is not None else None), "peak_bad": peak_bad,
             "span_s": int(now - h[0][0]),               # what "the window" actually covers right now
             "last_bad_s": int(now - bad_at[-1]) if bad_at else None,
-            "life_pkts": cur[0], "life_bad": sum(kinds),
+            # …counted from the last reset when there was one. Clamped at 0: an interface recreated after a
+            # reset restarts its kernel counters below the baseline, and a negative "since" reads as corruption.
+            "life_pkts": max(0, cur[0] - _bb.get("pkts", 0)), "life_bad": max(0, sum(kinds) - _bb.get("bad", 0)),
+            "life_since": _bb.get("at") or None,
         }
     for gone in [k for k in _IFDROP if k not in ifaces]:
         _IFDROP.pop(gone, None)
@@ -11505,6 +11552,7 @@ def main():
                 sa = start_ifaces(node_cfg, reply.get("iface_start"), agent, sudo)
                 ik = apply_iface_keys(node_cfg, reply.get("iface_key"), agent, sudo)   # keypair restore/rebaseline from the on-disk backup
                 _def_egress = ((reply.get("node_egress") or {}).get("default_egress_ip") or "").strip()   # node IP role: fallback SNAT source
+                note_drops_resets(reply.get("desired_ifaces"))   # operator asked to re-baseline a drop counter
                 # Only run the drift-checking routing reconcile when the DESIRED routing changed, an interface's
                 # lifecycle changed this cycle, or the safety window elapsed — not every 5s. (See ROUTING_RECONCILE_EVERY_S.)
                 _route_sig = json.dumps([reply.get("desired_ifaces"), reply.get("cascade"),
