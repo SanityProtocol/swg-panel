@@ -425,7 +425,7 @@ export function MeshStat({ nodeId, mode }) {
   const legOf = p => (mode === "in" ? (p.plink || p.link) : p.link);
   const legIsPeer = p => mode !== "in" || !!p.plink;
   const lossOf = p => (mode === "in" ? p.plink : p.link);   // directional: never borrowed from the near end
-  const anyLoss = h.peers.some(p => { const l = lossOf(p); return l && typeof l.loss === "number" && l.loss >= 0.05; });
+  const anyLoss = h.peers.some(p => { const l = lossOf(p); return l && typeof l.loss === "number" && l.loss > 0; });
   const row = n => {   // node name FIRST, then the glowing arrow(s)
     const p = h.peers.find(x => x.peer === n.id);
     const nameCls = p.in === "up" ? "mh-bold" : p.in === "down" ? "mh-dim" : "";
@@ -436,7 +436,8 @@ export function MeshStat({ nodeId, mode }) {
     // fleet does not carry an empty gutter.
     const lk = legOf(p), ll = lossOf(p);
     const loss = ll && typeof ll.loss === "number" ? ll.loss : null;
-    const warn = loss != null && loss >= 0.05;   // show it at all; lossColor decides how loud
+    const warn = loss != null && loss > 0;   // ⚠️ MESH IS THE EXCEPTION: a DC-to-DC leg is not a client link: ANY loss on it is worth seeing, so this one shows from the
+              // first lost packet rather than at the 0.05% the client-facing counters use.
     const legBase = !ll ? (lk ? T("Round-trip latency to {v3}. Loss this way is measured by {v3}, which has not reported it.", { v3: n.name }) : "")
       : legIsPeer(p) ? T("Leg measured from {v3}: {v1} of {v2} probe packets lost.",
                          { v1: ll.window_lost, v2: ll.window_sent, v3: n.name })

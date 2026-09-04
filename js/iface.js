@@ -1293,7 +1293,8 @@ export function ConnectionEditSheet({ node, iface }) {
           if (!_lk || _lk.rtt_ms == null) return "—";
           const _ls = typeof _lk.loss === "number" ? _lk.loss : null;
           const _pl = ((meshHealth(node).peers.find(x => x.peer === peer)) || {}).plink || null;
-          const _warn = _ls != null && _ls >= 0.05;   // show it at all; lossColor decides how loud
+          const _warn = _ls != null && _ls > 0;   // ⚠️ MESH IS THE EXCEPTION: a DC-to-DC leg is not a client link: ANY loss on it is worth seeing, so this one shows from the
+              // first lost packet rather than at the 0.05% the client-facing counters use.
           const _val = html`<${Fragment}>${Math.round(_lk.rtt_ms)}${T("unit|ms")}${_warn
             ? html` <span class="dp-num" style=${"color:" + lossColor(_ls)}>${T("(Loss {v1}%)", { v1: _ls })}</span>` : null}<//>`;
           return html`<${LossPop} l=${_lk} pl=${_pl} peerName=${Store.nodeName(peer)} trigger=${_val}/>`;

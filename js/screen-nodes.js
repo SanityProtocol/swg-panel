@@ -394,7 +394,8 @@ export function NodeDetail({ node: rawName }) {
               const _pl = ((meshHealth(name).peers.find(x => x.peer === peer)) || {}).plink || null;
               // One row, not two: latency is the link's defining fact and loss is a qualifier ON it, so the
               // card reads "18ms (0.4% loss)" rather than splitting one measurement across two label rows.
-              const _warn = _ls != null && _ls >= 0.05;   // show it at all; lossColor decides how loud
+              const _warn = _ls != null && _ls > 0;   // ⚠️ MESH IS THE EXCEPTION: a DC-to-DC leg is not a client link: ANY loss on it is worth seeing, so this one shows from the
+              // first lost packet rather than at the 0.05% the client-facing counters use.
               const _val = html`<${Fragment}>${Math.round(_lk.rtt_ms)}${T("unit|ms")}${_warn
                 ? html` <span class="dp-num" style=${"color:" + lossColor(_ls)}>${T("(Loss {v1}%)", { v1: _ls })}</span>` : null}<//>`;
               // 0.167% is ONE lost packet in half an hour and reads like a persistent fault; the bubble says
