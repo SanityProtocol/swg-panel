@@ -3091,7 +3091,6 @@ export const STR = {
   "No changes to save": "Нечего сохранять",
   "This end": "Эта сторона",
   "— (not dialed yet)": "— (ещё не звонили)",
-  "Last handshake": "Рукопожатие",
   "Auto (default route)": "Авто (по умолчанию)",
   "Interface saved — starting…": "Интерфейс сохранён — запускаем…",
   "Interface saved.": "Интерфейс сохранён.",

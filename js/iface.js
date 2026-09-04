@@ -26,7 +26,7 @@ import { RangedHistory, IfaceThroughput, lossColor } from "./charts.js";
 import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCached } from "./crypto.js";
 import { EgressPicker, egressInit, egressError, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules,
          SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog } from "./routing.js";
-import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop } from "./views.js";
+import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, LossPop, meshHealth } from "./views.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
@@ -1284,7 +1284,20 @@ export function ConnectionEditSheet({ node, iface }) {
         ${Cell("Endpoint", meta.peer_endpoint || T("— (not dialed yet)"))}
         ${Cell("Rate", rateCell(meta.rx_speed, meta.tx_speed))}
         ${meta.rx_bytes != null || meta.tx_bytes != null ? Cell("Total", xferCell(...dlul(meta.rx_bytes, meta.tx_bytes))) : null}
-        ${Cell(T("Last handshake"), meta.handshake_age != null ? T("{v1} ago", { v1: seen(meta.handshake_age) }) : "—")}
+        ${Cell(T("col|Latency"), (() => {
+          // Same reading, same rendering, same bubble as this link's card on the node page — this sheet is
+          // where an operator decides what to do about a leg, so it should not be the one place that shows
+          // only whether it handshook. The handshake age it replaces already drives the status pill at the
+          // top of this card, so nothing is lost.
+          const _lk = meta.link;
+          if (!_lk || _lk.rtt_ms == null) return "—";
+          const _ls = typeof _lk.loss === "number" ? _lk.loss : null;
+          const _pl = ((meshHealth(node).peers.find(x => x.peer === peer)) || {}).plink || null;
+          const _warn = _ls != null && _ls >= 0.05;   // show it at all; lossColor decides how loud
+          const _val = html`<${Fragment}>${Math.round(_lk.rtt_ms)}${T("unit|ms")}${_warn
+            ? html` <span class="dp-num" style=${"color:" + lossColor(_ls)}>${T("(Loss {v1}%)", { v1: _ls })}</span>` : null}<//>`;
+          return html`<${LossPop} l=${_lk} pl=${_pl} peerName=${Store.nodeName(peer)} trigger=${_val}/>`;
+        })())}
       </div>
     </div>
     <div style="margin-top:12px"><${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.meshSeries(node, peer, r).then(x => x && x.ok ? x.data : {})}/></div>
