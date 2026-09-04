@@ -537,8 +537,15 @@ export function LossPop({ l, pl, peerName, trigger, alignRight }) {
         last.x.last_loss_s < 90 ? T("just now") : T("{v1} ago", { v1: seen(last.x.last_loss_s) })}${tag(last)}</span></div>`
       : reportsLast ? html`<div class="dp-row"><span class="dp-l">${T("Last loss")}</span><span class="dp-v">${T("none in this window")}</span></div>` : null}
     ${one ? html`<div class="dp-hint">${T("That is a single lost packet — the smallest amount this probe can measure. One is normal; watch whether it keeps happening.")}</div>` : null}
+    ${/* ⚠️ THIS BUBBLE MIXES TWO TIME SPANS AND USED TO NAME NEITHER. Loss is accumulated over the whole
+          30-probe window (half an hour) because one probe of 20 packets cannot express 0.4%; latency,
+          min/max and jitter are the NEWEST probe alone — 20 packets over about four seconds. So "0.167%
+          (1 of 600)" sat directly above "18ms" with thirty minutes between what they describe, and an
+          operator reading the two together had no way to know. Say it. */""}
     <div class="dp-foot">${ends[0].x.probes
-      ? T("{v1} probes of {v2} packets, one a minute, {v3}-byte payload", { v1: ends[0].x.probes, v2: 20, v3: ends[0].x.probe_size })
+      ? T("Loss over the last {v1} ({v2} probes of {v3} packets, {v4}-byte). Latency and jitter are from the newest probe.",
+          { v1: seen((ends[0].x.probes || 0) * (ends[0].x.probe_every_s || 60)), v2: ends[0].x.probes,
+            v3: 20, v4: ends[0].x.probe_size })
       : T("measured by pinging the far end of this link")}</div>
   </${Popover}>`;
 }
@@ -566,7 +573,20 @@ export function DropsPop({ d, iface, trigger, alignRight }) {
     </div>
     ${pair("out", T("Sending"))}
     ${pair("in", T("Receiving"))}
-    ${has("peak") && d.peak > d.pct ? html`<div class="dp-row"><span class="dp-l">${T("Worst sample")}</span><span class="dp-v"><b style=${"color:" + lossColor(d.peak)}>${d.peak}%</b></span></div>` : null}
+    ${(() => {
+      // ⚠️ THE RATE AND THE COUNT ANSWER DIFFERENT QUESTIONS, AND THE RATE CAN LIE. A 5s sample that pushed
+      // 2 packets while dropping 70 is 97.22%, which the panel duly showed an operator as "Worst sample
+      // 97.22%" on an interface whose 5-min window moved 23,416 packets cleanly. The node now withholds a
+      // rate it cannot support (peak = null below IFACE_PEAK_MIN) and always reports the raw count, which
+      // is a fact at any traffic level. So: lead with the rate when it means something, and let the count
+      // carry the row when it doesn't — a burst must never go unreported just because the leg was quiet.
+      const wp = has("peak") && d.peak > (d.pct || 0) ? d.peak : null;
+      const wb = typeof d.peak_bad === "number" && d.peak_bad > 0 ? d.peak_bad : null;
+      if (wp == null && wb == null) return null;
+      return html`<div class="dp-row"><span class="dp-l">${T("Worst sample")}</span><span class="dp-v">${wp != null
+        ? html`<b style=${"color:" + lossColor(wp)}>${wp}%</b>${wb ? html`<span class="dp-kind">${fmtNum(wb)} ${T("dropped")}</span>` : null}`
+        : html`<b>${fmtNum(wb)}</b><span class="dp-kind">${T("dropped")}</span>`}</span></div>`;
+    })()}
     ${has("last_bad_s") || d.last_bad_s === null ? html`<div class="dp-row"><span class="dp-l">${T("Last drop")}</span><span class="dp-v">${
       d.last_bad_s == null ? T("none in this window") : d.last_bad_s < 5 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
     ${has("life_bad") ? html`<div class="dp-row"><span class="dp-l">${T("Since boot")}</span><span class="dp-v">${

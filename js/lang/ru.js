@@ -1465,8 +1465,6 @@ export const STR = {
   // budget-ok: bubble hint, wraps
   "That is a single lost packet — the smallest amount this probe can measure. One is normal; watch whether it keeps happening.": "Это один потерянный пакет — минимум, который эта проба вообще может измерить. Один — норма; смотрите, повторяется ли.",
   // budget-ok: bubble footer, wraps
-  "{v1} probes of {v2} packets, one a minute, {v3}-byte payload": "{v1} проб по {v2} пакетов, раз в минуту, полезная нагрузка {v3} байт",
-  // budget-ok: bubble footer, wraps
   "measured by pinging the far end of this link": "измеряется пингом дальнего конца этого канала",
   // budget-ok: appended to a popover row tooltip, wraps
   "Worst probe {v1}%.": "Худшая проба {v1}%.",
@@ -1490,7 +1488,10 @@ export const STR = {
   "queue full": "очередь",
   "refused": "отклонено",
   "errors": "ошибки",
+  // budget-ok: bubble footer, wraps
+  "Loss over the last {v1} ({v2} probes of {v3} packets, {v4}-byte). Latency and jitter are from the newest probe.": "Потери за последние {v1} ({v2} проб по {v3} пакетов, {v4} байт). Задержка и джиттер — из последней пробы.",
   "Worst sample": "Худший замер",
+  "dropped": "отброшено",
   // budget-ok: bubble micro-label in a max-content column, measured 103px, no wrap or clip
   "Last drop": "Последняя потеря",
   "none in this window": "нет за это окно",

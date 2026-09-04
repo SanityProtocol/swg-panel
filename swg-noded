@@ -5396,6 +5396,14 @@ def mesh_health():
 # report the ratio, which is comparable across interfaces and directly colourable next to mesh loss.
 # Cost is a handful of small file reads per interface per sync: no subprocess, no probe traffic.
 IFACE_DROP_WINDOW = 60          # samples retained (60 x 5s sync = 5 min)
+# ⚠️ A RATE NEEDS A DENOMINATOR THAT CAN CARRY IT. `peak` is the worst SINGLE 5s sample, and a sample that
+# carried 72 packets while 70 of them were dropped reports 97.22% — which is true arithmetic and useless as
+# a rate. Measured on msk-shadow: wg11001 showed peak 97.22% inside a 5-min window that moved 23,416 packets
+# cleanly. The EVENT was real (a 70-packet queue stall in five seconds); the percentage was noise, and the
+# panel put it in front of an operator as "Worst sample 97.22%".
+# So the rate is computed only over samples big enough to express one, and the raw count rides alongside —
+# the count is what actually says "a burst happened", at any traffic level.
+IFACE_PEAK_MIN = 200            # packets in one sample below which a percentage is not a measurement
 _IFDROP = {}                    # iface -> {"prev": (pkts, rxd, rxe, txd, txe), "hist": [(t, dpkts, drxd, drxe, dtxd, dtxe), ...]}
 
 
@@ -5447,11 +5455,13 @@ def iface_drops(ifaces):
         if not (tp + tb):
             continue
         bad_at = [r[0] for r in h if sum(r[2:])]
-        peak = max([sum(r[2:]) * 100.0 / (r[1] + sum(r[2:])) for r in h if r[1] + sum(r[2:])] or [0.0])
+        _rate = [sum(r[2:]) * 100.0 / (r[1] + sum(r[2:])) for r in h if (r[1] + sum(r[2:])) >= IFACE_PEAK_MIN]
+        peak = max(_rate) if _rate else None          # None = no sample was big enough to express a rate
+        peak_bad = max([sum(r[2:]) for r in h] or [0])   # …but the COUNT is always a fact
         out[ifn] = {
             "pct": round(tb * 100.0 / (tp + tb), 3), "window_pkts": tp, "window_bad": tb,
             "rx_drop": part[0], "rx_err": part[1], "tx_drop": part[2], "tx_err": part[3],
-            "peak": round(peak, 3),
+            "peak": (round(peak, 3) if peak is not None else None), "peak_bad": peak_bad,
             "span_s": int(now - h[0][0]),               # what "the window" actually covers right now
             "last_bad_s": int(now - bad_at[-1]) if bad_at else None,
             "life_pkts": cur[0], "life_bad": sum(kinds),
