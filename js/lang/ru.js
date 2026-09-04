@@ -1501,7 +1501,7 @@ export const STR = {
   "Rate": "Темп",
   "per minute": "в минуту",
   "Backlog": "В очереди",
-  "bytes waiting": "байт ждут",
+  "waiting": "ждут",
   "Since it started": "С запуска",
   // budget-ok: bubble footer, wraps
   "Packets that reached this server and were discarded because the proxy wasn't reading its socket fast enough. They never reach an interface, so no interface counter can show them.": "Пакеты дошли до сервера и были отброшены, потому что прокси не успевал читать свой сокет. До интерфейса они не доходят, поэтому счётчики интерфейсов их не видят.",

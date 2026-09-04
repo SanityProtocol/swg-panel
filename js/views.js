@@ -15,7 +15,7 @@
  * re-derives the freeze, pagination happens after.
  */
 
-import { tkey, seen } from "./util.js";
+import { tkey, seen, fmtBytes } from "./util.js";
 import { lossColor } from "./charts.js";
 import { Store, api, bus } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
@@ -550,8 +550,20 @@ export function LossPop({ l, pl, peerName, trigger, alignRight }) {
   </${Popover}>`;
 }
 
+// Counts in these bubbles span six orders of magnitude — "75,773 of 756,880,952" is a line nobody reads,
+// they just see two long numbers. Compact the big ones and leave the small ones ALONE: "1 of 600" is the
+// entire point of the loss bubble (one lost packet, the probe's own resolution floor) and "0.6k of 600"
+// would destroy it. So exactness below 10k, where every digit still carries meaning, and a short form
+// above it, where they no longer do.
+export const fmtCount = n => {
+  n = Number(n) || 0;
+  if (n < 10000) return fmtNum(n);
+  const [d, u] = n < 1e6 ? [n / 1e3, "K"] : n < 1e9 ? [n / 1e6, "M"] : [n / 1e9, "G"];
+  return d.toFixed(1).replace(/\.0$/, "") + u;
+};
+
 // Two decimals is right for 4.44/min and ridiculous for 80561.65/min. Scale the precision to the number.
-export const dropRate = v => (v >= 100 ? fmtNum(Math.round(v)) : v >= 10 ? v.toFixed(1) : String(v));
+export const dropRate = v => (v >= 100 ? fmtCount(Math.round(v)) : v >= 10 ? v.toFixed(1) : String(v));
 
 // ───── turn-proxy socket drops ─────
 // A proxy owns no interface, so this is not the same measurement as DropsPop and must not pretend to be:
@@ -564,13 +576,13 @@ export function ProxyDropsPop({ d, service, trigger, alignRight }) {
     <div class="onpop-h">${T("Dropped at the socket · {v1}", { v1: service })}</div>
     <div class="dp-head">
       <span class="dp-sub">${T("in the last {v1}", { v1: d.span_s ? seen(d.span_s) : "—" })}</span>
-      <b class="dp-pct" style=${"color:" + lossColor(d.per_min > 0 ? Math.min(5, d.per_min / 20) : 0)}>${fmtNum(d.win_drops || 0)}</b>
+      <b class="dp-pct" style=${"color:" + lossColor(d.per_min > 0 ? Math.min(5, d.per_min / 20) : 0)}>${fmtCount(d.win_drops || 0)}</b>
     </div>
     ${n(d.per_min) ? html`<div class="dp-row"><span class="dp-l">${T("Rate")}</span><span class="dp-v"><b>${dropRate(d.per_min)}</b><span class="dp-kind">${T("per minute")}</span></span></div>` : null}
-    ${n(d.rxq) ? html`<div class="dp-row"><span class="dp-l">${T("Backlog")}</span><span class="dp-v"><b>${fmtNum(d.rxq)}</b><span class="dp-kind">${T("bytes waiting")}</span></span></div>` : null}
+    ${n(d.rxq) ? html`<div class="dp-row"><span class="dp-l">${T("Backlog")}</span><span class="dp-v"><b>${fmtBytes(d.rxq)}</b><span class="dp-kind">${T("waiting")}</span></span></div>` : null}
     ${d.last_bad_s !== undefined ? html`<div class="dp-row"><span class="dp-l">${T("Last drop")}</span><span class="dp-v">${
       d.last_bad_s == null ? "—" : d.last_bad_s < 90 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
-    ${n(d.life_drops) ? html`<div class="dp-row"><span class="dp-l">${T("Since it started")}</span><span class="dp-v">${fmtNum(d.life_drops)}</span></div>` : null}
+    ${n(d.life_drops) ? html`<div class="dp-row"><span class="dp-l">${T("Since it started")}</span><span class="dp-v">${fmtCount(d.life_drops)}</span></div>` : null}
     <div class="dp-foot">${T("Packets that reached this server and were discarded because the proxy wasn't reading its socket fast enough. They never reach an interface, so no interface counter can show them.")}</div>
   </${Popover}>`;
 }
@@ -598,7 +610,7 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
     const rs = rowsFor(dir);
     if (!rs.length) return null;
     return html`<div class="dp-row"><span class="dp-l">${label}</span><span class="dp-v">${rs.map(x => html`
-      <span class=${"dp-kind" + (d[x.k] ? "" : " zero")}>${x.lbl()} <b>${fmtNum(d[x.k])}</b></span>`)}</span></div>`;
+      <span class=${"dp-kind" + (d[x.k] ? "" : " zero")}>${x.lbl()} <b>${fmtCount(d[x.k])}</b></span>`)}</span></div>`;
   };
   return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
     <div class="onpop-h dp-h">${T("Drops · {v1}", { v1: iface })}
@@ -608,7 +620,7 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
     ${/* The percentage is a VALUE, so it sits on the right where every other value in this bubble is,
           instead of on the left among the labels. */""}
     <div class="dp-head">
-      <span class="dp-sub">${T("{v1} of {v2} packets", { v1: fmtNum(d.window_bad), v2: fmtNum(d.window_pkts) })}</span>
+      <span class="dp-sub">${T("{v1} of {v2} packets", { v1: fmtCount(d.window_bad), v2: fmtCount(d.window_pkts) })}</span>
       <b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>
     </div>
     ${pair("out", T("Sending"))}
@@ -624,15 +636,15 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
       const wb = typeof d.peak_bad === "number" && d.peak_bad > 0 ? d.peak_bad : null;
       if (wp == null && wb == null) return null;
       return html`<div class="dp-row"><span class="dp-l">${T("Worst sample")}</span><span class="dp-v">${wp != null
-        ? html`<b style=${"color:" + lossColor(wp)}>${wp}%</b>${wb ? html`<span class="dp-kind">${fmtNum(wb)} ${T("dropped")}</span>` : null}`
-        : html`<b>${fmtNum(wb)}</b><span class="dp-kind">${T("dropped")}</span>`}</span></div>`;
+        ? html`<b style=${"color:" + lossColor(wp)}>${wp}%</b>${wb ? html`<span class="dp-kind">${fmtCount(wb)} ${T("dropped")}</span>` : null}`
+        : html`<b>${fmtCount(wb)}</b><span class="dp-kind">${T("dropped")}</span>`}</span></div>`;
     })()}
     ${has("last_bad_s") || d.last_bad_s === null ? html`<div class="dp-row"><span class="dp-l">${T("Last drop")}</span><span class="dp-v">${
       d.last_bad_s == null ? "—" : d.last_bad_s < 5 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
     ${/* the ratio alone made the reader do the division — give them the rate too, at the row's own size */""}
     ${has("life_bad") ? html`<div class="dp-row"><span class="dp-l">${
       d.life_since ? T("Since reset") : T("Since boot")}</span><span class="dp-v">${
-      T("{v1} of {v2}", { v1: fmtNum(d.life_bad), v2: fmtNum(d.life_pkts) })}${d.life_pkts
+      T("{v1} of {v2}", { v1: fmtCount(d.life_bad), v2: fmtCount(d.life_pkts) })}${d.life_pkts
         ? html`<span class="dp-life" style=${"color:" + lossColor(100 * d.life_bad / d.life_pkts)}>${
             (100 * d.life_bad / d.life_pkts).toFixed(4)}%</span>` : null}</span></div>` : null}
     ${hint ? html`<div class="dp-hint">${hint}</div>` : null}
