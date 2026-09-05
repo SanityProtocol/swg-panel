@@ -1512,6 +1512,8 @@ export const STR = {
   // budget-ok: button tooltip, wraps
   "Zero the counters and start measuring again from now": "Обнулить счётчики и начать измерять заново с этого момента",
   "Couldn't reset the counters.": "Не удалось сбросить счётчики.",
+  "Clear this leg's probe window at both ends and start measuring again from now": "Очистить окно замеров на обоих концах и начать измерять заново с этого момента",
+  "Couldn't reset the probe window.": "Не удалось очистить окно замеров.",
   "measured over the last {v1}": "замер за последние {v1}",
   "this node's own queues and datapath, not the path to the client": "собственные очереди и тракт узла, а не путь до клиента",
   "This node couldn't send fast enough and dropped from its own queue — local pressure, not the path.": "Узел не успевал отправлять и сбрасывал пакеты из своей очереди — это локальная нагрузка, а не путь.",

@@ -10533,6 +10533,19 @@ def _link_devs(nodes, nid, P):
     return lr_n.get("iface"), lr_p.get("iface"), lr_p.get("peer_address")
 
 
+def mesh_leg_ends(nodes, nid, iface):
+    """Both ends of the mesh leg (nid, iface) rides on, as [(node_id, iface), ...] — one entry if the far
+    end can't be resolved. A leg is measured INDEPENDENTLY at each end (`out` is mine, `in` is the far
+    node's own probe of me), so anything that re-baselines a leg has to reach BOTH: clearing one end leaves
+    the bubble half-stale, which reads as broken rather than as reset."""
+    ends = [(nid, iface)]
+    peer = (((nodes.get(nid) or {}).get("ifaces") or {}).get(iface) or {}).get("link_node")
+    far = ((((nodes.get(peer) or {}).get("links") or {}) if peer else {}).get(nid) or {}).get("iface")
+    if peer and far:
+        ends.append((peer, far))
+    return ends
+
+
 def cascade_plan(nodes, snaps, custom_lists=None):
     """Fleet-wide egress plan covering BOTH Phase-2 whole-interface forward (egress_mode=forward) AND
     Phase-3 per-destination smart routing (egress_mode=smart). Both route a user interface's traffic into
@@ -15080,6 +15093,15 @@ def api(method, path, qs, body, deps):
                     ov.pop("awg_params", None)
             else:
                 return 400, {"ok": False, "error": "awg_params must be an object", "code": "bad_request"}
+        if body.get("mesh_reset"):
+            # Empty this mesh leg's probe window at BOTH ends (see mesh_leg_ends). Same nonce shape as
+            # drops_reset — the node acts on it once, a node that is down picks it up when it returns.
+            _non = int(time.time())
+            for _n, _i in mesh_leg_ends(nodes, nid, iface):
+                if (_n, _i) == (nid, iface):
+                    ov["mesh_reset"] = _non
+                else:
+                    nodes[_n].setdefault("ifaces", {}).setdefault(_i, {})["mesh_reset"] = _non
         if body.get("drops_reset"):
             # Re-baseline this interface's drop counters. A monotonic nonce the node acts on ONCE (the same
             # shape as a WDTT/csqtt `restart`), not a command channel: if the node is down the reset simply
@@ -18671,6 +18693,8 @@ class Handler(BaseHTTPRequestHandler):
             # done, and the node never saw it.
             if ov.get("drops_reset"):
                 d["drops_reset"] = ov["drops_reset"]
+            if ov.get("mesh_reset"):
+                d["mesh_reset"] = ov["mesh_reset"]
             if not synced:
                 ov.pop("_synced", None)
             if not drift:

@@ -496,8 +496,19 @@ const DROP_KINDS = [
 //
 // `l` = this end's reading, `pl` = the far end's reading of the same leg. Loss is directional — only the
 // receiving end can see what failed to arrive — so both are shown side by side rather than averaged.
-export function LossPop({ l, pl, peerName, trigger, alignRight }) {
+export function LossPop({ l, pl, peerName, node, iface, trigger, alignRight }) {
+  const [reset, setReset] = useState("");
   if (!l && !pl) return trigger;
+  // ⚠️ RESETS THE LEG, NOT THIS END. `Out` is this node's probe, `In` is the far node's probe of us — two
+  // independent measurements — so the panel stamps the nonce on BOTH ends (mesh_leg_ends). Clearing only
+  // the near end would leave half the bubble reading the old outage, which looks like a bug, not a reset.
+  const doReset = async e => {
+    e.preventDefault(); e.stopPropagation();
+    setReset("busy");
+    const r = await api.ifaceUpdate({ node: node, iface: iface, mesh_reset: 1 });
+    if (r && r.ok) { setReset("ok"); setTimeout(() => setReset(""), 2500); }
+    else { setReset(""); toast(srvText(r) || T("Couldn't reset the probe window."), "err"); }
+  };
   // ⚠️ EVERY QUALIFIER MUST FOLLOW THE DIRECTION IT BELONGS TO. The first cut anchored "worst probe",
   // "last loss" and the RTT spread to whichever end reported first — in practice always the near one — so
   // a leg losing 2.4% INBOUND, with 412ms of far-end bufferbloat, rendered "last loss: none in this
@@ -523,7 +534,10 @@ export function LossPop({ l, pl, peerName, trigger, alignRight }) {
   const rttRows = splitRtt ? rtts : rtts.slice(0, 1);
   const one = ends.find(e => e.x.window_lost === 1);   // 1/600 = 0.167%: the probe's own resolution floor
   return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
-    <div class="onpop-h">${T("Leg quality · {v1}", { v1: peerName })}</div>
+    <div class="onpop-h dp-h">${T("Leg quality · {v1}", { v1: peerName })}
+      ${node && iface ? html`<button class=${"dp-reset" + (reset === "ok" ? " ok" : "")} disabled=${reset === "busy"}
+        title=${T("Clear this leg's probe window at both ends and start measuring again from now")}
+        onClick=${doReset}>${reset === "ok" ? T("Reset ✓") : reset === "busy" ? T("Resetting…") : T("Reset")}</button>` : null}</div>
     ${ends.map(e => html`<div class="dp-row"><span class="dp-l">${e.dir}</span><span class="dp-v">
       <b style=${"color:" + lossColor(e.x.loss)}>${e.x.loss}%</b>
       <span class="dp-kind">${T("{v1} of {v2}", { v1: e.x.window_lost, v2: e.x.window_sent })}</span></span></div>`)}

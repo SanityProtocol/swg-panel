@@ -1297,7 +1297,7 @@ export function ConnectionEditSheet({ node, iface }) {
               // first lost packet rather than at the 0.05% the client-facing counters use.
           const _val = html`<${Fragment}>${Math.round(_lk.rtt_ms)}${T("unit|ms")}${_warn
             ? html` <span class="dp-num" style=${"color:" + lossColor(_ls)}>${T("(Loss {v1}%)", { v1: _ls })}</span>` : null}<//>`;
-          return html`<${LossPop} l=${_lk} pl=${_pl} peerName=${Store.nodeName(peer)} trigger=${_val}/>`;
+          return html`<${LossPop} l=${_lk} pl=${_pl} peerName=${Store.nodeName(peer)} node=${node} iface=${iface} trigger=${_val}/>`;
         })())}
       </div>
     </div>

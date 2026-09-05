@@ -403,7 +403,7 @@ export function NodeDetail({ node: rawName }) {
               // figure has to swallow its own click — Popover preventDefaults it.
               return html`<div class="ifrow"><span class="l">${T("col|Latency")}</span><span class="r addr"
                 onClick=${e => { e.preventDefault(); e.stopPropagation(); }}><${LossPop} l=${_lk} pl=${_pl}
-                  peerName=${Store.nodeName(peer)} trigger=${_val}/></span></div>`;
+                  peerName=${Store.nodeName(peer)} node=${name} iface=${ifn} trigger=${_val}/></span></div>`;
             })()}
             ${carried.length ? html`<div class="ifrow"><span class="l">${T("Carrying")}</span><span class="r"><span class="carry-tags">${carried.map(k => html`<span class=${"tg tg-" + ((meta[k].awg_params && Object.keys(meta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`)}</span></span></div>` : null}
           </div></div>`;
