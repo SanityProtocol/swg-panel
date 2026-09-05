@@ -19838,6 +19838,16 @@ class Handler(BaseHTTPRequestHandler):
             # A node that came home is not "being transferred away" any more, and a badge that says it is
             # is a badge nobody can trust. The marker goes; `transferred_from` records the round trip.
             newrec.pop("transfer", None)
+            # ⚠️ A NODE ARRIVING UNDER A DIFFERENT ID LEAVES ITS OLD SELF'S MESH LINKS BEHIND.
+            # Popping the old record removes the node but NOT the fleet's links TO it: every survivor keeps
+            # `links[<old id>]` and an `ifaces[<swg_…>].link_node` naming an id that no longer exists. Those
+            # become permanent ghost connections — a card with no endpoint, stuck on 're-provisioning',
+            # holding the node's mesh status at 2/3 forever, and a mesh interface still up on the box that
+            # nothing will ever tear down. Seen live after hel-flux changed panels: msk-shadow and hel-relay
+            # each kept a link to 5d2508ac8775, a node that was already gone. The delete path has done this
+            # teardown all along; the transfer path simply never called it.
+            if a_nid != nid:
+                mesh_unlink_node(nodes, nid)
             nodes.pop(nid, None)
             nodes[a_nid] = newrec
 
