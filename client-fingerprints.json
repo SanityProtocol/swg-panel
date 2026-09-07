@@ -83,9 +83,9 @@
   },
   "vkturnproxy": {
    "anton48/vk-turn-proxy-ios@main:quick_link.py": {
-    "date": "2026-07-25T12:21:46Z",
-    "sha": "341964acc1138a823d85a53a4deaa4754bb4722f",
-    "url": "https://github.com/anton48/vk-turn-proxy-ios/commit/341964acc1138a823d85a53a4deaa4754bb4722f"
+    "date": "2026-09-06T13:02:00Z",
+    "sha": "f413e87aa2a8b0f29341a32ebcd015a352918195",
+    "url": "https://github.com/anton48/vk-turn-proxy-ios/commit/f413e87aa2a8b0f29341a32ebcd015a352918195"
    }
   },
   "wdttplus": {
@@ -122,6 +122,6 @@
    }
   }
  },
- "generated_at": 1788683941,
+ "generated_at": 1788772691,
  "schema": 1
 }
