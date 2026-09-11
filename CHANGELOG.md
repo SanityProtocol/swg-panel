@@ -67,6 +67,19 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
 
 ### Fixed
 
+- **On a distribution that confines the WireGuard tools with AppArmor, no interface could be created at
+  all.** The node daemon ran with `NoNewPrivileges`, and a process carrying that cannot be switched into an
+  AppArmor profile — so the kernel refused to *execute* `ip` and `wg`/`awg`, and `wg-quick` died before it
+  ran. That directive is retired: it withheld no privilege this root daemon did not already hold, and an
+  update takes it back out of units already installed. And where a bring-up is refused for any such
+  reason — the tools cannot be executed, or they run and the kernel turns down what they ask for — the
+  panel no longer blames the port or the subnet. It says which of the two happened and how to tell the
+  causes apart.
+- **Interfaces driven over a socket rather than through the kernel read as having no peers on those same
+  hosts.** wdtt, csqtt and any AmneziaWG interface on the userspace datapath are read through
+  `/run/wireguard/*.sock`, which the same AppArmor profile did not permit — a second refusal that retiring
+  `NoNewPrivileges` does not touch. Installing or updating a node now adds the two rules through the profile's
+  own `local/` include where the profile offers one, and says exactly what to add where it does not.
 - **A rule whose destination node had been deleted rendered as a blank control and routed nothing.** All of
   that interface's traffic went out the node's default instead, with nothing on screen saying so.
 - **Force-DNS reported its resolver "down" whenever there was nothing to resolve.** Both other host engines

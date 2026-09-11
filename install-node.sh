@@ -888,7 +888,9 @@ Environment=SWG_AGENT_CONFIG=/etc/swg-agent/config.json
 Environment=SWG_NODED_STATE=/var/lib/swg-noded
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=true
+# ⚠️ Do NOT add NoNewPrivileges. It withholds no privilege this root daemon does not already hold,
+# and a process carrying it cannot be switched into an AppArmor profile — so where the WireGuard tools
+# are confined the kernel refuses to EXEC them and no interface can be created at all.
 ProtectSystem=true
 ProtectHome=true
 PrivateTmp=true
@@ -898,6 +900,13 @@ WantedBy=multi-user.target
 EOF
 
 # ───────────────────────── enable ─────────────────────────
+# The node drives every USERSPACE interface (wdtt, csqtt, awg on amneziawg-go) over a UAPI socket
+# in /run/wireguard. Where a distribution confines the wg CLI with AppArmor, that path is not in
+# the profile and those interfaces read as having no peers — so extend the policy here, through
+# its own local/ include, rather than leaving a fresh install to discover it later. No-op where
+# there is no AppArmor, where the profile is already permissive, or with SWG_NO_APPARMOR_FIX=1.
+ensure_wg_apparmor
+
 info "Enable daemon"
 run systemctl daemon-reload
 run systemctl enable --quiet swg-noded

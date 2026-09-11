@@ -60,6 +60,7 @@ SUB_DIR="${SUB_DIR:-/opt/swg-sub}"
 AGENT_DIR="${AGENT_DIR:-/opt/swg-agent}"
 NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
+NODED_UNIT="${NODED_UNIT:-/etc/systemd/system/swg-noded.service}"
 
 # colours FIRST — must be detected on the real tty BEFORE lc_init's tee redirect makes stdout a pipe (else
 # [ -t 1 ] is false and the whole run prints uncoloured). The helper fns below resolve these vars at call time.
@@ -611,7 +612,7 @@ ensure_noded_unit(){   # HEAL (install-if-missing) the swg-noded systemd unit on
   # an existing unit. Template MUST mirror install-node.sh's swg-noded.service.
   [ -f "$SRC/swg-noded" ] || return 0
   [ -f "$NODED_DIR/swg-noded" ] && [ -f /etc/swg-agent/config.json ] || return 0   # a configured bare-metal node
-  local unit=/etc/systemd/system/swg-noded.service
+  local unit="$NODED_UNIT"
   if [ -f "$unit" ]; then
     $DRYRUN || systemctl is-enabled --quiet swg-noded 2>/dev/null || systemctl enable --quiet swg-noded 2>/dev/null || true
     return 0
@@ -632,7 +633,8 @@ Environment=SWG_AGENT_CONFIG=/etc/swg-agent/config.json
 Environment=SWG_NODED_STATE=/var/lib/swg-noded
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=true
+# ⚠️ NO NoNewPrivileges HERE — mirrors the installers; ensure_noded_no_nnp retires it from units
+# written before this. It blocked the AppArmor profile transition wg-quick needs to exec ip/wg.
 ProtectSystem=true
 ProtectHome=true
 PrivateTmp=true
@@ -643,6 +645,35 @@ EOF
   systemctl daemon-reload
   systemctl enable --quiet --now swg-noded 2>/dev/null || warn "couldn't enable swg-noded"
   ok "swg-noded unit healed — the node will sync + survive a reboot now"
+}
+
+ensure_noded_no_nnp(){   # MIGRATE (retract-one-directive) NoNewPrivileges out of an existing swg-noded unit.
+  # We put `NoNewPrivileges=true` in this unit and we are taking it back out. It withheld nothing:
+  # swg-noded is root with the full capability set, so there is no privilege left for it to refuse. What
+  # it DID do is make the kernel refuse to exec any tool that has to change AppArmor profile — a process
+  # with no_new_privs cannot be switched into one, so on a distribution that confines the WireGuard tools
+  # `wg-quick`/`awg-quick` cannot exec `ip` or `wg`/`awg` at ALL:
+  #
+  #     apparmor="DENIED" operation="exec" info="no new privs" profile="wg-quick"
+  #       name="/usr/bin/ip" target="wg-quick//ip"
+  #
+  # The interface then fails before the tool runs, which is nothing the operator can find from the panel.
+  # Tool-agnostic on purpose: nothing here names wg. Any confined `*-quick` was blocked the same way, and
+  # any that a distribution confines later is un-blocked by the same removal.
+  #
+  # ⚠️ THIS IS THE ONE THING ensure_noded_unit WON'T DO — it never rewrites an existing unit, on purpose,
+  # because that unit may carry operator edits. So this is a SURGICAL retraction, not a rewrite: it deletes
+  # exactly the line we wrote, only from our own unit, only when it is there, and leaves every other line
+  # (including anything the operator added) untouched. A drop-in under swg-noded.service.d/ that sets it
+  # again is the operator's own decision and is deliberately not touched.
+  local unit="$NODED_UNIT"
+  [ -f "$unit" ] || return 0
+  grep -q '^NoNewPrivileges=' "$unit" 2>/dev/null || return 0
+  if $DRYRUN; then echo "    [skip] drop NoNewPrivileges= from $unit + daemon-reload + restart swg-noded"; return 0; fi
+  sed -i '/^NoNewPrivileges=/d' "$unit" || { warn "couldn't edit $unit — remove its NoNewPrivileges= line by hand"; return 0; }
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl restart swg-noded 2>/dev/null || warn "couldn't restart swg-noded — run: systemctl restart swg-noded"
+  ok "swg-noded: NoNewPrivileges retired — interface tools can be executed under an AppArmor policy again"
 }
 
 ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a bare-metal node/master.
@@ -1276,6 +1307,8 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   else note "bare-metal swg-node: unchanged (${nold})"; fi
   ensure_node_update_ref # HEAL: record the ref this box tracks, so the node's self-update doesn't fall to main
   ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
+  ensure_noded_no_nnp    # MIGRATE: retract NoNewPrivileges — it blocked the AppArmor transition wg-quick/awg-quick need
+  ensure_wg_apparmor     # HEAL: let the confined wg CLI reach the UAPI sockets (wdtt / csqtt / awg-userspace)
   ensure_awg_datapath    # HEAL: install AmneziaWG if missing, rebuild its module, else userspace
   ensure_awg_quick_unit  # HEAL: the awg-quick@ template + the per-interface enable, so awg survives a reboot
 fi

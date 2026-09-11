@@ -1462,6 +1462,98 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   modprobe amneziawg 2>/dev/null || return 1
 }
 
+# ── AppArmor accommodation for the node's WireGuard tools ───────────────────────────────────────
+# Shared by install-node.sh, install-host.sh (a master installs a local node) and update.sh, so a
+# FRESH install on an affected distribution is not left waiting for its first update to work.
+AA_DIR="${AA_DIR:-/etc/apparmor.d}"                                    # AppArmor policy, vendor + local/
+AA_PROFILES="${AA_PROFILES:-/sys/kernel/security/apparmor/profiles}"   # loaded profiles + their mode
+
+# Where the node's WireGuard tools are confined by AppArmor, the UAPI sockets that every USERSPACE
+# interface is driven through are not in the profile — so `wg show <iface>` is refused and the panel
+# reads those interfaces as having no peers at all. Retiring NoNewPrivileges does not touch this: it is
+# a file rule inside the profile, not an exec transition, and it bites whether or not the transition
+# happens. It is the same policy, reached through a different door, and it lands on exactly the
+# interface types the exec fault did NOT break — wdtt, csqtt, and any awg running the userspace
+# datapath, all of which live on a socket rather than in the kernel.
+#
+#     apparmor="DENIED" operation="connect" profile="wg" name="/run/wireguard/wdtt1.sock"
+#     apparmor="DENIED" operation="open"    profile="wg" name="/run/wireguard/"
+#
+# /var/run is a symlink to /run on any system this runs on, and AppArmor mediates the RESOLVED path, so
+# the /var/run rules are dead weight there — they are written anyway for the pre-merge layout, where the
+# node's own WG_SOCK_DIRS still looks, and a dead rule costs nothing.
+# ⚠️ FENCED AT BOTH ENDS. local/<profile> is a file the distribution and the operator may also write
+# in, so "delete the file to revert" would be wrong and un-reversing it by hand is worse. Between these
+# two markers is ours and only ours: uninstall.sh reaps exactly this span, and the idempotence check
+# below looks for the opening one. Plain dashes, deliberately: `>>>`/`<<<` fences read as redirects and
+# here-strings to anything parsing this file as shell — the repo's own heredoc audit flagged them.
+APPARMOR_LOCAL_BEGIN='  # --- swgPanel: userspace WireGuard datapaths (begin) ---'
+APPARMOR_LOCAL_END='  # --- swgPanel: userspace WireGuard datapaths (end) ---'
+APPARMOR_LOCAL_BLOCK="$APPARMOR_LOCAL_BEGIN
+  # wireguard-go / amneziawg-go and the wdtt + csqtt forks are driven over a UAPI socket here. Without
+  # these the wg CLI cannot read them and every such interface reports zero peers. To revert, delete
+  # the lines between these two markers and: apparmor_parser -r <the profile that includes this file>
+  /run/wireguard/ r,
+  /run/wireguard/*.sock rw,
+  /var/run/wireguard/ r,
+  /var/run/wireguard/*.sock rw,
+$APPARMOR_LOCAL_END"
+
+ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confining the node's WireGuard tools.
+  # ⚠️ THIS EDITS A SECURITY POLICY ON SOMEONE ELSE'S MACHINE, so it is gated hard and narrowly:
+  #   · only a profile the distribution ships an enforcing copy of (complain mode already allows this);
+  #   · only through /etc/apparmor.d/local/<name>, the extension point the profile itself opts into by
+  #     including it — if the vendor profile carries no such include we do NOT touch the vendor file,
+  #     we say what to add and stop. Editing a packaged profile would be both wrong and lost on upgrade;
+  #   · APPEND-ONLY and marked, so a second run is a no-op and nothing already in that file is disturbed;
+  #   · SWG_NO_APPARMOR_FIX=1 declines it entirely.
+  # The grant is the narrowest one that restores the function: read the socket directory, talk to the
+  # sockets in it. Nothing else in the profile is widened.
+  [ "${SWG_NO_APPARMOR_FIX:-0}" = 1 ] && return 0
+  have apparmor_parser || return 0
+  local t c prof base loc changed=no
+  # ⚠️ WE LOOKED, AND COULD NOT SEE. Without the loaded-profile list there is no way to tell enforce
+  # from complain, and complain needs no fix at all — so say so rather than act on a guess or pass in
+  # silence. (securityfs unmounted, or a confined/containerised context.)
+  if [ ! -r "$AA_PROFILES" ] && { [ -f "$AA_DIR/wg" ] || [ -f "$AA_DIR/usr.bin.wg" ]; }; then
+    warn "AppArmor policy for the WireGuard tools is present but $AA_PROFILES is unreadable — can't tell enforce from complain, so leaving it alone."
+    return 0
+  fi
+  for t in wg awg; do
+    # ⚠️ A PROFILE IS NAMED EITHER WAY, and so is the file that holds it: newer policy uses the tool
+    # name (`wg`, /etc/apparmor.d/wg), older uses the path (`/usr/bin/wg`, /etc/apparmor.d/usr.bin.wg).
+    # Matching only one spelling reads a confined box as unconfined and silently does nothing.
+    grep -Eqs "^[[:space:]]*(${t}|/usr/bin/${t}|/bin/${t}) \(enforce\)\$" "$AA_PROFILES" || continue
+    prof=""; base=""
+    for c in "$t" "usr.bin.$t" "bin.$t"; do
+      [ -f "$AA_DIR/$c" ] && { prof="$AA_DIR/$c"; base="$c"; break; }
+    done
+    if [ -z "$prof" ]; then
+      warn "AppArmor enforces a profile for $t but no profile file was found under $AA_DIR — userspace interfaces (wdtt/csqtt/awg-userspace) will read 0 peers."
+      continue
+    fi
+    loc="$AA_DIR/local/$base"
+    # the profile must itself pull in local/<name>; that include is the distribution's own invitation
+    if ! grep -Eqs "include[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?<local/$base>" "$prof"; then
+      warn "AppArmor confines $t but $prof has no <local/$base> include — userspace interfaces (wdtt/csqtt/awg-userspace) will read 0 peers."
+      sub "add to $prof, then: apparmor_parser -r $prof"
+      printf '%s\n' "$APPARMOR_LOCAL_BLOCK"
+      continue
+    fi
+    grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null && continue   # already done
+    # NB: no `changed=yes` here. A dry-run that also prints the ✓ line below is claiming a policy
+    # change it did not make — the [skip] line is the whole report.
+    if $DRYRUN; then echo "    [skip] append swgPanel socket rules to $loc + apparmor_parser -r $prof"; continue; fi
+    mkdir -p "$AA_DIR/local" 2>/dev/null || true
+    printf '\n%s\n' "$APPARMOR_LOCAL_BLOCK" >> "$loc" 2>/dev/null \
+      || { warn "couldn't write $loc — add the swgPanel block there by hand"; continue; }
+    if apparmor_parser -r "$prof" 2>/dev/null; then changed=yes
+    else warn "wrote $loc but couldn't reload $prof — run: apparmor_parser -r $prof"; fi
+  done
+  [ "$changed" = yes ] && ok "AppArmor: the wg CLI may read userspace interface sockets again (wdtt / csqtt / awg-userspace)"
+  return 0
+}
+
 ensure_awg_userspace(){ # last rung: the userspace datapath, so AWG works even with no loadable module. 0/1
   # awg-quick falls back to this ON ITS OWN — its add_if() exits unless the module is missing AND
   # `amneziawg-go` is on PATH, so simply having the binary is the whole wiring. No env var, no config.

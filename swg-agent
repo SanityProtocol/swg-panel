@@ -826,6 +826,124 @@ def _iface_unit(action, tool, iface):
         return False
 
 
+# bash reports a failed execve as `<script>: line <n>: <path>: <reason>` — the tool never STARTED, so
+# nothing it would have said about ports, subnets or device types can be true.
+#
+# The English spelling is not luck: `<tool>-quick` does `export LC_ALL=C` on its ninth line, before it
+# runs anything, so every message below it is C-locale whatever the host is set to. Keep that in mind
+# before matching on any other stderr text here.
+_EXEC_DENIED_RE = re.compile(r"(?:^|\n)[^\n]*: line \d+: (\S+): Operation not permitted")
+
+# The OTHER refusal: the tool really did run, and the kernel turned down the operation it asked for.
+# A different fault with a different fix, which is why the pattern above is anchored tightly enough to
+# leave it alone — and it became the LIKELIER of the two the moment this project stopped setting
+# NoNewPrivileges on the node daemon, because the tools now genuinely execute under whatever policy
+# confines them instead of being refused at the door. Left to the generic message, it would arrive as
+# "port/subnet may be in use" — the exact lie this whole block exists to stop telling.
+_NETLINK_DENIED_RE = re.compile(r"RTNETLINK answers: Operation not permitted")
+
+_AA_PROFILES = "/sys/kernel/security/apparmor/profiles"
+_AA_TOOLS = ("wg", "wg-quick", "awg", "awg-quick")
+
+
+def _aa_enforced_tools():
+    """Which of the WireGuard tools this box has an ENFORCING AppArmor profile for — [] if none.
+
+    This is the difference between a message that lists three things it might be and one that names the
+    file to edit. Measured on the node that reported this: `getcap` printed nothing at all (no file
+    capabilities anywhere), and the kernel audit log said what had really happened —
+
+        apparmor="DENIED" operation="exec" info="no new privs" error=-1
+          profile="wg-quick" name="/usr/bin/ip" target="wg-quick//ip"
+
+    — a distribution-shipped `wg-quick` profile trying to switch `ip` into its `wg-quick//ip` child
+    profile, which AppArmor must refuse outright while the calling process has no_new_privs set.
+
+    ⚠️ A PROFILE IS NAMED EITHER WAY. Newer Debian/Ubuntu policy names it for the tool (`wg`), older
+    policy names it for the path (`/usr/bin/wg`), and matching only the first would read a confined box
+    as unconfined and hand the operator the wrong advice. Both spellings count; a `//` child profile
+    never does, because the operator acts on the parent that carries it.
+
+    Only `(enforce)` counts. A profile in complain mode LOGS the same denial and then allows the exec, so
+    it can never be what refused this one — naming it would send the operator at the wrong file. Reading
+    the file can fail (no AppArmor, securityfs not mounted, a container that cannot see the host's): that
+    is not a diagnosis either way, so it falls through to the general advice rather than guessing."""
+    try:
+        with open(_AA_PROFILES) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    out = set()
+    for ln in lines:
+        name, _, mode = ln.strip().rpartition(" ")
+        if mode != "(enforce)" or "//" in name:
+            continue
+        if name.rsplit("/", 1)[-1] in _AA_TOOLS:
+            out.add(name.rsplit("/", 1)[-1])
+    return sorted(out)
+
+
+def _denied_error(msg):
+    """The AgentError for a bring-up the SYSTEM refused — None when it failed of anything else.
+
+    Returns rather than raises, so the four call sites read `raise _denied_error(...)` and a reader can
+    see the control flow at the site. A version of this that raised from in here left each caller looking
+    like it fell through to the generic message, which is precisely the message being corrected.
+
+    Every arm is a FIXED sentence, nothing interpolated, so the panel translates it by catalogue lookup
+    like any other string — see _ensure_tool. That is why none of them names the binary bash named: a path
+    is a value, a value bakes the key, and a baked key arrives as English inside a translated page.
+
+    ⚠️ THE CONTAINER ARM COMES FIRST, and not because it is more likely. Its advice has to be actionable
+    where it is given: inside a container the lever is the container's own capability set and compose
+    file, and telling someone to edit host AppArmor policy they cannot reach from in there would be worse
+    than the generic message. Host policy is only diagnosed where host policy can be changed."""
+    if _EXEC_DENIED_RE.search(msg or ""):
+        if _IN_CONTAINER:
+            return AgentError("no_exec",
+                              "this node's container could not execute the tools that bring an interface "
+                              "up: the kernel refused to start them (\"Operation not permitted\"), so the "
+                              "bring-up never began. This is not a port or subnet conflict. A container "
+                              "gets this when its capability set no longer covers what those binaries ask "
+                              "for — give the node NET_ADMIN (in docker-compose.yml: cap_add: "
+                              "[NET_ADMIN]) and recreate it (docker compose up -d), then this interface "
+                              "creates itself on the next sync.")
+        if _aa_enforced_tools():
+            return AgentError("no_exec",
+                              "this node could not execute the tools that bring an interface up: AppArmor "
+                              "refused to start them, so the bring-up never began. This is not a port or "
+                              "subnet conflict. This distribution enforces an AppArmor profile for the "
+                              "WireGuard tools, and a confined program may not switch into its child "
+                              "profile while the calling service runs with NoNewPrivileges — which the "
+                              "node daemon does on an installation older than 1.8.7-beta; updating the "
+                              "node removes it. In dmesg the denial reads: apparmor=\"DENIED\" "
+                              "operation=\"exec\" info=\"no new privs\". To clear it by hand, put those "
+                              "profiles into complain mode on the node:  aa-complain /usr/bin/wg "
+                              "/usr/bin/wg-quick  (apt-get install -y apparmor-utils if that command is "
+                              "missing) — then this interface creates itself on the next sync.")
+        return AgentError("no_exec",
+                          "this node could not execute the tools that bring an interface up: the kernel "
+                          "refused to start them (\"Operation not permitted\"), so the bring-up never "
+                          "began. This is not a port or subnet conflict, and the datapath module is not "
+                          "the problem. Either those binaries carry file capabilities that this node's "
+                          "capability bounding set no longer covers, or an exec-control layer (SELinux, "
+                          "fapolicyd, or an AppArmor policy this node cannot read) is denying them. Run "
+                          "on the node:  getcap $(command -v ip) $(command -v wg) $(command -v awg)  for "
+                          "the first, and  dmesg | grep -i \'denied\'  for the second — one of them names "
+                          "it. Once the tools run again, this interface creates itself on the next sync.")
+    if _NETLINK_DENIED_RE.search(msg or ""):
+        return AgentError("no_priv",
+                          "the interface tools ran on this node, but the kernel refused the operation "
+                          "they asked for (\"RTNETLINK answers: Operation not permitted\"). This is not a "
+                          "port or subnet conflict: the tools are being denied the network privilege "
+                          "they need. In a container that means the node is missing NET_ADMIN (in "
+                          "docker-compose.yml: cap_add: [NET_ADMIN], then docker compose up -d). On a "
+                          "host it means a security policy is confining them —  dmesg | grep -i "
+                          "\'denied\'  names which one. Then this interface creates itself on the next "
+                          "sync.")
+    return None
+
+
 def op_create_iface(cfg, req):
     """Create a BRAND-NEW wg/awg interface natively (kernel on bare-metal, userspace in a node
     container): genkey, write the .conf (Address from the given subnet, ListenPort, MTU, auto-NAT
@@ -962,6 +1080,13 @@ def op_create_iface(cfg, req):
             with contextlib.suppress(Exception):
                 os.unlink(link)
         msg = str(e)
+        # FIRST, before any pattern that reads the tools' own output: a tool that could not be EXECUTED
+        # printed none of that output, and every branch below would be guessing at a command that never
+        # ran. The refused-by-the-kernel case is classified here too, for the same reason in reverse —
+        # it DID run, and what it says has nothing to do with ports or subnets either.
+        _denied = _denied_error(msg)
+        if _denied:
+            raise _denied
         # "Unknown device type" / "Protocol not supported" == the kernel datapath module isn't loadable (the awg
         # DKMS module never built against this kernel, or a kernel upgrade left it stale). The agent is sandboxed
         # (can't apt-install), so translate the cryptic failure into the exact fix instead of blaming the port.
@@ -1071,6 +1196,12 @@ def op_restart_iface(cfg, req):
     try:
         run([tool + "-quick", "up", iface])
     except Exception as e:
+        # Same classification as op_create_iface: Restart is the button the panel offers for a failed
+        # bring-up, so this is the path an operator hitting the refusal takes NEXT. Leaving the raw dump
+        # here would put the cause back out of reach one click after we named it.
+        _denied = _denied_error(str(e))
+        if _denied:
+            raise _denied
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed: {e}")
     return {"iface": iface, "restarted": True}
 
@@ -1095,6 +1226,9 @@ def op_start_iface(cfg, req):
     try:
         run([tool + "-quick", "up", iface])
     except Exception as e:
+        _denied = _denied_error(str(e))
+        if _denied:
+            raise _denied
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed: {e}")
     _unit = _iface_unit("enable", tool, iface)      # see op_create_iface for what the three values mean
     return {"iface": iface, "started": True, "unit_enabled": _unit}
@@ -1120,6 +1254,9 @@ def op_restore_iface_key(cfg, req):
     try:
         run([tool + "-quick", "up", iface])
     except Exception as e:
+        _denied = _denied_error(str(e))
+        if _denied:
+            raise _denied
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed after key restore: {e}")
     return {"iface": iface, "restored": True}
 

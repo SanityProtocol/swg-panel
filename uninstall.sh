@@ -409,6 +409,17 @@ rm_node(){
   remove_ifaces /etc/wireguard        wg-quick  mesh
   rmrf /opt/swg-agent /opt/swg-noded /srv/swg-queue /var/log/swg-agent /var/lib/swg-noded /var/lib/swg-recovery /etc/sudoers.d/swg-agent
   rmrf /etc/swg-agent   # turn-proxy.json here is just a panel-facing record; a kept turn-proxy keeps running
+  # The AppArmor grant the installer added so the wg CLI could read userspace interface sockets is a
+  # policy change we made to this box, so it goes back when we do. It lives INSIDE a file the
+  # distribution and the operator may also write in, so only the span between our own two markers is
+  # cut — never the file — and the profile is reloaded so the removal actually takes effect.
+  for _aal in /etc/apparmor.d/local/*; do
+    [ -f "$_aal" ] && grep -qsF '# --- swgPanel: userspace WireGuard datapaths (begin) ---' "$_aal" || continue
+    info "  reverting the swgPanel AppArmor grant in $_aal"
+    run sed -i '/# --- swgPanel: userspace WireGuard datapaths (begin) ---/,/# --- swgPanel: userspace WireGuard datapaths (end) ---/d' "$_aal"
+    _aap="/etc/apparmor.d/$(basename "$_aal")"
+    [ -f "$_aap" ] && command -v apparmor_parser >/dev/null 2>&1 && run apparmor_parser -r "$_aap" 2>/dev/null || true
+  done
   for u in swgpush swgagent; do if id "$u" >/dev/null 2>&1; then run userdel -r "$u"; fi; done
   # NOT rm_node_netobjects here. This runs FIRST in the component list, while "keep my interfaces / turn-proxies /
   # WDTT servers" are offered later and default to keep — and those objects are their datapath. A kept WDTT server

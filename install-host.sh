@@ -1087,7 +1087,9 @@ Environment=SWG_AGENT_CONFIG=/etc/swg-agent/config.json
 Environment=SWG_NODED_STATE=/var/lib/swg-noded
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=true
+# ⚠️ NO NoNewPrivileges HERE — see install-node.sh's copy of this unit for why. It withheld no
+# privilege this root daemon did not already hold, and it blocked the AppArmor profile transition that
+# wg-quick needs to exec ip/wg at all.
 ProtectSystem=true
 ProtectHome=true
 PrivateTmp=true
@@ -1095,6 +1097,10 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
+  # A master runs a local node, so it needs the same AppArmor accommodation install-node.sh applies:
+  # userspace interfaces (wdtt, csqtt, awg on amneziawg-go) are driven over a UAPI socket in
+  # /run/wireguard, which a distribution's wg profile does not permit. No-op without AppArmor.
+  ensure_wg_apparmor
 fi
 
 # ───────────────────────── nodes.json + fleet.json ─────────────────────────

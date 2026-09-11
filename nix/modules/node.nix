@@ -921,7 +921,11 @@ in
           # Root, because it samples kernel interfaces and runs swg-agent, which writes interface
           # .confs under /etc. ProtectSystem=true and NOT strict for exactly that reason: strict
           # would make /etc read-only and peers would stop persisting.
-          NoNewPrivileges = true;
+          # ⚠️ Do NOT add NoNewPrivileges. It withholds no privilege this daemon does not already
+          # hold (it is root with the full capability set), and a process with no_new_privs cannot be
+          # switched into an AppArmor profile — so where the WireGuard tools are confined, the kernel
+          # refuses to EXEC them and wg-quick/awg-quick die before creating anything. Retired from the
+          # bare-metal units in the same change (ensure_noded_no_nnp in update.sh).
           ProtectSystem = true;
         } // lib.optionalAttrs (cfg.tokenFile != null) {
           # The token lands in a per-unit tmpfs the bootstrap reads once through
