@@ -1408,9 +1408,14 @@ export function ConnectionEditSheet({ node, iface }) {
       // only while it has just re-proven the relay is serving, and drops it otherwise. A switch that showed
       // only its own position would be the one thing this feature must never ship.
       const rst = ((Store.stats[node] || {}).relay) || {};
+      // Keyed by relay INSTANCE (`<iface>` for a whole-interface cascade, `<iface>.<peer>` for one leg of
+      // a smart one), which is also the key the node reports each leg's health under — so `rst.ifaces[k]`
+      // needs no translation. `mark` is what separates the two kinds: 0 is the whole interface.
       const elig = Object.entries(((nrec.relay || {}).eligibility) || {}).filter(([, e]) => e.via === peer);
       const canRelay = elig.filter(([, e]) => !e.why).map(([k]) => k);
       const barred = elig.filter(([, e]) => e.why);
+      const smartLegs = elig.filter(([, e]) => !e.why && e.mark);
+      const legIfaces = [...new Set(elig.filter(([, e]) => !e.why).map(([k, e]) => e.iface || k))];
       // ⚠️ NO CHOICE IS NOT NO ANSWER. This returned null, so a leg with nothing to accelerate showed
       // NOTHING — and the card above it says "cascade" for BOTH kinds, so an operator comparing two legs
       // sees the same badge with the control on one and not the other, with no way to find out why.
@@ -1427,7 +1432,14 @@ export function ConnectionEditSheet({ node, iface }) {
           ? Trich("The traffic on this leg comes from *{peer}*, so its datapath is chosen there — open this link from {peer}'s page.",
                   { peer: Store.nodeName(peer) })
           : smartCarried.length
-            ? T("Only an interface that sends ALL its traffic through this link can be accelerated. The interfaces here route selected destinations by smart cascade, which stays on the forwarding path.")
+            // ⚠️ THIS USED TO SAY "only an interface that sends ALL its traffic through this link can be
+            // accelerated", which stopped being true the moment a smart leg could be relayed. What is
+            // actually true when smart rules name this peer and no leg is offered is that the panel has
+            // not planned one — it works the legs out on a node sync, so the usual cause is that none has
+            // landed since the panel started. If it stays empty the node's own card says why (a node that
+            // routes to more destinations than it has tables for drops the extras).
+            ? Trich("The panel hasn't worked out this link's routes yet, so there is nothing to accelerate here. The choice appears after *{node}*'s next sync.",
+                    { node: Store.nodeName(node) })
             : Trich("Nothing sends its whole traffic through this link yet. Set an interface's egress to *Forward to {peer}* and the datapath choice appears here.",
                     { peer: Store.nodeName(peer) });
         return html`<div class="dp-sec">
@@ -1470,8 +1482,20 @@ export function ConnectionEditSheet({ node, iface }) {
             ? html`<div class="hint dp-verdict warn"><${Ic} i="warn"/> ${Trich("This leg is losing *{v1}%* right now — that is the case for Relay.", { v1: String(_ls) })}</div>`
             : html`<div class="hint dp-verdict ok"><${Ic} i="check"/> ${Trich("This leg is clean right now — *Forward* is the cheaper choice.")}</div>`;
         })()}
+        ${smartLegs.length ? html`<div class="hint" style="margin-top:9px">${
+          // ⚠️ UNDER A CASCADE "accelerated" READS AS "THIS INTERFACE" AND UNDER SMART IT DOES NOT. Only the
+          // destinations these interfaces route over THIS link are relayed; everything else they send is
+          // untouched. And the relay terminates TCP, so half a rule's traffic staying on the forwarding
+          // path is a thing the sheet has to say out loud rather than leave to be discovered.
+          Trich("Only the destinations *{ifaces}* routes over this link are relayed — the rest of that traffic is untouched. And the relay terminates TCP, so UDP keeps forwarding either way.",
+                { ifaces: legIfaces.join(", ") })}</div>` : null}
         <div class="hint dp-why">${relayOn
-          ? Trich("*{node}* answers the client itself and opens its own connection to {peer}. Loss on the link stops reaching the client, so a bad leg costs the user far less. In exchange it uses noticeably more CPU, and on a link that is already healthy it buys nothing.", { node: Store.nodeName(node), peer: Store.nodeName(peer) })
+          // ⚠️ THE CAP IS NOT THIS LEG'S. It is written into one slice that every relay on the node shares,
+          // and one switch here can start several instances — a leg can carry smart rules from more than
+          // one interface. Measured on a 1-vCPU node at a 50% cap: two loaded legs together took 13% of a
+          // core with zero throttled periods, so the number defends the node's control plane rather than
+          // rationing throughput.
+          ? Trich("*{node}* answers the client itself and opens its own connection to {peer}. Loss on the link stops reaching the client, so a bad leg costs the user far less. In exchange it uses noticeably more CPU, and on a link that is already healthy it buys nothing. The cap is {node}'s whole relay budget, shared by every leg it accelerates.", { node: Store.nodeName(node), peer: Store.nodeName(peer) })
           : Trich("Packets cross this link untouched. The simplest and cheapest option — *{node}* barely spends CPU on them and there is nothing in the path to fail. Right while the link to {peer} is healthy.", { node: Store.nodeName(node), peer: Store.nodeName(peer) })}</div>
         ${relayOn0 ? html`<div class="conncard" style="margin-top:11px"><div class="conn-grid">
             ${Cell(T("col|State"), running.length

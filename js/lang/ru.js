@@ -1645,8 +1645,14 @@ export const STR = {
   "Datapath": "Путь данных",
   "The traffic on this leg comes from *{peer}*, so its datapath is chosen there — open this link from {peer}'s page.":
     "Трафик на этом плече идёт со стороны *{peer}*, поэтому путь данных выбирается там — откройте эту связь со страницы {peer}.",
-  "Only an interface that sends ALL its traffic through this link can be accelerated. The interfaces here route selected destinations by smart cascade, which stays on the forwarding path.":
-    "Ускорить можно только интерфейс, который отправляет через эту связь ВЕСЬ свой трафик. Здешние интерфейсы отправляют отдельные назначения умным каскадом, а он остаётся на обычной пересылке.",
+  // Reachable when smart rules name this peer but the panel has not planned a leg for them — usually
+  // because no node sync has landed since the panel started. The sentence it replaced claimed only a
+  // whole-interface cascade can be accelerated, which stopped being true when smart legs became relayable.
+  "The panel hasn't worked out this link's routes yet, so there is nothing to accelerate here. The choice appears after *{node}*'s next sync.":
+    "Панель ещё не рассчитала маршруты этой связи, так что ускорять здесь пока нечего. Выбор появится после следующей синхронизации *{node}*.",
+  // Under a whole-interface cascade "accelerated" reads as "this interface"; under a smart one it does not.
+  "Only the destinations *{ifaces}* routes over this link are relayed — the rest of that traffic is untouched. And the relay terminates TCP, so UDP keeps forwarding either way.":
+    "В релей уходят только те назначения, которые *{ifaces}* маршрутизирует через эту связь, — остальной трафик не затрагивается. И релей терминирует TCP, поэтому UDP в любом случае остаётся на пересылке.",
   "Nothing sends its whole traffic through this link yet. Set an interface's egress to *Forward to {peer}* and the datapath choice appears here.":
     "Пока ни один интерфейс не отправляет через эту связь весь свой трафик. Задайте в выходе интерфейса *Переслать на {peer}* — и выбор пути данных появится здесь.",
   "Existing peers": "Существующие пиры",
@@ -5517,7 +5523,7 @@ export const STR = {
   "{v1}% enforced, {v2}% set": "{v1}% применяется, задано {v2}%",
     "Forward": "Транзит",
   "Packets cross this link untouched. The simplest and cheapest option — *{node}* barely spends CPU on them and there is nothing in the path to fail. Right while the link to {peer} is healthy.": "Пакеты проходят через тоннель как есть, нода их не трогает. Самый простой и дешёвый вариант: *{node}* почти не тратит на них CPU, и ломаться по пути нечему. То, что нужно, пока связь с {peer} работает нормально.",
-  "*{node}* answers the client itself and opens its own connection to {peer}. Loss on the link stops reaching the client, so a bad leg costs the user far less. In exchange it uses noticeably more CPU, and on a link that is already healthy it buys nothing.": "*{node}* сам отвечает клиенту и открывает до {peer} отдельное соединение. Потери на связи дальше клиента не идут, поэтому плохое плечо бьёт по пользователю намного слабее. Взамен заметно растёт нагрузка на CPU, а на хорошей связи выигрыша не будет.",
+  "*{node}* answers the client itself and opens its own connection to {peer}. Loss on the link stops reaching the client, so a bad leg costs the user far less. In exchange it uses noticeably more CPU, and on a link that is already healthy it buys nothing. The cap is {node}'s whole relay budget, shared by every leg it accelerates.": "*{node}* сам отвечает клиенту и открывает до {peer} отдельное соединение. Потери на связи дальше клиента не идут, поэтому плохое плечо бьёт по пользователю намного слабее. Взамен заметно растёт нагрузка на CPU, а на хорошей связи выигрыша не будет. Лимит — это весь релейный бюджет {node}, общий для всех плеч, которые он ускоряет.",
       "{v1} configs are published again — saved.": "Конфиги {v1} снова публикуются — сохранено.",
   "{v1} configs hidden from the subscription — saved.": "Конфиги {v1} скрыты из подписки — сохранено.",
   "Routes": "Маршрутизирует",
