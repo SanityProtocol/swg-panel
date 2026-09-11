@@ -1,9 +1,9 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.6-beta</code></p>
+<p align="center"><code>1.8.7-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.6-beta** — [full changelog](CHANGELOG.md)
+> **What's new in 1.8.7-beta** — [full changelog](CHANGELOG.md)
 > - **A node can now leave by something other than its own address.** Register a free Cloudflare WARP account in one click, paste a WireGuard profile from anywhere else, or point at a network card or tunnel the box already runs. Any of them can be the node's default way out, one interface's way out, or the destination of a single routing rule — and each carries a kill-switch, so traffic is refused the moment that exit stops working instead of quietly falling back to the node's own address.
 > - **An exit's original account survives losing the node's key.** The key is sealed under your encryption key and the panel only ever holds ciphertext it cannot open. If a node re-registers and the address websites see changes, the row says so and offers the old account back.
 > - **Hybrid SNI routing, and rules that admit what they cannot do.** The kernel matches IP categories and reads the TLS handshake for host categories in one pass, with no helper process. A rule now says when this node's mode cannot match its target, and separately when its destination has been deleted — counted in the summary, without opening the section.

@@ -3,7 +3,10 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-## [1.8.6-beta] — 2026-09-11
+## [1.8.7-beta] — 2026-09-11
+
+1.8.6-beta was published briefly on the same day and is superseded by this release; everything it
+carried is listed below, so a box updating from 1.8.5 sees the whole set.
 
 ### Added
 
@@ -97,7 +100,20 @@ earlier releases predate the changelog — see the git history. · Русски�
   quotes — so a panel showing 23.8 beside a speed test showing 200 looked like it was under-counting by an
   order of magnitude. It was not: 200 Mbit/s *is* 23.8 MB/s. Every hop from the node's counters to the graph
   was measured and carries the rate exactly; the unit letter now stays on at every size.
-
+- **A mesh leg with no datapath choice now says why.** Forward ⇄ Relay only applies to a leg carrying a
+  whole-interface cascade — the one thing the relay accelerates — and when it did not apply the control
+  simply vanished. The card above it says "cascade" for both the whole-interface and the smart kind, so two
+  legs looked alike with the switch on one of them and nothing to explain the difference. It now names the
+  reason: the traffic comes from the other end and the choice is theirs, or the interfaces here smart-route
+  rather than forwarding whole, or nothing forwards through this link yet and here is the setting that
+  changes that.
+- **Removing a node left every interface that forwarded to it pointing at a ghost.** The panel already
+  refused to SET a forward to an unknown node, but deleting one did not clean up the interfaces already
+  aimed at it: their cascade was dropped in silence, their clients left by the node's own address, and the
+  egress control rendered blank. Those are reset to direct now — on the removal and on any later save, so
+  an existing one heals — and the node whose routing changed is named. A control still holding a gone
+  destination says so instead of showing nothing.
+- **«Датапас» was not a Russian word.** Two labels carried a transliteration instead of a translation.
 ## [1.8.5-beta] — 2026-09-02
 
 ### Added

@@ -1627,6 +1627,12 @@ export const STR = {
   "Loopback userspace-WG port (server-internal)": "Локальный порт userspace-WG (внутри сервера)",
   "Which WDTT server implements this instance": "Какой сервер WDTT реализует этот экземпляр",
   "Datapath": "Путь данных",
+  "The traffic on this leg comes from *{peer}*, so its datapath is chosen there — open this link from {peer}'s page.":
+    "Трафик на этом плече идёт со стороны *{peer}*, поэтому путь данных выбирается там — откройте эту связь со страницы {peer}.",
+  "Only an interface that sends ALL its traffic through this link can be accelerated. The interfaces here route selected destinations by smart cascade, which stays on the forwarding path.":
+    "Ускорить можно только интерфейс, который отправляет через эту связь ВЕСЬ свой трафик. Здешние интерфейсы отправляют отдельные назначения умным каскадом, а он остаётся на обычной пересылке.",
+  "Nothing sends its whole traffic through this link yet. Set an interface's egress to *Forward to {peer}* and the datapath choice appears here.":
+    "Пока ни один интерфейс не отправляет через эту связь весь свой трафик. Задайте в выходе интерфейса *Переслать на {peer}* — и выбор пути данных появится здесь.",
   "Existing peers": "Существующие пиры",
   // budget-ok: card row label, own cell
   "Config file": "Файл конфигурации",
@@ -4021,7 +4027,7 @@ export const STR = {
   "Network & TLS helper": "Помощник сети и TLS",
   "One-click self-update": "Обновление одной кнопкой",
   "Panel server": "Сервер панели",
-  "AmneziaWG datapath": "Датапас AmneziaWG",
+  "AmneziaWG datapath": "Путь данных AmneziaWG",
   "the subscription server isn’t installed — subscribers can’t load their configs":
     "сервер подписок не установлен — подписчики не получат свои конфиги",
   "the subscription server isn’t running — subscribers can’t load their configs":

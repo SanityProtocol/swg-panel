@@ -1411,7 +1411,30 @@ export function ConnectionEditSheet({ node, iface }) {
       const elig = Object.entries(((nrec.relay || {}).eligibility) || {}).filter(([, e]) => e.via === peer);
       const canRelay = elig.filter(([, e]) => !e.why).map(([k]) => k);
       const barred = elig.filter(([, e]) => e.why);
-      if (!elig.length) return null;                     // this leg carries no whole-interface cascade — no choice to offer
+      // ⚠️ NO CHOICE IS NOT NO ANSWER. This returned null, so a leg with nothing to accelerate showed
+      // NOTHING — and the card above it says "cascade" for BOTH kinds, so an operator comparing two legs
+      // sees the same badge with the control on one and not the other, with no way to find out why.
+      // Reported from the fleet as "the Forward/Relay switch is gone". It has three reachable causes and
+      // each has a different answer, so each gets its own sentence rather than a shared shrug.
+      if (!elig.length) {
+        // Does the FAR end forward to us? Then the choice exists — on their side, because the mode belongs
+        // to whoever sends the traffic. Read from the peer's own eligibility, the same field ours comes
+        // from, so the two ends cannot disagree about who owns the switch.
+        const _prec = (Store.nodes || []).find(n => n.id === peer) || {};
+        const _fromPeer = Object.entries(((_prec.relay || {}).eligibility) || {}).filter(([, e]) => e.via === node);
+        const _why = _fromPeer.length
+          ? Trich("The traffic on this leg comes from *{peer}*, so its datapath is chosen there — open this link from {peer}'s page.",
+                  { peer: Store.nodeName(peer) })
+          : smartCarried.length
+            ? T("Only an interface that sends ALL its traffic through this link can be accelerated. The interfaces here route selected destinations by smart cascade, which stays on the forwarding path.")
+            : Trich("Nothing sends its whole traffic through this link yet. Set an interface's egress to *Forward to {peer}* and the datapath choice appears here.",
+                    { peer: Store.nodeName(peer) });
+        return html`<div class="dp-sec">
+          <div class="dp-row"><span class="dp-l">${T("Datapath")}</span>
+            <span class="faint">${T("Forward")}</span></div>
+          <div class="hint" style="margin-top:6px">${_why}</div>
+        </div>`;
+      }
       const live = canRelay.map(k => [k, ((rst.ifaces || {})[k]) || null]);
       const running = live.filter(([, v]) => v && v.ok);
       const stalled = live.map(([, v]) => (v && !v.ok && v.why) || "").filter(Boolean)[0] || rst.why || "";
