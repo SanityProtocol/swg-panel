@@ -2524,6 +2524,9 @@ export function EgressPicker({ node, value, onChange, noRules }) {
   // control below, a second row would be a choice without a difference.
   const ifSel = value.mode === "smart" ? "smart" : value.mode === "forward" ? "forward|" + (value.node || "")
     : value.mode === "exit" ? "exit|" + (value.exitId || "") : "auto";
+  // Is the value this control is holding something the list below can name? Answered from the SAME source
+  // the list is built from, so the two cannot disagree. [[two-readers-one-grammar]]
+  const _goneFwd = value.mode === "forward" && !!value.node && !others.some(n => n.id === value.node);
   // The chosen exit, if it is still there. An interface KEEPS its selection when the exit is turned off, its
   // device goes bad, or the exit is deleted (decision 3) — so all three are reachable here, and each is a
   // different sentence. What they are NOT is a reason to refuse the save or to silently reset the field.
@@ -2603,6 +2606,15 @@ export function EgressPicker({ node, value, onChange, noRules }) {
         // (`_mint_device_exit`), so every picker can offer them and a cancelled sheet leaves nothing.
         ...exitOptionGroups(nrec, { prefix: "exit|", devices: true }),
         ...(others.length ? [{ group: T("Forward to node (cascade)"), items: others.map(n => ({ value: "forward|" + n.id, label: T("Forward to {node}", { node: n.name }) })) }] : []),
+        // ⚠️ A FORWARD WHOSE TARGET NODE IS GONE MUST BE NAMED, NOT BLANK. The options above are built from
+        // the nodes that DO exist, so a stored `forward|<removed id>` matched nothing and the control
+        // rendered EMPTY — the same silent hole `goneDest` closes for a rule's destination, in the control
+        // next to it. Meanwhile `cascade_plan` drops the forwarding (`if not P or P not in nodes: return`),
+        // so the interface behaves as direct while still claiming to cascade. `prune_node_refs` now repairs
+        // this on the server, but a reference can still be held here between the node's removal and that
+        // sweep — and a control that shows nothing is how it went unnoticed for a day.
+        ...(_goneFwd ? [{ value: ifSel, label: T("A node that is no longer here"), className: "bad",
+                          refuse: T("This interface forwards everything to a node that is not in this panel any more, so it routes nothing and its clients leave by this node's own address. Choose another destination.") }] : []),
         // A MODE, not a destination — last, outside every group, the way `Block` sits apart in the rule
         // picker.
         ...(others.length ? [{ value: "smart", label: T("Routing (smart cascade)"), className: "egopt-mode" }] : []),

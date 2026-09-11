@@ -4575,6 +4575,10 @@ def node_remove(deps, nid):
     _archive_node(deps, nid, nm, node_entry, affected, sf)   # back up BEFORE purging (moves stats/health out)
     mesh_unlink_node(nodes, nid)                              # tear down this node's mesh links on every survivor
     del nodes[nid]
+    # …and nothing on a SURVIVOR may still forward to it. Removing the node took the mesh link, which took
+    # the leg's card and its Datapath switch — but the interface that pointed here kept saying `forward` to
+    # an id that no longer resolves, and `cascade_plan` silently dropped it. See `prune_node_refs`.
+    _orphans = prune_node_refs(nodes)
     nodes_save(deps["nodes_path"], nodes)
     changed = False
     for pid in list(roster["peers"].keys()):
@@ -4597,6 +4601,13 @@ def node_remove(deps, nid):
         with contextlib.suppress(OSError):
             os.unlink(os.path.join(sd, f"health-{nid}.rrd"))
     ev_append(deps["roster_path"], "node", nid, "Removed node", nm)
+    # ⚠️ SAY WHOSE ROUTING THIS CHANGED. Rewriting an interface's egress is a traffic change on a node the
+    # operator did not touch, so it is reported per node rather than folded into the removal line — the one
+    # thing worse than an interface silently forwarding to a ghost is one silently repointed.
+    for _onid in sorted({h[0] for h in _orphans}):
+        _names = ", ".join(sorted(h[2] for h in _orphans if h[0] == _onid))
+        ev_append(deps["roster_path"], "node", _onid, "Egress reset to direct — its target node was removed",
+                  (nodes.get(_onid) or {}).get("name") or _onid, _names)
     return nm
 
 
@@ -12072,6 +12083,45 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
     return clean, None
 
 
+def prune_node_refs(nodes):
+    """Nothing may point at a node that is not in the fleet. Returns [(nid, source, name, gone_id)] rewritten.
+
+    ⚠️ THE PANEL ALREADY ENFORCES THIS ON WRITE AND DID NOT MAINTAIN IT ON DELETE. `/api/iface/update`
+    refuses a forward whose target is not a node ("egress_node must be another known node"), so the
+    invariant is plainly "egress_node is always live" — but removing a node left every interface that
+    forwarded to it pointing at a ghost. `cascade_plan` then does `if not P or P not in nodes: return` and
+    drops the forwarding silently, so the interface behaves as `direct` while still claiming `forward`, and
+    `EgressPicker` builds its options from the nodes that DO exist, so the control renders BLANK. Measured
+    on the qualification fleet: hel-flux removed at 06:54, and nixos/awg2 was still forwarding to it — its
+    clients leaving by nixos's own address with nothing on any screen saying so.
+
+    This is `prune_exit_refs` for the other kind of reference. `direct` is the shape an interface has when
+    nothing was pinned, so rewriting to it makes the STORED state say what the traffic was already doing.
+
+    ⚠️ ROUTING RULES ARE DELIBERATELY NOT PRUNED HERE. A rule whose destination node is gone already
+    degrades gracefully (cascade_plan skips it and traffic takes the next matching rule) AND is named on
+    screen — `goneDest` renders it as "A node that is no longer here" with the reason, and the collapsed
+    summary counts it. Rewriting those would erase a decision the operator can see and has been asked to
+    make. An interface's egress has neither property: it is singular, it has no next-rule fallback, and its
+    control shows nothing at all. Different situations, different answers — do not "fix" the asymmetry
+    without reading this.
+    """
+    live = set(nodes or {})
+    hit = []
+    for nid, rec in (nodes or {}).items():
+        for src in ("ifaces", "wdtt", "csqtt"):
+            for name, ov in ((rec or {}).get(src) or {}).items():
+                if not isinstance(ov, dict) or ov.get("system") or ov.get("egress_mode") != "forward":
+                    continue                       # system = a panel-managed mesh link, not ours to rewrite
+                gone = str(ov.get("egress_node") or "")
+                if gone and gone in live:
+                    continue
+                ov["egress_mode"] = "direct"
+                ov.pop("egress_node", None)
+                hit.append((nid, src, name, gone))
+    return hit
+
+
 def prune_exit_refs(rec):
     """Rewrite every reference to an exit that no longer exists back to "the node's default". Mutates `rec`;
     returns the list of "<where>" strings it changed, for the caller to report. Covers interfaces, WDTT and
@@ -17673,6 +17723,10 @@ def api(method, path, qs, body, deps):
         # anything rather than waiting for someone to touch the exact field that broke.
         prune_exit_refs(nodes[nid])
         prune_default_exit(nodes[nid])
+        # …and the same for a forward whose TARGET NODE is gone. Unconditional and fleet-wide for the same
+        # reason the two above are unconditional: a record already in that state heals on the next save of
+        # anything, instead of waiting for someone to open the exact interface that broke.
+        prune_node_refs(nodes)
         nodes[nid].pop("enabled_categories", None)   # §6.9: deleted, never read; drop the dead key as we pass
         if "catalog_cats" in body:              # categories the operator opted THIS node into (node-lens): provider-catalog
             cc = body.get("catalog_cats")       # ids (<prov>:<id>) AND curated built-ins (bare id) — both first-class + pullable

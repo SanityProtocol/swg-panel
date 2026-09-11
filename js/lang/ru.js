@@ -1626,7 +1626,7 @@ export const STR = {
   "DTLS listen (outside)": "Приём DTLS (снаружи)",
   "Loopback userspace-WG port (server-internal)": "Локальный порт userspace-WG (внутри сервера)",
   "Which WDTT server implements this instance": "Какой сервер WDTT реализует этот экземпляр",
-  "Datapath": "Датапас",
+  "Datapath": "Путь данных",
   "Existing peers": "Существующие пиры",
   // budget-ok: card row label, own cell
   "Config file": "Файл конфигурации",
@@ -2012,6 +2012,8 @@ export const STR = {
   // a control that renders blank while a real choice sits in the store.
   "{v1} pointing nowhere": "указывают в никуда: {v1}",
   "A node that is no longer here": "Ноды больше нет",
+  "This interface forwards everything to a node that is not in this panel any more, so it routes nothing and its clients leave by this node's own address. Choose another destination.":
+    "Этот интерфейс отправляет весь трафик на ноду, которой в панели больше нет, поэтому он не маршрутизирует ничего, и его клиенты выходят собственным адресом этой ноды. Выберите другое назначение.",
   "An exit that is no longer here": "Выхода больше нет",
   "This rule forwards to a node that is not in this panel any more, so it routes nothing and traffic takes the next matching rule instead. Choose another destination, or delete the rule.":
     "Это правило направляет на ноду, которой в панели больше нет: оно ничего не маршрутизирует, и трафик уходит по следующему подходящему правилу. Выберите другое назначение или удалите правило.",
