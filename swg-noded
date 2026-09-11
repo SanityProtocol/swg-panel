@@ -5529,6 +5529,8 @@ RELAY_QUOTA_PCT = 50                   # CPUQuota= written into the unit (percen
 # reservation in this design (Nice and IOSchedulingClass shape competition but reserve nothing). Clamped
 # here as well as in the panel, because the number arrives over the wire and this is what writes the unit.
 RELAY_QUOTA_MAX = 90
+RELAY_SELFDIAL_MAX = 5         # refused self-dials in one pass before the relay counts as unhealthy
+RELAY_DIVERT_MIN   = 4         # diverted packets in one pass before "and accepted none" means anything
 RELAY_MSS_HEADROOM = 80        # subtracted from the upstream leg's MTU — see _relay_mss for why an exact fit is not enough
 
 # ⚠️ A REROUTE FROM THE PLAN, ON PURPOSE. RELAY-FEATURE-PLAN §3.1 says a failing node sync disarms "within
@@ -5668,6 +5670,32 @@ def _relay_cpu(iface, pid, now):
     return max(0.0, (ticks - prev_t) / (now - prev_w) * 100.0)
 
 
+def _relay_diverted():
+    """Packets the tproxy rule has taken, summed over every armed subnet. 0 when nothing is armed.
+
+    The `socket transparent` rule matches packets belonging to a connection the relay ALREADY holds, so the
+    tproxy rule is very nearly "new connection attempts" — which is exactly what should turn into accepts."""
+    r = run(["nft", "-j", "list", "table", "inet", RELAY_TABLE])
+    if r.returncode != 0:
+        return None
+    try:
+        obj = json.loads(r.stdout or "{}")
+    except ValueError:
+        return None
+    total = 0
+    for item in (obj.get("nftables") or []):
+        rule = (item or {}).get("rule") or {}
+        if rule.get("chain") != "pre":
+            continue
+        expr = rule.get("expr") or []
+        if not any("tproxy" in e for e in expr if isinstance(e, dict)):
+            continue
+        for e in expr:
+            if isinstance(e, dict) and "counter" in e:
+                total += int((e["counter"] or {}).get("packets") or 0)
+    return total
+
+
 def _relay_probe(iface, now):
     """(healthy, why, detail). The ONLY thing allowed to conclude that a divert may exist."""
     st = _RELAY.setdefault(iface, {})
@@ -5691,6 +5719,37 @@ def _relay_probe(iface, now):
             return False, "relay over CPU budget (%.0f%% of one core, quota not enforcing)" % cpu, s
     else:
         st["hot"] = 0
+    # ⚠️ SOMETHING IS DIALLING THE RELAY'S PORT DIRECTLY. The port is dropped in `inp` and a diverted
+    # connection never carries it, so this can only be traffic that reached the listener another way. The
+    # relay refuses it rather than dialling itself, but a rising count means the divert's assumptions do not
+    # hold on this box and the operator needs to know before it is a wedged relay instead of a counter.
+    rs, rs_prev = s.get("refused_self") or 0, st.get("refused_self")
+    st["refused_self"] = rs
+    if rs_prev is not None and rs - rs_prev >= RELAY_SELFDIAL_MAX:
+        return False, "relay is being dialled on its own port (%d refused since the last pass)" % (rs - rs_prev), s
+    # ⚠️ AND THE CHECK THAT WAS MISSING ENTIRELY: IS IT SERVING, OR ONLY ANSWERING? A relay whose loop turns,
+    # whose status socket replies and whose CPU is idle looks identical to a healthy one while accepting
+    # NOTHING — and the divert stays armed over it, so every client TCP connection is silently swallowed.
+    # That is the exact blackhole this file's own docstring says must be proven against, and the previous
+    # criterion could not see it: `loops` ticks ~1.2/s from the select timeout alone, on a relay that has
+    # served nobody. Measured on a live node: `accepted=0` for 3h45m with the divert armed the whole time.
+    #
+    # So compare the two counters that must move together. Packets taken by the tproxy rule are new
+    # connection attempts; accepts are what became of them. Diverting more and more while accepting none,
+    # twice running, is not a slow client — it is traffic going nowhere.
+    dv, dv_prev = _relay_diverted(), st.get("diverted")
+    if dv is not None:
+        st["diverted"] = dv
+    ac, ac_prev = s.get("accepted") or 0, st.get("accepted")
+    st["accepted"] = ac
+    if (dv is not None and dv_prev is not None and ac_prev is not None
+            and dv - dv_prev >= RELAY_DIVERT_MIN and ac <= ac_prev):
+        st["mute"] = st.get("mute", 0) + 1
+        if st["mute"] >= 2:                             # two passes: not one SYN arriving mid-probe
+            return False, ("relay took %d diverted packets and accepted none — the divert is a blackhole"
+                           % (dv - dv_prev)), s
+    else:
+        st["mute"] = 0
     if prev is None:
         return False, "relay just seen, waiting for a second sample", s   # never arm on one observation
     return True, "", s
@@ -5709,8 +5768,26 @@ def _relay_nft(entries):
          "    type filter hook prerouting priority %d; policy accept;" % RELAY_HOOK_PRI]
     for e in entries:
         S, port = e["subnet"], e["port"]
-        L.append("    ip saddr %s meta l4proto tcp socket transparent 1 meta mark set 0x%x accept" % (S, RELAY_MARK))
-        L.append("    ip saddr %s meta l4proto tcp tproxy ip to :%d meta mark set 0x%x accept" % (S, port, RELAY_MARK))
+        L.append("    ip saddr %s meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))
+        # ⚠️ THE COUNTER IS LOAD-BEARING, not observability. It is the only way to tell a divert that is
+        # carrying nothing from one that is carrying traffic into a relay which never accepts it — and the
+        # second is a blackhole that every other signal reads as healthy. See _relay_diverted.
+        L.append("    ip saddr %s meta l4proto tcp tproxy ip to :%d counter meta mark set 0x%x accept" % (S, port, RELAY_MARK))
+    # ⚠️ AND THE PORT ITSELF IS CLOSED. The relay listens on 0.0.0.0 because a transparent socket must be
+    # able to receive packets addressed to ANY destination — so without this the port is reachable from
+    # anywhere that can reach the node, and one ordinary TCP connect to it drives the relay into dialling
+    # itself without bound (measured: 47,780 fds in six seconds, status socket wedged). The relay refuses a
+    # self-destination on its own now, but a public panel should not be depending on that alone.
+    #
+    # This costs nothing, and that is measurable rather than argued: tproxy hands the socket a packet whose
+    # destination is still the one the CLIENT asked for, so a legitimately diverted connection never carries
+    # the relay's port at all. Counted on a live rig — 16 packets at the client's own dport, 0 at the
+    # relay's — which is why dropping the port cannot reach real traffic.
+    if entries:
+        L += ["  }", "  chain inp {",
+              "    type filter hook input priority %d; policy accept;" % RELAY_HOOK_PRI]
+        for port in sorted({e["port"] for e in entries}):
+            L.append("    meta l4proto tcp th dport %d counter drop" % port)
     L += ["  }", "}"]
     return "\n".join(L) + "\n"
 

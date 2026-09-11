@@ -17,7 +17,7 @@ refused outright once fs.pipe-user-pages-soft is exhausted); TCP_CONGESTION sile
 default if the module is absent. A build that only catches OSError cannot tell a working tunable from an
 ignored one — which is exactly how the pipe fix went two rounds without ever being validly tested.
 """
-import argparse, contextlib, errno, fcntl, json, os, resource, selectors, socket, stat, sys, time
+import argparse, array, contextlib, errno, fcntl, json, os, resource, selectors, socket, stat, struct, sys, time
 
 IP_TRANSPARENT, SO_MARK, TCP_CONGESTION, TCP_MAXSEG = 19, 36, 13, 2
 F_SETPIPE_SZ, F_GETPIPE_SZ = 1031, 1032
@@ -28,7 +28,48 @@ CHUNK = 1 << 16
 PIPE_CAP = 1 << 20
 
 ST = {"accepted": 0, "connected": 0, "failed": 0, "closed": 0, "up": 0, "down": 0, "live": 0, "peak": 0,
-      "pipe_short": 0, "pipe_min": 0, "loops": 0}
+      "pipe_short": 0, "pipe_min": 0, "loops": 0, "refused_self": 0}
+
+
+SIOCGIFCONF = 0x8912
+
+
+def local_addrs():
+    """Every IPv4 address configured on this host, read straight from the kernel.
+
+    ⚠️ NO SUBPROCESS AND NO DEPENDENCY. This is consulted on the accept path, so shelling out to `ip` was
+    not an option; SIOCGIFCONF is the stdlib way and `fcntl` is already imported for the pipe sizing.
+    Addresses change under a running relay (an interface comes up, a mesh leg is rebuilt), so the caller
+    re-reads on a timer rather than caching this for the life of the process."""
+    out, n = set(), 64
+    while True:
+        buf = array.array("B", b"\x00" * (n * 40))
+        try:
+            raw = fcntl.ioctl(_IOCTL_SOCK.fileno(), SIOCGIFCONF,
+                              struct.pack("iL", len(buf), buf.buffer_info()[0]))
+        except OSError:
+            return out
+        size = struct.unpack("iL", raw)[0]
+        if size >= len(buf):                 # the list was truncated — ask for room and read it again
+            n *= 2
+            continue
+        b = buf.tobytes()
+        for i in range(0, size, 40):
+            out.add(socket.inet_ntoa(b[i + 20:i + 24]))
+        return out
+
+
+_IOCTL_SOCK = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+_LOCAL = {"at": 0.0, "set": frozenset()}
+
+
+def is_local_addr(ip, ttl=30.0):
+    """Is `ip` an address of this host? Cached for `ttl` so the accept path stays cheap."""
+    now = time.time()
+    if now - _LOCAL["at"] > ttl:
+        _LOCAL["set"] = frozenset(local_addrs()) | {"127.0.0.1", "0.0.0.0"}
+        _LOCAL["at"] = now
+    return ip in _LOCAL["set"]
 
 
 class Dir:
@@ -436,6 +477,18 @@ def main():
                         try:
                             dst = cli.getsockname()      # with TPROXY this IS the original destination
                         except OSError:
+                            cli.close(); continue
+                        # ⚠️ ONLY IF IT REALLY WAS DIVERTED. `getsockname()` on a connection that reached
+                        # this listener WITHOUT tproxy returns the listener's own address, and dialling it
+                        # re-enters this accept — each self-dial producing another. One stray connect
+                        # measured 47,780 fds in six seconds on a test node, and the status socket stopped
+                        # answering, so the watchdog then read the relay as dead while the divert was still
+                        # armed. A diverted connection's local address is the destination the CLIENT asked
+                        # for, which is by construction not an address of this host; a direct one's is.
+                        # That is the whole discriminator — and it still lets a client reach a REMOTE host
+                        # that happens to use our port, which a bare port test would have broken.
+                        if dst[1] == a.port and is_local_addr(dst[0]):
+                            ST["refused_self"] += 1
                             cli.close(); continue
                     R.start(cli, dst)
             else:
