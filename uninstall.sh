@@ -413,6 +413,8 @@ rm_node(){
   # policy change we made to this box, so it goes back when we do. It lives INSIDE a file the
   # distribution and the operator may also write in, so only the span between our own two markers is
   # cut — never the file — and the profile is reloaded so the removal actually takes effect.
+  # ⚠️ TWIN: these two markers are lib/common.sh's APPARMOR_LOCAL_BEGIN/_END, spelled out because
+  # this file deliberately does not source it (see the note at the top). Change one, change both.
   for _aal in /etc/apparmor.d/local/*; do
     [ -f "$_aal" ] && grep -qsF '# --- swgPanel: userspace WireGuard datapaths (begin) ---' "$_aal" || continue
     info "  reverting the swgPanel AppArmor grant in $_aal"

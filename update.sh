@@ -668,12 +668,15 @@ ensure_noded_no_nnp(){   # MIGRATE (retract-one-directive) NoNewPrivileges out o
   # again is the operator's own decision and is deliberately not touched.
   local unit="$NODED_UNIT"
   [ -f "$unit" ] || return 0
+  # ⚠️ A SYMLINK IS NOT OUR UNIT. The installers write a regular file; a link here means something else
+  # owns this service, and `sed -i` would quietly replace the link with a file and take it over.
+  [ -L "$unit" ] && { warn "$unit is a symlink — something else manages it; remove its NoNewPrivileges= line there."; return 0; }
   grep -q '^NoNewPrivileges=' "$unit" 2>/dev/null || return 0
   if $DRYRUN; then echo "    [skip] drop NoNewPrivileges= from $unit + daemon-reload + restart swg-noded"; return 0; fi
   sed -i '/^NoNewPrivileges=/d' "$unit" || { warn "couldn't edit $unit — remove its NoNewPrivileges= line by hand"; return 0; }
   systemctl daemon-reload 2>/dev/null || true
   systemctl restart swg-noded 2>/dev/null || warn "couldn't restart swg-noded — run: systemctl restart swg-noded"
-  ok "swg-noded: NoNewPrivileges retired — interface tools can be executed under an AppArmor policy again"
+  ok "swg-noded: NoNewPrivileges retired — it can stop the interface tools executing under a security policy"
 }
 
 ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a bare-metal node/master.

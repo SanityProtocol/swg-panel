@@ -1485,7 +1485,9 @@ AA_PROFILES="${AA_PROFILES:-/sys/kernel/security/apparmor/profiles}"   # loaded 
 # ⚠️ FENCED AT BOTH ENDS. local/<profile> is a file the distribution and the operator may also write
 # in, so "delete the file to revert" would be wrong and un-reversing it by hand is worse. Between these
 # two markers is ours and only ours: uninstall.sh reaps exactly this span, and the idempotence check
-# below looks for the opening one. Plain dashes, deliberately: `>>>`/`<<<` fences read as redirects and
+# below looks for the opening one. ⚠️ TWIN: uninstall.sh reaps this span by literal text and
+# deliberately does not source this file — change either marker and you must change both, or the
+# grant silently outlives the uninstall. Plain dashes, deliberately: `>>>`/`<<<` fences read as redirects and
 # here-strings to anything parsing this file as shell — the repo's own heredoc audit flagged them.
 APPARMOR_LOCAL_BEGIN='  # --- swgPanel: userspace WireGuard datapaths (begin) ---'
 APPARMOR_LOCAL_END='  # --- swgPanel: userspace WireGuard datapaths (end) ---'
@@ -1499,6 +1501,13 @@ APPARMOR_LOCAL_BLOCK="$APPARMOR_LOCAL_BEGIN
   /var/run/wireguard/*.sock rw,
 $APPARMOR_LOCAL_END"
 
+_aa_profile_file(){   # echo the profile FILE name under $AA_DIR that holds tool $1's policy, or fail.
+  # Newer policy names it for the tool (`wg`), older for the path (`usr.bin.wg`). ONE list, because the
+  # guard below and the loop must never disagree about what counts as "this box has a profile for it".
+  local c; for c in "$1" "usr.bin.$1" "bin.$1"; do [ -f "$AA_DIR/$c" ] && { echo "$c"; return 0; }; done
+  return 1
+}
+
 ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confining the node's WireGuard tools.
   # ⚠️ THIS EDITS A SECURITY POLICY ON SOMEONE ELSE'S MACHINE, so it is gated hard and narrowly:
   #   · only a profile the distribution ships an enforcing copy of (complain mode already allows this);
@@ -1511,11 +1520,11 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
   # sockets in it. Nothing else in the profile is widened.
   [ "${SWG_NO_APPARMOR_FIX:-0}" = 1 ] && return 0
   have apparmor_parser || return 0
-  local t c prof base loc changed=no
+  local t prof base loc changed=no
   # ⚠️ WE LOOKED, AND COULD NOT SEE. Without the loaded-profile list there is no way to tell enforce
   # from complain, and complain needs no fix at all — so say so rather than act on a guess or pass in
   # silence. (securityfs unmounted, or a confined/containerised context.)
-  if [ ! -r "$AA_PROFILES" ] && { [ -f "$AA_DIR/wg" ] || [ -f "$AA_DIR/usr.bin.wg" ]; }; then
+  if [ ! -r "$AA_PROFILES" ] && { _aa_profile_file wg >/dev/null || _aa_profile_file awg >/dev/null; }; then
     warn "AppArmor policy for the WireGuard tools is present but $AA_PROFILES is unreadable — can't tell enforce from complain, so leaving it alone."
     return 0
   fi
@@ -1524,10 +1533,8 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
     # name (`wg`, /etc/apparmor.d/wg), older uses the path (`/usr/bin/wg`, /etc/apparmor.d/usr.bin.wg).
     # Matching only one spelling reads a confined box as unconfined and silently does nothing.
     grep -Eqs "^[[:space:]]*(${t}|/usr/bin/${t}|/bin/${t}) \(enforce\)\$" "$AA_PROFILES" || continue
-    prof=""; base=""
-    for c in "$t" "usr.bin.$t" "bin.$t"; do
-      [ -f "$AA_DIR/$c" ] && { prof="$AA_DIR/$c"; base="$c"; break; }
-    done
+    base="$(_aa_profile_file "$t")" || base=""
+    prof="${base:+$AA_DIR/$base}"
     if [ -z "$prof" ]; then
       warn "AppArmor enforces a profile for $t but no profile file was found under $AA_DIR — userspace interfaces (wdtt/csqtt/awg-userspace) will read 0 peers."
       continue
@@ -1543,7 +1550,7 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
     grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null && continue   # already done
     # NB: no `changed=yes` here. A dry-run that also prints the ✓ line below is claiming a policy
     # change it did not make — the [skip] line is the whole report.
-    if $DRYRUN; then echo "    [skip] append swgPanel socket rules to $loc + apparmor_parser -r $prof"; continue; fi
+    if ${DRYRUN:-false}; then echo "    [skip] append swgPanel socket rules to $loc + apparmor_parser -r $prof"; continue; fi
     mkdir -p "$AA_DIR/local" 2>/dev/null || true
     printf '\n%s\n' "$APPARMOR_LOCAL_BLOCK" >> "$loc" 2>/dev/null \
       || { warn "couldn't write $loc — add the swgPanel block there by hand"; continue; }
