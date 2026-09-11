@@ -32,10 +32,17 @@ ST = {"accepted": 0, "connected": 0, "failed": 0, "closed": 0, "up": 0, "down": 
 
 
 SIOCGIFCONF = 0x8912
+# ⚠️ `struct ifreq` IS NOT THE SAME SIZE ON EVERY ARCH. 16 bytes of name plus a union whose largest member
+# is pointer-aligned: 40 bytes on LP64, 32 on a 32-bit build. Hardcoding 40 does not fail loudly on armv7
+# or i686 — it walks the buffer at the wrong stride and reads garbage, so the node's real addresses simply
+# do not appear and the self-dial guard quietly stops guarding on exactly the platforms where a 47,000-fd
+# loop hurts most. Derived, and the derivation is asserted by the selftest.
+IFREQ_SZ = 32 if struct.calcsize("P") == 4 else 40
 
 
 def local_addrs():
-    """Every IPv4 address configured on this host, read straight from the kernel.
+    """Every IPv4 address configured on this host, read straight from the kernel — or None if it could not
+    be read, which is a different answer from "this host has no addresses" and must stay different.
 
     ⚠️ NO SUBPROCESS AND NO DEPENDENCY. This is consulted on the accept path, so shelling out to `ip` was
     not an option; SIOCGIFCONF is the stdlib way and `fcntl` is already imported for the pipe sizing.
@@ -43,20 +50,22 @@ def local_addrs():
     re-reads on a timer rather than caching this for the life of the process."""
     out, n = set(), 64
     while True:
-        buf = array.array("B", b"\x00" * (n * 40))
+        buf = array.array("B", b"\x00" * (n * IFREQ_SZ))
         try:
             raw = fcntl.ioctl(_IOCTL_SOCK.fileno(), SIOCGIFCONF,
                               struct.pack("iL", len(buf), buf.buffer_info()[0]))
         except OSError:
-            return out
+            return None                      # NOT an empty set — see is_local_addr
         size = struct.unpack("iL", raw)[0]
         if size >= len(buf):                 # the list was truncated — ask for room and read it again
             n *= 2
             continue
         b = buf.tobytes()
-        for i in range(0, size, 40):
+        for i in range(0, size, IFREQ_SZ):
             out.add(socket.inet_ntoa(b[i + 20:i + 24]))
-        return out
+        # A host with a loopback and nothing else is possible; a host with NOTHING is not, and a wrong
+        # stride reads as exactly that. Treat an empty result as a failed read rather than as the truth.
+        return out or None
 
 
 _IOCTL_SOCK = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -64,10 +73,19 @@ _LOCAL = {"at": 0.0, "set": frozenset()}
 
 
 def is_local_addr(ip, ttl=30.0):
-    """Is `ip` an address of this host? Cached for `ttl` so the accept path stays cheap."""
+    """Is `ip` an address of this host? Cached for `ttl` so the accept path stays cheap.
+
+    ⚠️ FAILS CLOSED, AND DOES NOT CACHE A FAILURE. Both halves matter. If the address list cannot be read
+    we answer "yes, local", which costs at most a refused connection to a REMOTE host that happens to use
+    our port — against the alternative, which is the unbounded self-dial loop this guard exists to stop.
+    And the clock is only stamped on a successful read, so a transient failure is retried on the next
+    connection instead of disabling the guard for a whole TTL."""
     now = time.time()
     if now - _LOCAL["at"] > ttl:
-        _LOCAL["set"] = frozenset(local_addrs()) | {"127.0.0.1", "0.0.0.0"}
+        got = local_addrs()
+        if got is None:
+            return True                      # unknown => treat as ours => refuse. Cache untouched: retry.
+        _LOCAL["set"] = frozenset(got) | {"127.0.0.1", "0.0.0.0"}
         _LOCAL["at"] = now
     return ip in _LOCAL["set"]
 

@@ -5529,6 +5529,8 @@ RELAY_QUOTA_PCT = 50                   # CPUQuota= written into the unit (percen
 # reservation in this design (Nice and IOSchedulingClass shape competition but reserve nothing). Clamped
 # here as well as in the panel, because the number arrives over the wire and this is what writes the unit.
 RELAY_QUOTA_MAX = 90
+RELAY_BLACK_BASE   = 60        # seconds to hold the forwarding path after a blackhole verdict, doubling
+RELAY_BLACK_MAX    = 900       # ...to this cap. Cleared early by a new relay pid, or by accepts moving.
 RELAY_SELFDIAL_MAX = 5         # refused self-dials in one pass before the relay counts as unhealthy
 RELAY_DIVERT_MIN   = 4         # diverted packets in one pass before "and accepted none" means anything
 RELAY_MSS_HEADROOM = 80        # subtracted from the upstream leg's MTU — see _relay_mss for why an exact fit is not enough
@@ -5733,8 +5735,11 @@ def _relay_diverted():
     return out
 
 
-def _relay_probe(iface, now):
-    """(healthy, why, detail). The ONLY thing allowed to conclude that a divert may exist."""
+def _relay_probe(iface, now, diverted=None):
+    """(healthy, why, detail). The ONLY thing allowed to conclude that a divert may exist.
+
+    `diverted` is the whole table's per-instance counters, read once per pass by the caller; omitted, this
+    reads them itself, which is what the tests do."""
     st = _RELAY.setdefault(iface, {})
     s = _relay_status(iface)
     if not s:
@@ -5774,7 +5779,7 @@ def _relay_probe(iface, now):
     # So compare the two counters that must move together. Packets taken by the tproxy rule are new
     # connection attempts; accepts are what became of them. Diverting more and more while accepting none,
     # twice running, is not a slow client — it is traffic going nowhere.
-    _all = _relay_diverted()
+    _all = _relay_diverted() if diverted is None else diverted
     # ⚠️ `None` (cannot read the table) and "armed but nothing diverted yet" are different answers, and only
     # the second is a number. Treating a failed read as 0 would make the check below pass by accident.
     dv = None if _all is None else int(_all.get(iface, 0))
@@ -5783,14 +5788,36 @@ def _relay_probe(iface, now):
         st["diverted"] = dv
     ac, ac_prev = s.get("accepted") or 0, st.get("accepted")
     st["accepted"] = ac
-    if (dv is not None and dv_prev is not None and ac_prev is not None
-            and dv - dv_prev >= RELAY_DIVERT_MIN and ac <= ac_prev):
+    # ⚠️ THE VERDICT HAS TO LATCH, AND THE FIRST VERSION DID NOT — it produced a flap that put the divert
+    # back over a broken relay about three passes in four. The cycle: verdict -> no entries -> the table is
+    # DELETED -> next pass _relay_diverted() cannot find it and returns None -> "no comparison possible"
+    # cleared the strike count -> the relay still answers and its loop still turns, so it read as healthy ->
+    # re-armed with fresh counters -> two more passes to re-detect. On the exact failure this check was
+    # written for, the client was blackholed most of the time instead of being left on the forwarding path.
+    #
+    # So a verdict disarms for a cooling-off period that doubles, and only two things end it early: the
+    # relay process being REPLACED (a new pid is a new thing, worth one try), or accepts actually moving.
+    if s.get("pid") and st.get("pid") and s["pid"] != st["pid"]:
+        st.pop("black_until", None); st["black_wait"] = RELAY_BLACK_BASE   # new process, clean slate
+    st["pid"] = s.get("pid")
+    if now < st.get("black_until", 0):
+        return False, ("relay took traffic and accepted none; holding the forwarding path for %ds"
+                       % int(st["black_until"] - now)), s
+    if dv is None or dv_prev is None or ac_prev is None:
+        pass                                            # ⚠️ no comparison possible — HOLD the strike count.
+        #                                                 Clearing it here is what created the flap above.
+    elif dv - dv_prev >= RELAY_DIVERT_MIN and ac <= ac_prev:
         st["mute"] = st.get("mute", 0) + 1
         if st["mute"] >= 2:                             # two passes: not one SYN arriving mid-probe
+            st["mute"] = 0
+            st["black_wait"] = min(RELAY_BLACK_MAX, int(st.get("black_wait") or RELAY_BLACK_BASE) * 2)
+            st["black_until"] = now + st["black_wait"] / 2
             return False, ("relay took %d diverted packets and accepted none — the divert is a blackhole"
                            % (dv - dv_prev)), s
     else:
         st["mute"] = 0
+        if ac > (ac_prev or 0):
+            st["black_wait"] = RELAY_BLACK_BASE         # it is serving again: forget the backoff
     if prev is None:
         return False, "relay just seen, waiting for a second sample", s   # never arm on one observation
     return True, "", s
@@ -5804,7 +5831,7 @@ def _relay_rule_tag(iid):
     return RELAY_RULE_TAG + iid
 
 
-def _relay_nft(entries):
+def _relay_nft(entries, guard_ports=()):
     """The nft script for the whole table, rebuilt from scratch — one atomic `nft -f`, like the smart chains.
 
     ⚠️ THE `socket transparent` RULE IS SCOPED BY SOURCE TOO, not just the tproxy one. Unscoped it matches
@@ -5846,16 +5873,35 @@ def _relay_nft(entries):
     # itself without bound (measured: 47,780 fds in six seconds, status socket wedged). The relay refuses a
     # self-destination on its own now, but a public panel should not be depending on that alone.
     #
-    # This costs nothing, and that is measurable rather than argued: tproxy hands the socket a packet whose
-    # destination is still the one the CLIENT asked for, so a legitimately diverted connection never carries
-    # the relay's port at all. Counted on a live rig — 16 packets at the client's own dport, 0 at the
-    # relay's — which is why dropping the port cannot reach real traffic.
+    # ⚠️ AND IT MUST BE SCOPED TO *OUR OWN* ADDRESSES — `fib daddr type local`. The first version dropped
+    # the port outright, and that same measurement is what shows why it was wrong: tproxy hands the socket a
+    # packet whose destination is still the one the CLIENT asked for (counted on a live rig — 16 packets at
+    # the client's own dport, 0 at the relay's). So a client on a relayed interface dialling a REMOTE host
+    # that happens to use this node's port — the hash lands in 5590-5889, which holds Kibana at 5601 and
+    # NRPE at 5666 — had its SYN delivered toward the relay and then dropped here. That is precisely the
+    # case the relay's own self-dial guard is written to preserve, and relay_selfdial_selftest asserts the
+    # property; an unscoped drop made the nft half contradict the python half in silence.
+    #
+    # Scoped, it still closes the whole remote attack surface: a self-dial can only ever be addressed to one
+    # of this node's own addresses, which is what `type local` means.
+    # ⚠️ THE PORT GUARD OUTLIVES THE DIVERT, and finding that out took a live test. `_relay_disarm` deletes
+    # the whole table, so the first version's guard vanished exactly when the relay was in a bad state — a
+    # blackhole hold now keeps a leg disarmed for up to fifteen minutes, and for all of it the process is
+    # still running and still listening on 0.0.0.0 with only the python guard behind it. Observed on the
+    # rig: a stray connect during a disarm window reached the relay (refused_self=1) while the drop rule's
+    # counter sat at 0. So the guard is keyed on WHICH RELAYS EXIST, not on which legs are armed.
+    ports = sorted({e["port"] for e in entries} | set(guard_ports))
     if entries:
-        L += ["  }", "  chain inp {",
+        L += ["  }"]
+    else:
+        L = [l for l in L if not l.startswith("  chain pre") and "hook prerouting" not in l]
+    if ports:
+        L += ["  chain inp {",
               "    type filter hook input priority %d; policy accept;" % RELAY_HOOK_PRI]
-        for port in sorted({e["port"] for e in entries}):
-            L.append("    meta l4proto tcp th dport %d counter drop" % port)
-    L += ["  }", "}"]
+        for port in ports:
+            L.append("    fib daddr type local meta l4proto tcp th dport %d counter drop" % port)
+        L += ["  }"]
+    L += ["}"]
     return "\n".join(L) + "\n"
 
 
@@ -5921,21 +5967,18 @@ def _relay_shadowed(entries, rules):
     return out
 
 
-def _relay_arm(entries, res):
-    """Routing half FIRST, nft half LAST — see the ordering warning at the top of this section."""
+def _relay_arm(entries, res, rules=None):
+    """Routing half FIRST, nft half LAST — see the ordering warning at the top of this section.
+
+    ⚠️ THIS APPLIES WHAT IT IS GIVEN AND DECIDES NOTHING. Eligibility — including the shadowed-leg
+    precondition — is settled in reconcile_relay's probe loop, with every other reason a leg can be refused.
+    Filtering here instead looked equivalent and was not: the signature that decides whether to re-arm is
+    computed from the UNFILTERED list, so a leg dropped at this point stays dropped for as long as the leg
+    set is unchanged — even after the rule that shadowed it has gone away — and the verdict written here was
+    overwritten by the probe loop on the very next pass, leaving `relay_status` reporting a leg as healthy
+    whose divert had never been installed."""
     run(["ip", "route", "replace", "local", "default", "dev", "lo", "table", str(RELAY_RT)])
-    _rules = (run(["ip", "rule", "show"]).stdout or "").splitlines()
-    # the same read answers both questions, so the precondition costs nothing extra
-    bad = _relay_shadowed(entries, _rules)
-    if bad:
-        entries = [e for e in entries if e["iid"] not in bad]
-        for iid, whyx in sorted(bad.items()):
-            _RELAY.setdefault(iid, {})["ok"] = False
-            _RELAY[iid]["why"] = whyx
-            res["errors"].append("relay %s: %s" % (iid, whyx))
-        if not entries:
-            _relay_disarm(res)
-            return False
+    _rules = rules if rules is not None else (run(["ip", "rule", "show"]).stdout or "").splitlines()
     have = any(("fwmark 0x%x" % RELAY_MARK) in l and ("lookup %d" % RELAY_RT) in l
                for l in _rules)
     if not have:
@@ -5962,7 +6005,10 @@ def _relay_disarm(res=None):
 
 
 def _relay_table_live():
-    return run(["nft", "list", "table", "inet", RELAY_TABLE]).returncode == 0
+    """Is the DIVERT live? Not merely the table — a guard-only table (ports shut, nothing diverted) exists
+    while every leg is disarmed, and reading that as 'armed' would stop the next pass re-asserting."""
+    r = run(["nft", "list", "table", "inet", RELAY_TABLE])
+    return r.returncode == 0 and "tproxy" in (r.stdout or "")
 
 
 RELAY_ENV_DIR = "/etc/swg-panel/relay"
@@ -6111,6 +6157,7 @@ def _relay_supervise_docker(want, quota_pct, res):
         if _RELAY_ARM["sig"] is not None:                  # pull the divert BEFORE the process it points at goes
             _relay_disarm(res)
             _RELAY_ARM["sig"] = None; _RELAY_ARM["why"] = "relay restarting to pick up new settings"
+            _relay_note("DISARMED", _RELAY_ARM["why"])
         run(["docker", "rm", "-f", cn], timeout=30)
         r = run(["docker", "run", "-d", "--name", cn, "--network", "host", "--restart", "unless-stopped",
                  "--cpus", str(cpus), "--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW",
@@ -6159,6 +6206,12 @@ def _relay_supervise(want, quota_pct, res):
         _relay_disarm(res)
         _RELAY_ARM["sig"] = None
         _RELAY_ARM["why"] = "relay restarting to pick up new settings"
+        # ⚠️ A DISARM THAT IS NOT RECORDED IS WORSE THAN NO RECORD AT ALL. _relay_note dedupes on
+        # (state, why), so without this line the ARMED entry on the far side of a settings change is
+        # identical to the one before it and is swallowed — and the journal then reads as CONTINUOUSLY
+        # armed across a window in which the divert was pulled and client TCP was on the forwarding path.
+        # That is the exact question this record was added to make answerable.
+        _relay_note("DISARMED", _RELAY_ARM["why"])
     if reload_needed:
         if slice_changed:
             _relay_write(slice_path, slice_text)
@@ -6275,8 +6328,19 @@ def reconcile_relay(plan, res, sync_ok=True):
     now = time.time()
     cap = int(plan.get("max_conns") or 0)
     entries, why = [], []
+    # Read once per pass and use it for both the precondition and the arm — `ip rule show` is a fork, and
+    # this loop runs every five seconds. Same reason _relay_diverted is read once here rather than per leg.
+    _rules = (run(["ip", "rule", "show"]).stdout or "").splitlines()
+    _shadow = _relay_shadowed([{"iid": i, "subnet": want[i]["subnet"], "mark": want[i]["mark"]}
+                               for i in sorted(want)], _rules)
+    _div = _relay_diverted()
     for iface in sorted(want):
-        ok, reason, st = _relay_probe(iface, now)
+        ok, reason, st = _relay_probe(iface, now, _div)
+        if ok and iface in _shadow:
+            # ⚠️ RE-EVALUATED EVERY PASS, like every other reason. The leg comes back on its own the moment
+            # the rule that outranked it is gone, and until then it is refused in the one place the panel
+            # reads — rather than in a filter the next probe pass silently undoes.
+            ok, reason = False, _shadow[iface]
         if ok and cap and (st.get("live") or 0) >= cap:
             # §3.4: over the cap the whole interface degrades to plain forwarding rather than one
             # connection being queued or dropped. ⚠️ It is NOT free — pulling the divert drops the
@@ -6295,6 +6359,9 @@ def reconcile_relay(plan, res, sync_ok=True):
     if not entries:
         if _RELAY_ARM["sig"] is not None or _relay_table_live():
             _relay_disarm(res)
+        # Nothing is armed, but the processes are still up and still listening — keep their ports shut.
+        if want:
+            run(["nft", "-f", "-"], input_text=_relay_nft([], sorted({want[i]["port"] for i in want})))
         _RELAY_ARM["sig"] = None
         _RELAY_ARM["why"] = "; ".join(why) or "no healthy relay"
         _relay_note("DISARMED", _RELAY_ARM["why"])
@@ -6302,7 +6369,7 @@ def reconcile_relay(plan, res, sync_ok=True):
     # Armed intent: re-assert if the wanted set changed OR the table went missing under us (the cascade
     # band flush, an operator `nft flush ruleset`, a reboot). Cheap enough at one `nft list` per sync.
     if sig != _RELAY_ARM["sig"] or not _relay_table_live():
-        if _relay_arm(entries, res):
+        if _relay_arm(entries, res, _rules):
             _RELAY_ARM["sig"] = sig
             _RELAY_ARM["since"] = now
             _RELAY_ARM["why"] = "; ".join(why)

@@ -94,8 +94,18 @@ check("an input chain exists", 'chain inp {' in nft)
 check("…hooked in input", "hook input" in nft)
 check("…dropping tcp to each relay port", "dport %d counter drop" in nft)
 check("…counted, so 'it never fires' is a reading and not a hope", "counter drop" in nft)
-check("…and only when something is actually armed", re.search(r"if entries:\s*\n\s*L \+= \[\"  \}\", \"  chain inp \{\"", nft) is not None,
-      "an empty table with an input chain would drop the port with no relay to protect")
+# ⚠️ THE GUARD OUTLIVES THE DIVERT. `_relay_disarm` deletes the whole table, so a guard tied to the
+# armed set vanished exactly when the relay was in a bad state — and a blackhole hold now keeps a leg
+# disarmed for up to fifteen minutes while the process is still listening on 0.0.0.0. Observed live: a
+# stray connect during a disarm window reached the relay while the drop rule counter sat at 0.
+guard_only = noded[noded.index("def _relay_nft("):noded.index("def _relay_note(")]
+check("the builder takes ports independently of entries", "guard_ports" in guard_only)
+check("⚠️ …so a disarmed relay still has its port shut",
+      "if want:" in noded and re.search(r'_relay_nft\(\[\], sorted\(\{want\[i\]\["port"\]', noded) is not None,
+      "a disarm that opens the port re-opens the 47,000-fd loop to anything that can reach the node")
+check("…and a guard-only table does NOT read as armed",
+      '"tproxy" in (r.stdout or "")' in noded,
+      "else the next pass would never re-assert the divert")
 check("⚠️ the divert rules carry counters — the blackhole check has no other input",
       nft.count("counter meta mark set") >= 2)
 
@@ -131,7 +141,15 @@ check("⚠️ the ARM path records it", re.search(r'_relay_note\("ARMED"', body)
 check("…naming the instances and ports a client now depends on",
       re.search(r'_relay_note\("ARMED",[^)]*e\["iid"\][^)]*e\["port"\]', body, re.S) is not None)
 check("…and every DISARM path records it too",
-      len(re.findall(r'_relay_note\("DISARMED"', body)) >= 2, "a disarm that is not logged is the same blind spot")
+      len(re.findall(r'_relay_note\("DISARMED"', body)) >= 4, "a disarm that is not logged is the same blind spot")
+# ⚠️ INCLUDING THE SETTINGS-CHANGE ONE, in BOTH run-models. `_relay_note` dedupes on (state, why), so an
+# unrecorded disarm makes the ARMED line after it identical to the one before and it is swallowed — the
+# journal then reads as continuously armed across a window where the divert was pulled.
+for _fn, _label in (("_relay_supervise_docker", "docker"), ("_relay_supervise", "systemd")):
+    _seg = noded[noded.index("def %s(" % _fn):]
+    _seg = _seg[:_seg.index("\ndef ", 10)]
+    check("…the %s settings-change disarm is recorded" % _label,
+          '_relay_note("DISARMED"' in _seg, "a restart pulls the divert and says nothing")
 check("…including the one where arming itself failed",
       re.search(r'_RELAY_ARM\["sig"\] = None\s*\n\s*_relay_note\("DISARMED", "arming failed"\)', body) is not None)
 
