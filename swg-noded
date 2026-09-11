@@ -6643,6 +6643,13 @@ def relay_status():
     cap_ok, cap_why = _relay_capable()
     out = {"armed": _RELAY_ARM["sig"] is not None, "since": _RELAY_ARM["since"],
            "capable": cap_ok, "cannot": cap_why,          # the panel refuses to OFFER the switch when False
+           # ⚠️ SAY WHICH CONTRACT WE SPEAK, so the panel can stop shipping the old one to us. It still
+           # sends a whole-interface `ifaces` map alongside `legs` for nodes that predate the per-leg
+           # contract, and without a marker that map is permanent: this is a PUBLIC panel, so nobody can
+           # ever know the last old node is gone. Reported rather than inferred from a version string, the
+           # same way `capable` is — a node is the only thing that knows what it can read, and comparing
+           # versions to answer a capability question is how that answer goes stale.
+           "legs": True,
            "why": _RELAY_ARM["why"], "mark": RELAY_MARK, "table": RELAY_RT,
            "quota_pct": enforced if enforced is not None else RELAY_QUOTA_PCT, "ifaces": {}}
     for iface, st in sorted(_RELAY.items()):

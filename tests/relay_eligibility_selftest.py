@@ -28,6 +28,9 @@ Run: python3 tests/relay_eligibility_selftest.py   (0 = pass)
      --perturb-compat  puts smart legs in the old `ifaces` map   → RED
      --perturb-order   sorts the kinds together, so a smart leg
                        can take a forward leg's live port        → RED
+     --perturb-sunset  ships the old contract to every node,
+                       including the ones that say they read the
+                       new one                                   → RED
 """
 import importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -40,7 +43,8 @@ P_BAND = "--perturb-band" in sys.argv
 P_PORT = "--perturb-port" in sys.argv
 P_COMPAT = "--perturb-compat" in sys.argv
 P_ORDER = "--perturb-order" in sys.argv
-PERTURB = P_DEV or P_BAND or P_PORT or P_COMPAT or P_ORDER
+P_SUNSET = "--perturb-sunset" in sys.argv
+PERTURB = P_DEV or P_BAND or P_PORT or P_COMPAT or P_ORDER or P_SUNSET
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -75,12 +79,15 @@ if P_PORT:
                 out[iid] = q
                 break''',
         '''        out[iid] = _relay_port_hash(iid)''', "port probe")
+if P_SUNSET:
+    cut("    _reads_legs = bool(((snaps.get(nid) or {}).get(\"relay\") or {}).get(\"legs\"))",
+        "    _reads_legs = False", "compat sunset")
 if P_ORDER:
     cut('    for iid in sorted(marks, key=lambda i: (bool(marks[i]), i)):',
         '    for iid in sorted(marks):', "alloc order")
 if P_COMPAT:
-    cut('                       for l in legs if not l["mark"]},      # compat: a node older than this panel',
-        '                       for l in legs},', "compat filter")
+    cut('                           for l in legs if not l["mark"]}}),',
+        '                           for l in legs}}),', "compat filter")
 
 path = PANEL
 if PERTURB:
@@ -256,8 +263,11 @@ check("…and it reaches the operator as a `why`, not as silence",
 _plans = P.cascade_plan(_nodes, SNAP)
 _plans["n1"]["_legs"] = _bad_legs
 _p3 = P.relay_plan(_nodes, _plans, "n1", SNAP)
-check("…so the node is never asked to arm it",
-      not (_p3.get("legs") or []) and "wg9.n2" in (_p3.get("excluded") or {}), _p3)
+# The reason used to be echoed back in the plan as `excluded`, which nothing ever read — the sheet takes
+# it from `relay_eligibility` directly. So the claim to assert is the one that matters: the node is not
+# asked to arm it, and the operator is still told why.
+check("…so the node is never asked to arm it", not (_p3.get("legs") or []), _p3)
+check("…while the operator still has the reason", bool(_e3["wg9.n2"]["why"]), _e3)
 
 print("\n[8] inert unless the operator asked for it")
 _, _e4, _p4 = resolve(fleet({"wg8": dict(FWD), "wg9": dict(SMART)}, relay_on=()))
@@ -272,12 +282,39 @@ check("the node-wide cap rides on the plan",
 _, _, _p7 = resolve(fleet({"wg9": dict(SMART)}, quota=999))
 check("…clamped, because it writes a CPUQuota", _p7.get("quota_pct") == P.RELAY_QUOTA_MAX, _p7)
 
+print("\n[9] ⚠️ the old contract goes to the nodes that need it, and STOPS at the ones that do not")
+# Without this the compat map is permanent: on a PUBLIC panel nobody can ever know the last old node is
+# gone, and permanent compatibility code is code no one dares delete. Asked of the node, like `capable`.
+_N2 = fleet({"wg8": dict(FWD), "wg9": dict(SMART)})
+def _plan_for(relay):
+    _s = {"n1": dict(SNAP["n1"], **({"relay": relay} if relay else {}))}
+    return P.relay_plan(_N2, P.cascade_plan(_N2, _s), "n1", _s)
+_old, _new, _never = _plan_for({"capable": True}), _plan_for({"capable": True, "legs": True}), _plan_for(None)
+check("a node that says it reads legs is sent legs alone", "ifaces" not in _new, sorted(_new))
+check("⚠️ …and one that does not still gets the map it has always read", "ifaces" in _old, sorted(_old))
+check("⚠️ …as does one that has never synced, which is the safe way round",
+      "ifaces" in _never, "no snapshot means no marker means assume old")
+check("both are sent the same legs regardless", _old.get("legs") == _new.get("legs"))
+check("…and the node ADVERTISES it rather than the panel guessing a version",
+      '"legs": True' in open(NODED, encoding="utf-8").read(),
+      "comparing version strings to answer a capability question is how that answer goes stale")
+
+print("\n[10] the plan carries nothing nobody reads")
+check("⚠️ `excluded` is gone from the contract",
+      "excluded" not in json.dumps(_old) and "excluded" not in json.dumps(_new), sorted(_old))
+check("…and the reasons still reach the operator, from eligibility",
+      any(e.get("why") for e in P.relay_eligibility(
+          fleet({"wg9": dict(SMART)})["n1"], SNAP, "n1",
+          [{"subnet": "10.19.0.0/24", "peer": "n2", "mark": P.SWG_RT_MAX + 7, "mode": "smart"}]).values()),
+      "the sheet reads relay_eligibility directly; the plan never had a reader for them")
+
 bad = len(FAILS)
 if PERTURB:
     which = ("a device-exit rule recorded as a leg" if P_DEV else
              "the mark-band guard removed" if P_BAND else
              "the bare hash with no collision fix" if P_PORT else
              "the two kinds of leg sorted together" if P_ORDER else
+             "the old contract shipped to every node" if P_SUNSET else
              "smart legs leaking into the old `ifaces` contract")
     print("\n--perturb (%s): %d check(s) RED" % (which, bad))
     sys.exit(0 if bad else 1)

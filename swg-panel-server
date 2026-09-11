@@ -13472,15 +13472,14 @@ def relay_plan(nodes, plans, nid, snaps):
             on[peer] = r
     if not on:
         return {}
-    want, excluded = {}, {}
+    want = {}
     _legs = ((plans or {}).get(nid) or {}).get("_legs") or ()
     for iid, e in sorted(relay_eligibility(node, snaps, nid, _legs).items()):
         r = on.get(e["via"])
         if r is None:
             continue                          # routes over a link the operator left on plain `forward`
         if e["why"]:
-            excluded[iid] = e["why"]
-            continue
+            continue                          # the SHEET says why, from `relay_eligibility` directly
         want[iid] = (e, r)
     # ⚠️ THE PANEL ALLOCATES THE PORTS (§10.5). The node prefers what we send and only hashes as a
     # fallback, and that fallback has 300 slots — ample for one instance per interface, and colliding
@@ -13493,20 +13492,25 @@ def relay_plan(nodes, plans, nid, snaps):
     for iid in sorted(want):
         e, r = want[iid]
         if iid not in ports:
-            excluded[iid] = "this node has no free relay port left"
-            continue
+            continue                          # every slot in the window taken; see _relay_ports
         legs.append({"iface": e["iface"], "peer": e["peer"], "subnet": e["subnet"],
                      "mark": e["mark"], "up_table": e.get("up_table") or 0, "port": ports[iid],
                      "cc_cli": (r.get("cc_cli") or "").strip(),
                      "cc_up": (r.get("cc_up") or "").strip()})
     if not legs:
-        return {"legs": [], "ifaces": {}, "excluded": excluded}   # still sent: the panel wants to SHOW why nothing is on
+        return {"legs": [], "ifaces": {}}      # an empty plan, which is what makes the node tear down
     q = int(((node.get("relay") or {}).get("quota_pct")) or RELAY_QUOTA_DEFAULT)
+    # ⚠️ THE COMPAT MAP GOES TO NODES THAT NEED IT, AND ONLY THOSE. A node that says it reads `legs` is
+    # sent `legs` alone; one that says nothing is too old to have the marker, so it gets the whole-interface
+    # map it has always read. Without the marker this map would have been permanent — on a PUBLIC panel
+    # nobody can ever know the last old node is gone — and permanent compatibility code is code no one dares
+    # delete. Asked of the node rather than inferred from its version, exactly as `capable` is.
+    _reads_legs = bool(((snaps.get(nid) or {}).get("relay") or {}).get("legs"))
     return {"legs": legs,
-            "ifaces": {l["iface"]: {"subnet": l["subnet"], "port": l["port"],
-                                    "cc_cli": l["cc_cli"], "cc_up": l["cc_up"]}
-                       for l in legs if not l["mark"]},      # compat: a node older than this panel
-            "excluded": excluded,
+            **({} if _reads_legs else
+               {"ifaces": {l["iface"]: {"subnet": l["subnet"], "port": l["port"],
+                                        "cc_cli": l["cc_cli"], "cc_up": l["cc_up"]}
+                           for l in legs if not l["mark"]}}),
             "quota_pct": max(5, min(RELAY_QUOTA_MAX, q)),
             "max_conns": int(((node.get("relay") or {}).get("max_conns")) or 0)}
 
