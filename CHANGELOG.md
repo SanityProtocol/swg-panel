@@ -114,6 +114,21 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
   an existing one heals — and the node whose routing changed is named. A control still holding a gone
   destination says so instead of showing nothing.
 - **«Датапас» was not a Russian word.** Two labels carried a transliteration instead of a translation.
+- **A relay could be driven into connecting to itself.** One ordinary TCP connection to the relay's own
+  port — from anywhere that could reach the node, since a transparent socket must listen on every address —
+  made it dial itself, and each of those dials did it again. Measured on a test node: 6 open files to 47,780
+  in six seconds, after which it stopped answering at all. The port is now closed to everything except the
+  divert that feeds it, and the relay refuses a destination that is its own; a client connecting to some
+  other machine that happens to use that port is unaffected.
+- **A relay that had stopped serving anyone still counted as healthy**, so the interface it was accelerating
+  swallowed every TCP connection while the panel showed it working. Checking that the process answers and
+  that its loop is turning cannot see this — an idle loop turns. The node now compares the traffic handed to
+  the relay against the connections it actually took, and withdraws the acceleration when one moves without
+  the other.
+- **Turning acceleration on or off is now written to the node's log**, with the interfaces and ports it
+  covers and, when it is off, the reason. Without that line there is no way to tell afterwards whether an
+  interface was being accelerated at the moment somebody reported it was not working.
+
 ## [1.8.5-beta] — 2026-09-02
 
 ### Added
