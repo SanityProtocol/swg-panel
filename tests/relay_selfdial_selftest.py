@@ -156,7 +156,16 @@ check("…including the one where arming itself failed",
 print("\n[4] and the reader it depends on is real")
 rd = noded[noded.index("def _relay_diverted("):noded.index("def _relay_probe(")]
 check("_relay_diverted parses nft's own json", '"nft", "-j", "list"' in rd)
-check("…sums only the tproxy rules", '"tproxy" in e' in rd)
+# ⚠️ THE HEALTH COUNTER IS SYNs, NOT PACKETS. The tproxy rule also takes post-RST retransmits and late
+# FIN/ACKs on dead connections, so a QUIET leg with a few of those reads as "diverting and accepting
+# nothing" and has its working divert pulled. A SYN is unambiguously an attempt.
+check("…reads the dedicated SYN counter, not the tproxy rule's packets",
+      "RELAY_SYN_TAG" in rd, "packets != connection attempts")
+check("…and the builder emits that counter per instance",
+      'tcp flags syn / syn,rst counter comment' in noded and "_relay_syn_tag(" in noded)
+check("…with no verdict, so it falls through to the divert",
+      'syn,rst counter comment "%s"' in noded and "accept comment" not in
+      noded[noded.index("_relay_syn_tag(e[")-260:noded.index("_relay_syn_tag(e[")])
 check("…returns None (not 0) when it cannot read", re.search(r"return None", rd) is not None,
       "0 would read as 'nothing diverted' and silently pass the blackhole check")
 check("…and None is handled at the call site", "dv is not None" in probe)

@@ -4604,11 +4604,28 @@ def node_remove(deps, nid):
     # ⚠️ SAY WHOSE ROUTING THIS CHANGED. Rewriting an interface's egress is a traffic change on a node the
     # operator did not touch, so it is reported per node rather than folded into the removal line — the one
     # thing worse than an interface silently forwarding to a ghost is one silently repointed.
-    for _onid in sorted({h[0] for h in _orphans}):
-        _names = ", ".join(sorted(h[2] for h in _orphans if h[0] == _onid))
-        ev_append(deps["roster_path"], "node", _onid, "Egress reset to direct — its target node was removed",
-                  (nodes.get(_onid) or {}).get("name") or _onid, _names)
+    _report_orphan_egress(deps, nodes, _orphans)
     return nm
+
+
+def _report_orphan_egress(deps, nodes, orphans):
+    """Write one event per node whose interfaces were repointed, with the right reason for each.
+
+    ⚠️ SAY WHOSE ROUTING THIS CHANGED. Rewriting an interface's egress is a traffic change on a node the
+    operator did not touch, so it is reported per node rather than folded into whatever triggered it — the
+    one thing worse than an interface silently forwarding to a ghost is one silently repointed.
+
+    ⚠️ AND EVERY CALLER MUST REPORT. `prune_node_refs` is fleet-wide and unconditional, so it heals on any
+    node save — which means an interface on a node nobody touched can be rewritten by a save somewhere
+    else. The `/api/node/update` path discarded the return value and said nothing at all."""
+    for _onid in sorted({h[0] for h in orphans}):
+        mine = [h for h in orphans if h[0] == _onid]
+        nm = (nodes.get(_onid) or {}).get("name") or _onid
+        for _gone, _verb in ((True, "Egress reset to direct — its target node was removed"),
+                             (False, "Egress reset to direct — it forwarded to no node at all")):
+            names = ", ".join(sorted(h[2] for h in mine if bool(h[3]) is _gone))
+            if names:
+                ev_append(deps["roster_path"], "node", _onid, _verb, nm, names)
 
 
 def desired_for_node(roster, node_id):
@@ -12118,7 +12135,12 @@ def prune_node_refs(nodes):
                     continue
                 ov["egress_mode"] = "direct"
                 ov.pop("egress_node", None)
-                hit.append((nid, src, name, gone))
+                # ⚠️ AN EMPTY TARGET IS A DIFFERENT FAULT AND MUST NOT BORROW THIS ONE'S EXPLANATION. A
+                # record saying `forward` with no node was already malformed before anybody removed
+                # anything; reporting it as "its target node was removed" blames a removal for a state that
+                # predates it, and sends the operator looking for a node that never existed. Still rewritten
+                # — the traffic was leaving direct either way — just not attributed to the wrong cause.
+                hit.append((nid, src, name, gone) if gone else (nid, src, name, ""))
     return hit
 
 
@@ -17726,7 +17748,7 @@ def api(method, path, qs, body, deps):
         # …and the same for a forward whose TARGET NODE is gone. Unconditional and fleet-wide for the same
         # reason the two above are unconditional: a record already in that state heals on the next save of
         # anything, instead of waiting for someone to open the exact interface that broke.
-        prune_node_refs(nodes)
+        _report_orphan_egress(deps, nodes, prune_node_refs(nodes))
         nodes[nid].pop("enabled_categories", None)   # §6.9: deleted, never read; drop the dead key as we pass
         if "catalog_cats" in body:              # categories the operator opted THIS node into (node-lens): provider-catalog
             cc = body.get("catalog_cats")       # ids (<prov>:<id>) AND curated built-ins (bare id) — both first-class + pullable

@@ -5697,10 +5697,13 @@ def _relay_cpu(iface, pid, now):
 
 
 def _relay_diverted():
-    """Packets each instance's tproxy rule has taken -> {iid: packets}. None if the table cannot be read.
+    """Connection ATTEMPTS handed to each instance -> {iid: syns}. None if the table cannot be read.
 
-    The `socket transparent` rule matches packets belonging to a connection the relay ALREADY holds, so the
-    tproxy rule is very nearly "new connection attempts" — which is exactly what should turn into accepts.
+    Counted off a dedicated SYN rule, not off the tproxy rule. "Very nearly connection attempts" was not
+    near enough: the tproxy rule also takes post-RST retransmits and late FIN/ACKs on dead connections, and
+    a quiet leg with a few of those reads as "diverting and accepting nothing" — pulling a working divert.
+    A SYN is an attempt; a retransmitted SYN is still one; and what should turn into an accept is exactly
+    what this counts.
 
     ⚠️ PER INSTANCE, NOT A TOTAL. Summing was correct while a node relayed at most one leg, and the moment
     it relays two a total judges every leg by every other leg's traffic. The damage is not the obvious way
@@ -5722,16 +5725,14 @@ def _relay_diverted():
         if rule.get("chain") != "pre":
             continue
         tag = str(rule.get("comment") or "")
-        if not tag.startswith(RELAY_RULE_TAG):
-            continue                                  # the socket-transparent rule, or something not ours
-        expr = rule.get("expr") or []
-        if not any("tproxy" in e for e in expr if isinstance(e, dict)):
-            continue
+        if not tag.startswith(RELAY_SYN_TAG):
+            continue                                  # the tproxy/socket rules, or something not ours
         n = 0
-        for e in expr:
+        for e in (rule.get("expr") or []):
             if isinstance(e, dict) and "counter" in e:
                 n += int((e["counter"] or {}).get("packets") or 0)
-        out[tag[len(RELAY_RULE_TAG):]] = out.get(tag[len(RELAY_RULE_TAG):], 0) + n
+        iid = tag[len(RELAY_SYN_TAG):]
+        out[iid] = out.get(iid, 0) + n
     return out
 
 
@@ -5824,11 +5825,18 @@ def _relay_probe(iface, now, diverted=None):
 
 
 RELAY_RULE_TAG = "swg-relay:"
+RELAY_SYN_TAG = "swg-relay-syn:"
 
 
 def _relay_rule_tag(iid):
     """How a divert rule says which instance it feeds. Read back by _relay_diverted; keep the two together."""
     return RELAY_RULE_TAG + iid
+
+
+def _relay_syn_tag(iid):
+    """The counter the WATCHDOG reads: connection attempts handed to this instance. Separate from the
+    tproxy rule's own counter, which counts packets and is observability only — see _relay_nft."""
+    return RELAY_SYN_TAG + iid
 
 
 def _relay_nft(entries, guard_ports=()):
@@ -5862,6 +5870,16 @@ def _relay_nft(entries, guard_ports=()):
         # already set by the time this chain runs (mangle for it, mangle+10 for us). Matching the source
         # alone there would divert traffic that was routed somewhere else entirely.
         _m = ("meta mark 0x%x " % e["mark"]) if e.get("mark") else ""
+        # ⚠️ THE HEALTH COUNTER IS SYNs, NOT PACKETS, and that distinction is the whole rule. The tproxy
+        # rule takes every TCP packet from the subnet whose socket lookup missed — which is mostly
+        # connection attempts, but also post-RST retransmits and late FIN/ACKs on connections that are
+        # already dead. Judged by that, a QUIET leg carrying one long-lived connection plus a handful of
+        # stray packets satisfies "diverted rose, accepted did not" for two passes and has its working
+        # divert pulled — the same damage, from the other direction, that per-instance counters were
+        # introduced to avoid. A SYN is unambiguously an attempt, and a retransmitted SYN is still one.
+        # No verdict on this rule: it counts and falls through to the tproxy rule below.
+        L.append('    ip saddr %s %stcp flags syn / syn,rst counter comment "%s"'
+                 % (S, _m, _relay_syn_tag(e["iid"])))
         # ⚠️ THE COMMENT IS LOAD-BEARING. `_relay_diverted` reads these counters back PER INSTANCE: summing
         # the table instead would let a busy healthy leg keep the total climbing while another leg accepted
         # nothing, which is exactly the blackhole the accept-vs-divert check exists to catch.

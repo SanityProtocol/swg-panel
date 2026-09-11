@@ -92,8 +92,14 @@ check("the API still refuses to STORE a forward to an unknown node",
 print("\n[5] ⚠️ …and a reference held before the sweep is NAMED, not blank")
 rt = open(os.path.join(ROOT, "js", "routing.js"), encoding="utf-8").read()
 check("EgressPicker asks whether its value can be named",
-      'const _goneFwd = value.mode === "forward" && !!value.node && !others.some(n => n.id === value.node);' in rt)
+      'const _goneFwd = value.mode === "forward" && !!value.node' in rt)
 check("…from the SAME list the options are built from", "!others.some(n => n.id === value.node)" in rt)
+# ⚠️ AND FROM THE WHOLE FLEET AS WELL. `others` excludes the current node, so on its own it answers
+# "would we offer this?" rather than "does this id resolve to a node?" — and a record pointing at the
+# node's own id would render as "A node that is no longer here" about a node that is right here.
+check("…and does not call the node itself missing",
+      "(Store.nodes || []).some(n => n.id === value.node)" in rt,
+      "a self-referencing forward would be reported as a removed node")
 check("…and appends a refusing row when it cannot", "_goneFwd ? [{ value: ifSel" in rt and 'className: "bad"' in rt)
 check("…that says what is happening to the traffic",
       "so it routes nothing and its clients leave by this node's own address" in rt)

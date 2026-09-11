@@ -1420,8 +1420,9 @@ export function ConnectionEditSheet({ node, iface }) {
         // Does the FAR end forward to us? Then the choice exists — on their side, because the mode belongs
         // to whoever sends the traffic. Read from the peer's own eligibility, the same field ours comes
         // from, so the two ends cannot disagree about who owns the switch.
-        const _prec = (Store.nodes || []).find(n => n.id === peer) || {};
-        const _fromPeer = Object.entries(((_prec.relay || {}).eligibility) || {}).filter(([, e]) => e.via === node);
+        // `prec` is the same lookup, already in scope at the top of the sheet — a second copy is one
+        // more thing that can drift from the first.
+        const _fromPeer = Object.entries(((prec.relay || {}).eligibility) || {}).filter(([, e]) => e.via === node);
         const _why = _fromPeer.length
           ? Trich("The traffic on this leg comes from *{peer}*, so its datapath is chosen there — open this link from {peer}'s page.",
                   { peer: Store.nodeName(peer) })

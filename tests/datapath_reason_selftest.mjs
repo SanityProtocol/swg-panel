@@ -50,7 +50,10 @@ check("⚠️ …and they are distinct, not one shared sentence",
 
 console.log("\n[3] the far-end answer reads the peer's OWN eligibility, not a guess");
 // Both ends must agree about who owns the switch; deriving it from the same field is what guarantees that.
-check("it looks the peer up in Store.nodes", /\(Store\.nodes \|\| \[\]\)\.find\(n => n\.id === peer\)/.test(blk));
+// The sheet already resolves the peer at its top as `prec`; the branch reuses it rather than doing the
+// same lookup twice, because a second copy is one more thing that can drift from the first.
+check("it reads the peer record resolved at the top of the sheet", /\(\(prec\.relay \|\| \{\}\)\.eligibility\)/.test(blk));
+check("…and that record is the peer, resolved once", /const prec = \(Store\.nodes \|\| \[\]\)\.find\(n => n\.id === peer\)/.test(src));
 check("…and filters that peer's eligibility by THIS node", /\.filter\(\(\[, e\]\) => e\.via === node\)/.test(blk));
 
 console.log("\n[4] …and every sentence is translated");

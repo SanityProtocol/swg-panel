@@ -2526,7 +2526,12 @@ export function EgressPicker({ node, value, onChange, noRules }) {
     : value.mode === "exit" ? "exit|" + (value.exitId || "") : "auto";
   // Is the value this control is holding something the list below can name? Answered from the SAME source
   // the list is built from, so the two cannot disagree. [[two-readers-one-grammar]]
-  const _goneFwd = value.mode === "forward" && !!value.node && !others.some(n => n.id === value.node);
+  // ⚠️ `others` EXCLUDES THIS NODE, and the question here is "does this id resolve to a node", not "is it a
+  // node we would offer". A record forwarding to the node's own id is refused on write today, so it can
+  // only arrive by hand — but reading it as "a node that is no longer here" would be actively wrong about a
+  // node that is right here, and send the operator looking for something that was never removed.
+  const _goneFwd = value.mode === "forward" && !!value.node
+    && !others.some(n => n.id === value.node) && !(Store.nodes || []).some(n => n.id === value.node);
   // The chosen exit, if it is still there. An interface KEEPS its selection when the exit is turned off, its
   // device goes bad, or the exit is deleted (decision 3) — so all three are reachable here, and each is a
   // different sentence. What they are NOT is a reason to refuse the save or to silently reset the field.
