@@ -76,6 +76,12 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
   reason — the tools cannot be executed, or they run and the kernel turns down what they ask for — the
   panel no longer blames the port or the subnet. It says which of the two happened and how to tell the
   causes apart.
+- **A node whose installation is declared elsewhere was told to run commands that cannot stick.** Every
+  message that ends in an instruction — tools missing, datapath module missing, tools refused at exec —
+  now asks whether this node is declared before it asks whether it is a container, because a NixOS host
+  running our image is both and only one of those two answers can be acted on there. It was the wrong way
+  round everywhere, so such a node was sent to edit a `docker-compose.yml` its host does not have. The
+  signal is the environment the module already sets, not a probe of a filesystem that belongs to our image.
 - **Interfaces driven over a socket rather than through the kernel read as having no peers on those same
   hosts.** wdtt, csqtt and any AmneziaWG interface on the userspace datapath are read through
   `/run/wireguard/*.sock`, which the same AppArmor profile did not permit — a second refusal that retiring

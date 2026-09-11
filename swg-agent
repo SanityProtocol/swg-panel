@@ -637,12 +637,24 @@ def _ensure_tool(tool):
     if have and quick:
         return
     if tool == "wg":
+        if _declarative():
+            raise AgentError("no_tool", "WireGuard tools are not installed on this node, and this node's "
+                             "installation is managed declaratively — installing them by hand would not "
+                             "survive its next rebuild. Add the WireGuard tools to the system configuration "
+                             "that declares this node and rebuild it, then this interface creates itself on "
+                             "the next sync.")
         raise AgentError("no_tool", "WireGuard tools are not installed on this node. Install them with your "
                          "package manager (on Debian/Ubuntu: apt-get install -y wireguard), then this "
                          "interface creates itself on the next sync.")
     # Distinguish "nothing installed" from "half installed": awg without awg-quick is a real and confusing
     # state that reads from the panel exactly like the tools being absent.
     if have and not quick:
+        if _declarative():
+            raise AgentError("no_tool", "AmneziaWG is only half-installed on this node: awg is present but "
+                             "awg-quick is missing. This node's installation is managed declaratively, so it "
+                             "has to be completed in the system configuration that declares this node rather "
+                             "than by an installer run here — add the full AmneziaWG tools and rebuild, then "
+                             "this interface creates itself on the next sync.")
         if _IN_CONTAINER:
             raise AgentError("no_tool", "This node's container image has awg but not awg-quick. Update the node "
                              "(docker compose pull && docker compose up -d) so it runs a current swg-node image, "
@@ -653,21 +665,24 @@ def _ensure_tool(tool):
     # A DOCKER node gets its tools from the swg-node image, which fails its own build unless awg, awg-quick
     # and amneziawg-go are all present — so this should be unreachable there. If it ever is, "re-run the
     # installer" is the wrong instruction: nothing on the host owns those binaries. Pull the image instead.
-    if _IN_CONTAINER:
-        raise AgentError("no_tool", "AmneziaWG tools are missing from this node's container image. Update the "
-                         "node (docker compose pull && docker compose up -d) so it runs a current swg-node "
-                         "image, then this interface creates itself on the next sync.")
     # "Re-run the installer" is the wrong instruction where the installation is declared elsewhere:
-    # there is no installer to re-run, and one that ran would be invisible to the next rebuild. The
-    # read-only unit directory is the signal — a capability, not a distro name (a host whose units we
-    # cannot write is a host whose packages we have no business telling anyone to install by hand).
+    # there is no installer to re-run, and one that ran would be invisible to the next rebuild. ⚠️ THIS
+    # TEST GOES FIRST, above the container one: a declaratively managed node that happens to run in a
+    # container is both, and "docker compose pull" is the half of that it cannot act on.
     # Fixed sentence with nothing interpolated, like its sibling above, so the panel can translate it.
-    if not _units_persist():
+    if _declarative():
         raise AgentError("no_tool", "AmneziaWG tools are not installed on this node, and this node's "
                          "installation is managed declaratively — re-running an installer would not "
                          "survive its next rebuild. Add the AmneziaWG tools to the system configuration "
                          "that declares this node and rebuild it, then this interface creates itself on "
                          "the next sync.")
+    # A DOCKER node gets its tools from the swg-node image, which fails its own build unless awg, awg-quick
+    # and amneziawg-go are all present — so this should be unreachable there. If it ever is, "re-run the
+    # installer" is the wrong instruction: nothing on the host owns those binaries. Pull the image instead.
+    if _IN_CONTAINER:
+        raise AgentError("no_tool", "AmneziaWG tools are missing from this node's container image. Update the "
+                         "node (docker compose pull && docker compose up -d) so it runs a current swg-node "
+                         "image, then this interface creates itself on the next sync.")
     raise AgentError("no_tool", "AmneziaWG tools are not installed on this node. Re-run the swgPanel node "
                      "installer — it builds them from source on any distribution, and falls back to the "
                      "userspace datapath where the kernel module cannot load. Then this interface creates "
@@ -695,6 +710,29 @@ _IN_CONTAINER = os.path.exists("/.dockerenv") or os.path.exists("/run/.container
 
 _UNIT_DIR = "/etc/systemd/system"
 _UNIT_PERSIST = {"v": None}
+
+
+def _declarative():
+    """Is this node's installation DECLARED somewhere else — so a command typed here cannot stick?
+
+    Two signals, because neither alone is enough and the advice is wrong whenever this is:
+
+      · SWG_DECLARATIVE in the environment. nix/modules/node.nix sets it and swg-noded already reads
+        it; it is the only signal that survives the CONTAINER arm. A NixOS host running our image
+        declares the node, but inside that image /etc/systemd/system is an ordinary writable directory
+        on a Debian filesystem — so the probe below says "not declarative" and every message here then
+        names a docker-compose.yml that host does not have.
+      · a unit directory we cannot write — the native arm, and any other immutable-OS layout, where
+        there is no environment of ours to read.
+
+    ⚠️ MESSAGE SELECTION ONLY, and it must be asked BEFORE the container test everywhere it is used:
+    a declaratively managed container is both, and only one of the two answers can be acted on.
+    _iface_unit keeps asking _units_persist() directly — what it needs to know is whether a unit
+    written here would survive, which is a different question with a different right answer.
+    """
+    if (os.environ.get("SWG_DECLARATIVE") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return not _units_persist()
 
 
 def _units_persist():
@@ -883,6 +921,20 @@ def _aa_enforced_tools():
     return sorted(out)
 
 
+# The AppArmor arm's declarative twin, hoisted because TWO paths reach it: a declared host whose
+# policy confines the tools (caught above the container test, since a declared container is both),
+# and the host-policy branch further down.
+_AA_DECLARATIVE = ("this node could not execute the tools that bring an interface up: AppArmor refused to "
+                   "start them, so the bring-up never began. This is not a port or subnet conflict. A "
+                   "confined program may not switch into its child profile while the calling service runs "
+                   "with NoNewPrivileges, and this node's installation is managed declaratively \u2014 so the "
+                   "fix belongs in the system configuration that declares this node, not in a command "
+                   "here: the node daemon must not set NoNewPrivileges, and the AppArmor policy for the "
+                   "WireGuard tools has to allow /run/wireguard so userspace interfaces stay readable. "
+                   "Restart the node daemon once it is in \u2014 a rebuild does not restart it on its own, so "
+                   "the old unit keeps running. Then this interface creates itself on the next sync.")
+
+
 def _denied_error(msg):
     """The AgentError for a bring-up the SYSTEM refused — None when it failed of anything else.
 
@@ -894,11 +946,30 @@ def _denied_error(msg):
     like any other string — see _ensure_tool. That is why none of them names the binary bash named: a path
     is a value, a value bakes the key, and a baked key arrives as English inside a translated page.
 
-    ⚠️ THE CONTAINER ARM COMES FIRST, and not because it is more likely. Its advice has to be actionable
-    where it is given: inside a container the lever is the container's own capability set and compose
-    file, and telling someone to edit host AppArmor policy they cannot reach from in there would be worse
-    than the generic message. Host policy is only diagnosed where host policy can be changed."""
+    ⚠️ THE ARMS ARE ORDERED BY WHAT THE HOST CAN ACT ON, not by likelihood. A node whose installation
+    is DECLARED elsewhere gets configuration, never a command, and that test runs first because such a
+    node may also be a container and only one of those two answers is actionable there. A container
+    comes next: its lever is its own capability set, and host AppArmor policy is not reachable from
+    inside it. Host policy is diagnosed last — only where host policy can be changed."""
     if _EXEC_DENIED_RE.search(msg or ""):
+        aa = _aa_enforced_tools()
+        # ⚠️ ORDER IS THE WHOLE POINT. A declaratively managed node that runs in a container is BOTH, and
+        # only one of the two answers can be acted on there — so that test goes above the container one.
+        # Below it container still beats host policy: `aa-complain` on the host is not something a
+        # process inside a container can reach.
+        if _declarative():
+            if aa:
+                return AgentError("no_exec", _AA_DECLARATIVE)
+            return AgentError("no_exec",
+                              "this node could not execute the tools that bring an interface up: the "
+                              "kernel refused to start them (\"Operation not permitted\"), so the bring-up "
+                              "never began. This is not a port or subnet conflict. This node's installation "
+                              "is managed declaratively, so this belongs in the system configuration that "
+                              "declares it rather than in a command here: the node daemon must not set "
+                              "NoNewPrivileges, and the security policy and capability set that "
+                              "configuration gives this node have to let the WireGuard tools execute. "
+                              "Restart the node daemon once the change is in — a rebuild does not restart "
+                              "it on its own, so the old unit keeps running.")
         if _IN_CONTAINER:
             return AgentError("no_exec",
                               "this node's container could not execute the tools that bring an interface "
@@ -908,7 +979,7 @@ def _denied_error(msg):
                               "for — give the node NET_ADMIN (in docker-compose.yml: cap_add: "
                               "[NET_ADMIN]) and recreate it (docker compose up -d), then this interface "
                               "creates itself on the next sync.")
-        if _aa_enforced_tools():
+        if aa:
             # ⚠️ THE ADVICE HAS TO SURVIVE THE HOST. `aa-complain` is a command, and on a host whose
             # policy and units are declared elsewhere a command is a change that does not stick — the
             # same reason _ensure_tool and the no_module branch each carry a declarative twin. It is
@@ -916,19 +987,6 @@ def _denied_error(msg):
             # And it names the restart on purpose: nix/modules/node.nix sets restartIfChanged to
             # restartOnRebuild, which defaults to FALSE (a restart bounces every client), so a rebuild
             # alone leaves the OLD unit running and the operator with no sign that it did.
-            if not _units_persist():
-                return AgentError("no_exec",
-                                  "this node could not execute the tools that bring an interface up: "
-                                  "AppArmor refused to start them, so the bring-up never began. This is "
-                                  "not a port or subnet conflict. A confined program may not switch into "
-                                  "its child profile while the calling service runs with NoNewPrivileges, "
-                                  "and this node's installation is managed declaratively — so the fix "
-                                  "belongs in the system configuration that declares this node, not in a "
-                                  "command here: the node daemon must not set NoNewPrivileges, and the "
-                                  "AppArmor policy for the WireGuard tools has to allow /run/wireguard so "
-                                  "userspace interfaces stay readable. Restart the node daemon once it is "
-                                  "in — a rebuild does not restart it on its own, so the old unit keeps "
-                                  "running. Then this interface creates itself on the next sync.")
             return AgentError("no_exec",
                               "this node could not execute the tools that bring an interface up: AppArmor "
                               "refused to start them, so the bring-up never began. This is not a port or "
@@ -1119,7 +1177,7 @@ def op_create_iface(cfg, req):
             # the whole difficulty on such a host, so say that rather than a command that will not
             # apply. This message interpolates (kernel release), so it is not catalogue-translated
             # either way and adds no i18n key.
-            if not _units_persist():
+            if _declarative():
                 raise AgentError("no_module",
                                  f"the {mod} kernel module isn't built or loaded on this node (kernel {kr}), "
                                  f"and this node's installation is managed declaratively. Add the module to the "

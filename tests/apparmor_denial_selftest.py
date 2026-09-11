@@ -126,11 +126,19 @@ check("bring-up sites found", wired, 4)
 
 # ── the catalogue: an untranslated sentence reads as English inside a translated page ───────────
 ru = open(os.path.join(ROOT, "js/lang/ru.js")).read()
-fn = next(n for n in ast.walk(ast.parse(src))
-          if isinstance(n, ast.FunctionDef) and n.name == "_denied_error")
-msgs = [a.args[1].value for a in ast.walk(fn)
-        if isinstance(a, ast.Call) and getattr(a.func, "id", "") == "AgentError"]
-check("five arms", len(msgs), 5)   # container · apparmor · apparmor/declarative · general · netlink
+tree = ast.parse(src)
+consts = {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body
+          if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+          and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str)}
+fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_denied_error")
+msgs = []
+for a in ast.walk(fn):
+    if isinstance(a, ast.Call) and getattr(a.func, "id", "") == "AgentError":
+        arg = a.args[1]
+        # an arm reached from two places is a module constant, not a literal — resolve it, or the
+        # count below silently stops seeing it the moment one is hoisted
+        msgs.append(arg.value if isinstance(arg, ast.Constant) else consts[arg.id])
+check("six arms", len(msgs), 6)   # declarative/apparmor · declarative · container · apparmor · general · netlink
 for m in msgs:
     # The sentence IS the key (js/i18n.js srvText), so it must stay interpolation-free — a value baked
     # into it can never be looked up, and the message then arrives as English inside a translated page.
