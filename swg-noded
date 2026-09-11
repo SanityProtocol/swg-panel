@@ -5545,6 +5545,18 @@ _RELAY = {}                            # iface -> per-instance probe state (see 
 _RELAY_ARM = {"sig": None, "since": 0.0, "why": ""}
 
 
+def _relay_iid(iface, peer=""):
+    """The instance id for one relayed LEG: the interface, plus the peer when there is more than one leg.
+
+    ⚠️ FORWARD MODE KEEPS ITS OLD NAME. A whole-interface cascade has exactly one leg, so it stays `<iface>`
+    — which means an upgrade does not rename a unit, move a status socket, or reshuffle a port hash on any
+    node that is relaying today. Smart interfaces, which can route over several legs at once, get
+    `<iface>.<peer>`. systemd instance names take `.` and `-`; they do not take `/`, and no peer id contains
+    one."""
+    peer = (peer or "").strip()
+    return iface + ("." + peer if peer else "")
+
+
 def _relay_unit(iface):
     return "swg-relay@" + iface + ".service"
 
@@ -5587,12 +5599,20 @@ def _relay_sock(iface):
     return "/run/swg-relay-" + iface + ".sock"
 
 
-def _relay_port(iface, plan_port=0):
-    """Deterministic per-interface port. ⚠️ Deterministic because a restart that reshuffles ports leaves the
-    nft rule pointing at a port nothing listens on — armed, and a blackhole."""
+def _relay_port(iid, plan_port=0):
+    """The relay's listen port for one instance.
+
+    ⚠️ THE PANEL IS THE ALLOCATOR. It builds a node's whole set of legs in one place, so it can hand out
+    ports that cannot collide; this function prefers what it sent and only derives one when nothing did.
+    That matters more per-leg than it did per-interface: the fallback has 300 slots, which is ample for one
+    instance per interface and starts colliding around ten (~13%), and a collision means two legs sharing
+    one relay with one of them routed out the wrong exit — silently, because it works.
+
+    ⚠️ Deterministic either way, because a restart that reshuffles ports leaves the nft rule pointing at a
+    port nothing listens on — armed, and a blackhole."""
     if plan_port:
         return int(plan_port)
-    return RELAY_PORT_BASE + (int(hashlib.sha256(iface.encode()).hexdigest()[:4], 16) % 300)
+    return RELAY_PORT_BASE + (int(hashlib.sha256(iid.encode()).hexdigest()[:4], 16) % 300)
 
 
 def _iface_addr(iface):
@@ -5602,7 +5622,7 @@ def _iface_addr(iface):
     return m.group(1) if m else ""
 
 
-def _relay_mss(gw):
+def _relay_mss(gw, mark=0):
     """MSS for the relay's upstream socket, derived from the leg it will actually take.
 
     ⚠️ THE EXIT CANNOT CLAMP THIS CONNECTION AND WILL DROP WHAT IT CANNOT FIT. A forwarded client's SYN
@@ -5615,8 +5635,12 @@ def _relay_mss(gw):
     Sized off the OUTGOING leg's MTU with headroom rather than the exact fit: a packet of exactly the tunnel
     MTU still failed, so the arithmetic that "1380 + 40 == 1420 fits" is not the whole story on the exit's
     GRO/GSO path. Headroom is cheap; the drop is not."""
+    # ⚠️ ASK WITH THE MARK. Under a whole-interface cascade the leg is selected by SOURCE, so the bind
+    # address alone answers correctly. Under a smart cascade it is selected by MARK and the source selects
+    # nothing — so without this the kernel answers with the node's own default route and the MSS is sized
+    # off the wrong interface, which is precisely the ~12% silent drop this function exists to prevent.
     dev = ""
-    out = run(["ip", "route", "get", "1.1.1.1", "from", gw]).stdout or ""
+    out = run(["ip", "route", "get", "1.1.1.1", "from", gw] + (["mark", str(mark)] if mark else [])).stdout or ""
     m = re.search(r"\bdev (\S+)", out)
     if m:
         dev = m.group(1)
@@ -5671,10 +5695,18 @@ def _relay_cpu(iface, pid, now):
 
 
 def _relay_diverted():
-    """Packets the tproxy rule has taken, summed over every armed subnet. 0 when nothing is armed.
+    """Packets each instance's tproxy rule has taken -> {iid: packets}. None if the table cannot be read.
 
     The `socket transparent` rule matches packets belonging to a connection the relay ALREADY holds, so the
-    tproxy rule is very nearly "new connection attempts" — which is exactly what should turn into accepts."""
+    tproxy rule is very nearly "new connection attempts" — which is exactly what should turn into accepts.
+
+    ⚠️ PER INSTANCE, NOT A TOTAL. Summing was correct while a node relayed at most one leg, and the moment
+    it relays two a total judges every leg by every other leg's traffic. The damage is not the obvious way
+    round: a STARVED leg is caught either way, because its accept counter is per-instance and stays flat. It
+    is an IDLE leg that a total ruins — a busy neighbour's packets inflate the number it is judged by, so the
+    watchdog pulls a divert that was working and drops every live connection on a leg with nothing wrong
+    with it. The rules carry a comment naming their instance for exactly this, so the two must change
+    together — hence _relay_rule_tag."""
     r = run(["nft", "-j", "list", "table", "inet", RELAY_TABLE])
     if r.returncode != 0:
         return None
@@ -5682,18 +5714,23 @@ def _relay_diverted():
         obj = json.loads(r.stdout or "{}")
     except ValueError:
         return None
-    total = 0
+    out = {}
     for item in (obj.get("nftables") or []):
         rule = (item or {}).get("rule") or {}
         if rule.get("chain") != "pre":
             continue
+        tag = str(rule.get("comment") or "")
+        if not tag.startswith(RELAY_RULE_TAG):
+            continue                                  # the socket-transparent rule, or something not ours
         expr = rule.get("expr") or []
         if not any("tproxy" in e for e in expr if isinstance(e, dict)):
             continue
+        n = 0
         for e in expr:
             if isinstance(e, dict) and "counter" in e:
-                total += int((e["counter"] or {}).get("packets") or 0)
-    return total
+                n += int((e["counter"] or {}).get("packets") or 0)
+        out[tag[len(RELAY_RULE_TAG):]] = out.get(tag[len(RELAY_RULE_TAG):], 0) + n
+    return out
 
 
 def _relay_probe(iface, now):
@@ -5737,7 +5774,11 @@ def _relay_probe(iface, now):
     # So compare the two counters that must move together. Packets taken by the tproxy rule are new
     # connection attempts; accepts are what became of them. Diverting more and more while accepting none,
     # twice running, is not a slow client — it is traffic going nowhere.
-    dv, dv_prev = _relay_diverted(), st.get("diverted")
+    _all = _relay_diverted()
+    # ⚠️ `None` (cannot read the table) and "armed but nothing diverted yet" are different answers, and only
+    # the second is a number. Treating a failed read as 0 would make the check below pass by accident.
+    dv = None if _all is None else int(_all.get(iface, 0))
+    dv_prev = st.get("diverted")
     if dv is not None:
         st["diverted"] = dv
     ac, ac_prev = s.get("accepted") or 0, st.get("accepted")
@@ -5755,6 +5796,14 @@ def _relay_probe(iface, now):
     return True, "", s
 
 
+RELAY_RULE_TAG = "swg-relay:"
+
+
+def _relay_rule_tag(iid):
+    """How a divert rule says which instance it feeds. Read back by _relay_diverted; keep the two together."""
+    return RELAY_RULE_TAG + iid
+
+
 def _relay_nft(entries):
     """The nft script for the whole table, rebuilt from scratch — one atomic `nft -f`, like the smart chains.
 
@@ -5766,13 +5815,31 @@ def _relay_nft(entries):
          "table inet %s {" % RELAY_TABLE,
          "  chain pre {",
          "    type filter hook prerouting priority %d; policy accept;" % RELAY_HOOK_PRI]
+    # ⚠️ ONE `socket transparent` RULE PER SUBNET, AND IT IS NOT SCOPED BY MARK — the least obvious line in
+    # this function. It exists to keep packets of an ALREADY relayed connection reaching the socket we hold.
+    # A smart mark is recomputed per packet from set membership, and Hybrid SNI adds learned IPs mid-flight,
+    # so a mark-scoped rule would stop matching and break a live connection mid-stream. A successful socket
+    # lookup is anyway a stronger statement than the mark was: it proves the packet belongs to a connection
+    # WE accepted. The source scoping stays, and that is what keeps us off another product's transparent
+    # sockets (rw-core runs its own divert on these boxes).
+    for S in sorted({e["subnet"] for e in entries}):
+        L.append("    ip saddr %s meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))
     for e in entries:
         S, port = e["subnet"], e["port"]
-        L.append("    ip saddr %s meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))
         # ⚠️ THE COUNTER IS LOAD-BEARING, not observability. It is the only way to tell a divert that is
         # carrying nothing from one that is carrying traffic into a relay which never accepts it — and the
         # second is a blackhole that every other signal reads as healthy. See _relay_diverted.
-        L.append("    ip saddr %s meta l4proto tcp tproxy ip to :%d counter meta mark set 0x%x accept" % (S, port, RELAY_MARK))
+        # ⚠️ SCOPED BY MARK WHEN THERE IS ONE. A whole-interface cascade sends everything from the subnet
+        # down one leg, so the source says it all and `mark` is 0. A smart cascade splits the subnet across
+        # legs and a direct path, and the ONLY thing that distinguishes them is the mark swg_smart has
+        # already set by the time this chain runs (mangle for it, mangle+10 for us). Matching the source
+        # alone there would divert traffic that was routed somewhere else entirely.
+        _m = ("meta mark 0x%x " % e["mark"]) if e.get("mark") else ""
+        # ⚠️ THE COMMENT IS LOAD-BEARING. `_relay_diverted` reads these counters back PER INSTANCE: summing
+        # the table instead would let a busy healthy leg keep the total climbing while another leg accepted
+        # nothing, which is exactly the blackhole the accept-vs-divert check exists to catch.
+        L.append('    ip saddr %s %smeta l4proto tcp tproxy ip to :%d counter meta mark set 0x%x accept comment "%s"'
+                 % (S, _m, port, RELAY_MARK, _relay_rule_tag(e["iid"])))
     # ⚠️ AND THE PORT ITSELF IS CLOSED. The relay listens on 0.0.0.0 because a transparent socket must be
     # able to receive packets addressed to ANY destination — so without this the port is reachable from
     # anywhere that can reach the node, and one ordinary TCP connect to it drives the relay into dialling
@@ -5810,11 +5877,67 @@ def _relay_note(state, why=""):
     print("relay divert %s%s" % (state, (" — " + why) if why else ""), flush=True)
 
 
+def _relay_shadowed(entries, rules):
+    """Legs whose mark-based routing a source rule would silently outrank -> {iid: reason}.
+
+    ⚠️ MEASURED, NOT ASSUMED (2026-09-11, swgt). `ip rule` uses *priority == table number* for both kinds,
+    so `from <subnet> lookup T'` is consulted before `fwmark T lookup T` whenever T' < T — and the relay's
+    upstream is sourced from that very subnet on purpose, because --bind puts it there so the EXIT's SNAT
+    matches. On a node whose wg8 forwards to table 7001:
+
+        mark 0    from 10.18.0.1 -> table 7001      the source rule
+        mark 7000 from 10.18.0.1 -> table 7000      the mark won
+        mark 7002 from 10.18.0.1 -> table 7001      the mark LOST
+
+    A smart interface has no such rule — the panel's `scope:"rule"` exists to stop a per-category rule
+    installing one — so this should never fire. It is here because the failure if it ever does is silent and
+    wrong in the worst way: the relay terminates the connection and sends it out ANOTHER EXIT, which works,
+    so nobody notices. Refusing the leg with a reason is the only honest answer."""
+    src = []
+    for l in rules:
+        m = re.match(r"^(\d+):\s+from ([0-9./]+) lookup (\d+)\b", l.strip())
+        if m and m.group(2) != "all":
+            src.append((int(m.group(1)), m.group(2), int(m.group(3))))
+    out = {}
+    for e in entries:
+        T = int(e.get("mark") or 0)
+        if not T:
+            continue                          # no mark, no mark rule to shadow — forward mode is unaffected
+        try:
+            net = ipaddress.ip_network(e["subnet"], strict=False)
+        except ValueError:
+            continue
+        for pri, s_net, tbl in src:
+            if pri >= T:
+                continue                      # consulted after our mark rule; cannot shadow it
+            try:
+                other = ipaddress.ip_network(s_net, strict=False)
+            except ValueError:
+                continue
+            if other.subnet_of(net) or net.subnet_of(other):
+                out[e["iid"]] = ("routing for %s is claimed by rule %d (from %s lookup %d), which is "
+                                 "consulted before this leg's table %d" % (e["subnet"], pri, s_net, tbl, T))
+                break
+    return out
+
+
 def _relay_arm(entries, res):
     """Routing half FIRST, nft half LAST — see the ordering warning at the top of this section."""
     run(["ip", "route", "replace", "local", "default", "dev", "lo", "table", str(RELAY_RT)])
+    _rules = (run(["ip", "rule", "show"]).stdout or "").splitlines()
+    # the same read answers both questions, so the precondition costs nothing extra
+    bad = _relay_shadowed(entries, _rules)
+    if bad:
+        entries = [e for e in entries if e["iid"] not in bad]
+        for iid, whyx in sorted(bad.items()):
+            _RELAY.setdefault(iid, {})["ok"] = False
+            _RELAY[iid]["why"] = whyx
+            res["errors"].append("relay %s: %s" % (iid, whyx))
+        if not entries:
+            _relay_disarm(res)
+            return False
     have = any(("fwmark 0x%x" % RELAY_MARK) in l and ("lookup %d" % RELAY_RT) in l
-               for l in (run(["ip", "rule", "show"]).stdout or "").splitlines())
+               for l in _rules)
     if not have:
         run(["ip", "rule", "add", "fwmark", str(RELAY_MARK), "lookup", str(RELAY_RT),
              "priority", str(RELAY_RT)])
@@ -5879,7 +6002,7 @@ PartOf=swg-noded.service
 [Service]
 Type=simple
 EnvironmentFile=/etc/swg-panel/relay/%i.env
-ExecStart=RELAY_BIN_PATH --port ${RELAY_PORT} --bind ${RELAY_BIND} --cc ${RELAY_CC_UP} --cc-cli ${RELAY_CC_CLI} --mss ${RELAY_MSS} --status-sock ${RELAY_SOCK} --report 300
+ExecStart=RELAY_BIN_PATH --port ${RELAY_PORT} --bind ${RELAY_BIND} --mark ${RELAY_MARK} --cc ${RELAY_CC_UP} --cc-cli ${RELAY_CC_CLI} --mss ${RELAY_MSS} --status-sock ${RELAY_SOCK} --report 300
 Restart=always
 RestartSec=2
 CPUAccounting=yes
@@ -5907,8 +6030,12 @@ def _relay_slice_text(quota_pct):
 
 
 def _relay_env_text(iface, e):
+    # RELAY_MARK is 0 for a whole-interface cascade — the leg is picked by source there, and passing no mark
+    # keeps that path byte-identical to what is running on real fleets today.
     return ("RELAY_PORT=%d\nRELAY_BIND=%s\nRELAY_SOCK=%s\nRELAY_CC_UP=%s\nRELAY_CC_CLI=%s\nRELAY_MSS=%d\n"
-            % (e["port"], e["gw"], _relay_sock(iface), e.get("cc_up", ""), e.get("cc_cli", ""), e.get("mss") or 0))
+            "RELAY_MARK=%d\n"
+            % (e["port"], e["gw"], _relay_sock(iface), e.get("cc_up", ""), e.get("cc_cli", ""), e.get("mss") or 0,
+               int(e.get("mark") or 0)))
 
 
 def _relay_write(path, text, dry=False):
@@ -5944,7 +6071,10 @@ def _relay_docker_cpus(quota_pct, n):
 
 def _relay_docker_spec(iface, e, cpus):
     """Everything that decides whether the container must be recreated, as one comparable string."""
+    # ⚠️ EVERY ARG THAT REACHES THE PROCESS BELONGS HERE. A value missing from this string is a setting the
+    # operator changes and the container never picks up, because nothing decided it had to be recreated.
     return json.dumps({"img": SWG_TURN_IMAGE, "cpus": cpus, "port": e["port"], "bind": e["gw"],
+                       "mark": int(e.get("mark") or 0),
                        "mss": e.get("mss") or 0, "cc": e.get("cc_up", ""), "cli": e.get("cc_cli", "")},
                       sort_keys=True)
 
@@ -5988,7 +6118,8 @@ def _relay_supervise_docker(want, quota_pct, res):
                  "--log-opt", "max-size=10m", "--log-opt", "max-file=3",
                  "-v", host_dir + ":" + RELAY_DIR_LOCAL,
                  "--entrypoint", "python3", SWG_TURN_IMAGE, staged,
-                 "--port", str(e["port"]), "--bind", e["gw"], "--cc", e.get("cc_up", ""),
+                 "--port", str(e["port"]), "--bind", e["gw"], "--mark", str(int(e.get("mark") or 0)),
+                 "--cc", e.get("cc_up", ""),
                  "--cc-cli", e.get("cc_cli", ""), "--mss", str(e.get("mss") or 0),
                  "--status-sock", _relay_sock(iface), "--report", "300"], timeout=60)
         if r.returncode != 0:
@@ -6059,9 +6190,16 @@ def reconcile_relay(plan, res, sync_ok=True):
     whole guarantee, and a divert re-proven once a minute is a blackhole with a minute of runway.
 
     `plan` (absent/empty => the feature is OFF, everything torn down):
-        {"ifaces": {"<iface>": {"subnet": "10.9.0.0/24", "gw": "10.9.0.1",
-                                "cc_cli": "", "cc_up": "", "port": 0}},
+        {"legs": [{"iface": "awg2", "peer": "e08fb18c67da", "subnet": "10.9.0.0/24", "gw": "10.9.0.1",
+                   "mark": 7002, "port": 5629, "cc_cli": "", "cc_up": ""}],
          "quota_pct": 50, "max_conns": 0}
+
+    ⚠️ `mark: 0` MEANS A WHOLE-INTERFACE CASCADE and keeps that path byte-identical on the wire: no mark in
+    the divert, no `--mark` on the process, the instance still named `<iface>`. The forward path is the one
+    live on real fleets, so it changes only when something deliberately opts in.
+
+    The older `{"ifaces": {...}}` shape is still accepted — a node can be newer than its panel, and the
+    upgrade must not take the datapath away from a fleet mid-roll.
     """
     plan = plan or {}
     # A node that cannot run the relay at all drops the plan rather than retrying forever. The panel already
@@ -6069,17 +6207,34 @@ def reconcile_relay(plan, res, sync_ok=True):
     if not _relay_capable()[0]:
         plan = {}
     _RELAY_ARM["booted"] = _RELAY_ARM.get("booted", False)
-    want = {i: dict(e) for i, e in (plan.get("ifaces") or {}).items() if e.get("subnet")}
+    legs = plan.get("legs")
+    if legs is None:                                   # panel older than the per-leg contract
+        legs = [dict(e, iface=i) for i, e in (plan.get("ifaces") or {}).items()]
+    want = {}
+    for e in legs:
+        e = dict(e or {})
+        if not e.get("subnet") or not e.get("iface"):
+            continue
+        e["mark"] = int(e.get("mark") or 0)
+        e["iid"] = _relay_iid(e["iface"], e.get("peer", ""))
+        # ⚠️ TWO LEGS CANNOT SHARE AN INSTANCE. A panel that sent the same (iface, peer) twice would have
+        # the second silently replace the first; refuse instead, because "one of your legs is not relayed"
+        # is the kind of thing that is only noticed as unexplained loss.
+        if e["iid"] in want:
+            res["errors"].append("relay %s: two legs claim the same instance" % e["iid"])
+            continue
+        want[e["iid"]] = e
     for i, e in list(want.items()):
         # ⚠️ THE BIND ADDRESS IS DERIVED HERE, NOT SHIPPED. It is the node's own address on the interface —
         # purely local knowledge that cannot drift, and the panel getting it wrong would break the upstream
         # silently (see Relay.start). The panel may still override it, but it never has to know it.
-        e["gw"] = (e.get("gw") or "").strip() or _iface_addr(i)
+        e["gw"] = (e.get("gw") or "").strip() or _iface_addr(e["iface"])
         if not e["gw"]:
             res["errors"].append("relay %s: no local address on the interface, cannot bind upstream" % i)
             want.pop(i); continue
         e["port"] = _relay_port(i, e.get("port") or 0)
-        e["mss"] = int(e.get("mss") or 0) or _relay_mss(e["gw"])   # panel may pin it; otherwise derive from the leg
+        # the leg the upstream will take is a function of the bind address AND the mark — see _relay_mss
+        e["mss"] = int(e.get("mss") or 0) or _relay_mss(e["gw"], e["mark"])
     if not sync_ok:
         # ⚠️ A PANEL OUTAGE MUST NOT CHANGE THE DATAPATH. This used to converge to forward after a few failed
         # syncs, on the theory that forward is the safe state. It is the safe state, but converging to it is
@@ -6130,7 +6285,9 @@ def reconcile_relay(plan, res, sync_ok=True):
         _RELAY.setdefault(iface, {})["ok"] = ok
         _RELAY[iface]["why"] = reason
         if ok:
-            entries.append({"subnet": want[iface]["subnet"], "port": want[iface]["port"], "iface": iface})
+            entries.append({"subnet": want[iface]["subnet"], "port": want[iface]["port"],
+                            "iface": want[iface]["iface"], "peer": want[iface].get("peer", ""),
+                            "mark": want[iface]["mark"], "iid": iface})
         elif reason:
             why.append(iface + ": " + reason)
 
@@ -6151,7 +6308,7 @@ def reconcile_relay(plan, res, sync_ok=True):
             _RELAY_ARM["why"] = "; ".join(why)
             # name the interfaces AND the ports: "armed" alone does not say what a client's TCP is now
             # depending on, and that is the fact an operator needs when the answer is "nothing loads".
-            _relay_note("ARMED", ", ".join("%s -> :%d" % (e["iface"], e["port"]) for e in entries)
+            _relay_note("ARMED", ", ".join("%s -> :%d" % (e["iid"], e["port"]) for e in sorted(entries, key=lambda x: x["iid"]))
                                  + ("; excluded " + "; ".join(why) if why else ""))
         else:
             _RELAY_ARM["sig"] = None

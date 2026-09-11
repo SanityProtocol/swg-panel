@@ -126,8 +126,10 @@ check("…and says WHY", re.search(r'\(" — " \+ why\) if why else ""', arm) is
 check("…once, not every pass", '_RELAY_ARM.get("noted")' in arm and "if prev == now:" in arm)
 body = noded[noded.index("def _relay_note("):]
 check("⚠️ the ARM path records it", re.search(r'_relay_note\("ARMED"', body) is not None)
-check("…naming the interfaces and ports a client now depends on",
-      re.search(r'_relay_note\("ARMED",[^)]*e\["iface"\][^)]*e\["port"\]', body, re.S) is not None)
+# ⚠️ the INSTANCE, not the interface — one interface can carry two relayed legs under a smart cascade, and
+# naming the interface would print the same name twice with different ports.
+check("…naming the instances and ports a client now depends on",
+      re.search(r'_relay_note\("ARMED",[^)]*e\["iid"\][^)]*e\["port"\]', body, re.S) is not None)
 check("…and every DISARM path records it too",
       len(re.findall(r'_relay_note\("DISARMED"', body)) >= 2, "a disarm that is not logged is the same blind spot")
 check("…including the one where arming itself failed",
