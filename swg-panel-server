@@ -13354,12 +13354,9 @@ def _relay_ineligible(ov, mark=0, up_table=0):
     one subnet across several legs and a direct path. The divert is keyed on the leg's MARK now, which is
     what the routing engine already wrote on the packet, so the question has an answer and this bar is gone.
     The function stays: it is where the next real bar goes."""
-    if up_table and not (SWG_RT_BASE <= up_table <= SWG_RT_MAX):
-        # The same failure as below, one layer out: a leg named by a table we do not route to is a leg no
-        # rule on the node looks up, so the relay's own connection falls back to its bind address — and for
-        # a SMART leg there is no source rule behind it, so it leaves by this node's own uplink instead of
-        # the exit the operator chose. That WORKS, which is why nothing else would ever say so.
-        return "its upstream table (%d) is outside the %d-%d band" % (up_table, SWG_RT_BASE, SWG_RT_MAX)
+    # ⚠️ THE DIVERT'S MARK IS JUDGED FIRST. A smart leg passes the same table as both, so with the
+    # upstream arm first an out-of-band table was reported as "its upstream table …" when the thing that is
+    # actually wrong is the leg itself — the operator told which half is broken, and told the wrong one.
     if mark and not (SWG_RT_BASE <= mark <= SWG_RT_MAX):
         # ⚠️ SILENT IF MISSED, WHICH IS WHY IT IS HERE. A divert matching a mark outside the band the
         # routing engine allocates from matches something nothing ever sets: the traffic is not diverted,
@@ -13368,6 +13365,12 @@ def _relay_ineligible(ov, mark=0, up_table=0):
         # operator turned Relay on to hide is still there. `cascade_plan` cannot issue such a table today;
         # this is the assertion that keeps that true rather than assuming it.
         return "its routing table (%d) is outside the %d-%d band" % (mark, SWG_RT_BASE, SWG_RT_MAX)
+    if up_table and not (SWG_RT_BASE <= up_table <= SWG_RT_MAX):
+        # The same failure as below, one layer out: a leg named by a table we do not route to is a leg no
+        # rule on the node looks up, so the relay's own connection falls back to its bind address — and for
+        # a SMART leg there is no source rule behind it, so it leaves by this node's own uplink instead of
+        # the exit the operator chose. That WORKS, which is why nothing else would ever say so.
+        return "its upstream table (%d) is outside the %d-%d band" % (up_table, SWG_RT_BASE, SWG_RT_MAX)
     return ""
 
 
@@ -13456,12 +13459,11 @@ def relay_plan(nodes, plans, nid, snaps):
     port allocator hands out the node's own hash first — the same port it is listening on right now. The
     forward path is the one live on real fleets; nothing about it may move because smart gained a feature.
 
-    ⚠️ AND `ifaces` IS STILL EMITTED, carrying the forward legs only. A node OLDER than this panel reads
-    that key and nothing else — it has never heard of `legs` — so dropping it would have torn the relay down
-    on every currently-accelerated node the moment its panel updated, which is the wrong way round: panels
-    update first and nodes self-update on their own schedule. A node that understands `legs` ignores it
-    (`legs` present, even empty, wins), and an old node can only do what is in there anyway, since a
-    mark-keyed divert is exactly the thing it cannot build.
+    ⚠️ `ifaces` IS EMITTED ONLY TO A NODE THAT HAS NOT SAID IT READS `legs`. A node OLDER than this panel
+    reads that key and nothing else — it has never heard of `legs` — so dropping it outright would have torn
+    the relay down on every currently-accelerated node the moment its panel updated, which is the wrong way
+    round: panels update first and nodes self-update on their own schedule. A node that advertises the new
+    contract is sent `legs` alone, so the old map has a way to stop being sent rather than being permanent.
 
     Inert by construction: no link switched to `relay` ⇒ {} ⇒ the node tears everything down."""
     node = nodes.get(nid) or {}
@@ -13492,7 +13494,14 @@ def relay_plan(nodes, plans, nid, snaps):
     for iid in sorted(want):
         e, r = want[iid]
         if iid not in ports:
-            continue                          # every slot in the window taken; see _relay_ports
+            # ⚠️ AND THIS ONE IS NOT REPORTED ANYWHERE, WHICH IS A DELIBERATE LIMIT, NOT AN OVERSIGHT. Every
+            # other refusal reaches the operator through `relay_eligibility`, which the Connection sheet
+            # reads directly — but ports are allocated HERE, over the legs whose links are switched on, and
+            # eligibility is computed before any of that is known. It needs all 300 slots in the window
+            # taken, i.e. 300 relayed legs on ONE node; below that `_relay_ports` cannot fail. If it ever
+            # does, the leg is simply absent from the plan and the sheet reads "waiting for the node".
+            continue
+
         legs.append({"iface": e["iface"], "peer": e["peer"], "subnet": e["subnet"],
                      "mark": e["mark"], "up_table": e.get("up_table") or 0, "port": ports[iid],
                      "cc_cli": (r.get("cc_cli") or "").strip(),

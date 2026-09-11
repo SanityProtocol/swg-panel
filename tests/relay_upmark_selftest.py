@@ -68,9 +68,9 @@ def cut(src, a, b, why):
 if P_BAND:      # the collision the band exists to avoid: name the leg with the table itself
     nsrc = cut(nsrc, "    return SWG_RT_UP_BASE + (t - SWG_RT_BASE) if SWG_RT_BASE <= t <= SWG_RT_MAX else 0",
                "    return t if SWG_RT_BASE <= t <= SWG_RT_MAX else 0", "node up_mark")
-if P_GUARD:     # the leg named but its rule never installed
-    nsrc = cut(nsrc, '            if not any(re.match(r"^\\s*%d:\\s+.*fwmark (0x%x|%d)\\b.*lookup \\d+" % (T, T, T), l) for l in rules):',
-               "            if False:", "upstream rule guard")
+if P_GUARD:     # the shape it was first written in: refuse on the rule's ABSENCE, not on where it would go
+    nsrc = cut(nsrc, "            if _falls_to == _want_tbl:\n                continue",
+               "            if False:\n                continue", "guard falls-to")
 if P_SOMARK:
     nsrc = cut(nsrc, 'int(e.get("up") or 0)))', 'int(e.get("mark") or 0)))', "env so_mark")
 if P_DIVERT:
@@ -221,21 +221,37 @@ check("…while a table we do NOT route to is refused with a reason",
       bool(P._relay_ineligible({}, 0, 6890)) and bool(P._relay_ineligible({}, 0, N.SWG_RT_MAX + 1)),
       "a leg no rule looks up leaves by this node's own uplink instead — it WORKS, so nothing would say so")
 
-print("\n[9b] ⚠️ …and a leg whose rule was never installed is REFUSED, not armed")
+print("\n[9b] ⚠️ …and a missing rule is judged by WHERE THE PACKET WOULD GO, not by the rule's absence")
 # MEASURED on msk-main: `from 10.8.0.1 mark 6999` (a mark with no rule) resolves to `via 201.24.126.1 dev
 # eth0` — the node's own uplink. A smart leg has no source rule behind it, so the relay would re-originate
 # out the ENTRY node's address instead of the exit. That works, so nothing else would ever report it.
-_R_OK = ["0:\tfrom all lookup local",
-         "%d:\tfrom all fwmark 0x%x lookup 7000" % (N._up_mark(7000), N._up_mark(7000)),
+# ⚠⚠ THE FIRST VERSION OF THIS GUARD ASKED "IS THE RULE THERE" AND REFUSED A HEALTHY CASCADE. A
+# whole-interface cascade binds inside a subnet its own `from S lookup T` rule already claims, so a missing
+# upstream rule changes nothing for it — the packet still takes that table. Refusing it tore the divert down
+# and dropped every relayed connection on a leg that was routing perfectly. Worse, it was demonstrated ON a
+# cascade and read as the guard working, because the traffic kept flowing — which is exactly WHY it should
+# not have been refused. MEASURED on msk-main with pref 6891 deleted: `from 10.18.0.1 mark 6891` still
+# resolved to `dev swg_93c2fdf8 table 7001`.
+_FWD_SRC = "7001:\tfrom 10.18.0.0/24 lookup 7001"
+_R_OK = ["0:\tfrom all lookup local", _FWD_SRC,
+         "%d:\tfrom all fwmark 0x%x lookup 7001" % (N._up_mark(7001), N._up_mark(7001)),
          "32766:\tfrom all lookup main"]
-check("a leg whose rule is installed arms",
-      N._relay_shadowed([{"iid": "a", "subnet": "10.8.0.0/24", "mark": N._up_mark(7000)}], _R_OK) == {})
-_miss = N._relay_shadowed([{"iid": "a", "subnet": "10.8.0.0/24", "mark": N._up_mark(7001)}], _R_OK)
-check("⚠️ …and one whose rule is MISSING does not", "a" in _miss, _miss)
-check("…saying what would happen instead", _miss and "this node's address" in _miss["a"], _miss)
-check("…and a whole-interface cascade is unaffected either way",
-      N._relay_shadowed([{"iid": "a", "subnet": "10.18.0.0/24", "mark": 0}], _R_OK) == {},
-      "its source rule catches the upstream, which is what it has always done")
+_R_NO = ["0:\tfrom all lookup local", _FWD_SRC, "32766:\tfrom all lookup main"]
+def _sh(subnet, up, rules):
+    return N._relay_shadowed([{"iid": "a", "subnet": subnet, "mark": up}], rules)
+check("a leg whose rule is installed arms", _sh("10.18.0.0/24", N._up_mark(7001), _R_OK) == {})
+check("⚠️ a CASCADE whose rule is missing but names its OWN leg still arms",
+      _sh("10.18.0.0/24", N._up_mark(7001), _R_NO) == {},
+      "the source rule answers with the same table — same answer, nothing is wrong")
+_other = _sh("10.18.0.0/24", N._up_mark(7000), _R_NO)
+check("⚠️ …but one naming ANOTHER leg is refused", "a" in _other, _other)
+check("…saying which table would answer instead", _other and "table 7001" in _other["a"], _other)
+_smart = _sh("10.8.0.0/24", N._up_mark(7000), _R_NO)
+check("⚠️ a SMART leg with no source rule behind it is refused", "a" in _smart, _smart)
+check("…saying it would leave by this node's own address",
+      _smart and "this node's own address" in _smart["a"], _smart)
+check("…and a leg with no upstream mark at all is untouched",
+      _sh("10.18.0.0/24", 0, _R_NO) == {}, "mark 0 is a panel too old to name a leg")
 
 print("\n[10] the two halves the fixtures above route around")
 # ⚠️ WRITTEN BECAUSE TWO PERTURBATIONS PASSED WITH ZERO CHECKS RED. `_relay_nft` is fed a hand-built

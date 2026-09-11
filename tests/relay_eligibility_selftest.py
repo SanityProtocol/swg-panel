@@ -260,6 +260,14 @@ _bad_legs = [{"subnet": "10.19.0.0/24", "peer": "n2", "mark": P.SWG_RT_MAX + 7}]
 _e3 = P.relay_eligibility(_nodes["n1"], SNAP, "n1", _bad_legs)
 check("…and it reaches the operator as a `why`, not as silence",
       list(_e3) == ["wg9.n2"] and _e3["wg9.n2"]["why"], _e3)
+# ⚠️ AND IT MUST NAME THE HALF THAT IS ACTUALLY BROKEN. A smart leg passes the same table as both the
+# divert mark and the upstream, so with the upstream arm judged first an out-of-band table was reported as
+# "its upstream table …" when the leg itself is what is wrong. Asserting only that SOME reason exists
+# passes either way, which is how it got through.
+check("⚠️ …naming the leg's own table, not its upstream",
+      "routing table" in _e3["wg9.n2"]["why"] and "upstream" not in _e3["wg9.n2"]["why"], _e3["wg9.n2"]["why"])
+check("…while a bad UPSTREAM alone is reported as the upstream",
+      "upstream" in P._relay_ineligible({}, 7001, P.SWG_RT_MAX + 7), P._relay_ineligible({}, 7001, P.SWG_RT_MAX + 7))
 _plans = P.cascade_plan(_nodes, SNAP)
 _plans["n1"]["_legs"] = _bad_legs
 _p3 = P.relay_plan(_nodes, _plans, "n1", SNAP)

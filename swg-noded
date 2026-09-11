@@ -6090,22 +6090,49 @@ def _relay_shadowed(entries, rules):
         T = int(e.get("mark") or 0)
         if not T:
             continue                          # no mark, no mark rule to shadow — forward mode is unaffected
-        if SWG_RT_UP_BASE <= T <= SWG_RT_UP_MAX:
-            # ⚠️ NOTHING CAN OUTRANK IT — BUT IT HAS TO EXIST. A mark whose rule is missing is not routed by
-            # it: the lookup falls through, and for a SMART leg there is no source rule behind it to catch
-            # the packet. MEASURED on msk-main — `from 10.8.0.1 mark 6999` (a mark with no rule) resolves to
-            # `via 201.24.126.1 dev eth0`, the node's own uplink. So the relay would re-originate the
-            # connection out the ENTRY node's address instead of the exit the operator chose, which is the
-            # single thing an exit exists to prevent, and it WORKS, so nothing else would ever say so. The
-            # cascade installs one rule per leg on the same pass that hands us this plan; asserting it is
-            # free, because `rules` is the `ip rule show` this function was already given.
-            if not any(re.match(r"^\s*%d:\s+.*fwmark (0x%x|%d)\b.*lookup \d+" % (T, T, T), l) for l in rules):
-                out[e["iid"]] = ("this leg's routing rule (fwmark %d) is not installed, so the relay's own "
-                                 "connection would leave by this node's address instead of the exit" % T)
-            continue
         try:
             net = ipaddress.ip_network(e["subnet"], strict=False)
         except ValueError:
+            continue                          # both arms below ask which source rules overlap this subnet
+        if SWG_RT_UP_BASE <= T <= SWG_RT_UP_MAX:
+            # ⚠️ NOTHING CAN OUTRANK IT — BUT IT HAS TO EXIST, and what happens when it does not depends on
+            # what is BEHIND it. The lookup falls through to whatever matches next:
+            #
+            #   · a SMART leg has no source rule at all, so the upstream lands on the node's own uplink.
+            #     MEASURED on msk-main — `from 10.8.0.1 mark 6999` resolves to `via 201.24.126.1 dev eth0`.
+            #     The relay would re-originate out the ENTRY node's address instead of the chosen exit.
+            #   · a whole-interface CASCADE binds inside a subnet its own `from S lookup T` rule already
+            #     claims, so the upstream still takes that table — and while the leg it names IS that table,
+            #     that is the same answer and there is nothing wrong. MEASURED the same way: with pref 6891
+            #     deleted, `from 10.18.0.1 mark 6891` still resolved to `dev swg_93c2fdf8 table 7001`.
+            #
+            # ⚠️ SO THE QUESTION IS NOT "IS THE RULE THERE", IT IS "WOULD THE PACKET STILL GO WHERE THIS LEG
+            # SAYS". Asking the first one refused a healthy cascade and tore its divert down — dropping every
+            # relayed connection on a leg that was routing perfectly — and it was demonstrated ON a cascade
+            # and read as the guard working, because the traffic kept flowing. It kept flowing BECAUSE the
+            # leg should not have been refused.
+            #
+            # And the distinction still earns its keep the moment an upstream is pointed somewhere its
+            # interface's own traffic does not go: then the source rule answers with the WRONG table, which
+            # is the silent wrong-exit this guard exists for.
+            if any(re.match(r"^\s*%d:\s+.*fwmark (0x%x|%d)\b.*lookup \d+" % (T, T, T), l) for l in rules):
+                continue                      # installed; nothing below it can be consulted
+            _want_tbl = T - SWG_RT_UP_BASE + SWG_RT_BASE
+            _falls_to = None
+            for pri, s_net, tbl in src:
+                try:
+                    other = ipaddress.ip_network(s_net, strict=False)
+                except ValueError:
+                    continue
+                if other.subnet_of(net) or net.subnet_of(other):
+                    _falls_to = tbl
+                    break
+            if _falls_to == _want_tbl:
+                continue                      # a source rule sends it to the SAME leg — same answer, no harm
+            out[e["iid"]] = ("this leg's routing rule (fwmark %d) is not installed, so the relay's own "
+                             "connection would leave by %s instead of table %d"
+                             % (T, ("table %d" % _falls_to) if _falls_to else "this node's own address",
+                                _want_tbl))
             continue
         for pri, s_net, tbl in src:
             if pri >= T:
@@ -6336,11 +6363,11 @@ def _relay_supervise_docker(want, quota_pct, res):
                  "--log-opt", "max-size=10m", "--log-opt", "max-file=3",
                  "-v", host_dir + ":" + RELAY_DIR_LOCAL,
                  "--entrypoint", "python3", SWG_TURN_IMAGE, staged,
-                 # ⚠️ THE UPSTREAM MARK, exactly as the systemd unit passes it. These two run-models
-                 # implement ONE contract, and the first thing that happened when they diverged is that a
-                 # container node never asked for its leg by name while `_relay_shadowed` — which is now
-                 # asked about `up` — skipped it as in-band and stopped guarding the mark it was actually
-                 # running with. Two halves of one feature is how this codebase's kinds drift apart.
+                 # ⚠️ THE UPSTREAM MARK (derived from the plan's `up_table`), exactly as the systemd unit
+                 # passes it. These two run-models implement ONE contract, and the first thing that happened
+                 # when they diverged is that a container node never asked for its leg by name while
+                 # `_relay_shadowed` — which is asked about `up` — skipped it as in-band and stopped guarding
+                 # the mark it was actually running with. Two halves of one feature is how kinds drift.
                  "--port", str(e["port"]), "--bind", e["gw"], "--mark", str(int(e.get("up") or 0)),
                  "--cc", e.get("cc_up", ""),
                  "--cc-cli", e.get("cc_cli", ""), "--mss", str(e.get("mss") or 0),
