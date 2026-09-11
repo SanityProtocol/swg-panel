@@ -909,6 +909,26 @@ def _denied_error(msg):
                               "[NET_ADMIN]) and recreate it (docker compose up -d), then this interface "
                               "creates itself on the next sync.")
         if _aa_enforced_tools():
+            # ⚠️ THE ADVICE HAS TO SURVIVE THE HOST. `aa-complain` is a command, and on a host whose
+            # policy and units are declared elsewhere a command is a change that does not stick — the
+            # same reason _ensure_tool and the no_module branch each carry a declarative twin. It is
+            # also the only arm that prescribes rather than diagnoses, which is why only it needs one.
+            # And it names the restart on purpose: nix/modules/node.nix sets restartIfChanged to
+            # restartOnRebuild, which defaults to FALSE (a restart bounces every client), so a rebuild
+            # alone leaves the OLD unit running and the operator with no sign that it did.
+            if not _units_persist():
+                return AgentError("no_exec",
+                                  "this node could not execute the tools that bring an interface up: "
+                                  "AppArmor refused to start them, so the bring-up never began. This is "
+                                  "not a port or subnet conflict. A confined program may not switch into "
+                                  "its child profile while the calling service runs with NoNewPrivileges, "
+                                  "and this node's installation is managed declaratively — so the fix "
+                                  "belongs in the system configuration that declares this node, not in a "
+                                  "command here: the node daemon must not set NoNewPrivileges, and the "
+                                  "AppArmor policy for the WireGuard tools has to allow /run/wireguard so "
+                                  "userspace interfaces stay readable. Restart the node daemon once it is "
+                                  "in — a rebuild does not restart it on its own, so the old unit keeps "
+                                  "running. Then this interface creates itself on the next sync.")
             return AgentError("no_exec",
                               "this node could not execute the tools that bring an interface up: AppArmor "
                               "refused to start them, so the bring-up never began. This is not a port or "

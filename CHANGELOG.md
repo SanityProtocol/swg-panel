@@ -71,7 +71,8 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
   all.** The node daemon ran with `NoNewPrivileges`, and a process carrying that cannot be switched into an
   AppArmor profile — so the kernel refused to *execute* `ip` and `wg`/`awg`, and `wg-quick` died before it
   ran. That directive is retired: it withheld no privilege this root daemon did not already hold, and an
-  update takes it back out of units already installed. And where a bring-up is refused for any such
+  update takes it back out of units already installed. (A NixOS node picks it up from the module, but
+  a rebuild does not restart the daemon on its own — restart it once, or the old unit keeps running.) And where a bring-up is refused for any such
   reason — the tools cannot be executed, or they run and the kernel turns down what they ask for — the
   panel no longer blames the port or the subnet. It says which of the two happened and how to tell the
   causes apart.

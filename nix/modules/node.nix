@@ -926,6 +926,11 @@ in
           # switched into an AppArmor profile — so where the WireGuard tools are confined, the kernel
           # refuses to EXEC them and wg-quick/awg-quick die before creating anything. Retired from the
           # bare-metal units in the same change (ensure_noded_no_nnp in update.sh).
+          #
+          # ⚠️ ON THIS ARM THE REMOVAL IS NOT LIVE UNTIL A RESTART. restartIfChanged follows
+          # restartOnRebuild, which is false by default, so `nixos-rebuild switch` writes the new
+          # unit and leaves the OLD one running — with nothing on screen saying the fix has not
+          # taken. An operator hitting the AppArmor refusal is told to restart the daemon; this is why.
           ProtectSystem = true;
         } // lib.optionalAttrs (cfg.tokenFile != null) {
           # The token lands in a per-unit tmpfs the bootstrap reads once through

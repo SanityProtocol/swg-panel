@@ -63,7 +63,8 @@ def arm(err):
     if err is None:
         return "NONE"
     if "AppArmor refused" in err.msg:
-        return "APPARMOR"
+        # the declarative twin prescribes a configuration change, not a command — see _denied_error
+        return "DECLARATIVE" if "managed declaratively" in err.msg else "APPARMOR"
     if err.msg.startswith("this node's container"):
         return "CONTAINER"
     if err.msg.startswith("the interface tools ran"):
@@ -85,6 +86,9 @@ for label, profiles, want in [
     check(f"profiles/{label}", agent._aa_enforced_tools(), want)
 
 # ── which sentence each refusal gets ────────────────────────────────────────────────────────────
+# a host that cannot keep a unit it writes cannot keep an `aa-complain` either
+agent._units_persist = lambda: True
+
 for label, msg, profiles, in_container, want in [
     ("exec denied, AppArmor enforcing",   EXEC_DENIED,    "wg (enforce)\n",        False, "APPARMOR"),
     ("exec denied, path-named profile",   EXEC_DENIED,    "/usr/bin/wg (enforce)\n", False, "APPARMOR"),
@@ -102,6 +106,18 @@ for label, msg, profiles, in_container, want in [
     agent._IN_CONTAINER = in_container
     check(f"arm/{label}", arm(agent._denied_error(msg)), want)
 
+# ── a declaratively managed host gets configuration, never a command that cannot stick ──────────
+# NixOS also sets restartIfChanged=false by default, so a rebuild leaves the OLD unit running —
+# the sentence has to say so or the operator changes the module and sees no difference.
+agent._units_persist = lambda: False
+with_profiles("wg (enforce)\n")
+agent._IN_CONTAINER = False
+declarative = agent._denied_error(EXEC_DENIED)
+check("arm/declarative host", arm(declarative), "DECLARATIVE")
+check("declarative arm names the restart", "does not restart it" in (declarative.msg if declarative else ""), True)
+check("declarative arm prescribes no command", "aa-complain" in (declarative.msg if declarative else ""), False)
+agent._units_persist = lambda: True
+
 # ── every bring-up site must consult it, or the fix reaches one screen and not the next ─────────
 src = open(os.path.join(ROOT, "swg-agent")).read()
 wired = len(re.findall(r"_denied = _denied_error\(.*?\)\n\s+if _denied:\n\s+raise _denied", src))
@@ -114,7 +130,7 @@ fn = next(n for n in ast.walk(ast.parse(src))
           if isinstance(n, ast.FunctionDef) and n.name == "_denied_error")
 msgs = [a.args[1].value for a in ast.walk(fn)
         if isinstance(a, ast.Call) and getattr(a.func, "id", "") == "AgentError"]
-check("four arms", len(msgs), 4)
+check("five arms", len(msgs), 5)   # container · apparmor · apparmor/declarative · general · netlink
 for m in msgs:
     # The sentence IS the key (js/i18n.js srvText), so it must stay interpolation-free — a value baked
     # into it can never be looked up, and the message then arrives as English inside a translated page.
