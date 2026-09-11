@@ -150,11 +150,17 @@ _g = [{"subnet": "10.17.0.0/24", "dev": "wgcf", "table": 7000, "killswitch": Tru
 sig = N._cascade_want_sig([], [], [], guard=_g)
 check("the backstop route is in the wanted signature", "T|7000|prohibit||" in sig, sorted(sig))
 check("…and so is its from-rule", "R|from|10.17.0.0/24|7000" in sig, sorted(sig))
+# ⚠️ ASSERT THE CLAIM, NOT A TOTAL. This counted the whole signature and expected 3, which is a proxy
+# for "the from-rule is not duplicated" that goes red whenever any OTHER token is legitimately added — as
+# one was when a leg gained an upstream mark. A set cannot hold a duplicate anyway, so the real question
+# is whether both producers agree on the SAME spelling; two spellings would be two tokens.
+_both = N._cascade_want_sig([{"subnet": "10.17.0.0/24", "via_iface": "wgcf", "table": 7000}], [], [], guard=_g)
 check("a live exit and its backstop do not double-count the from-rule",
-      len(N._cascade_want_sig([{"subnet": "10.17.0.0/24", "via_iface": "wgcf", "table": 7000}], [], [],
-                              guard=_g)) == 3,
-      sorted(N._cascade_want_sig([{"subnet": "10.17.0.0/24", "via_iface": "wgcf", "table": 7000}], [], [],
-                                 guard=_g)))
+      len([t for t in _both if t.startswith("R|from|")]) == 1, sorted(_both))
+check("…and the backstop's route rides alongside the real one",
+      {"T|7000|prohibit||", "T|7000|default|wgcf|"} <= _both, sorted(_both))
+check("…while the leg itself is nameable by an upstream mark",
+      ("R|upmark|%d|7000" % N._up_mark(7000)) in _both, sorted(_both))
 check("with no kill-switch anywhere the signature is untouched",
       N._cascade_want_sig([], [], []) == set())
 
@@ -213,11 +219,15 @@ check("§5.2: …so the two events are distinguishable at the datapath, which is
 #   `prohibit default metric N` installs regardless and coexists with a `default dev D` at metric 0.
 class _Kernel:
     """Just enough `ip` to answer the two questions the drift compare asks."""
-    def __init__(k, up_devs): k.up, k.rules, k.tables = set(up_devs), [], {}
+    # ⚠️ IT MUST SPEAK EVERY RULE SHAPE THE RECONCILER EMITS, OR THE SETTLE TEST IS A LIE. It only knew
+    # `from` rules; when a leg gained an upstream-mark rule this raised ValueError on the FIRST pass, and a
+    # fake kernel that cannot install a rule the real one does is a fake kernel that can never settle.
+    def __init__(k, up_devs): k.up, k.rules, k.tables, k.marks = set(up_devs), [], {}, []
     def __call__(k, argv, **kw):
         a = list(map(str, argv))
         if a[:3] == ["ip", "rule", "show"]:
-            return _R("".join("%d:\tfrom %s lookup %d\n" % (t, s, t) for s, t in k.rules))
+            return _R("".join("%d:\tfrom %s lookup %d\n" % (t, s, t) for s, t in k.rules)
+                      + "".join("%d:\tfrom all fwmark 0x%x lookup %d\n" % (m, m, t) for m, t in k.marks))
         if a[:3] == ["ip", "route", "show"] and "table" in a:
             return _R("".join(r + "\n" for r in k.tables.get(a[a.index("table") + 1], [])))
         if a[:3] == ["ip", "route", "replace"] and "table" in a:
@@ -231,13 +241,18 @@ class _Kernel:
                 k.tables.setdefault(T, []).append("prohibit default metric %d" % N.DEVEXIT_GUARD_METRIC)
             return _R("")
         if a[:3] == ["ip", "rule", "add"]:
-            k.rules.append((a[a.index("from") + 1], int(a[a.index("priority") + 1]))); return _R("")
+            pri = int(a[a.index("priority") + 1])
+            if "fwmark" in a:
+                k.marks.append((pri, int(a[a.index("lookup") + 1])))
+            else:
+                k.rules.append((a[a.index("from") + 1], pri))
+            return _R("")
         if a[:3] == ["ip", "rule", "del"]:
             pref = int(a[a.index("pref") + 1])
-            hit = [x for x in k.rules if x[1] == pref]
+            hit = [x for x in k.rules if x[1] == pref] or [x for x in k.marks if x[0] == pref]
             if not hit:
                 r = _R(""); r.returncode = 2; return r
-            k.rules.remove(hit[0]); return _R("")
+            (k.rules if hit[0] in k.rules else k.marks).remove(hit[0]); return _R("")
         if a[:3] == ["ip", "route", "flush"]:
             k.tables.pop(a[a.index("table") + 1], None); return _R("")
         return _R("")

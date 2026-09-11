@@ -1767,6 +1767,44 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
 # ───────────────────────── Phase 2: traffic cascade ─────────────────────────
 SWG_RT_BASE = 7000          # swg-owned policy-routing table id / ip-rule priority band [BASE, MAX]
 SWG_RT_MAX = 7099           # (priority == table number; one table per egress target per node)
+
+# ── THE UPSTREAM-MARK BAND: how something on this box asks for a LEG BY NAME ──────────────────────────
+#
+# A client's packet picks its leg one of two ways: a smart cascade marks it with the table (`fwmark T
+# lookup T` at priority T), and a whole-interface cascade is routed by its SOURCE (`from S lookup T`, also
+# at priority T). The second cannot be overridden — `ip rule` uses priority == table number for both kinds,
+# so a source rule at T' outranks every mark rule whose table is numerically greater, and the relay's
+# upstream is deliberately sourced from that very subnet (`--bind gw`, so the exit's SNAT matches). That is
+# why a forward interface's relay has never been able to leave by any leg but its interface's own.
+#
+# ⚠️ THE FIX IS A SECOND MARK, NOT A MOVED ONE, AND THAT DISTINCTION IS THE WHOLE SAFETY ARGUMENT.
+# Re-homing the existing `fwmark T` rules below the band would have worked for the relay and quietly changed
+# precedence for CLIENT traffic: the exit side's `to <client subnet> lookup T` rules also live at priority
+# T, and a smart-marked packet addressed to another node's client subnet takes that `to` rule today. Moving
+# marks underneath it would silently re-route that case out the smart leg instead. So client marking is left
+# exactly where it is, and legs get a SECOND way to be named that nothing but this feature ever sets.
+#
+# MEASURED on msk-main (wg8 = forward to table 7001, and a second leg at 7000):
+#     from 10.18.0.1 mark 0     -> table 7001   the source rule, unchanged
+#     from 10.18.0.1 mark 6891  -> table 7001   this interface's own leg, asked for by name
+#     from 10.18.0.1 mark 6890  -> table 7000   ANOTHER LEG — which no mark could reach before
+#
+# The band sits below SWG_RT_BASE so no source rule can outrank it, and below RELAY_RT (6990) it stops, so
+# the relay's own divert rule keeps its place. One slot per table, same count, same order.
+SWG_RT_UP_BASE = SWG_RT_BASE - 110      # 6890: upstream-mark band [UP_BASE, UP_BASE+99] = [6890, 6989]
+SWG_RT_UP_MAX = SWG_RT_UP_BASE + (SWG_RT_MAX - SWG_RT_BASE)
+
+
+def _up_mark(table):
+    """The mark that means "send this out the leg whose table is `table`", or 0 if that is not our table.
+
+    ⚠️ THIS IS AN EGRESS SELECTOR, NOT A CLASSIFIER. Nothing in the datapath ever sets it on a client's
+    packet; it is set with SO_MARK by something on this box that has already decided where a connection
+    should go — today only the relay's upstream socket. Keeping it disjoint from the client-side marks is
+    what lets the two be pointed at different legs, which is the point (auto-failover, load balancing and
+    pick-the-fastest all reduce to "the upstream goes somewhere the client's own rule did not say")."""
+    t = int(table or 0)
+    return SWG_RT_UP_BASE + (t - SWG_RT_BASE) if SWG_RT_BASE <= t <= SWG_RT_MAX else 0
 SMART_NFT_TABLE = "swg_smart"   # Phase 3: inet nft table holding the per-category dest sets + marking chain
 SNI_NFQUEUE = 0                 # SNI mode: nft queues each connection's first packets here → swg-sni reads the ClientHello
 SNI_MAP_PATH = "/var/lib/swg-noded/sni-map.json"   # domain→category map swg-noded writes for swg-sni to consume
@@ -1980,6 +2018,14 @@ def _cascade_want_sig(fwd, exit_, smart=None, guard=()):
     for e in exit_:
         T = str(e["table"]); sig.add(f"R|to|{e['subnet']}|{T}")
         sig.add(f"T|{T}|{e['subnet']}|{e['via_iface']}|{str(e.get('gw') or '')}")
+    # ⚠️ ONE UPSTREAM RULE PER LEG THIS NODE CAN SEND OUT OF — `fwd` and `smart` both, because a leg is a
+    # leg whichever kind of interface happens to use it, and the whole value of the band is that the
+    # upstream may be pointed at a leg the packet's own interface never uses. Not `exit_`: those tables
+    # carry OTHER nodes' clients back down the mesh, and this node never originates into them.
+    for e in list(fwd) + list(smart or []):
+        _u = _up_mark(e["table"])
+        if _u:
+            sig.add(f"R|upmark|{_u}|{int(e['table'])}")
     return sig
 
 
@@ -1993,13 +2039,20 @@ def _cascade_live_sig(tables):
             if not mp:
                 continue
             pri = int(mp.group(1))
-            if not (SWG_RT_BASE <= pri <= SWG_RT_MAX):
+            # ⚠️ TWO DISJOINT BANDS, AND RELAY_RT (6990) IS IN NEITHER. Reading the relay's own divert rule
+            # here would put a token in the live set that the want set can never contain — permanent drift,
+            # i.e. a flush and rebuild of the whole band on every single sync, which is the packet-leaking
+            # gap this signature exists to avoid.
+            _up = SWG_RT_UP_BASE <= pri <= SWG_RT_UP_MAX
+            if not (_up or SWG_RT_BASE <= pri <= SWG_RT_MAX):
                 continue
             body = mp.group(2)
             lk = re.search(r"lookup (\S+)", body); T = lk.group(1) if lk else str(pri)
             mto = re.search(r"\bto (\S+)", body); mfrom = re.search(r"\bfrom (\S+)", body)
             mfw = re.search(r"fwmark (0x[0-9a-fA-F]+|\d+)", body)
-            if mfw:
+            if mfw and _up:
+                sig.add(f"R|upmark|{int(mfw.group(1), 0)}|{T}")
+            elif mfw:
                 sig.add(f"R|fwmark|{int(mfw.group(1), 0)}|{T}")
             elif mto:
                 sig.add(f"R|to|{mto.group(1)}|{T}")
@@ -2022,13 +2075,26 @@ def _cascade_live_sig(tables):
 
 
 def _live_band_prios():
+    """Every priority WE own that currently carries a rule — both bands, so a teardown reaps the upstream
+    rules too. ⚠️ A priority in the upstream band is NOT a table id (its rule looks up a table 110 higher),
+    so the caller must not flush a table by that number — see `_band_tables`."""
     out = []
     with contextlib.suppress(Exception):
         for line in run(["ip", "rule", "show"]).stdout.splitlines():
             mp = re.match(r"^\s*(\d+):", line)
-            if mp and SWG_RT_BASE <= int(mp.group(1)) <= SWG_RT_MAX:
-                out.append(int(mp.group(1)))
+            if not mp:
+                continue
+            pri = int(mp.group(1))
+            if SWG_RT_BASE <= pri <= SWG_RT_MAX or SWG_RT_UP_BASE <= pri <= SWG_RT_UP_MAX:
+                out.append(pri)
     return sorted(set(out))
+
+
+def _band_tables(prios):
+    """The subset of `prios` that are also TABLE ids. Priority == table only in the 7000 band; an upstream
+    priority names no table of its own, and flushing `table 6890` would be flushing something we never
+    wrote — harmless today and exactly the kind of thing that stops being harmless later."""
+    return [p for p in prios if SWG_RT_BASE <= p <= SWG_RT_MAX]
 
 
 def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip="", devexit=()):
@@ -4575,7 +4641,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             for _ in range(8):                                 # del-until-absent (a priority may carry several rules)
                 if run(["ip", "rule", "del", "pref", str(pri)]).returncode != 0:
                     break
-            run(["ip", "route", "flush", "table", str(pri)])
+        for tbl in _band_tables(band):                         # …and only the priorities that ARE tables
+            run(["ip", "route", "flush", "table", str(tbl)])
         for e in fwd:                                          # P2 ENTRY: from S → table T (default via link)
             T = str(e["table"]); S = e["subnet"]; dev = e["via_iface"]
             _gw = str(e.get("gw") or "")                       # "" for every point-to-point link — unchanged
@@ -4616,6 +4683,15 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             run(["ip", "route", "replace", S, "dev", dev, "table", T])
             run(["ip", "rule", "add", "to", S, "lookup", T, "priority", T])
             res["changed"] += 1
+        # UPSTREAM: a mark that names a LEG, for something on this box that has already chosen one. Below
+        # SWG_RT_BASE, so no source rule can outrank it; disjoint from the client-side marks, so pointing
+        # the upstream somewhere the client's own rule did not say is expressible at all. Nothing sets these
+        # marks on a forwarded packet — they are inert until a local socket asks for one with SO_MARK.
+        for _t in sorted({int(e["table"]) for e in (fwd + smart_exit)}):
+            _u = _up_mark(_t)
+            if _u:
+                run(["ip", "rule", "add", "fwmark", str(_u), "lookup", str(_t), "priority", str(_u)])
+                res["changed"] += 1
     # IPTABLES (SNAT / FORWARD accept / MSS clamp) — always reconciled by tag (cheap, no-churn).
     _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res, default_egress_ip, devexit=devexit)
     # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
@@ -5985,7 +6061,15 @@ def _relay_shadowed(entries, rules):
     A smart interface has no such rule — the panel's `scope:"rule"` exists to stop a per-category rule
     installing one — so this should never fire. It is here because the failure if it ever does is silent and
     wrong in the worst way: the relay terminates the connection and sends it out ANOTHER EXIT, which works,
-    so nobody notices. Refusing the leg with a reason is the only honest answer."""
+    so nobody notices. Refusing the leg with a reason is the only honest answer.
+
+    ⚠️ AND A MARK IN THE UPSTREAM BAND CANNOT BE SHADOWED AT ALL, BY CONSTRUCTION. Its rule is installed
+    below SWG_RT_BASE, so every source rule — which lives at its table's number, 7000 or above — is consulted
+    after it. That is exactly why the band exists. The check is NOT deleted on the strength of that: a mark
+    outside the band still reaches here from a panel too old to send an upstream mark, or from a smart leg
+    whose divert mark is being reused, and for those the old reasoning holds unchanged. Removing a guard
+    because the case it covers has become unreachable on the paths you happened to look at is how the case
+    comes back."""
     src = []
     for l in rules:
         m = re.match(r"^(\d+):\s+from ([0-9./]+) lookup (\d+)\b", l.strip())
@@ -5996,6 +6080,8 @@ def _relay_shadowed(entries, rules):
         T = int(e.get("mark") or 0)
         if not T:
             continue                          # no mark, no mark rule to shadow — forward mode is unaffected
+        if SWG_RT_UP_BASE <= T <= SWG_RT_UP_MAX:
+            continue                          # below the whole source-rule band; nothing there can outrank it
         try:
             net = ipaddress.ip_network(e["subnet"], strict=False)
         except ValueError:
@@ -6133,12 +6219,14 @@ def _relay_slice_text(quota_pct):
 
 
 def _relay_env_text(iface, e):
-    # RELAY_MARK is 0 for a whole-interface cascade — the leg is picked by source there, and passing no mark
-    # keeps that path byte-identical to what is running on real fleets today.
+    # ⚠️ RELAY_MARK IS THE UPSTREAM SELECTOR, NOT THE DIVERT'S. `mark` says which packets to take (0 = the
+    # whole subnet); `up` says which leg to send them out of, and the two are allowed to differ — that is
+    # what makes a relay pointable at a leg the client's own rule never names. 0 means "ask for no leg",
+    # which leaves the kernel to route the upstream by its bind address exactly as it does today.
     return ("RELAY_PORT=%d\nRELAY_BIND=%s\nRELAY_SOCK=%s\nRELAY_CC_UP=%s\nRELAY_CC_CLI=%s\nRELAY_MSS=%d\n"
             "RELAY_MARK=%d\n"
             % (e["port"], e["gw"], _relay_sock(iface), e.get("cc_up", ""), e.get("cc_cli", ""), e.get("mss") or 0,
-               int(e.get("mark") or 0)))
+               int(e.get("up") or 0)))
 
 
 def _relay_write(path, text, dry=False):
@@ -6301,12 +6389,20 @@ def reconcile_relay(plan, res, sync_ok=True):
 
     `plan` (absent/empty => the feature is OFF, everything torn down):
         {"legs": [{"iface": "awg2", "peer": "e08fb18c67da", "subnet": "10.9.0.0/24", "gw": "10.9.0.1",
-                   "mark": 7002, "port": 5629, "cc_cli": "", "cc_up": ""}],
+                   "mark": 7002, "up_mark": 6892, "port": 5629, "cc_cli": "", "cc_up": ""}],
          "quota_pct": 50, "max_conns": 0}
 
     ⚠️ `mark: 0` MEANS A WHOLE-INTERFACE CASCADE and keeps that path byte-identical on the wire: no mark in
-    the divert, no `--mark` on the process, the instance still named `<iface>`. The forward path is the one
-    live on real fleets, so it changes only when something deliberately opts in.
+    the divert, the instance still named `<iface>`. The forward path is the one live on real fleets, so it
+    changes only when something deliberately opts in.
+
+    ⚠️ `mark` AND `up_mark` ARE TWO DIFFERENT QUESTIONS and only the first has ever existed. `mark` scopes
+    the divert: WHICH of this subnet's packets to take. `up_mark` selects the leg the relay re-originates
+    down, from the band at SWG_RT_UP_BASE that exists so a leg can be named even where the client's own
+    traffic is routed by source. They are equal today for every leg the panel emits — the relay goes where
+    the client was going — and the reason they are separate fields is that auto-failover, load balancing and
+    pick-the-fastest are all exactly "make them differ". Absent `up_mark` falls back to `mark`, so a node
+    newer than its panel behaves as before.
 
     The older `{"ifaces": {...}}` shape is still accepted — a node can be newer than its panel, and the
     upgrade must not take the datapath away from a fleet mid-roll.
@@ -6326,6 +6422,13 @@ def reconcile_relay(plan, res, sync_ok=True):
         if not e.get("subnet") or not e.get("iface"):
             continue
         e["mark"] = int(e.get("mark") or 0)
+        # ⚠️ TWO MARKS, DELIBERATELY. `mark` scopes the DIVERT — which of this subnet's packets to take,
+        # and 0 means all of them (a whole-interface cascade, where the source says it all). `up_mark`
+        # selects the UPSTREAM's leg, from the band that exists precisely so a leg can be asked for by name
+        # even on an interface whose own traffic is routed by source. A panel too old to send one falls back
+        # to `mark`, which for a cascade is 0 and reproduces today's behaviour exactly: no SO_MARK, and the
+        # bind address decides.
+        e["up"] = int(e.get("up_mark") or 0) or e["mark"]
         e["iid"] = _relay_iid(e["iface"], e.get("peer", ""))
         # ⚠️ TWO LEGS CANNOT SHARE AN INSTANCE. A panel that sent the same (iface, peer) twice would have
         # the second silently replace the first; refuse instead, because "one of your legs is not relayed"
@@ -6343,8 +6446,11 @@ def reconcile_relay(plan, res, sync_ok=True):
             res["errors"].append("relay %s: no local address on the interface, cannot bind upstream" % i)
             want.pop(i); continue
         e["port"] = _relay_port(i, e.get("port") or 0)
-        # the leg the upstream will take is a function of the bind address AND the mark — see _relay_mss
-        e["mss"] = int(e.get("mss") or 0) or _relay_mss(e["gw"], e["mark"])
+        # the leg the upstream will take is a function of the bind address AND the mark it asks for — and it
+        # is the UPSTREAM mark that decides, so that is the one to size the MSS from. Asking with the divert
+        # mark would size off the leg the CLIENT takes, which is the same leg only while nothing has pointed
+        # the relay anywhere else — i.e. right up until the feature this band exists for is used.
+        e["mss"] = int(e.get("mss") or 0) or _relay_mss(e["gw"], e["up"])
     if not sync_ok:
         # ⚠️ A PANEL OUTAGE MUST NOT CHANGE THE DATAPATH. This used to converge to forward after a few failed
         # syncs, on the theory that forward is the safe state. It is the safe state, but converging to it is
@@ -6388,7 +6494,7 @@ def reconcile_relay(plan, res, sync_ok=True):
     # Read once per pass and use it for both the precondition and the arm — `ip rule show` is a fork, and
     # this loop runs every five seconds. Same reason _relay_diverted is read once here rather than per leg.
     _rules = (run(["ip", "rule", "show"]).stdout or "").splitlines()
-    _shadow = _relay_shadowed([{"iid": i, "subnet": want[i]["subnet"], "mark": want[i]["mark"]}
+    _shadow = _relay_shadowed([{"iid": i, "subnet": want[i]["subnet"], "mark": want[i]["up"]}
                                for i in sorted(want)], _rules)
     _div = _relay_diverted()
     for iface in sorted(want):

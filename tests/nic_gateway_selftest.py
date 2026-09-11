@@ -275,8 +275,12 @@ check("⚠️ a DHCP renewal that moves the gateway makes the wanted signature D
 check("…and the same gateway signs the same", s_a == N._cascade_want_sig(_f("10.201.0.1"), [], []))
 # The want and live readers are one grammar or they are two — and two means a permanent rebuild every
 # sync, which is the packet-leaking churn the signature exists to prevent.
+# ⚠️ A SETTLED NODE NOW CARRIES ONE MORE RULE. Every leg gets an upstream-mark rule below the band, so
+# a fixture that omits it models a node mid-rebuild, not a settled one — and the check would read as
+# permanent drift when the code is right. Included here so the no-churn claim is still about a real box.
 N.run = lambda argv, **kw: _R("default via 10.201.0.1 dev eth2 \n" if "route" in argv else
-                              "7000:\tfrom 10.17.0.0/24 lookup 7000\n")
+                              "7000:\tfrom 10.17.0.0/24 lookup 7000\n"
+                              "%d:\tfrom all fwmark 0x%x lookup 7000\n" % (N._up_mark(7000), N._up_mark(7000)))
 live = N._cascade_live_sig({"7000"})
 check("the LIVE reader spells the installed route the same way the want reader does",
       "T|7000|default|eth2|10.201.0.1" in live, sorted(live))

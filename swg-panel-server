@@ -528,7 +528,7 @@ def _ref_raw_parts(url):
     return (m.group(1), m.group(2), m.group(3)) if m else None
 
 
-_REF_SHA = {"at": 0, "ref": "", "sha": ""}
+_REF_SHA = {"at": 0, "ref": "", "sha": "", "bad_at": 0}
 def _resolve_release_sha():
     """Current commit SHA of the release ref, from the GitHub API (not raw's CDN -> never a stale tip). '' when
     the source is a non-github mirror or the API is unreachable/rate-limited -> callers fall back to the mutable
@@ -540,6 +540,12 @@ def _resolve_release_sha():
     now = int(time.time())
     if _REF_SHA["sha"] and _REF_SHA["ref"] == ref and now - _REF_SHA["at"] < 60:
         return _REF_SHA["sha"]
+    # A FAILURE IS CACHED FOR THE SAME MINUTE. Only successes were remembered, so where the API is blocked
+    # or rate-limited this ran on every call — and it runs FIRST, spending its whole timeout before the fetch
+    # that actually matters even gets to start. The fallback below is designed to cope without a sha; making
+    # the operator wait out the same dead call on every click is not part of that.
+    if _REF_SHA["ref"] == ref and now - _REF_SHA["bad_at"] < 60:
+        return ""
     try:
         api = "https://api.github.com/repos/%s/%s/commits/%s" % (owner, repo, ref)
         req = urllib.request.Request(api, headers={"User-Agent": "swg-panel",
@@ -547,10 +553,11 @@ def _resolve_release_sha():
         with urllib.request.urlopen(req, timeout=8) as r:
             sha = r.read(80).decode("ascii", "replace").strip()
         if re.fullmatch(r"[0-9a-f]{7,40}", sha):
-            _REF_SHA.update(at=now, ref=ref, sha=sha)
+            _REF_SHA.update(at=now, ref=ref, sha=sha, bad_at=0)
             return sha
     except Exception:
         pass
+    _REF_SHA.update(ref=ref, bad_at=now)
     return ""
 
 
@@ -734,8 +741,79 @@ UPDATE_CMD = os.environ.get("SWG_UPDATE_CMD") or ("" if PANEL_DECLARATIVE else
 UPDATE_TRIGGER = os.environ.get("SWG_UPDATE_TRIGGER")
 
 
-def _check_latest_remote():
-    ok = False                                       # True only if we actually reached the repo
+# ── why an outbound fetch failed, in a sentence the operator can act on ───────────────────────────────
+# ⚠️ "Couldn't reach the repo" WITH NO CAUSE IS A DEAD END. This check is the one outbound call every
+# operator touches, and until now every way it could fail — no DNS, an unverifiable certificate, a reset
+# injected by a middlebox, a rate limit — collapsed into `except Exception: pass` and a single boolean.
+# The panel knew exactly what went wrong and threw it away: nothing in the journal, nothing in the toast,
+# so a panel we cannot log into could not be diagnosed at all. Reported live by an operator whose check
+# failed instantly while the same fetch from a shell on the same box succeeded — a difference the cause
+# names in one word and the old message could not express.
+#
+# The sentences are whole, not fragments assembled from a stem and a cause: {v1} lands in a different
+# place in Russian, and a translator needs the sentence to move it.
+def _why_fetch_failed(url, e):
+    """(key, vars) for perr-style lookup — what stopped this fetch, said so the operator knows where to look."""
+    host = ""
+    with contextlib.suppress(Exception):
+        host = urlparse(url).hostname or ""
+    v = {"v1": host or (url or "the repo")}
+    # HTTPError IS a URLError, and it carries its own meaning — so it is read before the unwrap below.
+    if isinstance(e, urllib.error.HTTPError):
+        if e.code in (401, 403, 429):
+            return "{v1} is rate-limiting this server's address — try the check again in a few minutes.", v
+        return "{v1} answered {v2} to the update check.", dict(v, v2="HTTP %d" % e.code)
+    # Everything else arrives WRAPPED: urlopen raises URLError(reason=<the real OSError>), so testing the
+    # outer object would match nothing below and every cause would read as the generic fallback.
+    if isinstance(e, urllib.error.URLError) and isinstance(getattr(e, "reason", None), BaseException):
+        e = e.reason
+    if isinstance(e, ssl.SSLCertVerificationError):    # a subclass of SSLError — must be tested first
+        return ("Couldn't reach {v1} to check for updates — its TLS certificate could not be verified. "
+                "The CA certificates on this server may be missing or out of date."), v
+    if isinstance(e, ssl.SSLError):
+        return "Couldn't reach {v1} to check for updates — the TLS connection failed.", v
+    if isinstance(e, socket.gaierror):
+        return "Couldn't reach {v1} to check for updates — its name could not be resolved.", v
+    if isinstance(e, ConnectionRefusedError):
+        return "Couldn't reach {v1} to check for updates — the connection was refused.", v
+    if isinstance(e, ConnectionResetError):
+        return "Couldn't reach {v1} to check for updates — the connection was reset.", v
+    # socket.timeout IS TimeoutError, and TimeoutError is an OSError — so this precedes the errno test.
+    if isinstance(e, (socket.timeout, TimeoutError)):
+        return "Couldn't reach {v1} to check for updates — it did not answer in time.", v
+    if isinstance(e, OSError) and e.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH):
+        return "Couldn't reach {v1} to check for updates — there is no route to it from this server.", v
+    return "Couldn't reach {v1} to check for updates — {v2}.", dict(v, v2=type(e).__name__)
+
+
+# One GitHub GET, as patient as the rest of the product already is. Everything else here that fetches from
+# GitHub retries — swg-noded downloads with `curl --retry 3 --retry-all-errors`, the routing catalogue goes
+# through _http_retry(tries=4) — because, in the words of that helper, "the whole product targets networks
+# where GitHub is flaky/throttled". The update check was the one that never got it: a single urlopen with an
+# 8s timeout and no second attempt, so one injected reset or one TLS EOF became "couldn't reach the repo" on
+# a path that a retrying `curl` walks in the console without complaint.
+#
+# `deadline` is what keeps that patience honest. An operator is WAITING on the on-demand check, so the retry
+# budget has to be the whole check's, not per-fetch: without it three fetches x four tries x a 20s timeout is
+# minutes of spinner. _http_retry stops retrying once the deadline passes, and the per-attempt timeout is
+# clamped to what is left, so the button answers inside its budget whatever the network does.
+def _gh_get(url, headers, nbytes, deadline, timeout=12):
+    def _do():
+        left = deadline - time.time()
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=max(3.0, min(timeout, left))) as r:
+            return r.read(nbytes)
+    return _http_retry(_do, tries=3, deadline=deadline)   # defined further down; resolved at call time
+
+
+def _check_latest_remote(budget=120):
+    """Ask the repo what the newest published version is. True only if we actually reached it.
+
+    `budget` is the WHOLE check's, in seconds, not one fetch's — the hourly loop can afford to sit through
+    every retry, but a click cannot, and the same code serves both. On failure LATEST_REMOTE["why"] holds the
+    (key, vars) naming the cause, so the header's check button can say what stopped it instead of shrugging."""
+    ok, why, url = False, None, REMOTE_VERSION_URL
+    deadline = time.time() + max(5, budget)
     try:
         # Pin the fetch to the release ref's CURRENT COMMIT, resolved from the GitHub API (authoritative for a
         # ref's tip, and not raw's CDN). A /<sha>/ raw URL is immutable, so a just-published release is seen at
@@ -746,21 +824,27 @@ def _check_latest_remote():
         LATEST_REMOTE["sha"] = sha                   # reused by _latest_notes / _changelog_entries -> same commit
         vsrc = _pinned(REMOTE_VERSION_URL, sha)
         url = vsrc + (("&" if "?" in vsrc else "?") + "cb=" + str(int(time.time())))
-        req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            v = _short_ver(r.read(64).decode("utf-8", "replace").strip())
-            if v:
-                LATEST_REMOTE["version"] = v
-                cv, cdate, cnotes = _fetch_latest_changelog(sha=sha)   # bubble notes, from the same commit
-                # Never pair a new version with the PREVIOUS release's notes. The SHA path cannot (one commit);
-                # this guards the ref FALLBACK, where a CDN lag can still return a mismatched pair — keep the
-                # last-good notes rather than publish a wrong one; the next check self-corrects.
-                if not (cnotes and cv and _short_ver(cv) != v):
-                    LATEST_REMOTE["date"], LATEST_REMOTE["notes"] = cdate, cnotes
-                ok = True
-    except Exception:
-        pass
+        v = _short_ver(_gh_get(url, {"User-Agent": "swg-panel", "Cache-Control": "no-cache"},
+                               64, deadline).decode("utf-8", "replace").strip())
+        if v:
+            LATEST_REMOTE["version"] = v
+            cv, cdate, cnotes = _fetch_latest_changelog(sha=sha)   # bubble notes, from the same commit
+            # Never pair a new version with the PREVIOUS release's notes, and never let a FAILED changelog
+            # fetch blank good ones. The SHA path cannot mismatch (one commit); the ref fallback can, and a
+            # fetch that returned nothing at all used to fall through this guard and overwrite the bubble
+            # with empty — a blip erasing what the operator was reading. Take the notes only when they came
+            # back naming THIS version; otherwise keep the last good ones and let the next check correct.
+            if cv and _short_ver(cv) == v:
+                LATEST_REMOTE["date"], LATEST_REMOTE["notes"] = cdate, cnotes
+            ok = True
+        else:
+            # Reached it, and what came back was not a version — a captive portal or a block page answering
+            # 200 for raw.githubusercontent.com looks exactly like this, and says nothing about the network.
+            why = ("{v1} answered, but not with a version.", {"v1": urlparse(url).hostname or url})
+    except Exception as e:
+        why = _why_fetch_failed(url, e)
     LATEST_REMOTE["checked"] = int(time.time())
+    LATEST_REMOTE["why"] = None if ok else why
     return ok
 
 
@@ -8480,6 +8564,19 @@ def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None, snaps=N
 # ───────────────────────── Phase 2: traffic cascade ─────────────────────────
 SWG_RT_BASE = 7000          # swg-owned policy-routing table id / ip-rule priority band [BASE, MAX]
 SWG_RT_MAX = 7099           # (one table id per egress target per node; priority == table number)
+# ⚠️ MIRRORS swg-noded's SWG_RT_UP_BASE / _up_mark — keep the two in step (tests/cross_language_twins).
+# The upstream-mark band names a LEG for something on the node that has already chosen one. It sits below
+# SWG_RT_BASE so no `from <subnet>` rule can outrank it, which is what lets a relay be pointed at a leg its
+# interface's own traffic never takes — the mechanism auto-failover, load balancing and pick-the-fastest
+# all reduce to. The node is the only thing that installs these rules; the panel only has to name them.
+SWG_RT_UP_BASE = SWG_RT_BASE - 110
+SWG_RT_UP_MAX = SWG_RT_UP_BASE + (SWG_RT_MAX - SWG_RT_BASE)
+
+
+def _up_mark(table):
+    """The mark meaning "leave by the leg whose table is `table`", or 0 when that is not one of our tables."""
+    t = int(table or 0)
+    return SWG_RT_UP_BASE + (t - SWG_RT_BASE) if SWG_RT_BASE <= t <= SWG_RT_MAX else 0
 SWG_RT_BAND = SWG_RT_MAX - SWG_RT_BASE + 1   # how many destinations one node can route to at once — the number the operator is told when they hit it
 
 # Phase 3: per-interface destination categories an operator can route. Each maps to an nftables dest set on
@@ -10192,9 +10289,13 @@ def provider_update_all(nodes_path):
             _PROV_UPDATING["on"] = False
     threading.Thread(target=_work, daemon=True).start()
 
-def _http_retry(fn, tries=4, backoff=1.2):
+def _http_retry(fn, tries=4, backoff=1.2, deadline=None):
     """Retry a fetch through transient failures (TLS EOF, timeouts, 5xx) — the whole product targets networks
-    where GitHub is flaky/throttled, so one blip must not blank a provider or hang a list. Raises the last error."""
+    where GitHub is flaky/throttled, so one blip must not blank a provider or hang a list. Raises the last error.
+
+    `deadline` (an absolute time.time()) bounds the retrying for a caller something is WAITING on: past it,
+    the last error is raised rather than slept on. None — every caller that had no deadline before — keeps
+    the original unbounded behaviour exactly."""
     last = None
     for i in range(tries):
         try:
@@ -10210,7 +10311,15 @@ def _http_retry(fn, tries=4, backoff=1.2):
             # the full retry budget — that is what this function is for.
             if getattr(e, "code", None) in (401, 403, 429):
                 raise
-            time.sleep(backoff * (i + 1))
+            if i == tries - 1:
+                raise                                # nothing follows this sleep but the raise below it
+            nap = backoff * (i + 1)
+            if deadline is not None:
+                # Out of budget — and never sleep PAST it either, or the wait outlives the answer it was for.
+                nap = min(nap, deadline - time.time())
+                if nap <= 0:
+                    raise
+            time.sleep(nap)
     raise last
 
 def _catalog_gh(url):
@@ -13040,6 +13149,13 @@ def cascade_plan(nodes, snaps, custom_lists=None):
         if (S, dev_n, T) not in sn["_fwd_seen"]:
             sn["_fwd_seen"].add((S, dev_n, T))
             sn["forward"].append({"subnet": S, "via_iface": dev_n, "table": T})
+        # ⚠️ A WHOLE-INTERFACE CASCADE HAS A LEG TOO, and until now the panel never had to name it: the
+        # node routed that subnet by source and the table was nobody's business up here. It is now, because
+        # the relay's upstream asks for its leg BY TABLE — so this is where a forward interface's table
+        # becomes knowable, the same place and the same guard as the smart one below.
+        if (S, P, "forward") not in sn["_leg_seen"]:
+            sn["_leg_seen"].add((S, P, "forward"))
+            sn["_legs"].append({"subnet": S, "peer": P, "mark": T, "mode": "forward"})
         sn["allowed"][dev_n] = "0.0.0.0/0"
         add_exit(P, S, dev_p, T, X, W, base_p)
         # DECISION 4's OTHER HALF — the one the plan warned is easy to miss. Traffic cascaded in from
@@ -13096,9 +13212,9 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             # deliberately (see the branch below), so nothing downstream can tell them apart. Here they
             # can: `P` is a node id, `_targets` keys a device as "exit:<id>", and only this branch has a
             # peer node. The relay masks loss on a MESH leg; a device exit has no far end to mask.
-            if (S, P) not in sn["_leg_seen"]:
-                sn["_leg_seen"].add((S, P))
-                sn["_legs"].append({"subnet": S, "peer": P, "mark": T})
+            if (S, P, "smart") not in sn["_leg_seen"]:
+                sn["_leg_seen"].add((S, P, "smart"))
+                sn["_legs"].append({"subnet": S, "peer": P, "mark": T, "mode": "smart"})
         elif action == "dev":
             # ON THE WIRE THIS IS AN `exit` ENTRY, deliberately: the node's P3 lowering is `ip rule fwmark T
             # lookup T` + `default dev <via_iface> table T`, and it does not care whether that device is a
@@ -13219,7 +13335,7 @@ def _relay_ports(marks):
     return out
 
 
-def _relay_ineligible(ov, mark=0):
+def _relay_ineligible(ov, mark=0, up_mark=0):
     """Why this leg cannot be accelerated, or "" if it can.
 
     ⚠️ TERMINATING TCP TAKES THE PACKET OUT OF THE FORWARD PATH. Anything hooked at FORWARD stops seeing it,
@@ -13245,6 +13361,12 @@ def _relay_ineligible(ov, mark=0):
     one subnet across several legs and a direct path. The divert is keyed on the leg's MARK now, which is
     what the routing engine already wrote on the packet, so the question has an answer and this bar is gone.
     The function stays: it is where the next real bar goes."""
+    if up_mark and not (SWG_RT_UP_BASE <= up_mark <= SWG_RT_UP_MAX):
+        # The same failure as below, one layer out: an upstream mark outside its band names a leg no rule
+        # looks up, so the relay's own connection falls back to being routed by its bind address. That is
+        # today's behaviour, so it WORKS — and it silently un-does the one thing this band exists for the
+        # moment anything points a relay away from its interface's own leg.
+        return "its upstream table (%d) is outside the %d-%d band" % (up_mark, SWG_RT_UP_BASE, SWG_RT_UP_MAX)
     if mark and not (SWG_RT_BASE <= mark <= SWG_RT_MAX):
         # ⚠️ SILENT IF MISSED, WHICH IS WHY IT IS HERE. A divert matching a mark outside the band the
         # routing engine allocates from matches something nothing ever sets: the traffic is not diverted,
@@ -13287,9 +13409,12 @@ def relay_eligibility(node_cfg, snaps, nid, legs=()):
     # silently withdrawing the feature from every node mid-upgrade.
     _rs = ((snaps.get(nid) or {}).get("relay") or {})
     container_bar = "" if _rs.get("capable", True) else (_rs.get("cannot") or "this node cannot run the relay")
-    by_subnet = {}
+    by_subnet, by_fwd = {}, {}
     for lg in (legs or ()):
-        by_subnet.setdefault(lg.get("subnet") or "", []).append(lg)
+        if (lg.get("mode") or "smart") == "forward":
+            by_fwd[(lg.get("subnet") or "", lg.get("peer") or "")] = lg
+        else:
+            by_subnet.setdefault(lg.get("subnet") or "", []).append(lg)
     out = {}
     for iface, ov in ((node_cfg or {}).get("ifaces") or {}).items():
         ov = ov or {}
@@ -13303,14 +13428,22 @@ def relay_eligibility(node_cfg, snaps, nid, legs=()):
             peer = (ov.get("egress_node") or "").strip()
             if not peer:
                 continue                               # not reported yet — pause, never guess
+            # ⚠️ mark 0, up_mark T — AND THE ASYMMETRY IS THE POINT. The divert keeps naming the whole
+            # subnet, because on a cascade the source says it all and a mark match there would divert
+            # nothing (nothing marks a forwarded packet). The UPSTREAM names its leg, so the relay stops
+            # depending on its bind address landing in a `from <subnet>` rule and can be sent elsewhere.
+            # A leg the plan never resolved yields 0, which is exactly today's behaviour.
+            _u = _up_mark((by_fwd.get((subnet, peer)) or {}).get("mark") or 0)
             out[_relay_iid(iface, "")] = {"iface": iface, "peer": "", "via": peer, "subnet": subnet,
-                                          "mark": 0, "why": container_bar or _relay_ineligible(ov, 0)}
+                                          "mark": 0, "up_mark": _u,
+                                          "why": container_bar or _relay_ineligible(ov, 0, _u)}
         elif mode == "smart":
             for lg in sorted(by_subnet.get(subnet) or (), key=lambda x: str(x.get("peer") or "")):
                 _mk = int(lg.get("mark") or 0)
+                _u = _up_mark(_mk)
                 out[_relay_iid(iface, lg["peer"])] = {
                     "iface": iface, "peer": lg["peer"], "via": lg["peer"], "subnet": subnet, "mark": _mk,
-                    "why": container_bar or _relay_ineligible(ov, _mk)}
+                    "up_mark": _u, "why": container_bar or _relay_ineligible(ov, _mk, _u)}
     return out
 
 
@@ -13371,7 +13504,7 @@ def relay_plan(nodes, plans, nid, snaps):
             excluded[iid] = "this node has no free relay port left"
             continue
         legs.append({"iface": e["iface"], "peer": e["peer"], "subnet": e["subnet"],
-                     "mark": e["mark"], "port": ports[iid],
+                     "mark": e["mark"], "up_mark": e.get("up_mark") or 0, "port": ports[iid],
                      "cc_cli": (r.get("cc_cli") or "").strip(),
                      "cc_up": (r.get("cc_up") or "").strip()})
     if not legs:
@@ -20001,11 +20134,30 @@ def api(method, path, qs, body, deps):
         # hour with no way to hurry it. This is the operator saying "go and look again"; honour that for
         # everything the header can show, not just the version.
         _CHANGELOG_CACHE.clear()
-        reached = _check_latest_remote()             # synchronous one-off poll (for the header "check" icon)
-        with contextlib.suppress(Exception):
-            _check_turn_latest(deps)                 # the same click refreshes the turn-family badge
+        # An operator is watching a spinner, so this one gets a SHORT budget — the hourly loop keeps the long
+        # one. Both run the same code; the only difference is how long it is allowed to keep retrying.
+        reached = _check_latest_remote(budget=20)    # synchronous one-off poll (for the header "check" icon)
+        _why = None if reached else (LATEST_REMOTE.get("why") or None)
+        if _why:
+            # ALSO IN THE JOURNAL. The toast is seen by whoever clicked, once; a panel being supported from
+            # the outside needs the cause somewhere it can be read later. Only on the operator-driven check,
+            # so an unreachable GitHub cannot fill the log an hour at a time.
+            sys.stderr.write("swg-panel: update check failed — %s\n"
+                             % perr(_why[0], **_why[1])["error"])
+        # ⚠️ AND NOT WHEN GITHUB IS ALREADY KNOWN UNREACHABLE. This resolves a release tag per deployed fork,
+        # each one a curl with --max-time 25, so on a box that cannot reach GitHub the click that just proved
+        # it would go on to spend another 25s per fork discovering the same thing — a button that hangs for
+        # minutes to refresh a badge it cannot refresh. The hourly loop still tries both unconditionally, so a
+        # box where raw is blocked but github.com is not keeps its turn badge; only the waited-on click skips.
+        if reached:
+            with contextlib.suppress(Exception):
+                _check_turn_latest(deps)             # the same click refreshes the turn-family badge
         return 200, {"ok": True, "data": {
             "checked": reached,                      # did we actually reach the repo this time?
+            # WHY it could not be reached, as a translatable sentence — DNS, an unverifiable certificate, a
+            # reset, a rate limit. Absent when the check succeeded; an older SPA ignores it and shows the
+            # generic message it always did.
+            **({"why_key": _why[0], "why_vars": _why[1]} if _why else {}),
             "latest_remote": LATEST_REMOTE.get("version"),
             "latest_remote_date": _latest_notes(_req_lang())[0],
             "latest_remote_notes": _latest_notes(_req_lang())[1],
