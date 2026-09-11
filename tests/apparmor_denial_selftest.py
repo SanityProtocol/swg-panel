@@ -16,6 +16,12 @@ tools now genuinely RUN under whatever profile confines them, so `RTNETLINK answ
 permitted` — the tool running and the kernel turning it down — becomes the realistic outcome. It must not
 fall back to the same lie, so it gets its own arm and is asserted here.
 
+⚠️ BOTH REFUSAL SPELLINGS COUNT. EPERM is the no_new_privs transition denial; EACCES is a policy with
+no exec rule for the binary at all, or a noexec mount. Both mean the tool never ran, so both must reach
+a real message — matching only EPERM made the arm that names SELinux and fapolicyd unreachable for the
+hosts that actually produce them. Widening is safe here because `<tool>-quick` redirects only to file
+descriptors and /dev/null, so a failed redirect cannot wear this same shape inside it.
+
 ⚠️ A PROFILE IS NAMED EITHER WAY. Newer policy names it for the tool (`wg`), older for the path
 (`/usr/bin/wg`). Matching one spelling only would read a confined box as unconfined and hand the operator
 advice for the wrong cause — silently, which is why both are pinned below.
@@ -100,7 +106,10 @@ for label, msg, profiles, in_container, want in [
     ("datapath module missing",  "[#] ip link add\nError: Unknown device type.",          None, False, "NONE"),
     ("name already taken",       "wg-quick: `wg2' already exists",                          None, False, "NONE"),
     ("a real port clash",        "[#] wg setconf wg2\nAddress already in use",              None, False, "NONE"),
-    ("EACCES is not EPERM",      "/usr/bin/wg-quick: line 32: /usr/bin/ip: Permission denied", None, False, "NONE"),
+    # EACCES means the tool never ran either — a policy with no exec rule for the binary, or a noexec
+    # mount. The general arm names SELinux and fapolicyd, which produce exactly this; matching only
+    # EPERM left that advice unreachable and dropped those hosts back onto "port/subnet may be in use".
+    ("EACCES: no exec rule at all", "/usr/bin/wg-quick: line 32: /usr/bin/ip: Permission denied", None, False, "GENERAL"),
 ]:
     with_profiles(profiles)
     agent._IN_CONTAINER = in_container

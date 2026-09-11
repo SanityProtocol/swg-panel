@@ -417,7 +417,12 @@ rm_node(){
   # this file deliberately does not source it (see the note at the top). Change one, change both.
   for _aal in /etc/apparmor.d/local/*; do
     [ -f "$_aal" ] && grep -qsF '# --- swgPanel: userspace WireGuard datapaths (begin) ---' "$_aal" || continue
-    info "  reverting the swgPanel AppArmor grant in $_aal"
+    # ⚠️ UNCONDITIONAL, AND BEFORE THE KEEP QUESTIONS BELOW. The grant is a policy change we made to
+    # this box, so it goes back when we do — but an operator who then KEEPS a WDTT/csqtt server or a
+    # userspace awg interface is left with a running datapath whose socket the wg CLI can no longer
+    # read. Nothing of ours reads it once the node is gone, so the removal stands; it is said out loud
+    # rather than left to be discovered.
+    info "  reverting the swgPanel AppArmor grant in $_aal (a kept userspace server's socket becomes unreadable by the wg CLI)"
     run sed -i '/# --- swgPanel: userspace WireGuard datapaths (begin) ---/,/# --- swgPanel: userspace WireGuard datapaths (end) ---/d' "$_aal"
     _aap="/etc/apparmor.d/$(basename "$_aal")"
     [ -f "$_aap" ] && command -v apparmor_parser >/dev/null 2>&1 && run apparmor_parser -r "$_aap" 2>/dev/null || true

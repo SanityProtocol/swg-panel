@@ -1528,6 +1528,14 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
     warn "AppArmor policy for the WireGuard tools is present but $AA_PROFILES is unreadable — can't tell enforce from complain, so leaving it alone."
     return 0
   fi
+  # ⚠️ wg AND awg ONLY, and that is measured rather than assumed. On the node that reported this,
+  # `wg-quick` exec'd ip into a CHILD profile (target="wg-quick//ip") but exec'd wg into the STANDALONE
+  # one (target="wg"), and it was `profile="wg"` that then denied /run/wireguard — so local/wg is
+  # exactly the file that reaches it. Adding wg-quick here would write rules that no socket access ever
+  # consults; and a policy that did route wg through a `wg-quick//wg` child would be out of reach of
+  # local/ altogether, which is included at the profile's top level and not inside its children. That
+  # case degrades to the agent naming the refusal, which is the honest outcome for something we cannot
+  # repair from here.
   for t in wg awg; do
     # ⚠️ A PROFILE IS NAMED EITHER WAY, and so is the file that holds it: newer policy uses the tool
     # name (`wg`, /etc/apparmor.d/wg), older uses the path (`/usr/bin/wg`, /etc/apparmor.d/usr.bin.wg).
@@ -1547,12 +1555,26 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
       printf '%s\n' "$APPARMOR_LOCAL_BLOCK"
       continue
     fi
-    grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null && continue   # already done
+    if grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null; then
+      # ⚠️ PRESENT IS NOT LOADED. The block is written first and the profile reloaded second, so a
+      # reload that failed once (a transient parse error, an abstraction missing mid-upgrade, the
+      # module not up yet) left the rules on disk and unread — and every later run would stop HERE,
+      # meaning the heal that exists to fix exactly this could never fire again. Reloading a profile
+      # that already carries them is a cheap no-op, so it is not conditional on anything.
+      ${DRYRUN:-false} && { echo "    [skip] re-assert $loc via apparmor_parser -r $prof"; continue; }
+      apparmor_parser -r "$prof" 2>/dev/null \
+        || warn "$loc carries the swgPanel rules but $prof would not reload — run: apparmor_parser -r $prof"
+      continue
+    fi
     # NB: no `changed=yes` here. A dry-run that also prints the ✓ line below is claiming a policy
     # change it did not make — the [skip] line is the whole report.
     if ${DRYRUN:-false}; then echo "    [skip] append swgPanel socket rules to $loc + apparmor_parser -r $prof"; continue; fi
     mkdir -p "$AA_DIR/local" 2>/dev/null || true
-    printf '\n%s\n' "$APPARMOR_LOCAL_BLOCK" >> "$loc" 2>/dev/null \
+    # A separator only when the file needs one: `$(tail -c1)` strips a trailing newline, so it is
+    # empty exactly when the file already ends in one. Always prepending it instead would leave one
+    # more blank line behind on every install/uninstall cycle, since the reap cuts marker-to-marker.
+    [ -s "$loc" ] && [ -n "$(tail -c 1 "$loc" 2>/dev/null)" ] && printf '\n' >> "$loc" 2>/dev/null
+    printf '%s\n' "$APPARMOR_LOCAL_BLOCK" >> "$loc" 2>/dev/null \
       || { warn "couldn't write $loc — add the swgPanel block there by hand"; continue; }
     if apparmor_parser -r "$prof" 2>/dev/null; then changed=yes
     else warn "wrote $loc but couldn't reload $prof — run: apparmor_parser -r $prof"; fi

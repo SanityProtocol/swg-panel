@@ -725,6 +725,14 @@ def _declarative():
       · a unit directory we cannot write — the native arm, and any other immutable-OS layout, where
         there is no environment of ours to read.
 
+    ⚠️ THE ENV SIGNAL DOES NOT SURVIVE sudo. swg-noded prefixes `sudo -n` when node.sudo is true, and
+    sudo's env_reset drops SWG_DECLARATIVE — detection then falls back to the probe below. Left alone
+    deliberately: the combination that would need it is declarative AND containerised AND sudo, and a
+    container node runs the daemon as root (sudo false), while every shipped installer writes sudo
+    false too. `--preserve-env=` would be the fix, and it is NOT applied here because sudoers can
+    refuse that option outright, which would fail every agent call on such a node to repair a case
+    that cannot currently occur. Revisit if node.sudo ever becomes a default.
+
     ⚠️ MESSAGE SELECTION ONLY, and it must be asked BEFORE the container test everywhere it is used:
     a declaratively managed container is both, and only one of the two answers can be acted on.
     _iface_unit keeps asking _units_persist() directly — what it needs to know is whether a unit
@@ -867,10 +875,19 @@ def _iface_unit(action, tool, iface):
 # bash reports a failed execve as `<script>: line <n>: <path>: <reason>` — the tool never STARTED, so
 # nothing it would have said about ports, subnets or device types can be true.
 #
+# ⚠️ BOTH SPELLINGS, because both mean the same thing here. EPERM ("Operation not permitted") is the
+# no_new_privs transition denial this project caused and has now removed; EACCES ("Permission denied")
+# is what a policy that simply has no exec rule for the binary returns, and what a noexec mount returns
+# — SELinux and fapolicyd land there, and the general arm below names them, so matching only EPERM left
+# that advice permanently unreachable and dropped those hosts back onto "port/subnet may be in use".
+# Safe to widen here specifically: `<tool>-quick` redirects only to file descriptors and /dev/null, so
+# a failed REDIRECT — which bash reports in this same shape — cannot occur inside it.
+#
 # The English spelling is not luck: `<tool>-quick` does `export LC_ALL=C` on its ninth line, before it
 # runs anything, so every message below it is C-locale whatever the host is set to. Keep that in mind
 # before matching on any other stderr text here.
-_EXEC_DENIED_RE = re.compile(r"(?:^|\n)[^\n]*: line \d+: (\S+): Operation not permitted")
+_EXEC_DENIED_RE = re.compile(
+    r"(?:^|\n)[^\n]*: line \d+: (\S+): (?:Operation not permitted|Permission denied)")
 
 # The OTHER refusal: the tool really did run, and the kernel turned down the operation it asked for.
 # A different fault with a different fix, which is why the pattern above is anchored tightly enough to
@@ -962,7 +979,7 @@ def _denied_error(msg):
                 return AgentError("no_exec", _AA_DECLARATIVE)
             return AgentError("no_exec",
                               "this node could not execute the tools that bring an interface up: the "
-                              "kernel refused to start them (\"Operation not permitted\"), so the bring-up "
+                              "kernel refused to start them, so the bring-up "
                               "never began. This is not a port or subnet conflict. This node's installation "
                               "is managed declaratively, so this belongs in the system configuration that "
                               "declares it rather than in a command here: the node daemon must not set "
@@ -973,7 +990,7 @@ def _denied_error(msg):
         if _IN_CONTAINER:
             return AgentError("no_exec",
                               "this node's container could not execute the tools that bring an interface "
-                              "up: the kernel refused to start them (\"Operation not permitted\"), so the "
+                              "up: the kernel refused to start them, so the "
                               "bring-up never began. This is not a port or subnet conflict. A container "
                               "gets this when its capability set no longer covers what those binaries ask "
                               "for — give the node NET_ADMIN (in docker-compose.yml: cap_add: "
@@ -1001,7 +1018,7 @@ def _denied_error(msg):
                               "missing) — then this interface creates itself on the next sync.")
         return AgentError("no_exec",
                           "this node could not execute the tools that bring an interface up: the kernel "
-                          "refused to start them (\"Operation not permitted\"), so the bring-up never "
+                          "refused to start them, so the bring-up never "
                           "began. This is not a port or subnet conflict, and the datapath module is not "
                           "the problem. Either those binaries carry file capabilities that this node's "
                           "capability bounding set no longer covers, or an exec-control layer (SELinux, "
