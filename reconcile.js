@@ -150,26 +150,46 @@ function reconcile(roster, stats, now, cfg) {
       const key = t.node + "|" + t.iface + "|" + pubkey;
       managed[key] = true;
       const obs = observed[key] || null;
-      let st;
+      let st, faultKind = null;   // which RESTRICTED signature fired: "churn" (session won't hold) | "nohs" (never got in)
       if (nodeStatus[t.node] !== "live") st = "unknown";
       else if (obs) {
         if (obs.online) {
           st = "online";
-          // FAULTY: handshake is up but the node has received NO new bytes FROM the client for a while — the
-          // tunnel is established yet inbound data isn't flowing (one-way block / DPI / broken return path).
-          // Needs rx history across polls, kept by the caller in cfg.history (keyed like `observed`).
-          if (cfg.history) {
-            const h = cfg.history, rx = obs.rx_bytes || 0, prev = h[key];
-            if (!prev) h[key] = { rx: rx, flatSince: null };
-            else if (rx > prev.rx) { prev.rx = rx; prev.flatSince = null; }         // data flowing → healthy
-            else { if (prev.flatSince == null) prev.flatSince = now; if (cfg.detectFaulty !== false && (now - prev.flatSince) >= (cfg.faultyMs || 45000)) st = "faulty"; }
-          }
+          // FAULTY: the session will not HOLD. WireGuard renews a live session every 120s (REKEY_AFTER_TIME)
+          // and a session dies at 180s, which is what `online` is measured against. So the INTERVAL between
+          // handshakes reads directly on whether the tunnel is healthy: ~120s is a peer renewing on schedule,
+          // and a much shorter interval means the session keeps collapsing and the client keeps rebuilding it.
+          //
+          // ⚠️ THIS REPLACES A RULE THAT COULD ONLY EVER FIRE ON A FALSE POSITIVE. The old test was "handshake
+          // still valid but rx has been flat for 45s". WireGuard has no disconnect, so a client that closes its
+          // tunnel leaves a valid handshake behind for up to 180s with rx flat — the rule's exact signature.
+          // That produced the reported online → faulty → ready flicker on every single disconnect. Worse, it
+          // could not detect anything else: sampling a production node showed a re-handshaking peer moving rx
+          // on 18 of its 19 handshakes, so handshake traffic itself advances rx_bytes and "rx is flat" is
+          // exactly equivalent to "the client is sending nothing at all" — idle or gone, never a fault.
+          //
+          // The node measures the cadence now (see _session_health), so it works with no browser open and
+          // survives a reload; the browser-side rx history it replaces did neither. An older node sends no
+          // cadence, and then nothing is flagged — a missing measurement must never invent a fault.
+          // ⚠️ CHURN ALONE IS NOT EVIDENCE OF FILTERING. A session rebuilt every 15s reads the same whether a
+          // middlebox is killing a working tunnel or the peer is connected and idle: neither moves data,
+          // because a client that cannot get through is not sending any and one that is not trying is not
+          // either. Measured on the production node — the operator's own router, working fine but with
+          // nobody behind it, churned at 15s moving 180 B rx / 229 tx per interval and was shown as
+          // Restricted; EVERY peer the rule flagged there was idle. So the fault is claimed only when
+          // something was actually trying to flow between the handshakes. Healthy peers there moved
+          // 65 KB–78 MB per interval, idle ones 180 B–2.8 KB, so the floor is nowhere near either edge.
+          if (cfg.detectChurn !== false && obs.hs_gap_med != null
+              && obs.hs_seen >= (cfg.churnMin || 3)
+              && obs.hs_gap_med <= (cfg.churnGapS || 60)
+              && (obs.hs_bytes_med || 0) >= (cfg.churnBytes || 16384)
+              && !obs.ep_moves) { st = "blocked"; faultKind = "churn"; }   // a ROAMING client rehandshakes legitimately — its endpoint moved
         } else if (cfg.detectBlocked !== false && obs.endpoint && (obs.rx_bytes || 0) > 0
                    && obs.handshake_age == null && (now - createdMs) > cfg.graceMs) {
           // BLOCKED: the client IS sending packets (rx moved) but no handshake ever completed — it reaches the
           // server and the tunnel won't come up (DPI on the handshake, MTU, wrong params). The endpoint alone
           // does not prove that: a server conf can carry one, and then nothing has arrived at all.
-          st = "blocked";
+          st = "blocked"; faultKind = "nohs";
         } else st = "ready";
       }
       else {
@@ -210,7 +230,7 @@ function reconcile(roster, stats, now, cfg) {
                // roster's own). effectiveClientParams needs them to rebuild a config from the encrypted blob,
                // and dropping them here is what made the panel's QR disagree with the peer's subscription page.
                overrides: t.overrides || null,
-               status: st, online: !!(obs && obs.online), observed: obs, via: via,
+               status: st, fault: faultKind, online: !!(obs && obs.online), observed: obs, via: via,
                viaTurn: viaTurn,   // the SPECIFIC turn-proxy service the peer came in through (one per connection)
                restorable: (st === "dangling") && _trip,   // this deployment's interface is gone long enough → offer Restore
                correctable: (st === "broken") && _trip,     // this deployment's IP is out-of-subnet long enough → offer Correct
@@ -229,7 +249,13 @@ function reconcile(roster, stats, now, cfg) {
     else if (present.length === 0) status = (live.length && live.every(d => d.status === "broken")) ? "broken"
                                             : ((now - createdMs) <= cfg.graceMs ? "creating" : "dangling");   // broken record vs gone interface
     else if (present.length < live.length) status = "partial";
-    else { status = "ready"; present.forEach(d => { if ((RANK[d.status] || 0) > (RANK[status] || 0)) status = d.status; }); }   // all present → best of the targets' states (online/faulty/blocked/ready)
+    // All present → the most-alive of the targets' states, so a peer that still works somewhere is not
+    // alarmed about a node it also lives on. ⚠️ SEEDED FROM A REAL TARGET, not from the literal "ready":
+    // `blocked` RANKS BELOW `ready` (it is a fault, not an aliveness level), so seeding "ready" meant a
+    // single-target peer whose one target was blocked rolled up to "ready" and the status could never be
+    // seen. That was the second, independent reason "restricted" never appeared in the UI — the condition
+    // could fire and the roll-up would still throw it away.
+    else { status = present[0].status; present.forEach(d => { if ((RANK[d.status] || 0) > (RANK[status] || 0)) status = d.status; }); }
 
     // a key rotation in flight: the new key isn't on the wire yet — show "rotating", not dangling
     if (cfg.rotating && cfg.rotating.has(pid) && (status === "dangling" || status === "creating" || status === "unknown")) status = "rotating";
@@ -277,9 +303,12 @@ function reconcile(roster, stats, now, cfg) {
       const bt = new Set(targets.filter(d => d.status === "blocked").map(d => d.type));
       // datapath NAMES, not language — they are what the operator sees in wg/awg output   // i18n-keys
       const proto = (bt.has("awg") && bt.has("wg")) ? "Wireguard or AmneziaWG" : bt.has("awg") ? "AmneziaWG" : bt.has("wg") ? "Wireguard" : "Wireguard or AmneziaWG";   // i18n-keys
-      reason = T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {v1} params", { v1: proto });
+      // Two very different failures wear this badge, and they need different fixes: one never got in at all,
+      // the other gets in and cannot stay. Churn wins when both are present — it is the more specific finding.
+      reason = targets.some(d => d.fault === "churn")
+        ? T("the tunnel keeps collapsing and being rebuilt — the session won't hold, which is what a filtered or DPI'd connection looks like")
+        : T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {v1} params", { v1: proto });
     }
-    else if (status === "faulty") reason = T("connected, but no inbound data is flowing — likely a one-way block / DPI on the return path");
     else if (status === "broken") reason = T("the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface");
     else if (status === "expired") reason = selfExpired ? T("this peer's access date has passed") : T("the subscription's access date has passed");
 
@@ -342,6 +371,7 @@ function reconcile(roster, stats, now, cfg) {
     return {
       id: uid, name: u.name || "", tag: u.tag || "", note: u.note || "", vk_link: u.vk_link || "",
       vk_links: Array.isArray(u.vk_links) ? u.vk_links : (u.vk_link ? [u.vk_link] : []),   // full ordered set (primary first) — the VK-links manager reads all of these
+      vk_pool: u.vk_pool || {},   // pool-id → URL for the links that came from the shared pool, so Manage can mark them apart from personal ones
 
       created_at: u.created_at || null, modified_at: u.modified_at || null,
       peerIds: mine.map(pr => pr.id),

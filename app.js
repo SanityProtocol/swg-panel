@@ -146,7 +146,13 @@ function _parseAddr(rawUrl) {
 function oldAddrCurrent() {   // → the current canonical addr {host,scheme,port,base,label} if THIS tab is on a different one, else null
   const c = _parseAddr(Store.panelPublicUrl); if (!c) return null;
   const scheme = location.protocol.replace(":", "");
-  const hereBase = location.pathname.replace(/\/+$/, "");
+  // ⚠️ `/panel/index.html` IS `/panel/`. The mount base never includes a file name, so comparing it against
+  // the raw pathname made the SPA's own entry file read as a DIFFERENT address: open the panel at
+  // `https://host:2087/index.html` — a bookmark, a hand-typed URL, a proxy that does not rewrite — and the
+  // ribbon announced "You're on a previous panel address", offering to send the operator to the address
+  // they were already on. Observed on swgt while loading `/index.html?cb=…`. Drop the entry file before
+  // comparing; a real subpath mount ("/swg") is unaffected because it has no file name to strip.
+  const hereBase = location.pathname.replace(/\/index\.html?$/i, "/").replace(/\/+$/, "");
   // ⚠️ THE CONSOLE ADDRESS IS NOT A STALE ONE. With private access on, the panel's public url is
   // deliberately NOT where the console lives — that address answers node routes and 404s these pages —
   // so a tab on the console differs from `panelPublicUrl` by design, on every load, for as long as the

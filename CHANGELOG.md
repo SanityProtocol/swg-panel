@@ -3,14 +3,109 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.6-beta] — 2026-09-11
+
+### Added
+
+- **A node can now leave by something other than its own address.** Register a free Cloudflare WARP account
+  in one click — or paste a WARP+ licence from the mobile app and the exit comes up on WARP+ — paste a
+  WireGuard profile from anywhere else, or point at a network card or tunnel the box already runs. Any of them can be the node's default way out, one interface's way out, or the destination of
+  a single routing rule — the same question, asked the same way, in every picker that asks it.
+- **A kill-switch per exit.** With it on, traffic using that exit is refused the moment the exit stops
+  working, instead of quietly falling back to the node's own address — which is the one thing an exit exists
+  to prevent. It is a route installed whether the device is up or not, so the very next packet is refused,
+  with nothing of ours having to notice first.
+- **An exit's original account survives losing the node's key.** The key is sealed under your encryption key
+  and the panel only ever holds ciphertext it cannot open. If a node re-registers and the address websites
+  see changes, the row says so and offers the old account back.
+- **Hybrid SNI routing.** The kernel matches IP categories and reads the TLS handshake for host categories in
+  one pass, with no helper process — the throughput of the IP engine with the reach of the name engine.
+- **Recreating a lost interface puts back what it was.** Its endpoint, port, MTU, DNS, keepalive and
+  obfuscation band all come from what the panel held, instead of the fleet defaults; and an AmneziaWG
+  interface comes back as AmneziaWG.
+- **A NixOS node reports which build it is running.** Two builds of the same branch used to be
+  indistinguishable to the panel.
+- **The iPhone app can open a csqtt server.** anton48's VK TURN Proxy added csqtt in build 364, so a csqtt
+  server is no longer Android-only — the same `csqtt://` link serves both apps, and iOS users are offered the
+  app instead of "no client for this platform".
+- **Speeds can be shown in bits.** Settings → Display → Throughput units. Bytes stay the default — it is
+  what the node counts, and what totals are shown in — but a panel set to bits reads 200 Mbit/s where a
+  speed test reads 200, with no dividing by eight. Totals are always in bytes.
+- **Every leg of the mesh is either Forward or Relay, and the panel says which case you are in.** Forward
+  sends packets across the link untouched: the cheapest option, nothing in the path to fail, and the right
+  one while the leg is healthy. Relay makes the node answer the client itself and open its own connection
+  onward, so loss on a bad leg stops reaching the user — in exchange it costs noticeably more CPU and buys
+  nothing on a clean link. The card reads the leg's live loss and names the choice that fits, and a CPU cap
+  bounds what the relay may take. ⚠️ A divert whose relay is not serving is a blackhole, not a no-op, so the
+  rule exists only while a watchdog has just proven the relay answering from inside its own event loop —
+  anything that cannot be proven is removed on that pass, and "could not check" counts as cannot.
+
+### Changed
+
+- **Every dropdown in the panel is one control.** The last 35 native selects were replaced, so grouping,
+  keyboard navigation, disabled rows that say *why* they are disabled, and the way a long list scrolls now
+  behave identically everywhere — including the ones you reach with the keyboard alone.
+- **The exits you can see and the exits you can manage are on one screen.** They were on two, which meant a
+  device you could route through was not a device you could rename, switch off or remove.
+- **A box installed from a branch or a tag keeps tracking it.** One-click Update used to fetch `main` on
+  every box, whatever it was installed from — so a panel tracking a pre-release branch silently rolled
+  itself backwards. Nodes track their own installed ref too, and an update heals a box that never recorded
+  one.
+- **A routing rule says when it cannot run here, and when it points at nothing.** The summary counts both,
+  separately, without opening the section — a target this node's mode cannot match is a different problem
+  from a destination that has been deleted.
+- **The exits grid explains its two switches.** Kill-switch and Active are the only controls there that
+  change what happens to traffic and to an account, and neither said what it did.
+- **Each routing mode says what it can and cannot match.** IP-only takes ranges and networks; Force-DNS
+  adds sites and zones; Kernel-SNI takes sites as text and text patterns; Hybrid SNI takes all of them. A
+  rule whose target the node's current mode cannot run now says so on the rule itself instead of quietly
+  matching nothing, and the summary counts it without opening the section. Punycode names are shown the way
+  they were written.
+
+### Fixed
+
+- **A rule whose destination node had been deleted rendered as a blank control and routed nothing.** All of
+  that interface's traffic went out the node's default instead, with nothing on screen saying so.
+- **Force-DNS reported its resolver "down" whenever there was nothing to resolve.** Both other host engines
+  already knew that idle is not broken.
+- **Recreating a ghost interface was refused at its own port,** with a message naming the very interface
+  being recreated.
+- **`convert.sh --dry-run` converted.** The flag every other installer honours was accepted, ignored, and
+  the conversion ran — and the front door announced a preview of it.
+- **An uninstall left a systemd override behind** that the next install of that name silently inherited, and
+  which suppressed the heal that would have corrected it.
+- **`--build` on the docker installer named nothing it built.** The flip that switches compose from the
+  published images to a local build matched a tag that had not been a literal for two releases, so it left
+  every service carrying both. Corrected — and a build install now pins its own image tag, so what a box
+  built from source is distinguishable from what CI publishes from `main`, and cannot be replaced by it.
+- **An interface name the box does not have became a permanent per-sync error.** `MANAGE_IFACES=none`
+  installed cleanly, printed a green summary, and wrote a managed interface called `none` into the node's
+  config — after which the node reported `none: cannot read interface` on every pass, for ever. Both the
+  node and the master installer now refuse a name that is not there, and say what the box does have.
+- **Russian read "1 пир получат"** — a count as the subject of a verb that cannot agree with it — in four
+  places, and two more the audit could not see.
+- **Reordering your nodes did not reach every screen.** The Nodes screen is drag-reorderable, but the peer
+  sheet, the interface picker, the turn-proxy list and the mesh grid each re-sorted nodes alphabetically —
+  so the server you put at the top was third everywhere else, with nothing explaining the disagreement.
+- **Opening the panel at `/index.html` was reported as "a previous address".** The migration ribbon
+  compared the raw path against the mount base, which never carries a file name — so a bookmark, a
+  hand-typed URL or a proxy that does not rewrite `/` produced a banner offering to send you to the address
+  you were already on.
+- **A speed said which unit it was in — and then stopped, exactly where it mattered.** Small rates read
+  "512 B/s"; large ones read "23.8 M/s", the B dropped the moment the number could be misread. On a screen
+  about network speed a bare "M/s" is read as megabits, because bits are what every speed test and ISP plan
+  quotes — so a panel showing 23.8 beside a speed test showing 200 looked like it was under-counting by an
+  order of magnitude. It was not: 200 Mbit/s *is* 23.8 MB/s. Every hop from the node's counters to the graph
+  was measured and carries the rate exactly; the unit letter now stays on at every size.
+
 ## [1.8.5-beta] — 2026-09-02
 
 ### Added
 
 - **A newer server build for every fork the panel builds, with the one you were on kept as a rollback
   target.** csqtt 2.1.9, qWDTT 1.4.3, WDTT-Plus 15, xxcipher 2.0.0.70 and ildarmaga 1.5.40-2, each published
-  for amd64 and arm64 — the arm64 halves are new, so an arm64 node could not install several of these before.
-  The version picker still lists the previous build, so an upgrade stays reversible.
+  for amd64 and arm64, as every fork build always has been. The version picker still lists the build you were
+  on, so an upgrade stays reversible.
 - **ildarmaga's RAW-IP datapath is now the panel's to place.** It used to derive its own listener from the
   DTLS port and always bind it, on a fixed interface name — a port the panel never allocated, and a name two
   servers on one machine would fight over. RAW is now an explicit choice per server, on the port the panel

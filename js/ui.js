@@ -13,7 +13,7 @@
  * handles Esc/Enter/Tab. Without it a child sheet's Escape would close its parent too.
  */
 
-import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rate, seen } from "./util.js";
+import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rateIn, niceScaleCeilIn, seen } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText, srvVars } from "./i18n.js";
@@ -22,7 +22,7 @@ import { IFACE_COLOR_DEFAULTS, THEME_COLOR_DEFAULT, THEME_COLOR_LIGHT_DEFAULT, T
 import { targetType, peerUncategorised } from "./model.js";
 import { turnColor, turnLabel, turnForkList } from "./turn-catalog.js";
 import { h, render, Fragment } from "preact";
-import { useState, useEffect, useRef } from "preact/hooks";
+import { useState, useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -93,6 +93,9 @@ export const ICON = {
   link: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M10 13a4 4 0 0 0 6 .5l2-2a4 4 0 0 0-5.7-5.7l-1.2 1.1M14 11a4 4 0 0 0-6-.5l-2 2A4 4 0 0 0 11.7 18l1.2-1.1"/></svg>',
   qr: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><path d="M14 14h3v3M21 14v3M17 21h4M14 21h.01M21 21v.01M17 17h.01"/></svg>',
   doc: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>',
+  // `</>` — the rule field's text view. Round joins and the same 2px stroke as the rest of the set, so it
+  // sits beside the drag grip without reading as a different family.
+  code: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 7.5L4 12l4.5 4.5M15.5 7.5L20 12l-4.5 4.5M13.5 4.5l-3 15"/></svg>',
   // OS/platform brand glyphs (Android/iOS/Windows/macOS from the sub-page picker; Linux = Simple Icons Tux) — viewBox-only, CSS-sized
   os_android: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.2 9.3h9.6v7.2a1 1 0 0 1-1 1H15v2.1a1.1 1.1 0 0 1-2.2 0V17.5h-1.6v2.1a1.1 1.1 0 0 1-2.2 0V17.5h-.8a1 1 0 0 1-1-1zM5 9.6a1.1 1.1 0 0 1 1.1 1.1v4.4a1.1 1.1 0 0 1-2.2 0v-4.4A1.1 1.1 0 0 1 5 9.6zm14 0a1.1 1.1 0 0 1 1.1 1.1v4.4a1.1 1.1 0 0 1-2.2 0v-4.4A1.1 1.1 0 0 1 19 9.6zM8.3 8.4a3.9 3.9 0 0 1 1.7-2.7l-.82-1.35a.28.28 0 0 1 .48-.28l.83 1.4a4.6 4.6 0 0 1 3 0l.83-1.4a.28.28 0 0 1 .48.28L14 5.7a3.9 3.9 0 0 1 1.7 2.7zm1.8-1.6a.62.62 0 1 0 0-1.24.62.62 0 0 0 0 1.24zm3.8 0a.62.62 0 1 0 0-1.24.62.62 0 0 0 0 1.24z"/></svg>',
   os_ios: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.8 12.7c-.02-2.2 1.8-3.26 1.88-3.32-1.02-1.5-2.62-1.7-3.19-1.72-1.36-.14-2.65.8-3.34.8-.68 0-1.75-.78-2.88-.76-1.5.02-2.85.86-3.61 2.19-1.54 2.68-.4 6.65 1.1 8.83.73 1.07 1.6 2.27 2.74 2.23 1.1-.045 1.52-.71 2.85-.71 1.33 0 1.7.71 2.87.69 1.18-.02 1.93-1.09 2.65-2.16.83-1.24 1.18-2.44 1.2-2.5-.026-.01-2.3-.885-2.32-3.51zM13.6 6.35c.6-.73.995-1.74.888-2.75-.86.035-1.9.57-2.52 1.3-.55.64-1.03 1.68-.9 2.66.955.075 1.93-.49 2.53-1.21z"/></svg>',
@@ -127,9 +130,18 @@ export function toast(msg, kind = "info", ms = 5500) {
 // The "type <name> to confirm" label above a destructive sheet's input. Shared: three delete sheets use it
 // (peer/user, interface, turn-proxy) and it lived private in sheets-crud.js, so the other two threw a
 // ReferenceError the moment they rendered — a delete dialog that could not open at all.
+// The phrase the operator has to retype, rendered so they can just take it: clicking the word (or the copy
+// mark beside it) puts it on the clipboard. Retyping a phrase is the point of the gate — copying it is not a
+// way around that, it is the same deliberate act without the typos, and it is the only way a phrase in a
+// language the operator does not use is reachable at all.
+export function ConfirmPhrase({ phrase, bold }) {
+  return html`<button type="button" class="ctype-copy" title=${T("Copy")}
+    onClick=${e => { e.preventDefault(); e.stopPropagation(); copy(phrase, T("Phrase copied")); }}>
+    <span class=${bold ? "mono b" : "mono"}>${phrase}</span><${Ic} i="copy"/></button>`;
+}
 export function typeToConfirm(phrase) {
   const [a, b] = Tsplit("Type {phrase} to confirm", "phrase");
-  return html`<${Fragment}>${a}<span class="mono" style="text-transform:none">${phrase}</span>${b}<//>`;
+  return html`<${Fragment}>${a}<${ConfirmPhrase} phrase=${phrase}/>${b}<//>`;
 }
 export function copy(text, what) { navigator.clipboard.writeText(text); toast((what || T("Copied")) + ".", "ok", 1500); }
 
@@ -225,11 +237,20 @@ export const rowNoSelect = e => { if (e.detail > 1) e.preventDefault(); };   // 
 // transform on hover; a `.down` card carries opacity:.5) — z-index can't rescue it across contexts.
 // Rendering at <body> escapes every ancestor context. Preact core has no createPortal, so we drive a
 // detached container with render().
+/* The content render is a LAYOUT effect, and that is not a preference — with a passive effect this portal
+   silently drops EVERY SECOND update. Reproduced in isolation: a component rendering the same counter inline
+   and through this portal went 1,1,3,3,5 in the portal against 1,2,3,4,5 inline. Preact debounces passive
+   effects into an after-paint flush, and calling render() from inside that flush re-enters the queue it is
+   draining, which swallows one pass; a layout effect runs synchronously inside the commit and lands every
+   time. The mount effect that appends the host stays passive — layout effects run first, so the content is
+   already in the detached div when it is attached, which is one fewer reflow, not a problem.
+   Every popover in the panel is this component, so the catalog search used to show the results for the
+   keystroke before last whenever you stopped typing on an even one. */
 export function Portal({ children }) {
   const host = useRef(null);
   if (!host.current) host.current = document.createElement("div");
   useEffect(() => { const el = host.current; document.body.appendChild(el); return () => { render(null, el); el.remove(); }; }, []);
-  useEffect(() => { render(children, host.current); });
+  useLayoutEffect(() => { render(children, host.current); });
   return null;
 }
 
@@ -378,7 +399,7 @@ export function subjectBlocked(subject) {
   const rec = subject.kind === "user" ? Store.user(subject.id) : Store.peer(subject.id);
   return !!(rec && rec.disabled);
 }
-export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, onBack, noGuard, subject }) {
+export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, cleanRef, onBack, noGuard, subject }) {
   useStore();                                    // track live block/unblock while the modal is open
   onClose = onClose || closeModal;
   const blocked = subjectBlocked(subject);
@@ -393,6 +414,12 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
   // entirely — view modals (QR / turn configs) save every field inline, so there's nothing to discard.
   const tryClose = () => { if (!noGuard && (dirty.current || (dirtyRef && dirtyRef.current)) && !discardRef.current) { setDiscarding(true); return; } onClose(); };
   if (closeRef) closeRef.current = tryClose;   // expose the guarded close so a footer Cancel routes through it too
+  // ⚠️ A SHEET THAT SAVES ITSELF NEEDS A WAY TO SAY SO. `dirty` is set by any input/change event and was
+  // never cleared, so a sheet whose own body writes to the server (rather than closing through the footer
+  // action) went on guarding forever: save everything, click outside, and it asks whether to discard
+  // changes that are already on disk — which teaches the operator to click through the one dialog that
+  // matters. `cleanRef` is the caller saying "committed"; the input listener arms it again on the next edit.
+  if (cleanRef) cleanRef.current = () => { dirty.current = false; };
   // The keydown listener below is registered ONCE (useEffect []), but openModal REPLACES one <Sheet> with
   // another at the same position, so Preact reuses this instance and only updates props — the effect never
   // re-runs. Without this ref, Esc would keep calling the FIRST render's onClose: a config sheet reached via a
@@ -416,6 +443,13 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       if (_qrZoomOpen()) return;   // a QR enlargement is open — let it handle Esc (collapse it, keep the modal)
       if (_sheetStack[_sheetStack.length - 1] !== tok) return;   // a child modal is on top — defer to it
       if ((e.key === "Enter" || e.key === "Escape") && e.target && e.target.dataset && e.target.dataset.enter === "self") return;   // input handles its own Enter/Esc (e.g. inline rename) — don't submit/close the sheet
+      // ⚠️ AN OPEN DROPDOWN OWNS ENTER AND ESCAPE, and this listener is on `document` in the CAPTURE phase —
+      // so without this it beats the popup's own handler every time. MEASURED: with a list open in a sheet,
+      // Enter on a row fired the sheet's primary button. The operator was choosing an option and the form
+      // submitted instead, which on the interface sheet means creating the interface. The popup is portalled
+      // to <body>, so it is not inside `root` and no focus- or containment-based test can see it; its class
+      // is the signal, exactly as `_qrZoomOpen()` above is for an enlarged QR.
+      if ((e.key === "Enter" || e.key === "Escape") && document.querySelector(".ddpop")) return;
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryCloseRef.current(); return; }
       if (e.key === "Enter" && !noGuardRef.current && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
         // view modals (QR / turn) have no single submit action — Enter must not fire a random primary button
@@ -479,7 +513,7 @@ export function openConfirm(opts) { openChildOrRoot(html`<${ConfirmSheet} ...${o
    the bold word. That keeps each language's word order (Russian puts the name last) without concatenating. */
 function typePrompt(word) {
   const [before, after] = Tsplit("Confirm by typing {name}", "name");
-  return html`<${Fragment}>${before}<b>${word}</b>${after}<//>`;
+  return html`<${Fragment}>${before}<${ConfirmPhrase} phrase=${word} bold=${true}/>${after}<//>`;
 }
 export function ConfirmSheet({ title, body, note, log, confirmLabel, busyLabel, cancelLabel, danger, warn, onConfirm, back, requireType }) {
   back = back || closeModal;
@@ -784,7 +818,6 @@ export function gridIfacesTag(prim, all) {
 // every grid regardless of which columns are shown. Otherwise the normal Badge.
 const STATUS_REASONS = once(() => ({
   blocked: blockedReason(null),
-  faulty: T("connected, but no inbound data is flowing — likely a one-way block / DPI on the return path"),
   broken: T("the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface"),
   disabled: T("access is blocked — removed from every server until unblocked"),
   expired: T("the access date has passed — removed from every server until the date is extended"),
@@ -794,8 +827,11 @@ export const statusReason = s => STATUS_REASONS()[s] || "";
 // The blocked "wrong params" hint, naming the datapath the deployment runs (wg → Wireguard, awg → AmneziaWG,
 // unknown → both) so it points at the right knobs. Mirrors the dynamic reason reconcile.js sets peer-wide.
 // The protocol name is INTERPOLATED, not concatenated: it lands mid-sentence, and only one language puts it there.
-export function protoLabel(type) { return type === "awg" ? "AmneziaWG" : type === "wg" ? "Wireguard" : T("Wireguard or AmneziaWG"); }
+export function protoLabel(type) { return type === "awg" ? "AmneziaWG" : type === "wg" ? "Wireguard" : T("Wireguard or AmneziaWG"); }   // i18n-keys: protocol names
 export function blockedReason(type) { return T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {proto} params", { proto: protoLabel(type) }); }
+// The other "restricted" signature: the handshake DOES complete, repeatedly, because the session will not
+// hold. Mirrors the dynamic reason reconcile.js sets peer-wide.
+export function churnReason() { return T("the tunnel keeps collapsing and being rebuilt — the session won't hold, which is what a filtered or DPI'd connection looks like"); }
 // The "why" bubble for an Uncategorised peer, as a Popover rather than the CSS-only .turnbub: every peers
 // grid lives inside `.panel`, which is `overflow:hidden` to clip the table to its rounded corners, so a bubble
 // anchored inside it is CUT OFF at the panel's bottom edge — measured, 54px of a 112px bubble on the last row.
@@ -812,7 +848,9 @@ export function uncatPop(trigger) {
 export function gridStatusBadge(t, p, re) {
   const st = t.status || p.status;
   const reason = (t.down ? T("Interface {iface} is down — {why}", { iface: t.iface, why: t.down })
-    : st === "blocked" ? blockedReason(t.type)   // name THIS deployment's datapath (wg / awg) in the "wrong params" hint
+    // "restricted" now covers two failures. `t.fault` says which one this deployment hit, so the bubble
+    // stops telling a peer whose session keeps collapsing that its handshake never completed.
+    : st === "blocked" ? (t.fault === "churn" ? churnReason() : blockedReason(t.type))   // name THIS deployment's datapath (wg / awg) in the "wrong params" hint
     : (p.reason || statusReason(st))) || "";
   // UNCATEGORISED keeps the peer's real status word and recolours it, the same grammar `b-turn` uses for
   // "online, but via a proxy". Replacing the word with "Uncategorised" threw away something true — the peer
@@ -841,7 +879,7 @@ export function gridStatusBadge(t, p, re) {
     const bc = "var(--fault)";
     return html`<span class="turnwrap" title="">
       <${Badge} s=${st}/>
-      <span class="turnbub statusbub"><span class="statusbub-h" style=${"color:" + bc}><${Ic} i="warn"/>${st === "blocked" ? "Restricted" : "Faulty"}</span>${reason}</span></span>`;
+      <span class="turnbub statusbub"><span class="statusbub-h" style=${"color:" + bc}><${Ic} i="warn"/>${statusLabel(st)}</span>${reason}</span></span>`;
   }
   return html`<${Badge} s=${st} title=${reason}/>`;
 }
@@ -851,7 +889,7 @@ export function badgeWithReason(st, reason) {
   reason = reason || statusReason(st);
   if ((st === "blocked" || st === "faulty") && reason) {
     return html`<span class="turnwrap" title=""><${Badge} s=${st}/>
-      <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${st === "blocked" ? "Restricted" : "Faulty"}</span>${reason}</span></span>`;
+      <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${statusLabel(st)}</span>${reason}</span></span>`;
   }
   return html`<${Badge} s=${st} title=${reason}/>`;
 }
@@ -895,6 +933,19 @@ export function endpointCell(t) {
 // dlul(rx, tx) returns [downValue, upValue] for whichever perspective is active. Numbers are unchanged;
 // only which one is labelled ↓ vs ↑ swaps.
 export const dlul = (rx, tx) => ((Store.panelSettings || {}).throughput_perspective === "peers") ? [tx || 0, rx || 0] : [rx || 0, tx || 0];
+// ── the OTHER throughput display preference: which unit a speed is said in ──────────────────────────────
+// BYTES by default — it is what the node counts, what the panel stores, and what totals are already shown
+// in, so the two figures on one card agree. BITS are the opt-in, for reading the panel against a speed
+// test, an ISP plan or a "1 Gbps port" without dividing by eight. The wire figure is bytes/s either way;
+// only the wording changes, and it always names the unit (23.8 MB/s · 200 Mbit/s), never a bare "M/s".
+//
+// ⚠️ IT LIVES HERE, NOT IN util.js, FOR THE SAME REASON `dlul` DOES. util.js is LAYER 0 and store.js
+// imports it, so reading a setting there would be an import cycle as well as a violation of the rule
+// written at the top of that file. The arithmetic stays pure over there (`rateIn`/`niceScaleCeilIn`); this
+// is the one place that knows what the operator chose, and every screen takes `rate` from here.
+export const rateUnits = () => ((Store.panelSettings || {}).throughput_units === "bits" ? "bits" : "bytes");
+export const rate = bps => rateIn(bps, rateUnits());
+export const niceScaleCeil = bps => niceScaleCeilIn(bps, rateUnits());
 export function rateCell(rx, tx) {
   const live = (rx || 0) + (tx || 0) > 0; const [d, u] = dlul(rx, tx);
   return html`<span class=${"ratecell" + (live ? " live" : "")}>↓ ${rate(d)} <span class="up">↑ ${rate(u)}</span></span>`;
@@ -980,30 +1031,153 @@ export const Switch = ({ on, onChange, title, disabled }) => html`<label class=$
 // Reusable styled dropdown — a drop-in for a native <select> so every dropdown in the app shares one look (the
 // OS-rendered <select> option list can't be styled, hence this). `options` is a flat [{value,label,disabled}] or
 // grouped [{group,items:[…]}]. `short(label)` optionally shortens the CLOSED label (e.g. cut at a comma).
-export function Dropdown({ value, onChange, options, className, placeholder, disabled, short }) {
+//
+// AN OPTION MAY ALSO CARRY:
+//   title      a tooltip — the one thing a native <option> could do that this could not
+//   className  an extra class, for a row that is a MODE rather than one more value in the list
+//   refuse     a sentence: the row is shown and stays reachable, but CHOOSING it says this instead. For a
+//              row whose own `extra` control is what unblocks it — refusing silently would leave the
+//              operator clicking a row that does nothing, with the fix sitting inches to its right.
+//   extra      a control rendered beside the label, inside the row (a switch, a count, a mini button).
+//              This is why an option is a <div class="ddrow"> wrapping the <button>: nesting one
+//              interactive element inside another is invalid HTML and the inner one stops receiving
+//              clicks in some browsers, so the row's own control has to be a SIBLING of the option.
+//
+// ⚠️ KEYBOARD IS NOT A NICETY HERE, IT IS THE COST OF LEAVING <select>. A native select gives arrows,
+// Home/End, type-ahead, Enter and Escape for free, and every one of them is lost the moment it is replaced
+// by <button>s — so a control adopted "because it looks designed" would quietly be a downgrade for anyone
+// who does not use a mouse. Focus moves for real (rather than aria-activedescendant) because a row may hold
+// its own control in `extra`, and a real Tab has to be able to reach it.
+export function Dropdown({ value, onChange, options, className, placeholder, disabled, short, ariaLabel, title, onClose, closeRef, keep = null, drop = "auto" }) {
   const [open, setOpen] = useState(false), [pos, setPos] = useState(null);
   const ref = useRef(null), popRef = useRef(null);
+  // "was this opened from the keyboard, and at which end" — a mouse open must NOT pull focus into the popup
+  // (it would paint a focus ring nobody asked for); a keyboard open must, or the arrows have nothing to move.
+  const kbd = useRef(null);
+  const typed = useRef({ s: "", t: 0 });
+  // ⚠️ CLOSING IS AN EVENT THE CALLER NEEDS. Anything a row is doing — a delete waiting to be confirmed,
+  // say — is state that belongs to the OPEN popup, and there are six ways it can close (outside click,
+  // Escape, Tab, focus leaving, choosing a row, the trigger again). Watching `open` fall is the one place
+  // that catches all of them; a caller clearing on any single one of them would leave the rest stale.
+  const wasOpen = useRef(false);
+  useEffect(() => { if (wasOpen.current && !open && onClose) onClose(); wasOpen.current = open; }, [open]);
   const flat = (options || []).flatMap(o => o.items ? o.items : [o]);
   const cur = flat.find(o => String(o.value) === String(value));
   const curLabel = cur ? (short ? short(cur.label) : cur.label) : (placeholder || "");
+  // ⚠️ `drop:"up"` IS NOT A STYLE CHOICE. A caller that puts an editable form BELOW this control has to be
+  // able to say so: left on auto, the list opens downward whenever there is room and lands squarely on the
+  // fields the operator opened it to edit. Auto everywhere else — the geometry is right far more often than
+  // a caller's guess, and forcing it up where there is nothing above only wastes the room.
   const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
-    const below = window.innerHeight - r.bottom - 12, above = r.top - 12; const flip = below < 240 && above > below;
+    const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
+    const flip = drop === "up" ? true : (below < 240 && above > below);
     setPos({ left: Math.round(r.left), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width), flip, maxh: Math.max(180, Math.round(flip ? above : below) - 16) }); };
+  // Back to the trigger on close, which is what a native select does and what keeps a keyboard user from
+  // being dumped on <body> in the middle of a form. Guarded: `onChange` may unmount this very control.
+  const close = back => { setOpen(false); kbd.current = null;
+    if (back && ref.current) { const b = ref.current.querySelector(".ddbtn"); if (b) b.focus(); } };
+  // ⚠️ A ROW'S OWN CONTROL CANNOT CLOSE THE POPUP BY ITSELF. It stops propagation (or the click would also
+  // choose the row), and the outside-click handler ignores anything INSIDE the popup — so a control that
+  // opens a sheet left the list sitting on top of it, and one that opens a form below the field left the
+  // form hidden underneath. Handed out the same way `Sheet` hands out its guarded close.
+  // No refocus: whatever the control opened is about to take the focus.
+  if (closeRef) closeRef.current = () => close(false);
+  const optEls = () => (popRef.current ? [...popRef.current.querySelectorAll(".ddopt:not(:disabled)")] : []);
+  const focusAt = el => { if (!el) return; el.focus(); el.scrollIntoView({ block: "nearest" }); };
+  const moveTo = i => { const els = optEls(); if (els.length) focusAt(els[Math.max(0, Math.min(els.length - 1, i))]); };
+  const moveBy = d => { const els = optEls(); const i = els.indexOf(document.activeElement);
+    moveTo(i < 0 ? (d > 0 ? 0 : els.length - 1) : i + d); };
+  // Type-ahead, the half of a native select nobody notices until it is gone. A single repeated letter CYCLES
+  // through the rows starting with it (search from the row after the current one); a longer buffer searches
+  // from the top, so "wa" always finds the same row whatever is focused. 700ms to type the next character.
+  const typeAhead = ch => {
+    const now = Date.now();
+    typed.current = { s: (now - typed.current.t < 700 ? typed.current.s : "") + ch.toLowerCase(), t: now };
+    const els = optEls(), q = typed.current.s;
+    const from = Math.max(0, els.indexOf(document.activeElement));
+    const order = q.length === 1 ? [...els.slice(from + 1), ...els.slice(0, from + 1)] : els;
+    focusAt(order.find(el => (el.textContent || "").trim().toLowerCase().startsWith(q)));
+  };
   useEffect(() => { if (!open) return; place();
     const onMove = () => place();
-    const onDoc = e => { const t = e.target; if (!((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)))) setOpen(false); };
-    const onKey = e => { if (e.key === "Escape") { setOpen(false); blurActive(); } };
+    // ⚠️ `keep` IS A THIRD "INSIDE", AND IT IS A PREDICATE RATHER THAN A REF ON PURPOSE. A caller can put a
+    // form beside the list that belongs to it — editing a row's title while the row is on screen — and
+    // without this the first click into that form counts as clicking away and dismisses the very list the
+    // form was opened from. A ref is not enough either: such a form holds controls whose own popups are
+    // PORTALLED to the body, so a click in one is not `contains`-inside anything the caller can name. Only
+    // the caller knows what belongs to it, so the caller answers.
+    const onDoc = e => { const t = e.target;
+      if ((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t))
+          || (keep && keep(t))) return;
+      setOpen(false); };
+    const onKey = e => { if (e.key === "Escape") close(true); };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
     document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey);
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); document.removeEventListener("keydown", onKey); };
-  }, [open]);
-  const opt = o => html`<button type="button" disabled=${o.disabled} class=${"ddopt" + (String(o.value) === String(value) ? " sel" : "") + (o.disabled ? " off" : "")}
-    onClick=${() => { if (o.disabled) return; onChange(o.value); setOpen(false); }}>${o.label}</button>`;
+    // `drop` is a dependency because the caller changes it WHILE the list is open — the form that must not be
+    // covered appears after the list was opened, so a placement fixed at open time would be the wrong one.
+  }, [open, drop]);
+  // Land on the SELECTED row, not the first one — opening a 40-node list on "Auto" and making the operator
+  // arrow down to what is already chosen is the thing this control exists to be better than.
+  useEffect(() => {
+    if (!open || !pos || !kbd.current) return;
+    const els = optEls(); const at = kbd.current; kbd.current = null;
+    if (els.length) focusAt(els.find(el => el.classList.contains("sel")) || els[at === "last" ? els.length - 1 : 0]);
+  }, [open, pos]);
+  const onPopKey = e => {
+    const k = e.key;
+    if (k === "Escape") { e.preventDefault(); close(true); return; }
+    if (k === "Tab") { setOpen(false); return; }              // let focus carry on out of the popup naturally
+    if (k === "ArrowDown") { e.preventDefault(); moveBy(1); return; }
+    if (k === "ArrowUp") { e.preventDefault(); moveBy(-1); return; }
+    if (k === "Home") { e.preventDefault(); moveTo(0); return; }
+    if (k === "End") { e.preventDefault(); moveTo(1e9); return; }
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;   // a row's own field owns its typing
+    if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && /\S/.test(k)) { e.preventDefault(); typeAhead(k); }
+  };
+  // Focus leaving the popup for somewhere that is neither the popup nor the trigger closes it. `relatedTarget`
+  // is null when focus goes nowhere at all (clicking page chrome), which the pointerdown handler already covers.
+  // ⚠️ `keep` HAS TO BE ASKED HERE TOO, and this is the half that is easy to miss: a caller that owns a form
+  // beside the list gets past the pointerdown check and is then closed by THIS one instead, because clicking
+  // a field moves focus out of the popup. The symptom is identical — the list vanishes on the first click
+  // into the form — so it reads as the pointerdown guard not working, and no amount of fixing that helps.
+  const onPopBlur = e => { const to = e.relatedTarget;
+    if (to && !((popRef.current && popRef.current.contains(to)) || (ref.current && ref.current.contains(to))
+                || (keep && keep(to)))) setOpen(false); };
+  const onBtnKey = e => {
+    if (disabled || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+    e.preventDefault();
+    const at = e.key === "ArrowUp" ? "last" : "first";
+    if (open) { const els = optEls(); if (els.length) focusAt(els.find(el => el.classList.contains("sel")) || els[at === "last" ? els.length - 1 : 0]); return; }
+    kbd.current = at; setOpen(true);
+  };
+  const opt = o => {
+    const sel = String(o.value) === String(value);
+    const btn = html`<button type="button" role="option" aria-selected=${sel ? "true" : "false"}
+      disabled=${o.disabled} title=${o.title || ""} aria-disabled=${o.refuse ? "true" : undefined}
+      class=${"ddopt" + (sel ? " sel" : "") + (o.disabled ? " off" : "") + (o.className ? " " + o.className : "")}
+      onClick=${() => { if (o.disabled) return;
+        // REFUSED, AND SAID SO. The popup stays open on purpose: whatever unblocks the row is in the row.
+        if (o.refuse) return toast(o.refuse, "info");
+        onChange(o.value); close(true); }}>${o.label}</button>`;
+    // THE WHOLE ROW CARRIES THE SELECTION, not just the label button — a tint that stops short of the
+    // row's own control reads as a rendering fault rather than as a selected row.
+    return o.extra ? html`<div class=${"ddrow" + (sel ? " sel" : "")}>${btn}<span class="ddx">${o.extra}</span></div>` : btn;
+  };
   return html`<div class=${"dropdown " + (className || "")} ref=${ref}>
-    <button type="button" class=${"ddbtn" + (open ? " on" : "")} disabled=${disabled} onClick=${() => !disabled && setOpen(o => !o)}>
+    <button type="button" class=${"ddbtn" + (open ? " on" : "")} disabled=${disabled}
+      aria-haspopup="listbox" aria-expanded=${open ? "true" : "false"} aria-label=${ariaLabel || ""}
+      title=${title || ""}
+      onKeyDown=${onBtnKey}
+      onClick=${e => { if (disabled) return; const willOpen = !open; kbd.current = willOpen && e.detail === 0 ? "first" : null; setOpen(willOpen); }}>
       <span class="ddlbl">${curLabel}</span><span class="catpick-caret">▾</span></button>
-    ${open && pos ? html`<${Portal}><div ref=${popRef} class=${"ddpop" + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + pos.width + "px;--ddmaxh:" + pos.maxh + "px"}>
-      ${(options || []).map(o => o.items ? html`<div class="ddgrp">${o.group}</div>${o.items.map(opt)}` : opt(o))}
+    ${open && pos ? html`<${Portal}><div ref=${popRef} role="listbox" tabindex="-1"
+        onKeyDown=${onPopKey} onfocusout=${onPopBlur}
+        class=${"ddpop" + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + pos.width + "px;--ddmaxh:" + pos.maxh + "px"}>
+      ${(options || []).map(o => o.items
+        ? html`<div role="group" aria-label=${o.group}><div class="ddgrp">${o.group}</div>${o.items.map(opt)}</div>`
+        : opt(o))}
     </div><//>` : null}
   </div>`;
 }
@@ -1168,6 +1342,160 @@ export function useHostOnNode(host, ips) {
   return state;
 }
 
+/* ── IS THIS DEVICE AN EXIT ON THIS NODE? ──────────────────────────────────────────────────────
+   useHostOnNode's twin, and deliberately built to the same shape rather than to a new one: the operator
+   types a device name, and the honest answer has the SAME four states with the same silence rule.
+
+     ""        nothing to say — the node has never reported, is stale, or runs a build that does not send
+               its exit devices at all (three of four nodes on this fleet, the day this shipped). NOT a
+               warning, and never rendered as one.
+     checking  asked, waiting.
+     ok        the node reported its exit devices, this name is one of them, and its ROLE allows it.
+     bad       the ONLY state that warns — and it carries `why` so the caller can say which sentence:
+               a role refusal ("that is this node's own interface", "that is Exit via node → P") or,
+               when `why` is empty, the node answered and simply has no such device.
+
+   A boolean would collapse "not reported yet", "node is stale" and "no such device" into one red answer,
+   which is this project's most-repeated bug. `bad` has to be a POSITIVE finding: the node answered, and
+   the answer did not contain this name.
+
+   ⚠️ THE PANEL ANSWERS, NOT THIS. The verdict needs the node's snapshot AND its roles, and the SPA holds
+   most of that — which is exactly how a second copy of the grammar would look easy and then drift. One
+   reader. Unlike resolveHost there is nothing external to wait for, so the round trip is local and cheap;
+   debounced anyway, because it runs on every keystroke. */
+/* ⚠️ THIS CACHE EXPIRES, AND NEVER HOLDS AN "I CANNOT SAY". `useHostOnNode`'s twin caches DNS for the
+   page's life, which is fine for an answer that barely moves. This one is about a DEVICE and a NODE: the
+   device can be created or torn down while the sheet is open, and the node can come back from stale. A
+   permanent cache would pin the field to whichever answer it happened to get first — and the worst one to
+   pin is `known: null`, the transient "ask me again" state, which would leave the field silent for ever on
+   a node that started reporting one second later. So: a short TTL, and null answers are not stored at all. */
+const _exitCache = new Map();
+const _EXIT_TTL_MS = 15000;
+export function useExitDeviceOnNode(node, dev, iface) {
+  const [v, setV] = useState({ state: "", why: "", up: null, bootPersist: null });
+  useEffect(() => {
+    const d = String(dev || "").trim();
+    if (!node || !d) { setV({ state: "", why: "", up: null, bootPersist: null }); return; }
+    const key = node + "|" + d + "|" + (iface || "");
+    const shape = r => {
+      const k = r.known, why = r.why_not || "";
+      // ROLE FIRST. A managed interface is not "no such device" — it plainly exists; saying so would be
+      // false and would send the operator looking for a typo they did not make.
+      if (why) return { state: "bad", why, up: r.up, bootPersist: r.boot_persist };
+      if (k === true) return { state: "ok", why: "", up: r.up, bootPersist: r.boot_persist };
+      if (k === false) return { state: "bad", why: "", up: null, bootPersist: null };
+      return { state: "", why: "", up: null, bootPersist: null };   // k == null → we cannot say
+    };
+    const hit = _exitCache.get(key);
+    if (hit && (Date.now() - hit.at) < _EXIT_TTL_MS) { setV(shape(hit.d)); return; }
+    setV({ state: "checking", why: "", up: null, bootPersist: null });
+    let dead = false;
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.exitCheck(node, d, iface);
+        const data = (r && r.data) || null;
+        if (!data) { if (!dead) setV({ state: "", why: "", up: null, bootPersist: null }); return; }
+        // A role refusal is durable (it is about what this device IS); `known` is a snapshot fact and
+        // `null` is the transient one. Cache the first, never the last.
+        if (data.why_not || data.known !== null) _exitCache.set(key, { at: Date.now(), d: data });
+        if (!dead) setV(shape(data));
+      } catch (_) { if (!dead) setV({ state: "", why: "", up: null, bootPersist: null }); }   // can't tell → don't cry wolf
+    }, 450);
+    return () => { dead = true; clearTimeout(t); };
+  }, [node, String(dev || ""), iface || ""]);
+  return v;
+}
+
+/** ONE SENTENCE PER REFUSAL CODE, and one copy of them. `exit_device_refusal` on the server answers with a
+ *  CODE; this is where that code becomes something an operator can act on. It lived inside `ExitDevicePick`,
+ *  which meant the picker could explain a refusal and nothing else could — so a save that was refused
+ *  reached the operator as the raw code in a toast ("exit device refused: nic_nogw") while the sentence for
+ *  it sat three lines away. Exported so the save path shows the same words the picker does.
+ *
+ *  `value` is the device the sentence is about; the codes that do not name one ignore it. */
+export const exitRefusalSentences = (value) => ({
+
+    self: T("An interface can't exit through itself."),
+    mesh: T("That's a mesh link — send traffic there with “Forward to node”, which sets up the return path too."),
+    managed: T("That's an interface this node serves clients on, not a way out of it."),
+    ingress: T("That's a server device clients arrive on, not a way out."),
+    loopback: T("Loopback isn't a way out of this node."),
+    name: T("Not a usable device name — up to 15 characters: letters, digits, dot, dash or underscore."),
+    imported: T("This node already runs that device for one of its own exits — pick that exit instead."),
+    // ⚠️ THREE SENTENCES FOR THE CARD, because the one flat refusal became three verdicts and they are
+    // not interchangeable. Each names something the operator can act on — which is the whole idiom here.
+    //   `nic`       we have no data: this node has not reported gateways. NOT a claim about the card.
+    //   `nic_nogw`  the card has no way off the box. Two ways to give it one, both named.
+    //   `nic_wan`   it would work and change nothing, which is worse than refusing it.
+    nic: T("This node hasn't said which of its network cards have a gateway yet. Update the node, and a card that has one can be used as an exit."),
+    nic_nogw: T("This node reports no gateway for {v1}, so there's no way off the box through it. Give it a default route on the node, or set the gateway on the exit under Settings → Network.", { v1: value }),
+    nic_wan: T("That's already where this node's traffic leaves, so choosing it would change nothing — and it would report no traffic of its own. Leave the outbound interface on Auto instead."),
+});
+
+/** The sentence for one refusal code, or "" when there is nothing useful to say about it. */
+export const exitRefusalText = (code, device) =>
+  (code ? (exitRefusalSentences(device || "")[String(code)] || "") : "");
+
+/* The exit-device control: the devices this node reports it dials out on, plus Custom… for everything else.
+   BOTH halves are load-bearing and neither replaces the other (plan §11.3).
+
+   The dropdown is the discoverable path — no typing, no typos, and it shows the operator that the panel
+   knows what is on the box. But it can only ever offer what the node classified and the last sync carried,
+   and on this fleet that was measured at ZERO correct entries before the discovery work: a device that
+   exists only while a service is up, or was created ten seconds ago, is reachable by typing and by nothing
+   else. Typing is also the operator's CONSENT, which is the thing a curated list can never obtain — and
+   consent is exactly what `wg-wdtt-exit`, the surprise this whole feature began from, never got. */
+export function ExitDevicePick({ node, value, onChange, iface, disabled, placeholder, onVerdict }) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const cands = nrec.exit_candidates || [];
+  const offer = cands.filter(c => c && c.offerable).map(c => c.name);
+  const valIsCustom = !!value && !offer.includes(value);
+  const [custom, setCustom] = useState(valIsCustom);
+  const showCustom = custom || valIsCustom;
+  const sel = showCustom ? "__custom__" : (value || "");
+  const st = useExitDeviceOnNode(node, showCustom ? value : "", iface);
+  // Only `bad` warns. Everything else is either fine or something we cannot honestly claim.
+  const WHY = () => exitRefusalSentences(value);
+  const msg = st.state !== "bad" ? ""
+    : (WHY()[st.why] || T("This node doesn't report a device by that name."));
+  // The verdict, offered UPWARD for a caller that has a Save button to block — the exits list does, and the
+  // alternative was a second copy of this grammar in the settings screen, which is the one thing §11.3 is
+  // about. Reported from an effect on the resolved message, so it fires on change rather than every render,
+  // and clears on unmount: a removed row must not keep a Save disabled for a device that is no longer there.
+  useEffect(() => { if (onVerdict) onVerdict(msg); return () => { if (onVerdict) onVerdict(""); }; }, [msg]);
+  return html`<${Fragment}>
+    <${Dropdown} value=${sel} onChange=${v => { if (v === "__custom__") setCustom(true); else { setCustom(false); onChange(v); } }}
+      disabled=${disabled} options=${[
+        // THE NULL CHOICE ALWAYS HAS A LABEL. With offers present there was no `""` option at all, so a
+        // control whose value is blank rendered as a bare caret with nothing beside it — invisible until
+        // the exits list started every new row that way. The two blank states are different facts and say
+        // different things: "this node reported none" is about the NODE, "pick one" is about this field.
+        ...(offer.length ? (value ? [] : [{ value: "", label: T("val|Choose a device…") }])
+                         : [{ value: "", label: T("val|No device reported") }]),
+        ...offer.map(n => ({ value: n, label: n })),
+        { value: "__custom__", label: T("Use custom…") }]}/>
+    ${showCustom ? html`<input class="ipk-custom" placeholder=${placeholder || T("Device name — e.g. wgcf")}
+        value=${value || ""} onInput=${e => onChange(e.target.value)} disabled=${disabled}
+        spellcheck="false" autocomplete="off"/>` : null}
+    ${msg ? html`<div class="hint err">${msg}</div>` : null}
+    ${/* WHY the list is empty, because "No device reported" alone reads as a broken panel. It is usually
+          true and unremarkable: the picker only offers devices this box DIALS OUT on (a host address plus a
+          peer carrying a default route), and a node that only SERVES clients has none. Measured across the
+          real fleet: every wg/awg device on every node was a server. Not shown once the operator is typing
+          — at that point the four-state verdict above is the useful sentence. */""}
+    ${!offer.length && !showCustom
+      ? html`<div class="hint">${T("This node isn't dialling out anywhere yet, so there's nothing to offer. Register with WARP or paste a profile instead — or type a device name if you run one.")}</div>` : null}
+    ${/* What existence does NOT answer, each said separately and only when we actually know it (§11.4).
+          A device can be present and down; and "will it come back after a reboot" is a different claim
+          from "is it here now" — `boot_persist` is TRI-STATE and null means this host does not start
+          interfaces from units at all, where any answer would be an invention. */""}
+    ${st.state === "ok" && st.up === false
+      ? html`<div class="hint">${T("This device exists but is down right now — traffic will fall through until it comes back.")}</div>` : null}
+    ${st.state === "ok" && st.bootPersist === false
+      ? html`<div class="hint">${T("This device isn't set to come back after a reboot.")}</div>` : null}
+  <//>`;
+}
+
 export function NodeIpPick({ ips, value, onChange, auto, customPlaceholder, disabled }) {
   // A WILDCARD bind is not an address you choose off a list — it is the deliberate "listen on everything",
   // and the operator who typed it should see it back where they typed it. Keeping it out of the options
@@ -1185,6 +1513,76 @@ export function NodeIpPick({ ips, value, onChange, auto, customPlaceholder, disa
       { value: "__custom__", label: T("Use custom…") }]}/>
     ${sel === "__custom__" ? html`<input class="ipk-custom" placeholder=${customPlaceholder || T("Custom IP — e.g. 203.0.113.5")} value=${value || ""} onInput=${e => onChange(e.target.value)} disabled=${disabled} spellcheck="false" autocomplete="off"/>` : null}
   </${Fragment}>`;
+}
+
+/** THE SOURCE TRAFFIC LEAVES A DEVICE EXIT AS — a combobox: a dropdown whose face becomes a text field when
+ *  the operator picks "custom", with the caret beside it opening the same list so "back to Auto" is one
+ *  click. Built by OVERLAYING the input on the dropdown's own trigger rather than by teaching `Dropdown` a
+ *  second face, so the popup keeps its width, keyboard handling, portal and outside-click logic — an
+ *  <input> cannot live inside a <button> anyway, and the caret is what stays exposed.
+ *
+ *  Separate from `NodeIpPick`, which asks the same KIND of question, for two reasons that are not cosmetic:
+ *    the LIST     `NodeIpPick` offers the node's own PUBLIC addresses and filters private ones out. A device
+ *                 exit's source is an address ON THAT DEVICE, and those are private almost by definition —
+ *                 10.66.0.2, 172.16.0.2. That picker would filter away the only value this one can offer.
+ *    the DEFAULT  there, blank means "let the kernel choose out the WAN". Here it means MASQUERADE out THIS
+ *                 device, whose answer we can usually name — so the option is labelled with the address the
+ *                 node reported, and degrades to a bare "Auto" only where we have nothing to name.
+ *
+ *  ⚠️ THE DEFAULT STORES "", NEVER THE ADDRESS IT IS LABELLED WITH. Writing the address in would freeze it:
+ *  the device renumbers, the stored source stops being local, and SNAT to a non-local source drops every
+ *  packet — silently, because the row would still show the value the operator picked. "" keeps it a live
+ *  question the node re-answers each sync, which is what "default" has to mean to be safe. For the same
+ *  reason there is no third option beside Auto and Custom: two entries that produce identical packets today
+ *  and differ only after a renumber are one delayed outage wearing a choice.
+ *
+ *  `onCommit` is for callers that WRITE THROUGH instead of drafting. An exit's fields are saved the moment
+ *  they change, and a text input on that path would POST once per character — so typing is `onChange`
+ *  (local) and `onCommit` fires on blur, Enter, or a dropdown change, the three moments the operator has
+ *  finished speaking. Callers that draft (the grid, `ExitFields`) pass only `onChange`. */
+/** What the exit-source control shows: its rows, and which one is selected. PURE, and exported for that
+ *  reason — the component around it uses three hooks, so it cannot be called outside a render, and the part
+ *  worth gating is this: which addresses are offered and whether a stored value lands on a row or in the
+ *  free-text box.
+ *
+ *  ⚠️ A KNOWN ADDRESS IS A ROW, NOT "custom". `addrs` are the addresses the node reports on this exit's own
+ *  device — offered for a NETWORK CARD, where the panel can see them (see `cardAddrs`), and empty for an
+ *  adopted tunnel, where it cannot. Derived from the VALUE rather than from state, so an address that
+ *  becomes known on a later poll stops rendering as a hand-typed string under the operator. */
+export function exitEgressState(discovered, addrs, value, custom) {
+  const val = String(value || "").trim();
+  const known = (addrs || []).includes(val);
+  return { val, known,
+    sel: known ? val : ((custom || val) ? "__custom__" : ""),
+    options: [{ value: "", label: discovered ? T("Auto ({v1})", { v1: discovered }) : T("val|Auto") },
+              ...(addrs || []).map(a => ({ value: a, label: a })),
+              { value: "__custom__", label: T("Use custom…") }] };
+}
+
+export function ExitEgressPick({ discovered, value, onChange, onCommit, disabled, addrs }) {
+  const [custom, setCustom] = useState(!!String(value || "").trim());
+  const { val, sel, options } = exitEgressState(discovered, addrs, value, custom);
+  const done = v => { if (onCommit) onCommit(v); };
+  // ⚠️ CHOOSING "custom" HAS TO PUT THE CARET IN THE FIELD, and neither `autofocus` nor hoping does it.
+  // `autofocus` is honoured on parse, not on a node inserted later; and `Dropdown.close(true)` deliberately
+  // focuses its own trigger on the way out, so the field appears while the BUTTON holds focus and every
+  // keystroke is swallowed as type-ahead. Measured: ten characters typed, nothing in the box. An effect
+  // runs after the DOM commit, i.e. after that refocus, so it wins — and only on the TRANSITION, or it
+  // would grab the caret on page load for every exit that already has a source, and in the grid it would
+  // fight over eight rows at once.
+  const inRef = useRef(null), grab = useRef(false);
+  useEffect(() => { if (grab.current && inRef.current) { grab.current = false; inRef.current.focus(); } }, [custom]);
+  const onSel = v => { if (v === "__custom__") { grab.current = true; setCustom(true); }
+                       else { setCustom(false); onChange(v); done(v); } };   // "" clears, an address pins it
+  const dd = html`<${Dropdown} value=${sel} onChange=${onSel} disabled=${disabled} options=${options}/>`;
+  if (sel !== "__custom__") return dd;
+  return html`<span class="ipk-combo">${dd}
+    <input class="ipk-over mono" value=${val} ref=${inRef}
+      placeholder=${T("e.g. 203.0.113.5")} onInput=${e => onChange(e.target.value)}
+      onBlur=${e => done(e.target.value)}
+      onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); done(e.target.value); } }}
+      disabled=${disabled} spellcheck="false" autocomplete="off"/>
+  </span>`;
 }
 
 // interface op flashes — the iface twins of the turn* maps, read by the node cards

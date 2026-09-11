@@ -1,0 +1,18 @@
+{
+  "_why": "Strings the server ships in English ON PURPOSE. They render through T()'s fallback, so an i18n audit counts them as untranslated and can never reach zero — which is what made the count unactionable (release gap G7: nobody can act on a number that is never allowed to be 0). Each entry is a PROPER NOUN: a name a third party publishes under, or a wire/protocol identifier. Translating one would make it wrong, not friendlier. Add here only with a reason; anything else belongs in js/lang/*.js.",
+  "list_providers": {
+    "_why": "The name the blocklist / routing-list is published under. An operator matches these against the upstream project.",
+    "names": ["1Hosts", "FireHOL", "HaGeZi", "OISD", "Peter Lowe", "Phishing Army", "StevenBlack",
+              "The Block List Project", "Tor Project", "UT1 · Toulouse", "MetaCubeX", "v2fly",
+              "blackmatrix7", "Loyalsoldier", "Re-filter"]
+  },
+  "fork_authors": {
+    "_why": "The handle a turn-proxy fork is published under. These are how an operator finds the build on GitHub.",
+    "names": ["amurcanov", "anton48", "ildarmaga", "samosvalishe", "kiper292", "cacggghp", "Ivan4537",
+              "Moroka8", "SpaceNeuroX", "MYSOREZ", "XXcipherX", "WINGS-N"]
+  },
+  "wire_names": {
+    "_why": "Protocol and obfuscation identifiers that appear on the wire and in the clients' own UIs.",
+    "names": ["VLESS", "UDP", "SRTP (keyless)", "WRAP", "WRAP (keyed)", "Wrap"]
+  }
+}

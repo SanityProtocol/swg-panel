@@ -144,7 +144,9 @@ export function confirmDeletePeer(peer, back, closeOwner) {
 function _durText(ms) { const m = Math.max(1, Math.floor((ms || 0) / 60000)); return T("more than {count}", { count: plural(m, "minute") }); }
 function _missingIface(node, iface) {
   const nr = (Store.nodes || []).find(n => n.id === node) || {};
-  return (nr.missing_ifaces || {})[iface] || null;   // {subnet, listen_port, address, awg_params, public_key, key_source} | null
+  // {subnet, listen_port, mtu, address, awg_params, endpoint_host, dns, keepalive, public_key, key_source}
+  // | null — `dns`/`keepalive` are null when the panel holds no opinion, and [] / 0 when it holds "off".
+  return (nr.missing_ifaces || {})[iface] || null;
 }
 // Restore is an INTERFACE action (it recreates the whole interface, recovering EVERY dangling peer on it) —
 // this shared confirm is opened both from a peer row/modal and from the node's interface list, so the copy
@@ -220,10 +222,28 @@ export function openRecreateRekey(node, iface, back) {
   const peers = ghostPeers(node, iface);
   let proto = "wg"; const ips = [];
   peers.forEach(p => (p.targets || []).forEach(t => { if (t.node === node && t.iface === iface) { if (t.type === "awg") proto = "awg"; if (t.ip) ips.push(t.ip); } }));
+  // ⚠️ WHAT WE SAVED BEATS WHAT WE CAN GUESS. Inference is right for a COLD ghost — no record exists, the
+  // peers are all there is. A WARM one still has its `_lastcfg`, and guessing from peers there is how an
+  // AmneziaWG interface with no peers came back as WireGuard on a suggested port: nothing to infer from,
+  // so the default won. Every value below falls back to the guess, so the cold path is untouched.
+  if (g.awg_params && Object.keys(g.awg_params).length) proto = "awg";
   const nr = (Store.nodes || []).find(n => n.id === node) || {};
-  const pre = { iface, proto, subnet: g.subnet || _subnet24(ips[0]), endpoint: (nr.ips || [])[0] || "" };
+  // ⚠️ THE SAVED ENDPOINT BEATS THE NODE'S FIRST IP. Falling back to `nr.ips[0]` is right for a COLD ghost
+  // and wrong for a warm one: an interface published as a hostname came back as a bare address, and every
+  // client config reissued after the recreate pointed at the address instead. The node's IP stays as the
+  // fallback, so nothing changes where the panel holds no endpoint of its own.
+  const pre = { iface, proto, subnet: g.subnet || _subnet24(ips[0]),
+                endpoint: g.endpoint_host || (nr.ips || [])[0] || "",
+                port: g.listen_port || 0, mtu: g.mtu || 0,
+                // `null` = the panel holds no opinion, so the sheet may use the fleet default. An empty
+                // LIST is an opinion ("no DNS line") and must reach the sheet as an empty field.
+                dns: Array.isArray(g.dns) ? g.dns.join(", ") : null,
+                keepalive: typeof g.keepalive === "number" ? g.keepalive : null };
   const rekeyable = peers.filter(p => p.user_id).map(p => p.id);   // only ASSIGNED peers can be rekeyed (rekey needs a holder)
-  _openLoadIface({ node, pre, ghost: { node, iface, peers: rekeyable, total: peers.length }, back });
+  // `warm` — the panel holds this interface's saved config, so the sheet is showing what it WAS rather than
+  // what could be guessed from its peers. The notice says which, because "review the settings below" is only
+  // actionable if the operator knows where they came from.
+  _openLoadIface({ node, pre, ghost: { node, iface, peers: rekeyable, total: peers.length, warm: g.cold === false }, back });
 }
 
 // Phase 2 of a ghost recreate: once the recreated interface reports back LIVE (with its brand-new server key),
@@ -395,10 +415,18 @@ export function pubState(peer, src) {
     flip: () => {
       if (only) { toast(T("A peer has to publish at least one kind of config — keep one selected."), "err", 4000); return; }
       const next = hidden ? subHidden(peer).filter(s => s !== src) : subHidden(peer).concat([src]);
+      const showing = hidden;                            // what it becomes, not what it was
       mutate({
         key: "subhide:" + peer.id + ":" + src,
         patch: st => { const p2 = st.roster.peers[peer.id]; if (p2) p2.sub_hide = next; },
         call: () => api.peerUpdate({ peer_id: peer.id, sub_hide: next }),
+        // ⚠️ SAY THAT IT SAVED. This switch writes immediately — there is no Save behind it — but it sits
+        // inside sheets that DO have one, and operators were pressing that button afterwards expecting it to
+        // commit the click. A control that has already acted and shows nothing is indistinguishable from one
+        // that did not fire. Failure was always announced by mutate; success has to be too.
+        onOk: () => toast(showing
+          ? T("{v1} configs are published again — saved.", { v1: String(src).toUpperCase() })
+          : T("{v1} configs hidden from the subscription — saved.", { v1: String(src).toUpperCase() }), "ok"),
       });
     },
   };

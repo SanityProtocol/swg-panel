@@ -34,6 +34,35 @@ warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 # ── turn-proxy list rows for the migration prompts (the per-server summary's rows live in lib/common.sh now) ──
 # the interface a turn-proxy forwards to: the iface whose ListenPort matches the connect port (else empty)
+# ── the docker-only one-click updater, retired on the way OUT of docker ────────────────────────────────
+# `wire_host_updater` lays `swg-update{,-check}` + swg-update.service/.timer down on EVERY docker profile,
+# node included, because a container cannot recreate itself: the panel/node touches a trigger and this
+# host-side unit does the `compose pull && up`. None of that means anything once the box is bare-metal, and
+# convert.sh removed none of it — so a converted node kept a 30 s timer polling for docker update requests
+# on a box with no docker install, and `update.sh` never touches it again (a bare-metal NODE has no wrapper
+# BY DESIGN; `ensure_update_unit` is panel-only). Two identical bare-metal nodes then differ by history
+# alone, and the stale wrapper on the converted one is never rewritten.
+#
+# Safe for every role: a bare PANEL gets its own wrapper back from install-host.sh's `ensure_update_unit`,
+# which runs later in this same conversion. Best-effort throughout — a missing unit must not trip set -e.
+# Found on hel-fresh doing the bare→docker→bare round trip, 1.8.6 qualification.
+# ⚠️ PLAIN COMMANDS, not `run`/`rmrf`: those are the INSTALLERS' helpers (install-host.sh, install-docker.sh,
+# uninstall.sh each define their own) and convert.sh has neither — it calls things directly, like line 139
+# below. Written with them first, this function would have died with "run: command not found" on the one
+# path nobody re-runs. `|| true` on every step because the file is `set -euo pipefail` and a unit that was
+# never installed must not abort a conversion that has otherwise finished.
+retire_docker_updater(){
+  local _u
+  for _u in swg-update.timer swg-update.path; do
+    [ -e "/etc/systemd/system/$_u" ] || continue
+    systemctl disable --now "$_u" >/dev/null 2>&1 || true
+  done
+  rm -f /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path \
+        /etc/systemd/system/swg-update.timer /usr/local/bin/swg-update \
+        /usr/local/bin/swg-update-check /var/lib/swg-update.stamp 2>/dev/null || true
+  systemctl daemon-reload 2>/dev/null || true
+}
+
 fwd_iface_for(){ local cp="${1##*:}" f lp; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] || continue; lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" | head -1)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && { basename "$f" .conf; return 0; }; done; return 0; }   # no match → empty + success (a non-zero here would trip set -e in callers)
 # turn_row <service> <listen> <connect> — green service + "listen → connect (iface)"
 turn_row(){ local fw; fw="$(fwd_iface_for "${3:-}")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$1" "$RESET" "${2:-?}" "${3:-?}" "${fw:+ ($fw)}"; }
@@ -62,7 +91,8 @@ import_bare_conf(){ # <src> <dest>
   chmod 600 "$dest"
 }
 
-cyn(){ local a; printf '  %s (Y/n): ' "$1"; read -r a 2>/dev/null </dev/tty || a=y; case "$a" in [Nn]*) return 1;; *) return 0;; esac; }
+cyn(){ local a; [ "${ASSUME_YES:-no}" = yes ] && { printf '  %s (Y/n): y\n' "$1"; return 0; }
+  printf '  %s (Y/n): ' "$1"; read -r a 2>/dev/null </dev/tty || a=y; case "$a" in [Nn]*) return 1;; *) return 0;; esac; }
 
 # Lifecycle signalling is handled by lc_init (lib/common.sh): it's armed at the point we tell the panel
 # "converting…", and its EXIT/INT traps then emit converted-* (success) / convert-aborted / convert-failed.
@@ -249,6 +279,40 @@ _norm_role(){ case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in
 _USAGE="usage: convert.sh [--check] <docker|baremetal> <docker|baremetal> <node|host|master>"
 FROM="$(_norm_method "${1:-}")"; TO="$(_norm_method "${2:-}")"; ROLE="$(_norm_role "${3:-}")"
 [ -n "$FROM" ] && [ -n "$TO" ] && [ -n "$ROLE" ] || die "$_USAGE"
+# ⚠️ REFUSE WHAT WE DO NOT UNDERSTAND, and refuse `--dry-run` LOUDLY. This read $1 $2 $3 and dropped
+# everything after them, so `convert.sh baremetal docker node --dry-run` printed the conversion banner and
+# then CONVERTED — the one flag every sibling script honours, silently ignored by the one script whose work
+# cannot be undone. It is not a typo an operator has to invent, either: `bootstrap.sh` collects unrecognised
+# flags into `PASS` and hands them straight here (both convert call sites), and its `run_script` sets
+# `_keep_tmp=1` the moment it sees `--dry-run` — so the front door prints "dry-run preview kept at …" about
+# a conversion that has already happened.
+#
+# The answer is a refusal, not an implementation. A convert tears the old method down before the new one is
+# up; rendering that under a $PREFIX the way the installers do would be a second, unexercised code path
+# through the most destructive script here, which is a worse trade than one clear sentence. `--check` is the
+# rehearsal this script actually has, so name it.
+# ⚠️ ARGUMENTS FIRST, ROOT SECOND. Both are refusals and neither needs the other, but answering "run as
+# root" to a command that is ALSO misspelled costs two round trips for one mistake — and it hides the more
+# important of the two sentences behind a `sudo`. Parsing is pure string work; nothing has been touched yet.
+# ⚠️ AND `-y` IS NOT AN UNKNOWN FLAG, IT IS THE FRONT DOOR'S. `bootstrap.sh` puts every flag it does not
+# recognise into `PASS` and hands it to BOTH convert call sites, and `-y`/`--yes` is the documented
+# unattended form of `update.sh` and `uninstall.sh` — so `bootstrap.sh node -y` on a box that has the other
+# method installed reached here and died at argument parsing, after the operator had already answered the
+# menu and the "proceed with the conversion" confirm. It used to be dropped in silence; refusing every
+# unrecognised word turned that into a failed conversion for a flag the front door itself forwards.
+# Honoured, not merely tolerated: this script has its own yes/no questions (the turn-proxy transfer), and
+# `-y` means the same thing here as everywhere else. `cyn` reads it.
+ASSUME_YES=no
+for _x in "${@:4}"; do case "$_x" in
+  -y|--yes) ASSUME_YES=yes ;;
+  --dry-run) die "convert.sh has no dry run — a conversion cannot be rehearsed by rendering files, because it takes the old method down before the new one is up. Use $(b "convert.sh --check $FROM $TO $ROLE") for the port/interface pre-flight." ;;
+  *) die "‘$_x’ isn't an option here. $_USAGE" ;;
+esac; done
+# ⚠️ ROOT, LIKE EVERY SIBLING. This was the one script here with no root check at all: it went straight
+# into the pre-flight as an ordinary user, whose failed write probe made `declarative_host` call an Ubuntu
+# box "managed declaratively", so the first thing anybody who forgot `sudo` saw was advice about NixOS
+# modules. There is no `--dry-run` to exempt (see just above), so this is unconditional.
+[ "$(id -u)" = 0 ] || die "run as root"
 for _a in "FROM:$FROM" "TO:$TO"; do case "${_a#*:}" in docker|baremetal) :;;
   *) die "‘${_a#*:}’ isn't a method (${_a%%:*}). Use $(b docker) or $(b baremetal). $_USAGE";; esac; done
 case "$ROLE" in node|host|master) :;; *) die "‘$ROLE’ isn't a role. Use $(b node), $(b host) or $(b master). $_USAGE";; esac
@@ -733,6 +797,7 @@ print(urlparse(((( json.load(open(sys.argv[1])).get("access") or {}).get("sub") 
     lc_emit_file converted-bare
   fi
 
+  retire_docker_updater   # the docker-only one-click updater has no meaning on a bare box — see above
   # 3) move the old docker dir aside so a later convert-back isn't blocked by the leftover .env, then done
   if [ -d "$DOCKER_DIR" ]; then
     _bak="$DOCKER_DIR.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
@@ -872,6 +937,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   # move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker convert isn't
   # blocked by the leftover .env — UNLESS the docker PANEL is still running from this dir (a co-located master-split:
   # only the node converted, the panel stays on docker and needs the dir + its compose/.env + bind mounts).
+  retire_docker_updater   # the docker-only one-click updater has no meaning on a bare box — see above
   if [ -d "$DOCKER_DIR" ] && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
     _bak="$DOCKER_DIR.converted-$(date +%Y%m%d-%H%M%S)"
     if mv "$DOCKER_DIR" "$_bak" 2>/dev/null; then info "moved the old docker dir aside → $(b "$_bak") (backup — safe to delete)"

@@ -17,7 +17,12 @@
 #
 # ⚠️ This file re-declares, in Nix, the contract docker-compose.yml defines. Nothing in the
 # language keeps the two in step, so `.campaign/compose-nix-contract.mjs` does.
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs
+  # Which build this module came from. Set by the flake's `_revModule` via `_module.args`, because a
+  # default written against the CONSUMER's pkgs (D1) cannot see `self`. Defaulted so importing this
+  # file directly, with no flake, still evaluates — with the unstamped VERSION it always had.
+, swgBuildRev ? ""
+, ... }:
 
 let
   cfg = config.services.swg-panel;
@@ -321,6 +326,18 @@ let
     resultOwner = if cfg.delivery == "native" then "swgpanel:swg" else "";
     stampFile = "${stateDir}/.update-stamp";
     triggerFile = updateTrigger;
+    # Same as the node's: oci-containers runs `--pull missing`, so a moving tag is fetched once and
+    # never again, and a rebuild that leaves the unit unchanged restarts nothing. Without these two
+    # the Update button on a container panel reports "updated" and changes nothing at all.
+    # A digest-pinned image cannot have moved, so it gets no pull and no registry dependency.
+    pullImage = if cfg.delivery == "container" && !(lib.hasInfix "@sha256:" cfg.image)
+                then cfg.image else null;
+    pullCmd = if cfg.delivery == "container"
+              then "${if cfg.backend == "docker" then config.virtualisation.docker.package
+                                                 else config.virtualisation.podman.package}/bin/${cfg.backend}"
+              else "";
+    restartUnits = if cfg.delivery == "container"
+                   then [ "${cfg.backend}-swg-panel.service" ] else [ "swg-panel-server.service" ];
   };
 
 in
@@ -346,7 +363,25 @@ in
     backend = mkOption {
       type = types.enum [ "docker" "podman" ];
       default = "docker";
-      description = "Container runtime for `delivery = \"container\"`.";
+      description = ''
+        Container runtime for `delivery = "container"`.
+
+        ⚠️ `"docker"` turns on `virtualisation.docker`, which evaluates your channel's
+        `virtualisation.docker.package` — and nixpkgs marks an unmaintained docker **insecure**,
+        which stops the WHOLE configuration evaluating, not just this module. On nixos-25.11 the
+        default is docker-28.5.2 and is marked exactly that, so a 25.11 consumer needs
+        `virtualisation.docker.package = pkgs.docker_29;` (nixos-26.05 ships 29.7.2 and needs
+        nothing). This module never picks that package for you. The failure names only whichever
+        option pulled the package in, which is why it is written here rather than left to be
+        rediscovered.
+
+        ⚠️ ON A MASTER — panel and node on one box — THIS AND `services.swg-node.backend` MUST
+        MATCH. Both modules set `virtualisation.oci-containers.backend` from their own option, so
+        two different values on the container arm collide, and nixpkgs reports a conflicting
+        definition for `virtualisation.oci-containers.backend` while naming neither swg module.
+        Podman also needs `virtualisation.containers.enable` for its `policy.json`, which the
+        container arm sets for you.
+      '';
     };
 
     image = mkOption {
@@ -361,7 +396,7 @@ in
 
     package = mkOption {
       type = types.package;
-      default = pkgs.callPackage ../package.nix { };
+      default = pkgs.callPackage ../package.nix { rev = swgBuildRev; };
       defaultText = literalExpression "pkgs.callPackage <swg-panel>/nix/package.nix { }";
       description = "The swg-panel package, for `delivery = \"native\"`. Resolved against YOUR pkgs.";
     };
@@ -696,6 +731,23 @@ in
       '';
     };
 
+    latestVersionUrl = mkOption {
+      type = types.str;
+      default = "";
+      example = "https://git.example.org/swg-panel/raw/main/VERSION";
+      description = ''
+        Where the panel reads the latest published VERSION, for the "this panel is behind" banner.
+        Blank keeps the built-in (this project's `main` on GitHub); the changelog is read from the
+        file beside it on the same ref.
+
+        Offered because `docker-compose.yml` passes `SWG_LATEST_URL` straight through and this arm
+        had no way to say it — the same deployment expressed two ways, answering differently. Point
+        it at your own fork's VERSION if you run one, or at anything reachable if the box cannot
+        talk to GitHub. Note that on a declarative host the banner is advisory either way: what you
+        actually get on an update is whatever `selfUpdate.flakeRef` resolves to, not this.
+      '';
+    };
+
     selfUpdate = {
       enable = mkOption {
         type = types.bool;
@@ -931,6 +983,7 @@ in
           # that is neither `none` nor a CA mode means "a mounted certificate wins" to the image.
           TLS = if useACME then "mounted" else "none";
           SWG_PANEL_BASE = cfg.basePath;
+          SWG_LATEST_URL = cfg.latestVersionUrl;   # blank ⇒ the panel's built-in default
           SWG_PANEL_LOCAL_PORT = toString cfg.localPort;
           # The console door. 0 = off, and then the publish below is not added either. On this arm the
           # panel binds 0.0.0.0 inside the container (a publish always targets the container's 0.0.0.0)
@@ -1120,6 +1173,7 @@ in
           SWG_PANEL_CONSOLE_HOST = cfg.consoleHost;
           SWG_PANEL_AUTH = "${etcDir}/auth";
           SWG_PANEL_BASE = cfg.basePath;
+          SWG_LATEST_URL = cfg.latestVersionUrl;   # both nix arms, or the option would mean different things on each
           SWG_PANEL_TLS_CERT = optionalString useACME "${certDir}/fullchain.pem";
           SWG_PANEL_TLS_KEY = optionalString useACME "${certDir}/key.pem";
           SWG_PANEL_PLATFORM = "nixos";

@@ -183,14 +183,20 @@ export async function ivkResealForNode(node, mi) {
   if (!tpub) throw new Error(T("The node hasn't reported its transport key yet — try again in a few seconds."));
   return await ivkSeal(tpub, await ivkUnseal(await ivkVaultPriv(), mi.key_blob));
 }
-// A WDTT server's escrowed identity (owner pw + wg-keys.dat) → unseal with the vault key + re-seal to the node's
-// transport key, so a full-wipe restore relays only ciphertext. `keyBlob` is the node-view's wdtt_vault[iface].
-export async function wdttResealForNode(node, keyBlob) {
+// ANY escrowed blob → unseal with the operator vault key, re-seal to the node's transport key, so a restore
+// relays only ciphertext and the panel never holds the plaintext it is escrowing. This is the whole of the
+// browser's role in the escrow: the one place that can open a blob is the one place holding the vault key.
+// `missing` names what is absent, so the failure reads as the thing the operator was doing.
+export async function ivkResealForNodeBlob(node, keyBlob, missing) {
   if (!subSKCached()) throw new Error(T("Unlock the Encryption Vault first."));
-  if (!keyBlob || !keyBlob.ct) throw new Error(T("No escrowed identity is stored for this WDTT server."));
+  if (!keyBlob || !keyBlob.ct) throw new Error(missing || T("No escrowed key is stored for this."));
   const tpub = ((Store.stats[node] || {}).transport_pub) || "";
   if (!tpub) throw new Error(T("The node hasn't reported its transport key yet — try again in a few seconds."));
   return await ivkSeal(tpub, await ivkUnseal(await ivkVaultPriv(), keyBlob));
+}
+// A WDTT server's escrowed identity (owner pw + wg-keys.dat). Same dance, its own sentence.
+export async function wdttResealForNode(node, keyBlob) {
+  return await ivkResealForNodeBlob(node, keyBlob, T("No escrowed identity is stored for this WDTT server."));
 }
 
 let _subSK = null;                       // the unwrapped encryption key (CryptoKey), cached for this session
@@ -945,7 +951,7 @@ export async function runConfigMigration() {
            remaining: (pr && pr.data && pr.data.remaining) || 0 };
 }
 
-export const AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
+export const AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];   // i18n-keys: AmneziaWG parameter names, as the protocol spells them
 // IPv6 leak-guard: a FULL v4 tunnel (AllowedIPs contains 0.0.0.0/0) MUST also capture v6 (::/0), else the client's
 // IPv6 traffic escapes the tunnel over its real IP (the tunnels are v4-only, so captured v6 is dropped node-side and
 // apps fall back to v4 — no leak). Append ::/0 when it's missing. Split-tunnel (specific v4 CIDRs, no 0.0.0.0/0) is

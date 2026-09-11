@@ -10,11 +10,29 @@
 # ⚠️ This file re-declares, in Nix, the contract docker-compose.yml defines — env keys, capabilities,
 # devices, volumes, sysctls. Nothing in the language keeps the two in step, so
 # `.campaign/compose-nix-contract.mjs` does. Run it after touching either.
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs
+  # Which build this module came from. Set by the flake's `_revModule` via `_module.args`, because a
+  # default written against the CONSUMER's pkgs (D1) cannot see `self`. Defaulted so importing this
+  # file directly, with no flake, still evaluates — with the unstamped VERSION it always had.
+, swgBuildRev ? ""
+, ... }:
 
 let
   cfg = config.services.swg-node;
   inherit (lib) mkOption mkEnableOption mkIf types literalExpression optional optionalAttrs;
+
+  # The container CLI THIS SYSTEM is configured with. Never `pkgs.${cfg.backend}`, which is the
+  # channel's DEFAULT package and ignores `virtualisation.docker.package` completely.
+  #
+  # ⚠️ That bare reference made the WHOLE configuration refuse to evaluate on nixpkgs 25.11, where the
+  # default `pkgs.docker` is 28.5.2 and nixpkgs marks it insecure ("unmaintained since November 2025").
+  # The error named only `systemd.services.swg-node-turn-reap.preStop` — nothing about swg-node, nothing
+  # about the backend option that chose it — and it fired even for an operator who had already set
+  # `virtualisation.docker.package = pkgs.docker_29`, because this reference never asked. Reproduced on a
+  # 25.11 box, 2026-09-08. It also dragged a SECOND docker into the closure of anyone who had pinned one.
+  backendPkg =
+    if cfg.backend == "docker" then config.virtualisation.docker.package
+    else config.virtualisation.podman.package;
 
   # What we tell the node its firewall allows — and ONLY when there is a firewall for a port to be
   # outside of. With `networking.firewall.enable = false` everything is open, so reporting a range
@@ -73,6 +91,13 @@ let
     resultShape = "node";
     stampFile = "${cfg.stateDir}/.update-stamp";
     triggerFile = updateTrigger;
+    # A DIGEST-pinned image needs no pull — it cannot have moved, and adding one would make an
+    # update that only has to rebuild depend on the registry being reachable. A moving tag does.
+    pullImage = if cfg.delivery == "container" && !(lib.hasInfix "@sha256:" cfg.image)
+                then cfg.image else null;
+    pullCmd = if cfg.delivery == "container" then "${backendPkg}/bin/${cfg.backend}" else "";
+    restartUnits = if cfg.delivery == "container"
+                   then [ "${cfg.backend}-swg-node.service" ] else [ "swg-noded.service" ];
   };
 
 in
@@ -100,6 +125,16 @@ in
         `virtualisation.podman.dockerCompat` and a rootful docker-compatible socket.
         Podman also refuses every pull without `/etc/containers/policy.json`, which
         `virtualisation.containers.enable` supplies.
+
+        The two are not interchangeable in one config: `"docker"` turns on
+        `virtualisation.docker`, which nixpkgs refuses to have beside podman's `dockerCompat` /
+        `dockerSocket`. Switch both together — there is an assertion that says so.
+
+        ⚠️ `"docker"` inherits your channel's `virtualisation.docker.package`, and nixpkgs marks
+        an unmaintained docker **insecure**, which stops the whole configuration evaluating — not
+        just this module. On nixos-25.11 the default is docker-28.5.2 and is marked exactly that,
+        so a 25.11 consumer needs `virtualisation.docker.package = pkgs.docker_29;` (nixos-26.05
+        ships 29.7.2 and needs nothing). This module never picks that package for you.
       '';
     };
 
@@ -259,7 +294,7 @@ in
 
     package = mkOption {
       type = types.package;
-      default = pkgs.callPackage ../package.nix { };
+      default = pkgs.callPackage ../package.nix { rev = swgBuildRev; };
       defaultText = literalExpression "pkgs.callPackage <swg-panel>/nix/package.nix { }";
       description = ''
         The swg-panel package, for `delivery = "native"`. Resolved against YOUR pkgs, not the ones
@@ -526,6 +561,27 @@ in
             backend = "docker".
           '';
         }
+        {
+          # …and the mirror image, which is the switch an operator makes NEXT. The assertion above
+          # tells a podman user to turn dockerCompat on; nixpkgs then refuses to have it alongside
+          # `virtualisation.docker`, which THIS module turns on by itself for backend = "docker".
+          # So a config that followed our own advice and then flipped one word fails to evaluate
+          # with two nixpkgs messages — "Option dockerCompat conflicts with docker" and a second
+          # about the socket — neither of which mentions swg-node or the option that caused it.
+          # Reproduced on a 25.11 box, 2026-09-08. Ours does not replace theirs; it names the cause
+          # beside them.
+          assertion = !(cfg.delivery == "container" && cfg.backend == "docker"
+                        && (config.virtualisation.podman.dockerCompat
+                            || config.virtualisation.podman.dockerSocket.enable));
+          message = ''
+            services.swg-node.backend = "docker" turns on virtualisation.docker, and only one
+            runtime may own /run/docker.sock — so it cannot coexist with
+            virtualisation.podman.dockerCompat or virtualisation.podman.dockerSocket.enable.
+            Those two are exactly what the "podman" backend asks for, so this is what a config
+            switched from podman to docker looks like. Turn both off, or go back to
+            backend = "podman".
+          '';
+        }
       ];
     }
 
@@ -624,8 +680,8 @@ in
           done
           [ "$gone" = 1 ] || exit 0
 
-          ids=$(${pkgs.${cfg.backend}}/bin/${cfg.backend} ps -aq --filter name=swg-turn- 2>/dev/null || true)
-          [ -n "$ids" ] && ${pkgs.${cfg.backend}}/bin/${cfg.backend} rm -f $ids >/dev/null 2>&1 || true
+          ids=$(${backendPkg}/bin/${cfg.backend} ps -aq --filter name=swg-turn- 2>/dev/null || true)
+          [ -n "$ids" ] && ${backendPkg}/bin/${cfg.backend} rm -f $ids >/dev/null 2>&1 || true
           exit 0
         '';
       };

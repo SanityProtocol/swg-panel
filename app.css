@@ -38,6 +38,8 @@
   --partial-r:#F19AA4;   /* the "partial" badge's soft-red (a problem that isn't a stopper) */
   --dangling:#F26B82; --orphan:#B79BD6; --unknown:#62748B; --removing:#E2C84A;
   --brand:#1FC8D6; --brand-2:#5FE2EC; --brand-ink:#04232A; --smart:#F472B6;   /* smart routing — rose/pink, distinct from cascade purple */
+  --relay:#7C5CFF; --relay-2:#B9A6FF;   /* datapath RELAY — electric violet: the deliberate, more expensive path,
+                                           deliberately NOT the theme cyan so the two modes never read as one control in two states */
   --tp-rx:#1FC8D6; --tp-tx:#818CF8;   /* throughput chart: rx (down) cyan, tx (up) indigo — kept distinct */
   --rate-up:#4FA8F0;   /* throughput UP value/arrow — a fixed blue, decoupled from the ready-status colour so it stays this light in both modes (upload reads slightly lighter than the green download) */
   --sel-ink:var(--brand);   /* text colour for a SELECTED brand-tinted control (Online pill, etc.); darkened on light */
@@ -81,6 +83,7 @@
 }
 /* LIGHT-mode component tweaks that a variable swap can't express. */
 /* Hover-bubble (peers/users online list, "connected via", status "why") headers read a touch darker on white. */
+:root[data-theme="light"]{--relay:#6D3FF0; --relay-2:#4B22C4}   /* light: darken so violet-on-white stays readable */
 :root[data-theme="light"] .turnbub{color:var(--ink-2)}
 /* the online-peers bubble header sits on a tinted band (a bit darker than the theme) with a darker-theme label. */
 :root[data-theme="light"] .onlpop .onpop-h{color:var(--sel-ink);background:color-mix(in srgb,var(--brand) 20%,transparent);border-radius:7px}
@@ -143,6 +146,12 @@ h1,h2,h3{font-family:var(--sans)}
 .tabs a.active::after{content:"";position:absolute;left:11px;right:11px;bottom:-1px;height:2px;border-radius:2px;
   background:var(--brand);box-shadow:0 0 9px color-mix(in srgb,var(--brand) 55%,transparent)}
 .appbar-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+/* NOWRAP ON EVERY HEADER PILL. These are single-token status chips — a count and a word, a version, an
+   action — and the English happens to be short enough that none of them ever wrapped. Russian is not:
+   "FIX 2 ISSUES" becomes "ИСПРАВИТЬ 2 ПРОБЛЕМЫ" and broke onto FOUR lines, taking the whole header bar with
+   it. A pill that wraps is not a pill, and there is nothing here worth wrapping — they are short by
+   construction, so let them size to their text. */
+.livepill,.onlinetag,.onl-toggle,.tport{white-space:nowrap}
 .livepill{display:flex;align-items:center;gap:7px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
   color:var(--dim);font-family:var(--mono);padding:5px 11px;border:1px solid var(--line-solid);border-radius:99px;background:var(--surface-2)}
 .livepill b{color:var(--online);font-weight:600;font-size:13px;letter-spacing:-.02em}
@@ -932,10 +941,18 @@ textarea.ta::-webkit-scrollbar-track{background:transparent}
 textarea.ta::-webkit-scrollbar-thumb{background:var(--line-solid);border-radius:8px;border:2px solid var(--surface-2)}
 textarea.ta::-webkit-scrollbar-thumb:hover{background:var(--dim)}
 .search input{padding-left:34px}
-select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px;
-  background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);
-  background-position:calc(100% - 15px) 52%,calc(100% - 10px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+/* The hand-drawn caret for a native <select> lived here. There are no native selects in this SPA any more —
+   every one is the shared `Dropdown`, which draws its own — so the rule had nothing left to style. The
+   grouped `input,select{…}` above stays: it costs nothing and it means a stray future <select> is merely
+   unstyled rather than unreadable, while still looking wrong enough to send its author to `Dropdown`. */
 .selwrap{width:auto;min-width:150px}
+/* ⚠️ `.selwrap` IS A SIZING HOOK NOW, NOT A NATIVE <select>. Every one of those became the shared Dropdown,
+   which renders `.dropdown` — and `.dropdown{min-width:0}` is declared LATER in this file, so a bare
+   `.selwrap` would lose the tie and every toolbar control would collapse to its text. This rule wins on
+   specificity (0,2,0). It is placed HERE, early, on purpose: the parent rules that resize a particular slot
+   (`.tf-trail`, `.pager-size`, `.turninst`, `.field`, `.rrrow`) are also (0,2,0), so they beat it only by
+   coming later. Move this below them and they all silently stop applying. */
+.dropdown.selwrap{width:auto;min-width:150px}
 /* in a form field a dropdown should match the text inputs (full width), not size to its content */
 .field .selwrap:not(.mini){width:100%;min-width:0}
 .chips{display:flex;gap:7px;flex-wrap:wrap}
@@ -1058,6 +1075,10 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
   box-shadow:var(--shadow);animation:pop .24s var(--ease)}
 @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
 .sheet-head{display:flex;align-items:center;padding:18px 20px;border-bottom:1px solid var(--line)}
+/* the drops readout sits beside Turn IPs in the sheet header — its own control, with real air between
+   them so they don't read as one widget */
+.pxdrop-hd{margin-right:10px;cursor:default}
+.pxdrop-hd b{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600}
 .sheet-head h3{margin:0;font-size:15px;color:var(--ink);font-weight:650;letter-spacing:.01em}
 .sheet-head h3 .sheet-ver{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--ready);margin-left:4px}   /* deployed version shown right in the turn-proxy sheet title */
 .sheet-head h3 .sheet-verset{margin-left:6px;padding:2px;vertical-align:middle;color:var(--muted)}   /* gear beside the version → fork Server defaults (version/rollback) */
@@ -1087,6 +1108,8 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 /* validation: invalid field + error hint */
 input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px color-mix(in srgb,var(--dangling) 12%,transparent)}
 .hint.err{color:var(--dangling)}
+/* the middle severity: something is not ready YET (registering, not up) as against something that FAILED */
+.hint.warnish{color:var(--fault)}
 .advbad{color:var(--dangling);font-size:11px;font-weight:600;margin-left:6px}
 /* per-user VK link field: an editable icon-box mirroring the sub-link box; amber (empty/invalid) → blue (set) */
 .vkfield.warn .vkbox{border-color:#e0a85f;background:color-mix(in srgb,#e0a85f 8%,var(--bg))}
@@ -1099,10 +1122,6 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .vklinks-grid{display:flex;flex-direction:column;gap:8px;margin:12px 0}
 .vklinks-row{display:flex;align-items:center;gap:10px}
 .vklinks-row.warn .vkbox{border-color:#e0a85f;background:color-mix(in srgb,#e0a85f 8%,var(--bg))}
-.vklinks-prim{display:flex;align-items:center;gap:6px;cursor:pointer;flex:0 0 auto;min-width:74px;font-size:12px;font-weight:700;color:var(--dim);user-select:none}
-.vklinks-prim input{accent-color:var(--brand);cursor:pointer}
-.vklinks-prim input:focus,.vklinks-prim input:focus-visible{outline:none}   /* no bluish square around the radio on click */
-.vklinks-prim:has(input:checked){color:var(--brand)}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .hint.vk-warn{color:#e0a85f}}
 .inline{display:flex;gap:8px}.inline input{flex:1}
 .advtoggle{background:none;border:0;color:var(--dim);font-size:12px;cursor:pointer;padding:2px 0;display:flex;align-items:center;gap:6px}
@@ -1116,10 +1135,16 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .formmsg.err{color:var(--dangling)} .formmsg.ok{color:var(--online)} .formmsg.work{color:var(--dim)} .formmsg.warn{color:#F0913C}
 
 /* ───── toasts ───── */
-.toasts{position:fixed;right:20px;bottom:20px;z-index:70;display:flex;flex-direction:column;gap:10px;max-width:360px}
+/* ⚠️ THE TOP LAYER, BY DEFINITION. A toast is what the panel says happened — a refused choice, a failed
+   save — and it is worthless behind the thing that caused it. At z-index 70 it sat UNDER every popover
+   (80) and every dropdown popup (90), so the refusal you triggered by clicking a row in an open list was
+   posted behind that list. Above the QR zoom (9999) too: if a save fails while an enlarged code is open,
+   that is exactly the moment the message matters. Nothing in this file may out-rank it. */
+.toasts{position:fixed;right:20px;bottom:20px;z-index:10000;display:flex;flex-direction:column;gap:10px;max-width:360px}
 .toast{background:var(--raise);border:1px solid var(--line-solid);border-left-width:3px;border-radius:10px;padding:12px 14px;
   font-size:13px;color:var(--ink);box-shadow:var(--shadow);display:flex;gap:10px;align-items:flex-start;animation:slidein .25s var(--ease)}
 .toast.ok{border-left-color:var(--online)} .toast.err{border-left-color:var(--dangling)} .toast.info{border-left-color:var(--ready)}
+.toast.warn{border-left-color:var(--partial)}   /* the save went through, but not all of it — §5.4's dropped-entries line */
 .toast svg{flex:none;margin-top:1px}
 @keyframes slidein{from{transform:translateX(22px);opacity:0}to{transform:none;opacity:1}}
 .toast.out{animation:slideout .25s var(--ease) forwards}
@@ -1428,6 +1453,12 @@ button.nstat.asbtn:hover{text-decoration:underline}
 .egb-direct{color:#5B8CFF}                /* direct — blue */
 .egb-cascade{color:var(--pending)}        /* cascade — Node-connections icon colour (purple) */
 .egb-smart{color:var(--smart)}            /* smart routing — rose/pink */
+/* exit DEVICE — deliberately the same blue as `direct`, because that is what it is: this node putting the
+   traffic on the internet, just by another road. The two families the eye needs to separate are "this node
+   exits" (blue) from "another node exits" (cyan/purple), and the icon + the exit's own name carry the rest.
+   Its own class so decision 14's per-exit colour has somewhere to land without inventing a hue now. */
+.egb-exit{color:#5B8CFF}
+.egb-gone{color:var(--unknown)}           /* …and the exit it named is gone: stated, never shown as `direct` */
 /* on a node-connection card, the cascade badge + status dot sit at the TOP of the header (flex-start) so the
    dot is equidistant from the card's top and right borders (both = the card padding), not centred on the name */
 .ifcard.tp .ifcard-top .egb,.ifcard.tp .ifcard-top .lkdot{align-self:flex-start}
@@ -1476,6 +1507,16 @@ button.nstat.asbtn:hover{text-decoration:underline}
 .prov-tiers{display:flex;gap:4px}
 .prov-upd{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
 .prov-upd.never{opacity:.6;font-style:italic}
+/* Curated has no switch (§6.5) — this holds its column so every row's swatch stays on one line. */
+.prov-nosw{width:34px;height:19px;flex:none}
+/* "in use" — a rule names this list, so the node holds it whether or not it is pinned (§1.4). Quiet: it is a
+   statement of fact beside the title, not a status to scan for. */
+.lg-inuse{font-size:10.5px;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 5px;white-space:nowrap}
+.fleet-note{font-size:10.5px;color:var(--dim);white-space:nowrap}
+.prov-always{font-size:11px;color:var(--dim);white-space:nowrap}   /* stands where "updated 3h ago" does on a fetched provider */
+/* "used by 3 rules on 2 interfaces" — the blast radius of the switch to its left. --dim, matching .prov-upd
+   beside it rather than the quieter --faint of the repo link: this is a figure read before a decision. */
+.prov-use{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
 .prov-st{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;white-space:nowrap}
 .prov-st .ic svg{width:13px;height:13px}
 .prov-st.upd{color:var(--dim)}
@@ -1516,7 +1557,10 @@ button.nstat.asbtn:hover{text-decoration:underline}
 .fvp-nm{font-size:13px}
 .fvp-ver{font-size:12px;color:var(--muted)}
 .fvp-act{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.fvp-sel{min-width:260px;max-width:100%}
+/* ⚠️ SAME TIE AS `.selwrap` ABOVE: `.dropdown{min-width:0}` is declared later, so a bare `.fvp-sel` loses
+   and this control silently shrank from 260px to 150px when it stopped being a <select>. Qualified to
+   (0,2,0), and it sits AFTER `.dropdown.selwrap` so it still wins the pair the caller passes together. */
+.dropdown.fvp-sel{min-width:260px;max-width:100%}
 /* hover bubble: the nodes running this fork (+ live updating/updated during an Update) */
 .tf-verpop{position:absolute;top:calc(100% + 6px);left:0;z-index:40;min-width:max-content;display:none;flex-direction:column;gap:4px;
   padding:7px 9px;border:1px solid var(--line-solid);border-radius:9px;background:var(--surface-2);box-shadow:0 8px 26px rgba(0,0,0,.45);
@@ -1713,7 +1757,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rc-cnt.wire{color:var(--fault);background:color-mix(in srgb,var(--fault) 13%,transparent);border-color:color-mix(in srgb,var(--fault) 32%,transparent)}
 .rc-cnt.val{color:var(--ready);background:color-mix(in srgb,var(--ready) 13%,transparent);border-color:color-mix(in srgb,var(--ready) 32%,transparent)}
 .fd-sum.val{color:var(--ready)}
-.rc-ver{font-family:var(--mono);font-size:11px;padding:3px 6px;border-radius:6px;border:1px solid var(--line-solid);background:var(--surface-2);color:var(--ink);max-width:170px}
+/* the roster version pin — a <select> until it became the shared Dropdown, so the look moves to its button */
+.rc-ver{max-width:170px;min-width:0}
+.rc-ver .ddbtn{font-family:var(--mono);font-size:11px;padding:3px 6px;border-radius:6px;gap:5px}
 .rc-wtag{font-size:10px;font-weight:600;color:var(--fault);background:color-mix(in srgb,var(--fault) 12%,transparent);border-radius:5px;padding:1px 6px;white-space:nowrap}
 /* Server-defaults ExecStart box: a read-only auto/obfuscation block above an editable free-flags textarea, as one field */
 .obfrow{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
@@ -1874,13 +1920,58 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .setfoot .grow{flex:1}   /* expand the spacer so Back/Save sit right (the saved-flash stays left) */
 .setfoot .btn{padding:9px 26px;min-width:104px;justify-content:center}   /* Back + Save: wide + equal */
 .setfoot .savedflash{margin-left:2px}
-.rrcatch{min-width:0}   /* the routing catch-all ("everything else") dropdown — matches the per-rule route-to dropdowns exactly */
+/* The destination control on a rule row and on the catch-all. Both were native <select class="selwrap">
+   sized by `.tf-trail .selwrap`; they are the shared `Dropdown` now, so the slot has to name that instead —
+   same width, same place, so the two kinds of row still line up with each other down the list. */
+.rrdest{display:block;min-width:0}
+.rrdest .ddbtn{font-size:12.5px;padding:7px 10px}
+.rrcatch{min-width:0}   /* the routing catch-all ("everything else") — matches the per-rule route-to control exactly */
 /* Phase 3 smart-routing rule editor. Row + catch-all footer share ONE grid template (grip · dropdown · arrow ·
    dropdown · xbtn), so the "everything else" dropdown + arrow line up exactly under the per-rule ones. The side
    columns are `auto` (icon-width) and identical in both, so the two 1fr dropdown columns come out equal. A flex
    row can't do this reliably — a <span> and a <select> don't split a flex track equally. */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
-.rrrow{display:grid;grid-template-columns:16px minmax(0,1fr) auto minmax(0,1fr) auto;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
+/* TWO COLUMNS: the grip, then the field across everything else. The destination select used to be a third
+   and fourth column, which capped the target box at half the dialog however wide the dialog got — and the
+   box is the part that holds an unbounded number of badges. It now rides in the field's own foot, right
+   aligned and level with the entry count (`.tf-trail`), so the box gets the full width and the two controls
+   still read as one line. */
+.rrrow{--rr-rail:16px;--rr-gap:8px;display:grid;grid-template-columns:var(--rr-rail) minmax(0,1fr);align-items:start;gap:var(--rr-gap);padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
+.rrrow .drag-grip{margin-top:7px}   /* grid is top-aligned now, so the grip lines up with the box, not the row */
+/* The destination, tucked to the right of the foot. `margin-left:auto` rather than a spacer so a long
+   sentence in the foot pushes it to its own line instead of squeezing the select to nothing. */
+/* EXPLICIT WIDTHS, not intrinsic ones. The base rule is `input,select{width:100%}`, so a select left to size
+   itself here takes the whole trail and shoves the arrow and the × outside the row — and because the trail's
+   own max-content is then computed FROM that select, the two chase each other to a width that fits neither.
+   A fixed dropdown width also makes the rule rows and the catch-all agree by construction rather than by two
+   intrinsic sizes happening to land on the same number, which they did not: 234 against 238. */
+.tf-trail{margin-left:auto;display:flex;align-items:center;gap:8px;flex:0 0 auto;max-width:100%}
+/* 190 → 224 → 272. Each bump has had the same cause and a longer winner: at 190 it was "Напрямую (эта
+   нода)"; at 224 it is an exit, whose label is a name AND a device — "ВАРП выход — wgx-736a24bf" — and
+   those clipped to "wgx-736a24…", which is the half that tells two exits apart. Both the rule rows and the
+   catch-all read from this one rule, so they keep matching widths down the list. */
+.tf-trail .selwrap,.tf-trail .rrdest{width:272px;min-width:0;flex:0 0 272px}
+/* The trailing button is a × on a rule and a gear on the catch-all; they must occupy the SAME box or the two
+   dropdowns sit a few pixels apart all the way down the list, which reads as a wobble rather than a column. */
+.tf-trail .xbtn{width:20px;height:20px;padding:0;margin-left:0;flex:none}
+/* IN THE RAIL, DIRECTLY UNDER THE TEXT-VIEW TOGGLE — not in the foot's flow. It used to sit beside the
+   destination dropdown, one careless click from it; then at the foot's left edge, where it crowded the
+   entry count. The rail is the row's column of controls-on-the-field, and this is one: taken out of flow
+   so it lines up under `</>` and the count keeps the line's left edge. Red at rest, because a destructive
+   control that only reveals itself on hover is one the operator finds by accident. */
+/* TWO ALIGNMENTS AT ONCE, which is why it is absolute INSIDE the pair rather than in the foot: vertical
+   comes from `.tf-lstart`, whose box is the entry count's own line, so 50% is that line's middle whatever
+   the destination select does to the foot's height; horizontal comes from the same rail expression the
+   text-view toggle uses, so the two controls share a column. Out of flow, so the count keeps the box's
+   left edge instead of being pushed right by a button sitting outside the box. */
+.tf-lstart{position:relative;display:flex;align-items:center;gap:6px;min-width:0;flex:0 1 auto}
+.tf-lead{position:absolute;left:calc(-1 * (var(--rr-rail,16px) + var(--rr-gap,8px) + 2px));top:50%;
+  transform:translateY(-50%);display:flex;align-items:center;justify-content:center;
+  width:var(--rr-rail,16px);flex:none}
+.tf-lead .xbtn{width:18px;height:18px;padding:0;margin:0;flex:none;color:var(--dangling);opacity:.85}
+.tf-lead .xbtn:hover{opacity:1;background:color-mix(in srgb,var(--dangling) 14%,transparent)}
+.tf-lead .xbtn .ic svg{width:15px;height:15px}
+.tf-foot .tf-trail{margin-right:-2px}   /* cancel the foot's own 2px inset so the control lines up with the box above it */
 /* custom IPs/domains rule: a full-width auto-growing textarea on its own grid row. Starts one row tall (like a
    textbox); JS grows it to fit wrapped content (resize off, no scrollbar). */
 .rrdoms{grid-column:1/-1;width:100%;box-sizing:border-box;display:block;font-family:var(--mono);font-size:12px;line-height:1.55;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);resize:none;overflow:hidden}
@@ -1955,7 +2046,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
   font-size:11.5px;line-height:1.45;font-weight:500;text-align:left;white-space:normal;box-shadow:0 10px 26px rgba(0,0,0,.4)}
 .descinfo:hover .descbub,.descinfo:focus .descbub,.descinfo:focus-within .descbub{display:block}
 /* ── Routing lists redesign: mode banner + two list grids + fleet popover ── */
-.rmode-banner{position:relative;padding:11px 16px 14px;border-radius:10px;margin-bottom:22px;
+.rmode-banner{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:14px;align-items:start;padding:11px 16px 14px;border-radius:10px;margin-bottom:22px;
   border:1px solid var(--line-solid);background:color-mix(in srgb,var(--mc,var(--brand)) 6%,var(--surface-2));border-left:3px solid var(--mc,var(--brand))}
 .rmode-info{display:inline-flex;flex:none}
 .rmode-infobtn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:6px;color:var(--brand);cursor:help;transition:color .12s,background .12s}
@@ -1964,7 +2055,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-info-pop{max-width:420px;font-size:12.5px;line-height:1.55;color:var(--dim)}
 .rmode-info-body{padding:5px 8px;text-align:justify}
 .rmode-info-body b{color:var(--ink);font-weight:600}
-.rmode-desc{font-size:12px;color:var(--dim);line-height:1.55;margin-top:11px;max-width:none}
+.rmode-desc{grid-column:1 / -1;font-size:12px;color:var(--dim);line-height:1.55;margin-top:11px;max-width:none}
 .rmode-tabs{display:flex;gap:8px;margin:0 0 14px}
 .rmtab{--mc:var(--brand);flex:0 0 auto;width:54px;height:44px;display:inline-flex;align-items:center;justify-content:center;
   border:1px solid var(--line-solid);background:var(--surface-2);border-radius:9px;color:var(--faint);cursor:pointer;
@@ -2057,6 +2148,14 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .disc-sum b{font-weight:700}
 .disc-sum.on b{color:var(--online)}      /* active filters — green */
 .disc-sum.route b{color:var(--smart)}    /* routing rule count — rose */
+/* A named divider BETWEEN groups inside one disclosure — the protocol settings and the NAT source card
+   sit in the same "Advanced settings" body and two unlabelled runs of fields read as one long list. Not a
+   nested accordion on purpose: only one protocol block ever applies, so collapsing it would add a click to
+   reach settings that are always relevant. First one in a body has no rule above it — the disclosure's own
+   border already is one. */
+.field.secdiv{margin:4px 0 10px}
+.field.secdiv>label{margin:0;padding-top:11px;border-top:1px solid var(--line-bright);color:var(--fg)}
+.disc-body>.field.secdiv:first-child>label{padding-top:0;border-top:none}
 .disc-body{border:1px solid var(--line-bright);border-top:none;border-radius:0 0 10px 10px;padding:13px 13px 4px;
   background:color-mix(in srgb,var(--surface-2) 45%,transparent)}
 .disc-body>.field:last-child{margin-bottom:6px}
@@ -2093,25 +2192,42 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .bk-pickitem:hover{background:color-mix(in srgb,var(--brand) 12%,transparent)}
 .bk-pickitem:hover .bk-pilabel{color:var(--brand)}
 .bk-pickempty{color:var(--faint);font-size:12px;padding:10px 8px}
-.rd-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:7px;padding-right:200px}   /* right gutter reserves the floated buttons' space so the title/summary never slide under them */
+/* THE BUTTONS ARE A COLUMN NOW, not an overlay. `.rd-headside` used to be `position:absolute` in the card's
+   top-right, which takes no space — so every full-width block under it (`.rd-head`, `.rd-lines`) had to
+   reserve a gutter by hand and hope the number was big enough. It was not: `.rd-head` guessed 200px while
+   the column measures 248, and the +/− lines cleared the buttons by 25px purely on string length. Measured
+   on the live card, one longer benefit line ran straight underneath.
+   As a real grid column spanning the head and the lines, nothing CAN overlap it, no block needs a gutter,
+   and the left text still reclaims the full width from the spec strip down — which is what the absolute
+   positioning was reaching for in the first place. */
+.rd-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:7px;grid-column:1}
 .rd-headmain{display:flex;flex-direction:column;gap:5px;flex:1;min-width:0}   /* title, then summary right below it (top-aligned — no longer stretched to the buttons) */
 .rd-titlerow{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .rd-ic{display:inline-flex;color:var(--mc)}.rd-ic svg{width:20px;height:20px}
 .rd-name{font-size:15px;color:var(--ink);font-weight:700}
 .rd-head .rmode-tabs{margin:0;flex:none;align-self:flex-start}   /* the 4 mode icons live in the header now */
 .rd-adds{font-size:12.5px;color:var(--ink);font-weight:700;line-height:1.5}
-.rd-lines{display:flex;flex-direction:column;gap:3px;margin-bottom:8px}   /* even spacing between every +/- row */
+.rd-lines{display:flex;flex-direction:column;gap:3px;margin-bottom:8px;grid-column:1 / -1}   /* even spacing between every +/- row */
 .rmc-tag{font-family:var(--mono);font-size:9px;letter-spacing:.03em;color:var(--mc);padding:2px 7px;border-radius:20px;background:color-mix(in srgb,var(--mc) 14%,transparent);white-space:nowrap}
 .rmc-bene,.rmc-cost{font-size:12px;line-height:1.45;display:flex;gap:7px;align-items:baseline}
 .rmc-bene b,.rmc-cost b{flex:none;font-family:var(--mono);font-weight:700;font-size:12.5px}
 .rmc-bene{color:var(--dim)}.rmc-bene b{color:#3EA76B}
 .rmc-cost{color:var(--faint)}.rmc-cost b{color:#C0821A}
 :root[data-theme="dark"] .rmc-bene b{color:#57C98A}:root[data-theme="dark"] .rmc-cost b{color:#EBB43C}
+/* The capability strip: three facts, label column aligned, no rules or box around it. The card already
+   carries a +/− list and a tag pill; a bordered panel here would be a third device saying the same thing at
+   the same volume. Sits between the trade-offs and the prose because it is the last thing read before the
+   paragraph, and BELOW the absolutely-positioned mode buttons so it cannot slide under them. */
+.rd-spec{grid-column:1 / -1;display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 12px;margin-top:10px;align-items:baseline}
+.rds-k{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap}
+.rds-v{font-size:12px;color:var(--dim);line-height:1.5}
 .rmode-banner .rmode-desc{margin-top:8px}
-.rd-headside{position:absolute;top:11px;right:16px;display:flex;flex-direction:column;align-items:flex-end;gap:13px}   /* floated out of flow → buttons + lists stay top-right; the left text + bullets flow back up to their original spots */
+/* ROW 1 ONLY. It used to span the lines as well, which cost them half the card — measured 456px against a
+   Russian benefit line needing 663px, so every mode wrapped in Russian while English fit by luck. With the
+   lists line gone the button row is SHORTER than the title+summary beside it, so spanning one row wastes
+   no space at all and hands `.rd-lines` the full 714px, where the widest line in either language fits. */
+.rd-headside{grid-column:2;grid-row:1;display:flex;flex-direction:column;align-items:flex-end;gap:13px;min-width:0}
 .rd-headside .rmode-tabs{align-self:flex-end}
-.rmode-lists{font-size:12px;color:var(--dim);line-height:1.55;text-align:right}   /* lists this mode uses — sits under the 4 mode buttons */
-.rmode-lists b{color:var(--ink);font-weight:700}
 /* status bar ABOVE the mode card (outside it): "<node> currently runs on <mode>" + status under it, reset/info right */
 .rmode-runbar{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}   /* status text (left) and caption (right) share a baseline */
 .rmr-left{display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0}   /* status (+ reset when there's no 2nd status line), left-aligned */
@@ -2151,7 +2267,13 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
   border:none;background:none;color:#D65B5B;cursor:pointer;padding:0;transition:color .12s,background .12s}
 .rmode-reset-ic .ic svg{width:14px;height:14px}
 .rmode-reset-ic:hover{color:#E86B6B;background:color-mix(in srgb,#D65B5B 15%,transparent)}
-.rmode-reset-pop{max-width:280px;font-size:12px;line-height:1.5;color:var(--dim)}
+/* ⚠️ .deppop AND .rmode-reset-pop ARE THE SAME SPECIFICITY, and .deppop is declared later — so its
+   padding:5px won and this prose sat hard against the bubble's edge, in --dim, while every other prose
+   popover in the panel (.prot-who-pop, .hostupd-bub) pads to 11-14px on --raise. Qualified with .deppop to
+   outrank it by specificity rather than by hoping about source order. */
+.deppop.rmode-reset-pop{max-width:300px;padding:11px 14px;background:var(--raise);
+  border-color:var(--line-solid);box-shadow:0 16px 40px rgba(0,0,0,.45);
+  white-space:normal;font-size:12px;line-height:1.55;color:var(--ink-2);letter-spacing:0;text-transform:none}
 /* type-to-confirm field inside a destructive ConfirmSheet */
 .confirm-type{display:flex;flex-direction:column;gap:6px;margin:13px 2px 2px}
 .confirm-type>span{font-size:12.5px;color:var(--dim)}
@@ -2179,11 +2301,273 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .ddpop{position:fixed;z-index:90;max-width:min(480px,92vw);max-height:var(--ddmaxh,320px);overflow-y:auto;
   background:var(--surface-2);border:1px solid var(--line-solid);border-radius:var(--r-sm);box-shadow:0 12px 34px rgba(0,0,0,.5);padding:5px}
 .ddpop.flip{transform:translateY(-100%)}
-.ddgrp{font-family:var(--mono);font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--dim);padding:8px 8px 4px}
+.ddgrp{font-family:var(--mono);font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--dim);font-weight:700;padding:8px 8px 4px}
 .ddopt{display:block;width:100%;text-align:left;padding:8px 10px;border:0;border-radius:6px;background:none;color:var(--ink);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ddopt:hover:not(:disabled){background:var(--dd-hover);color:var(--ink)}
 .ddopt.sel{background:var(--dd-sel);color:var(--sel-ink);font-weight:600}
+/* A row with its own control is selected AS A ROW. The tint has to reach past the label button and under
+   the switch, or a selected row reads as a half-painted one. The inner button then stops painting its own,
+   and the hover follows the same rule. */
+.ddrow.sel{background:var(--dd-sel);border-radius:6px}
+.ddrow.sel>.ddopt.sel{background:none}
+.ddrow:hover:not(.sel){background:var(--dd-hover);border-radius:6px}
+.ddrow:hover:not(.sel)>.ddopt:hover{background:none}
+/* ── THE TWO LEVELS OF THE LIST ────────────────────────────────────────────────────────────────────────
+   A row under a heading is indented under it; a row that answers the question on its own — "Auto", the
+   node's default, a mode — is TOP LEVEL and bold, because it is a peer of the headings rather than one
+   more item beneath them. Structure the reader can see without reading. */
+.ddpop>.ddopt,.ddpop>.ddrow>.ddopt{font-weight:600}
+.ddpop [role=group] .ddopt{padding-left:22px}
 .ddopt.off{color:var(--faint);cursor:not-allowed}
+/* TURNED OFF, not unavailable. `.off` is a row that cannot be chosen; `.dim` is one that CAN — an exit
+   switched off still has to be selectable, because an interface pointed at it keeps that selection. */
+.ddopt.dim{opacity:.45}
+.ddrow:has(.ddopt.dim) .ddx{opacity:.75}
+/* THE ARROW-KEY CURSOR. Focus moves for real between rows, so the focused one has to be as obvious as the
+   hovered one or arrowing through a long list is navigating blind. `:focus-visible`, not `:focus`, so
+   selecting with the mouse (which hands focus back to the trigger) never paints a ring. */
+.ddopt:focus-visible{background:var(--dd-hover);outline:2px solid color-mix(in srgb,var(--brand) 70%,transparent);outline-offset:-2px}
+/* ⚠️ ON A ROW WITH ITS OWN CONTROLS THE RING BELONGS TO THE ROW. Drawn on the inner button it stopped dead
+   before the pencil and the switch, so the selected row wore a squarish box around two thirds of itself —
+   which reads as a rendering fault, not as focus. Moved out to the row; the indicator is KEPT, because
+   arrowing through a list with nothing showing where you are is the thing it exists to prevent. */
+.ddrow>.ddopt:focus-visible{outline:none;background:none}
+.ddrow:has(>.ddopt:focus-visible){outline:2px solid color-mix(in srgb,var(--brand) 70%,transparent);outline-offset:-2px;border-radius:6px}
+.ddpop:focus{outline:none}
+/* A row that carries its own control (`extra`). The control is a SIBLING of the option button, never inside
+   it: nested interactive elements are invalid and the inner one stops taking clicks. */
+.ddrow{display:flex;align-items:center;gap:4px}
+.ddrow>.ddopt{flex:1 1 auto;width:auto;min-width:0}
+.ddx{flex:none;display:flex;align-items:center;gap:4px;padding-right:6px}
+/* The row's own rename affordance. Quiet until the row is under the pointer — a pencil on every line is
+   noise, an invisible one is a feature nobody finds, so it fades in with the row. */
+.ddpen{display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;
+  border-radius:5px;background:none;color:var(--faint);cursor:pointer;opacity:.35;transition:opacity .12s,color .12s}
+.ddrow:hover .ddpen,.ddrow.sel .ddpen,.ddpen:focus-visible{opacity:1}
+.ddpen:hover{color:var(--brand);background:color-mix(in srgb,var(--brand) 14%,transparent)}
+.ddpen svg{width:13px;height:13px}
+/* Remove — same quiet-until-hovered treatment as the pencil, in the destructive colour so the two are never
+   mistaken for each other at a glance. Only on rows the operator ADDED; a discovered device has no record. */
+.ddrm{display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;
+  border-radius:5px;background:none;color:var(--dangling);cursor:pointer;opacity:.35;transition:opacity .12s,background .12s}
+.ddrow:hover .ddrm,.ddrow.sel .ddrm,.ddrm:focus-visible{opacity:1}
+.ddrm:hover{background:color-mix(in srgb,var(--dangling) 16%,transparent)}
+.ddrm svg{width:12px;height:12px}
+/* ── ASKING, IN THE ROW ─────────────────────────────────────────────────────────────────────────────────
+   Takes the whole control slot: a "delete?" beside a live switch reads as two questions, and the switch is
+   the one thing that must not stay clickable while a delete is pending. */
+.ddconf{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.ddconf-q{font-size:11.5px;color:var(--dangling)}
+.ddconf-y,.ddconf-n{padding:2px 9px;border-radius:6px;font-size:11.5px;font-weight:600;cursor:pointer;border:1px solid transparent}
+.ddconf-y{background:color-mix(in srgb,var(--dangling) 16%,transparent);color:var(--dangling);
+  border-color:color-mix(in srgb,var(--dangling) 45%,transparent)}
+.ddconf-y:hover{background:color-mix(in srgb,var(--dangling) 26%,transparent)}
+.ddconf-n{background:none;color:var(--dim)}
+.ddconf-n:hover{color:var(--ink);background:var(--dd-hover)}
+/* the row being asked about sits still — no hover tint competing with the question */
+.ddrow:has(.ddconf):hover{background:none}
+.ddopt.arming{opacity:.75}
+/* Title + device + the two buttons, wrapping to their own line for the hint. */
+/* Three fields on ONE line, and the actions on the right where the thing pressed last belongs. It used to
+   live in a single ~370px column, which is why each field wrapped onto a line of its own and the buttons
+   needed a row to themselves; spanning the whole band, they all fit. */
+.exname{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;flex:1 1 100%;min-width:0}
+/* ⚠️ WIDE ENOUGH FOR THEIR OWN PLACEHOLDERS. This form lives in one column of a two-column row, so a basis
+   that let both inputs share that column left each about 180px — and "Название — необязательно" was cut to
+   "Название — необязател", which is a placeholder that cannot do its job. The basis is now larger than half
+   the column, so they wrap to one per line and each gets the full width instead. */
+/* ⚠️ EACH FIELD IS A LABELLED COLUMN NOW. Three boxes in a row with the field name written inside them as
+   placeholder text told you what they were only until you typed — after that the form was three anonymous
+   boxes and you had to remember which was which. The name moves out to a label that stays; the placeholder
+   keeps only the EXAMPLE, which is the half that is still worth reading when the box is empty.
+   Smaller than a `.field>label`: these sit inside a control, not above a section. */
+.exname-f{display:flex;flex-direction:column;min-width:0}
+.exname-f>input{width:100%;min-width:0}
+.exname-lbl{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);
+  font-weight:600;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.exname-t{flex:1 1 150px;min-width:120px}
+.exname-d{flex:1 1 190px;min-width:150px}
+.exname-d input{font-family:var(--mono)}   /* mono is wide — its placeholder needs the room */
+/* The source picker is a dropdown that GROWS a second row when "custom" is chosen, so it gets a flex column
+   of its own rather than sitting inline — otherwise the text field it opens pushes the buttons around. */
+.exname-eg{flex:1 1 170px;min-width:150px}
+/* The typed gateway, cards only. Narrower than the others: an IPv4 literal is a known width, and it only
+   appears when the node could not detect one, so it should not push the fields that are always there. */
+.exname-gw{flex:1 1 140px;min-width:120px}
+.exname-gw input{font-family:var(--mono)}
+/* the actions have no label above them, so they sit on the CONTROL's line, not the label's */
+.exname-act{flex:none;margin-left:auto;display:flex;gap:6px;align-self:flex-end}
+/* the one line that is about the KIND of thing being made, so it spans everything below the fields */
+.exname-hint{flex-basis:100%;margin-top:2px}
+/* Manage — the fuller answer to the same question the "Custom interface…" row asks, so it rides in that row
+   rather than adding a second one. Always visible: it is a way OUT of the list, not a per-row control. */
+.ddmanage{padding:3px 9px;font-size:11px;white-space:nowrap}
+/* ── THE WAYS-OUT GRID ─────────────────────────────────────────────────────────────────────────────────
+   Seven columns, so every row answers the same questions in the same places.
+
+   ⚠️ NO COLUMN GAP — the separators are per-cell `border-bottom`, and a `gap` puts unpainted alleys through
+   every one of them, so the rules came out as seven dashes instead of a line. The breathing room is cell
+   PADDING instead, which the border runs underneath. */
+/* ⚠️ THE TRACKS MUST FIT. With minimums that added up to more than the sheet, the grid overflowed and
+   TYPE ran underneath USED BY — two columns printing on top of each other. Type and Used-by are sized to
+   their content (a pill, a short count) with a floor, and only Title/Device flex. */
+/* ⚠️ NO `align-items:center` ON THE GRID. Centre the ITEMS and each cell shrinks to its own content, so
+   the seven `border-bottom`s in a row land at seven different heights — which is exactly the stepped,
+   broken divider under the switches and the trash. The tracks STRETCH (the default) so every cell in a row
+   is the same height and the rule is one line; the content is centred inside each cell instead. */
+/* ⚠️ FIXED PIXEL TRACKS ARE A MEASUREMENT OF ONE LANGUAGE. These were sized against English and Russian
+   promptly overflowed them — «Не используется» wrapped to two lines in an 88px column and the KILL-SWITCH
+   header was cut mid-word. The three label columns size to their CONTENT with a floor, so each language
+   gets the width its own words need; only Title and Device flex. */
+.exgrid{display:grid;font-size:12.5px;margin:0 -10px}
+/* Two shapes, one set of cell rules. The track count has to be in the SELECTOR as well as the template —
+   `:nth-child` counts siblings, and a grid's cells are all siblings, so "first in the row" is 7n+1 in one
+   and 8n+1 in the other. Getting that wrong is what put the trash icons 8px apart. */
+.exgrid.g7{grid-template-columns:minmax(120px,1.4fr) minmax(115px,1.3fr) minmax(88px,max-content)
+  minmax(84px,max-content) minmax(76px,max-content) minmax(62px,max-content) 62px}
+
+/* Nine now: "Latency" sits beside the exit IP, because the two answer the same question — what is on the
+   far end of this tunnel, and is it worth routing through. Kept narrow (max-content over a 64px floor): the
+   value is "128 ms" or an em dash and never grows. */
+.exgrid.g8{grid-template-columns:minmax(110px,1.3fr) minmax(130px,1.2fr) minmax(70px,max-content)
+  minmax(110px,max-content) minmax(64px,max-content) minmax(76px,max-content) minmax(62px,max-content) 40px 40px}
+/* the manage grid: the same seven plus "Leaves as", the source the traffic actually carries */
+.exgrid.g8x{grid-template-columns:minmax(95px,1fr) minmax(100px,0.9fr) minmax(70px,max-content)
+  minmax(178px,1.4fr) minmax(84px,max-content) minmax(76px,max-content) minmax(62px,max-content) 62px}
+/* A device the node has never reported, left on Auto — the one cell here that fails silently. Marked on the
+   WRAPPER, not on an input: the control is a dropdown now, and what is risky is the CHOICE, not a typo. */
+.exg-inw.risky .ddbtn{border-color:color-mix(in srgb,var(--fault) 60%,transparent)}
+/* ⚠️ THE WRAPPER MUST BE POSITIONED. Without `position:relative` the marker anchors to whatever ancestor
+   happens to be positioned — which here was the modal itself, so five warning triangles stacked up on the
+   backdrop OUTSIDE the sheet, pointing at nothing. It also has to be a flex box that fills the track, or
+   the input inside it shrinks to its default size and the marker sits past its right edge. */
+/* ⚠️ `position:relative` is what the warning marker anchors to — without it the marker anchors to the modal
+   and stacks up on the backdrop, outside the sheet, pointing at nothing. The cell is ONE control tall now
+   (the picker is a combobox), so the row height no longer changes when custom is chosen. */
+.exg-inw{position:relative;display:flex;flex-direction:column;align-items:stretch;width:100%;min-width:0}
+/* OUTSIDE the control, not on top of it. Sat inside the dropdown it landed between the label and the caret,
+   where it read as part of the value and clipped the text it was warning about. Pinned to the DROPDOWN's
+   row rather than the cell's centre, because the cell grows downward when the custom field opens and a
+   centred marker would drift away from the control it is about. */
+.exg-warn{position:absolute;top:10px;right:0;display:flex;color:var(--fault);pointer-events:auto;cursor:help}
+.exg-warn svg{width:13px;height:13px}
+/* the gutter the marker sits in — taken out of the CONTROL's width, not out of the next column's */
+.exg-inw.risky{padding-right:19px}
+
+/* ⚠️ THE ROW IS AN ELEMENT NOW, and that is what makes both of these possible. A CSS grid's cells are all
+   siblings, so there is nothing to hover and nothing that means "first in the row" — which is why the trash
+   icons once sat 8px apart under `:last-child`, and why only the hovered CELL used to light up.
+   `display:contents` gives each row a real element for events and scoping while its cells stay grid items,
+   so `:first-child`/`:last-child` finally mean what they say and the whole row highlights together. */
+.exg-r{display:contents}
+/* ⚠️ THE HIGHLIGHT NEEDS TO EXTEND PAST THE TEXT, or the row lights up with its first letter and its last
+   icon flush against the edge of the tint. The outer cells keep real padding and the grid is pulled out by
+   the same amount, so the columns still line up with everything else in the pane while the hover bleeds
+   into the margin — the text is inside the highlight rather than defining it. */
+.exg-r>*:first-child{padding-left:10px}
+.exg-r>*:last-child{padding-right:10px}
+/* A whole row opens the editor, so the cells that are not controls say so. */
+.exg-c.clk{cursor:pointer}
+.exgrid.g8 .exg-r:hover>.exg-c{background:color-mix(in srgb,var(--brand) 7%,transparent)}
+.exg-ed{display:flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;
+  border-radius:6px;background:none;color:var(--faint);cursor:pointer;transition:background .12s,color .12s}
+.exg-ed:hover{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--brand)}
+.exg-ed svg{width:14px;height:14px}
+/* ── THE EXIT EDITOR'S HEADER ───────────────────────────────────────────────────────────────────────────
+   Three weights, in one line, with air between them: the NAME is the loud thing, the kind and the device
+   are metadata beside it, and what depends on it sits far right where a count belongs. Everything after the
+   title lives in one flex box so the spacing is a rhythm rather than four separate margins — jammed up
+   against the h3 they read as one run-on label. */
+.exed-hx{flex:1;min-width:0;display:flex;align-items:center;gap:11px;margin:0 14px 0 16px}
+.sheet-head .exed-hx .exg-t{flex:none}
+.exed-dev{font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.exed-used{font-size:11.5px;color:var(--faint);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+/* Headers never wrap and never truncate — a column head that reads "КТО ИСПОЛЬЗУ" names nothing. They are
+   part of what sizes the track (max-content above), so the track grows to fit the word instead. */
+.exg-h{font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);
+  padding:0 8px 6px;border-bottom:1px solid var(--line-solid);white-space:nowrap}
+/* ⚠️ `:first-child` / `:last-child` DO NOT MEAN "first/last in the row". Every cell of a CSS grid is a
+   sibling, so those matched the first and last cell of the WHOLE grid — one title lost its left padding and
+   one action cell lost its right, which is why the trash icons sat 8px apart down the column. Count by the
+   track instead: with seven columns, 7n+1 is the first of each row and 7n the last. */
+/* Rows are a LIST, not a form: 6px of padding on a 28px control gives a 40px row, which keeps six of them
+   on screen at once — the whole point of a grid over a stack of cards. */
+.exg-c{padding:6px 8px;border-bottom:1px solid var(--line);min-width:0;display:flex;align-items:center;gap:7px}
+.exg-c input{padding:5px 9px;font-size:12.5px}
+.exg-c.dim{opacity:.5}
+/* A switch under a left-aligned header reads as knocked out of true; both are centred so the column is a
+   column. The two are fixed-width for the same reason — rows must not shift as titles get longer. */
+.exg-h.c,.exg-c.c{justify-content:center;text-align:center}
+.exg-c input{width:100%;min-width:0}
+.exg-c .mono,.exg-c input.mono{font-family:var(--mono)}
+.exg-dev{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* Health. Hollow is "the node has not mentioned it", which is a different thing from down and must not
+   borrow its colour. */
+.exg-dot{flex:none;width:7px;height:7px;border-radius:50%;cursor:help}
+.exg-dot.up{background:var(--online)}
+.exg-dot.down{background:var(--fault)}
+.exg-dot.bad{background:var(--dangling)}
+.exg-dot.unknown{background:none;border:1px solid var(--line-solid)}
+/* the dot answers "what state", the marker answers "you need to do something about it" — a 7px circle is
+   enough for up/down, which are ordinary, and not enough for a failed registration. */
+.exg-h8{display:inline-flex;align-items:center;gap:5px}
+.ddwarn{display:inline-flex;align-items:center;cursor:help;flex:none}
+/* The marker that OPENS its reason reads as a control: a pointer rather than the help cursor, and a hover
+   that says it will do something. The plain (busy) marker keeps `cursor:help` above. */
+.ddwarn-clk{cursor:pointer;border-radius:4px;padding:1px;margin:-1px;transition:background .12s}
+.ddwarn-clk:hover{background:color-mix(in srgb,currentColor 16%,transparent)}
+.ddwarn svg{width:13px;height:13px}
+.ddwarn.warn{color:var(--fault)}
+.ddwarn.bad{color:var(--dangling)}
+/* IN PROGRESS, NOT A FAULT. A WARP account still registering wore the amber warning triangle, so creating
+   an exit looked like breaking one. Muted rather than coloured — nothing is wrong, something is happening —
+   and turning slowly enough to read as "working", not "loading". The global prefers-reduced-motion rule
+   already flattens this to a still icon. */
+.ddwarn.busy{color:var(--dim);cursor:default}
+.ddwarn.busy svg{animation:ddspin 1.8s linear infinite}
+@keyframes ddspin{to{transform:rotate(360deg)}}
+.exg-act{justify-content:flex-end;gap:5px}
+.exg-t{font-size:10.5px;padding:2px 8px;border-radius:99px;white-space:nowrap;font-weight:600}
+.exg-t.warp{background:color-mix(in srgb,var(--online) 15%,transparent);color:var(--online)}
+/* WARP+ — the one row in the list somebody paid for. Same green, so it reads as the same family, but lit:
+   a ring plus a soft bloom is enough to find it at a glance without inventing a second colour. */
+/* The "+" carries the meaning, so it gets the weight and the accent — and 1px up, because a "+" sits on the
+   baseline and reads LOW next to capitals. */
+.exg-plus{color:var(--fault);font-weight:900;position:relative;top:-1px;margin-left:1px}
+.exg-t.plus{background:color-mix(in srgb,var(--online) 24%,transparent);color:var(--online);font-weight:700;
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--online) 55%,transparent),
+             0 0 10px color-mix(in srgb,var(--online) 45%,transparent)}
+.exg-t.found{background:color-mix(in srgb,var(--ready) 15%,transparent);color:var(--ready)}
+.exg-t.custom{background:color-mix(in srgb,var(--pending) 15%,transparent);color:var(--pending)}
+/* A pasted profile, coloured by the tunnel it actually is — the SAME pair `.iftype.wg` / `.iftype.awg` use
+   for interfaces, so the vocabulary is learned once. Before this both wore the WARP green and the one
+   difference that decides whether the tunnel works was invisible. */
+.exg-t.exwg{background:color-mix(in srgb,var(--online) 15%,transparent);color:var(--online)}
+.exg-t.exawg{background:color-mix(in srgb,var(--brand) 16%,transparent);color:var(--brand)}
+/* Not a type — a state, and the only one that means "this row is not real yet". Amber, because it is the
+   colour the rest of the panel uses for "not settled". */
+.exg-t.unsaved{background:color-mix(in srgb,var(--fault) 16%,transparent);color:var(--fault)}
+.exg-bad{font-size:10.5px;color:var(--dangling);white-space:nowrap}
+/* Remove — quiet until the pointer is on it, then unmistakably destructive. */
+.exg-rm{display:flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;
+  border-radius:6px;background:none;color:var(--faint);cursor:pointer;transition:background .12s,color .12s}
+.exg-rm:hover{background:color-mix(in srgb,var(--dangling) 16%,transparent);color:var(--dangling)}
+.exg-rm svg{width:14px;height:14px}
+/* Adding one takes the same two questions the grid asks: what you call it, what the kernel calls it. */
+/* Used by — a count that opens the list on hover, because the count alone is the one thing that is never
+   actionable ("3 users" tells you to be careful; it does not tell you WHICH three). */
+.exu-wrap{display:inline-flex}
+.exu-n{cursor:help;border-bottom:1px dotted var(--line-solid);white-space:nowrap}
+.exg-c .faint{white-space:nowrap}
+/* Inherits .deppop wholesale — surface, border, radius, shadow and its 5px padding — and the rows are the
+   shared .deprow, so this reads as the same control as every other hover list rather than a private box. */
+.exu-pop{min-width:250px;max-width:340px;font-size:12px}
+.exu-r{gap:12px}
+.exu-r b{font-family:var(--mono);font-weight:600}
+.exu-r .faint{font-size:11px}
+.exu-f{margin:3px 3px 1px;padding:7px 5px 2px;border-top:1px solid var(--line);color:var(--faint);
+  font-size:11px;line-height:1.45;white-space:normal}
+.exname .btn{flex:none}
 .lgrid-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
 .lg-htitle{display:flex;align-items:center;gap:9px}   /* title · count · sub — all vertically centred on one line */
 .lg-htitle .seclabel{border-bottom:none;padding-bottom:0;margin:0}   /* no underline under Provider/Custom list headers */
@@ -2192,11 +2576,18 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .lg-sub{font-size:11px}
 /* list grid — flex rows (no header), every cell vertically centred, clean separators */
 .lgrid{display:flex;flex-direction:column}
-.lgrow{display:grid;grid-template-columns:40px minmax(0,1fr) 120px 86px 78px 52px;align-items:center;gap:12px;
+/* The pin column is gone with the pin — this grid is a usage view now, not a control panel. What was the
+   40px switch is reclaimed by the name, and the fleet-assign popover's 86px becomes the interface chips,
+   which need room for real interface names rather than a count. */
+.lgrow{display:grid;grid-template-columns:minmax(0,1fr) 120px minmax(0,150px) 78px 52px;align-items:center;gap:12px;
   padding:9px 4px;border-top:1px solid var(--line)}   /* pull · category(fills, truncates last) · size · fleet · caps · actions — fixed right cols keep rows vertically aligned */
 .lgrow:first-child{border-top:none}
 .lgrow:hover{background:color-mix(in srgb,var(--ink) 2.5%,transparent)}
 .lgrow.lg-lock{opacity:.5}
+.lgrow.clk{cursor:pointer}   /* the whole row opens the editor; its buttons opt out in JS */
+/* STILL USED — by the BLOCKING grid, which keeps its per-node switch. The routing grid dropped its pin
+   column, and deleting this rule with it would have silently unaligned the other tab's switches: one class,
+   two grids. */
 .lg-pull{justify-self:start;display:flex;align-items:center}
 .lg-cat{display:flex;flex-direction:column;justify-content:center;gap:0;min-width:0}   /* title + tag on top, id tight under */
 .lg-catmain{display:flex;align-items:center;gap:8px;min-width:0;line-height:1.25}
@@ -2206,6 +2597,16 @@ button.lg-title:hover{color:var(--brand)}
 .lg-id{font-family:var(--mono);font-size:10.5px;line-height:1;color:var(--faint);align-self:flex-start;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hover{color:var(--brand)}
 .lg-caps{display:flex;justify-content:flex-end}
+/* The interfaces asking for a list, each a way straight into the rule that asks. Chips rather than plain
+   text because they are the one clickable thing in the row, and they inherit the badge language the rule
+   field already uses rather than inventing a third. */
+.lg-used{display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end}
+.lg-ifchip{font-family:var(--mono);font-size:10.5px;color:var(--dim);background:var(--surface-2);
+  border:1px solid var(--line-solid);border-radius:5px;padding:2px 6px;cursor:pointer;white-space:nowrap;
+  transition:color .12s,border-color .12s,background .12s}
+.lg-ifchip:hover{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 45%,var(--line-solid));
+  background:color-mix(in srgb,var(--brand) 10%,transparent)}
+.lg-unused{font-size:10.5px;color:var(--faint);white-space:nowrap;text-align:right}
 .lg-size{color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums;font-size:12px;text-align:right;justify-self:end}
 .lg-act{display:flex;align-items:center;justify-content:flex-end;gap:10px}
 .lg-act .ccchip-info,.lg-act .ccchip-x{margin:0}
@@ -2247,7 +2648,10 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 /* Uses --dangling like every other destructive control (.btn-danger, .iconbtn.danger). It previously
    referenced an undefined token, which made both declarations invalid-at-computed-value-time — so the
    delete "x" had NO hover state at all. Never reference a custom property that isn't defined in :root. */
-.ccchip-x:hover{background:color-mix(in srgb,var(--dangling) 18%,transparent);color:var(--dangling)}
+.ccchip-x:hover:not(:disabled){background:color-mix(in srgb,var(--dangling) 18%,transparent);color:var(--dangling)}
+/* Disabled × — a rule holds this list, so unpinning it would be a no-op (§1.4). It has to LOOK unavailable:
+   the button kept its pointer cursor and full colour, which is a control that lies about being clickable. */
+.ccchip-x:disabled{opacity:.35;cursor:not-allowed}
 .ccchip-x .ic svg{width:12px;height:12px}
 /* list size summary ("142 hosts · 38 nets") + hover sample tooltip */
 .listsize{cursor:default;font-size:11px;color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -2257,7 +2661,7 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 /* the catch-all footer reuses the row's grid template + the row's content inset (transparent padding+border) so
    its columns start/end identically. The grip/xbtn ghosts are invisible width-matched spacers for cols 1 & 5. */
 .rrfoot{display:grid;grid-template-columns:16px minmax(0,1fr) auto minmax(0,1fr) auto;align-items:center;gap:8px;margin-top:8px;padding:0 8px;border:1px solid transparent}
-.rrfoot-lead{grid-column:1/3;min-width:0;display:flex;align-items:center;gap:8px}
+.rrfoot-lead{min-width:0;display:flex;align-items:center;gap:8px}
 .rrfoot-label{font-size:13.5px;color:var(--dim);font-weight:600;white-space:nowrap;margin-left:auto}   /* right-align within the column so it sits next to the → arrow */
 /* Add-rule: flush with the grey rule-row's left border above (undo the 8px row padding), a touch larger, bold cyan + */
 .rrfoot-lead .btn-mini{margin-left:-8px;padding:7px 13px}
@@ -2269,10 +2673,6 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .rrfoot-lead .btn-mini .ic path{stroke-width:2.75}
 /* routing-lists gear in the footer's last column: its box is pinned to the rule-row X width so the grid's
    auto track (and thus the catch-all dropdown) never shifts; a larger glyph overflows the box harmlessly. */
-.rrfoot-gear{width:18px;height:18px;padding:0;box-sizing:border-box;justify-content:center;overflow:visible;color:var(--dim)}
-.rrfoot-gear:hover{color:var(--brand);background:transparent}
-.rrfoot-gear .ic{overflow:visible}
-.rrfoot-gear .ic svg{width:22px;height:22px}
 /* node-connection link health: a single glowing dot (green up / amber connecting / red down) */
 .lkdot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown);--g:var(--unknown)}
 .lkdot.up{background:var(--online);--g:var(--online);animation:pulse 2.6s infinite}
@@ -2341,6 +2741,65 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .seclabel{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin:18px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--line)}
 .awg-val{font-family:var(--mono);font-size:12px;color:var(--ink);padding:5px 7px;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ipk-custom{margin-top:6px;width:100%;font-family:var(--mono);font-size:12.5px}
+/* the node's Default exit: the picker, and a gear to the room behind it */
+.exdd-row{display:flex;align-items:center;gap:7px}
+.exdd-row>.dropdown{flex:1 1 auto;min-width:0}
+.exdd-gear{flex:none;display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;
+  padding:0;border:1px solid var(--line-solid);border-radius:var(--r-sm);background:var(--surface-2);
+  color:var(--dim);cursor:pointer;transition:border-color .15s,color .15s}
+.exdd-gear:hover{border-color:color-mix(in srgb,var(--brand) 45%,var(--line-solid));color:var(--ink)}
+.exdd-gear svg{width:15px;height:15px}
+
+/* THE COMBOBOX — a text field wearing the dropdown's trigger as its frame. The input is absolutely placed
+   over the label region, so what is left exposed is the caret: click the text to type, click the caret to
+   reopen the list and go back to Auto.
+   ⚠️ `--dd-cover` IS THE ENTIRE TARGET. Everything left of it is covered by the input and types; this strip
+   is the only way back to the list, so it is sized as a control rather than as padding around a glyph — the
+   caret is ~8px and sat in a 30px gutter that read, and behaved, like a decoration. */
+.ipk-combo{position:relative;display:block;--dd-cover:42px}
+.ipk-combo .ddlbl{visibility:hidden}          /* the input renders in its place */
+.ipk-combo .ddbtn{cursor:default;padding-right:17px}   /* centres the caret in the strip it owns */
+/* The button is a SIBLING of the input, not its ancestor, so `:hover` fires only when the pointer is over
+   the exposed strip — which makes it honest feedback about where the target actually is. */
+.ipk-combo .ddbtn:hover{cursor:pointer}
+.ipk-combo .ddbtn .catpick-caret{cursor:pointer;font-size:12px;transition:color .12s}
+.ipk-combo .ddbtn:hover .catpick-caret{color:var(--ink)}
+.ipk-combo>.ipk-over{position:absolute;left:1px;top:1px;bottom:1px;right:var(--dd-cover);width:auto;margin:0;
+  padding:0 0 0 11px;border:0;background:transparent;border-radius:var(--r-sm) 0 0 var(--r-sm);
+  font-family:var(--mono);font-size:13px;color:var(--ink);outline:none;min-width:0}
+.ipk-combo>.ipk-over:focus{box-shadow:none}
+/* EXTERNAL EXITS list (Settings -> Network, per node). Rows are separated by a hairline rather than boxed:
+   the card they sit in is already a surface, and a card-in-card per row would out-shout the ingress/egress
+   forms above them for something that is usually one or two entries. `.row2` gets a wrap only HERE, so a
+   narrow viewport stacks name and device instead of squashing both. */
+.exrow{padding:14px 0;border-top:1px solid var(--line)}
+.exrow:first-of-type{border-top:0;padding-top:2px}
+/* The row's header strip: what kind of exit this is, and what is relying on it. Quiet — it is orientation,
+   not a control, so it sits above the fields at label weight rather than competing with them. */
+.exrow-h{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+.exrow-used{font-size:11.5px;color:var(--faint);display:inline-flex;align-items:center;gap:5px}
+.exrow .row2{flex-wrap:wrap}
+.exrow .row2>.field{min-width:210px}
+.exrow-opts{display:flex;align-items:center;gap:20px;margin-top:12px}
+.exsw{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2);cursor:pointer;user-select:none}
+.exrow>.hint{font-size:11.5px;color:var(--faint);margin-top:8px}
+.exstat .exwarn{color:var(--fault)}   /* ORANGE — the one clause about what BREAKS, inside an otherwise faint line */
+.exrow>.hint .err{color:var(--dangling)}
+/* node egress: "where it leaves" beside "as what" — one line, stacking rather than squashing. */
+.egopt-mode{font-weight:700}   /* the smart-routing entry is a MODE — same weight as the optgroup labels it sits beside */
+.egrow{flex-wrap:wrap;position:relative}
+.egrow>.field{min-width:210px}
+/* Only the CREATE form takes the row's place, and creating is reached by CHOOSING "Custom interface…" from
+   the list — which closes the list on its way out, as any choice does. So there is no popup anchored to
+   this trigger while the fields are gone, and they can simply not be rendered. (An earlier version kept
+   them laid out with `visibility:hidden` to protect an anchor that, in this case, is never there.) */
+.egrow.editing>.field{display:none}
+.egrow.editing>.exname{margin-top:0}
+.exdial{gap:8px}
+.exdial .dropdown{min-width:170px}
+.exdef input{accent-color:var(--brand);width:15px;height:15px;margin:0;cursor:pointer}
+.exadd{display:flex;flex-wrap:wrap;gap:8px}   /* the three ways to get an exit, equal weight — none is the "real" one */
+/* .exprof — see `.tf-text, .exprof` below: one look for every box an operator types a config into. */
 /* mesh-health tag (node-detail header + nodes-list) + its hover bubble */
 .mh-pop{display:inline-flex}
 .mh-tag{display:inline-flex;align-items:center;gap:16px;white-space:nowrap;cursor:default}   /* label↔value = value↔value = 16 (identical, roomy enough for 2-digit counts like 20/20) */
@@ -2355,13 +2814,63 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .mh-ar{font-family:var(--mono);line-height:1;font-size:12.5px}   /* identical to the throughput arrows: same MONO glyph, size + weight */
 .mh-ar.mh-down.s-up{color:var(--online)}
 .mh-ar.mh-up.s-up{color:var(--ready)}
-.mh-row{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:4px 14px 4px 8px}   /* name left (aligns title) · arrows right-aligned, inset a bit more than the names */
-.mh-rn{font-family:var(--mono);font-size:12.5px;flex:none}
+/* GRID, not flex: the leg columns have to line up down the bubble, and a per-row flex sizes each row on its
+   own contents — which is what made 2ms / 18ms / 1ms sit at three different x positions. Every row shares one
+   fixed template, so the columns align without the container needing to be the grid (which would cost the
+   per-row hover box). Same frame as the other bubbles' rows: 5px 8px, 6px radius, baseline alignment. */
+.mh-row{display:grid;grid-template-columns:1fr 5ch max-content;gap:12px;align-items:baseline;padding:5px 8px;border-radius:6px;white-space:nowrap}
+.mh-bubble.has-loss .mh-row{grid-template-columns:1fr 7ch 5ch max-content}   /* loss column only when a leg has loss */
+.mh-row:hover{background:var(--surface)}
+.mh-rn{font-family:var(--mono);font-size:12.5px}
 .mh-rn.mh-bold{font-weight:700} .mh-rn.mh-dim{opacity:.5}
-.mh-rar{display:inline-flex;gap:6px;flex:none}
+/* the numeric columns: same mono/size the other bubbles use for values (.onlpop .on-ct), right-aligned so
+   the digits stack rather than the words. */
+.mh-loss,.mh-rtt{font-family:var(--mono);font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
+.mh-rtt{color:var(--muted)}
+.mh-loss{color:var(--muted)}
+/* header: .onpop-h is scoped to .onlpop, so this bubble was rendering its title with no rule at all. Same
+   eyebrow as every other bubble rather than a second look. */
+.mh-bubble .onpop-h{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:4px 8px 6px}
+.mh-rar{display:inline-flex;gap:6px;justify-content:flex-end}
+/* loss/drop colour now comes from lossColor() (js/charts.js) as an inline value, so one ramp serves
+   every surface and there is no second copy of the thresholds living in CSS. */
 .mh-rar .mh-ar{font-size:13px}   /* small arrows, matching the line */
 .mh-rar .mh-ar.s-up{text-shadow:0 0 8px currentColor}   /* static glow only for up status — green (down) / blue (up); yellow + red get no glow */
 .deppop.mh-bubble{width:max-content;min-width:120px}   /* dynamic width — sized to the longest node name */
+
+/* ───── interface drops bubble ─────
+   Same vocabulary as the mesh bubble above (mono uppercase micro-labels, tabular numerals, 5px/8px rows,
+   6px radius, hover surface) so a percentage looks the same wherever the panel shows one. The dotted
+   underline on the trigger is the only affordance: the figure sits inside a link to the interface page,
+   and without it there is nothing to say the number itself holds more. */
+.dp-num{font-family:var(--mono);font-variant-numeric:tabular-nums;border-bottom:1px dotted color-mix(in srgb,currentColor 45%,transparent)}
+.drops-pop{display:inline-block;cursor:default}
+.deppop.dp-bubble{width:max-content;min-width:232px;max-width:376px}
+.dp-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:10px 8px 7px;margin-bottom:4px;border-bottom:1px solid var(--line)}
+.dp-pct{font-family:var(--mono);font-size:16px;line-height:1;font-variant-numeric:tabular-nums}
+.dp-sub{font-size:11px;color:var(--dim)}
+/* header carries the Reset action on its right — same mini-button grammar the panels use.
+   ⚠️ `.onlpop .onpop-h{display:block}` is 0,2,0; a bare `.dp-h` never won, so the button sat inline
+   against the title. Match the depth. */
+.onlpop .onpop-h.dp-h{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.dp-reset{flex:none;font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;
+  line-height:1;padding:3px 7px;border-radius:6px;cursor:pointer;color:var(--dim);
+  background:transparent;border:1px solid var(--line-solid);transition:color .12s,border-color .12s}
+.dp-reset:hover{color:var(--ink-2);border-color:color-mix(in srgb,var(--ink) 30%,transparent)}
+.dp-reset:disabled{opacity:.55;cursor:default}
+.dp-reset.ok{color:var(--online);border-color:color-mix(in srgb,var(--online) 45%,transparent)}
+/* the since-boot rate: the row's own size, not a headline — it qualifies the ratio beside it */
+.dp-life{font-size:12px;font-variant-numeric:tabular-nums}
+.dp-row{display:grid;grid-template-columns:max-content 1fr;gap:14px;align-items:baseline;padding:4px 8px;border-radius:6px;white-space:nowrap}
+.dp-row:hover{background:var(--surface)}
+.dp-l{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.dp-v{display:flex;justify-content:flex-end;gap:13px;font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+/* kind label dim, its count solid — the eye should land on the number that is not zero */
+.dp-kind{color:var(--dim)}
+.dp-kind b{margin-left:2px;font-weight:600;color:var(--ink-2)}
+.dp-kind.zero,.dp-kind.zero b{color:var(--faint);font-weight:400}
+.dp-hint{margin-top:4px;padding:8px 8px 3px;border-top:1px solid var(--line);font-size:11.5px;line-height:1.45;color:var(--ink-2);white-space:normal}
+.dp-foot{padding:5px 8px 1px;font-size:10.5px;line-height:1.4;color:var(--faint);white-space:normal}
 /* node↔node connection info card (NOC-style: status pill + protocol tag + labeled grid) */
 .conncard{border:1px solid var(--line);border-radius:12px;padding:15px 17px;background:color-mix(in srgb,var(--ink) 2.5%,transparent)}
 .conncard-top{display:flex;align-items:center;gap:9px;margin-bottom:16px}
@@ -2829,6 +3338,40 @@ a.tg:hover{filter:brightness(1.25)}
   font-weight:700;padding:5px 13px;border-radius:20px;cursor:pointer}
 .seg:hover{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 55%,var(--line-solid))}
 .seg.on{background:color-mix(in srgb,var(--brand) 16%,transparent);border-color:var(--brand);color:var(--brand)}
+/* ── Datapath switch ───────────────────────────────────────────────────────────────────────────────────
+   ONE control with two halves, not two buttons that happen to be adjacent: a single track, equal-width
+   sides, and the chosen one filled. Equal widths are fixed rather than content-sized, so the switch does
+   not jump when the labels change length between languages ("Transit"/"Relay" vs «Транзит»/«Релей»).
+   Forward wears the theme's own colour; Relay wears violet, so an operator can see at a glance which of
+   their links are doing something unusual. */
+.dpsw{display:inline-flex;gap:3px;padding:3px;border:1px solid var(--line);border-radius:22px;
+  background:var(--surface-2)}
+.dpsw button{appearance:none;border:0;background:transparent;color:var(--dim);font:inherit;font-size:12.5px;
+  font-weight:700;padding:6px 14px;min-width:112px;text-align:center;border-radius:19px;cursor:pointer;
+  transition:background .15s var(--ease),color .15s var(--ease)}
+.dpsw button:hover:not(.on):not(:disabled){color:var(--ink-2)}
+.dpsw button:disabled{opacity:.42;cursor:not-allowed}
+.dpsw button.on{background:color-mix(in srgb,var(--brand) 20%,transparent);color:var(--brand)}
+.dpsw button.on.sw-relay{background:color-mix(in srgb,var(--relay) 28%,transparent);color:var(--relay-2);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--relay) 50%,transparent)}
+/* a percentage typed by hand — the spinners are noise at this size and nudge the value by accident */
+.dp-cpu input::-webkit-outer-spin-button,.dp-cpu input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.dp-cpu input{-moz-appearance:textfield;appearance:textfield}
+/* The section's own name sits ON the control row, in the same register as the cap's label, so the whole
+   datapath choice reads as one line rather than a heading with things under it. The rule that used to come
+   from .seclabel moves onto the section wrapper, so the separation from the dial fields above is kept. */
+.dp-sec{border-top:1px solid var(--line);margin:18px 0 0;padding-top:13px}
+/* ⚠️ SCOPED TO .dp-sec ON PURPOSE. `.dp-row` / `.dp-l` were already the drops/loss BUBBLE's row classes,
+   defined further up as a two-column grid whose value column is pinned right. Redefining them unscoped here
+   — later in the file, same specificity — silently won everywhere and collapsed every bubble row to a
+   left-packed flex line, so labels and numbers ran together with no right edge to read down. */
+.dp-sec .dp-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 9px}
+.dp-sec .dp-l{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);white-space:nowrap}
+.dp-cpu{display:flex;align-items:center;gap:9px;margin-left:6px}
+.dp-cpu input{width:78px;text-align:right;padding:5px 9px}
+.dp-cpu>span.u{color:var(--faint);font-size:12.5px}
+.dp-why{margin:0 0 2px}                       /* the explanation sits full width under the row it explains */
+.dp-why + .dp-why{margin-top:7px}
 .subaddr{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--card-2,rgba(127,127,127,.05))}
 .subaddr-row{display:flex;gap:12px;align-items:baseline}
 .subaddr-k{flex:0 0 96px;color:var(--muted);font-size:12.5px}
@@ -2961,7 +3504,14 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 /* embedded (loc) grid: the interface badge sits beside the STATUS so you see which iface is online. */
 .peergrid td.c-status{white-space:nowrap}
 .peergrid td.c-status>*{vertical-align:middle}
-.peergrid.loc td.c-status>.tg{margin-left:7px}
+/* ⚠️ THE INTERFACE BADGE LIVES IN THE STATUS CELL, so its right edge is the boundary with the title — with
+   no padding there the two run together and read as one string ("AWG11003Router Папа"). And because the
+   cell is nowrap and unbounded, a long interface name pushes the title further on that row alone, so the
+   column never lines up down the grid. Give the cell a right gutter, and cap the badge so one long name
+   cannot set the column width for everybody. */
+.peergrid.loc td.c-status{padding-right:15px}
+.peergrid.loc td.c-status>.tg{margin-left:8px;max-width:104px;overflow:hidden;text-overflow:ellipsis;display:inline-block}
+.peergrid.loc td.c-status>.badge{max-width:132px;overflow:hidden;text-overflow:ellipsis}
 /* live grids (standalone + embedded): a touch more air between the status dot and the iface badge. */
 .peergrid.loc.live td.c-status>.tg{margin-left:9px}
 .peergrid.loc.live td.c-status>.turnwrap{gap:9px}
@@ -3007,6 +3557,11 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .pager{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:14px;padding:6px 2px;font-size:12.5px}
 .pager-size{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
 .pager-size .selwrap{width:auto;min-width:62px;padding:6px 26px 6px 10px}
+/* …and the padding has to reach the BUTTON — on a <select> it sat on the control itself. The 26px right
+   inset was room for the native caret drawn as a background image; the Dropdown draws its own, so this is
+   symmetric again. */
+.pager-size .dropdown.selwrap{padding:0}
+.pager-size .dropdown.selwrap .ddbtn{padding:6px 10px;font-size:12.5px}
 .pager-info{font-family:var(--mono);color:var(--faint)}
 .pager-pg{font-family:var(--mono);min-width:52px;text-align:center;color:var(--ink-2)}
 .pager .btn{padding:6px 12px}
@@ -3175,3 +3730,248 @@ body.has-oldaddr .appbar{margin-top:var(--oldaddr-h,40px);top:var(--oldaddr-h,40
    "https: /1.1.1.1" — the value was right the whole time, only the rendering lied. (`->`, `!=`, `::` and `www`
    ligate too.) Turn them off wherever literal text is shown or typed; prose keeps its ordinary fi/fl. */
 input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0, "calt" 0; }
+
+/* ── Shared VK call-link pool (Settings → Turn proxies) + per-user link origin ────────────────────
+   A pool link is the panel's to rewrite; a personal one is the operator's. The two behave differently
+   on a pool edit, so they never look alike: pool rows carry the shared "users" mark and the accent,
+   personal rows stay neutral. Dead rows stay legible — the operator still has to read and fix them. */
+.vkpool{display:flex;flex-direction:column;gap:8px;margin:10px 0 4px}
+.vkpool-row{display:flex;align-items:center;gap:8px}
+.vkpool-row .vkbox{border-color:color-mix(in srgb,var(--brand) 42%,var(--line))}
+.vkpool-row.warn .vkbox{border-color:#e0a85f;background:color-mix(in srgb,#e0a85f 8%,var(--bg))}
+/* A dead row KEEPS ITS BORDER, in grey. Dropping the border made the row look like it had stopped being a
+   field at all — it reads as removed rather than retired, and the operator can still edit and revive it. */
+.vkpool-row.dead .vkbox{border-color:var(--line-solid);background:color-mix(in srgb,var(--line) 22%,var(--bg))}
+.vkpool-row.dead .vkbox > .ic{color:var(--faint)}
+.vkpool-row.dead .vkbox-input{text-decoration:line-through;color:var(--faint)}
+.vkpool-held{flex:none;min-width:34px;text-align:center;font-size:11px;font-variant-numeric:tabular-nums;
+  color:var(--ink);padding:3px 7px;border-radius:6px;background:color-mix(in srgb,var(--brand) 14%,transparent)}
+.vkpool-held.none{color:var(--faint);background:transparent}
+.vkpool-dead{flex:none}
+.vkpool-dead.on{color:#e0a85f}                    /* the row is dead: this button now offers "mark as alive" */
+/* The save affordance lives INSIDE the field, so it reads as "apply what you just typed" and can never be
+   confused with the row's alive/dead tick sitting further right. Only rendered while the text differs. */
+.vkbox-save{flex:none;margin-left:6px;padding:2px 7px;color:var(--brand);
+  border-color:color-mix(in srgb,var(--brand) 45%,var(--line))}
+.vkbox-save:hover:not(:disabled){background:color-mix(in srgb,var(--brand) 12%,transparent)}
+.vkpool-empty{padding:12px;border:1px dashed var(--line);border-radius:8px;color:var(--faint);font-size:12px}
+.vkpool-foot{display:flex;align-items:center;gap:8px;margin-top:10px}
+.vkpool-foot .grow{flex:1}
+/* The two kinds of link are told apart by the FIELD itself now that the ПУЛ/ЛИЧНАЯ badges are gone: a pool
+   link carries the brand border and the shared-people icon, a personal one the blue border and the chain.
+   Without the blue the personal rows read as unstyled — as if they were missing something the others had. */
+.vkbox.frompool{border-color:color-mix(in srgb,var(--brand) 42%,var(--line))}
+.vkbox.frompool > .ic{color:var(--brand)}
+.vklinks-row .vkbox:not(.frompool){border-color:color-mix(in srgb,var(--ready) 55%,var(--line))}
+.vklinks-row .vkbox:not(.frompool) > .ic{color:var(--ready)}
+.vklinks-star{flex:none;padding:3px 7px}          /* the primary marker: same star control as a peer's deployments */
+.vkbox-input[readonly]{cursor:default}            /* a pool link is edited in the pool, not here */
+
+/* The measured verdict that the datapath choice actually turns on — stated where the choice is made. */
+.dp-verdict{display:flex;align-items:center;gap:7px;margin-top:9px}
+.dp-verdict.ok{color:var(--online)}
+.dp-verdict.warn{color:var(--partial)}
+.dp-verdict .ic{flex:none}
+
+/* ── VK pool: sort bar, pager, bulk paste, sheet columns ─────────────────────────────────────────── */
+/* Sort arrows sit directly over their column, reusing the ROW's width classes so they line up by
+   construction rather than by a hand-tuned pixel value that drifts the moment a column changes. */
+.vkpool-head{display:flex;align-items:center;gap:8px;margin:0 0 7px;padding:0;min-height:18px}
+.vkpool-head .grow{flex:1}
+/* Big enough to read and dark enough to see: at 10px in --faint the mark was there in the DOM and absent on
+   the screen, which is the same as not shipping it. --dim for the resting state, brand when it is the one
+   sorting. Tabular width so swapping ↕ for ↓ does not nudge the column. */
+.vkpool-head .vkh{background:none;border:0;padding:0 2px;cursor:pointer;color:var(--dim);
+  font-size:12px;line-height:1;letter-spacing:0;text-align:center;font-variant-numeric:tabular-nums}
+.vkpool-head .vkh:hover{color:var(--ink)}
+.vkpool-head .vkh.on{color:var(--brand);font-weight:700}
+.vkpool-head .vkh-pad{visibility:hidden;pointer-events:none}
+.vkpool-pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:9px;font-size:11.5px}
+.vkpool-pager-in{margin-top:0}
+/* ⚠️ NOT reusing .vkpool-foot here — that one is the paste box's own row. Three columns so the pager stays
+   optically centred while the two buttons hold the edges, whatever their labels say in any language. */
+.vkpool-bar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;margin-top:10px}
+.vkpool-bar > :last-child{justify-self:end}
+.vkpool-bar > :first-child{justify-self:start}
+.vkpool-add{width:100%;margin-top:2px}
+.vkpool-paste{width:100%;box-sizing:border-box;resize:vertical;min-height:64px;font-family:var(--mono);
+  font-size:12px;line-height:1.5;padding:8px 11px;border:1px solid var(--line);border-radius:8px;
+  background:var(--bg);color:var(--ink)}
+.vkpool-paste:focus{outline:none;border-color:color-mix(in srgb,var(--brand) 55%,var(--line))}
+/* "added" reads as context, not data — same weight as the holder count it sits beside. */
+.vkpool-added{flex:none;min-width:66px;text-align:right;font-size:11px;color:var(--faint);white-space:nowrap}
+
+/* Pool totals — what the whole pool adds up to, above the rows on both surfaces. */
+.vkpool-tot{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-2)}
+.vkpool-tot.big{font-size:13px}
+.vkpool-tot .vkpool-dot{color:var(--faint)}
+.vkpool-tot .vk-dead-n{color:#e0a85f}
+
+/* The retype phrase, made takeable: click the word or the mark to copy it. Reads as text, behaves as a button. */
+.ctype-copy{display:inline-flex;align-items:center;gap:5px;padding:1px 5px;margin:0 1px;border:0;border-radius:5px;
+  background:color-mix(in srgb,var(--brand) 10%,transparent);color:inherit;font:inherit;cursor:pointer;vertical-align:baseline}
+.ctype-copy:hover{background:color-mix(in srgb,var(--brand) 20%,transparent)}
+.ctype-copy .mono{font-family:var(--mono);text-transform:none;letter-spacing:0}
+.ctype-copy .mono.b{font-weight:700}
+.ctype-copy .ic{opacity:.65;flex:none}
+.ctype-copy:hover .ic{opacity:1}
+
+/* ── The routing rule builder's field ─────────────────────────────────────────────────────────────────────
+   One control where the category dropdown, its "Custom IPs / domains…" entry and the targets textarea used to
+   be. Nothing here invents an identity: the badge is .blkchip's pill at .capb's scale, a list keeps the
+   provider colour it already has everywhere else, and amber is --partial. Two states are new because nothing
+   in the panel expressed them — PREPARING (the panel is still fetching this list) and INERT (kept, and this
+   node's engine cannot run it), and inert deliberately borrows .blkchip.inert's dashed-and-dimmed treatment
+   plus its ⊘, so the operator learns one visual for "present, not in force" across routing and blocking. */
+/* Both follow .rrrow's two columns now. The catch-all keeps the SAME shape as a rule row on purpose — its
+   arrow, dropdown and trailing button have to land under the rule rows' own, or the one line that says where
+   everything else goes stops reading as part of the same list. Flex rather than a grid column for the tail,
+   so it right-aligns against whatever width the lead takes, exactly like `.tf-trail` does in the foot. */
+.rrrow-b{grid-template-columns:16px minmax(0,1fr)}
+.rrfoot{display:flex;align-items:center;gap:8px}
+.rrfoot .rrfoot-lead{flex:1 1 auto}
+.tfield{position:relative;min-width:0;display:flex;flex-direction:column;gap:4px}
+/* TWO ROWS TALL BEFORE ANYTHING IS IN IT. A rule usually names several things, so a box sized for one badge
+   grew the moment the second was added and every row below it jumped — and an empty one read as a
+   single-value field. 68px = two 25px badge rows + the 6px row gap + 10px padding + 2px border.
+   `align-content:flex-start` keeps the first row AT THE TOP: with `align-items:center` alone the lines are
+   stretched and one badge floats in the middle of a box twice its height. */
+.tf-box{display:flex;flex-wrap:wrap;align-items:center;align-content:flex-start;gap:6px;min-height:68px;
+  padding:5px 7px;cursor:text;
+  border:1px solid var(--line-solid);border-radius:7px;background:var(--bg);transition:border-color .12s}
+.tf-box:hover{border-color:color-mix(in srgb,var(--brand) 40%,var(--line-solid))}
+.tf-box:focus-within{border-color:var(--brand)}
+.tfield.locked .tf-box{cursor:default;background:none;border-style:dashed}
+.tf-in{flex:1 1 150px;min-width:110px;border:0;background:none;outline:none;color:var(--ink);font:inherit;font-size:12.5px;padding:3px 2px}
+.tf-in::placeholder{color:var(--faint)}
+/* A token that means nothing anywhere is marked where it was typed and left there to be fixed — never
+   swallowed, never a modal (§5.3). */
+.tf-in.bad{text-decoration:underline wavy color-mix(in srgb,var(--dangling) 75%,transparent);text-underline-offset:3px}
+
+.tfbadge{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:2px 4px 2px 9px;border-radius:99px;
+  font-size:12px;font-weight:600;white-space:nowrap;color:var(--ink);background:var(--surface-2);
+  border:1px solid var(--line-solid);transition:opacity .12s,border-color .12s}
+/* A whole zone or a text match reaches orders of magnitude further than it looks — the same amber the panel
+   already uses for "this works, and you should know what it costs". */
+.tfbadge.wide{border-color:color-mix(in srgb,var(--partial) 50%,transparent);background:color-mix(in srgb,var(--partial) 9%,var(--surface-2))}
+.tfbadge.inert{opacity:.55;border-style:dashed;background:none;padding-left:6px}
+.tfbadge.inert:hover{opacity:.8}
+.tfb-g{font-size:12px;line-height:1;color:var(--dim);flex:none}
+.tfb-main{display:inline-flex;align-items:center;gap:6px;min-width:0;border:0;background:none;padding:0;color:inherit;font:inherit;cursor:pointer;text-align:left}
+.tfield.locked .tfb-main{cursor:default}
+/* The badge currently open in the box below it. It stays in the row (see `edit`), so it has to read as
+   "this one is being worked on" rather than as a second copy of what you are typing. */
+.tfbadge.editing{opacity:.45;outline:1px dashed color-mix(in srgb,var(--brand) 55%,transparent);outline-offset:1px}
+.tfb-lbl{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.tfbadge.tgt .tfb-lbl{font-family:var(--mono);font-size:11.5px;font-weight:500}
+.capb.kind{color:var(--dim);background:color-mix(in srgb,var(--ink) 9%,transparent)}
+.capb.wide{color:var(--partial);background:color-mix(in srgb,var(--partial) 16%,transparent)}
+/* Collapsed rules summary: how many targets this node's engine cannot match. Amber, not red —
+   nothing is broken or lost, the operator changed the engine and these are waiting for it back. */
+.rs-off{color:var(--partial)}
+.tfbadge.degraded .capb{color:var(--partial);background:color-mix(in srgb,var(--partial) 16%,transparent)}
+.tfb-size{font-size:10.5px;font-weight:500;color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
+/* The panel is fetching this list right now. It pulses rather than spins: it is a wait, not a task. */
+.tfb-size.preparing{color:var(--partial);animation:tfprep 1.8s ease-in-out infinite}
+@keyframes tfprep{0%,100%{opacity:.55}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.tfb-size.preparing{animation:none;opacity:.8}}
+/* Tried, and nothing came back. --partial-r is the panel's "a problem that isn't a stopper" — the rule saves
+   and routes as soon as the list lands; this is the retry. */
+.tfb-size.notready{color:var(--partial-r);border:0;background:none;font:inherit;font-size:10.5px;cursor:pointer;text-decoration:underline dotted;padding:0}
+/* NOT FOUND — a different state from "not ready" and it has to look like one. `notready` is amber and
+   dotted-underlined because it is a wait you can retry; this is a rule that matches nothing until the list
+   comes back, so it takes the panel's problem colour and offers no retry (there is nothing to re-ask). */
+.tfb-size.missing{color:var(--dangling);font-weight:600}
+.tfb-fix,.tfb-x{display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;padding:0;border:0;
+  border-radius:50%;background:none;color:var(--faint);cursor:pointer;flex:none}
+.tfb-fix:hover{background:color-mix(in srgb,var(--brand) 16%,transparent);color:var(--brand)}
+.tfb-x:hover{background:color-mix(in srgb,var(--dangling) 18%,transparent);color:var(--dangling)}
+.tfb-fix .ic svg,.tfb-x .ic svg{width:11px;height:11px}
+.tf-more{font-size:11px;font-weight:600;color:var(--dim);background:none;border:1px dashed var(--line-solid);
+  border-radius:99px;padding:3px 10px;cursor:pointer}
+.tf-more:hover{color:var(--ink);border-color:var(--line-bright)}
+
+.tf-foot{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;padding:0 2px;font-size:11px;line-height:1.5}
+/* THE MESSAGE GETS ITS OWN LINE, and the destination never moves. Sharing the row with the entry count
+   meant a long lint ("did you mean the whole .tester zone?") pushed the destination control sideways and
+   down — the control jumping while you type is worse than the second line it costs. `order` puts it last
+   in layout while it stays second in the DOM, so the count and the destination keep line one to themselves. */
+/* ⚠️ ON THE LINE, NOT UNDER IT. `flex-basis:100%` gave the hint a row of its own below the destination,
+   which cost a line of height to say something the operator reads while typing — beside the control, where
+   the eye already is. It sits between the leading × and the right-aligned destination and SHRINKS (the
+   destination keeps its fixed width), and the foot still wraps when there is genuinely no room. */
+.tf-foot .tf-lint,.tf-foot .tf-say{flex:1 1 auto;min-width:0}
+/* TEXT VIEW. The badge box and the textarea are the same field in two readings, so the textarea borrows the
+   box's own border, radius and focus ring rather than looking like a different control that replaced it.
+   Monospace because every line is an address, a range or an AS number, and a fixed advance is what makes a
+   column of them scannable — the same reason the badges use it.
+   ⚠️ AND `.exprof` — the pasted WireGuard profile on the exit sheet — SHARES IT. That box set only width,
+   font and resize, so it fell through to the browser's own textarea: in DARK theme a near-black rectangle
+   whose hairline border disappears into the sheet behind it, with no radius, no padding and no focus ring,
+   sitting two fields above a routing box that has all four. Reported from the panel. Shared rather than
+   copied — a second set of the same declarations is how two controls that must look alike stop looking
+   alike, and this file already carries that scar elsewhere. */
+.tf-text,.exprof{width:100%;box-sizing:border-box;min-height:96px;resize:vertical;padding:7px 9px;
+  border:1px solid var(--line-solid);border-radius:7px;background:var(--bg);color:var(--ink);
+  font-family:var(--mono);font-size:12px;line-height:1.7;outline:none;transition:border-color .12s}
+.tf-text:hover,.exprof:hover{border-color:color-mix(in srgb,var(--brand) 40%,var(--line-solid))}
+.tf-text:focus,.exprof:focus{border-color:var(--brand)}
+.tf-text::placeholder,.exprof::placeholder{color:var(--faint)}
+/* The lists the text cannot carry, kept in sight above it so nothing looks deleted while you edit. */
+.tf-keep{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:6px}
+.tf-keepnote{font-size:10.5px;color:var(--faint)}
+/* IN THE GRIP COLUMN, under the drag handle. `.rrrow` is `16px | 1fr` with an 8px gap, so −24px from the
+   field's own left edge lands it in that rail, centred on the same 16px the grip uses. Absolute because the
+   state it toggles belongs to the field: putting the button in the row's markup would have meant lifting
+   `asText` out of the component that owns it. One control, two states — same place, same shape, only the
+   pressed style changes, so the way back is exactly where the way in was.
+   `top:30px` clears the grip rather than sitting on it: the grip is 18px tall starting 7px down, so the two
+   were drawn one on top of the other at 9px — both centred in the same rail, which reads as one smudged
+   control instead of two.
+   The offset is DERIVED from the row's own `--rr-rail`/`--rr-gap` rather than restating them: this rule and
+   `.rrrow` sit 1600 lines apart, and a hard-coded −24px is a number that silently stops matching the grid it
+   was measured against. The fallbacks keep it sane if the field is ever rendered outside a row. */
+/* Brand-coloured and a little larger: it is the only way into the text view and it sits alone in the rail,
+   where a faint 14px glyph read as decoration. Dropped down to clear the box's first badge row. */
+.tf-vtog{position:absolute;left:calc(-1 * (var(--rr-rail,16px) + var(--rr-gap,8px)));top:38px;
+  width:var(--rr-rail,16px);height:18px;display:inline-flex;align-items:center;
+  justify-content:center;color:var(--brand);background:none;border:0;border-radius:4px;padding:0;
+  cursor:pointer;opacity:.85;transition:color .12s,background .12s,opacity .12s}
+.rrrow:hover .tf-vtog{opacity:.95}
+.tf-vtog .ic svg{width:16px;height:16px}
+.tf-vtog:hover{color:var(--brand);opacity:1;background:color-mix(in srgb,var(--brand) 10%,transparent)}
+.tf-vtog.on{color:var(--brand);opacity:1;background:color-mix(in srgb,var(--brand) 12%,transparent)}
+.tf-vtog:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+/* THE FOOT VARIANT — the custom-list sheet, which has no row and therefore no grip column to sit in. Static
+   rather than absolute (the rail offset put it outside the sheet entirely), labelled, and pushed right by the
+   foot's own flex. Brand-coloured at rest, not faint: in a rule row it is one control among several and stays
+   quiet; here it is the only way to reach the text view, so it has to read as something you can press. */
+.tf-vtog.inline{position:static;width:auto;height:auto;gap:5px;padding:1px 6px;opacity:1;
+  color:var(--brand);font:inherit;font-size:11px;line-height:1.5}
+.tf-vtog.inline:hover{background:color-mix(in srgb,var(--brand) 12%,transparent)}
+.tf-meter{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+.tf-say{color:var(--faint);min-width:0}
+.tf-say b{color:var(--ink-2);font-weight:600}
+.tf-lint{color:var(--partial);min-width:0}
+/* `err`, NOT `bad`. `.bad` is the panel-wide INVALID-INPUT style — `box-shadow:0 0 0 3px` plus a
+   `border-color:!important` — meant for a control the operator has to fix. On a text span it drew a red
+   ring around the sentence, which read as "this message is itself broken". Same class name, different
+   thing; renamed rather than cancelled, so the collision cannot come back through a third user. */
+.tf-lint.err{color:var(--partial-r)}
+.tf-live{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+
+/* The field's dropdown reuses the catalog popover wholesale — same rows, same paging, same placement rule. */
+.tfpop .catpick-list{padding:5px 5px 7px}
+.tfrow{border-radius:7px}
+.tfrow.act{background:var(--dd-hover)}
+.tfrow.act .catrow:hover{background:none}
+.tfrow-why{display:flex;flex-wrap:wrap;gap:6px;padding:0 9px 8px 32px;font-size:11px;line-height:1.45;color:var(--partial)}
+/* "Use what you typed" — pinned above the lists, because inference is never silent: the reading and its
+   consequence are on screen before the badge exists. */
+.tfuse{display:flex;flex-wrap:wrap;align-items:center;gap:9px;width:100%;padding:8px 9px;border:0;border-radius:7px;
+  background:none;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.tfuse.act{background:var(--dd-hover)}
+.tfuse.off{cursor:not-allowed}
+.tfuse.off .tfbadge{opacity:.55;border-style:dashed;background:none}
+.tfuse-say{font-size:11.5px;color:var(--dim);min-width:0}
+.tfuse.off .tfuse-say{color:var(--partial)}

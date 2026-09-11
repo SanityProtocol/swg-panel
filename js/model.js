@@ -25,11 +25,28 @@ import { T } from "./i18n.js";
 // down still classifies correctly. The name pattern below is only a last-resort fallback — adoption accepts an
 // operator-chosen name (wdttreal0), which the generated-name regex rejects, and such a target was then dropped
 // into the WG list and tagged "wg". Peer-create dispatches on this, so it minted the wrong kind of peer too.
+// ⚠️ A RAW instance owns TWO devices, and only one of them is the record's key. qWDTT/ildarmaga with raw on
+// run a second TUN (`raw_iface`, e.g. `wdttraw2`) beside the wg one, and it is a FIELD of the instance, not
+// another entry — so every "is this name one of ours?" check that only looked at keys said no. That is how
+// `wdttraw2` reached the egress picker as `Direct — wdttraw2`: a client INGRESS tunnel offered as an exit NIC,
+// which installs `-o wdttraw2` MASQUERADE in place of the working `-o eth0` one. The rule can never match
+// (internet-bound traffic routes out eth0), so the interface keeps its handshake and silently loses its NAT.
+// Both readbacks carry the field (`stats[].wdtt[].raw_iface`, `nodes[].wdtt_cfg[].raw_iface`), so ask both.
+//
+// The two predicates below take a CONFIG MAP, not a node id, so that the callers who already hold the node
+// record can ask without a lookup — `scKindByName` loops over every node, and routing an id back through a
+// `.find` there turned a flat cost into a quadratic one (measured: 0.02 ms → 0.46 ms per render at 60 nodes,
+// for no behaviour change at all). One grammar, asked at whichever level the caller is already standing on.
+export const wdttCfgClaims = (cfg, iface) =>
+  !!(cfg || {})[iface] || Object.values(cfg || {}).some(c => c && c.raw_iface === iface);
+// The csqtt twin, deliberately written out rather than left inline: csqtt has no second device today, and the
+// only way that stays true on purpose is if the question has a place to be answered when it stops being true.
+export const csqttCfgClaims = (cfg, iface) => !!(cfg || {})[iface];
+
 export function wdttOn(node, iface) {
   if (!node || !iface) return false;
-  if (((Store.stats[node] || {}).wdtt || []).some(w => w && w.iface === iface)) return true;
-  const n = (Store.nodes || []).find(x => x.id === node);
-  return !!(n && (n.wdtt_cfg || {})[iface]);
+  if (((Store.stats[node] || {}).wdtt || []).some(w => w && (w.iface === iface || w.raw_iface === iface))) return true;
+  return wdttCfgClaims(((Store.nodes || []).find(x => x.id === node) || {}).wdtt_cfg, iface);
 }
 // The csqtt sibling of wdttOn, and for the same reason: ASK THE NODE before guessing from the name. Without
 // it `kindOf` fell from an explicit `type` straight to `/^csqtt\d{1,4}$/`, so an ADOPTED instance — whose name
@@ -39,8 +56,7 @@ export function wdttOn(node, iface) {
 export function csqttOn(node, iface) {
   if (!node || !iface) return false;
   if (((Store.stats[node] || {}).csqtt || []).some(c => c && c.iface === iface)) return true;
-  const n = (Store.nodes || []).find(x => x.id === node);
-  return !!(n && (n.csqtt_cfg || {})[iface]);
+  return csqttCfgClaims(((Store.nodes || []).find(x => x.id === node) || {}).csqtt_cfg, iface);
 }
 // ── NAME → kind, asked of the FLEET ───────────────────────────────────────────────────────────────
 // Several call sites (dropdown groups, interface filters, NIC lists) hold only an interface NAME — no node,
@@ -55,9 +71,14 @@ export function scKindByName(name) {
     if (wdttOn(nid, name)) return "wdtt";
     if (csqttOn(nid, name)) return "csqtt";
   }
+  // ⚠️ SHARE THE PREDICATE, don't re-implement it. This loop used to inline `(n.wdtt_cfg || {})[name]` — a
+  // second copy of the test wdttOn owns — so teaching wdttOn about a RAW instance's second device fixed the
+  // node that is REPORTING and left the DOWN one still offering `wdttraw2`. Caught only by running both
+  // paths; the two must answer one question with one piece of code, or the answer depends on whether a node
+  // has synced. Asked of the record we already hold, not via wdttOn(n.id, …) — see the note on the helpers.
   for (const n of (Store.nodes || [])) {
-    if ((n.wdtt_cfg || {})[name]) return "wdtt";
-    if ((n.csqtt_cfg || {})[name]) return "csqtt";
+    if (wdttCfgClaims(n.wdtt_cfg, name)) return "wdtt";
+    if (csqttCfgClaims(n.csqtt_cfg, name)) return "csqtt";
   }
   return isWdttIface(name) ? "wdtt" : isCsqttIface(name) ? "csqtt" : null;
 }
@@ -185,7 +206,27 @@ export function ghostIface(node, iface) {
   const g = (nr.ghost_ifaces || {})[iface];
   if (g) return { cold: true, ripe: !!g.ripe, problemMs: g.problemMs || 0, subnet: null };
   const mi = (nr.missing_ifaces || {})[iface];
-  if (mi && !mi.key_source) return { cold: false, ripe: !!mi.ripe, problemMs: mi.problemMs || 0, subnet: mi.subnet || null };
+  // ⚠️ CARRY THE WHOLE SAVED CONFIG, NOT JUST THE SUBNET. A WARM ghost is an interface the panel still has
+  // `_lastcfg` for — subnet, listen port, MTU and, decisively, its AmneziaWG parameters. Rebuilt here from a
+  // key list that named only `subnet`, everything else was dropped, and the recreate sheet then INFERRED the
+  // protocol from a peer's target type. An interface with no peers has nothing to infer from, so it silently
+  // came back as plain WireGuard on a suggested port. Measured on hel-fresh after a vault reset: `awg0` was
+  // AmneziaWG on port 443 with nine obfuscation parameters, and the sheet offered WireGuard on 51821.
+  // The badge renderer in iface.js already reads `missIf.awg_params` for exactly this question — two readers
+  // of one fact, and only one of them was right.
+  // ⚠️ AND THE PANEL-OWNED SETTINGS TOO, not only the ones the node reports. Anything the sheet cannot be
+  // seeded with, it posts the PANEL-WIDE DEFAULT for — which is a value, not a blank, and create writes it.
+  // Measured against the real endpoint: a recreate turned a hostname endpoint into a raw IP, the operator's
+  // resolvers into 1.1.1.1 and keepalive 15 into 25, none of it shown on screen. Same shape as the MTU.
+  if (mi && !mi.key_source) return { cold: false, ripe: !!mi.ripe, problemMs: mi.problemMs || 0,
+                                     subnet: mi.subnet || null, listen_port: mi.listen_port || 0,
+                                     mtu: mi.mtu || 0, awg_params: mi.awg_params || null,
+                                     // ⚠️ PASSED THROUGH, NOT DEFAULTED. `dns: []` and `keepalive: 0` are
+                                     // both things an operator can mean; `|| 0` / `|| null` would erase the
+                                     // difference between "off" and "never set" before the sheet sees it.
+                                     endpoint_host: mi.endpoint_host || "",
+                                     dns: Array.isArray(mi.dns) ? mi.dns : null,
+                                     keepalive: typeof mi.keepalive === "number" ? mi.keepalive : null };
   return null;
 }
 // the reconciled peers with a deployment on this (node, iface)
@@ -255,8 +296,23 @@ export function suggestPort(node, kind, extra) {
   // "turn RAW on" a one-click change instead of a per-user instruction. (See _wdtt_alloc_raw_subnet / the RAW
   // field's hint — the panel prefers 56003 for RAW and says so when it can't get it.)
   const reserved = new Set([51820, 56000, 56001, 56003]);
-  let p = mine.length ? Math.max(...mine) + 1 : (kind === "turn" ? 56002 : 51821);
-  while ((used.has(p) || reserved.has(p)) && p < 65535) p++;
+  // ⚠️ AND THE SYSTEM MESH BAND, WHICH THE SERVER REFUSES OUTRIGHT ("port N is in the reserved system mesh
+  // range"). It was missing from both halves below, and the two failures compound on exactly the node an
+  // operator meets first. A freshly-enrolled node's ONLY interfaces are its mesh links, so `mine` is the
+  // mesh ports, the seed is one above the highest of them — inside the band — and the sheet pre-filled a
+  // port that Create then rejected. Found on hel-flux during 1.8.5 qualification: a brand-new interface
+  // offered :10002 and answered "port 10002 is in the reserved system mesh range (9999–10098)".
+  // Read off the same settings the server validates against, so moving the band moves both readers.
+  const _rsv = (Store.panelSettings || {}).reserved || {};
+  const _mBase = Number(_rsv.mesh_port_base) || 9999, _mSpan = Number(_rsv.port_span) || 100;
+  const inMesh = q => q >= _mBase && q < _mBase + _mSpan;
+  // …and a MESH LINK IS NOT A USER INTERFACE, so it does not get a vote on where the next one starts. With
+  // the band merely skipped, a fresh node's first suggestion would be the first port ABOVE the band — an
+  // arbitrary number that depends on how many nodes it is meshed with. Seeding off user interfaces only
+  // makes a fresh node suggest the documented default, the same as a node with no interfaces at all.
+  const mineUser = mine.filter(q => !inMesh(q));
+  let p = mineUser.length ? Math.max(...mineUser) + 1 : (kind === "turn" ? 56002 : 51821);
+  while ((used.has(p) || reserved.has(p) || inMesh(p)) && p < 65535) p++;
   return p;
 }
 // Client-side port-collision check (mirrors the server's _node_ports). Returns a human label of whatever

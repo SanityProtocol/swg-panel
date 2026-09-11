@@ -209,6 +209,86 @@ docker_stack_live(){
   return 1
 }
 
+# ── Would this recreate be able to publish its ports? (found live, svo-im 2026-09-10) ──
+# A compose recreate re-derives the port map from the CURRENT .env, and this branch DESTROYS the running
+# containers first (`docker rm -f`, below) so `up` cannot hit "name already in use". That makes a port
+# conflict TOTAL and unrecoverable: the old container is gone, the new one cannot bind, and the stack is
+# left with a container in `Created` that never starts. Observed exactly that — a blank `PANEL_PORT`
+# resolves through compose's `${PANEL_PORT:-443}` to 0.0.0.0:443, which the host's own nginx had held
+# since two days earlier, and the one-click update took the panel down.
+#
+# The rule is not new: the docker address flow already refuses a change whose target port is taken
+# ("a recreate can't publish a port another service already holds"). It was simply enforced in one of the
+# two places that recreate containers. Same test, same `ss` probe, so the two cannot drift.
+#
+# A port our OWN container currently publishes is not a conflict — the recreate releases it first.
+# If we cannot render the config we do not know, and NOT KNOWING MUST NOT BLOCK AN UPDATE: say so and
+# carry on, rather than refusing on an older compose that cannot print JSON.
+docker_ports_preflight(){                     # $1 = profile → 0 = clear/undetermined, 1 = held by something else
+  local prof="$1" cfg ours rc
+  have docker || return 0
+  cfg="$(cd "$DOCKER_DIR" 2>/dev/null && $COMPOSE --profile "$prof" config --format json 2>/dev/null)" || cfg=""
+  case "$cfg" in *'"services"'*) ;; *)
+    note "docker ($prof): port pre-flight skipped — this compose cannot render its config as JSON"
+    return 0 ;; esac
+  local _cf _pf; _cf="$(mktemp)" || return 0; _pf="$(mktemp)" || { rm -f "$_cf"; return 0; }
+  printf '%s' "$cfg" > "$_cf"
+  # A port our OWN container publishes right now is not a conflict — the recreate releases it first.
+  ours="$(docker ps --format '{{.Ports}}' 2>/dev/null || true)"
+  # The checker goes in on STDIN as a quoted heredoc and the config in by PATH. It was written as
+  # `python3 -c '…'` first and the quoting mangled the one regex in it into a SyntaxError — which exited
+  # non-zero with an empty stdout, i.e. exactly like "could not determine", i.e. a silent pass on a host
+  # where the conflict was sitting right there. Hence both halves of what follows: no quoting to get wrong,
+  # and THREE outcomes rather than two, so a crash can never wear the clear answer's clothes.
+  OURS="$ours" python3 - "$_cf" >"$_pf" 2>/dev/null <<'PYPORT'
+import json, os, re, subprocess, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+    mine = set(re.findall(r"(\d+)->", os.environ.get("OURS", "")))   # host ports our own containers publish now
+    bad = []
+    for name, svc in sorted((cfg.get("services") or {}).items()):
+        for p in (svc.get("ports") or []):
+            pub = str(p.get("published") or "").split("-")[0]        # a range publishes from its first port
+            if not pub.isdigit() or pub in mine:
+                continue
+            # -p so the message can NAME the holder ("held by nginx"), which is the only actionable half of
+            # it. Needs root, which an update is; without it `users:((…))` is simply absent and the fallback
+            # wording stands, so this degrades rather than failing.
+            r = subprocess.run(["ss", "-lntpH", "sport = :" + pub], capture_output=True)
+            holder = (r.stdout or b"").decode("utf-8", "replace").strip()
+            if holder:
+                who = re.search(r'users:\(\("([^"]+)"', holder)
+                bad.append((name, (p.get("host_ip") or "0.0.0.0") + ":" + pub,
+                            who.group(1) if who else "another process"))
+except Exception:
+    sys.exit(4)                                                      # could not determine — NOT the same as clear
+for row in bad:
+    print("\t".join(row))
+sys.exit(3 if bad else 0)
+PYPORT
+  rc=$?
+  rm -f "$_cf"
+  case "$rc" in
+    0) rm -f "$_pf"; return 0 ;;
+    3) ;;
+    *) rm -f "$_pf"
+       note "docker ($prof): port pre-flight could not run (exit $rc) — proceeding unchecked"
+       warn "could not pre-flight the published ports (the checker exited $rc) — continuing, but if the
+       recreate fails to bind, that is why."
+       return 0 ;;
+  esac
+  warn "REFUSING the docker recreate — a published port is already held by something else on this host:"
+  local _svc _addr _who
+  while IFS="$(printf '\t')" read -r _svc _addr _who; do
+    [ -n "$_addr" ] || continue
+    printf '       %s wants %s, held by %s\n' "$(b "$_svc")" "$(b "$_addr")" "$(b "$_who")" >&2
+  done < "$_pf"
+  rm -f "$_pf"
+  warn "The containers are still running on the old image — nothing was touched. Free that port, or set the
+       right one in $(b "$DOCKER_DIR/.env") — note a BLANK value there means 443 to compose, not \"unset\" —
+       then re-run the update."
+  return 1
+}
 docker_profile(){
   local names sniff="" mark
   if have docker; then
@@ -274,14 +354,59 @@ install_update_unit(){   # idempotent: wire one-click host self-update for an ex
   local st="${STATE_DIR:-/var/lib/swg-panel}" usr="${PANEL_USER:-swgpanel}" trig
   trig="${st}/.update-request"
   if $DRYRUN; then echo "    [skip] install /usr/local/bin/swg-update{,-check} + swg-update.{service,timer} + trigger drop-in"; return 0; fi
-  cat > /usr/local/bin/swg-update <<'WRAP'
+    # ⚠️ THE REF THE BOX WAS INSTALLED FROM, not `main`. `bootstrap.sh` deliberately supports installing a
+  # branch or tag (SWG_REF, or inferred from the URL it was fetched from) — and its own comment says why:
+  # "a panel tracking a pre-release branch SILENTLY DOWNGRADED itself on every one-click update". That fix
+  # covered the bootstrap and NOT this wrapper, which is the thing the Update button actually runs. Baked in
+  # at write time because nothing else on the box records the branch, and this file IS rewritten by every
+  # update — so a box installed from a ref keeps tracking it without any new state to keep in step.
+  _swg_ref="${SWG_REF:-main}"
+  # ⚠️ WRITTEN BESIDE, THEN RENAMED — AND THAT IS THE OTHER HALF OF THE SELF-REWRITE FIX.
+  # The braces + `exit` below protect a wrapper that ALREADY HAS THEM. They do nothing for the one press of
+  # Update that installs them, because the script running at that moment is the OLD, unguarded wrapper, and
+  # `cat >` truncates and refills the SAME INODE — which is precisely the file the running bash still holds
+  # an fd on. So without this, the release that FIXES the bug reproduces it once on every existing box, and
+  # `swg-update.service` (Type=oneshot, ExecStart=swg-update-check → exec swg-update) records a FAILED unit
+  # at the end of a perfectly good update. A rename gives the new wrapper a NEW inode: the old bash keeps
+  # reading the old, now-unlinked file, finds EOF where it left off, and exits 0.
+  # Measured both ways in a scratch dir with a 14-line wrapper rewritten to 63 lines mid-run:
+  #     cat >  → `line 7: through: command not found`, rc=127      (the shipped behaviour)
+  #     mv     → `update-ok`, rc=0
+  # It is also simply the right way to replace a root-owned executable: an interrupted `cat >` leaves a
+  # truncated one behind, a rename cannot.
+  cat > /usr/local/bin/swg-update.new <<WRAP
 #!/usr/bin/env bash
+# ⚠️ THE WHOLE BODY IS ONE COMPOUND COMMAND, AND THE \`exit\` AT THE END IS PART OF THE FIX.
+# THIS SCRIPT REWRITES ITSELF. The update it runs re-bakes /usr/local/bin/swg-update, and bash reads a
+# script INCREMENTALLY — so when the pipeline returned, bash went back to the file for the next command at
+# the byte offset it had reached, landed in the middle of the NEW file's last line, and ran the tail of a
+# comment. Measured on swgt at the end of a completely successful panel update:
+#     /usr/local/bin/swg-update: line 15: pass: command not found
+# — from \`# extra flags (e.g. --node-only) pass through\`, in a file that is only 14 lines long. Under
+# \`set -e\` that is a non-zero exit after the update has already reported success, so a real update ends by
+# announcing a failure that did not happen. It fires ONLY when something is actually installed, which is
+# why a second run looks clean and why this survived every dry run.
+# Braces make bash parse the whole body before executing any of it, and the \`exit\` means it never reads
+# from the file again.
+{
 # swg-update — fixed root entrypoint for one-click in-place update (swg programs only).
 set -euo pipefail
-URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh}"
-curl -fsSL "$URL" | bash -s update -y --no-components "$@"   # extra flags (e.g. --node-only) pass through
+# ⚠️ EXPORTED, not just used. \`bootstrap.sh\` derives the ref from the URL IT WAS FETCHED FROM, reading
+# \$SWG_BOOTSTRAP_URL out of its own environment — and this line used the baked URL only as a shell
+# DEFAULT, so the piped bash saw the variable UNSET, inferred nothing, and fell back to \`main\`. The
+# wrapper fetched dev's bootstrap and then installed main from it: the panel silently downgraded itself
+# and re-baked this very file back to main, which is word for word the failure the inference was added to
+# prevent. Measured on swgt: 1.8.6-beta -> 1.8.5-beta, wrapper dev -> main, on one press of Update.
+# Exporting the URL (rather than forcing SWG_REF) keeps an operator's own \$SWG_BOOTSTRAP_URL authoritative
+# — their URL then decides the ref, which is the whole point of deriving it from the URL.
+URL="\${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/${_swg_ref}/bootstrap.sh}"
+export SWG_BOOTSTRAP_URL="\$URL"
+curl -fsSL "\$URL" | bash -s update -y --no-components "\$@"   # extra flags (e.g. --node-only) pass through
+exit
+}
 WRAP
-  chmod 755 /usr/local/bin/swg-update
+  chmod 755 /usr/local/bin/swg-update.new
+  mv -f /usr/local/bin/swg-update.new /usr/local/bin/swg-update   # see the rename note above — NEVER `cat >`
   cat > /usr/local/bin/swg-update-check <<'WRAP2'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -806,6 +931,39 @@ ensure_acme_home(){
   [ "$kept" -gt 0 ] && warn "$kept certificate(s) exist in BOTH $stray and $ACME_HOME_CANON — kept the renewable one; $stray left in place for inspection"
   return 0; }
 
+ensure_node_update_ref(){   # HEAL: record the ref this box tracks in the node's agent config.
+  # ⚠️ AN UPDATE DOES NOT REWRITE config.json — it copies binaries and leaves the config alone, which is
+  # right for everything else in there (it holds the node key and the interface map). But `update_ref` is
+  # the one field that must follow the ref the box is being updated FROM, and the installers only write it
+  # at install time. Without this heal, a node installed from main and then updated to dev keeps no ref at
+  # all and its self-update falls back to `main` — the very downgrade the ref exists to stop, surviving the
+  # update that was supposed to fix it. This is the node's equivalent of `ensure_update_unit` re-baking the
+  # panel's wrapper on every update, and it is why that one works.
+  local cfg=/etc/swg-agent/config.json want="${SWG_REF:-main}"
+  [ -f "$cfg" ] || return 0
+  if $DRYRUN; then echo "    [skip] record update_ref=$want in $cfg"; return 0; fi
+  local out
+  out="$(SWG_WANT_REF="$want" python3 - "$cfg" <<'PYREF'
+import json, os, sys
+p, want = sys.argv[1], os.environ.get("SWG_WANT_REF", "main")
+try:
+    d = json.load(open(p))
+except Exception:
+    sys.exit(0)                       # never fail an update over this
+n = d.setdefault("node", {})
+if str(n.get("update_ref") or "") == want:
+    sys.exit(0)
+n["update_ref"] = want
+tmp = p + ".tmp"
+json.dump(d, open(tmp, "w"), indent=2)
+os.replace(tmp, p); os.chmod(p, 0o640)
+print("changed")
+PYREF
+)" || return 0
+  [ -n "$out" ] && ok "node self-update now tracks $(col_v "$want")"
+  return 0
+}
+
 ensure_update_unit(){   # HEAL (install-if-missing) the one-click self-update wiring on a bare-metal panel.
   # install_update_unit (below) is called during an actual version update to REFRESH this wiring, but on an
   # up-to-date box with the units missing (a partial install / older host) nothing re-wires them, so the
@@ -1111,10 +1269,12 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
     [ -d "$AGENT_DIR" ] && [ -f "$SRC/swg-agent" ] && { run cp "$SRC/swg-agent" "$AGENT_DIR/"; run chmod 755 "$AGENT_DIR/swg-agent"; }
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-noded" ] && { run cp "$SRC/swg-noded" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-noded"; }
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-sni" ] && { run cp "$SRC/swg-sni" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-sni"; }   # SNI-router classifier
+    [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-relay" ] && { run cp "$SRC/swg-relay" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-relay"; }   # TCP-terminating relay
     stamp "$NODED_DIR"
     if run systemctl restart swg-noded; then ok "swg-node updated + restarted"; note "bare-metal swg-node: ${nold} → ${NEW_VER}"
     else DID_FAIL=yes; warn "couldn't restart swg-noded — run: systemctl restart swg-noded"; note "bare-metal swg-node: updated but RESTART FAILED"; fi
   else note "bare-metal swg-node: unchanged (${nold})"; fi
+  ensure_node_update_ref # HEAL: record the ref this box tracks, so the node's self-update doesn't fall to main
   ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
   ensure_awg_datapath    # HEAL: install AmneziaWG if missing, rebuild its module, else userspace
   ensure_awg_quick_unit  # HEAL: the awg-quick@ template + the per-interface enable, so awg survives a reboot
@@ -1218,6 +1378,39 @@ PYSC
       printf '%s\n' 'SWG_NODE_SECCOMP=unconfined   # this node runs csqtt servers, whose io_uring dataplane the default profile denies' \
         >> "$DOCKER_DIR/.env" \
         && note ".env: SWG_NODE_SECCOMP=unconfined (this node runs csqtt — its io_uring dataplane needs it)"
+    fi ;;
+  esac
+  # 2) The operator console's own port. Shipped in 1.8.3 as three lines — a ports publish plus two env keys —
+  #    and, being NEW compose content rather than a changed value, it reached only fresh installs. Every panel
+  #    installed before then has been told at each update that its file is behind and to restage, for a feature
+  #    it could simply have been given. The panel reads SWG_PANEL_CONSOLE_PORT with a default of 0, and 0 means
+  #    "off", so on those boxes Settings → Panel URL → "Its own address" does not work at all.
+  #    SAFE BY CONSTRUCTION: the publish is ${CONSOLE_BIND:-127.0.0.1} — LOOPBACK unless the operator sets
+  #    CONSOLE_BIND themselves — so this opens nothing to the network. Both anchor lines are byte-identical in
+  #    every shipped compose back to 1.8.2, which is as far back as this can matter.
+  case "$prof" in host|master|host-node)
+    if ! $DRYRUN && [ -f "$DOCKER_DIR/docker-compose.yml" ] \
+       && ! grep -q 'SWG_PANEL_CONSOLE_PORT' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null \
+       && ! grep -q 'SWG_PANEL_CONSOLE_HOST' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
+      python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYCON' && note "docker-compose.yml: added the operator console port (SWG_PANEL_CONSOLE_HOST/PORT + its loopback publish)"
+import sys
+f = sys.argv[1]
+lines = open(f).read().split("\n")
+out, did_port, did_env = [], False, False
+for l in lines:
+    out.append(l)
+    if not did_port and l.strip() == '- "127.0.0.1:${PANEL_LOCAL_PORT:-8088}:${PANEL_LOCAL_PORT:-8088}"':
+        out.append('      # The OPERATOR CONSOLE own port (Settings -> Panel URL -> "Its own address").')
+        out.append('      # LOOPBACK by default; set CONSOLE_BIND=0.0.0.0 (or a host IP) in .env to publish, then firewall it.')
+        out.append('      - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_PORT:-8445}:${CONSOLE_PORT:-8445}"')
+        did_port = True
+    elif not did_env and "SWG_PANEL_BASE:" in l and "${PANEL_BASE" in l:
+        out.append('      SWG_PANEL_CONSOLE_PORT: "${CONSOLE_PORT:-8445}"')
+        out.append('      SWG_PANEL_CONSOLE_HOST: "${CONSOLE_BIND:-127.0.0.1}"')
+        did_env = True
+# all three lines or none — a half-applied migration is worse than the warning it silences
+sys.exit(0 if (did_port and did_env and open(f, "w").write("\n".join(out)) is not None) else 1)
+PYCON
     fi ;;
   esac
   # 3) Image tag. `image:` lines were baked LITERAL (…/swg-panel:latest) before SWG_IMAGE_TAG existed, and an
@@ -1406,7 +1599,7 @@ PYDRIFT
     if should_update "docker ($prof, source build)" "$DOCKER_DIR"; then
       info "restaging source + rebuilding ($DOCKER_DIR)"
       for f in Dockerfile Dockerfile.node .dockerignore VERSION \
-               swg-panel-server swg-agent swg-noded swg-sni swg-sub swg-passwd \
+               swg-panel-server swg-agent swg-noded swg-sni swg-relay swg-sub swg-passwd \
                index.html app.css app.js reconcile.js $SUB_WEB; do
         [ -e "$SRC/$f" ] && run cp -a "$SRC/$f" "$DOCKER_DIR/"
       done
@@ -1415,6 +1608,7 @@ PYDRIFT
       [ -d "$SRC/docker" ] && run cp -a "$SRC/docker" "$DOCKER_DIR/"; stamp "$DOCKER_DIR"
       rescue_container_confs "$prof"
       if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof up -d --build)"; note "docker ($prof): would rebuild"
+      elif ! docker_ports_preflight "$prof"; then DID_FAIL=yes; note "docker ($prof): REFUSED — a published port is held by another process"
       else ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" up -d --build ) && { ok "docker ($prof) rebuilt + restarted"; note "docker ($prof): rebuilt"; } || { DID_FAIL=yes; warn "compose rebuild failed — check $DOCKER_DIR"; note "docker ($prof): rebuild FAILED"; }; fi
     else note "docker ($prof): unchanged"; fi
   else
@@ -1426,8 +1620,12 @@ PYDRIFT
       # --force-recreate: after `pull` updates :latest, a plain `up -d` may just (re)start the EXISTING
       # container on the OLD image (log shows "Started", not "Recreated") — so the node keeps the old
       # version until a 2nd run. Forcing recreation guarantees it runs the freshly-pulled image.
+      elif ! docker_ports_preflight "$prof"; then DID_FAIL=yes; note "docker ($prof): REFUSED — a published port is held by another process"
       else
         rescue_container_confs "$prof"
+        # ⚠️ EVERYTHING BELOW THIS LINE IS DESTRUCTIVE — the containers are removed before `up` runs, so a
+        # failure here has nothing to fall back to. That is why the port check is a PRE-flight and sits in
+        # the `elif` above, not inside this branch.
         for _c in $(case "$prof" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
         ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" pull && on_tty $COMPOSE --profile "$prof" up -d --force-recreate ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { DID_FAIL=yes; warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
     else warn "docker ($prof): skipped"; note "docker ($prof): skipped"; fi

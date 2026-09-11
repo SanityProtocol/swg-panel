@@ -1,0 +1,453 @@
+#!/usr/bin/env python3
+"""swg-relay — a TPROXY TCP-terminating relay. ONE event loop, no thread per connection.
+
+⚠️ THE PROTOTYPE THIS REPLACES USED 2 OS THREADS PER CONNECTION and died under a single speedtest with
+"RuntimeError: can't start new thread". On the same box, rw-core carried 1,668 connections on 14 threads.
+Thread-per-connection is not a tuning problem, it is the wrong shape: one selector loop multiplexes
+everything, and splice keeps the payload out of userspace entirely.
+
+⚠️ A DIVERT THAT MATCHES BUT IS NOT SERVED IS A BLACKHOLE. tproxy removes the packet from the forwarding
+path; if this process is not accepting, the traffic is simply gone. Anything that arms a divert must prove
+`accepted` rises before it walks away. (Conversely: with NO listener, tproxy passes packets through
+untouched — so a "successful" test against a dead relay is indistinguishable from a working one.)
+
+⚠️ EVERY TUNABLE HERE IS SILENTLY OVERRIDABLE BY THE KERNEL, so each one is read back and reported rather
+than assumed. F_SETPIPE_SZ returns the size it actually granted (rounded, capped by fs.pipe-max-size, and
+refused outright once fs.pipe-user-pages-soft is exhausted); TCP_CONGESTION silently keeps the system
+default if the module is absent. A build that only catches OSError cannot tell a working tunable from an
+ignored one — which is exactly how the pipe fix went two rounds without ever being validly tested.
+"""
+import argparse, contextlib, errno, fcntl, json, os, resource, selectors, socket, stat, sys, time
+
+IP_TRANSPARENT, SO_MARK, TCP_CONGESTION, TCP_MAXSEG = 19, 36, 13, 2
+F_SETPIPE_SZ, F_GETPIPE_SZ = 1031, 1032
+SPLICE_MOVE, SPLICE_NONBLOCK = 1, 2
+CHUNK = 1 << 16
+# Cap inflight per direction so one fat flow cannot hog memory. NOT a throughput knob — measured flat from
+# 64 KiB to 4 MiB (see Dir.__init__). Pick it against the connection cap and the pipe-page budget instead.
+PIPE_CAP = 1 << 20
+
+ST = {"accepted": 0, "connected": 0, "failed": 0, "closed": 0, "up": 0, "down": 0, "live": 0, "peak": 0,
+      "pipe_short": 0, "pipe_min": 0, "loops": 0}
+
+
+class Dir:
+    """One direction of one connection: src -> pipe -> dst."""
+    __slots__ = ("src", "dst", "r", "w", "cap", "inflight", "src_eof", "done", "label")
+
+    def __init__(self, src, dst, label, want_cap):
+        self.src, self.dst, self.label = src, dst, label
+        self.r, self.w = os.pipe()
+        os.set_blocking(self.r, False); os.set_blocking(self.w, False)
+        # ⚠️ "A DEFAULT 64 KB PIPE MAKES THIS STOP-AND-WAIT" WAS WRONG — MEASURED AND FALSIFIED 2026-09-05
+        # on swgt (1 core, emulated 40 ms / 300 Mbit client leg + 25 ms / 500 Mbit mesh leg). Sweeping the
+        # pipe over 64 KiB / 256 KiB / 1 MiB / 4 MiB moved single-stream throughput 222 / 245 / 192 / 201
+        # Mbit/s and 32-stream 276 / 282 / 281 / 285 — flat, with the 64 KiB DEFAULT at the top of the
+        # range. The pipe is a staging buffer, not the window: the in-flight bytes live in the two sockets'
+        # buffers, and level-triggered epoll re-arms immediately, so a small pipe costs syscalls, not
+        # throughput. The real cause of the low single-stream number was congestion control on the
+        # CLIENT-FACING socket (see the cc_cli note in start()). Sizing this to the BDP buys nothing.
+        #
+        # Read the granted size back anyway, because the failure is otherwise invisible and because the
+        # number bounds the connection cap: fcntl returns what was granted, and once
+        # fs.pipe-user-pages-soft (16384 pages = 64 MiB/user) is exhausted the kernel does not fall back to
+        # the 64 KiB default, it collapses new pipes to 8192 bytes. ⚠️ That budget applies ONLY to a
+        # process without CAP_SYS_RESOURCE: as root 120 x 1 MiB pipes were all granted; as nobody the 64th
+        # pipe onward got 8 KiB. So the cliff is invisible today and appears the moment a hardened unit
+        # drops privileges. Measured cost of hitting it: none (283 Mbit/s at 32 streams with 8 KiB pipes) —
+        # which follows from the pipe not mattering in the first place.
+        granted = 0
+        try:
+            granted = fcntl.fcntl(self.w, F_SETPIPE_SZ, want_cap)
+        except OSError:
+            pass                                     # over pipe-max-size / out of budget: keep the default
+        if granted <= 0:
+            try: granted = fcntl.fcntl(self.w, F_GETPIPE_SZ)
+            except OSError: granted = 65536
+        self.cap = granted
+        if granted < want_cap:
+            ST["pipe_short"] += 1
+        if not ST["pipe_min"] or granted < ST["pipe_min"]:
+            ST["pipe_min"] = granted
+        self.inflight = 0
+        self.src_eof = False
+        self.done = False
+
+    def close(self):
+        for fd in (self.r, self.w):
+            try: os.close(fd)
+            except OSError: pass
+
+
+class Conn:
+    __slots__ = ("cli", "up", "a", "b", "connecting", "dead")
+
+    def __init__(self, cli, up):
+        self.cli, self.up = cli, up
+        self.a = self.b = None
+        self.connecting = True
+        self.dead = False
+
+
+class Relay:
+    def __init__(self, mark, cc, pipe_cap=PIPE_CAP, cc_cli="", bind="", mss=0):
+        self.sel = selectors.DefaultSelector()
+        self.mark, self.cc, self.pipe_cap, self.cc_cli, self.bind = mark, cc, pipe_cap, cc_cli, bind
+        self.mss = mss
+        self.conns = {}
+
+    # ── plumbing ──
+    def _want(self, sock, events, conn):
+        try:
+            self.sel.modify(sock, events, conn)
+        except KeyError:
+            if events:
+                self.sel.register(sock, events, conn)
+
+    def _events(self, c):
+        """Recompute interest for both sockets from the two directions' state."""
+        cli = up = 0
+        for d in (c.a, c.b):
+            if d is None or d.done:
+                continue
+            if not d.src_eof and d.inflight < d.cap:
+                if d.src is c.cli: cli |= selectors.EVENT_READ
+                else:              up  |= selectors.EVENT_READ
+            if d.inflight:
+                if d.dst is c.cli: cli |= selectors.EVENT_WRITE
+                else:              up  |= selectors.EVENT_WRITE
+        self._want(c.cli, cli, c)
+        self._want(c.up, up, c)
+        if not cli and not up:
+            self.reap(c)
+
+    # ── data movement ──
+    def _pump(self, d, c):
+        moved = 0
+        while not d.src_eof and d.inflight < d.cap:
+            try:
+                n = os.splice(d.src.fileno(), d.w, CHUNK, flags=SPLICE_MOVE | SPLICE_NONBLOCK)
+            except (BlockingIOError, InterruptedError):
+                break
+            except OSError:
+                d.src_eof = True; break
+            if n == 0:
+                d.src_eof = True; break
+            d.inflight += n; moved += n
+        while d.inflight:
+            try:
+                n = os.splice(d.r, d.dst.fileno(), d.inflight, flags=SPLICE_MOVE | SPLICE_NONBLOCK)
+            except (BlockingIOError, InterruptedError):
+                break
+            except OSError:
+                d.done = True; break
+            if n == 0:
+                break
+            d.inflight -= n
+            ST["up" if d.label == "up" else "down"] += n
+        if d.src_eof and not d.inflight and not d.done:
+            d.done = True
+            try: d.dst.shutdown(socket.SHUT_WR)      # half-close, not a full close: the other way may still flow
+            except OSError: pass
+        return moved
+
+    def reap(self, c):
+        if c.dead:
+            return
+        c.dead = True
+        for d in (c.a, c.b):
+            if d: d.close()
+        for s in (c.cli, c.up):
+            try: self.sel.unregister(s)
+            except (KeyError, ValueError): pass
+            try: s.close()
+            except OSError: pass
+        self.conns.pop(id(c), None)
+        ST["closed"] += 1; ST["live"] -= 1
+
+    # ── lifecycle ──
+    def start(self, cli, dst):
+        # ⚠️ EVERY ALLOCATION IN HERE CAN RAISE EMFILE, AND IT MUST NOT REACH THE LOOP. This costs SIX fds
+        # per connection — two sockets plus two pipes — so the ceiling arrives four times sooner than a
+        # socket count suggests. An earlier build created the upstream socket OUTSIDE this try and a burst
+        # of parallel connections took the whole relay down with "Too many open files".
+        ST["accepted"] += 1
+        up = None
+        try:
+            cli.setblocking(False)
+            # ⚠️ THE CLIENT-FACING SOCKET IS THE SENDER FOR EVERY DOWNLOAD. Setting TCP_CONGESTION only on
+            # the upstream (as this did until 2026-09-05) tunes the leg the relay RECEIVES on, where a
+            # sender-side algorithm does nothing. Terminating TCP is worth doing because it lets the node
+            # run its own CC on BOTH halves; only one half was ever wired.
+            if self.cc_cli:
+                try: cli.setsockopt(socket.IPPROTO_TCP, TCP_CONGESTION, self.cc_cli.encode())
+                except OSError: pass
+                if not ST.get("cc_cli_seen"):
+                    ST["cc_cli_seen"] = sock_cc(cli) or "?"
+            up = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            up.setblocking(False)
+            if self.bind:
+                # ⚠️ TERMINATING TCP RE-ORIGINATES FROM THE NODE, AND THE EXIT NODE'S SNAT IS KEYED ON THE
+                # CLIENT SUBNET. Left unbound, the upstream leaves with the mesh /31 source, which matches
+                # no `swg-fwd-snat:<subnet>` rule at the exit and no `ip rule to <subnet>` for the reply —
+                # the connection simply never comes back. Binding to the accelerated interface's own gateway
+                # address puts the relay inside the subnet the exit already routes and SNATs for, and the
+                # existing `from <subnet> lookup <table>` rule then picks the mesh leg with no mark at all.
+                up.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                up.bind((self.bind, 0))
+            if self.mss:
+                # ⚠️ THE EXIT CANNOT CLAMP THIS CONNECTION, SO WE MUST SIZE IT OURSELVES. A forwarded client's
+                # SYN crosses the exit's `-o <mesh> ... TCPMSS --clamp-mss-to-pmtu` rule and comes back sized
+                # for the tunnel. The relay's upstream SYN leaves the exit via its WAN, where that rule does
+                # not match, so the far end sends segments sized for OUR route MTU — and the exit then has to
+                # push them back down the tunnel, cannot fragment because DF is set, and drops them.
+                # Measured on hel-flux: 1763 IpFragFails and 1765 tx_dropped per 20 MB relayed, versus ZERO
+                # forwarded. That is a silent ~12% packet loss that the far end pays for in retransmits.
+                try: up.setsockopt(socket.IPPROTO_TCP, TCP_MAXSEG, self.mss)
+                except OSError: pass
+            if self.mark:
+                up.setsockopt(socket.SOL_SOCKET, SO_MARK, self.mark)
+            if self.cc:
+                try: up.setsockopt(socket.IPPROTO_TCP, TCP_CONGESTION, self.cc.encode())
+                except OSError: pass          # kernel without that CC: carry on rather than drop the connection
+            if not ST.get("cc_seen"):
+                ST["cc_seen"] = sock_cc(up) or "?"    # what the kernel ACTUALLY gave the first upstream
+            try:
+                up.connect(dst)
+            except BlockingIOError:
+                pass
+            c = Conn(cli, up)
+            c.a = c.b = None
+            self.conns[id(c)] = c
+            ST["live"] += 1; ST["peak"] = max(ST["peak"], ST["live"])
+            self.sel.register(up, selectors.EVENT_WRITE, c)
+        except OSError as e:
+            ST["failed"] += 1
+            if e.errno == errno.EMFILE:
+                ST["emfile"] = ST.get("emfile", 0) + 1
+            for s in (cli, up):
+                try:
+                    if s is not None: s.close()
+                except OSError: pass
+
+    def on_ready(self, sock, mask, c):
+        if c.dead:
+            return
+        if c.connecting:
+            err = c.up.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+            if err:
+                ST["failed"] += 1; self.reap(c); return
+            c.connecting = False
+            ST["connected"] += 1
+            c.a = Dir(c.cli, c.up, "up", self.pipe_cap)   # os.pipe() here can EMFILE; on_ready's guard reaps
+            c.b = Dir(c.up, c.cli, "down", self.pipe_cap)
+            self._events(c); return
+        for d in (c.a, c.b):
+            if d and not d.done:
+                self._pump(d, c)
+        if c.a and c.b and c.a.done and c.b.done:
+            self.reap(c)
+        elif not c.dead:
+            self._events(c)
+
+
+def sock_cc(s):
+    """The congestion control the kernel actually chose for this socket, not the one we asked for."""
+    try:
+        return s.getsockopt(socket.IPPROTO_TCP, TCP_CONGESTION, 16).split(b"\0")[0].decode() or None
+    except OSError:
+        return None
+
+
+def _read(path):
+    try:
+        with open(path) as f: return f.read().strip()
+    except OSError:
+        return "?"
+
+
+def probe(want_cap, cc):
+    """Report what the kernel will actually grant, BEFORE any measurement is taken.
+
+    ⚠️ Without this the whole tuning exercise is unreadable: a pipe that came back at the 64 KB default and
+    a CC request that was silently ignored both look exactly like success."""
+    r, w = os.pipe()
+    try:
+        try:
+            fcntl.fcntl(w, F_SETPIPE_SZ, want_cap)
+        except OSError as e:
+            sys.stderr.write("relay: F_SETPIPE_SZ refused: %s\n" % e)
+        granted = fcntl.fcntl(w, F_GETPIPE_SZ)   # never trust the request: ask the pipe what it holds
+    finally:
+        os.close(r); os.close(w)
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        asked_ok = True
+        if cc:
+            try: s.setsockopt(socket.IPPROTO_TCP, TCP_CONGESTION, cc.encode())
+            except OSError as e: asked_ok = False; sys.stderr.write("relay: TCP_CONGESTION refused: %s\n" % e)
+        got_cc = sock_cc(s) or "?"
+    finally:
+        s.close()
+
+    soft = _read("/proc/sys/fs/pipe-user-pages-soft")
+    # ⚠️ MEASURED 2026-09-05, swgt: fs.pipe-user-pages-soft and fs.pipe-max-size are BOTH bypassed for a
+    # process with CAP_SYS_RESOURCE/CAP_SYS_ADMIN — as root, 120 x 1 MiB pipes were all granted in full.
+    # As an unprivileged user on the same box the first 63 got 1 MiB and every pipe after that collapsed to
+    # 8192 bytes (PIPE_MIN_DEF_BUFFERS), i.e. a 128x cliff, not a fallback to the 64 KiB default. So the
+    # ceiling below binds only once this is de-privileged — which is exactly what a hardened systemd unit
+    # would do. Whoever writes that unit must keep CAP_SYS_RESOURCE or raise the sysctl.
+    privileged = os.geteuid() == 0
+    ceiling = "unbounded (privileged: soft budget bypassed)"
+    try:
+        if not privileged and granted > 0 and int(soft) > 0:
+            ceiling = "%d" % (int(soft) * 4096 // (granted * 2))
+    except ValueError:
+        ceiling = "?"
+    sys.stderr.write(
+        "relay: pipe requested=%d granted=%d (%s)  pipe-max-size=%s  pipe-user-pages-soft=%s"
+        " => %s concurrent conns before the kernel stops honouring it\n"
+        % (want_cap, granted, "OK" if granted >= want_cap else "SHORT", _read("/proc/sys/fs/pipe-max-size"),
+           soft, ceiling))
+    sys.stderr.write(
+        "relay: cc requested=%s selected=%s (%s)  system default=%s  available=%s\n"
+        % (cc or "(none)", got_cc, "OK" if (not cc or (asked_ok and got_cc == cc)) else "IGNORED",
+           _read("/proc/sys/net/ipv4/tcp_congestion_control"),
+           _read("/proc/sys/net/ipv4/tcp_available_congestion_control")))
+    return granted
+
+
+STATUS = object()        # selector sentinel: the status listener, distinct from the TPROXY listener (None)
+
+
+def status_listener(path):
+    """A unix socket that answers one JSON line per connect, SERVED BY THE SAME EVENT LOOP as the traffic.
+
+    ⚠️ THIS IS THE WHOLE POINT OF PUTTING IT IN THE LOOP. A watchdog that only checks "is the process
+    alive" cannot tell a serving relay from a wedged one, and a divert in front of a wedged relay is a
+    blackhole exactly like a divert in front of a dead one. Because this accept is dispatched by the same
+    `select()`, a loop that has stopped turning stops answering, and `loops` in the reply rises only while
+    it really is turning — so the watchdog gets liveness evidence, not a liveness assertion."""
+    with contextlib.suppress(OSError):
+        if stat.S_ISSOCK(os.stat(path).st_mode):
+            os.unlink(path)                      # a stale socket from a killed run would make bind() fail
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(path)
+    os.chmod(path, 0o600)
+    s.listen(16)
+    s.setblocking(False)
+    return s
+
+
+def status_reply(cfg, started):
+    d = dict(ST)
+    d.update(cfg)
+    d["pid"] = os.getpid()
+    d["uptime_s"] = round(time.time() - started, 1)
+    return (json.dumps(d, sort_keys=True) + "\n").encode()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--host", default="0.0.0.0")
+    ap.add_argument("--port", type=int, required=True)
+    ap.add_argument("--mark", type=int, default=0)
+    ap.add_argument("--bind", default="", help="source address for the UPSTREAM socket (see Relay.start)")
+    ap.add_argument("--status-sock", default="", help="unix socket answering one JSON status line per connect")
+    ap.add_argument("--mss", type=int, default=0,
+                    help="TCP_MAXSEG for the UPSTREAM socket — the exit cannot clamp us (see Relay.start)")
+    ap.add_argument("--cc", default="", help="congestion control for the UPSTREAM socket (sender on uploads)")
+    ap.add_argument("--cc-cli", default="",
+                    help="congestion control for the CLIENT-FACING socket (sender on downloads)")
+    ap.add_argument("--pipe-size", type=int, default=PIPE_CAP,
+                    help="bytes to request per direction (2 pipes per connection)")
+    ap.add_argument("--dst", default="",
+                    help="TEST ONLY: fixed host:port upstream instead of TPROXY's original destination. "
+                         "Lets throughput be measured without arming a divert on a live interface.")
+    ap.add_argument("--report", type=int, default=0)
+    a = ap.parse_args()
+
+    fixed = None
+    if a.dst:
+        h, _, p = a.dst.rpartition(":")
+        fixed = (h, int(p))
+
+    granted = probe(a.pipe_size, a.cc or a.cc_cli)
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.setsockopt(socket.SOL_IP, IP_TRANSPARENT, 1)
+    except OSError as e:
+        # Needs CAP_NET_ADMIN. Fatal for a real divert, but --dst mode is a plain proxy and must stay
+        # runnable de-privileged — that is the only way to observe the fs.pipe-user-pages-soft cliff.
+        sys.stderr.write("relay: IP_TRANSPARENT unavailable (%s) — TPROXY divert will NOT work\n" % e)
+    # Six fds per connection against a 1024 default is ~170 connections. Ask for the hard limit, the same
+    # thing the panel does at startup, and report what we actually got rather than assuming it worked.
+    try:
+        _soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        _want = min(_hard if _hard > 0 else 65536, 65536)
+        if _soft < _want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (_want, _hard))
+    except (ValueError, OSError):
+        pass
+    sys.stderr.write("relay: fd limit %s\n" % (resource.getrlimit(resource.RLIMIT_NOFILE)[0],))
+    srv.bind((a.host, a.port)); srv.listen(1024); srv.setblocking(False)
+
+    R = Relay(a.mark, a.cc, a.pipe_size, a.cc_cli, a.bind, a.mss)
+    R.sel.register(srv, selectors.EVENT_READ, None)
+    cfg = {"port": a.port, "mark": a.mark, "bind": a.bind, "cc_up": a.cc, "cc_cli": a.cc_cli,
+           "pipe_granted": granted, "dst": a.dst, "mss": a.mss}
+    started = time.time()
+    stsock = None
+    if a.status_sock:
+        stsock = status_listener(a.status_sock)
+        R.sel.register(stsock, selectors.EVENT_READ, STATUS)
+        sys.stderr.write("relay: status socket %s\n" % a.status_sock)
+    sys.stderr.write("relay: listening %s:%d mark=%s cc-up=%s cc-cli=%s dst=%s\n"
+                     % (a.host, a.port, a.mark, a.cc or "(default)", a.cc_cli or "(default)",
+                        a.dst or "(tproxy original)"))
+    sys.stderr.flush()
+    last = time.time()
+    while True:
+        ST["loops"] += 1
+        for key, mask in R.sel.select(timeout=1.0):
+            if key.data is STATUS:
+                while True:
+                    try:
+                        c, _ = stsock.accept()
+                    except (BlockingIOError, InterruptedError, OSError):
+                        break
+                    with contextlib.suppress(OSError):
+                        c.sendall(status_reply(cfg, started))
+                    with contextlib.suppress(OSError):
+                        c.close()
+            elif key.data is None:
+                while True:
+                    try:
+                        cli, _ = srv.accept()
+                    except (BlockingIOError, InterruptedError):
+                        break
+                    except OSError:
+                        break
+                    dst = fixed
+                    if dst is None:
+                        try:
+                            dst = cli.getsockname()      # with TPROXY this IS the original destination
+                        except OSError:
+                            cli.close(); continue
+                    R.start(cli, dst)
+            else:
+                try:
+                    R.on_ready(key.fileobj, mask, key.data)
+                except Exception:
+                    R.reap(key.data)                 # one bad connection must never stop the loop
+        if a.report and time.time() - last >= a.report:
+            last = time.time()
+            sys.stderr.write("relay: " + " ".join("%s=%s" % kv for kv in sorted(ST.items())) + "\n")
+            sys.stderr.flush()
+
+
+if __name__ == "__main__":
+    main()

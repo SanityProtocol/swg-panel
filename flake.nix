@@ -22,19 +22,26 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      # WHICH BUILD, threaded from the flake because only the flake knows it. `shortRev` exists for a clean
+      # git tree, `dirtyShortRev` for one with uncommitted changes, and neither for a tarball input — in
+      # which case this is "" and the package stamps the bare VERSION exactly as it did before.
+      # ⚠️ In the `let`, not in the outputs attrset: that set is not recursive, so a sibling could not read it.
+      # Parenthesised because `or` here is attribute-selection fallback, not a boolean.
+      buildRev = self.shortRev or (self.dirtyShortRev or "");
+      _revModule = { _module.args.swgBuildRev = buildRev; };
     in
     {
       # The overlay is the supported way to get the package against YOUR nixpkgs rather than ours.
       # The modules' `package` option defaults to a callPackage against the consumer's pkgs for the
       # same reason (D1), so importing a module never drags this flake's nixpkgs into your closure.
       overlays.default = final: _prev: {
-        swg-panel = final.callPackage ./nix/package.nix { srcRoot = ./.; };
+        swg-panel = final.callPackage ./nix/package.nix { srcRoot = ./.; rev = buildRev; };
       };
 
       packages = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in
         {
-          swg-panel = pkgs.callPackage ./nix/package.nix { srcRoot = ./.; };
+          swg-panel = pkgs.callPackage ./nix/package.nix { srcRoot = ./.; rev = buildRev; };
           default = self.packages.${system}.swg-panel;
         });
 
@@ -61,12 +68,24 @@
       # commit as the code it starts. It takes nothing from this flake's inputs: the container arm
       # names a published image, and each native arm's `package` option callPackages
       # against the CONSUMER's pkgs, so importing this never drags our nixpkgs into your closure.
+      # ⚠️ THE REV REACHES THE MODULES THROUGH `_module.args`, NOT THROUGH THE PACKAGE ARGUMENT, and that is
+      # the whole trick. Each module's `package` option defaults to `pkgs.callPackage ../package.nix { }` —
+      # deliberately the CONSUMER's pkgs (D1), so importing a module never drags this flake's nixpkgs into
+      # their closure — and a default written there cannot see `self`. Threading it as a module arg keeps
+      # that property and simply tells the default which build it came from. A consumer who imports the
+      # module FILE directly, with no flake, gets the `""` fallback in the module's own signature and the
+      # bare VERSION exactly as before.
+      #
+      # Measured before this existed: the box built through `nixosModules.default`, so stamping only
+      # `packages.<system>.swg-panel` and the overlay changed nothing at all — the installed VERSION still
+      # read `1.8.6-beta` after a full rebuild. Wiring the two outputs nobody's NixOS config goes through is
+      # exactly the shape of a fix that passes review and ships a no-op.
       nixosModules = {
-        swg-node = ./nix/modules/node.nix;
-        swg-panel = ./nix/modules/panel.nix;
+        swg-node = { imports = [ ./nix/modules/node.nix _revModule ]; };
+        swg-panel = { imports = [ ./nix/modules/panel.nix _revModule ]; };
         # Both, because a master runs both on one host and importing two modules to describe one
         # machine is friction with nothing behind it.
-        default = { imports = [ ./nix/modules/node.nix ./nix/modules/panel.nix ]; };
+        default = { imports = [ ./nix/modules/node.nix ./nix/modules/panel.nix _revModule ]; };
       };
     };
 }

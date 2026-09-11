@@ -393,6 +393,10 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
   reconstruct_live_orphans   # rebuild confs for running wg/awg ifaces that have none on disk → detected below
   migrate_docker_ifaces      # docker→bare convert: list the migrated interfaces + "Transfer? (Y/n)"; declined ⇒ drop them (must run AFTER reconstruct, before detect_wg, so a drop sticks)
   detect_wg
+  # Normalised + validated by `manage_ifaces_resolve` (lib/common.sh), shared with install-host.sh so the
+  # two cannot drift: a blank-ish value must not become a blank array entry, and a name this box does not
+  # have must be refused rather than written into config.json as a managed interface. See the function.
+  manage_ifaces_resolve            # sets MANAGE_IFACES; must NOT be called in $( ) — see the function
   if [ -n "$MANAGE_IFACES" ]; then
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
   elif [ -n "${ADOPTED_IFACES:-}" ]; then
@@ -444,7 +448,8 @@ apply_node_switch(){
   fi
   apply_specs   # install tools + write confs + bring up every queued interface now (after all prompts)
   detect_wg
-  for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }
+  for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "$n" ] || continue   # the guard the line above already has
+    [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }
     [ -n "${IF_ENDPOINT[$n]:-}" ] && continue   # interfaces just created already have an endpoint
     _ep="$(detect_public_ip)"; IF_ENDPOINT[$n]="$_ep"   # auto endpoint clients dial (change it later in the panel)
     echo "    Used $(bb "$_ep") endpoint IP for $(col "$C_GREEN" "$n")"; done
@@ -821,6 +826,7 @@ info "Agent + daemon"
 for f in swg-agent swg-noded; do [ -f "$SRC/$f" ] || die "missing $f beside this script (unzip the bundle here)"; done
 mkdir -p "$PREFIX$AGENT_DIR" "$PREFIX$NODED_DIR"; cp "$SRC/swg-agent" "$PREFIX$AGENT_DIR/"; cp "$SRC/swg-noded" "$PREFIX$NODED_DIR/"
 [ -f "$SRC/swg-sni" ] && { cp "$SRC/swg-sni" "$PREFIX$NODED_DIR/"; chmod 755 "$PREFIX$NODED_DIR/swg-sni"; }   # SNI-router classifier (routing_mode=sni)
+[ -f "$SRC/swg-relay" ] && { cp "$SRC/swg-relay" "$PREFIX$NODED_DIR/"; chmod 755 "$PREFIX$NODED_DIR/swg-relay"; }   # TCP-terminating relay (accelerated mesh legs); inert until the panel asks for it
 chmod 755 "$PREFIX$AGENT_DIR/swg-agent" "$PREFIX$NODED_DIR/swg-noded"; ok "installed agent + daemon"
 [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$NODED_DIR/" || true   # version stamp (update.sh reports it)
 mkdir -p "$PREFIX/var/lib/swg-noded" "$PREFIX/var/log/swg-agent" "$PREFIX/etc/swg-agent"
@@ -842,6 +848,10 @@ if [ -z "$ENDPOINT_IP" ]; then for n in "${SELECTED[@]}"; do [ -n "${IF_ENDPOINT
 [ -z "$ENDPOINT_IP" ] && ENDPOINT_IP="$(detect_public_ip)"
 VERIFY_JSON=$([ "$TLS_VERIFY" = yes ] && echo true || echo false)
 FP=""; [ -n "$TLS_FINGERPRINT" ] && FP=$',\n    "fingerprint": "'"$TLS_FINGERPRINT"'"'
+# ⚠️ THE REF THIS BOX IS BEING INSTALLED FROM, recorded so the node's self-update tracks it. `bootstrap.sh`
+# exports SWG_REF; without this the node falls back to `main` and the panel's Update button rolls a
+# branch install backwards — the node half of the downgrade `51a4b10` fixed for the panel.
+_swg_ref="${SWG_REF:-main}"
 writef /etc/swg-agent/config.json 640 <<EOF
 {
   "interfaces": {
@@ -857,7 +867,8 @@ $IFJSON
   "node": {
     "interval": ${INTERVAL},
     "agent": "${AGENT_DIR}/swg-agent",
-    "sudo": false
+    "sudo": false,
+    "update_ref": "${_swg_ref}"
   }
 }
 EOF

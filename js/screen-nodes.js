@@ -8,7 +8,7 @@
  * above any mount.
  */
 
-import { $, esc, seen, dur, ago, rate, fmtBytes, niceScaleCeil, tkey, ipOf, portOf, listenAddr } from "./util.js";
+import { $, esc, seen, dur, ago, fmtBytes, tkey, ipOf, portOf, listenAddr } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
@@ -22,12 +22,13 @@ import {
   dismissNodeProc, dismissHostProc, statusLabel, LogBody, logRaw, useReorder, GRIP_SVG,
   orderById, rowSingle, rowDouble, rowNoSelect, RowError, goSettings, ifaceReady, ifaceWasBusy, ifaceFlash, adoptSeen,
   trackIfaceOps, StoreOffBanner, ifaceColor, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
+  rate,
 } from "./ui.js";
-import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
+import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
-         RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, histTime, ChartHover, IfaceThroughput,
-         RANGE_CAP } from "./charts.js";
-import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, onlineUserRows, onlinePeerRows,
+         RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, lossColor, histTime, ChartHover, IfaceThroughput,
+         RANGE_CAP, lossColorMesh } from "./charts.js";
+import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsPop, LossPop, onlineUserRows, onlinePeerRows,
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES } from "./views.js";
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
          openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet } from "./turn.js";
@@ -115,13 +116,20 @@ function platformPill(nrec) {
   <//>`;
 }
 
-export function HealthDot({ issues }) {
+export function HealthDot({ issues, i18n }) {
   if (!issues || !issues.length) return null;
   const n = issues.length;
-  const trigger = html`<span class="badge b-issue ic"><${Ic} i="warn"/>${n} issue${n > 1 ? "s" : ""}</span>`;
+  // The lines were rendered RAW, so the bubble read half-translated: its header went through T() while every
+  // sentence under it stayed English. They carry an interface name, so the panel now ships them perr-shaped
+  // ({v1} sentence + values) alongside the plain English, and srvText() — the same helper every other server
+  // sentence already uses — translates one. Falls back to the English list when the node record predates it.
+  const line = i => (i18n && i18n[i]) ? srvText(i18n[i]) : issues[i];
+  // plural(), not `issue${n>1?"s":""}` — the badge was the last English word in a bubble whose header and
+  // lines are both translated now, and Russian picks between three forms that an English -s cannot express.
+  const trigger = html`<span class="badge b-issue ic"><${Ic} i="warn"/>${plural(n, "nom|issue")}</span>`;
   return html`<${Popover} cls="onlinetag bare healthpop" trigger=${trigger}>
     <div class="onpop-h">${T("{v1} on this node", { v1: plural(n, "nom|issue") })}</div>
-    ${issues.map(it => html`<div class="onrow hrow"><span class="on-name">${it}</span></div>`)}
+    ${issues.map((it, i) => html`<div class="onrow hrow"><span class="on-name">${line(i)}</span></div>`)}
   </${Popover}>`;
 }
 const _CTR_PROC = new Set(["adopted-container", "adopt-container-failed"]);   // one interface's outcome, not the node's
@@ -341,7 +349,7 @@ export function NodeDetail({ node: rawName }) {
 
     ${(nrec.mesh_peers || []).length ? html`<${Panel} icon="network" title=${T("Node connections")} tone="pending" count=${(nrec.mesh_peers || []).length}
         actions=${html`<${MeshStat} nodeId=${name} mode="in"/>`}>
-      <div class="ifgrid">${[...(nrec.mesh_peers || [])].sort((a, b) => Store.nodeName(a.peer).localeCompare(Store.nodeName(b.peer))).map(mp => {
+      <div class="ifgrid">${[...(nrec.mesh_peers || [])].sort((a, b) => Store.byNode(a.peer, b.peer)).map(mp => {
         const peer = mp.peer;
         const ifn = mp.iface;
         const m = (ifn && meta) ? meta[ifn] : null;   // reported stats for the link's CURRENT iface (absent mid-rebuild)
@@ -375,6 +383,29 @@ export function NodeDetail({ node: rawName }) {
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("col|Endpoint")}</span><span class="r addr">${(m && m.peer_endpoint) || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Tunnel")}</span><span class="r addr">${(m && m.subnet) || "—"}</span></div>
+            ${(() => {
+              // Leg quality, same measurement the mesh bubble shows, on the card that names the link. Latency
+              // always (it is the link's defining fact); loss only when it is enough to matter — a "0.0%" row
+              // on every healthy card is a row nobody reads, and then the one that matters reads like the rest.
+              const _lk = m && m.link;
+              if (!_lk || _lk.rtt_ms == null) return null;
+              const _ls = typeof _lk.loss === "number" ? _lk.loss : null;
+              // The far end's reading of the SAME leg, for the inbound direction — only the receiving end can
+              // see what failed to arrive, so the bubble shows both rather than implying one covers both.
+              const _pl = ((meshHealth(name).peers.find(x => x.peer === peer)) || {}).plink || null;
+              // One row, not two: latency is the link's defining fact and loss is a qualifier ON it, so the
+              // card reads "18ms (0.4% loss)" rather than splitting one measurement across two label rows.
+              const _warn = _ls != null && _ls > 0;   // ⚠️ MESH IS THE EXCEPTION: a DC-to-DC leg is not a client link: ANY loss on it is worth seeing, so this one shows from the
+              // first lost packet rather than at the 0.05% the client-facing counters use.
+              const _val = html`<${Fragment}>${Math.round(_lk.rtt_ms)}${T("unit|ms")}${_warn
+                ? html` <span class="dp-num" style=${"color:" + lossColorMesh(_ls)}>${T("(Loss {v1}%)", { v1: _ls })}</span>` : null}<//>`;
+              // 0.167% is ONE lost packet in half an hour and reads like a persistent fault; the bubble says
+              // which packet count, which direction and when. Card click opens the connection sheet, so the
+              // figure has to swallow its own click — Popover preventDefaults it.
+              return html`<div class="ifrow"><span class="l">${T("col|Latency")}</span><span class="r addr"
+                onClick=${e => { e.preventDefault(); e.stopPropagation(); }}><${LossPop} l=${_lk} pl=${_pl}
+                  peerName=${Store.nodeName(peer)} node=${name} iface=${ifn} trigger=${_val}/></span></div>`;
+            })()}
             ${carried.length ? html`<div class="ifrow"><span class="l">${T("Carrying")}</span><span class="r"><span class="carry-tags">${carried.map(k => html`<span class=${"tg tg-" + ((meta[k].awg_params && Object.keys(meta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`)}</span></span></div>` : null}
           </div></div>`;
       })}</div>
@@ -798,7 +829,7 @@ export function NodeDetail({ node: rawName }) {
               <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${wcfg.egress_mode === "forward" && wcfg.egress_node
                 ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(wcfg.egress_node)} title=${T("Exits via {v1}", { v1: Store.nodeName(wcfg.egress_node) + (wcfg.egress_ip ? " (" + wcfg.egress_ip + ")" : "") })}><${Ic} i="server"/>→ ${Store.nodeName(wcfg.egress_node)}</span>`
                 : wcfg.egress_mode === "smart"
-                ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (wcfg.routing || []).filter(r => r.action === "exit").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
+                ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (wcfg.routing || []).filter(r => r.action === "exit" || r.action === "dev").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                 : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${w.iface} orphans=${0} orphHref=${href}
@@ -854,7 +885,7 @@ export function NodeDetail({ node: rawName }) {
               <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${ccfg.egress_mode === "forward" && ccfg.egress_node
                 ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(ccfg.egress_node)} title=${T("Exits via {v1}", { v1: Store.nodeName(ccfg.egress_node) + (ccfg.egress_ip ? " (" + ccfg.egress_ip + ")" : "") })}><${Ic} i="server"/>→ ${Store.nodeName(ccfg.egress_node)}</span>`
                 : ccfg.egress_mode === "smart"
-                ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (ccfg.routing || []).filter(r => r.action === "exit").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
+                ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (ccfg.routing || []).filter(r => r.action === "exit" || r.action === "dev").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                 : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${c.iface} orphans=${0} orphHref=${href}
@@ -902,10 +933,27 @@ export function NodeDetail({ node: rawName }) {
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${m.subnet || "—"}</span></div>
+                  ${(() => {
+                    // The node's OWN errored/dropped share for this interface — its queues and datapath, not
+                    // the path to the client. Free (kernel counters), and invisible until now. Shown only when
+                    // there is something to see, on the same colour ramp as mesh loss so a percentage means
+                    // the same thing wherever it appears in the panel.
+                    // ⚠️ CARDS STAY QUIET ON PURPOSE — kept after being questioned, and deliberately NOT
+                    // aligned with the interface page, which shows the same figure with no threshold. The
+                    // card is scanned across a whole fleet, where a "0.000%" on every healthy interface is
+                    // a row the eye learns to skip — and then skips the one that matters. The detail page
+                    // is opened about ONE interface, where "we measure this, and it is clean" is the answer.
+                    const _d = m.drops;
+                    if (!_d || !(_d.pct >= 0.05)) return null;
+                    // The figure carries a bubble: one percentage cannot say whether this is the node's own
+                    // send queue, a failed send, or traffic refused on arrival — three faults, three fixes.
+                    return html`<div class="ifrow"><span class="l">${T("col|Drops")}</span><span class="r addr"><${DropsPop} d=${_d} iface=${ifn} node=${name}
+                      trigger=${html`<span class="dp-num" style=${"color:" + lossColor(_d.pct)}>${_d.pct}%</span>`}/></span></div>`;
+                  })()}
                   <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${m.egress_mode === "forward" && m.egress_node
                     ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(m.egress_node)} title=${T("Exits via {v1}", { v1: Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "") })}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>`
                     : m.egress_mode === "smart"
-                    ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (m.routing || []).filter(r => r.action === "exit").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
+                    ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (m.routing || []).filter(r => r.action === "exit" || r.action === "dev").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                     : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
                   <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                     ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph} orphHref=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}
@@ -984,7 +1032,19 @@ export function healthAlerts(health) {
                  msg: T("{v1} of {v2} {v3} saturated{v4}", { v1: hot, v2: tot, v3: cpuNamePl(health, tot), v4: pk }) });
     }
   }
-  if (health && Array.isArray(health.load) && (health.load[0] || 0) / ncpu > 1.5) out.push({ sev: "warn", msg: "load " + health.load[0].toFixed(1) + " / " + ncpu + " " + cpuNamePl(health, ncpu) });
+  // ⚠️ LOAD ALONE IS NOT PRESSURE, AND ON THESE NODES IT IS USUALLY NOT EVEN CPU. Linux counts every
+  // short-lived process in the load average, and swg-noded shells out constantly (nft, ip, iptables,
+  // systemctl) on its 5s loop — measured on swgt: **22 new processes per second**, load 1.61/1.72/1.74 on
+  // 1 vCPU, and at the same instant cpu 11.7%, iowait 0.4%, ONE runnable process. That lit this warning
+  // permanently on a box that was 88% idle, which trains an operator to ignore the warning strip.
+  // So corroborate with the CPU figures the node already sends. Real saturation is not lost by this: it has
+  // its own "N of M saturated" warning above, driven by per-core percentages.
+  // A node too old to report cpu_pct sends nothing to corroborate with, so there the load stands alone
+  // rather than the warning disappearing.
+  const cpuKnown = health && typeof health.cpu_pct === "number";
+  const cpuBusy = !cpuKnown || health.cpu_pct >= 50 || (health.cpu_iowait_pct || 0) >= 10;
+  if (health && Array.isArray(health.load) && (health.load[0] || 0) / ncpu > 1.5 && cpuBusy)
+    out.push({ sev: "warn", msg: "load " + health.load[0].toFixed(1) + " / " + ncpu + " " + cpuNamePl(health, ncpu) });
   return out;
 }
 export const SAT_PCT = 90;                                     // a logical CPU at/above this is "saturated" (matches CPU_SAT_PCT in swg-panel-server)
@@ -993,7 +1053,11 @@ export const hotCores = h => cpuCores(h).reduce((n, c) => n + (c >= SAT_PCT ? 1 
 // /proc/stat's cpuN are LOGICAL cpus: vCPUs under a hypervisor, hardware threads on bare metal. Never
 // "cores" — an 8-core box with hyperthreading lists 16. The node reports `virt`; unknown ⇒ plain "CPU".
 export const cpuName = h => (h && h.virt) ? T("vCPU") : T("CPU");
-export const cpuNamePl = (h, n) => cpuName(h) + (n === 1 ? "" : "s");
+// The COUNTED form. `cpuName() + "s"` appended an English plural to an already-translated word, so a
+// Russian panel read «8 vCPUs»; Russian does not decline a borrowed acronym at all («8 vCPU»). The noun
+// table answers that with three identical forms, and English still gets its "s" from enPlural because
+// PLURALS is only loaded for a translated language.
+export const cpuNamePl = (h, n) => pluralWord(n, (h && h.virt) ? "vCPU" : "CPU");
 
 // The CPU bar+number is ALWAYS the hover target — per-vCPU detail is useful on a healthy node too.
 // The triangle is only an attention marker, added when at least one vCPU is saturated.
@@ -1264,7 +1328,10 @@ export function updateHost() {
       // Update on each node by hand.
       const _n = ((r.data || {}).nodes || {}).started || [];
       toast(_n.length
-        ? T("Update started — the panel will restart shortly. {v1} will update on their next sync.", { v1: plural(_n.length, "node") })
+        // ⚠️ THE COUNT IS IN PARENTHESES — a count can never be the subject of a verb that will not
+        // inflect for it. «1 нода обновятся» is wrong for exactly 1, the same shape as 091ac8e's
+        // «1 пир получат»; the subject is "the nodes", the number sits beside it.
+        ? T("Update started — the panel will restart shortly. The nodes ({v1}) follow on their next sync.", { v1: plural(_n.length, "node") })
         : T("Update started — the panel will restart shortly."), "ok");
     },
   });
@@ -1535,7 +1602,7 @@ export function NodeCard({ n, reorder }) {
         : st === "online" ? html`<span class="reporting">${T("reporting")}</span>`
         : st === "offline" ? html`<span class="nstat offline"><${Ic} i="info"/> ${T("tag|offline")}</span>`
         : html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>`}${procEff ? procTag(procEff, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, procErr(n), st !== "online" && st !== "offline") : null}
-      <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
+      <span style="margin-left:8px"><${HealthDot} issues=${n.issues} i18n=${n.issues_i18n}/></span>
       ${n.superseded_box ? html`<span style="margin-left:14px"><${SupersededTag} n=${n}/></span>` : null}
       ${n.transfer ? html`<span style="margin-left:14px"><${TransferTag} n=${n}/></span>` : null}
       ${removing ? html`<span class="nstat removing" style="margin-left:14px"><${Ic} i="trash"/> ${T("tag|flagged for removal")}</span>` : null}

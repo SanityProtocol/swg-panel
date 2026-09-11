@@ -12,8 +12,8 @@
  * were distributed to ui.js and routing.js first, which is what let this come out with a one-way edge.
  */
 
-import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
-import { esc, portOf, ipOf, ipChoices, ipPickerVal, seen, ago, dur, fmtBytes, rate, isSelfContainedKind } from "./util.js";
+import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
+import { esc, portOf, ipOf, ipChoices, ipPickerVal, seen, ago, dur, fmtBytes, isSelfContainedKind } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
@@ -25,9 +25,9 @@ import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnProxi
          suggestPort, portHolder, portErrMsg, nextWdttName, cidrNet, subnetsOverlap, subnetFleetConflict,
          subnetServerAddr, suggestSubnet, ghostIface } from "./model.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
-import { EgressPicker, egressInit, egressError, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules } from "./routing.js";
-import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount } from "./views.js";
-import { IfaceThroughput, RangedHistory } from "./charts.js";
+import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules, reportDropped, rulesSummary } from "./routing.js";
+import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop, dropRate } from "./views.js";
+import { IfaceThroughput, RangedHistory, lossColor } from "./charts.js";
 import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, subFeatureOn,
          ensureVaultUnlocked, wdttResealForNode } from "./crypto.js";
 import { h, Fragment } from "preact";
@@ -153,6 +153,17 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
     <div class="ifcard-rows">
       <div class="ifrow"><span class="l">${T("Turn-proxy fork")}</span><span class="r">${turnFork(tp.service)}</span></div>
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${tp.listen || "—"}</span></div>
+      ${(() => {
+        // The proxy's OWN losses. It has no interface, so nothing else on this page can show them: these
+        // packets reached the box and died at the socket before any interface saw them. Shown only when
+        // there are some — a "0" on every healthy card is a row nobody reads. Absent (a TCP-mode proxy,
+        // where the kernel exposes no per-socket count) stays absent rather than reading as clean.
+        const _pd = ((Store.stats[node] || {}).turn_drops || {})[tp.service];
+        if (!_pd || !(_pd.win_drops > 0)) return null;
+        return html`<div class="ifrow"><span class="l">${T("col|Drops")}</span><span class="r addr"
+          onClick=${e => { e.preventDefault(); e.stopPropagation(); }}><${ProxyDropsPop} d=${_pd} service=${tp.service}
+            trigger=${html`<span class="dp-num" style=${"color:" + lossColor(Math.min(5, (_pd.per_min || 0) / 20))}>${dropRate(_pd.per_min)}${T("unit|/min")}</span>`}/></span></div>`;
+      })()}
       ${showForwards ? html`<div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + ((nodeStale(node) || ifaceNotUp(node, fronted)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
     </div></div>`;
 }
@@ -271,6 +282,23 @@ const _lastSeen = last => last ? T("{v1} ago", { v1: seen(Math.max(0, Math.floor
 // never dials a proxy directly — it goes through a VK TURN server which relays to us — so these are VK relays.
 // The active count comes from the live snapshot (no fetch); the hover bubble lists them (green dot = online) with
 // a Flush that drops the offline ones. `src_ips` is node-collected (nft); history persists on the panel.
+// Socket drops beside the Turn IPs control, on every sheet that fronts a listening server — turn-proxy,
+// WDTT and csqtt alike. Shown even at zero: this is a detail sheet an operator opened deliberately, and
+// "0" is the answer to "is it dropping?" — the scannable CARD is where a clean row would be noise.
+//
+// ⚠️ A RATE, NOT A PERCENTAGE. /proc/net/udp reports no received count, so there is no denominator, and
+// putting a "%" here would invent one — the exact mistake `peak` made with a 5-second sample. The bubble
+// carries the counts.
+export function ProxyDropsHeader({ node, svc }) {
+  useStore();
+  const d = ((Store.stats[node] || {}).turn_drops || {})[svc];
+  if (!d) return null;                 // no UDP socket found (TCP-mode, or not listening) → absent, never a false zero
+  const r = d.per_min || 0;
+  return html`<${ProxyDropsPop} d=${d} service=${svc} alignRight=${true}
+    trigger=${html`<span class="turnips-hd pxdrop-hd">${T("Drops")} · <b style=${"color:" + lossColor(Math.min(5, r / 20))}>${
+      r ? dropRate(r) + T("unit|/min") : "0"}</b></span>`}/>`;
+}
+
 export function TurnIpsHeader({ node, svc }) {
   const [data, setData] = useState(null);
   const load = () => api.turnIps().then(r => setData(r && r.ok ? ((r.data.nodes || {})[node] || {}) : {})).catch(() => setData({}));
@@ -397,12 +425,16 @@ export function TurnManageSheet({ node, tp }) {
   const down = tp.running === false;
   const owner = turnOwner(svc);
   const doReinstall = async (verb, tag) => {
-    setBusy(true); setMsg({ k: "work", t: verb.toLowerCase() + "…" });
-    if (verb === "Update") turnUpdating[node + "|" + svc] = Date.now() + 120000;   // card shows "updating" (not "installing") while it applies
+    // `verb` stays a CANONICAL id — it is compared below — and is translated only where it is shown. It
+    // used to be both at once, so the status line and the toast rendered English inside a Russian panel,
+    // via a .toLowerCase() that is itself an English-only assumption about how a word starts a sentence.
+    const shown = verb === "update" ? T("val|update") : T("val|reinstall");
+    setBusy(true); setMsg({ k: "work", t: shown + "…" });
+    if (verb === "update") turnUpdating[node + "|" + svc] = Date.now() + 120000;   // card shows "updating" (not "installing") while it applies
     const r = await api.turnReinstall({ node, service: svc, owner, ...(tag ? { tag } : {}) });
     if (!r.ok) { delete turnUpdating[node + "|" + svc]; return fail(srvText(r) || T("Request failed.")); }
     closeModal(); await Store.poll();
-    toast(T("Turn-proxy {verb} requested — applies on the node's next sync.", { verb: verb.toLowerCase() }), "ok");
+    toast(T("Turn-proxy {verb} requested — applies on the node's next sync.", { verb: shown }), "ok");
   };
   const save = async () => {
     if (!lhost) return fail(T("Listen IP is required."));
@@ -441,7 +473,7 @@ export function TurnManageSheet({ node, tp }) {
     || _mConnect !== (tp.connect || "")
     || params.trim() !== origParams.trim()
     || title.trim() !== (tp.title || "");
-  return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: turnFork(svc) })} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`} width=${664} headExtra=${html`<${TurnIpsHeader} node=${node} svc=${svc}/>`}
+  return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: turnFork(svc) })} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`} width=${664} headExtra=${html`<${ProxyDropsHeader} node=${node} svc=${svc}/><${TurnIpsHeader} node=${node} svc=${svc}/>`}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${stopped
@@ -453,7 +485,7 @@ export function TurnManageSheet({ node, tp }) {
             <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Stop the service on the node (stays down until started)")} onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> ${T("Stop service")}</button>
             <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Restart the service on the node")} onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> ${T("Restart service")}</button>
           <//>`
-        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Re-download the binary and start the service on the node")} onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`}
+        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Re-download the binary and start the service on the node")} onClick=${() => doReinstall("reinstall")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${dis || !!tperr || !turnDirty} title=${tperr || (!turnDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
     ${blocked ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>${T("This node is busy or offline")}${nrec.proc_status ? html` (${procLabel(nrec.proc_status)})` : ""}${T(" — turn-proxy actions are disabled until it's reporting again.")}</span></div>` : null}
@@ -472,10 +504,9 @@ export function TurnManageSheet({ node, tp }) {
       ? html`<div class="notice" style="margin:-6px 0 16px"><${Ic} i="info"/><span>${Trich("Bridge node: the proxy binds `0.0.0.0` inside the container and this port is published, so enter the node's *public* IP/host (what clients dial) here.")}</span></div>`
       : html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This doesn't resolve to an address on this node. The proxy *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.")}</span></div>`) : null}
     <div class="field"><label>${T("Forwards to")}</label>
-      <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
-        ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
-        <option value="__custom__">${T("Custom IP:Port…")}</option>
-      </select>
+      <${Dropdown} className="selwrap" value=${fwd} onChange=${v => setFwd(v)} ariaLabel=${T("Forward to")}
+        options=${[...ifaces.map(i => ({ value: i.name, label: i.name + " · 127.0.0.1:" + i.port })),
+                   { value: "__custom__", label: T("Custom IP:Port…") }]}/>
       ${hideAwg ? html`<div class="hint">${T("{v1} is WireGuard-only — AmneziaWG interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
     </div>
     ${isCustom ? html`<${Fragment}>
@@ -495,7 +526,7 @@ export function DeleteTurnSheet({ node, service, label }) {
   const del = async () => {
     if (!ok || busy) return; setBusy(true);
     const r = await api.turnDelete({ node, service });
-    if (!r.ok) { setBusy(false); return toast(srvText(r) || "Failed.", "err"); }
+    if (!r.ok) { setBusy(false); return toast(srvText(r) || T("Failed."), "err"); }
     closeModal(); await Store.poll();
     toast(T("Turn-proxy removal requested — the node stops + removes it on its next sync."), "ok");
   };
@@ -571,9 +602,14 @@ export function settingShown(d, values) {
   return !d.showIf || Object.keys(d.showIf).every(k => values[k] === d.showIf[k]);
 }
 // options normalised to [{value,label}] for enum (string values) + flagenum (object values).
-export function turnOptions(d) {
-  return (d.values || []).map(o => d.type === "flagenum" ? { value: o.value, label: o.label || o.value } : { value: o, label: String(o) });
-}
+// A schema parameter's values as Dropdown options, label translated. Two controls render it — the create
+// sheet's obfuscation row and the live per-proxy editor — and they must not disagree about how a value is
+// spelled. It was two functions, a raw one and a translating wrapper, because the raw one fed the
+// `<option>` renderers; those are gone, so it is one.
+export const turnOptions = d => (d.values || []).map(o => {
+  const [value, raw] = d.type === "flagenum" ? [o.value, o.label] : [o, null];
+  return { value, label: raw ? T(raw) : String(value) };
+});
 // ANY parameter with exactly two states renders as a switch: a bool, or an enum/flagenum with exactly 2 values.
 // 3+ values → dropdown. The switch shows the selected value's LABEL so a 2-mode enum (e.g. WRAP/SRTP) is unambiguous.
 export function serializeTurnSettings(schema, values) {   // typed values → ExecStart params tail (schema order; skips hidden + empty)
@@ -624,14 +660,15 @@ export function TurnServerFields({ schema, vals, setV, extra, setExtra, listen, 
   // WDTT is SELF-CONTAINED: it owns its WireGuard interface, so its command is nothing like a -connect fork's.
   // Show the real WDTT ExecStart shape (read-only, per-instance values are placeholders) instead of -listen/-connect.
   const autoLine = wdtt
-    ? "-iface wdttN -wg-addr 10.66.N.1/24 -listen server_ip:dtls_port -wg-port internal_port -no-nat -fixed-config -password <node-minted>" + (obfTail ? " " + obfTail : "")
+    ? "-iface wdttN -wg-addr 10.66.N.1/24 -listen server_ip:dtls_port -wg-port internal_port -no-nat -fixed-config -password <node-minted>" + (obfTail ? " " + obfTail : "")   // i18n-keys: CLI flags the operator reads verbatim
     : "-listen " + (listen || "server_ip:port") + " -connect " + (connect || "interface_ip:port") + (obfTail ? " " + obfTail : "");   // i18n-keys: CLI flags — the operator types these
   return html`<${Fragment}>
     ${obfFields.length ? html`<div class="field"><label>${T("Obfuscation")}</label>
       <div class="obfrow">
         ${obfFields.map(d => d.type === "bool"
           ? html`<label class="obfctl" key=${d.key}><${Switch} on=${!!vals[d.key]} onChange=${v => setV(d.key, v)}/> <span class="obfctl-lbl">${d.label ? T(d.label) : d.key}</span></label>`
-          : html`<label class="obfctl" key=${d.key}><select class="selwrap" value=${vals[d.key]} onChange=${e => setV(d.key, e.target.value)}>${turnOptions(d).map(o => html`<option value=${o.value}>${o.label ? T(o.label) : o.value}</option>`)}</select></label>`)}
+          : html`<label class="obfctl" key=${d.key}><${Dropdown} className="selwrap" value=${vals[d.key]}
+              onChange=${v => setV(d.key, v)} options=${turnOptions(d)} ariaLabel=${d.label ? T(d.label) : d.key}/></label>`)}
         ${keyField && keyUsed ? html`<button type="button" class="btn btn-mini" onClick=${() => setV(keyField.key, randWrapKey())}><${Ic} i="refresh"/> ${T("Generate key")}</button>${!vals[keyField.key] ? html`<span class="notgen">${T("Not generated yet")}</span>` : null}` : null}
       </div></div>` : null}
     <div class="field"><label>${T("ExecStart parameters")}</label>
@@ -670,7 +707,8 @@ export function TurnDefaultsForm({ schema, values, onSet, busy }) {
     ${d.type === "bool"
       ? html`<div style="display:flex;align-items:center;gap:10px"><${Switch} on=${!!cur(d)} disabled=${busy} onChange=${v => onSet(d.key, v)}/> <span class="faint">${cur(d) ? T("on") : T("off")}</span></div>`
       : (d.type === "enum" || d.type === "flagenum")
-      ? html`<select class="selwrap" value=${cur(d)} disabled=${busy} onInput=${e => onSet(d.key, e.target.value)}>${turnOptions(d).map(o => html`<option value=${o.value}>${o.label ? T(o.label) : o.value}</option>`)}</select>`
+      ? html`<${Dropdown} className="selwrap" value=${cur(d)} disabled=${busy} onChange=${v => onSet(d.key, v)}
+          options=${turnOptions(d)} ariaLabel=${d.label ? T(d.label) : d.key}/>`
       : d.type === "hexkey"
       ? html`<div style="display:flex;gap:8px;align-items:center">
           <input class="mono" style="flex:1" value=${cur(d)} spellcheck="false" autocomplete="off" placeholder=${T("64 hex chars — blank = a fresh key per proxy")} disabled=${busy} onInput=${e => onSet(d.key, e.target.value.trim())}/>
@@ -1065,11 +1103,11 @@ export function RosterCounts(c) {
 }
 export function SetVersionPicker(p4, onPick, busy) {
   const vs = p4.versions || [], pin = p4.pinned_snapshot;
-  return html`<select class="rc-ver" disabled=${busy} value=${pin === null || pin === undefined ? "" : String(pin)}
-      onChange=${e => onPick(e.target.value === "" ? null : parseInt(e.target.value, 10))} title=${T("Roll this client's schema to a previous app version")}>
-    <option value="">${T("↻ Track latest")}</option>
-    ${vs.map((v, i) => html`<option value=${i}>${v.app_version || ("v" + (i + 1))}${i === vs.length - 1 ? " (latest)" : ""}</option>`)}
-  </select>`;
+  return html`<${Dropdown} className="rc-ver" disabled=${busy} value=${pin === null || pin === undefined ? "" : pin}
+    onChange=${v => onPick(v === "" ? null : v)} title=${T("Roll this client's schema to a previous app version")}
+    ariaLabel=${T("Roll this client's schema to a previous app version")}
+    options=${[{ value: "", label: T("↻ Track latest") },
+               ...vs.map((v, i) => ({ value: i, label: (v.app_version || ("v" + (i + 1))) + (i === vs.length - 1 ? " " + T("(latest)") : "") }))]}/>`;
 }
 export function RosterP1Files(p1) {
   return html`${(p1.files || []).map(f => html`<div class="roster-file"><span class="mono">${f.path.split("/").pop()}</span>
@@ -1198,7 +1236,7 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
     else if (wdtt) { for (const w of (snap.wdtt || [])) if (w && w.fork === fork && w.iface) { const m = running[nid] = running[nid] || { version: "", ids: [] }; if (w.version) m.version = w.version; m.ids.push(w.iface); } }
     else { for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fork) { const m = running[nid] = running[nid] || { version: "", ids: [] }; if (tp.version) m.version = tp.version; m.ids.push(tp.service); } }
   }
-  const nids = Object.keys(running).sort((a, b) => Store.nodeName(a).localeCompare(Store.nodeName(b)));
+  const nids = Object.keys(running).sort((a, b) => Store.byNode(a, b));
   const [vmap, setVmap] = useState({});   // nid -> versions[] (newest-first). ONLY the version list loads async.
   const [sel, setSel] = useState({});     // nid -> user override; absent = the actual hold (heldOf) — so the dropdown shows the right value on open, no "latest" flash
   const heldOf = nid => (Store.turnHolds[nid] || {})[fork] || "";   // sync, from /api/state → correct current selection immediately
@@ -1245,10 +1283,9 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
         ${held ? html`<span class="tg" style=${"color:var(--" + (mismatch ? "dangling" : "warn") + ");background:color-mix(in srgb,var(--" + (mismatch ? "dangling" : "warn") + ") 16%,transparent)"}>${T("held · {v1}", { v1: held })}</span>` : null}
       </div>
       <div class="fvp-act">
-        <select class="selwrap fvp-sel" value=${curSel(nid)} onChange=${e => setSel(m => ({ ...m, [nid]: e.target.value }))}>
-          <option value="">${T("Use latest version")}</option>
-          ${opts.map(x => html`<option value=${x}>${x}</option>`)}
-        </select>
+        <${Dropdown} className="selwrap fvp-sel" value=${curSel(nid)} ariaLabel=${T("Use latest version")}
+          onChange=${v => setSel(m => ({ ...m, [nid]: v }))}
+          options=${[{ value: "", label: T("Use latest version") }, ...opts.map(x => ({ value: x, label: x }))]}/>
         ${curSel(nid) !== heldOf(nid) ? html`<span class="fvp-pend"><${Ic} i="pencil"/> ${T("tag|unsaved")}</span>` : null}
       </div>
       ${mismatch ? html`<div class="notice warn" style="margin:2px 0 0"><${Ic} i="warn"/><span>${Trich("Pinned to *{held}* but the node is still running *{inst}* — the version swap failed on the node (often a checksum mismatch). Check the proxy's status, then re-try or pick a different version.", { held, inst })}</span></div>` : null}
@@ -1392,15 +1429,28 @@ export function ServerDefaultsSheet({ fork }) {
   const [verOpen, setVerOpen] = useState(true);   // open the Version & rollback section by default (both WDTT and turn-proxies)
   const verCommitRef = useRef(null); const [verDirty, setVerDirty] = useState(false);   // version dropdowns → applied on Save
   const setV = (k, v) => setVals(o => ({ ...o, [k]: v }));
+  // RAW-IP: only forks that actually carry a second listener have it, so it belongs in THEIR defaults rather
+  // than on the Turn screen where it read as a fleet-wide switch. ⚠️ The stored setting IS still one value for
+  // every raw-capable fork — the node reads a single wdtt_raw_default when it creates a server — so the copy
+  // below says "raw-capable" rather than naming this fork, and changing it here changes it in the other one too.
+  const rawCap = !!f.raw;
+  // Per fork, stored beside this fork's other server defaults. `wdtt_raw_default` is the fleet-wide key this
+  // used to be — still the fallback, so a panel that set it keeps what it chose until this fork is saved once.
+  const rawSaved = typeof stored.raw === "boolean" ? stored.raw : ((Store.panelSettings || {}).wdtt_raw_default !== false);
+  const [rawDef, setRawDef] = useState(rawSaved);
+  const rawDirty = rawCap && rawDef !== rawSaved;
   const defaultsDirty = JSON.stringify({ ...vals, _extra: extra }) !== JSON.stringify({ ...baseTyped(), _extra: (stored._extra || "") });
-  const dirty = defaultsDirty || verDirty;
+  const dirty = defaultsDirty || verDirty || rawDirty;
   const save = async () => {
     setBusy(true); setFlash(null);
-    if (defaultsDirty) {
+    if (defaultsDirty || rawDirty) {
       const keyUsed = turnKeyUsed(schema, vals);
       const all = { ...((Store.panelSettings || {}).turn_server_defaults || {}) };
       const clean = {}; schema.forEach(d => { if (d === keyField && !keyUsed) return; const vv = vals[d.key]; if (vv !== undefined && vv !== null && vv !== "") clean[d.key] = vv; });
       if (extra.trim()) clean._extra = extra.trim();
+      // ⚠️ `clean` is rebuilt from the catalog schema every save, and RAW is not a catalog flag — set it here
+      // or it is dropped the next time anything else in this modal is saved.
+      if (rawCap) clean.raw = rawDef;
       all[fork] = clean;
       const r = await api.panelSettings({ turn_server_defaults: all });
       if (!r.ok) { setBusy(false); setFlash(srvText(r) || T("Save failed")); return false; }
@@ -1419,6 +1469,12 @@ export function ServerDefaultsSheet({ fork }) {
       ? Trich("Extra command-line flags that *pre-fill* a new {v1} server. It's self-contained — its real config lives per interface — so there's little to default here beyond advanced flags.", { v1: f.label || fork })
       : Trich("The ExecStart flags that *pre-fill* a new {v1} proxy. Nothing here changes proxies you've already deployed.", { v1: f.label || fork })}</p>
     <${TurnServerFields} schema=${schema} vals=${vals} setV=${setV} extra=${extra} setExtra=${setExtra} listen="server_ip:port" connect="interface_ip:port" template=${true} wdtt=${isSelfContainedKind(f.kind)}/>
+    ${rawCap ? html`<${Fragment}>
+      <div class="seclabel" style="margin-top:18px">${T("RAW-IP mode")}</div>
+      <p class="hint" style="margin:0 0 10px">${Trich("A second, WireGuard-free listener that is roughly *6x* faster through the same VK relay. The server keeps its normal WireGuard listener either way, so each user picks per device — but RAW has *no forward secrecy and no replay protection*. This only sets what a NEWLY created server starts with; every server can be switched afterwards.")}</p>
+      <div class="cl-row" style="margin-bottom:4px"><span class="cl-name">${T("Enable RAW on new servers")}</span><span class="grow"></span>
+        <label class="swt" title=${rawDef ? T("New servers start with RAW on") : T("New servers start with RAW off")}><input type="checkbox" checked=${rawDef} onChange=${e => setRawDef(e.target.checked)}/><span class="track"></span><span class="knob"></span></label></div>
+    <//>` : null}
     <${Disclosure} title=${T("Version & rollback")} sumCls="route" open=${verOpen} onToggle=${() => setVerOpen(o => !o)}>
       <p class="hint" style="margin:0 0 10px">${Trich("{fork} servers share one binary per node, so the version is per node — every {fork} instance on a node moves together. Pinning an older version *holds* it (no auto-update); *Use latest* follows new releases.", { fork: f.kind === "csqtt" ? (f.product || fork) : (f.label || fork) })}</p>
       <${ForkVersionPanel} f=${f} commitRef=${verCommitRef} onDirty=${setVerDirty}/>
@@ -1551,7 +1607,7 @@ export function SetupTurnSheet({ node, forwardIface }) {
     if (mode === "existing") {
       const p = path.trim();
       if (!p.startsWith("/") || !p.endsWith(".service")) return fail(T("Enter the absolute path to the .service unit."));
-      setBusy(true); setMsg({ k: "work", t: "requesting…" });
+      setBusy(true); setMsg({ k: "work", t: T("requesting…") });
       const r = await api.turnOnboard({ node, path: p });
       if (!r.ok) return fail(srvText(r) || T("Request failed."));
       closeModal(); await Store.poll();
@@ -1597,9 +1653,9 @@ export function SetupTurnSheet({ node, forwardIface }) {
       <div class="row2">
         <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${f.label} autocomplete="off"/></div>
         <div class="field"><label>${T("Fork")}</label>
-          <select class="selwrap" value=${fork} disabled=${!FORKS.length} onChange=${e => pickFork(e.target.value)}>
-            ${FORKS.map(x => html`<option value=${x.id}>${x.label}${(x.wrap || x.keyflag) ? "" : " · no obfuscation"}</option>`)}
-          </select>
+          <${Dropdown} className="selwrap" value=${fork} disabled=${!FORKS.length} onChange=${v => pickFork(v)}
+            ariaLabel=${T("Server fork")}
+            options=${FORKS.map(x => ({ value: x.id, label: x.label + ((x.wrap || x.keyflag) ? "" : " · " + T("no obfuscation")) }))}/>
           <div class="hint">${FORKS.length ? f.owner : T("No forks enabled — turn them on in Panel settings → Turn proxies.")}</div></div>
       </div>
       <div class="row2">
@@ -1614,10 +1670,9 @@ export function SetupTurnSheet({ node, forwardIface }) {
       ${isCsqtt ? html`<${CsqttInstanceBody} node=${node} snap=${snap} saveRef=${csqttSaveRef} setBusy=${setBusy} setMsg=${setMsg} fail=${fail}/>`
        : isWdtt ? html`<${WdttInstanceBody} node=${node} snap=${snap} saveRef=${wdttSaveRef} setBusy=${setBusy} setMsg=${setMsg} fail=${fail}/>` : html`<${Fragment}>
       <div class="field"><label>${T("Forwards to")}</label>
-        <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
-          ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
-          <option value="__custom__">${T("Custom IP:Port…")}</option>
-        </select>
+        <${Dropdown} className="selwrap" value=${fwd} onChange=${v => setFwd(v)} ariaLabel=${T("Forward to")}
+          options=${[...ifaces.map(i => ({ value: i.name, label: i.name + " · 127.0.0.1:" + i.port })),
+                     { value: "__custom__", label: T("Custom IP:Port…") }]}/>
         ${hideAwg ? html`<div class="hint">${T("{v1} is WireGuard-only — AmneziaWG interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
@@ -1833,6 +1888,7 @@ export function WdttManageSheet({ node, w: w0 }) {
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
     api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed"));
+        reportDropped(r);   // §5.4
         const mv = ((r.data || {}).raw_moved || "");
         if (mv) toast(T("RAW-IP moved from {v1} to {v2} — one raw listener per address.", { v1: mv, v2: iface }), "ok", 5000);
         Store.poll(); })
@@ -1857,18 +1913,18 @@ export function WdttManageSheet({ node, w: w0 }) {
     closeModal();
     pushOptTitle("w|" + node + "|" + iface, title.trim());   // reflect on the card instantly
     api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
-      .then(r => { if (r && r.ok) { Store.poll(); toast(T("Title saved."), "ok"); } else toast(srvText(r) || T("Save failed."), "err"); });
+      .then(r => { if (r && r.ok) { Store.poll(); reportDropped(r); toast(T("Title saved."), "ok"); } else toast(srvText(r) || T("Save failed."), "err"); });   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting} title=${title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   return html`<${Sheet}
     title=${html`WDTT-proxy · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkPickLabel(fork) })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`}
     width=${664}
-    headExtra=${w.service ? html`<${TurnIpsHeader} node=${node} svc=${w.service}/>` : null}
+    headExtra=${w.service ? html`<${ProxyDropsHeader} node=${node} svc=${w.service}/><${TurnIpsHeader} node=${node} svc=${w.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", T("Start service"), T("Bring this WDTT server up on the node"))
           : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this WDTT server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this WDTT server on the node"))}<//>`}
-      <//>`, onCancel: closeModal, disabled: !anyDirty || !!wperr, onAction: save, action: "Save" })}>
+      <//>`, onCancel: closeModal, disabled: !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
     ${awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${Trich("This server was wiped. Its identity (server keypair + owner password) is *escrowed in your Encryption Vault*. *Restore* to bring it back with its original identity — no user re-imports.")}
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary" disabled=${restoring || recreating} onClick=${() => wdttRestoreIdentity(node, iface)}><${Ic} i="shield"/> ${restoring ? T("Restoring…") : T("Restore server identity")}</button>
@@ -1937,7 +1993,7 @@ export function wdttRecreateFresh(node, iface) {
   openConfirm({ title: T("Recreate with a fresh identity?"), danger: true, requireType: iface, confirmLabel: T("Recreate fresh"),
     body: Trich("This *abandons the vaulted server identity* and generates a NEW server key for *{iface}*. Every existing user must *re-import* their link. Use this only if the Encryption Vault can't be unlocked. Type *{iface}* to confirm.", { iface }),
     onConfirm: async () => { const r = await api.wdttRecreateFresh({ node, iface });
-      toast(r && r.ok ? T("Recreating with a fresh identity — users must re-import.") : (srvText(r) || "Failed."), r && r.ok ? "ok" : "err");
+      toast(r && r.ok ? T("Recreating with a fresh identity — users must re-import.") : (srvText(r) || T("Failed.")), r && r.ok ? "ok" : "err");
       await Store.poll(); } });
 }
 export function WdttDeleteSheet({ node, iface }) {
@@ -2001,11 +2057,11 @@ export function EditWdttSheet({ node, iface }) {
     Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
     api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, ...egressBody(eg) })
-      .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); Store.poll(); })   // busy → applied via trackIfaceOps
+      .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4; busy → applied via trackIfaceOps
       .catch(e => fail((e && e.message) || T("save failed")));
   };
   const save = () => {
-    const ee = egressError(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
+    const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
     if (wgPort.trim() && !/^\d+$/.test(wgPort.trim())) return setMsg({ k: "err", t: T("Internal WG port must be a number.") });
     // the internal WG port is baked into each wdtt:// link → a change re-issues it
     if (!!oldListen && (wgPort.trim() || "56001") !== String(cfg.wg_port || "56001")) {
@@ -2016,27 +2072,50 @@ export function EditWdttSheet({ node, iface }) {
     }
     doSave();
   };
+  // The same Delete / Stop / Restart the WDTT-proxy modal carries. A self-contained server IS its interface,
+  // so an operator who opened the interface to change its egress should not have to find the other modal to
+  // bounce it — every other interface edit sheet offers these in its footer.
+  const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
+  const awaiting = !!w.await_restore;
+  const notup = w.active !== "active" && !awaiting;
+  const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px"
+    disabled=${blocked || awaiting} title=${title}
+    onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   return html`<${Sheet} title=${T("Edit WDTT interface · {v1}", { v1: iface })} width=${720}
-    foot=${footRow({ onCancel: closeModal, disabled: busy || adopting || !!wgperr || !!egressError(eg, emode), title: (adopting ? T("This server is being adopted — wait for the node to finish") : wgperr || egressError(eg, emode)) || "", onAction: save, action: T("Save") })}>
+    foot=${footRow({ left: html`<${Fragment}>
+        <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
+        ${notup ? control("start", "play", T("Start service"), T("Bring this WDTT server up on the node"))
+          : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this WDTT server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this WDTT server on the node"))}<//>`}
+      <//>`, onCancel: closeModal, disabled: busy || adopting || !!wgperr || !!egressSaveBlock(eg, emode), title: (adopting ? T("This server is being adopted — wait for the node to finish") : wgperr || egressSaveBlock(eg, emode)) || "", onAction: save, action: T("Save") })}>
     ${adopting ? html`<div class="notice"><${Ic} i="clock"/><span>${Trich("This server is being *taken over* right now — its settings are read-only until the node reports the result.")}</span></div>` : null}
     <div class="iface-intro"><div>${Trich("*WDTT* owns its own *WireGuard* interface *({iface} · {addr})* and mints each user's key on connect.", { iface, addr: wgAddr || "—" })}</div></div>
     <div class="row2">
-      <div class="field"><label>${T("WDTT server instance")}</label>
+      <div class="field"><label>${T("WDTT server")}</label>
         <div class="ro-field" style="display:flex;align-items:center;gap:10px"><span class="mono">${forkLabel}</span><span class="grow"></span><span class="mono">${oldListen || "—"}</span></div>
         <div class="hint">${T("Fork is set at create. Endpoint & listen port are edited from the WDTT-proxy modal.")}</div></div>
       <div class="field"><label>${T("Internal WG port")}</label><input class=${wgperr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder="56001"/>${wgperr ? html`<div class="hint err">${wgperr}</div>` : html`<div class="hint">${T("Loopback userspace-WG port (server-internal)")}</div>`}</div>
     </div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
     ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
-      summary=${(eg.rules || []).length ? Trich("*{v1}* {v2} · first match wins", { v1: (eg.rules || []).length, v2: (eg.rules || []).length === 1 ? "rule" : "rules" }) : T("no rules yet")}
+      summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} rules=${eg.rules || []} onChange=${rs => setEg({ ...eg, rules: rs })}/>
+      <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
     <//>` : null}
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
       summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
       <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
     <//>
+    ${/* ⚠️ THESE SHEETS HAD NO "Advanced settings" AT ALL, and `wan_iface` is a real per-instance field for
+          them — the node runs the same `_egress_des` ladder for a WDTT/csqtt subnet as for an interface.
+          Moving the pin under Advanced without giving them one would have deleted the control for this
+          whole kind. One section, one control, same framing as the interface sheets. */""}
+    ${/* The whole section, not just its body: here Advanced holds ONLY the pin, so in a mode that does not
+          store one there is nothing to open. */""}
+    ${natPinApplies(eg) ? html`<${Disclosure} title=${T("Advanced settings")} summary=${eg.nic || T("val|Off")}
+      open=${disc.advanced} onToggle=${() => tog("advanced")}>
+      <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
+    <//>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -2157,7 +2236,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
     api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
-      .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); Store.poll(); })
+      .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
   const save = () => {
@@ -2170,18 +2249,18 @@ export function CsqttManageSheet({ node, c: c0 }) {
     if (paramsDirty) { doSave(); return; }
     closeModal(); pushOptTitle("c|" + node + "|" + iface, title.trim());
     api.csqttSet({ node, iface, listen: oldListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
-      .then(r => { if (r && r.ok) { Store.poll(); toast(T("Title saved."), "ok"); } else toast(srvText(r) || T("Save failed."), "err"); });
+      .then(r => { if (r && r.ok) { Store.poll(); reportDropped(r); toast(T("Title saved."), "ok"); } else toast(srvText(r) || T("Save failed."), "err"); });   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked} title=${title} onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   return html`<${Sheet}
     title=${html`csqtt-proxy · ${(title.trim() || iface)}${c.version ? html` <span class="sheet-ver">${c.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: "CSQTT" })} onClick=${() => openServerDefaults("csqtt")}><${Ic} i="gear"/></button>`}
     width=${664}
-    headExtra=${c.service ? html`<${TurnIpsHeader} node=${node} svc=${c.service}/>` : null}
+    headExtra=${c.service ? html`<${ProxyDropsHeader} node=${node} svc=${c.service}/><${TurnIpsHeader} node=${node} svc=${c.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", T("Start service"), T("Bring this csqtt server up on the node"))
           : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this csqtt server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this csqtt server on the node"))}<//>`}
-      <//>`, onCancel: closeModal, disabled: !anyDirty || !!wperr, onAction: save, action: "Save" })}>
+      <//>`, onCancel: closeModal, disabled: !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
     <${IfaceThroughput} node=${node} iface=${iface}/>
     <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>
     <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${iface} autocomplete="off"/></div>
@@ -2238,24 +2317,48 @@ export function EditCsqttSheet({ node, iface }) {
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
     api.csqttSet({ node, iface, listen: oldListen, block: blk, ...egressBody(eg) })
-      .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); Store.poll(); })
+      .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
-  const save = () => { const ee = egressError(eg, emode); if (ee) return setMsg({ k: "err", t: ee }); doSave(); };
+  const save = () => { const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee }); doSave(); };
+  const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
+  const notup = c.active !== "active";
+  const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px"
+    disabled=${blocked} title=${title}
+    onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   return html`<${Sheet} title=${T("Edit csqtt interface · {v1}", { v1: iface })} width=${720}
-    foot=${footRow({ onCancel: closeModal, disabled: busy || !!egressError(eg, emode), title: egressError(eg, emode) || "", onAction: save, action: T("Save") })}>
+    foot=${footRow({ left: html`<${Fragment}>
+        <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
+        ${notup ? control("start", "play", T("Start service"), T("Bring this csqtt server up on the node"))
+          : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this csqtt server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this csqtt server on the node"))}<//>`}
+      <//>`, onCancel: closeModal, disabled: busy || !!egressSaveBlock(eg, emode), title: egressSaveBlock(eg, emode) || "", onAction: save, action: T("Save") })}>
     <div class="iface-intro"><div>${Trich("*csqtt* owns its own raw-IP tunnel *({iface} · {addr})* and mints each user's address on connect.", { iface, addr: tunAddr || "—" })}</div></div>
+    ${/* Same read-only identity row WDTT's edit sheet carries. csqtt has no fork choice and no internal WG
+          port — it is a raw-IP datapath — so this is the server and where it listens, and nothing else. */""}
+    <div class="field"><label>${T("csqtt server")}</label>
+      <div class="ro-field" style="display:flex;align-items:center;gap:10px"><span class="mono">${cfg.title || "csqtt"}</span><span class="grow"></span><span class="mono">${oldListen || "—"}</span></div>
+      <div class="hint">${T("Endpoint & listen port are edited from the csqtt-proxy modal.")}</div></div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
     ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
-      summary=${(eg.rules || []).length ? Trich("*{v1}* {v2} · first match wins", { v1: (eg.rules || []).length, v2: (eg.rules || []).length === 1 ? "rule" : "rules" }) : T("no rules yet")}
+      summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} rules=${eg.rules || []} onChange=${rs => setEg({ ...eg, rules: rs })}/>
+      <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
     <//>` : null}
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
       summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
       <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
     <//>
+    ${/* ⚠️ THESE SHEETS HAD NO "Advanced settings" AT ALL, and `wan_iface` is a real per-instance field for
+          them — the node runs the same `_egress_des` ladder for a WDTT/csqtt subnet as for an interface.
+          Moving the pin under Advanced without giving them one would have deleted the control for this
+          whole kind. One section, one control, same framing as the interface sheets. */""}
+    ${/* The whole section, not just its body: here Advanced holds ONLY the pin, so in a mode that does not
+          store one there is nothing to open. */""}
+    ${natPinApplies(eg) ? html`<${Disclosure} title=${T("Advanced settings")} summary=${eg.nic || T("val|Off")}
+      open=${disc.advanced} onToggle=${() => tog("advanced")}>
+      <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
+    <//>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }

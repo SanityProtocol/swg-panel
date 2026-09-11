@@ -10,7 +10,7 @@
  * model.js, not a rename hunt. See docs/APP-JS-SPLIT-PLAN.md §5.
  */
 
-import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
+import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
 import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, ipChoices, portOf, listenAddr, ipPickerVal, V } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
@@ -20,13 +20,14 @@ import {
   suggestIface, suggestSubnet, suggestPort, portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr,
   cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg, candDialPort, turnIfaceNameError,
 } from "./model.js";
-import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkPickLabel } from "./turn-catalog.js";
+import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkOpts } from "./turn-catalog.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm } from "./ui.js";
-import { RangedHistory, IfaceThroughput } from "./charts.js";
+import { RangedHistory, IfaceThroughput, lossColor, lossColorMesh } from "./charts.js";
 import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCached } from "./crypto.js";
-import { EgressPicker, egressInit, egressError, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules,
-         SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog } from "./routing.js";
-import { orphCount, OnlinePeersTag, peersView, searchMatch } from "./views.js";
+import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules,
+         SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog, reportDropped, rulesSummary, targetLabel } from "./routing.js";
+import { rulesToRows } from "./rulerows.js";
+import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, LossPop, meshHealth } from "./views.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
@@ -299,7 +300,7 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm, c
             </tr>`)}</tbody></table>
             ${cand.peers > cand.peer_list.length ? html`<div class="hint" style="padding:8px 14px">${T("Showing {n} of {total} — the rest come across on adopt.", { n: cand.peer_list.length, total: cand.peers })}</div>` : null}`
         : html`<div class="empty">${cand.peers
-            ? Trich("*{v1} peer{v2} on this interface*The node couldn't read their details — they still come across when you adopt.", { v1: cand.peers, v2: cand.peers === 1 ? "" : "s" })
+            ? Trich("*{v1} on this interface*The node couldn't read their details — they still come across when you adopt.", { v1: plural(cand.peers, "peer") })
             : Trich("*{v1}*Nothing is configured on this interface yet. Adopt it to add peers from the panel.", { v1: T("No peers here") })}</div>`}
     <//>`}
   </div>`;
@@ -347,7 +348,7 @@ export function AdoptCsqttSheet({ node, c }) {
       <div class="ig-item"><span class="ig-l">${T("Users")}</span><span class="ig-v">${storeGone ? html`<span class="faint">${T("couldn't be read")}</span>` : (n || html`<span class="faint">${T("none found")}</span>`)}</span></div>
     </div>
     ${n ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Adopting brings its *{count}* across — each becomes an unassigned peer you can hand to a user.", { count: plural(n, "user") })}</div>` : null}
-    <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select>
+    <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/>
       <div class="hint">${T("Which csqtt server implements this instance")}</div></div>
     ${storeGone
       ? html`<label class="ivk-esc-row" style="margin-top:12px"><${Switch} on=${accept} onChange=${setAccept}/><span>${T("I understand its current users will be lost")}</span></label>`
@@ -382,7 +383,7 @@ export function AdoptDormantWdttSheet({ node, d, nrec }) {
     : (Number(wgPort) === Number(dtls)) ? T("The DTLS port and internal WG port must differ.")
     : portErrMsg(node, wgPort, [Number(dtls) || 0]);
   const iperr = dtlsErr || wgErr;
-  const nameErr = /^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$/.test(iface.trim()) ? "" : "Letters, digits, _ and -, up to 15 characters.";
+  const nameErr = /^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$/.test(iface.trim()) ? "" : T("Letters, digits, _ and -, up to 15 characters.");
   const doAdopt = async () => {
     setBusy(true);
     const r = await api.wdttAdopt({ node, iface: iface.trim(), fork, adopt_config_dir: d.config_dir,
@@ -409,7 +410,7 @@ export function AdoptDormantWdttSheet({ node, d, nrec }) {
       ? Trich("Ports recovered from its password store — its clients already dial these. The *subnet* is never written to disk, so set that below.")
       : T("Not running, so its ports and subnet can't be read from the server — set them here.")}</div>
     <div class="row2">
-      <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select><div class="hint">${d.fork ? html`Detected <b>${d.fork}</b> from its files` : T("Pick the fork this install is")}</div></div>
+      <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/><div class="hint">${d.fork ? html`Detected <b>${d.fork}</b> from its files` : T("Pick the fork this install is")}</div></div>
       <div class="field"><label>${T("Interface name")}</label><input class=${nameErr ? "bad" : ""} value=${iface} onInput=${e => setIface(e.target.value)} placeholder="wdtt1"/>${nameErr ? html`<div class="hint err">${nameErr}</div>` : null}</div>
     </div>
     <div class="row2">
@@ -515,7 +516,7 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
         : T("Managed as plain WireGuard.")}</div>
     </div>
     <div class="iface-grid" style="margin:0 0 16px">
-      <div class="ig-item"><span class="ig-l">${T("Datapath")}</span><span class="ig-v">${cand.datapath}${cand.up ? "" : " · down"}</span></div>
+      <div class="ig-item"><span class="ig-l">${T("Datapath")}</span><span class="ig-v">${cand.datapath}${cand.up ? "" : " · " + T("val|down")}</span></div>
       <div class="ig-item"><span class="ig-l">${T("Tunnel subnet")}</span><span class="ig-v">${cand.address || w.wg_addr || "—"}</span></div>
       ${/* For a WDTT server the interface's peer count is the WRONG number: it counts wg peers that have
             CONNECTED, so a server with three issued users nobody has used yet reads "0 existing peers" —
@@ -538,7 +539,7 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
       </div></div></div>` : null}
     <div class="row2">
       ${type === "wdtt" ? html`<div class="field"><label>${T("Server fork")}</label>
-        <select value=${fork} onChange=${e => setFork(e.target.value)}>${forks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select>
+        <${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/>
         <div class="hint">${w.fork ? Trich("Detected *{v1}*{v2} — change only if wrong", { v1: w.fork, v2: w.store ? " (" + w.store + ")" : "" }) : T("Pick the fork this server runs")}</div>
       </div>` : null}
       <div class="field"><label>${T("Endpoint host / IP")}</label><${NodeIpPick} ips=${ipChoices(nrec)} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname"/><div class="hint">${T("What clients dial")}</div></div>
@@ -706,8 +707,16 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${meta.address || "—"}</span></div>
-          <div class="ig-item"><span class="ig-l">${T("Throughput")}</span><span class="ig-v">${ifTrafficBadge(meta.egress_mode, meta.egress_node)}</span></div>
-          <div class="ig-item"><span class="ig-l">MTU</span><span class="ig-v">${meta.mtu || 1280}</span></div>
+          <div class="ig-item"><span class="ig-l">${T("Throughput")}</span><span class="ig-v">${ifTrafficBadge(meta.egress_mode, meta.egress_node, node, meta.exit_id)}</span></div>
+          ${(() => {
+            // MTU used to sit here. It is a create-time constant that never moves on its own and is still on
+            // Edit interface; this one changes minute to minute and had nowhere on this page to live.
+            const d = meta.drops;
+            return html`<div class="ig-item"><span class="ig-l">${T("col|Drops")}</span><span class="ig-v">${d
+              ? html`<${DropsPop} d=${d} iface=${iface} node=${node} alignRight=${false}
+                  trigger=${html`<span class="dp-num" style=${"color:" + lossColor(d.pct)}>${d.pct}%</span>`}/>`
+              : html`<span class="faint" title=${T("This node hasn't reported drop counters for this interface yet.")}>—</span>`}</span></div>`;
+          })()}
         </div>
         ${type === "awg" ? html`<div class="iface-amnezia">
           <span class="ig-l">AmneziaWG</span>
@@ -868,7 +877,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
       <div class="iface-grid">
         <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${w.listen || cfg.listen || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${(isCsq ? (w.tun_addr || cfg.tun_addr) : w.wg_addr) || "—"}</span></div>
-        <div class="ig-item"><span class="ig-l">${T("Throughput")}</span><span class="ig-v">${ifTrafficBadge(cfg.egress_mode, cfg.egress_node)}</span></div>
+        <div class="ig-item"><span class="ig-l">${T("Throughput")}</span><span class="ig-v">${ifTrafficBadge(cfg.egress_mode, cfg.egress_node, node, cfg.exit_id)}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Fork")}</span><span class="ig-v"><${ForkTag} fork=${fork}/></span></div>
       </div>
     <//>
@@ -926,6 +935,8 @@ export function BridgePortSheet({ iface, port }) {   // shown after creating an 
 
 
 
+const awgTail = " · AWG";   // i18n-keys: a protocol acronym, appended to the already-translated summary
+const natTail = " · NAT";   // …and the NAT source card, which now lives in the same section
 export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing
@@ -945,7 +956,10 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const sugWdttListen = suggestPort(node, "turn");                        // external DTLS (turn-proxy family)
   const sugWdttWg = suggestPort(node, "turn", [sugWdttListen]);           // internal userspace-WG port (≠ the listen)
   const [iface, setIface] = useState((pre && pre.iface) || (_defProto === "wdtt" ? sugWdtt : _defProto === "awg" ? sugAwg : sugWg)); const [subnet, setSubnet] = useState((pre && pre.subnet) || ((pre && pre.proto) === "wdtt" ? sugWdttNet : suggestSubnet(node)));
-  const [host, setHost] = useState(""); const [port, setPort] = useState(String((pre && pre.proto) === "wdtt" ? sugWdttListen : suggestPort(node, "iface")));
+  // `pre.port` — a RECREATE knows the port the interface actually had; only a fresh create should be handed a
+  // suggestion. Without this the sheet ignored what openRecreateRekey passed and offered the next free port,
+  // so an interface that had lived on 443 came back on 51821 and every client needed a new endpoint anyway.
+  const [host, setHost] = useState(""); const [port, setPort] = useState(String((pre && pre.port) || ((pre && pre.proto) === "wdtt" ? sugWdttListen : suggestPort(node, "iface"))));
   // WDTT server forks the operator has enabled. A fork with no PUBLISHED build has nothing for a node to
   // install, so it is offered but not selectable — visible (it exists, and a build may land) with the reason
   // attached, instead of silently creating a server that can never come up.
@@ -970,9 +984,16 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const [cfork, setCfork] = useState((_csqttForks[0] || {}).id || "csqtt");
   const isCsqtt = proto === "csqtt";
   const _idf = (Store.panelSettings || {}).interface_defaults || {};   // panel-wide new-interface defaults
-  const [dns, setDns] = useState((_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String(_idf.mtu || 1280)); const [ka, setKa] = useState(String(_idf.keepalive || 25));
+  // `pre.dns` / `pre.keepalive` — a RECREATE knows what the interface was serving; only a fresh create takes
+  // the panel-wide default. The sheet posts all three unconditionally, so an unseeded field is not a blank
+  // the server ignores, it is the default overwriting what the operator chose. See openRecreateRekey.
+  const [dns, setDns] = useState(pre && pre.dns != null ? pre.dns : (_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String((pre && pre.mtu) || _idf.mtu || 1280)); const [ka, setKa] = useState(String(pre && pre.keepalive != null ? pre.keepalive : (_idf.keepalive || 25)));
   const [conf, setConf] = useState("");
-  const ips = ipChoices(nrec); const [eg, setEg] = useState(() => egressInit({}));
+  const ips = ipChoices(nrec);
+  // No creation seed: a new interface starts on AUTO and INHERITS the node's default exit live, exactly as
+  // a blank egress IP already inherits the node's default IP. Nothing is copied at creation, so nothing can
+  // go stale, and changing the node default moves every interface that never made its own choice.
+  const [eg, setEg] = useState(() => egressInit({}));
   const [blk, setBlk] = useState(() => defaultBlockFor(node));   // Filters & abuse — seeded from each category's default_on once the catalog loads
   const blkSeeded = useRef(false);
   useEffect(() => { loadBlockCatalog().then(() => { if (blkSeeded.current) return; blkSeeded.current = true; setBlk(defaultBlockFor(node)); }); }, []);
@@ -1008,7 +1029,15 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const exWdtt = existing && proto === "wdtt";
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const save = async () => {
-    setBusy(true); setMsg({ k: "work", t: "requesting…" });
+    setBusy(true); setMsg({ k: "work", t: T("requesting…") });
+    /* ONE GATE FOR EVERY BRANCH THAT SHIPS ROUTING. wdtt, csqtt and wg/awg all spread `egressBody(eg)` into
+       their create call; only the adopt branch (`existing`) ships none, which is why the foot's `disabled`
+       carries the same `!existing` — the two now say it in the same words. This check used to live INSIDE
+       the wg/awg branch, so its two neighbours rested entirely on the button being disabled: one edit to
+       that expression, or a fifth branch added below, and a wdtt/csqtt create would have shipped the rules
+       as they stood BEFORE the operator's unapplied text, silently. Before the vault prompt on purpose —
+       a save that is about to be refused should not ask for a passphrase first. */
+    if (!existing) { const ee = egressSaveBlock(eg, nrec.routing_mode || "kernel"); if (ee) return fail(ee); }
     // Recreating a ghost rekeys its peers in the background once the fresh interface returns — the ONE moment the
     // browser holds each new private key. Unlock the vault UP FRONT so those fresh configs are captured as they're
     // rekeyed (re-viewable in the panel + served on subscription pages) instead of being lost on the next reload.
@@ -1020,7 +1049,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         reason: T("Recreating {v1} gives its {v2} brand-new keys once it's back. Unlock your encryption key now so each fresh config is captured the moment it's rekeyed — then it stays re-viewable in the panel and is served on the users' subscription pages.", { v1: ghost.iface, v2: plural(n, "peer") }),
         consequence: T("the interface is recreated and its peers are rekeyed, but their new configs are NOT captured — they can't be re-viewed or served on subscription pages, and you'd have to hand every client a fresh QR by other means. (Unlock later in this same tab before reloading and they're still saved; after a reload the new keys are gone for good.)"),
       });
-      setMsg({ k: "work", t: "requesting…" });   // the prompt may have taken a while → restore the working state
+      setMsg({ k: "work", t: T("requesting…") });   // the prompt may have taken a while → restore the working state
     }
     let r;
     if (existing) {
@@ -1070,12 +1099,12 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       if (!nm || /[\s/]/.test(nm)) return fail(T("Interface name is required (no spaces or /)."));
       if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail(T("Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24."));
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail(T("Listen port must be a number."));
-      const ee = egressError(eg, nrec.routing_mode || "kernel"); if (ee) return fail(ee);
       const hostVal = ipPickerVal(hostSel, hostCustom);
       r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: hostVal,
         listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, ...egressBody(eg) });
     }
     if (!r.ok) return fail(srvText(r) || T("Request failed."));
+    reportDropped(r);   // §5.4 — create carries a routing block too (the new-interface sheet has the field)
     // optimistic: show the card — WITH the details just entered — the instant Create is clicked (use the
     // component-scoped state vars, not the else-block locals). Onboarding doesn't know subnet/port yet.
     const _newName = existing ? (conf.trim().split("/").pop() || "").replace(/\.conf$/i, "") : iface.trim();
@@ -1111,8 +1140,21 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const pperr = portErrMsg(node, port, []);
   const wgperr = isWdtt ? ((port.trim() && wgPort.trim() && Number(port) === Number(wgPort)) ? T("The DTLS port and internal WG port must differ.") : portErrMsg(node, wgPort, [])) : null;
   return html`<${Sheet} title=${ghost ? T("Recreate & rekey · {iface}", { iface: ghost.iface }) : T("Create new interface")} onBack=${back || null}
-    foot=${footRow({ onCancel: back || closeModal, disabled: busy || !!nameErr || !!_subConflict || !!pperr || !!wgperr || (!existing && !!egressError(eg, nrec.routing_mode || "kernel")), title: (nameErr || pperr || wgperr || (_subConflict ? T("This subnet is already in use in the fleet") : (!existing && egressError(eg, nrec.routing_mode || "kernel")))) || "", onAction: save, action: ghost ? T("Recreate & rekey") : (existing ? T("Adopt") : T("Create")) })}>
-    ${ghost ? html`<div class="notice danger" style="margin-bottom:16px"><${Ic} i="warn"/><span>${Trich("Interface *{iface}* is gone from {node} with *no recoverable key*, so it can't be restored — only recreated with a *new server key*. Its *{count}* will be rekeyed once it's back, so *every client must re-import* a fresh QR / config. Review the settings below (inferred from the peers) and recreate.", { iface: ghost.iface, node: Store.nodeName(node), count: plural(ghost.total, "peer") })}</span></div>` : null}
+    foot=${footRow({ onCancel: back || closeModal, disabled: busy || !!nameErr || !!_subConflict || !!pperr || !!wgperr || (!existing && !!egressSaveBlock(eg, nrec.routing_mode || "kernel")), title: (nameErr || pperr || wgperr || (_subConflict ? T("This subnet is already in use in the fleet") : (!existing && egressSaveBlock(eg, nrec.routing_mode || "kernel")))) || "", onAction: save, action: ghost ? T("Recreate & rekey") : (existing ? T("Adopt") : T("Create")) })}>
+    ${/* ⚠️ THE PROVENANCE LINE HAS TO MATCH WHERE THE VALUES CAME FROM. "(inferred from the peers)" was true
+         when this sheet guessed the protocol from a peer's target type and the port from a suggestion. A WARM
+         ghost is now pre-filled from the interface's own saved config — port, MTU, DNS, keepalive, endpoint
+         and its AmneziaWG band — so that parenthetical told the operator to distrust the one thing they
+         should trust, on the very screen that asks them to review it. The COLD path still infers, and still
+         says so. And with nothing deployed there is no client to re-import: saying "every client must" of
+         zero clients is an instruction nobody can follow. */""}
+    ${ghost ? html`<div class="notice danger" style="margin-bottom:16px"><${Ic} i="warn"/><span>${
+      ghost.warm && !ghost.total
+        ? Trich("Interface *{iface}* is gone from {node} with *no recoverable key*, so it can't be restored — only recreated with a *new server key*. Nothing is deployed on it, so no client is affected. The settings below are its *last saved config* — review them and recreate.", { iface: ghost.iface, node: Store.nodeName(node) })
+      : ghost.warm
+        ? Trich("Interface *{iface}* is gone from {node} with *no recoverable key*, so it can't be restored — only recreated with a *new server key*. Its *{count}* will be rekeyed once it's back, so *every client must re-import* a fresh QR / config. The settings below are its *last saved config* — review them and recreate.", { iface: ghost.iface, node: Store.nodeName(node), count: plural(ghost.total, "peer") })
+        : Trich("Interface *{iface}* is gone from {node} with *no recoverable key*, so it can't be restored — only recreated with a *new server key*. Its *{count}* will be rekeyed once it's back, so *every client must re-import* a fresh QR / config. Review the settings below (inferred from the peers) and recreate.", { iface: ghost.iface, node: Store.nodeName(node), count: plural(ghost.total, "peer") })
+    }</span></div>` : null}
     <div class="field"><label>${T("Protocol")}</label>
       <div class=${"chiprow" + (ghost ? "" : " proto3")}>
         <button class=${"chip c-wg" + (proto === "wg" ? " on" : "")} onClick=${() => pickProto("wg")}>WireGuard</button>
@@ -1150,12 +1192,13 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="46000"/>${pperr ? html`<div class="hint err">${pperr}</div>` : html`<div class="hint">${T("UDP DTLS listen (outside)")}</div>`}</div>
       </div>
       <div class="row2">
-        <div class="field"><label>${T("Server fork")}</label><select value=${cfork} onChange=${e => setCfork(e.target.value)}>${_csqttForks.map(f => html`<option value=${f.id}>${forkPickLabel(f.id)}</option>`)}</select><div class="hint">${T("Which csqtt server implements this instance")}</div></div>
+        <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${cfork} onChange=${v => setCfork(v)} options=${forkOpts(_csqttForks)} ariaLabel=${T("Server fork")}/><div class="hint">${T("Which csqtt server implements this instance")}</div></div>
         <div class="field"><label>${T("Max users")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${maxPw} onInput=${e => setMaxPw(e.target.value)} placeholder="500"/><div class="hint">${T("Cap on simultaneous access passwords · blank = 500")}</div></div>
       </div>` : null}
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — after creating you must publish this port in the node's `docker-compose.yml` ({ports}) and `up -d`, or clients can't reach it. (A host-networking node needs none of this.)", { ports: 'ports: "' + (port || "PORT") + ":" + (port || "PORT") + '/udp"' })}</span></div>` : null}
       ${isWdtt ? html`<div class="row2">
-        <div class="field"><label>${T("Server fork")}</label><select value=${fork} onChange=${e => setFork(e.target.value)}>${_wdttForks.map(f => html`<option value=${f.id} disabled=${!_forkBuildable(f)}>${forkPickLabel(f.id)}${_forkBuildable(f) ? "" : " — " + T("no build published yet")}</option>`)}</select><div class="hint">${T("Which WDTT server implements this instance")}</div></div>
+        <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} ariaLabel=${T("Server fork")}
+          options=${forkOpts(_wdttForks, f => _forkBuildable(f) ? "" : T("no build published yet"))}/><div class="hint">${T("Which WDTT server implements this instance")}</div></div>
         <div class="field"><label>${T("Endpoint host / IP")}</label>
           <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
           <div class="hint">${T("What clients dial")}</div></div>
@@ -1166,22 +1209,29 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       </div>` : null}
       <${Fragment}><${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
       ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
-        summary=${(eg.rules || []).length ? Trich("*{v1}* {v2} · first match wins", { v1: (eg.rules || []).length, v2: (eg.rules || []).length === 1 ? "rule" : "rules" }) : T("no rules yet")}
+        summary=${rulesSummary(node, eg.rows, eg.catchAll)}
         open=${disc.routing} onToggle=${() => tog("routing")}>
-        <${RoutingRules} node=${node} rules=${eg.rules || []} onChange=${rs => setEg({ ...eg, rules: rs })}/>
+        <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
       <//>` : null}
       <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
         summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
         open=${disc.filters} onToggle=${() => tog("filters")}>
         <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
       <//>
-      ${(!isWdtt && !isCsqtt) ? html`<${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS")}
+      ${/* ⚠️ TWO NAMED SECTIONS, ONE ACCORDION. The tunnel settings are named after the PROTOCOL rather
+            than left as a nameless run of fields, because the NAT source card now sits beside them and two
+            unlabelled groups read as one long list. Sub-accordions were the other option and were not
+            taken: only one protocol block can ever apply, so collapsing it would add a click to reach
+            settings that are always relevant, and a summary of summaries says less than this one line. */""}
+      ${(!isWdtt && !isCsqtt) ? html`<${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS") + (natPinApplies(eg) ? natTail : "")}
         open=${disc.advanced} onToggle=${() => tog("advanced")}>
+        <div class="field secdiv"><label>${proto === "awg" ? T("AmneziaWG settings") : T("WireGuard settings")}</label></div>
         <div class="row2">
           <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">${T("Blank = 1280")}</div></div>
           <div class="field"><label>${T("Persistent keepalive (s)")}</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">${T("0 disables · blank = 25")}</div></div>
         </div>
         <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/><div class="hint">${T("Comma-separated")}</div></div>
+        <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
       <//>` : null}<//>
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -1216,7 +1266,7 @@ export function DeleteIfaceSheet({ node, iface }) {
 export async function startOrRestartIface(node, iface, verb) {
   const key = node + "|" + iface;
   Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply();
-  const m = verb === "stop" ? "ifaceStop" : verb === "start" ? "ifaceStart" : "ifaceRestart";
+  const m = verb === "stop" ? "ifaceStop" : verb === "start" ? "ifaceStart" : "ifaceRestart";   // i18n-keys: api method names
   const r = await api[m]({ node, iface });
   if (!r.ok) {
     Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 10000, err: srvText(r) || T("request failed") };
@@ -1225,6 +1275,26 @@ export async function startOrRestartIface(node, iface, verb) {
   await Store.poll();   // queued on the node; trackIfaceOps() watches for completion each poll
 }
 export function openEditIface(node, iface) { openModal(html`<${EditIfaceSheet} node=${node} iface=${iface}/>`); }
+
+/** Open the RIGHT editor for an interface whose KIND the caller does not know.
+ *
+ * ⚠️ THREE KINDS, THREE SHEETS, and `openEditIface` is only one of them. A csqtt or WDTT server owns its own
+ * raw-IP/userspace tunnel and its settings live under the node's `csqtt`/`wdtt` map, not under `ifaces` — so
+ * the WireGuard sheet opened on one finds nothing: no tunnel IP (it renders "—"), an empty external port,
+ * and an egress mode of "Auto (MASQUERADE)" for a server that is stored as `smart` with rules. Nothing is
+ * broken on the node; the editor is simply reading the wrong half of the record, and Save would then write
+ * that emptiness back.
+ *
+ * Reported from the Routing-lists screen, whose interface chips open "the interface that asked for this
+ * list" and could not know which kind it was. The two pages that DO know (the WG interface detail and
+ * WdttIfaceDetail) dispatch inline and are unaffected; this exists for every caller that does not.
+ */
+export function openIfaceEditor(node, iface) {
+  const k = iTypeOf(node, iface);
+  if (k === "csqtt") return openEditCsqtt(node, iface);
+  if (k === "wdtt") return openEditWdtt(node, iface);
+  return openEditIface(node, iface);
+}
 export function openConnectionEdit(node, iface) { openModal(html`<${ConnectionEditSheet} node=${node} iface=${iface}/>`); }
 // A node↔node mesh link (system interface). Mesh-managed (no create/delete/egress here) — mostly status;
 // the only operator knob is whether this link can carry forwarded user traffic (reserved for Phase 2).
@@ -1236,6 +1306,18 @@ export function ConnectionEditSheet({ node, iface }) {
   const prec = (Store.nodes || []).find(n => n.id === peer) || {};
   const [dialSrc, setDialSrc] = useState(meta.dial_src || "");
   const [dialEp, setDialEp] = useState(meta.dial_endpoint || "");
+  const relayOn0 = ((meta.relay || {}).mode || "forward") === "relay";
+  const quota0 = String(((nrec.relay || {}).quota_pct) || 50);
+  // ⚠️ FOLLOW THE SERVER UNTIL THE OPERATOR TOUCHES IT — do not seed useState from the store and freeze.
+  // The sheet can mount before /api/state has landed, and a frozen seed then shows "Forward" for the life
+  // of the sheet on a link that is relaying: a control that lies about the current state is worse than no
+  // control. `null` means "not touched", so a later poll corrects the display; once touched, the operator's
+  // choice owns it and polling can no longer clobber it (the same rule as every other live-updating editor).
+  const [relayPick, setRelayPick] = useState(null);
+  const [quotaPick, setQuotaPick] = useState(null);
+  const relayOn = relayPick === null ? relayOn0 : relayPick;
+  const quota = quotaPick === null ? quota0 : quotaPick;
+  const setRelayOn = setRelayPick, setQuota = setQuotaPick;
   const nodeDown = nodeStale(node) || inProc(nrec.proc_status);   // node not reporting / mid re-install → can't apply a dial change
   const lk = nodeStale(node) ? "down" : (meta.handshake_age == null ? "connecting" : (meta.handshake_age < 180 ? "up" : "down"));
   const lkLabel = { up: "connected", connecting: "connecting", down: "down" }[lk];
@@ -1246,10 +1328,17 @@ export function ConnectionEditSheet({ node, iface }) {
     mutate({
       key: "conn:" + node + "|" + peer,
       patch: () => {},
-      call: () => api.connectionUpdate({ node, peer, dial_src: dialSrc, dial_endpoint: dialEp }),
+      call: () => api.connectionUpdate({ node, peer, dial_src: dialSrc, dial_endpoint: dialEp,
+                                         relay_mode: relayOn ? "relay" : "forward", relay_quota_pct: Number(quota) || 50 }),
     });
   };
-  const connDirty = dialSrc !== (meta.dial_src || "") || dialEp !== (meta.dial_endpoint || "");   // enable Save only when the dial fields changed
+  // ⚠️ 90, not 100. The relay is a single event loop, so one core is its structural ceiling anyway; what
+  // 100 would mean on a 1-vCPU node is "the relay may have the whole machine". CPUQuota is the only hard
+  // reservation in the design, so the last tenth of a core is not the operator's to give away.
+  const QUOTA_MAX = 90;
+  const quotaErr = (() => { const q = Number(quota); return (!Number.isInteger(q) || q < 5 || q > QUOTA_MAX) ? T("CPU cap must be between {v1} and {v2}", { v1: "5", v2: String(QUOTA_MAX) }) : ""; })();
+  const connDirty = dialSrc !== (meta.dial_src || "") || dialEp !== (meta.dial_endpoint || "")
+    || relayOn !== relayOn0 || quota !== quota0;   // enable Save only when something actually changed
   // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
   const allMeta = Store.describe[node] || {};
   const carried = Object.keys(allMeta).filter(k => !allMeta[k].system
@@ -1259,12 +1348,17 @@ export function ConnectionEditSheet({ node, iface }) {
   const _listTitle = Object.fromEntries((Store.panelSettings?.custom_lists || []).map(l => [l.id, l.title]));
   const smartCarried = Object.keys(allMeta).filter(k => !allMeta[k].system && allMeta[k].egress_mode === "smart")
     .map(k => ({ iface: k, cats: (allMeta[k].routing || []).filter(r => r.action === "exit" && r.node === peer)
-      .map(r => r.category === "custom" ? [...(r.domains || []), ...(r.cidrs || [])].join(", ") || "custom" : (SMART_CAT_LABEL[r.category] || _listTitle[r.category] || r.category)) }))
+      // A custom rule is said the way its BADGES say it, not by joining two of the four arrays it can hold:
+      // that left out `asns` and `patterns` (a rule carrying only `*.ru` read as the word "custom") and
+      // printed punycode where the field shows the name the operator typed. One display path, one answer.
+      .map(r => r.category === "custom"
+        ? ((rulesToRows([r]).rows[0] || {}).badges || []).map(b => targetLabel(b.kind, b.value)).join(", ") || "custom"
+        : (SMART_CAT_LABEL[r.category] || _listTitle[r.category] || r.category)) }))
     .filter(x => x.cats.length);
   const ifBadge = k => html`<span class=${"tg tg-" + ((allMeta[k].awg_params && Object.keys(allMeta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`;
   const peerNm = html`<b style=${"color:" + Store.nodeColor(peer)}>${Store.nodeName(peer)}</b>`;
   return html`<${Sheet} title=${T("Connection to {v1}", { v1: Store.nodeName(peer) })} width=${680} onClose=${closeModal}
-      foot=${footRow({ onCancel: closeModal, disabled: nodeDown || !connDirty, title: nodeDown ? T("{v1} isn't reporting — reconnect it before changing this link", { v1: Store.nodeName(node) }) : (!connDirty ? T("No changes to save") : ""), onAction: saveDial, action: T("Save") })}>
+      foot=${footRow({ onCancel: closeModal, disabled: nodeDown || !connDirty || !!quotaErr, title: nodeDown ? T("{v1} isn't reporting — reconnect it before changing this link", { v1: Store.nodeName(node) }) : (quotaErr || (!connDirty ? T("No changes to save") : "")), onAction: saveDial, action: T("Save") })}>
     <div class="conncard">
       <div class="conncard-top">
         <span class=${"iftype " + proto}>${T("System {v1}", { v1: proto.toUpperCase() })}</span>
@@ -1273,10 +1367,24 @@ export function ConnectionEditSheet({ node, iface }) {
       <div class="conn-grid">
         ${Cell(T("Node"), html`<a href=${"#/node/" + encodeURIComponent(peer)} onClick=${closeModal}>${Store.nodeName(peer)}</a>`)}
         ${Cell(T("This end"), meta.address || "—")}
-        ${Cell("Endpoint", meta.peer_endpoint || T("— (not dialed yet)"))}
-        ${Cell("Rate", rateCell(meta.rx_speed, meta.tx_speed))}
-        ${meta.rx_bytes != null || meta.tx_bytes != null ? Cell("Total", xferCell(...dlul(meta.rx_bytes, meta.tx_bytes))) : null}
-        ${Cell(T("Last handshake"), meta.handshake_age != null ? T("{v1} ago", { v1: seen(meta.handshake_age) }) : "—")}
+        ${Cell(T("col|Endpoint"), meta.peer_endpoint || T("— (not dialed yet)"))}
+        ${Cell(T("col|Rate"), rateCell(meta.rx_speed, meta.tx_speed))}
+        ${meta.rx_bytes != null || meta.tx_bytes != null ? Cell(T("col|Total"), xferCell(...dlul(meta.rx_bytes, meta.tx_bytes))) : null}
+        ${Cell(T("col|Latency"), (() => {
+          // Same reading, same rendering, same bubble as this link's card on the node page — this sheet is
+          // where an operator decides what to do about a leg, so it should not be the one place that shows
+          // only whether it handshook. The handshake age it replaces already drives the status pill at the
+          // top of this card, so nothing is lost.
+          const _lk = meta.link;
+          if (!_lk || _lk.rtt_ms == null) return "—";
+          const _ls = typeof _lk.loss === "number" ? _lk.loss : null;
+          const _pl = ((meshHealth(node).peers.find(x => x.peer === peer)) || {}).plink || null;
+          const _warn = _ls != null && _ls > 0;   // ⚠️ MESH IS THE EXCEPTION: a DC-to-DC leg is not a client link: ANY loss on it is worth seeing, so this one shows from the
+              // first lost packet rather than at the 0.05% the client-facing counters use.
+          const _val = html`<${Fragment}>${Math.round(_lk.rtt_ms)}${T("unit|ms")}${_warn
+            ? html` <span class="dp-num" style=${"color:" + lossColorMesh(_ls)}>${T("(Loss {v1}%)", { v1: _ls })}</span>` : null}<//>`;
+          return html`<${LossPop} l=${_lk} pl=${_pl} peerName=${Store.nodeName(peer)} node=${node} iface=${iface} trigger=${_val}/>`;
+        })())}
       </div>
     </div>
     <div style="margin-top:12px"><${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.meshSeries(node, peer, r).then(x => x && x.ok ? x.data : {})}/></div>
@@ -1286,7 +1394,6 @@ export function ConnectionEditSheet({ node, iface }) {
       <div class="field"><label>${T("Dial endpoint IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— {node}'s IP", { node: Store.nodeName(peer) })}</span></label>
         <${NodeIpPick} ips=${prec.ips || []} value=${dialEp} onChange=${setDialEp} auto=${T("Auto ({v1}'s ingress)", { v1: Store.nodeName(peer) })}/></div>
     </div>
-    <div class="hint" style="margin-top:-4px">${Trich("Per-connection overrides: which of *{a}*'s IPs dials out, and which of *{b}*'s IPs it dials to (overriding {b}'s default ingress). Changing the endpoint re-connects this link automatically. Neither changes how routed traffic appears externally — that's the exit node's egress IP", { a: Store.nodeName(node), b: Store.nodeName(peer) })}.</div>
     ${(carried.length || smartCarried.length) ? html`<div style="margin-top:16px">
       ${carried.length ? html`<div class="fwd-head"><span class="egb egb-cascade"><${Ic} i="cascade"/>${T("tag|cascade")}</span><span class="fwd-to">to</span>${peerNm}</div>
         <div class="fwd-ifaces">${carried.map(c => ifBadge(c.iface))}</div>` : null}
@@ -1294,6 +1401,80 @@ export function ConnectionEditSheet({ node, iface }) {
         <div class="fwd-list">${smartCarried.map(s => html`<div class="fwd-row">${ifBadge(s.iface)} <span class="faint">(${s.cats.map(c => SMART_CAT_LABEL[c] || c).join(", ")})</span></div>`)}</div>` : null}
       <div class="hint" style="margin-top:16px">${Trich("These interfaces' client traffic exits the fleet through *{node}*{smart}.", { node: Store.nodeName(peer), smart: smartCarried.length ? T(" — smart-routed by destination") : "" })}</div>
     </div>` : null}
+    ${(() => {
+      // ── Datapath for this leg (RELAY-FEATURE-PLAN §4) ────────────────────────────────────────────────
+      // The mode is the operator's INTENT; the line under it is what the node is actually doing. Those are
+      // not the same thing and the difference is the whole point of the control: the node arms the divert
+      // only while it has just re-proven the relay is serving, and drops it otherwise. A switch that showed
+      // only its own position would be the one thing this feature must never ship.
+      const rst = ((Store.stats[node] || {}).relay) || {};
+      const elig = Object.entries(((nrec.relay || {}).eligibility) || {}).filter(([, e]) => e.via === peer);
+      const canRelay = elig.filter(([, e]) => !e.why).map(([k]) => k);
+      const barred = elig.filter(([, e]) => e.why);
+      if (!elig.length) return null;                     // this leg carries no whole-interface cascade — no choice to offer
+      const live = canRelay.map(k => [k, ((rst.ifaces || {})[k]) || null]);
+      const running = live.filter(([, v]) => v && v.ok);
+      const stalled = live.map(([, v]) => (v && !v.ok && v.why) || "").filter(Boolean)[0] || rst.why || "";
+      const conns = running.reduce((a, [, v]) => a + (v.live || 0), 0);
+      const down = running.reduce((a, [, v]) => a + (v.bytes_down || 0), 0);
+      const up = running.reduce((a, [, v]) => a + (v.bytes_up || 0), 0);
+      return html`<div class="dp-sec">
+        <div class="dp-row">
+          <span class="dp-l">${T("Datapath")}</span>
+          <div class="dpsw" role="radiogroup" aria-label=${T("Datapath")}>
+            <button type="button" role="radio" aria-checked=${!relayOn} class=${!relayOn ? "on" : ""}
+              onClick=${() => setRelayOn(false)}>${T("Forward")}</button>
+            <button type="button" role="radio" aria-checked=${relayOn} disabled=${!canRelay.length}
+              title=${!canRelay.length ? T("No interface on this link can be relayed") : ""}
+              class=${"sw-relay" + (relayOn ? " on" : "")} onClick=${() => setRelayOn(true)}>${T("Relay")}</button>
+          </div>
+          ${relayOn ? html`<div class="dp-cpu">
+            <span class="dp-l">${T("CPU cap")}</span>
+            <input type="number" min="5" max=${QUOTA_MAX} value=${quota} onInput=${e => setQuota(e.target.value)}/>
+            <span class="u">%</span>
+          </div>` : null}
+        </div>
+        ${(() => {
+          // The choice turns entirely on ONE measured fact — is this leg losing packets — and the panel has
+          // it. Saying "on a healthy link it buys nothing" without saying whether THIS link is healthy makes
+          // the operator go and look, several blocks up. Stated as of now, because it is a live reading and
+          // a leg that is clean this minute may not be clean tonight.
+          const _l = (meta.link || {});
+          const _ls = typeof _l.loss === "number" ? _l.loss : null;
+          if (_l.rtt_ms == null || _ls === null) return null;
+          return _ls > 0
+            ? html`<div class="hint dp-verdict warn"><${Ic} i="warn"/> ${Trich("This leg is losing *{v1}%* right now — that is the case for Relay.", { v1: String(_ls) })}</div>`
+            : html`<div class="hint dp-verdict ok"><${Ic} i="check"/> ${Trich("This leg is clean right now — *Forward* is the cheaper choice.")}</div>`;
+        })()}
+        <div class="hint dp-why">${relayOn
+          ? Trich("*{node}* answers the client itself and opens its own connection to {peer}. Loss on the link stops reaching the client, so a bad leg costs the user far less. In exchange it uses noticeably more CPU, and on a link that is already healthy it buys nothing.", { node: Store.nodeName(node), peer: Store.nodeName(peer) })
+          : Trich("Packets cross this link untouched. The simplest and cheapest option — *{node}* barely spends CPU on them and there is nothing in the path to fail. Right while the link to {peer} is healthy.", { node: Store.nodeName(node), peer: Store.nodeName(peer) })}</div>
+        ${relayOn0 ? html`<div class="conncard" style="margin-top:11px"><div class="conn-grid">
+            ${Cell(T("col|State"), running.length
+              ? html`<span class="lkpill up"><span class="lkdot up"></span>${T("relaying")}</span>`
+              : html`<span class="lkpill down"><span class="lkdot down"></span>${T("not relaying")}</span>`)}
+            ${running.length
+              ? Cell(T("Connections"), String(conns))
+              : Cell(T("Reason"), html`<span class="faint">${stalled || T("waiting for the node")}</span>`)}
+            ${running.length ? Cell(T("Carried"), fmtBytes(down) + " ↓  " + fmtBytes(up) + " ↑") : null}
+            ${(() => {
+              // The cap the KERNEL reports, not the one we asked for. A transient `systemctl set-property`
+              // drop-in outranks the unit file silently, and showing the configured number would display a
+              // limit nothing was enforcing.
+              const eff = live.map(([, v]) => v && v.quota_pct).find(v => v != null);
+              return (eff != null && String(eff) !== quota0)
+                ? Cell(T("CPU cap"), html`<span class="dp-num" style="color:var(--warn)">${T("{v1}% enforced, {v2}% set", { v1: eff, v2: quota0 })}</span>`)
+                : null;
+            })()}
+        </div></div>` : null}
+        ${barred.length ? html`<div class="notice warn" style="margin-top:11px"><${Ic} i="warn"/><span>
+          ${barred.map(([k, e]) => html`<div>${Trich("*{v1}* can't be relayed — {v2}. It keeps forwarding.", { v1: k, v2: e.why })}</div>`)}
+        </span></div>` : null}
+        ${quotaErr ? html`<div class="notice err" style="margin-top:9px"><${Ic} i="warn"/><span>${quotaErr}</span></div>` : null}
+        ${relayOn !== relayOn0 ? html`<div class="notice warn" style="margin-top:11px"><${Ic} i="warn"/><span>
+          ${Trich("Saving this drops every TCP connection currently crossing this link. Clients reconnect on their own.")}</span></div>` : null}
+      </div>`;
+    })()}
     <div class="hint" style="margin-top:14px">${Trich("This is a panel-managed mesh link to *{node}*. It's created and torn down automatically as nodes are added or removed. To route a user interface's traffic out through this node, set that interface's egress to *Forward to {node}*.", { node: Store.nodeName(peer) })}</div>
   <//>`;
 }
@@ -1334,12 +1515,14 @@ export function EditIfaceSheet({ node, iface }) {
     const fail = (m) => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 5000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 5100); };
     const r = await api.ifaceUpdate(body);
     if (!r.ok) return fail(srvText(r) || T("save failed"));
+    reportDropped(r);   // §5.4: the panel keeps what it can and names what it could not
+
     if (notup) { const r2 = await api.ifaceStart({ node, iface }); if (!r2.ok) return fail(srvText(r2) || T("start failed")); }
     await Store.poll();   // trackIfaceOps drives busy → done
     toast(notup ? T("Interface saved — starting…") : T("Interface saved."), "ok");
   };
   const save = () => {
-    const ee = egressError(eg, emode); if (ee) return toast(ee, "err");
+    const ee = egressSaveBlock(eg, emode); if (ee) return toast(ee, "err");
     const portChanged = port.trim() !== String(meta.desired_port || meta.listen_port || "");
     const epChanged = host.trim() !== epHost;
     if (portChanged || epChanged) {           // client-breaking → confirm first (the editor stays open behind it)
@@ -1365,7 +1548,7 @@ export function EditIfaceSheet({ node, iface }) {
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bring this interface up on the node")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> ${T("Start service")}</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Take this interface down on the node (stays down until started)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bounce this interface's service on the node (down then up)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg, emode) || !!iperr || !ifaceDirty} title=${iperr || egressError(eg, emode) || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressSaveBlock(eg, emode) || !!iperr || !ifaceDirty} title=${iperr || egressSaveBlock(eg, emode) || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
     <div class="iface-intro"><div>${Trich("Changing the *endpoint* or *port* will break the existing clients' connections; you will need to re-distribute the configs / QR codes.")}</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("This interface is *down* on the node. Change the *Listen port* to a free one and *Save* — the panel will write the new port and restart the interface to bring it up.")}</span></div>` : null}
     ${((meta.drift && meta.drift.public_key) || driftDone) ? (() => {
@@ -1443,17 +1626,18 @@ export function EditIfaceSheet({ node, iface }) {
     </div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
     ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
-      summary=${(eg.rules || []).length ? Trich("*{v1}* {v2} · first match wins", { v1: (eg.rules || []).length, v2: (eg.rules || []).length === 1 ? "rule" : "rules" }) : T("no rules yet")}
+      summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} rules=${eg.rules || []} onChange=${rs => setEg({ ...eg, rules: rs })}/>
+      <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
     <//>` : null}
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
       summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
       <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
     <//>
-    <${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS") + (isAwg ? " · AWG" : "")}
+    <${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS") + (isAwg ? awgTail : "") + (natPinApplies(eg) ? natTail : "")}
       open=${disc.advanced} onToggle=${() => tog("advanced")}>
+      <div class="field secdiv"><label>${isAwg ? T("AmneziaWG settings") : T("WireGuard settings")}</label></div>
       <div class="row2">
         <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">${T("Default for new peers")}</div></div>
         <div class="field"><label>${T("Persistent keepalive (s)")}</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">${T("0 disables · blank = 25")}</div></div>
@@ -1462,6 +1646,7 @@ export function EditIfaceSheet({ node, iface }) {
       ${isAwg ? html`<div class="field"><label>${T("AmneziaWG parameters")}</label>
         <div class="hint" style="margin:0 0 8px">${T("Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.")}</div>
         <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div></div>` : null}
+      <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
     <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;

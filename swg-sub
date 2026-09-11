@@ -46,11 +46,17 @@ import re
 import signal
 import ssl
 import threading
+import traceback
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 FLEET_PATH = os.environ.get("SWG_SUB_FLEET") or os.environ.get("SWG_PANEL_FLEET", "/etc/swg-panel/fleet.json")
-WEB_DIR    = os.environ.get("SWG_SUB_WEB", os.path.dirname(os.path.abspath(__file__)))
+# ⚠️ ABSOLUTE, ALWAYS. The containment check in `_static` compares the resolved file path against this,
+# so a RELATIVE value — `SWG_SUB_WEB=.`, which swg-panel-server accepts for its own web dir — makes every
+# asset fail that comparison and return 403. The page shell still serves, so what the operator sees is a
+# subscription page stuck for ever on "Loading…" with no stylesheet and nothing in the log. Measured
+# 2026-09-08. Resolving it here means the two programs answer the same env-var shape the same way.
+WEB_DIR    = os.path.realpath(os.environ.get("SWG_SUB_WEB", os.path.dirname(os.path.abspath(__file__))))
 # swg-sub's OWN cert (never the panel's — an internet-facing process must not hold the panel's TLS key).
 # swg-netctl issues+installs here; the file is group-swg readable so swgsub can load it. Absent → plain HTTP.
 SUB_TLS_DIR  = os.environ.get("SWG_SUB_TLS_DIR", "/etc/swg-sub/tls")
@@ -598,6 +604,7 @@ class Handler(BaseHTTPRequestHandler):
         pass                                            # no request logging — the page is public, keep it quiet
 
     def _headers(self, code, ctype, length, cache="no-store", extra=None):
+        self._replied = True                              # so the do_GET guard never writes a second response
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(length))
@@ -635,7 +642,12 @@ class Handler(BaseHTTPRequestHandler):
         if not rel:
             return self._notfound()
         full = os.path.normpath(os.path.join(WEB_DIR, rel))
-        if not (full.startswith(os.path.realpath(WEB_DIR)) or full.startswith(WEB_DIR)):
+        # Belt and braces over a hardcoded table: `rel` comes from STATIC, so nothing here is
+        # attacker-controlled and no `..` can reach this. Kept so a future STATIC entry cannot quietly
+        # widen it. ONE comparison now — WEB_DIR is resolved at read, so the second clause this used to
+        # carry (`or full.startswith(WEB_DIR)`) tested exactly the same thing, and reading it invited the
+        # conclusion that WEB_DIR might be unresolved, which is the bug that was just fixed.
+        if not full.startswith(WEB_DIR):
             return self._send(403, "forbidden\n")
         try:
             with open(full, "rb") as f:
@@ -699,6 +711,21 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
+        # ⚠️ AN UNHANDLED EXCEPTION HERE SENDS THE CLIENT NOTHING AT ALL. BaseHTTPRequestHandler does not
+        # catch what do_GET raises: the traceback goes to stderr, the connection closes, and ZERO bytes reach
+        # the client — measured, not assumed. Behind Cloudflare that is a 520 with no origin status to read,
+        # which is exactly how the 1.7.11 sub outage presented: one NameError, every page down, and nothing
+        # in the reply to say why. That particular name was fixed; this makes the whole CLASS survivable —
+        # a 500 the operator can see, a traceback in the journal, and the rest of the pages still served.
+        try:
+            self._route()
+        except Exception:
+            traceback.print_exc()
+            if not getattr(self, "_replied", False):
+                with contextlib.suppress(Exception):     # the peer may be gone; never raise out of the handler
+                    self._send(500, "server error\n")
+
+    def _route(self):
         path = strip_base(self.path.split("?", 1)[0].split("#", 1)[0])   # drop the reverse-proxy mount prefix, if any
         st = Handler.state
 

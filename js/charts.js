@@ -8,10 +8,11 @@
  * screen; they read node records and the iface-op lifecycle, which is not chart business.
  */
 
-import { rate, niceScaleCeil } from "./util.js";
+// `rate`/`niceScaleCeil` come from ui.js: they follow the operator's unit choice (see rateUnits there).
+
 import { resolvedTheme } from "./theme.js";
 import { Store, api } from "./store.js";
-import { Tag, Panel } from "./ui.js";
+import { Tag, Panel, rate, niceScaleCeil } from "./ui.js";
 import { T } from "./i18n.js";
 import { rangeLabel } from "./views.js";
 import { h, Fragment } from "preact";
@@ -85,6 +86,52 @@ export function cpuColor(v) {
   if (v <= 100) return mix(LOAD_O, LOAD_R, (v - 85) / 15);
   return mix(LOAD_R, LOAD_R, 0);
 }
+// Loss / drop colour ramp, in the panel's own status hues — NOT the CPU ramp's green. Green means "fine",
+// and a link losing packets is not fine, so the lowest band is BLUE: "measured, and not a problem".
+//
+// The blue is a FLOOR, not the first stop of the gradient. Interpolating out of blue lands on a grey-beige
+// right where the interesting values sit, and interpolating hue instead walks through green to get there —
+// the exact wrong signal. Above the floor the ramp runs warm only: partial (yellow) → fault (orange) →
+// dangling (red), three adjacent hues that stay saturated the whole way.
+//
+// Bands, chosen to under-warn rather than over-warn: blue to 0.5%, yellow→orange 0.5–2%, orange→red 2–5%,
+// full red past 5%. ⚠️ Known trade-off, recorded deliberately: 0.4% loss is enough to collapse a cascaded
+// upload (measured — 147 Mbit/s to 8 on this fleet) and under these bands it reads BLUE. That is the
+// operator's call and the right default for a panel nobody should learn to ignore; the number and its
+// sample count are always on the row for anyone reading closely. Tune here; no caller picks colours.
+const LOSS_FLOOR = 0.5;
+const LOSS_FLOOR_DARK = [79, 168, 240], LOSS_FLOOR_LIGHT = [43, 124, 211];        // --ready
+const LOSS_STOPS_DARK = [[0.5, [226, 200, 74]], [2, [242, 153, 74]], [5, [242, 107, 130]]];   // partial → fault → dangling
+const LOSS_STOPS_LIGHT = [[0.5, [176, 122, 22]], [2, [217, 119, 42]], [5, [214, 58, 85]]];
+// ⚠️ A MESH LEG IS NOT A CLIENT LINK, AND 0.5% IS THE WRONG FLOOR FOR ONE. Measured on this fleet: ~0.1%
+// one-way loss on the swgt→hel-flux leg collapsed a cascaded upload, rate-independently — and under the
+// client-calibrated scale above that leg painted the same blue as a perfect one, because everything at or
+// below 0.5% is "ready". The leg cards already SHOW loss from the first lost packet for exactly this reason
+// (a DC-to-DC leg has no business losing anything); the colour has to agree with them, or the number says
+// "0.4%" while the colour says "fine" and the colour is what gets read across a room.
+//
+// Stops are the client scale shifted down a decade, which is roughly the damage ratio we measured: 0.1%
+// reads yellow, 0.4% orange, 2%+ red. The floor sits just under a single lost packet in a few thousand, so
+// genuine noise still reads healthy.
+const LOSS_FLOOR_MESH = 0.05;
+const MESH_STOPS_DARK = [[0.05, [226, 200, 74]], [0.5, [242, 153, 74]], [2, [242, 107, 130]]];
+const MESH_STOPS_LIGHT = [[0.05, [176, 122, 22]], [0.5, [217, 119, 42]], [2, [214, 58, 85]]];
+export function lossColorMesh(pct) { return lossColor(pct, true); }
+
+export function lossColor(pct, mesh) {
+  const light = resolvedTheme() === "light";
+  const S = mesh ? (light ? MESH_STOPS_LIGHT : MESH_STOPS_DARK) : (light ? LOSS_STOPS_LIGHT : LOSS_STOPS_DARK);
+  const rgb = a => "rgb(" + a.join(",") + ")";
+  if (!(pct > (mesh ? LOSS_FLOOR_MESH : LOSS_FLOOR))) return rgb(light ? LOSS_FLOOR_LIGHT : LOSS_FLOOR_DARK);
+  for (let i = 1; i < S.length; i++) {
+    if (pct <= S[i][0]) {
+      const [lo, a] = S[i - 1], [hi, b] = S[i], t = (pct - lo) / (hi - lo);
+      return rgb(a.map((x, k) => Math.round(x + (b[k] - x) * t)));
+    }
+  }
+  return rgb(S[S.length - 1][1]);
+}
+
 export function MiniArea({ points, h, times, range, cap }) {
   const [hov, setHov] = useState(null);
   const wref = useRef(null);

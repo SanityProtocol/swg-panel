@@ -69,6 +69,13 @@ export function turnForkList() {
 // turnFork label) use the FULL turnForkList() so a deployed hidden-fork instance still resolves; only the pickers/
 // toggles/dropdowns use this filtered view.
 export function turnForksVisible() { return turnForkList().filter(f => !f.hidden); }
+// Dropdown options for a list of forks — the "Server fork" picker, which the interface sheets ask for five
+// times over (WDTT create/adopt/edit, csqtt create, the fork row). Five hand-written option lists were five
+// chances to label the same fork differently; `forkPickLabel` was already the one name, this is the one list.
+export const forkOpts = (forks, off = null) => (forks || []).map(f => {
+  const why = off ? off(f) : "";      // a reason this fork cannot be picked, or "" — the row greys and says it
+  return { value: f.id, label: forkPickLabel(f.id) + (why ? " — " + why : ""), disabled: !!why };
+});
 // A fork's OPERATOR-FACING name (the catalog label), never the internal id. They differ for every fork whose author
 // name isn't its id — Ivan4537/wdttplus, XXcipherX/xxcipherx, SpaceNeuroX/qwdtt, amurcanov/csqtt — and the id leaking
 // into a label position is a recurring drift (see ForkTag). One lookup, so there is a single place to be right.

@@ -22,7 +22,7 @@ import {
   Portal,
 } from "./ui.js";
 import {
-  peersView, sortPeerRows, peerSortBy, pageScroll, searchMatch, peerMatchesQ, ifaceOptGroups,
+  peersView, sortPeerRows, peerSortBy, pageScroll, pageSizeOpts, searchMatch, peerMatchesQ, ifaceOptGroups,
   nodeFilterOptions, ifaceFilterOptions, orphCount, OnlinePeersTag, revealUser,
   dashNodes, dashNodeOn, dashToggleNode,
 } from "./views.js";
@@ -143,7 +143,7 @@ export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideTool
   const bump = () => force(x => x + 1);
   const nodeSet = new Set(), ifByNode = {};
   for (const p of peers) for (const t of p.targets) { nodeSet.add(t.node); (ifByNode[t.node] = ifByNode[t.node] || new Set()).add(t.iface); }
-  const nodes = [...nodeSet].sort((a, b) => Store.nodeName(a).localeCompare(Store.nodeName(b)));
+  const nodes = [...nodeSet].sort((a, b) => Store.byNode(a, b));
   const multiServer = nodes.length > 1;
   if (view.node && view.node !== "*" && !nodeSet.has(view.node)) view.node = "";
   if (!view.node) view.node = multiServer ? "*" : (nodes[0] || "*");
@@ -196,20 +196,19 @@ export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideTool
   return html`<div class="peerspanel">
     ${hideToolbar ? null : html`<div class="toolbar sub">
       <${SearchBox} placeholder=${T("Search title, address…")} value=${view.q || ""} onInput=${e => { view.q = e.target.value; view.page = 1; bump(); }}/>
-      ${multiServer ? html`<select class="selwrap" value=${node} onChange=${e => { view.node = e.target.value; view.iface = ""; view.page = 1; bump(); }}>
-        <option value="*">${T("All nodes")}</option>${nodes.map(n => html`<option value=${n}>${Store.nodeName(n)}</option>`)}
-      </select>` : null}
-      ${ifaceOpts.length > 1 ? html`<select class="selwrap" value=${iface} onChange=${e => { view.iface = e.target.value; view.page = 1; bump(); }}>
-        <option value="*">${T("All interfaces")}</option>${ifaceOptGroups(ifaceOpts)}
-      </select>` : null}
+      ${multiServer ? html`<${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${node}
+        onChange=${v => { view.node = v; view.iface = ""; view.page = 1; bump(); }}
+        options=${[{ value: "*", label: T("All nodes") }, ...nodes.map(n => ({ value: n, label: Store.nodeName(n) }))]}/>` : null}
+      ${ifaceOpts.length > 1 ? html`<${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${iface}
+        onChange=${v => { view.iface = v; view.page = 1; bump(); }}
+        options=${[{ value: "*", label: T("All interfaces") }, ...ifaceOptGroups(ifaceOpts)]}/>` : null}
       ${onNew ? html`<span class="grow"></span><button class="btn btn-primary btn-mini" onClick=${onNew}><${Ic} i="plus"/> ${newLabel || T("New peer")}</button>` : null}
     </div>`}
     <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live} sort=${view.sort} dir=${view.dir} onSort=${c => { peerSortBy(view, c); view.page = 1; bump(); }}/>
     ${rows.length > pageSize ? html`<div class="pager">
       <label class="pager-size">${T("Rows per page")}
-        <select class="selwrap" value=${pageSize} onChange=${e => { view.pageSize = +e.target.value; view.page = 1; bump(); }}>
-          ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
-        </select></label>
+        <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}
+          onChange=${v => { view.pageSize = v; view.page = 1; bump(); }}/></label>
       <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, rows.length), total: rows.length })}</span>
       <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>${T("‹ Prev")}</button>
       <span class="pager-pg">${page} / ${totalPages}</span>
@@ -235,11 +234,14 @@ export function NodesRailPanel({ nav, active }) {
       const cls = "railmenu-b node" + (on ? " on" : (nav ? "" : " off")) + (down ? " down" : "");
       const styl = "--c:" + Store.nodeColor(n.id);   // on the button so BOTH the dot glow and the selected name can use the node colour
       const inner = html`<span class="railmenu-ic"><span class="railnode-dot"></span></span><span class="railmenu-t">${n.name}</span>`;
+      // The node NAME is interpolated, not concatenated: "Hide msk-1" and "Скрыть msk-1" put it in the
+      // same place, but the two prefixes are not interchangeable words — a language may need a case ending.
+      const notRep = down ? " · " + T("not reporting") : "";
       if (!nav)
-        return html`<button key=${n.id} class=${cls} style=${styl} onClick=${() => dashToggleNode(n.id)} title=${(on ? "Hide " : "Show ") + n.name + (down ? " · not reporting" : "")}>${inner}</button>`;
+        return html`<button key=${n.id} class=${cls} style=${styl} onClick=${() => dashToggleNode(n.id)} title=${(on ? T("Hide {v1}", { v1: n.name }) : T("Show {v1}", { v1: n.name })) + notRep}>${inner}</button>`;
       return on
-        ? html`<span key=${n.id} class=${cls} style=${styl} title=${n.name + (down ? " · not reporting" : "")}>${inner}</span>`
-        : html`<a key=${n.id} class=${cls} style=${styl} href=${"#/node/" + encodeURIComponent(n.id)} title=${(down ? "Down — " : "Go to ") + n.name}>${inner}</a>`;
+        ? html`<span key=${n.id} class=${cls} style=${styl} title=${n.name + notRep}>${inner}</span>`
+        : html`<a key=${n.id} class=${cls} style=${styl} href=${"#/node/" + encodeURIComponent(n.id)} title=${down ? T("Down — {v1}", { v1: n.name }) : T("Go to {v1}", { v1: n.name })}>${inner}</a>`;
     })}
   </div>`;
 }

@@ -15,14 +15,15 @@
  * re-derives the freeze, pagination happens after.
  */
 
-import { tkey } from "./util.js";
-import { Store, bus } from "./store.js";
+import { tkey, seen, fmtBytes } from "./util.js";
+import { lossColor, lossColorMesh } from "./charts.js";
+import { Store, api, bus } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
          isWdttName, isCsqttName, isSelfContainedName } from "./model.js";
 import { go } from "./router.js";
-import { statusLabel, Popover, Ic, Tag, inProc, setPendingSection } from "./ui.js";
+import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
-import { T, plural, pluralWord } from "./i18n.js";
+import { T, plural, pluralWord, fmtNum, srvText } from "./i18n.js";
 import { h } from "preact";
 import { useState } from "preact/hooks";
 import htm from "htm";
@@ -40,13 +41,23 @@ export const peersView = { node: "", iface: "", q: "", sort: "status", dir: -1, 
 // dropdown can never drift from the badges it filters (that includes the two display remaps: the access-revoke
 // key `disabled` shows as Blocked, the DPI fault key `blocked` as Restricted).
 export const PEER_STATUS_KEYS = ["", "online", "ready", "unassigned", "disabled", "expired", "expiring", "blocking",
-  "restoring", "dangling", "broken", "partial", "blocked", "faulty", "pending", "unknown"];   // i18n-keys
-export const peerStatusFilters = () => PEER_STATUS_KEYS.map(k => [k, k ? statusLabel(k) : T("All statuses")]);
+  "restoring", "dangling", "broken", "partial", "blocked", "pending", "unknown"];   // i18n-keys
+// ("faulty" is gone from this list: the flat-rx rule that produced it could only fire on a false positive,
+//  and the churn detector that replaced it raises "blocked"/Restricted. A filter that can never match is
+//  worse than no filter — it reads as "no faulty peers" rather than "this is not measured any more".)
+// The one page-size list, and its Dropdown options. Written out four times across three pagers before —
+// three in the roster screens and one in the shared grid — which is three chances for them to drift apart.
+export const pageSizeOpts = () => [20, 30, 50, 100].map(n => ({ value: n, label: String(n) }));
+export const peerStatusFilters = () => PEER_STATUS_KEYS.map(k => ({ value: k, label: k ? statusLabel(k) : T("All statuses") }));
 // Prominent warning when the panel keeps no client configs at rest — QRs/downloads then only work
 // in the session a peer is created, and existing peers can't be re-shared. Shown on Overview + Peers.
 
-// <option>s for an interface dropdown: "All AmneziaWG" / "All WireGuard" shortcuts, then AmneziaWG / WireGuard
-// optgroups of the individual interfaces (used everywhere we list ifaces; the caller renders "All interfaces").
+// OPTIONS for an interface dropdown: "All AmneziaWG" / "All WireGuard" shortcuts, then AmneziaWG / WireGuard
+// groups of the individual interfaces (used everywhere we list ifaces; the caller renders "All interfaces").
+//
+// ⚠️ DATA, NOT MARKUP. These three built `<option>`/`<optgroup>` elements while every consumer was a native
+// `<select>`. They are the shared `Dropdown` now, which takes `[{value,label}]` with `{group,items}` for a
+// heading — so the helpers return that and there is ONE shape, rather than a markup twin per data twin.
 // Type groups only matter when BOTH kinds are present — with one kind we list the interfaces flat (a group header
 // or "All <type>" would just duplicate "All interfaces"). "All AmneziaWG" / "All WireGuard" appear only when both
 // kinds exist AND there's more than one of that kind (otherwise they'd equal "All interfaces" or the lone iface).
@@ -58,9 +69,10 @@ export function ifaceOptGroups(names) {
   const awg = names.filter(n => !isSelfContainedName(n) && ifaceIsAwg(n));
   const wg = names.filter(n => !isSelfContainedName(n) && !ifaceIsAwg(n));
   const groups = [["*awg", "AmneziaWG", awg], ["*wg", "WireGuard", wg], ["*wdtt", "WDTT", wdtt], ["*csqtt", "CSQTT", csqtt]].filter(g => g[2].length);
-  if (groups.length < 2) return html`${names.map(i => html`<option value=${i}>${i}</option>`)}`;   // one kind → flat list (an "All <type>" would just duplicate "All interfaces")
+  if (groups.length < 2) return names.map(i => ({ value: i, label: i }));   // one kind → flat list (an "All <type>" would just duplicate "All interfaces")
   // "All <type>" shortcut per kind (only when that kind has >1 — else it equals the lone iface), then a group per kind.
-  return html`${groups.map(([val, label, arr]) => arr.length > 1 ? html`<option value=${val}>${T("All {v1}", { v1: label })}</option>` : null)}${groups.map(([, label, arr]) => html`<optgroup label=${label}>${arr.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>`)}`;
+  return [...groups.filter(([, , arr]) => arr.length > 1).map(([val, label]) => ({ value: val, label: T("All {v1}", { v1: label }) })),
+          ...groups.map(([, label, arr]) => ({ group: label, items: arr.map(i => ({ value: i, label: i })) }))];
 }
 // Shared node / interface FILTER <option> lists so the Peers / Users / Live toolbars behave identically:
 //   0 available → a single "No nodes/interfaces" item · exactly 1 → that one (labelled, value=allVal so the list
@@ -68,14 +80,14 @@ export function ifaceOptGroups(names) {
 //   "all" sentinel ("" or "*").
 export function nodeFilterOptions(allVal) {
   const ns = Store.nodes || [];
-  if (!ns.length) return html`<option value=${allVal}>${T("No nodes")}</option>`;
-  if (ns.length === 1) return html`<option value=${allVal}>${ns[0].name}</option>`;
-  return html`<option value=${allVal}>${T("All nodes")}</option>${ns.map(n => html`<option value=${n.id}>${n.name}</option>`)}`;
+  if (!ns.length) return [{ value: allVal, label: T("No nodes") }];
+  if (ns.length === 1) return [{ value: allVal, label: ns[0].name }];
+  return [{ value: allVal, label: T("All nodes") }, ...ns.map(n => ({ value: n.id, label: n.name }))];
 }
 export function ifaceFilterOptions(names, allVal) {
-  if (!names.length) return html`<option value=${allVal}>${T("No interfaces")}</option>`;
-  if (names.length === 1) return html`<option value=${allVal}>${names[0]}</option>`;
-  return html`<option value=${allVal}>${T("All interfaces")}</option>${ifaceOptGroups(names)}`;
+  if (!names.length) return [{ value: allVal, label: T("No interfaces") }];
+  if (names.length === 1) return [{ value: allVal, label: names[0] }];
+  return [{ value: allVal, label: T("All interfaces") }, ...ifaceOptGroups(names)];
 }
 
 // column sort keys for the shared peer grid — every header is clickable (order-by). Callers hold sort/dir in
@@ -305,7 +317,7 @@ export function onlineUserRows(nodeId) {
     const isOn = nodeId ? p.targets.some(t => t.node === nodeId && t.online) : p.online;
     if (!isOn) return;
     const id = p.unassigned ? "_un" : ("u" + p.user_id);
-    if (!m[id]) m[id] = { name: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), count: 0, unassigned: !!p.unassigned, lastAge: null };
+    if (!m[id]) m[id] = { name: p.unassigned ? T("val|Unassigned") : (p.name || T("(unnamed)")), count: 0, unassigned: !!p.unassigned, lastAge: null };
     m[id].count++;
     if (p.lastHandshakeAge != null) m[id].lastAge = (m[id].lastAge == null) ? p.lastHandshakeAge : Math.min(m[id].lastAge, p.lastHandshakeAge);
   });
@@ -322,7 +334,7 @@ export function onlinePeerRows(nodeId, iface) {
   const onT = (t) => (nodeId == null || t.node === nodeId) && (iface == null || t.iface === iface) && t.online;
   return (Store.recon.peers || []).filter(p => p.targets.some(onT))
     .map(p => { const t = p.targets.find(onT) || {};
-      return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"),
+      return { title: p.title || p.name || T("(peer)"), user: p.unassigned ? T("val|Unassigned") : (p.name || T("(unnamed)")),
                ip: t.ip || "", iface: t.iface, unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })
     .sort(_byHandshake);
 }
@@ -336,7 +348,7 @@ export function turnConnRows(nodeId, iface, service) {
   const onT = (t) => t.node === nodeId && t.iface === iface && t.online && t.viaTurn === service;
   return (Store.recon.peers || []).filter(p => p.targets.some(onT))
     .map(p => { const t = p.targets.find(onT) || {};
-      return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), ip: t.ip || "", unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })
+      return { title: p.title || p.name || T("(peer)"), user: p.unassigned ? T("val|Unassigned") : (p.name || T("(unnamed)")), ip: t.ip || "", unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })
     .sort(_byHandshake);
 }
 
@@ -346,7 +358,7 @@ export function wdttConnRows(nodeId, iface) {
   const onT = (t) => t.node === nodeId && t.iface === iface && t.online;
   return (Store.recon.peers || []).filter(p => p.targets.some(onT))
     .map(p => { const t = p.targets.find(onT) || {};
-      return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), ip: t.ip || "", unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })
+      return { title: p.title || p.name || T("(peer)"), user: p.unassigned ? T("val|Unassigned") : (p.name || T("(unnamed)")), ip: t.ip || "", unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })
     .sort(_byHandshake);
 }
 
@@ -380,7 +392,15 @@ export function meshHealth(nodeId) {
     // can be asserted up: the surviving end's handshake age lags up to 180s behind the peer actually going away —
     // which showed an offline node ↓1/1 AND its still-online peer ↑1/1 to a node that's already gone. Zero both.
     const linkDown = nodeStale(nodeId) || nodeStale(peer);
-    return { peer,
+    // Leg quality as measured FROM THIS NODE (the node probes its own links). A handshake says the link is
+    // up; this says whether it carries traffic well — 0.4% loss caps a single cascaded TCP flow at a few
+    // Mbit/s while the same link moves hundreds in the other direction.
+    const link = (((Store.describe || {})[nodeId] || {})[iface] || {}).link || null;
+    // …and the PEER's measurement of the same leg. Each node probes its OWN links, so "how is the traffic
+    // coming IN to this node" is a question only the other end can answer. The inbound bubble asks exactly
+    // that, and showing our own outbound figure there would answer a different question with a straight face.
+    const plink = (((Store.describe || {})[peer] || {})[pmp.iface] || {}).link || null;
+    return { peer, link, plink,
       out: linkDown ? "down" : stat(nodeId, iface, reprovisioning),
       in:  linkDown ? "down" : stat(peer, pmp.iface, pmp.reprovisioning) };
   });
@@ -397,17 +417,269 @@ export function MeshStat({ nodeId, mode }) {
   // all-up → the arrow's colour (inbound green · outbound blue) · none up → red · partial → orange
   const num = (ok, dir) => html`<b class=${"mh-num " + (mode === "in" ? "mh-num-hdr " : "") + (ok >= h.total ? dir : ok === 0 ? "mhn-bad" : "mhn-warn")}>${ok}/${h.total}</b>`;
   const ordered = (Store.nodes || []).filter(n => h.peers.some(p => p.peer === n.id));
+  // The loss COLUMN exists only when some leg actually has loss — otherwise a healthy fleet pays for an
+  // empty gutter on every row. Layout stays stable while it is there, so a value appearing does not shift
+  // the columns beside it.
+  // DIRECTION MATTERS, AND IT MATTERS PER QUANTITY.
+  //
+  // RTT is a ROUND trip: measured from either end it crosses the same point-to-point tunnel out and back,
+  // so our own reading is a legitimate answer in an inbound view. LOSS IS NOT — it is per-direction, and
+  // only the far end can measure what arrives here. So the inbound bubble takes latency from whichever end
+  // has it and takes loss ONLY from the peer.
+  //
+  // The fallback used to cover both, which put this node's OUTBOUND loss under an "inbound" heading — the
+  // same figure the link cards already show for the other direction, wearing the opposite label. A number
+  // in the wrong direction is worse than a blank cell: the blank says "not measured", the number lies.
+  const legOf = p => (mode === "in" ? (p.plink || p.link) : p.link);
+  const legIsPeer = p => mode !== "in" || !!p.plink;
+  const lossOf = p => (mode === "in" ? p.plink : p.link);   // directional: never borrowed from the near end
+  const anyLoss = h.peers.some(p => { const l = lossOf(p); return l && typeof l.loss === "number" && l.loss > 0; });
   const row = n => {   // node name FIRST, then the glowing arrow(s)
     const p = h.peers.find(x => x.peer === n.id);
     const nameCls = p.in === "up" ? "mh-bold" : p.in === "down" ? "mh-dim" : "";
-    return html`<div class="mh-row"><span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span><span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}</span></div>`;
+    // Leg quality in FIXED columns so they line up down the bubble, loss first because it is the alarm and
+    // sits closest to the name that owns it. Loss renders ONLY when it is enough to matter: a "0.0%" on
+    // every healthy row is noise that teaches the eye to skip the column, and then the one row that matters
+    // gets skipped with it. The column itself only exists when some leg has loss (see anyLoss), so a healthy
+    // fleet does not carry an empty gutter.
+    const lk = legOf(p), ll = lossOf(p);
+    const loss = ll && typeof ll.loss === "number" ? ll.loss : null;
+    const warn = loss != null && loss > 0;   // ⚠️ MESH IS THE EXCEPTION: a DC-to-DC leg is not a client link: ANY loss on it is worth seeing, so this one shows from the
+              // first lost packet rather than at the 0.05% the client-facing counters use.
+    const legBase = !ll ? (lk ? T("Round-trip latency to {v3}. Loss this way is measured by {v3}, which has not reported it.", { v3: n.name }) : "")
+      : legIsPeer(p) ? T("Leg measured from {v3}: {v1} of {v2} probe packets lost.",
+                         { v1: ll.window_lost, v2: ll.window_sent, v3: n.name })
+      : T("Leg measured from this node: {v1} of {v2} probe packets lost.",
+          { v1: ll.window_lost, v2: ll.window_sent });
+    // A row inside this bubble cannot carry a bubble of its own — the outer one closes the moment the
+    // pointer leaves it for a portalled child — so the extra facts ride the native tooltip here. The mesh
+    // CARDS, which are not inside a popover, get the full LossPop instead.
+    const legTitle = [legBase,
+      ll && typeof ll.peak_loss === "number" && ll.peak_loss > (ll.loss || 0) ? T("Worst probe {v1}%.", { v1: ll.peak_loss }) : "",
+      ll && ll.last_loss_s != null ? T("Last loss {v1} ago.", { v1: seen(ll.last_loss_s) }) : "",
+      lk && lk.mdev_ms != null ? T("Jitter {v1}ms.", { v1: lk.mdev_ms.toFixed(1) }) : "",
+    ].filter(Boolean).join(" ");
+    return html`<div class="mh-row" title=${legTitle}>
+      <span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span>
+      ${anyLoss ? html`<span class="mh-loss" style=${warn ? "color:" + lossColorMesh(loss) : ""}>${warn ? loss + "%" : ""}</span>` : null}
+      <span class="mh-rtt">${lk && lk.rtt_ms != null ? Math.round(lk.rtt_ms) + T("unit|ms") : ""}</span>
+      <span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}</span>
+    </div>`;
   };
   const trigger = mode === "in"
     ? html`<span class="mh-tag mh-tag-hdr"><span class="mh-lbl-hdr">${T("This node's mesh status:")}</span> ${num(h.okIn, "mhn-down")}</span>`
     : html`<span class="mh-tag"><span class="nm-l">${T("Mesh")}</span><span class="mh-grp"><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn, "mhn-down")}</span><span class="mh-grp"><span class="mh-ar mh-up s-up">↑</span>${num(h.okOut, "mhn-up")}</span></span>`;
-  return html`<${Popover} cls="mh-pop" popCls="mh-bubble" alignRight=${true} trigger=${trigger}>
+  return html`<${Popover} cls="mh-pop" popCls=${"mh-bubble" + (anyLoss ? " has-loss" : "")} alignRight=${true} trigger=${trigger}>
     <div class="onpop-h">${mode === "in" ? T("Inbound links") : T("Mesh connections")}</div>
     ${ordered.map(row)}
+  </${Popover}>`;
+}
+
+// ───── interface drops: what the kernel counters can actually tell an operator ─────
+// The card shows one percentage. One percentage cannot be acted on: a node that cannot send fast enough,
+// a send that failed outright, and traffic refused on arrival are three different faults wearing the same
+// number. This bubble splits it the way the kernel already counts it, and adds the two things a rolling
+// mean hides — the worst single sample (bursts are what users feel; a 0.02% mean can be one 5% sample)
+// and whether it is happening NOW or is a scar from hours ago.
+//
+// Everything here is free: the node reads sysfs counters it was already reading. Fields are all optional,
+// because a node on an older build reports only pct/window_* and this must degrade to that quietly.
+const DROP_KINDS = [
+  { k: "tx_drop", dir: "out", lbl: () => T("queue full"),
+    hint: () => T("This node couldn't send fast enough and dropped from its own queue — local pressure, not the path.") },
+  { k: "tx_err",  dir: "out", lbl: () => T("failed"),
+    hint: () => T("Sends failed outright — no route out, or a peer whose endpoint this node doesn't know yet.") },
+  { k: "rx_drop", dir: "in",  lbl: () => T("refused"),
+    hint: () => T("Traffic arrived and wasn't accepted — typically a stale key, or a source outside the peer's allowed range.") },
+  { k: "rx_err",  dir: "in",  lbl: () => T("errors"),
+    hint: () => T("Malformed or truncated frames arrived on this interface.") },
+];
+
+// ───── mesh loss: the same treatment, for the number that comes off the probe ─────
+// ⚠️ THE HEADLINE PERCENTAGE OVERSTATES ITS OWN PRECISION. 20 packets a minute over a 30-probe window is
+// 600 packets, so the smallest non-zero loss the probe can express is 1/600 = 0.167% — and that is exactly
+// the figure an operator sees when ONE packet went missing, once, up to half an hour ago. The bubble's job
+// is to put that packet count in front of them, and to say when it happened, before they go rebuild a leg
+// that is fine. Everything here is measured already; none of it costs another probe.
+//
+// `l` = this end's reading, `pl` = the far end's reading of the same leg. Loss is directional — only the
+// receiving end can see what failed to arrive — so both are shown side by side rather than averaged.
+export function LossPop({ l, pl, peerName, node, iface, trigger, alignRight }) {
+  const [reset, setReset] = useState("");
+  if (!l && !pl) return trigger;
+  // ⚠️ RESETS THE LEG, NOT THIS END. `Out` is this node's probe, `In` is the far node's probe of us — two
+  // independent measurements — so the panel stamps the nonce on BOTH ends (mesh_leg_ends). Clearing only
+  // the near end would leave half the bubble reading the old outage, which looks like a bug, not a reset.
+  const doReset = async e => {
+    e.preventDefault(); e.stopPropagation();
+    setReset("busy");
+    const r = await api.ifaceUpdate({ node: node, iface: iface, mesh_reset: 1 });
+    if (r && r.ok) { setReset("ok"); setTimeout(() => setReset(""), 2500); }
+    else { setReset(""); toast(srvText(r) || T("Couldn't reset the probe window."), "err"); }
+  };
+  // ⚠️ EVERY QUALIFIER MUST FOLLOW THE DIRECTION IT BELONGS TO. The first cut anchored "worst probe",
+  // "last loss" and the RTT spread to whichever end reported first — in practice always the near one — so
+  // a leg losing 2.4% INBOUND, with 412ms of far-end bufferbloat, rendered "last loss: none in this
+  // window", "jitter 0.3ms", no worst-probe row at all. Every figure was true of the clean direction and
+  // read as a verdict on the leg. Same class of bug as the inbound bubble showing outbound loss: a number
+  // under the wrong label is worse than a blank cell, because a blank says "not measured".
+  // ⚠️ THESE ROWS ARE NOT DIRECTIONS, AND CALLING THEM "Out"/"In" CLAIMED MORE THAN THE PROBE MEASURES.
+  // Both are `ping` — a ROUND TRIP. The near node's probe goes near→far and the reply comes far→near; the
+  // far node's probe does the same in the opposite order. Each one therefore crosses BOTH directions, so a
+  // packet lost anywhere shows up in whichever probe was unlucky, and neither number can say which way the
+  // loss happened. Two rows that disagree are two samples of one bidirectional path, not two directions.
+  // Label them by WHO MEASURED, which is exactly what distinguishes them, and say what a row is.
+  const nearName = node ? Store.nodeName(node) : T("this node");
+  const ends = [];
+  if (l && typeof l.loss === "number") ends.push({ dir: nearName, x: l });
+  if (pl && typeof pl.loss === "number") ends.push({ dir: peerName, x: pl });
+  if (!ends.length) return trigger;
+  const both = ends.length > 1;
+  const tag = e => both ? html`<span class="dp-kind">${e.dir}</span>` : null;
+  const pick = (has, better) => { const c = ends.filter(has); return c.length ? c.reduce(better) : null; };
+  const worst = pick(e => typeof e.x.peak_loss === "number", (a, b) => b.x.peak_loss > a.x.peak_loss ? b : a);
+  const last  = pick(e => e.x.last_loss_s != null, (a, b) => b.x.last_loss_s < a.x.last_loss_s ? b : a);
+  const reportsLast = ends.some(e => "last_loss_s" in e.x);
+  // Round trip is symmetric, but each end SAMPLES it separately: one-way queueing shows up as a far-end
+  // max the near end never sees. Show both rows only when they actually disagree — otherwise it is one
+  // measurement printed twice.
+  const rtts = ends.filter(e => e.x.rtt_ms != null);
+  const spread = rtts.map(e => e.x.rtt_max != null ? e.x.rtt_max : e.x.rtt_ms);
+  const splitRtt = rtts.length > 1 && Math.max(...spread) > Math.min(...spread) * 1.25;
+  const rttRows = splitRtt ? rtts : rtts.slice(0, 1);
+  const one = ends.find(e => e.x.window_lost === 1);   // 1/600 = 0.167%: the probe's own resolution floor
+  return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
+    <div class="onpop-h dp-h">${T("Leg quality · {v1}", { v1: peerName })}
+      ${node && iface ? html`<button class=${"dp-reset" + (reset === "ok" ? " ok" : "")} disabled=${reset === "busy"}
+        title=${T("Clear this leg's probe window at both ends and start measuring again from now")}
+        onClick=${doReset}>${reset === "ok" ? T("Reset ✓") : reset === "busy" ? T("Resetting…") : T("Reset")}</button>` : null}</div>
+    ${ends.map(e => html`<div class="dp-row"><span class="dp-l">${e.dir}</span><span class="dp-v">
+      <b style=${"color:" + lossColorMesh(e.x.loss)}>${e.x.loss}%</b>
+      <span class="dp-kind">${T("{v1} of {v2}", { v1: e.x.window_lost, v2: e.x.window_sent })}</span></span></div>`)}
+    ${rttRows.map(e => html`<div class="dp-row"><span class="dp-l">${T("Round trip")}</span><span class="dp-v">
+      <b>${Math.round(e.x.rtt_ms)}${T("unit|ms")}</b>${e.x.rtt_min != null && e.x.rtt_max != null
+        ? html`<span class="dp-kind">${T("min {v1} · max {v2}", { v1: Math.round(e.x.rtt_min), v2: Math.round(e.x.rtt_max) })}</span>` : null}${splitRtt ? tag(e) : null}</span></div>`)}
+    ${rttRows.filter(e => e.x.mdev_ms != null).map(e => html`<div class="dp-row"><span class="dp-l">${T("Jitter")}</span>
+      <span class="dp-v"><b>${e.x.mdev_ms.toFixed(1)}${T("unit|ms")}</b>${splitRtt ? tag(e) : null}</span></div>`)}
+    ${worst && worst.x.peak_loss > (worst.x.loss || 0) ? html`<div class="dp-row"><span class="dp-l">${T("Worst probe")}</span>
+      <span class="dp-v"><b style=${"color:" + lossColorMesh(worst.x.peak_loss)}>${worst.x.peak_loss}%</b>${tag(worst)}</span></div>` : null}
+    ${last ? html`<div class="dp-row"><span class="dp-l">${T("Last loss")}</span><span class="dp-v">${
+        last.x.last_loss_s < 90 ? T("just now") : T("{v1} ago", { v1: seen(last.x.last_loss_s) })}${tag(last)}</span></div>`
+      : reportsLast ? html`<div class="dp-row"><span class="dp-l">${T("Last loss")}</span><span class="dp-v">${"—"}</span></div>` : null}
+    ${one ? html`<div class="dp-hint">${T("That is a single lost packet — the smallest amount this probe can measure. One is normal; watch whether it keeps happening.")}</div>` : null}
+    ${both ? html`<div class="dp-hint">${T("Each row is a round trip measured from that node, so both cross the link in both directions — a difference between them is two samples of the same link, not a direction.")}</div>` : null}
+    ${/* ⚠️ THIS BUBBLE MIXES TWO TIME SPANS AND USED TO NAME NEITHER. Loss is accumulated over the whole
+          30-probe window (half an hour) because one probe of 20 packets cannot express 0.4%; latency,
+          min/max and jitter are the NEWEST probe alone — 20 packets over about four seconds. So "0.167%
+          (1 of 600)" sat directly above "18ms" with thirty minutes between what they describe, and an
+          operator reading the two together had no way to know. Say it. */""}
+    <div class="dp-foot">${ends[0].x.probes
+      ? T("Loss over the last {v1} ({v2} probes of {v3} packets, {v4}-byte). Latency and jitter are from the newest probe.",
+          { v1: seen((ends[0].x.probes || 0) * (ends[0].x.probe_every_s || 60)), v2: ends[0].x.probes,
+            v3: 20, v4: ends[0].x.probe_size })
+      : T("measured by pinging the far end of this link")}</div>
+  </${Popover}>`;
+}
+
+// Counts in these bubbles span six orders of magnitude — "75,773 of 756,880,952" is a line nobody reads,
+// they just see two long numbers. Compact the big ones and leave the small ones ALONE: "1 of 600" is the
+// entire point of the loss bubble (one lost packet, the probe's own resolution floor) and "0.6k of 600"
+// would destroy it. So exactness below 10k, where every digit still carries meaning, and a short form
+// above it, where they no longer do.
+export const fmtCount = n => {
+  n = Number(n) || 0;
+  if (n < 10000) return fmtNum(n);
+  const [d, u] = n < 1e6 ? [n / 1e3, "K"] : n < 1e9 ? [n / 1e6, "M"] : [n / 1e9, "G"];
+  return d.toFixed(1).replace(/\.0$/, "") + u;
+};
+
+// Two decimals is right for 4.44/min and ridiculous for 80561.65/min. Scale the precision to the number.
+export const dropRate = v => (v >= 100 ? fmtCount(Math.round(v)) : v >= 10 ? v.toFixed(1) : String(v));
+
+// ───── turn-proxy socket drops ─────
+// A proxy owns no interface, so this is not the same measurement as DropsPop and must not pretend to be:
+// there is no received-packet count on a UDP socket, so there is NO PERCENTAGE — only the count and the
+// rate, which are facts. Leading with a rate the data cannot support is the mistake `peak` already made.
+export function ProxyDropsPop({ d, service, trigger, alignRight }) {
+  if (!d) return trigger;
+  const n = v => typeof v === "number";
+  return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
+    <div class="onpop-h">${T("Dropped at the socket · {v1}", { v1: service })}</div>
+    <div class="dp-head">
+      <span class="dp-sub">${T("in the last {v1}", { v1: d.span_s ? seen(d.span_s) : "—" })}</span>
+      <b class="dp-pct" style=${"color:" + lossColor(d.per_min > 0 ? Math.min(5, d.per_min / 20) : 0)}>${fmtCount(d.win_drops || 0)}</b>
+    </div>
+    ${n(d.per_min) ? html`<div class="dp-row"><span class="dp-l">${T("Rate")}</span><span class="dp-v"><b>${dropRate(d.per_min)}</b><span class="dp-kind">${T("per minute")}</span></span></div>` : null}
+    ${n(d.rxq) ? html`<div class="dp-row"><span class="dp-l">${T("Backlog")}</span><span class="dp-v"><b>${fmtBytes(d.rxq)}</b><span class="dp-kind">${T("waiting")}</span></span></div>` : null}
+    ${d.last_bad_s !== undefined ? html`<div class="dp-row"><span class="dp-l">${T("Last drop")}</span><span class="dp-v">${
+      d.last_bad_s == null ? "—" : d.last_bad_s < 90 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
+    ${n(d.life_drops) ? html`<div class="dp-row"><span class="dp-l">${T("Since it started")}</span><span class="dp-v">${fmtCount(d.life_drops)}</span></div>` : null}
+    <div class="dp-foot">${T("Packets that reached this server and were discarded because the proxy wasn't reading its socket fast enough. They never reach an interface, so no interface counter can show them.")}</div>
+  </${Popover}>`;
+}
+
+export function DropsPop({ d, iface, node, trigger, alignRight }) {
+  const [reset, setReset] = useState("");
+  if (!d) return trigger;
+  // Re-baseline on the NODE, not in the browser: the counters are the node's, and a page reload must not
+  // undo it. The panel writes a nonce the node acts on once, so a slow sync only means it lands late.
+  const doReset = async e => {
+    e.preventDefault(); e.stopPropagation();
+    setReset("busy");
+    const r = await api.ifaceUpdate({ node: node, iface: iface, drops_reset: 1 });
+    if (r && r.ok) { setReset("ok"); setTimeout(() => setReset(""), 2500); }
+    else { setReset(""); toast(srvText(r) || T("Couldn't reset the counters."), "err"); }
+  };
+  const has = k => typeof d[k] === "number";
+  const split = DROP_KINDS.filter(x => has(x.k));
+  // The dominant kind names the fault. Only when it is genuinely dominant (over half) — a 50/50 mix has no
+  // single explanation and inventing one would send the operator down the wrong path.
+  const top = split.slice().sort((a, b) => d[b.k] - d[a.k])[0];
+  const hint = top && d[top.k] > 0 && d[top.k] * 2 > d.window_bad ? top.hint() : null;
+  const rowsFor = dir => split.filter(x => x.dir === dir);
+  const pair = (dir, label) => {
+    const rs = rowsFor(dir);
+    if (!rs.length) return null;
+    return html`<div class="dp-row"><span class="dp-l">${label}</span><span class="dp-v">${rs.map(x => html`
+      <span class=${"dp-kind" + (d[x.k] ? "" : " zero")}>${x.lbl()} <b>${fmtCount(d[x.k])}</b></span>`)}</span></div>`;
+  };
+  return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
+    <div class="onpop-h dp-h">${T("Drops · {v1}", { v1: iface })}
+      ${node ? html`<button class=${"dp-reset" + (reset === "ok" ? " ok" : "")} disabled=${reset === "busy"}
+        title=${T("Zero the counters and start measuring again from now")}
+        onClick=${doReset}>${reset === "ok" ? T("Reset ✓") : reset === "busy" ? T("Resetting…") : T("Reset")}</button>` : null}</div>
+    ${/* The percentage is a VALUE, so it sits on the right where every other value in this bubble is,
+          instead of on the left among the labels. */""}
+    <div class="dp-head">
+      <span class="dp-sub">${T("{v1} of {v2} packets", { v1: fmtCount(d.window_bad), v2: fmtCount(d.window_pkts) })}</span>
+      <b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>
+    </div>
+    ${pair("out", T("Sending"))}
+    ${pair("in", T("Receiving"))}
+    ${(() => {
+      // ⚠️ THE RATE AND THE COUNT ANSWER DIFFERENT QUESTIONS, AND THE RATE CAN LIE. A 5s sample that pushed
+      // 2 packets while dropping 70 is 97.22%, which the panel duly showed an operator as "Worst sample
+      // 97.22%" on an interface whose 5-min window moved 23,416 packets cleanly. The node now withholds a
+      // rate it cannot support (peak = null below IFACE_PEAK_MIN) and always reports the raw count, which
+      // is a fact at any traffic level. So: lead with the rate when it means something, and let the count
+      // carry the row when it doesn't — a burst must never go unreported just because the leg was quiet.
+      const wp = has("peak") && d.peak > (d.pct || 0) ? d.peak : null;
+      const wb = typeof d.peak_bad === "number" && d.peak_bad > 0 ? d.peak_bad : null;
+      if (wp == null && wb == null) return null;
+      return html`<div class="dp-row"><span class="dp-l">${T("Worst sample")}</span><span class="dp-v">${wp != null
+        ? html`<b style=${"color:" + lossColor(wp)}>${wp}%</b>${wb ? html`<span class="dp-kind">${fmtCount(wb)} ${T("dropped")}</span>` : null}`
+        : html`<b>${fmtCount(wb)}</b><span class="dp-kind">${T("dropped")}</span>`}</span></div>`;
+    })()}
+    ${has("last_bad_s") || d.last_bad_s === null ? html`<div class="dp-row"><span class="dp-l">${T("Last drop")}</span><span class="dp-v">${
+      d.last_bad_s == null ? "—" : d.last_bad_s < 5 ? T("just now") : T("{v1} ago", { v1: seen(d.last_bad_s) })}</span></div>` : null}
+    ${/* the ratio alone made the reader do the division — give them the rate too, at the row's own size */""}
+    ${has("life_bad") ? html`<div class="dp-row"><span class="dp-l">${
+      d.life_since ? T("Since reset") : T("Since boot")}</span><span class="dp-v">${
+      T("{v1} of {v2}", { v1: fmtCount(d.life_bad), v2: fmtCount(d.life_pkts) })}${d.life_pkts
+        ? html`<span class="dp-life" style=${"color:" + lossColor(100 * d.life_bad / d.life_pkts)}>${
+            (100 * d.life_bad / d.life_pkts).toFixed(4)}%</span>` : null}</span></div>` : null}
+    ${hint ? html`<div class="dp-hint">${hint}</div>` : null}
+    <div class="dp-foot">${d.span_s ? T("measured over the last {v1}", { v1: seen(d.span_s) }) : T("this node's own queues and datapath, not the path to the client")}</div>
   </${Popover}>`;
 }
 
@@ -424,7 +696,7 @@ export function OnlineUsersTag({ nodeId, cls, trigger, presence, rangeLabel }) {
   const count = isPeers ? peerRows.length : onlineUserCount(userRows);
   const title = isPeers ? T("Online peers") : (presence ? T("Users online · {v1}", { v1: rangeLabel || T("val|range") }) : T("Online users"));
   const word = isPeers ? "peer" : "user";
-  const dflt = (c, w) => html`<span class="dot"></span><b class=${"oncount" + (c ? " on" : "")}>${c}</b> ${w || "user"}${c === 1 ? "" : "s"}`;
+  const dflt = (c, w) => html`<span class="dot"></span><b class=${"oncount" + (c ? " on" : "")}>${c}</b> ${pluralWord(c, w || "user")}`;
   // hoverOnly on the popover frees the click to TOGGLE the mode (rather than pin the bubble); the bubble updates live.
   const trig = c => html`<span class="onl-toggle" title=${T("Click to switch users / peers")} onClick=${e => { e.stopPropagation(); e.preventDefault(); setMode(m => m === "users" ? "peers" : "users"); }}>${(trigger || dflt)(c, word)}</span>`;
   return html`<${OnlPop} peer=${isPeers} title=${title} rows=${rows} count=${count} cls=${cls} hoverOnly=${true} trigger=${trig}/>`;
@@ -514,7 +786,7 @@ export function dashToggleNode(id) {
 export const evItemLabel = item => ({
   "Peer": T("event|Peer"), "User": T("event|User"), "Node": T("event|Node"),   // i18n-keys
   "Interface": T("event|Interface"), "Turn-proxy": T("event|Turn-proxy"), "Mesh": T("event|Mesh"),   // i18n-keys
-  "Settings": T("event|Settings"), "Update": T("event|Update"),
+  "Settings": T("event|Settings"), "Update": T("event|Update"),   // i18n-keys
 }[item] || item);
 export const EV_ITEMS = ["Peer", "User", "Node", "Interface", "Turn-proxy", "Mesh", "Settings", "Update"];   // i18n-keys: canonical (filter value + routing key) — evDecorate adds itemLabel for display
 export const EV_ACTIONS = ["Added", "Changed", "Removed"];   // i18n-keys: canonical (filter value + evAction result)

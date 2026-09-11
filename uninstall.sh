@@ -20,6 +20,17 @@ die(){  echo "$(c '0;31')✗ $*$(c 0)" >&2; exit 1; }
 b(){ printf '\033[1m%s\033[0m' "$*"; }
 run(){ if $DRYRUN; then echo "    [dry] $*"; else "$@"; fi; }
 rmrf(){ local p; for p in "$@"; do if [ -e "$p" ] || [ -L "$p" ]; then run rm -rf "$p"; fi; done; }
+# Drop a directory only once nothing is left in it. Used where a `rm -rf` would take a file this run
+# deliberately KEPT — a foreign interface's .conf and its keys living in the same directory as ours.
+rmdir_if_empty(){ local d="$1"
+  [ -d "$d" ] || return 0
+  if [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
+    $DRYRUN && echo "    [dry] keeping $d (still holds files this run did not remove)" \
+            || info "  keeping $(b "$d") — it still holds files this run did not remove"
+    return 0
+  fi
+  run rmdir "$d"
+}
 # ask_yn <prompt> <default> <outvar>  — preset outvar (env) or --yes skips the prompt
 ask_yn(){ local v p="$1" d="${2:-n}"
   # A PRESET answer (unattended run) is normalised exactly like a typed one. It used to be returned verbatim, so
@@ -36,7 +47,13 @@ ask_yn(){ local v p="$1" d="${2:-n}"
   read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; echo; }   # one trailing blank after the prompt
 # ask_comp <label> — the per-component yes/no (honours --yes); returns 0 = uninstall
-ask_comp(){ local v verb="${3:-Uninstall}"; $ASSUME_YES && return 0
+# ⚠️ `--yes` MEANS "YES TO EVERY SWG COMPONENT", NOT "yes to somebody else's data". A component marked
+# never-auto is always typed: --yes does not answer it, and with no terminal it is KEPT. That is the whole
+# protection for an interface swg never created — the one thing in this list that is not ours to delete.
+ask_comp(){ local v verb="${3:-Uninstall}" noauto="${4:-}"
+  if [ "$noauto" = never-auto ]; then
+    if ! { true </dev/tty; } 2>/dev/null; then info "Kept — this one is never decided unattended. Re-run from a terminal to choose."; return 1; fi
+  elif $ASSUME_YES; then return 0; fi
   if ! { true </dev/tty; } 2>/dev/null; then return 1; fi   # no usable tty, not --yes => keep
   read -rp "  $verb $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}? (y/N): " v </dev/tty || true
   case "$v" in [Yy]*) return 0;; *) return 1;; esac; }
@@ -124,10 +141,19 @@ rm_panel(){
   # one-click self-update bits the panel installed (mk_update_unit): units, wrapper, and the env drop-in.
   # Not gated on the fragment existing — disabling something already gone is harmless.
   for _su in swg-update.timer swg-update.path; do run systemctl disable --now "$_su" 2>/dev/null || true; done
+  # ⚠️ `.service.d` FOR swg-netctl TOO — the two beside it already reap theirs, and this is the ONE unit
+  # here that actually gets a drop-in written: `update.sh`'s `ensure_acme_home` pins LE_WORKING_DIR into
+  # `swg-netctl.service.d/acme-home.conf`, because acme.sh otherwise follows $HOME and the helper has none.
+  # Left behind, the drop-in outlives the unit AND the install — measured on a scratch box: uninstall, then
+  # a fresh install from nothing, and `systemctl show -p Environment swg-netctl` still carried the OLD
+  # install's LE_WORKING_DIR, from a file written nine minutes before the unit above it. A drop-in
+  # OVERRIDES the unit, so the day a new install canonicalises a different store the stale pin wins — and
+  # worse, `ensure_acme_home` skips its heal when it finds any LE_WORKING_DIR in that directory, so the
+  # residue suppresses the very correction that would fix it. ([[acme-store-split-and-arms]])
   rmrf $SD/swg-panel-server.service $SD/swg-panel-server.service.d $SD/swg-sub.service $SD/swg-sub.service.d \
-       $SD/swg-netctl.service $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl \
+       $SD/swg-netctl.service $SD/swg-netctl.service.d $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl \
        $SD/swg-netctl-docker.service $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer \
-       $SD/swg-update.service $SD/swg-update.path $SD/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
+       $SD/swg-update.service $SD/swg-update.path $SD/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update.new /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
   # ⚠️ A DANGLING ENABLEMENT SYMLINK OUTLIVES ITS UNIT FILE, and `systemctl disable` CANNOT clear it: it
   # reads [Install] from the FRAGMENT to learn which symlinks to drop, so once the fragment is gone the link
   # in multi-user.target.wants/ is orphaned and systemd reports that name for ever as "not-found inactive
@@ -351,6 +377,20 @@ capture_adopted(){ local _n
 rm_node(){
   info "Removing swg-node (bare-metal entry server)"
   node_goodbye   # signal the panel before we tear down the config it needs
+  # ⚠️ THE RELAY'S DIVERT COMES DOWN BEFORE ANYTHING ELSE, AND BEFORE THE RELAY ITSELF. A tproxy rule whose
+  # relay has been uninstalled is not a leftover, it is a BLACKHOLE: the kernel takes those packets out of
+  # the forwarding path and nothing is left on the box that would ever remove the rule. nft half first, then
+  # the routing half, exactly as swg-noded's own disarm does it.
+  run sh -c 'nft delete table inet swg_relay >/dev/null 2>&1 || true'
+  run sh -c 'n=0; while [ $n -lt 4 ] && ip rule del fwmark 0x9c40 lookup 6990 2>/dev/null; do n=$((n+1)); done; true'
+  run sh -c 'ip route flush table 6990 >/dev/null 2>&1 || true'
+  run sh -c 'for u in $(systemctl list-units --all --plain --no-legend "swg-relay@*.service" 2>/dev/null | awk "{print \$1}"); do systemctl disable --now "$u" >/dev/null 2>&1 || true; done'
+  # ⚠️ THE SLICE IS A UNIT TOO, and it was the one thing this block left behind — `swg-relay.slice` stayed
+  # on disk and ACTIVE after a full uninstall, so a box that had removed swg still had an swg unit loaded.
+  # It is written beside `swg-relay@.service` by the node (`RELAY_SLICE`), so it comes off beside it.
+  # Found by checking what a completed uninstall actually left, 1.8.5 qualification.
+  run systemctl stop swg-relay.slice 2>/dev/null || true
+  rmrf $SD/"swg-relay@.service" $SD/swg-relay.slice /etc/swg-panel/relay
   if [ -e $SD/swg-noded.service ]; then run systemctl disable --now swg-noded; fi
   run systemctl unmask dnsmasq 2>/dev/null || true   # install masked the distro dnsmasq (node ran its own); restore it
   rmrf $SD/swg-noded.service; run systemctl daemon-reload
@@ -361,6 +401,12 @@ rm_node(){
   # while the record still exists; the restore itself is deferred to the end of the run, past the interface
   # removal, or their container would come back to a port ours is still holding.
   capture_adopted /etc/swg-agent/config.json /var/lib/swg-noded/adopted-containers.json
+  # The panel's system mesh links go with the node that carried them — they are not peer interfaces and
+  # are never offered as a separate question. Before the agent config is deleted, so `swg_owns` still has
+  # something to read for everything else.
+  info "  removing the panel's system mesh links"
+  remove_ifaces /etc/amnezia/amneziawg awg-quick mesh
+  remove_ifaces /etc/wireguard        wg-quick  mesh
   rmrf /opt/swg-agent /opt/swg-noded /srv/swg-queue /var/log/swg-agent /var/lib/swg-noded /var/lib/swg-recovery /etc/sudoers.d/swg-agent
   rmrf /etc/swg-agent   # turn-proxy.json here is just a panel-facing record; a kept turn-proxy keeps running
   for u in swgpush swgagent; do if id "$u" >/dev/null 2>&1; then run userdel -r "$u"; fi; done
@@ -431,7 +477,7 @@ docker_cleanup_if_last(){   # shared bits (network/images/data dir) — only onc
   if docker_running swg-panel || docker_running swg-node; then return 0; fi
   # host one-click updater units (install-docker's wire_host_updater) — remove now that no swg container remains
   for _su in swg-update.timer swg-update.path; do [ -e "/etc/systemd/system/$_su" ] && run systemctl disable --now "$_su" 2>/dev/null || true; done
-  rmrf /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path /etc/systemd/system/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
+  rmrf /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path /etc/systemd/system/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update.new /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
   run systemctl daemon-reload 2>/dev/null || true
   if command -v docker >/dev/null 2>&1; then
     local DC=""; if docker compose version >/dev/null 2>&1; then DC="docker compose"; elif command -v docker-compose >/dev/null 2>&1; then DC="docker-compose"; fi
@@ -518,8 +564,9 @@ down_ifaces(){ local dir="$1" tool="$2" f n              # quietly bring each in
     { command -v "$tool" >/dev/null 2>&1 && "$tool" down "$n"; ip link delete "$n"; } >/dev/null 2>&1 || true; done; }
 # Down each interface + delete its .conf, printing ONE green ✓ line (name · address · port) — used by the
 # peer-removal components (down_ifaces above is the quiet, no-display version used before purging a package).
-remove_ifaces(){ local dir="$1" tool="$2" f n addr port
+remove_ifaces(){ local dir="$1" tool="$2" want="${3:-own}" f n addr port
   for f in "$dir"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"
+    _iface_pick "$n" "$want" || continue
     addr="$(awk -F= 'tolower($1)~/address/{gsub(/[ \t]/,"",$2);split($2,a,",");print a[1];exit}' "$f" 2>/dev/null)"
     port="$(awk -F= 'tolower($1)~/listenport/{gsub(/[ \t]/,"",$2);print $2;exit}' "$f" 2>/dev/null)"
     if $DRYRUN; then echo "    [dry] down + disable ${tool}@$n + remove $n"
@@ -537,31 +584,56 @@ remove_ifaces(){ local dir="$1" tool="$2" f n addr port
 # Peers (the interface .conf files) and the wg/awg PACKAGE are removed INDEPENDENTLY — so you can wipe the
 # panel + peers but KEEP the wg/awg service installed (or remove the package but keep the configs). Each is
 # its own component in the list, so the peer question is always asked regardless of the package answer.
+# `rmdir_if_empty`, never `rm -rf`, because a FOREIGN .conf may still be sitting in this directory —
+# kept on purpose by the operator, or kept because nothing could establish whose it was.
 rm_awg_peers(){
   info "Removing AmneziaWG interface configs (peers)"
-  remove_ifaces /etc/amnezia/amneziawg awg-quick
-  rmrf /etc/amnezia/amneziawg
+  remove_ifaces /etc/amnezia/amneziawg awg-quick own
+  rmdir_if_empty /etc/amnezia/amneziawg
 }
+rm_awg_foreign(){
+  info "Removing the AmneziaWG interfaces that are NOT swg's"
+  remove_ifaces /etc/amnezia/amneziawg awg-quick foreign
+  rmdir_if_empty /etc/amnezia/amneziawg
+}
+# ⚠️ SAY WHAT ACTUALLY HAPPENED. These printed their ✓ unconditionally, so a purge that failed — and
+# apt fails for an ordinary reason, another apt holding /var/lib/dpkg/lock-frontend — still reported
+# "WireGuard package removed" AND listed it under Removed: in the summary. Measured on hel-flux
+# 2026-09-08: both wireguard packages still `ii` after a run that claimed to have removed them. The
+# error text was right there on screen, contradicted two lines later by the verdict.
 rm_awg_pkg(){
   info "Uninstalling the AmneziaWG package (kernel module + tools)"
   down_ifaces /etc/amnezia/amneziawg awg-quick      # if the configs were kept, bring the ifaces down before pulling the module
   if command -v apt-get >/dev/null 2>&1; then
-    run apt-get purge -y amneziawg amneziawg-tools amneziawg-dkms
-    run add-apt-repository -y --remove ppa:amnezia/ppa; run apt-get autoremove -y
+    if run apt-get purge -y amneziawg amneziawg-tools amneziawg-dkms; then
+      run add-apt-repository -y --remove ppa:amnezia/ppa; run apt-get autoremove -y
+      ok "AmneziaWG package removed"
+    else
+      NOT_DONE+=("AmneziaWG package (kernel module + tools)")
+      warn "apt could not purge the AmneziaWG packages (see the error above) — they are STILL INSTALLED. Re-run once apt is free."
+    fi
   else warn "Non-apt system — remove the amneziawg packages with your package manager."; fi
-  ok "AmneziaWG package removed"
 }
 rm_wg_peers(){
   info "Removing WireGuard interface configs (peers)"
-  remove_ifaces /etc/wireguard wg-quick
-  rmrf /etc/wireguard
+  remove_ifaces /etc/wireguard wg-quick own
+  rmdir_if_empty /etc/wireguard
+}
+rm_wg_foreign(){
+  info "Removing the WireGuard interfaces that are NOT swg's"
+  remove_ifaces /etc/wireguard wg-quick foreign
+  rmdir_if_empty /etc/wireguard
 }
 rm_wg_pkg(){
   info "Uninstalling the WireGuard package"
   down_ifaces /etc/wireguard wg-quick
-  if command -v apt-get >/dev/null 2>&1; then run apt-get purge -y wireguard wireguard-tools; run apt-get autoremove -y
+  if command -v apt-get >/dev/null 2>&1; then
+    if run apt-get purge -y wireguard wireguard-tools; then run apt-get autoremove -y; ok "WireGuard package removed"
+    else
+      NOT_DONE+=("WireGuard package (kernel module + tools)")
+      warn "apt could not purge the WireGuard packages (see the error above) — they are STILL INSTALLED. Re-run once apt is free."
+    fi
   else warn "Non-apt system — remove the wireguard packages with your package manager."; fi
-  ok "WireGuard package removed"
 }
 rm_netctl(){   # a leftover swg-netctl (e.g. after a docker convert) with no bare panel around to sweep it up
   info "Removing swg-netctl (leftover helper)"
@@ -572,8 +644,8 @@ rm_netctl(){   # a leftover swg-netctl (e.g. after a docker convert) with no bar
              swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
     [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true   # one at a time: a multi-unit disable aborts wholesale on the first missing unit
   done
-  rmrf $SD/swg-netctl.service $SD/swg-netctl.path $SD/swg-netctl.timer \
-       $SD/swg-netctl-docker.service $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl
+  rmrf $SD/swg-netctl.service $SD/swg-netctl.service.d $SD/swg-netctl.path $SD/swg-netctl.timer \
+       $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl
   run systemctl daemon-reload; ok "swg-netctl removed"
 }
 # Host-side remnants of a DOCKER or converted install that no container remover owns: swg-sub's own tls dir and its
@@ -583,6 +655,13 @@ rm_leftovers(){
   info "Removing leftover swg files (docker/converted install)"
   for _u in swg-sub.service; do [ -e "$SD/$_u" ] && run systemctl disable --now "$_u" 2>/dev/null || true; done
   rmrf /etc/swg-sub /opt/swg-sub "$SD/swg-sub.service" "$SD/swg-sub.service.d" /usr/local/bin/swg-sub
+  # ⚠️ AND THE RELAY UNITS, for the box the FIX CANNOT REACH. `rm_node` learned to remove swg-relay.slice,
+  # but `rm_node` only runs when a node component is still detected — so a box uninstalled by an older
+  # build keeps an ACTIVE slice for ever, and re-running the new uninstaller walks straight past it. This
+  # component is the one that runs when nothing owns the remnants, which is exactly that box's situation.
+  # Idempotent and safe beside rm_node: both stop the same units, and stopping a stopped slice is a no-op.
+  for _u in swg-relay.slice; do [ -e "$SD/$_u" ] && run systemctl stop "$_u" 2>/dev/null || true; done
+  rmrf "$SD/swg-relay@.service" "$SD/swg-relay.slice" /etc/swg-panel/relay
   run systemctl daemon-reload
   # Service identities the pre-convert BARE install created. rm_panel/rm_node own these, and neither runs on a
   # docker-only box, so they outlived the uninstall — leaving swgpanel + group swg on a box with no swg on it.
@@ -596,6 +675,7 @@ rm_leftovers(){
 }
 _has_netctl(){ ls $SD/swg-netctl.* >/dev/null 2>&1 || ls $SD/swg-netctl-docker.* >/dev/null 2>&1; }
 _has_leftovers(){ [ -d /etc/swg-sub ] || [ -d /opt/swg-sub ] || [ -e "$SD/swg-sub.service" ] || [ -d "$SD/swg-sub.service.d" ] \
+  || [ -e "$SD/swg-relay.slice" ] || [ -e "$SD/swg-relay@.service" ] || [ -d /etc/swg-panel/relay ] \
   || id swgpanel >/dev/null 2>&1 || id swgsub >/dev/null 2>&1 || id swgpush >/dev/null 2>&1 || id swgagent >/dev/null 2>&1 \
   || getent group swg >/dev/null 2>&1; }
 
@@ -755,17 +835,62 @@ rm_csqtt(){ local unit="$1" name iface
 }
 
 # ───────────────────────── detect installed components ─────────────────────────
-declare -a CLABEL=() CDETAIL=() CFN=() CARG=() CHINT=() CVERB=() CPROMPT=()   # init empty (not just `declare -a`) — bash 5.2 + set -u treats a never-assigned array as unbound for ${#arr[@]}
+declare -a CLABEL=() CDETAIL=() CFN=() CARG=() CHINT=() CVERB=() CPROMPT=() CNOAUTO=()   # init empty (not just `declare -a`) — bash 5.2 + set -u treats a never-assigned array as unbound for ${#arr[@]}
 # ── richer component details: interface names+ports, node endpoints, turn-proxy ports ──
-iface_list(){  # <dir> -> "awg0:51820, awg505:51234" (interface name + ListenPort from each .conf)
-  local dir="$1" out="" f n p
+# ── WHOSE INTERFACE IS THIS? ────────────────────────────────────────────────────────────────────
+# `install-node.sh` has a scope test that refuses to ADOPT an interface swg did not create — a client
+# tunnel, another product's server. The uninstaller had no matching test: it listed every .conf in the
+# directory under "AmneziaWG interfaces", so `--yes` (or one careless Enter on a list whose label reads
+# as though all of it were ours) brought a stranger's interface DOWN, disabled its unit, and deleted its
+# keys with the `rm -rf` that follows. Measured on hel-flux 2026-09-08 — an awg0 from May with its own
+# flux_* keys, an interface this box's own panel correctly lists as an ADOPTION CANDIDATE rather than
+# owning, was in the removal plan. The installer and the uninstaller must answer this the same way.
+#
+# The bare node's agent config is the authority for what swg manages here. UNREADABLE ⇒ NOTHING IS
+# CLAIMED: a missing answer must not become a confident yes about somebody else's data. The lists are
+# built before any component runs, so a config the node component is about to delete is still present.
+swg_owned_ifaces(){
+  [ -f /etc/swg-agent/config.json ] && command -v python3 >/dev/null 2>&1 || return 0
+  python3 - <<'PY' 2>/dev/null || true
+import json
+try: c = json.load(open("/etc/swg-agent/config.json"))
+except Exception: raise SystemExit
+print(" ".join(str(k) for k in (c.get("interfaces") or {})))
+PY
+}
+_SWG_OWNED=" $(swg_owned_ifaces 2>/dev/null | tr '\n' ' ') "
+swg_owns(){ case "$_SWG_OWNED" in *" $1 "*) return 0;; *) return 1;; esac; }
+# THREE BUCKETS, and every .conf in the directory is in exactly one:
+#   mesh     `swg_`-prefixed — the panel's system links. ALWAYS ours; the prefix is ours by construction,
+#            so this holds even when the agent config cannot be read.
+#   own      a peer interface the node's agent config names.
+#   foreign  everything else — see the note above.
+#
+# ⚠️ THE MESH LINKS ARE THE NODE COMPONENT'S TO REMOVE, and until now nothing removed them. They were
+# excluded from the printed list on the grounds that "the node component removes them" — and it did not;
+# they only ever came down because `remove_ifaces` had no filter at all and took every .conf in the
+# directory, with `rm -rf` finishing the job. The first version of the ownership split made that
+# accidental coverage explicit and lost it: three mesh interfaces survived a COMPLETED uninstall on
+# hel-flux, still up, with :9999-:10001 still bound. `rm_node` now removes them, where the comment always
+# said they were removed.
+_iface_mesh(){ case "$1" in "${SWG_SYS_PREFIX:-swg_}"*) return 0;; *) return 1;; esac; }
+_iface_pick(){ local n="$1" want="${2:-own}"
+  case "$want" in
+    mesh)    _iface_mesh "$n" ;;
+    own)     if _iface_mesh "$n"; then return 1; else swg_owns "$n"; fi ;;
+    foreign) if _iface_mesh "$n" || swg_owns "$n"; then return 1; else return 0; fi ;;
+    *)       return 0 ;;
+  esac
+}
+iface_list(){  # <dir> [own|foreign|all] -> "awg0:51820, awg505:51234" (name + ListenPort from each .conf)
+  local dir="$1" want="${2:-own}" out="" f n p
   for f in "$dir"/*.conf; do [ -f "$f" ] || continue
     n="$(basename "$f" .conf)"
-    case "$n" in "${SWG_SYS_PREFIX:-swg_}"*) continue;; esac   # don't list panel-managed mesh links
+    _iface_pick "$n" "$want" || continue
     p="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" 2>/dev/null | head -1)"
     out="${out:+$out, }${n}${p:+:$p}"
   done
-  printf '%s' "${out:-$dir}"
+  printf '%s' "$out"
 }
 bm_node_detail(){  # bare-metal node: endpoint + interfaces from config.json
   local cfg=/etc/swg-agent/config.json ep ifs
@@ -855,7 +980,7 @@ turn_detail(){  # <unit> -> "1.2.3.4:57000 → 127.0.0.1:51820 (wg7)" — the li
   fw="$(turn_fwd_iface "$con")"
   printf '%s%s%s' "${lis:-?}" "${con:+ → $con}" "${fw:+ ($fw)}"
 }
-add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); CHINT+=("${5:-}"); CVERB+=("${6:-Uninstall}"); CPROMPT+=("${7:-$1}"); }   # $6 = question verb (default Uninstall); $7 = shorter label for the question (defaults to the list label)
+add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); CHINT+=("${5:-}"); CVERB+=("${6:-Uninstall}"); CPROMPT+=("${7:-$1}"); CNOAUTO+=("${8:-}"); }   # $6 = question verb (default Uninstall); $7 = shorter label for the question (defaults to the list label); $8 = "never-auto" ⇒ --yes does NOT answer it
 turn_listen(){ local lis con; IFS="$(printf '\t')" read -r lis con < <(turn_exec_env "$1"); printf '%s' "$lis"; }
 # WDTT: params live in the instance's wdtt.env (the unit's ExecStart only references them), so read that.
 wdtt_env(){ local iface="$1" k="$2"; sed -n "s/^$k=//p" "$WDTT_DIR/$iface/wdtt.env" 2>/dev/null | head -1; }
@@ -940,11 +1065,21 @@ wg_pkg(){  command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +wireguard '; }
 # its datapath in-container (userspace amneziawg-go), so on a docker-only box these host packages belong to
 # something else (e.g. wg-easy, or another VPN) — purging them would break it. Peers (interface .conf files) are
 # still offered separately since those files ARE swg's own.
+_f=""; _fw=""   # the foreign interface lists, set by the registrations below and READ by the package ones
 _bare_swg=false; { [ -d /opt/swg-noded ] || [ -d /opt/swg-agent ] || [ -f "$SD/swg-noded.service" ] || [ -d /opt/swg-panel ] || [ -f "$SD/swg-panel-server.service" ]; } && _bare_swg=true
-awg_ifaces && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "AmneziaWG interfaces" "$_d" rm_awg_peers "" "$_d" Remove; }
-awg_pkg    && $_bare_swg && add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg
-wg_ifaces  && { _d="$(iface_list /etc/wireguard)";        add "WireGuard interfaces" "$_d" rm_wg_peers "" "$_d" Remove; }
-wg_pkg     && $_bare_swg && add "WireGuard package (kernel module + tools)" "wireguard · wireguard-tools" rm_wg_pkg
+awg_ifaces && { _d="$(iface_list /etc/amnezia/amneziawg own)"; [ -n "$_d" ] && add "AmneziaWG interfaces" "$_d" rm_awg_peers "" "$_d" Remove
+                _f="$(iface_list /etc/amnezia/amneziawg foreign)"; [ -n "$_f" ] && add "AmneziaWG interfaces NOT created by swg" "$_f" rm_awg_foreign "" "$_f" Remove "AmneziaWG interfaces NOT created by swg" never-auto; true; }
+# ⚠️ AND THE PACKAGE THAT INTERFACE NEEDS. Purging it runs `down_ifaces` first — which brings the
+# foreign interface DOWN — and then removes the kernel module out from under it, so keeping the .conf
+# and purging the package still ends with somebody else's tunnel dead, just less obviously. When a
+# foreign interface of this kind is present the package question is therefore never-auto too: it must
+# be typed, it is kept with no terminal, and the hint says why.
+awg_pkg    && $_bare_swg && { if [ -n "$_f" ]; then add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg "" "$_f needs it" Uninstall "AmneziaWG package (kernel module + tools)" never-auto
+                             else add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg; fi; }
+wg_ifaces  && { _d="$(iface_list /etc/wireguard own)"; [ -n "$_d" ] && add "WireGuard interfaces" "$_d" rm_wg_peers "" "$_d" Remove
+                _fw="$(iface_list /etc/wireguard foreign)"; [ -n "$_fw" ] && add "WireGuard interfaces NOT created by swg" "$_fw" rm_wg_foreign "" "$_fw" Remove "WireGuard interfaces NOT created by swg" never-auto; true; }
+wg_pkg     && $_bare_swg && { if [ -n "$_fw" ]; then add "WireGuard package (kernel module + tools)" "wireguard · wireguard-tools" rm_wg_pkg "" "$_fw needs it" Uninstall "WireGuard package (kernel module + tools)" never-auto
+                             else add "WireGuard package (kernel module + tools)" "wireguard · wireguard-tools" rm_wg_pkg; fi; }
 true   # don't let the last &&-test leave a non-zero status
 
 for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do
@@ -970,9 +1105,10 @@ echo
 
 # Per component: ask "Uninstall X?"; if yes, the removal fn asks its own destructive sub-questions
 # (keep peers / delete data dir) so the peers' fate is decided in context, not up front.
-DID_REMOVE=(); DID_KEEP=()
+DID_REMOVE=(); DID_KEEP=(); NOT_DONE=()   # NOT_DONE: asked for, attempted, and the box says otherwise
 for i in $(seq 0 $((N-1))); do
-  if ask_comp "${CPROMPT[$i]}" "${CHINT[$i]}" "${CVERB[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
+  if ask_comp "${CPROMPT[$i]}" "${CHINT[$i]}" "${CVERB[$i]}" "${CNOAUTO[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"
+    case " ${NOT_DONE[*]-} " in *" ${CLABEL[$i]} "*) :;; *) DID_REMOVE+=("${CLABEL[$i]}");; esac
   else info "Kept ${CLABEL[$i]}."; DID_KEEP+=("${CLABEL[$i]}"); fi
   echo
 done
@@ -1039,6 +1175,11 @@ if [ "${#DID_REMOVE[@]}" -gt 0 ]; then echo "  $(b Removed):"
 [ "${#DID_REMOVE[@]}" -gt 0 ] && [ "${#DID_KEEP[@]}" -gt 0 ] && echo
 if [ "${#DID_KEEP[@]}" -gt 0 ]; then echo "  $(b Kept):"
   for x in "${DID_KEEP[@]}"; do echo "    $(c '0;32')•$(c 0) $x"; done; fi
+# The list that has to exist for the other two to be worth anything: what was asked for, attempted, and
+# did not happen. Without it a failed purge sat under "Removed" and the operator had no reason to look.
+if [ "${#NOT_DONE[@]}" -gt 0 ]; then echo
+  echo "  $(b 'Asked for but NOT removed') — the box still has these:"
+  for x in "${NOT_DONE[@]}"; do echo "    $(c '0;33')!$(c 0) $x"; done; fi
 echo
 $DRYRUN && ok "DRY RUN — nothing was actually removed; re-run without --dry-run to apply." \
         || ok "Uninstall complete."

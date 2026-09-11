@@ -44,7 +44,7 @@ export function CreateUserSheet() {
   const [name, setName] = useState(""); const [tag, setTag] = useState(""); const [note, setNote] = useState(""); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const createUser = async () => {
     if (!name.trim()) { setMsg({ k: "err", t: T("Give the user a name.") }); return null; }
-    setBusy(true); setMsg({ k: "work", t: "creating…" });
+    setBusy(true); setMsg({ k: "work", t: T("creating…") });
     const r = await api.userCreate({ name: name.trim(), tag: tag.trim(), note });
     setBusy(false);
     if (!r.ok) { setMsg({ k: "err", t: srvText(r) || T("couldn't create user") }); return null; }
@@ -91,7 +91,13 @@ export function PeerBlockGrid({ peers, mode, act }) {
         <span class="pg2-c pg2-title">${i === 0
           ? html`<${Fragment}><span class="pg2-nm">${(p.title || "").trim() || html`<span class="faint">${T("tag|untitled")}</span>`}</span>${multi ? html`<span class="pg2-rel primary">${T("Primary")}</span>` : null}<//>`
           : html`<span class="pg2-bk">${T("Backup")}</span>`}</span>
-        <span class="pg2-c pg2-tags">${t.node ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/><${Tag} kind=${targetType(t)} label=${targetType(t)}/>` : null}</span>
+        <span class="pg2-c pg2-tags">${t.node ? (mode === "mine"
+          // On the user's OWN peers these tags are the publish switches for that kind of config, exactly as
+          // they are on the deployment cards — the operator was already used to clicking them there and had
+          // to leave this sheet to do it. Left plain in the unassigned pool: publishing is about what a
+          // HOLDER is offered, and an unassigned peer has no holder for the switch to mean anything to.
+          ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${p} dim=${!t.online}/><${PubTag} peer=${p} src=${targetType(t)} label=${targetType(t)} dim=${!t.online}/>`
+          : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/><${Tag} kind=${targetType(t)} label=${targetType(t)}/>`) : null}</span>
         <span class="pg2-c pg2-ifn">${t.node ? t.iface : ""}</span>
         <span class="pg2-c pg2-ip">${t.node ? (String(t.ip || "").split("/")[0] || "—") : ""}</span>
         <span class="pg2-c pg2-ctl">${i === 0 ? html`<${Fragment}>${mode === "mine" ? html`<button type="button" class="pg2-act add" title=${T("Add or edit interface deployments")} onClick=${() => openAddTarget(p)}><${Ic} i="plus"/></button>` : null}<button type="button" class=${"pg2-act " + mode} title=${mode === "mine" ? T("Unassign from this user") : T("Assign to this user (keeps its key)")} onClick=${() => act(p)}><${Ic} i=${mode === "mine" ? "link" : "plus"}/></button><//>` : null}</span>
@@ -107,7 +113,7 @@ export function AddPeersSheet({ userId, userName }) {
   const orderPeers = list => [...list].sort((a, b) =>
     (b.title ? 1 : 0) - (a.title ? 1 : 0) ||                              // named peers first (untitled sink to the bottom)
     String(a.title || "").localeCompare(String(b.title || "")) ||        // then alphabetical by title
-    (Store.nodeName(rep(a).node) || "").localeCompare(Store.nodeName(rep(b).node) || "") ||
+    Store.byNode(rep(a).node, rep(b).node) ||
     String(rep(a).ip || "").localeCompare(String(rep(b).ip || ""), undefined, { numeric: true }));
   const mine = orderPeers(userId ? Store.peersOfUser(userId) : []);
   const free = orderPeers(Store.unassignedPeers());
@@ -266,8 +272,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
   // record has always held the three credentials side by side and the node reply builders have always been
   // target-driven. One peer may now span wg + awg + wdtt + csqtt, and each row carries its own settings.
   const ordered = [...targets].sort((a, b) =>
-    (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "")
-    || (a.iface || "").localeCompare(b.iface || ""));
+    Store.byNode(a.node, b.node) || (a.iface || "").localeCompare(b.iface || ""));
   return html`<div class="targetpick">${ordered.map(t => {
     const k = tkey(t.node, t.iface); const s = sel[k];
     const ity = t.missing ? (t.type || "wg") : iTypeOf(t.node, t.iface);   // wg | awg | wdtt (a WDTT iface isn't in `describe`, so key off the name via iTypeOf)
@@ -339,7 +344,7 @@ export function TargetSettingsSheet({ node, iface, opts, meta, onSave, readOnly 
     <div class="field"><label>DNS</label>
       <input class=${errs.dns ? "bad" : ""} disabled=${readOnly} value=${dns} onInput=${e => setDns(e.target.value)} placeholder=${T("from server, or e.g. 1.1.1.1")}/>${fld("dns", T("Comma-separated IPs. Blank = no DNS line."))}</div>
     <div class="row2">
-      <div class="field"><label>MTU</label><input class=${errs.mtu ? "bad" : ""} disabled=${readOnly} value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/>${fld("mtu", "Blank = 1280.")}</div>
+      <div class="field"><label>MTU</label><input class=${errs.mtu ? "bad" : ""} disabled=${readOnly} value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/>${fld("mtu", T("Blank = 1280."))}</div>
       <div class="field"><label>${T("Persistent keepalive (s)")}</label><input class=${errs.keepalive ? "bad" : ""} disabled=${readOnly} value=${keepalive} onInput=${e => setKa(e.target.value)} placeholder="25"/>${fld("keepalive", T("0 disables · blank = 25."))}</div>
     </div>
     <div class="hint">${awgOn
@@ -494,7 +499,7 @@ export function AddTargetSheet({ peer, back, child }) {
   const nochange = !added.length && !removed.length && !ipChanged.length;
 
   const doSave = async () => {
-    setBusy(true); setMsg({ k: "work", t: "applying…" });
+    setBusy(true); setMsg({ k: "work", t: T("applying…") });
     const fails = [];
     for (const t of added) {
       const kind = kindFor(t);
@@ -1167,8 +1172,8 @@ export function NodeCreateSheet() {
   const nameBad = name.trim() && !V.nodeName(name);
   const create = async () => {
     if (!name.trim()) return setMsg({ k: "err", t: T("Give the node a name.") });
-    if (!V.nodeName(name)) return setMsg({ k: "err", t: "Name: 1–40 chars, letters/digits/-/_ only." });
-    setMsg({ k: "work", t: "creating…" });
+    if (!V.nodeName(name)) return setMsg({ k: "err", t: T("Name: 1–40 chars, letters/digits/-/_ only.") });
+    setMsg({ k: "work", t: T("creating…") });
     const r = await api.nodeCreate({ name: name.trim(), endpoint_host: "", color });
     if (!r.ok) return setMsg({ k: "err", t: srvText(r) || T("couldn't create node") });
     await Store.poll(); openModal(html`<${NodeTokenSheet} name=${r.data.name} token=${r.data.token} isNew=${true}/>`);
@@ -1178,7 +1183,7 @@ export function NodeCreateSheet() {
     <div class="field"><label>${T("Name")}</label>
       <div class="namerow"><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} placeholder="msk-edge1" autocomplete="off"/>
         <${ThemedSwatch} val=${color} title=${T("Node colour")} onChange=${setColor} sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 16%,transparent);color:" + c}>${name.trim() || "node"}</span>`}/></div>
-      <div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : T("A label for this node — you can rename it anytime. The swatches set its colour per theme.")}</div></div>
+      <div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? T("1–40 chars: letters, digits, - or _ only.") : T("A label for this node — you can rename it anytime. The swatches set its colour per theme.")}</div></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -1220,10 +1225,10 @@ function nixNodeSteps(host, endpoint, token, recovery, mode) {
   // ⚠️ native REQUIRES delivery = "native": tokenFile is rejected on the container default, so
   // omitting it is a build failure, not a silent fallback.
   const svc = podman ? [
-    "        { services.swg-node = {",
-    "            enable = true;",
+    "        { services.swg-node = {",   // i18n-keys: generated Nix — file text, copied verbatim
+    "            enable = true;",   // i18n-keys: generated Nix — file text, copied verbatim
     '            delivery = "container";',
-    "            # nixpkgs flags docker insecure on 25.11",
+    "            # nixpkgs flags docker insecure on 25.11",   // i18n-keys: generated Nix — file text, copied verbatim
     '            backend = "podman";',
     `            panelUrl = "${host}";`,
     `            endpoint = "${ep}";   # the public IP CLIENTS dial`,
@@ -1231,8 +1236,8 @@ function nixNodeSteps(host, endpoint, token, recovery, mode) {
     '            selfUpdate.flakeRef = "/etc/nixos#swg";',
     "        }; }",
   ] : [
-    "        { services.swg-node = {",
-    "            enable = true;",
+    "        { services.swg-node = {",   // i18n-keys: generated Nix — file text, copied verbatim
+    "            enable = true;",   // i18n-keys: generated Nix — file text, copied verbatim
     '            delivery = "native";',
     `            panelUrl = "${host}";`,
     `            endpoint = "${ep}";   # the public IP CLIENTS dial`,
@@ -1244,10 +1249,10 @@ function nixNodeSteps(host, endpoint, token, recovery, mode) {
     "{",
     '  inputs.nixpkgs.url   = "github:NixOS/nixpkgs/nixos-25.11";',
     '  inputs.swg-panel.url = "github:SanityProtocol/swg-panel";',
-    "  outputs = { self, nixpkgs, swg-panel }: {",
-    "    nixosConfigurations.swg = nixpkgs.lib.nixosSystem {",
+    "  outputs = { self, nixpkgs, swg-panel }: {",   // i18n-keys: generated Nix — file text, copied verbatim
+    "    nixosConfigurations.swg = nixpkgs.lib.nixosSystem {",   // i18n-keys: generated Nix — file text, copied verbatim
     '      system = "x86_64-linux";',
-    "      modules = [",
+    "      modules = [",   // i18n-keys: generated Nix — file text, copied verbatim
     "        ./configuration.nix",
     "        swg-panel.nixosModules.swg-node",
     ...svc,
@@ -1257,10 +1262,10 @@ function nixNodeSteps(host, endpoint, token, recovery, mode) {
     "}",
   ].join("\n");
   const buildCmd = podman ? [
-    "cd /etc/nixos && sudo git init -q -b main && sudo git add -A",
+    "cd /etc/nixos && sudo git init -q -b main && sudo git add -A",   // i18n-keys: a shell command the operator runs verbatim
     "sudo nixos-rebuild switch --flake /etc/nixos#swg",
   ].join("\n") : [
-    "cd /etc/nixos && sudo git init -q -b main && sudo git add -A",
+    "cd /etc/nixos && sudo git init -q -b main && sudo git add -A",   // i18n-keys: a shell command the operator runs verbatim
     "sudo nixos-rebuild switch --flake /etc/nixos#swg",
     "sudo reboot   # once, so the AmneziaWG kernel module loads",
   ].join("\n");
@@ -1480,7 +1485,7 @@ export function NodeEditSheet({ node }) {
     });
   };
   const save = async () => {
-    if (!name.trim() || !V.nodeName(name)) return setMsg({ k: "err", t: "Name: 1–40 chars, letters/digits/-/_ only." });
+    if (!name.trim() || !V.nodeName(name)) return setMsg({ k: "err", t: T("Name: 1–40 chars, letters/digits/-/_ only.") });
     if (reprovChanged) {   // re-provisioning bounces this node's mesh links → confirm first
       return pushModal(html`<${ConfirmSheet} title=${T("Re-provision this node's mesh links?")} confirmLabel=${T("Re-provision")} warn=${true}
         body=${T("Changing the mesh subnet / port / prefix of {v1} rebuilds all of its node-to-node links with the new settings.", { v1: node.name }) + " " + T("{v1} will briefly drop off the mesh (and any cascade/smart traffic routed through it pauses) until every peer pulls the new config and reconnects — usually a few seconds. Other nodes' links to each other are unaffected.", { v1: node.name })}
@@ -1503,7 +1508,7 @@ export function NodeEditSheet({ node }) {
     <div class="field"><label>${T("Name")}</label>
       <div class="namerow"><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/>
         <${ThemedSwatch} val=${color} title=${T("Node colour")} onChange=${setColor} sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 16%,transparent);color:" + c}>${name.trim() || node.name || "node"}</span>`}/></div>
-      <div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : T("A label for this node — rename anytime, nothing else changes. The swatches set its colour per theme.")}</div></div>
+      <div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? T("1–40 chars: letters, digits, - or _ only.") : T("A label for this node — rename anytime, nothing else changes. The swatches set its colour per theme.")}</div></div>
     <div class="seclabel">${T("Egress")}</div>
     <div class="field"><label>${T("Default egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— direct internet exit")}</span></label>
       <${NodeIpPick} ips=${ips} value=${defEgress} onChange=${setDefEgress} auto=${T("Auto (MASQUERADE)")}/>
@@ -1686,6 +1691,7 @@ export function TransferOutcome({ d, preview }) {
 }
 
 export function openNodeTransfer(node) { openModal(html`<${NodeTransferSheet} node=${node}/>`); }
+const TOKEN_PREFIX_HINT = "swgx1_…";   // i18n-keys: the literal prefix every transfer token starts with
 export function NodeTransferSheet({ node }) {
   const [paste, setPaste] = useState("");
   const [pf, setPf] = useState(null);          // the checked target + what would move
@@ -1727,7 +1733,7 @@ export function NodeTransferSheet({ node }) {
           back is to change it — which the link below the result offers explicitly. */ null}
     ${!pf ? html`<div class="field"><label>${T("The other panel's transfer token")}</label>
       <textarea class="ta" rows="3" spellcheck="false" autocomplete="off" value=${paste}
-        placeholder=${"swgx1_…"}
+        placeholder=${TOKEN_PREFIX_HINT}
         onInput=${e => { setPaste(e.target.value); setPf(null); setMsg(null); }}></textarea>
       <div class="hint">${T("On the other panel: Nodes → Add node, then copy its Transfer token — it carries that panel's address and the new node's key together. An enrolment command still works if you have one; nothing is ever run.")}</div></div>` : null}
     ${pf ? html`<${Fragment}>
@@ -1886,7 +1892,7 @@ export function NodeRemoveSheet({ node }) {
   const declarative = !!node.declarative;
   const nixos = node.platform === "nixos";
   const uninstall = declarative
-    ? (nixos ? "services.swg-node.enable = false;   # then: sudo nixos-rebuild switch" : "")
+    ? (nixos ? "services.swg-node.enable = false;   # then: sudo nixos-rebuild switch" : "")   // i18n-keys: generated Nix — file text, copied verbatim
     : `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s uninstall`;
   const flag = () => { setFlagged(true); mutate({
     key: "node:" + node.id,

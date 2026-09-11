@@ -43,6 +43,14 @@ declarative_host(){                  # 0 = managed declaratively; sets DECLARATI
   if [ -e /etc/NIXOS ] || grep -qsE '^ID="?nixos"?[[:space:]]*$' /etc/os-release; then DECLARATIVE_KIND="nixos"; return 0; fi
   local sd="${SYSTEMD_DIR:-/etc/systemd/system}" p
   [ -d "$sd" ] || return 1
+  # ⚠️ THE WRITE PROBE IS ONLY EVIDENCE WHEN WE COULD HAVE WRITTEN. Run as an ordinary user it fails on
+  # every box in the world, and this then reported an Ubuntu laptop as "managed declaratively" and told the
+  # operator to describe swg-panel in their NixOS configuration — a confident wrong diagnosis, with advice
+  # they cannot act on, as the FIRST thing anyone sees who forgets `sudo`. Measured: install-node.sh,
+  # update.sh and convert.sh all reach this before their own root check (convert.sh had none at all), while
+  # install-docker.sh and uninstall.sh got there first and said "run as root", which is the true answer.
+  # The NixOS markers above still decide outright — those are real evidence at any privilege level.
+  [ "$(id -u)" = 0 ] || return 1
   p="$sd/.swg-install-probe.$$"
   if ( : > "$p" ) 2>/dev/null; then rm -f "$p"; return 1; fi
   DECLARATIVE_KIND="declarative"; return 0
@@ -387,7 +395,35 @@ for t in tps:
     _sum_wdtt_block docker
     _sum_csqtt_block docker
   else
-    _ifn=0; for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] && _ifn=$((_ifn+1)); done
+    # ⚠️ ASK WHO OWNS IT, don't glob the directory. "What .conf files exist" is a different question from
+    # "what does this node manage", and on a box that already ran somebody else's server they differ: this
+    # summary listed a FOREIGN awg0 under "managed bare-metal" TWENTY LINES after the same run had correctly
+    # reported it as an adoption candidate the panel does not own — and after writing a config.json that does
+    # not contain it. One run, two contradictory statements, and the wrong one is the one at the end.
+    # Measured on hel-flux 2026-09-08. uninstall.sh answers this from the same file and the two must agree.
+    #
+    # Unreadable ⇒ fall back to listing everything, which is today's behaviour: here the cost of not knowing
+    # is a cosmetic over-claim, whereas in the UNINSTALLER the same unknown costs somebody's data, so that
+    # one fails the other way. Same question, opposite safe answer, on purpose.
+    # ⚠️ "READ IT, AND IT IS EMPTY" IS AN ANSWER; "could not read it" is not. The first version of this
+    # decided by whether the output was non-empty, so a node that manages NOTHING YET — which is every
+    # fresh install, because the mesh links are added by swg-noded after this summary prints — took the
+    # can't-tell fallback and listed every .conf on the box. That is the same failure this block exists to
+    # fix, made one level up. The exit status is what distinguishes them.
+    _sum_owned=""; _sum_owned_known=no
+    if [ -f /etc/swg-agent/config.json ] && have python3; then
+      if _sum_out="$(python3 - <<'PY'
+import json
+c = json.load(open("/etc/swg-agent/config.json"))
+print(" ".join(str(k) for k in (c.get("interfaces") or {})))
+PY
+)"; then _sum_owned=" $_sum_out "; _sum_owned_known=yes; fi
+    fi
+    _sum_ours(){ [ "$_sum_owned_known" = yes ] || return 0; case "$_sum_owned" in *" $1 "*) return 0;; *) return 1;; esac; }
+    _ifn=0; _foreign=0
+    for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] || continue
+      n="$(basename "$conf" .conf)"; is_sys_iface "$n" && continue
+      if _sum_ours "$n"; then _ifn=$((_ifn+1)); else _foreign=$((_foreign+1)); fi; done
     echo
     if [ "$_ifn" -eq 0 ]; then echo "  $(b 'Interfaces'):  none yet — add them in the web panel"
     else echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; fi
@@ -395,7 +431,10 @@ for t in tps:
     _meshif=""
     for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
       is_sys_iface "$n" && { _meshif="$_meshif $n"; continue; }   # panel-managed mesh link — never listed as a user interface
+      _sum_ours "$n" || continue                                  # somebody else's — named above as an adoption candidate
       case "$conf" in */wireguard/*) proto=wg;; *) proto=awg;; esac; _sum_iface_row "$n" "$proto" "$conf" "$nep"; done
+    [ "$_foreign" -gt 0 ] && printf '    %s%s wg/awg interface(s) on this box are NOT managed here — adopt them from the panel if you want them%s\n' \
+        "${C_GREY:-}" "$_foreign" "${RESET:-}"
     for n in $_meshif; do printf '    %s Mesh interface %s\n' "${C_BLUE:-}→${RESET:-}" "${C_BLUE:-}$n${RESET:-}"; done
     units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
     if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (host systemd, managed from the panel):"; echo
@@ -916,16 +955,52 @@ print_proxy_configs(){
 # update), reloads systemd, and enables the 30s timer. Caller owns $DRYRUN gating + container trigger pre-creation.
 # systemctl calls are best-effort so this never trips set -e. Returns 0.
 write_docker_updater(){
-  cat > /usr/local/bin/swg-update <<'WRAP'
+    # ⚠️ THE REF THE BOX WAS INSTALLED FROM, not `main`. `bootstrap.sh` deliberately supports installing a
+  # branch or tag (SWG_REF, or inferred from the URL it was fetched from) — and its own comment says why:
+  # "a panel tracking a pre-release branch SILENTLY DOWNGRADED itself on every one-click update". That fix
+  # covered the bootstrap and NOT this wrapper, which is the thing the Update button actually runs. Baked in
+  # at write time because nothing else on the box records the branch, and this file IS rewritten by every
+  # update — so a box installed from a ref keeps tracking it without any new state to keep in step.
+  _swg_ref="${SWG_REF:-main}"
+  # ⚠️ WRITTEN BESIDE, THEN RENAMED. Same reason as update.sh's `install_update_unit`, which this must stay
+  # identical to: the braces + `exit` below cannot help the one press of Update that INSTALLS them, because
+  # the script running then is the old unguarded wrapper and `cat >` refills the very inode its bash still
+  # holds open. A rename gives the new file a new inode, so the old bash reads EOF and exits 0.
+  cat > /usr/local/bin/swg-update.new <<WRAP
 #!/usr/bin/env bash
+# ⚠️ THE WHOLE BODY IS ONE COMPOUND COMMAND, AND THE \`exit\` AT THE END IS PART OF THE FIX.
+# THIS SCRIPT REWRITES ITSELF. The update it runs re-bakes /usr/local/bin/swg-update, and bash reads a
+# script INCREMENTALLY — so when the pipeline returned, bash went back to the file for the next command at
+# the byte offset it had reached, landed in the middle of the NEW file's last line, and ran the tail of a
+# comment. Measured on swgt at the end of a completely successful panel update:
+#     /usr/local/bin/swg-update: line 15: pass: command not found
+# — from \`# extra flags (e.g. --node-only) pass through\`, in a file that is only 14 lines long. Under
+# \`set -e\` that is a non-zero exit after the update has already reported success, so a real update ends by
+# announcing a failure that did not happen. It fires ONLY when something is actually installed, which is
+# why a second run looks clean and why this survived every dry run.
+# Braces make bash parse the whole body before executing any of it, and the \`exit\` means it never reads
+# from the file again.
+{
 # swg-update — root entrypoint for the panel/node one-click update. swg programs + images only (--no-components
-# skips docker engine / wg-awg / turn-proxies); on a docker box this is `compose pull && up`. A container can't
+# skips docker engine / wg-awg / turn-proxies); on a docker box this is \`compose pull && up\`. A container can't
 # recreate itself, so the panel/node touches its trigger and THIS (host, root) unit does the recreate.
 set -euo pipefail
-URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh}"
-curl -fsSL "$URL" | bash -s update -y --no-components
+# ⚠️ EXPORTED, not just used. \`bootstrap.sh\` derives the ref from the URL IT WAS FETCHED FROM, reading
+# \$SWG_BOOTSTRAP_URL out of its own environment — and this line used the baked URL only as a shell
+# DEFAULT, so the piped bash saw the variable UNSET, inferred nothing, and fell back to \`main\`. The
+# wrapper fetched dev's bootstrap and then installed main from it: the panel silently downgraded itself
+# and re-baked this very file back to main, which is word for word the failure the inference was added to
+# prevent. Measured on swgt: 1.8.6-beta -> 1.8.5-beta, wrapper dev -> main, on one press of Update.
+# Exporting the URL (rather than forcing SWG_REF) keeps an operator's own \$SWG_BOOTSTRAP_URL authoritative
+# — their URL then decides the ref, which is the whole point of deriving it from the URL.
+URL="\${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/${_swg_ref}/bootstrap.sh}"
+export SWG_BOOTSTRAP_URL="\$URL"
+curl -fsSL "\$URL" | bash -s update -y --no-components
+exit
+}
 WRAP
-  chmod 755 /usr/local/bin/swg-update
+  chmod 755 /usr/local/bin/swg-update.new
+  mv -f /usr/local/bin/swg-update.new /usr/local/bin/swg-update   # see the rename note above — NEVER `cat >`
   # The trigger files are written by the panel/node CONTAINER through a bind mount, and inotify does NOT cross that
   # bind mount — a host `.path` unit (PathModified) NEVER sees the container's write. So we POLL the trigger mtimes
   # from the host instead (stat across the bind mount works — it's a shared inode). A timer runs this every 30s.
@@ -1316,6 +1391,18 @@ host_bindable_ips(){
 # successful install. These two rungs close that. Order matters — the kernel module is materially
 # faster, so it is always tried first and userspace is only a fallback.
 
+# One clone, two transports. Full diagnosis in bootstrap.sh: on Ubuntu 22.04 (git 2.34 / libcurl3-gnutls
+# 7.81 / nghttp2 1.43) GitHub answers git's smart-HTTP `POST /git-upload-pack` over HTTP/2 with a 401 and a
+# Basic-auth challenge — on a PUBLIC repo whose `GET /info/refs` it served 200 a moment earlier. git then
+# asks for a username, which GIT_TERMINAL_PROMPT=0 turns into a clean failure rather than a hang. The
+# HTTP/1.1 retry turns it back into a working clone. Ubuntu 24.04 (git 2.43 / nghttp2 1.59) never sees it.
+# Costs nothing where HTTP/2 works: the retry is only ever reached after a failure.
+git_clone_depth1(){ # <url> <dest>
+  run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 "$1" "$2" && return 0
+  rm -rf "${2:?}"
+  run env GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth=1 "$1" "$2"
+}
+
 awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstream. 0 = tools AND module.
   # Tools first and unconditionally: `awg` + `awg-quick` are what the panel needs to write and bring up a
   # conf, and they build anywhere with a compiler — no distro repo involved. WITH_WGQUICK=yes is what
@@ -1338,13 +1425,18 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   if ! have awg || ! have awg-quick; then
     info "building AmneziaWG tools from source (the amnezia PPA is Ubuntu-only)…"
     # ca-certificates is NOT optional here: without it every https git clone below fails cert verification.
+    # GIT_TERMINAL_PROMPT=0 on each clone below: these are PUBLIC amnezia-vpn repos, so a credential
+    # prompt can only mean github.com is unreachable — and git asks on /dev/tty, which the `>log 2>&1`
+    # around these blocks does NOT capture, so an install would sit there waiting for a login with its
+    # explanation buried in a log file. Failing is handled (`|| true`, and the caller checks the result);
+    # hanging is not. Same defect bootstrap.sh had at the top of this very install.
     # Dockerfile.node never hit this because its golang base image ships them; a minimal Debian does not.
     have apt-get && run apt-get install -y --no-install-recommends git make build-essential ca-certificates >/dev/null 2>&1
     if ! have git || ! have make; then
       warn "cannot build AmneziaWG tools — git/make/compiler missing and no apt-get to add them"
       rm -rf "$w"; return 1
     fi
-    { run git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-tools "$w/tools" \
+    { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-tools "$w/tools" \
         && run make -C "$w/tools/src" \
         && run make -C "$w/tools/src" install PREFIX=/usr WITH_BASHCOMPLETION=no \
                 WITH_WGQUICK=yes; } >"$w/build.log" 2>&1 || true
@@ -1362,7 +1454,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
   info "building the AmneziaWG kernel module for $(uname -r)…"
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
-  { run git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" \
+  { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" \
       && run make -C "$w/mod/src" \
       && run make -C "$w/mod/src" install; } >"$w/mod.log" 2>&1 || true
   run depmod -a >/dev/null 2>&1 || true
@@ -1381,7 +1473,7 @@ ensure_awg_userspace(){ # last rung: the userspace datapath, so AWG works even w
   have go || { warn "no Go toolchain — install amneziawg-go by hand for a userspace AmneziaWG datapath"; return 1; }
   info "building the userspace AmneziaWG datapath (amneziawg-go)…"
   local w; w="$(mktemp -d)"
-  { run git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" \
+  { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" \
       && ( cd "$w/go" && run go build -o /usr/local/bin/amneziawg-go . ); } >"$w/go.log" 2>&1 || true
   # Debian STABLE ships a Go far older than amneziawg-go asks for (bookworm: 1.19 vs a go.mod wanting 1.25),
   # and 1.19 predates Go fetching its own toolchain, so it cannot bootstrap out of it either. backports is
@@ -1407,4 +1499,51 @@ ensure_awg_userspace(){ # last rung: the userspace datapath, so AWG works even w
   fi
   rm -rf "$w"
   return 0
+}
+
+# ── MANAGE_IFACES: normalise it, then refuse a name this box does not have ────────────────────────────
+# ⚠️ ONE READER, BECAUSE THERE ARE TWO INSTALLERS. install-node.sh and install-host.sh each have their own
+# `choose_ifaces`, their own `detect_wg` and their own copy of the same "unknown name → fall through to the
+# wg default" fallback. The guard was written into ONE of them, so `MANAGE_IFACES=none bootstrap node`
+# refused while `MANAGE_IFACES=none bootstrap master` — the more common first install — went on writing
+#     "none": {"cmd": ["wg"], "conf": "/etc/wireguard/none.conf"}
+# into config.json and the node reported `reconcile: … errors=['none: cannot read interface']` on EVERY
+# pass, for ever, under a green install summary. Fixing a twin and not its sibling is how the sibling gets
+# found in production. [[csqtt-wdtt-presence-parity]]
+#
+# Two jobs, both here so they cannot drift apart again:
+#   1. Normalise. `MANAGE_IFACES=" "` — a trailing space out of a copy-paste — is non-empty, takes the
+#      "explicit list" branch, and puts a blank entry in SELECTED; every later loop then indexes IF_* with
+#      an empty subscript and the install dies at `IF_CMD: bad array subscript` mid-Step 1.
+#   2. Validate against what the box HAS. `detect_wg` has already walked every conventional wg/awg
+#      location and (in install-node) rebuilt confs for running interfaces that had none, so a name absent
+#      from IF_CMD names nothing here. Refused rather than dropped: this is an explicit statement of
+#      intent, and quietly managing fewer interfaces than asked is the other half of the same lie.
+#      Only reachable unattended — the interactive path picks from a list.
+#
+# ⚠️ IT WRITES $MANAGE_IFACES; IT DOES NOT ECHO IT. The obvious shape —
+# `MANAGE_IFACES="$(manage_ifaces_resolve "$MANAGE_IFACES")"` — puts the whole function inside a COMMAND
+# SUBSTITUTION, which is a subshell, so `die`'s `exit 1` kills the subshell and nothing else: the parent
+# assigns the empty string and carries on as if MANAGE_IFACES had been blank all along. The refusal would
+# have printed its message and then let the install do the very thing it refused. Assign a global from the
+# CURRENT shell instead, where `die` means what it says. [[installer-convert-session-2026-06]]
+#
+# Call AFTER detect_wg. Sets MANAGE_IFACES to the normalised value, or `die`s (the caller's `die`).
+manage_ifaces_resolve(){
+  local _raw="${MANAGE_IFACES:-}" _n _have="" ; local -a _bad=()
+  _raw="$(printf '%s' "$_raw" | tr -s ', ' ',' | sed 's/^,//; s/,$//')"
+  MANAGE_IFACES="$_raw"
+  [ -n "$_raw" ] || return 0
+  local _old_ifs="$IFS"; IFS=','; local -a _want=($_raw); IFS="$_old_ifs"
+  for _n in ${_want[@]+"${_want[@]}"}; do _n="${_n// /}"; [ -z "$_n" ] && continue
+    [ -n "${IF_CMD[$_n]:-}" ] || _bad+=("$_n"); done
+  if [ "${#_bad[@]}" -gt 0 ]; then
+    # ⚠️ AN EMPTY ASSOCIATIVE ARRAY STILL EXPANDS TO ONE EMPTY WORD, so `printf '%s\n' "${!IF_CMD[@]}"`
+    # emits a blank line and a `${_have:-…}` default never fires — the sentence then read "Found here:"
+    # followed by nothing, on the box where the fallback mattered most. Ask the SIZE, not the expansion.
+    if [ "${#IF_CMD[@]}" -gt 0 ]; then _have="$(printf '%s\n' "${!IF_CMD[@]}" | sort | tr '\n' ' ')"; fi
+    die "MANAGE_IFACES names $(b "${_bad[*]}"), which $([ "${#_bad[@]}" -gt 1 ] && echo are || echo is) not on this box.
+    Found here: ${_have:-(no wg/awg interfaces at all)}
+    Leave MANAGE_IFACES blank to report every interface this box has and adopt them from the panel."
+  fi
 }

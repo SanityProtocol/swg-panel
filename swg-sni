@@ -18,6 +18,19 @@ NFQUEUE is spoken directly over an AF_NETLINK socket (NETLINK_NETFILTER) — no 
 Python: pure stdlib, single file, like the rest of the fleet. Fails OPEN: swg-noded adds the queue rule with the
 `bypass` flag, so if this process dies, new connections simply stop being learned — traffic keeps flowing.
 
+TWO INPUT FILES, both written by swg-noded and both pre-bucketed by the PANEL — this process classifies
+nothing, it only looks strings up. `sni-map.json` is {category: [domain]}, matched by longest suffix.
+`sni-patterns.json` beside it is {kind: {category: [operand]}} — the panel's pattern buckets — of which this
+build lowers all six, in two tiers: label-anchored ones by dict lookup (`any` / `first` / `zone`) and
+character-level ones by a linear scan (`starts` / `ends` / `contains`). This is the only engine holding the
+PARSED hostname as a string, so it is the only one that can anchor either end of a name. A kind not in
+SNI_KINDS is IGNORED, so a build that predates a kind routes fewer destinations, never more, and a later
+phase is a change here alone.
+
+Two files and not one, because in the domain map a bare label is indistinguishable from a domain and this
+process would have to guess what the operator meant. The patterns path is derived from --map, so neither
+side of a half-updated node needs a new flag.
+
 Run:  swg-sni --queue 0 --map /var/lib/swg-noded/sni-map.json --table swg_smart
 Env:  SWG_SNI_QUEUE, SWG_SNI_MAP, SWG_SNI_TABLE (flags win).
 """
@@ -203,6 +216,105 @@ BLK_TOPK       = 500        # blocked-domain attribution: keep at most this many
 BLK_WRITE_EVERY = 10.0      # s — how often the blocked-domain top-K is mirrored to disk for swg-noded to harvest
 
 
+# The pattern kinds this build can LOWER, split by the tier that decides HOW they are matched — which is the
+# same split that decides what they cost (plan §1.2, and PATTERNS §1.2 where it was measured).
+#
+#   TIER 1  the star sits on a label boundary, so the operand is a whole LABEL and the match is a dict hit:
+#           `*.google.*` = some label is `google` · `google.*` = the first one is · `*.ru` = the last one is.
+#           Flat regardless of how many there are.
+#   TIER 2  the star sits inside a label, so there is no boundary to hash on and the operand is matched
+#           against the name as a STRING. Linear in the number of operands — the only cost in this matcher
+#           that grows, which is why it is the only one anything bounds (`_SNI_TIER2_MAX` in swg-noded).
+#
+# BOTH TUPLES ARE LOADING LISTS AND NEITHER IS A CAPABILITY LIST. Adding a kind here loads its bucket and
+# lowers nothing: `_match` is what lowers, and it names each kind itself. A kind needs BOTH, and the gate
+# that proves it is `.campaign/routing-rig/capmatrix.py`, which drives `_match` with a probe host per kind
+# rather than reading either tuple. The file may carry more kinds than these — the panel ships every bucket
+# a rule named — and anything not listed is ignored rather than guessed at, so a build that predates a kind
+# routes fewer destinations, never more.
+SNI_TIER1 = ("first", "zone", "any")      # ladder order — see _match, which spells it out itself
+SNI_TIER2 = ("starts", "ends", "contains")
+SNI_KINDS = SNI_TIER1 + SNI_TIER2
+if set(SNI_TIER1) & set(SNI_TIER2):
+    # Not defensiveness about data — this can only be a typo in the two lines above, and it fails SILENTLY.
+    # A kind in both tuples gets Tier 1's DICT shape from _bucket, and _match's Tier-2 loop would then
+    # iterate that dict's KEYS and unpack each one as a pair: a two-character operand `ru` would quietly
+    # become op='r', cats='u', matching a huge share of hostnames and learning them into an invented
+    # category `u`. Better to refuse to start, which swg-noded reports as the SNI parser being down and
+    # which routes traffic direct, than to misroute it into a category nobody wrote.
+    raise SystemExit("swg-sni: %s is in both SNI_TIER1 and SNI_TIER2 — a kind has exactly one tier"
+                     % ", ".join(sorted(set(SNI_TIER1) & set(SNI_TIER2))))
+
+
+def _mtime(path):
+    """A file's mtime, or None when it is not there. `None` is a VALUE here, not an error: an absent input
+    file is the empty set, and it has to compare equal to itself so a missing file is not re-read for ever."""
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return None
+
+
+def _index(data, labels=True):
+    """{category: [name, ...]} → {name: [category, ...]}, the shape every lookup uses.
+
+    `labels=False` FOR TIER 2, and it is not a tidiness flag. Everything else indexed here is made of DNS
+    LABELS — a domain name, a zone, a first/any label — where a leading or trailing dot is punctuation and
+    stripping it is what makes `yandex.ru.` and `yandex.ru` the same key. A Tier-2 operand is not a name: it
+    is a run of BYTES matched against one, and a dot at either end is the operator pinning a label boundary.
+    Stripping it silently WIDENS the rule — `*yandex.*` becomes `yandex`, which matches
+    `notyandexmail.com`, the exact string the dot was written to exclude — and it desyncs the two engines
+    that both run `contains`, since xt_string matches the operand as stored.
+
+    PER-NAME, and a LIST — the same shape, and for the same reason, as _ensure_smart_dnsmasq's dom_sets. This
+    used to be `d2c[dom] = cat`, so a domain claimed by two categories (google.com in a custom list AND the
+    built-in Google set; two rules that both name a service) landed in exactly one of them — and since
+    swg-noded writes this map with sort_keys=True, the winner was whichever category NAME sorted last. Silent,
+    order-dependent, and invisible in every reading the panel takes: the other category's set simply never
+    fills, so its rule never matches and its traffic goes wherever it would have gone anyway. Learn the
+    destination into EVERY matched category and let the nft chain pick by RULE ORDER, which is the operator's
+    own priority and the answer dnsmasq has always given in Force-DNS mode.
+
+    An empty key is dropped whichever way: as a zone it would be the last label of a name written with a
+    trailing dot, and a "" that matched would claim every hostname on the node."""
+    out = {}
+    for cat, names in (data or {}).items():
+        if not isinstance(names, (list, tuple)):
+            continue                                   # a string here would iterate CHARACTERS and invent
+            #                                            single-letter zone keys out of a malformed file
+        for n in names:
+            k = str(n).lower()
+            k = k.strip(".") if labels else k
+            if not k:
+                continue
+            cats = out.setdefault(k, [])
+            if cat not in cats:
+                cats.append(cat)
+    return out
+
+
+def _bucket(kind, data):
+    """One kind's operands, in the shape ITS TIER is matched with: a dict for Tier 1, an ordered list for
+    Tier 2. Two tiers are two matchers, so they get two structures rather than one shape the packet path
+    then has to adapt — and the difference is visible in the data instead of only in a comment.
+
+    TIER 2 IS ORDERED LONGEST OPERAND FIRST, then lexicographically. A scan can have several operands match
+    one hostname and something has to decide which category wins; "most specific" is the same rule §1.4
+    already uses BETWEEN kinds, so it is the one used within them. Left as a dict, the answer would come out
+    of JSON key order — emergent, and different on a node whose file was written by a different panel
+    version. §1.4 says never. Sorted here, once per reload, and never in the packet path."""
+    if kind in SNI_TIER1:
+        return _index(data)                            # labels: a dot at either end is punctuation
+    d = _index(data, labels=False)                     # bytes: a dot at either end is the rule
+    return sorted(d.items(), key=lambda kv: (-len(kv[0]), kv[0]))
+
+
+def _empty_pats():
+    """The no-patterns state — every kind present, each in its tier's shape. One function because four places
+    reset this and a branch that built a bare {} would hand `_match` a dict where it iterates pairs."""
+    return {k: _bucket(k, None) for k in SNI_KINDS}
+
+
 def _learnsetname(cat):
     # MUST match swg-noded's _smart_learnsetname: learned dst IPs go in the per-cat catl_ set (flags timeout → they
     # auto-expire), separate from the timeout-less interval cat_ set that holds the static geoip CIDRs.
@@ -216,8 +328,13 @@ class Classifier:
         self.reset_mark = reset_mark               # >0: RST the FIRST flow to each newly-learned dst so it reconnects routed
         self.learn_ttl = learn_ttl                 # learned catl_ entry lifetime (matches the set's default timeout)
         self.refresh_age = learn_ttl / 2.0         # re-add (refresh the set timeout) once a seen entry is this old → active dsts never expire
-        self.mtime = 0
-        self.dom2cat = {}                              # exact domain → category
+        self.map_mtime = None                          # each file is stat-gated and PARSED on its own — see _reload
+        self.pat_mtime = None
+        self.dom2cat = {}                              # exact domain → [category, ...] — see _reload
+        self.pats = _empty_pats()                      # kind → Tier-1 {operand: [cat]} / Tier-2 [(operand, [cat])]
+        # Derived from --map, like blk_path below: swg-noded writes both into the same directory, so a node
+        # whose swg-noded and swg-sni are updated a moment apart never has to agree about a new flag.
+        self.pat_path = os.path.join(os.path.dirname(map_path) or ".", "sni-patterns.json")
         self.blk_path = os.path.join(os.path.dirname(map_path) or ".", "sni-blk-hits.json")
         self._blk_hits = {}                            # blocked hostname → cumulative hit count (bounded top-K, panel buckets → category)
         self._blk_last_w = 0.0                         # last time _blk_hits was mirrored to disk
@@ -232,33 +349,134 @@ class Classifier:
         t.start()
 
     def _reload(self):
-        try:
-            st = os.stat(self.map_path)
-        except OSError:
-            self.dom2cat = {}; return
-        if st.st_mtime == self.mtime:
+        """Re-read whichever of the two inputs has moved. INDEPENDENTLY, on purpose: a patterns file that
+        fails to parse must not also freeze the domain map, and neither one's mtime may gate the other. Each
+        stamps its own mtime BEFORE parsing, so a file that is broken is read once and not once every two
+        seconds for ever; each keeps its previous index on failure, which routes what it already routed."""
+        mt = _mtime(self.map_path)
+        if mt is None:                                 # no map ⇒ this node routes nothing through us at all
+            self.dom2cat = {}; self.pats = _empty_pats()
+            self.map_mtime = self.pat_mtime = None
             return
-        self.mtime = st.st_mtime
-        try:
-            with open(self.map_path) as f:
-                data = json.load(f)                    # {category: [domain, ...]}
-            d2c = {}
-            for cat, doms in (data or {}).items():
-                for dom in (doms or []):
-                    d2c[str(dom).strip(".").lower()] = cat
-            self.dom2cat = d2c
-            print(f"swg-sni: loaded {len(d2c)} domains across {len(data or {})} categories", flush=True)
-        except Exception as e:
-            print("swg-sni: map reload failed:", e, flush=True)
+        if mt != self.map_mtime:
+            self.map_mtime = mt
+            try:
+                with open(self.map_path) as f:
+                    self.dom2cat = _index(json.load(f))   # {category: [domain, ...]}
+                print(f"swg-sni: loaded {len(self.dom2cat)} domains", flush=True)
+            except Exception as e:
+                print("swg-sni: map reload failed:", e, flush=True)
+        pmt = _mtime(self.pat_path)
+        if pmt != self.pat_mtime:
+            self.pat_mtime = pmt
+            if pmt is None:                            # absent IS the empty set — swg-noded removes the file
+                self.pats = _empty_pats()
+            else:                                      # an `else`, not an early return: nothing here may
+                try:                                   # depend on this being the last thing _reload does
+                    with open(self.pat_path) as f:
+                        pdata = json.load(f) or {}     # {kind: {category: [operand, ...]}}
+                    self.pats = {k: _bucket(k, pdata.get(k)) for k in SNI_KINDS}
+                    print("swg-sni: loaded patterns " +
+                          ", ".join("%d %s" % (len(v), k) for k, v in self.pats.items()) +
+                          (" (ignoring %s)" % ", ".join(sorted(set(pdata) - set(SNI_KINDS)))
+                           if set(pdata) - set(SNI_KINDS) else ""), flush=True)
+                except Exception as e:
+                    print("swg-sni: pattern reload failed:", e, flush=True)
 
     def _match(self, host):
-        """Longest-suffix match: www.youtube.com → youtube.com. Returns a category or None."""
-        labels = host.split(".")
+        """Which categories claim this hostname — EVERY one the winning operand belongs to (usually one), or
+        an empty tuple.
+
+        ONE LADDER, MOST SPECIFIC FIRST, and it is spelled out here rather than derived from SNI_KINDS or from
+        any dict's ordering (plan §1.4, and PATTERNS §1.4 where it is decided). The first rung that answers
+        wins outright; nothing accumulates across rungs.
+
+            1. full suffix   `mail.google.com`   the domain map, longest suffix, ≥2 labels
+            2. first-label   `google.*`          the leftmost label is exactly `google`
+            3. zone          `*.ru`              the rightmost label is
+            4. any-label     `*.google.*`        SOME label is — anywhere
+            5. Tier-2 scan   `google*` `*google` `*google*`   the name as a string: starts, then ends, then contains
+
+        WHY THIS ORDER — MOST SPECIFIC FIRST, and "specific" is meant literally: for one operand, each rung
+        matches a SUBSET of the hosts the rung below it matches. A two-label suffix pins two labels and their
+        position; `first` and `zone` pin one label and its position; `any` pins a label and no position, so
+        `google.*` ⊂ `*.google.*` and `*.ru` ⊂ `*.ru.*` — both strictly. Tier 2 pins no boundary at all and
+        goes last.
+
+        ⚠️ THIS PUTS `any` BELOW `first`, WHICH IS NOT THE ORDER §1.4 LISTS. That list has any-label second,
+        and it is wrong by its own heading ("most specific wins"): `any` is a strict SUPERSET of `first` for
+        the same operand, so trying it first means the broader kind always wins and `google.*` could never
+        beat `*.google.*`. §1.4 is marked [DECIDE] / "Confirm" in PATTERNS §9 precisely because the list was
+        never checked against the principle above it. The principle is what is implemented here.
+
+        `first` before `zone` is the one CONVENTION in the ladder and is flagged as such: neither is a subset
+        of the other — one pins the start, one pins the end — so nothing derives the order. It is chosen
+        because a zone is the broadest key an operator can write in practice (a TLD is millions of sites),
+        and the same convention then reads down into Tier 2 as starts, then ends, then contains: anchored at
+        the start, then at the end, then not anchored.
+
+        `mail.google.com` and `*.com` both claim `mail.google.com`; the suffix must win, exactly as dnsmasq's
+        longest-suffix rule decides it, because those are the two rungs Force-DNS also runs and the two
+        engines have to agree about one name. MEASURED, not reasoned (2026-09-07, svo-im, plan §10.4x): two
+        overlapping directives, one real lookup, both sets read — dnsmasq fills ONLY the most specific
+        matching key's sets, regardless of the order the directives are written in. Read twice through
+        different back ends on different builds (2.91/nftset in the node container, 2.90/ipset on the host)
+        because "most specific wins" could otherwise have been a property of one back end rather than of
+        dnsmasq's domain matching. The agreement this paragraph claims is therefore TOTAL, not just true of
+        the example: every overlap Force-DNS can express is suffix-comparable (its only two kinds are a
+        domain and a one-label zone, and any two keys matching one host are suffixes of it), and the walk
+        above answers each one the way dnsmasq does. That makes these two rungs the one part of the ladder a
+        union would BREAK rather than fix — see on_packet.
+
+        WHAT THIS LADDER IS NOT: the operator's rule order. When two RULES both claim a host, this function
+        picks by kind and the panel's "first match wins" does not apply — see the note in on_packet.
+
+        The suffix walk is unchanged and still stops at the MOST SPECIFIC key: a host covered by
+        `mail.google.com` does not also collect `google.com`'s categories. The multi-category part is about one
+        key belonging to several categories, not about matching more keys.
+
+        EVERY TIER-1 RUNG MATCHES A WHOLE LABEL, never a substring. `*.ru` routes `x.ru` and `ru` itself, and
+        never `sub.ruble.com` — that is the whole difference between a zone and what an xt_string engine would
+        make of the same two bytes, and it is why Kernel-SNI refuses the kind outright rather than accepting it
+        degraded. Tier 2 is the opposite by construction, which is what the 3-character floor and the operator's
+        amber badge are for.
+
+        Tier 2 costs one pass over its operands on a MISS, which is every connection to a name nothing claims —
+        the hot path. Measured on the build machine for this exact code: 0.44 µs at 10 operands, 2.6 µs at 100
+        (§12.1's per-interface cap), 26.7 µs at 1000. Bounded at the node, not here, because the node is what
+        can report a truncation to the panel."""
+        name = host.strip(".")                         # `yandex.ru.` is a valid FQDN — a trailing dot is not a label
+        labels = name.split(".")
         for k in range(len(labels) - 1):               # need ≥2 labels; try progressively broader suffixes
-            cat = self.dom2cat.get(".".join(labels[k:]))
-            if cat:
-                return cat
-        return None
+            cats = self.dom2cat.get(".".join(labels[k:]))
+            if cats:
+                return cats
+        # ── Tier 1: label-anchored, O(1) whatever the operand count ──
+        cats = self.pats["first"].get(labels[0])
+        if cats:
+            return cats
+        cats = self.pats["zone"].get(labels[-1])
+        if cats:
+            return cats
+        anyl = self.pats["any"]
+        if anyl:                                       # guarded: the one rung that is O(labels), not O(1)
+            for lb in labels:                          # LEFTMOST label wins, and that is a decision, not an
+                cats = anyl.get(lb)                    # accident: `mail.google.com` under both `*.mail.*` and
+                if cats:                               # `*.google.*` goes to mail's, because labels get more
+                    return cats                        # specific right-to-left and the leftmost is the most
+                    #                                    specific thing the host said about itself.
+        # ── Tier 2: character-level, linear. Unrolled per kind rather than dispatched inside the loop: the
+        # test is per OPERAND, and the order is the thing this function exists to make explicit. ──
+        for op, cats in self.pats["starts"]:
+            if name.startswith(op):
+                return cats
+        for op, cats in self.pats["ends"]:
+            if name.endswith(op):
+                return cats
+        for op, cats in self.pats["contains"]:
+            if op in name:
+                return cats
+        return ()
 
     def on_packet(self, payload):
         now = time.time()                              # pick up map edits within a couple of seconds (mtime-gated)
@@ -270,29 +488,59 @@ class Classifier:
         host = parse_sni(tcp)
         if not host:
             return
-        cat = self._match(host)
-        if not cat:
+        # ⚠️ _match returns ONE rung's categories, so when two RULES both claim a host the KIND decides and the
+        # panel's "first match wins" does not apply. This paragraph used to justify that by saying the other
+        # two engines both defer to rule order, "xt_string's `-j SET` is non-terminating AND dnsmasq fills
+        # every set a name is in". BOTH HALVES WERE MEASURED on svo-im (2026-09-07, plan §10.4x) and the
+        # sentence was HALF WRONG — which is why it is written out here rather than trusted again:
+        #
+        #   ✅ xt_string's `-j SET` really is non-terminating. One payload holding two operands fills BOTH
+        #      ipsets, in either rule order, and also under _xts_scan's connbytes gate. Kernel-SNI therefore
+        #      does defer to rule order, and the panel builds `smart` in rule order (cascade_plan: "ORDER is
+        #      preserved … so first-match"), so the chain really does arbitrate the way the UI promises.
+        #   ❌ dnsmasq does NOT fill every set a name is in. It fills only the MOST SPECIFIC matching key's
+        #      sets, order-independently — read twice, through nftset on 2.91 and ipset on 2.90. Force-DNS
+        #      does not defer to rule order at all; it cannot, because dnsmasq decides and we only hand it
+        #      keys.
+        #
+        # So the divergence is not the shape it was written up as. Against Force-DNS there is NO divergence:
+        # its only two kinds are `site` and `zone`, both dnsmasq keys, and _match's suffix walk answers every
+        # such overlap exactly as dnsmasq does. Returning the union for those two rungs would CREATE a
+        # divergence where none exists. The real one is against Kernel-SNI, over the two kinds IT runs
+        # (`site`, degraded to a substring, and `contains`): there a host matching two rules lands in both
+        # sets and the earlier rule wins, while here the ladder puts the suffix walk above all of Tier 2.
+        #
+        # ⚠️ AND THE TWO ENGINES WE DO NOT CONTROL ALREADY DISAGREE WITH EACH OTHER. `site` is the one kind
+        # both of them run, and it is the one kind they answer differently: for rules `example.com`→B then
+        # `shop.example.com`→A and host `shop.example.com`, dnsmasq gives A (most specific) and xt_string
+        # gives B (rule order) — both measured, same afternoon, same box. There is no single answer for this
+        # engine to converge on, so the slice in plan §10.5 is a POLICY choice about which arbitration the
+        # panel promises, not a bug fix that makes three engines agree. Do not take it as "return the union"
+        # without reading §10.4x's result first: the union belongs to the rungs no dnsmasq key can express.
+        cats = self._match(host)
+        if not cats:
             return
-        if str(cat).startswith("blku"):               # a BLOCK match — count the hostname (bounded) so the panel can
-            with self._lock:                           # bucket it into its content category. Once per ClientHello (the only
-                self._blk_hits[host] = self._blk_hits.get(host, 0) + 1   # packet carrying an SNI) → ≈ per blocked connection.
-                if len(self._blk_hits) > BLK_TOPK:     # evict the coldest host so memory stays hard-bounded
+        if any(str(c).startswith("blku") for c in cats):   # a BLOCK match — count the hostname (bounded) so the panel
+            with self._lock:                           # can bucket it into its content category. ONCE per ClientHello
+                self._blk_hits[host] = self._blk_hits.get(host, 0) + 1   # however many categories claim the host —
+                if len(self._blk_hits) > BLK_TOPK:     # it is one blocked connection, not one per category.
                     self._blk_hits.pop(min(self._blk_hits, key=self._blk_hits.get), None)
-        key = (dst, cat)
+        first = False                                      # any category learning this dst for the first time earns the RST
         with self._lock:
-            ts = self.seen.get(key)
-            if ts is None or now - ts >= self.learn_ttl:   # not in the set (never learned, or timed out) → learn + RST
-                first = True
-            elif now - ts >= self.refresh_age:             # still in the set, aging → re-add to refresh its timeout (no RST)
-                first = False
-            else:
-                return                                     # fresh → already routing, nothing to do
-            self.seen[key] = now
-            self._pending.append((cat, dst))               # buffered; the flusher adds it to catl_ within FLUSH_INTERVAL
+            for cat in cats:
+                key = (dst, cat)
+                ts = self.seen.get(key)
+                if ts is None or now - ts >= self.learn_ttl:   # not in the set (never learned, or timed out) → learn + RST
+                    first = True
+                elif now - ts < self.refresh_age:              # fresh → already routing in this category, nothing to do
+                    continue
+                #  else: still in the set, aging → re-add to refresh its timeout (no RST on account of this one)
+                self.seen[key] = now
+                self._pending.append((cat, dst))           # buffered; the flusher adds it to catl_ within FLUSH_INTERVAL
             if len(self._pending) >= MAX_BATCH:
                 self._wake.set()
         if first:
-            print(f"swg-sni: {host} → {cat}  (+{dst})", flush=True)
+            print(f"swg-sni: {host} → {', '.join(map(str, cats))}  (+{dst})", flush=True)
             return self.reset_mark                          # FIRST sight of this dst: RST this flow so the client reconnects —
             #                                                 the retry's SYN matches catl_ (added by the flusher) and routes.
         return None                                         # refresh only → the dst already routes, don't disturb the flow

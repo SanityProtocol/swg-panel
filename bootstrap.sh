@@ -37,6 +37,10 @@ _ref_from_url(){   # https://raw.githubusercontent.com/<owner>/<repo>/<ref>/boot
 REF="${SWG_REF:-}"
 [ -z "$REF" ] && REF="$(_ref_from_url "${SWG_BOOTSTRAP_URL:-}")"
 REF="${REF:-main}"
+# ⚠️ EXPORTED, so the scripts this dispatches to know which ref the box is being installed from. Nothing on
+# the box records it otherwise, and the one-click update wrapper they write has to keep pointing at it —
+# without this, a box installed from a branch reverts to `main` the first time anyone presses Update.
+export SWG_REF="$REF"
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; C_BL=$'\033[38;5;33m'; C_BROWN=$'\033[38;5;130m'; C_RED=$'\033[31m'; else BOLD=""; RESET=""; C_BLUE=""; C_BL=""; C_BROWN=""; C_RED=""; fi
 b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
@@ -148,7 +152,11 @@ need(){ command -v "$1" >/dev/null 2>&1; }
 # Keep the tree in that case, and say where it is rather than leaving them to guess.
 _keep_tmp=0
 _cleanup_tmp(){
-  if [ "$_keep_tmp" = 1 ] && [ -d "${TMP:-}" ]; then
+  # ⚠️ ONLY IF THERE IS ACTUALLY A PREVIEW. `_keep_tmp` is set from the FLAG, so a script that refuses
+  # `--dry-run` (convert.sh has no dry run and now says so) still ended the run with "dry-run preview kept
+  # at …" pointing at a directory nothing wrote. Naming a preview that does not exist is worse than saying
+  # nothing: it reads as confirmation that the rehearsal happened.
+  if [ "$_keep_tmp" = 1 ] && [ -d "${TMP:-}/swg-panel/dryrun" ]; then
     printf '\n  dry-run preview kept at %s\n  remove it with: rm -rf %s\n' "$TMP/swg-panel/dryrun" "$TMP"
   elif [ -n "${TMP:-}" ]; then
     rm -rf "$TMP"
@@ -165,15 +173,50 @@ run_script(){   # run_script <script> [args…] — dispatch as a child, so the 
 }
 TMP="$(mktemp -d)"; trap '_cleanup_tmp' EXIT
 info "fetching $REPO @ $REF"
+# ⚠️ GIT MUST NOT ASK FOR A PASSWORD, AND MUST NOT BE THE ONLY WAY IN. `git clone` answers a repo it
+# cannot read with an interactive "Username for 'https://github.com':", and it reads /dev/tty directly —
+# so it prompts even here, piped from curl, and the install simply stops at a login it does not need
+# (this repo is public). Seen in the field on a box whose github.com was unreachable while
+# raw.githubusercontent.com — which had served THIS script seconds earlier — was fine.
+#
+# Two changes, both small. GIT_TERMINAL_PROMPT=0 makes that case FAIL instead of hang. And the tarball
+# is now a fallback for git FAILING, not merely for git being ABSENT: the old shape reached it only
+# when git was missing, which is the one situation that box was not in. Nothing downstream reads .git
+# and there is no .gitattributes, so the archive is the same tree by another road.
+#
+# ⚠️ AND THE COMMONEST CAUSE IS NOT AN UNREACHABLE GITHUB — IT IS HTTP/2. On Ubuntu 22.04 (git 2.34 +
+# libcurl3-gnutls 7.81 + nghttp2 1.43) GitHub answers git's smart-HTTP POST /git-upload-pack with
+# `HTTP/2 401 … www-authenticate: Basic`, on a PUBLIC repo that the preceding GET /info/refs just served
+# 200. git then asks for a username and the install stops. Reproduced on svo-im: `ls-remote` fails by
+# default and succeeds verbatim under `-c http.version=HTTP/1.1`; Ubuntu 24.04 (git 2.43 / nghttp2 1.59)
+# is unaffected. Reported from the field, where 2 of 5 nodes could not update until forced to HTTP/1.1.
+#
+# So retry once over HTTP/1.1 before giving up on git. Order matters: HTTP/2 stays the fast path, the
+# retry rescues exactly the affected boxes, and the tarball remains the last resort. Diagnosing this as
+# "GitHub unreachable" and going straight to the tarball works, but silently costs every 22.04 node the
+# git path for ever — and hides a defect that is one flag from fixed.
+_fetched=""
 if need git; then
-  git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"
-elif need curl && need tar; then
-  curl -fsSL "$REPO/archive/refs/heads/$REF.tar.gz" | tar -xz -C "$TMP" \
-    || curl -fsSL "$REPO/archive/refs/tags/$REF.tar.gz" | tar -xz -C "$TMP"
-  mv "$TMP"/swg-panel-* "$TMP/swg-panel"
-else
-  die "need git, or curl+tar, to fetch the repo"
+  if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"; then
+    _fetched=git
+  else
+    rm -rf "$TMP/swg-panel"   # a failed clone can leave a partial dir, and the mv below would land INSIDE it
+    warn "git clone failed — retrying over HTTP/1.1 (Ubuntu 22.04 git/nghttp2 vs GitHub HTTP/2)"
+    if GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"; then
+      _fetched=git
+    else
+      rm -rf "$TMP/swg-panel"
+      warn "git clone failed over HTTP/1.1 too — falling back to the source tarball"
+    fi
+  fi
 fi
+if [ -z "$_fetched" ] && need curl && need tar; then
+  if { curl -fsSL "$REPO/archive/refs/heads/$REF.tar.gz" | tar -xz -C "$TMP"; } \
+     || { curl -fsSL "$REPO/archive/refs/tags/$REF.tar.gz" | tar -xz -C "$TMP"; }; then
+    mv "$TMP"/swg-panel-* "$TMP/swg-panel" && _fetched=tar
+  fi
+fi
+[ -n "$_fetched" ] || die "could not fetch $REPO @ $REF — needs git, or curl+tar, and a reachable GitHub"
 cd "$TMP/swg-panel"
 
 # ── update / uninstall: no method/role ──

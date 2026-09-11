@@ -21,6 +21,11 @@
  *   • WINGS-N   wingsv:// = 0x12 ‖ zlib(protobuf Config); hand-encoded. Config.ver = 1.
  */
 (function (root) {
+  // How many of a user's VK links each client actually carries. These are the encoders' OWN limits, asserted
+  // right where they are applied below — the panel shows them so an operator can see that a 5th link on a WDTT
+  // user is inert. Anything not listed takes only the primary.
+  var VK_LINK_CAPS = { wdtt: 4, csqtt: 6 };
+
   "use strict";
 
   var AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
@@ -439,6 +444,15 @@
   // Returns a descriptor:
   // { fork, label, ext, qr, hint, uri?, cmd?, text? OR buildAsync } — `text` ready, `buildAsync` a
   // promise (wingsv://, VKTGZ need compression). `qr` = the client imports via a scannable QR.
+  /* The VK TURN Proxy import hint, as four finished sentences — see the note at its use below for why it is
+     a table and not a ternary. Index: launcher ? 0 : 2, plus vkMissing ? 0 : 1. */
+  var VKTGZ_HINTS = [
+    { hint: "Import the {v1} core (client-android-arm64 from the {v1} releases) into the VK TURN Proxy app — it runs as a launcher for that core, then scan the QR (Profiles → Import) or paste the VKTGZ: text — the VK call link + endpoint ride inside once you add a VK link." },
+    { hint: "Import the {v1} core (client-android-arm64 from the {v1} releases) into the VK TURN Proxy app — it runs as a launcher for that core, then scan the QR (Profiles → Import) or paste the VKTGZ: text — the VK call link + endpoint ride inside." },
+    { hint: "Import the {v1} core (client-android-arm64 from the {v1} releases) into the VK TURN Proxy app, then scan the QR (Profiles → Import) or paste the VKTGZ: text — the VK call link + endpoint ride inside once you add a VK link." },
+    { hint: "Import the {v1} core (client-android-arm64 from the {v1} releases) into the VK TURN Proxy app, then scan the QR (Profiles → Import) or paste the VKTGZ: text — the VK call link + endpoint ride inside." },
+  ];
+
   function artifact(baseConf, tp, vkLink, cs, vkLinks, asClient) {
     var fork = label(tp.service);
     var enc = asClient || nativeEncoder(fork);            // which client app's encoder to run
@@ -523,8 +537,20 @@
       var launcher = (fork === "Moroka8" || fork === "samosvalishe");   // the app hosts ANOTHER fork's core (universal launcher)
       return { fork: fork, app: "VK TURN Proxy", label: clientLabel(fork, "vktgz"), ext: "txt", qr: true, wrap: true, vkMissing: vkMissing, enc: enc,
         vk: true, vkLinks: vkList,
-        hint: "Import the " + coreName + " core (client-android-arm64 from the " + coreName + " releases) into the VK TURN Proxy app"
-          + (launcher ? " — it runs as a launcher for that core" : "") + ", then scan the QR (Profiles → Import) or paste the VKTGZ: text — the VK call link + endpoint ride inside" + (vkMissing ? " once you add a VK link." : "."),
+        /* ⚠️ FOUR WHOLE SENTENCES, NOT ONE BUILT FROM FIVE PIECES. This was assembled with `+` around the
+           core name and two conditional clauses, and the panel renders it through `T(a.hint)` — so the only
+           thing the extractor could ever see was the literal `"Import the "`, no key could match the
+           finished sentence, and it was the last untranslated string in the panel for that reason alone. A
+           message catalog wants complete sentences: a translator cannot reorder around a fragment, and
+           Russian needs to. The core name stays a slot because it is a proper noun that never changes shape.
+
+           ⚠️ AND THEY LIVE IN `VKTGZ_HINTS`, ONE `hint:` LITERAL PER ENTRY, ON PURPOSE. Written as a ternary
+           straight into the returned object they compiled and rendered perfectly — and the audit went from
+           "1 still English" to "✓ every message translated", because `hint:` was no longer followed by a
+           quote and the extractor simply stopped seeing them. That is a worse bug than the one being fixed:
+           an untranslated string the gate reports as translated. Keep the literals where the audit looks. */
+        hint: VKTGZ_HINTS[(launcher ? 0 : 2) + (vkMissing ? 0 : 1)].hint,
+        hintArgs: { v1: coreName },
         buildAsync: function () { return vktgzLink(baseConf, tp, vkList, cs, fork); } };
     }
     if (enc === "freeturn") {
@@ -647,7 +673,7 @@
       if (w.name) pl.name = String(w.name);
       // Their vkhash.Max is 4 — a longer list is truncated by the client anyway. Omitted when empty: their own
       // builder substitutes a literal "VK_HASH" placeholder there, which is a prompt, not a credential.
-      if (vkHashes.length) pl.hash = vkHashes.slice(0, 4).join(",");
+      if (vkHashes.length) pl.hash = vkHashes.slice(0, VK_LINK_CAPS.wdtt).join(",");
       var uriI = "wdtt://" + b64Utf8(JSON.stringify(pl));
       return { fork: "WDTT", app: "PWDTT", label: "WDTT via PWDTT (desktop · wdtt:// base64) by ildarmaga", ext: "txt",
         uri: true, qr: false, vkMissing: vkMissing, enc: enc,
@@ -676,20 +702,26 @@
       (Array.isArray(c.vk_links) ? c.vk_links : (c.vk_links ? [c.vk_links] : [])).forEach(function (l) { var h = stripVkUrl(l); if (h) hs.push(h); });
     }
     hs = hs.map(function (s) { return String(s || "").trim(); }).filter(Boolean);
-    var seen = {}; hs = hs.filter(function (h) { if (seen[h]) return false; seen[h] = 1; return true; }).slice(0, 6);
+    var seen = {}; hs = hs.filter(function (h) { if (seen[h]) return false; seen[h] = 1; return true; }).slice(0, VK_LINK_CAPS.csqtt);
     var vkMissing = hs.length === 0;   // VK hashes are the TURN credential; a link without them only works for a self-test
     var qp = ["v=2", "host=" + encodeURIComponent(String(c.host || "")),
               "peer=" + (parseInt(c.port, 10) || ""), "password=" + encodeURIComponent(String(c.password || ""))];
     if (hs.length) qp.push("hashes=" + hs.map(function (h) { return h.replace(/\+/g, "%2B"); }).join("+"));
     var uri = "csqtt://connect?" + qp.join("&");
     // qr:false — the CSQTT app has no scanner yet, so a QR is a dead end for the user. Link only until it does.
-    return { fork: "csqtt", app: "CSQTT", label: "CSQTT (Android · csqtt://connect)", ext: "txt", uri: true, qr: false,
-      vkMissing: vkMissing, hint: "Open the csqtt:// link in the CSQTT app, or paste it in.", text: uri };
+    // ⚠️ THE LABEL NAMED A PLATFORM, AND THERE ARE TWO NOW. anton48's iOS VK TURN Proxy speaks csqtt from
+    // build 364, and its parser takes this exact link (BackupManager.parseCsqttLink) — so the same string
+    // serves both apps and the label must stop saying "Android". The platform comes out; the app family and
+    // the scheme stay, which is the shape every other artifact label here has. (A bare "csqtt://connect"
+    // was tried and reverted: `artLabel` runs this through T(), and a URL scheme is not a sentence anyone
+    // can translate — it would be catalogue noise for a string that is a literal in every language.)
+    return { fork: "csqtt", app: "CSQTT", label: "CSQTT (csqtt://connect)", ext: "txt", uri: true, qr: false,
+      vkMissing: vkMissing, hint: "Open the csqtt:// link in your csqtt app, or paste it in.", text: uri };
   }
 
   // The label is composed here as English prose ("<fork> via <app> (<platform>) by <author>"), which no catalog
   // key can match — the fork and author are proper nouns. Expose the PARTS so the panel can put them through a
   // placeholder string instead, the way it already does for every other composed sentence.
   function clientMeta(enc) { var m = CLIENT_META[enc]; return m ? { app: m.app, platform: m.platform, author: m.author } : null; }
-  root.SWGTurn = { artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
+  root.SWGTurn = { vkLinkCaps: VK_LINK_CAPS, artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
 })(typeof window !== "undefined" ? window : this);

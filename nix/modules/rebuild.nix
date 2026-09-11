@@ -38,6 +38,23 @@
   # rebuild it just ran.
 , stampFile
 , triggerFile
+  # ── container arm only ──────────────────────────────────────────────────────────────────────
+  # The image to re-pull before rebuilding, and the CLI to do it with. `null` ⇒ no pull step.
+  #
+  # ⚠️ WITHOUT THIS THE UPDATE BUTTON IS A LIE ON THE CONTAINER ARM. `virtualisation.oci-containers`
+  # runs with `--pull missing`, so a moving tag is fetched ONCE, at first start, and never again —
+  # not on a restart, and not by a `nixos-rebuild switch` that leaves the unit definition unchanged,
+  # which is exactly what an update is here. The rebuild succeeds, the panel reports "updated", and
+  # the host keeps serving the image it first pulled. Measured on a NixOS box 2026-09-08: an image
+  # from 2026-08-25 still running a fortnight later, its entrypoint missing a fix the published
+  # image had carried for a week — and the node 401'd against its own panel because of it.
+  # Deliberately INSIDE the reported subshell: if the pull cannot be done, the operator who pressed
+  # Update needs to be told, not to be handed a silent no-op that says "updated".
+, pullImage ? null
+, pullCmd ? ""
+  # Units to bounce once the switch has landed. The default is the native arm's daemon; the
+  # container arm names its own container unit, which the rebuild does NOT recreate by itself.
+, restartUnits ? [ "swg-noded.service" ]
 }:
 
 let
@@ -74,6 +91,7 @@ let
   '';
 
   steps = preflight
+    ++ lib.optional (pullImage != null) "${pullCmd} pull ${pullImage}"
     ++ lib.optional (updateInputs != [ ] && localFlake)
       "${nixBin} flake update ${lib.concatStringsSep " " updateInputs} --flake ${flakeDir}"
     ++ [ "${nixosRebuild} switch${lib.optionalString (flakeRef != "") " --flake ${flakeRef}"}" ];
@@ -81,7 +99,8 @@ let
   # The human form drops the store prefixes (they are noise in a dialog) and carries a sudo per
   # step, because `sudo a && b` only elevates `a`.
   humanSteps =
-    lib.optional (updateInputs != [ ] && localFlake)
+    lib.optional (pullImage != null) "sudo ${baseNameOf pullCmd} pull ${pullImage}"
+    ++ lib.optional (updateInputs != [ ] && localFlake)
       "sudo nix flake update ${lib.concatStringsSep " " updateInputs} --flake ${flakeDir}"
     ++ [ "sudo nixos-rebuild switch${lib.optionalString (flakeRef != "") " --flake ${flakeRef}"}" ];
 
@@ -135,11 +154,28 @@ let
     # one case where that is wrong: the operator pressed Update expecting the node to RUN the new version,
     # and without this it keeps serving the old one until a reboot, with no prompt (the kernel-module hint
     # stays silent when the module is already loaded). So bounce it here. `try-restart` is a no-op where
-    # there is no such unit — a panel-only host, or the container arm (its node is the backend-swg-node
-    # container, recreated by the rebuild itself) — and the interfaces are kernel state that survives it,
-    # so users are not dropped. Best-effort: a failed bounce must not fail an update that already landed.
+    # there is no such unit — a panel-only host names only its own.
+    #
+    # ⚠️ THE BOUNCE IS NOT FREE, AND THIS SAID IT WAS. It claimed "the interfaces are kernel state that
+    # survives it, so users are not dropped". Measured on the nixos node 2026-09-08: restarting swg-noded
+    # moved every managed interface's `ifindex` (awg0 422→428, awg1 423→429, awg2 424→430), which is a
+    # destroy-and-recreate, not a survival — the daemon re-runs the bootstrap on start. Connected clients
+    # drop until the next reconcile restores the runtime peers, exactly as `services.swg-node.
+    # restartOnRebuild`'s own description says. Two comments in one tree claimed opposite things and the
+    # false one was attached to the code that does the restarting.
+    #
+    # It is still RIGHT to bounce here — an update the operator asked for that keeps serving the old
+    # binary until a reboot is worse than a brief reconnect, and that asymmetry is the whole reason this
+    # line exists. But the cost is real, so do not "optimise" an unrelated rebuild into this path, and do
+    # not cite this comment as evidence that restarts are cheap. Best-effort: a failed bounce must not fail
+    # an update that already landed.
+    #
+    # ⚠️ The container arm is NOT a no-op here, which is what this said before. `nixos-rebuild` only
+    # restarts a unit whose definition changed, and pulling a newer image under a moving tag changes
+    # nothing about the unit — so the container went on running the old image after a "successful"
+    # update. That arm passes its own container unit in `restartUnits`.
     if [ "$rc" -eq 0 ]; then
-      /run/current-system/sw/bin/systemctl try-restart swg-noded.service >/dev/null 2>&1 || true
+${lib.concatMapStringsSep "\n" (u: "      /run/current-system/sw/bin/systemctl try-restart ${u} >/dev/null 2>&1 || true") restartUnits}
     fi
     umask 027
     TMP=${resultFile}.tmp

@@ -9,7 +9,7 @@
  */
 
 import {
-  ago, dur, fmtBytes, rate, seen,
+  ago, dur, fmtBytes, seen,
 } from "./util.js";
 import { T, Trich, plural, pluralWord, srvVerb, srvDetail } from "./i18n.js";
 import {
@@ -25,6 +25,7 @@ import {
   Badge, Popover, STATUS_RANK, Sheet, StoreOffBanner, closeModal, dlul, ifaceColor, modalDepth, openModal,
   rateCell, secTitle, toast, xferCell,
   Ic,
+  rate,
 } from "./ui.js";
 import {
   MultiRing, OnlineBlocks, RANGE_CAP, RankBars, RingLegend, ThroughputChart, TrendSpark,
@@ -276,10 +277,10 @@ export const RANGE_STEP = { hour: 15, day: 300, week: 1800, month: 7200 };   // 
 // One fetch burst per range/selection change, shared by the doughnuts AND the flow map (lifted to Overview so
 // they don't each hit the API). Pulls per-node RRD + per-pair mesh means. Live → empty (widgets use the bundle).
 export function useRangeHistory(range, selIds) {
-  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], peers: [], presence: null, range: "live" });
+  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], exits: [], peers: [], presence: null, range: "live" });
   const key = range + "|" + selIds.slice().sort().join(",");
   useEffect(() => {
-    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], peers: [], presence: null, range: "live" }); return; }
+    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], exits: [], peers: [], presence: null, range: "live" }); return; }
     let alive = true; setSt(s => ({ ...s, loading: true }));
     const [obN, obStep] = ONLINE_BLOCKS[range] || ONLINE_BLOCKS.live;   // the bars ask for exactly the blocks they draw
     Promise.all([
@@ -287,9 +288,10 @@ export function useRangeHistory(range, selIds) {
       api.meshHistory(range).then(r => (r && r.data && r.data.pairs) || []).catch(() => []),
       api.categoryHistory(range).then(r => (r && r.data && r.data.cats) || []).catch(() => []),
       api.turnHistory(range).then(r => (r && r.data && r.data.turn) || []).catch(() => []),
+      api.exitHistory(range).then(r => (r && r.data && r.data.exits) || []).catch(() => []),
       api.peerHistory(range).then(r => (r && r.data && r.data.peers) || []).catch(() => []),
       api.presence(range, obN, obStep, selIds).then(r => (r && r.data) || null).catch(() => null),
-    ]).then(([rows, mesh, cats, turn, peers, presence]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, cats, turn, peers, presence, range }); });
+    ]).then(([rows, mesh, cats, turn, exits, peers, presence]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, cats, turn, exits, peers, presence, range }); });
     return () => { alive = false; };
   }, [key]);
   return st;
@@ -557,7 +559,40 @@ export function DoughCard({ title, rings, center, legend, note, loading, badges 
 // Per selected server, live rx/tx split into endpoint KINDS: clients (direct wg/awg peers), turn (per VK fork),
 // internet (direct exit — approximate until the node SNAT counter), mesh (per peer server). Each is a bidirectional
 // pair (ingress = rx, egress = tx); 0-value flows dropped. Every flow is drawn source→dest as blue(egress)→green(ingress).
-export const FLOW_EG = "#2E90FF", FLOW_IN = "#22D07A", FLOW_GLOBE = "#12BECE", FLOW_MESH = "#9B8AFF";   // egress blue · ingress green · internet cyan-teal (distinct from egress blue) · off-fleet mesh violet
+export const FLOW_EG = "#2E90FF", FLOW_IN = "#22D07A", FLOW_GLOBE = "#12BECE", FLOW_MESH = "#9B8AFF",   // egress blue · ingress green · internet cyan-teal (distinct from egress blue) · off-fleet mesh violet
+  FLOW_EXIT = "#0B7A8C";   // external exit — the internet cyan, deepened. Same family because it IS the internet lane, clearly darker because it is a different door: a first pass one shade off #12BECE was, on screen, the same colour
+
+// What each exit device carried, for ONE node. Two screens ask — the flow-map satellite (decision 14) and the
+// Overview widget (13) — and a second copy of this join is how they come to disagree about a device.
+//
+// The measurement is keyed by DEVICE the whole way from the node's counters, and meets an exit only here. A
+// device exactly one exit names is that exit's, and takes its label: the operator needs to know WHICH exit
+// carried it, not merely that something did (decision 5). A device SEVERAL exits name — which `resolve_exit`
+// allows on purpose, two exits being two policies — keeps the device as its own name, because naming one of
+// them would put the whole measurement under a label that only half owns it.
+//
+// A device NO exit names is dropped, and its bytes stay in the internet lane. That only happens for the one
+// sync between deleting an exit and the node rebuilding its counting chain, and the alternative is a row
+// appearing under a raw device name for an exit the operator has just deleted. Leaving them in the internet
+// total is not a rounding-off: they really were internet, and now nothing claims to have carried them.
+//
+// `ranged` reads volumes over the window from /api/exit-history; live reads B/s off the node's snapshot. Same
+// units as the internet lane beside it in either mode, which is what lets the two be subtracted.
+export function exitTraffic(nid, ranged, hist) {
+  const nrec = (Store.nodes || []).find(n => n.id === nid) || {};
+  const owners = {};
+  (nrec.exits || []).forEach(x => { const d = String((x && x.device) || "").trim(); if (d) (owners[d] = owners[d] || []).push(x); });
+  // Live rates come off the raw snapshot, where `inet` — the lane these are split out of — already lives.
+  // They were briefly re-projected onto the node record too, next to `exits`, which made the join a single
+  // lookup and put the same map on the wire twice every five seconds for the convenience.
+  const src = ranged
+    ? Object.fromEntries(((hist && hist.exits) || []).filter(e => e.node === nid).map(e => [e.dev, { up: e.up || 0, down: e.down || 0 }]))
+    : ((Store.stats[nid] || {}).exit_rate || {});
+  return Object.entries(src).filter(([dev]) => (owners[dev] || []).length).map(([dev, v]) => {
+    const own = owners[dev], one = own.length === 1 ? own[0] : null;
+    return { dev, key: one ? "exit:" + one.id : "dev:" + dev, label: (one && one.label) || dev, up: v.up || 0, down: v.down || 0 };
+  }).filter(x => x.up || x.down);
+}
 export function flowGraph(selIds, range, hist) {
   const sel = new Set(selIds);
   const fleet = (Store.fleet || []).filter(n => sel.has(n.id));
@@ -630,9 +665,27 @@ export function flowGraph(selIds, range, hist) {
     // internet lane: the node's MEASURED egress (a.inet) when present — exact and multi-hop-correct (an exit's
     // relayed traffic shows here; an entry's forwarded traffic does NOT, it rode the mesh lane). Falls back to the
     // client+turn estimate only for a node that doesn't report a counter yet (older noded / no iptables).
-    const inetOut = a.inet ? a.inet.out : a.cl.rx + turnRx, inetIn = a.inet ? a.inet.in : a.cl.tx + turnTx;
+    //
+    // …and traffic that left through an EXIT gets its own satellite (decision 14), SPLIT OUT of the internet lane
+    // rather than added beside it — the same move that lifts turn out of the client lane above. The node counts an
+    // exit's bytes into its internet total on purpose (decision 11: choosing a different door does not stop it
+    // being internet), so drawing both unsubtracted would show every exit byte twice, on two lines out of one
+    // node. Split, the map reads the way §5.4 promises: a quiet internet satellite and a busy exit one.
+    // Live the split is exact — one chain read, two sums of it. Over a RANGE it is close but not exact: the
+    // node ring is written every sync and the per-exit rings at most once a minute (the category rings'
+    // throttle), so two windows of bucket means need not cancel to the byte. Hence the floor at 0 rather
+    // than trusting the subtraction — a slightly over-reported exit must not push the internet lane negative.
+    const ex = exitTraffic(n.id, ranged, hist);
+    const exOut = ex.reduce((t, x) => t + x.up, 0), exIn = ex.reduce((t, x) => t + x.down, 0);
+    const inetOut = Math.max(0, (a.inet ? a.inet.out : a.cl.rx + turnRx) - exOut),
+      inetIn = Math.max(0, (a.inet ? a.inet.in : a.cl.tx + turnTx) - exIn);
     if (inetOut || inetIn) { const s = satId(n.id, "internet"); sats.push({ id: s, node: n.id, kind: "internet", label: "internet", color: FLOW_GLOBE, ic: "globe", measured: !!a.inet });
       if (inetOut) flows.push({ from: n.id, to: s, bps: inetOut }); if (inetIn) flows.push({ from: s, to: n.id, bps: inetIn }); }
+    ex.forEach(x => { const s = satId(n.id, x.key);   // `exit:<id>` where one exit owns the device, `dev:<name>` where the reading cannot be pinned on one
+      // `link`, not the badge's `device`: that icon is a phone here, and the map already spends it on clients.
+      // An exit is upstream of the node, not another thing hanging off it.
+      sats.push({ id: s, node: n.id, kind: "exit", label: x.label, color: FLOW_EXIT, ic: "link" });
+      if (x.up) flows.push({ from: n.id, to: s, bps: x.up }); if (x.down) flows.push({ from: s, to: n.id, bps: x.down }); });
     Object.entries(a.mesh).forEach(([peer, v]) => { if (v.tx) flows.push({ from: n.id, to: peer, bps: v.tx }); });
     if (a.offmesh.rx || a.offmesh.tx) {   // aggregate of mesh traffic to fleet nodes NOT in the diagram
       const s = satId(n.id, "mesh"), oc = a.offmesh.n.size; sats.push({ id: s, node: n.id, kind: "mesh", label: T("Other {v1}", { v1: plural(oc, "node") }), color: FLOW_MESH, ic: "server" });
@@ -884,7 +937,7 @@ export function FlowMap2({ selIds, range, hist }) {
       const occ = flows.filter(f => f.from === hov.id || f.to === hov.id).map(f => { const O = epPos(f.from === hov.id ? f.to : f.from); return O ? Math.atan2(O.y - P.y, O.x - P.x) : null; }).filter(a => a != null);
       spot = bubbleSpot(P, occ, epR(hov.id));
       if (spos[hov.id]) hv = { type: "ep", name: Store.nodeName(hov.id), ib: G.inTot[hov.id], ob: G.outTot[hov.id], sub: "server", col: Store.nodeColor(hov.id) };
-      else { const sm = sats.find(x => x.id === hov.id); if (sm) { const t = satTot[hov.id] || {}; hv = { type: "ep", name: sm.kind === "turn" ? sm.fork : sm.label || sm.kind, ib: t.ib, ob: t.ob, sub: sm.kind === "internet" ? (sm.measured ? "internet · measured" : "internet · estimated") : sm.kind === "turn" ? "turn-proxy" : sm.kind === "mesh" ? T("fleet nodes not shown") : "clients", col: sm.color }; } }   // i18n-keys: internal fork/service id
+      else { const sm = sats.find(x => x.id === hov.id); if (sm) { const t = satTot[hov.id] || {}; hv = { type: "ep", name: sm.kind === "turn" ? sm.fork : sm.label || sm.kind, ib: t.ib, ob: t.ob, sub: sm.kind === "internet" ? (sm.measured ? "internet · measured" : "internet · estimated") : sm.kind === "turn" ? "turn-proxy" : sm.kind === "exit" ? T("external exit") : sm.kind === "mesh" ? T("fleet nodes not shown") : "clients", col: sm.color }; } }   // i18n-keys: internal fork/service id
     }
   } else if (hov && hov.fi != null) {
     const f = flows[hov.fi], r = ribbons.find(x => x.idx === hov.fi);
@@ -1082,7 +1135,7 @@ export function CatsBubble({ cats, color, counts }) {
     : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, "") + "k" : String(n); };
   const scroll = cats.length > WHO_VISIBLE;
   return html`<div class="prot-who">
-    <div class="prot-who-h">${counts ? "Blocked" : "Filtering"}<span class="prot-who-sub">${counts ? T("sites caught") : T("by list size")}</span><span class="prot-who-tot">${fmtCount(cats.length)}</span></div>
+    <div class="prot-who-h">${counts ? T("Blocked") : T("Filtering")}<span class="prot-who-sub">${counts ? T("sites caught") : T("by list size")}</span><span class="prot-who-tot">${fmtCount(cats.length)}</span></div>
     <div class=${"prot-who-list" + (scroll ? " scroll" : "")}>
       ${cats.map((c, i) => html`<div class="prot-who-r prot-cat-row" key=${i}>
         <span class="prot-cat-nm">${c.label}</span>
@@ -1098,14 +1151,18 @@ export function Protection({ range, bs }) {
   const mechKeys = Object.keys(mech);
   const hasCov = (cov.domains || 0) + (cov.threat_ips || 0) + (cov.categories || 0) + mechKeys.length > 0;
   const torrents = (d && d.torrents) || 0, scan = (d && d.scan) || 0, reach = (d && d.reach) || 0, blocked = (d && d.blocked) || 0;
+  const mechd = (d && d.mech) || 0;   // packets the FREE port rules dropped (SMTP / QUIC / torrent port-hint)
   const who = (d && d.who) || {};   // per-metric attribution {scan:[{user,peers,count}], …} → the hover "who" bubble
   const bcats = (d && d.blocked_cats) || [];   // [{label,count}] per-category blocked counts (SNI mode) → Blocked bubble
   // Nothing configured and nothing seen → don't show an empty card on installs that don't use blocking.
-  if (!d || (!hasCov && !torrents && !scan && !reach && !blocked)) return null;
+  if (!d || (!hasCov && !torrents && !scan && !reach && !blocked && !mechd)) return null;
   const rw = rangeWord(bs.range || range);
   const kmb = n => { n = n || 0; return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M"
     : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, "") + "k" : String(n); };
-  const MECH_LABEL = { torrents: "Torrents", smtp: "Spam / SMTP", portscan: T("Port scans"), quic: "QUIC", doh: "DoH", mining: "Mining" };
+  // QUIC / DoH stay as they are — protocol names, not words. The rest are words, and three of them were
+  // sitting untranslated next to a translated fourth in the same row of chips.
+  const MECH_LABEL = { torrents: T("Torrents"), smtp: T("Spam / SMTP"), portscan: T("Port scans"),
+                       quic: "QUIC", doh: "DoH", mining: T("Mining") };
   const tiles = [];
   // Blocked — cumulative packets dropped to content-filter sets over the range (GROWS as you browse). The distinct
   // destinations currently blocked (reach) ride along as context. Shown whenever content filtering is in play.
@@ -1114,21 +1171,38 @@ export function Protection({ range, bs }) {
     // not reach (distinct IPs — a CDN domain is many IPs). Fall back to reach only when there's no per-category data.
     const bsites = bcats.reduce((a, c) => a + (c.count || 0), 0);
     const bsub = bcats.length ? (T("{v1} sites", { v1: kmb(bsites) })) : (reach ? (T("{v1} sites", { v1: kmb(reach) })) : "");
-    tiles.push({ k: "Blocked", v: kmb(blocked), n: blocked,
+    tiles.push({ k: T("Blocked"), v: kmb(blocked), n: blocked,
       sub: bsub ? T("packets · {v1} · {v2}", { v1: bsub, v2: rw }) : (blocked ? T("packets · {v1}", { v1: rw }) : T("none {v1}", { v1: rw })),   // the big number is DROPPED PACKETS (inflated by retries); "sites" is what the bubble sums to
       spark: (d && d.bseries) || null, color: "var(--brand)",
       // Prefer per-category counts (SNI mode, what's actually catching traffic); fall back to composition (what's loaded).
       bcats: bcats.length ? bcats : null, cats: (cov.cats && cov.cats.length) ? cov.cats : null });
   }
   tiles.push({ k: T("Torrents caught"), v: kmb(torrents), n: torrents, sub: torrents ? T("connections · {v1}", { v1: rw }) : T("none {v1}", { v1: rw }), spark: (d && d.series) || null, color: "var(--dangling)", who: who.torrent });
-  tiles.push({ k: T("Scanners flagged"), v: kmb(scan), n: scan, sub: scan ? "source" + (scan === 1 ? "" : "s") + " · " + rw : T("none flagged"), color: "var(--partial)", who: who.scan });
+  tiles.push({ k: T("Scanners flagged"), v: kmb(scan), n: scan, sub: scan ? plural(scan, "source") + " · " + rw : T("none flagged"), color: "var(--partial)", who: who.scan });
+  // The free port rules, shown only where they are switched on. Deliberately its own tile rather than folded
+  // into "Blocked": that one counts content filtering, this one counts SMTP / QUIC / the torrent port-hint, and
+  // an operator turning on "Spam / SMTP" had no way at all to see whether it was doing anything.
+  if (mechKeys.length || mechd) {
+    tiles.push({ k: T("Ports blocked"), v: kmb(mechd), n: mechd,
+      sub: mechd ? T("packets · {v1}", { v1: rw }) : T("none {v1}", { v1: rw }),
+      spark: (d && d.mseries) || null, color: "var(--pending)" });
+  }
   // Coverage sentence — what the fleet is FILTERING (ads/malware/mining live here; they can be listed, not counted).
+  // ⚠️ THIS WAS BUILT FROM BARE ENGLISH LITERALS and rendered "По механизмам across 4 interfaces" on a Russian
+  // panel. The audit cannot see it: with no T() call there is nothing to compare, which is exactly why the house
+  // rule is that a SENTENCE is the key. Quantities go through plural() so Russian agrees ("1 домен / 2 домена /
+  // 5 доменов"); the abbreviated number is put back afterwards, because plural() prints the raw count and these
+  // run to millions.
+  // plural() is called with a LITERAL noun at each site on purpose: the i18n extractor scans for those calls,
+  // and a noun it cannot see is a noun nobody notices is missing — which falls back to English pluralisation
+  // inside a Russian sentence, i.e. straight back to the bug above.
+  const q = (n, s) => s.replace(/^\d+/, kmb(n));
   const covParts = [];
-  if (cov.domains) covParts.push(html`<b>${kmb(cov.domains)}</b> domains`);
-  if (cov.threat_ips) covParts.push(html`<b>${kmb(cov.threat_ips)}</b> threat-IPs`);
+  if (cov.domains) covParts.push(q(cov.domains, plural(cov.domains, "domain")));
+  if (cov.threat_ips) covParts.push(q(cov.threat_ips, plural(cov.threat_ips, "threat-IP")));
   const acrossParts = [];
-  if (cov.categories) acrossParts.push(html`<b>${cov.categories}</b> categor${cov.categories === 1 ? "y" : "ies"}`);
-  if (cov.ifaces) acrossParts.push(html`<b>${cov.ifaces}</b> interface${cov.ifaces === 1 ? "" : "s"}`);
+  if (cov.categories) acrossParts.push(q(cov.categories, plural(cov.categories, "category")));
+  if (cov.ifaces) acrossParts.push(q(cov.ifaces, plural(cov.ifaces, "interface")));
   return html`<${Fragment}>
     ${secTitle(T("Protection"), html`${rw} · ${T("what blocking caught & is filtering")}`, undefined, "protection")}
     <div class="protcard">
@@ -1161,8 +1235,13 @@ export function Protection({ range, bs }) {
       ${hasCov ? html`<div class="prot-cov">
         <span class="prot-cov-ic"><${Ic} i="shield"/></span>
         <span class="prot-cov-txt">
-          ${covParts.length ? html`Filtering ${joinNodes(covParts, " + ")}` : T("Mechanism blocking")}
-          ${acrossParts.length ? html` across ${joinNodes(acrossParts, " · ")}` : ""}
+          ${(() => {
+            const what = covParts.join(" + "), where = acrossParts.join(" · ");
+            if (what && where) return Trich("Filtering *{v1}* across *{v2}*", { v1: what, v2: where });
+            if (what) return Trich("Filtering *{v1}*", { v1: what });
+            if (where) return Trich("Mechanism blocking across *{v1}*", { v1: where });
+            return T("Mechanism blocking");
+          })()}
         </span>
         ${mechKeys.length ? html`<span class="prot-mech">${mechKeys.map(m => html`<span class="prot-chip" key=${m}>${MECH_LABEL[m] || m}${mech[m] > 1 ? html` <i>×${mech[m]}</i>` : ""}</span>`)}</span>` : null}
       </div>` : null}
@@ -1349,6 +1428,35 @@ export function Overview() {
     .map(([cat, v], i) => ({ label: catLabelOf(cat), value: v.dn + v.up, sub: dRanged ? xferCell(...dlul(v.dn, v.up)) : rateCell(v.dn, v.up), color: dashRankColor(i, "dest") }));
   const _un = catAgg.uncat;   // the first-match "matched no set" bucket — always pinned last (a catch-all, not ranked), even if it's the largest
   if (_un && _un.up + _un.dn > 0) catRows.push({ label: catLabelOf("uncat"), value: _un.dn + _un.up, sub: dRanged ? xferCell(...dlul(_un.dn, _un.up)) : rateCell(_un.dn, _un.up), color: CAT_UNCAT_COLOR });
+  // TRAFFIC BY EXIT (decision 13) — the same measurement the flow map splits into satellites, through the same
+  // join, listed instead of drawn. Unlike the destination categories above these do NOT overlap: a forwarded
+  // packet leaves by exactly one device, so these rows really are a partition of the traffic that used an exit.
+  // One colour rather than the rank ramp: an exit is a lasting, named thing, and a hue that reshuffles whenever
+  // two of them trade places says something about this minute that is not true of the exit.
+  const exitAll = fleetSel.flatMap(n => exitTraffic(n.id, dRanged, rangeHist).map(x => ({ ...x, node: n.id })));
+  // Two nodes may each call an exit "WARP", so a bare label is ambiguous — but only for the labels that
+  // actually repeat. Suffixing every row instead cost the exit's own name the room to be read: the column
+  // is fixed-width, and "Лаборатория X · rig-a" truncated to "Лаборатория X · r…" on a fleet where no name
+  // was ambiguous in the first place.
+  const exitDup = {};
+  exitAll.forEach(x => { exitDup[x.label] = (exitDup[x.label] || 0) + 1; });
+  // BOUNDED, like every ranked list beside it — a fleet of ten nodes with three exits each would otherwise
+  // render thirty rows on a screen where "Top nodes" stops at six and the destinations stop at `nDest`. The
+  // tail is SUMMED into a last row rather than dropped: these rows are a partition of the traffic that used
+  // an exit (unlike the categories above, which overlap), so quietly truncating it would make the section's
+  // own arithmetic wrong. Split BEFORE building the rows, so a row carries only what a row is drawn from.
+  const exitSorted = exitAll.slice().sort((a, b) => (b.up + b.down) - (a.up + a.down));
+  const exitTail = exitSorted.splice(nDest);
+  const exitCell = (up, down) => dRanged ? xferCell(...dlul(down, up)) : rateCell(down, up);
+  const exitRows = exitSorted.map(x => ({
+    label: exitDup[x.label] > 1 ? x.label + " · " + Store.nodeName(x.node) : x.label,
+    value: x.up + x.down, color: FLOW_EXIT, sub: exitCell(x.up, x.down),
+  }));
+  if (exitTail.length) {
+    const up = exitTail.reduce((t, x) => t + x.up, 0), dn = exitTail.reduce((t, x) => t + x.down, 0);
+    exitRows.push({ label: T("…and {v1} more", { v1: exitTail.length }), value: up + dn,
+                    color: FLOW_EXIT, sub: exitCell(up, dn) });
+  }
   const totClientRx = nodeTraffic.reduce((a, x) => a + (x.rx || 0), 0);   // distinct client total (rx/tx) — categories are a subset/overlap of this
   const totClientTx = nodeTraffic.reduce((a, x) => a + (x.tx || 0), 0);
 
@@ -1411,6 +1519,11 @@ export function Overview() {
     ${catRows.length ? html`<${Fragment}>
       ${secTitle(T("Top destinations"), html`${dRanged ? rangeWord(effRange) : rangeWord("live")} · ${T("categories overlap")}${(totClientRx + totClientTx) ? (() => { const f = dRanged ? fmtBytes : rate, [d, u] = dlul(totClientRx, totClientTx); return html` · ${ofTotal(f(d), f(u))}`; })() : ""}`, undefined, "topdest")}
       <div class="rankcard"><${RankBars} rows=${catRows}/></div>
+    <//>` : null}
+
+    ${exitRows.length ? html`<${Fragment}>
+      ${secTitle(T("Traffic by exit"), dRanged ? T("{range} · by volume", { range: rangeWord(effRange) }) : T("by live throughput"), undefined, "byexit")}
+      <div class="rankcard"><${RankBars} rows=${exitRows}/></div>
     <//>` : null}
 
     ${recent.length ? html`<${Fragment}>

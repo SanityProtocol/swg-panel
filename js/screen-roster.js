@@ -17,12 +17,12 @@ import {
   ifaceIsAll, ifaceMatch, targetType,
 } from "./model.js";
 import {
-  Ic, RowError, SearchBox, StoreOffBanner, Tag, dlul, lifecycleIcon, openConfirm, rateCell, rowDouble,
+  Dropdown, Ic, RowError, SearchBox, StoreOffBanner, Tag, dlul, lifecycleIcon, openConfirm, rateCell, rowDouble,
   rowNoSelect, rowSingle, secTitle, xferCell,
 } from "./ui.js";
 import {
   EV_ACTIONS, EV_ITEMS, evItemLabel, evActionLabel, peerStatusFilters, USER_DEFDIR, activityView, connView, evDecorate,
-  ifaceFilterOptions, ifaceOptGroups, nodeFilterOptions, pageScroll, peerMatchesQ, peerSortBy, peersView,
+  ifaceFilterOptions, ifaceOptGroups, nodeFilterOptions, pageScroll, pageSizeOpts, peerMatchesQ, peerSortBy, peersView,
   searchMatch, sortColToggle, sortPeerRows, sortUsers, unassignedView, userIdentityMatchesQ, userMatchesQ,
   userOnNodeIface, userPeerViews, userStatTag, userStats, usersView,
 } from "./views.js";
@@ -122,17 +122,18 @@ export function PeersScreen() {
         title=${grouped ? T("One row per peer — its other deployments are behind the +N") : T("Collapse each peer's deployments into one row")}
         onClick=${() => { peersView.group = !peersView.group; peersView.page = 1; force(x => x + 1); }}>${grouped ? T("btn|Grouped") : T("btn|Group")}</button>
       <${SearchBox} placeholder=${T("Search title, user, address…")} value=${peersView.q} onInput=${e => { peersView.q = e.target.value; peersView.page = 1; force(x => x + 1); }}/>
-      <select class="selwrap" value=${node} onChange=${e => { peersView.node = e.target.value; peersView.iface = ""; peersView.page = 1; force(x => x + 1); }}>
-        ${multiServer ? html`<option value="*">${T("All nodes")}</option>` : (!fleet.length ? html`<option value="*">${T("No nodes")}</option>` : null)}
-        ${fleet.map(n => html`<option value=${n.id}>${n.name}</option>`)}
-      </select>
-      <select class="selwrap" value=${iface} onChange=${e => { peersView.iface = e.target.value; peersView.page = 1; force(x => x + 1); }}>
-        ${ifaceOpts.length && (node === "*" || ifaceOpts.length > 1) ? html`<option value="*">${T("All interfaces")}</option>` : null}
-        ${ifaceOpts.length ? ifaceOptGroups(ifaceOpts) : html`<option value="">${T("No interfaces")}</option>`}
-      </select>
-      <select class="selwrap" value=${peersView.status || ""} onChange=${e => { peersView.status = e.target.value || null; peersView.page = 1; force(x => x + 1); }}>
-        ${peerStatusFilters().map(([v, l]) => html`<option value=${v}>${l}</option>`)}
-      </select>
+      <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${node}
+        onChange=${v => { peersView.node = v; peersView.iface = ""; peersView.page = 1; force(x => x + 1); }}
+        options=${[...(multiServer ? [{ value: "*", label: T("All nodes") }]
+                     : !fleet.length ? [{ value: "*", label: T("No nodes") }] : []),
+                   ...fleet.map(n => ({ value: n.id, label: n.name }))]}/>
+      <${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${iface}
+        onChange=${v => { peersView.iface = v; peersView.page = 1; force(x => x + 1); }}
+        options=${[...(ifaceOpts.length && (node === "*" || ifaceOpts.length > 1) ? [{ value: "*", label: T("All interfaces") }] : []),
+                   ...(ifaceOpts.length ? ifaceOptGroups(ifaceOpts) : [{ value: "", label: T("No interfaces") }])]}/>
+      <${Dropdown} className="selwrap" ariaLabel=${T("All statuses")} value=${peersView.status || ""}
+        onChange=${v => { peersView.status = v || null; peersView.page = 1; force(x => x + 1); }}
+        options=${peerStatusFilters()}/>
       ${restorableCount ? html`<button class="btn btn-restore" title=${T("Recreate every missing interface shown here with its original identity")} onClick=${() => confirmRestoreAll(rows)}><${Ic} i="refresh"/> ${T("Restore all dangling")}${restorableCount > 1 ? " · " + restorableCount : ""}</button>` : null}
       ${correctableCount ? html`<button class="btn btn-correct" title=${T("Assign each broken peer shown here the next free in-subnet address")} onClick=${() => confirmCorrectAll(rows)}><${Ic} i="check"/> ${T("Fix all broken")}${correctableCount > 1 ? " · " + correctableCount : ""}</button>` : null}
       <button class="btn btn-primary" onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> ${T("New peer")}</button>
@@ -144,12 +145,11 @@ export function PeersScreen() {
     </span><span class="count">${rows.length}</span></div>
     <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
     ${rows.length > 20 ? html`<div class="pager">
-      <label class="pager-size">Rows per page
-        <select class="selwrap" value=${pageSize} onChange=${e => { peersView.pageSize = +e.target.value; peersView.page = 1; force(x => x + 1); }}>
-          ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
-        </select>
+      <label class="pager-size">${T("Rows per page")}
+        <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}
+          onChange=${v => { peersView.pageSize = v; peersView.page = 1; force(x => x + 1); }}/>
       </label>
-      <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, rows.length)} of ${rows.length}</span>
+      <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, rows.length), total: rows.length })}</span>
       <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>${T("‹ Prev")}</button>
       <span class="pager-pg">${page} / ${totalPages}</span>
       <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>${T("Next ›")}</button>
@@ -199,12 +199,12 @@ export function ActivityHistoryScreen() {
     <div class="crumb"><a href="#/">${T("Overview")}</a><span class="sep">/</span><b>${T("Activity history")}</b></div>
     <div class="toolbar">
       <${SearchBox} placeholder=${T("Search action, name, detail…")} value=${activityView.q} onInput=${e => { activityView.q = e.target.value; activityView.page = 1; bump(); }}/>
-      <select class="selwrap" value=${activityView.item} onChange=${e => { activityView.item = e.target.value; activityView.page = 1; bump(); }}>
-        <option value="">${T("All items")}</option>${EV_ITEMS.map(i => html`<option value=${i}>${evItemLabel(i)}</option>`)}
-      </select>
-      <select class="selwrap" value=${activityView.action} onChange=${e => { activityView.action = e.target.value; activityView.page = 1; bump(); }}>
-        <option value="">${T("All actions")}</option>${EV_ACTIONS.map(a => html`<option value=${a}>${evActionLabel(a)}</option>`)}
-      </select>
+      <${Dropdown} className="selwrap" ariaLabel=${T("All items")} value=${activityView.item}
+        onChange=${v => { activityView.item = v; activityView.page = 1; bump(); }}
+        options=${[{ value: "", label: T("All items") }, ...EV_ITEMS.map(i => ({ value: i, label: evItemLabel(i) }))]}/>
+      <${Dropdown} className="selwrap" ariaLabel=${T("All actions")} value=${activityView.action}
+        onChange=${v => { activityView.action = v; activityView.page = 1; bump(); }}
+        options=${[{ value: "", label: T("All actions") }, ...EV_ACTIONS.map(a => ({ value: a, label: evActionLabel(a) }))]}/>
       <button class="btn btn-danger" disabled=${!all.length} onClick=${clearAll}><${Ic} i="trash"/> ${T("Clear history")}</button>
     </div>
     ${secTitle(T("Activity history"), html`${list.length}${list.length !== all.length ? " / " + all.length : ""}`, false)}
@@ -253,11 +253,10 @@ export function ConnectionsScreen() {
     const pageSize = connView.pageSize || 20, totalPages = Math.max(1, Math.ceil(total / pageSize));
     const page = Math.min(Math.max(1, connView.page || 1), totalPages);
     return total > pageSize ? html`<div class="pager">
-      <label class="pager-size">Rows per page
-        <select class="selwrap" value=${pageSize} onChange=${e => { connView.pageSize = +e.target.value; reset(); }}>
-          ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
-        </select></label>
-      <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}</span>
+      <label class="pager-size">${T("Rows per page")}
+        <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}
+          onChange=${v => { connView.pageSize = v; reset(); }}/></label>
+      <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, total), total })}</span>
       <button class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>${T("‹ Prev")}</button>
       <span class="pager-pg">${page} / ${totalPages}</span>
       <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>${T("Next ›")}</button>
@@ -272,12 +271,10 @@ export function ConnectionsScreen() {
       <button class=${"pm-opt pm-users" + (mode === "users" ? " on" : "")} onClick=${() => setMode("users")}>${T("Users")}</button>
     </div>
     <${SearchBox} placeholder=${mode === "users" ? T("Search users, tags, peers…") : T("Search peer, user, endpoint, IP…")} value=${connView.q} onInput=${e => { connView.q = e.target.value; reset(); }}/>
-    <select class="selwrap" value=${connView.node} onChange=${e => { connView.node = e.target.value; connView.iface = ""; reset(); }}>
-      ${nodeFilterOptions("")}
-    </select>
-    <select class="selwrap" value=${connView.iface} onChange=${e => { connView.iface = e.target.value; reset(); }}>
-      ${ifaceFilterOptions(ifaceOpts, "")}
-    </select>
+    <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${connView.node}
+      onChange=${v => { connView.node = v; connView.iface = ""; reset(); }} options=${nodeFilterOptions("")}/>
+    <${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${connView.iface}
+      onChange=${v => { connView.iface = v; reset(); }} options=${ifaceFilterOptions(ifaceOpts, "")}/>
     <button class=${"onlbtn" + (connView.online ? " on" : "")} title=${T("Show only online connections")} onClick=${() => { connView.online = !connView.online; reset(); }}>${T("status|Online")}</button>
   </div>`;
 
@@ -348,7 +345,7 @@ export function UserRow({ user, live, onlineOnly, q }) {
     nn[t.iface].count++;
   }
   const srvNodes = Object.keys(_nm).map(nid => ({ node: nid, ifaces: Object.values(_nm[nid]).sort((a, b) => a.iface.localeCompare(b.iface)) }))
-    .sort((a, b) => Store.nodeName(a.node).localeCompare(Store.nodeName(b.node)));
+    .sort((a, b) => Store.byNode(a.node, b.node));
   const st = userStats(user.id);
   const [db, ub] = dlul(st.rxb, st.txb);
   const view = userPeerViews[user.id] || (userPeerViews[user.id] = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 });
@@ -420,12 +417,12 @@ export function UsersScreen() {
     <${StoreOffBanner}/>
     <div class="toolbar">
       <${SearchBox} placeholder=${T("Search users, tags, notes, peers…")} value=${usersView.q} onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/>
-      <select class="selwrap" value=${usersView.node} onChange=${e => { usersView.node = e.target.value; usersView.iface = ""; usersView.page = 1; force(x => x + 1); }}>
-        ${nodeFilterOptions("")}
-      </select>
-      <select class="selwrap" value=${usersView.iface} onChange=${e => { usersView.iface = e.target.value; usersView.page = 1; force(x => x + 1); }}>
-        ${ifaceFilterOptions(ifaceOpts, "")}
-      </select>
+      <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${usersView.node}
+        onChange=${v => { usersView.node = v; usersView.iface = ""; usersView.page = 1; force(x => x + 1); }}
+        options=${nodeFilterOptions("")}/>
+      <${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${usersView.iface}
+        onChange=${v => { usersView.iface = v; usersView.page = 1; force(x => x + 1); }}
+        options=${ifaceFilterOptions(ifaceOpts, "")}/>
       <button class="btn btn-ghost" onClick=${() => openCreatePeer({})}><span class="plus"><${Ic} i="plus"/></span> ${T("New peer")}</button>
       <button class="btn btn-primary" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> ${T("New user")}</button>
     </div>
@@ -438,11 +435,10 @@ export function UsersScreen() {
         <div class="urows">${pageUsers.map(u => html`<${UserRow} key=${u.id} user=${u} q=${q}/>`)}</div>
       <//>`}
     ${users.length > pageSize ? html`<div class="pager">
-      <label class="pager-size">Rows per page
-        <select class="selwrap" value=${pageSize} onChange=${e => { usersView.pageSize = +e.target.value; usersView.page = 1; force(x => x + 1); }}>
-          ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
-        </select></label>
-      <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, users.length)} of ${users.length}</span>
+      <label class="pager-size">${T("Rows per page")}
+        <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}
+          onChange=${v => { usersView.pageSize = v; usersView.page = 1; force(x => x + 1); }}/></label>
+      <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, users.length), total: users.length })}</span>
       <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>${T("‹ Prev")}</button>
       <span class="pager-pg">${page} / ${totalPages}</span>
       <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>${T("Next ›")}</button>

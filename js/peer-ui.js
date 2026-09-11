@@ -298,7 +298,7 @@ export function targetsWantVk(targets) {
   if (turnEnabled() && (targets || []).some(t => turnProxiesFor(t.node, t.iface).length > 0)) return true;
   return (targets || []).some(isSelfContainedTgt);
 }
-const _VK_CALL_RE = /^https:\/\/(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)\/call\/join\/[\w-]+/i;
+export const _VK_CALL_RE = /^https:\/\/(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)\/call\/join\/[\w-]+/i;
 // let the operator paste a VK link with or without the scheme — add https:// when it's missing
 export function normVkLink(s) { s = (s || "").trim(); return s && !/^https?:\/\//i.test(s) ? "https://" + s : s; }
 // Per-user VK call link, editable inline from the QR modals. Shown only when the user has a peer behind a
@@ -358,9 +358,16 @@ export function VkLinkField({ user }) {
 // Manage ALL of a user's VK call links (grid CRUD + which is primary). The primary is the one single-link apps use;
 // FreeTurn passes them all. Reordered so the primary is first on save (vk_links[0] = primary; vk_link mirrors it).
 export function VkLinksSheet({ user }) {
+  useStore();   // re-render on each poll so a link just taken from the pool shows as a POOL link, not a personal one
   const lu = (Store.recon.users || []).find(x => x.id === user.id) || user;   // live user — the modal's `user` prop is a stale snapshot
   const start = (lu.vk_links && lu.vk_links.length ? lu.vk_links : (lu.vk_link ? [lu.vk_link] : [])).slice();
+  // Which of this user's links came from the shared pool. Keyed by URL (provenance is stored pool-id → URL),
+  // so a link the operator retypes by hand stops reading as a pool link — which is exactly right: once it no
+  // longer matches the pool entry, the pool no longer owns it and won't rewrite it under them.
+  const poolUrls = new Set(Object.values(lu.vk_pool || {}));
+  const fromPool = (url) => poolUrls.has(url);
   const [rows, setRows] = useState(start.length ? start.map(u => ({ url: u })) : [{ url: "" }]);
+  const [adding, setAdding] = useState(false);
   const [primary, setPrimary] = useState(0);
   const [busy, setBusy] = useState(false);
   const setUrl = (i, v) => setRows(rs => rs.map((r, j) => j === i ? { url: v } : r));
@@ -369,39 +376,71 @@ export function VkLinksSheet({ user }) {
     setPrimary(p => (i === p ? 0 : i < p ? p - 1 : p)); };
   const norm = rows.map(r => normVkLink(r.url));                       // add https:// where missing
   const bad = norm.some(u => u && !_VK_CALL_RE.test(u));
-  const save = async () => {
+  const poolLeft = ((Store.panelSettings || {}).vk_pool || [])
+    .filter(e => e && e.url && !e.dead && !norm.includes(e.url)).length;   // links this user could still be given
+  // The pick happens on the server (it holds the pool and excludes what they already have). Unsaved edits in
+  // this sheet would be lost by the round trip, so save them first when there are any.
+  const addFromPool = async () => {
+    setAdding(true);
+    if (dirty) { const ok = await persist(false); if (!ok) { setAdding(false); return; } }
+    const r = await api.userVkPoolAdd(user.id);
+    setAdding(false);
+    if (!r || !r.ok) return toast(srvText(r) || T("Couldn't add a link from the pool"), "err");
+    const got = (r.data || {}).vk_links || [];
+    setRows(got.map(u => ({ url: u })));
+    Store.poll(); Store.configEpoch++; bus.emit();
+    toast(T("Added a link from the pool."), "ok");
+  };
+  const dirty = JSON.stringify(norm.filter(Boolean)) !== JSON.stringify(start);
+  const persist = async (close) => {
     const clean = norm.filter(Boolean);
-    if (clean.some(u => !_VK_CALL_RE.test(u))) return toast(T("One of the links isn't a valid VK call link."), "err");
+    if (clean.some(u => !_VK_CALL_RE.test(u))) { toast(T("One of the links isn't a valid VK call link."), "err"); return false; }
     const uniq = [...new Set(clean)];
     const primUrl = norm[primary];                                    // move the chosen primary to the front
     const ordered = primUrl && uniq.includes(primUrl) ? [primUrl, ...uniq.filter(u => u !== primUrl)] : uniq;
     setBusy(true);
     const r = await api.userUpdate({ id: user.id, vk_links: ordered });
     setBusy(false);
-    if (!r || !r.ok) return toast(srvText(r) || T("Couldn't save the VK links"), "err");
-    closeModal(); Store.poll(); Store.configEpoch++; bus.emit();      // turn configs re-render with the updated links
-    toast(ordered.length ? `Saved ${ordered.length} VK link${ordered.length !== 1 ? "s" : ""}.` : T("VK links cleared."), "ok");
+    if (!r || !r.ok) { toast(srvText(r) || T("Couldn't save the VK links"), "err"); return false; }
+    if (close) closeModal();
+    Store.poll(); Store.configEpoch++; bus.emit();                    // turn configs re-render with the updated links
+    if (close) toast(ordered.length ? T("Saved {v1}.", { v1: plural(ordered.length, "VK link") }) : T("VK links cleared."), "ok");
+    return true;
   };
-  return html`<${Sheet} title=${html`VK call links <span class="faint" style="text-transform:none;letter-spacing:0">— ${user.name}</span>`} width=${560} onClose=${closeModal}
+  const save = () => persist(true);
+  return html`<${Sheet} title=${html`${T("VK call links")} <span class="faint" style="text-transform:none;letter-spacing:0">— ${user.name}</span>`} width=${560} onClose=${closeModal}
     foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${addRow}><${Ic} i="plus"/> ${T("Add link")}</button>
+      <button class="btn btn-ghost" disabled=${adding || busy || !poolLeft} onClick=${addFromPool}
+        title=${poolLeft ? T("Give this user one more link from the shared pool") : T("No unused link left in the shared pool")}>
+        <${Ic} i="users"/> ${adding ? T("Adding…") : T("Add from pool")}</button>
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${busy || bad} onClick=${save}>${busy ? T("Saving…") : T("Save")}</button></>`}>
     <div class="iface-intro" style="margin-top:2px"><div>${vkLinksIntro()}</div></div>
     <div class="vklinks-grid">
       ${rows.map((r, i) => { const nv = norm[i]; const rbad = nv && !_VK_CALL_RE.test(nv); return html`
         <div class=${"vklinks-row" + (rbad ? " warn" : "")}>
-          <label class="vklinks-prim" title=${T("Set as the primary link")}>
-            <input type="radio" name="vkprim" checked=${primary === i} onChange=${() => setPrimary(i)}/>
-            <span>${primary === i ? T("Primary") : T("Set")}</span>
-          </label>
-          <div class="vkbox" style="flex:1">
-            <${Ic} i="link"/>
-            <input class="vkbox-input" value=${r.url} placeholder=${T("vk.ru/call/join/…")} onInput=${e => setUrl(i, e.target.value)}/>
+          <button type="button" class=${"primtog vklinks-star" + (primary === i ? " on" : "")}
+            title=${primary === i ? T("The primary link — single-link apps use this one") : T("Set as the primary link")}
+            onClick=${() => setPrimary(i)}><span class="primstar">${primary === i ? "★" : "☆"}</span></button>
+          <div class=${"vkbox" + (fromPool(r.url) ? " frompool" : "")} style="flex:1">
+            <${Ic} i=${fromPool(r.url) ? "users" : "link"}/>
+            ${/* A pool link is the POOL's to edit: retyping it here would silently detach this user from the
+                  pool entry, and the next edit or mark-dead would no longer reach them. Read-only, and the
+                  tooltip says where to change it. Personal links stay fully editable. */ ""}
+            <input class="vkbox-input" value=${r.url} placeholder=${T("vk.ru/call/join/…")}
+              readOnly=${fromPool(r.url)}
+              title=${fromPool(r.url) ? T("From the shared pool — change it in Settings → Turn proxies, or remove it here") : ""}
+              onInput=${e => setUrl(i, e.target.value)}/>
           </div>
           <button class="iconbtn" title=${T("Remove this link")} onClick=${() => delRow(i)}><${Ic} i="trash"/></button>
         </div>`; })}
     </div>
     ${bad ? html`<div class="hint err">${T("Every link must look like")} <span class="mono">https://vk.ru/call/join/…</span></div>` : null}
+    ${/* Apps genuinely differ — the vkturnproxy link carries every link, the wdtt:// one takes 4 and csqtt 6,
+          and single-link apps take only the primary. So this says the ORDER matters rather than naming a cap
+          that would be wrong for half the fleet. Only shown once a user holds more than the tightest cap. */ ""}
+    ${norm.filter(Boolean).length > (((typeof SWGTurn !== "undefined" && SWGTurn.vkLinkCaps) || {}).wdtt || 4)
+      ? html`<div class="hint">${T("Apps differ: some use every link, some only the first few, some only the primary — the star sets which comes first.")}</div>` : null}
   </div>`;
 }
 // Quick "Set expiry" — a small date picker reachable straight from the QR modal (no trip to the edit screen).
@@ -596,9 +635,9 @@ export function TurnConfigSheet({ peer, t, conf }) {
       class=${"snbadge turntab" + (k === fi ? " on" : "")} style=${"--c:" + turnColor(f)} onClick=${() => setSelFork(k)}>${forkLabel(f)}</button>`)}</div>` : null}
     ${list.length > 1 ? html`<div class="turninst">
       <label>${T("Which {v1} proxy", { v1: forkLabel(fork) })}</label>
-      <select class="selwrap" value=${ii} onChange=${e => setInst(m => ({ ...m, [fork]: +e.target.value }))}>
-        ${list.map((p, k) => html`<option value=${k}>${(p.listen || ("proxy " + (k + 1))) + (p.title ? " (" + p.title + ")" : "")}</option>`)}
-      </select></div>` : null}
+      <${Dropdown} className="selwrap" value=${ii} onChange=${v => setInst(m => ({ ...m, [fork]: v }))}
+        ariaLabel=${T("Which {v1} proxy", { v1: forkLabel(fork) })}
+        options=${list.map((p, k) => ({ value: k, label: (p.listen || ("proxy " + (k + 1))) + (p.title ? " (" + p.title + ")" : "") }))}/></div>` : null}
     ${(osList.length > 1 || clients.length > 1) ? html`<div class="turncfg-devrow">
       ${osList.length > 1 ? html`<div class="turncfg-os"><label>${T("Device")}</label><${OsDropdown} value=${curOs} options=${osList} onChange=${o => setSelOs(m => ({ ...m, [fork]: o }))}/></div>` : null}
       ${clients.length > 1 ? html`<div class="turncfg-app"><label>${T("App")}</label><${AppDropdown} value=${client ? client.id : null}
@@ -625,7 +664,7 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
   useEffect(() => {
     if (a.text != null) { setText(a.text); return; }
     let ok = true; setText(null); setErr(null);
-    Promise.resolve().then(a.buildAsync).then(t => { if (ok) setText(t); }).catch(e => { if (ok) setErr((e && e.message) || "couldn't generate"); });
+    Promise.resolve().then(a.buildAsync).then(t => { if (ok) setText(t); }).catch(e => { if (ok) setErr((e && e.message) || T("couldn't generate")); });
     return () => { ok = false; };
   }, [tp.service, conf, vk, client && client.encoder, os]);
   useEffect(() => { setView(a.qr ? "qr" : "text"); }, [tp.service, client && client.encoder]);   // reset to the default when the client changes
@@ -634,7 +673,7 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
   const qrView = a.qr && view === "qr";
   return html`<div class="turncfg-item">
     <div class="turncfg-head"><span class="tcf-label">${artLabel(a)}</span></div>
-    ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${T(a.hint)}</div>` : null}
+    ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${T(a.hint, a.hintArgs)}</div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
       : qrView ? (ready ? html`<div class="turncfg-qr"><${QR} conf=${text} label=${a.label}/></div>` : html`<div class="turncfg-qr qr-pending">${T("generating…")}</div>`)
       : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => { e.target.select(); copy(text, a.uri ? T("Link copied") : T("Config copied")); }}>${ready ? text : T("generating…")}</textarea>
@@ -800,7 +839,7 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
       : null;
   const uri = dc.uri;
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
-  const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
+  const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : esc(T("val|Unassigned"))}</span>`
     + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-csqtt">${esc(t.iface)}</span>`;
   return html`<div class="deploy deploy-csqtt">
     ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind="csqtt" label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
@@ -878,7 +917,7 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
       : null;
   const uri = dc.uri;
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
-  const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
+  const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : esc(T("val|Unassigned"))}</span>`
     + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-wdtt">${esc(t.iface)}</span>`;
   return html`<div class="deploy deploy-wdtt">
     ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind="wdtt" label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
@@ -980,7 +1019,7 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
   // zoom caption: username + title (or "Unassigned"), then the server name (in its colour) + iface tag
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
   const ltype = targetType(t);
-  const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
+  const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : esc(T("val|Unassigned"))}</span>`
     + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-${ltype}">${esc(t.iface)}</span>`;
 
   return html`<div class="deploy">

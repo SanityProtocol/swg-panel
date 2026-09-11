@@ -1,12 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.5-beta</code></p>
+<p align="center"><code>1.8.6-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.5-beta** — [full changelog](CHANGELOG.md)
-> - **A config could be issued for a different vendor's app that shares a name.** Two different clients are both called "PWDTT" — one from luminescq, one shipped inside ildarmaga's own release — and they take different link formats, so ildarmaga users were handed the wrong one and their app rejected it outright as corrupt. A fork's own app is now always offered and preferred, on the panel and on subscription pages alike.
-> - **Every client app a fork can actually drive is now offered.** Which apps a proxy can hand out is decided by one table — the compatibility matrix — instead of a second, hand-kept list beside it. Apps that were silently missing now appear, ordered by how well they fit: a fork's own app first, then compatible apps, then command-line builds, with connections that lose obfuscation last.
-> - **The panel now tells you when a proxy on a node is behind, not just the panel itself.** The header update bubble covers the whole fleet: which forks have a newer build, which nodes run the old one, and — before you press anything — exactly which servers will restart. Updates are grouped by fork rather than listed once per node.
+> **What's new in 1.8.6-beta** — [full changelog](CHANGELOG.md)
+> - **A node can now leave by something other than its own address.** Register a free Cloudflare WARP account in one click, paste a WireGuard profile from anywhere else, or point at a network card or tunnel the box already runs. Any of them can be the node's default way out, one interface's way out, or the destination of a single routing rule — and each carries a kill-switch, so traffic is refused the moment that exit stops working instead of quietly falling back to the node's own address.
+> - **An exit's original account survives losing the node's key.** The key is sealed under your encryption key and the panel only ever holds ciphertext it cannot open. If a node re-registers and the address websites see changes, the row says so and offers the old account back.
+> - **Hybrid SNI routing, and rules that admit what they cannot do.** The kernel matches IP categories and reads the TLS handshake for host categories in one pass, with no helper process. A rule now says when this node's mode cannot match its target, and separately when its destination has been deleted — counted in the summary, without opening the section.
 <!-- WHATS-NEW:END -->
 
 ---

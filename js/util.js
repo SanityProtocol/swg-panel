@@ -112,22 +112,54 @@ export function seen(age) {
   if (age < 172800) return Math.round(age / 3600) + T("unit|h");
   return Math.round(age / 86400) + T("unit|d");
 }
-export function rate(bps) {
-  bps = bps || 0;
-  const u = ["B", "K", "M", "G"]; let i = 0, v = bps;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+// Throughput. The wire figure is always BYTES per second — that is what the node measures (`rx_bytes`
+// deltas over real elapsed time) and what the panel stores end to end. `units` chooses only how it is SAID.
+//
+// ⚠️ THE UNIT LETTER STAYS ON AT EVERY MAGNITUDE, AND THAT IS THE FIX. The old ladder was
+// ["B","K","M","G"], so a small rate read "512 B/s" and a large one "23.8 M/s" — the B present while the
+// number is unambiguous and gone the moment it is not. "M/s" is not a unit, and on a screen about network
+// speed it is read as megaBITS, because bits are what every speed test, ISP plan and router page quotes.
+// Reported from the fleet: a 200 Mbit/s speed test against a panel reading "23.8 M/s" looked like the panel
+// was under-counting by an order of magnitude. It was not — 200 Mbit/s IS 23.8 MB/s, a factor of 8.39, and
+// the missing letter was the entire discrepancy. Measured through every hop by `.campaign/rate-truth-rig.py`
+// (node counters, sync, /api/state, the hrrd history, the SPA's own summing): the number is carried exactly.
+//
+// BYTES ARE THE DEFAULT — it is what the node counts, what the panel stores, and what `fmtBytes` already
+// renders for totals two lines down, so the two figures on a card agree. Bits are offered for the operator
+// who wants to read the panel against a speed test without dividing by eight; naming the unit is what makes
+// either one safe to read.
+//
+// ⚠️ AND THE BASE FOLLOWS THE UNIT. Bytes are binary (1 KB/s = 1024 B/s); bits are DECIMAL — nobody writes
+// Mibit/s, and a speed test's "200" is 200,000,000 bit/s exactly. Formatting bits over a 1024 ladder would
+// print "190.7 Mbit/s" for the very number the operator switched units to compare against, which is the
+// whole defect again in a new place.
+const RATE_UNITS = {
+  bytes: { mul: 1, base: 1024, u: ["B", "KB", "MB", "GB", "TB"] },     // the default: what the node counts
+  bits:  { mul: 8, base: 1000, u: ["bit", "kbit", "Mbit", "Gbit", "Tbit"] },   // opt-in: what a speed test says
+};
+export function rateIn(bps, units) {
+  const k = RATE_UNITS[units] ? units : "bytes";
+  const { mul, base, u } = RATE_UNITS[k];
+  let i = 0, v = (bps || 0) * mul;
+  while (v >= base && i < u.length - 1) { v /= base; i++; }
   return (v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i] + "/s";
 }
-// Nice y-axis ceiling for a throughput graph: the smallest "1/5/10/50/100/500 × {B,K,M,G}" value ≥ bps.
-// Base-1024 to match rate(), so the scale badge reads e.g. "50 K/s" / "500 K/s" / "1 M/s"; past 500 it rolls to
-// the next unit (…500 K → 1 M, never an ugly "1000 K"). Callers pass peak/0.85 to guarantee ≥15% headroom.
-export function niceScaleCeil(bps) {
+
+// Nice y-axis ceiling for a throughput graph: the smallest "1/5/10/50/100/500 × unit" value >= bps, in the
+// unit the axis is labelled in — so the badge lands on a round figure in BOTH modes (base-1000 for bits,
+// base-1024 for bytes) and the legend's "nearest 1/5/10/50/100/500 unit" stays true either way.
+// Past 500 it rolls to the next unit (…500 Mbit -> 1 Gbit, never an ugly "1000 Mbit").
+// Returns BYTES per second, like its input: only the LADDER is unit-aware, so callers and the series they
+// scale never have to know which mode is on. Callers pass peak/0.85 to guarantee >=15% headroom.
+export function niceScaleCeilIn(bps, units) {
+  const k = RATE_UNITS[units] ? units : "bytes";
+  const { mul, base } = RATE_UNITS[k];
   const LADDER = [1, 5, 10, 50, 100, 500];
-  let unit = 1;
-  while (bps >= 1024 * unit) unit *= 1024;
-  const m = bps / unit;
-  for (const L of LADDER) if (m <= L) return L * unit;
-  return 1024 * unit;
+  let unit = 1, v = (bps || 0) * mul;
+  while (v >= base * unit) unit *= base;
+  const m = v / unit;
+  for (const L of LADDER) if (m <= L) return (L * unit) / mul;
+  return (base * unit) / mul;
 }
 
 // ── validation for fields that affect connectivity / data-structure ──

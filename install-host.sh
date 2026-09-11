@@ -108,6 +108,16 @@ bringup(){ local tool="$1" ifn="$2" out
 writef(){ # writef <abs_path> <mode>   (content on stdin)
   local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"
   chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
+# writef, but the file arrives by RENAME instead of by truncating in place — a NEW inode, not the same one
+# refilled. For a script that can be REPLACED WHILE IT IS RUNNING this is the difference between working and
+# not: /usr/local/bin/swg-update re-bakes itself during the update it is performing, and bash reads a script
+# incrementally from an open fd, so an in-place rewrite makes the running shell resume at its old byte offset
+# inside the NEW file's text. A rename leaves that fd pointing at the old, unlinked bytes, where the offset
+# is simply EOF. (It is also the only safe way to replace a root-owned executable: an interrupted `cat >`
+# leaves a truncated one behind, a rename cannot.)
+writef_atomic(){ # writef_atomic <abs_path> <mode>   (content on stdin)
+  local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full.new"
+  chmod "$m" "$full.new" 2>/dev/null || true; mv -f "$full.new" "$full"; ok "wrote $p ($m)"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }   # menu <styled-label> <description>
 key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  a 'mneziawg'           → [a]mneziawg
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd a 'mneziawg (default)'  → [a]mneziawg (default)
@@ -268,6 +278,11 @@ for n, ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' creates more
   detect_wg
+  # ⚠️ THE MASTER PATH HAD NONE OF THIS. `MANAGE_IFACES=none bootstrap master` wrote a managed interface
+  # called `none` into config.json and the node then reported `none: cannot read interface` on every sync,
+  # for ever, under a green summary — the same defect install-node.sh had, in the installer people reach
+  # first. Same reader for both, so a fix here can't miss the twin again.
+  manage_ifaces_resolve            # sets MANAGE_IFACES; must NOT be called in $( ) — see the function
   if [ -n "$MANAGE_IFACES" ]; then
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
   else
@@ -973,6 +988,7 @@ if [ "$HOST_HAS_WG" = yes ]; then
   mkdir -p "$PREFIX$AGENT_DIR"; cp "$SRC/swg-agent" "$PREFIX$AGENT_DIR/"; chmod 755 "$PREFIX$AGENT_DIR/swg-agent"
   mkdir -p "$PREFIX$NODED_DIR"; cp "$SRC/swg-noded" "$PREFIX$NODED_DIR/"; chmod 755 "$PREFIX$NODED_DIR/swg-noded"
   [ -f "$SRC/swg-sni" ] && { cp "$SRC/swg-sni" "$PREFIX$NODED_DIR/"; chmod 755 "$PREFIX$NODED_DIR/swg-sni"; }   # SNI-router classifier (routing_mode=sni)
+  [ -f "$SRC/swg-relay" ] && { cp "$SRC/swg-relay" "$PREFIX$NODED_DIR/"; chmod 755 "$PREFIX$NODED_DIR/swg-relay"; }   # TCP-terminating relay (accelerated mesh legs); inert until the panel asks for it
   [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$NODED_DIR/" || true
   mkdir -p "$PREFIX/var/lib/swg-noded" "$PREFIX/var/log/swg-agent"
 
@@ -1032,6 +1048,10 @@ PY
     # node-level endpoint_host is now a fallback (panel uses each interface's own); default it to the first interface's
     if [ -z "$HOST_ENDPOINT_IP" ]; then for n in "${SELECTED[@]}"; do [ -n "${IF_ENDPOINT[$n]:-}" ] && { HOST_ENDPOINT_IP="${IF_ENDPOINT[$n]}"; break; }; done; fi
     [ -z "$HOST_ENDPOINT_IP" ] && HOST_ENDPOINT_IP="$(detect_public_ip)"
+    # ⚠️ THE REF THIS BOX IS BEING INSTALLED FROM, recorded so the co-located node's self-update tracks it.
+    # The panel's own wrapper already bakes this in; the node had no equivalent and fell back to `main`, so
+    # a master installed from a branch would roll its node backwards on the Update button.
+    _swg_node_ref="${SWG_REF:-main}"
     writef /etc/swg-agent/config.json 640 <<EOF
 {
   "interfaces": {
@@ -1047,7 +1067,8 @@ $IFJSON
   "node": {
     "interval": 5,
     "agent": "${AGENT_DIR}/swg-agent",
-    "sudo": false
+    "sudo": false,
+    "update_ref": "${_swg_node_ref}"
   }
 }
 EOF
@@ -1353,13 +1374,40 @@ EOF
 # cgroup so 'systemctl restart swg-panel-server' mid-update can't kill it. swg programs only.
 mk_update_unit(){
   [ -n "${_UPDATE_UNIT_DONE:-}" ] && return 0; _UPDATE_UNIT_DONE=1   # write_panel_unit runs twice (placeholder→real cert); the TLS-independent self-update units only need writing once
-  writef /usr/local/bin/swg-update 755 <<'WRAP'
+  # ⚠️ THE REF THIS BOX IS BEING INSTALLED FROM, not `main` — see the note in update.sh's copy. `bootstrap.sh`
+  # supports installing a branch or tag and exports it; baking it in here is what keeps the Update button on
+  # that branch, since nothing else on the box records which one it was.
+  _swg_ref="${SWG_REF:-main}"
+  writef_atomic /usr/local/bin/swg-update 755 <<WRAP
 #!/usr/bin/env bash
+# ⚠️ THE WHOLE BODY IS ONE COMPOUND COMMAND, AND THE \`exit\` AT THE END IS PART OF THE FIX.
+# THIS SCRIPT REWRITES ITSELF. The update it runs re-bakes /usr/local/bin/swg-update, and bash reads a
+# script INCREMENTALLY — so when the pipeline returned, bash went back to the file for the next command at
+# the byte offset it had reached, landed in the middle of the NEW file's last line, and ran the tail of a
+# comment. Measured on swgt at the end of a completely successful panel update:
+#     /usr/local/bin/swg-update: line 15: pass: command not found
+# — from \`# extra flags (e.g. --node-only) pass through\`, in a file that is only 14 lines long. Under
+# \`set -e\` that is a non-zero exit after the update has already reported success, so a real update ends by
+# announcing a failure that did not happen. It fires ONLY when something is actually installed, which is
+# why a second run looks clean and why this survived every dry run.
+# Braces make bash parse the whole body before executing any of it, and the \`exit\` means it never reads
+# from the file again.
+{
 # swg-update — fixed root entrypoint for one-click in-place update of EVERY swg component on this box (a bare
 # panel, a docker node, or both). swg programs only (panel/noded/agent); never wg/awg/turn-proxies. Logs to journal.
 set -euo pipefail
-URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh}"
-curl -fsSL "$URL" | bash -s update -y --no-components "$@"   # extra flags (e.g. --node-only) pass through
+# ⚠️ EXPORTED, not just used — the half this writer was missing while its two siblings had it.
+# \`bootstrap.sh\` derives the ref from the URL IT WAS FETCHED FROM, reading \$SWG_BOOTSTRAP_URL out of its
+# own environment. Baked in only as a shell DEFAULT, the piped bash sees the variable UNSET, infers
+# nothing and falls back to \`main\` — so a box installed FRESH from a branch fetched dev's bootstrap and
+# then installed main from it, and re-baked this very file back to main. That is 64b9aee's defect, which
+# reached update.sh and lib/common.sh and not this one; measured on a scratch box by installing dev from
+# nothing and reading the wrapper it wrote (\`exports=0\`, where the update path writes 1).
+URL="\${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/${_swg_ref}/bootstrap.sh}"
+export SWG_BOOTSTRAP_URL="\$URL"
+curl -fsSL "\$URL" | bash -s update -y --no-components "\$@"   # extra flags (e.g. --node-only) pass through
+exit
+}
 WRAP
   # A docker container's write to a bind-mounted trigger does NOT cross to a host .path/inotify watch, so we POLL.
   # FIXED unit names + a COMPREHENSIVE trigger list mean a bare panel and a docker node on the SAME box write

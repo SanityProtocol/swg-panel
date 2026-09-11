@@ -28,12 +28,21 @@
   # Root of the source tree. Defaults to this file's parent so the module can `callPackage
   # ./package.nix { }` against the CONSUMER's pkgs (D1) without threading a src through.
 , srcRoot ? ../.
+  # WHICH BUILD THIS IS, so the panel can say. Every other arm stamps a commit into the VERSION it
+  # installs; the Nix arm installed the bare `VERSION` file, so two different builds of the same branch
+  # both reported `1.8.6-beta` and the panel could not tell a node running last week's code from one
+  # running today's. Optional and defaulted so the module's own `callPackage ./package.nix { }` (D1) is
+  # unchanged — a consumer who does not thread a rev gets exactly what they got before.
+, rev ? ""
 }:
 
 let
   fs = lib.fileset;
 
-  version = lib.fileContents (srcRoot + "/VERSION");
+  baseVersion = lib.fileContents (srcRoot + "/VERSION");
+  # `1.8.6-beta+ab12cd3` — the same shape install-host.sh and the docker images stamp, so the panel's
+  # existing version reader needs no Nix-shaped special case.
+  version = baseVersion + lib.optionalString (rev != "") ("+" + rev);
 
   # Panel web root — matches install-host.sh's copy loop ("index.html app.css app.js
   # reconcile.js turn-artifacts.js") and Dockerfile's first COPY.
@@ -52,6 +61,7 @@ let
     "swg-sub"            # the public subscription surface — its own user and unit (D8)
     "swg-noded"          # node daemon
     "swg-sni"            # SNI classifier, launched by swg-noded from its own directory
+    "swg-relay"          # TCP-terminating relay, launched by swg-noded from its own directory
     "swg-agent"          # one peer op, stdin → stdout
     "swg-netctl"         # Access/TLS helper, root-side of the panel's queue
     "swg-passwd"         # `swg-passwd` — reset the panel login
@@ -82,9 +92,15 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
 
+    # The VERSION every component reads, stamped with the build's revision when one was threaded in.
+    # ⚠️ `echo`, not `printf '%s\n'`: a Nix indented string passes backslashes through untouched, so the
+    # printf form would have written a literal `\n` into the file and every reader would have seen a
+    # version ending in backslash-n. Written once, installed three times.
+    echo "$version" > VERSION.stamped
+
     # ── panel: program + SPA + VERSION in one directory ──
     install -Dm755 swg-panel-server $out/libexec/swg-panel/swg-panel-server
-    install -Dm644 VERSION          $out/libexec/swg-panel/VERSION
+    install -Dm644 VERSION.stamped  $out/libexec/swg-panel/VERSION
     for f in ${lib.concatStringsSep " " panelWeb}; do
       install -Dm644 "$f" "$out/libexec/swg-panel/$f"
     done
@@ -92,7 +108,7 @@ stdenvNoCC.mkDerivation {
 
     # ── swg-sub: its own directory, its own copy of VERSION (separate unit, user and TLS dir) ──
     install -Dm755 swg-sub          $out/libexec/swg-sub/swg-sub
-    install -Dm644 VERSION          $out/libexec/swg-sub/VERSION
+    install -Dm644 VERSION.stamped  $out/libexec/swg-sub/VERSION
     for f in ${lib.concatStringsSep " " subWeb}; do
       install -Dm644 "$f" "$out/libexec/swg-sub/$f"
     done
@@ -101,7 +117,8 @@ stdenvNoCC.mkDerivation {
     # ── node: swg-sni sits beside swg-noded because that is the first place it is looked for ──
     install -Dm755 swg-noded        $out/libexec/swg-noded/swg-noded
     install -Dm755 swg-sni          $out/libexec/swg-noded/swg-sni
-    install -Dm644 VERSION          $out/libexec/swg-noded/VERSION
+    install -Dm755 swg-relay        $out/libexec/swg-noded/swg-relay
+    install -Dm644 VERSION.stamped  $out/libexec/swg-noded/VERSION
 
     install -Dm755 swg-agent        $out/libexec/swg-agent/swg-agent
 
@@ -125,6 +142,7 @@ stdenvNoCC.mkDerivation {
     mkbin swg-sub          $out/libexec/swg-sub/swg-sub
     mkbin swg-noded        $out/libexec/swg-noded/swg-noded
     mkbin swg-sni          $out/libexec/swg-noded/swg-sni
+    mkbin swg-relay        $out/libexec/swg-noded/swg-relay
     mkbin swg-agent        $out/libexec/swg-agent/swg-agent
 
     runHook postInstall

@@ -593,6 +593,25 @@ def _ipt_set(table, rule):
 
 
 def _wan_iface():
+    """The device this node's own traffic leaves by. THE SAME QUESTION `swg-noded._detect_wan` asks, and
+    it has to come back with the same answer — the agent writes the egress rule the node then reconciles,
+    so a disagreement here is a rule that is rewritten on every pass.
+
+    ⚠️ Read off the DEFAULT ROUTE, not off `route get 1.1.1.1`: that probe follows any host route for
+    1.1.1.1, and a host route in front of a destination is what this product exists to install. See
+    `_detect_wan` for the failure it produced on a live box."""
+    best, best_metric = "", None
+    out = run(["ip", "-4", "route", "show", "default"], check=False) or ""
+    for ln in out.splitlines():
+        m = re.search(r"\bdev (\S+)", ln)
+        if not m:
+            continue
+        mt = re.search(r"\bmetric (\d+)", ln)
+        mt = int(mt.group(1)) if mt else 0
+        if best_metric is None or mt < best_metric:
+            best, best_metric = m.group(1), mt
+    if best:
+        return best
     out = run(["ip", "-4", "route", "get", "1.1.1.1"], check=False)
     m = re.search(r" dev (\S+)", out or "")
     return m.group(1) if m else "eth0"

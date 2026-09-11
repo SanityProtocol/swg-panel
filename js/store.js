@@ -68,6 +68,7 @@ export const api = {
   meshHistory(range) { return this.get("/api/mesh-history?range=" + encodeURIComponent(range)); },
   categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
   turnHistory(range) { return this.get("/api/turn-history?range=" + encodeURIComponent(range)); },
+  exitHistory(range) { return this.get("/api/exit-history?range=" + encodeURIComponent(range)); },
   peerHistory(range) { return this.get("/api/peer-history?range=" + encodeURIComponent(range)); },
   blockStats(range) { return this.get("/api/block-stats?range=" + encodeURIComponent(range)); },
   // DISTINCT peers/users seen online over a range — set-union of per-bucket presence bitmaps, never a mean
@@ -87,9 +88,14 @@ export const api = {
   catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
   blockCatalog() { return this.get("/api/block-catalog"); },                       // block-list categories + providers + pickable lists (Routing & Blocking → Blocking tab)
   blockCatalogSave(body) { return this.post("/api/block-catalog/save", body || {}); },   // staged commit: category deltas + provider toggles
-  listInfo(cat) { return this.get("/api/list-info?cat=" + encodeURIComponent(cat)); },
+  // `retry` clears the panel's failure cooldown for this list — the operator pressing "not ready" is the one
+  // signal that should reach upstream sooner than the cooldown would allow.
+  listInfo(cat, retry) { return this.get("/api/list-info?cat=" + encodeURIComponent(cat) + (retry ? "&retry=1" : "")); },
   geoUpdate() { return this.post("/api/geo/update", {}); },
   geoProviderRetry(provider) { return this.post("/api/geo/provider-retry", { provider }); },
+  // Cancel also turns the provider off, server-side: a cancelled download was started by enabling it, so
+  // leaving it enabled would have the next settings save start the same fetch again.
+  geoProviderCancel(provider) { return this.post("/api/geo/provider-cancel", { provider }); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
@@ -104,8 +110,17 @@ export const api = {
   turnReclaim(b) { return this.post("/api/turn/reclaim", b); },   // a wdtt/csqtt server the node holds and no panel claims
   escrowVerified(b) { return this.post("/api/iface/escrow/verified", b); },   // the browser opened the blob: it is for THIS vault
   resolveHost(h) { return this.get("/api/resolve?host=" + encodeURIComponent(h)); },   // does this name land on this node?
+  // is this device an exit on that node, and may it be one? (tri-state `known` + a role verdict — §11.3)
+  exitCheck(node, dev, iface) { return this.get("/api/exit/check?node=" + encodeURIComponent(node)
+    + "&dev=" + encodeURIComponent(dev) + (iface ? "&iface=" + encodeURIComponent(iface) : "")); },
+  // decision 8: relay a vault-escrowed exit key back to its node, re-sealed by the BROWSER to the node's
+  // transport key — the panel never sees plaintext, which is the property that makes the escrow worth having.
+  exitRestore(node, id, key_blob, pub) { return this.post("/api/exit/restore", { node, id, key_blob, pub }); },
+  exitEscrowForget(node, id) { return this.post("/api/exit/escrow/forget", { node, id }); },
   connectionUpdate(b) { return this.post("/api/connection/update", b); },
   panelSettings(b) { return this.post("/api/panel/settings", b); },
+  vkPool(pool, rev) { return this.post("/api/vk-pool", { pool, rev }); },     // save the whole shared VK pool (cascades to holders server-side; rev guards a stale overwrite)
+  userVkPoolAdd(id) { return this.post("/api/user/vk-pool-add", { id }); },  // give this user one more link from the pool
   subVault() { return this.get("/api/sub/vault"); },
   subVaultSet(b) { return this.post("/api/sub/vault", b); },
   subReset() { return this.post("/api/sub/reset", {}); },
@@ -266,6 +281,10 @@ export const Store = {
     // store_configs is now an enum: "encrypted" (blob at rest) | "off". storeConfigs stays a convenience bool
     // meaning "the panel keeps configs" (now encrypted). configsPlaintext = legacy plaintext files awaiting migration.
     this.storeMode = (d.store_configs === "off" || d.store_configs === false) ? "off" : "encrypted";
+    // The placeholder a stored profile's PrivateKey line carries in the editor. Comes from the SERVER so the
+    // two ends can never disagree about the exact string — it is what says "keep the key you already hold".
+    this.exitKeyKeep = d.exit_key_keep || "";
+    this.exitPskKeep = d.exit_psk_keep || "";   // the same sentinel trick for the peer's preshared key
     this.storeConfigs = this.storeMode !== "off";
     this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
@@ -354,13 +373,15 @@ export const Store = {
       for (const ifn of Object.keys(this.describe[nid] || {}))
         if (this.describe[nid][ifn] && this.describe[nid][ifn].system) systemIfaces.add(nid + "|" + ifn);
     const _adv = (this.panelSettings || {}).advanced || {};   // operator-tunable stale/grace thresholds
-    // rx-history for FAULTY detection persists across polls (keyed node|iface|pubkey, like reconcile's `observed`)
-    this._rxHistory = this._rxHistory || {};
     this._probSince = this._probSince || {};   // {pid: firstProblemMs} — persists so Restore/Correct only offers after a real, sustained problem (not a hiccup / mid-create)
     const _sc = (this.panelSettings || {}).status_conditions || {};   // peer-health detection toggles (default on)
     this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)),
-      history: this._rxHistory, faultyMs: _adv.faulty_ms || 45000, probSince: this._probSince,
-      detectBlocked: _sc.blocked !== false, detectFaulty: _sc.faulty !== false,
+      probSince: this._probSince,
+      ...(_adv.churn_gap_s ? { churnGapS: _adv.churn_gap_s } : {}), ...(_adv.churn_min ? { churnMin: _adv.churn_min } : {}),
+      // Both detectors raise the SAME badge ("restricted") from different evidence, and each stays
+      // independently switchable. `_sc.faulty` keeps its stored name: it gated the flat-rx rule that the
+      // churn detector replaced, and renaming the key would silently re-enable it for anyone who turned it off.
+      detectBlocked: _sc.blocked !== false, detectChurn: _sc.faulty !== false,
       expiryWarnDays: (this.panelSettings || {}).expiry_warn_days,   // "about to expire" warn window (days) for the derived status
       ...(_adv.restore_grace_ms ? { restoreGraceMs: _adv.restore_grace_ms } : {}),
       ...(_adv.node_stale_ms ? { nodeStaleMs: _adv.node_stale_ms } : {}), ...(_adv.peer_grace_ms ? { graceMs: _adv.peer_grace_ms } : {}) });
@@ -413,6 +434,36 @@ export const Store = {
   },
   node(id) { return this.fleet.find(n => n.id === id); },              // lookup by stable id
   nodeName(id) { const n = this.node(id); return (n && n.name) || id; }, // display title (falls back to id)
+  // ⚠️ THE FLEET HAS AN ORDER AND IT IS THE OPERATOR'S. The Nodes screen is drag-reorderable and the
+  // position is persisted per node (`pos`, POST /api/order); the server sorts every node list it builds by
+  // it, so `Store.nodes` — and this projection — arrive in that order. Screens that grouped by node then
+  // re-sorted the groups ALPHABETICALLY, which silently threw that away: an operator who had put their
+  // busiest server at the top found it third in the peer sheet, the interface picker and the turn list,
+  // with nothing on screen explaining why those disagreed with the Nodes screen they had just arranged.
+  //
+  // `nodeRank` is the position; `byNode` is the comparator to sort by. A node the projection has not seen
+  // sorts AFTER every known one (rather than to the front, where an unloaded record would look deliberate)
+  // and ties break on the display name, so the order stays stable while /api/state is still arriving.
+  nodeRank(id) { const i = this.fleet.findIndex(n => n.id === id); return i < 0 ? Number.MAX_SAFE_INTEGER : i; },
+  // ⚠️ THE `|| ""` GUARDS WERE LOAD-BEARING AND THIS DROPPED THEM. `nodeName(id)` is `(n && n.name) || id`,
+  // so an id of `undefined` comes back `undefined` and `.localeCompare` on it throws. The call sites this
+  // replaced all wrote `(Store.nodeName(x) || "")`, and one of them needs it: `AddPeersSheet` sorts by
+  // `rep(p).node` where `rep = p => orderedTargets(p.targets || [])[0] || {}` — an UNASSIGNED peer has no
+  // deployment, so `.node` is undefined. Two of those in one list tie on rank (both unknown), the tiebreak
+  // runs, and `Array.sort` throws inside the comparator: the Add-peers sheet renders nothing.
+  //
+  // ⚠️ WHAT IS AND IS NOT DEMONSTRATED. The throw is: `byNode(undefined, undefined)` raises, measured. That
+  // a peer can reach it with no targets at all is NOT — the swgt fleet has 28 peers and none of them is
+  // target-less, so that screen would not have crashed there. ("Free" peers, of which it has 21, are peers
+  // with no USER; they still have deployments. Do not confuse the two — an earlier version of this comment
+  // did, and inflated the severity.) The guard goes back because the call sites this comparator replaced
+  // all wrote `|| ""` deliberately and the reconciler tolerates `targets: []`; removing a guard whose case
+  // you have not disproved is the regression, whether or not today's data reaches it.
+  // [[review-your-own-fixes]] (check the CALLERS of what you changed).
+  byNode(a, b) {
+    return this.nodeRank(a) - this.nodeRank(b)
+        || String(this.nodeName(a) || "").localeCompare(String(this.nodeName(b) || ""));
+  },
   nodeColor(id) { const n = this.node(id); return pickThemed(n && n.color, NODE_COLOR_DEFAULT.dark, NODE_COLOR_DEFAULT.light); },
   ifacesOf(node) { return Object.keys(this.describe[node] || {}); },   // node = id (describe keyed by id)
   ifaceMeta(node, iface) { return (this.describe[node] || {})[iface] || null; },
