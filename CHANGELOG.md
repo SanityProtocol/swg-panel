@@ -38,8 +38,11 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
   sends packets across the link untouched: the cheapest option, nothing in the path to fail, and the right
   one while the leg is healthy. Relay makes the node answer the client itself and open its own connection
   onward, so loss on a bad leg stops reaching the user — in exchange it costs noticeably more CPU and buys
-  nothing on a clean link. The card reads the leg's live loss and names the choice that fits, and a CPU cap
-  bounds what the relay may take. ⚠️ A divert whose relay is not serving is a blackhole, not a no-op, so the
+  nothing on a clean link. It works on a smart cascade too: where an interface routes only some
+  destinations over the link, only those are relayed and the rest of its traffic goes on exactly as before.
+  The relay terminates TCP, so a rule's UDP always forwards either way. The card reads the leg's live loss
+  and names the choice that fits, and a CPU cap bounds what every relay on the node may take between them —
+  it is the node's budget, not one leg's, and one switch can start more than one relay. ⚠️ A divert whose relay is not serving is a blackhole, not a no-op, so the
   rule exists only while a watchdog has just proven the relay answering from inside its own event loop —
   anything that cannot be proven is removed on that pass, and "could not check" counts as cannot.
 
