@@ -26,6 +26,8 @@ Run: python3 tests/relay_eligibility_selftest.py   (0 = pass)
      --perturb-band    drops the mark-band guard                 → RED
      --perturb-port    hands out the bare hash, no collision fix → RED
      --perturb-compat  puts smart legs in the old `ifaces` map   → RED
+     --perturb-order   sorts the kinds together, so a smart leg
+                       can take a forward leg's live port        → RED
 """
 import importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -37,7 +39,8 @@ P_DEV = "--perturb-dev" in sys.argv
 P_BAND = "--perturb-band" in sys.argv
 P_PORT = "--perturb-port" in sys.argv
 P_COMPAT = "--perturb-compat" in sys.argv
-PERTURB = P_DEV or P_BAND or P_PORT or P_COMPAT
+P_ORDER = "--perturb-order" in sys.argv
+PERTURB = P_DEV or P_BAND or P_PORT or P_COMPAT or P_ORDER
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -72,6 +75,9 @@ if P_PORT:
                 out[iid] = q
                 break''',
         '''        out[iid] = _relay_port_hash(iid)''', "port probe")
+if P_ORDER:
+    cut('    for iid in sorted(marks, key=lambda i: (bool(marks[i]), i)):',
+        '    for iid in sorted(marks):', "alloc order")
 if P_COMPAT:
     cut('                       for l in legs if not l["mark"]},      # compat: a node older than this panel',
         '                       for l in legs},', "compat filter")
@@ -208,11 +214,31 @@ for i in range(4000):
 check("a colliding pair exists to test with", _pair is not None, _pair)
 if _pair:
     check("…and they really do hash the same", N._relay_port(_pair[0]) == N._relay_port(_pair[1]), _pair)
-    _al = P._relay_ports(list(_pair))
+    _marks = {_pair[0]: 7000, _pair[1]: 7001}
+    _al = P._relay_ports(_marks)
     check("⚠️ the panel does not hand them the same port", len(set(_al.values())) == 2, _al)
-    check("…the smaller id keeps the hashed slot (stable across a re-plan)",
+    check("…the first id keeps the hashed slot (stable across a re-plan)",
           _al[sorted(_pair)[0]] == N._relay_port(sorted(_pair)[0]), (_al, N._relay_port(sorted(_pair)[0])))
-    check("…and re-planning is deterministic", P._relay_ports(list(_pair)) == _al, _al)
+    check("…and re-planning is deterministic", P._relay_ports(_marks) == _al, _al)
+
+print("\n[6b] ⚠️ …and a SMART leg never displaces a FORWARD one")
+# `sorted()` alone mixes the kinds and "awg0.n2" < "wg8", so a smart leg on an UNRELATED interface could
+# take the hashed slot a forward leg is listening on. The node would rewrite that unit's port and restart
+# it, dropping every TCP connection on a leg the operator never touched. Found by search: a real pair whose
+# smart id sorts FIRST and hashes to the same slot, so `sorted()` alone would fail this.
+_FWD_IID = "wg8"
+_h = N._relay_port(_FWD_IID)
+_clash = None
+for i in range(200000):
+    k = "awg0.n%05d" % i
+    if k < _FWD_IID and N._relay_port(k) == _h:
+        _clash = k; break
+check("a smart id exists that sorts first AND collides", _clash is not None, _clash)
+if _clash:
+    _al2 = P._relay_ports({_FWD_IID: 0, _clash: 7000})
+    check("⚠️ the forward leg keeps the port it is listening on", _al2[_FWD_IID] == _h, (_al2, _h))
+    check("…and the smart leg is the one that moves", _al2[_clash] != _h, _al2)
+    check("…which a plain sorted() would have got backwards", sorted([_clash, _FWD_IID])[0] == _clash)
 
 print("\n[7] ⚠️ a mark outside the band is refused, not shipped")
 # A divert matching a mark nothing ever sets diverts nothing — the traffic forwards instead, which WORKS,
@@ -251,6 +277,7 @@ if PERTURB:
     which = ("a device-exit rule recorded as a leg" if P_DEV else
              "the mark-band guard removed" if P_BAND else
              "the bare hash with no collision fix" if P_PORT else
+             "the two kinds of leg sorted together" if P_ORDER else
              "smart legs leaking into the old `ifaces` contract")
     print("\n--perturb (%s): %d check(s) RED" % (which, bad))
     sys.exit(0 if bad else 1)

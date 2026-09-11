@@ -13187,21 +13187,28 @@ def _relay_port_hash(iid):
     return RELAY_PORT_BASE + (int(hashlib.sha256(iid.encode()).hexdigest()[:4], 16) % RELAY_PORT_SPAN)
 
 
-def _relay_ports(iids):
-    """`iid -> listen port` for one node's whole leg set, collision-free by construction.
+def _relay_ports(marks):
+    """`{iid: mark} -> {iid: port}` for one node's whole leg set, collision-free by construction.
 
     The node's fallback hash has 300 slots, which is ample for one instance per interface and starts
     colliding around ten (~13%) — and per-leg there can be several instances per interface. A collision
     means two legs sharing one relay with one of them sent out the wrong exit, silently, because it works.
     The panel builds a node's entire leg set in one place, so it can simply not do that.
 
-    ⚠️ ORDER IS THE TIE-BREAK, and it is `sorted(iids)` so it is stable: the same leg set always yields the
-    same ports. On the rare collision the lexicographically smaller instance keeps its hashed slot and the
-    other probes up — so ADDING a leg can move an existing one's port, but only one that shares its hash.
+    ⚠️ ORDER IS THE TIE-BREAK, and it is stable: the same leg set always yields the same ports. On a
+    collision the instance that comes first keeps its hashed slot and the other probes up.
+
+    ⚠️ AND A WHOLE-INTERFACE CASCADE COMES FIRST, WHICH IS THE WHOLE POINT. A plain `sorted()` mixes the
+    two kinds and `"awg0.n2" < "wg8"`, so a smart leg on an unrelated interface could take the hashed slot
+    a forward leg is LISTENING ON — the node would then rewrite that unit's port, restart it, and drop every
+    TCP connection on a leg the operator never touched, because a different interface gained a rule. Mark 0
+    first makes `relay_plan`'s promise ("the same port it is listening on right now") true by construction
+    rather than true by luck of the alphabet.
+
     Returns nothing for an iid it could not place; the caller refuses that leg rather than letting the node
     fall back to a hash that is known to collide."""
     out, taken = {}, set()
-    for iid in sorted(iids):
+    for iid in sorted(marks, key=lambda i: (bool(marks[i]), i)):
         h = _relay_port_hash(iid)
         for k in range(RELAY_PORT_SPAN):
             q = RELAY_PORT_BASE + ((h - RELAY_PORT_BASE + k) % RELAY_PORT_SPAN)
@@ -13356,7 +13363,7 @@ def relay_plan(nodes, plans, nid, snaps):
     # sent out the wrong exit, silently, because it works. Allocated here, where a node's whole leg set is
     # known at once, it cannot happen; a leg that could not be placed is refused with a reason instead of
     # being left to the hash that is known to collide.
-    ports = _relay_ports(want)
+    ports = _relay_ports({i: e["mark"] for i, (e, _r) in want.items()})
     legs = []
     for iid in sorted(want):
         e, r = want[iid]

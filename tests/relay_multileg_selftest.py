@@ -15,6 +15,7 @@ Run: python3 tests/relay_multileg_selftest.py (0 = pass)
      --perturb        scopes the `socket transparent` rule by mark too, RED.
      --perturb-mss    asks the kernel for the leg without the mark, RED.
      --perturb-fwd    makes forward mode emit a mark match, RED.
+     --perturb-ctstate  lets the socket rule match a SYN again, RED.
 """
 import importlib.machinery, importlib.util, os, re, sys
 
@@ -24,6 +25,7 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 P_SOCK = "--perturb" in sys.argv
 P_MSS = "--perturb-mss" in sys.argv
 P_FWD = "--perturb-fwd" in sys.argv
+P_CTST = "--perturb-ctstate" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -38,9 +40,13 @@ def cut(a, b, why):
     src = src.replace(a, b, 1)
 
 if P_SOCK:   # the shipped-regression shape: scope the established-connection rule by mark as well
-    cut('L.append("    ip saddr %s meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))',
-        'L.append("    ip saddr %s meta mark 0x1 meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))',
+    cut('L.append("    ip saddr %s ct state != new meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))',
+        'L.append("    ip saddr %s ct state != new meta mark 0x1 meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))',
         "socket transparent")
+if P_CTST:  # the shape this shipped in: the socket rule matching a SYN as well as an established packet
+    cut('L.append("    ip saddr %s ct state != new meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))',
+        'L.append("    ip saddr %s meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))',
+        "socket ct state")
 if P_MSS:
     cut('out = run(["ip", "route", "get", "1.1.1.1", "from", gw] + (["mark", str(mark)] if mark else [])).stdout or ""',
         'out = run(["ip", "route", "get", "1.1.1.1", "from", gw]).stdout or ""', "mss mark")
@@ -49,9 +55,9 @@ if P_FWD:
         '_m = "meta mark 0x%x " % (e.get("mark") or 1)', "forward inertness")
 
 path = os.path.join(ROOT, "__perturb_multileg.py")
-if P_SOCK or P_MSS or P_FWD:
+if P_SOCK or P_MSS or P_FWD or P_CTST:
     open(path, "w").write(src)
-l = importlib.machinery.SourceFileLoader("noded_ml", path if (P_SOCK or P_MSS or P_FWD) else NODED)
+l = importlib.machinery.SourceFileLoader("noded_ml", path if (P_SOCK or P_MSS or P_FWD or P_CTST) else NODED)
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("noded_ml", l))
 try:
     l.exec_module(m)
@@ -82,6 +88,15 @@ print("\n[2] ⚠️ the `socket transparent` rule is per SUBNET and carries NO m
 check("one rule per distinct subnet, not per leg", len(sock) == 2, "%d rules for 2 subnets" % len(sock))
 check("⚠️ …and none of them matches a mark", not any("meta mark 0x" in l.split("socket")[0] for l in sock), sock)
 check("…while the tproxy rules DO", any("meta mark 0x" in l for l in tproxy))
+# ⚠️ …AND IT MUST NOT MATCH A CONNECTION ATTEMPT. The relay listens on 0.0.0.0 because a transparent
+# socket must receive packets for ANY destination, so the kernel's listener lookup matches that wildcard
+# bind for a SYN to any host on that port — the same fact the `fib daddr type local` scoping on the input
+# drop was measured from. Under a whole-interface cascade that was harmless (every destination took the leg
+# anyway); under a SMART cascade the relay would terminate a `direct` destination and re-originate it down
+# the mesh leg with the leg's mark. The relay never picks an egress the rule did not.
+check("⚠️ …and none of them matches a connection ATTEMPT",
+      all("ct state != new" in l.split("socket")[0] for l in sock), sock)
+check("…which is the only packet that could misroute a direct destination", "ct state" in nft)
 
 print("\n[3] the relay port is closed, once per distinct port")
 inp = nft[nft.index("chain inp"):]
@@ -112,9 +127,10 @@ m._relay_mss("10.18.0.1", 0)
 check("…and NOT asked with one in forward mode", "mark" not in (seen.get("argv") or []), seen.get("argv"))
 
 bad = len(FAILS)
-if P_SOCK or P_MSS or P_FWD:
+if P_SOCK or P_MSS or P_FWD or P_CTST:
     which = ("the socket-transparent rule mark-scoped" if P_SOCK else
-             "the MSS lookup without its mark" if P_MSS else "forward mode emitting a mark match")
+             "the MSS lookup without its mark" if P_MSS else
+             "the socket rule matching a SYN" if P_CTST else "forward mode emitting a mark match")
     print("\n--perturb (%s): %d check(s) RED" % (which, bad))
     sys.exit(0 if bad else 1)
 print("\n%d failing" % bad)

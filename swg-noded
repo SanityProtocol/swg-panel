@@ -5869,12 +5869,25 @@ def _relay_nft(entries, guard_ports=()):
     # ⚠️ ONE `socket transparent` RULE PER SUBNET, AND IT IS NOT SCOPED BY MARK — the least obvious line in
     # this function. It exists to keep packets of an ALREADY relayed connection reaching the socket we hold.
     # A smart mark is recomputed per packet from set membership, and Hybrid SNI adds learned IPs mid-flight,
-    # so a mark-scoped rule would stop matching and break a live connection mid-stream. A successful socket
-    # lookup is anyway a stronger statement than the mark was: it proves the packet belongs to a connection
-    # WE accepted. The source scoping stays, and that is what keeps us off another product's transparent
-    # sockets (rw-core runs its own divert on these boxes).
+    # so a mark-scoped rule would stop matching and break a live connection mid-stream. The source scoping
+    # stays, and that is what keeps us off another product's transparent sockets (rw-core runs its own
+    # divert on these boxes).
+    #
+    # ⚠️ …BUT IT IS SCOPED BY `ct state != new`, AND THAT IS NOT COSMETIC. The justification above used to
+    # end "a successful socket lookup proves the packet belongs to a connection WE accepted". That is true
+    # of an ESTABLISHED packet and false of a SYN: the relay listens on `0.0.0.0:<port>` because a
+    # transparent socket must be able to receive packets addressed to ANY destination, so the kernel's
+    # listener lookup matches that wildcard bind for a SYN to *any* host on that port. The same measurement
+    # that justified `fib daddr type local` on the input drop below is the proof: a client dialling a REMOTE
+    # host on a port that happens to equal one of this node's relay ports has its SYN delivered toward the
+    # relay. Under a whole-interface cascade that was harmless — every destination took the leg anyway. Under
+    # a SMART cascade it is a misroute: a `direct` destination would be terminated here and re-originated
+    # down the mesh leg with the leg's mark, egressing at the peer node. The relay must never pick a
+    # different egress than the rule said (RELAY-SMART-CASCADE-PLAN §1), and a SYN is the only packet that
+    # can make it. `!= new` rather than `established` on purpose: an invalid or untracked packet of a live
+    # relayed connection still belongs to the socket we hold, and only the connection ATTEMPT must not.
     for S in sorted({e["subnet"] for e in entries}):
-        L.append("    ip saddr %s meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))
+        L.append("    ip saddr %s ct state != new meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))
     for e in entries:
         S, port = e["subnet"], e["port"]
         # ⚠️ THE COUNTER IS LOAD-BEARING, not observability. It is the only way to tell a divert that is
