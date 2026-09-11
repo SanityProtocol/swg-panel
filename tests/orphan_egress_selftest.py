@@ -81,7 +81,21 @@ check("on node removal, before the store is written",
       and _rm.index("_orphans = prune_node_refs(nodes)") < _rm.index('nodes_save(deps["nodes_path"], nodes)'),
       "the sweep must run before the store is written, or the removal persists the orphans")
 check("…and unconditionally on any node save, so an old record self-heals",
-      "prune_node_refs(nodes)" in src.split("prune_default_exit(nodes[nid])")[1][:400])
+      "prune_node_refs(nodes)" in src.split("prune_default_exit(nodes[nid])")[1][:1200])
+# ⚠️ AND THAT CALL SITE MUST REPORT, AFTER THE SAVE. It is fleet-wide, so an interface on a node nobody
+# touched can be repointed by a save somewhere else — and this path discarded the return value entirely.
+# Reporting BEFORE `nodes_save` is its own bug: several validators still `return 400` in between, so the
+# journal would record a rewrite that was never persisted, then record it again on the next good save.
+_upd = src.split("prune_default_exit(nodes[nid])")[1]
+check("…and that sweep’s result is reported, not discarded", "_orphans_u = prune_node_refs(nodes)" in _upd)
+check("⚠️ …only AFTER the save that could still be refused",
+      0 < _upd.index('nodes_save(deps["nodes_path"], nodes)') < _upd.index("_report_orphan_egress(deps, nodes, _orphans_u)"),
+      "an event for a rewrite that a 400 threw away")
+# ⚠️ AND THE SENTENCES STAY IN THE ev_append ARGUMENT POSITION. Lifting them into a loop variable was
+# tidier and made them invisible to i18n-extract, so the catalogue entries went orphaned and nothing
+# would have re-checked them. The i18n audit caught that; the code review did not.
+check("…with both sentences where the extractor can see them",
+      src.count('ev_append(deps["roster_path"], "node", _onid,') == 2)
 check("…and the operator is told whose routing changed",
       "Egress reset to direct — its target node was removed" in src)
 
@@ -92,7 +106,16 @@ check("the API still refuses to STORE a forward to an unknown node",
 print("\n[5] ⚠️ …and a reference held before the sweep is NAMED, not blank")
 rt = open(os.path.join(ROOT, "js", "routing.js"), encoding="utf-8").read()
 check("EgressPicker asks whether its value can be named",
-      'const _goneFwd = value.mode === "forward" && !!value.node' in rt)
+      'const _unnamed = value.mode === "forward" && !!value.node' in rt)
+# ⚠️ TWO REASONS IT CANNOT BE NAMED, AND BOTH NEED A ROW. `others` excludes the current node, so a
+# forward pointing at THIS node is unnameable too — and a fix that only stopped calling it "no longer
+# here" left the control BLANK, which is the exact failure prune_node_refs exists to prevent. That one
+# the sweep can never heal either: the id IS live, so only the operator can resolve it.
+check("…a removed target and the node ITSELF are told apart",
+      "const _goneFwd = _unnamed &&" in rt and "const _selfFwd = _unnamed && !_goneFwd;" in rt)
+check("⚠️ …and each gets its own refusing row, so the control is never blank",
+      "_selfFwd ? [{ value: ifSel" in rt and "_goneFwd ? [{ value: ifSel" in rt,
+      "an unnameable value with no row renders an empty dropdown")
 check("…from the SAME list the options are built from", "!others.some(n => n.id === value.node)" in rt)
 # ⚠️ AND FROM THE WHOLE FLEET AS WELL. `others` excludes the current node, so on its own it answers
 # "would we offer this?" rather than "does this id resolve to a node?" — and a record pointing at the

@@ -4618,14 +4618,21 @@ def _report_orphan_egress(deps, nodes, orphans):
     ⚠️ AND EVERY CALLER MUST REPORT. `prune_node_refs` is fleet-wide and unconditional, so it heals on any
     node save — which means an interface on a node nobody touched can be rewritten by a save somewhere
     else. The `/api/node/update` path discarded the return value and said nothing at all."""
+    # ⚠️ THE SENTENCE STAYS IN THE ev_append CALL. Lifting these two into a loop variable was tidier and made
+    # them INVISIBLE to `i18n-extract.mjs`, which reads literals in the argument position — so the catalogue
+    # entries went orphaned and nothing would have checked them again if the English changed. The audit found
+    # that; the code review did not. Two calls is the cheaper price.
     for _onid in sorted({h[0] for h in orphans}):
         mine = [h for h in orphans if h[0] == _onid]
         nm = (nodes.get(_onid) or {}).get("name") or _onid
-        for _gone, _verb in ((True, "Egress reset to direct — its target node was removed"),
-                             (False, "Egress reset to direct — it forwarded to no node at all")):
-            names = ", ".join(sorted(h[2] for h in mine if bool(h[3]) is _gone))
-            if names:
-                ev_append(deps["roster_path"], "node", _onid, _verb, nm, names)
+        _gone_n = ", ".join(sorted(h[2] for h in mine if h[3]))
+        _blank_n = ", ".join(sorted(h[2] for h in mine if not h[3]))
+        if _gone_n:
+            ev_append(deps["roster_path"], "node", _onid,
+                      "Egress reset to direct — its target node was removed", nm, _gone_n)
+        if _blank_n:
+            ev_append(deps["roster_path"], "node", _onid,
+                      "Egress reset to direct — it forwarded to no node at all", nm, _blank_n)
 
 
 def desired_for_node(roster, node_id):
@@ -12140,7 +12147,8 @@ def prune_node_refs(nodes):
                 # anything; reporting it as "its target node was removed" blames a removal for a state that
                 # predates it, and sends the operator looking for a node that never existed. Still rewritten
                 # — the traffic was leaving direct either way — just not attributed to the wrong cause.
-                hit.append((nid, src, name, gone) if gone else (nid, src, name, ""))
+                hit.append((nid, src, name, gone))     # `gone` is "" when there was no target at all;
+                #                                          _report_orphan_egress splits the two cases on it
     return hit
 
 
@@ -17748,7 +17756,10 @@ def api(method, path, qs, body, deps):
         # …and the same for a forward whose TARGET NODE is gone. Unconditional and fleet-wide for the same
         # reason the two above are unconditional: a record already in that state heals on the next save of
         # anything, instead of waiting for someone to open the exact interface that broke.
-        _report_orphan_egress(deps, nodes, prune_node_refs(nodes))
+        # ⚠️ COLLECT NOW, REPORT AFTER THE SAVE. Several validators below still `return 400`, and an event
+        # written here would record a rewrite that was never persisted — then record it again on the next
+        # successful save. `node_remove` already has this ordering; this path did not.
+        _orphans_u = prune_node_refs(nodes)
         nodes[nid].pop("enabled_categories", None)   # §6.9: deleted, never read; drop the dead key as we pass
         if "catalog_cats" in body:              # categories the operator opted THIS node into (node-lens): provider-catalog
             cc = body.get("catalog_cats")       # ids (<prov>:<id>) AND curated built-ins (bare id) — both first-class + pullable
@@ -17813,6 +17824,7 @@ def api(method, path, qs, body, deps):
                 me.setdefault("ifaces", {}).setdefault(lr.get("iface"), {})["listen_port"] = np   # push via reconcile_ifaces
             ev_append(roster_path, "node", nid, "Re-ported mesh links (live)", me.get("name", nid))
         nodes_save(deps["nodes_path"], nodes)
+        _report_orphan_egress(deps, nodes, _orphans_u)
         if "color" in body:                       # server colour drives the subscription page's server name → refresh serve.json
             with contextlib.suppress(Exception):
                 write_sub_serve(deps)

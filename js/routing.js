@@ -2530,8 +2530,14 @@ export function EgressPicker({ node, value, onChange, noRules }) {
   // node we would offer". A record forwarding to the node's own id is refused on write today, so it can
   // only arrive by hand — but reading it as "a node that is no longer here" would be actively wrong about a
   // node that is right here, and send the operator looking for something that was never removed.
-  const _goneFwd = value.mode === "forward" && !!value.node
-    && !others.some(n => n.id === value.node) && !(Store.nodes || []).some(n => n.id === value.node);
+  const _unnamed = value.mode === "forward" && !!value.node && !others.some(n => n.id === value.node);
+  const _goneFwd = _unnamed && !(Store.nodes || []).some(n => n.id === value.node);
+  // ⚠️ TWO REASONS THE LIST CANNOT NAME THIS VALUE, AND BOTH NEED A ROW. Splitting them fixed the
+  // sentence and broke the control: a forward pointing at THIS node is not in `others` either, so with
+  // only the `_goneFwd` row it rendered blank — the exact "control shows nothing" failure that let a
+  // ghost reference sit unnoticed for a day. And `prune_node_refs` cannot heal this one: the id IS live,
+  // so the sweep leaves it alone and only the operator can resolve it.
+  const _selfFwd = _unnamed && !_goneFwd;
   // The chosen exit, if it is still there. An interface KEEPS its selection when the exit is turned off, its
   // device goes bad, or the exit is deleted (decision 3) — so all three are reachable here, and each is a
   // different sentence. What they are NOT is a reason to refuse the save or to silently reset the field.
@@ -2618,6 +2624,8 @@ export function EgressPicker({ node, value, onChange, noRules }) {
         // so the interface behaves as direct while still claiming to cascade. `prune_node_refs` now repairs
         // this on the server, but a reference can still be held here between the node's removal and that
         // sweep — and a control that shows nothing is how it went unnoticed for a day.
+        ...(_selfFwd ? [{ value: ifSel, label: T("This node itself"), className: "bad",
+                          refuse: T("This interface is set to forward everything to the node it is already on, which cannot work — the traffic would leave by this node's own address anyway. Choose another destination.") }] : []),
         ...(_goneFwd ? [{ value: ifSel, label: T("A node that is no longer here"), className: "bad",
                           refuse: T("This interface forwards everything to a node that is not in this panel any more, so it routes nothing and its clients leave by this node's own address. Choose another destination.") }] : []),
         // A MODE, not a destination — last, outside every group, the way `Block` sits apart in the rule

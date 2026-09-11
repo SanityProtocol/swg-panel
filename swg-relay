@@ -84,7 +84,14 @@ def is_local_addr(ip, ttl=30.0):
     if now - _LOCAL["at"] > ttl:
         got = local_addrs()
         if got is None:
-            return True                      # unknown => treat as ours => refuse. Cache untouched: retry.
+            # ⚠️ FALL BACK TO THE LAST GOOD ANSWER BEFORE FALLING CLOSED. Refusing everything on a transient
+            # ioctl hiccup is not free: each refusal bumps `refused_self`, and RELAY_SELFDIAL_MAX of them in
+            # one pass makes the watchdog call the relay unhealthy and pull a WORKING divert. A set read
+            # seconds ago is far better evidence than no evidence, and the fail-closed answer is still there
+            # for the genuinely-unknown case — a relay that has never managed one successful read.
+            if _LOCAL["set"]:
+                return ip in _LOCAL["set"]   # cache time untouched, so the next call retries the read
+            return True                      # nothing ever read => treat as ours => refuse
         _LOCAL["set"] = frozenset(got) | {"127.0.0.1", "0.0.0.0"}
         _LOCAL["at"] = now
     return ip in _LOCAL["set"]

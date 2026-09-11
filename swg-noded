@@ -5532,7 +5532,16 @@ RELAY_QUOTA_MAX = 90
 RELAY_BLACK_BASE   = 60        # seconds to hold the forwarding path after a blackhole verdict, doubling
 RELAY_BLACK_MAX    = 900       # ...to this cap. Cleared early by a new relay pid, or by accepts moving.
 RELAY_SELFDIAL_MAX = 5         # refused self-dials in one pass before the relay counts as unhealthy
-RELAY_DIVERT_MIN   = 4         # diverted packets in one pass before "and accepted none" means anything
+RELAY_DIVERT_MIN   = 1         # ⚠️ ONE. This counts SYNs now, not packets, and the two are not the same
+#                                scale. In the failure it exists for — a relay that listens, whose loop
+#                                turns, and which never accept()s — the kernel completes the handshake
+#                                into the 1024-deep backlog, so the client never retransmits and every
+#                                attempt contributes exactly ONE SYN (its data packets then match the
+#                                socket-transparent rule, not this one). At 4 the check needed ~0.8 new
+#                                connections per second sustained across two passes before it would
+#                                fire; a quiet leg could be blackholed indefinitely, which is exactly
+#                                the "accepted=0 for 3h45m" this was written to catch. The two-pass run
+#                                is what de-bounces it, not the magnitude.
 RELAY_MSS_HEADROOM = 80        # subtracted from the upstream leg's MTU — see _relay_mss for why an exact fit is not enough
 
 # ⚠️ A REROUTE FROM THE PLAN, ON PURPOSE. RELAY-FEATURE-PLAN §3.1 says a failing node sync disarms "within
@@ -5798,9 +5807,16 @@ def _relay_probe(iface, now, diverted=None):
     #
     # So a verdict disarms for a cooling-off period that doubles, and only two things end it early: the
     # relay process being REPLACED (a new pid is a new thing, worth one try), or accepts actually moving.
-    if s.get("pid") and st.get("pid") and s["pid"] != st["pid"]:
+    # ⚠️ NOT BY PID. Under docker each relay is PID 1 of its own container, so the pid never changes and
+    # this escape hatch was inert on exactly the run-model where `--restart unless-stopped` replaces a bad
+    # relay for us. Uptime going BACKWARDS means a new process in both run-models, and it needs no identity
+    # the container can lie about.
+    _up, _up_prev = s.get("uptime_s"), st.get("uptime_s")
+    if _up is not None and _up_prev is not None and _up < _up_prev:
         st.pop("black_until", None); st["black_wait"] = RELAY_BLACK_BASE   # new process, clean slate
-    st["pid"] = s.get("pid")
+    elif s.get("pid") and st.get("pid") and s["pid"] != st["pid"]:
+        st.pop("black_until", None); st["black_wait"] = RELAY_BLACK_BASE
+    st["pid"], st["uptime_s"] = s.get("pid"), _up
     if now < st.get("black_until", 0):
         return False, ("relay took traffic and accepted none; holding the forwarding path for %ds"
                        % int(st["black_until"] - now)), s
@@ -5985,7 +6001,7 @@ def _relay_shadowed(entries, rules):
     return out
 
 
-def _relay_arm(entries, res, rules=None):
+def _relay_arm(entries, res, rules=None, guard_ports=()):
     """Routing half FIRST, nft half LAST — see the ordering warning at the top of this section.
 
     ⚠️ THIS APPLIES WHAT IT IS GIVEN AND DECIDES NOTHING. Eligibility — including the shadowed-leg
@@ -6002,7 +6018,12 @@ def _relay_arm(entries, res, rules=None):
     if not have:
         run(["ip", "rule", "add", "fwmark", str(RELAY_MARK), "lookup", str(RELAY_RT),
              "priority", str(RELAY_RT)])
-    r = run(["nft", "-f", "-"], input_text=_relay_nft(entries))
+    # ⚠️ EVERY SUPERVISED PORT, NOT EVERY ARMED ONE. `guard_ports` existed and this call did not pass it,
+    # so the guard was keyed on the armed set after all — the precise thing the parameter was added to
+    # stop. With two legs and one of them held disarmed (a blackhole hold runs up to 450s, and cap /
+    # shadowed / CPU / loop-stuck do the same), its relay process is still up and still listening on
+    # 0.0.0.0 while the table protected only the other one. One connect re-opens the 47,780-fd loop.
+    r = run(["nft", "-f", "-"], input_text=_relay_nft(entries, guard_ports))
     if r.returncode != 0:
         _relay_disarm(res)                    # a half-applied divert must never survive the pass that failed
         res["errors"].append("relay divert: " + (r.stderr or "nft failed").strip())
@@ -6020,6 +6041,11 @@ def _relay_disarm(res=None):
     run(["ip", "route", "flush", "table", str(RELAY_RT)])
     if res is not None and _RELAY_ARM["sig"] is not None:
         res["changed"] += 1
+
+
+def _relay_any_table():
+    """Does our table exist at all — armed or guard-only? `_relay_table_live` asks a different question."""
+    return run(["nft", "list", "table", "inet", RELAY_TABLE]).returncode == 0
 
 
 def _relay_table_live():
@@ -6379,7 +6405,21 @@ def reconcile_relay(plan, res, sync_ok=True):
             _relay_disarm(res)
         # Nothing is armed, but the processes are still up and still listening — keep their ports shut.
         if want:
-            run(["nft", "-f", "-"], input_text=_relay_nft([], sorted({want[i]["port"] for i in want})))
+            # Only when it would CHANGE, and only when it is missing — this branch runs every five seconds
+            # for as long as nothing is healthy, and deleting plus recreating the table each time is a fork
+            # and a window. And report the failure: an nft too old for `fib daddr type` would otherwise
+            # leave the ports open with nothing anywhere saying so.
+            _gp = sorted({want[i]["port"] for i in want})
+            _gsig = json.dumps(_gp)
+            if _gsig != _RELAY_ARM.get("guard") or not _relay_any_table():
+                _gr = run(["nft", "-f", "-"], input_text=_relay_nft([], _gp))
+                if _gr.returncode != 0:
+                    _RELAY_ARM["guard"] = None
+                    res["errors"].append("relay port guard: " + (_gr.stderr or "nft failed").strip()[:160])
+                else:
+                    _RELAY_ARM["guard"] = _gsig
+        else:
+            _RELAY_ARM["guard"] = None
         _RELAY_ARM["sig"] = None
         _RELAY_ARM["why"] = "; ".join(why) or "no healthy relay"
         _relay_note("DISARMED", _RELAY_ARM["why"])
@@ -6387,8 +6427,9 @@ def reconcile_relay(plan, res, sync_ok=True):
     # Armed intent: re-assert if the wanted set changed OR the table went missing under us (the cascade
     # band flush, an operator `nft flush ruleset`, a reboot). Cheap enough at one `nft list` per sync.
     if sig != _RELAY_ARM["sig"] or not _relay_table_live():
-        if _relay_arm(entries, res, _rules):
+        if _relay_arm(entries, res, _rules, sorted({want[i]["port"] for i in want})):
             _RELAY_ARM["sig"] = sig
+            _RELAY_ARM["guard"] = None            # the armed table supersedes the guard-only one
             _RELAY_ARM["since"] = now
             _RELAY_ARM["why"] = "; ".join(why)
             # name the interfaces AND the ports: "armed" alone does not say what a client's TCP is now

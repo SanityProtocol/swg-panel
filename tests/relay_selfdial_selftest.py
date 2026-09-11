@@ -60,11 +60,11 @@ noded = open(NODED, encoding="utf-8").read()
 if P_GUARD:
     relay = cut(relay, 'if dst[1] == a.port and is_local_addr(dst[0]):', 'if False:', "relay guard")
 if P_NFT:
-    noded = cut(noded, 'L.append("    meta l4proto tcp th dport %d counter drop" % port)',
+    noded = cut(noded, 'L.append("    fib daddr type local meta l4proto tcp th dport %d counter drop" % port)',
                 'pass', "nft port drop")
 if P_PROBE:
-    noded = cut(noded, "and dv - dv_prev >= RELAY_DIVERT_MIN and ac <= ac_prev):",
-                "and False):", "serving check")
+    noded = cut(noded, "elif dv - dv_prev >= RELAY_DIVERT_MIN and ac <= ac_prev:",
+                "elif False:", "serving check")
 
 print("[1] the relay refuses to dial its own listener")
 # the guard sits at the ACCEPT site, on the branch that trusts getsockname() — not on the --dst branch,
@@ -101,8 +101,16 @@ check("…counted, so 'it never fires' is a reading and not a hope", "counter dr
 guard_only = noded[noded.index("def _relay_nft("):noded.index("def _relay_note(")]
 check("the builder takes ports independently of entries", "guard_ports" in guard_only)
 check("⚠️ …so a disarmed relay still has its port shut",
-      "if want:" in noded and re.search(r'_relay_nft\(\[\], sorted\(\{want\[i\]\["port"\]', noded) is not None,
+      "if want:" in noded and re.search(r'_relay_nft\(\[\], _gp\)', noded) is not None,
       "a disarm that opens the port re-opens the 47,000-fd loop to anything that can reach the node")
+# ⚠⚠ AND ON THE ARM PATH TOO, which is where it was missed: `guard_ports` existed and the arm call did
+# not pass it, so with two legs and one held disarmed — a blackhole hold runs up to 450s, and cap /
+# shadowed / CPU do the same — the table protected only the armed one while the other process was still
+# listening on 0.0.0.0. A guard keyed on the armed set is the bug the parameter was added to remove.
+check("⚠⚠ …and a leg disarmed BESIDE an armed one has its port shut as well",
+      re.search(r'_relay_arm\(entries, res, _rules, sorted\(\{want\[i\]\["port"\]', noded) is not None
+      and "_relay_nft(entries, guard_ports)" in noded,
+      "the arm path guarded only the legs that passed the probe")
 check("…and a guard-only table does NOT read as armed",
       '"tproxy" in (r.stdout or "")' in noded,
       "else the next pass would never re-assert the divert")
