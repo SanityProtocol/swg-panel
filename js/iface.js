@@ -1492,7 +1492,8 @@ export function ConnectionEditSheet({ node, iface }) {
             })()}
         </div></div>` : null}
         ${barred.length ? html`<div class="notice warn" style="margin-top:11px"><${Ic} i="warn"/><span>
-          ${barred.map(([k, e]) => html`<div>${Trich("*{v1}* can't be relayed — {v2}. It keeps forwarding.", { v1: k, v2: e.why })}</div>`)}
+          ${/* the key is the relay INSTANCE id (`<iface>.<peer>` for a smart leg); the operator knows the interface */
+            barred.map(([k, e]) => html`<div>${Trich("*{v1}* can't be relayed — {v2}. It keeps forwarding.", { v1: e.iface || k, v2: e.why })}</div>`)}
         </span></div>` : null}
         ${quotaErr ? html`<div class="notice err" style="margin-top:9px"><${Ic} i="warn"/><span>${quotaErr}</span></div>` : null}
         ${relayOn !== relayOn0 ? html`<div class="notice warn" style="margin-top:11px"><${Ic} i="warn"/><span>

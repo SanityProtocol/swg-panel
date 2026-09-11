@@ -12770,7 +12770,9 @@ def cascade_plan(nodes, snaps, custom_lists=None):
         return plans.setdefault(nid, {"forward": [], "smart": [], "exit": [], "devexit": [], "allowed": {},
                                       "domains": {}, "cidrs": {},
                                       "patterns": {},
-                                      "_fwd_seen": set(), "_smart_seen": set(), "_exit_seen": set(), "_targets": {}})
+                                      "_legs": [],
+                                      "_fwd_seen": set(), "_smart_seen": set(), "_exit_seen": set(),
+                                      "_leg_seen": set(), "_targets": {}})
 
     def add_exit(P, S, dev_p, T, X, W, base_p):        # exit record + exit-side AllowedIPs (shared by forward + smart)
         sp = slot(P)
@@ -13083,6 +13085,20 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             entry = {"subnet": S, "category": cat, "action": "exit", "via_iface": dev_n, "table": T}
             sn["allowed"][dev_n] = "0.0.0.0/0"
             add_exit(P, S, dev_p, T, "", "", base_p)
+            # ⚠️ THE ONE PLACE THAT KNOWS "THIS SUBNET ROUTES SOME OF ITS TRAFFIC OVER A PEER NODE'S LEG,
+            # AND THE TABLE IS T". `relay_eligibility` reads this rather than re-deriving it, and that is
+            # the whole point: a second walk of the same rules would have to re-implement every filter
+            # above it — disabled rules, unknown actions, a custom rule that resolves to nothing, a link
+            # whose devices are not reported, a target past the band — and the moment the two disagree the
+            # panel offers a relay for a leg that carries no traffic, or withholds one that does.
+            #
+            # ⚠️ AND THIS IS WHY `dev` RULES CANNOT LEAK IN. A device exit is an `exit` entry ON THE WIRE,
+            # deliberately (see the branch below), so nothing downstream can tell them apart. Here they
+            # can: `P` is a node id, `_targets` keys a device as "exit:<id>", and only this branch has a
+            # peer node. The relay masks loss on a MESH leg; a device exit has no far end to mask.
+            if (S, P) not in sn["_leg_seen"]:
+                sn["_leg_seen"].add((S, P))
+                sn["_legs"].append({"subnet": S, "peer": P, "mark": T})
         elif action == "dev":
             # ON THE WIRE THIS IS AN `exit` ENTRY, deliberately: the node's P3 lowering is `ip rule fwmark T
             # lookup T` + `default dev <via_iface> table T`, and it does not care whether that device is a
@@ -13136,7 +13152,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                         b.setdefault(_k["kind"], []).append(_k["value"])
 
     for sn in plans.values():
-        for k in ("_fwd_seen", "_smart_seen", "_exit_seen", "_targets"):
+        for k in ("_fwd_seen", "_smart_seen", "_exit_seen", "_leg_seen", "_targets"):
             sn.pop(k, None)
     return plans
 
@@ -13145,8 +13161,59 @@ RELAY_QUOTA_DEFAULT = 50        # % of ONE core; the operator's cap, written int
 RELAY_QUOTA_MAX = 90            # never all of a core — see /api/connection/update for why the last tenth is not the operator's to give away
 
 
-def _relay_ineligible(ov):
-    """Why this interface cannot be accelerated, or "" if it can.
+RELAY_PORT_BASE = 5590          # ⚠️ MIRRORS swg-noded's own constant — see _relay_port_hash
+RELAY_PORT_SPAN = 300
+
+
+def _relay_iid(iface, peer=""):
+    """The instance id for one relayed leg — ⚠️ THE NODE'S `_relay_iid`, AND IT MUST STAY THAT EXACT STRING.
+
+    It names the systemd unit, the status socket, the nft rule comments and the key the node reports its
+    per-leg health under, so the panel and the node agreeing about it is what lets the Connection sheet show
+    a leg's state at all. A whole-interface cascade keeps the bare interface name (`peer` empty), which is
+    what stops an upgrade renaming a unit on every node that is relaying today."""
+    peer = (peer or "").strip()
+    return iface + ("." + peer if peer else "")
+
+
+def _relay_port_hash(iid):
+    """The port swg-noded derives for an instance when the panel sends none.
+
+    ⚠️ A SECOND READER OF THE NODE'S GRAMMAR, AND DELIBERATELY IDENTICAL. The panel allocates ports now
+    (§10.5) — but it allocates the node's OWN answer first and only moves a leg off it on a collision. That
+    is what makes this change inert for a fleet that is already relaying: every existing forward leg is
+    handed back the port it is listening on, so no unit restarts and no divert points at a dead port. A
+    panel that drifted from this function would silently re-port the whole fleet on upgrade instead."""
+    return RELAY_PORT_BASE + (int(hashlib.sha256(iid.encode()).hexdigest()[:4], 16) % RELAY_PORT_SPAN)
+
+
+def _relay_ports(iids):
+    """`iid -> listen port` for one node's whole leg set, collision-free by construction.
+
+    The node's fallback hash has 300 slots, which is ample for one instance per interface and starts
+    colliding around ten (~13%) — and per-leg there can be several instances per interface. A collision
+    means two legs sharing one relay with one of them sent out the wrong exit, silently, because it works.
+    The panel builds a node's entire leg set in one place, so it can simply not do that.
+
+    ⚠️ ORDER IS THE TIE-BREAK, and it is `sorted(iids)` so it is stable: the same leg set always yields the
+    same ports. On the rare collision the lexicographically smaller instance keeps its hashed slot and the
+    other probes up — so ADDING a leg can move an existing one's port, but only one that shares its hash.
+    Returns nothing for an iid it could not place; the caller refuses that leg rather than letting the node
+    fall back to a hash that is known to collide."""
+    out, taken = {}, set()
+    for iid in sorted(iids):
+        h = _relay_port_hash(iid)
+        for k in range(RELAY_PORT_SPAN):
+            q = RELAY_PORT_BASE + ((h - RELAY_PORT_BASE + k) % RELAY_PORT_SPAN)
+            if q not in taken:
+                taken.add(q)
+                out[iid] = q
+                break
+    return out
+
+
+def _relay_ineligible(ov, mark=0):
+    """Why this leg cannot be accelerated, or "" if it can.
 
     ⚠️ TERMINATING TCP TAKES THE PACKET OUT OF THE FORWARD PATH. Anything hooked at FORWARD stops seeing it,
     so a bare link toggle would silently disarm whatever lives there — worse than not offering the feature.
@@ -13163,20 +13230,47 @@ def _relay_ineligible(ov):
     interface has always counted zero locally BY DESIGN. Under relay the exit still counts: 20 MB downloaded
     read 24.1 MB at the exit against 21.5 forwarded — it over-reads by roughly a tenth rather than going
     blind. Per-peer and per-interface WireGuard counters are untouched either way, since the client's traffic
-    still crosses the tunnel. See RELAY-FEATURE-PLAN §10 for the numbers and the one thing still unexplained."""
-    if (ov.get("egress_mode") or "") == "smart":
-        return "per-destination routing is enabled"   # belt-and-braces: smart never yields a forward entry
+    still crosses the tunnel. See RELAY-FEATURE-PLAN §10 for the numbers and the one thing still unexplained.
+
+    ⚠️ SMART CASCADE USED TO BE BARRED HERE and no longer is. The bar was structural, not cautious: the
+    divert was source-keyed (`ip saddr <subnet>`), which can say "this interface's traffic" but not "the
+    destinations this interface routes over leg X" — the only thing worth saying under a cascade that splits
+    one subnet across several legs and a direct path. The divert is keyed on the leg's MARK now, which is
+    what the routing engine already wrote on the packet, so the question has an answer and this bar is gone.
+    The function stays: it is where the next real bar goes."""
+    if mark and not (SWG_RT_BASE <= mark <= SWG_RT_MAX):
+        # ⚠️ SILENT IF MISSED, WHICH IS WHY IT IS HERE. A divert matching a mark outside the band the
+        # routing engine allocates from matches something nothing ever sets: the traffic is not diverted,
+        # it forwards instead, and forwarding WORKS — so the leg reads as relayed, the relay reads as
+        # healthy (it is up, it just never gets a connection), and the only symptom is that the loss the
+        # operator turned Relay on to hide is still there. `cascade_plan` cannot issue such a table today;
+        # this is the assertion that keeps that true rather than assuming it.
+        return "its routing table (%d) is outside the %d-%d band" % (mark, SWG_RT_BASE, SWG_RT_MAX)
     return ""
 
 
-def relay_eligibility(node_cfg, snaps, nid):
-    """Every interface whose whole traffic forwards over a mesh link, and whether the relay could carry it:
-    `iface -> {via, subnet, why}` where `why` is "" for eligible.
+def relay_eligibility(node_cfg, snaps, nid, legs=()):
+    """Every LEG this node could accelerate, and whether the relay could carry it:
+    `<instance id> -> {iface, peer, via, subnet, mark, why}` where `why` is "" for eligible.
 
     ⚠️ ONE RULE, TWO CONSUMERS. The node's resolved plan and the operator's Connection sheet both read this,
-    so the sheet can never offer an interface the node would exclude — or stay silent about one it excludes.
+    so the sheet can never offer a leg the node would exclude — or stay silent about one it excludes.
     Computed for every forwarded interface regardless of the link's current mode, because the sheet has to
-    say what WOULD happen before the operator switches, not only what is happening."""
+    say what WOULD happen before the operator switches, not only what is happening.
+
+    ⚠️ KEYED PER (INTERFACE, LEG), NOT PER INTERFACE. A whole-interface cascade has exactly one leg and
+    keeps the bare interface as its key, so nothing about a fleet that is relaying today moves. A SMART
+    interface splits its subnet across several legs and a direct path, and each leg is its own relay
+    instance, port and divert — so it contributes one entry per peer node it routes to, keyed
+    `<iface>.<peer>` exactly as the node names the instance.
+
+    ⚠️ THE SMART LEGS ARE NOT RE-DERIVED HERE. `legs` is `cascade_plan`'s own record of "this subnet
+    routes some of its traffic over a peer node's leg, with this table" — the only place that knows it after
+    every filter the plan applies (disabled rules, a custom rule that resolves to nothing, an unreported mesh
+    device, a target past the band). Walking the rules a second time would mean re-implementing all of that,
+    and the day the two copies disagreed the panel would offer a relay for a leg carrying nothing, or
+    withhold one from a leg carrying everything. Empty `legs` (no sync yet) yields no smart entry: nothing
+    has been planned, so nothing is offered."""
     # ⚠️ ASK THE NODE, DO NOT INFER FROM ITS KIND. A container node runs the relay as a sibling container and
     # a bare-metal one as a systemd unit; either can be missing what its own run-model needs (no host data dir
     # mapped, no runner image, no docker socket, no systemd). The node is the only thing that knows, so it
@@ -13186,25 +13280,56 @@ def relay_eligibility(node_cfg, snaps, nid):
     # silently withdrawing the feature from every node mid-upgrade.
     _rs = ((snaps.get(nid) or {}).get("relay") or {})
     container_bar = "" if _rs.get("capable", True) else (_rs.get("cannot") or "this node cannot run the relay")
+    by_subnet = {}
+    for lg in (legs or ()):
+        by_subnet.setdefault(lg.get("subnet") or "", []).append(lg)
     out = {}
     for iface, ov in ((node_cfg or {}).get("ifaces") or {}).items():
         ov = ov or {}
-        if ov.get("system") or ov.get("egress_mode") != "forward":
-            continue                                   # only whole-interface cascade is accelerable in v1
-        peer = (ov.get("egress_node") or "").strip()
+        mode = ov.get("egress_mode")
+        if ov.get("system") or mode not in ("forward", "smart"):
+            continue                                   # direct / device exit — nothing crosses a mesh leg
         subnet = _iface_subnet_from_snap(snaps, nid, iface)
-        if not peer or not subnet:
+        if not subnet:
             continue                                   # not reported yet — pause, never guess
-        out[iface] = {"via": peer, "subnet": subnet, "why": container_bar or _relay_ineligible(ov)}
+        if mode == "forward":
+            peer = (ov.get("egress_node") or "").strip()
+            if not peer:
+                continue                               # not reported yet — pause, never guess
+            out[_relay_iid(iface, "")] = {"iface": iface, "peer": "", "via": peer, "subnet": subnet,
+                                          "mark": 0, "why": container_bar or _relay_ineligible(ov, 0)}
+        elif mode == "smart":
+            for lg in sorted(by_subnet.get(subnet) or (), key=lambda x: str(x.get("peer") or "")):
+                _mk = int(lg.get("mark") or 0)
+                out[_relay_iid(iface, lg["peer"])] = {
+                    "iface": iface, "peer": lg["peer"], "via": lg["peer"], "subnet": subnet, "mark": _mk,
+                    "why": container_bar or _relay_ineligible(ov, _mk)}
     return out
 
 
 def relay_plan(nodes, plans, nid, snaps):
-    """Resolve node `nid`'s TCP-terminating-relay plan → the node contract of RELAY-FEATURE-PLAN §7.1.
+    """Resolve node `nid`'s TCP-terminating-relay plan → the node contract of RELAY-SMART-CASCADE-PLAN §5.
 
     The MODE lives on the mesh link (§4: the benefit is a property of the LEG, and the Connection sheet is
     already where the leg's loss and RTT are shown). The CPU CAP lives on the NODE, because the budget being
     protected is the node's, not the leg's — two accelerated links share one CPU.
+
+    ⚠️ ONE SWITCH CAN NOW START SEVERAL RELAYS. Per-leg is the operator's unit, but a leg can carry smart
+    rules from more than one interface and each (iface, leg) pair is its own instance, port and divert. That
+    is correct — and it lands on a CPU quota that is node-wide, which is what the Connection sheet has to say
+    rather than implying a single process.
+
+    ⚠️ `mark: 0` MEANS A WHOLE-INTERFACE CASCADE and the node keeps that path byte-identical on the wire:
+    no mark in the divert, no `--mark` on the process, the instance still named `<iface>`, and — because the
+    port allocator hands out the node's own hash first — the same port it is listening on right now. The
+    forward path is the one live on real fleets; nothing about it may move because smart gained a feature.
+
+    ⚠️ AND `ifaces` IS STILL EMITTED, carrying the forward legs only. A node OLDER than this panel reads
+    that key and nothing else — it has never heard of `legs` — so dropping it would have torn the relay down
+    on every currently-accelerated node the moment its panel updated, which is the wrong way round: panels
+    update first and nodes self-update on their own schedule. A node that understands `legs` ignores it
+    (`legs` present, even empty, wins), and an old node can only do what is in there anyway, since a
+    mark-keyed divert is exactly the thing it cannot build.
 
     Inert by construction: no link switched to `relay` ⇒ {} ⇒ the node tears everything down."""
     node = nodes.get(nid) or {}
@@ -13215,21 +13340,41 @@ def relay_plan(nodes, plans, nid, snaps):
             on[peer] = r
     if not on:
         return {}
-    ifaces, excluded = {}, {}
-    for iface, e in sorted(relay_eligibility(node, snaps, nid).items()):
+    want, excluded = {}, {}
+    _legs = ((plans or {}).get(nid) or {}).get("_legs") or ()
+    for iid, e in sorted(relay_eligibility(node, snaps, nid, _legs).items()):
         r = on.get(e["via"])
         if r is None:
-            continue                          # forwards over a link the operator left on plain `forward`
+            continue                          # routes over a link the operator left on plain `forward`
         if e["why"]:
-            excluded[iface] = e["why"]
+            excluded[iid] = e["why"]
             continue
-        ifaces[iface] = {"subnet": e["subnet"],
-                         "cc_cli": (r.get("cc_cli") or "").strip(),
-                         "cc_up": (r.get("cc_up") or "").strip()}
-    if not ifaces:
-        return {"ifaces": {}, "excluded": excluded}      # still sent: the panel wants to SHOW why nothing is on
+        want[iid] = (e, r)
+    # ⚠️ THE PANEL ALLOCATES THE PORTS (§10.5). The node prefers what we send and only hashes as a
+    # fallback, and that fallback has 300 slots — ample for one instance per interface, and colliding
+    # around ten now that there is one per LEG. A collision is two legs sharing one relay with one of them
+    # sent out the wrong exit, silently, because it works. Allocated here, where a node's whole leg set is
+    # known at once, it cannot happen; a leg that could not be placed is refused with a reason instead of
+    # being left to the hash that is known to collide.
+    ports = _relay_ports(want)
+    legs = []
+    for iid in sorted(want):
+        e, r = want[iid]
+        if iid not in ports:
+            excluded[iid] = "this node has no free relay port left"
+            continue
+        legs.append({"iface": e["iface"], "peer": e["peer"], "subnet": e["subnet"],
+                     "mark": e["mark"], "port": ports[iid],
+                     "cc_cli": (r.get("cc_cli") or "").strip(),
+                     "cc_up": (r.get("cc_up") or "").strip()})
+    if not legs:
+        return {"legs": [], "ifaces": {}, "excluded": excluded}   # still sent: the panel wants to SHOW why nothing is on
     q = int(((node.get("relay") or {}).get("quota_pct")) or RELAY_QUOTA_DEFAULT)
-    return {"ifaces": ifaces, "excluded": excluded,
+    return {"legs": legs,
+            "ifaces": {l["iface"]: {"subnet": l["subnet"], "port": l["port"],
+                                    "cc_cli": l["cc_cli"], "cc_up": l["cc_up"]}
+                       for l in legs if not l["mark"]},      # compat: a node older than this panel
+            "excluded": excluded,
             "quota_pct": max(5, min(RELAY_QUOTA_MAX, q)),
             "max_conns": int(((node.get("relay") or {}).get("max_conns")) or 0)}
 
@@ -14164,7 +14309,8 @@ def api(method, path, qs, body, deps):
                         # relay could carry (with the reason where it could not) — the Connection sheet's
                         # per-link eligibility comes from here, not from a rule re-implemented in the SPA.
                         "relay": {"quota_pct": int((c.get("relay") or {}).get("quota_pct") or RELAY_QUOTA_DEFAULT),
-                                  "eligibility": relay_eligibility(c, deps.get("node_snaps") or {}, nid)},
+                                  "eligibility": relay_eligibility(c, deps.get("node_snaps") or {}, nid,
+                                                                   (deps.get("cas_legs") or {}).get(nid) or ())},
                         "ip_learning": c.get("ip_learning", True),   # keep learned SNI IPs vs stay fresh (default on)
                         "catalog_cats": c.get("catalog_cats") or [],          # provider-catalog categories opted into on this node (node-lens)
                         # Every routing rule's category, per interface, from the NODE RECORD — including the
@@ -21751,6 +21897,12 @@ class Handler(BaseHTTPRequestHandler):
         # (it is already this panel's dominant CPU cost on a 1-core VM). No sync yet ⇒ empty ⇒ silence,
         # which is the right way round: nothing has been planned, so nothing has been dropped.
         Handler.deps["cas_capped"] = {_n: _p["_capped"] for _n, _p in cas_plans.items() if _p.get("_capped")}
+        # ⚠️ AND THE SMART LEGS, for the SAME reason and on the same terms. `relay_eligibility` runs once
+        # per node on every /api/state build and needs to know which of a node's subnets route over a PEER
+        # NODE's leg and with which table — a fact only `cascade_plan` holds, and one /api/state must not
+        # build a whole fleet plan to ask for. No sync yet ⇒ empty ⇒ the smart half of the Connection sheet
+        # stays silent, which is the right way round: nothing has been planned, so nothing is offered.
+        Handler.deps["cas_legs"] = {_n: _p["_legs"] for _n, _p in cas_plans.items() if _p.get("_legs")}
         my_plan = cas_plans.get(nid) or {"forward": [], "smart": [], "exit": [], "devexit": [], "allowed": {}}
         _ps = Handler.deps.get("panel_settings") or {}   # Panel settings → mirrors / geo TTL / geo epoch for the node (used in the reply below)
         for _ifn, _mpeers in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],

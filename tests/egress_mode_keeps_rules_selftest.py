@@ -102,9 +102,30 @@ if _fn is not None:
     check("back to smart with the kept list", err is None and rec.get("egress_mode") == "smart", (err, rec.get("egress_mode")))
     check("…and the rule is there", len(rec.get("routing") or []) == 1, rec.get("routing"))
 
-print("\n[5] KEEPING IT MUST STAY INERT — the plan reads it only in smart mode")
+print("\n[5] KEEPING IT MUST STAY INERT — ASKED OF THE PLAN, not grepped for")
+# ⚠️ THIS WAS A STRING MATCH AND IT WAS ANCHORED ON THE WRONG LINE. The sentence claimed "the plan
+# builder gates on egress_mode == smart"; the string it looked for lived in `_relay_ineligible`, the
+# relay's belt-and-braces bar, which has nothing to do with the plan builder. Deleting that bar (Relay
+# works under a smart cascade now) turned this check red while the claim it makes stayed perfectly true —
+# which is the same thing as its having been green while the claim was never tested. So ask the plan: the
+# SAME interface record, carrying the SAME stored rules, under each mode.
+_SNAP = {"n1": {"interfaces": {"wg1": {"meta": {"subnet": "10.7.0.0/24"}}}}}
+def _plan_for(mode, extra=None):
+    ov = {"egress_mode": mode, "routing": [{"enabled": True, "category": "media", "action": "exit", "node": "n3"}]}
+    ov.update(extra or {})
+    nd = {"n1": {"name": "a", "ifaces": {"wg1": ov},
+                 "links": {"n2": {"iface": "swg_a2"}, "n3": {"iface": "swg_a3"}}},
+          "n2": {"name": "b", "links": {"n1": {"iface": "swg_b1", "peer_address": "10.255.0.1"}}},
+          "n3": {"name": "c", "links": {"n1": {"iface": "swg_c1", "peer_address": "10.255.1.1"}}}}
+    return P.cascade_plan(nd, _SNAP).get("n1") or {}
+# The fixture must be PROVEN capable of producing the entry, or "no entry" says nothing about the gating.
+_sm = _plan_for("smart")
+check("the fixture CAN route a stored rule (smart)", len(_sm.get("smart") or []) == 1, _sm.get("smart"))
+check("…out the leg the rule names", (_sm.get("smart") or [{}])[0].get("via_iface") == "swg_a3", _sm.get("smart"))
+for _m, _x in (("direct", {}), ("forward", {"egress_node": "n2"}), ("exit", {"exit_id": "x1"})):
+    _pl = _plan_for(_m, _x)
+    check("%-8s → the kept rules move no packet" % _m, not (_pl.get("smart") or []), _pl.get("smart"))
 src = open(os.path.join(ROOT, "swg-panel-server"), encoding="utf-8").read()
-check("the plan builder gates on egress_mode == smart", 'if (ov.get("egress_mode") or "") == "smart":' in src)
 nd = open(os.path.join(ROOT, "swg-noded"), encoding="utf-8").read()
 check("the node reads neither `routing` nor `egress_mode` from the interface record",
       '"routing"' not in nd and "egress_mode" not in nd)
