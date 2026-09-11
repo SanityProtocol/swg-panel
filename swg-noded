@@ -1791,7 +1791,12 @@ SWG_RT_MAX = 7099           # (priority == table number; one table per egress ta
 #
 # The band sits below SWG_RT_BASE so no source rule can outrank it, and below RELAY_RT (6990) it stops, so
 # the relay's own divert rule keeps its place. One slot per table, same count, same order.
-SWG_RT_UP_BASE = SWG_RT_BASE - 110      # 6890: upstream-mark band [UP_BASE, UP_BASE+99] = [6890, 6989]
+# ⚠️ DERIVED FROM THE TABLE BAND'S OWN WIDTH, so widening one cannot silently overlap the other. Written
+# as a literal 6890 this held only by arithmetic nobody would re-check: raise SWG_RT_MAX to 7199 and the
+# upstream band would have run to 7089, i.e. straight through the table band, and every upstream mark from
+# 7000 up would have collided with a client-side one. Expressed this way the two move together, and the
+# −11 keeps the top of the band clear of RELAY_RT (SWG_RT_BASE − 10) whatever the width becomes.
+SWG_RT_UP_BASE = SWG_RT_BASE - (SWG_RT_MAX - SWG_RT_BASE) - 11
 SWG_RT_UP_MAX = SWG_RT_UP_BASE + (SWG_RT_MAX - SWG_RT_BASE)
 
 
@@ -6086,7 +6091,18 @@ def _relay_shadowed(entries, rules):
         if not T:
             continue                          # no mark, no mark rule to shadow — forward mode is unaffected
         if SWG_RT_UP_BASE <= T <= SWG_RT_UP_MAX:
-            continue                          # below the whole source-rule band; nothing there can outrank it
+            # ⚠️ NOTHING CAN OUTRANK IT — BUT IT HAS TO EXIST. A mark whose rule is missing is not routed by
+            # it: the lookup falls through, and for a SMART leg there is no source rule behind it to catch
+            # the packet. MEASURED on msk-main — `from 10.8.0.1 mark 6999` (a mark with no rule) resolves to
+            # `via 201.24.126.1 dev eth0`, the node's own uplink. So the relay would re-originate the
+            # connection out the ENTRY node's address instead of the exit the operator chose, which is the
+            # single thing an exit exists to prevent, and it WORKS, so nothing else would ever say so. The
+            # cascade installs one rule per leg on the same pass that hands us this plan; asserting it is
+            # free, because `rules` is the `ip rule show` this function was already given.
+            if not any(re.match(r"^\s*%d:\s+.*fwmark (0x%x|%d)\b.*lookup \d+" % (T, T, T), l) for l in rules):
+                out[e["iid"]] = ("this leg's routing rule (fwmark %d) is not installed, so the relay's own "
+                                 "connection would leave by this node's address instead of the exit" % T)
+            continue
         try:
             net = ipaddress.ip_network(e["subnet"], strict=False)
         except ValueError:
@@ -6404,20 +6420,20 @@ def reconcile_relay(plan, res, sync_ok=True):
 
     `plan` (absent/empty => the feature is OFF, everything torn down):
         {"legs": [{"iface": "awg2", "peer": "e08fb18c67da", "subnet": "10.9.0.0/24", "gw": "10.9.0.1",
-                   "mark": 7002, "up_mark": 6892, "port": 5629, "cc_cli": "", "cc_up": ""}],
+                   "mark": 7002, "up_table": 7002, "port": 5629, "cc_cli": "", "cc_up": ""}],
          "quota_pct": 50, "max_conns": 0}
 
     ⚠️ `mark: 0` MEANS A WHOLE-INTERFACE CASCADE and keeps that path byte-identical on the wire: no mark in
     the divert, the instance still named `<iface>`. The forward path is the one live on real fleets, so it
     changes only when something deliberately opts in.
 
-    ⚠️ `mark` AND `up_mark` ARE TWO DIFFERENT QUESTIONS and only the first has ever existed. `mark` scopes
-    the divert: WHICH of this subnet's packets to take. `up_mark` selects the leg the relay re-originates
-    down, from the band at SWG_RT_UP_BASE that exists so a leg can be named even where the client's own
-    traffic is routed by source. They are equal today for every leg the panel emits — the relay goes where
-    the client was going — and the reason they are separate fields is that auto-failover, load balancing and
-    pick-the-fastest are all exactly "make them differ". Absent `up_mark` falls back to `mark`, so a node
-    newer than its panel behaves as before.
+    ⚠️ `mark` AND `up_table` ARE TWO DIFFERENT QUESTIONS and only the first has ever existed. `mark` scopes
+    the divert: WHICH of this subnet's packets to take. `up_table` names the leg the relay re-originates
+    down — and the node turns that into a mark from the band at SWG_RT_UP_BASE, which exists so a leg can be
+    named even where the client's own traffic is routed by source. They name the same leg today for every
+    leg the panel emits — the relay goes where the client was going — and the reason they are separate is
+    that auto-failover, load balancing and pick-the-fastest are all exactly "make them differ". Absent
+    `up_table` falls back to `mark`, so a node newer than its panel behaves as before.
 
     The older `{"ifaces": {...}}` shape is still accepted — a node can be newer than its panel, and the
     upgrade must not take the datapath away from a fleet mid-roll.
@@ -6443,7 +6459,13 @@ def reconcile_relay(plan, res, sync_ok=True):
         # even on an interface whose own traffic is routed by source. A panel too old to send one falls back
         # to `mark`, which for a cascade is 0 and reproduces today's behaviour exactly: no SO_MARK, and the
         # bind address decides.
-        e["up"] = int(e.get("up_mark") or 0) or e["mark"]
+        # ⚠️ THE PANEL NAMES THE LEG BY ITS TABLE AND THE NODE TURNS THAT INTO A MARK. The band arithmetic
+        # lives here and only here — it used to be twinned in the panel, which is one more pair that can drift
+        # apart, and this codebase has been bitten by exactly that often enough to stop adding them. It also
+        # matches how everything else in the cascade contract talks: entries carry `table`, not a mark.
+        # A table outside our band, or none at all (a panel too old to send one), maps to 0 and falls back
+        # to `mark` — which for a cascade is 0, i.e. routed by the bind address exactly as today.
+        e["up"] = _up_mark(int(e.get("up_table") or 0)) or e["mark"]
         e["iid"] = _relay_iid(e["iface"], e.get("peer", ""))
         # ⚠️ TWO LEGS CANNOT SHARE AN INSTANCE. A panel that sent the same (iface, peer) twice would have
         # the second silently replace the first; refuse instead, because "one of your legs is not relayed"

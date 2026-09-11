@@ -34,6 +34,7 @@ Run: python3 tests/relay_upmark_selftest.py   (0 = pass)
      --perturb-docker    launches the container relay with the DIVERT mark              → RED
      --perturb-dspec     drops `up` from the container's recreate signature             → RED
      --perturb-tbl       feeds upstream priorities to the drift check as table ids      → RED
+     --perturb-guard     arms a leg whose routing rule was never installed               → RED
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -49,7 +50,8 @@ P_SIG = "--perturb-sig" in sys.argv
 P_DOCKER = "--perturb-docker" in sys.argv
 P_DSPEC = "--perturb-dspec" in sys.argv
 P_TBL = "--perturb-tbl" in sys.argv
-PERTURB = P_BAND or P_SOMARK or P_DIVERT or P_FLUSH or P_SIG or P_DOCKER or P_DSPEC or P_TBL
+P_GUARD = "--perturb-guard" in sys.argv
+PERTURB = P_BAND or P_SOMARK or P_DIVERT or P_FLUSH or P_SIG or P_DOCKER or P_DSPEC or P_TBL or P_GUARD
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -66,8 +68,9 @@ def cut(src, a, b, why):
 if P_BAND:      # the collision the band exists to avoid: name the leg with the table itself
     nsrc = cut(nsrc, "    return SWG_RT_UP_BASE + (t - SWG_RT_BASE) if SWG_RT_BASE <= t <= SWG_RT_MAX else 0",
                "    return t if SWG_RT_BASE <= t <= SWG_RT_MAX else 0", "node up_mark")
-    psrc = cut(psrc, "    return SWG_RT_UP_BASE + (t - SWG_RT_BASE) if SWG_RT_BASE <= t <= SWG_RT_MAX else 0",
-               "    return t if SWG_RT_BASE <= t <= SWG_RT_MAX else 0", "panel up_mark")
+if P_GUARD:     # the leg named but its rule never installed
+    nsrc = cut(nsrc, '            if not any(re.match(r"^\\s*%d:\\s+.*fwmark (0x%x|%d)\\b.*lookup \\d+" % (T, T, T), l) for l in rules):',
+               "            if False:", "upstream rule guard")
 if P_SOMARK:
     nsrc = cut(nsrc, 'int(e.get("up") or 0)))', 'int(e.get("mark") or 0)))', "env so_mark")
 if P_DIVERT:
@@ -102,12 +105,17 @@ def load(name, path, src, changed):
     return m
 
 N = load("noded_up", NODED, nsrc, P_BAND or P_SOMARK or P_DIVERT or P_FLUSH or P_SIG or P_DOCKER
-             or P_DSPEC or P_TBL)
-P = load("panel_up", PANEL, psrc, P_BAND)
+             or P_DSPEC or P_TBL or P_GUARD)
+P = load("panel_up", PANEL, psrc, False)
 
 print("[1] the band is below every source rule, and collides with nothing")
 check("it starts below SWG_RT_BASE", N.SWG_RT_UP_MAX < N.SWG_RT_BASE, (N.SWG_RT_UP_BASE, N.SWG_RT_UP_MAX))
 check("…with a slot for every table", N.SWG_RT_UP_MAX - N.SWG_RT_UP_BASE == N.SWG_RT_MAX - N.SWG_RT_BASE)
+# ⚠️ DERIVED, NOT A LITERAL. Widening the table band must move this one, or a wider band would run straight
+# through it: at SWG_RT_MAX = 7199 a literal 6890 base would have reached 7089.
+check("⚠️ …and it is derived from the table band's width",
+      "SWG_RT_UP_BASE = SWG_RT_BASE - (SWG_RT_MAX - SWG_RT_BASE) - 11" in nsrc,
+      "a literal base stops being below the table band the moment that band is widened")
 check("⚠️ …and it does not swallow the relay's own divert rule",
       not (N.SWG_RT_UP_BASE <= N.RELAY_RT <= N.SWG_RT_UP_MAX),
       "RELAY_RT %d inside [%d, %d] would make the signature drift for ever" % (N.RELAY_RT, N.SWG_RT_UP_BASE, N.SWG_RT_UP_MAX))
@@ -117,10 +125,14 @@ check("a table maps to a distinct mark", N._up_mark(7000) != 7000 and N._up_mark
 check("…and a table outside our band maps to nothing",
       N._up_mark(0) == 0 and N._up_mark(7100) == 0 and N._up_mark(6999) == 0)
 
-print("\n[2] ⚠️ the SEAM — the panel names the leg the node installs")
-for t in (7000, 7001, 7042, 7099):
-    check("table %d agrees" % t, P._up_mark(t) == N._up_mark(t), (P._up_mark(t), N._up_mark(t)))
-check("…and both refuse the same non-tables", P._up_mark(6999) == N._up_mark(6999) == 0)
+print("\n[2] ⚠️ THE SEAM IS GONE — the panel names a LEG, the node decides how to ask for it")
+# This used to be a twin check: both programs computed the mark and had to agree. A pair that must be kept
+# in step is a pair that can drift, and the contract everywhere else in the cascade already speaks in
+# TABLES. So the arithmetic lives in one place now, and the thing to assert is that it is NOT in the other.
+check("the panel carries no copy of the band", not hasattr(P, "SWG_RT_UP_BASE") and not hasattr(P, "_up_mark"),
+      "a second reader of one grammar is the pair that drifts")
+check("…and names the leg by its table instead", "up_table" in psrc and "up_mark" not in psrc)
+check("the node is where a table becomes a mark", N._up_mark(7000) == N.SWG_RT_UP_BASE)
 
 print("\n[3] the node installs one upstream rule per leg it can send out of")
 FWD = [{"subnet": "10.18.0.0/24", "via_iface": "swg_a", "table": 7001}]
@@ -167,28 +179,29 @@ legs = {l["iface"]: l for l in (plan.get("legs") or [])}
 check("a forward interface's leg is recorded at all", any(l.get("mode") == "forward" for l in plans["n1"]["_legs"]),
       plans["n1"]["_legs"])
 check("⚠️ the forward leg keeps divert mark 0", legs.get("wg8", {}).get("mark") == 0, legs.get("wg8"))
-check("⚠️ …and gains an upstream mark in the band",
-      N.SWG_RT_UP_BASE <= legs.get("wg8", {}).get("up_mark", 0) <= N.SWG_RT_UP_MAX, legs.get("wg8"))
-check("…naming its OWN leg today", legs.get("wg8", {}).get("up_mark") == P._up_mark(7000), legs.get("wg8"))
+check("⚠️ …and names its leg by table", legs.get("wg8", {}).get("up_table") == 7000, legs.get("wg8"))
+check("…which the node turns into an in-band mark",
+      N.SWG_RT_UP_BASE <= N._up_mark(legs.get("wg8", {}).get("up_table", 0)) <= N.SWG_RT_UP_MAX, legs.get("wg8"))
 check("the smart leg names its leg the same way",
-      legs.get("wg9", {}).get("up_mark") == P._up_mark(legs.get("wg9", {}).get("mark", 0)), legs.get("wg9"))
+      legs.get("wg9", {}).get("up_table") == legs.get("wg9", {}).get("mark"), legs.get("wg9"))
 
 print("\n[7] the node reads it, and an older panel still works")
 def derive(leg):
     e = dict(leg or {}); e["mark"] = int(e.get("mark") or 0)
-    e["up"] = int(e.get("up_mark") or 0) or e["mark"]
+    e["up"] = N._up_mark(int(e.get("up_table") or 0)) or e["mark"]
     return e
 check("both legs survived into the plan (else nothing below is tested)", "wg8" in legs and "wg9" in legs, sorted(legs))
 _w8, _w9 = legs.get("wg8") or {}, legs.get("wg9") or {}
-check("a leg with an upstream mark uses it", derive(_w8)["up"] == P._up_mark(7000))
-_old = {k: v for k, v in _w8.items() if k != "up_mark"}
+check("a leg with an upstream mark uses it", derive(_w8)["up"] == N._up_mark(7000))
+_old = {k: v for k, v in _w8.items() if k != "up_table"}
 check("⚠️ …and one WITHOUT falls back to the divert mark", derive(_old)["up"] == 0,
       "a cascade from a panel too old to send one must keep being routed by its bind address")
-_olds = {k: v for k, v in _w9.items() if k != "up_mark"}
+_olds = {k: v for k, v in _w9.items() if k != "up_table"}
 check("…which for a smart leg is its own table", bool(_w9) and derive(_olds)["up"] == _w9.get("mark"))
 
 print("\n[8] the guard, and the reason it is kept rather than deleted")
 RULES = ["0:\tfrom all lookup local",
+         "%d:\tfrom all fwmark 0x%x lookup 7001" % (N._up_mark(7001), N._up_mark(7001)),
          "7000:\tfrom 10.18.0.0/24 lookup 7000",
          "7001:\tfrom all fwmark 0x1b59 lookup 7001",
          "32766:\tfrom all lookup main"]
@@ -201,12 +214,28 @@ check("…naming the rule that outranks it", _legacy and "7000" in _legacy["wg8"
 print("\n[9] ⚠️ THE CAPABILITY: the upstream can name a leg the interface never uses")
 # This is the whole point, and it is the thing that was impossible before. wg8 forwards to table 7000; its
 # relay is pointed at 7001, the OTHER leg. The contract has to be able to say that at all.
-_other = dict(_w8, up_mark=P._up_mark(7001))
-check("the contract expresses it", derive(_other)["up"] == P._up_mark(7001) != derive(_w8)["up"])
-check("…and it is still a legal mark", P._relay_ineligible({}, 0, derive(_other)["up"]) == "")
-check("…while a mark outside the band is refused with a reason",
-      bool(P._relay_ineligible({}, 0, 7001)) and bool(P._relay_ineligible({}, 0, N.SWG_RT_UP_BASE - 1)),
-      "a mark no rule looks up routes by bind address instead — it WORKS, so nothing would say otherwise")
+_other = dict(_w8, up_table=7001)
+check("the contract expresses it", derive(_other)["up"] == N._up_mark(7001) != derive(_w8)["up"])
+check("…and it is still a leg we route to", P._relay_ineligible({}, 0, 7001) == "")
+check("…while a table we do NOT route to is refused with a reason",
+      bool(P._relay_ineligible({}, 0, 6890)) and bool(P._relay_ineligible({}, 0, N.SWG_RT_MAX + 1)),
+      "a leg no rule looks up leaves by this node's own uplink instead — it WORKS, so nothing would say so")
+
+print("\n[9b] ⚠️ …and a leg whose rule was never installed is REFUSED, not armed")
+# MEASURED on msk-main: `from 10.8.0.1 mark 6999` (a mark with no rule) resolves to `via 201.24.126.1 dev
+# eth0` — the node's own uplink. A smart leg has no source rule behind it, so the relay would re-originate
+# out the ENTRY node's address instead of the exit. That works, so nothing else would ever report it.
+_R_OK = ["0:\tfrom all lookup local",
+         "%d:\tfrom all fwmark 0x%x lookup 7000" % (N._up_mark(7000), N._up_mark(7000)),
+         "32766:\tfrom all lookup main"]
+check("a leg whose rule is installed arms",
+      N._relay_shadowed([{"iid": "a", "subnet": "10.8.0.0/24", "mark": N._up_mark(7000)}], _R_OK) == {})
+_miss = N._relay_shadowed([{"iid": "a", "subnet": "10.8.0.0/24", "mark": N._up_mark(7001)}], _R_OK)
+check("⚠️ …and one whose rule is MISSING does not", "a" in _miss, _miss)
+check("…saying what would happen instead", _miss and "this node's address" in _miss["a"], _miss)
+check("…and a whole-interface cascade is unaffected either way",
+      N._relay_shadowed([{"iid": "a", "subnet": "10.18.0.0/24", "mark": 0}], _R_OK) == {},
+      "its source rule catches the upstream, which is what it has always done")
 
 print("\n[10] the two halves the fixtures above route around")
 # ⚠️ WRITTEN BECAUSE TWO PERTURBATIONS PASSED WITH ZERO CHECKS RED. `_relay_nft` is fed a hand-built
@@ -257,7 +286,7 @@ _env = nsrc[nsrc.index("def _relay_env_text("):]
 _env = _env[:_env.index("\ndef ")]
 check("…the same field the unit writes", 'int(e.get("up") or 0)' in _env, _env[-200:])
 # Behavioural, not a grep: re-pointing a leg must make the container recreate.
-_a = {"port": 5629, "gw": "10.18.0.1", "mss": 1340, "mark": 0, "up": N._up_mark(7000)}
+_a = {"port": 5629, "gw": "10.18.0.1", "mss": 1340, "mark": 0, "up": N._up_mark(7000)}   # `up` is post-derivation
 _b = dict(_a, up=N._up_mark(7001))
 check("⚠️ changing ONLY the leg changes the recreate signature",
       N._relay_docker_spec("wg8", _a, 0.5) != N._relay_docker_spec("wg8", _b, 0.5),
@@ -289,6 +318,7 @@ if PERTURB:
              "the container launched with the divert mark" if P_DOCKER else
              "`up` dropped from the container's recreate signature" if P_DSPEC else
              "upstream priorities fed to the drift check as tables" if P_TBL else
+             "a leg armed without its routing rule" if P_GUARD else
              "the signature blind to the upstream rules")
     print("\n--perturb (%s): %d check(s) RED" % (which, bad))
     sys.exit(0 if bad else 1)

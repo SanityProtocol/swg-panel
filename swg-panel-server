@@ -8564,19 +8564,12 @@ def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None, snaps=N
 # ───────────────────────── Phase 2: traffic cascade ─────────────────────────
 SWG_RT_BASE = 7000          # swg-owned policy-routing table id / ip-rule priority band [BASE, MAX]
 SWG_RT_MAX = 7099           # (one table id per egress target per node; priority == table number)
-# ⚠️ MIRRORS swg-noded's SWG_RT_UP_BASE / _up_mark — keep the two in step (tests/cross_language_twins).
-# The upstream-mark band names a LEG for something on the node that has already chosen one. It sits below
-# SWG_RT_BASE so no `from <subnet>` rule can outrank it, which is what lets a relay be pointed at a leg its
-# interface's own traffic never takes — the mechanism auto-failover, load balancing and pick-the-fastest
-# all reduce to. The node is the only thing that installs these rules; the panel only has to name them.
-SWG_RT_UP_BASE = SWG_RT_BASE - 110
-SWG_RT_UP_MAX = SWG_RT_UP_BASE + (SWG_RT_MAX - SWG_RT_BASE)
-
-
-def _up_mark(table):
-    """The mark meaning "leave by the leg whose table is `table`", or 0 when that is not one of our tables."""
-    t = int(table or 0)
-    return SWG_RT_UP_BASE + (t - SWG_RT_BASE) if SWG_RT_BASE <= t <= SWG_RT_MAX else 0
+# ⚠️ THE PANEL NAMES A LEG BY ITS TABLE AND STOPS THERE. How a node asks the kernel for that leg — the
+# upstream-mark band below SWG_RT_BASE, which is what lets a relay be pointed at a leg its interface's own
+# traffic never takes — is swg-noded's business and lives there alone. This once carried a copy of that
+# arithmetic; a second reader of one grammar is a pair that can drift, and the contract everywhere else in
+# the cascade already speaks in TABLES (`{"subnet", "via_iface", "table"}`), so naming one here is both
+# smaller and more idiomatic than naming a mark.
 SWG_RT_BAND = SWG_RT_MAX - SWG_RT_BASE + 1   # how many destinations one node can route to at once — the number the operator is told when they hit it
 
 # Phase 3: per-interface destination categories an operator can route. Each maps to an nftables dest set on
@@ -13335,7 +13328,7 @@ def _relay_ports(marks):
     return out
 
 
-def _relay_ineligible(ov, mark=0, up_mark=0):
+def _relay_ineligible(ov, mark=0, up_table=0):
     """Why this leg cannot be accelerated, or "" if it can.
 
     ⚠️ TERMINATING TCP TAKES THE PACKET OUT OF THE FORWARD PATH. Anything hooked at FORWARD stops seeing it,
@@ -13361,12 +13354,12 @@ def _relay_ineligible(ov, mark=0, up_mark=0):
     one subnet across several legs and a direct path. The divert is keyed on the leg's MARK now, which is
     what the routing engine already wrote on the packet, so the question has an answer and this bar is gone.
     The function stays: it is where the next real bar goes."""
-    if up_mark and not (SWG_RT_UP_BASE <= up_mark <= SWG_RT_UP_MAX):
-        # The same failure as below, one layer out: an upstream mark outside its band names a leg no rule
-        # looks up, so the relay's own connection falls back to being routed by its bind address. That is
-        # today's behaviour, so it WORKS — and it silently un-does the one thing this band exists for the
-        # moment anything points a relay away from its interface's own leg.
-        return "its upstream table (%d) is outside the %d-%d band" % (up_mark, SWG_RT_UP_BASE, SWG_RT_UP_MAX)
+    if up_table and not (SWG_RT_BASE <= up_table <= SWG_RT_MAX):
+        # The same failure as below, one layer out: a leg named by a table we do not route to is a leg no
+        # rule on the node looks up, so the relay's own connection falls back to its bind address — and for
+        # a SMART leg there is no source rule behind it, so it leaves by this node's own uplink instead of
+        # the exit the operator chose. That WORKS, which is why nothing else would ever say so.
+        return "its upstream table (%d) is outside the %d-%d band" % (up_table, SWG_RT_BASE, SWG_RT_MAX)
     if mark and not (SWG_RT_BASE <= mark <= SWG_RT_MAX):
         # ⚠️ SILENT IF MISSED, WHICH IS WHY IT IS HERE. A divert matching a mark outside the band the
         # routing engine allocates from matches something nothing ever sets: the traffic is not diverted,
@@ -13428,22 +13421,21 @@ def relay_eligibility(node_cfg, snaps, nid, legs=()):
             peer = (ov.get("egress_node") or "").strip()
             if not peer:
                 continue                               # not reported yet — pause, never guess
-            # ⚠️ mark 0, up_mark T — AND THE ASYMMETRY IS THE POINT. The divert keeps naming the whole
+            # ⚠️ mark 0, up_table T — AND THE ASYMMETRY IS THE POINT. The divert keeps naming the whole
             # subnet, because on a cascade the source says it all and a mark match there would divert
             # nothing (nothing marks a forwarded packet). The UPSTREAM names its leg, so the relay stops
             # depending on its bind address landing in a `from <subnet>` rule and can be sent elsewhere.
             # A leg the plan never resolved yields 0, which is exactly today's behaviour.
-            _u = _up_mark((by_fwd.get((subnet, peer)) or {}).get("mark") or 0)
+            _u = int((by_fwd.get((subnet, peer)) or {}).get("mark") or 0)
             out[_relay_iid(iface, "")] = {"iface": iface, "peer": "", "via": peer, "subnet": subnet,
-                                          "mark": 0, "up_mark": _u,
+                                          "mark": 0, "up_table": _u,
                                           "why": container_bar or _relay_ineligible(ov, 0, _u)}
         elif mode == "smart":
             for lg in sorted(by_subnet.get(subnet) or (), key=lambda x: str(x.get("peer") or "")):
                 _mk = int(lg.get("mark") or 0)
-                _u = _up_mark(_mk)
                 out[_relay_iid(iface, lg["peer"])] = {
                     "iface": iface, "peer": lg["peer"], "via": lg["peer"], "subnet": subnet, "mark": _mk,
-                    "up_mark": _u, "why": container_bar or _relay_ineligible(ov, _mk, _u)}
+                    "up_table": _mk, "why": container_bar or _relay_ineligible(ov, _mk, _mk)}
     return out
 
 
@@ -13504,7 +13496,7 @@ def relay_plan(nodes, plans, nid, snaps):
             excluded[iid] = "this node has no free relay port left"
             continue
         legs.append({"iface": e["iface"], "peer": e["peer"], "subnet": e["subnet"],
-                     "mark": e["mark"], "up_mark": e.get("up_mark") or 0, "port": ports[iid],
+                     "mark": e["mark"], "up_table": e.get("up_table") or 0, "port": ports[iid],
                      "cc_cli": (r.get("cc_cli") or "").strip(),
                      "cc_up": (r.get("cc_up") or "").strip()})
     if not legs:
