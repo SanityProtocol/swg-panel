@@ -31,6 +31,9 @@ Run: python3 tests/relay_upmark_selftest.py   (0 = pass)
      --perturb-divert    scopes the divert by the upstream mark                        → RED
      --perturb-flush     flushes a table by an upstream PRIORITY                       → RED
      --perturb-sig       stops the signature seeing the upstream rules                 → RED
+     --perturb-docker    launches the container relay with the DIVERT mark              → RED
+     --perturb-dspec     drops `up` from the container's recreate signature             → RED
+     --perturb-tbl       feeds upstream priorities to the drift check as table ids      → RED
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -43,7 +46,10 @@ P_SOMARK = "--perturb-somark" in sys.argv
 P_DIVERT = "--perturb-divert" in sys.argv
 P_FLUSH = "--perturb-flush" in sys.argv
 P_SIG = "--perturb-sig" in sys.argv
-PERTURB = P_BAND or P_SOMARK or P_DIVERT or P_FLUSH or P_SIG
+P_DOCKER = "--perturb-docker" in sys.argv
+P_DSPEC = "--perturb-dspec" in sys.argv
+P_TBL = "--perturb-tbl" in sys.argv
+PERTURB = P_BAND or P_SOMARK or P_DIVERT or P_FLUSH or P_SIG or P_DOCKER or P_DSPEC or P_TBL
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -70,6 +76,15 @@ if P_FLUSH:
     nsrc = cut(nsrc, "    return [p for p in prios if SWG_RT_BASE <= p <= SWG_RT_MAX]", "    return list(prios)", "flush set")
 if P_SIG:
     nsrc = cut(nsrc, "            if mfw and _up:", "            if False:", "live sig")
+if P_DOCKER:   # the shape it shipped in: two run-models, two contracts
+    nsrc = cut(nsrc, '"--bind", e["gw"], "--mark", str(int(e.get("up") or 0)),',
+               '"--bind", e["gw"], "--mark", str(int(e.get("mark") or 0)),', "docker argv")
+if P_DSPEC:
+    nsrc = cut(nsrc, '"mark": int(e.get("mark") or 0), "up": int(e.get("up") or 0),',
+               '"mark": int(e.get("mark") or 0),', "docker spec")
+if P_TBL:
+    nsrc = cut(nsrc, "    live_sig = _cascade_live_sig({str(p) for p in _band_tables(band)} | want_tables)",
+               "    live_sig = _cascade_live_sig({str(p) for p in band} | want_tables)", "live sig tables")
 
 def load(name, path, src, changed):
     if changed:
@@ -86,7 +101,8 @@ def load(name, path, src, changed):
             os.unlink(path)
     return m
 
-N = load("noded_up", NODED, nsrc, P_BAND or P_SOMARK or P_DIVERT or P_FLUSH or P_SIG)
+N = load("noded_up", NODED, nsrc, P_BAND or P_SOMARK or P_DIVERT or P_FLUSH or P_SIG or P_DOCKER
+             or P_DSPEC or P_TBL)
 P = load("panel_up", PANEL, psrc, P_BAND)
 
 print("[1] the band is below every source rule, and collides with nothing")
@@ -225,12 +241,54 @@ check("⚠️ …and the relay's own divert rule is NOT in it",
       not any("6990" in x for x in live),
       "a token the want set can never carry means permanent drift — the whole band rebuilt every sync")
 
+print("\n[11] ⚠️ ONE CONTRACT, TWO RUN-MODELS — a bare-metal node and a container must agree")
+# The systemd half writes an env file and the docker half builds an argv, and they had diverged: the unit
+# asked for its leg by name while the container was still launched with the DIVERT mark. Two consequences,
+# and the second is the bad one — `_relay_shadowed` is asked about the UPSTREAM mark, which is always
+# in-band and therefore always skipped, so a container node was running with the shadowable client-side
+# mark and no longer being guarded against exactly the silent wrong-exit that guard exists for.
+_dk = nsrc[nsrc.index("def _relay_supervise_docker("):]
+_dk = _dk[:_dk.index("\ndef ")]
+check("the container is launched with the UPSTREAM mark", '"--mark", str(int(e.get("up") or 0))' in _dk,
+      "a container node otherwise never asks for its leg by name, and loses the shadow guard with it")
+# ⚠️ BOUNDED BY THE NEXT `def`, not by a character count — a fixed slice stops covering the function the
+# moment a comment is added to it, which is the second time that has cost a red check in this work.
+_env = nsrc[nsrc.index("def _relay_env_text("):]
+_env = _env[:_env.index("\ndef ")]
+check("…the same field the unit writes", 'int(e.get("up") or 0)' in _env, _env[-200:])
+# Behavioural, not a grep: re-pointing a leg must make the container recreate.
+_a = {"port": 5629, "gw": "10.18.0.1", "mss": 1340, "mark": 0, "up": N._up_mark(7000)}
+_b = dict(_a, up=N._up_mark(7001))
+check("⚠️ changing ONLY the leg changes the recreate signature",
+      N._relay_docker_spec("wg8", _a, 0.5) != N._relay_docker_spec("wg8", _b, 0.5),
+      "a leg re-pointed by up_mark alone would restart a systemd relay and leave a container on the OLD leg")
+check("…and an unchanged leg does not", N._relay_docker_spec("wg8", _a, 0.5) == N._relay_docker_spec("wg8", dict(_a), 0.5))
+
+print("\n[12] the drift check does not ask the kernel about tables that cannot exist")
+_seen = []
+_saved = N.run
+N.run = lambda argv, **kw: (_seen.append(list(map(str, argv))),
+                            type("R", (), {"stdout": "", "returncode": 0})())[1]
+try:
+    N._cascade_live_sig({str(p) for p in N._band_tables([7000, N._up_mark(7000)])})
+finally:
+    N.run = _saved
+_asked = [a[a.index("table") + 1] for a in _seen if a[:3] == ["ip", "route", "show"] and "table" in a]
+check("it asks about the real table", "7000" in _asked, _asked)
+check("⚠️ …and not about an upstream PRIORITY", str(N._up_mark(7000)) not in _asked, _asked)
+check("…and the caller passes it through _band_tables",
+      "_cascade_live_sig({str(p) for p in _band_tables(band)}" in nsrc,
+      "otherwise one wasted fork per leg per reconcile — and phantom routes if anything else owns that number")
+
 bad = len(FAILS)
 if PERTURB:
     which = ("the upstream mark colliding with the table" if P_BAND else
              "the divert's mark sent to the socket" if P_SOMARK else
              "the divert scoped by the upstream mark" if P_DIVERT else
              "a table flushed by an upstream priority" if P_FLUSH else
+             "the container launched with the divert mark" if P_DOCKER else
+             "`up` dropped from the container's recreate signature" if P_DSPEC else
+             "upstream priorities fed to the drift check as tables" if P_TBL else
              "the signature blind to the upstream rules")
     print("\n--perturb (%s): %d check(s) RED" % (which, bad))
     sys.exit(0 if bad else 1)

@@ -4618,7 +4618,12 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     else:
         _RPF["bad"] = []
     want_sig = _cascade_want_sig(fwd, exit_, smart_exit, guard=_dxguard)   # only exit entries create fwmark→table policy routing
-    live_sig = _cascade_live_sig({str(p) for p in band} | want_tables)
+    # ⚠️ ONLY THE PRIORITIES THAT ARE ALSO TABLES. `band` now spans both bands, and an upstream priority
+    # names no table of its own — so this asked the kernel for `route show table 6890` once per leg per
+    # reconcile, for a table that cannot exist. Wasteful, and worse than wasteful: anything ELSE on the box
+    # that happened to own a table by that number would put phantom routes in the live signature and drift
+    # the band for ever. `_band_tables` exists for exactly this distinction.
+    live_sig = _cascade_live_sig({str(p) for p in _band_tables(band)} | want_tables)
     # POLICY RULES/ROUTES — only touch them when they drift (avoids per-sync rule gaps).
     if want_sig != live_sig:
         if fwd or smart_e or exit_:                            # enable forwarding + loose rp_filter (asymmetric paths)
@@ -6264,8 +6269,13 @@ def _relay_docker_spec(iface, e, cpus):
     """Everything that decides whether the container must be recreated, as one comparable string."""
     # ⚠️ EVERY ARG THAT REACHES THE PROCESS BELONGS HERE. A value missing from this string is a setting the
     # operator changes and the container never picks up, because nothing decided it had to be recreated.
+    # ⚠️ AND `up` IS ONE OF THEM. It is the leg the upstream leaves by, and it is allowed to differ from
+    # `mark` — that is the entire reason they are separate fields. Omitted here, the one change this band
+    # exists to make (re-point a leg without touching which packets are diverted) would restart a bare-metal
+    # relay and leave a container relaying out the OLD leg for ever, because nothing decided it had to be
+    # recreated. The bare-metal half gets this for free: its env file changes, so the unit restarts.
     return json.dumps({"img": SWG_TURN_IMAGE, "cpus": cpus, "port": e["port"], "bind": e["gw"],
-                       "mark": int(e.get("mark") or 0),
+                       "mark": int(e.get("mark") or 0), "up": int(e.get("up") or 0),
                        "mss": e.get("mss") or 0, "cc": e.get("cc_up", ""), "cli": e.get("cc_cli", "")},
                       sort_keys=True)
 
@@ -6310,7 +6320,12 @@ def _relay_supervise_docker(want, quota_pct, res):
                  "--log-opt", "max-size=10m", "--log-opt", "max-file=3",
                  "-v", host_dir + ":" + RELAY_DIR_LOCAL,
                  "--entrypoint", "python3", SWG_TURN_IMAGE, staged,
-                 "--port", str(e["port"]), "--bind", e["gw"], "--mark", str(int(e.get("mark") or 0)),
+                 # ⚠️ THE UPSTREAM MARK, exactly as the systemd unit passes it. These two run-models
+                 # implement ONE contract, and the first thing that happened when they diverged is that a
+                 # container node never asked for its leg by name while `_relay_shadowed` — which is now
+                 # asked about `up` — skipped it as in-band and stopped guarding the mark it was actually
+                 # running with. Two halves of one feature is how this codebase's kinds drift apart.
+                 "--port", str(e["port"]), "--bind", e["gw"], "--mark", str(int(e.get("up") or 0)),
                  "--cc", e.get("cc_up", ""),
                  "--cc-cli", e.get("cc_cli", ""), "--mss", str(e.get("mss") or 0),
                  "--status-sock", _relay_sock(iface), "--report", "300"], timeout=60)

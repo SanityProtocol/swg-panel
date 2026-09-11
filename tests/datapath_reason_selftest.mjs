@@ -75,6 +75,14 @@ check("a smart leg is told apart from a whole-interface one by its MARK",
 check("…and the scope sentence appears only for a smart leg", /\$\{smartLegs\.length \? html`/.test(src));
 check("…naming the interfaces, not the relay instance ids", /legIfaces\.join\(", "\)/.test(src)
       && /map\(\(\[k, e\]\) => e\.iface \|\| k\)/.test(src));
+// ⚠️ AND NAMING ONLY THE SMART ONES. The sentence says only SELECTED destinations are relayed — true of a
+// smart leg, false of a whole-interface cascade, where every packet that interface sends over the link is
+// relayed. One link can carry both (one interface forwarding to the peer, another smart-routing to it), and
+// built from `elig` this told the operator something untrue about the forward one. The previous check
+// passes either way, which is why it needed a second: it pins the SHAPE, not the SUBJECT.
+check("⚠️ …and only the SMART ones, or it makes a false claim about a cascade",
+      /const legIfaces = \[\.\.\.new Set\(smartLegs\.map\(/.test(src),
+      "built from every eligible leg, the sentence names whole-interface cascades too");
 check("…saying the rest of that traffic is untouched", /the rest of that traffic is untouched/.test(src));
 check("⚠️ …and that UDP is never relayed", /UDP keeps forwarding either way/.test(src));
 check("the CPU cap says it is the NODE's budget, shared",

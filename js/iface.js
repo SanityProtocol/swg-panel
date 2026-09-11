@@ -1415,7 +1415,12 @@ export function ConnectionEditSheet({ node, iface }) {
       const canRelay = elig.filter(([, e]) => !e.why).map(([k]) => k);
       const barred = elig.filter(([, e]) => e.why);
       const smartLegs = elig.filter(([, e]) => !e.why && e.mark);
-      const legIfaces = [...new Set(elig.filter(([, e]) => !e.why).map(([k, e]) => e.iface || k))];
+      // ⚠️ FROM THE SMART LEGS, NOT FROM ALL OF THEM. This is the subject of a sentence that says only
+      // SELECTED destinations are relayed — true of a smart leg and false of a whole-interface cascade, where
+      // every packet the interface sends over this link is relayed. One link can carry both (one interface
+      // forwarding to the peer, another smart-routing to it), and built from `elig` the sentence named the
+      // forward interface too and told the operator something untrue about it.
+      const legIfaces = [...new Set(smartLegs.map(([k, e]) => e.iface || k))];
       // ⚠️ NO CHOICE IS NOT NO ANSWER. This returned null, so a leg with nothing to accelerate showed
       // NOTHING — and the card above it says "cascade" for BOTH kinds, so an operator comparing two legs
       // sees the same badge with the control on one and not the other, with no way to find out why.
