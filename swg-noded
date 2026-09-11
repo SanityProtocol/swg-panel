@@ -5792,6 +5792,24 @@ def _relay_nft(entries):
     return "\n".join(L) + "\n"
 
 
+def _relay_note(state, why=""):
+    """Record every arm/disarm transition, once, with the reason.
+
+    ⚠️ THIS DID NOT EXIST AND IT COST A WHOLE INVESTIGATION. A divert that matches but is not served is a
+    blackhole (swg-relay's own docstring), and arming one is the most dangerous state change this node
+    makes — yet nothing anywhere recorded that it had happened. When an operator reported "no internet on a
+    cascaded interface", the journal could not answer the only question that mattered: WAS THE DIVERT ARMED
+    WHEN THEY TESTED? The relay's own counters said `accepted=0` for 3h45m, the node logged nothing at all,
+    and the state was gone by the time anyone looked. It is one line per transition, it is silent in steady
+    state, and it makes that question answerable next time."""
+    prev = _RELAY_ARM.get("noted")
+    now = (state, why)
+    if prev == now:
+        return                                # steady state says nothing — only transitions are events
+    _RELAY_ARM["noted"] = now
+    print("relay divert %s%s" % (state, (" — " + why) if why else ""), flush=True)
+
+
 def _relay_arm(entries, res):
     """Routing half FIRST, nft half LAST — see the ordering warning at the top of this section."""
     run(["ip", "route", "replace", "local", "default", "dev", "lo", "table", str(RELAY_RT)])
@@ -6090,6 +6108,7 @@ def reconcile_relay(plan, res, sync_ok=True):
             _relay_disarm(res)
             _RELAY_ARM["sig"] = None
             _RELAY_ARM["why"] = "off"
+        _relay_note("off", "no relay wanted")
         _relay_supervise({}, plan.get("quota_pct") or RELAY_QUOTA_PCT, res)
         return
 
@@ -6121,6 +6140,7 @@ def reconcile_relay(plan, res, sync_ok=True):
             _relay_disarm(res)
         _RELAY_ARM["sig"] = None
         _RELAY_ARM["why"] = "; ".join(why) or "no healthy relay"
+        _relay_note("DISARMED", _RELAY_ARM["why"])
         return
     # Armed intent: re-assert if the wanted set changed OR the table went missing under us (the cascade
     # band flush, an operator `nft flush ruleset`, a reboot). Cheap enough at one `nft list` per sync.
@@ -6129,8 +6149,13 @@ def reconcile_relay(plan, res, sync_ok=True):
             _RELAY_ARM["sig"] = sig
             _RELAY_ARM["since"] = now
             _RELAY_ARM["why"] = "; ".join(why)
+            # name the interfaces AND the ports: "armed" alone does not say what a client's TCP is now
+            # depending on, and that is the fact an operator needs when the answer is "nothing loads".
+            _relay_note("ARMED", ", ".join("%s -> :%d" % (e["iface"], e["port"]) for e in entries)
+                                 + ("; excluded " + "; ".join(why) if why else ""))
         else:
             _RELAY_ARM["sig"] = None
+            _relay_note("DISARMED", "arming failed")
 
 
 def _relay_quota_effective():

@@ -116,6 +116,23 @@ for keep, why in (("relay not answering", "a dead relay"), ("loops stuck at", "a
                   ("over CPU budget", "a quota that is not enforcing")):
     check("…while still catching %s" % why, keep in probe)
 
+print("\n[3b] ⚠️ …and every arm/disarm is on the record")
+# This did not exist, and it is why the live failure could not be settled after the fact: the node armed a
+# blackhole-capable divert and wrote nothing anywhere. Detection without a record just moves the same
+# unanswerable question one layer along.
+arm = noded[noded.index("def _relay_note("):noded.index("def _relay_arm(")]
+check("a transition is written to the journal", "print(" in arm and "relay divert" in arm)
+check("…and says WHY", re.search(r'\(" — " \+ why\) if why else ""', arm) is not None)
+check("…once, not every pass", '_RELAY_ARM.get("noted")' in arm and "if prev == now:" in arm)
+body = noded[noded.index("def _relay_note("):]
+check("⚠️ the ARM path records it", re.search(r'_relay_note\("ARMED"', body) is not None)
+check("…naming the interfaces and ports a client now depends on",
+      re.search(r'_relay_note\("ARMED",[^)]*e\["iface"\][^)]*e\["port"\]', body, re.S) is not None)
+check("…and every DISARM path records it too",
+      len(re.findall(r'_relay_note\("DISARMED"', body)) >= 2, "a disarm that is not logged is the same blind spot")
+check("…including the one where arming itself failed",
+      re.search(r'_RELAY_ARM\["sig"\] = None\s*\n\s*_relay_note\("DISARMED", "arming failed"\)', body) is not None)
+
 print("\n[4] and the reader it depends on is real")
 rd = noded[noded.index("def _relay_diverted("):noded.index("def _relay_probe(")]
 check("_relay_diverted parses nft's own json", '"nft", "-j", "list"' in rd)
