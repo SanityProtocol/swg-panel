@@ -211,9 +211,9 @@ RULES = ["0:\tfrom all lookup local",
          "7000:\tfrom 10.18.0.0/24 lookup 7000",
          "7001:\tfrom all fwmark 0x1b59 lookup 7001",
          "32766:\tfrom all lookup main"]
-_up = N._relay_shadowed([{"iid": "wg8", "subnet": "10.18.0.0/24", "mark": N._up_mark(7001)}], RULES)
+_up = N._relay_unroutable([{"iid": "wg8", "subnet": "10.18.0.0/24", "mark": N._up_mark(7001)}], RULES)
 check("⚠️ an upstream mark cannot be shadowed — its rule is below the whole band", _up == {}, _up)
-_legacy = N._relay_shadowed([{"iid": "wg8", "subnet": "10.18.0.0/24", "mark": 7001}], RULES)
+_legacy = N._relay_unroutable([{"iid": "wg8", "subnet": "10.18.0.0/24", "mark": 7001}], RULES)
 check("…while a legacy table-shaped mark still is, and says why", "wg8" in _legacy, _legacy)
 check("…naming the rule that outranks it", _legacy and "7000" in _legacy["wg8"], _legacy)
 
@@ -244,7 +244,7 @@ _R_OK = ["0:\tfrom all lookup local", _FWD_SRC,
          "32766:\tfrom all lookup main"]
 _R_NO = ["0:\tfrom all lookup local", _FWD_SRC, "32766:\tfrom all lookup main"]
 def _sh(subnet, up, rules):
-    return N._relay_shadowed([{"iid": "a", "subnet": subnet, "mark": up}], rules)
+    return N._relay_unroutable([{"iid": "a", "subnet": subnet, "mark": up}], rules)
 check("a leg whose rule is installed arms", _sh("10.18.0.0/24", N._up_mark(7001), _R_OK) == {})
 check("⚠️ a CASCADE whose rule is missing but names its OWN leg still arms",
       _sh("10.18.0.0/24", N._up_mark(7001), _R_NO) == {},
@@ -295,7 +295,7 @@ check("⚠️ …and the relay's own divert rule is NOT in it",
 print("\n[11] ⚠️ ONE CONTRACT, TWO RUN-MODELS — a bare-metal node and a container must agree")
 # The systemd half writes an env file and the docker half builds an argv, and they had diverged: the unit
 # asked for its leg by name while the container was still launched with the DIVERT mark. Two consequences,
-# and the second is the bad one — `_relay_shadowed` is asked about the UPSTREAM mark, which is always
+# and the second is the bad one — `_relay_unroutable` is asked about the UPSTREAM mark, which is always
 # in-band and therefore always skipped, so a container node was running with the shadowable client-side
 # mark and no longer being guarded against exactly the silent wrong-exit that guard exists for.
 _dk = nsrc[nsrc.index("def _relay_supervise_docker("):]

@@ -6106,8 +6106,14 @@ def _relay_note(state, why=""):
     print("relay divert %s%s" % (state, (" — " + why) if why else ""), flush=True)
 
 
-def _relay_shadowed(entries, rules):
-    """Legs whose mark-based routing a source rule would silently outrank -> {iid: reason}.
+def _relay_unroutable(entries, rules):
+    """Legs whose upstream would NOT leave by the leg they name -> {iid: reason}.
+
+    ⚠️ TWO WAYS THAT HAPPENS, AND THE FUNCTION WAS NAMED AFTER ONLY ONE. It began as `_relay_shadowed`,
+    asking whether a source rule outranks the leg's mark rule; it later also had to ask whether that mark
+    rule EXISTS at all, because a mark with no rule is not routed by it either. Both questions are the same
+    question — "would the packet still go where this leg says" — and a name describing half of what a
+    function does is a comment that lies without being a comment.
 
     ⚠️ MEASURED, NOT ASSUMED (2026-09-11, swgt). `ip rule` uses *priority == table number* for both kinds,
     so `from <subnet> lookup T'` is consulted before `fwmark T lookup T` whenever T' < T — and the relay's
@@ -6416,7 +6422,7 @@ def _relay_supervise_docker(want, quota_pct, res):
                  # ⚠️ THE UPSTREAM MARK (derived from the plan's `up_table`), exactly as the systemd unit
                  # passes it. These two run-models implement ONE contract, and the first thing that happened
                  # when they diverged is that a container node never asked for its leg by name while
-                 # `_relay_shadowed` — which is asked about `up` — skipped it as in-band and stopped guarding
+                 # `_relay_unroutable` — asked about `up` — skipped it as in-band and stopped guarding
                  # the mark it was actually running with. Two halves of one feature is how kinds drift.
                  "--port", str(e["port"]), "--bind", e["gw"], "--mark", str(int(e.get("up") or 0)),
                  "--cc", e.get("cc_up", ""),
@@ -6619,16 +6625,16 @@ def reconcile_relay(plan, res, sync_ok=True):
     # Read once per pass and use it for both the precondition and the arm — `ip rule show` is a fork, and
     # this loop runs every five seconds. Same reason _relay_diverted is read once here rather than per leg.
     _rules = (run(["ip", "rule", "show"]).stdout or "").splitlines()
-    _shadow = _relay_shadowed([{"iid": i, "subnet": want[i]["subnet"], "mark": want[i]["up"]}
+    _unroutable = _relay_unroutable([{"iid": i, "subnet": want[i]["subnet"], "mark": want[i]["up"]}
                                for i in sorted(want)], _rules)
     _div = _relay_diverted()
     for iface in sorted(want):
         ok, reason, st = _relay_probe(iface, now, _div)
-        if ok and iface in _shadow:
+        if ok and iface in _unroutable:
             # ⚠️ RE-EVALUATED EVERY PASS, like every other reason. The leg comes back on its own the moment
             # the rule that outranked it is gone, and until then it is refused in the one place the panel
             # reads — rather than in a filter the next probe pass silently undoes.
-            ok, reason = False, _shadow[iface]
+            ok, reason = False, _unroutable[iface]
         if ok and cap and (st.get("live") or 0) >= cap:
             # §3.4: over the cap the whole interface degrades to plain forwarding rather than one
             # connection being queued or dropped. ⚠️ It is NOT free — pulling the divert drops the
