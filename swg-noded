@@ -5673,6 +5673,28 @@ def _relay_unit(iface):
 RELAY_DIR_LOCAL = "/var/lib/swg-noded/relay"          # inside swg-noded; SWG_HOST_NODE_DIR/relay on the host
 def _relay_cname(iface): return "swg-relay-" + iface
 
+
+def _relay_existing():
+    """Every relay instance this node has ON DISK, whatever started it.
+
+    ⚠️ BECAUSE `_RELAY` IS IN-MEMORY AND EMPTY ON A FRESH START. The stop-sweep used to walk it alone, so
+    after ANY restart it stopped nothing — and "the wanted set shrank across a restart" is the ordinary
+    case: an operator switches a link back to Forward and the node is updated or rebooted, or a node is
+    DOWNGRADED to a build that names its instances differently. The unit then runs for ever with nobody
+    supervising it, holding a transparent listener on 0.0.0.0, and the only reason that is not worse is
+    that its divert is rebuilt from `want` every pass and so was already pulled.
+
+    MEASURED on the rig by rolling a node back to released 1.8.6: `swg-relay@wg1.<peer>` was still active
+    and listening on 5632 while the released node managed only `wg8` and could not even name the other.
+
+    The env file is the durable record — written next to the unit for exactly the instances we run, and
+    removed when one is swept — so it answers "what exists" for both run-models (the container arm writes
+    the same files)."""
+    out = set()
+    with contextlib.suppress(OSError):
+        out = {f[:-4] for f in os.listdir(RELAY_ENV_DIR) if f.endswith(".env")}
+    return out
+
 def _relay_capable():
     """Can this node run the relay at all? -> (ok, why). Reported to the panel, which refuses to OFFER the
     switch when it cannot — a switch that silently does nothing is worse than one that is not there."""
@@ -6376,10 +6398,12 @@ def _relay_supervise_docker(want, quota_pct, res):
             res["errors"].append(("relay %s: docker run failed: %s" % (iface, (r.stderr or r.stdout or "").strip()))[:200])
         else:
             res["changed"] += 1
-    for iface in [i for i in _RELAY if i not in want]:
+    for iface in sorted((set(_RELAY) | _relay_existing()) - set(want)):
         run(["docker", "rm", "-f", _relay_cname(iface)], timeout=30)
         with contextlib.suppress(OSError):
             os.unlink(_relay_sock(iface))
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(RELAY_ENV_DIR, iface + ".env"))
         _RELAY.pop(iface, None)
     return set(want)
 
@@ -6433,7 +6457,7 @@ def _relay_supervise(want, quota_pct, res):
             res["changed"] += 1
     # Instances we are no longer asked for: stop them. Their divert is already gone (it is rebuilt from
     # `want` every pass), so this only reclaims the process.
-    for iface in [i for i in _RELAY if i not in want]:
+    for iface in sorted((set(_RELAY) | _relay_existing()) - set(want)):
         run(["sh", "-c", "systemctl disable --now " + shlex.quote(_relay_unit(iface)) + " >/dev/null 2>&1"])
         with contextlib.suppress(OSError):
             os.unlink(os.path.join(RELAY_ENV_DIR, iface + ".env"))

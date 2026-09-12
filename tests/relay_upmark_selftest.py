@@ -35,6 +35,7 @@ Run: python3 tests/relay_upmark_selftest.py   (0 = pass)
      --perturb-dspec     drops `up` from the container's recreate signature             → RED
      --perturb-tbl       feeds upstream priorities to the drift check as table ids      → RED
      --perturb-guard     arms a leg whose routing rule was never installed               → RED
+     --perturb-sweep     sweeps only in-memory state, so a restart stops nothing         → RED
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -51,7 +52,9 @@ P_DOCKER = "--perturb-docker" in sys.argv
 P_DSPEC = "--perturb-dspec" in sys.argv
 P_TBL = "--perturb-tbl" in sys.argv
 P_GUARD = "--perturb-guard" in sys.argv
-PERTURB = P_BAND or P_SOMARK or P_DIVERT or P_FLUSH or P_SIG or P_DOCKER or P_DSPEC or P_TBL or P_GUARD
+P_SWEEP = "--perturb-sweep" in sys.argv
+PERTURB = (P_BAND or P_SOMARK or P_DIVERT or P_FLUSH or P_SIG or P_DOCKER or P_DSPEC or P_TBL or P_GUARD
+           or P_SWEEP)
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -68,6 +71,9 @@ def cut(src, a, b, why):
 if P_BAND:      # the collision the band exists to avoid: name the leg with the table itself
     nsrc = cut(nsrc, "    return SWG_RT_UP_BASE + (t - SWG_RT_BASE) if SWG_RT_BASE <= t <= SWG_RT_MAX else 0",
                "    return t if SWG_RT_BASE <= t <= SWG_RT_MAX else 0", "node up_mark")
+if P_SWEEP:     # the shape it shipped in: the stop-sweep walks only this process's own memory
+    nsrc = cut(nsrc, "    for iface in sorted((set(_RELAY) | _relay_existing()) - set(want)):\n        run([\"sh\", \"-c\", \"systemctl disable --now \"",
+               "    for iface in [i for i in _RELAY if i not in want]:\n        run([\"sh\", \"-c\", \"systemctl disable --now \"", "systemd sweep")
 if P_GUARD:     # the shape it was first written in: refuse on the rule's ABSENCE, not on where it would go
     nsrc = cut(nsrc, "            if _falls_to == _want_tbl:\n                continue",
                "            if False:\n                continue", "guard falls-to")
@@ -105,7 +111,7 @@ def load(name, path, src, changed):
     return m
 
 N = load("noded_up", NODED, nsrc, P_BAND or P_SOMARK or P_DIVERT or P_FLUSH or P_SIG or P_DOCKER
-             or P_DSPEC or P_TBL or P_GUARD)
+             or P_DSPEC or P_TBL or P_GUARD or P_SWEEP)
 P = load("panel_up", PANEL, psrc, False)
 
 print("[1] the band is below every source rule, and collides with nothing")
@@ -325,6 +331,32 @@ check("…and the caller passes it through _band_tables",
       "_cascade_live_sig({str(p) for p in _band_tables(band)}" in nsrc,
       "otherwise one wasted fork per leg per reconcile — and phantom routes if anything else owns that number")
 
+print("\n[13] ⚠️ an instance no longer wanted is stopped AFTER A RESTART, not just within one process")
+# `_RELAY` is in-memory and empty on a fresh start, so a sweep over it alone stops nothing after any
+# restart — and "the wanted set shrank across a restart" is the ordinary case (a link switched back to
+# Forward plus an update or reboot; or a DOWNGRADE to a build that names instances differently). MEASURED
+# by rolling a node back to released 1.8.6 on the rig: `swg-relay@wg1.<peer>` stayed active and listening
+# on 0.0.0.0:5632 while the released node managed only `wg8` and could not even name the other one.
+import tempfile as _tf
+_d = _tf.mkdtemp()
+for _n in ("wg8.env", "wg1.peerA.env", "awg2.peerB.env"):
+    open(os.path.join(_d, _n), "w").write("x")
+_saved_dir, N.RELAY_ENV_DIR = N.RELAY_ENV_DIR, _d
+try:
+    check("the durable record is read from disk", N._relay_existing() == {"wg8", "wg1.peerA", "awg2.peerB"},
+          N._relay_existing())
+    _sweep = sorted((set({}) | N._relay_existing()) - {"wg8"})
+    check("⚠️ …so a FRESH process still knows what to stop", _sweep == ["awg2.peerB", "wg1.peerA"], _sweep)
+finally:
+    N.RELAY_ENV_DIR = _saved_dir
+check("…and both run-models sweep the same way",
+      nsrc.count("sorted((set(_RELAY) | _relay_existing()) - set(want))") == 2,
+      "the container arm leaks the same way if it walks memory alone")
+check("…and the container arm removes the env file too, or the record outlives the container",
+      "os.unlink(os.path.join(RELAY_ENV_DIR, iface" in nsrc[nsrc.index("def _relay_supervise_docker("):
+                                                          nsrc.index("def _relay_supervise(")])
+check("a missing env dir is not an error", isinstance(N._relay_existing(), set))
+
 bad = len(FAILS)
 if PERTURB:
     which = ("the upstream mark colliding with the table" if P_BAND else
@@ -335,6 +367,7 @@ if PERTURB:
              "`up` dropped from the container's recreate signature" if P_DSPEC else
              "upstream priorities fed to the drift check as tables" if P_TBL else
              "a leg armed without its routing rule" if P_GUARD else
+             "the stop-sweep walking only in-memory state" if P_SWEEP else
              "the signature blind to the upstream rules")
     print("\n--perturb (%s): %d check(s) RED" % (which, bad))
     sys.exit(0 if bad else 1)
