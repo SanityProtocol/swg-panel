@@ -90,9 +90,9 @@
   },
   "wdttplus": {
    "Ivan4537/WDTT-Plus@main:app/src/main/java/com/wdtt/plus/SettingsStore.kt": {
-    "date": "2026-09-04T16:38:52Z",
-    "sha": "abf0a0f13053127891c7dc47b4ec3ba58051f497",
-    "url": "https://github.com/Ivan4537/WDTT-Plus/commit/abf0a0f13053127891c7dc47b4ec3ba58051f497"
+    "date": "2026-09-11T12:45:55Z",
+    "sha": "b3935b947acd81d95107869c8f33507f3f5c1309",
+    "url": "https://github.com/Ivan4537/WDTT-Plus/commit/b3935b947acd81d95107869c8f33507f3f5c1309"
    }
   },
   "wgturn": {
@@ -122,6 +122,6 @@
    }
   }
  },
- "generated_at": 1789116834,
+ "generated_at": 1789202240,
  "schema": 1
 }
