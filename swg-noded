@@ -6029,6 +6029,15 @@ def _relay_nft(entries, guard_ports=()):
         # ⚠️ THE COUNTER IS LOAD-BEARING, not observability. It is the only way to tell a divert that is
         # carrying nothing from one that is carrying traffic into a relay which never accepts it — and the
         # second is a blackhole that every other signal reads as healthy. See _relay_diverted.
+        #
+        # ⚠️ AND "BLACKHOLE" MEANS A RELAY THAT IS LISTENING AND NOT ACCEPTING — NOT ONE THAT IS GONE.
+        # MEASURED 2026-09-12: with the divert armed and the relay process stopped, three client connections
+        # left this counter UNMOVED and reached their exit normally. `tproxy` needs a socket; without one the
+        # rule does not match and the packet falls through to plain forwarding. So a missing relay degrades
+        # safely and only a PRESENT-but-deaf one traps the client — the kernel completes its handshake into
+        # the 1024-deep backlog and it waits for ever. That is why `PartOf=swg-noded.service` on the unit is
+        # a safety property rather than churn: if the supervisor dies, killing the relay converts a possible
+        # blackhole into forwarding. It also means every relayed TCP connection dies on a noded restart.
         # ⚠️ SCOPED BY MARK WHEN THERE IS ONE. A whole-interface cascade sends everything from the subnet
         # down one leg, so the source says it all and `mark` is 0. A smart cascade splits the subnet across
         # legs and a direct path, and the ONLY thing that distinguishes them is the mark swg_smart has
