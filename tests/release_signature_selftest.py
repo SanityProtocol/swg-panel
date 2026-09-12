@@ -199,6 +199,40 @@ r = run(["openssl", "dgst", "-sha256", "-verify", os.path.join(KEYDIR, "k.pub"),
 check("[10] ⚠️ `dgst -sha256` is the verify form (works from openssl 1.0.2)",
       "Key type not supported" not in (r.stdout + r.stderr), (r.stdout + r.stderr).strip())
 
+# ── [11] the signing workflow cannot quietly do the wrong thing ──────────────────────────────────────────
+# CI signs (the custody decision), which means CI COMMITS to a branch. That collides with a standing rule:
+# main carries one squashed commit per release whose parent is the previous release commit. The resolution
+# is that signing is manual and targets `dev`, and the release squash carries the manifest to main — so
+# main gains the signature without gaining a commit. These checks keep that from eroding.
+WF = os.path.join(ROOT, ".github", "workflows", "sign-release.yml")
+check("[11] there is a signing workflow", os.path.exists(WF))
+wf = open(WF, encoding="utf-8").read() if os.path.exists(WF) else ""
+check("[11b] ⚠️ it is manual — never on push, which would put a bot commit on every release",
+      "workflow_dispatch" in wf and re.search(r"^on:\s*\n\s+push:", wf, re.M) is None)
+check("[11c] it defaults to dev, not main", re.search(r"default:\s*'dev'", wf) is not None)
+check("[11d] ⚠️ it refuses when the signing secret is absent", "RELEASE_SIGNING_KEY is not set" in wf)
+check("[11e] ⚠️ it refuses to sign what no shipped key could verify",
+      "carries no release public key" in wf)
+check("[11f] ⚠️ it verifies against the EMBEDDED public key, not the private one it just used",
+      "verifies against NO key embedded" in wf)
+check("[11g] its commit skips the image rebuild it cannot affect", "[skip ci]" in wf)
+
+# ── [12] if a production key has been embedded, the workflow can actually extract it ─────────────────────
+# Conditional by design: the slot is empty until a key exists, and this gate must not fail for that. What
+# it must not allow is a key that is embedded in a shape the extractor cannot read — that would sign
+# releases nobody can verify, which is the failure the workflow's own guard is aiming at.
+if "BEGIN PUBLIC KEY" in boot_src:
+    ext = os.path.join(TMP, "extracted.pub")
+    run(["bash", "-c", "awk -v d=%s '/BEGIN PUBLIC KEY/{n++} n{print > (d \"/relkey-\" n \".pub\")}' %s"
+         % (TMP, BOOT)])
+    keys = [f for f in os.listdir(TMP) if f.startswith("relkey-")]
+    check("[12] the embedded key(s) extract", bool(keys), "none extracted")
+    for k in keys:
+        r = run(["openssl", "pkey", "-pubin", "-in", os.path.join(TMP, k), "-noout"])
+        check("[12b] %s is a parseable public key" % k, r.returncode == 0, r.stderr.strip())
+else:
+    print("  SKIP [12] no production key embedded yet — slot is empty (see emit_release_keys)")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print()
 if FAILS:

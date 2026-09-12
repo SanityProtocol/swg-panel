@@ -242,13 +242,23 @@ cd "$TMP/swg-panel"
 RELEASE_KEYS_D="$TMP/.swg-release-keys"
 emit_release_keys(){
   mkdir -p "$RELEASE_KEYS_D"
-  # Two keys, current and next, from day one. Rotation with no overlap window strands every box that has
-  # not updated yet — and the boxes hardest to reach are exactly the ones that would be stranded.
-  # ⚠️ PLACEHOLDERS. Until real keys are pasted here no release can be signed, and the check below finds no
-  # manifest and says so. Generate with:
-  #     openssl ecparam -name prime256v1 -genkey -noout -out release-1.key
-  #     openssl ec -in release-1.key -pubout -out release-1.pub
-  :
+  # ⚠️ THE KEY SLOT IS EMPTY. No release can be signed until a production keypair exists, and until then
+  # the check below finds no manifest and says so. This is the only place a key can live: the verifier
+  # cannot ship inside the tree it verifies, so neither can the key that drives it.
+  #
+  # To fill it, generate the pair OFF this machine and paste ONLY the public half here:
+  #
+  #     openssl ecparam -name prime256v1 -genkey -noout -out release-1.key   # never leaves your custody
+  #     openssl ec -in release-1.key -pubout                                 # paste the block it prints
+  #
+  # as one `cat > "$RELEASE_KEYS_D/release-1.pub" <<'PUBKEY'` … `PUBKEY` heredoc per key, below this
+  # comment. TWO keys, current and next, from the day the first one ships: rotation with no overlap window
+  # strands every box that has not updated yet, and the boxes hardest to reach are exactly those.
+  #
+  # ECDSA P-256 — see lib/release-manifest.sh for why it is not Ed25519 (measured, not preference).
+  # .github/workflows/sign-release.yml refuses to sign while this slot is empty, because a signature no box
+  # can check looks like protection and is not.
+  return 0
 }
 verify_fetched_tree(){
   local man="MANIFEST.sha256" sig="MANIFEST.sha256.sig" k ok=no
