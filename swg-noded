@@ -87,9 +87,12 @@ AWG_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
             "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
 
 
+_VERSION_PATHS = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
+                  "/opt/swg-noded/VERSION")
+
+
 def _noded_version():
-    for p in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
-              "/opt/swg-noded/VERSION"):
+    for p in _VERSION_PATHS:
         try:
             with open(p) as f:
                 v = f.read().strip()
@@ -98,6 +101,16 @@ def _noded_version():
         except OSError:
             pass
     return None
+
+
+def _noded_version_path():
+    """WHERE this daemon's version is written — what an update changes, and therefore the only honest way to
+    tell an update that landed from one that ran and did nothing. Falls back to the install location: on a box
+    where neither exists yet, that is where an update would put it."""
+    for p in _VERSION_PATHS:
+        if os.path.isfile(p):
+            return p
+    return _VERSION_PATHS[-1]
 
 
 NODED_VERSION = _noded_version()
@@ -14804,12 +14817,68 @@ def default_update_cmd(node_cfg):
     return UPDATE_CMD_TMPL.format(ref=_ref)
 
 
+# ── the updater's verdict has to outlive the updater ────────────────────────────────────────────────────
+# This daemon cannot watch its own update: the updater RESTARTS it, so whatever it launched is gone from
+# under it. That is why the output went to DEVNULL — nothing here could have read it anyway. The declarative
+# arm solved this years-equivalent ago by writing `.update-result` (state on line 1, failure tail after it),
+# which report_update_result() relays on the next sync; the bare arm never got the same treatment, so a node
+# that failed to update looked exactly like one that succeeded.
+#
+# What the panel could see without this is a TIMEOUT, and only after PROC_GRACE: "the node never reported a
+# new version (e.g. it couldn't reach GitHub)". True, five minutes late, and a guess about the cause.
+#
+# ⚠️ AND WRONG WHENEVER THE UPDATER CORRECTLY DID NOTHING. The panel decides an update landed by watching the
+# version advance, so a box that was ALREADY current advances nothing, falls through to that timeout, and is
+# told its network is at fault. Measured live on `svo-im` 2026-08-27: the updater ran clean, found nothing
+# newer, and the box stayed on the version it should have stayed on. So this reports THREE outcomes, not two,
+# and it distinguishes them the only way that cannot lie — by reading the version file before and after.
+def _self_update_wrapper(cmd):
+    """Shell that runs `cmd`, then records what it did where the next daemon can find it.
+
+    Runs in the updater's own transient scope, so it survives the restart the updater performs and writes its
+    verdict afterwards. `rm -f` on the result FIRST: if this wrapper dies mid-way, the next sync must find
+    nothing rather than report a previous run's verdict as this one's."""
+    inner = cmd if isinstance(cmd, str) else " ".join(shlex.quote(c) for c in cmd)
+    if os.geteuid() != 0:
+        # ⚠️ SUDO TAKES A COMMAND, NOT A SHELL FRAGMENT. The old form pasted the prefix onto the front of the
+        # string — `sudo -n ` + `for i in …; do …; done` is `sudo -n for`, a syntax error, and the same for
+        # any pipeline, loop or `&&` an operator's own `update_cmd` might hold. It had always been broken
+        # this way and could not be seen, because the output it died into was discarded. Hand the whole
+        # command to a shell UNDER sudo instead, which is correct for every shape.
+        inner = "sudo -n bash -c " + shlex.quote(inner)
+    return (
+        "umask 027\n"
+        "R={res}\nL={res}.log\nV={ver}\n"
+        'rm -f "$R" "$L"\n'
+        'B=$(cat "$V" 2>/dev/null)\n'
+        # ⚠️ A SUBSHELL, NOT A BRACE GROUP. `{{ …; }}` runs in THIS shell, so an `exit` anywhere in the
+        # command — an operator's own `update_cmd`, a sourced script — terminates the wrapper before it can
+        # write anything, which is precisely the silence this exists to end. Caught by the gate's
+        # `exit 7` case; `rebuild.nix` had it right with parentheses all along.
+        '( {inner} ) > "$L" 2>&1\n'
+        "rc=$?\n"
+        'A=$(cat "$V" 2>/dev/null)\n'
+        'if [ "$rc" -ne 0 ]; then S=update-failed\n'
+        'elif [ -n "$A" ] && [ "$A" != "$B" ]; then S=updated\n'
+        "else S=uptodate; fi\n"
+        # 20 lines, the same tail every other lifecycle failure in this project reports. It is the actionable
+        # half — "could not fetch $REPO @ $REF" names a blocked box; a failed unit restart names itself.
+        "printf '%s\\n%s\\n' \"$S\" \"$(tail -n 20 \"$L\" 2>/dev/null)\" > \"$R.tmp\"\n"
+        'mv -f "$R.tmp" "$R"\n'
+        'rm -f "$L"\n'
+        'exit "$rc"\n'
+    ).format(res=shlex.quote(UPDATE_RESULT_FILE), ver=shlex.quote(_noded_version_path()), inner=inner)
+
+
 def run_self_update(node_cfg, want):
     """Run the swg-only in-place updater, detached so it survives swg-noded's own restart. Only ever
     called on a valid sync reply that carries an 'update'. Updates swg-noded/swg-agent (and a co-located
     panel) — NOT wg/awg/turn-proxies. The panel clears the request once we report the new version."""
     cmd = (node_cfg.get("node") or {}).get("update_cmd") or default_update_cmd(node_cfg)
-    base = cmd if isinstance(cmd, list) else ["bash", "-lc", (cmd if os.geteuid() == 0 else "sudo -n " + cmd)]
+    # Always through a shell now, LIST COMMAND INCLUDED — the wrapper is what turns a detached updater into a
+    # reported one, and an operator's own `update_cmd` deserves that as much as ours does (shlex-quoted, so a
+    # list is passed through exactly as it would have been exec'd).
+    base = ["bash", "-c", _self_update_wrapper(cmd)]
     try:
         # run OUTSIDE swg-noded's own cgroup, so the updater's 'systemctl restart swg-noded' doesn't
         # kill the updater itself. systemd-run --scope gives it a fresh transient scope.

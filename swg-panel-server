@@ -23467,6 +23467,15 @@ class Handler(BaseHTTPRequestHandler):
                     ps["err"] = err
                 nodes[nid]["proc_status"] = ps
                 nodes[nid].pop("uninstalled", None)   # any active lifecycle (re-installing / updating / …) means the node is BACK → drop the grey "Uninstalled" tag so its real status (reinstalling → reinstalled-updated / failed) shows through
+                # ⚠️ AND RETIRE THE PENDING REQUEST once the node has actually spoken about it. The sync
+                # loop's fallback decides an update landed by watching the version advance, and after
+                # PROC_GRACE calls everything else "did not complete … e.g. it couldn't reach GitHub" — a
+                # guess, five minutes late, which this verdict exists to replace. Left standing, that guess
+                # OVERWRITES the verdict, so the node's own account of what happened would be the
+                # shorter-lived of the two. The case that made it visible is a box that was ALREADY current:
+                # it reports `uptodate`, advances no version, and was then told its network was at fault.
+                if state in ("updated", "uptodate", "update-failed", "update-aborted"):
+                    nodes[nid].pop("update", None)
                 if state == "reinstalling":   # a re-install adopts the node's CURRENT server keys → drop pinned/drift pubkeys
                     for ov in (nodes[nid].get("ifaces") or {}).values():
                         # ⚠️ …but NEVER an identity we are holding in ESCROW. "Adopt the box's current keys"
