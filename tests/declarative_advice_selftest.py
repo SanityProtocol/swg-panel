@@ -21,7 +21,7 @@ survive, which is a different question — in a container the honest answer is n
 
 Run: python3 tests/declarative_advice_selftest.py      (0 = pass)
 """
-import ast, importlib.machinery, importlib.util, json, os, sys
+import ast, tempfile, importlib.machinery, importlib.util, json, os, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAIL = []
@@ -32,8 +32,50 @@ def check(label, got, want):
         FAIL.append(f"{label}: got {got!r}, want {want!r}")
 
 
+# ── perturbations ──────────────────────────────────────────────────────────────────────────────
+# ⚠️ This gate was green while a whole arm of `_denied_error` had no declarative branch (release
+# qualification 1.8.7, finding 1) — it drove the EXEC refusal twice and the RTNETLINK one never. A gate
+# nobody has broken is a gate nobody has checked, so the experiments live here now:
+#
+#     for f in netlink env order decl; do
+#       python3 tests/declarative_advice_selftest.py --perturb-$f >/dev/null 2>&1; echo "$f rc=$?"
+#     done      # every one MUST print rc=1
+#
+# ⚠️ An anchor that no longer matches is a FALSE PASS, not a skipped edit, so it is a hard error.
+_EDITS = {
+    "--perturb-netlink": ('        if _declarative():\n            return AgentError("no_priv"',
+                          '        if False:\n            return AgentError("no_priv"'),
+    "--perturb-env":     ('    if (os.environ.get("SWG_DECLARATIVE")',
+                          '    if False and (os.environ.get("SWG_DECLARATIVE")'),
+    "--perturb-order":   ('        if _declarative():\n            if aa:',
+                          '        if _declarative() and not _IN_CONTAINER:\n            if aa:'),
+    "--perturb-decl":    ('def _declarative():', 'def _declarative():\n    return False'),
+}
+PERTURB = [a for a in sys.argv[1:] if a.startswith("--perturb")]
+for _f in PERTURB:
+    if _f not in _EDITS:
+        sys.exit("unknown perturbation %s (have: %s)" % (_f, " ".join(sorted(_EDITS))))
+
+
+def read(rel):
+    text = open(os.path.join(ROOT, rel)).read()
+    if rel != "swg-agent":
+        return text
+    for flag in PERTURB:
+        old, new = _EDITS[flag]
+        if old not in text:
+            sys.exit("PERTURBATION %s FOUND NO ANCHOR — it would have passed for the wrong reason" % flag)
+        text = text.replace(old, new, 1)
+    return text
+
+
+_agent_path = os.path.join(ROOT, "swg-agent")
+if PERTURB:
+    _tmp = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False)
+    _tmp.write(read("swg-agent")); _tmp.close()
+    _agent_path = _tmp.name
 spec = importlib.util.spec_from_loader(
-    "swgagent", importlib.machinery.SourceFileLoader("swgagent", os.path.join(ROOT, "swg-agent")))
+    "swgagent", importlib.machinery.SourceFileLoader("swgagent", _agent_path))
 agent = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(agent)
 
@@ -89,14 +131,24 @@ EXEC_DENIED = "/usr/bin/wg-quick: line 32: /usr/bin/ip: Operation not permitted"
 agent._AA_PROFILES = os.path.join(ROOT, "no-such-apparmor-profiles")
 check("bring-up refused at exec", advice(agent._denied_error(EXEC_DENIED).msg), "CONFIGURE")
 
+# ⚠️ AND THE OTHER REFUSAL, which this gate drove NOT ONCE. `_denied_error` classifies two faults: the
+# tool that could not be EXEC'd, and the tool that ran and had its operation refused — and only the
+# first was ever asked what a declared host should be told. The second shipped as one sentence naming
+# a docker-compose.yml a declaratively managed node does not have. It is also the arm the module's own
+# docstring calls the LIKELIER of the two now that NoNewPrivileges is retired, because the tools
+# genuinely execute under whatever policy confines them. Release qualification 1.8.7, finding 1.
+NETLINK_DENIED = "RTNETLINK answers: Operation not permitted"
+check("kernel refused the operation", advice(agent._denied_error(NETLINK_DENIED).msg), "CONFIGURE")
+
 # and the same host WITHOUT the declaration still gets the container answer, or the reorder would
 # simply have swapped one wrong message for another
 os.environ.pop("SWG_DECLARATIVE", None)
 check("undeclared container: no tools", ensure_tool(lambda t: None), "PULL-IMAGE")
 check("undeclared container: refused",  advice(agent._denied_error(EXEC_DENIED).msg), "PULL-IMAGE")
+check("undeclared container: kernel refused", advice(agent._denied_error(NETLINK_DENIED).msg), "PULL-IMAGE")
 
 # ── the deliberate asymmetry ─────────────────────────────────────────────────────────────────────
-src = open(os.path.join(ROOT, "swg-agent")).read()
+src = read("swg-agent")
 fn = next(n for n in ast.walk(ast.parse(src))
           if isinstance(n, ast.FunctionDef) and n.name == "_iface_unit")
 names = {n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
