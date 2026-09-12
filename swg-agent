@@ -1027,15 +1027,44 @@ def _denied_error(msg):
                           "the first, and  dmesg | grep -i \'denied\'  for the second — one of them names "
                           "it. Once the tools run again, this interface creates itself on the next sync.")
     if _NETLINK_DENIED_RE.search(msg or ""):
+        # ⚠️ THE SAME THREE ARMS, IN THE SAME ORDER, AND FOR THE SAME REASON as the exec case above.
+        # This one used to be a single sentence that named the container fix AND the host fix and no
+        # configuration at all — so a declaratively managed node was told to edit a docker-compose.yml
+        # it does not have and run `docker compose up -d`, which is the one instruction that cannot
+        # stick there. It was the only arm in this function without a declarative branch, and by the
+        # docstring above _NETLINK_DENIED_RE it is the arm that became the LIKELIER of the two the
+        # moment this project stopped setting NoNewPrivileges: the tools now genuinely execute under
+        # whatever policy confines them, so being turned down mid-operation is the realistic outcome.
+        # The message most likely to fire was the one that never asked what the host could act on.
+        if _declarative():
+            return AgentError("no_priv",
+                              "the interface tools ran on this node, but the kernel refused the "
+                              "operation they asked for (\"RTNETLINK answers: Operation not "
+                              "permitted\"). This is not a port or subnet conflict: the tools are being "
+                              "denied the network privilege they need. This node's installation is "
+                              "managed declaratively, so this belongs in the system configuration that "
+                              "declares it rather than in a command here: the capability set and the "
+                              "security policy that configuration gives this node have to let the "
+                              "WireGuard tools change network state. Restart the node daemon once the "
+                              "change is in — a rebuild does not restart it on its own, so the old unit "
+                              "keeps running.")
+        if _IN_CONTAINER:
+            return AgentError("no_priv",
+                              "this node's container ran the interface tools, but the kernel refused "
+                              "the operation they asked for (\"RTNETLINK answers: Operation not "
+                              "permitted\"). This is not a port or subnet conflict: the tools are being "
+                              "denied the network privilege they need. A container gets this when its "
+                              "capability set no longer covers what those binaries ask for — give the "
+                              "node NET_ADMIN (in docker-compose.yml: cap_add: [NET_ADMIN]) and "
+                              "recreate it (docker compose up -d), then this interface creates itself "
+                              "on the next sync.")
         return AgentError("no_priv",
                           "the interface tools ran on this node, but the kernel refused the operation "
                           "they asked for (\"RTNETLINK answers: Operation not permitted\"). This is not a "
                           "port or subnet conflict: the tools are being denied the network privilege "
-                          "they need. In a container that means the node is missing NET_ADMIN (in "
-                          "docker-compose.yml: cap_add: [NET_ADMIN], then docker compose up -d). On a "
-                          "host it means a security policy is confining them —  dmesg | grep -i "
-                          "\'denied\'  names which one. Then this interface creates itself on the next "
-                          "sync.")
+                          "they need. On a host that means a security policy is confining them — "
+                          " dmesg | grep -i \'denied\'  names which one. Then this interface creates "
+                          "itself on the next sync.")
     return None
 
 

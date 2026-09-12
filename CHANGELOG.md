@@ -80,7 +80,8 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
   panel no longer blames the port or the subnet. It says which of the two happened and how to tell the
   causes apart.
 - **A node whose installation is declared elsewhere was told to run commands that cannot stick.** Every
-  message that ends in an instruction — tools missing, datapath module missing, tools refused at exec —
+  message that ends in an instruction — tools missing, datapath module missing, a tool refused at exec,
+  a tool the kernel turned down mid-operation —
   now asks whether this node is declared before it asks whether it is a container, because a NixOS host
   running our image is both and only one of those two answers can be acted on there. It was the wrong way
   round everywhere, so such a node was sent to edit a `docker-compose.yml` its host does not have. The
