@@ -84,6 +84,31 @@ SD="${SYSTEMD_DIR:-/etc/systemd/system}"   # overridable for testing
 # a real write.
 unit_dir_writable(){ local p="$SD/.swg-uninstall-probe.$$"
   ( : > "$p" ) 2>/dev/null || return 1; rm -f "$p"; return 0; }
+# ⚠️ …AND THAT PROBE ANSWERS "COULD *I* WRITE HERE", WHICH IS A DIFFERENT QUESTION. As a non-root
+# `--dry-run` — which the root check above deliberately allows — it fails on EVERY ordinary systemd host,
+# because /etc/systemd/system is root-owned everywhere. Answering the DECLARATIVE question from it told an
+# ordinary Ubuntu user their host was NixOS, and made the `--dry-run` that same root check offers
+# unreachable for the only people who need it. So below, the probe is trusted only where it means
+# something — as root — and otherwise the host has to say so itself, which this asks without needing any
+# privilege at all:
+unit_dir_immutable(){   # would a unit written here be unable to stick, whoever we are?
+  [ -e /etc/NIXOS ] && return 0
+  grep -qsE '^ID="?nixos"?[[:space:]]*$' /etc/os-release && return 0
+  # The MOUNT says so. `findmnt --target` answers for the RESOLVED path, which is the point: on a
+  # declarative host $SD is a symlink into an immutable store, and it is the store's mount that is `ro`,
+  # not the symlink. Measured: `rw,relatime,…` on Ubuntu, `ro,nosuid,nodev,relatime` on NixOS.
+  local o=""
+  command -v findmnt >/dev/null 2>&1 && o="$(findmnt -no OPTIONS --target "$SD" 2>/dev/null)"
+  if [ -z "$o" ]; then   # no findmnt, or it could not answer: longest matching mount point in /proc/mounts
+    local rp; rp="$(readlink -f "$SD" 2>/dev/null || echo "$SD")"
+    o="$(awk -v p="$rp/" 'BEGIN{best=0}
+           { mp=$2; if (mp != "/") mp=mp"/"
+             if (index(p, mp)==1 && length(mp)>=best) { best=length(mp); opt=$4 } }
+           END{ print opt }' "${PROC_MOUNTS:-/proc/mounts}" 2>/dev/null)"
+  fi
+  case ",$o," in *,ro,*) return 0 ;; esac
+  return 1
+}
 # A DRY RUN refuses too, unlike the installers'. There the exemption earns its keep — a dry run shows what the
 # bare-metal install WOULD lay down, which is worth seeing on a box you are migrating off. Nothing equivalent is
 # true of an uninstaller: the plan it printed here described deleting the node's interfaces and purging its
@@ -91,7 +116,7 @@ unit_dir_writable(){ local p="$SD/.swg-uninstall-probe.$$"
 # for an operation that cannot happen is not a preview, it is a wrong answer, and it reads as "this tool handles
 # NixOS". The refusal below already names the paths to remove by hand, which is the only thing the plan could
 # honestly have offered.
-if [ -d "$SD" ] && ! unit_dir_writable; then
+if [ -d "$SD" ] && ! unit_dir_writable && { [ "$(id -u)" = 0 ] || unit_dir_immutable; }; then
   # Name NixOS when it IS NixOS. The generic message below is right about the mechanism and useless
   # about the next action: on a declarative host the operator's move is an edit and a rebuild, and
   # the two things they will otherwise trip on — which options to turn off, and that a node removed
@@ -109,7 +134,10 @@ if [ -d "$SD" ] && ! unit_dir_writable; then
     A node removed this way never signs off, so the panel keeps showing it — delete it there too.
     See nix/README.md (\"Removing a node\")."
   fi
-  die "$SD is read-only — this host's services are managed declaratively (NixOS?).
+  # Says what was OBSERVED, not what was concluded from it. Reaching here means either we are root and a
+  # real write failed, or the mount itself reports `ro` — "read-only" was a guess in the first case.
+  die "cannot write to $SD, so nothing here could be disabled — either this host's services are managed
+    declaratively (NixOS?), or the directory sits on a read-only mount.
     Remove the swg services from your system configuration and rebuild instead. Running this
     uninstaller here would delete /opt/swg-* and /var/lib/swg-* while every service kept running."
 fi

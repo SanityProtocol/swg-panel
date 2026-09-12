@@ -153,6 +153,14 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
   covers and, when it is off, the reason. Without that line there is no way to tell afterwards whether an
   interface was being accelerated at the moment somebody reported it was not working.
 
+- **`uninstall.sh --dry-run` without root told you your host was NixOS.** The script offers that dry run to a
+  non-root user on purpose, then decided whether this host's services are declared elsewhere by *writing a
+  file* into `/etc/systemd/system` — which fails for want of root on every ordinary machine, so the refusal
+  it printed named a cause that was not there and the only mode a non-root user is offered could never run.
+  The write probe is now trusted only where it means something, as root; otherwise the host is asked
+  directly, by two signals that need no privilege at all — it says it is NixOS, or the mount holding the
+  unit directory reports itself read-only. A declarative host still refuses either way, which is the point
+  of the check, and the generic refusal now says what was observed instead of asserting read-only.
 ## [1.8.5-beta] — 2026-09-02
 
 ### Added
