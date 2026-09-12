@@ -612,19 +612,24 @@ def _req_lang():
     return v if re.fullmatch(r"[a-z]{2}", v or "") else "en"
 LATEST_REMOTE = {"version": None, "checked": 0, "date": "", "notes": []}
 
-def _fetch_latest_changelog(lang="en", sha=""):
+def _fetch_latest_changelog(lang="en", sha="", deadline=None):
     """Fetch the remote changelog's TOP entry → (version, date, [bullet notes]) for the 'update to …' hover.
     `sha` pins the fetch to an immutable commit (never CDN-stale); '' falls back to the mutable ref. Best-effort
-    — ('', '', []) on any failure; markdown emphasis/code marks stripped from the bullets."""
+    — ('', '', []) on any failure; markdown emphasis/code marks stripped from the bullets.
+
+    tries=1 deliberately: this is the hover's notes, not the answer the operator is waiting for, and its
+    failure is already tolerated by the caller. It gets the API second door (same host, same block) but not
+    a retry budget that would be spent out of the version check's."""
     base = _pinned(_changelog_url(lang), sha)
+    if deadline is None:
+        deadline = time.time() + 16
     try:
         url = base + (("&" if "?" in base else "?") + "cb=" + str(int(time.time())))
-        req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            text = r.read(24000).decode("utf-8", "replace")
+        text = _gh_get(url, {"User-Agent": "swg-panel", "Cache-Control": "no-cache"},
+                       24000, deadline, tries=1).decode("utf-8", "replace")
     except Exception:
         # a translated changelog may simply not be published yet → fall back to English rather than nothing
-        return ("", "", []) if lang == "en" else _fetch_latest_changelog("en", sha)
+        return ("", "", []) if lang == "en" else _fetch_latest_changelog("en", sha, deadline)
     version, date, notes, started, cur = "", "", [], False, []
     def _flush():
         if cur:
@@ -684,9 +689,11 @@ def _changelog_entries(lang="en"):
     try:
         base = _pinned(_changelog_url(lang), LATEST_REMOTE.get("sha", ""))
         url = base + (("&" if "?" in base else "?") + "cb=" + str(now))
-        req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            text = r.read(200000).decode("utf-8", "replace")
+        # ⚠️ The API door serves a file RAW only below 1 MB. CHANGELOG.ru.md is already ~216 KB and grows
+        # every release; when it approaches that, this fallback stops working for the browser (the version
+        # check's VERSION never will) and the blob API becomes the next door. Read cap stays 200 KB.
+        text = _gh_get(url, {"User-Agent": "swg-panel", "Cache-Control": "no-cache"},
+                       200000, time.time() + 20, tries=1).decode("utf-8", "replace")
     except Exception:
         # not published in this language (yet) → English, so the browser always has something to show
         return cache["entries"] or (_changelog_entries("en") if lang != "en" else [])
@@ -807,13 +814,63 @@ def _why_fetch_failed(url, e):
 # budget has to be the whole check's, not per-fetch: without it three fetches x four tries x a 20s timeout is
 # minutes of spinner. _http_retry stops retrying once the deadline passes, and the per-attempt timeout is
 # clamped to what is left, so the button answers inside its budget whatever the network does.
-def _gh_get(url, headers, nbytes, deadline, timeout=12):
-    def _do():
-        left = deadline - time.time()
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=max(3.0, min(timeout, left))) as r:
-            return r.read(nbytes)
-    return _http_retry(_do, tries=3, deadline=deadline)   # defined further down; resolved at call time
+#
+# ── and a SECOND DOOR onto the same file ────────────────────────────────────────────────────────────────
+# raw.githubusercontent.com resolves into 185.199.108-111.x, the range actually filtered in the networks this
+# product is most used in. api.github.com does not: measured from two vantage points it answered on
+# 140.82.121.6 and 4.225.11.201 — which is the point, and also why no single address is named as a promise.
+# Same repo, same commit, same TLS, same trust: only the infrastructure differs, so
+# this adds no party to trust, which is why it can ship well ahead of the signing work that every OTHER
+# mirror would need first (docs/UPDATE-RESILIENCE-PLAN.md, Phase 0a).
+#
+# ⚠️ IT IS THE MASTER THAT MAKES THIS URGENT rather than merely nice. A `master` install is the panel AND a
+# node on one box, so when that box is the filtered one there is no healthy control plane to fall back on —
+# the panel cannot see the version and nothing on the box can. And note what this does NOT do: the UPDATE
+# itself is still `curl raw.githubusercontent.com/.../bootstrap.sh | bash`, untouched here. This makes the
+# CHECK work; the plan's later phases are what make the update work.
+def _api_contents_url(url):
+    """The same file, through the GitHub API's contents endpoint instead of raw. "" for anything that is not
+    a github raw URL — an operator's own mirror (SWG_LATEST_URL) has no such second door, and guessing one
+    would be inventing a source.
+
+    The `?cb=` buster is dropped on the way: it exists to fight raw's CDN, and this is not that CDN."""
+    m = re.match(r"^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$", url or "")
+    if not m:
+        return ""
+    owner, repo, ref, path = m.groups()
+    path = path.split("?", 1)[0].split("#", 1)[0]
+    if not path:
+        return ""
+    return ("https://api.github.com/repos/%s/%s/contents/%s?ref=%s"
+            % (quote(owner, safe=""), quote(repo, safe=""), quote(path), quote(ref, safe="")))
+
+
+def _gh_get(url, headers, nbytes, deadline, timeout=12, tries=3):
+    """Fetch `url`, retried, bounded by `deadline` — falling back to the API door if raw cannot be had.
+
+    Raises the RAW error when both fail, not the fallback's: raw is the primary source and its cause is the
+    one an operator can act on ("the connection was reset" names a middlebox; the API's 403 that follows
+    would only name our own quota)."""
+    def _fetch(u, hdrs):
+        def _do():
+            left = deadline - time.time()
+            req = urllib.request.Request(u, headers=hdrs)
+            with urllib.request.urlopen(req, timeout=max(3.0, min(timeout, left))) as r:
+                return r.read(nbytes)
+        return _http_retry(_do, tries=tries, deadline=deadline)   # defined further down; resolved at call time
+    try:
+        return _fetch(url, headers)
+    except Exception as e:
+        first = e
+    # Only worth trying while there is budget left to try it in — a raw fetch that timed out slowly has
+    # already spent what the click had, and a second door opened after the answer is due helps nobody.
+    alt = _api_contents_url(url)
+    if not alt or time.time() >= deadline:
+        raise first
+    try:
+        return _fetch(alt, dict(headers, Accept="application/vnd.github.raw"))
+    except Exception:
+        raise first
 
 
 def _check_latest_remote(budget=120):
@@ -845,7 +902,7 @@ def _check_latest_remote(budget=120):
             v = ""
         if v:
             LATEST_REMOTE["version"] = v
-            cv, cdate, cnotes = _fetch_latest_changelog(sha=sha)   # bubble notes, from the same commit
+            cv, cdate, cnotes = _fetch_latest_changelog(sha=sha, deadline=deadline)   # bubble notes, same commit
             # Never pair a new version with the PREVIOUS release's notes, and never let a FAILED changelog
             # fetch blank good ones. The SHA path cannot mismatch (one commit); the ref fallback can, and a
             # fetch that returned nothing at all used to fall through this guard and overwrite the bubble
