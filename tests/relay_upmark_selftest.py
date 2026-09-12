@@ -352,9 +352,15 @@ finally:
 check("…and both run-models sweep the same way",
       nsrc.count("sorted((set(_RELAY) | _relay_existing()) - set(want))") == 2,
       "the container arm leaks the same way if it walks memory alone")
-check("…and the container arm removes the env file too, or the record outlives the container",
-      "os.unlink(os.path.join(RELAY_ENV_DIR, iface" in nsrc[nsrc.index("def _relay_supervise_docker("):
-                                                          nsrc.index("def _relay_supervise(")])
+# ⚠️ THIS CHECK USED TO DEMAND THE CONTAINER ARM UNLINK AN ENV FILE. It writes none — that record is the
+# systemd arm's — so the demand was incoherent, and satisfying it had papered over the real gap: the arm
+# had no durable record of its own at all. Its record is the CONTAINER, so what it must do on a successful
+# removal is drop that instance from the one-shot registry.
+_dk_arm = nsrc[nsrc.index("def _relay_supervise_docker("):nsrc.index("def _relay_supervise(")]
+check("⚠️ the container arm forgets the instance it actually removed",
+      '_RELAY_UNITS["at"].discard(iface)' in _dk_arm, "otherwise every later pass re-reaps something gone")
+check("…and does not pretend to own an env file it never wrote",
+      "os.unlink(os.path.join(RELAY_ENV_DIR" not in _dk_arm, _dk_arm[-200:])
 check("a missing env dir is not an error", isinstance(N._relay_existing(), set))
 # ⚠️ AND SYSTEMD IS ASKED TOO, ONCE. The env file is OUR bookkeeping, so it cannot see an orphan left by a
 # build with a different naming scheme — which is exactly what a downgrade leaves. Enumerating units finds
@@ -373,6 +379,23 @@ check("⚠️ an orphan with NO env record is still found, via systemd",
       {"wg1.ghostpeer", "wg8"} <= got, got)
 check("…and it is asked exactly once per process", len([c for c in _seen_cmd if "list-units" in c]) == 1,
       _seen_cmd)
+# ⚠⚠ AND THE CONTAINER ARM ANSWERS FOR ITSELF. It writes NO env files — that record belongs to the systemd
+# arm — so asking only systemd left the sweep on a container node walking `_RELAY` alone: the very bug this
+# function exists to fix, unfixed for half the fleet. Each arm answers or neither is answered for.
+_seen_d = []
+N._RELAY_UNITS["at"] = None
+_sv2, N.run = N.run, lambda a, **k: (_seen_d.append(" ".join(a)),
+                                     type("R", (), {"stdout": "swg-relay-wg8\nswg-relay-wg1.peerA\nnot-ours\n",
+                                                    "returncode": 0})())[1]
+_svk, N.NODE_KIND = N.NODE_KIND, "docker"
+try:
+    gotd = N._relay_existing()
+finally:
+    N.run, N.NODE_KIND = _sv2, _svk
+check("⚠️ a CONTAINER node enumerates its own containers", {"wg8", "wg1.peerA"} <= gotd, gotd)
+check("…and does not claim someone else's container", "not-ours" not in gotd and not any("not-ours" in g for g in gotd), gotd)
+check("…by asking docker, not systemd", any("docker" in c and "ps" in c for c in _seen_d)
+      and not any("list-units" in c for c in _seen_d), _seen_d)
 N._RELAY_UNITS["at"] = None
 check("…and a second call does not fork again",
       (lambda: (N.__dict__.__setitem__("_RELAY_UNITS", {"at": {"x"}}), N._relay_existing() >= {"x"})[1])())

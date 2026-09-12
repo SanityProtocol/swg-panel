@@ -5696,15 +5696,25 @@ def _relay_existing():
     out = set()
     with contextlib.suppress(OSError):
         out = {f[:-4] for f in os.listdir(RELAY_ENV_DIR) if f.endswith(".env")}
-    # ⚠️ AND ONCE PER PROCESS, ASK SYSTEMD ITSELF — the same question `uninstall.sh` asks, and for the same
-    # reason. The env file is OUR bookkeeping, so it only finds instances we wrote a record for; an orphan
-    # left by a build with a DIFFERENT naming scheme, or one whose record was removed while its unit
-    # survived, is invisible to it. Enumerating units finds those. It is a fork, so it happens exactly once,
-    # on the first pass — the same trade the unconditional disarm at startup already makes a few lines into
-    # `reconcile_relay`: be thorough once about what we inherited, then trust our own state.
+    # ⚠️ AND ONCE PER PROCESS, ASK THE RUN-MODEL'S OWN REGISTRY — the same question `uninstall.sh` asks.
+    # The env file is OUR bookkeeping, so it only finds instances we wrote a record for; an orphan left by a
+    # build with a DIFFERENT naming scheme, or one whose record was removed while the thing itself survived,
+    # is invisible to it. systemd and docker each know what is actually there. It is a fork, so it happens
+    # exactly once, on the first pass — the same trade the unconditional disarm at startup already makes:
+    # be thorough once about what we inherited, then trust our own state.
+    #
+    # ⚠️ AND THE CONTAINER ARM IS NOT AN AFTERTHOUGHT HERE. It writes NO env files at all — that record is
+    # the systemd arm's — so asking only systemd left the sweep on a container node walking `_RELAY` alone,
+    # which is the exact bug this function exists to fix, unfixed for half the fleet. Each arm answers for
+    # itself or neither is answered for.
     if _RELAY_UNITS["at"] is None:
         _RELAY_UNITS["at"] = set()
-        if NODE_KIND != "docker":
+        if NODE_KIND == "docker":
+            r = run(["docker", "ps", "-a", "--filter", "name=" + _relay_cname(""), "--format", "{{.Names}}"])
+            for ln in (r.stdout or "").split():
+                if ln.startswith(_relay_cname("")):
+                    _RELAY_UNITS["at"].add(ln[len(_relay_cname("")):])
+        else:
             r = run(["sh", "-c", "systemctl list-units --all --plain --no-legend 'swg-relay@*.service' "
                                  "2>/dev/null | awk '{print $1}'"])
             for ln in (r.stdout or "").split():
@@ -6418,11 +6428,13 @@ def _relay_supervise_docker(want, quota_pct, res):
             res["changed"] += 1
     for iface in sorted((set(_RELAY) | _relay_existing()) - set(want)):
         # Same rule as the systemd arm: the record outlives a failed removal, so the next pass retries.
+        # ⚠️ The record HERE is the container itself, not an env file — this arm writes none — so dropping
+        # it from the one-shot registry is what stops the next pass re-reaping something already gone.
         if run(["docker", "rm", "-f", _relay_cname(iface)], timeout=30).returncode == 0:
             with contextlib.suppress(OSError):
                 os.unlink(_relay_sock(iface))
-            with contextlib.suppress(OSError):
-                os.unlink(os.path.join(RELAY_ENV_DIR, iface + ".env"))
+            if _RELAY_UNITS["at"] is not None:
+                _RELAY_UNITS["at"].discard(iface)
             _RELAY.pop(iface, None)
     return set(want)
 
