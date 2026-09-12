@@ -70,6 +70,18 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
 
 ### Fixed
 
+- **“Couldn’t reach the repo to check for updates” named no cause, and gave up at the first stumble.** The
+  check behind the header’s Check status button made a single attempt with a short timeout — the one fetch in
+  the product that never got the retry everything else has, on networks where a reset injected mid-connection
+  is ordinary — so one blip decided the answer, while the same fetch from a shell on the same box succeeded.
+  It now retries, bounded by a budget so the button still answers promptly, and when it genuinely cannot get
+  through it says what stopped it: no DNS, a certificate it could not verify, a refused or reset connection,
+  no route, a rate limit, or a page that answered but was not a version. The reason is also written to the
+  panel’s log, so a failure can be diagnosed after the fact. A block page answering 200 is no longer stored
+  as the latest version — which used to leave the header quietly claiming the panel was up to date — a
+  changelog fetch that failed no longer blanks the release notes already on screen, and a check that cannot
+  reach GitHub no longer goes on to spend another 25 seconds per proxy family discovering the same thing.
+
 - **On a distribution that confines the WireGuard tools with AppArmor, no interface could be created at
   all.** The node daemon ran with `NoNewPrivileges`, and a process carrying that cannot be switched into an
   AppArmor profile — so the kernel refused to *execute* `ip` and `wg`/`awg`, and `wg-quick` died before it

@@ -753,37 +753,47 @@ UPDATE_TRIGGER = os.environ.get("SWG_UPDATE_TRIGGER")
 # The sentences are whole, not fragments assembled from a stem and a cause: {v1} lands in a different
 # place in Russian, and a translator needs the sentence to move it.
 def _why_fetch_failed(url, e):
-    """(key, vars) for perr-style lookup — what stopped this fetch, said so the operator knows where to look."""
+    """What stopped this fetch, as a perr() message — the panel's own convention for a sentence carrying values,
+    so the browser looks the English up and puts {v1} where its own language puts it.
+
+    ⚠️ EVERY SENTENCE IS WRITTEN INLINE AT ITS OWN perr() CALL, not handed to one later as a (key, vars)
+    pair: .campaign/i18n-extract.mjs finds a server sentence by the SHAPE around it, and a perr call with the
+    literal right there is one of the shapes it knows. Written any other way these read as ORPHANED in the
+    catalog — which, as that file warns twice, is how a working translation gets deleted as dead.
+
+    ⚠️ And do not spell that shape out in prose here. The first version of this docstring quoted it, opening
+    quote and all, and the gate scraped the REST OF THE DOCSTRING as an untranslated panel sentence — red on
+    a comment explaining why the gate goes red. A scraper cannot tell the thing from the mention of it."""
     host = ""
     with contextlib.suppress(Exception):
         host = urlparse(url).hostname or ""
-    v = {"v1": host or (url or "the repo")}
+    host = host or (url or "the repo")
     # HTTPError IS a URLError, and it carries its own meaning — so it is read before the unwrap below.
     if isinstance(e, urllib.error.HTTPError):
         if e.code in (401, 403, 429):
-            return "{v1} is rate-limiting this server's address — try the check again in a few minutes.", v
-        return "{v1} answered {v2} to the update check.", dict(v, v2="HTTP %d" % e.code)
+            return perr("{v1} is rate-limiting this server's address — try the check again in a few minutes.", v1=host)
+        return perr("{v1} answered {v2} to the update check.", v1=host, v2="HTTP %d" % e.code)
     # Everything else arrives WRAPPED: urlopen raises URLError(reason=<the real OSError>), so testing the
     # outer object would match nothing below and every cause would read as the generic fallback.
     if isinstance(e, urllib.error.URLError) and isinstance(getattr(e, "reason", None), BaseException):
         e = e.reason
     if isinstance(e, ssl.SSLCertVerificationError):    # a subclass of SSLError — must be tested first
-        return ("Couldn't reach {v1} to check for updates — its TLS certificate could not be verified. "
-                "The CA certificates on this server may be missing or out of date."), v
+        return perr("Couldn't reach {v1} to check for updates — its TLS certificate could not be verified. "
+                    "The CA certificates on this server may be missing or out of date.", v1=host)
     if isinstance(e, ssl.SSLError):
-        return "Couldn't reach {v1} to check for updates — the TLS connection failed.", v
+        return perr("Couldn't reach {v1} to check for updates — the TLS connection failed.", v1=host)
     if isinstance(e, socket.gaierror):
-        return "Couldn't reach {v1} to check for updates — its name could not be resolved.", v
+        return perr("Couldn't reach {v1} to check for updates — its name could not be resolved.", v1=host)
     if isinstance(e, ConnectionRefusedError):
-        return "Couldn't reach {v1} to check for updates — the connection was refused.", v
+        return perr("Couldn't reach {v1} to check for updates — the connection was refused.", v1=host)
     if isinstance(e, ConnectionResetError):
-        return "Couldn't reach {v1} to check for updates — the connection was reset.", v
+        return perr("Couldn't reach {v1} to check for updates — the connection was reset.", v1=host)
     # socket.timeout IS TimeoutError, and TimeoutError is an OSError — so this precedes the errno test.
     if isinstance(e, (socket.timeout, TimeoutError)):
-        return "Couldn't reach {v1} to check for updates — it did not answer in time.", v
+        return perr("Couldn't reach {v1} to check for updates — it did not answer in time.", v1=host)
     if isinstance(e, OSError) and e.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH):
-        return "Couldn't reach {v1} to check for updates — there is no route to it from this server.", v
-    return "Couldn't reach {v1} to check for updates — {v2}.", dict(v, v2=type(e).__name__)
+        return perr("Couldn't reach {v1} to check for updates — there is no route to it from this server.", v1=host)
+    return perr("Couldn't reach {v1} to check for updates — {v2}.", v1=host, v2=type(e).__name__)
 
 
 # One GitHub GET, as patient as the rest of the product already is. Everything else here that fetches from
@@ -810,8 +820,8 @@ def _check_latest_remote(budget=120):
     """Ask the repo what the newest published version is. True only if we actually reached it.
 
     `budget` is the WHOLE check's, in seconds, not one fetch's — the hourly loop can afford to sit through
-    every retry, but a click cannot, and the same code serves both. On failure LATEST_REMOTE["why"] holds the
-    (key, vars) naming the cause, so the header's check button can say what stopped it instead of shrugging."""
+    every retry, but a click cannot, and the same code serves both. On failure LATEST_REMOTE["why"] holds a
+    perr() message naming the cause, so the header's check button can say what stopped it instead of shrugging."""
     ok, why, url = False, None, REMOTE_VERSION_URL
     deadline = time.time() + max(5, budget)
     try:
@@ -826,6 +836,13 @@ def _check_latest_remote(budget=120):
         url = vsrc + (("&" if "?" in vsrc else "?") + "cb=" + str(int(time.time())))
         v = _short_ver(_gh_get(url, {"User-Agent": "swg-panel", "Cache-Control": "no-cache"},
                                64, deadline).decode("utf-8", "replace").strip())
+        # ⚠️ AND IT HAS TO LOOK LIKE A VERSION. _short_ver falls back to handing the whole string back when no
+        # token starts with a digit, which is the right answer for a VERSION file and the wrong one for a
+        # captive portal or an ISP block page — those answer 200 with HTML, and the panel used to store that
+        # blob AS the latest version. _ver_behind then read it as unparseable, so the header said "up to date":
+        # a silent wrong answer, on exactly the networks this check exists to survive. Louder is safer here.
+        if _vtuple(v) == (0, 0, 0):      # not a version -> treat it as no answer at all
+            v = ""
         if v:
             LATEST_REMOTE["version"] = v
             cv, cdate, cnotes = _fetch_latest_changelog(sha=sha)   # bubble notes, from the same commit
@@ -840,7 +857,7 @@ def _check_latest_remote(budget=120):
         else:
             # Reached it, and what came back was not a version — a captive portal or a block page answering
             # 200 for raw.githubusercontent.com looks exactly like this, and says nothing about the network.
-            why = ("{v1} answered, but not with a version.", {"v1": urlparse(url).hostname or url})
+            why = perr("{v1} answered, but not with a version.", v1=(urlparse(url).hostname or url))
     except Exception as e:
         why = _why_fetch_failed(url, e)
     LATEST_REMOTE["checked"] = int(time.time())
@@ -20147,8 +20164,7 @@ def api(method, path, qs, body, deps):
             # ALSO IN THE JOURNAL. The toast is seen by whoever clicked, once; a panel being supported from
             # the outside needs the cause somewhere it can be read later. Only on the operator-driven check,
             # so an unreachable GitHub cannot fill the log an hour at a time.
-            sys.stderr.write("swg-panel: update check failed — %s\n"
-                             % perr(_why[0], **_why[1])["error"])
+            sys.stderr.write("swg-panel: update check failed — %s\n" % _why["error"])
         # ⚠️ AND NOT WHEN GITHUB IS ALREADY KNOWN UNREACHABLE. This resolves a release tag per deployed fork,
         # each one a curl with --max-time 25, so on a box that cannot reach GitHub the click that just proved
         # it would go on to spend another 25s per fork discovering the same thing — a button that hangs for
@@ -20162,7 +20178,7 @@ def api(method, path, qs, body, deps):
             # WHY it could not be reached, as a translatable sentence — DNS, an unverifiable certificate, a
             # reset, a rate limit. Absent when the check succeeded; an older SPA ignores it and shows the
             # generic message it always did.
-            **({"why_key": _why[0], "why_vars": _why[1]} if _why else {}),
+            **({"why_key": _why["error_key"], "why_vars": _why["error_vars"]} if _why else {}),
             "latest_remote": LATEST_REMOTE.get("version"),
             "latest_remote_date": _latest_notes(_req_lang())[0],
             "latest_remote_notes": _latest_notes(_req_lang())[1],

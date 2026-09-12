@@ -2508,6 +2508,30 @@ export const STR = {
   "Update started — the panel will restart shortly.": "Обновление запущено — панель скоро перезапустится.",
   "Update started — the panel will restart shortly. The nodes ({v1}) follow on their next sync.": "Обновление запущено — панель скоро перезапустится. Ноды ({v1}) подтянутся при следующей синхронизации.",
   "Couldn't reach the repo to check for updates.": "Не удалось достучаться до репозитория за обновлениями.",
+  // Why the repo could not be reached. The stem is repeated in every one of these rather than glued to a
+  // translated fragment: {v1} and the cause sit in a different order in Russian, and a translator needs the
+  // whole sentence to move them. «Достучаться» matches the generic line above, which operators already know.
+  "Couldn't reach {v1} to check for updates — its name could not be resolved.":
+    "Не удалось достучаться до {v1} за обновлениями — имя не резолвится.",
+  "Couldn't reach {v1} to check for updates — the connection was refused.":
+    "Не удалось достучаться до {v1} за обновлениями — соединение отклонено.",
+  "Couldn't reach {v1} to check for updates — the connection was reset.":
+    "Не удалось достучаться до {v1} за обновлениями — соединение сброшено.",
+  "Couldn't reach {v1} to check for updates — there is no route to it from this server.":
+    "Не удалось достучаться до {v1} за обновлениями — с этого сервера до него нет маршрута.",
+  "Couldn't reach {v1} to check for updates — it did not answer in time.":
+    "Не удалось достучаться до {v1} за обновлениями — он не ответил вовремя.",
+  // budget-ok: toast, wraps
+  "Couldn't reach {v1} to check for updates — its TLS certificate could not be verified. The CA certificates on this server may be missing or out of date.":
+    "Не удалось достучаться до {v1} за обновлениями — не удалось проверить его TLS-сертификат. Возможно, на этом сервере нет корневых сертификатов или они устарели.",
+  "Couldn't reach {v1} to check for updates — the TLS connection failed.":
+    "Не удалось достучаться до {v1} за обновлениями — не удалось установить TLS-соединение.",
+  "Couldn't reach {v1} to check for updates — {v2}.":
+    "Не удалось достучаться до {v1} за обновлениями — {v2}.",
+  "{v1} is rate-limiting this server's address — try the check again in a few minutes.":
+    "{v1} ограничивает запросы с адреса этого сервера — повторите проверку через несколько минут.",
+  "{v1} answered {v2} to the update check.": "{v1} ответил {v2} на проверку обновлений.",
+  "{v1} answered, but not with a version.": "{v1} ответил, но не версией.",
   "Loading changelog…": "Загружаю изменения…",
   "No changelog available.": "Список изменений недоступен.",
   // budget-ok: hover-bubble footer, wraps

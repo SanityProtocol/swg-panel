@@ -24,7 +24,7 @@ import {
   trackIfaceOps, StoreOffBanner, ifaceColor, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
   rate,
 } from "./ui.js";
-import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
+import { T, Trich, Tsplit, plural, pluralWord, srvText, srvVars } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
          RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, lossColor, histTime, ChartHover, IfaceThroughput,
          RANGE_CAP, lossColorMesh } from "./charts.js";
@@ -1344,7 +1344,12 @@ export async function checkForUpdate(e, nodeId) {
     const r = await api.checkUpdate();
     await Store.poll();
     if (!r.ok) toast(srvText(r) || T("Couldn't check for updates."), "err");
-    else if (r.data && !r.data.checked) toast(T("Couldn't reach the repo to check for updates."), "err");
+    // The panel now says WHY it could not reach the repo — no DNS, an unverifiable certificate, a reset, a
+    // rate limit — because the bare sentence was a dead end: it named no cause and left nothing behind, so a
+    // panel being supported from the outside could not be diagnosed at all. The generic line stays as the
+    // fallback for a panel too old to send a reason.
+    else if (r.data && !r.data.checked) toast(r.data.why_key ? T(r.data.why_key, srvVars(r.data.why_vars))
+                                                             : T("Couldn't reach the repo to check for updates."), "err");
     else if (nodeId) {                               // invoked from a NODE header → show the result THERE, not on the panel header
       const n = (Store.nodes || []).find(x => x.id === nodeId);   // outdated → its "update node" button appears; up-to-date → flash on the node row
       if (!(n && n.outdated)) { Store.nodeUpdFlash = { id: nodeId, until: Date.now() + 5000 }; Store.apply(); setTimeout(() => Store.apply(), 5100); }
