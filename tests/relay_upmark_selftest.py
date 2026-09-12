@@ -356,6 +356,35 @@ check("…and the container arm removes the env file too, or the record outlives
       "os.unlink(os.path.join(RELAY_ENV_DIR, iface" in nsrc[nsrc.index("def _relay_supervise_docker("):
                                                           nsrc.index("def _relay_supervise(")])
 check("a missing env dir is not an error", isinstance(N._relay_existing(), set))
+# ⚠️ AND SYSTEMD IS ASKED TOO, ONCE. The env file is OUR bookkeeping, so it cannot see an orphan left by a
+# build with a different naming scheme — which is exactly what a downgrade leaves. Enumerating units finds
+# those; doing it once keeps it off the 5-second loop, the same trade the startup disarm already makes.
+_seen_cmd = []
+N._RELAY_UNITS["at"] = None
+_sv, N.run = N.run, lambda a, **k: (_seen_cmd.append(" ".join(a)),
+                                    type("R", (), {"stdout": "swg-relay@wg1.ghostpeer.service\nswg-relay@wg8.service\n",
+                                                   "returncode": 0})())[1]
+_sv_kind, N.NODE_KIND = N.NODE_KIND, "bare"
+try:
+    got = N._relay_existing()
+finally:
+    N.run, N.NODE_KIND = _sv, _sv_kind
+check("⚠️ an orphan with NO env record is still found, via systemd",
+      {"wg1.ghostpeer", "wg8"} <= got, got)
+check("…and it is asked exactly once per process", len([c for c in _seen_cmd if "list-units" in c]) == 1,
+      _seen_cmd)
+N._RELAY_UNITS["at"] = None
+check("…and a second call does not fork again",
+      (lambda: (N.__dict__.__setitem__("_RELAY_UNITS", {"at": {"x"}}), N._relay_existing() >= {"x"})[1])())
+# The record must survive a stop that did not take, or nothing can ever find the unit again — and BOTH
+# arms have to honour that, so each is located by its own stop command rather than by a shared prefix.
+_sysd = nsrc[nsrc.index("systemctl disable --now "):][:900]
+check("⚠️ systemd: the env record survives a stop that did not take",
+      "is-active" in _sysd and _sysd.index("is-active") < _sysd.index("os.unlink"),
+      "an unconditional unlink loses the only handle on a unit whose stop failed")
+_dock = nsrc[nsrc.index('run(["docker", "rm", "-f", _relay_cname(iface)]'):][:600]
+check("⚠️ docker: the same, keyed on the removal actually succeeding",
+      ".returncode == 0" in _dock and _dock.index(".returncode == 0") < _dock.index("os.unlink"), _dock[:160])
 
 bad = len(FAILS)
 if PERTURB:

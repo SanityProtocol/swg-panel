@@ -5674,6 +5674,9 @@ RELAY_DIR_LOCAL = "/var/lib/swg-noded/relay"          # inside swg-noded; SWG_HO
 def _relay_cname(iface): return "swg-relay-" + iface
 
 
+_RELAY_UNITS = {"at": None}      # instances systemd knows about; read ONCE per process — see _relay_existing
+
+
 def _relay_existing():
     """Every relay instance this node has ON DISK, whatever started it.
 
@@ -5693,7 +5696,22 @@ def _relay_existing():
     out = set()
     with contextlib.suppress(OSError):
         out = {f[:-4] for f in os.listdir(RELAY_ENV_DIR) if f.endswith(".env")}
-    return out
+    # ⚠️ AND ONCE PER PROCESS, ASK SYSTEMD ITSELF — the same question `uninstall.sh` asks, and for the same
+    # reason. The env file is OUR bookkeeping, so it only finds instances we wrote a record for; an orphan
+    # left by a build with a DIFFERENT naming scheme, or one whose record was removed while its unit
+    # survived, is invisible to it. Enumerating units finds those. It is a fork, so it happens exactly once,
+    # on the first pass — the same trade the unconditional disarm at startup already makes a few lines into
+    # `reconcile_relay`: be thorough once about what we inherited, then trust our own state.
+    if _RELAY_UNITS["at"] is None:
+        _RELAY_UNITS["at"] = set()
+        if NODE_KIND != "docker":
+            r = run(["sh", "-c", "systemctl list-units --all --plain --no-legend 'swg-relay@*.service' "
+                                 "2>/dev/null | awk '{print $1}'"])
+            for ln in (r.stdout or "").split():
+                m = re.match(r"^swg-relay@(.+)\.service$", ln.strip())
+                if m:
+                    _RELAY_UNITS["at"].add(m.group(1))
+    return out | _RELAY_UNITS["at"]
 
 def _relay_capable():
     """Can this node run the relay at all? -> (ok, why). Reported to the panel, which refuses to OFFER the
@@ -6399,12 +6417,13 @@ def _relay_supervise_docker(want, quota_pct, res):
         else:
             res["changed"] += 1
     for iface in sorted((set(_RELAY) | _relay_existing()) - set(want)):
-        run(["docker", "rm", "-f", _relay_cname(iface)], timeout=30)
-        with contextlib.suppress(OSError):
-            os.unlink(_relay_sock(iface))
-        with contextlib.suppress(OSError):
-            os.unlink(os.path.join(RELAY_ENV_DIR, iface + ".env"))
-        _RELAY.pop(iface, None)
+        # Same rule as the systemd arm: the record outlives a failed removal, so the next pass retries.
+        if run(["docker", "rm", "-f", _relay_cname(iface)], timeout=30).returncode == 0:
+            with contextlib.suppress(OSError):
+                os.unlink(_relay_sock(iface))
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(RELAY_ENV_DIR, iface + ".env"))
+            _RELAY.pop(iface, None)
     return set(want)
 
 
@@ -6459,9 +6478,15 @@ def _relay_supervise(want, quota_pct, res):
     # `want` every pass), so this only reclaims the process.
     for iface in sorted((set(_RELAY) | _relay_existing()) - set(want)):
         run(["sh", "-c", "systemctl disable --now " + shlex.quote(_relay_unit(iface)) + " >/dev/null 2>&1"])
-        with contextlib.suppress(OSError):
-            os.unlink(os.path.join(RELAY_ENV_DIR, iface + ".env"))
-        _RELAY.pop(iface, None)
+        # ⚠️ THE RECORD OUTLIVES A FAILED STOP. Removing the env file unconditionally meant that if the
+        # stop did not take — and it is run with its output thrown away, so nothing here would notice — the
+        # unit kept running and the only thing that could have found it again was gone. Keep the record
+        # until the unit is actually down; the next pass tries again.
+        if run(["systemctl", "is-active", "--quiet", _relay_unit(iface)]).returncode != 0:
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(RELAY_ENV_DIR, iface + ".env"))
+            _RELAY_UNITS["at"].discard(iface)
+            _RELAY.pop(iface, None)
     return set(want)
 
 
