@@ -219,6 +219,61 @@ fi
 [ -n "$_fetched" ] || die "could not fetch $REPO @ $REF — needs git, or curl+tar, and a reachable GitHub"
 cd "$TMP/swg-panel"
 
+# ── verify what we just fetched, before anything in it is run ───────────────────────────────────────────
+#
+# ⚠️ THE VERIFIER CANNOT LIVE IN THE TREE IT VERIFIES, and neither can the key. That is why this is here,
+# in the one file that arrives separately — curl'd over TLS from GitHub — rather than in lib/common.sh with
+# the other shared helpers. A check that an attacker ships alongside their own payload checks nothing.
+#
+# What this buys TODAY, with GitHub as the only transport: integrity against a corrupted fetch and against
+# raw's CDN, which is a party we do not control and which has already served this project stale content.
+# What it is FOR is docs/UPDATE-RESILIENCE-PLAN.md Phase C — the moment a release may come from a mirror or
+# a CDN, the signature is the only thing standing between "another way in" and "another way to be owned".
+#
+# ⚠️ NOT YET FAIL-CLOSED, and this is the transition the plan describes rather than an oversight. A release
+# published before Phase A carries no manifest, and a box updating FROM one must not be bricked by the
+# absence of a file that did not exist when it was made. So: a manifest that is present is ENFORCED, and an
+# absent one is announced and allowed. Once a signed release is the oldest one anyone can be running, this
+# becomes a refusal — one line, marked below.
+#
+# SWG_SKIP_VERIFY=1 is the revert story, deliberately loud and deliberately not a pretty flag: a pinned key
+# cannot be unshipped from boxes that already have it, so there has to be a way out that does not require an
+# update to deliver it.
+RELEASE_KEYS_D="$TMP/.swg-release-keys"
+emit_release_keys(){
+  mkdir -p "$RELEASE_KEYS_D"
+  # Two keys, current and next, from day one. Rotation with no overlap window strands every box that has
+  # not updated yet — and the boxes hardest to reach are exactly the ones that would be stranded.
+  # ⚠️ PLACEHOLDERS. Until real keys are pasted here no release can be signed, and the check below finds no
+  # manifest and says so. Generate with:
+  #     openssl ecparam -name prime256v1 -genkey -noout -out release-1.key
+  #     openssl ec -in release-1.key -pubout -out release-1.pub
+  :
+}
+verify_fetched_tree(){
+  local man="MANIFEST.sha256" sig="MANIFEST.sha256.sig" k ok=no
+  if [ "${SWG_SKIP_VERIFY:-}" = 1 ]; then
+    warn "SWG_SKIP_VERIFY=1 — installing $REF WITHOUT verifying its signature"
+    return 0
+  fi
+  if [ ! -f "$man" ] || [ ! -f "$sig" ]; then
+    # ⚠️ MAKE THIS A `die` once every supported release carries a manifest.
+    info "this release carries no signature yet — installing it unverified"
+    return 0
+  fi
+  need openssl || die "$REF is signed but this box has no openssl to check it with — install openssl (it is in every base repo), or set SWG_SKIP_VERIFY=1 if you accept an unverified install"
+  need sha256sum || die "$REF is signed but this box has no sha256sum to check it with (coreutils)"
+  emit_release_keys
+  for k in "$RELEASE_KEYS_D"/*.pub; do
+    [ -f "$k" ] || continue
+    if openssl dgst -sha256 -verify "$k" -signature "$sig" "$man" >/dev/null 2>&1; then ok=yes; break; fi
+  done
+  [ "$ok" = yes ] || die "the signature on $REF does not match any release key this bootstrap trusts — refusing to install it. If you are pointing SWG_REPO at your own fork, sign it with your own key or set SWG_SKIP_VERIFY=1."
+  sha256sum -c --quiet "$man" >/dev/null 2>&1     || die "$REF is signed, but a file in it does not match what was signed — refusing to install. Re-run to fetch it again; if it persists, the source is not serving what it claims."
+  info "release verified — signature and $(wc -l < "$man") files"
+}
+verify_fetched_tree
+
 # ── update / uninstall: no method/role ──
 if [ -n "$ACTION" ]; then
   SCRIPT="update.sh"; [ "$ACTION" = uninstall ] && SCRIPT="uninstall.sh"
