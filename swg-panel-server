@@ -18005,12 +18005,26 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/networks":
-        # The same report, read-only — for the peer sheet to show what a peer's networks are doing now.
+        # The same report, read-only — for the peer sheet to show what a peer's networks are doing now. With
+        # `routes` it judges a DRAFT and reports what saving it WOULD mean, writing nothing: §4.5 puts the
+        # exposure in front of the operator before they confirm, not in a toast after.
         roster = roster_load(roster_path)
         pid = body.get("peer_id") or ""
         if pid not in (roster.get("peers") or {}):
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
-        return 200, {"ok": True, "data": network_report(roster, pid, deps.get("node_snaps") or {})}
+        _snaps = deps.get("node_snaps") or {}
+        if "routes" not in body:
+            return 200, {"ok": True, "data": network_report(roster, pid, _snaps)}
+        _rt = body.get("routes")
+        if not isinstance(_rt, list) or any(not isinstance(x, str) for x in _rt):
+            return 400, {"ok": False, "error": "routes must be a list of CIDR strings", "code": "bad_request"}
+        _clean, _refused = network_routes_clean(roster, roster["peers"][pid], _rt, _snaps)
+        _bad = {r["prefix"] for r in _refused}
+        _draft = dict(roster, peers=dict(roster["peers"]))            # this one peer replaced; nothing else copied
+        _draft["peers"][pid] = dict(roster["peers"][pid], routes=[x for x in _clean if x not in _bad])
+        _data = network_report(_draft, pid, _snaps)
+        _data.update(refusals=_refused, routes=_clean)
+        return 200, {"ok": True, "data": _data}
 
     if method == "POST" and path == "/api/peers/update-target":
         # Change ONE deployment's assigned address and/or its client-config overrides.

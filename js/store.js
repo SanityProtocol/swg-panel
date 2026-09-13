@@ -173,6 +173,7 @@ export const api = {
   // peers
   peerCreate(b) { return this.post("/api/peers/create", b); },
   peerUpdate(b) { return this.post("/api/peers/update", b); },
+  peerNetworks(b) { return this.post("/api/peers/networks", b); },   // {peer_id, routes?} — routes = a draft, judged and reported, never saved
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
   peerUpdateTarget(b) { return this.post("/api/peers/update-target", b); },
   peerRemoveTarget(b) { return this.post("/api/peers/remove-target", b); },

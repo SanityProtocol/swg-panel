@@ -23,6 +23,56 @@ export const STR = {
   "{v1} is no longer a list the panel knows": "{v1} — панель больше не знает такого списка",
   "…and {v1} more": "…и ещё {v1}",
 
+  // ── networks behind a peer (docs/NETWORKS-PLAN.md) ──
+  // {node} is a node's own NAME, so no sentence here makes a verb or pronoun agree with it: «{node}: …» or
+  // «на {node}» throughout. {peers}/{users} arrive already counted; the users slot reads after «у», so the
+  // code passes the genitive noun (gen|user).
+  "Networks behind this device": "Сети за этим устройством",
+  "Save networks": "Сохранить сети",
+  // budget-ok: field hint, wraps
+  "Networks this device routes for, like the office LAN behind a router. Clients on the same node reach them through it. Saved on its own — the sheet's Save leaves it alone.": "Сети, для которых это устройство — шлюз, например офисная LAN за роутером. Клиенты той же ноды попадают в них через него. Сохраняется отдельно — кнопка «Сохранить» внизу это поле не трогает.",
+  "Couldn't check these networks.": "Не удалось проверить эти сети.",
+  "Networks saved.": "Сети сохранены.",
+  "Networks removed.": "Сети удалены.",
+  "Networks weren't saved.": "Сети не сохранены.",
+  "carried": "проводится",
+  "refused by the node": "нода отказала",
+  "not carried": "не проводится",
+  // budget-ok: wraps
+  "Every client on {node} can reach this: {peers} belonging to {users}. The node can't tell them apart.": "Сюда попадёт любой клиент на {node}: {peers} у {users}. Нода их не различает.",
+  "No other client is on {node} yet. Anyone added there will reach this.": "На {node} пока нет других клиентов. Любой, кого туда добавят, попадёт сюда.",
+  "Narrowed routing, can't reach it: {peers}": "Сужена маршрутизация, доступа нет: {peers}",
+  "Edit routing": "Изменить маршруты",
+  "Set up the device's side": "Настройка на стороне устройства",
+  // budget-ok: disclosure body, wraps
+  "The node sends traffic to this device; the device has to pass it on and answer. On a Linux or OpenWrt device, run this with its LAN interface in place of <lan-device>:": "Нода отправляет трафик на это устройство, а оно должно передать его дальше и ответить. На Linux или OpenWrt выполните это, подставив LAN-интерфейс вместо <lan-device>:",
+  "On any other router, add this static route on the network's own router instead:": "На любом другом роутере вместо этого добавьте статический маршрут на роутере самой сети:",
+  "A Windows or Mac device can't be set up from here — it has to be told to forward and translate traffic by hand.": "Устройство на Windows или Mac отсюда не настроить — пересылку и трансляцию трафика там включают вручную.",
+  "an unnamed peer": "пир без имени",
+  "another peer": "другой пир",
+  "{p} isn't a network address.": "{p} — не адрес сети.",
+  "{p} is IPv6 — only IPv4 networks can be carried.": "{p} — это IPv6, а проводить можно только сети IPv4.",
+  "{p} would send all of the node's internet traffic into this device.": "{p} отправил бы в это устройство весь интернет-трафик ноды.",
+  "{p} is a reserved range — loopback, link-local, multicast or cloud metadata.": "{p} — зарезервированный диапазон: loopback, link-local, multicast или метаданные облака.",
+  "{node} is already on {p} ({a}), so its clients reach it without a gateway device.": "{node} уже в сети {p} ({a}) — клиенты этой ноды попадают туда без шлюза.",
+  "{p} overlaps a tunnel subnet on {node} ({a}).": "{p} пересекается с подсетью туннеля на {node} ({a}).",
+  "{p} overlaps a mesh link on {node} ({a}).": "{p} пересекается с mesh-связью на {node} ({a}).",
+  "{p} contains {a}, the gateway {node} reaches the internet through.": "В {p} входит {a} — шлюз, через который {node} выходит в интернет.",
+  "{p} contains {a}, the address {node} reaches this panel by.": "В {p} входит {a} — адрес, по которому {node} достаёт до этой панели.",
+  "{p} contains {a}, the DNS server {node} depends on — it could no longer find this panel.": "В {p} входит {a} — DNS-сервер, от которого зависит {node}: без него панель будет не найти.",
+  "{node} can't tell which DNS server it depends on, so it carries no networks.": "{node}: не удаётся определить, от какого DNS-сервера зависит нода, поэтому сети не проводятся.",
+  "{node} runs a version that can't check a route is safe — update it to carry networks.": "{node}: версия ноды не умеет проверять безопасность маршрута — обновите её, чтобы проводить сети.",
+  "{node} hasn't reported yet; the network waits until it does.": "От {node} ещё нет отчёта — сеть ждёт его.",
+  "{node} hasn't finished a sync yet; the network waits.": "{node}: синхронизация ещё не завершилась, сеть ждёт.",
+  "A turn server deployment has no key, so nothing can be routed through it.": "У развёртывания на turn-сервере нет ключа, через него ничего не маршрутизировать.",
+  "{by} already carries {a} on {node} — a network has one device per node.": "{a} на {node} уже проводит {by}: у сети одно устройство на ноду.",
+  "{p} overlaps {a}, which this device already lists.": "{p} пересекается с {a}, которая уже есть у этого устройства.",
+  "A device can front at most 8 networks.": "Одно устройство проводит не больше 8 сетей.",
+  "This device is blocked or expired, so it carries nothing.": "Устройство заблокировано или его срок истёк — оно ничего не проводит.",
+  "{node} installed the route and took it straight back out — it moved the path to {a}.": "{node}: маршрут поставлен и сразу снят — он менял путь до {a}.",
+  "{node} already routes {p} through {a}, and leaves that route alone.": "{node}: {p} уже маршрутизируется через {a}, этот маршрут не трогаем.",
+  "{node} couldn't check the route to {p} safely, so it didn't install it.": "{node}: не удалось безопасно проверить маршрут до {p}, он не поставлен.",
+
   // ── geo providers: what turning one off actually costs (§6.4) ──
   // Reads on the row itself, in the same quiet register as «обновлён 3 ч назад» beside it. Both counts are
   // prepositional: «в 3 правилах на 2 интерфейсах» — see the prep| forms in PLURALS.

@@ -3333,6 +3333,29 @@ a.tg:hover{filter:brightness(1.25)}
    Nix lines scroll inside the block — the settings card must not scroll sideways. */
 .nixblock{white-space:pre;overflow-x:auto;padding:10px 12px;border-radius:8px;border:1px solid var(--line);
   background:var(--code-bg,rgba(127,127,127,.09));margin:0 0 8px;font-size:.85em;line-height:1.5}
+/* NETWORKS behind a peer (docs/NETWORKS-PLAN.md §4.5–4.6). Dense like the deployment rows above it; the exposure
+   line is the one loud thing in the block, in the theme's pending tone like every other "you should know this" line.
+   A snippet gets the full width with its Copy under it — beside it, the iptables line was clipped mid-command. */
+.netfield .netrow{display:flex;gap:8px;align-items:center}
+.netfield .netrow input{flex:1;min-width:0}
+.netref{display:grid;gap:4px;margin-top:8px;font-size:12.5px;color:var(--dangling)}
+.netref>div{display:flex;gap:6px;align-items:flex-start}
+.netref svg,.netexp svg{flex:none;margin-top:2px}
+.netnode{margin-top:10px;padding:9px 12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2)}
+.netnode-h{display:flex;gap:8px;align-items:baseline;font-weight:600}
+.netnode-h .tp,.netwiden .tp{color:var(--dim);font-family:var(--mono);font-weight:400;font-size:12px}
+.netlist{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 4px}
+.nettag{display:inline-flex;gap:7px;align-items:baseline;padding:2px 9px;border:1px solid var(--line);border-radius:999px;font-size:12px}
+.nettag em{font-style:normal;color:var(--dim)}
+.nettag.s-active{border-color:color-mix(in srgb,var(--brand) 45%,var(--line))}
+.nettag.s-active em{color:var(--brand)}
+.nettag.s-inert em,.nettag.s-refused_by_node em{color:var(--pending)}
+.netwhy{font-size:12.5px;color:var(--dim);margin:2px 0}
+.netexp{display:flex;gap:8px;align-items:flex-start;margin:8px 0 6px;font-size:13px;font-weight:600;color:var(--pending)}
+.netwiden{display:flex;gap:10px;align-items:center;font-size:12.5px;padding:3px 0}
+.netwiden .mono{max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.netsnip{display:flex;flex-direction:column;align-items:flex-end;gap:4px;margin-bottom:8px}
+.netsnip .nixblock{align-self:stretch;margin:0}
 .segrow{display:flex;gap:6px;margin:0 0 10px}
 .seg{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;font-size:12px;
   font-weight:700;padding:5px 13px;border-radius:20px;cursor:pointer}

@@ -947,10 +947,141 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
             : T("Changing an address moves the peer on that interface."))
         : T("These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.")}</div>
     </div>
+    ${hasKeyed ? html`<${NetworksField} peer=${live}/>` : null}
     ${(hasKeyed && !loaded) ? html`<div class="loading"><span class="spin"></span>${T("loading config…")}</div>` : null}
     ${(hasKeyed && loaded && !editable) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The client's private key isn't available, so DNS / MTU / routing can't be rebuilt")}${Store.storeConfigs ? "" : T(" (enable store_configs, or edit right after creating)")}${T(". Title and address can still change.")}</span></div>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
+}
+
+// ── networks behind a peer (docs/NETWORKS-PLAN.md §4.5, §4.6, §5, D8) ──────────────────────────────
+// A peer can front networks — the office LAN behind a router, a NAS behind a home box. The field declares
+// them; the report under it is what matters. WHO can now reach the network: everyone on the node, because the
+// node cannot tell peers apart — an exposure disclosure, not a detail. Which narrowed peers still can't. And
+// the far side's setup, which nothing the panel does can make exist. The draft is judged by the server as it
+// is typed and nothing is written until "Save networks", so all of that is on screen BEFORE the save.
+const netList = s => String(s || "").split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+const netPeerName = id => {
+  const q = Store.peer(id);
+  return q ? ([q.name, q.title].filter(Boolean).join(" / ") || T("an unnamed peer")) : T("another peer");
+};
+// Every reason a network is not carried, in words. The tokens come from the panel (network_subnet_refusal,
+// node_networks) and from the node (network_route_refusal, net_route_install); one missing here falls through
+// to the last line rather than printing a token.
+function netWhy(r, node) {
+  const v = { p: r.prefix, a: r.addr || "", node: node || "", by: r.by ? netPeerName(r.by) : "" };
+  switch (r.why) {
+    case "invalid": return T("{p} isn't a network address.", v);
+    case "not_v4": return T("{p} is IPv6 — only IPv4 networks can be carried.", v);
+    case "default_route": return T("{p} would send all of the node's internet traffic into this device.", v);
+    case "reserved": return T("{p} is a reserved range — loopback, link-local, multicast or cloud metadata.", v);
+    case "node_lan": return T("{node} is already on {p} ({a}), so its clients reach it without a gateway device.", v);
+    case "iface_subnet": return T("{p} overlaps a tunnel subnet on {node} ({a}).", v);
+    case "mesh": return T("{p} overlaps a mesh link on {node} ({a}).", v);
+    case "node_gateway": return T("{p} contains {a}, the gateway {node} reaches the internet through.", v);
+    case "node_panel": return T("{p} contains {a}, the address {node} reaches this panel by.", v);
+    case "node_resolver": return T("{p} contains {a}, the DNS server {node} depends on — it could no longer find this panel.", v);
+    case "resolver_unknown": return T("{node} can't tell which DNS server it depends on, so it carries no networks.", v);
+    case "node_too_old": return T("{node} runs a version that can't check a route is safe — update it to carry networks.", v);
+    case "no_snapshot": return T("{node} hasn't reported yet; the network waits until it does.", v);
+    case "panel_unknown": return T("{node} hasn't finished a sync yet; the network waits.", v);
+    case "self_contained": return T("A turn server deployment has no key, so nothing can be routed through it.", v);
+    case "taken": return T("{by} already carries {a} on {node} — a network has one device per node.", v);
+    case "overlap": return T("{p} overlaps {a}, which this device already lists.", v);
+    case "cap": return T("A device can front at most 8 networks.", v);
+    case "blocked": return T("This device is blocked or expired, so it carries nothing.", v);
+    case "rolled_back": return T("{node} installed the route and took it straight back out — it moved the path to {a}.", v);
+    case "route_exists": return T("{node} already routes {p} through {a}, and leaves that route alone.", v);
+    default: return T("{node} couldn't check the route to {p} safely, so it didn't install it.", v);
+  }
+}
+
+function NetworksField({ peer }) {
+  const stored = peer.routes || [];
+  const storedKey = stored.join(",");
+  const [draft, setDraft] = useState(stored.join(", "));
+  const [rep, setRep] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState({});
+  const toggle = k => setOpen(o => ({ ...o, [k]: !o[k] }));
+  const want = netList(draft);
+  const wantKey = want.join(",");
+  useEffect(() => {
+    if (!want.length && !stored.length) { setRep(null); return; }
+    let ok = true;
+    const h = setTimeout(async () => {
+      try {
+        const r = await api.peerNetworks({ peer_id: peer.id, routes: want });
+        if (ok) setRep(r && r.ok ? { ...r.data, _for: wantKey } : { targets: [], refusals: [], error: srvText(r) || T("Couldn't check these networks.") });
+      } catch (e) {
+        if (ok) setRep({ targets: [], refusals: [], error: T("Couldn't check these networks.") });
+      }
+    }, 350);
+    return () => { ok = false; clearTimeout(h); };
+  }, [wantKey, peer.id, storedKey]);
+  const refusals = (rep && rep.refusals) || [];
+  // Compared NORMALISED: the operator types `172.30.9.9`, the roster stores `172.30.9.9/32`. A raw compare kept
+  // "Save networks" lit after a successful save, reading as unsaved. The preview carries the server's own
+  // normalisation of the draft, so that is the spelling compared whenever it is for THIS draft.
+  const normKey = (rep && rep.routes && rep._for === wantKey) ? rep.routes.join(",") : wantKey;
+  const save = async () => {
+    setBusy(true);
+    try {
+      const r = await api.peerUpdate({ peer_id: peer.id, routes: want });
+      if (r && r.ok) {
+        const saved = (r.data && r.data.routes) || want;
+        setDraft(saved.join(", "));                    // the stored spelling, so the field reads saved
+        toast(want.length ? T("Networks saved.") : T("Networks removed."), "ok");
+        await Store.poll();
+      }
+      else if (r && r.refusals) setRep(x => ({ ...(x || { targets: [] }), refusals: r.refusals }));
+      else toast(srvText(r) || T("Networks weren't saved."), "err");
+    } finally { setBusy(false); }
+  };
+  return html`<div class="field netfield">
+    <label>${T("Networks behind this device")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label>
+    <div class="netrow">
+      <input class=${"mono" + (refusals.length ? " bad" : "")} value=${draft} onInput=${e => setDraft(e.target.value)}
+        placeholder="192.168.1.0/24, 10.20.0.0/16" autocomplete="off" spellcheck="false"/>
+      <button class="btn" disabled=${busy || normKey === storedKey || refusals.length > 0} onClick=${save}>${busy ? T("saving…") : T("Save networks")}</button>
+    </div>
+    <div class="hint">${T("Networks this device routes for, like the office LAN behind a router. Clients on the same node reach them through it. Saved on its own — the sheet's Save leaves it alone.")}</div>
+    ${rep && rep.error ? html`<div class="formmsg err">${rep.error}</div>` : null}
+    ${refusals.length ? html`<div class="netref">${refusals.map(r => html`<div><${Ic} i="warn"/><span>${netWhy(r, r.node ? Store.nodeName(r.node) : "")}</span></div>`)}</div>` : null}
+    ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle}/>`)}
+  </div>`;
+}
+
+function NetNode({ t, open, toggle }) {
+  const node = Store.nodeName(t.node);
+  const active = t.networks.filter(n => n.state === "active");
+  const sub = t.subnet || "<tunnel-subnet>";
+  const snip = "sysctl -w net.ipv4.ip_forward=1\niptables -t nat -A POSTROUTING -s " + sub + " -o <lan-device> -j MASQUERADE";   // i18n-keys: shell commands, not prose
+  const route = sub + " via <device-lan-address>";   // i18n-keys: a route in router syntax, not prose
+  return html`<div class="netnode">
+    <div class="netnode-h"><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${node}</span><span class="tp">${t.iface}</span></div>
+    <div class="netlist">${t.networks.map(n => html`<span class=${"nettag s-" + n.state}><span class="mono">${n.prefix}</span><em>${
+      n.state === "active" ? T("carried") : n.state === "refused_by_node" ? T("refused by the node") : T("not carried")}</em></span>`)}</div>
+    ${t.networks.filter(n => n.state !== "active").map(n => html`<div class="netwhy">${netWhy(n, node)}</div>`)}
+    ${active.length ? html`<div class="netexp"><${Ic} i="warn"/><span>${t.audience.peers
+      ? T("Every client on {node} can reach this: {peers} belonging to {users}. The node can't tell them apart.",
+          { node, peers: plural(t.audience.peers, "peer"), users: plural(t.audience.users, "gen|user") })
+      : T("No other client is on {node} yet. Anyone added there will reach this.", { node })}</span></div>` : null}
+    ${t.widen_total ? html`<${Disclosure} title=${T("Narrowed routing, can't reach it: {peers}", { peers: plural(t.widen_total, "peer") })}
+        open=${!!open[t.node + "|w"]} onToggle=${() => toggle(t.node + "|w")}>
+      ${t.widen.map(w => html`<div class="netwiden"><span class="grow">${netPeerName(w.peer_id)}</span><span class="tp">${w.iface}</span>
+        <span class="mono faint">${w.allowed}</span>
+        <button class="btn btn-ghost btn-mini" onClick=${() => { const q = Store.peer(w.peer_id); if (q) openEditPeer(q, { node: t.node, iface: w.iface }); }}>${T("Edit routing")}</button></div>`)}
+      ${t.widen_total > t.widen.length ? html`<div class="hint">${T("…and {v1} more", { v1: t.widen_total - t.widen.length })}</div>` : null}
+    <//>` : null}
+    ${active.length ? html`<${Disclosure} title=${T("Set up the device's side")} open=${!!open[t.node + "|s"]} onToggle=${() => toggle(t.node + "|s")}>
+      <div class="hint">${T("The node sends traffic to this device; the device has to pass it on and answer. On a Linux or OpenWrt device, run this with its LAN interface in place of <lan-device>:")}</div>
+      <div class="netsnip"><pre class="mono nixblock">${snip}</pre><button class="btn btn-ghost btn-mini" onClick=${() => copy(snip)}><${Ic} i="copy"/> ${T("Copy")}</button></div>
+      <div class="hint">${T("On any other router, add this static route on the network's own router instead:")}</div>
+      <div class="netsnip"><pre class="mono nixblock">${route}</pre><button class="btn btn-ghost btn-mini" onClick=${() => copy(route)}><${Ic} i="copy"/> ${T("Copy")}</button></div>
+      <div class="hint">${T("A Windows or Mac device can't be set up from here — it has to be told to forward and translate traffic by hand.")}</div>
+    <//>` : null}
+  </div>`;
 }
 
 // ── node sheets ──
