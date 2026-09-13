@@ -3358,6 +3358,17 @@ a.tg:hover{filter:brightness(1.25)}
 .netsnip .nixblock{align-self:stretch;margin:0}
 .netgw{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--dim);margin:6px 0 2px}
 .netgw.on{color:var(--ink-2)}
+/* P4 — the reachability test. The row is the field's own; the answer uses the gateway line's words and dots, but the
+   dot is STILL: a test result is a moment, not a live link, and a pulse would say otherwise. */
+.netprobe{margin:10px 0 4px}
+.netprobe-h{font-size:12.5px;color:var(--dim);margin-bottom:5px}
+.netfield .netprobe .netrow{flex-wrap:wrap}
+.netfield .netprobe .netrow input{min-width:11em}
+.netfield .netprobe .netrow input.netprobe-port{flex:0 0 5.5em;min-width:0}
+.netprobe .netgw{align-items:flex-start;flex-wrap:nowrap}
+.netprobe .condot{animation:none;flex:none;margin-top:5px}
+.netprobe .netgw.t-on{color:var(--ink-2)}
+.netprobe .netgw.t-blocked{color:var(--pending)}
 /* P3 — a gateway's tag on its peer row, and a user's reachable networks in their edit sheet */
 .tg.tg-gw{margin-left:8px;display:inline-flex;gap:4px;align-items:center;color:var(--brand);border-color:color-mix(in srgb,var(--brand) 40%,var(--line))}
 .tg.tg-gw svg{width:12px;height:12px}

@@ -1052,11 +1052,116 @@ function NetworksField({ peer }) {
     ${rep && rep.error ? html`<div class="formmsg err">${rep.error}</div>` : null}
     ${refusals.length ? html`<div class="netref">${refusals.map(r => html`<div><${Ic} i="warn"/><span>${netWhy(r, r.node ? Store.nodeName(r.node) : "")}</span></div>`)}</div>` : null}
     ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle}
-        kaOff=${((rep && rep.keepalive_off) || []).includes(t.node)}/>`)}
+        kaOff=${((rep && rep.keepalive_off) || []).includes(t.node)} pid=${peer.id} testable=${normKey === storedKey}/>`)}
   </div>`;
 }
 
-function NetNode({ t, open, toggle, kaOff }) {
+// ── P4: the reachability test (docs/NETWORKS-PLAN.md §8 P4) ────────────────────────────────────────────────────────
+// Carried and connected is not the same as working: the device behind may never pass a packet on. So the node sends
+// one probe into the network THROUGH this device and says what came back (swg-noded net_probe_run). The panel and the
+// node send tokens; every sentence is here. → [dot, sentence, a second line or null].
+function netProbeSays(v, node) {
+  const r = v.result || {};
+  const o = { addr: v.addr, node, port: v.port || "", ms: r.ms, from: r.from || "", dev: r.dev || "", detail: r.detail || "" };
+  switch (r.verdict) {
+    // Measured on the rig: this device's OWN address on its network answers with forwarding off, so an answer is
+    // only proof when it came from something behind it. Said with the answer, the one moment it could mislead.
+    case "answered": return ["on", T("{addr} answered through {node} in {ms} ms.", o),
+      T("That proves the path only if {addr} is a device on the network — this device's own address there answers even when it passes nothing on.", o)];
+    case "refused_port": return ["on", T("{addr} answered through {node} in {ms} ms — port {port} is closed, but the network is reachable.", o), null];
+    case "unreachable": return ["blocked", r.from ? T("The device passed it on, and {from} replied that nothing is at {addr}. Check the address.", o)
+      : T("The device passed it on, but nothing is at {addr}. Check the address.", o), null];
+    case "no_answer": return ["blocked", T("{node} sent it through the device, which is connected, and nothing came back. The device has to pass traffic on to its network and send the answers back — see “Set up the device's side”.", o),
+      v.port ? null : T("Some devices ignore pings. If {addr} might, test a port it listens on.", o)];
+    case "gateway_offline": return ["off", T("The device isn't connected to {node}, so nothing reaches {addr} through it.", o), null];
+    case "no_route": return ["off", T("{node} doesn't carry this network, so nothing was sent.", o),
+      netWhy({ prefix: v.prefix, why: r.why, addr: r.raddr }, node)];
+    case "route_elsewhere": return ["off", r.dev ? T("{node} would send {addr} out through {dev}, not through this device, so nothing was sent — clients on this interface can't reach it either.", o)
+      : T("{node} has no route to {addr} yet, so nothing was sent.", o), null];
+    case "no_acl": return ["off", T("{node} doesn't let this device carry {addr} yet, so nothing was sent. It catches up within a sync — test again in a moment.", o), null];
+    case "not_carried": return ["off", T("{node} isn't sending {addr} through this device, so it didn't test it.", o), null];
+    case "network_address": return ["off", T("{addr} is the network's own address or its broadcast — test a device on it.", o), null];
+    case "no_source": return ["off", T("{node} can't read its own address on this interface, so it had nothing to send from.", o), null];
+    case "expired": return ["off", r.collected ? T("{node} took the test but never answered — it may run a version that can't test networks. Update it.", o)
+      : T("{node} didn't pick up the test in time. Check it's online, then test again.", o), null];
+    default: return ["off", r.detail ? T("{node} couldn't run the test: {detail}", o) : T("{node} couldn't run the test.", o), null];
+  }
+}
+
+// Why the panel would not arm a test (net_probe_refusal), in words. → lines.
+function netProbeRefused(b, node, addr) {
+  const d = b.detail || {};
+  const o = { addr, node, p: d.prefix || "" };
+  switch (b.why) {
+    case "bad_address": return [T("{addr} isn't an IPv4 address.", o)];
+    case "bad_port": return [T("A port is a number from 1 to 65535.", o)];
+    case "not_deployed": return [T("This device isn't on {node}.", o)];
+    case "node_offline": return [T("{node} isn't syncing, so it can't run a test right now.", o)];
+    case "network_address": return [T("{addr} is the network's own address or its broadcast — test a device on it.", o)];
+    case "busy": return [T("{node} is already running a test — try again in a few seconds.", o)];
+    case "not_carried": return d.because ? [T("{addr} is in {p}, which this device doesn't carry:", o), netWhy({ prefix: d.prefix, ...d.because }, node)]
+      : [T("{addr} isn't in a network this device carries on {node}, so it can't be tested from there.", o)];
+    default: return [srvText(b) || T("Couldn't start the test.", o)];
+  }
+}
+
+function NetProbe({ pid, nid, node, nets }) {
+  const [addr, setAddr] = useState("");
+  const [port, setPort] = useState("");
+  const [test, setTest] = useState(null);       // the panel's view of the latest test on this node
+  const [msg, setMsg] = useState(null);          // why a test was not armed, as lines
+  const pending = !!test && test.state === "pending";
+  useEffect(() => {                              // a test still running, or just answered, when the sheet opens
+    let ok = true;
+    api.peerNetworkProbe({ peer_id: pid }).then(r => {
+      const x = r && r.ok ? (r.data || []).find(q => q.node === nid) : null;
+      if (ok && x) setTest(x);
+    }).catch(() => {});
+    return () => { ok = false; };
+  }, [pid, nid]);
+  useEffect(() => {                              // the answer arrives within a couple of syncs; the panel expires it at 45 s
+    if (!pending) return;
+    let ok = true, n = 0;
+    const h = setInterval(async () => {
+      if (++n > 60) { clearInterval(h); return; }
+      try {
+        const r = await api.peerNetworkProbe({ peer_id: pid, id: test.id });
+        if (!ok) return;
+        if (r && r.ok) setTest(r.data);
+        else if (r && r.why === "unknown") { setTest(null); setMsg([T("The panel no longer has that test — run it again.")]); }
+      } catch (e) { /* the next tick asks again */ }
+    }, 1500);
+    return () => { ok = false; clearInterval(h); };
+  }, [pending, test && test.id]);
+  const run = async () => {
+    const a = addr.trim();
+    setMsg(null);
+    try {
+      const r = await api.peerNetworkProbe({ peer_id: pid, node: nid, addr: a, ...(port.trim() ? { port: port.trim() } : {}) });
+      if (r && r.ok) setTest(r.data);
+      else setMsg(r && r.why ? netProbeRefused(r, node, a) : [srvText(r) || T("Couldn't start the test.")]);
+    } catch (e) { setMsg([T("Couldn't start the test.")]); }
+  };
+  // The sheet turns Enter into Save unless an input owns the key (data-enter="self"): here Enter runs the test.
+  const key = e => { if (e.key === "Enter") { e.preventDefault(); if (!pending && addr.trim()) run(); } };
+  const says = test && !pending ? netProbeSays(test, node) : null;
+  return html`<div class="netprobe">
+    <div class="netprobe-h">${T("Test that the network answers — {node} sends it through this device:", { node })}</div>
+    <div class="netrow">
+      <input class="mono" value=${addr} onInput=${e => setAddr(e.target.value)} onKeyDown=${key} data-enter="self" data-noautofocus
+        placeholder=${T("an address on {p}", { p: nets[0] || "" })} aria-label=${T("Address to test")} autocomplete="off" spellcheck="false"/>
+      <input class="mono netprobe-port" value=${port} onInput=${e => setPort(e.target.value)} onKeyDown=${key} data-enter="self" data-noautofocus
+        inputmode="numeric" placeholder=${T("port")} aria-label=${T("Port to connect to — leave empty to ping")} autocomplete="off"/>
+      <button class="btn" disabled=${pending || !addr.trim()} onClick=${run}>${pending ? T("testing…") : T("Test from the node")}</button>
+    </div>
+    ${pending ? html`<div class="netgw"><span class="condot"></span><span>${T("Waiting for {node} to send it and report back — a few seconds.", { node })}</span></div>` : null}
+    ${says ? html`<div class=${"netgw t-" + says[0]}><span class=${"condot " + says[0]}></span><span>${says[1]}</span></div>` : null}
+    ${says && says[2] ? html`<div class="netwhy">${says[2]}</div>` : null}
+    ${msg ? msg.map(m => html`<div class="netwhy">${m}</div>`) : null}
+  </div>`;
+}
+
+function NetNode({ t, open, toggle, kaOff, pid, testable }) {
   const node = Store.nodeName(t.node);
   const active = t.networks.filter(n => n.state === "active");
   const sub = t.subnet || "<tunnel-subnet>";
@@ -1077,6 +1182,10 @@ function NetNode({ t, open, toggle, kaOff }) {
     <div class="netlist">${t.networks.map(n => html`<span class=${"nettag s-" + n.state}><span class="mono">${n.prefix}</span><em>${
       n.state === "active" ? T("carried") : n.state === "refused_by_node" ? T("refused by the node") : T("not carried")}</em></span>`)}</div>
     ${t.networks.filter(n => n.state !== "active").map(n => html`<div class="netwhy">${netWhy(n, node)}</div>`)}
+    ${/* Only for what is SAVED (a draft network is carried nowhere, so the panel would refuse the test) and only through a
+          keyed deployment — a turn server's has no peer to send it through. */""}
+    ${testable && t.gateway && t.networks.some(n => n.state !== "inert") ? html`<${NetProbe} pid=${pid} nid=${t.node} node=${node}
+        nets=${t.networks.filter(n => n.state !== "inert").map(n => n.prefix)}/>` : null}
     ${active.length ? html`<div class="netexp"><${Ic} i="warn"/><span>${t.audience.peers
       ? T("Every client on {node} can reach this: {peers} belonging to {users}. The node can't tell them apart.",
           { node, peers: plural(t.audience.peers, "peer"), users: plural(t.audience.users, "gen|user") })
