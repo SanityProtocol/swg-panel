@@ -1046,13 +1046,17 @@ function NetworksField({ peer }) {
       <button class="btn" disabled=${busy || normKey === storedKey || refusals.length > 0} onClick=${save}>${busy ? T("saving…") : T("Save networks")}</button>
     </div>
     <div class="hint">${T("Networks this device routes for, like the office LAN behind a router. Clients on the same node reach them through it. Saved on its own — the sheet's Save leaves it alone.")}</div>
+    ${/* Feature 11: peer-to-peer needs nothing built — two devices on a node already reach each other — and
+          operators do not know that. Said here, where someone reaching for "connect devices" will look. */""}
+    <div class="hint">${T("Devices on the same node already reach each other at their tunnel addresses — that needs nothing here.")}</div>
     ${rep && rep.error ? html`<div class="formmsg err">${rep.error}</div>` : null}
     ${refusals.length ? html`<div class="netref">${refusals.map(r => html`<div><${Ic} i="warn"/><span>${netWhy(r, r.node ? Store.nodeName(r.node) : "")}</span></div>`)}</div>` : null}
-    ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle}/>`)}
+    ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle}
+        kaOff=${((rep && rep.keepalive_off) || []).includes(t.node)}/>`)}
   </div>`;
 }
 
-function NetNode({ t, open, toggle }) {
+function NetNode({ t, open, toggle, kaOff }) {
   const node = Store.nodeName(t.node);
   const active = t.networks.filter(n => n.state === "active");
   const sub = t.subnet || "<tunnel-subnet>";
@@ -1060,6 +1064,16 @@ function NetNode({ t, open, toggle }) {
   const route = sub + " via <device-lan-address>";   // i18n-keys: a route in router syntax, not prose
   return html`<div class="netnode">
     <div class="netnode-h"><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${node}</span><span class="tp">${t.iface}</span></div>
+    ${/* P3 evidence: is the gateway there to carry anything? Its traffic is the device's own and its networks'
+          together — wg counts per peer — so it is labelled as traffic THROUGH the device. */""}
+    ${t.gateway ? html`<div class=${"netgw" + (t.gateway.online ? " on" : "")}>
+      <span class=${"condot " + (t.gateway.online ? "on" : "off")}></span>
+      <span>${!t.gateway.reported ? T("{node} doesn't list this device yet.", { node })
+        : t.gateway.online ? T("The device is connected — traffic through it:")
+        : T("The device is offline, so nothing reaches these networks until it reconnects.")}</span>
+      ${t.gateway.online ? html`${rateCell(t.gateway.rx_speed, t.gateway.tx_speed)}${xferCell(...dlul(t.gateway.rx_bytes, t.gateway.tx_bytes))}` : null}
+    </div>` : null}
+    ${kaOff ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This device's config for {node} sends no keepalive, so {node} loses its session when the device goes quiet — and these networks with it. Set a keepalive on that deployment.", { node })}</span></div>` : null}
     <div class="netlist">${t.networks.map(n => html`<span class=${"nettag s-" + n.state}><span class="mono">${n.prefix}</span><em>${
       n.state === "active" ? T("carried") : n.state === "refused_by_node" ? T("refused by the node") : T("not carried")}</em></span>`)}</div>
     ${t.networks.filter(n => n.state !== "active").map(n => html`<div class="netwhy">${netWhy(n, node)}</div>`)}

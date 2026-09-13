@@ -174,6 +174,7 @@ export const api = {
   peerCreate(b) { return this.post("/api/peers/create", b); },
   peerUpdate(b) { return this.post("/api/peers/update", b); },
   peerNetworks(b) { return this.post("/api/peers/networks", b); },   // {peer_id, routes?} — routes = a draft, judged and reported, never saved
+  userNetworks(b) { return this.post("/api/users/networks", b); },   // {user_id} — what that user's devices can reach; on demand, never per poll
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
   peerUpdateTarget(b) { return this.post("/api/peers/update-target", b); },
   peerRemoveTarget(b) { return this.post("/api/peers/remove-target", b); },

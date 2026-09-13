@@ -5052,11 +5052,70 @@ def network_report(roster, pid, snaps):
                     widen.append({"peer_id": q.get("id"), "title": q.get("title") or "", "user_id": q.get("user_id"),
                                   "iface": x.get("iface"), "allowed": allowed, "missing": miss})
         meta = (((snap.get("interfaces") or {}).get(ifn) or {}).get("meta") or {})
-        out.append({"node": nid, "iface": ifn, "subnet": meta.get("subnet") or "",
-                    "address": (t.get("ip") or "").split("/")[0], "networks": nets,
-                    "audience": {"peers": peers_n, "users": len(users_s)},
-                    "widen": widen[:200], "widen_total": len(widen)})
-    return {"targets": out}
+        entry = {"node": nid, "iface": ifn, "subnet": meta.get("subnet") or "",
+                 "address": (t.get("ip") or "").split("/")[0], "networks": nets,
+                 "audience": {"peers": peers_n, "users": len(users_s)},
+                 "widen": widen[:200], "widen_total": len(widen)}
+        if not _is_self_contained_target(t):
+            # P3 EVIDENCE — is the gateway there to carry anything? The node's own row for this peer: online and
+            # last handshake, and its byte counters. ⚠️ THROUGH the gateway, not "to its networks": wg counts per
+            # peer, so this is the device's own traffic and its networks' together (feature 12 is a display, and
+            # this is exactly what there is to display). `reported` False means the node lists no such peer.
+            row = next((q for q in (((snap.get("interfaces") or {}).get(ifn) or {}).get("peers") or [])
+                        if isinstance(q, dict) and q.get("public_key") and q.get("public_key") == p.get("pubkey")), None)
+            entry["gateway"] = dict({"reported": row is not None, "online": bool(row and row.get("online")),
+                                     "handshake_age": (row or {}).get("handshake_age"),
+                                     "keepalive": effective_client_params(p, t, meta)["keepalive"]},
+                                    **{k: (row or {}).get(k) or 0 for k in ("rx_bytes", "tx_bytes", "rx_speed", "tx_speed")})
+        out.append(entry)
+    # §4.9 — a gateway deployed to several nodes keeps its networks reachable through each only while it holds a
+    # live session with each, and wg holds one only if the DEVICE keeps it alive. A keepalive of 0 on any of them
+    # means that node's route leads to a gateway that has gone quiet. Named per node, never guessed across them.
+    multi = sum(1 for e in out if "gateway" in e) > 1
+    return {"targets": out, "multi_node": multi,
+            "keepalive_off": [e["node"] for e in out if multi and "gateway" in e and not e["gateway"]["keepalive"]]}
+
+
+def user_networks(roster, uid, snaps, nodes=None):
+    """Every network one user's devices can reach beyond the internet — per device, per deployment.
+
+    ⚠️ §4.10: A CROSS-PRODUCT, so ON DEMAND ONLY. For each deployment of each of the user's peers, every network any
+    OTHER provider carries on that node, plus the node's own private network. Computed for one user when someone
+    asks (`/api/users/networks`), never for every user on every poll — `/api/state` is already this panel's
+    measured cost, and a panel with thousands of peers would pay this for nobody.
+
+    `covered`: does that deployment's client config actually route the network into the tunnel — from
+    `effective_client_params` itself (D8). None for a keyless deployment, whose client routing the panel does not
+    render. A device's own networks are behind it, not reached through it, so they are not listed for it."""
+    nodes = nodes or {}
+    users = roster.get("users") or {}
+    nowv = int(time.time())
+    u = users.get(uid) or {}
+    plans, out = {}, []
+    mine = [(key, p) for key, p in (roster.get("peers") or {}).items() if isinstance(p, dict) and p.get("user_id") == uid]
+    for key, p in sorted(mine, key=lambda x: ((x[1].get("title") or "").lower(), x[0])):
+        pid = str(p.get("id") or key)
+        tgs = []
+        for t in p.get("targets") or []:
+            nid = t.get("node")
+            if not nid:
+                continue
+            snap = (snaps or {}).get(nid) or {}
+            if nid not in plans:
+                plans[nid] = node_networks(roster, nid, snap)["carry"]
+            meta = (((snap.get("interfaces") or {}).get(t.get("iface")) or {}).get("meta") or {})
+            allowed = None if _is_self_contained_target(t) else effective_client_params(p, t, meta)["allowed"]
+            nets = [{"prefix": pre, "via": opid, "covered": None if allowed is None else _allowed_covers(allowed, pre)}
+                    for opid, ent in sorted(plans[nid].items()) if opid != pid for pre in ent["nets"]]
+            nets.sort(key=lambda n: ipaddress.ip_network(n["prefix"]))
+            ent = {"node": nid, "iface": t.get("iface") or "", "networks": nets}
+            lans = node_lans(snap)
+            if lans:
+                ent["lan"] = {"addrs": [l["ip"] for l in lans], "open": (nodes.get(nid) or {}).get("lan_share") is not False}
+            tgs.append(ent)
+        out.append({"peer_id": pid, "title": p.get("title") or "", "targets": tgs,
+                    "blocked": bool(p.get("disabled") or u.get("disabled") or is_expired(p, nowv) or is_expired(u, nowv))})
+    return {"peers": out}
 
 
 # ── NETWORKS P2 — the private network a node sits on (docs/NETWORKS-PLAN.md D10, §8 P2) ──────────────────────
@@ -18043,6 +18102,15 @@ def api(method, path, qs, body, deps):
         if "routes" in changed:                 # what the operator has just done, before they walk away (§4.5)
             return 200, {"ok": True, "data": p2, "networks": network_report(roster, pid, deps.get("node_snaps") or {})}
         return 200, {"ok": True, "data": p2}
+
+    if method == "POST" and path == "/api/users/networks":
+        # "My networks" for one user (NETWORKS-PLAN feature 13) — on demand, never per poll (§4.10).
+        roster = roster_load(roster_path)
+        uid = body.get("user_id") or ""
+        if uid not in (roster.get("users") or {}):
+            return 404, {"ok": False, "error": "unknown user", "code": "not_found"}
+        return 200, {"ok": True, "data": user_networks(roster, uid, deps.get("node_snaps") or {},
+                                                        nodes_load(deps["nodes_path"]))}
 
     if method == "POST" and path == "/api/peers/networks":
         # The same report, read-only — for the peer sheet to show what a peer's networks are doing now. With

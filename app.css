@@ -3356,6 +3356,14 @@ a.tg:hover{filter:brightness(1.25)}
 .netwiden .mono{max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .netsnip{display:flex;flex-direction:column;align-items:flex-end;gap:4px;margin-bottom:8px}
 .netsnip .nixblock{align-self:stretch;margin:0}
+.netgw{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--dim);margin:6px 0 2px}
+.netgw.on{color:var(--ink-2)}
+/* P3 — a gateway's tag on its peer row, and a user's reachable networks in their edit sheet */
+.tg.tg-gw{margin-left:8px;display:inline-flex;gap:4px;align-items:center;color:var(--brand);border-color:color-mix(in srgb,var(--brand) 40%,var(--line))}
+.tg.tg-gw svg{width:12px;height:12px}
+.unets{display:grid;gap:8px}
+.unet-h{display:flex;gap:8px;align-items:baseline;font-size:13px}
+.unet-h .tp{color:var(--dim);font-family:var(--mono);font-size:12px}
 /* NETWORKS P2 — the node's own local network. A disclosure: the addresses and the sentence carry it, the switch is
    its one control, and the status line is the node's word on whether a close is in force. */
 .lanswitch{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--dim)}

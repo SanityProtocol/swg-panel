@@ -694,6 +694,34 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
 
 // Inline-editable peer title (optimistic). The operator's label to tell a user's devices apart.
 
+// NETWORKS P3 (feature 13) — what this user's devices can reach beyond the internet: networks other devices front
+// on the same node, and the node's own local network. Asked for ONCE when the sheet opens, never per poll — it is a
+// cross-product (docs/NETWORKS-PLAN.md §4.10). Renders nothing when there is nothing beyond the internet to show.
+function UserNetworksPanel({ user }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    let ok = true;
+    api.userNetworks({ user_id: user.id }).then(r => { if (ok && r && r.ok) setData(r.data); }).catch(() => {});
+    return () => { ok = false; };
+  }, [user.id]);
+  const rows = ((data && data.peers) || []).filter(p => !p.blocked)
+    .flatMap(p => p.targets.filter(t => t.networks.length || t.lan).map(t => ({ p, t })));
+  if (!rows.length) return null;
+  const via = id => { const q = Store.peer(id); return q ? (q.title || q.name || "") : ""; };
+  return html`<div class="field"><label>${T("Networks this user can reach")}</label>
+    <div class="unets">${rows.map(({ p, t }) => html`<div class="unet">
+      <div class="unet-h"><b>${p.title || T("Untitled")}</b>
+        <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
+      <div class="netlist">
+        ${t.networks.map(n => html`<span class=${"nettag " + (n.covered === false ? "s-inert" : "s-active")} title=${T("Through {via}", { via: via(n.via) })}>
+          <span class="mono">${n.prefix}</span><em>${n.covered === false ? T("not in this device's routing")
+            : n.covered === null ? T("routing unknown") : T("reachable")}</em></span>`)}
+        ${t.lan ? html`<span class=${"nettag " + (t.lan.open ? "s-active" : "s-inert")}><span class="mono">${t.lan.addrs.join(", ")}</span><em>${
+          t.lan.open ? T("the node's local network") : T("the node's local network, closed")}</em></span>` : null}
+      </div></div>`)}</div>
+    <div class="hint">${T("Worked out when this sheet opens. A device whose routing leaves a network out can be widened from its own settings.")}</div></div>`;
+}
+
 export function UserEditCard({ user, done }) {
   useStore();          // re-render on poll, so the Block/Unblock button flips after the action without reopening
   const [name, setName] = useState(user.name || "");
@@ -736,6 +764,7 @@ export function UserEditCard({ user, done }) {
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
     ${showVk ? html`<${VkLinkField} user=${user}/>` : null}
+    <${UserNetworksPanel} user=${user}/>
     <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> ${T("Delete user")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!dirty} onClick=${save}>${T("Save")}</button></div>
   </div>`;
 }

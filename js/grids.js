@@ -12,7 +12,7 @@
  */
 
 import { esc, tkey, seen, dur, fmtBytes } from "./util.js";
-import { T } from "./i18n.js";
+import { T, plural } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
 import { targetType, nodeStale, ghostIface, ifaceIsAll, ifaceMatch, tgtXfer, tgtSeenAge, peerUncategorised } from "./model.js";
 import {
@@ -41,6 +41,15 @@ const html = htm.bind(h);
 // `live` (the Live monitor): status is the animated connDot (not the pill badge), an Endpoint column is added
 // (turn peers show "Local turn-proxy"), the row actions + assign-to-user dropdown are dropped (read-only).
 // `sort`/`dir`/`onSort` make every column header a clickable order-by.
+// NETWORKS P3 (feature 7) — this peer fronts networks: a tag on its row, lit while the deployment shown is online.
+// Built from the peer record and the row's own online flag, so it costs the grid nothing it did not already have.
+const gwTag = (p, t) => {
+  const nets = (p.routes || []).join(", ");
+  return html`<span class=${"tg tg-gw" + (t.online ? "" : " muted")}
+    title=${t.online ? T("Gateway to {nets} — connected", { nets }) : T("Gateway to {nets} — offline, so nothing reaches them", { nets })}>
+    <${Ic} i="network"/>${plural(p.routes.length, "network")}</span>`;
+};
+
 export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live, grouped, sort, dir, onSort }) {
   const arrow = c => sort === c ? (dir < 0 ? "↓ " : "↑ ") : "";
   const th = (c, label, cls) => onSort ? html`<th class=${(cls ? cls + " " : "") + "clk"} onClick=${() => onSort(c)}>${arrow(c)}${label}</th>` : html`<th class=${cls || ""}>${label}</th>`;
@@ -83,7 +92,7 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             return html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? "online" : "offline"}></span>${ifaceB}`;
           })()}</td>
           ${(() => {
-            const titleCell = html`<td data-label=${T("col|Title")} class="c-name">${lifecycleIcon(p, t.status)}${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">${T("Untitled")}</span>`}</td>`;
+            const titleCell = html`<td data-label=${T("col|Title")} class="c-name">${lifecycleIcon(p, t.status)}${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">${T("Untitled")}</span>`}${(p.routes || []).length ? gwTag(p, t) : null}</td>`;
             const addrCell = html`<td data-label=${T("col|Address")}><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
             const epCell = html`<td data-label=${T("col|Endpoint")}>${endpointCell(t)}</td>`;
             const nodeCell = html`<td data-label=${T("col|Node")}><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;

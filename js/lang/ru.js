@@ -72,6 +72,23 @@ export const STR = {
   "{node} installed the route and took it straight back out — it moved the path to {a}.": "{node}: маршрут поставлен и сразу снят — он менял путь до {a}.",
   "{node} already routes {p} through {a}, and leaves that route alone.": "{node}: {p} уже маршрутизируется через {a}, этот маршрут не трогаем.",
   "{node} couldn't check the route to {p} safely, so it didn't install it.": "{node}: не удалось безопасно проверить маршрут до {p}, он не поставлен.",
+  // P3 evidence — the gateway as its node sees it, and the one thing operators don't know needs nothing
+  "Devices on the same node already reach each other at their tunnel addresses — that needs nothing here.": "Устройства на одной ноде и так видят друг друга по туннельным адресам — для этого здесь ничего не нужно.",
+  "{node} doesn't list this device yet.": "{node}: этого устройства пока нет в списке ноды.",
+  "Gateway to {nets} — connected": "Шлюз в {nets} — подключён",
+  "Gateway to {nets} — offline, so nothing reaches them": "Шлюз в {nets} — не в сети, туда ничего не попадает",
+  "Networks this user can reach": "Сети, доступные этому пользователю",
+  "Through {via}": "Через {via}",
+  "not in this device's routing": "не в маршрутах устройства",
+  "routing unknown": "маршруты неизвестны",
+  "reachable": "доступна",
+  "the node's local network": "локальная сеть ноды",
+  "the node's local network, closed": "локальная сеть ноды, закрыта",
+  "Worked out when this sheet opens. A device whose routing leaves a network out can be widened from its own settings.": "Рассчитано при открытии. Если сети нет в маршрутах устройства, её можно добавить в его собственных настройках.",
+  "The device is connected — traffic through it:": "Устройство подключено, трафик через него:",
+  "The device is offline, so nothing reaches these networks until it reconnects.": "Устройство не в сети — до переподключения в эти сети ничего не попадёт.",
+  // budget-ok: notice, wraps
+  "This device's config for {node} sends no keepalive, so {node} loses its session when the device goes quiet — and these networks with it. Set a keepalive on that deployment.": "Конфиг этого устройства для {node} не шлёт keepalive: когда устройство затихает, {node} теряет сессию, а с ней и эти сети. Задайте keepalive для этого развёртывания.",
   // the node's own local network (P2) — a disclosure on the node page, with the switch that closes it
   "Local network": "Локальная сеть",
   "Clients can reach it": "Клиентам доступна",
