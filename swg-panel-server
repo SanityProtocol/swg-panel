@@ -5059,6 +5059,39 @@ def network_report(roster, pid, snaps):
     return {"targets": out}
 
 
+# ── NETWORKS P2 — the private network a node sits on (docs/NETWORKS-PLAN.md D10, §8 P2) ──────────────────────
+# Measured: a client already reaches it, with nothing built. So this is a DISCLOSURE — shown unprompted on the node
+# page, because there is no save to hang it on — with an opt-out behind it (`lan_share`).
+_LAN_PRIVATE = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
+
+
+def lan_private(ip):
+    """Is `ip` on a PRIVATE network — RFC 1918, or carrier-grade NAT? `swg-noded` `lan_private()` asks the same of the
+    same list: the panel discloses exactly what the node would close."""
+    with contextlib.suppress(ValueError, TypeError):
+        a = ipaddress.ip_address(str(ip))
+        return a.version == 4 and any(a in ipaddress.ip_network(n) for n in _LAN_PRIVATE)
+    return False
+
+
+def node_lans(snap, is_sysif=None):
+    """[{ip, iface}] — this node's addresses on private networks, from what every node already reports.
+
+    `is_sysif` is the /api/state builder's own mesh-link test (a lambda local to it, which knows the configured mesh
+    prefix); without one, the reserved `swg_` prefix is the test.
+
+    Addresses, not prefixes: the prefix stays on the node (a `node_nets` field was dropped in review), and the
+    address is what an operator recognises on their own LAN. An old node without `node_ip_ifaces` falls back to its
+    bare addresses."""
+    snap = snap if isinstance(snap, dict) else {}
+    pairs = snap.get("node_ip_ifaces")
+    if not isinstance(pairs, list):
+        pairs = [{"ip": ip, "iface": ""} for ip in (snap.get("node_ips") or [])]
+    return [{"ip": str(p.get("ip")), "iface": str(p.get("iface") or "")} for p in pairs
+            if isinstance(p, dict) and lan_private(p.get("ip"))
+            and not (is_sysif or (lambda ifn: str(ifn or "").startswith("swg_")))(p.get("iface"))]
+
+
 def desired_for_node(roster, node_id, snap=None):
     """The peer set the roster assigns to one node, grouped by interface.
 
@@ -14929,6 +14962,13 @@ def api(method, path, qs, body, deps):
                         "ether_gws": ({k: v for k, v in (snap.get("ether_gws") or {}).items()
                                        if not _is_sysif(k) and isinstance(v, str)}
                                       if isinstance(snap.get("ether_gws"), dict) else None),
+                        # NETWORKS P2 — the private networks this node sits on (which its clients can reach unless the
+                        # operator closed them), the operator's choice, and the node's own word on whether the close is
+                        # in force. `net_capable`: the node can enforce it (it reports net_deps, which shipped alongside).
+                        "lans": node_lans(snap, _is_sysif),
+                        "lan_share": c.get("lan_share") is not False,
+                        "lan_block": snap.get("lan_block") if isinstance(snap.get("lan_block"), dict) else None,
+                        "net_capable": isinstance(snap.get("net_deps"), dict),
                         # unmanaged wg/awg interfaces the node found on the box (Approach B) → adoption candidates.
                         # Split: active (offered for adopt/ignore) vs ignored (operator dismissed → Settings → Interfaces).
                         "iface_candidates": [x for x in _cands if x["name"] not in _ign],
@@ -18498,6 +18538,13 @@ def api(method, path, qs, body, deps):
                 lr["listen_port"] = np
                 me.setdefault("ifaces", {}).setdefault(lr.get("iface"), {})["listen_port"] = np   # push via reconcile_ifaces
             ev_append(roster_path, "node", nid, "Re-ported mesh links (live)", me.get("name", nid))
+        if "lan_share" in body:                 # NETWORKS P2: may this node's clients reach the private network it sits on?
+            # Stored ONLY as a departure from the default — sharing is what every node does today (D10) — so a node
+            # nobody switched carries no key, and switching back removes it rather than writing `true`.
+            if body.get("lan_share") is False:
+                nodes[nid]["lan_share"] = False
+            else:
+                nodes[nid].pop("lan_share", None)
         nodes_save(deps["nodes_path"], nodes)
         _report_orphan_egress(deps, nodes, _orphans_u)
         if "color" in body:                       # server colour drives the subscription page's server name → refresh serve.json
@@ -23600,6 +23647,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
                                 "owned_ifaces": owned_ifaces,
                                 **({"adopt_container": _adc} if _adc else {}),
+                                # NETWORKS P2: only when the operator closed this node's LAN — absent means share,
+                                # so a node nobody switched gets exactly the reply it got before (D1).
+                                **({"lan_share": False} if node.get("lan_share") is False else {}),
                                 "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
                                 "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
                                 "wdtt_vault_want": _wdtt_want,   # WDTT instances the panel needs a current sealed server identity for

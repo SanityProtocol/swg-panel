@@ -347,6 +347,8 @@ export function NodeDetail({ node: rawName }) {
 
     ${nrec.health_history ? html`<${NodeThroughput} name=${name} nrec=${nrec}/>` : null}
 
+    <${NodeLanPanel} nrec=${nrec}/>
+
     ${(nrec.mesh_peers || []).length ? html`<${Panel} icon="network" title=${T("Node connections")} tone="pending" count=${(nrec.mesh_peers || []).length}
         actions=${html`<${MeshStat} nodeId=${name} mode="in"/>`}>
       <div class="ifgrid">${[...(nrec.mesh_peers || [])].sort((a, b) => Store.byNode(a.peer, b.peer)).map(mp => {
@@ -1152,6 +1154,36 @@ export const TurnTag = (node, tp) =>
 // Node throughput panel: a Peers/Mesh toggle in the header (right-aligned) splits the graph into client (rx−mrx),
 // mesh (mrx), or both. Never both off — turning off the only-selected one switches to the other (like the doughnuts).
 // Node health panel: CPU/Mem/Disk meters + the CPU-load history, with the range picker hoisted into the header.
+// NETWORKS P2 — the private network this node sits on (docs/NETWORKS-PLAN.md D10, §8 P2). Measured: a client
+// already reaches it with nothing built, and nobody chose that. There is no save for this to announce itself at, so
+// it is said HERE, unprompted, with the way to close it beside it. A node with no private address (a VPS on public
+// addresses only) has nothing to disclose and shows nothing.
+function NodeLanPanel({ nrec }) {
+  const lans = nrec.lans || [];
+  if (!lans.length) return null;
+  const share = nrec.lan_share !== false;
+  const lb = nrec.lan_block;
+  const set = on => mutate({ key: "node:" + nrec.id, call: () => api.nodeUpdate({ id: nrec.id, lan_share: on }),
+    onOk: () => toast(on ? T("Clients of this node can reach its local network again.")
+                         : T("Clients of this node are now kept off its local network."), "ok") });
+  // The node's own word, never the panel's hope: closed only once the node says the table is in.
+  const status = share ? null
+    : !nrec.net_capable ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node runs a version that can't close its local network — update it. Until then its clients still reach it.")}</span></div>`
+    : !lb ? html`<div class="lanstat"><${Ic} i="clock"/> ${T("Waiting for the node to close it.")}</div>`
+    : lb.ok ? html`<div class="lanstat ok"><${Ic} i="check"/> ${T("Closed on the node.")}</div>`
+    : lb.why === "addresses_unreadable" ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The node couldn't read its own addresses, so it left the block as it was.")}</span></div>`
+    : html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The node couldn't close it, so its clients still reach it: {why}", { why: lb.detail || lb.why || "" })}</span></div>`;
+  return html`<${Panel} icon="shield" title=${T("Local network")} tone=${share ? "pending" : "online"}
+      actions=${html`<span class="lanswitch">${T("Clients can reach it")}<${Switch} on=${share} onChange=${set}
+        title=${share ? T("Keep this node's clients off its local network") : T("Let this node's clients reach its local network")}/></span>`}>
+    <div class="lanlist">${lans.map(l => html`<span class="lanaddr"><span class="mono">${l.ip}</span>${l.iface ? html`<span class="faint">${l.iface}</span>` : null}</span>`)}</div>
+    <p class="lanmsg">${share
+      ? T("Clients of this node can reach the private network it sits on — every device on it, not only this node. Nobody set this up: it is what routing does when the node's local network is also its way out.")
+      : T("Clients of this node are kept off the private network it sits on. They still reach the internet and this node itself.")}</p>
+    ${status}
+  <//>`;
+}
+
 export function NodeHealthPanel({ name, nrec }) {
   const [range, setRange] = useState("live");
   const removing = nrec.removing ? html`<span class="nstat removing"><${Ic} i="trash"/> ${T("tag|flagged for removal")}</span><button class="btn btn-mini" style="margin-left:9px" title=${T("Cancel removal — keep this node")} onClick=${() => unflagNode(nrec)}>${T("Cancel")}</button>` : null;

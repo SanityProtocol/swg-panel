@@ -1449,6 +1449,9 @@ def _attach_turn_running(tps):
             t["running"] = _TURN_RUN["map"][t["service"]]
 
 
+_NODE_ADDR_SKIP = ("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")   # tunnels + bridges, not cards
+
+
 def _node_addrs():
     """[(dev, ip)] for the node's non-loopback, non-tunnel/bridge IPv4 addresses — the shared parse behind
     list_node_ips / _ip_ifaces / _ifaces. One `ip -o addr show` instead of three per snapshot."""
@@ -1462,7 +1465,7 @@ def _node_addrs():
         if len(p) < 4 or p[2] != "inet":
             continue
         dev, ip = p[1], p[3].split("/")[0]
-        if dev == "lo" or dev.startswith(("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
+        if dev == "lo" or dev.startswith(_NODE_ADDR_SKIP):
             continue
         if ip.startswith("127."):
             continue
@@ -1770,6 +1773,7 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
     # MSS clamp), tagged apart from the cascade's link-dev rules; mesh links excluded (cascade owns theirs). Idempotent
     # + self-cleaning (drops tags for interfaces that go away) via _ensure_dev_rules.
     client_devs.sort()
+    _CLIENT_DEVS["list"] = list(client_devs)          # the LAN opt-out blocks from exactly these (reconcile_lan_block)
     _ensure_dev_rules("filter", "FORWARD", "swg-egress-acl:", client_devs, res,
                       lambda d, direction: ["iptables", "-I", "FORWARD", direction, d,
                                             "-m", "comment", "--comment", "swg-egress-acl:" + d, "-j", "ACCEPT"])
@@ -2457,6 +2461,124 @@ def reconcile_net_routes(node_cfg, desired, res, _proc="/proc/net/route"):
                 res["changed"] += 1
     _NET["refused"] = refused
     return kept
+
+
+# ───────────────────────── networks: the node's own LAN (P2) ─────────────────────────
+#
+# NETWORKS-PLAN D10, measured on .campaign/rigs/home-node-netns.sh: a client ALREADY reaches the private network the
+# node sits on, with nothing built — its packet leaves by the LAN card, which on a home node is also the way out, so
+# the standing MASQUERADE matches. Nobody chose that. The panel discloses it; this is the opt-out behind the
+# disclosure: a drop, from every client tunnel and every mesh link, to every private network on one of the box's own
+# cards. Sharing stays the default (D10), so while it is on nothing is installed — and after a process's first pass,
+# nothing is even asked (D1).
+
+LAN_NFT_TABLE = "swg_lan"
+# ⚠️ §4.7 — A DETERMINISTIC PRIORITY. swg_smart's forward chain and iptables' FORWARD (where the swg-egress-acl
+# ACCEPTs live) both run at `filter`; swg_smart's counters at `mangle`. Chains at one priority run in an undefined
+# order. An ACCEPT does not stop a later chain and a DROP ends the packet wherever it runs, so the verdict would hold
+# anyway — but `filter - 5` runs ahead of both filter-priority chains and behind the counters, so nothing about this
+# depends on an order nobody defined.
+LAN_HOOK_PRI = "filter - 5"
+_LAN = {"probed": False, "installed": False, "sig": None, "status": None}
+_CLIENT_DEVS = {"list": []}                        # reconcile_egress's client tunnels, as of its last pass
+_LAN_PRIVATE = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
+
+
+def lan_private(ip):
+    """Is `ip` on a PRIVATE network — RFC 1918, or carrier-grade NAT? The panel's `lan_private` asks the same question
+    of the same list. A public subnet next to a VPS is the internet, not a LAN anyone could expect to close."""
+    import ipaddress
+    with contextlib.suppress(ValueError):
+        a = ipaddress.ip_address(str(ip))
+        return a.version == 4 and any(a in ipaddress.ip_network(n) for n in _LAN_PRIVATE)
+    return False
+
+
+def _node_lan_nets():
+    """The private networks on this box's own cards — `_node_addrs`' device filter (no tunnels, no bridges) over the
+    prefixes `_local_addrs` keeps. One `ip` fork. None if it could not be read."""
+    local = _local_addrs()
+    if local is None:
+        return None
+    return sorted({sub for dev, ip, sub in local if not dev.startswith(_NODE_ADDR_SKIP) and lan_private(ip)})
+
+
+def _lan_ruleset(nets, devs):
+    """The whole table as one atomic `nft -f` (create-then-delete, so a rebuild never has a gap with the old rules
+    gone and the new ones not in). Pure, so the selftest reads exactly what the kernel is handed."""
+    dst = "{ %s }" % ", ".join(nets)
+    L = ["table inet %s" % LAN_NFT_TABLE, "delete table inet %s" % LAN_NFT_TABLE,
+         # ⚠️ NOT `fwd`: that is a reserved word in nft's file grammar (the fwd statement), and the load fails with
+         # "unexpected fwd" — caught on the P2 rig, which no fixture could have.
+         "table inet %s {" % LAN_NFT_TABLE, "  chain clients {",
+         "    type filter hook forward priority %s; policy accept;" % LAN_HOOK_PRI]
+    if devs:
+        L.append("    iifname { %s } ip daddr %s counter drop" % (", ".join('"%s"' % d for d in devs), dst))
+    # …and clients of OTHER nodes arriving over a mesh link: a cascade carries them through this box too.
+    L.append('    iifname "swg_*" ip daddr %s counter drop' % dst)
+    L += ["  }", "}"]
+    return "\n".join(L) + "\n"
+
+
+def _lan_drop_table(res):
+    r = run(["nft", "delete", "table", "inet", LAN_NFT_TABLE])
+    if r.returncode == 0 or "No such file" in (r.stderr or ""):
+        _LAN["installed"] = False
+        res["changed"] += 1
+        return True
+    res["errors"].append("lan block: could not remove %s: %s" % (LAN_NFT_TABLE, (r.stderr or "").strip()[:120]))
+    return False
+
+
+def reconcile_lan_block(block, res):
+    """Converge the opt-out. `block` True: clients may not reach this node's private networks. → the status the
+    snapshot reports, or None while sharing (the snapshot then carries no key at all).
+
+    ⚠️ INERT WHILE SHARING, AND SAFE ACROSS A RESTART. The table is asked about ONCE per process: a node whose
+    operator re-opened its LAN while the daemon was down must not keep a drop nobody wants — and nothing records
+    that it exists, so only the kernel can say — while a node that never blocked must not pay a fork per pass for
+    a feature it does not use. After that one look, sharing costs nothing.
+
+    While blocking, the table is re-read every pass and rebuilt if it is missing or its inputs moved (a DHCP move,
+    an interface added) — a ruleset flush must not quietly re-open a LAN the operator closed. A read that fails
+    leaves whatever is installed in place and says so: an opt-out never fails OPEN on its own."""
+    if not _LAN["probed"]:
+        _LAN["installed"] = run(["nft", "list", "table", "inet", LAN_NFT_TABLE]).returncode == 0
+        _LAN["probed"] = True
+    if not block:
+        if _LAN["installed"]:
+            _lan_drop_table(res)
+        _LAN["sig"] = None
+        _LAN["status"] = None
+        return None
+    nets = _node_lan_nets()
+    devs = sorted(d for d in _CLIENT_DEVS["list"] if re.match(r"^[A-Za-z0-9_.@-]{1,15}$", str(d)))
+    if nets is None:
+        _LAN["status"] = {"on": True, "ok": False, "why": "addresses_unreadable", "nets": []}
+        res["errors"].append("lan block: cannot read this node's addresses — the block is left as it was")
+        return _LAN["status"]
+    if not nets:                                   # no private network on any card: nothing to close
+        if _LAN["installed"]:
+            _lan_drop_table(res)
+        _LAN["sig"] = None
+        _LAN["status"] = {"on": True, "ok": True, "nets": []}
+        return _LAN["status"]
+    sig = json.dumps([nets, devs])
+    live = _LAN["installed"] and run(["nft", "list", "table", "inet", LAN_NFT_TABLE]).returncode == 0
+    if not live or sig != _LAN["sig"]:
+        r = run(["nft", "-f", "-"], input_text=_lan_ruleset(nets, devs))
+        if r.returncode != 0:
+            _LAN["probed"] = False                 # we no longer know what is installed: ask again next pass
+            _LAN["sig"] = None
+            detail = (r.stderr or "").strip()[:160]
+            _LAN["status"] = {"on": True, "ok": False, "why": "nft_failed", "detail": detail, "nets": nets}
+            res["errors"].append("lan block: " + detail)
+            return _LAN["status"]
+        _LAN["installed"] = True
+        _LAN["sig"] = sig
+        res["changed"] += 1
+    _LAN["status"] = {"on": True, "ok": True, "nets": nets}
+    return _LAN["status"]
 
 
 def _cascade_want_sig(fwd, exit_, smart=None, guard=(), nets=(), net_tables=()):
@@ -9758,6 +9880,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             _lp = str(_x.get("listen") or "").rsplit(":", 1)[-1]
             if _lp.isdigit():
                 _x["src_ips"] = sorted(_cmap.get(_lp, ()))
+    if _LAN["status"]:                                # the LAN opt-out, in force or not — absent while sharing (D1)
+        snap["lan_block"] = dict(_LAN["status"])
     if _NET["refused"]:                               # networks this node will not carry, and why — absent when none (D1)
         snap["net_refused"] = {p: dict(v) for p, v in _NET["refused"].items()}
     snap["iface_candidates"] = iface_candidates(node_cfg)
@@ -15764,7 +15888,8 @@ def main():
                 _route_sig = json.dumps([reply.get("desired_ifaces"), reply.get("cascade"),
                                          reply.get("smart"), _def_egress,
                                          _devexit_sig(reply.get("cascade")),
-                                         _NET["sig"], sorted(_NET["refused"])], sort_keys=True, default=str)
+                                         _NET["sig"], sorted(_NET["refused"]),
+                                         reply.get("lan_share")], sort_keys=True, default=str)
                 _iface_churn = bool(cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
                                     or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"] or cq["changed"])   # a WDTT/csqtt install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
                 if (_route_sig != last_route_sig or _iface_churn
@@ -15774,6 +15899,9 @@ def main():
                     # Networks: after the ACL (D14, `reconcile` above), before the cascade, which copies what `main`
                     # now holds into its tables (§4.2). Given the UNFILTERED set, so a refusal is re-judged every pass.
                     _nets = reconcile_net_routes(node_cfg, reply["desired"], nr)
+                    # The node's own LAN: after reconcile_egress (it names the client tunnels this pass). The panel
+                    # sends `lan_share` only when the operator closed it, so absent means share — today's behaviour.
+                    reconcile_lan_block(reply.get("lan_share") is False, nr)
                     cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"), _def_egress,
                                             panel_conn=panel, panel_cfg=reply.get("panel"),
                                             nets=_nets)   # P2 forward + P3 smart + exit SNAT (+ panel-pull provider lists)

@@ -72,6 +72,21 @@ export const STR = {
   "{node} installed the route and took it straight back out — it moved the path to {a}.": "{node}: маршрут поставлен и сразу снят — он менял путь до {a}.",
   "{node} already routes {p} through {a}, and leaves that route alone.": "{node}: {p} уже маршрутизируется через {a}, этот маршрут не трогаем.",
   "{node} couldn't check the route to {p} safely, so it didn't install it.": "{node}: не удалось безопасно проверить маршрут до {p}, он не поставлен.",
+  // the node's own local network (P2) — a disclosure on the node page, with the switch that closes it
+  "Local network": "Локальная сеть",
+  "Clients can reach it": "Клиентам доступна",
+  "Keep this node's clients off its local network": "Закрыть локальную сеть ноды от её клиентов",
+  "Let this node's clients reach its local network": "Открыть локальную сеть ноды её клиентам",
+  "Clients of this node can reach its local network again.": "Клиентам ноды снова доступна её локальная сеть.",
+  "Clients of this node are now kept off its local network.": "Локальная сеть ноды закрыта от её клиентов.",
+  "This node runs a version that can't close its local network — update it. Until then its clients still reach it.": "Версия ноды не умеет закрывать локальную сеть — обновите ноду. Пока клиенты по-прежнему в неё попадают.",
+  "Waiting for the node to close it.": "Ждём, пока нода её закроет.",
+  "Closed on the node.": "Закрыто на ноде.",
+  "The node couldn't read its own addresses, so it left the block as it was.": "Нода не смогла прочитать свои адреса и оставила блокировку как была.",
+  "The node couldn't close it, so its clients still reach it: {why}": "Нода не смогла её закрыть, клиенты по-прежнему в неё попадают: {why}",
+  // budget-ok: panel body, wraps
+  "Clients of this node can reach the private network it sits on — every device on it, not only this node. Nobody set this up: it is what routing does when the node's local network is also its way out.": "Клиенты этой ноды попадают в частную сеть, в которой она стоит, — на любое устройство в ней, а не только на саму ноду. Этого никто не настраивал: так работает маршрутизация, когда локальная сеть ноды — это и её выход в интернет.",
+  "Clients of this node are kept off the private network it sits on. They still reach the internet and this node itself.": "Клиенты этой ноды не попадают в частную сеть, в которой она стоит. Интернет и сама нода им по-прежнему доступны.",
 
   // ── geo providers: what turning one off actually costs (§6.4) ──
   // Reads on the row itself, in the same quiet register as «обновлён 3 ч назад» beside it. Both counts are
