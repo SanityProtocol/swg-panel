@@ -1,0 +1,33 @@
+name: verify-release
+
+# Is what landed on `main` something a box could actually verify?
+#
+# Signing is manual (sign-release.yml explains why: main carries one squashed commit per release, so a bot
+# commit per push is not available to us). A manual step can be forgotten, and forgetting THIS one publishes
+# a release that a fail-closed install would refuse. This is the backstop: you can still forget, and you
+# find out here, loudly, rather than from an operator months later.
+#
+# It runs the SHIPPED verifier — verify_fetched_tree() lifted out of bootstrap.sh — so the check that gates
+# a release and the check a node performs cannot drift apart into agreeing with nothing.
+#
+# Self-activating: while bootstrap.sh carries no release key this exits clean, because nothing can be
+# signed yet. The first signed release turns it on for good, with no second switch to remember.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify this tree the way a node would
+        run: bash .github/verify-release.sh

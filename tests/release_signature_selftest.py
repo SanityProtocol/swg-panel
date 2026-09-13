@@ -260,6 +260,55 @@ r3 = run([sys.executable, EMB, _ed, _drift])
 check("[11q] ⚠️ it FAILS on drift rather than writing nothing quietly",
       r3.returncode != 0 and "drifted" in (r3.stdout + r3.stderr), (r3.stdout + r3.stderr).strip())
 
+# ── [13] the main-side backstop for the manual signing step ──────────────────────────────────────────────
+# Signing is manual, because main carries one squashed commit per release and a bot commit per push is not
+# available to us. A manual step can be forgotten; this is what makes forgetting loud instead of silent.
+VWF = os.path.join(ROOT, ".github", "workflows", "verify-release.yml")
+VSH = os.path.join(ROOT, ".github", "verify-release.sh")
+check("[13] there is a main-side verify workflow", os.path.exists(VWF) and os.path.exists(VSH))
+vwf = open(VWF, encoding="utf-8").read() if os.path.exists(VWF) else ""
+check("[13b] it runs on pushes to main", re.search(r"push:\s*\n\s+branches:\s*\[main\]", vwf) is not None)
+vsh = open(VSH, encoding="utf-8").read() if os.path.exists(VSH) else ""
+check("[13c] ⚠️ it runs the SHIPPED verifier, not a second copy that can drift",
+      "verify_fetched_tree" in vsh and "openssl dgst" not in vsh)
+check("[13d] ⚠️ SWG_SKIP_VERIFY cannot wave a release through", "env -u SWG_SKIP_VERIFY" in vsh)
+check("[13e] a failed extraction is fatal, not an empty pass", "it has drifted" in vsh)
+
+# Behaviour, not just shape: four states, run for real against throwaway trees.
+def _vtree(sign_with="k.key", embed=True, stale=False, drop_manifest=False):
+    d = tempfile.mkdtemp(prefix="swg-vr-", dir=TMP)
+    os.makedirs(os.path.join(d, ".github"), exist_ok=True)
+    os.makedirs(os.path.join(d, "lib"), exist_ok=True)
+    shutil.copy(VSH, os.path.join(d, ".github", "verify-release.sh"))
+    shutil.copy(os.path.join(ROOT, "lib", "release-manifest.sh"), os.path.join(d, "lib"))
+    boot = open(BOOT, encoding="utf-8").read()
+    if embed:
+        pub = open(os.path.join(KEYDIR, "k.pub"), encoding="utf-8").read().strip()
+        boot = boot.replace('  return 0\n}\nverify_fetched_tree(){',
+                            '  cat > "$RELEASE_KEYS_D/release-1.pub" <<\'PUBKEY\'\n%s\nPUBKEY\n}\n'
+                            'verify_fetched_tree(){' % pub, 1)
+    open(os.path.join(d, "bootstrap.sh"), "w", encoding="utf-8").write(boot)
+    open(os.path.join(d, "VERSION"), "w").write("9.9.9-beta\n")
+    run(["git", "init", "-q", "."], cwd=d); run(["git", "add", "-A"], cwd=d)
+    if not drop_manifest:
+        run(["bash", "lib/release-manifest.sh", "generate"], cwd=d)
+        run(["bash", "lib/release-manifest.sh", "sign", os.path.join(KEYDIR, sign_with)], cwd=d)
+    if stale:
+        open(os.path.join(d, "VERSION"), "a").write("# later change\n")
+    return run(["bash", ".github/verify-release.sh"], cwd=d)
+
+r = _vtree(embed=False, drop_manifest=True)
+check("[13f] no key embedded yet → passes, signing is not live", r.returncode == 0, r.stderr.strip()[:120])
+r = _vtree(drop_manifest=True)
+check("[13g] ⚠️ key embedded but nobody signed → FAILS", r.returncode != 0)
+check("[13h] …and names the fix", "sign-release workflow" in (r.stdout + r.stderr))
+r = _vtree()
+check("[13i] properly signed → passes", r.returncode == 0, (r.stdout + r.stderr).strip()[:160])
+r = _vtree(stale=True)
+check("[13j] ⚠️ STALE manifest (signed, then a commit landed) → FAILS", r.returncode != 0)
+check("[13k] …and says it is staleness, not a hostile mirror",
+      "STALE" in (r.stdout + r.stderr), (r.stdout + r.stderr).strip()[:160])
+
 # ── [12] if a production key has been embedded, the workflow can actually extract it ─────────────────────
 # Conditional by design: the slot is empty until a key exists, and this gate must not fail for that. What
 # it must not allow is a key that is embedded in a shape the extractor cannot read — that would sign
