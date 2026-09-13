@@ -211,11 +211,54 @@ check("[11b] ⚠️ it is manual — never on push, which would put a bot commit
       "workflow_dispatch" in wf and re.search(r"^on:\s*\n\s+push:", wf, re.M) is None)
 check("[11c] it defaults to dev, not main", re.search(r"default:\s*'dev'", wf) is not None)
 check("[11d] ⚠️ it refuses when the signing secret is absent", "RELEASE_SIGNING_KEY is not set" in wf)
-check("[11e] ⚠️ it refuses to sign what no shipped key could verify",
-      "carries no release public key" in wf)
+# The old guard ("bootstrap.sh carries no public key") is gone because it cannot happen any more: CI
+# derives the public half from the secret, so a tree being signed always gets one. The refusal moved to
+# the secret itself, where the real mistakes now live — a secret that is not an EC key (a bad paste), or
+# no usable secret at all. Both must be errors rather than an unsigned release that looks signed.
+check("[11e] ⚠️ it refuses a secret that is not a readable EC private key",
+      "is not a readable EC private key" in wf)
+check("[11e2] ⚠️ …and refuses when no secret is usable at all",
+      "no usable signing key in the repository secrets" in wf)
 check("[11f] ⚠️ it verifies against the EMBEDDED public key, not the private one it just used",
       "verifies against NO key embedded" in wf)
 check("[11g] its commit skips the image rebuild it cannot affect", "[skip ci]" in wf)
+
+# ── [11h] the operator's job is the secret, not a file edit ──────────────────────────────────────────────
+# The public half is DERIVED from the secret and written in by machine. A key transcribed by hand is one
+# that can be transcribed wrongly, and that mistake makes every install refuse every release — including
+# the one that would fix it. So the workflow must derive, and the embedder must be the thing that writes.
+check("[11h] ⚠️ CI derives the public half rather than asking for it", "openssl ec -in" in wf and "-pubout" in wf)
+check("[11i] …using the embedder, not inline yaml-in-shell-in-python",
+      "embed-release-keys.py" in wf)
+check("[11j] …and commits bootstrap.sh, since embedding changes it", "MANIFEST.sha256.sig bootstrap.sh" in wf)
+
+# ── [11k] the embedder actually embeds, is idempotent, and cannot silently write nothing ─────────────────
+EMB = os.path.join(ROOT, ".github", "embed-release-keys.py")
+check("[11k] the embedder exists", os.path.exists(EMB))
+_ed = os.path.join(TMP, "embed")
+os.makedirs(_ed, exist_ok=True)
+for i, kn in enumerate(("k.key", "evil.key"), 1):
+    run(["bash", "-c", "openssl ec -in %s -pubout > %s/pub-%d.pem 2>/dev/null"
+         % (os.path.join(KEYDIR, kn), _ed, i)])
+_boot_copy = os.path.join(TMP, "bootstrap.sh")
+shutil.copy(BOOT, _boot_copy)
+r1 = run([sys.executable, EMB, _ed, _boot_copy])
+check("[11l] it embeds both keys", "embedded 2" in r1.stdout, (r1.stdout + r1.stderr).strip())
+_after = open(_boot_copy, encoding="utf-8").read()
+check("[11m] …into emit_release_keys(), leaving valid shell",
+      run(["bash", "-n", _boot_copy]).returncode == 0)
+check("[11n] …flush-left, or openssl will not parse the PEM",
+      "\n-----BEGIN PUBLIC KEY-----" in _after)
+check("[11o] …with a quoted heredoc, so the shell cannot expand the key",
+      "<<'PUBKEY'" in _after)
+r2 = run([sys.executable, EMB, _ed, _boot_copy])
+check("[11p] ⚠️ it is idempotent — a re-run commits nothing", "already current" in r2.stdout,
+      (r2.stdout + r2.stderr).strip())
+_drift = os.path.join(TMP, "drifted.sh")
+open(_drift, "w").write("emit_release_keys(){\n  # renamed away\n}\n")
+r3 = run([sys.executable, EMB, _ed, _drift])
+check("[11q] ⚠️ it FAILS on drift rather than writing nothing quietly",
+      r3.returncode != 0 and "drifted" in (r3.stdout + r3.stderr), (r3.stdout + r3.stderr).strip())
 
 # ── [12] if a production key has been embedded, the workflow can actually extract it ─────────────────────
 # Conditional by design: the slot is empty until a key exists, and this gate must not fail for that. What
