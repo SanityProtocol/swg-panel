@@ -2267,7 +2267,199 @@ def net_deps():
     return {"panel": _PANEL_PEER.get("addr") or "", "resolvers": res, "resolvers_known": known}
 
 
-def _cascade_want_sig(fwd, exit_, smart=None, guard=()):
+# ───────────────────────── networks: the route reconciler ─────────────────────────
+#
+# NETWORKS-PLAN D4 / D6 / D14 / §4.2 / §4.12. The panel sends ONE field — a provider peer's `allowed_ips`, its
+# own /32 first and its networks after. Everything else is derived here: which members are networks (outside
+# the interface's own subnet — the test swg-agent op_add_peer makes), which of them this box will carry (the
+# guard above), and which routes on a client interface are stale (anything routed there that is not wanted).
+# No state file: a wiped /var/lib or a recreated container cannot leak a route, because nothing is remembered.
+
+_NET = {"refused": {}, "seen": set(), "sig": []}   # refused: prefix → {why, addr, iface?} from the last judgement
+
+
+def _net_prefix(s):
+    """A v4 CIDR normalised the way both sides compare it — `10.0.0.5` and `10.0.0.5/32` are one network (the
+    kernel prints a /32 bare, §4.11). "" for anything else."""
+    import ipaddress
+    with contextlib.suppress(ValueError):
+        n = ipaddress.ip_network(str(s).strip(), strict=False)
+        if n.version == 4:
+            return str(n)
+    return ""
+
+
+def _net_kernel_dst(prefix):
+    """`prefix` spelled the way `ip route show` prints it: a /32 without its length (§4.11, measured twice)."""
+    return prefix[:-3] if prefix.endswith("/32") else prefix
+
+
+def _net_members(node_cfg, desired):
+    """{iface: {prefix: [pubkey, …]}} — every network a desired peer on a CLIENT interface carries.
+
+    ⚠️ INERT WHEN UNUSED (D1, §4.12). A client peer today is exactly `<ip>/32`, so an interface none of whose
+    peers carries a comma is skipped before its conf is even opened. Mesh links carry multi-CIDR values for
+    their own reasons (the cascade's /0) and are never networks."""
+    import ipaddress
+    out = {}
+    ifs = node_cfg.get("interfaces") or {}
+    for iface, plist in (desired or {}).items():
+        if iface not in ifs or iface.startswith("swg_"):
+            continue
+        multi = [p for p in (plist or []) if "," in str(p.get("allowed_ips") or "")]
+        if not multi:
+            continue
+        sub = _iface_subnet(node_cfg, iface)
+        if not sub or _iface_is_mesh(node_cfg, iface, sub):
+            continue
+        net = ipaddress.ip_network(sub)
+        for p in multi:
+            for m in str(p.get("allowed_ips")).split(","):
+                pre = _net_prefix(m)
+                if pre and not ipaddress.ip_network(pre).subnet_of(net):
+                    out.setdefault(iface, {}).setdefault(pre, []).append(p.get("public_key"))
+    return out
+
+
+def _net_live_main(node_cfg, _proc="/proc/net/route"):
+    """{iface: {prefix}} — routes in `main` on a CLIENT interface that lie outside its own subnet: every network
+    this box carries right now, including any it should stop carrying. None if the table could not be read.
+
+    Read from /proc, no fork (§4.12). The mask is explicit here, so a /32 reads as a /32: the churn §4.11 measured
+    belongs to `ip route`'s output, and this reader never sees it."""
+    import ipaddress
+    try:
+        with open(_proc) as f:
+            rows = f.read().splitlines()[1:]
+    except OSError:
+        return None
+    ifs = node_cfg.get("interfaces") or {}
+    subs, out = {}, {}
+    for line in rows:
+        t = line.split()
+        if len(t) < 8 or t[0] not in ifs or t[0].startswith("swg_"):
+            continue
+        with contextlib.suppress(ValueError):
+            d, m = int(t[1], 16), int(t[7], 16)
+            plen = bin(m).count("1")
+            if not plen:                                 # a default route on a client tunnel is nobody's network
+                continue
+            pre = _net_prefix("%d.%d.%d.%d/%d" % (d & 0xFF, (d >> 8) & 0xFF, (d >> 16) & 0xFF, (d >> 24) & 0xFF, plen))
+            if t[0] not in subs:
+                s = _iface_subnet(node_cfg, t[0])
+                subs[t[0]] = None if (not s or _iface_is_mesh(node_cfg, t[0], s)) else ipaddress.ip_network(s)
+            if subs[t[0]] is not None and pre and not ipaddress.ip_network(pre).subnet_of(subs[t[0]]):
+                out.setdefault(t[0], set()).add(pre)
+    return out
+
+
+def net_filter_desired(node_cfg, desired):
+    """The desired peer set with every network this box will not carry taken out of its peer's `allowed_ips` —
+    before `reconcile` writes the ACL anywhere.
+
+    ⚠️ THE ACL IS NOT HARMLESS ON ITS OWN. A client interface's .conf has no `Table = off`, so `wg-quick up` runs
+    `ip route add` for every AllowedIPs member not already routed on the device, under `set -e`. A refused member
+    in the conf therefore either fails the interface's next bring-up (a prefix a connected route owns: "File
+    exists") or installs — at boot, with no guard at all — the very route the guard refused. So a refused network
+    never reaches the ACL.
+
+    A network this process has never judged is judged here, before its ACL can exist; after that the routing pass
+    (`reconcile_net_routes`) re-judges every one. The SAME object comes back when nothing is dropped, and nothing
+    at all is read when no peer carries a network."""
+    members = _net_members(node_cfg, desired)
+    _NET["sig"] = sorted((i, p) for i, m in members.items() for p in m)
+    if not members:
+        _NET["seen"].clear()
+        return desired
+    allp = {p for m in members.values() for p in m}
+    _NET["seen"] &= allp
+    new = sorted(allp - _NET["seen"] - set(_NET["refused"]))
+    if new:
+        deps = _net_guard_deps()
+        for p in new:
+            why, addr = network_route_refusal(p, **deps) if deps is not None else ("guard_unreadable", "")
+            if why:
+                _NET["refused"][p] = {"why": why, "addr": addr}
+            _NET["seen"].add(p)
+    out = None
+    for iface, nets in members.items():
+        drop = set(nets) & set(_NET["refused"])      # only THIS interface's networks — never another's own /32
+        if not drop:
+            continue
+        out = out or dict(desired)
+        out[iface] = [dict(p, allowed_ips=",".join(m for m in str(p.get("allowed_ips")).split(",")
+                                                   if _net_prefix(m) not in drop))
+                      if "," in str(p.get("allowed_ips") or "") else p
+                      for p in desired[iface]]
+    return desired if out is None else out
+
+
+def reconcile_net_routes(node_cfg, desired, res, _proc="/proc/net/route"):
+    """Converge `main`'s routes for every network a client interface's peers carry, and return the ones held
+    there now as [(prefix, iface)] — which `reconcile_cascade` then copies into each policy table (§4.2).
+
+    `desired` is the panel's set BEFORE `net_filter_desired`, so a refused network is re-judged every pass and
+    heals the moment its reason goes away (a node whose DHCP address moves back, §4.3).
+
+      D14   ACL first, route second — a network is routed only once the LIVE interface lets its peer carry it.
+            The other order sends packets into an interface that silently drops them, which looks like a
+            far-side fault.
+      D6    the reaper is derived: a route in `main` on a client interface, outside its subnet, that nothing
+            wants right now is removed.
+      §4.12 nothing is forked unless a network is wanted or one is still routed."""
+    members = _net_members(node_cfg, desired)
+    live = _net_live_main(node_cfg, _proc)
+    if not members and not live:
+        _NET["refused"] = {}
+        return []
+    if live is None:
+        res["errors"].append("networks: cannot read the routing table — nothing changed")
+        return []
+    deps = _net_guard_deps()
+    if deps is None:                                 # a read failed: keep what is there, reap nothing blind
+        res["errors"].append("networks: cannot read this node's addresses — nothing changed")
+        return sorted((p, i) for i, ps in live.items() for p in ps if p in (members.get(i) or {}))
+    refused, kept = {}, []
+    for iface, nets in sorted(members.items()):
+        carried = {_net_prefix(m) for v in (current_allowed(node_cfg, iface) or {}).values()
+                   for m in str(v).split(",")}
+        for p in sorted(nets):
+            key = "netroute|%s|%s" % (iface, p)
+            why, addr = network_route_refusal(p, **deps)
+            if why:
+                refused[p] = {"why": why, "addr": addr, "iface": iface}
+                continue
+            # ⚠️ BEFORE the ACL test, not after. A rolled-back network is kept out of the ACL for the backoff; asked
+            # the other way round it is "not carried" on the next pass, drops out of `refused`, re-enters the ACL,
+            # fails again — the ACL flapping every pass for as long as the fault lasts.
+            if not _op_ready(key):
+                refused[p] = dict(_NET["refused"].get(p) or {"why": "rolled_back", "addr": ""}, iface=iface)
+                continue
+            if p not in carried:
+                continue
+            if p in (live.get(iface) or ()):
+                kept.append((p, iface))
+                continue
+            ok, why, addr = net_route_install(p, iface)
+            if ok:
+                _op_ok(key)
+                kept.append((p, iface))
+                res["changed"] += 1
+            else:
+                _op_fail(key, base=15.0, err=why)
+                refused[p] = {"why": why, "addr": addr, "iface": iface}
+                res["errors"].append(("network %s on %s: %s %s" % (p, iface, why, addr)).strip())
+    keep = set(kept)
+    for iface, ps in sorted(live.items()):
+        for p in sorted(ps):
+            if (p, iface) not in keep:
+                run(["ip", "route", "del", p, "dev", iface])
+                res["changed"] += 1
+    _NET["refused"] = refused
+    return kept
+
+
+def _cascade_want_sig(fwd, exit_, smart=None, guard=(), nets=(), net_tables=()):
     """Canonical signature of the policy rules+routes a plan wants — same token shape as the live
     reader below, so an exact-match means 'no drift' and we skip the (gap-inducing) flush+rebuild.
 
@@ -2313,6 +2505,12 @@ def _cascade_want_sig(fwd, exit_, smart=None, guard=()):
         _u = _up_mark(e["table"])
         if _u:
             sig.add(f"R|upmark|{_u}|{int(e['table'])}")
+    # NETWORKS §4.2 — every network `main` holds, in each table serving a client subnet. ⚠️ Spelled the way the
+    # live reader will read it back: `ip route show` prints a /32 bare (§4.11), so signing `x/32` would be a token
+    # the live set can never contain — a flush and rebuild of the whole band on every sync.
+    for T in net_tables:
+        for p, dev in nets:
+            sig.add(f"T|{T}|{_net_kernel_dst(p)}|{dev}|")
     return sig
 
 
@@ -4768,7 +4966,7 @@ def reconcile_exits(desired, res):
     _EXITS["list"] = out
 
 
-def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_conn=None, panel_cfg=None):
+def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_conn=None, panel_cfg=None, nets=()):
     """Phase 2 cascade + Phase 3 smart routing. ENTRY (P2 forward): `ip rule from S lookup T`; ENTRY
     (P3 smart): nftables marks `ip saddr S ip daddr @<category> meta mark set T` then `ip rule fwmark T
     lookup T` — both route into `default dev <link> table T`. EXIT (shared): `ip rule to S lookup T` +
@@ -4904,7 +5102,15 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                              if _rp_effective(d, _rall) not in (None, 2))
     else:
         _RPF["bad"] = []
-    want_sig = _cascade_want_sig(fwd, exit_, smart_exit, guard=_dxguard)   # only exit entries create fwmark→table policy routing
+    # NETWORKS §4.2 — a forward/smart interface's table never consults `main`, and its `default dev <leg>` matches
+    # a LAN as happily as the internet: without this the network is silently unreachable from exactly those
+    # interfaces while every screen reads healthy. So each network `main` holds (`nets`, already guarded there)
+    # goes into every table that serves a client subnet, more specific than that table's default. A kill-switch
+    # table too: a dead exit should fail the INTERNET closed, not the office LAN. Not `exit_` tables — those carry
+    # other nodes' clients, and a network is reached from its own node (D12). Empty when there are none (D1).
+    _net_tables = sorted({str(e["table"]) for e in fwd + smart_exit} | {str(e["table"]) for e in _dxguard}) if nets else []
+    want_sig = _cascade_want_sig(fwd, exit_, smart_exit, guard=_dxguard,
+                                 nets=nets, net_tables=_net_tables)   # only exit entries create fwmark→table policy routing
     # ⚠️ ONLY THE PRIORITIES THAT ARE ALSO TABLES. `band` now spans both bands, and an upstream priority
     # names no table of its own — so this asked the kernel for `route show table 6890` once per leg per
     # reconcile, for a table that cannot exist. Wasteful, and worse than wasteful: anything ELSE on the box
@@ -4975,6 +5181,10 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             run(["ip", "route", "replace", S, "dev", dev, "table", T])
             run(["ip", "rule", "add", "to", S, "lookup", T, "priority", T])
             res["changed"] += 1
+        for T in _net_tables:                                  # NETWORKS §4.2: outranks the table's default
+            for p, dev in nets:
+                run(["ip", "route", "replace", p, "dev", dev, "table", T])
+                res["changed"] += 1
         # UPSTREAM: a mark that names a LEG, for something on this box that has already chosen one. Below
         # SWG_RT_BASE, so no source rule can outrank it; disjoint from the client-side marks, so pointing
         # the upstream somewhere the client's own rule did not say is expressible at all. Nothing sets these
@@ -9548,6 +9758,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             _lp = str(_x.get("listen") or "").rsplit(":", 1)[-1]
             if _lp.isdigit():
                 _x["src_ips"] = sorted(_cmap.get(_lp, ()))
+    if _NET["refused"]:                               # networks this node will not carry, and why — absent when none (D1)
+        snap["net_refused"] = {p: dict(v) for p, v in _NET["refused"].items()}
     snap["iface_candidates"] = iface_candidates(node_cfg)
     # …and the devices this box DIALS OUT on, which that call classified on its way past. Read straight
     # after it, never before: the list is rebuilt by that call, so reading it earlier reports the previous
@@ -15528,7 +15740,9 @@ def main():
                     reconcile_exits(reply.get("exits"), xr)
                 with contextlib.suppress(Exception):
                     write_inventory(node_cfg)      # what this box carries + how it runs it (see NODE_INVENTORY)
-                r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
+                # A network this node will not carry never reaches the ACL (see net_filter_desired). The same object
+                # comes straight back when no peer carries a network.
+                r = reconcile(node_cfg, net_filter_desired(node_cfg, reply["desired"]), agent, sudo, reply.get("remove"))
                 # …and the imported exits' own dial sources, from what reconcile_exits just reported: the
                 # endpoint is only known after registration, so this reads the LIVE record rather than the
                 # panel's request.
@@ -15549,14 +15763,20 @@ def main():
                 # lifecycle changed this cycle, or the safety window elapsed — not every 5s. (See ROUTING_RECONCILE_EVERY_S.)
                 _route_sig = json.dumps([reply.get("desired_ifaces"), reply.get("cascade"),
                                          reply.get("smart"), _def_egress,
-                                         _devexit_sig(reply.get("cascade"))], sort_keys=True, default=str)
+                                         _devexit_sig(reply.get("cascade")),
+                                         _NET["sig"], sorted(_NET["refused"])], sort_keys=True, default=str)
                 _iface_churn = bool(cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
                                     or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"] or cq["changed"])   # a WDTT/csqtt install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
                 if (_route_sig != last_route_sig or _iface_churn
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):
                     eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
+                    nr = {"changed": 0, "errors": []}
+                    # Networks: after the ACL (D14, `reconcile` above), before the cascade, which copies what `main`
+                    # now holds into its tables (§4.2). Given the UNFILTERED set, so a refusal is re-judged every pass.
+                    _nets = reconcile_net_routes(node_cfg, reply["desired"], nr)
                     cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"), _def_egress,
-                                            panel_conn=panel, panel_cfg=reply.get("panel"))   # P2 forward + P3 smart + exit SNAT (+ panel-pull provider lists)
+                                            panel_conn=panel, panel_cfg=reply.get("panel"),
+                                            nets=_nets)   # P2 forward + P3 smart + exit SNAT (+ panel-pull provider lists)
                     with contextlib.suppress(Exception):
                         # …and in step with the EXIT devices too (§5.3): traffic leaving by one matches
                         # neither WAN rule, so without this the internet lane reads zero on exactly the
@@ -15567,6 +15787,7 @@ def main():
                     last_route_sig = _route_sig; last_route_t = time.time()
                 else:
                     eg = {"changed": 0, "errors": []}; cas = {"changed": 0, "errors": []}   # unchanged routing → skip the ip/iptables/nft drift-check shell-outs
+                    nr = {"changed": 0, "errors": []}
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name — INCLUDING
                 # keypair restore/rebaseline (ik): a failed Restore (e.g. awg-quick up failed) is reported so the
                 # panel can show "restore failed" + the reason instead of hanging on "restoring".
@@ -15612,10 +15833,12 @@ def main():
                         NODE_NOTES.pop(k, None)
                 for e in eg["errors"] + cas["errors"]:
                     print("egress: " + e, flush=True)
+                for e in nr["errors"]:
+                    print("networks: " + e, flush=True)
                 for e in xr["errors"]:                  # an imported exit that could not register/come up
                     print("exit: " + e, flush=True)
                 if (r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]
-                        or eg["changed"] or eg["errors"] or cas["changed"] or cas["errors"]
+                        or eg["changed"] or eg["errors"] or cas["changed"] or cas["errors"] or nr["changed"]
                         or xr["changed"] or xr["errors"]
                         or ob["added"] or ob["errors"] or cr["created"] or cr["errors"]
                         or dl["deleted"] or dl["errors"] or tp["done"] or tp["errors"]):
