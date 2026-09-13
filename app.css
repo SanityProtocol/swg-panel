@@ -3369,6 +3369,7 @@ a.tg:hover{filter:brightness(1.25)}
 .netprobe .condot{animation:none;flex:none;margin-top:5px}
 .netprobe .netgw.t-on{color:var(--ink-2)}
 .netprobe .netgw.t-blocked{color:var(--pending)}
+.netprobe .netgw.t-blocked .condot{background:var(--pending)}   /* one tone per line: the sentence's, not the grid's orange */
 /* P3 — a gateway's tag on its peer row, and a user's reachable networks in their edit sheet */
 .tg.tg-gw{margin-left:8px;display:inline-flex;gap:4px;align-items:center;color:var(--brand);border-color:color-mix(in srgb,var(--brand) 40%,var(--line))}
 .tg.tg-gw svg{width:12px;height:12px}

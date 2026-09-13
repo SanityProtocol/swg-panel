@@ -1138,9 +1138,12 @@ function NetProbe({ pid, nid, node, nets }) {
     setMsg(null);
     try {
       const r = await api.peerNetworkProbe({ peer_id: pid, node: nid, addr: a, ...(port.trim() ? { port: port.trim() } : {}) });
-      if (r && r.ok) setTest(r.data);
-      else setMsg(r && r.why ? netProbeRefused(r, node, a) : [srvText(r) || T("Couldn't start the test.")]);
-    } catch (e) { setMsg([T("Couldn't start the test.")]); }
+      if (r && r.ok) { setTest(r.data); return; }
+      // ⚠️ A refused attempt clears the last answer. Left on screen, "nothing is at 192.168.50.99" sat directly above
+      // "192.168.1.1 isn't in a network…" and read as the new address's result — seen in the real sheet, not predicted.
+      if (!(r && r.why === "busy")) setTest(null);
+      setMsg(r && r.why ? netProbeRefused(r, node, a) : [srvText(r) || T("Couldn't start the test.")]);
+    } catch (e) { setTest(null); setMsg([T("Couldn't start the test.")]); }
   };
   // The sheet turns Enter into Save unless an input owns the key (data-enter="self"): here Enter runs the test.
   const key = e => { if (e.key === "Enter") { e.preventDefault(); if (!pending && addr.trim()) run(); } };
