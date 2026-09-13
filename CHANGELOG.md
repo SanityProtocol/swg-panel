@@ -68,7 +68,34 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
   matching nothing, and the summary counts it without opening the section. Punycode names are shown the way
   they were written.
 
+### Security
+
+- **Releases are signed, and a server checks the signature before installing anything.** Every published
+  release now carries a manifest of its files and a signature over it; `bootstrap.sh` verifies both before a
+  single file is copied into place, and refuses a release whose signature does not match or whose contents
+  have been altered. Today that guards against a corrupted download and against the content-delivery network
+  in front of the repository — neither of which we control. It matters more for what comes next: the panel is
+  gaining ways to fetch a release that do not depend on reaching GitHub, and a signature is what makes another
+  route another way *in* rather than another way to be handed something else. Releases published before this
+  carry no signature and still install, with a note saying so.
+
 ### Fixed
+
+- **An update that did nothing was reported as one that failed.** A node cannot watch its own update — the
+  updater restarts it — so the panel judged the result by whether the version moved, and after five minutes
+  of “updating…” told you the node “never reported a new version (e.g. it couldn’t reach GitHub)”. On a box
+  that was already current, nothing moves and nothing is wrong: the updater did exactly the right thing and
+  was reported as a failure, blaming your network. An update now says which of three things happened —
+  it updated, it was already up to date, or it failed — and a failure carries the last of the updater’s
+  output, so the reason is on the node’s card instead of being guessed at. It also arrives on the next sync
+  rather than five minutes later.
+- **On a server where GitHub is filtered, the panel could not even see whether an update existed.** The
+  version check reads three files from `raw.githubusercontent.com`, which resolves into the address range
+  those networks actually block. It now falls back to GitHub’s API, which does not — the same files, the
+  same repository, the same commit, over different infrastructure — so the version, the release notes and
+  the changelog browser keep working. This matters most on a master, where the panel and a node share one
+  box: when that box is the filtered one there is no second machine to ask. It does not make the update
+  itself work there; that is a larger piece of work, and it is under way.
 
 - **“Couldn’t reach the repo to check for updates” named no cause, and gave up at the first stumble.** The
   check behind the header’s Check status button made a single attempt with a short timeout — the one fetch in
