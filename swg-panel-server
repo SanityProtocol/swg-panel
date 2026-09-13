@@ -3013,7 +3013,9 @@ def peer_set(roster, pid, fields, now):
     # sub_hide: which CONFIG SOURCES this peer publishes to its subscription (see SUB_SOURCES). Preserved across
     # every other mutation for the same reason as the rest — an update-target must not silently re-publish a
     # source the operator hid.
-    for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash", "sub_hide"):
+    # routes: the networks this device fronts (NETWORKS-PLAN §6) — preserved for the same reason as the rest.
+    for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash", "sub_hide",
+              "routes"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
@@ -4793,7 +4795,271 @@ def _report_orphan_egress(deps, nodes, orphans):
                       "Egress reset to direct — it forwarded to no node at all", nm, _blank_n)
 
 
-def desired_for_node(roster, node_id):
+# ── NETWORKS — which networks a node carries, and why not (docs/NETWORKS-PLAN.md §5, §6) ─────────────────
+# A network is `(provider, subnet)`: a peer's `routes`, lowered onto every node the peer is deployed to as extra
+# members of its `allowed_ips`, own /32 first (D9). The node holds the authoritative copy of the refusal set
+# (`swg-noded` `network_route_refusal()`, read from its own kernel); this one answers from the snapshot, so the
+# operator is told at the door rather than finding out from a node report.
+#
+# Reason TOKENS, never sentences — the SPA owns the wording, most specific first. `node_too_old`, `no_snapshot`
+# and `resolver_unknown` are not verdicts about the prefix: the node cannot guard itself yet, so nothing is
+# lowered onto it, and a save is NOT refused for them — the report says so instead.
+NETWORK_CAP = 8
+_NET_RESERVED = ("0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
+_NETWORK_REFUSALS = ("invalid", "not_v4", "default_route", "reserved", "self_contained", "no_snapshot", "node_lan",
+                     "iface_subnet", "mesh", "node_gateway", "node_too_old", "node_panel", "node_resolver",
+                     "resolver_unknown", "overlap", "taken", "cap", "blocked")
+_NETWORK_NOT_A_VERDICT = ("no_snapshot", "node_too_old", "resolver_unknown")
+
+
+def network_prefix(s):
+    """A v4 CIDR normalised (`192.168.1.7/24` → `192.168.1.0/24`, a bare address → /32), or ""."""
+    try:
+        n = ipaddress.ip_network(str(s or "").strip(), strict=False)
+    except ValueError:
+        return ""
+    return str(n) if n.version == 4 else ""
+
+
+def network_subnet_refusal(prefix, snap, target=None):
+    """(reason, address) for a network this panel must not lower onto the node `snap` describes, or (None, "").
+
+    Mirrors `swg-noded` `network_route_refusal()`. Where they differ it is because the panel knows less: it has the
+    node's ADDRESSES (`node_ips`) but not their prefixes, so "the node's own LAN" is containment here and overlap
+    there. That asymmetry fails closed — the node refuses what this passes — and it is why D7 makes the node
+    authoritative."""
+    try:
+        net = ipaddress.ip_network(str(prefix or "").strip(), strict=False)
+    except ValueError:
+        return "invalid", ""
+    if net.version != 4:
+        return "not_v4", ""
+    if net.prefixlen == 0:
+        return "default_route", ""
+    if any(net.overlaps(ipaddress.ip_network(r)) for r in _NET_RESERVED):
+        return "reserved", ""
+    if target is not None and _is_self_contained_target(target):
+        return "self_contained", ""          # keyless: no peer entry, no AllowedIPs to attach to (§4.8)
+    snap = snap if isinstance(snap, dict) else {}
+    if not snap:
+        return "no_snapshot", ""
+    def _in(a):
+        with contextlib.suppress(ValueError, TypeError):
+            return ipaddress.ip_address(str(a)) in net
+        return False
+    for a in snap.get("node_ips") or []:
+        if _in(a):
+            return "node_lan", str(a)        # ⚠️ a REDIRECT, not a no: the node is already a provider for it (§4.1)
+    for ifn, blk in sorted((snap.get("interfaces") or {}).items()):
+        meta = (blk or {}).get("meta") or {}
+        with contextlib.suppress(ValueError, TypeError):
+            if meta.get("subnet") and net.overlaps(ipaddress.ip_network(meta["subnet"], strict=False)):
+                return ("mesh" if str(ifn).startswith("swg_") else "iface_subnet"), \
+                       str(meta.get("address") or meta["subnet"]).split("/")[0]
+    gws = snap.get("ether_gws")
+    for g in (gws.values() if isinstance(gws, dict) else ()):
+        if g and _in(g):
+            return "node_gateway", str(g)
+    nd = snap.get("net_deps")
+    if not isinstance(nd, dict):
+        return "node_too_old", ""            # D7: a node that cannot say what it depends on cannot guard itself
+    if nd.get("panel") and _in(nd["panel"]):
+        return "node_panel", str(nd["panel"])
+    for r in nd.get("resolvers") or []:
+        if _in(r):
+            return "node_resolver", str(r)
+    if not nd.get("resolvers_known"):
+        return "resolver_unknown", ""
+    return None, ""
+
+
+def node_networks(roster, nid, snap):
+    """The networks one node carries, and every one it does not with its reason:
+        {"carry": {pid: {"iface": <iface>, "nets": [prefix, …]}}, "inert": {pid: {prefix: {why, addr, by?}}}}
+
+    A network attaches to its provider's FIRST deployment on this node — a kernel route has one device. Two
+    providers cannot hold one prefix (§4.3: wg's trie has one owner per prefix, and `192.168.1.0/24` is the normal
+    case, not the rare one), so an overlap is resolved DETERMINISTICALLY — earliest `created_at`, then id — and the
+    loser is inert with `taken` + who took it. Deterministic so it cannot flap; resolved here rather than refused
+    at save because a transfer can put two stored records side by side, and refusing the save then is how a record
+    becomes unsavable, including the save that would fix it. A blocked or expired provider carries nothing."""
+    users = roster.get("users") or {}
+    nowv = int(time.time())
+    provs = []
+    for key, p in (roster.get("peers") or {}).items():
+        if not isinstance(p, dict) or not p.get("routes"):
+            continue
+        u = users.get(p.get("user_id")) or {}
+        if p.get("disabled") or u.get("disabled") or is_expired(p, nowv) or is_expired(u, nowv):
+            continue
+        tg = next((t for t in (p.get("targets") or []) if t.get("node") == nid and t.get("iface")), None)
+        if tg is not None:
+            provs.append((int(p.get("created_at") or 0), str(p.get("id") or key), p, tg))
+    carry, inert, held = {}, {}, []
+    for _c, pid, p, tg in sorted(provs, key=lambda x: (x[0], x[1])):
+        for i, raw in enumerate(p.get("routes") or []):
+            pre = network_prefix(raw) or str(raw)
+            by = ""
+            why, addr = ("cap", "") if i >= NETWORK_CAP else network_subnet_refusal(pre, snap, tg)
+            if not why:
+                n = ipaddress.ip_network(pre)
+                hit = next((h for h in held if n.overlaps(h[0])), None)
+                if hit:
+                    why, addr, by = ("overlap" if hit[1] == pid else "taken"), str(hit[0]), hit[1]
+            if why:
+                inert.setdefault(pid, {})[pre] = dict({"why": why, "addr": addr}, **({"by": by} if by else {}))
+            else:
+                held.append((ipaddress.ip_network(pre), pid))
+                carry.setdefault(pid, {"iface": tg.get("iface"), "nets": []})["nets"].append(pre)
+    for ent in carry.values():
+        ent["nets"].sort(key=ipaddress.ip_network)
+    return {"carry": carry, "inert": inert}
+
+
+def network_routes_clean(roster, peer, raw, snaps):
+    """(clean routes, refusals) for a save of `peer`'s networks.
+
+    ASYMMETRIC, like `exit_device_refusal`: a NEW prefix is refused at the door against every node the peer is
+    deployed to; a prefix ALREADY STORED is kept whatever it would say now, so a node whose address moved (§4.3)
+    or a transfer that collided two records never makes the peer unsavable. What stops a stored-but-now-wrong
+    network doing harm is `node_networks` at plan time and the node's own guard, not this door."""
+    stored = {network_prefix(x) for x in (peer.get("routes") or [])}
+    out, refusals = [], []
+    for r in raw:
+        s = str(r).strip()
+        if not s:
+            continue
+        pre = network_prefix(s)
+        why, _a = network_subnet_refusal(s, None) if pre else (network_subnet_refusal(s, None)[0] or "invalid", "")
+        if why in ("invalid", "not_v4", "default_route", "reserved"):
+            refusals.append({"prefix": s, "why": why})
+            continue
+        if pre not in out:
+            out.append(pre)
+    if len(out) > NETWORK_CAP:
+        refusals.append({"prefix": out[NETWORK_CAP], "why": "cap"})
+    for i, pre in enumerate(out):
+        hit = next((q for q in out[:i] if ipaddress.ip_network(pre).overlaps(ipaddress.ip_network(q))), None)
+        if hit:
+            refusals.append({"prefix": pre, "why": "overlap", "addr": hit})
+    targets = [t for t in (peer.get("targets") or []) if not _is_self_contained_target(t)]
+    if out and not targets:
+        refusals.append({"prefix": out[0], "why": "self_contained"})
+    done = set()
+    for t in targets:
+        nid = t.get("node")
+        if not nid or nid in done:
+            continue
+        done.add(nid)
+        snap = (snaps or {}).get(nid) or {}
+        others = node_networks(roster, nid, snap)["carry"]
+        for pre in out:
+            if pre in stored:
+                continue
+            why, addr = network_subnet_refusal(pre, snap, t)
+            if why in _NETWORK_NOT_A_VERDICT:
+                continue
+            if why:
+                refusals.append({"prefix": pre, "node": nid, "iface": t.get("iface"), "why": why, "addr": addr})
+                continue
+            n = ipaddress.ip_network(pre)
+            for opid, ent in sorted(others.items()):
+                if opid == peer.get("id"):
+                    continue
+                hit = next((x for x in ent["nets"] if n.overlaps(ipaddress.ip_network(x))), None)
+                if hit:
+                    refusals.append({"prefix": pre, "node": nid, "why": "taken", "addr": hit, "by": opid})
+                    break
+    return out, refusals
+
+
+def _allowed_covers(allowed, prefix):
+    """Does a client AllowedIPs string route `prefix` into the tunnel?"""
+    n = ipaddress.ip_network(prefix)
+    for m in str(allowed or "").split(","):
+        with contextlib.suppress(ValueError, TypeError):
+            if n.subnet_of(ipaddress.ip_network(m.strip(), strict=False)):
+                return True
+    return False
+
+
+def network_report(roster, pid, snaps):
+    """What a peer's networks MEAN, computed on demand for the save result and the peer sheet — never per poll
+    (§4.10). One entry per node the peer is deployed to:
+
+      networks   each prefix's state: `active` (sent to the node), `refused_by_node` (sent, and the node's own
+                 guard would not carry it — its reason), or `inert` (not sent — the panel's reason).
+      audience   ⚠️ AN EXPOSURE DISCLOSURE (§4.5). Everyone else with a live deployment ON THIS NODE can reach it —
+                 any interface, because crossing interfaces on one node is free (§0) — and the node cannot tell
+                 them apart until sharing exists. Counted across the node, not the interface, so it never
+                 understates what the operator has just done.
+      widen      D8: the peers in that audience whose client AllowedIPs does NOT cover a network, from
+                 `effective_client_params` itself — never a fourth copy of the render rule. A full-tunnel peer
+                 (the default) already reaches it and is not listed.
+      subnet / address   what the far-side snippet needs (§4.6): the tunnel subnet to NAT or route back, and the
+                 provider's own tunnel address."""
+    p = (roster.get("peers") or {}).get(pid) or {}
+    if not p.get("routes"):
+        return {"targets": []}
+    users = roster.get("users") or {}
+    nowv = int(time.time())
+    out, done = [], set()
+    for t in p.get("targets") or []:
+        nid, ifn = t.get("node"), t.get("iface")
+        if not nid or nid in done:
+            continue
+        done.add(nid)
+        snap = (snaps or {}).get(nid) or {}
+        plan = node_networks(roster, nid, snap)
+        mine = (plan["carry"].get(pid) or {}).get("nets") or []
+        _pu = users.get(p.get("user_id")) or {}
+        # Neither carried nor judged: node_networks skips a blocked/expired provider outright (it carries nothing),
+        # and otherwise the only way here is a keyless deployment.
+        _none = "blocked" if (p.get("disabled") or _pu.get("disabled") or is_expired(p, nowv)
+                              or is_expired(_pu, nowv)) else "self_contained"
+        nref = snap.get("net_refused") if isinstance(snap.get("net_refused"), dict) else {}
+        nets = []
+        for raw in p.get("routes") or []:
+            pre = network_prefix(raw) or str(raw)
+            if pre in mine:
+                r = nref.get(pre) if isinstance(nref.get(pre), dict) else None
+                nets.append(dict({"prefix": pre, "state": "refused_by_node" if r else "active"},
+                                 **({"why": str(r.get("why") or ""), "addr": str(r.get("addr") or "")} if r else {})))
+            else:
+                nets.append(dict({"prefix": pre, "state": "inert"},
+                                 **((plan["inert"].get(pid) or {}).get(pre) or {"why": _none})))
+        active = [n["prefix"] for n in nets if n["state"] == "active"]
+        peers_n, users_s, widen = 0, set(), []
+        for q in (roster.get("peers") or {}).values():
+            if not isinstance(q, dict) or q.get("id") == pid:
+                continue
+            qu = users.get(q.get("user_id")) or {}
+            if q.get("disabled") or qu.get("disabled") or is_expired(q, nowv) or is_expired(qu, nowv):
+                continue
+            qts = [x for x in (q.get("targets") or []) if x.get("node") == nid]
+            if not qts:
+                continue
+            peers_n += 1
+            if q.get("user_id"):
+                users_s.add(q.get("user_id"))
+            for x in qts:
+                if _is_self_contained_target(x) or not active:
+                    continue
+                xm = (((snap.get("interfaces") or {}).get(x.get("iface")) or {}).get("meta") or {})
+                allowed = effective_client_params(q, x, xm)["allowed"]
+                miss = [a for a in active if not _allowed_covers(allowed, a)]
+                if miss:
+                    widen.append({"peer_id": q.get("id"), "title": q.get("title") or "", "user_id": q.get("user_id"),
+                                  "iface": x.get("iface"), "allowed": allowed, "missing": miss})
+        meta = (((snap.get("interfaces") or {}).get(ifn) or {}).get("meta") or {})
+        out.append({"node": nid, "iface": ifn, "subnet": meta.get("subnet") or "",
+                    "address": (t.get("ip") or "").split("/")[0], "networks": nets,
+                    "audience": {"peers": peers_n, "users": len(users_s)},
+                    "widen": widen[:200], "widen_total": len(widen)})
+    return {"targets": out}
+
+
+def desired_for_node(roster, node_id, snap=None):
     """The peer set the roster assigns to one node, grouped by interface.
 
     Derived entirely from peers→targets: a node may serve several interfaces
@@ -4802,10 +5068,18 @@ def desired_for_node(roster, node_id):
     flat-roster era — a node still receives
         { "<iface>": [ {public_key, allowed_ips, preshared_key, name}, ... ] }
     — so swg-noded / swg-agent are untouched by the schema change.
+
+    NETWORKS (D4, D9): a provider's networks ride in the same field, after its own /32 — which four positional
+    readers depend on staying first. Only onto a node whose snapshot (`snap`) proves it can guard itself: an ACL
+    alone takes the prefix out of wg's trie while nothing routes to it. Not computed at all unless some peer
+    declares a network, so without one this output is byte-identical to what it was (D1).
     """
     users = roster.get("users") or {}
     nowv = int(time.time())
     out = {}
+    nets = {}
+    if snap is not None and any(isinstance(q, dict) and q.get("routes") for q in (roster.get("peers") or {}).values()):
+        nets = node_networks(roster, node_id, snap)["carry"]
     for p in (roster.get("peers") or {}).values():
         if not isinstance(p, dict):
             continue
@@ -4828,9 +5102,13 @@ def desired_for_node(roster, node_id):
             if not iface:
                 continue
             ip = (t.get("ip") or "").split("/")[0]
+            allowed = (ip + "/32") if ip else ""
+            _nw = nets.get(p.get("id")) if nets else None
+            if allowed and _nw and _nw["iface"] == iface:
+                allowed = ",".join([allowed] + _nw["nets"])
             out.setdefault(iface, []).append({
                 "public_key": p.get("pubkey"),
-                "allowed_ips": (ip + "/32") if ip else "",
+                "allowed_ips": allowed,
                 "preshared_key": p.get("psk") or "none",
                 "name": name,
             })
@@ -17703,6 +17981,14 @@ def api(method, path, qs, body, deps):
                 if uexp and exp > uexp:
                     return 400, {"ok": False, **perr("Peer expiry can't be later than the subscription's expiry ({v1})", v1=fmt_day(uexp)), "code": "bad_request"}
             changed["expiry"] = exp
+        if "routes" in body:                    # the networks behind this device — refused at the door, tolerated once stored
+            _rt = body.get("routes")
+            if not isinstance(_rt, list) or any(not isinstance(x, str) for x in _rt):
+                return 400, {"ok": False, "error": "routes must be a list of CIDR strings", "code": "bad_request"}
+            _clean, _refused = network_routes_clean(roster, p, _rt, deps.get("node_snaps") or {})
+            if _refused:
+                return 400, {"ok": False, "error": "network refused", "code": "network_refused", "refusals": _refused}
+            changed["routes"] = _clean
         if not changed:
             return 400, {"ok": False, "error": "nothing to update", "code": "bad_request"}
         p2 = peer_set(roster, pid, changed, now())
@@ -17712,9 +17998,19 @@ def api(method, path, qs, body, deps):
         if "user_id" in changed:
             ev_append(roster_path, "peer", pid,
                       "Assigned peer" if changed["user_id"] else "Unassigned peer", peer_label(roster, p2))
-        elif ("overrides" in changed or "expiry" in changed) and "title" not in changed:
+        elif ("overrides" in changed or "expiry" in changed or "routes" in changed) and "title" not in changed:
             ev_append(roster_path, "peer", pid, "Edited peer config", peer_label(roster, p2))
+        if "routes" in changed:                 # what the operator has just done, before they walk away (§4.5)
+            return 200, {"ok": True, "data": p2, "networks": network_report(roster, pid, deps.get("node_snaps") or {})}
         return 200, {"ok": True, "data": p2}
+
+    if method == "POST" and path == "/api/peers/networks":
+        # The same report, read-only — for the peer sheet to show what a peer's networks are doing now.
+        roster = roster_load(roster_path)
+        pid = body.get("peer_id") or ""
+        if pid not in (roster.get("peers") or {}):
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        return 200, {"ok": True, "data": network_report(roster, pid, deps.get("node_snaps") or {})}
 
     if method == "POST" and path == "/api/peers/update-target":
         # Change ONE deployment's assigned address and/or its client-config overrides.
@@ -22126,7 +22422,7 @@ class Handler(BaseHTTPRequestHandler):
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
         roster = roster_load(Handler.deps["roster_path"])
-        desired = desired_for_node(roster, nid)
+        desired = desired_for_node(roster, nid, snap)   # the snapshot gates networks: absent net_deps ⇒ /32 only (D7)
         _clists = {cl["id"]: cl for cl in ((Handler.deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")}
         cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {}, _clists)   # Phase 2/3: whole-fleet forward + smart plan (resolves custom-list rules)
         # Targets that fell off the 7000-band, kept for the node cards. The plan is fleet-wide, so ONE node
