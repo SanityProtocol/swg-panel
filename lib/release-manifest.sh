@@ -49,6 +49,16 @@ generate(){
   #
   # The manifest and its signature are excluded — a file cannot state its own hash, and the signature is
   # made over the manifest after it exists.
+  # ⚠️ THIS HASHES THE WORKING TREE, NOT HEAD. That is correct — the working tree is what gets installed,
+  # and CI deliberately modifies bootstrap.sh (embedding the public key) immediately before generating. But
+  # it means an unrelated uncommitted edit is baked into the signature, and the manifest then goes stale the
+  # moment someone commits or reverts it. A warning rather than a refusal, because the CI case above is
+  # legitimate; loud, because a silently stale manifest is a valid signature over the wrong tree.
+  if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    echo "release-manifest: ⚠ tracked files are modified — this manifest describes the WORKING TREE:" >&2
+    git status --porcelain --untracked-files=no 2>/dev/null | sed 's/^/    /' >&2
+    echo "release-manifest:   sign a clean tree for a real release, or the signature covers these edits" >&2
+  fi
   git ls-files -z \
     | LC_ALL=C sort -z \
     | while IFS= read -r -d '' f; do

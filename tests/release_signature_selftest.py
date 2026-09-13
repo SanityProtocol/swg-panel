@@ -179,19 +179,26 @@ check("[8b] …and warns that it did", "WITHOUT verifying" in out, out.strip())
 # ── [9] the real generator covers the whole tracked tree, crane included ─────────────────────────────────
 r = run(["git", "ls-files"], cwd=ROOT)
 tracked = {l for l in r.stdout.split() if l}
-# The manifest is a RELEASE artifact, generated and signed when a release is cut. Running the generator
-# here must not leave one lying in the working tree: unsigned and stale the moment anything changes, it
-# is exactly the sort of build output that later gets committed by accident.
+# ⚠️ THE MANIFEST IS A SIGNED RELEASE ARTIFACT — DO NOT DAMAGE IT. The generator writes to a fixed path in
+# the repo root, and the first version of this only cleaned up when no manifest had existed beforehand. The
+# day a real release was signed, running the gate silently REGENERATED the signed manifest and the operator's
+# signature stopped matching — a test that broke the thing it was testing, and reported a clean pass while
+# doing it. Save the bytes first and put them back unconditionally, then assert the restore actually worked:
+# a restore that quietly failed would leave exactly the damage this is here to prevent.
 _man_path = os.path.join(ROOT, "MANIFEST.sha256")
-_man_existed = os.path.exists(_man_path)
+_man_before = open(_man_path, "rb").read() if os.path.exists(_man_path) else None
 gen = run(["bash", GEN, "generate"], cwd=ROOT)
 listed = {l.split("  ", 1)[1].rstrip("\n") for l in open(os.path.join(ROOT, "MANIFEST.sha256")) if "  " in l}
 missing = tracked - listed - {"MANIFEST.sha256", "MANIFEST.sha256.sig"}
 check("[9] every tracked file is in the manifest", not missing, sorted(missing)[:5])
 for crane in ("bootstrap.sh", "update.sh", "install-host.sh", "install-node.sh", "lib/common.sh"):
     check("[9b] the manifest covers %s" % crane, crane in listed)
-if not _man_existed:
+if _man_before is None:
     os.remove(_man_path)
+else:
+    open(_man_path, "wb").write(_man_before)
+    check("[9c] ⚠️ the gate restored the signed manifest it had to overwrite",
+          open(_man_path, "rb").read() == _man_before)
 
 # ── [10] the primitive works with the openssl form every supported box has ───────────────────────────────
 r = run(["openssl", "dgst", "-sha256", "-verify", os.path.join(KEYDIR, "k.pub"),
@@ -281,12 +288,20 @@ def _vtree(sign_with="k.key", embed=True, stale=False, drop_manifest=False):
     os.makedirs(os.path.join(d, "lib"), exist_ok=True)
     shutil.copy(VSH, os.path.join(d, ".github", "verify-release.sh"))
     shutil.copy(os.path.join(ROOT, "lib", "release-manifest.sh"), os.path.join(d, "lib"))
+    # ⚠️ SET THE KEY STATE, DO NOT ASSUME IT. The first version of this appended a key by replacing the
+    # empty slot's `return 0`, which silently stopped matching the day a real release was signed and the
+    # shipped bootstrap.sh gained a key of its own. Both fixtures then tested something other than what
+    # they claimed: the "no key" tree had one, and the "properly signed" tree carried the PRODUCTION key
+    # while being signed with a throwaway. Rewrite the whole function body instead, so the fixture's key
+    # state is what the fixture says it is regardless of what the repo currently ships.
     boot = open(BOOT, encoding="utf-8").read()
+    _m = re.search(r'(emit_release_keys\(\)\{\n  mkdir -p "\$RELEASE_KEYS_D"\n)(.*?)(\n\}\n)', boot, re.S)
+    assert _m, "emit_release_keys() shape changed — this fixture can no longer control the key state"
+    body = "  return 0\n"
     if embed:
         pub = open(os.path.join(KEYDIR, "k.pub"), encoding="utf-8").read().strip()
-        boot = boot.replace('  return 0\n}\nverify_fetched_tree(){',
-                            '  cat > "$RELEASE_KEYS_D/release-1.pub" <<\'PUBKEY\'\n%s\nPUBKEY\n}\n'
-                            'verify_fetched_tree(){' % pub, 1)
+        body = '  cat > "$RELEASE_KEYS_D/release-1.pub" <<\'PUBKEY\'\n%s\nPUBKEY\n' % pub
+    boot = boot[:_m.end(1)] + body + _m.group(3) + boot[_m.end(3):]
     open(os.path.join(d, "bootstrap.sh"), "w", encoding="utf-8").write(boot)
     open(os.path.join(d, "VERSION"), "w").write("9.9.9-beta\n")
     run(["git", "init", "-q", "."], cwd=d); run(["git", "add", "-A"], cwd=d)
