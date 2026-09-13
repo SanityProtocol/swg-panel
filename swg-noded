@@ -3124,6 +3124,29 @@ def _ensure_tunnel_acl(prefix, devs, res):
                                             prefix + d, "-j", tgt if direction == "-i" else "ACCEPT"])
 
 
+def _ipt_del_listed(targs, chain, ln):
+    """Delete the rule `iptables -S <chain>` printed as `ln` — by its NUMBER, never by its spec. → True when it went.
+
+    ⚠️ A DELETE BY SPEC IS NOT A DELETE OF THAT RULE. MEASURED on nixpkgs' iptables 1.8.11 (the nixos node, and the same
+    store path in a container on another kernel): its spec match IGNORES INTERFACE MATCHES — `-D … -i X …` removed the
+    `-o X` rule, `-i bb` removed `-i aa`, a spec with no interface removed one with `-o cc` — while the comment, protocol,
+    source and target are compared. So the only ambiguous delete here was the ACCEPT → SWG_FWD_IN migration, whose `-i`
+    and `-o` twins share tag and target: it took every tunnel's return-path accept and left the stale one — on a
+    policy-DROP host, every client offline until the next pass. Debian's 1.8.11, 1.8.10 and 1.8.7 delete the right rule.
+
+    So the chain is re-listed (an earlier delete in the same pass moves every number below it), and a position is deleted
+    only if `-S <chain> <n>` still prints this exact line at the last moment — nothing else writes our rules, but Docker
+    writes FORWARD. No shell, so no rule text is ever re-parsed by one."""
+    want = ln.strip()
+    lines = [l.strip() for l in (run(["iptables"] + targs + ["-S", chain]).stdout or "").splitlines() if l.startswith("-A ")]
+    if want not in lines:
+        return False
+    n = str(lines.index(want) + 1)
+    if (run(["iptables"] + targs + ["-S", chain, n]).stdout or "").strip() != want:
+        return False
+    return run(["iptables"] + targs + ["-D", chain, n]).returncode == 0
+
+
 def _ensure_dev_rules(table, chain, prefix, link_devs, res, mk):
     """Ensure the tagged per-device rules built by mk(dev, '-i'/'-o') exist (skip if present), and drop
     any tagged rule for a device no longer in link_devs. mk may return None for a direction to skip it."""
@@ -3145,7 +3168,7 @@ def _ensure_dev_rules(table, chain, prefix, link_devs, res, mk):
             tgt = add[add.index("-j") + 1] if "-j" in add else ""
             stale = [ln for ln in have if tgt and not re.search(r"-j %s(\s|$)" % re.escape(tgt), ln)]
             for ln in stale:                                    # replaced, never stacked beside the new one
-                run(["sh", "-c", "iptables " + " ".join(targs) + " " + ln.replace("-A " + chain, "-D " + chain, 1)])
+                _ipt_del_listed(targs, chain, ln)
                 res["changed"] += 1
             if len(have) == len(stale):
                 run(add)
@@ -3153,7 +3176,7 @@ def _ensure_dev_rules(table, chain, prefix, link_devs, res, mk):
     for ln in lines:                                            # drop stale device tags
         mt = re.search(r'--comment "?(' + re.escape(prefix) + r'[^"\s]+)"?', ln)
         if mt and mt.group(1) not in want and ln.startswith("-A " + chain):
-            run(["sh", "-c", "iptables " + " ".join(targs) + " " + ln.replace("-A " + chain, "-D " + chain, 1)]); res["changed"] += 1
+            _ipt_del_listed(targs, chain, ln); res["changed"] += 1
 
 
 def _smart_setname(cat):
@@ -13937,7 +13960,7 @@ def _wdtt_del_iptables_comment(table, chain, tag):
     with contextlib.suppress(Exception):
         for ln in (run(["iptables", "-t", table, "-S", chain]).stdout or "").splitlines():
             if ln.startswith("-A ") and needle in ln:
-                run(["sh", "-c", "iptables -t " + table + " " + ln.replace("-A ", "-D ", 1)])
+                _ipt_del_listed(["-t", table], chain, ln)
 
 def _wdtt_remove(iface):
     if not _WDTT_NAME_RE.match(iface or ""):   # never rm -rf a path built from an unvalidated name
