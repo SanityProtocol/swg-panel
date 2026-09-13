@@ -68,10 +68,18 @@ def render(fname):
 def run_with_self_rewrite(body):
     """Run the wrapper while its own file is replaced underneath it — the real failure mode.
 
-    The stub stands in for `curl … | bash -s update`: it rewrites the script with a LONGER file whose tail
+    The stub stands in for running the fetched bootstrap: it rewrites the script with a LONGER file whose tail
     is nothing but poison, so whatever offset bash resumes at lands on a command that must never run."""
     d = tempfile.mkdtemp(prefix="wrapsr-")
     path = os.path.join(d, "swg-update")
+    # ⚠️ NO RUN OF THIS GATE MAY REACH THE NETWORK. A curl on PATH answers every fetch with an empty file. When
+    # the plant below stopped matching (see the anchor note), the REAL wrapper ran here, fetched the real
+    # bootstrap.sh from GitHub and executed it — stopped only because the test was not root.
+    bindir = os.path.join(d, "bin")
+    os.makedirs(bindir)
+    with open(os.path.join(bindir, "curl"), "w") as fh:
+        fh.write('#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && { : > "$2"; shift; }; shift; done\nexit 0\n')
+    os.chmod(os.path.join(bindir, "curl"), 0o755)
     # neuter the network call and make it do what the real update does: re-bake this very file
     # The poison is an UNKNOWN COMMAND, not an echo: that is what the real one was (`pass through`, the tail
     # of a comment), and it is what makes `set -e` turn a successful update into a non-zero exit. With an
@@ -83,11 +91,17 @@ def run_with_self_rewrite(body):
     stub = ("REWRITE_TARGET=\"$0\"\n"
             "{ cat \"$REWRITE_TARGET.orig\"; for i in $(seq 1 400); do echo 'POISONED_$i through'; done; } > \"$REWRITE_TARGET\"\n"
             "echo update-ok\n")
-    body = re.sub(r"^curl -fsSL .*$", stub, body, count=1, flags=re.M)
+    # ⚠️ ANCHOR ON THE LINE THAT RUNS THE UPDATE, AND ASSERT IT MATCHED. This used to replace `^curl -fsSL .*$`.
+    # When the wrapper stopped piping curl into bash (it now downloads to "$B" and runs that), the pattern matched
+    # nothing, `re.sub` said nothing, and [2]'s "nothing from the REWRITTEN file is executed" stayed green over a
+    # plant that was never planted. A miss is fatal here, not a quiet skip.
+    body, n = re.subn(r'^bash "\$B" update .*$', stub, body, count=1, flags=re.M)
+    assert n == 1, "the line that runs the update was not found in the rendered wrapper — this run would test nothing"
     open(path, "w").write(body)
     open(path + ".orig", "w").write(body)      # what the rewrite starts from, so offsets line up
     os.chmod(path, 0o755)
-    r = subprocess.run(["bash", path], capture_output=True, text=True, timeout=60)
+    env = dict(os.environ, PATH=bindir + os.pathsep + os.environ.get("PATH", ""))
+    r = subprocess.run(["bash", path], capture_output=True, text=True, timeout=60, env=env)
     return r
 
 
