@@ -995,7 +995,23 @@ set -euo pipefail
 # — their URL then decides the ref, which is the whole point of deriving it from the URL.
 URL="\${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/${_swg_ref}/bootstrap.sh}"
 export SWG_BOOTSTRAP_URL="\$URL"
-curl -fsSL "\$URL" | bash -s update -y --no-components
+# ⚠️ DOWNLOADED FIRST, RUN SECOND — AND A SECOND DOOR WHEN RAW CANNOT BE HAD. Byte-identical in install-host.sh,
+# update.sh and lib/common.sh; tests/update_bootstrap_fallback_selftest.py runs all three and compares them.
+# \`curl | bash\` executes whatever arrived before the connection died, so a reset halfway through bootstrap.sh
+# ran half of it. A file is run only once curl says the whole of it arrived.
+# raw.githubusercontent.com resolves into the address range filtered in the networks this product is most used
+# in, and api.github.com does not (docs/UPDATE-RESILIENCE-PLAN.md, 0a). This one file is the ONLY thing an
+# update reads from raw — bootstrap.sh fetches the tree from github.com itself — so reading it through the API
+# is what lets a filtered box update at all. Same repo, same ref, same TLS: nothing new to trust. Only a GitHub
+# raw URL has that door; an operator's own SWG_BOOTSTRAP_URL mirror is not handed a source it never named.
+B="\$(mktemp)"; trap 'rm -f "\$B"' EXIT
+API="\$(printf '%s' "\$URL" | sed -nE 's#^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/([^?#]+).*#https://api.github.com/repos/\1/\2/contents/\4?ref=\3#p')"
+if ! curl -fsSL --connect-timeout 20 --max-time 120 "\$URL" -o "\$B"; then
+  [ -n "\$API" ] || exit 1
+  echo "swg-update: could not fetch bootstrap.sh from \$URL — trying api.github.com" >&2
+  curl -fsSL --connect-timeout 20 --max-time 120 -H 'Accept: application/vnd.github.raw' "\$API" -o "\$B"
+fi
+bash "\$B" update -y --no-components "\$@"   # extra flags (e.g. --node-only) pass through
 exit
 }
 WRAP

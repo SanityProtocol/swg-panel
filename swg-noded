@@ -14800,8 +14800,20 @@ def csqtt_snapshot():
 # The command template stays HERE, in one place, and the installers record only the thing they know (the
 # ref). A box with no `update_ref` gets `main`, which is exactly today's behaviour for an install that
 # genuinely came from main. `update_cmd` remains the full override for anyone who needs one.
-UPDATE_CMD_TMPL = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/{ref}/"
-                   "bootstrap.sh | SWG_REF={ref} bash -s update -y --no-components --node-only")
+#
+# ⚠️ DOWNLOADED FIRST, RUN SECOND, WITH api.github.com AS A SECOND DOOR — the same fetch as the panel's
+# `swg-update` wrapper (install-host.sh · update.sh · lib/common.sh), for the same two reasons: `curl | bash`
+# runs whatever arrived before a reset, and raw.githubusercontent.com is the host filtered where this product
+# is most used while the API is not. bootstrap.sh is the only file an update reads from raw. `{{ }}` are
+# literal braces for str.format. Gate: tests/update_bootstrap_fallback_selftest.py.
+UPDATE_CMD_TMPL = (
+    'B=$(mktemp) && trap \'rm -f "$B"\' EXIT && '
+    '{{ curl -fsSL --connect-timeout 20 --max-time 120 -o "$B" '
+    'https://raw.githubusercontent.com/SanityProtocol/swg-panel/{ref}/bootstrap.sh '
+    '|| {{ echo "could not fetch bootstrap.sh from raw.githubusercontent.com — trying api.github.com" >&2; '
+    'curl -fsSL --connect-timeout 20 --max-time 120 -o "$B" -H "Accept: application/vnd.github.raw" '
+    '"https://api.github.com/repos/SanityProtocol/swg-panel/contents/bootstrap.sh?ref={ref}"; }}; }} && '
+    'SWG_REF={ref} bash "$B" update -y --no-components --node-only')
 DEFAULT_UPDATE_REF = "main"
 
 
