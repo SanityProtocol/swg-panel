@@ -212,6 +212,13 @@ services:
       # silently omitted the one thing it was added for. /var/run is a symlink to /run in this image, so both
       # of swg-noded's WG_SOCK_DIRS scan paths resolve to the same mount.
       - /run/wireguard:/run/wireguard
+      # The DNS servers the host's systemd-resolved forwards to — READ-ONLY. A node carrying a network behind a
+      # peer refuses any route that would shadow the DNS server it depends on (the one mistake measured to cut a
+      # node off for good). In here /etc/resolv.conf names only the stub 127.0.0.53, so without this the node
+      # cannot say which server that is and carries no networks at all. The directory, not the file: resolved
+      # replaces the file by rename, which a file bind never sees. On a host without resolved it stays empty and
+      # the node reports its resolver as unknown, exactly as before.
+      - /run/systemd/resolve:/run/systemd/resolve:ro
       # Full AmneziaWG server conf(s) with your own obfuscation params. Every file
       # mounted under /etc/swg-node/*.conf becomes a managed interface:
       # - ./awg0.conf:/etc/swg-node/awg0.conf:ro

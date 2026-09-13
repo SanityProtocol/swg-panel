@@ -707,7 +707,12 @@ in
           # comes back with a new owner password. The daemon only ever COPIES out of them.
           "/opt/swg-wdtt:/opt/swg-wdtt:ro"
           "/opt/swg-csqtt:/opt/swg-csqtt:ro"
-        ] ++ optional cfg.turnManage
+        ]
+        # The DNS servers resolved forwards to, READ-ONLY: in the container /etc/resolv.conf is only the stub, and a
+        # node that cannot name its resolver carries no networks behind a peer (docs/NETWORKS-PLAN.md §4.1). Only
+        # when resolved runs — podman refuses to start a container whose bind source does not exist.
+        ++ optional config.services.resolved.enable "/run/systemd/resolve:/run/systemd/resolve:ro"
+        ++ optional cfg.turnManage
           (if cfg.backend == "podman"
            then "/run/podman/podman.sock:/var/run/docker.sock"
            else "/var/run/docker.sock:/var/run/docker.sock");

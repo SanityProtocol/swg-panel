@@ -1432,6 +1432,25 @@ PYSC
         && note ".env: SWG_NODE_SECCOMP=unconfined (this node runs csqtt — its io_uring dataplane needs it)"
     fi ;;
   esac
+  # 1c) The host resolver's server list, read-only (networks — docs/NETWORKS-PLAN.md §4.1). In a host-net container
+  #    /etc/resolv.conf is systemd-resolved's stub, so without this the node cannot name the DNS server it depends
+  #    on and refuses to carry any network behind a peer. A read-only directory bind with nothing to decide, so it
+  #    is simply added. Anchored on the node's state-dir mount, which every compose this project ever shipped has.
+  case "$prof" in node|master|host-node)
+    if ! $DRYRUN && ! grep -q 'run/systemd/resolve' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null \
+       && grep -q '\./data/node:/var/lib/swg-noded' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
+      python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYRES' && note "docker-compose.yml: mounted the host's DNS server list read-only (networks behind a peer need it)"
+import sys
+f=sys.argv[1]; o=[]; done=False
+for l in open(f).read().split("\n"):
+    o.append(l)
+    if not done and l.strip().startswith("- ./data/node:/var/lib/swg-noded"):
+        o.append(l[:len(l)-len(l.lstrip())] + "- /run/systemd/resolve:/run/systemd/resolve:ro")
+        done=True
+open(f,"w").write("\n".join(o))
+PYRES
+    fi ;;
+  esac
   # 2) The operator console's own port. Shipped in 1.8.3 as three lines — a ports publish plus two env keys —
   #    and, being NEW compose content rather than a changed value, it reached only fresh installs. Every panel
   #    installed before then has been told at each update that its file is behind and to restage, for a feature
