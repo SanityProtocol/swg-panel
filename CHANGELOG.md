@@ -68,17 +68,6 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
   matching nothing, and the summary counts it without opening the section. Punycode names are shown the way
   they were written.
 
-### Security
-
-- **Releases are signed, and a server checks the signature before installing anything.** Every published
-  release now carries a manifest of its files and a signature over it; `bootstrap.sh` verifies both before a
-  single file is copied into place, and refuses a release whose signature does not match or whose contents
-  have been altered. Today that guards against a corrupted download and against the content-delivery network
-  in front of the repository — neither of which we control. It matters more for what comes next: the panel is
-  gaining ways to fetch a release that do not depend on reaching GitHub, and a signature is what makes another
-  route another way *in* rather than another way to be handed something else. Releases published before this
-  carry no signature and still install, with a note saying so.
-
 ### Fixed
 
 - **An update that did nothing was reported as one that failed.** A node cannot watch its own update — the
@@ -94,8 +83,15 @@ carried is listed below, so a box updating from 1.8.5 sees the whole set.
   those networks actually block. It now falls back to GitHub’s API, which does not — the same files, the
   same repository, the same commit, over different infrastructure — so the version, the release notes and
   the changelog browser keep working. This matters most on a master, where the panel and a node share one
-  box: when that box is the filtered one there is no second machine to ask. It does not make the update
-  itself work there; that is a larger piece of work, and it is under way.
+  box: when that box is the filtered one there is no second machine to ask. The update itself is the next
+  entry.
+- **An update could not start without `raw.githubusercontent.com`, and ran whatever part of the installer
+  had arrived.** Every update, the panel's and a node's, begins by downloading `bootstrap.sh` from raw —
+  the one address in the whole update that those networks block — and it was piped straight into the shell.
+  That file now falls back to GitHub's API as well, the same file from the same repository over the same
+  connection security, so a server that can reach GitHub but not raw updates again. And the file is
+  downloaded in full before any of it runs: a connection reset part-way through used to run part of the
+  installer.
 
 - **“Couldn’t reach the repo to check for updates” named no cause, and gave up at the first stumble.** The
   check behind the header’s Check status button made a single attempt with a short timeout — the one fetch in
