@@ -2288,9 +2288,12 @@ def net_route_install(prefix, dev, table="", _guard=True, _verify=True):
 def net_deps():
     """The one snapshot field the networks guard adds (NETWORKS-PLAN §4.1, D7): the address this node reaches
     its panel BY, and the resolvers its lookups depend on. PRESENCE is the gate — a node too old to send it
-    cannot guard itself, so the panel lowers nothing onto it. File reads only; no fork per sync (D1)."""
+    cannot guard itself, so the panel lowers nothing onto it. File reads only; no fork per sync (D1).
+
+    `share`: this node enforces a RESTRICTED network (§15.2 S8). A panel carries one only onto a node that says so —
+    anywhere else the network would stay open to everyone while the operator believed it restricted."""
     res, known = _resolvers()
-    return {"panel": _PANEL_PEER.get("addr") or "", "resolvers": res, "resolvers_known": known}
+    return {"panel": _PANEL_PEER.get("addr") or "", "resolvers": res, "resolvers_known": known, "share": 1}
 
 
 # ───────────────────────── networks: the route reconciler ─────────────────────────
@@ -2860,6 +2863,175 @@ def reconcile_lan_block(block, res):
         res["changed"] += 1
     _LAN["status"] = {"on": True, "ok": True, "nets": nets}
     return _LAN["status"]
+
+
+# ───────────────────────── networks: sharing (P5) ─────────────────────────
+#
+# NETWORKS-PLAN §15. A provider the operator RESTRICTED is reachable only from the sources the panel lists for it —
+# its owner's and grantees' deployments on this node, as (arrival interface, source prefix) — and every other packet
+# addressed to its networks is dropped. One table, rebuilt atomically; none at all while nothing is restricted (D1).
+#
+#   PREROUTING, not forward (S4): swg-relay terminates a diverted connection and re-dials it FROM this box, so a
+#       forward-hook drop never sees it, while every client packet crosses prerouting with its own source first. An
+#       accept in another base chain does not end a packet's walk (measured, §15.1 G), so the priority is economy:
+#       `mangle - 5` runs before every swg chain that marks, queues or diverts, and matches no priority in use.
+#   REPLIES exempt (§15.1 H): a flow the network itself opened, and one-way site-to-site between two restricted
+#       providers, answer INTO a restricted network. `ct direction reply` matches only a connection whose first packet
+#       was already let through; an untracked packet has no direction and is dropped.
+#   DATES in the kernel (S5): an element carries its remaining time, so a grant lapses at its date with the panel
+#       unreachable and this daemon dead. nft refuses a ten-year timeout (measured: 2 years loads), so a date further
+#       out than SHARE_TIMEOUT_CAP loads without one and the panel's omission covers it; the signature marks it "far",
+#       so it is reloaded with its real timeout once the date comes within the cap.
+#   RESTRICTION FIRST, ACL SECOND (S7): a restricted provider's networks reach the ACL only while its table is live.
+
+SHARE_NFT_TABLE = "swg_share"
+SHARE_HOOK_PRI = "mangle - 5"
+SHARE_TIMEOUT_CAP = 7 * 86400
+_SHARE = {"probed": False, "installed": False, "sig": None, "plan": None, "status": None}
+_SHARE_IFNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,15}$")
+
+
+def _share_plan(node_cfg, desired, share):
+    """[(pubkey, [networks], [(iface, prefix, until)])] — the reply's `net_share` joined to the ACL this pass writes.
+
+    The networks are the provider's own ACCEPTED members (D4) — never the wire — so a network this node refused to
+    carry gets no rule. A provider carrying nothing here is left out. An element that does not parse is dropped (fewer
+    sources is the safe direction), and one source listed twice keeps the widest date (0 = no end)."""
+    import ipaddress
+    by_peer = {}
+    for _iface, m in _net_members(node_cfg, desired).items():
+        for pre, pks in m.items():
+            for pk in pks:
+                by_peer.setdefault(pk, set()).add(pre)
+    plan, seen = [], set()
+    for ent in (share if isinstance(share, list) else []):
+        pk = ent.get("peer") if isinstance(ent, dict) else None
+        if not isinstance(pk, str) or pk in seen or not by_peer.get(pk):
+            continue
+        seen.add(pk)
+        els = {}
+        for e in (ent.get("from") if isinstance(ent.get("from"), list) else []):
+            if not (isinstance(e, list) and len(e) == 3):
+                continue
+            ifn, pre, until = e
+            pre = _net_prefix(pre) if isinstance(pre, str) else ""
+            if not (isinstance(ifn, str) and _SHARE_IFNAME_RE.match(ifn) and pre
+                    and isinstance(until, int) and not isinstance(until, bool) and until >= 0):
+                continue
+            k = (ifn, pre)
+            els[k] = 0 if (until == 0 or els.get(k) == 0) else max(until, els.get(k) or 0)
+        plan.append((pk, sorted(by_peer[pk], key=ipaddress.ip_network),
+                     [(i, x, els[(i, x)]) for i, x in sorted(els, key=lambda k: (k[0], ipaddress.ip_network(k[1])))]))
+    return sorted(plan)
+
+
+def _share_live(els, now):
+    """The elements to load NOW: (iface, prefix, timeout seconds or 0). A lapsed date is not loaded; a date beyond
+    SHARE_TIMEOUT_CAP loads without a timeout."""
+    return [(i, x, (u - now) if (u and u - now <= SHARE_TIMEOUT_CAP) else 0) for i, x, u in els if not u or u > now]
+
+
+def _share_sig(plan, now):
+    """What decides a reload: the plan with each date as the kernel will see it — its value within the cap, "far"
+    beyond it — so a countdown never reloads and a date crossing into the cap does, once."""
+    return json.dumps([[pk, nets, [[i, x, (u if (u and u - now <= SHARE_TIMEOUT_CAP) else ("far" if u else 0))]
+                                   for i, x, u in els if not u or u > now]] for pk, nets, els in plan])
+
+
+def _share_ruleset(plan, now):
+    """The whole table as one atomic `nft -f` (create, delete, declare — never a gap with the old rules gone and the new
+    ones not in). Pure, so the selftest reads exactly what the kernel is handed. One vmap lookup per packet however
+    many providers are restricted (D11)."""
+    T = SHARE_NFT_TABLE
+    L = ["table inet %s" % T, "delete table inet %s" % T, "table inet %s {" % T]
+    vm = []
+    for n, (_pk, nets, els) in enumerate(plan):
+        vm += ["%s : jump p%d" % (x, n) for x in nets]
+        live = ['"%s" . %s%s' % (i, x, (" timeout %ds" % t) if t else "") for i, x, t in _share_live(els, now)]
+        L.append("  set a%d { type ifname . ipv4_addr; flags interval, timeout;%s }"
+                 % (n, (" elements = { %s }" % ", ".join(live)) if live else ""))
+    L.append("  map nets { type ipv4_addr : verdict; flags interval; elements = { %s } }" % ", ".join(vm))
+    L.append("  chain pre { type filter hook prerouting priority %s; policy accept; ip daddr vmap @nets; }" % SHARE_HOOK_PRI)
+    for n in range(len(plan)):
+        L.append("  chain p%d { ct direction reply return; iifname . ip saddr != @a%d counter drop; }" % (n, n))
+    L.append("}")
+    return "\n".join(L) + "\n"
+
+
+def _share_strip(desired, plan):
+    """The desired set with every restricted provider's networks taken out of its ACL — S7's fail-closed half. Its own
+    tunnel address stays: the device keeps its tunnel, and nobody reaches what is behind it."""
+    drop = {pk: set(nets) for pk, nets, _e in plan}
+    out = dict(desired)
+    for iface, plist in desired.items():
+        if not any(isinstance(q, dict) and q.get("public_key") in drop for q in plist or []):
+            continue
+        out[iface] = [dict(q, allowed_ips=",".join(m for m in str(q.get("allowed_ips") or "").split(",")
+                                                   if _net_prefix(m) not in drop[q["public_key"]]))
+                      if isinstance(q, dict) and q.get("public_key") in drop else q for q in plist]
+    return out
+
+
+def _share_drop_table(res):
+    r = run(["nft", "delete", "table", "inet", SHARE_NFT_TABLE])
+    if r.returncode == 0 or "No such file" in (r.stderr or ""):
+        _SHARE["installed"] = False
+        res["changed"] += 1
+        return
+    res["errors"].append("sharing: could not remove %s: %s" % (SHARE_NFT_TABLE, (r.stderr or "").strip()[:120]))
+
+
+def reconcile_net_share(node_cfg, desired, share, res, now=None):
+    """Converge the restriction BEFORE the ACL is written (S7). → the desired set `reconcile` may write: the SAME object
+    while every restriction is in force, and one without a provider's networks when its table will not load — a network
+    this node cannot restrict is carried for nobody, never opened to everyone.
+
+    ⚠️ INERT WHILE NOTHING IS RESTRICTED, AND SAFE ACROSS A RESTART (P2's pattern, `reconcile_lan_block`): the kernel is
+    asked ONCE per process whether a table is left over — a restriction lifted while this daemon was down must not keep
+    dropping — and never again. While restricting, a reload happens only when the plan moves (`_share_sig`)."""
+    if not _SHARE["probed"]:
+        _SHARE["installed"] = run(["nft", "list", "table", "inet", SHARE_NFT_TABLE]).returncode == 0
+        _SHARE["probed"] = True
+    plan = _share_plan(node_cfg, desired, share) if share else []
+    if not plan:
+        if _SHARE["installed"]:
+            _share_drop_table(res)
+        _SHARE.update(sig=None, plan=None, status=None)
+        return desired
+    now = int(time.time()) if now is None else now
+    sig = _share_sig(plan, now)
+    if not _SHARE["installed"] or sig != _SHARE["sig"]:
+        r = run(["nft", "-f", "-"], input_text=_share_ruleset(plan, now))
+        if r.returncode != 0:
+            detail = (r.stderr or "").strip()[:160]
+            _SHARE.update(probed=False, sig=None, plan=None,           # no longer known what is installed: ask again
+                          status={"ok": False, "why": "nft_failed", "detail": detail, "peers": [x[0] for x in plan]})
+            res["errors"].append("sharing: " + detail)
+            return _share_strip(desired, plan)
+        _SHARE.update(installed=True, sig=sig)
+        res["changed"] += 1
+    _SHARE["plan"] = plan
+    _SHARE["status"] = {"ok": True, "peers": [x[0] for x in plan]}
+    return desired
+
+
+def net_share_verify(res, now=None):
+    """The routing pass's re-read (S7): a table flushed away — `systemctl restart nftables` under Debian's `flush
+    ruleset`, a firewalld reload — is rebuilt from the plan already held. One fork per routing pass, and only while
+    something is restricted. A rebuild that fails is forgotten, so the next reply pass takes the networks out of the
+    ACL instead of leaving them open."""
+    if not _SHARE["plan"] or not _SHARE["installed"]:
+        return
+    if run(["nft", "list", "table", "inet", SHARE_NFT_TABLE]).returncode == 0:
+        return
+    now = int(time.time()) if now is None else now
+    r = run(["nft", "-f", "-"], input_text=_share_ruleset(_SHARE["plan"], now))
+    if r.returncode == 0:
+        _SHARE["sig"] = _share_sig(_SHARE["plan"], now)
+        res["changed"] += 1
+        return
+    _SHARE.update(installed=False, sig=None)
+    res["errors"].append("sharing: the table was gone and could not be rebuilt: " + (r.stderr or "").strip()[:120])
 
 
 def _cascade_want_sig(fwd, exit_, smart=None, guard=(), nets=(), net_tables=()):
@@ -10253,6 +10425,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 _x["src_ips"] = sorted(_cmap.get(_lp, ()))
     if _LAN["status"]:                                # the LAN opt-out, in force or not — absent while sharing (D1)
         snap["lan_block"] = dict(_LAN["status"])
+    if _SHARE["status"]:                              # P5: the restriction, in force or not — absent while nothing is restricted (D1)
+        snap["net_share"] = dict(_SHARE["status"])
     if _NET["refused"]:                               # networks this node will not carry, and why — absent when none (D1)
         snap["net_refused"] = {p: dict(v) for p, v in _NET["refused"].items()}
     _probe = net_probe_status()
@@ -16238,9 +16412,13 @@ def main():
                     reconcile_exits(reply.get("exits"), xr)
                 with contextlib.suppress(Exception):
                     write_inventory(node_cfg)      # what this box carries + how it runs it (see NODE_INVENTORY)
-                # A network this node will not carry never reaches the ACL (see net_filter_desired). The same object
-                # comes straight back when no peer carries a network.
-                r = reconcile(node_cfg, net_filter_desired(node_cfg, reply["desired"]), agent, sudo, reply.get("remove"))
+                # A network this node will not carry never reaches the ACL (see net_filter_desired), and a RESTRICTED one
+                # reaches it only while its restriction is in force (reconcile_net_share, NETWORKS P5 — restriction first,
+                # ACL second). Both hand back the very object they were given when there is nothing to do.
+                _shr = {"changed": 0, "errors": []}
+                r = reconcile(node_cfg, reconcile_net_share(node_cfg, net_filter_desired(node_cfg, reply["desired"]),
+                                                            reply.get("net_share"), _shr),
+                              agent, sudo, reply.get("remove"))
                 # …and the imported exits' own dial sources, from what reconcile_exits just reported: the
                 # endpoint is only known after registration, so this reads the LIVE record rather than the
                 # panel's request.
@@ -16263,7 +16441,7 @@ def main():
                                          reply.get("smart"), _def_egress,
                                          _devexit_sig(reply.get("cascade")),
                                          _NET["sig"], sorted(_NET["refused"]),
-                                         reply.get("lan_share")], sort_keys=True, default=str)
+                                         reply.get("lan_share"), _SHARE["sig"]], sort_keys=True, default=str)
                 _iface_churn = bool(cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
                                     or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"] or cq["changed"])   # a WDTT/csqtt install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
                 if (_route_sig != last_route_sig or _iface_churn
@@ -16276,6 +16454,7 @@ def main():
                     # The node's own LAN: after reconcile_egress (it names the client tunnels this pass). The panel
                     # sends `lan_share` only when the operator closed it, so absent means share — today's behaviour.
                     reconcile_lan_block(reply.get("lan_share") is False, nr)
+                    net_share_verify(nr)          # P5: a restriction flushed away is rebuilt, never left open
                     cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"), _def_egress,
                                             panel_conn=panel, panel_cfg=reply.get("panel"),
                                             nets=_nets)   # P2 forward + P3 smart + exit SNAT (+ panel-pull provider lists)
@@ -16340,6 +16519,8 @@ def main():
                     print("egress: " + e, flush=True)
                 for e in nr["errors"]:
                     print("networks: " + e, flush=True)
+                for e in _shr["errors"]:
+                    print(e, flush=True)
                 for e in xr["errors"]:                  # an imported exit that could not register/come up
                     print("exit: " + e, flush=True)
                 if (r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]
