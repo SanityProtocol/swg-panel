@@ -204,10 +204,16 @@ for addr, pub, iface, what in (("10.8.0.10", "A", "wg0", "the gateway's own /32 
                                ("192.168.1.1", "A", "wg0", "the node's own LAN router"),
                                ("1.1.1.1", "A", "wg0", "the internet"),
                                ("192.168.50.5", "A", "wg9", "an interface this node does not manage"),
-                               ("8.8.8.8", "M", "swg_ab", "anything through a mesh link, even its /0"),
-                               ("192.168.80.5", "E", "wg6", "an interface whose first Address is IPv6 — refused, not a crash")):
+                               ("8.8.8.8", "M", "swg_ab", "anything through a mesh link, even its /0")):
     r_, c_ = N.net_probe_check(CFG, rq(addr, pub, iface), DES)
     check("not_carried: %s — %s" % (addr, what), c_ is None and (r_ or {}).get("verdict") == "not_carried", (r_, c_))
+r_, c_ = N.net_probe_check(CFG, rq("192.168.80.5", "E", "wg6"), DES)
+check("accepted: an interface whose first Address is IPv6 is judged by its IPv4 half, and sent from 10.9.0.1",
+      r_ is None and c_["src"] == "10.9.0.1" and c_["prefix"] == "192.168.80.0/24", (r_, c_))
+_cfg6 = {"interfaces": {"wg7": {"conf": conf("wg7", "[Interface]\nAddress = fd42::7/64\n")}}}
+r_, c_ = N.net_probe_check(_cfg6, rq("192.168.80.5", "E", "wg7"),
+                           {"wg7": [{"public_key": K("E"), "allowed_ips": "10.9.0.2/32,192.168.80.0/24"}]})
+check("not_carried: an interface with no IPv4 address at all — refused, not a crash", c_ is None and (r_ or {}).get("verdict") == "not_carried", (r_, c_))
 check("not_carried: an empty reply carries nothing", N.net_probe_check(CFG, rq("192.168.50.5"), {})[0]["verdict"] == "not_carried")
 check("network_address", N.net_probe_check(CFG, rq("192.168.50.255"), DES)[0]["verdict"] == "network_address")
 for bad in (rq("fd00::5"), rq("x"), rq("192.168.50.5", port=0), rq("192.168.50.5", port="22"), rq("192.168.50.5", port=True)):

@@ -258,8 +258,29 @@ def parse_interface_section(conf_text):
             continue
         if in_iface and "=" in s and not s.startswith("#"):
             k, v = s.split("=", 1)
-            info[k.strip()] = v.strip()
+            k, v = k.strip(), v.strip()
+            # `Address` may be given on several lines (wg-quick adds every one) — keep them all, in order. Every other
+            # key keeps its last value, as before.
+            info[k] = (info[k] + ", " + v) if (k.lower() == "address" and info.get(k) and v) else v
     return info
+
+
+def conf_v4_address(address):
+    """The interface's IPv4 address with its prefix ("10.8.0.1/24") out of an `Address` value — its FIRST IPv4 entry,
+    wherever that sits. "" if there is none. Twin: `swg-agent` `conf_v4_address()`.
+
+    ⚠️ NOT THE FIRST ENTRY. Every reader took `split(",")[0]`, so `Address = fd42::1/64, 10.8.0.1/24` — a legal wg-quick
+    line — made a client interface's subnet `fd42::/64`: `_iface_is_mesh` took the /64 for a point-to-point link, so the
+    interface lost its egress MASQUERADE and its FORWARD accepts, a network behind a peer on it entered the ACL unjudged,
+    the agent refused every peer add, the panel was shown the IPv6 address, and a key restore wrote the first entry back
+    as the whole Address line — erasing the IPv4 address every client uses. The panel is IPv4 (NETWORKS-PLAN D12): its
+    view of an interface is the IPv4 half."""
+    import ipaddress
+    for a in str(address or "").split("#", 1)[0].split(","):
+        with contextlib.suppress(ValueError):
+            if a.strip() and ipaddress.ip_interface(a.strip()).version == 4:
+                return a.strip()
+    return ""
 
 
 def awg_params(info):
@@ -304,7 +325,9 @@ def _link_kind(iface):
 
 def build_meta(iface_line, conf_text, endpoint_host, dns, cmd=None, iface=None):
     info = parse_interface_section(conf_text)
-    addr = info.get("Address", "").split(",")[0].strip()
+    # The IPv4 address the panel works with (conf_v4_address). An interface with no IPv4 at all still reports its first
+    # address, exactly as before.
+    addr = conf_v4_address(info.get("Address")) or info.get("Address", "").split(",")[0].strip()
     subnet = None
     if addr and "/" in addr:
         try:
@@ -374,7 +397,9 @@ def harvest_iface_backup(conf_text, cmd=None):
     port = str(info.get("ListenPort", "")).strip()
     return {"private_key": priv, "public_key": derive_pubkey(cmd, priv),
             "listen_port": int(port) if port.isdigit() else None,
-            "address": (info.get("Address", "").split(",")[0].strip() or None),
+            # EVERY address, as the conf gives them: a restore writes this back as the whole Address line, and the first
+            # entry alone erased the rest — on a v6-first interface, the IPv4 address every client uses.
+            "address": (info.get("Address", "").strip() or None),
             "saved_at": int(time.time())}
 
 def write_iface_backup(iface, rec):
@@ -1560,18 +1585,14 @@ def _detect_wan():
 
 
 def _iface_subnet(node_cfg, iface):
-    """The interface's tunnel subnet (CIDR) read from its conf Address — for the egress SNAT match."""
+    """The interface's IPv4 tunnel subnet (CIDR) from its conf `Address` — its first IPv4 entry (conf_v4_address), not its
+    first entry. "" when it has no IPv4 address: every reader is IPv4 (the egress SNAT match, the mesh test, the networks
+    routes, smart), and an interface with only IPv6 was skipped by all of them before, as a "mesh link"."""
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     try:
         with open(ic.get("conf", "")) as f:
-            m = re.search(r"(?im)^\s*Address\s*=\s*([^\s,]+)", f.read())
-    except Exception:
-        return ""
-    if not m:
-        return ""
-    import ipaddress
-    try:
-        return str(ipaddress.ip_network(m.group(1), strict=False))
+            a = conf_v4_address(parse_interface_section(f.read()).get("Address"))
+        return str(ipaddress.ip_network(a, strict=False)) if a else ""
     except Exception:
         return ""
 
@@ -1645,8 +1666,11 @@ def _iface_is_mesh(node_cfg, iface, subnet):
     if iface.startswith("swg_"):
         return True
     try:
-        if int(str(subnet).rsplit("/", 1)[1]) >= 31:
-            return True
+        # Point-to-point FOR ITS FAMILY: /31+ in IPv4, /127+ in IPv6. As a bare `>= 31`, an IPv6 /64 read as a mesh link.
+        if "/" in str(subnet):
+            n = ipaddress.ip_network(str(subnet), strict=False)
+            if n.prefixlen >= (31 if n.version == 4 else 127):
+                return True
     except Exception:
         pass
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
@@ -2493,18 +2517,13 @@ _PROBE_ID_RE = re.compile(r"^[A-Za-z0-9]{8,32}$")
 
 
 def _iface_own_addr(node_cfg, iface):
-    """This node's own IPv4 address on `iface`, from its conf `Address` — what a probe is sent FROM. "" if unreadable."""
-    import ipaddress
+    """This node's own IPv4 address on `iface` (conf_v4_address) — what a probe is sent FROM. "" if unreadable."""
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     try:
         with open(ic.get("conf", "")) as f:
-            m = re.search(r"(?im)^\s*Address\s*=\s*([^\s,/]+)", f.read())
+            return conf_v4_address(parse_interface_section(f.read()).get("Address")).split("/")[0]
     except Exception:
         return ""
-    with contextlib.suppress(ValueError):
-        if m and ipaddress.ip_address(m.group(1)).version == 4:
-            return m.group(1)
-    return ""
 
 
 def net_probe_check(node_cfg, req, desired):
@@ -9218,7 +9237,7 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
     # would have torn down a working server to find out.
     _mine = (node_cfg.get("interfaces") or {})
     with contextlib.suppress(Exception):
-        _want = ipaddress.ip_network(addr.split(",")[0].strip(), strict=False)
+        _want = ipaddress.ip_network(conf_v4_address(addr) or addr.split(",")[0].strip(), strict=False)
         for _ifn in _mine:
             _have = _iface_subnet(node_cfg, _ifn)
             if not _have:

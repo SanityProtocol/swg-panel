@@ -121,8 +121,22 @@ def parse_interface_section(conf_text):
             continue
         if in_iface and "=" in s and not s.startswith("#"):
             k, v = s.split("=", 1)
-            info[k.strip()] = v.strip()
+            k, v = k.strip(), v.strip()
+            # `Address` may be given on several lines (wg-quick adds every one) — keep them all, in order. Every other
+            # key keeps its last value, as before.
+            info[k] = (info[k] + ", " + v) if (k.lower() == "address" and info.get(k) and v) else v
     return info
+
+
+def conf_v4_address(address):
+    """The interface's IPv4 address with its prefix ("10.8.0.1/24") out of an `Address` value — its FIRST IPv4 entry,
+    wherever that sits. "" if there is none. Twin: `swg-noded` `conf_v4_address()` — the two must agree, or the node and
+    the agent disagree about which subnet an interface serves (tests/iface_address_selftest.py compares them)."""
+    for a in str(address or "").split("#", 1)[0].split(","):
+        with contextlib.suppress(ValueError):
+            if a.strip() and ipaddress.ip_interface(a.strip()).version == 4:
+                return a.strip()
+    return ""
 
 
 def awg_params(info):
@@ -135,7 +149,9 @@ def awg_params(info):
 
 
 def iface_net(info):
-    addr = info.get("Address", "").split(",")[0].strip()
+    # The IPv4 address (conf_v4_address), not the first entry: `Address = fd42::1/64, 10.8.0.1/24` made every peer add
+    # fail "not inside subnet fd42::/64". An interface with no IPv4 at all keeps its first address, as before.
+    addr = conf_v4_address(info.get("Address")) or info.get("Address", "").split(",")[0].strip()
     if not addr:
         raise AgentError("internal", "interface conf has no Address")
     return ipaddress.ip_interface(addr)          # .ip = server addr, .network = subnet
@@ -243,7 +259,11 @@ def set_iface_fields_in_conf(path, fields):
         if in_iface and "=" in s and not s.startswith("#"):
             k = s.split("=", 1)[0].strip().lower()
             if k in want:
-                name, val = want[k]; out.append(f"{name} = {val}"); seen.add(k); continue
+                # Written ONCE. A key given on several lines (Address may be) becomes one line carrying the whole value;
+                # writing the value onto each line would repeat every address, and wg-quick up fails on the repeat.
+                if k not in seen:
+                    name, val = want[k]; out.append(f"{name} = {val}"); seen.add(k)
+                continue
         out.append(line)
     missing = [(name, val) for k, (name, val) in want.items() if k not in seen]
     if missing:
