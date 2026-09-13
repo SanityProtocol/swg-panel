@@ -3014,8 +3014,9 @@ def peer_set(roster, pid, fields, now):
     # every other mutation for the same reason as the rest — an update-target must not silently re-publish a
     # source the operator hid.
     # routes: the networks this device fronts (NETWORKS-PLAN §6) — preserved for the same reason as the rest.
+    # share: who may reach them (§15) — and dropping it would silently OPEN them, so `share_clean` never stores a falsy one.
     for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash", "sub_hide",
-              "routes"):
+              "routes", "share"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
@@ -4882,7 +4883,11 @@ def node_networks(roster, nid, snap):
     case, not the rare one), so an overlap is resolved DETERMINISTICALLY — earliest `created_at`, then id — and the
     loser is inert with `taken` + who took it. Deterministic so it cannot flap; resolved here rather than refused
     at save because a transfer can put two stored records side by side, and refusing the save then is how a record
-    becomes unsavable, including the save that would fix it. A blocked or expired provider carries nothing."""
+    becomes unsavable, including the save that would fix it. A blocked or expired provider carries nothing.
+
+    P5 (§15.2 S8): a RESTRICTED provider is carried only by a node that says it can enforce the restriction
+    (`net_deps.share`). Anywhere else it is inert, `share_unsupported` — its owner included — because carrying it open
+    is the operator believing a network is restricted while it is not."""
     users = roster.get("users") or {}
     nowv = int(time.time())
     provs = []
@@ -4896,11 +4901,15 @@ def node_networks(roster, nid, snap):
         if tg is not None:
             provs.append((int(p.get("created_at") or 0), str(p.get("id") or key), p, tg))
     carry, inert, held = {}, {}, []
+    _enforces = isinstance((snap or {}).get("net_deps"), dict) and bool(snap["net_deps"].get("share"))
     for _c, pid, p, tg in sorted(provs, key=lambda x: (x[0], x[1])):
+        _unenforced = isinstance(p.get("share"), dict) and not _enforces
         for i, raw in enumerate(p.get("routes") or []):
             pre = network_prefix(raw) or str(raw)
             by = ""
             why, addr = ("cap", "") if i >= NETWORK_CAP else network_subnet_refusal(pre, snap, tg)
+            if not why and _unenforced:
+                why, addr = "share_unsupported", ""
             if not why:
                 n = ipaddress.ip_network(pre)
                 hit = next((h for h in held if n.overlaps(h[0])), None)
@@ -4914,6 +4923,116 @@ def node_networks(roster, nid, snap):
     for ent in carry.values():
         ent["nets"].sort(key=ipaddress.ip_network)
     return {"carry": carry, "inert": inert}
+
+
+# ── NETWORKS P5 — sharing (docs/NETWORKS-PLAN.md §15) ─────────────────────────────────────────────────────────────────
+# A provider with no `share` is reachable by everyone on its node, exactly as before (D1, D5). One with a `share` is
+# reachable by its OWNER — always, never lapsing (§15.7 item 1) — and by the users it names, each until a date or for
+# good. The panel decides who, per node; the node enforces it with one nft table (`swg-noded` `reconcile_net_share()`).
+NET_SHARE_MAX = 500        # grantees on one provider — bounds the reply, the node's sets and the sheet
+
+
+def share_grants(p, users, nowv):
+    """{uid: until (0 = no end)} — who may reach a RESTRICTED provider's networks right now, or None when it is not
+    restricted. The owner is always in. A uid that no longer exists and a date that has passed grant nothing —
+    filtered here, at plan time, never swept from the store (§6): a deleted user reaches nothing, and a grant whose
+    date is extended works again without anyone re-saving it."""
+    sh = p.get("share") if isinstance(p, dict) else None
+    if not isinstance(sh, dict):
+        return None
+    out = {}
+    for uid, until in (sh.get("users") if isinstance(sh.get("users"), dict) else {}).items():
+        if uid not in users or isinstance(until, bool) or not isinstance(until, int) or until < 0:
+            continue
+        if until and until <= nowv:
+            continue
+        out[uid] = until
+    if p.get("user_id") in users:
+        out[p["user_id"]] = 0
+    return out
+
+
+def share_clean(roster, peer, raw, nowv):
+    """(share to store or None, refusal token or None) for a save of `peer`'s share. `null`/`false` clears it — its
+    networks are open to everyone on the node again. A token, never a sentence: the SPA owns the words.
+
+    ⚠️ The `users` wrapper is load-bearing: `peer_set()` keeps a field only `if v:`, so a bare `{}` ("the owner only")
+    would be dropped by the next update-target or rekey and silently re-open the network (§15.5); `{"users": {}}` is
+    truthy. The owner is never stored as a grantee — it is in regardless, and a date on it would promise nothing.
+    ASYMMETRIC, like `network_routes_clean`: a grant already stored whose date has passed or whose user was deleted is
+    dropped quietly, so the sheet can always save back what it was shown; a NEW past date or unknown user is refused."""
+    if raw is None or raw is False:
+        return None, None
+    if not isinstance(raw, dict) or set(raw) - {"users"} or not isinstance(raw.get("users", {}), dict):
+        return None, "bad_shape"
+    users = roster.get("users") or {}
+    stored = ((peer.get("share") or {}).get("users") or {}) if isinstance(peer.get("share"), dict) else {}
+    out = {}
+    for uid, until in raw.get("users", {}).items():
+        if isinstance(until, bool) or not isinstance(until, int) or until < 0:
+            return None, "bad_date"
+        was = stored.get(uid, -1) == until
+        if uid not in users:
+            if was:
+                continue
+            return None, "unknown_user"
+        if until and until <= nowv:
+            if was:
+                continue
+            return None, "date_passed"
+        if uid != peer.get("user_id"):
+            out[uid] = until
+    if len(out) > NET_SHARE_MAX:
+        return None, "too_many"
+    return {"users": dict(sorted(out.items()))}, None
+
+
+def net_share_for_node(roster, nid, carry):
+    """The sync reply's `net_share` for one node (§15.2 S3, S6) — every RESTRICTED provider this node carries, with the
+    sources allowed to reach its networks; [] when there is none, and the reply then carries no key at all (D1).
+
+        [{"peer": <provider pubkey>, "from": [[<iface>, <prefix>, <until>], …]}, …]
+
+    A source is a deployment ON THIS NODE of a user in the audience: its tunnel /32 on its interface, plus every
+    network that peer itself carries here (site-to-site). Only wg/awg vouch for a source address, so a keyless
+    deployment is never one, and nothing arriving over a mesh link is on the list. No networks on the wire: the node
+    reads them from the provider's own accepted ACL members (D4), so a network it refused gets no rule.
+
+    ONE pass over the roster however many providers are restricted (§15.8 Round 5)."""
+    users = roster.get("users") or {}
+    peers = roster.get("peers") or {}
+    nowv = int(time.time())
+    restricted = sorted(((pid, peers[pid]) for pid in (carry or {})
+                         if isinstance(peers.get(pid), dict) and isinstance(peers[pid].get("share"), dict)
+                         and peers[pid].get("pubkey")), key=lambda x: x[1]["pubkey"])
+    if not restricted:
+        return []
+    by_user = {}
+    for key, q in peers.items():
+        if not isinstance(q, dict) or q.get("user_id") not in users:
+            continue
+        qu = users[q["user_id"]] or {}
+        if q.get("disabled") or qu.get("disabled") or is_expired(q, nowv) or is_expired(qu, nowv):
+            continue
+        src = by_user.setdefault(q["user_id"], set())
+        for t in q.get("targets") or []:
+            ip = (t.get("ip") or "").split("/")[0]
+            if t.get("node") != nid or not t.get("iface") or not ip or _is_self_contained_target(t):
+                continue
+            with contextlib.suppress(ValueError):
+                src.add((t["iface"], str(ipaddress.ip_network(ip + "/32"))))
+        ent = carry.get(str(q.get("id") or key))
+        if ent:
+            src.update((ent["iface"], n) for n in ent["nets"])
+    out = []
+    for _pid, p in restricted:
+        el = {}
+        for uid, until in share_grants(p, users, nowv).items():
+            for s_ in by_user.get(uid, ()):
+                el[s_] = 0 if (until == 0 or el.get(s_) == 0) else max(until, el.get(s_) or 0)
+        out.append({"peer": p["pubkey"],
+                    "from": [[i, pre, el[(i, pre)]] for i, pre in sorted(el, key=lambda x: (x[0], ipaddress.ip_network(x[1])))]})
+    return out
 
 
 def network_routes_clean(roster, peer, raw, snaps):
@@ -5003,6 +5122,7 @@ def network_report(roster, pid, snaps):
         return {"targets": []}
     users = roster.get("users") or {}
     nowv = int(time.time())
+    grants = share_grants(p, users, nowv)          # P5: None = open to everyone on the node, as before
     out, done = [], set()
     for t in p.get("targets") or []:
         nid, ifn = t.get("node"), t.get("iface")
@@ -5030,6 +5150,9 @@ def network_report(roster, pid, snaps):
                                  **((plan["inert"].get(pid) or {}).get(pre) or {"why": _none})))
         active = [n["prefix"] for n in nets if n["state"] == "active"]
         peers_n, users_s, widen = 0, set(), []
+        # P5 (§15.3): a restricted provider's audience is its owner and grantees, not the node. Everyone else ON the node
+        # is who the restriction cuts off, and a grantee whose devices here are all keyless reaches nothing (S3).
+        cut_peers, cut_users, dev, kl = 0, set(), {}, {}
         for q in (roster.get("peers") or {}).values():
             if not isinstance(q, dict) or q.get("id") == pid:
                 continue
@@ -5039,6 +5162,18 @@ def network_report(roster, pid, snaps):
             qts = [x for x in (q.get("targets") or []) if x.get("node") == nid]
             if not qts:
                 continue
+            if grants is not None:
+                quid = q.get("user_id")
+                if quid not in grants:
+                    cut_peers += 1
+                    if quid:
+                        cut_users.add(quid)
+                    continue
+                keyed = any(not _is_self_contained_target(x) for x in qts)
+                dev[quid] = dev.get(quid, 0) + (1 if keyed else 0)
+                kl[quid] = kl.get(quid, 0) + (0 if keyed else 1)
+                if not keyed:
+                    continue
             peers_n += 1
             if q.get("user_id"):
                 users_s.add(q.get("user_id"))
@@ -5056,6 +5191,19 @@ def network_report(roster, pid, snaps):
                  "address": (t.get("ip") or "").split("/")[0], "networks": nets,
                  "audience": {"peers": peers_n, "users": len(users_s)},
                  "widen": widen[:200], "widen_total": len(widen)}
+        if grants is not None:
+            _stored = p["share"].get("users") if isinstance(p["share"].get("users"), dict) else {}
+            _peers = roster.get("peers") or {}
+            entry["share"] = {
+                "grants": [{"user_id": u, "until": g, "owner": u == p.get("user_id"),
+                            "devices": dev.get(u, 0), "keyless": kl.get(u, 0)} for u, g in sorted(grants.items())],
+                "lapsed": sorted(u for u, g in _stored.items()
+                                 if u in users and isinstance(g, int) and not isinstance(g, bool) and 0 < g <= nowv),
+                "cut_off": {"peers": cut_peers, "users": len(cut_users),
+                            "providers": sorted(o for o in plan["carry"]
+                                                if o != pid and (_peers.get(o) or {}).get("user_id") not in grants)},
+                # what the node says about enforcing it: absent from an old node or before its first pass
+                "node": snap.get("net_share") if isinstance(snap.get("net_share"), dict) else None}
         if not _is_self_contained_target(t):
             # P3 EVIDENCE — is the gateway there to carry anything? The node's own row for this peer: online and
             # last handshake, and its byte counters. ⚠️ THROUGH the gateway, not "to its networks": wg counts per
@@ -5072,7 +5220,7 @@ def network_report(roster, pid, snaps):
     # live session with each, and wg holds one only if the DEVICE keeps it alive. A keepalive of 0 on any of them
     # means that node's route leads to a gateway that has gone quiet. Named per node, never guessed across them.
     multi = sum(1 for e in out if "gateway" in e) > 1
-    return {"targets": out, "multi_node": multi,
+    return {"targets": out, "multi_node": multi, "share": p.get("share"),
             "keepalive_off": [e["node"] for e in out if multi and "gateway" in e and not e["gateway"]["keepalive"]]}
 
 
@@ -5105,8 +5253,19 @@ def user_networks(roster, uid, snaps, nodes=None):
                 plans[nid] = node_networks(roster, nid, snap)["carry"]
             meta = (((snap.get("interfaces") or {}).get(t.get("iface")) or {}).get("meta") or {})
             allowed = None if _is_self_contained_target(t) else effective_client_params(p, t, meta)["allowed"]
-            nets = [{"prefix": pre, "via": opid, "covered": None if allowed is None else _allowed_covers(allowed, pre)}
-                    for opid, ent in sorted(plans[nid].items()) if opid != pid for pre in ent["nets"]]
+            nets = []
+            for opid, ent in sorted(plans[nid].items()):
+                if opid == pid:
+                    continue
+                # P5: a restricted network is listed only for its owner and live grantees, and never for a keyless
+                # deployment, whose source address nothing can vouch for (§15.2 S3)
+                g = share_grants((roster.get("peers") or {}).get(opid), users, nowv)
+                if g is not None and (uid not in g or allowed is None):
+                    continue
+                for pre in ent["nets"]:
+                    nets.append(dict({"prefix": pre, "via": opid,
+                                      "covered": None if allowed is None else _allowed_covers(allowed, pre)},
+                                     **({"restricted": True, "until": g[uid]} if g is not None else {})))
             nets.sort(key=lambda n: ipaddress.ip_network(n["prefix"]))
             ent = {"node": nid, "iface": t.get("iface") or "", "networks": nets}
             lans = node_lans(snap)
@@ -18227,6 +18386,12 @@ def api(method, path, qs, body, deps):
             if _refused:
                 return 400, {"ok": False, "error": "network refused", "code": "network_refused", "refusals": _refused}
             changed["routes"] = _clean
+        if "share" in body:                     # NETWORKS P5: who may reach this device's networks — null = everyone on its node
+            _sh, _why = share_clean(roster, dict(p, user_id=changed.get("user_id", p.get("user_id"))),
+                                    body.get("share"), int(time.time()))
+            if _why:
+                return 400, {"ok": False, "error": "share refused", "code": "share_refused", "why": _why}
+            changed["share"] = _sh
         if not changed:
             return 400, {"ok": False, "error": "nothing to update", "code": "bad_request"}
         p2 = peer_set(roster, pid, changed, now())
@@ -18236,9 +18401,9 @@ def api(method, path, qs, body, deps):
         if "user_id" in changed:
             ev_append(roster_path, "peer", pid,
                       "Assigned peer" if changed["user_id"] else "Unassigned peer", peer_label(roster, p2))
-        elif ("overrides" in changed or "expiry" in changed or "routes" in changed) and "title" not in changed:
+        elif ("overrides" in changed or "expiry" in changed or "routes" in changed or "share" in changed) and "title" not in changed:
             ev_append(roster_path, "peer", pid, "Edited peer config", peer_label(roster, p2))
-        if "routes" in changed:                 # what the operator has just done, before they walk away (§4.5)
+        if "routes" in changed or "share" in changed:   # what the operator has just done, before they walk away (§4.5)
             return 200, {"ok": True, "data": p2, "networks": network_report(roster, pid, deps.get("node_snaps") or {})}
         return 200, {"ok": True, "data": p2}
 
@@ -18260,17 +18425,28 @@ def api(method, path, qs, body, deps):
         if pid not in (roster.get("peers") or {}):
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
         _snaps = deps.get("node_snaps") or {}
-        if "routes" not in body:
+        if "routes" not in body and "share" not in body:
             return 200, {"ok": True, "data": network_report(roster, pid, _snaps)}
-        _rt = body.get("routes")
-        if not isinstance(_rt, list) or any(not isinstance(x, str) for x in _rt):
-            return 400, {"ok": False, "error": "routes must be a list of CIDR strings", "code": "bad_request"}
-        _clean, _refused = network_routes_clean(roster, roster["peers"][pid], _rt, _snaps)
-        _bad = {r["prefix"] for r in _refused}
-        _draft = dict(roster, peers=dict(roster["peers"]))            # this one peer replaced; nothing else copied
-        _draft["peers"][pid] = dict(roster["peers"][pid], routes=[x for x in _clean if x not in _bad])
+        _dp, _extra = dict(roster["peers"][pid]), {}                  # this one peer replaced; nothing else copied
+        if "routes" in body:
+            _rt = body.get("routes")
+            if not isinstance(_rt, list) or any(not isinstance(x, str) for x in _rt):
+                return 400, {"ok": False, "error": "routes must be a list of CIDR strings", "code": "bad_request"}
+            _clean, _refused = network_routes_clean(roster, roster["peers"][pid], _rt, _snaps)
+            _bad = {r["prefix"] for r in _refused}
+            _dp["routes"] = [x for x in _clean if x not in _bad]
+            _extra.update(refusals=_refused, routes=_clean)
+        if "share" in body:                                          # P5: who the draft would let in — and who it cuts off
+            _sh, _why = share_clean(roster, _dp, body.get("share"), int(time.time()))
+            if _why:
+                return 400, {"ok": False, "error": "share refused", "code": "share_refused", "why": _why}
+            _dp.pop("share", None)
+            if _sh is not None:
+                _dp["share"] = _sh
+        _draft = dict(roster, peers=dict(roster["peers"]))
+        _draft["peers"][pid] = _dp
         _data = network_report(_draft, pid, _snaps)
-        _data.update(refusals=_refused, routes=_clean)
+        _data.update(_extra)
         return 200, {"ok": True, "data": _data}
 
     if method == "POST" and path == "/api/peers/networks/probe":
@@ -22720,6 +22896,11 @@ class Handler(BaseHTTPRequestHandler):
                 nodes_save(Handler.deps["nodes_path"], nodes)
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid, snap)   # the snapshot gates networks: absent net_deps ⇒ /32 only (D7)
+        # NETWORKS P5 — who may reach each RESTRICTED network this node carries (docs/NETWORKS-PLAN.md §15 S6). Not even
+        # computed unless some peer restricts a network, so a panel with no share sends exactly the reply it sent (D1).
+        _nshare = (net_share_for_node(roster, nid, node_networks(roster, nid, snap)["carry"])
+                   if snap is not None and any(isinstance(q, dict) and q.get("routes") and isinstance(q.get("share"), dict)
+                                               for q in (roster.get("peers") or {}).values()) else [])
         _clists = {cl["id"]: cl for cl in ((Handler.deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")}
         cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {}, _clists)   # Phase 2/3: whole-fleet forward + smart plan (resolves custom-list rules)
         # Targets that fell off the 7000-band, kept for the node cards. The plan is fleet-wide, so ONE node
@@ -23889,6 +24070,8 @@ class Handler(BaseHTTPRequestHandler):
                                 **({"lan_share": False} if node.get("lan_share") is False else {}),
                                 # NETWORKS P4: a reachability test, only while one is waiting for its answer (D1).
                                 **({"net_probe": _nprobe} if _nprobe else {}),
+                                # NETWORKS P5: only while this node carries a restricted network (D1).
+                                **({"net_share": _nshare} if _nshare else {}),
                                 "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
                                 "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
                                 "wdtt_vault_want": _wdtt_want,   # WDTT instances the panel needs a current sealed server identity for

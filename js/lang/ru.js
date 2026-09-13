@@ -124,6 +124,7 @@ export const STR = {
   "a test is already running on this node": "на этой ноде уже идёт проверка",
   "no such test": "такой проверки нет",
   "network refused": "сеть отклонена",
+  "share refused": "настройки доступа не сохранены",
   "routes must be a list of CIDR strings": "routes должен быть списком строк CIDR",
   "{node} is already running a test — try again in a few seconds.": "{node} уже выполняет проверку — повторите через несколько секунд.",
   "{addr} is in {p}, which this device doesn't carry:": "{addr} входит в {p}, а эту сеть устройство не проводит:",

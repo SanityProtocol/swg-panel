@@ -18,9 +18,13 @@ Hermetic. Run: python3 tests/networks_inert_selftest.py            (0 = pass)
      --perturb   drops the presence gate (a node without net_deps is treated as able to guard itself) and
                  expects RED on [3].
      --perturb-probe   has the panel put a reachability test in every sync reply and expects RED on [5].
+     --perturb-share   has the panel restrict every carried network and expects RED on [6].
 
   [5] P4: with no reachability test asked for, the panel's reply carries no `net_probe`, the node starts no thread
       and forks nothing, and the snapshot carries no answer.
+  [6] P5: with no network restricted, the panel computes and sends no `net_share`, and the node asks the kernel ONCE
+      per process whether a table is left over, then forks nothing — not in the ACL pass, not in the routing pass —
+      hands `reconcile` the very object it was given, and reports nothing.
 """
 import importlib.machinery, importlib.util, ipaddress, json, os, sys, tempfile, time
 
@@ -30,6 +34,7 @@ PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-serv
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
 PERTURB_PROBE = "--perturb-probe" in sys.argv
+PERTURB_SHARE = "--perturb-share" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -200,6 +205,31 @@ check("…nothing waits for the snapshot", N.net_probe_status() is None)
 _bs = inspect.getsource(N.build_snapshot)
 check("…and the snapshot adds `net_probe` only under that answer", 'if _probe:' in _bs and 'snap["net_probe"] = _probe' in _bs
       and _bs.count('"net_probe"') == 1)
+
+print("\n[6] P5, sharing: nothing restricted, so nothing computed, sent, installed or forked")
+if PERTURB_SHARE:
+    P.net_share_for_node = lambda roster, nid, carry: [{"peer": pid, "from": []} for pid in carry]
+check("the panel: a roster with networks but no share yields no `net_share` for the node",
+      P.net_share_for_node(RN, "n1", P.node_networks(RN, "n1", SNAP)["carry"]) == [])
+check("…and the reply names `net_share` only behind that result, computed only when a peer restricts one",
+      '**({"net_share": _nshare} if _nshare else {})' in _psrc and _psrc.count('"net_share":') == 1
+      and 'q.get("routes") and isinstance(q.get("share"), dict)' in _psrc)
+N._SHARE.update(probed=False, installed=False, sig=None, plan=None, status=None)
+N.run = lambda a, input_text=None, timeout=20: FORKS.append(a) or N.subprocess.CompletedProcess(a, 1, "", "")
+del FORKS[:]
+_d = P.desired_for_node(RN, "n1", SNAP)
+res = {"changed": 0, "errors": []}
+check("the node, first pass: the SAME object handed on to reconcile",
+      N.reconcile_net_share(CFG, N.net_filter_desired(CFG, desired), None, res) is desired)
+check("…after exactly ONE kernel look (a restriction lifted while the daemon was down must not keep dropping)",
+      FORKS == [["nft", "list", "table", "inet", "swg_share"]], FORKS)
+del FORKS[:]
+for _ in range(3):
+    N.reconcile_net_share(CFG, desired, None, res)
+    N.net_share_verify(res)
+check("…every later pass, ACL and routing alike: NO subprocess", FORKS == [], FORKS)
+check("…nothing to report", N._SHARE["status"] is None and res == {"changed": 0, "errors": []}, (N._SHARE, res))
+check("…and the snapshot adds `net_share` only under a status", 'if _SHARE["status"]:' in _bs and _bs.count('"net_share"') == 1)
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)
