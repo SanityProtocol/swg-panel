@@ -1774,9 +1774,7 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
     # + self-cleaning (drops tags for interfaces that go away) via _ensure_dev_rules.
     client_devs.sort()
     _CLIENT_DEVS["list"] = list(client_devs)          # the LAN opt-out blocks from exactly these (reconcile_lan_block)
-    _ensure_dev_rules("filter", "FORWARD", "swg-egress-acl:", client_devs, res,
-                      lambda d, direction: ["iptables", "-I", "FORWARD", direction, d,
-                                            "-m", "comment", "--comment", "swg-egress-acl:" + d, "-j", "ACCEPT"])
+    _ensure_tunnel_acl("swg-egress-acl:", client_devs, res)   # scoped away from Docker's bridges — see _ensure_tunnel_acl
     _ensure_dev_rules("mangle", "FORWARD", "swg-egress-mss:", client_devs, res,
                       lambda d, direction: (["iptables", "-t", "mangle", "-I", "FORWARD", "-o", d,
                                              "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN",
@@ -2774,14 +2772,73 @@ def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip="", dev
         if mt and mt.group(1) not in want_snat and ln.startswith("-A POSTROUTING"):
             run(["sh", "-c", "iptables -t nat " + ln.replace("-A POSTROUTING", "-D POSTROUTING", 1)]); res["changed"] += 1
     # 2) FORWARD accept (filter) + 3) MSS clamp (mangle), present-or-absent per link dev
-    _ensure_dev_rules("filter", "FORWARD", "swg-fwd-acl:", link_devs, res,
-                      lambda d, direction: ["iptables", "-I", "FORWARD", direction, d,
-                                            "-m", "comment", "--comment", "swg-fwd-acl:" + d, "-j", "ACCEPT"])
+    _ensure_tunnel_acl("swg-fwd-acl:", link_devs, res)
     _ensure_dev_rules("mangle", "FORWARD", "swg-fwd-mss:", link_devs, res,
                       lambda d, direction: (["iptables", "-t", "mangle", "-I", "FORWARD", "-o", d,
                                              "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN",
                                              "-m", "comment", "--comment", "swg-fwd-mss:" + d,
                                              "-j", "TCPMSS", "--clamp-mss-to-pmtu"] if direction == "-o" else None))
+
+
+# ── FORWARD accepts for tunnels, scoped away from Docker's bridges ─────────────────────────────────────────
+#
+# MEASURED 2026-09-13 (.campaign/rigs/docker-bridge-exposure.sh, Docker-in-Docker): our tunnel ACCEPTs sit at the
+# TOP of FORWARD, above Docker's own chains. On Docker 28+ that is harmless — per-container raw drops run before
+# FORWARD. On an older Docker with FORWARD policy DROP it is not: every container's UNPUBLISHED ports became reachable
+# from every client, and it was this rule that did it. So a packet arriving FROM a tunnel is accepted through one
+# chain that first hands anything bound INTO a Docker bridge back to FORWARD, where Docker's chains decide exactly as
+# they would with no swg rules at all. Published ports keep working: that is Docker's own verdict.
+#
+# A chain rather than one rule because iptables takes one negated `-o` per rule, and two are needed.
+# ⚠️ AN UNDERSCORE, NOT A HYPHEN: uninstall.sh sweeps our chains by `SWG[A-Za-z0-9_]*` (as it does SWG_INET), and
+# a hyphen would leave `SWG_FWD_IN` read as `SWG` — never deleted, surviving every uninstall.
+FWD_IN_CHAIN = "SWG_FWD_IN"
+_FWD_IN = {"n": -1, "ok": False}
+
+
+def _fwd_in_want(forward_lines):
+    """SWG_FWD_IN's rules for this box. The RETURNs only where Docker manages FORWARD (it jumps to DOCKER-USER):
+    `br-+` is Docker's naming for a user network, but a hand-made LAN bridge may be called `br-lan` too, and on a ufw
+    host (FORWARD policy DROP) a RETURN would cut clients off a LAN they reach today."""
+    docker = any(re.search(r"-j DOCKER-USER(\s|$)", ln) for ln in forward_lines)
+    ret = ["-A %s -o docker0 -j RETURN" % FWD_IN_CHAIN, "-A %s -o br-+ -j RETURN" % FWD_IN_CHAIN] if docker else []
+    return ret + ["-A %s -j ACCEPT" % FWD_IN_CHAIN]
+
+
+def _ensure_fwd_in_chain(res):
+    """Converge SWG_FWD_IN, once per loop (the client and the mesh/exit families both need it). → True when rules may
+    jump to it. False when it cannot be made — and the callers then fall back to a plain ACCEPT, because a node that
+    cannot scope its accept must never stop forwarding its clients altogether."""
+    if _FWD_IN["n"] == _LOOP["n"]:
+        return _FWD_IN["ok"]
+    _FWD_IN["n"] = _LOOP["n"]
+    cur = run(["iptables", "-S", FWD_IN_CHAIN])
+    if cur.returncode != 0:
+        if run(["iptables", "-N", FWD_IN_CHAIN]).returncode != 0:
+            res["errors"].append("forward accept: could not create chain " + FWD_IN_CHAIN)
+            _FWD_IN["ok"] = False
+            return False
+        have = []
+        res["changed"] += 1
+    else:
+        have = [ln.strip() for ln in (cur.stdout or "").splitlines() if ln.startswith("-A ")]
+    want = _fwd_in_want((run(["iptables", "-S", "FORWARD"]).stdout or "").splitlines())
+    if have != want:
+        run(["iptables", "-F", FWD_IN_CHAIN])
+        for ln in want:
+            run(["iptables"] + ln.split())
+        res["changed"] += 1
+    _FWD_IN["ok"] = True
+    return True
+
+
+def _ensure_tunnel_acl(prefix, devs, res):
+    """FORWARD accept for tunnel devices — client tunnels (`swg-egress-acl:`) and mesh links / device exits
+    (`swg-fwd-acl:`). OUT of a tunnel through SWG_FWD_IN (above); INTO a tunnel directly, which opens nothing new."""
+    tgt = FWD_IN_CHAIN if (devs and _ensure_fwd_in_chain(res)) else "ACCEPT"
+    _ensure_dev_rules("filter", "FORWARD", prefix, devs, res,
+                      lambda d, direction: ["iptables", "-I", "FORWARD", direction, d, "-m", "comment", "--comment",
+                                            prefix + d, "-j", tgt if direction == "-i" else "ACCEPT"])
 
 
 def _ensure_dev_rules(table, chain, prefix, link_devs, res, mk):
@@ -2799,7 +2856,15 @@ def _ensure_dev_rules(table, chain, prefix, link_devs, res, mk):
             add = mk(d, direction)
             if add is None:
                 continue
-            if not any((tag in ln and f"{direction} {d}" in ln) for ln in lines):
+            have = [ln for ln in lines if tag in ln and f"{direction} {d}" in ln]
+            # ⚠️ THE TARGET IS PART OF "PRESENT". Tag + direction alone read a rule with an OLD target as correct, so
+            # changing what a family jumps to (ACCEPT → SWG_FWD_IN) would silently never reach an existing node.
+            tgt = add[add.index("-j") + 1] if "-j" in add else ""
+            stale = [ln for ln in have if tgt and not re.search(r"-j %s(\s|$)" % re.escape(tgt), ln)]
+            for ln in stale:                                    # replaced, never stacked beside the new one
+                run(["sh", "-c", "iptables " + " ".join(targs) + " " + ln.replace("-A " + chain, "-D " + chain, 1)])
+                res["changed"] += 1
+            if len(have) == len(stale):
                 run(add)
                 res["changed"] += 1
     for ln in lines:                                            # drop stale device tags
