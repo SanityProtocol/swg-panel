@@ -17,6 +17,10 @@ Every feature in that plan is INERT WHEN UNUSED. With no network declared anywhe
 Hermetic. Run: python3 tests/networks_inert_selftest.py            (0 = pass)
      --perturb   drops the presence gate (a node without net_deps is treated as able to guard itself) and
                  expects RED on [3].
+     --perturb-probe   has the panel put a reachability test in every sync reply and expects RED on [5].
+
+  [5] P4: with no reachability test asked for, the panel's reply carries no `net_probe`, the node starts no thread
+      and forks nothing, and the snapshot carries no answer.
 """
 import importlib.machinery, importlib.util, ipaddress, json, os, sys, tempfile, time
 
@@ -25,6 +29,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
+PERTURB_PROBE = "--perturb-probe" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -167,6 +172,34 @@ FWD = [{"table": N.SWG_RT_BASE + 50, "subnet": "10.8.0.0/24", "via_iface": "swg_
 check("the cascade want-signature is identical with no networks",
       N._cascade_want_sig(FWD, [], [], ()) == N._cascade_want_sig(FWD, [], [], (), nets=[], net_tables=[]))
 check("the node's refusal state is empty, so the snapshot carries no net_refused key", N._NET["refused"] == {})
+
+print("\n[5] P4, the reachability test: nobody asked, so nothing is sent — in either direction")
+import inspect
+if PERTURB_PROBE:
+    P.net_probe_reply = lambda nid, now=None: {"id": "0" * 16, "iface": "awg0", "pubkey": "a" * 43 + "=", "addr": "192.168.50.5"}
+P._NET_PROBES.clear()
+check("the panel: with no test armed the sync reply's `net_probe` helper returns None", P.net_probe_reply("n1") is None)
+check("…and a snapshot carrying no answer changes nothing", P.net_probe_absorb("n1", SNAP) is False and P._NET_PROBES == {})
+_psrc = open(PANEL).read()
+check("…and the reply names `net_probe` exactly once, behind that helper's result",
+      _psrc.count('"net_probe":') == 1 and '**({"net_probe": _nprobe} if _nprobe else {})' in _psrc)
+def _no_thread(*a, **k):
+    raise AssertionError("a probe thread was started with no test requested")
+_thr = N.threading.Thread
+N.threading.Thread = _no_thread
+N._PROBE.update(id="", result=None, at=0.0)
+del FORKS[:]
+try:
+    for _r in (None, {}, {"id": ""}):
+        N.net_probe_take(CFG, _r, desired)
+    check("the node: no test in the reply ⇒ no thread, no fork", FORKS == [], FORKS)
+except AssertionError as e:
+    check("the node: no test in the reply ⇒ no thread, no fork", False, e)
+N.threading.Thread = _thr
+check("…nothing waits for the snapshot", N.net_probe_status() is None)
+_bs = inspect.getsource(N.build_snapshot)
+check("…and the snapshot adds `net_probe` only under that answer", 'if _probe:' in _bs and 'snap["net_probe"] = _probe' in _bs
+      and _bs.count('"net_probe"') == 1)
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)

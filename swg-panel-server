@@ -5118,6 +5118,145 @@ def user_networks(roster, uid, snaps, nodes=None):
     return {"peers": out}
 
 
+# ── NETWORKS P4 — the reachability test (docs/NETWORKS-PLAN.md §8 P4) ──────────────────────────────────────────────
+# On demand, one at a time per node: the operator names an address inside a network a gateway carries, the node sends
+# one probe into it through that gateway (`swg-noded` `net_probe_run()`), and says what came back. The node is
+# outbound-only, so the request rides the sync reply and the answer rides a later snapshot.
+#
+# IN MEMORY, NOT IN THE NODE STORE. A test is a question, not configuration: nothing about a node changes because
+# someone asked, and a restart that forgets one costs the operator a click. So no writer of nodes.json, and nothing
+# for the store's fingerprint registry to account for.
+#
+# ⚠️ THE SECURITY BOUNDARY: only an address inside a network this panel CARRIES for that peer on that node. An on-demand
+# probe from a node is otherwise a scanner the panel operates. The node checks again against what it was sent (D7).
+NET_PROBE_TTL = 45        # a test with no answer by then is over: collected within a sync, run ≤ 4 s, reported next sync
+NET_PROBE_KEEP = 600      # …and an answered one stays readable this long
+_NET_PROBES = {}          # nid -> {id, peer_id, node, pubkey, iface, addr, port, prefix, at, sent_at, result, done_at}
+_NET_PROBES_LOCK = threading.Lock()
+_NET_PROBE_VERDICTS = ("answered", "refused_port", "unreachable", "no_answer", "gateway_offline", "no_route",
+                       "route_elsewhere", "no_acl", "not_carried", "network_address", "no_source", "bad_request", "error")
+# what a node's answer may carry beyond its verdict, and how long each may be — a snapshot is remote input
+_NET_PROBE_FIELDS = {"ms": (int, float), "handshake_age": int, "from": 45, "dev": 16, "why": 32, "raddr": 64,
+                     "detail": 160, "kind": 8, "src": 45}
+
+
+def net_probe_refusal(roster, pid, nid, addr, port, snap, seen_age, stale_s):
+    """(reason, detail) — why this test may not be sent, or (None, {iface, pubkey, prefix}). A token, never a sentence,
+    most specific first. `detail.because` carries the panel's own reason when the address sits in a network it declares
+    but does not carry, so the operator hears that reason rather than a bare no."""
+    try:
+        a = ipaddress.ip_address(str(addr or "").strip())
+    except ValueError:
+        return "bad_address", {}
+    if a.version != 4:
+        return "bad_address", {}
+    if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535):
+        return "bad_port", {}
+    p = (roster.get("peers") or {}).get(pid) or {}
+    if not any(t.get("node") == nid for t in p.get("targets") or []):
+        return "not_deployed", {}
+    if not isinstance(snap, dict) or not snap or seen_age is None or seen_age > stale_s:
+        return "node_offline", {}             # the request would never be collected
+    plan = node_networks(roster, nid, snap)
+    ent = plan["carry"].get(pid) or {}
+    hit = next((x for x in ent.get("nets") or [] if a in ipaddress.ip_network(x)), None)
+    if not hit:
+        for pre, why in sorted((plan["inert"].get(pid) or {}).items()):
+            with contextlib.suppress(ValueError):
+                if a in ipaddress.ip_network(pre):
+                    return "not_carried", {"prefix": pre, "because": dict(why)}
+        return "not_carried", {}
+    n = ipaddress.ip_network(hit)
+    if n.prefixlen <= 30 and a in (n.network_address, n.broadcast_address):
+        return "network_address", {"prefix": hit}
+    return None, {"iface": ent["iface"], "pubkey": p.get("pubkey") or "", "prefix": hit}
+
+
+def _net_probe_expire(rec, now):
+    if rec["result"] is None and now - rec["at"] > NET_PROBE_TTL:
+        rec["result"], rec["done_at"] = {"verdict": "expired", "collected": bool(rec["sent_at"])}, now
+
+
+def net_probe_view(rec, now):
+    return {"id": rec["id"], "node": rec["node"], "peer_id": rec["peer_id"], "iface": rec["iface"], "addr": rec["addr"],
+            "port": rec["port"], "prefix": rec["prefix"], "state": "pending" if rec["result"] is None else "done",
+            "collected": bool(rec["sent_at"]), "age": int(now - rec["at"]), "result": rec["result"]}
+
+
+def net_probe_request(roster, pid, nid, addr, port, snaps, seen, stale_s, now=None):
+    """Arm one test. → (http status, body)."""
+    now = time.time() if now is None else now
+    age = (now - seen[nid]) if (seen or {}).get(nid) else None
+    why, d = net_probe_refusal(roster, pid, nid, addr, port, (snaps or {}).get(nid), age, stale_s)
+    if why:
+        return 400, {"ok": False, "error": "test refused: " + why, "code": "refused", "why": why, "detail": d}
+    with _NET_PROBES_LOCK:
+        cur = _NET_PROBES.get(nid)
+        if cur:
+            _net_probe_expire(cur, now)
+            if cur["result"] is None:
+                return 409, {"ok": False, "error": "a test is already running on this node", "code": "busy", "why": "busy"}
+        rec = {"id": secrets.token_hex(8), "peer_id": pid, "node": nid, "pubkey": d["pubkey"], "iface": d["iface"],
+               "addr": str(ipaddress.ip_address(str(addr).strip())), "port": port, "prefix": d["prefix"],
+               "at": now, "sent_at": 0, "result": None, "done_at": 0}
+        _NET_PROBES[nid] = rec
+        return 200, {"ok": True, "data": net_probe_view(rec, now)}
+
+
+def net_probe_reply(nid, now=None):
+    """The sync reply's `net_probe` for one node — the test still waiting for its answer, or None, and then the reply
+    carries no key at all (D1). Repeated every sync until the answer arrives; the node takes each id once."""
+    now = time.time() if now is None else now
+    with _NET_PROBES_LOCK:
+        rec = _NET_PROBES.get(nid)
+        if rec is None:
+            return None
+        _net_probe_expire(rec, now)
+        if rec["result"] is not None:
+            if now - rec["done_at"] > NET_PROBE_KEEP:
+                _NET_PROBES.pop(nid, None)
+            return None
+        rec["sent_at"] = rec["sent_at"] or now
+        return dict({k: rec[k] for k in ("id", "iface", "pubkey", "addr")}, **({"port": rec["port"]} if rec["port"] else {}))
+
+
+def net_probe_absorb(nid, snap, now=None):
+    """Take a test's answer out of a node's snapshot. Only the answer to the test still waiting counts: a repeat, a
+    stale id or a malformed value changes nothing. → True when an answer was kept."""
+    got = snap.get("net_probe") if isinstance(snap, dict) else None
+    if not isinstance(got, dict):
+        return False
+    now = time.time() if now is None else now
+    with _NET_PROBES_LOCK:
+        rec = _NET_PROBES.get(nid)
+        if not rec or rec["result"] is not None or got.get("id") != rec["id"]:
+            return False
+        v = got.get("verdict")
+        res = {"verdict": v if v in _NET_PROBE_VERDICTS else "error"}
+        for k, spec in _NET_PROBE_FIELDS.items():
+            x = got.get(k)
+            if isinstance(spec, int) and not isinstance(spec, bool) and isinstance(x, str):
+                res[k] = x[:spec]
+            elif isinstance(spec, tuple) and isinstance(x, spec) and not isinstance(x, bool):
+                res[k] = x
+            elif spec is int and isinstance(x, int) and not isinstance(x, bool):
+                res[k] = x
+        rec["result"], rec["done_at"] = res, now
+        return True
+
+
+def net_probe_status(pid, rid=None, now=None):
+    """One test by id, or every test this peer has on any node. None for an id the panel does not know."""
+    now = time.time() if now is None else now
+    with _NET_PROBES_LOCK:
+        recs = [r for r in _NET_PROBES.values() if r["peer_id"] == pid and (rid is None or r["id"] == rid)]
+        for r in recs:
+            _net_probe_expire(r, now)
+        if rid is not None:
+            return net_probe_view(recs[0], now) if recs else None
+        return [net_probe_view(r, now) for r in sorted(recs, key=lambda r: r["node"])]
+
+
 # ── NETWORKS P2 — the private network a node sits on (docs/NETWORKS-PLAN.md D10, §8 P2) ──────────────────────
 # Measured: a client already reaches it, with nothing built. So this is a DISCLOSURE — shown unprompted on the node
 # page, because there is no save to hang it on — with an opt-out behind it (`lan_share`).
@@ -18134,6 +18273,34 @@ def api(method, path, qs, body, deps):
         _data.update(refusals=_refused, routes=_clean)
         return 200, {"ok": True, "data": _data}
 
+    if method == "POST" and path == "/api/peers/networks/probe":
+        # NETWORKS P4 — does a network behind this gateway actually answer, FROM the node? `addr` (+ `node`, `port`)
+        # arms one test; `id` reads it; neither lists this peer's tests. The answer arrives within a couple of syncs,
+        # so the sheet polls by id. Refusal tokens in `why` (net_probe_refusal); the SPA owns the words.
+        roster = roster_load(roster_path)
+        pid = body.get("peer_id") or ""
+        if pid not in (roster.get("peers") or {}):
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        if body.get("id"):
+            _pv = net_probe_status(pid, str(body.get("id")))
+            if _pv is None:
+                return 404, {"ok": False, "error": "no such test", "code": "not_found", "why": "unknown"}
+            return 200, {"ok": True, "data": _pv}
+        if not body.get("addr"):
+            return 200, {"ok": True, "data": net_probe_status(pid)}
+        _port = body.get("port")
+        if isinstance(_port, str):
+            _port = int(_port) if _port.strip().isdigit() else (None if not _port.strip() else -1)
+        _adv = ((deps.get("panel_settings") or {}).get("advanced") or {})
+        _st, _out = net_probe_request(roster, pid, str(body.get("node") or ""), body.get("addr"), _port,
+                                      deps.get("node_snaps") or {}, deps.get("node_seen") or {},
+                                      max(5, int((_adv.get("node_stale_ms") or 30000) / 1000)))
+        if _st == 200:
+            _d = _out["data"]
+            ev_append(roster_path, "peer", pid, "Tested a network", peer_label(roster, roster["peers"][pid]),
+                      "%s · %s/%s" % (_d["addr"] + (":%d" % _d["port"] if _d["port"] else ""), _d["node"], _d["iface"]))
+        return _st, _out
+
     if method == "POST" and path == "/api/peers/update-target":
         # Change ONE deployment's assigned address and/or its client-config overrides.
         #   `ip`        — a real connectivity change (its allowed_ips moves), reconciled on the next sync.
@@ -22166,6 +22333,7 @@ class Handler(BaseHTTPRequestHandler):
                 nodes_save(Handler.deps["nodes_path"], nodes)
         Handler.deps.setdefault("node_snaps", {})[nid] = snap
         Handler.deps.setdefault("node_seen", {})[nid] = int(time.time())
+        net_probe_absorb(nid, snap)                     # NETWORKS P4: a reachability test's answer, when one rode this snapshot
         if not (node.get("endpoint_host") or "").strip():   # mesh needs a dial host — auto-fill from the reported
             _pub = node_public_ip(snap)                      # public IP (operator can still override it later)
             if _pub:
@@ -23712,12 +23880,15 @@ class Handler(BaseHTTPRequestHandler):
         # offered instead is a CREATE, which refuses a name that is already on the box. Additive: older nodes
         # ignore it and behave as before.
         owned_ifaces = sorted((node.get("ifaces") or {}).keys())
+        _nprobe = net_probe_reply(nid)
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
                                 "owned_ifaces": owned_ifaces,
                                 **({"adopt_container": _adc} if _adc else {}),
                                 # NETWORKS P2: only when the operator closed this node's LAN — absent means share,
                                 # so a node nobody switched gets exactly the reply it got before (D1).
                                 **({"lan_share": False} if node.get("lan_share") is False else {}),
+                                # NETWORKS P4: a reachability test, only while one is waiting for its answer (D1).
+                                **({"net_probe": _nprobe} if _nprobe else {}),
                                 "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
                                 "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
                                 "wdtt_vault_want": _wdtt_want,   # WDTT instances the panel needs a current sealed server identity for
