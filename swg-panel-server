@@ -5189,7 +5189,7 @@ def net_probe_request(roster, pid, nid, addr, port, snaps, seen, stale_s, now=No
     age = (now - seen[nid]) if (seen or {}).get(nid) else None
     why, d = net_probe_refusal(roster, pid, nid, addr, port, (snaps or {}).get(nid), age, stale_s)
     if why:
-        return 400, {"ok": False, "error": "test refused: " + why, "code": "refused", "why": why, "detail": d}
+        return 400, {"ok": False, **perr("test refused: {v1}", v1=why), "code": "refused", "why": why, "detail": d}
     with _NET_PROBES_LOCK:
         cur = _NET_PROBES.get(nid)
         if cur:

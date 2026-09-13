@@ -118,6 +118,13 @@ export const STR = {
   "A port is a number from 1 to 65535.": "Порт — это число от 1 до 65535.",
   "This device isn't on {node}.": "Этого устройства нет на {node}.",
   "{node} isn't syncing, so it can't run a test right now.": "{node} не синхронизируется, проверку сейчас не запустить.",
+  // the networks endpoints' own errors — the SPA words every refusal token itself, so these reach a person only
+  // through an API call the sheet does not make, or a token newer than the sheet
+  "test refused: {v1}": "проверка отклонена: {v1}",
+  "a test is already running on this node": "на этой ноде уже идёт проверка",
+  "no such test": "такой проверки нет",
+  "network refused": "сеть отклонена",
+  "routes must be a list of CIDR strings": "routes должен быть списком строк CIDR",
   "{node} is already running a test — try again in a few seconds.": "{node} уже выполняет проверку — повторите через несколько секунд.",
   "{addr} is in {p}, which this device doesn't carry:": "{addr} входит в {p}, а эту сеть устройство не проводит:",
   "{addr} isn't in a network this device carries on {node}, so it can't be tested from there.": "{addr} не входит ни в одну сеть, которую это устройство проводит на {node}, поэтому проверить его оттуда нельзя.",
