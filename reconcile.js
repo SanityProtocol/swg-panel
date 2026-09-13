@@ -333,6 +333,7 @@ function reconcile(roster, stats, now, cfg) {
       unassigned: !user,
       sub_hide: Array.isArray(p.sub_hide) ? p.sub_hide : [],   // config kinds the operator keeps OFF this peer's subscription page
       routes: Array.isArray(p.routes) ? p.routes : [],         // networks behind this device (docs/NETWORKS-PLAN.md §6)
+      share: (p.share && typeof p.share === "object" && !Array.isArray(p.share)) ? p.share : null,   // who may reach them (§15); null = everyone on the node
       overrides: p.overrides || null,   // peer-wide render overrides (the fallback under each target's own) — see the target field
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,

@@ -715,7 +715,9 @@ function UserNetworksPanel({ user }) {
       <div class="netlist">
         ${t.networks.map(n => html`<span class=${"nettag " + (n.covered === false ? "s-inert" : "s-active")} title=${T("Through {via}", { via: via(n.via) })}>
           <span class="mono">${n.prefix}</span><em>${n.covered === false ? T("not in this device's routing")
-            : n.covered === null ? T("routing unknown") : T("reachable")}</em></span>`)}
+            : n.covered === null ? T("routing unknown")
+            : n.restricted ? (n.until ? T("shared until {date}", { date: fmtDate(n.until) }) : T("shared with this user"))
+            : T("reachable")}</em></span>`)}
         ${t.lan ? html`<span class=${"nettag " + (t.lan.open ? "s-active" : "s-inert")}><span class="mono">${t.lan.addrs.join(", ")}</span><em>${
           t.lan.open ? T("the node's local network") : T("the node's local network, closed")}</em></span>` : null}
       </div></div>`)}</div>

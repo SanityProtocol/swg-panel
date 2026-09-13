@@ -3361,6 +3361,11 @@ a.tg:hover{filter:brightness(1.25)}
 /* P4 — the reachability test. The row is the field's own; the answer uses the gateway line's words and dots, but the
    dot is STILL: a test result is a moment, not a live link, and a pulse would say otherwise. */
 .netprobe{margin:10px 0 4px}
+.netshare{margin:12px 0 4px}
+.netshare .segrow{margin:5px 0 8px}
+.netshare .netwiden input[type=date]{flex:none;width:auto}
+.netshare .netrow .usercombo{flex:1;min-width:0}
+.netshare-says{margin:8px 0 4px}
 .netprobe-h{font-size:12.5px;color:var(--dim);margin-bottom:5px}
 .netfield .netprobe .netrow{flex-wrap:wrap}
 .netfield .netprobe .netrow input{min-width:11em}

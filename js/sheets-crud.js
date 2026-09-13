@@ -992,8 +992,74 @@ function netWhy(r, node) {
     case "blocked": return T("This device is blocked or expired, so it carries nothing.", v);
     case "rolled_back": return T("{node} installed the route and took it straight back out — it moved the path to {a}.", v);
     case "route_exists": return T("{node} already routes {p} through {a}, and leaves that route alone.", v);
+    case "share_unsupported": return T("{node} runs a version that can't restrict who reaches a network, so it carries this one for nobody — update it.", v);
     default: return T("{node} couldn't check the route to {p} safely, so it didn't install it.", v);
   }
+}
+
+// ── P5: who can reach these networks (docs/NETWORKS-PLAN.md §15) ─────────────────────────────────────────────────────
+// `share` null = everyone on the node, as before. An object = the device's owner, always, plus the people named, each
+// until a day or for good. The panel refuses with tokens (share_clean); the words are here.
+const shareOf = s => (s && typeof s === "object" && s.users && typeof s.users === "object")
+  ? { on: true, users: { ...s.users } } : { on: false, users: {} };
+const shareBody = d => d.on ? { users: d.users } : null;
+const shareKey = d => d.on ? "on:" + Object.keys(d.users).sort().map(k => k + "=" + (d.users[k] || 0)).join(",") : "off";
+function shareRefused(why) {
+  switch (why) {
+    case "unknown_user": return T("One of these people no longer exists — remove them and save again.");
+    case "date_passed": return T("A date has already passed — pick a later day or leave it empty.");
+    case "too_many": return T("A network can be shared with at most 500 people.");
+    default: return T("Access wasn't saved.");
+  }
+}
+const shareUser = id => { const u = Store.user(id); return u ? u.name : T("a user who no longer exists"); };
+
+function NetShare({ peer, draft, setDraft, dirty, busy, onSave }) {
+  const owner = peer.user_id ? Store.user(peer.user_id) : null;
+  const ids = Object.keys(draft.users).sort((a, b) => shareUser(a).localeCompare(shareUser(b)));
+  const setUser = (id, until) => setDraft(d => ({ ...d, users: { ...d.users, [id]: until } }));
+  const drop = id => setDraft(d => { const u = { ...d.users }; delete u[id]; return { ...d, users: u }; });
+  const mode = on => html`<button type="button" role="radio" aria-checked=${draft.on === on} class=${"seg" + (draft.on === on ? " on" : "")}
+    onClick=${() => setDraft(d => ({ ...d, on }))}>${on ? T("Only people you choose") : T("Everyone on its node")}</button>`;
+  return html`<div class="netshare">
+    <div class="netprobe-h">${T("Who can reach these networks")}</div>
+    <div class="segrow" role="radiogroup" aria-label=${T("Who can reach these networks")}>${mode(false)}${mode(true)}</div>
+    ${draft.on ? html`
+      <div class="netwiden"><span class="grow">${owner ? owner.name : T("No owner")}</span>
+        <span class="faint">${owner ? T("owns this device — always") : T("This device has no owner, so only the people below reach its networks.")}</span></div>
+      ${ids.map(id => html`<div class="netwiden" key=${id}><span class="grow">${shareUser(id)}</span>
+        <input type="date" value=${expiryInputVal(draft.users[id])} data-enter="self" data-noautofocus
+          aria-label=${T("Last day {name} can reach them — leave empty for no end", { name: shareUser(id) })}
+          onInput=${e => setUser(id, expiryFromInput(e.target.value))}/>
+        <button type="button" class="btn btn-ghost btn-mini" title=${T("Stop sharing with {name}", { name: shareUser(id) })}
+          aria-label=${T("Stop sharing with {name}", { name: shareUser(id) })} onClick=${() => drop(id)}><${Ic} i="x"/></button></div>`)}
+      <div class="netrow"><${UserPicker} value=${null} placeholder=${T("Share with someone…")}
+        onChange=${id => { if (id && id !== peer.user_id && !(id in draft.users)) setUser(id, 0); }}/></div>
+      <div class="hint">${T("A date is the last day they can reach these networks; leave it empty for no end. Only their WireGuard and AmneziaWG devices on the same node count — a turn-server device can't reach a restricted network.")}</div>` : null}
+    <div class="netrow"><span class="grow"></span>
+      <button class="btn" disabled=${busy || !dirty} onClick=${onSave}>${busy ? T("saving…") : T("Save access")}</button></div>
+  </div>`;
+}
+
+// What a restriction does on one node: who reaches it, who it cuts off, each grant, and whether the node enforces it.
+function NetShareSays({ t, node }) {
+  const s = t.share, c = s.cut_off || {}, st = s.node;
+  return html`<div class="netshare-says">
+    ${st && st.ok === false ? html`<div class="netref"><div><${Ic} i="warn"/><span>${T("{node} couldn't apply the restriction, so nobody reaches these networks there until it can: {detail}",
+        { node, detail: st.detail || st.why || "" })}</span></div></div>`
+      : !st ? html`<div class="netwhy">${T("{node} hasn't confirmed the restriction yet — it does on its next sync.", { node })}</div>` : null}
+    <div class="netgw on"><span>${t.audience.peers
+      ? T("On {node}, {peers} belonging to {users} can reach this.", { node, peers: plural(t.audience.peers, "peer"), users: plural(t.audience.users, "gen|user") })
+      : T("Nobody on {node} can reach this yet.", { node })}</span></div>
+    ${c.peers ? html`<div class="netwhy">${T("{peers} on {node} can't reach it.", { node, peers: plural(c.peers, "peer") })}</div>` : null}
+    ${(c.providers || []).length ? html`<div class="netwhy">${T("Networks behind {names} lose their way to it.", { names: c.providers.map(netPeerName).join(", ") })}</div>` : null}
+    ${(s.grants || []).map(g => html`<div class="netwiden" key=${g.user_id}><span class="grow">${shareUser(g.user_id)}</span>
+      <span class="faint">${g.owner ? T("owner") : g.until ? T("until {date}", { date: fmtDate(g.until) }) : T("no end")}</span>
+      <span class="faint">${g.devices ? T("{devices} here", { devices: plural(g.devices, "device") }) : g.keyless ? "" : T("no device on {node}", { node })}</span></div>
+      ${g.keyless ? html`<div class="netwhy">${T("{name}: turn-server devices can't reach a restricted network ({devices}).",
+          { name: shareUser(g.user_id), devices: plural(g.keyless, "device") })}</div>` : null}`)}
+    ${(s.lapsed || []).length ? html`<div class="netwhy">${T("Access has ended for {names}.", { names: s.lapsed.map(shareUser).join(", ") })}</div>` : null}
+  </div>`;
 }
 
 function NetworksField({ peer }) {
@@ -1006,19 +1072,28 @@ function NetworksField({ peer }) {
   const toggle = k => setOpen(o => ({ ...o, [k]: !o[k] }));
   const want = netList(draft);
   const wantKey = want.join(",");
+  // P5: its own draft and its own Save, like the networks. The preview judges both drafts together, so the report
+  // below shows what saving would do — who it would let in, and who it would cut off — before anything is written.
+  const shareStoredKey = shareKey(shareOf(peer.share));
+  const [share, setShare] = useState(() => shareOf(peer.share));
+  const [shareBusy, setShareBusy] = useState(false);
+  useEffect(() => { setShare(shareOf(peer.share)); }, [shareStoredKey]);
+  const shareDraftKey = shareKey(share);
+  const shareDirty = shareDraftKey !== shareStoredKey;
   useEffect(() => {
     if (!want.length && !stored.length) { setRep(null); return; }
     let ok = true;
     const h = setTimeout(async () => {
       try {
-        const r = await api.peerNetworks({ peer_id: peer.id, routes: want });
-        if (ok) setRep(r && r.ok ? { ...r.data, _for: wantKey } : { targets: [], refusals: [], error: srvText(r) || T("Couldn't check these networks.") });
+        const r = await api.peerNetworks({ peer_id: peer.id, routes: want, ...(shareDirty ? { share: shareBody(share) } : {}) });
+        if (ok) setRep(r && r.ok ? { ...r.data, _for: wantKey } : { targets: [], refusals: [],
+          error: r && r.code === "share_refused" ? shareRefused(r.why) : (srvText(r) || T("Couldn't check these networks.")) });
       } catch (e) {
         if (ok) setRep({ targets: [], refusals: [], error: T("Couldn't check these networks.") });
       }
     }, 350);
     return () => { ok = false; clearTimeout(h); };
-  }, [wantKey, peer.id, storedKey]);
+  }, [wantKey, peer.id, storedKey, shareDraftKey]);
   const refusals = (rep && rep.refusals) || [];
   // Compared NORMALISED: the operator types `172.30.9.9`, the roster stores `172.30.9.9/32`. A raw compare kept
   // "Save networks" lit after a successful save, reading as unsaved. The preview carries the server's own
@@ -1038,6 +1113,14 @@ function NetworksField({ peer }) {
       else toast(srvText(r) || T("Networks weren't saved."), "err");
     } finally { setBusy(false); }
   };
+  const saveShare = async () => {
+    setShareBusy(true);
+    try {
+      const r = await api.peerUpdate({ peer_id: peer.id, share: shareBody(share) });
+      if (r && r.ok) { toast(share.on ? T("Access saved.") : T("Open to everyone on the node again."), "ok"); await Store.poll(); }
+      else toast(r && r.code === "share_refused" ? shareRefused(r.why) : (srvText(r) || T("Access wasn't saved.")), "err");
+    } finally { setShareBusy(false); }
+  };
   return html`<div class="field netfield">
     <label>${T("Networks behind this device")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label>
     <div class="netrow">
@@ -1051,6 +1134,7 @@ function NetworksField({ peer }) {
     <div class="hint">${T("Devices on the same node already reach each other at their tunnel addresses — that needs nothing here.")}</div>
     ${rep && rep.error ? html`<div class="formmsg err">${rep.error}</div>` : null}
     ${refusals.length ? html`<div class="netref">${refusals.map(r => html`<div><${Ic} i="warn"/><span>${netWhy(r, r.node ? Store.nodeName(r.node) : "")}</span></div>`)}</div>` : null}
+    ${stored.length ? html`<${NetShare} peer=${peer} draft=${share} setDraft=${setShare} dirty=${shareDirty} busy=${shareBusy} onSave=${saveShare}/>` : null}
     ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle}
         kaOff=${((rep && rep.keepalive_off) || []).includes(t.node)} pid=${peer.id} testable=${normKey === storedKey}/>`)}
   </div>`;
@@ -1105,7 +1189,7 @@ function netProbeRefused(b, node, addr) {
   }
 }
 
-function NetProbe({ pid, nid, node, nets }) {
+function NetProbe({ pid, nid, node, nets, restricted }) {
   const [addr, setAddr] = useState("");
   const [port, setPort] = useState("");
   const [test, setTest] = useState(null);       // the panel's view of the latest test on this node
@@ -1150,6 +1234,7 @@ function NetProbe({ pid, nid, node, nets }) {
   const says = test && !pending ? netProbeSays(test, node) : null;
   return html`<div class="netprobe">
     <div class="netprobe-h">${T("Test that the network answers — {node} sends it through this device:", { node })}</div>
+    ${restricted ? html`<div class="hint">${T("It's sent by {node} itself, so it answers the same whoever this is shared with.", { node })}</div>` : null}
     <div class="netrow">
       <input class="mono" value=${addr} onInput=${e => setAddr(e.target.value)} onKeyDown=${key} data-enter="self" data-noautofocus
         placeholder=${T("an address on {p}", { p: nets[0] || "" })} aria-label=${T("Address to test")} autocomplete="off" spellcheck="false"/>
@@ -1188,11 +1273,12 @@ function NetNode({ t, open, toggle, kaOff, pid, testable }) {
     ${/* Only for what is SAVED (a draft network is carried nowhere, so the panel would refuse the test) and only through a
           keyed deployment — a turn server's has no peer to send it through. */""}
     ${testable && t.gateway && t.networks.some(n => n.state !== "inert") ? html`<${NetProbe} pid=${pid} nid=${t.node} node=${node}
-        nets=${t.networks.filter(n => n.state !== "inert").map(n => n.prefix)}/>` : null}
-    ${active.length ? html`<div class="netexp"><${Ic} i="warn"/><span>${t.audience.peers
-      ? T("Every client on {node} can reach this: {peers} belonging to {users}. The node can't tell them apart.",
+        nets=${t.networks.filter(n => n.state !== "inert").map(n => n.prefix)} restricted=${!!t.share}/>` : null}
+    ${active.length && !t.share ? html`<div class="netexp"><${Ic} i="warn"/><span>${t.audience.peers
+      ? T("Every client on {node} can reach this: {peers} belonging to {users}. Choose who under “Who can reach these networks”.",
           { node, peers: plural(t.audience.peers, "peer"), users: plural(t.audience.users, "gen|user") })
       : T("No other client is on {node} yet. Anyone added there will reach this.", { node })}</span></div>` : null}
+    ${active.length && t.share ? html`<${NetShareSays} t=${t} node=${node}/>` : null}
     ${t.widen_total ? html`<${Disclosure} title=${T("Narrowed routing, can't reach it: {peers}", { peers: plural(t.widen_total, "peer") })}
         open=${!!open[t.node + "|w"]} onToggle=${() => toggle(t.node + "|w")}>
       ${t.widen.map(w => html`<div class="netwiden"><span class="grow">${netPeerName(w.peer_id)}</span><span class="tp">${w.iface}</span>
