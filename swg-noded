@@ -1069,7 +1069,7 @@ def _sig_headers(token, body):
     return {"X-SWG-TS": ts, "X-SWG-MAC": mac}
 
 
-def post_json(url, token, obj, panel, timeout=20, source_ip=""):
+def post_json(url, token, obj, panel, timeout=20, source_ip="", peer=None):
     """POST JSON to the panel. TLS posture comes from `panel`:
          fingerprint set -> pin sha256 (verified during the handshake, before any
                             bytes are sent, and fails closed if it can't be read);
@@ -1077,6 +1077,7 @@ def post_json(url, token, obj, panel, timeout=20, source_ip=""):
          otherwise       -> unverified (self-signed; encrypted but no MITM protection).
     `source_ip` (optional) binds the local source IP for the connection (the node's "panel connection IP"
     role); callers fall back to unbound on failure so a bad IP can't cut the node off from the panel.
+    `peer` (optional dict) gets `addr` = the address the connection actually reached — see `_PANEL_PEER`.
     Returns (status, dict). status 0 means the request never completed."""
     body = json.dumps(obj).encode()
     headers = {"Content-Type": "application/json", "Authorization": "Bearer " + token, **_sig_headers(token, body)}
@@ -1104,6 +1105,9 @@ def post_json(url, token, obj, panel, timeout=20, source_ip=""):
         else:
             return 0, {"error": f"unsupported url scheme {u.scheme!r}"}
         conn.request("POST", path, body=body, headers=headers)
+        if peer is not None:
+            with contextlib.suppress(Exception):
+                peer["addr"] = conn.sock.getpeername()[0]
         resp = conn.getresponse()
         data = (resp.read().decode() or "{}")
         if resp.status >= 400:
@@ -1996,6 +2000,271 @@ def _devexit_gw(e, detected=None):
         return ""
     gw = _dev_gateway(dev) if detected is None else detected
     return gw or str((e or {}).get("gw") or "").strip() or _table_default_via((e or {}).get("table") or "", dev)
+
+
+# ───────────────────────── networks: the stranding guard ─────────────────────────
+#
+# docs/NETWORKS-PLAN.md §4.1. A route to a declared network is `ip route replace <prefix> dev <tunnel>`, and
+# `replace` — unlike `add` — takes a prefix a connected route already owns, silently. Measured on
+# .campaign/rigs/home-node-netns.sh: a node on 192.168.1.50/24 handed its own LAN keeps its default route and
+# loses everything ADDRESSED on the LAN, its resolver with it. A panel it knows by hostname can then never be
+# resolved, so the node never hears the correction: a site visit. So nothing here is decided on the panel's
+# word (D7) — it is refused from this box's own kernel before installing, and re-checked after.
+
+# The address the last sync POST actually CONNECTED to — not the url's host, which on this fleet is a name
+# (and on svo-im a name pinned in /etc/hosts). "" until a sync has connected: unknown, which is not "none".
+_PANEL_PEER = {"addr": ""}
+
+RESOLV_CONF = "/etc/resolv.conf"
+RESOLVED_UPSTREAM = "/run/systemd/resolve/resolv.conf"
+_RESERVED_V4 = ("0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
+_TUNNEL_DEV_PREFIXES = ("wg", "awg", "dawg", "wdtt", "csqtt")
+_RT_TYPES = ("local", "broadcast", "unicast", "multicast", "blackhole", "unreachable", "prohibit", "throw")
+
+
+def _resolvers(_path=None, _upstream=None):
+    """(sorted v4 resolver addresses this box's lookups depend on the ROUTE to, known).
+
+    `known` is False when that set cannot be read, and the guard then refuses: "found no resolver" from a read
+    that did not work is the one answer that would wave through the route that deafens the box.
+
+    Three shapes, each measured 2026-09-13 rather than assumed:
+      plain            nameserver lines name the servers.
+      resolved stub    msk-main and svo-im both point /etc/resolv.conf at 127.0.0.53; the servers it forwards
+                       to are only in /run/systemd/resolve/resolv.conf. Inside svo-im's host-net CONTAINER that
+                       file is not mounted, so a docker node on a resolved host reports known=False.
+      docker 127.0.0.11  a user-defined network writes `# ExtServers: [host(1.1.1.1) host(8.8.8.8)]`. A
+                       `host(…)` server is asked FROM THE HOST's namespace — blackholing both inside the
+                       container left resolution working — so no route installed here can shadow it. A bare
+                       entry is asked from the container, and is kept.
+    A v6 server is no dependency either: a v4 route cannot shadow it (D12)."""
+    import ipaddress
+    def _ns(text):
+        return [t[1] for t in (ln.split() for ln in text.splitlines()) if len(t) >= 2 and t[0] == "nameserver"]
+    def _v4(s):
+        with contextlib.suppress(ValueError):
+            a = ipaddress.ip_address(s.split("%")[0])
+            if a.version == 4:
+                return a
+        return None
+    try:
+        with open(_path or RESOLV_CONF) as f:
+            text = f.read()
+    except OSError:
+        return [], False
+    servers = _ns(text)
+    if not servers:                                  # glibc then asks 127.0.0.1, whose upstream is not visible
+        return [], False
+    out, known = set(), True
+    for s in servers:
+        a = _v4(s)
+        if a is None:
+            continue
+        if not a.is_loopback:
+            out.add(str(a))
+            continue
+        if str(a) == "127.0.0.53":
+            try:
+                with open(_upstream or RESOLVED_UPSTREAM) as f:
+                    ups = _ns(f.read())
+            except OSError:
+                known = False
+                continue
+        elif str(a) == "127.0.0.11":
+            m = re.search(r"(?m)^#\s*ExtServers:\s*\[([^\]]*)\]", text)
+            if not m:
+                known = False
+                continue
+            ups = [u for u in m.group(1).split() if not u.startswith("host(")]
+        else:                                        # a local dnsmasq / unbound / pi-hole: upstream is its own config
+            known = False
+            continue
+        for u in ups:
+            b = _v4(u)
+            if b is not None and b.is_loopback:
+                known = False
+            elif b is not None:
+                out.add(str(b))
+    return sorted(out), known
+
+
+def _default_gateways(_proc="/proc/net/route"):
+    """Every gateway a default route in `main` names, on any device, no fork — or None if the table could not
+    be read. `_dev_gateway` answers per NIC for the snapshot; the guard needs all of them."""
+    out = []
+    try:
+        with open(_proc) as f:
+            lines = f.read().splitlines()[1:]
+    except OSError:
+        return None
+    for line in lines:
+        t = line.split()
+        if len(t) < 8 or t[1] != "00000000" or t[7] != "00000000" or t[2] == "00000000":
+            continue
+        with contextlib.suppress(ValueError):
+            v = int(t[2], 16)                        # host byte order, as `_dev_gateway` reads it
+            gw = "%d.%d.%d.%d" % (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF)
+            if gw not in out:
+                out.append(gw)
+    return out
+
+
+def _local_addrs():
+    """[(dev, ip, network)] for every IPv4 address on the box but loopback — tunnels and bridges included, and
+    with the prefix `_node_addrs` throws away. None when `ip` could not be read. Called only when a route is
+    about to be installed, never per sync (§4.12)."""
+    import ipaddress
+    r = run(["ip", "-4", "-o", "addr", "show"])
+    if r.returncode != 0:
+        return None
+    out = []
+    for ln in (r.stdout or "").splitlines():
+        p = ln.split()
+        if len(p) < 4 or p[2] != "inet" or p[1] == "lo":
+            continue
+        with contextlib.suppress(ValueError):
+            itf = ipaddress.ip_interface(p[3])
+            out.append((p[1], str(itf.ip), str(itf.network)))
+    return out
+
+
+def network_route_refusal(prefix, local=(), gateways=(), panel=(), resolvers=(), resolvers_known=True):
+    """→ (reason, address) for a route this box must not install toward `prefix`, or (None, "").
+
+    The node's copy of the panel's refusal set (NETWORKS-PLAN §5), and the authoritative one (D7): a reason
+    TOKEN, most specific first, plus the address that collided — so the panel can say "192.168.1.1, this node's
+    gateway" rather than naming a prefix.
+
+    ⚠️ `local` IS TESTED BY OVERLAP, the rest by CONTAINMENT. A route takes every address it covers from
+    whatever held them: half the LAN is as wrong as all of it, and a slice of a tunnel's subnet strands that
+    slice's clients. The gateway, the panel and the resolvers are single addresses the box reaches OUT to.
+    `panel` None means no sync has connected yet — not "nothing to protect"."""
+    import ipaddress
+    try:
+        net = ipaddress.ip_network(str(prefix).strip(), strict=False)
+    except ValueError:
+        return "invalid", ""
+    if net.version != 4:
+        return "not_v4", ""
+    if net.prefixlen == 0:
+        return "default_route", ""
+    if any(net.overlaps(ipaddress.ip_network(r)) for r in _RESERVED_V4):
+        return "reserved", ""
+    for dev, ip, sub in local:
+        with contextlib.suppress(ValueError):
+            if net.overlaps(ipaddress.ip_network(str(sub), strict=False)):
+                if dev.startswith("swg_"):
+                    return "mesh", ip
+                return ("iface_subnet" if dev.startswith(_TUNNEL_DEV_PREFIXES) else "node_lan"), ip
+    for why, addrs in (("node_gateway", gateways), ("node_panel", panel or ()), ("node_resolver", resolvers)):
+        for a in addrs:
+            with contextlib.suppress(ValueError):
+                if ipaddress.ip_address(a) in net:
+                    return why, a
+    if panel is None:
+        return "panel_unknown", ""
+    if not resolvers_known:
+        return "resolver_unknown", ""
+    return None, ""
+
+
+def _route_paths(addrs):
+    """{addr: "via X dev D"} — the path the kernel takes to each address right now, one fork for all of them.
+    An address with no route reads "unreachable". None when nothing could be read at all, which a caller must
+    never mistake for "every path unchanged"."""
+    addrs = [a for a in addrs if a]
+    if not addrs:
+        return {}
+    r = run(["ip", "-4", "-force", "-batch", "-"], input_text="".join("route get %s\n" % a for a in addrs))
+    out = {a: "unreachable" for a in addrs}
+    seen = False
+    for ln in (r.stdout or "").splitlines():
+        if not ln or ln[0].isspace():                # `cache …` continuation
+            continue
+        t = ln.split()
+        kind = ""
+        if t[0] in _RT_TYPES and len(t) > 1:
+            kind, t = t[0] + " ", t[1:]
+        if t[0] not in out:
+            continue
+        seen = True
+        out[t[0]] = kind + " ".join(k + " " + t[t.index(k) + 1] for k in ("via", "dev") if k in t[:-1])
+    if not seen and r.returncode != 0:
+        return None
+    return out
+
+
+def _net_guard_deps():
+    """What this box depends on, read from its own kernel for `network_route_refusal` — None if a read failed."""
+    local, gws = _local_addrs(), _default_gateways()
+    if local is None or gws is None:
+        return None
+    res, known = _resolvers()
+    pa = _PANEL_PEER.get("addr") or ""
+    return {"local": local, "gateways": gws, "resolvers": res, "resolvers_known": known,
+            "panel": None if not pa else [a for a in (pa,) if ":" not in a and not a.startswith("127.")]}
+
+
+def net_route_install(prefix, dev, table="", _guard=True, _verify=True):
+    """Install ONE route toward a declared network, or refuse it. → (installed, reason, address).
+
+    Three closes, each for a different way of being wrong:
+      1. `network_route_refusal` — what this box depends on, from its own kernel.
+      2. An EXACT route to another device is left alone. `add` refuses one and `replace` takes it; this is
+         `add`'s answer for a route that is not ours and `replace`'s for one that is, which keeps it idempotent
+         against itself and against wg-quick installing the same route on the same device (§4.4).
+      3. VERIFY AFTER APPLY. The path to every gateway, the panel and every resolver is read before and after;
+         if any moved, the route comes straight back out and the refusal goes up instead. The list in 1 is only
+         as complete as whoever wrote it, and what it guards needs somebody on the box.
+    `_guard` / `_verify` exist for the P0 rig, which turns each off to prove the other still saves the node.
+    Nothing in the daemon passes them."""
+    tbl = ["table", str(table)] if table else []
+    deps = _net_guard_deps()
+    if deps is None:
+        return False, "guard_unreadable", ""
+    if _guard:
+        why, addr = network_route_refusal(prefix, **deps)
+        if why:
+            return False, why, addr
+    cur = run(["ip", "-4", "route", "show", "exact", str(prefix)] + tbl)
+    if cur.returncode != 0:
+        return False, "guard_unreadable", ""
+    foreign = [t for t in (ln.split() for ln in (cur.stdout or "").splitlines())
+               if t and ("dev" not in t[:-1] or t[t.index("dev") + 1] != dev)]
+    if _guard and foreign:
+        t = foreign[0]
+        return False, "route_exists", (t[t.index("dev") + 1] if "dev" in t[:-1] else t[0])
+    watch = sorted(set(deps["gateways"]) | set(deps["panel"] or ()) | set(deps["resolvers"]))
+    before = _route_paths(watch) if _verify else {}
+    if before is None:
+        return False, "verify_unreadable", ""
+    r = run(["ip", "route", "replace", str(prefix), "dev", dev] + tbl)
+    if r.returncode != 0:
+        return False, "install_failed", (r.stderr or "").strip()[:160]
+    if _verify:
+        after = _route_paths(watch)
+        moved = [a for a in watch if after is None or after.get(a) != before.get(a)]
+        if moved:
+            run(["ip", "route", "del", str(prefix), "dev", dev] + tbl)
+            # ⚠️ `del` DOES NOT BRING BACK WHAT `replace` DISPLACED. Measured on the P0 rig: the LAN's connected
+            # route, once replaced, stays gone after ours is deleted. The box still pings its gateway — through
+            # the default route's surviving nexthop — so it LOOKS recovered, and then cannot install any route
+            # via that gateway again ("Nexthop has invalid gateway"): the next DHCP renewal that re-adds the
+            # default strands it for real. So put back exactly what was there.
+            for t in foreign:
+                run(["ip", "route", "add"] + [w for w in t if w not in (
+                    "linkdown", "dead", "pervasive", "offload", "trap", "rt_offload", "rt_trap",
+                    "rt_offload_failed", "notify")] + tbl)
+            return False, "rolled_back", moved[0]
+    return True, None, ""
+
+
+def net_deps():
+    """The one snapshot field the networks guard adds (NETWORKS-PLAN §4.1, D7): the address this node reaches
+    its panel BY, and the resolvers its lookups depend on. PRESENCE is the gate — a node too old to send it
+    cannot guard itself, so the panel lowers nothing onto it. File reads only; no fork per sync (D1)."""
+    res, known = _resolvers()
+    return {"panel": _PANEL_PEER.get("addr") or "", "resolvers": res, "resolvers_known": known}
 
 
 def _cascade_want_sig(fwd, exit_, smart=None, guard=()):
@@ -9197,6 +9466,9 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # and never stored — a gateway is as box-specific as a device name, and it moves.
             "ether_gws": {d: _dev_gateway(d) for d in list_ether_ifaces(_addrs)},
             "wan_iface": _detect_wan(),                  # the device the default route uses — what "Default" MEANS on this box
+            # What this node reaches its panel BY and which resolvers it depends on (NETWORKS-PLAN §4.1). Its
+            # PRESENCE is the gate: a node too old to send it cannot guard itself, so no network lowers onto it.
+            "net_deps": net_deps(),
             "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status(),
             # Whether the TCP-terminating relay's divert is ARMED RIGHT NOW, and if not, why not — §4 of
             # RELAY-FEATURE-PLAN. "why" is the whole point: a feature that silently disarms itself and
@@ -15124,10 +15396,11 @@ def main():
             report_update_result(panel)             # a declarative rebuild finished while we were restarting — say how it went
             snap = build_snapshot(node_cfg, online_max, last_samples)
             use_ip = panel_ip if (panel_ip and panel_ip != bad_pip) else ""
-            status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel, source_ip=use_ip)
+            status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel, source_ip=use_ip,
+                                      peer=_PANEL_PEER)   # what we actually reach the panel BY — the networks guard's input
             if status == 0 and use_ip:              # fail-safe: a bound source couldn't reach the panel → retry unbound + stop binding that IP
                 bad_pip = use_ip
-                status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel)
+                status, reply = post_json(url, panel["token"], {"snapshot": snap}, panel, peer=_PANEL_PEER)
             if status == 200:                       # adopt the panel-chosen connection IP (persist; reset bad-flag if it changed)
                 want_pip = ((reply.get("node_egress") or {}).get("panel_ip") or "").strip()
                 if want_pip != panel_ip:
