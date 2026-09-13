@@ -2461,6 +2461,270 @@ def reconcile_net_routes(node_cfg, desired, res, _proc="/proc/net/route"):
     return kept
 
 
+# ───────────────────────── networks: the reachability test (P4) ─────────────────────────
+#
+# NETWORKS-PLAN §8 P4 — the evidence the far-side snippet cannot give. The panel can say "carried, gateway connected"
+# while the device behind never forwards a packet. On request, and only then, this node sends ONE probe into a network
+# it carries, through that network's gateway, and says what came back.
+#
+# ⚠️ NOT AN AGENT OP, whatever the plan said: swg-agent "talks to nothing over the network" (docs/AGENT.md), and a
+# probe is nothing but network. The daemon already sends raw ICMP (`_exit_ping`); no node image has a `ping` binary.
+#
+# MEASURED on .campaign/rigs/networks-p1-netns.sh before any of this was written:
+#   SOURCE  this node's own address on the gateway's interface — the one source the far side is set up to return:
+#           the snippet NATs `-s <tunnel subnet>`, a static route routes the tunnel subnet. The node's LAN address came
+#           back only through a FULL-tunnel gateway and was lost behind one narrowed to its tunnel.
+#   NO SO_BINDTODEVICE. It lied twice: with no route on the node it still got an answer (a bound device is treated as
+#           on-link), and on a forward-mode interface it got one while every client's packet went into the leg. Bound
+#           only to the tunnel SOURCE, the probe matches the same `ip rule from <subnet>` a client does, so it fails
+#           where they fail — and the path is checked before anything is sent.
+#   4 SECONDS. A gateway says "nothing at that address" only once ARP gives up, ~3 s after the first ask.
+#   TCP BESIDE ICMP. A host that drops ICMP still answers a connect with a reset, which proves the path as well.
+#
+# ⚠️ INERT UNLESS ASKED (D1): no request in the reply, nothing forked, no thread, no snapshot key.
+# ⚠️ THE NODE IS AUTHORITATIVE (D7): only an address inside a network the panel is sending for THAT peer on THAT
+# interface, in the very reply that asks, is ever probed. Anything else is `not_carried` and nothing leaves the box.
+
+NET_PROBE_WAIT_S = 4.0
+NET_PROBE_KEEP_S = 60                    # a result the panel keeps asking about but never collects stops being repeated
+_PROBE = {"id": "", "result": None, "at": 0.0}
+_PROBE_LOCK = threading.Lock()
+_PROBE_ID_RE = re.compile(r"^[A-Za-z0-9]{8,32}$")
+
+
+def _iface_own_addr(node_cfg, iface):
+    """This node's own IPv4 address on `iface`, from its conf `Address` — what a probe is sent FROM. "" if unreadable."""
+    import ipaddress
+    ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
+    try:
+        with open(ic.get("conf", "")) as f:
+            m = re.search(r"(?im)^\s*Address\s*=\s*([^\s,/]+)", f.read())
+    except Exception:
+        return ""
+    with contextlib.suppress(ValueError):
+        if m and ipaddress.ip_address(m.group(1)).version == 4:
+            return m.group(1)
+    return ""
+
+
+def net_probe_check(node_cfg, req, desired):
+    """→ (refusal, ctx) for a test the panel asked for, judged from the reply that asked — pure, no fork.
+
+    `refusal` is a finished result (a verdict nothing was sent for) or None; `ctx` is what `net_probe_run` sends."""
+    import ipaddress
+    rid = str(req.get("id") or "")
+    base = {"id": rid, "addr": str(req.get("addr") or "")[:64]}
+    port = req.get("port")
+    try:
+        addr = ipaddress.ip_address(str(req.get("addr") or "").strip())
+    except ValueError:
+        return dict(base, verdict="bad_request"), None
+    if addr.version != 4 or (port is not None and (isinstance(port, bool) or not isinstance(port, int)
+                                                   or not 1 <= port <= 65535)):
+        return dict(base, verdict="bad_request"), None
+    iface = str(req.get("iface") or "")
+    sub = _iface_subnet(node_cfg, iface) if iface in (node_cfg.get("interfaces") or {}) and not iface.startswith("swg_") else ""
+    peer, prefix = None, ""
+    if sub and ipaddress.ip_network(sub).version == 4 and not _iface_is_mesh(node_cfg, iface, sub):
+        peer = next((p for p in (desired or {}).get(iface) or [] if p.get("public_key") == req.get("pubkey")), None)
+        tun = ipaddress.ip_network(sub)
+        for m in str((peer or {}).get("allowed_ips") or "").split(",")[1:]:     # the own /32 is first (D9), never a network
+            pre = _net_prefix(m)
+            if pre and not ipaddress.ip_network(pre).subnet_of(tun) and addr in ipaddress.ip_network(pre):
+                prefix = pre
+                break
+    if not prefix:
+        return dict(base, verdict="not_carried"), None
+    base["prefix"] = prefix
+    net = ipaddress.ip_network(prefix)
+    if net.prefixlen <= 30 and addr in (net.network_address, net.broadcast_address):
+        return dict(base, verdict="network_address"), None
+    r = _NET["refused"].get(prefix)
+    if r:
+        return dict(base, verdict="no_route", why=str(r.get("why") or ""), raddr=str(r.get("addr") or "")), None
+    src = _iface_own_addr(node_cfg, iface)
+    if not src:
+        return dict(base, verdict="no_source"), None
+    return None, {"id": rid, "iface": iface, "pubkey": peer.get("public_key"), "addr": str(addr), "port": port,
+                  "prefix": prefix, "src": src}
+
+
+def _net_icmp(dst, src, wait=NET_PROBE_WAIT_S, count=3):
+    """Echo from `src`: three requests a second apart, one answer is enough. → ("answered", ms) | ("unreachable", ms,
+    from) | ("no_answer",) | ("send_error", errno name). The RTT is timed from the request that was answered."""
+    import errno
+    def _ck(d):
+        if len(d) % 2:
+            d += b"\0"
+        x = sum(struct.unpack("!%dH" % (len(d) // 2), d))
+        x = (x >> 16) + (x & 0xFFFF); x += x >> 16
+        return ~x & 0xFFFF
+    s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+    try:
+        s.bind((src, 0))
+        ident, sent, pl = secrets.randbelow(0xFFFF) + 1, {}, b"swg-net-probe"
+        t0 = time.monotonic()
+        end, gap = t0 + wait, wait / (count + 1)
+        while True:
+            now = time.monotonic()
+            if len(sent) < count and now >= t0 + len(sent) * gap:
+                seq = len(sent) + 1
+                try:
+                    s.sendto(struct.pack("!BBHHH", 8, 0, _ck(struct.pack("!BBHHH", 8, 0, 0, ident, seq) + pl), ident, seq)
+                             + pl, (dst, 0))
+                except OSError as e:
+                    return ("send_error", errno.errorcode.get(e.errno, str(e.errno)))
+                sent[seq] = time.monotonic()
+                continue
+            if now >= end:
+                return ("no_answer",)
+            nxt = t0 + len(sent) * gap if len(sent) < count else end
+            if not select.select([s], [], [], max(0.0, min(end, nxt) - now))[0]:
+                continue
+            data, frm = s.recvfrom(2048)
+            ihl = (data[0] & 0x0F) * 4
+            if len(data) < ihl + 8:
+                continue
+            if data[ihl] == 0 and frm[0] == dst:
+                rid, seq = struct.unpack("!HH", data[ihl + 4:ihl + 8])
+                if rid == ident and seq in sent:
+                    return ("answered", round((time.monotonic() - sent[seq]) * 1000, 1))
+            elif data[ihl] == 3 and len(data) >= ihl + 36:          # destination unreachable, quoting OUR echo
+                inner = data[ihl + 8:]
+                iihl = (inner[0] & 0x0F) * 4
+                if (len(inner) >= iihl + 8 and inner[9] == 1 and socket.inet_ntoa(inner[16:20]) == dst
+                        and struct.unpack("!H", inner[iihl + 4:iihl + 6])[0] == ident):
+                    return ("unreachable", round((time.monotonic() - t0) * 1000, 1), frm[0])
+    finally:
+        s.close()
+
+
+def _net_tcp(dst, port, src, wait=NET_PROBE_WAIT_S):
+    """One connect from `src`. → ("answered", ms) | ("refused_port", ms) | ("unreachable", ms, "") | ("no_answer",) |
+    ("send_error", errno name). A reset is an answer: the host is there, the port is not."""
+    import errno
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((src, 0))
+        s.settimeout(wait)
+        t0 = time.monotonic()
+        try:
+            rc = s.connect_ex((dst, port))
+        except socket.timeout:
+            return ("no_answer",)
+        except OSError as e:
+            rc = e.errno
+        ms = round((time.monotonic() - t0) * 1000, 1)
+        if rc == 0:
+            return ("answered", ms)
+        if rc == errno.ECONNREFUSED:
+            return ("refused_port", ms)
+        if rc in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+            return ("unreachable", ms, "")
+        if rc in (errno.ETIMEDOUT, errno.EAGAIN, errno.EWOULDBLOCK, errno.EINPROGRESS):
+            return ("no_answer",)
+        return ("send_error", errno.errorcode.get(rc, str(rc)))
+    finally:
+        s.close()
+
+
+def _net_route_dev(addr, src):
+    """The device the kernel sends `addr` out of FROM `src` — policy rules included, so the same lookup a client on
+    that subnet gets. "" when there is no route; None when it could not be asked."""
+    r = run(["ip", "-4", "route", "get", addr, "from", src])
+    if r.returncode in (124, 127):
+        return None
+    t = (r.stdout or "").split() if r.returncode == 0 else []
+    return t[t.index("dev") + 1] if "dev" in t[:-1] else ""
+
+
+def net_probe_run(node_cfg, ctx, online_max=180, _icmp=None, _tcp=None):
+    """Send the probe `net_probe_check` accepted and say what happened. Seconds of wall clock — a thread, never the
+    sync pass. Checked in the order that makes each answer mean one thing: the path leaves by the gateway's device,
+    the gateway's ACL carries the network, and only then is a silence the far side's."""
+    out = {"id": ctx["id"], "addr": ctx["addr"], "prefix": ctx["prefix"], "src": ctx["src"],
+           "kind": "tcp" if ctx["port"] else "icmp"}
+    if ctx["port"]:
+        out["port"] = ctx["port"]
+    dev = _net_route_dev(ctx["addr"], ctx["src"])
+    if dev is None:
+        return dict(out, verdict="error", detail="cannot read the routing table")
+    if dev != ctx["iface"]:
+        return dict(out, verdict="route_elsewhere", dev=dev)
+    def _row():
+        d = _iface_dump(node_cfg, ctx["iface"])
+        return None if d is None else next((p for p in d[1] if p["public_key"] == ctx["pubkey"]), {})
+    row = _row()
+    if row is None:
+        return dict(out, verdict="error", detail="cannot read " + ctx["iface"])
+    if ctx["prefix"] not in {_net_prefix(m) for m in str(row.get("allowed_ips") or "").split(",")}:
+        return dict(out, verdict="no_acl")
+    got = ((_tcp or _net_tcp)(ctx["addr"], ctx["port"], ctx["src"]) if ctx["port"]
+           else (_icmp or _net_icmp)(ctx["addr"], ctx["src"]))
+    if got[0] in ("answered", "refused_port"):
+        return dict(out, verdict=got[0], ms=got[1])
+    if got[0] == "unreachable" and got[2]:           # an ICMP error that came back THROUGH the tunnel: the gateway is there
+        return dict(out, verdict="unreachable", ms=got[1], **{"from": got[2]})
+    if got[0] == "send_error" and got[1] == "ENOKEY":  # measured: wg's own refusal when no peer carries the address
+        return dict(out, verdict="no_acl")
+    hs = (_row() or row).get("last_handshake") or 0  # read AFTER: sending may have brought an idle session back
+    age = int(time.time() - hs) if hs else None
+    if got[0] == "send_error" and got[1] != "EDESTADDRREQ" and age is not None and age <= online_max:
+        return dict(out, verdict="error", detail=got[1])
+    if age is None or age > online_max:              # measured: EDESTADDRREQ is wg with no endpoint — never connected
+        return dict(out, verdict="gateway_offline", handshake_age=age)
+    if got[0] == "unreachable":
+        return dict(out, verdict="unreachable", ms=got[1])
+    return dict(out, verdict="no_answer", handshake_age=age)
+
+
+def _net_probe_done(rid, result):
+    with _PROBE_LOCK:
+        if _PROBE["id"] == rid:                      # a test the panel has since given up on is not reported
+            _PROBE.update(result=dict(result, at=int(time.time())), at=time.time())
+
+
+def _net_probe_thread(node_cfg, ctx, online_max):
+    try:
+        res = net_probe_run(node_cfg, ctx, online_max)
+    except Exception as e:
+        res = {"id": ctx["id"], "addr": ctx["addr"], "prefix": ctx["prefix"], "verdict": "error", "detail": str(e)[:160]}
+    _net_probe_done(ctx["id"], res)
+
+
+def net_probe_take(node_cfg, req, desired, online_max=180):
+    """The sync loop's whole contact with P4, once per valid reply; the answer rides a later snapshot.
+
+    No request: forget any answer the panel has stopped asking about (it has it, or it gave up) and do nothing else —
+    no fork, no thread (D1). A request is taken ONCE however many replies repeat it: the panel repeats it until the
+    answer arrives, so a reply lost on the way costs an interval, not the test."""
+    with _PROBE_LOCK:
+        rid = req.get("id") if isinstance(req, dict) else ""
+        rid = rid if isinstance(rid, str) else ""
+        if not rid:
+            if _PROBE["id"]:
+                _PROBE.update(id="", result=None, at=0.0)
+            return
+        if rid == _PROBE["id"]:
+            if _PROBE["result"] is not None and time.time() - _PROBE["at"] > NET_PROBE_KEEP_S:
+                _PROBE["result"] = None
+            return
+        if not _PROBE_ID_RE.match(rid):
+            return
+        _PROBE.update(id=rid, result=None, at=time.time())
+    refusal, ctx = net_probe_check(node_cfg, req, desired)
+    if refusal is not None:
+        _net_probe_done(rid, refusal)
+        return
+    threading.Thread(target=_net_probe_thread, args=(node_cfg, ctx, online_max), daemon=True).start()
+
+
+def net_probe_status():
+    """The snapshot's `net_probe`: an answer waiting for the panel, or None — and then no key at all (D1)."""
+    with _PROBE_LOCK:
+        return dict(_PROBE["result"]) if _PROBE["result"] is not None else None
+
+
 # ───────────────────────── networks: the node's own LAN (P2) ─────────────────────────
 #
 # NETWORKS-PLAN D10, measured on .campaign/rigs/home-node-netns.sh: a client ALREADY reaches the private network the
@@ -9949,6 +10213,9 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         snap["lan_block"] = dict(_LAN["status"])
     if _NET["refused"]:                               # networks this node will not carry, and why — absent when none (D1)
         snap["net_refused"] = {p: dict(v) for p, v in _NET["refused"].items()}
+    _probe = net_probe_status()
+    if _probe:                                        # a reachability test's answer, waiting for the panel — absent otherwise (D1)
+        snap["net_probe"] = _probe
     snap["iface_candidates"] = iface_candidates(node_cfg)
     # …and the devices this box DIALS OUT on, which that call classified on its way past. Read straight
     # after it, never before: the list is rebuilt by that call, so reading it earlier reports the previous
@@ -15981,6 +16248,9 @@ def main():
                 else:
                     eg = {"changed": 0, "errors": []}; cas = {"changed": 0, "errors": []}   # unchanged routing → skip the ip/iptables/nft drift-check shell-outs
                     nr = {"changed": 0, "errors": []}
+                # NETWORKS P4 — a reachability test, only while the panel asks for one: judged AFTER the routing pass,
+                # against what this node carries now; the probe runs in a thread and its answer rides the next snapshot.
+                net_probe_take(node_cfg, reply.get("net_probe"), reply["desired"], online_max)
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name — INCLUDING
                 # keypair restore/rebaseline (ik): a failed Restore (e.g. awg-quick up failed) is reported so the
                 # panel can show "restore failed" + the reason instead of hanging on "restoring".
