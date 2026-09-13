@@ -1,3 +1,12 @@
+# check=skip=SecretsUsedInArgOrEnv
+# ⚠️ That line is a BuildKit parser directive: it only counts as the file's FIRST line, so keep it there. It skips
+# exactly one build check, for a false positive. The check flags any ENV/ARG whose NAME contains AUTH or KEY, and
+# the two it hits below — SWG_PANEL_AUTH and SWG_PANEL_TLS_KEY — hold FILE PATHS, not secrets. The other ways out
+# are worse: renaming them breaks the name every installer, the nix module and the server read, and moving the
+# defaults into entrypoint.sh would give anything that starts this image WITHOUT the entrypoint a blank
+# SWG_PANEL_AUTH, which the panel reads as "no login". Never put an actual secret in ENV/ARG in this file —
+# nothing will warn about it now.
+#
 # swg-panel — control-plane (broker + UI) image.
 # Self-contained: serves its own TLS + login + the /wgstats board. Nodes reach the
 # panel over OUTBOUND HTTPS (no ssh, no inbound) — add them in the Nodes screen.
