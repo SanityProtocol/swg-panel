@@ -65,7 +65,7 @@ jobs:
           - { mode: channel, float: true  }
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # A flake reads the GIT tree, and nix wants a real revision — a depth-1 clone has bitten
           # enough projects that the two minutes this costs are not worth arguing about. It also
@@ -336,7 +336,7 @@ jobs:
 
       - name: Keep the build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nix-build-log-${{ matrix.mode }}
           path: nix-build.log
