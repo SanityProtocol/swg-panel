@@ -1135,6 +1135,7 @@ function NetPagedRows({ rows, total, render }) {
 // colour-coded count — green reach it, amber will once connected, red can't — with the per-node detail on hover. The window
 // asks the panel what its own draft would mean (the same preview the Networks window uses), so the counts follow edits.
 function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, onApply }) {
+  useStore();          // a group deleted while this window is open must turn into its "no longer exists" row on the next poll
   const owner = peer.user_id ? Store.user(peer.user_id) : null;
   const [users, setUsers] = useState(() => { const u = { ...(initial || {}) }; delete u[peer.user_id]; return u; });
   const [groups, setGroups] = useState(() => ({ ...(initialGroups || {}) }));
@@ -1143,6 +1144,9 @@ function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, o
   const key = signOf(users) + "|" + signOf(groups);
   if (base.current === null) base.current = key;
   dirtyRef.current = key !== base.current;
+  // The draft is unchanged when someone ELSE deletes one of its groups, so the preview is asked again on that too — the panel's
+  // refusal is what tells the operator to remove the row before Apply, instead of the Networks window failing after it.
+  const goneKey = Object.keys(groups).filter(id => !Store.group(id)).sort().join(",");
   useEffect(() => {
     let ok = true;
     const h = setTimeout(async () => {
@@ -1153,7 +1157,7 @@ function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, o
       } catch (e) { if (ok) setErr(T("Couldn't check these networks.")); }
     }, 350);
     return () => { ok = false; clearTimeout(h); };
-  }, [key]);
+  }, [key, goneKey]);
   const reach = {};                                      // uid → devices that reach it, summed over the device's nodes
   for (const t of (rep && rep.targets) || []) for (const g of ((t.share || {}).grants || [])) {
     const w = g.keyless_why || {}, soon = w.not_connected || 0;
