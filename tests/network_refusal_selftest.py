@@ -214,5 +214,27 @@ check("a blocked provider reads `blocked`, not a reason it does not have",
       rep["targets"][0]["networks"][0].get("why") == "blocked", rep["targets"][0]["networks"])
 check("a peer with no routes reports nothing", P.network_report(R, "pF", {"n1": SNAP}) == {"targets": []})
 
+# NETWORKS §17 F1 — a blocked gateway says who it cuts off, from the same walk as the audience
+tc = P.network_report(R, "pC", {"n1": SNAP})["targets"][0]
+_lost = tc.get("lost") or {}
+check("a blocked gateway lists who loses its networks — the node's audience, itself excluded",
+      _lost.get("peers") == tc["audience"]["peers"] > 0 and _lost.get("total") == _lost.get("peers")
+      and {w["peer_id"] for w in _lost.get("list") or []} == {"pA", "pB", "pD", "pE", "pF", "pN"}, tc)
+check("an active gateway has no `lost`", "lost" not in t0, t0)
+
+# NETWORKS §17 F5 — the Force DNS note comes only from the node's own dns_redirect, and only for an exempted active prefix
+_sr = {"dns_redirect": {"subnets": ["10.8.0.0/24"], "exempt": ["192.168.50.0/24"]}}
+tf = P.network_report(R, "pA", {"n1": dict(SNAP, smartroute=_sr)})["targets"][0]
+check("a carried network the node exempts carries the Force DNS note, naming the redirected interface",
+      tf.get("force_dns") == {"ifaces": ["awg0"], "exempt": ["192.168.50.0/24"]}, tf.get("force_dns"))
+check("no note without the node's dns_redirect", "force_dns" not in t0, t0)
+_sr2 = {"dns_redirect": {"subnets": ["10.8.0.0/24"], "exempt": ["10.200.0.0/16"]}}
+check("no note when the node exempts only other prefixes",
+      "force_dns" not in P.network_report(R, "pA", {"n1": dict(SNAP, smartroute=_sr2)})["targets"][0])
+_sr3 = {"dns_redirect": {"subnets": ["10.77.0.0/24"], "exempt": ["192.168.50.0/24"]}}
+check("an unmapped subnet names itself",
+      (P.network_report(R, "pA", {"n1": dict(SNAP, smartroute=_sr3)})["targets"][0].get("force_dns") or {}).get("ifaces")
+      == ["10.77.0.0/24"])
+
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)

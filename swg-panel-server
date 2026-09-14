@@ -5179,6 +5179,22 @@ def _allowed_covers(allowed, prefix):
     return False
 
 
+def _subnet_names(snap, subnets):
+    """Name each tunnel subnet the node reported (NETWORKS §17 F4) the way the operator knows it: an interface, a WDTT or a
+    csqtt instance, from the same snapshot. A subnet nothing in the snapshot claims is shown as itself."""
+    names = {}
+    for ifn, blk in ((snap or {}).get("interfaces") or {}).items():
+        sub_ = str((((blk or {}).get("meta") or {}).get("subnet")) or "")
+        if sub_:
+            names.setdefault(network_prefix(sub_) or sub_, ifn)
+    for kind, key in (("wdtt", "wg_addr"), ("csqtt", "tun_addr")):
+        for inst in ((snap or {}).get(kind) or []):
+            if isinstance(inst, dict) and inst.get("iface") and inst.get(key):
+                with contextlib.suppress(ValueError, TypeError):
+                    names.setdefault(str(ipaddress.ip_network(str(inst[key]), strict=False)), inst["iface"])
+    return sorted({names.get(network_prefix(x) or str(x), str(x)) for x in subnets})
+
+
 def network_report(roster, pid, snaps):
     """What a peer's networks MEAN, computed on demand for the save result and the peer sheet — never per poll
     (§4.10). One entry per node the peer is deployed to:
@@ -5226,7 +5242,9 @@ def network_report(roster, pid, snaps):
                 nets.append(dict({"prefix": pre, "state": "inert"},
                                  **((plan["inert"].get(pid) or {}).get(pre) or {"why": _none})))
         active = [n["prefix"] for n in nets if n["state"] == "active"]
-        peers_n, users_s, widen = 0, set(), []
+        # NETWORKS §17 F1: the gateway itself is blocked/expired, so these networks go nowhere — say who that cuts off.
+        _blocked = any(n["state"] == "inert" and n.get("why") == "blocked" for n in nets)
+        peers_n, users_s, widen, lost = 0, set(), [], []
         # P5 (§15.3): a restricted provider's audience is its owner and grantees, not the node. Everyone else ON the node
         # is who the restriction cuts off, and a grantee whose devices here are all keyless reaches nothing (S3).
         cut_peers, cut_users, dev, kl, klw = 0, set(), {}, {}, {}
@@ -5259,6 +5277,9 @@ def network_report(roster, pid, snaps):
             peers_n += 1
             if q.get("user_id"):
                 users_s.add(q.get("user_id"))
+            if _blocked:
+                lost.append({"peer_id": q.get("id"), "title": q.get("title") or "", "user_id": q.get("user_id"),
+                             "iface": qts[0].get("iface")})
             for x in qts:
                 if _is_self_contained_target(x) or not active:
                     continue
@@ -5273,6 +5294,15 @@ def network_report(roster, pid, snaps):
                  "address": (t.get("ip") or "").split("/")[0], "networks": nets,
                  "audience": {"peers": peers_n, "users": len(users_s)},
                  "widen": widen[:200], "widen_total": len(widen)}
+        if _blocked and lost:
+            entry["lost"] = {"peers": peers_n, "users": len(users_s), "list": lost[:200], "total": len(lost)}
+        # NETWORKS §17 F5: the node's OWN word on Force DNS (smart_status.dns_redirect, present only while it redirects).
+        # A carried network it exempts is reachable by name — and a client using a resolver there skips Force DNS.
+        _dr = (snap.get("smartroute") or {}).get("dns_redirect") if isinstance(snap.get("smartroute"), dict) else None
+        if active and isinstance(_dr, dict) and _dr.get("subnets"):
+            _ex = [p_ for p_ in active if p_ in set(_dr.get("exempt") or [])]
+            if _ex:
+                entry["force_dns"] = {"ifaces": _subnet_names(snap, _dr.get("subnets") or []), "exempt": _ex}
         if grants is not None:
             _stored = p["share"].get("users") if isinstance(p["share"].get("users"), dict) else {}
             _peers = roster.get("peers") or {}

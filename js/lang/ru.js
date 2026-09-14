@@ -96,6 +96,11 @@ export const STR = {
   "{p} would send all of the node's internet traffic into this device.": "{p} отправил бы в это устройство весь интернет-трафик ноды.",
   "{p} is a reserved range — loopback, link-local, multicast or cloud metadata.": "{p} — зарезервированный диапазон: loopback, link-local, multicast или метаданные облака.",
   "{node} is already on {p} ({a}), so its clients reach it without a gateway device.": "{node} уже в сети {p} ({a}) — клиенты этой ноды попадают туда без шлюза.",
+  "Blocked, so {peers} of {users} lose these networks until it is unblocked — their devices keep sending that traffic into the tunnel, where nothing answers.":
+    "Устройство заблокировано — эти сети недоступны до разблокировки: {peers} у {users}. Их устройства по-прежнему отправляют этот трафик в туннель, где никто не отвечает.",
+  "Who loses these networks: {peers}": "Кто теряет эти сети: {peers}",
+  "Clients of {ifaces} on {node} that use a DNS server on {p} skip Force DNS: those lookups aren't blocked or routed by name.":
+    "Клиенты {ifaces} на {node}, которые используют DNS-сервер в сети {p}, обходят Force DNS: такие запросы не блокируются и не маршрутизируются по имени.",
   "{node} is already on {p} ({a}), but it keeps its clients off that network. Turn on “Clients can reach it” under Local network on {node} to let them in.":
     "{node} уже в сети {p} ({a}), но не пускает туда своих клиентов. Чтобы пустить их, включите «Клиентам доступна» в разделе «Локальная сеть» на {node}.",
   "{p} overlaps a tunnel subnet on {node} ({a}).": "{p} пересекается с подсетью туннеля на {node} ({a}).",

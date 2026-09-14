@@ -4176,6 +4176,7 @@ SMART_DNS_MAX_TTL = 60   # seconds a CLIENT may cache an answer we served (see t
 DNSMASQ_BIN  = "dnsmasq"
 DNSMASQ_CONF = os.path.join(STATE_DIR, "smart-dnsmasq.conf")
 DNSMASQ_PID  = os.path.join(STATE_DIR, "smart-dnsmasq.pid")
+SMARTDNS_NET_TAG = "swg-smartdns-net"                           # RETURN rules letting DNS to a carried network past it (NETWORKS §17)
 SMARTDNS_TAG = "swg-smartdns"                                   # iptables comment tag for the DNS-redirect rules
 
 
@@ -4324,20 +4325,39 @@ def _route_localnet_ok():
         return False
 
 
-def _smart_dns_redirect(subnets, res):
+def _smart_dns_redirect(subnets, res, nets=()):
     """DNAT udp/tcp :53 from each smart subnet → our dnsmasq (127.0.0.1:SMART_DNS_PORT), tag-reconciled so it
     converges (add wanted / drop stale) without churn. Empty subnets → remove all our redirect rules. The
-    route_localnet sysctl lets a forwarded packet DNAT to loopback (off by default)."""
+    route_localnet sysctl lets a forwarded packet DNAT to loopback (off by default).
+
+    NETWORKS §17 F2/F3 — `nets` is what this node ROUTES right now (reconcile_net_routes), never the panel's plan, so a
+    refused network gets no hole. DNS to a host inside one of them is let past the redirect by a RETURN above the DNATs:
+    the office router answering `nas.office` is asked, not our dnsmasq that has never heard of it. Order IS the mechanism
+    — a RETURN below a DNAT exempts nothing — so RETURNs are inserted at the top, DNATs appended at the bottom, and a
+    RETURN found below one of our DNATs is deleted (by position) and re-inserted in the same pass.
+    ⚠️ A client whose DNS server is inside a carried network skips Force DNS for every lookup; the panel says so (F5)."""
     want = {(S, proto) for S in subnets for proto in ("udp", "tcp")}
+    prefixes = sorted({_net_prefix(x) for x in (nets or ()) if _net_prefix(x)}) if subnets else []
+    want_x = {(S, P, proto) for S in subnets for P in prefixes for proto in ("udp", "tcp")}
     out = getattr(run(["iptables", "-t", "nat", "-S", "PREROUTING"]), "stdout", "") or ""
-    live = set()
+    live, live_x, x_lines, order_bad, dnat_seen = set(), set(), [], False, False
+    _one = lambda a: a if "/" in a else a + "/32"
     for ln in out.splitlines():
-        if SMARTDNS_TAG not in ln:
-            continue
+        mc = re.search(r"--comment \"?([^\"\s]+)", ln)
+        tag = mc.group(1) if mc else ""
         ms = re.search(r"-s (\S+)", ln); mp = re.search(r"-p (\w+)", ln)
-        if ms and mp:
-            S = ms.group(1)
-            live.add((S if "/" in S else S + "/32", mp.group(1)))
+        if not (ms and mp):
+            continue
+        # ⚠️ THE TAG IS MATCHED EXACTLY, and by target: `swg-smartdns-net` contains `swg-smartdns`, and the substring test
+        # this used to be would have read every exemption as a stale DNAT and deleted it each pass.
+        if tag == SMARTDNS_TAG and "-j DNAT" in ln:
+            live.add((_one(ms.group(1)), mp.group(1))); dnat_seen = True
+        elif tag == SMARTDNS_NET_TAG and "-j RETURN" in ln:
+            md = re.search(r"-d (\S+)", ln)
+            if md:
+                live_x.add((_one(ms.group(1)), _net_prefix(md.group(1)) or _one(md.group(1)), mp.group(1)))
+                x_lines.append(ln)
+                order_bad = order_bad or dnat_seen
     if want and not _route_localnet_ok():
         # Re-assert every cycle it's found off — a container/host restart resets the sysctl while our DNAT rules
         # persist, silently blackholing client DNS. Idempotent where already on; a no-op where /proc/sys is
@@ -4347,10 +4367,27 @@ def _smart_dns_redirect(subnets, res):
     def rule(S, proto):
         return ["-s", S, "-p", proto, "--dport", "53", "-m", "comment", "--comment", SMARTDNS_TAG,
                 "-j", "DNAT", "--to-destination", "127.0.0.1:" + str(SMART_DNS_PORT)]
+
+    def xrule(S, P, proto):
+        return ["-s", S, "-d", P, "-p", proto, "--dport", "53", "-m", "comment", "--comment", SMARTDNS_NET_TAG, "-j", "RETURN"]
+    if order_bad:                                              # a RETURN below a DNAT exempts nothing → take them all out
+        for ln in x_lines:
+            if _ipt_del_listed(["-t", "nat"], "PREROUTING", ln):
+                res["changed"] += 1
+        live_x = set()
+    for (S, P, proto) in sorted(live_x - want_x):
+        run(["iptables", "-t", "nat", "-D", "PREROUTING"] + xrule(S, P, proto)); res["changed"] += 1
+    for (S, P, proto) in sorted(want_x - live_x):
+        run(["iptables", "-t", "nat", "-I", "PREROUTING", "1"] + xrule(S, P, proto)); res["changed"] += 1
     for (S, proto) in sorted(want - live):
         run(["iptables", "-t", "nat", "-A", "PREROUTING"] + rule(S, proto)); res["changed"] += 1
     for (S, proto) in sorted(live - want):
         run(["iptables", "-t", "nat", "-D", "PREROUTING"] + rule(S, proto)); res["changed"] += 1
+    # F4 — the node's own word, and only while something is exempt (D1: a node carrying no network reports nothing new).
+    if subnets and prefixes:
+        _SMART_MODE["dns_redirect"] = {"subnets": sorted(subnets), "exempt": prefixes}
+    else:
+        _SMART_MODE.pop("dns_redirect", None)
 
 
 def _pattern_buckets(smart):
@@ -4410,7 +4447,7 @@ def _dom_signature(smart_e, domains, zones, fetched):
             tuple(sorted((c, _DOM_CACHE.get(c, (None,))[0]) for c in (fetched or {}))))
 
 
-def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None):
+def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, nets=()):
     """(Re)configure + run the domain-tier dnsmasq and redirect smart-subnet DNS to it. domains = {cat:[domain]}
     for the active domain categories; smart_e gives the source subnets. Nothing wanted → full teardown.
     unchanged=True (inputs identical to last cycle) → skip the expensive body rebuild, but still re-assert the DNS
@@ -4430,7 +4467,7 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None):
     # route_localnet fine, and the panel drawing "DNS resolver — down — host routing degraded" in red. That
     # is the first thing an operator sees after picking the mode and before assigning any category.
     _SMART_MODE["dns_idle"] = not want
-    _smart_dns_redirect(subnets if want else [], res)          # cheap, diff-gated — always reconciled
+    _smart_dns_redirect(subnets if want else [], res, nets=[p for p, _i in (nets or ())])   # cheap, diff-gated — always reconciled
     if not want:                                               # nothing to fill → tear down + reap any stray instance
         _DNSMASQ_BUILD["n"] = 0
         had = _dnsmasq_running() or os.path.exists(DNSMASQ_CONF) or run(["pgrep", "-f", "conf-file=" + DNSMASQ_CONF]).returncode == 0
@@ -5999,7 +6036,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         # constant cost for nothing. For a Force-DNS node with nothing routed it is one diff-gated redirect
         # reconcile plus a teardown that finds nothing.
         if host_engine == "dns" or smart_e or domains or _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
-            _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=dom_unchanged, zones=_zones)
+            _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=dom_unchanged, zones=_zones, nets=nets)
         # Force-DNS runs `zone` and nothing else — a name is a dnsmasq key, and there is no key shape for
         # "contains these letters". Only worth saying while Force-DNS is the ENGINE: this branch also serves
         # IP-only, where no host layer is expected, patterns deliberately survive upstream, and the panel
@@ -6692,6 +6729,8 @@ def smart_status():
         base["lowered"] = _SMART_MODE["lowered"]
     if _SMART_MODE.get("no_lower"):                            # {kind: n} handed to this engine and NOT runnable by it
         base["no_lower"] = _SMART_MODE["no_lower"]
+    if _SMART_MODE.get("dns_redirect"):                        # NETWORKS §17 F4: carried networks whose DNS skips Force DNS
+        base["dns_redirect"] = _SMART_MODE["dns_redirect"]
     if t["rc"] != 0:
         # No CONTENT table — but the FREE abuse tier (swg_mech: smtp / torrent ports / port-scan) is a separate
         # datapath that does not need one, and turning ONLY those on is an ordinary configuration. `block` used to

@@ -1285,6 +1285,19 @@ function NetNode({ t, open, toggle, kaOff, pid, testable }) {
     <div class="netlist">${t.networks.map(n => html`<span class=${"nettag s-" + n.state}><span class="mono">${n.prefix}</span><em>${
       n.state === "active" ? T("carried") : n.state === "refused_by_node" ? T("refused by the node") : T("not carried")}</em></span>`)}</div>
     ${t.networks.filter(n => n.state !== "active").map(n => html`<div class="netwhy">${netWhy(n, node)}</div>`)}
+    ${/* NETWORKS §17 F1: the device is blocked or expired, so its networks go nowhere — and the people who used them are
+          not told by anything on their side. Said here, where the block is visible, with the list one click away. */""}
+    ${t.lost ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Blocked, so {peers} of {users} lose these networks until it is unblocked — their devices keep sending that traffic into the tunnel, where nothing answers.",
+        { peers: plural(t.lost.peers, "peer"), users: plural(t.lost.users, "gen|user") })}</span></div>
+      <${Disclosure} title=${T("Who loses these networks: {peers}", { peers: plural(t.lost.total, "peer") })}
+        open=${!!open[t.node + "|l"]} onToggle=${() => toggle(t.node + "|l")}>
+        ${t.lost.list.map(w => html`<div class="netwiden"><span class="grow">${netPeerName(w.peer_id)}</span><span class="tp">${w.iface}</span></div>`)}
+        ${t.lost.total > t.lost.list.length ? html`<div class="hint">${T("…and {v1} more", { v1: t.lost.total - t.lost.list.length })}</div>` : null}
+      <//>` : null}
+    ${/* NETWORKS §17 F5: Force DNS on this node answers every lookup itself; the node lets DNS to this network through, so
+          names on it resolve — and a client that uses a resolver there skips Force DNS for everything it looks up. */""}
+    ${t.force_dns ? t.force_dns.exempt.map(p => html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Clients of {ifaces} on {node} that use a DNS server on {p} skip Force DNS: those lookups aren't blocked or routed by name.",
+        { ifaces: t.force_dns.ifaces.join(", "), node, p })}</span></div>`) : null}
     ${/* Only for what is SAVED (a draft network is carried nowhere, so the panel would refuse the test) and only through a
           keyed deployment — a turn server's has no peer to send it through. */""}
     ${testable && t.gateway && t.networks.some(n => n.state !== "inert") ? html`<${NetProbe} pid=${pid} nid=${t.node} node=${node}
