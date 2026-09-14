@@ -29,7 +29,7 @@ export const STR = {
   // code passes the genitive noun (gen|user).
   "Networks behind this device": "Сети за этим устройством",
   // NETWORKS P5 — who can reach a network behind a device
-  "A date is the last day they can reach these networks; leave it empty for no end. Their devices on the same node count — a turn-server device only when its server can prove who is sending.": "Дата — последний день, когда эти сети доступны; оставьте пустой, чтобы без срока. Считаются их устройства на той же ноде — устройство за turn-сервером только если его сервер может подтвердить отправителя.",
+  "A date is the last day they can reach these networks; leave it empty for no end.": "Дата — последний день доступа к этим сетям; оставьте пустой, чтобы без срока.",
   "{name}: {devices} on a turn server whose build can't prove who is sending — they can't reach it.": "{name}: {devices} за turn-сервером, сборка которого не подтверждает отправителя, — доступа нет.",
   "{name}: {devices} not connected yet — they reach it once connected.": "{name}: {devices} — подключения ещё не было, доступ появится после него.",
   "{name}: {devices} on a turn server that isn't running.": "{name}: {devices} за turn-сервером, который не запущен.",
@@ -44,7 +44,6 @@ export const STR = {
   "Networks": "Сети",
   "Networks · {n}": "Сети · {n}",
   "Networks · {name}": "Сети · {name}",
-  "No networks yet": "Сетей пока нет",
   "Networks behind this device: {list}": "Сети за этим устройством: {list}",
   "Blocked, so nothing reaches {list} through it": "Заблокировано, поэтому через него {list} недоступны",
   "Offline, so nothing reaches {list} until it reconnects": "Не в сети, поэтому {list} недоступны, пока оно не подключится",
@@ -67,7 +66,6 @@ export const STR = {
   // budget-ok: notice, wraps
   "{nodes} runs an older version that can't limit who reaches a network, so with this choice nobody reaches them there. Update {nodes}, or choose “{everyone}”.":
     "{nodes} работает на старой версии, которая не умеет ограничивать доступ к сети, поэтому с таким выбором туда никто не попадёт. Обновите {nodes} или выберите «{everyone}».",
-  "Choose at least one person, or pick “{everyone}”.": "Выберите хотя бы одного человека или «{everyone}».",
   "Saving with no networks removes them — you'll be asked first.": "Если сохранить пустое поле, сети будут удалены — сначала появится подтверждение.",
   "Someone changed these networks while this window was open. Cancel and open it again to see the latest.":
     "Пока окно было открыто, кто-то изменил эти сети. Нажмите «Отмена» и откройте окно снова, чтобы увидеть актуальное.",
@@ -89,7 +87,7 @@ export const STR = {
   "Networks this device routes for, like the office LAN behind a router. Clients on the same node reach them through it.":
     "Сети, для которых это устройство служит шлюзом, например офисная сеть за роутером. Клиенты на той же ноде попадают туда через него.",
   "Only {name}": "Только {name}",
-  "{name} and people you choose": "{name} и выбранные люди",
+  "People you choose": "Выбранные люди",
   "Everyone on {node}": "Все на {node}",
   "Everyone on its nodes": "Все на его нодах",
   "Only {name}'s own devices on the same node reach them.": "Туда попадают только устройства {name} на той же ноде.",
@@ -99,13 +97,14 @@ export const STR = {
   "{device} stops routing {nets}. Everyone who reaches them through it loses access.":
     "{device} перестанет маршрутизировать {nets}. Все, кто попадал туда через него, потеряют доступ.",
   "Who can reach these networks": "Кому доступны эти сети",
-  "Only people you choose": "Только выбранным людям",
-  "No owner": "Нет владельца",
-  "owns this device — always": "владелец устройства — всегда",
-  "This device has no owner, so only the people below reach its networks.": "У этого устройства нет владельца, поэтому его сети доступны только людям ниже.",
+  "Add a person…": "Добавить человека…",
+  "always, as the owner": "всегда, как владелец",
+  "until": "до",
+  "Nobody else yet — add people with the search.": "Больше никого — добавьте людей через поиск.",
+  "Nobody yet — add people with the search, or pick “{everyone}”.": "Пока никого — добавьте людей через поиск или выберите «{everyone}».",
   "Last day {name} can reach them — leave empty for no end": "Последний день доступа для {name} — оставьте пустым, чтобы без срока",
   "Stop sharing with {name}": "Закрыть доступ для {name}",
-  "Share with someone…": "Открыть доступ кому-то…",
+  "everyone is already added": "все уже добавлены",
   "{node} couldn't apply the restriction, so nobody reaches these networks there until it can: {detail}": "{node} не смогла применить ограничение, поэтому там эти сети никому не доступны, пока не сможет: {detail}",
   "{node} hasn't confirmed the restriction yet — it does on its next sync.": "{node} ещё не подтвердила ограничение — подтвердит при следующей синхронизации.",
   "On {node}, {peers} belonging to {users} can reach this.": "На {node} это доступно: {peers} у {users}.",

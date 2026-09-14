@@ -128,6 +128,22 @@ check("a refusal outranks pending", e(s_ref)["networks"][0]["state"] == "refused
 check("a node with no net_deps at all: can_share None (it can't guard networks; the reason line says so)",
       e(dict(s_old, net_deps=None))["can_share"] is None)
 
+print("\n[7] a peer with a turn-server AND a WireGuard deployment on one node carries through the WireGuard one")
+KL = {"node": "n1", "iface": "wdtt1", "type": "wdtt"}
+RM = dict(R, peers=dict(R["peers"], gwA=dict(R["peers"]["gwA"], targets=[KL, T("10.8.0.10")])))
+plan = P.node_networks(RM, "n1", SNAPS["n1"])
+check("node_networks carries it, on the keyed interface — not inert self_contained behind the keyless one listed first",
+      (plan["carry"].get("gwA") or {}).get("iface") == "awg0" and "gwA" not in plan["inert"], plan)
+em = next(x for x in P.network_report(RM, "gwA", SNAPS)["targets"] if x["node"] == "n1")
+check("…and the report's entry for that node is the keyed deployment, with its gateway row",
+      em["iface"] == "awg0" and em["networks"][0]["state"] == "active" and "gateway" in em, em)
+RK = dict(R, peers=dict(R["peers"], gwA=dict(R["peers"]["gwA"], targets=[KL])))
+ek = P.network_report(RK, "gwA", SNAPS)["targets"][0]
+check("a node where the only deployment is keyless: still inert, self_contained", ek["networks"][0]["state"] == "inert"
+      and ek["networks"][0].get("why") == "self_contained", ek)
+check("node order is the order the peer lists its nodes in",
+      [x["node"] for x in P.network_report(R, "gwA", SNAPS)["targets"]] == ["n1", "n2"])
+
 print("\n[4] §4.10 — on demand only")
 src = open(PANEL).read()
 # ⚠️ BY HANDLER, NOT BY `def`. The node records are built inside the `/api/fleet` branch of one very large `api()`,

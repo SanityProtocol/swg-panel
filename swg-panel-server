@@ -4909,7 +4909,11 @@ def node_networks(roster, nid, snap):
         u = users.get(p.get("user_id")) or {}
         if p.get("disabled") or u.get("disabled") or is_expired(p, nowv) or is_expired(u, nowv):
             continue
-        tg = next((t for t in (p.get("targets") or []) if t.get("node") == nid and t.get("iface")), None)
+        # ⚠️ A KEYED deployment first. A peer can hold a turn-server deployment AND a WireGuard one on the same node; taking the
+        # first listed made a network "self_contained" (never carried) whenever the keyless one came first — seen on swgt, a
+        # tester's network on wdtt1 + wg8 carried nowhere. Only a node where every deployment is keyless is judged on one.
+        _ts = [t for t in (p.get("targets") or []) if t.get("node") == nid and t.get("iface")]
+        tg = next((t for t in _ts if not _is_self_contained_target(t)), None) or (_ts[0] if _ts else None)
         if tg is not None:
             provs.append((int(p.get("created_at") or 0), str(p.get("id") or key), p, tg))
     carry, inert, held = {}, {}, []
@@ -5225,12 +5229,13 @@ def network_report(roster, pid, snaps):
     users = roster.get("users") or {}
     nowv = int(time.time())
     grants = share_grants(p, users, nowv)          # P5: None = open to everyone on the node, as before
-    out, done = [], set()
-    for t in p.get("targets") or []:
-        nid, ifn = t.get("node"), t.get("iface")
-        if not nid or nid in done:
-            continue
-        done.add(nid)
+    out, _tg = [], {}
+    for t in p.get("targets") or []:                # one entry per node, on the deployment node_networks carries through:
+        nid = t.get("node")                          # a keyed one when the node has any (first-seen node order kept)
+        if nid and (nid not in _tg or (_is_self_contained_target(_tg[nid]) and not _is_self_contained_target(t))):
+            _tg[nid] = t
+    for nid, t in _tg.items():
+        ifn = t.get("iface")
         snap = (snaps or {}).get(nid) or {}
         plan = node_networks(roster, nid, snap)
         mine = (plan["carry"].get(pid) or {}).get("nets") or []

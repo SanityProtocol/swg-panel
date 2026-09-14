@@ -41,13 +41,15 @@ const html = htm.bind(h);
 // `live` (the Live monitor): status is the animated connDot (not the pill badge), an Endpoint column is added
 // (turn peers show "Local turn-proxy"), the row actions + assign-to-user dropdown are dropped (read-only).
 // `sort`/`dir`/`onSort` make every column header a clickable order-by.
-// NETWORKS P3 (feature 7) — this peer fronts networks: a tag on its row, lit while the deployment shown is online.
-// Built from the peer record and the row's own online flag, so it costs the grid nothing it did not already have.
+// NETWORKS P3 (feature 7) — this peer fronts networks: an icon + count chip beside its interface tag, lit while the deployment
+// shown is online; the networks themselves are on hover. Built from the peer record and the row's own online flag, so it
+// costs the grid nothing it did not already have. ⚠️ It used to follow the TITLE with the word "network(s)", and a long
+// title ran it into the next column (Peers, Online) — the interface tag's cell is sized for chips.
 const gwTag = (p, t) => {
   const nets = (p.routes || []).join(", ");
-  return html`<span class=${"tg tg-gw" + (t.online ? "" : " muted")}
+  return html`<span class=${"tg tg-gw" + (t.online ? "" : " muted")} aria-label=${plural(p.routes.length, "network")}
     title=${t.online ? T("Gateway to {nets} — connected", { nets }) : T("Gateway to {nets} — offline, so nothing reaches them", { nets })}>
-    <${Ic} i="network"/>${plural(p.routes.length, "network")}</span>`;
+    <${Ic} i="network"/>${p.routes.length}</span>`;
 };
 
 export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live, grouped, sort, dir, onSort }) {
@@ -69,9 +71,10 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
         const re = rowError("peer:" + p.id);   // pinned action failure → shown on the status hover bubble, not inline
+        const gw = (p.routes || []).length ? gwTag(p, t) : null;   // beside the interface tag, wherever this layout puts it
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} data-peer=${p.id} class=${"clk" + (fresh ? " pcreate" : "")} title=${T("Double-click for QR / configs")} onMouseDown=${rowNoSelect} onClick=${e => rowSingle(e, () => openPeerView(p.id, t.node, t.iface))} onDblClick=${e => rowDouble(e, () => openPeerConfigs(p))}>
           <td data-label=${T("col|Status")} class="c-status">${(() => {
-            const ifaceB = loc ? gridIfaceTag(t) : null;
+            const ifaceB = loc ? html`${gridIfaceTag(t)}${gw}` : null;
             if (!live) return html`${gridStatusBadge(t, p, re)}${ifaceB}`;
             const dot = html`<span class=${"condot " + (t.status === "faulty" ? "faulty" : t.status === "blocked" ? "blocked" : t.online ? "on" : "off")}></span>`;
             if (re) {
@@ -92,7 +95,12 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             return html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? "online" : "offline"}></span>${ifaceB}`;
           })()}</td>
           ${(() => {
-            const titleCell = html`<td data-label=${T("col|Title")} class="c-name">${lifecycleIcon(p, t.status)}${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">${T("Untitled")}</span>`}${(p.routes || []).length ? gwTag(p, t) : null}</td>`;
+            const titleCell = html`<td data-label=${T("col|Title")} class="c-name">${lifecycleIcon(p, t.status)}${(() => {
+              const nm = p.title ? html`<b>${p.title}</b>` : html`<span class="faint">${T("Untitled")}</span>`;
+              // No interface column in this layout, so the chip stays by the title — in one row with it, the TITLE truncating
+              // and the chip never pushed past the cell's edge.
+              return !loc && !agg && gw ? html`<span class="namewrap">${nm}${gw}</span>` : nm;
+            })()}</td>`;
             const addrCell = html`<td data-label=${T("col|Address")}><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
             const epCell = html`<td data-label=${T("col|Endpoint")}>${endpointCell(t)}</td>`;
             const nodeCell = html`<td data-label=${T("col|Node")}><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
@@ -108,7 +116,8 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             if (loc) return html`${userCell}${titleCell}${live ? epCell : null}${addrCell}${nodeCell}`;
             const srvAgg = agg ? html`<td data-label=${node === "*" ? T("col|Node") : T("col|IF")}><div class="srvcell">
               ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
-              ${ifaceIsAll(iface) ? (grouped ? gridIfacesTag(t, matchedOf(p)) : gridIfaceTag(t)) : null}
+              ${gw ? html`<span class="srvtags">${ifaceIsAll(iface) ? (grouped ? gridIfacesTag(t, matchedOf(p)) : gridIfaceTag(t)) : null}${gw}</span>`
+                : (ifaceIsAll(iface) ? (grouped ? gridIfacesTag(t, matchedOf(p)) : gridIfaceTag(t)) : null)}
             </div></td>` : null;
             return html`${userCell}${titleCell}${srvAgg}${addrCell}${live ? epCell : null}`;
           })()}

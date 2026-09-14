@@ -915,7 +915,8 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
             : isKeyless ? (rotating ? T("Rotating link…") : T("Rotate link"))
             : (rotating ? T("Rotating keys…") : T("Rotate keys"))}</button>`;
   return html`<${Sheet} title=${T("Edit peer")} width=${700} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
-    foot=${footRow({ left: html`${editable && hasKeyed ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/>QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> ${T("Targets")}</button>${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
+    foot=${footRow({ left: html`${editable && hasKeyed ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/>QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> ${T("Targets")}</button>${hasKeyed
+        ? html`<button class="btn btn-ghost" onClick=${() => openPeerNetworks(live)}><${Ic} i="network"/> ${(live.routes || []).length ? T("Networks · {n}", { n: live.routes.length }) : T("Networks")}</button>` : null}${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy || !_dirty, title: _dirty ? "" : T("No changes to save"), onAction: save, action: T("Save") })}>
     <${PeerStatusLine} peer=${peer} pos="bar"/>
     <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder=${T("e.g. iPhone, Work laptop")}/></div>
     <div class="field"><label>${T("col|User")}</label>
@@ -960,10 +961,6 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
             : T("Changing an address moves the peer on that interface."))
         : T("These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.")}</div>
     </div>
-    ${hasKeyed ? html`<div class="field"><label>${T("Networks behind this device")}</label>
-      <div class="netrow-sum"><span class=${"grow " + ((live.routes || []).length ? "mono" : "faint")}>${(live.routes || []).length
-          ? live.routes.join(", ") : T("No networks yet")}</span>
-        <button class="btn btn-ghost" onClick=${() => openPeerNetworks(live)}><${Ic} i="network"/> ${T("Networks")}</button></div></div>` : null}
     ${(hasKeyed && !loaded) ? html`<div class="loading"><span class="spin"></span>${T("loading config…")}</div>` : null}
     ${(hasKeyed && loaded && !editable) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The client's private key isn't available, so DNS / MTU / routing can't be rebuilt")}${Store.storeConfigs ? "" : T(" (enable store_configs, or edit right after creating)")}${T(". Title and address can still change.")}</span></div>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -1071,13 +1068,20 @@ function NetShare({ peer, draft, setDraft, nodes, noShare }) {
   const setUser = (id, until) => setDraft(d => ({ ...d, users: { ...d.users, [id]: until } }));
   const drop = id => setDraft(d => { const u = { ...d.users }; delete u[id]; return { ...d, users: u }; });
   const everyone = nodes.length === 1 ? T("Everyone on {node}", { node: nodes[0] }) : T("Everyone on its nodes");
-  const modes = [...(owner ? [["owner", T("Only {name}", { name: owner.name })], ["chosen", T("{name} and people you choose", { name: owner.name })]]
-    : [["chosen", T("Only people you choose")]]), ["everyone", everyone]];
-  const seg = ([m, label]) => html`<button type="button" role="radio" aria-checked=${draft.mode === m} class=${"seg" + (draft.mode === m ? " on" : "")}
-    onClick=${() => setDraft(d => ({ ...d, mode: m }))}>${label}</button>`;
+  // ONE control, the panel's pill switch (the link datapath's Forward | Relay), with the person search inline where that one
+  // has its CPU cap — shown only for the mode it belongs to. The owner is in every restricted mode, so "People you choose"
+  // needs no name in it; the list under it starts with the owner.
+  const modes = [...(owner ? [["owner", T("Only {name}", { name: owner.name })]] : []), ["chosen", T("People you choose")], ["everyone", everyone]];
+  const label = T("Who can reach these networks");
   return html`<div class="netshare">
-    <div class="netprobe-h">${T("Who can reach these networks")}</div>
-    <div class="segrow" role="radiogroup" aria-label=${T("Who can reach these networks")}>${modes.map(seg)}</div>
+    <label class="netshare-l">${label}</label>
+    <div class="netshare-row">
+      <div class="dpsw netsw-share" role="radiogroup" aria-label=${label}>${modes.map(([m, l]) => html`<button type="button" role="radio"
+        aria-checked=${draft.mode === m} class=${draft.mode === m ? "on" : ""} onClick=${() => setDraft(d => ({ ...d, mode: m }))}>${l}</button>`)}</div>
+      ${draft.mode === "chosen" ? html`<div class="netshare-add"><${UserPicker} value=${null} placeholder=${T("Add a person…")}
+        exclude=${[peer.user_id, ...ids].filter(Boolean)}
+        onChange=${id => { if (id && id !== peer.user_id && !(id in draft.users)) setUser(id, 0); }}/></div>` : null}
+    </div>
     ${/* NETWORKS P5 S8: a node that can't enforce a restriction carries a restricted network for NOBODY. Said at the choice,
           before the save — further down it was one reason line among many, and "Only Alice" read as simply broken. */""}
     ${draft.mode !== "everyone" && noShare.length ? html`<div class="notice warn"><${Ic} i="warn"/><span>${owner
@@ -1085,19 +1089,19 @@ function NetShare({ peer, draft, setDraft, nodes, noShare }) {
         : T("{nodes} runs an older version that can't limit who reaches a network, so with this choice nobody reaches them there. Update {nodes}, or choose “{everyone}”.", { nodes: noShare.join(", "), everyone })}</span></div>` : null}
     ${draft.mode === "owner" && owner ? html`<div class="hint">${T("Only {name}'s own devices on the same node reach them.", { name: owner.name })}</div>` : null}
     ${draft.mode === "everyone" ? html`<div class="hint">${T("Every device on the same node reaches them — the report below says how many.")}</div>` : null}
-    ${draft.mode === "chosen" ? html`
-      <div class="netwiden"><span class="grow">${owner ? owner.name : T("No owner")}</span>
-        <span class="faint">${owner ? T("owns this device — always") : T("This device has no owner, so only the people below reach its networks.")}</span></div>
-      ${ids.map(id => html`<div class="netwiden" key=${id}><span class="grow">${shareUser(id)}</span>
-        <input type="date" value=${expiryInputVal(draft.users[id])} data-enter="self" data-noautofocus
-          aria-label=${T("Last day {name} can reach them — leave empty for no end", { name: shareUser(id) })}
-          onInput=${e => setUser(id, expiryFromInput(e.target.value))}/>
-        <button type="button" class="btn btn-ghost btn-mini" title=${T("Stop sharing with {name}", { name: shareUser(id) })}
-          aria-label=${T("Stop sharing with {name}", { name: shareUser(id) })} onClick=${() => drop(id)}><${Ic} i="x"/></button></div>`)}
-      <div class="netrow"><${UserPicker} value=${null} placeholder=${T("Share with someone…")}
-        onChange=${id => { if (id && id !== peer.user_id && !(id in draft.users)) setUser(id, 0); }}/></div>
-      ${!owner && !ids.length ? html`<div class="formmsg err">${T("Choose at least one person, or pick “{everyone}”.", { everyone })}</div>` : null}
-      <div class="hint">${T("A date is the last day they can reach these networks; leave it empty for no end. Their devices on the same node count — a turn-server device only when its server can prove who is sending.")}</div>` : null}
+    ${draft.mode === "chosen" ? html`<div class="netgrants">
+        ${owner ? html`<div class="netgrant"><span class="nm">${owner.name}</span><span class="faint">${T("always, as the owner")}</span></div>` : null}
+        ${ids.map(id => html`<div class="netgrant" key=${id}><span class="nm">${shareUser(id)}</span>
+          <span class="netgrant-until"><span class="faint">${T("until")}</span><input type="date" class="datein" value=${expiryInputVal(draft.users[id])}
+            data-enter="self" data-noautofocus aria-label=${T("Last day {name} can reach them — leave empty for no end", { name: shareUser(id) })}
+            onInput=${e => setUser(id, expiryFromInput(e.target.value))}/></span>
+          <button type="button" class="btn btn-ghost btn-mini" title=${T("Stop sharing with {name}", { name: shareUser(id) })}
+            aria-label=${T("Stop sharing with {name}", { name: shareUser(id) })} onClick=${() => drop(id)}><${Ic} i="x"/></button></div>`)}
+        ${!ids.length ? html`<div class=${"netgrant empty" + (owner ? "" : " err")}>${owner
+          ? T("Nobody else yet — add people with the search.")
+          : T("Nobody yet — add people with the search, or pick “{everyone}”.", { everyone })}</div>` : null}
+      </div>
+      ${ids.length ? html`<div class="hint">${T("A date is the last day they can reach these networks; leave it empty for no end.")}</div>` : null}` : null}
   </div>`;
 }
 
@@ -1395,8 +1399,8 @@ function NetSetup({ sub }) {
     ["linux", T("Linux computer")], ["route", T("Route on the router")]];
   return html`<div class="netsetup">
     <div class="hint">${T("The node sends traffic to this device; the device has to pass it on to its network and send the answers back. Where does the tunnel run?")}</div>
-    <div class="segrow" role="radiogroup" aria-label=${T("Where the tunnel runs")}>${kinds.map(([k, label]) => html`<button type="button" role="radio"
-      aria-checked=${kind === k} class=${"seg" + (kind === k ? " on" : "")} onClick=${() => setKind(k)}>${label}</button>`)}</div>
+    <div class="dpsw netsw" role="radiogroup" aria-label=${T("Where the tunnel runs")}>${kinds.map(([k, label]) => html`<button type="button" role="radio"
+      aria-checked=${kind === k} class=${kind === k ? "on" : ""} onClick=${() => setKind(k)}>${label}</button>`)}</div>
     ${kind === "openwrt" ? html`
       <div class="hint">${T("On the OpenWrt router itself (22.03 or newer). Put the peer section that “uci show network | grep wireguard_” prints in place of <peer-section>, and the tunnel's interface name in place of <wg-interface>. Nothing needs translating — the router is already its network's gateway.")}</div>
       ${box(S.openwrt)}
@@ -1460,7 +1464,10 @@ function NetNode({ t, open, toggle, kaOff, pid, testable, stored = [] }) {
       ? html`<div class="netwhy">${T("{node} hasn't routed it yet — it does on its next sync, usually within a minute.", { node })}</div>` : null}
     ${/* One line per REASON, not per network: two networks refused for the same node-wide reason ("can't restrict") printed
           the identical sentence twice, under a warning that had already said it. */""}
-    ${[...new Set(t.networks.filter(n => n.state !== "active" && n.state !== "pending").map(n => netWhy(n, node)))].map(s => html`<div class="netwhy">${s}</div>`)}
+    ${/* `share_unsupported` is left to the warning at "Who can reach these networks", which names the node and the way out;
+          repeated here it was the same news twice in one window. */""}
+    ${[...new Set(t.networks.filter(n => n.state !== "active" && n.state !== "pending" && n.why !== "share_unsupported")
+        .map(n => netWhy(n, node)))].map(s => html`<div class="netwhy">${s}</div>`)}
     ${/* NETWORKS §17 F1: the device is blocked or expired, so its networks go nowhere — and the people who used them are
           not told by anything on their side. Said here, where the block is visible, with the list one click away. */""}
     ${t.lost ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Blocked, so {peers} of {users} lose these networks until it is unblocked — their devices keep sending that traffic into the tunnel, where nothing answers.",
