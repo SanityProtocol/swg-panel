@@ -747,7 +747,12 @@ export function UserEditCard({ user, done }) {
     });
   };
   const del = () => openConfirm({ title: T("Delete user · {name}", { name: user.name }), confirmLabel: T("Delete user"), danger: true, back: done,
-    body: T("Their peers are revoked and become unassigned.") + " " + T("This can't be undone."),
+    body: T("Their peers are revoked and become unassigned.") + " " + T("This can't be undone.") + (() => {
+      // A gateway among them takes its networks down for everyone who used them (docs/NETWORKS-PLAN.md §18).
+      const gws = Store.peersOfUser(user.id).filter(p => (p.routes || []).length);
+      return gws.length ? " " + T("Their devices that carry networks ({devices}) take them down too — everyone who reaches them through those devices loses access.",
+        { devices: gws.map(p => p.title || T("Untitled")).join(", ") }) : "";
+    })(),
     // Delete closes the editor it was opened from — see confirmDeletePeer for why `back` is not enough.
     // Two frames, not the whole stack: the confirm and this editor. Identical when the editor is the only
     // thing open (the usual case), and correct rather than lucky when something opened it.

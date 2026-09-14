@@ -28,7 +28,6 @@ export const STR = {
   // «на {node}» throughout. {peers}/{users} arrive already counted; the users slot reads after «у», so the
   // code passes the genitive noun (gen|user).
   "Networks behind this device": "Сети за этим устройством",
-  "Save networks": "Сохранить сети",
   // NETWORKS P5 — who can reach a network behind a device
   "A date is the last day they can reach these networks; leave it empty for no end. Their devices on the same node count — a turn-server device only when its server can prove who is sending.": "Дата — последний день, когда эти сети доступны; оставьте пустой, чтобы без срока. Считаются их устройства на той же ноде — устройство за turn-сервером только если его сервер может подтвердить отправителя.",
   "{name}: {devices} on a turn server whose build can't prove who is sending — they can't reach it.": "{name}: {devices} за turn-сервером, сборка которого не подтверждает отправителя, — доступа нет.",
@@ -47,7 +46,46 @@ export const STR = {
   "Networks · {name}": "Сети · {name}",
   "No networks yet": "Сетей пока нет",
   "Networks behind this device: {list}": "Сети за этим устройством: {list}",
-  "Add networks behind this device": "Добавить сети за этим устройством",
+  "Blocked, so nothing reaches {list} through it": "Заблокировано, поэтому через него {list} недоступны",
+  "Offline, so nothing reaches {list} until it reconnects": "Не в сети, поэтому {list} недоступны, пока оно не подключится",
+  // NETWORKS §18 — the gaps a use-case walk found: what cuts a gateway off, old nodes, the device's own routing, home ranges
+  "This device": "Это устройство",
+  "{device} carries {nets} — everyone who reaches them through it loses access.": "{device} проводит {nets} — все, кто попадает туда через него, потеряют доступ.",
+  "{device} carries {nets} — everyone who reaches them through it loses access until it's unblocked.": "{device} проводит {nets} — все, кто попадает туда через него, потеряют доступ до разблокировки.",
+  "Their devices that carry networks ({devices}) take them down too — everyone who reaches them through those devices loses access.":
+    "Через устройства этого пользователя проходят сети ({devices}) — все, кто попадает в них через эти устройства, потеряют доступ.",
+  "Their devices that carry networks ({devices}) take them down too — everyone who reaches them through those devices loses access until the user is unblocked.":
+    "Через устройства этого пользователя проходят сети ({devices}) — все, кто попадает в них через эти устройства, потеряют доступ до разблокировки пользователя.",
+  "{device} stops carrying {nets} on {where} — everyone who reaches them there loses access.": "{device} перестанет проводить {nets} на {where} — все, кто попадал туда там, потеряют доступ.",
+  "{device} carries {nets}. On a node you add, they're carried there too — for the same people as now.": "{device} проводит {nets}. На добавленной ноде они тоже будут проводиться — для тех же людей, что и сейчас.",
+  // budget-ok: notice, wraps
+  "{device} carries {nets}. On a node you add, they're carried there too, and every device on that node can reach them. Open Networks to limit who.":
+    "{device} проводит {nets}. На добавленной ноде они тоже будут проводиться, и туда сможет попасть любое устройство на этой ноде. Ограничить доступ можно в окне «Сети».",
+  // budget-ok: notice, wraps
+  "{nodes} runs an older version that can't limit who reaches a network, so with this choice nobody reaches them there — {name} included. Update {nodes}, or choose “{everyone}”.":
+    "{nodes} работает на старой версии, которая не умеет ограничивать доступ к сети, поэтому с таким выбором туда никто не попадёт — и {name} тоже. Обновите {nodes} или выберите «{everyone}».",
+  // budget-ok: notice, wraps
+  "{nodes} runs an older version that can't limit who reaches a network, so with this choice nobody reaches them there. Update {nodes}, or choose “{everyone}”.":
+    "{nodes} работает на старой версии, которая не умеет ограничивать доступ к сети, поэтому с таким выбором туда никто не попадёт. Обновите {nodes} или выберите «{everyone}».",
+  "Choose at least one person, or pick “{everyone}”.": "Выберите хотя бы одного человека или «{everyone}».",
+  "Saving with no networks removes them — you'll be asked first.": "Если сохранить пустое поле, сети будут удалены — сначала появится подтверждение.",
+  "Someone changed these networks while this window was open. Cancel and open it again to see the latest.":
+    "Пока окно было открыто, кто-то изменил эти сети. Нажмите «Отмена» и откройте окно снова, чтобы увидеть актуальное.",
+  // budget-ok: notice, wraps
+  "Many home routers use {list}. Anyone whose home network uses the same addresses can't reach it from home — their own network wins — though it still works on mobile data. If you can, renumber this network to something rarer, like 10.57.20.0/24.":
+    "Диапазон {list} используют многие домашние роутеры. У кого дома сеть с такими же адресами, тот не попадёт в неё из дома — побеждает домашняя сеть, — хотя через мобильный интернет всё работает. Если можете, перенумеруйте эту сеть во что-то более редкое, например 10.57.20.0/24.",
+  "Checking these networks…": "Проверяем эти сети…",
+  // budget-ok: notice, wraps
+  "This device's config for {node} sends all its traffic into the tunnel. If it's a router, every device behind it browses the internet through {node} too. To carry only these networks, set its routing to {subnet} and re-import its config.":
+    "Конфиг этого устройства для {node} отправляет в туннель весь трафик. Если это роутер, то и все устройства за ним будут выходить в интернет через {node}. Чтобы проводить только эти сети, укажите в его маршрутах {subnet} и заново импортируйте конфиг.",
+  // budget-ok: notice, wraps
+  "This device's config for {node} doesn't route {subnet}, so its answers to clients leave through its own internet connection and never arrive. Add {subnet} to its routing and re-import its config.":
+    "Конфиг этого устройства для {node} не маршрутизирует {subnet}, поэтому его ответы клиентам уходят через его собственный интернет и не доходят. Добавьте {subnet} в его маршруты и заново импортируйте конфиг.",
+  "waiting for {node}": "ждёт {node}",
+  "carried once saved": "будет проводиться после сохранения",
+  "{node} hasn't routed it yet — it does on its next sync, usually within a minute.": "{node} ещё не проложила маршрут — сделает это при следующей синхронизации, обычно в течение минуты.",
+  "A widened device reaches these networks only after its user re-imports the config or refreshes their subscription.":
+    "Устройство с расширенными маршрутами попадёт в эти сети только после того, как пользователь заново импортирует конфиг или обновит подписку.",
   "Networks this device routes for, like the office LAN behind a router. Clients on the same node reach them through it.":
     "Сети, для которых это устройство служит шлюзом, например офисная сеть за роутером. Клиенты на той же ноде попадают туда через него.",
   "Only {name}": "Только {name}",
@@ -62,16 +100,12 @@ export const STR = {
     "{device} перестанет маршрутизировать {nets}. Все, кто попадал туда через него, потеряют доступ.",
   "Who can reach these networks": "Кому доступны эти сети",
   "Only people you choose": "Только выбранным людям",
-  "Everyone on its node": "Всем на ноде",
   "No owner": "Нет владельца",
   "owns this device — always": "владелец устройства — всегда",
   "This device has no owner, so only the people below reach its networks.": "У этого устройства нет владельца, поэтому его сети доступны только людям ниже.",
   "Last day {name} can reach them — leave empty for no end": "Последний день доступа для {name} — оставьте пустым, чтобы без срока",
   "Stop sharing with {name}": "Закрыть доступ для {name}",
   "Share with someone…": "Открыть доступ кому-то…",
-  "Save access": "Сохранить доступ",
-  "Access saved.": "Доступ сохранён.",
-  "Open to everyone on the node again.": "Снова доступно всем на ноде.",
   "{node} couldn't apply the restriction, so nobody reaches these networks there until it can: {detail}": "{node} не смогла применить ограничение, поэтому там эти сети никому не доступны, пока не сможет: {detail}",
   "{node} hasn't confirmed the restriction yet — it does on its next sync.": "{node} ещё не подтвердила ограничение — подтвердит при следующей синхронизации.",
   "On {node}, {peers} belonging to {users} can reach this.": "На {node} это доступно: {peers} у {users}.",
@@ -87,8 +121,6 @@ export const STR = {
   "It's sent by {node} itself, so it answers the same whoever this is shared with.": "Проверку отправляет сама {node}, поэтому ответ не зависит от того, кому открыт доступ.",
   "shared until {date}": "доступ до {date}",
   "shared with this user": "доступ открыт этому пользователю",
-  // budget-ok: field hint, wraps
-  "Networks this device routes for, like the office LAN behind a router. Clients on the same node reach them through it. Saved on its own — the sheet's Save leaves it alone.": "Сети, для которых это устройство — шлюз, например офисная LAN за роутером. Клиенты той же ноды попадают в них через него. Сохраняется отдельно — кнопка «Сохранить» внизу это поле не трогает.",
   "Couldn't check these networks.": "Не удалось проверить эти сети.",
   "Networks saved.": "Сети сохранены.",
   "Networks removed.": "Сети удалены.",
@@ -103,10 +135,44 @@ export const STR = {
   "Narrowed routing, can't reach it: {peers}": "Сужена маршрутизация, доступа нет: {peers}",
   "Edit routing": "Изменить маршруты",
   "Set up the device's side": "Настройка на стороне устройства",
+  // The far side, per kind of device (NETWORKS §18). Keenetic's own Russian UI labels are quoted as the router shows them.
+  "OpenWrt router": "Роутер OpenWrt",
+  "Linux computer": "Компьютер с Linux",
+  "Route on the router": "Маршрут на роутере",
+  "Where the tunnel runs": "Где работает туннель",
+  "The node sends traffic to this device; the device has to pass it on to its network and send the answers back. Where does the tunnel run?":
+    "Нода отправляет трафик на это устройство, а оно должно передать его в свою сеть и вернуть ответы. Где работает туннель?",
   // budget-ok: disclosure body, wraps
-  "The node sends traffic to this device; the device has to pass it on and answer. On a Linux or OpenWrt device, run this with its LAN interface in place of <lan-device>:": "Нода отправляет трафик на это устройство, а оно должно передать его дальше и ответить. На Linux или OpenWrt выполните это, подставив LAN-интерфейс вместо <lan-device>:",
-  "On any other router, add this static route on the network's own router instead:": "На любом другом роутере вместо этого добавьте статический маршрут на роутере самой сети:",
-  "A Windows or Mac device can't be set up from here — it has to be told to forward and translate traffic by hand.": "Устройство на Windows или Mac отсюда не настроить — пересылку и трансляцию трафика там включают вручную.",
+  "On the OpenWrt router itself (22.03 or newer). Put the peer section that “uci show network | grep wireguard_” prints in place of <peer-section>, and the tunnel's interface name in place of <wg-interface>. Nothing needs translating — the router is already its network's gateway.":
+    "На самом роутере OpenWrt (22.03 или новее). Вместо <peer-section> подставьте секцию пира, которую выводит «uci show network | grep wireguard_», а вместо <wg-interface> — имя интерфейса туннеля. Трансляция адресов не нужна — роутер и так шлюз своей сети.",
+  "Saved to the router's memory, so it survives a reboot. Don't put the tunnel in the wan zone — that blocks it.":
+    "Настройки сохраняются в память роутера и переживают перезагрузку. Не добавляйте туннель в зону wan — это его заблокирует.",
+  // budget-ok: disclosure body, wraps
+  "On the MikroTik itself (RouterOS 7), with its WireGuard interface in place of <wg-interface>. Nothing needs translating, the default firewall already lets the tunnel reach the network, and RouterOS saves changes as you make them.":
+    "На самом MikroTik (RouterOS 7), подставив его интерфейс WireGuard вместо <wg-interface>. Трансляция адресов не нужна, стандартный файрвол уже пропускает туннель в сеть, а RouterOS сохраняет изменения сразу.",
+  "Don't add the tunnel to the WAN interface list — that blocks it.": "Не добавляйте туннель в список интерфейсов WAN — это его заблокирует.",
+  "In the Keenetic web interface — no commands, nothing to translate:": "В веб-интерфейсе Keenetic — без команд и без трансляции адресов:",
+  "Open the WireGuard connection. Set the peer's Allowed IPs to {subnet} and turn off “Use for accessing the Internet”. Save.":
+    "Откройте подключение WireGuard. У пира укажите в «Разрешенные подсети» {subnet} и выключите «Использовать для выхода в Интернет». Сохраните.",
+  "Routing → Add route: “Route to network”, destination {subnet}, interface: this WireGuard connection, “Add automatically” on. Save.":
+    "Маршрутизация → Добавить маршрут: «Маршрут до сети», адрес сети назначения {subnet}, интерфейс — это подключение WireGuard, «Добавлять автоматически» включено. Сохраните.",
+  "Firewall → this WireGuard connection → add a rule that allows the IP protocol. Save. A tunnel starts out blocking incoming traffic; this rule lets clients in.":
+    "Межсетевой экран → это подключение WireGuard → добавьте правило, разрешающее протокол IP. Сохраните. Изначально туннель блокирует входящий трафик; это правило пропускает клиентов.",
+  // budget-ok: disclosure body, wraps
+  "On a Linux computer on that network that runs the tunnel with wg-quick — a Raspberry Pi, a NAS, a server. Add these lines to its tunnel config, with its network card (like eth0) in place of <lan-device>:":
+    "На компьютере с Linux в этой сети, где туннель поднят через wg-quick, — Raspberry Pi, NAS, сервер. Добавьте эти строки в конфиг туннеля, подставив сетевую карту (например, eth0) вместо <lan-device>:",
+  "Then run this once, as root, with the tunnel's name in place of <wg-interface>:": "Затем один раз выполните это от root, подставив имя туннеля вместо <wg-interface>:",
+  "The rules come back every time the tunnel starts, and the tunnel starts at boot. If iptables isn't installed, the tunnel won't come up — install it first.":
+    "Правила восстанавливаются при каждом запуске туннеля, а туннель запускается при загрузке. Если iptables не установлен, туннель не поднимется — сначала установите его.",
+  // budget-ok: disclosure body, wraps
+  "If the tunnel runs on a separate Linux computer and you'd rather not translate addresses: use the Linux setup without its two MASQUERADE lines, and add this route on the network's own router:":
+    "Если туннель работает на отдельном компьютере с Linux и транслировать адреса не хочется: возьмите настройку для Linux без двух строк MASQUERADE и добавьте этот маршрут на роутере самой сети:",
+  "Some routers' firewalls drop the answers that come back this way — if connections start and then stall, use the Linux setup as it is.":
+    "Файрволы некоторых роутеров отбрасывают ответы, идущие таким путём: если соединения начинаются и зависают, используйте настройку для Linux как есть.",
+  // budget-ok: disclosure body, wraps
+  "Some devices on the network answer only their own network — Windows file sharing and ping, for example — and ignore {subnet}. If one doesn't answer, allow {subnet} in its firewall.":
+    "Некоторые устройства в сети отвечают только своей сети — например, общий доступ к файлам Windows и ping — и не отвечают {subnet}. Если какое-то не отвечает, разрешите {subnet} в его файрволе.",
+  "A Windows or Mac computer can't act as the gateway from here — use a router or a Linux computer.": "Компьютер с Windows или Mac отсюда шлюзом не сделать — используйте роутер или компьютер с Linux.",
   "an unnamed peer": "пир без имени",
   "another peer": "другой пир",
   "{p} isn't a network address.": "{p} — не адрес сети.",

@@ -497,6 +497,12 @@ export function AddTargetSheet({ peer, back, child }) {
   const needsIp = c => !isSelfContainedKind(kindFor(c));
   const badIp = added.concat(ipChanged).filter(needsIp).some(c => !c.ip || !V.ipv4(String(c.ip).split("/")[0]));
   const nochange = !added.length && !removed.length && !ipChanged.length;
+  // A device that carries networks carries them on EVERY node it is deployed to — so a node added here opens them to that
+  // node too, and a node removed takes them away from everyone there. Neither was said.
+  const nets = peer.routes || [];
+  const netDev = peer.title || ((peer.user_id && Store.user(peer.user_id)) || {}).name || T("This device");
+  const netsAdded = nets.length > 0 && added.some(needsIp);
+  const netsGone = nets.length ? removed.filter(t => !isSelfContainedKind(targetType(t))) : [];
 
   const doSave = async () => {
     setBusy(true); setMsg({ k: "work", t: T("applying…") });
@@ -546,7 +552,8 @@ export function AddTargetSheet({ peer, back, child }) {
     if (badIp) return setMsg({ k: "err", t: T("A target has an invalid address.") });
     if (chosen.length === 0) {                       // a peer must live on at least one interface — none left = delete it
       pushModal(html`<${ConfirmSheet} title=${T("Delete this peer?")} confirmLabel=${T("Yes, delete")} danger=${true}
-        body=${T("You've unchecked every interface, so there's nothing left to deploy this peer to — saving will completely delete it. Its access is revoked everywhere and its config / QR stops working. This action is irreversible. Are you sure you want to continue?")}
+        body=${T("You've unchecked every interface, so there's nothing left to deploy this peer to — saving will completely delete it. Its access is revoked everywhere and its config / QR stops working. This action is irreversible. Are you sure you want to continue?")
+          + (nets.length ? " " + T("{device} carries {nets} — everyone who reaches them through it loses access.", { device: netDev, nets: nets.join(", ") }) : "")}
         onConfirm=${async () => {
           if (peer.user_id != null) { const u = await api.peerUnassign({ peer_id: peer.id }); if (!u.ok) return setMsg({ k: "err", t: T("Delete failed: {v1}", { v1: srvText(u) || u.code || "" }) }); }
           const r = await api.peerDelete({ peer_id: peer.id });
@@ -562,6 +569,8 @@ export function AddTargetSheet({ peer, back, child }) {
       parts.push(removed.length > 1
         ? T("Remove the peer from {v1} — those tunnels drop immediately and the client can no longer connect through them.", { v1: where })
         : T("Remove the peer from {v1} — that tunnel drops immediately and the client can no longer connect through it.", { v1: where }));
+      if (netsGone.length) parts.push(T("{device} stops carrying {nets} on {where} — everyone who reaches them there loses access.",
+        { device: netDev, nets: nets.join(", "), where: [...new Set(netsGone.map(t => Store.nodeName(t.node)))].join(", ") }));
     }
       if (ipChanged.length) {
       const where = ipChanged.map(c => Store.nodeName(c.node) + "/" + c.iface).join(", ");
@@ -587,6 +596,9 @@ export function AddTargetSheet({ peer, back, child }) {
             : T("store_configs is off, so the client's private key isn't kept — new targets get the same key + PSK, but a fresh QR can't be shown.")}</span></div>` : null}
         <div class="field"><label>${T("Targets")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— check to deploy, uncheck to remove")}</span></label>
           <${TargetPicker} initial=${initial} pubPeer=${peer} onChange=${setChosen}/></div>
+        ${netsAdded ? html`<div class="notice warn"><${Ic} i="network"/><span>${peer.share
+            ? T("{device} carries {nets}. On a node you add, they're carried there too — for the same people as now.", { device: netDev, nets: nets.join(", ") })
+            : T("{device} carries {nets}. On a node you add, they're carried there too, and every device on that node can reach them. Open Networks to limit who.", { device: netDev, nets: nets.join(", ") })}</span></div>` : null}
         ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
       </>`}
   <//>`;
@@ -626,7 +638,7 @@ export function PeerViewSheet({ pid, node, iface }) {
     <div class="pv-head">
       <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href="#/users" onClick=${e => { e.preventDefault(); closeModal(); revealUser(u.id); }}>${u.name}</a>`
           : html`<${UserCombo} onPick=${uid => assignPeer(p, uid)} placeholder=${T("Assign to a user…")}/>`}</div></div>
-      ${p.targets.some(t => !isSelfContainedKind(targetType(t))) ? html`<${NetworksBadge} peer=${p}/>` : null}
+      ${(p.routes || []).length && p.targets.some(t => !isSelfContainedKind(targetType(t))) ? html`<${NetworksBadge} peer=${p}/>` : null}
       ${badgeWithReason(p.unassigned ? "unassigned" : p.status, p.reason)}</div>
     <div class="lbl" style="margin:16px 2px 4px">${T("Deployments · {n}", { n: p.targets.length })}</div>
     <div class="pv-deps">${depsOrdered.map(t => {
@@ -965,6 +977,19 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
 // the far side's setup, which nothing the panel does can make exist. The draft is judged by the server as it
 // is typed and nothing is written until "Save networks", so all of that is on screen BEFORE the save.
 const netList = s => String(s || "").split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+// The ranges home routers hand out by default (TP-Link/D-Link/Asus, Netgear, Huawei, Xiaomi, MikroTik, ISP boxes). A network
+// overlapping one is unreachable from any home that uses it — the home LAN's own route wins on the user's device.
+const HOME_RANGES = ["192.168.0.0/24", "192.168.1.0/24", "192.168.2.0/24", "192.168.8.0/24", "192.168.31.0/24",
+  "192.168.88.0/24", "192.168.100.0/24", "10.0.0.0/24"];
+const v4Range = s => {                                        // "a.b.c.d[/n]" → [first, last] as integers, or null
+  const m = /^(\d{1,3}(?:\.\d{1,3}){3})(?:\/(\d{1,2}))?$/.exec(String(s).trim());
+  if (!m || !V.ipv4(m[1]) || (m[2] !== undefined && +m[2] > 32)) return null;
+  const size = 2 ** (32 - (m[2] === undefined ? 32 : +m[2])), a = m[1].split(".").reduce((n, o) => n * 256 + +o, 0);
+  const lo = Math.floor(a / size) * size;
+  return [lo, lo + size - 1];
+};
+const homeClash = list => list.filter(p => { const r = v4Range(p);
+  return r && HOME_RANGES.some(h => { const q = v4Range(h); return r[0] <= q[1] && q[0] <= r[1]; }); });
 const netPeerName = id => {
   const q = Store.peer(id);
   return q ? ([q.name, q.title].filter(Boolean).join(" / ") || T("an unnamed peer")) : T("another peer");
@@ -1038,9 +1063,11 @@ function shareKeyless(why, name, devices) {
   }
 }
 
-function NetShare({ peer, draft, setDraft, nodes }) {
+function NetShare({ peer, draft, setDraft, nodes, noShare }) {
   const owner = peer.user_id ? Store.user(peer.user_id) : null;
-  const ids = Object.keys(draft.users).sort((a, b) => shareUser(a).localeCompare(shareUser(b)));
+  // The owner is in regardless and never stored as a grantee; after a reassignment the new owner can still sit in the stored
+  // list, and was shown twice — once as the owner, once as someone chosen.
+  const ids = Object.keys(draft.users).filter(id => id !== peer.user_id).sort((a, b) => shareUser(a).localeCompare(shareUser(b)));
   const setUser = (id, until) => setDraft(d => ({ ...d, users: { ...d.users, [id]: until } }));
   const drop = id => setDraft(d => { const u = { ...d.users }; delete u[id]; return { ...d, users: u }; });
   const everyone = nodes.length === 1 ? T("Everyone on {node}", { node: nodes[0] }) : T("Everyone on its nodes");
@@ -1051,6 +1078,11 @@ function NetShare({ peer, draft, setDraft, nodes }) {
   return html`<div class="netshare">
     <div class="netprobe-h">${T("Who can reach these networks")}</div>
     <div class="segrow" role="radiogroup" aria-label=${T("Who can reach these networks")}>${modes.map(seg)}</div>
+    ${/* NETWORKS P5 S8: a node that can't enforce a restriction carries a restricted network for NOBODY. Said at the choice,
+          before the save — further down it was one reason line among many, and "Only Alice" read as simply broken. */""}
+    ${draft.mode !== "everyone" && noShare.length ? html`<div class="notice warn"><${Ic} i="warn"/><span>${owner
+        ? T("{nodes} runs an older version that can't limit who reaches a network, so with this choice nobody reaches them there — {name} included. Update {nodes}, or choose “{everyone}”.", { nodes: noShare.join(", "), name: owner.name, everyone })
+        : T("{nodes} runs an older version that can't limit who reaches a network, so with this choice nobody reaches them there. Update {nodes}, or choose “{everyone}”.", { nodes: noShare.join(", "), everyone })}</span></div>` : null}
     ${draft.mode === "owner" && owner ? html`<div class="hint">${T("Only {name}'s own devices on the same node reach them.", { name: owner.name })}</div>` : null}
     ${draft.mode === "everyone" ? html`<div class="hint">${T("Every device on the same node reaches them — the report below says how many.")}</div>` : null}
     ${draft.mode === "chosen" ? html`
@@ -1064,6 +1096,7 @@ function NetShare({ peer, draft, setDraft, nodes }) {
           aria-label=${T("Stop sharing with {name}", { name: shareUser(id) })} onClick=${() => drop(id)}><${Ic} i="x"/></button></div>`)}
       <div class="netrow"><${UserPicker} value=${null} placeholder=${T("Share with someone…")}
         onChange=${id => { if (id && id !== peer.user_id && !(id in draft.users)) setUser(id, 0); }}/></div>
+      ${!owner && !ids.length ? html`<div class="formmsg err">${T("Choose at least one person, or pick “{everyone}”.", { everyone })}</div>` : null}
       <div class="hint">${T("A date is the last day they can reach these networks; leave it empty for no end. Their devices on the same node count — a turn-server device only when its server can prove who is sending.")}</div>` : null}
   </div>`;
 }
@@ -1088,12 +1121,18 @@ function NetShareSays({ t, node }) {
   </div>`;
 }
 
-// The device's networks badge on the peer view: the way in to the Networks window, and a count once there are any.
+// The device's networks badge on the peer view — the way in to the Networks window, shown only once the device HAS networks:
+// an empty "Networks" button on every phone read as something left to set up. New ones are added from Edit. Amber while
+// nothing can reach them through it — blocked, expired, or connected on no node — since a lit badge said "working".
 function NetworksBadge({ peer }) {
-  const n = (peer.routes || []).length;
-  return html`<button type="button" class=${"badge ic b-nets" + (n ? " on" : "")} onClick=${() => openPeerNetworks(peer)}
-    title=${n ? T("Networks behind this device: {list}", { list: peer.routes.join(", ") }) : T("Add networks behind this device")}>
-    <${Ic} i="network"/>${n ? T("Networks · {n}", { n }) : T("Networks")}</button>`;
+  const n = (peer.routes || []).length, list = (peer.routes || []).join(", ");
+  const blocked = !!(peer.selfDisabled || peer.userDisabled) || peer.status === "expired";
+  const down = blocked || !peer.targets.some(t => !isSelfContainedKind(targetType(t)) && t.online);
+  return html`<button type="button" class=${"badge ic b-nets " + (down ? "warn" : "on")} onClick=${() => openPeerNetworks(peer)}
+    title=${blocked ? T("Blocked, so nothing reaches {list} through it", { list })
+      : down ? T("Offline, so nothing reaches {list} until it reconnects", { list })
+      : T("Networks behind this device: {list}", { list })}>
+    <${Ic} i=${down ? "warn" : "network"}/>${T("Networks · {n}", { n })}</button>`;
 }
 
 export function openPeerNetworks(peer) { (modalDepth() > 0 ? pushModal : openModal)(html`<${NetworksSheet} pid=${peer.id}/>`); }
@@ -1112,7 +1151,7 @@ function NetworksSheet({ pid }) {
   const [rep, setRep] = useState(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState({});
-  const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null);
+  const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null), base = useRef(null);
   const toggle = k => setOpen(o => ({ ...o, [k]: !o[k] }));
   const want = netList(draft);
   const wantKey = want.join(",");
@@ -1126,16 +1165,17 @@ function NetworksSheet({ pid }) {
   const shareStoredKey = stored.length ? shareKey(shareOf(peer.share)) : "";
   const shareDirty = want.length > 0 && shareDraftKey !== shareStoredKey;
   const nodes = [...new Set((peer.targets || []).filter(t => !isSelfContainedKind(targetType(t))).map(t => Store.nodeName(t.node)))];
+  const reqKey = wantKey + "|" + shareDraftKey;                // the draft a report answers — anything else on screen is stale
   useEffect(() => {
     if (!want.length && !stored.length) { setRep(null); return; }
     let ok = true;
     const h = setTimeout(async () => {
       try {
         const r = await api.peerNetworks({ peer_id: pid, routes: want, ...(want.length ? { share: shareBody(share) } : {}) });
-        if (ok) setRep(r && r.ok ? { ...r.data, _for: wantKey } : { targets: [], refusals: [],
+        if (ok) setRep(r && r.ok ? { ...r.data, _for: wantKey, _key: reqKey } : { targets: [], refusals: [], _key: reqKey,
           error: r && r.code === "share_refused" ? shareRefused(r.why) : (srvText(r) || T("Couldn't check these networks.")) });
       } catch (e) {
-        if (ok) setRep({ targets: [], refusals: [], error: T("Couldn't check these networks.") });
+        if (ok) setRep({ targets: [], refusals: [], _key: reqKey, error: T("Couldn't check these networks.") });
       }
     }, 350);
     return () => { ok = false; clearTimeout(h); };
@@ -1145,6 +1185,15 @@ function NetworksSheet({ pid }) {
   const normKey = (rep && rep.routes && rep._for === wantKey) ? rep.routes.join(",") : wantKey;
   const dirty = normKey !== storedKey || shareDirty;
   dirtyRef.current = dirty;
+  if (base.current === null) base.current = storedKey + "|" + shareStoredKey;
+  // Someone else saved these networks while this window was open (another operator, another tab): saving now would put the
+  // old list back over theirs without a word. Caught on the poll that brings their change, before anything is written.
+  const stale = storedKey + "|" + shareStoredKey !== base.current;
+  // A device with no owner, restricted to nobody: a network no one can reach, saved as if it were a choice.
+  const nobody = want.length > 0 && !owner && share.mode === "chosen" && !Object.keys(share.users).length;
+  const noShare = ((rep && rep.targets) || []).filter(x => x.can_share === false).map(x => Store.nodeName(x.node));
+  const clash = homeClash(want);
+  const checking = (want.length > 0 || stored.length > 0) && (!rep || rep._key !== reqKey);
   const name = peer.title || (owner ? owner.name : T("Unassigned peer"));
   const save = async () => {
     setBusy(true);
@@ -1173,7 +1222,9 @@ function NetworksSheet({ pid }) {
       ${stored.length ? html`<button class="btn btn-danger" disabled=${busy} onClick=${remove}>${T("Remove networks")}</button>` : null}
       <span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
-      <button class="btn btn-primary" disabled=${busy || !dirty || !want.length || refusals.length > 0} onClick=${save}>${busy ? T("saving…") : T("Save")}</button><//>`}>
+      ${/* An emptied field saves as a removal, through the same confirm — Save used to just grey out, which read as broken. */""}
+      <button class="btn btn-primary" disabled=${busy || !dirty || stale || nobody || (!want.length && !stored.length) || refusals.length > 0}
+        onClick=${want.length ? save : remove}>${busy ? T("saving…") : T("Save")}</button><//>`}>
     <div class="field netfield">
       <label>${T("Networks behind this device")}</label>
       <input class=${"mono" + (refusals.length ? " bad" : "")} value=${draft} onInput=${e => setDraft(e.target.value)}
@@ -1182,10 +1233,16 @@ function NetworksSheet({ pid }) {
       ${/* Feature 11: peer-to-peer needs nothing built — two devices on a node already reach each other — and
             operators do not know that. Said here, where someone reaching for "connect devices" will look. */""}
       <div class="hint">${T("Devices on the same node already reach each other at their tunnel addresses — that needs nothing here.")}</div>
+      ${!want.length && stored.length ? html`<div class="hint">${T("Saving with no networks removes them — you'll be asked first.")}</div>` : null}
+      ${stale ? html`<div class="formmsg err">${T("Someone changed these networks while this window was open. Cancel and open it again to see the latest.")}</div>` : null}
       ${rep && rep.error ? html`<div class="formmsg err">${rep.error}</div>` : null}
       ${refusals.length ? html`<div class="netref">${refusals.map(r => html`<div><${Ic} i="warn"/><span>${netWhy(r, r.node ? Store.nodeName(r.node) : "")}</span></div>`)}</div>` : null}
-      ${want.length ? html`<${NetShare} peer=${peer} draft=${share} setDraft=${setShare} nodes=${nodes}/>` : null}
-      ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle}
+      ${/* The trap nobody on the panel side can see: a user whose home LAN uses the same range reaches their own printer, not
+            the office — "works on mobile data, not at home". Only the common home-router ranges; a hint, never a refusal. */""}
+      ${clash.length ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Many home routers use {list}. Anyone whose home network uses the same addresses can't reach it from home — their own network wins — though it still works on mobile data. If you can, renumber this network to something rarer, like 10.57.20.0/24.", { list: clash.join(", ") })}</span></div>` : null}
+      ${want.length ? html`<${NetShare} peer=${peer} draft=${share} setDraft=${setShare} nodes=${nodes} noShare=${noShare}/>` : null}
+      ${checking ? html`<div class="loading"><span class="spin"></span>${T("Checking these networks…")}</div>` : null}
+      ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle} stored=${stored}
           kaOff=${((rep && rep.keepalive_off) || []).includes(t.node)} pid=${pid} testable=${normKey === storedKey && !shareDirty}/>`)}
     </div>
   <//>`;
@@ -1300,12 +1357,83 @@ function NetProbe({ pid, nid, node, nets, restricted }) {
   </div>`;
 }
 
-function NetNode({ t, open, toggle, kaOff, pid, testable }) {
+// ── the far side, per kind of device (docs/NETWORKS-PLAN.md §18) ────────────────────────────────────────────────────────
+// ⚠️ The first version was one `sysctl -w` + one `iptables -A` for every device: gone at the router's first reboot, and no
+// `iptables` at all on current OpenWrt (fw4/nftables). Each recipe below is checked against its vendor's own docs and
+// survives a reboot: UCI commits to flash; RouterOS saves as you go; Keenetic saves from its web UI; wg-quick re-runs its
+// PostUp on every start and starts at boot. Where the tunnel runs ON the network's router, nothing needs translating —
+// the LAN already answers through it. Commands and config lines, never prose.
+const netSetupSnips = sub => ({
+  openwrt: ["uci -q delete network.<peer-section>.allowed_ips",   // i18n-keys: shell commands, not prose
+    "uci add_list network.<peer-section>.allowed_ips='" + sub + "'",   // i18n-keys: shell commands, not prose
+    "uci set network.<peer-section>.route_allowed_ips='1'", "uci commit network",   // i18n-keys: shell commands, not prose
+    "uci set firewall.swg=zone", "uci set firewall.swg.name='swg'",   // i18n-keys: shell commands, not prose
+    "uci set firewall.swg.input='REJECT'", "uci set firewall.swg.output='ACCEPT'", "uci set firewall.swg.forward='REJECT'",   // i18n-keys: shell commands, not prose
+    "uci add_list firewall.swg.network='<wg-interface>'",   // i18n-keys: shell commands, not prose
+    "uci set firewall.swg_lan=forwarding", "uci set firewall.swg_lan.src='swg'", "uci set firewall.swg_lan.dest='lan'",   // i18n-keys: shell commands, not prose
+    "uci commit firewall", "service network restart", "service firewall restart"].join("\n"),   // i18n-keys: shell commands, not prose
+  mikrotik: ["/interface wireguard peers set [find interface=<wg-interface>] allowed-address=" + sub,   // i18n-keys: RouterOS commands, not prose
+    "/ip route add dst-address=" + sub + " gateway=<wg-interface>"].join("\n"),   // i18n-keys: RouterOS commands, not prose
+  linuxConf: ["# under [Interface]",   // i18n-keys: config lines, not prose
+    "PostUp = iptables -t nat -A POSTROUTING -s " + sub + " -o <lan-device> -j MASQUERADE",   // i18n-keys: config lines, not prose
+    "PostUp = iptables -I FORWARD -i %i -o <lan-device> -j ACCEPT",   // i18n-keys: config lines, not prose
+    "PostUp = iptables -I FORWARD -i <lan-device> -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",   // i18n-keys: config lines, not prose
+    "PostDown = iptables -t nat -D POSTROUTING -s " + sub + " -o <lan-device> -j MASQUERADE",   // i18n-keys: config lines, not prose
+    "PostDown = iptables -D FORWARD -i %i -o <lan-device> -j ACCEPT",   // i18n-keys: config lines, not prose
+    "PostDown = iptables -D FORWARD -i <lan-device> -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",   // i18n-keys: config lines, not prose
+    "# under [Peer]", "AllowedIPs = " + sub].join("\n"),   // i18n-keys: config lines, not prose
+  linuxOnce: ["echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-swg-forward.conf",   // i18n-keys: shell commands, not prose
+    "sysctl -p /etc/sysctl.d/99-swg-forward.conf", "systemctl enable --now wg-quick@<wg-interface>"].join("\n"),   // i18n-keys: shell commands, not prose
+  route: sub + " via <device-lan-address>",   // i18n-keys: a route in router syntax, not prose
+});
+
+function NetSetup({ sub }) {
+  const [kind, setKind] = useState("openwrt");
+  const S = netSetupSnips(sub);
+  const box = s => html`<div class="netsnip"><pre class="mono nixblock">${s}</pre><button type="button" class="btn btn-ghost btn-mini" onClick=${() => copy(s)}><${Ic} i="copy"/> ${T("Copy")}</button></div>`;
+  const kinds = [["openwrt", T("OpenWrt router")], ["mikrotik", "MikroTik"], ["keenetic", "Keenetic"],   // i18n-keys: brand names
+    ["linux", T("Linux computer")], ["route", T("Route on the router")]];
+  return html`<div class="netsetup">
+    <div class="hint">${T("The node sends traffic to this device; the device has to pass it on to its network and send the answers back. Where does the tunnel run?")}</div>
+    <div class="segrow" role="radiogroup" aria-label=${T("Where the tunnel runs")}>${kinds.map(([k, label]) => html`<button type="button" role="radio"
+      aria-checked=${kind === k} class=${"seg" + (kind === k ? " on" : "")} onClick=${() => setKind(k)}>${label}</button>`)}</div>
+    ${kind === "openwrt" ? html`
+      <div class="hint">${T("On the OpenWrt router itself (22.03 or newer). Put the peer section that “uci show network | grep wireguard_” prints in place of <peer-section>, and the tunnel's interface name in place of <wg-interface>. Nothing needs translating — the router is already its network's gateway.")}</div>
+      ${box(S.openwrt)}
+      <div class="hint">${T("Saved to the router's memory, so it survives a reboot. Don't put the tunnel in the wan zone — that blocks it.")}</div>` : null}
+    ${kind === "mikrotik" ? html`
+      <div class="hint">${T("On the MikroTik itself (RouterOS 7), with its WireGuard interface in place of <wg-interface>. Nothing needs translating, the default firewall already lets the tunnel reach the network, and RouterOS saves changes as you make them.")}</div>
+      ${box(S.mikrotik)}
+      <div class="hint">${T("Don't add the tunnel to the WAN interface list — that blocks it.")}</div>` : null}
+    ${kind === "keenetic" ? html`
+      <div class="hint">${T("In the Keenetic web interface — no commands, nothing to translate:")}</div>
+      <ol class="netsteps">
+        <li>${T("Open the WireGuard connection. Set the peer's Allowed IPs to {subnet} and turn off “Use for accessing the Internet”. Save.", { subnet: sub })}</li>
+        <li>${T("Routing → Add route: “Route to network”, destination {subnet}, interface: this WireGuard connection, “Add automatically” on. Save.", { subnet: sub })}</li>
+        <li>${T("Firewall → this WireGuard connection → add a rule that allows the IP protocol. Save. A tunnel starts out blocking incoming traffic; this rule lets clients in.")}</li>
+      </ol>` : null}
+    ${kind === "linux" ? html`
+      <div class="hint">${T("On a Linux computer on that network that runs the tunnel with wg-quick — a Raspberry Pi, a NAS, a server. Add these lines to its tunnel config, with its network card (like eth0) in place of <lan-device>:")}</div>
+      ${box(S.linuxConf)}
+      <div class="hint">${T("Then run this once, as root, with the tunnel's name in place of <wg-interface>:")}</div>
+      ${box(S.linuxOnce)}
+      <div class="hint">${T("The rules come back every time the tunnel starts, and the tunnel starts at boot. If iptables isn't installed, the tunnel won't come up — install it first.")}</div>` : null}
+    ${kind === "route" ? html`
+      <div class="hint">${T("If the tunnel runs on a separate Linux computer and you'd rather not translate addresses: use the Linux setup without its two MASQUERADE lines, and add this route on the network's own router:")}</div>
+      ${box(S.route)}
+      <div class="hint">${T("Some routers' firewalls drop the answers that come back this way — if connections start and then stall, use the Linux setup as it is.")}</div>` : null}
+    ${kind !== "linux" ? html`<div class="hint">${T("Some devices on the network answer only their own network — Windows file sharing and ping, for example — and ignore {subnet}. If one doesn't answer, allow {subnet} in its firewall.", { subnet: sub })}</div>` : null}
+    <div class="hint">${T("A Windows or Mac computer can't act as the gateway from here — use a router or a Linux computer.")}</div>
+  </div>`;
+}
+
+function NetNode({ t, open, toggle, kaOff, pid, testable, stored = [] }) {
   const node = Store.nodeName(t.node);
-  const active = t.networks.filter(n => n.state === "active");
+  const gwPeer = Store.peer(pid);
+  // `pending` = sent to the node and not routed there yet (swg-noded net_carried). It still counts as what saving means —
+  // who can reach it, whose routing leaves it out, the far-side setup — just not as "carried".
+  const active = t.networks.filter(n => n.state === "active" || n.state === "pending");
   const sub = t.subnet || "<tunnel-subnet>";
-  const snip = "sysctl -w net.ipv4.ip_forward=1\niptables -t nat -A POSTROUTING -s " + sub + " -o <lan-device> -j MASQUERADE";   // i18n-keys: shell commands, not prose
-  const route = sub + " via <device-lan-address>";   // i18n-keys: a route in router syntax, not prose
   return html`<div class="netnode">
     <div class="netnode-h"><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${node}</span><span class="tp">${t.iface}</span></div>
     ${/* P3 evidence: is the gateway there to carry anything? Its traffic is the device's own and its networks'
@@ -1318,9 +1446,21 @@ function NetNode({ t, open, toggle, kaOff, pid, testable }) {
       ${t.gateway.online ? html`${rateCell(t.gateway.rx_speed, t.gateway.tx_speed)}${xferCell(...dlul(t.gateway.rx_bytes, t.gateway.tx_bytes))}` : null}
     </div>` : null}
     ${kaOff ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This device's config for {node} sends no keepalive, so {node} loses its session when the device goes quiet — and these networks with it. Set a keepalive on that deployment.", { node })}</span></div>` : null}
+    ${/* The device's OWN routing (network_report gateway.full_tunnel / no_return). A new peer's config sends everything into
+          the tunnel — on an office router that is the whole office browsing through the node, which nobody asked for. */""}
+    ${t.gateway && (t.gateway.full_tunnel || t.gateway.no_return) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${t.gateway.full_tunnel
+        ? T("This device's config for {node} sends all its traffic into the tunnel. If it's a router, every device behind it browses the internet through {node} too. To carry only these networks, set its routing to {subnet} and re-import its config.", { node, subnet: sub })
+        : T("This device's config for {node} doesn't route {subnet}, so its answers to clients leave through its own internet connection and never arrive. Add {subnet} to its routing and re-import its config.", { node, subnet: sub })}
+      ${gwPeer ? html` <button type="button" class="btn btn-ghost btn-mini" onClick=${() => openEditPeer(gwPeer, { node: t.node, iface: t.iface })}>${T("Edit routing")}</button>` : null}</span></div>` : null}
     <div class="netlist">${t.networks.map(n => html`<span class=${"nettag s-" + n.state}><span class="mono">${n.prefix}</span><em>${
-      n.state === "active" ? T("carried") : n.state === "refused_by_node" ? T("refused by the node") : T("not carried")}</em></span>`)}</div>
-    ${t.networks.filter(n => n.state !== "active").map(n => html`<div class="netwhy">${netWhy(n, node)}</div>`)}
+      n.state === "active" ? T("carried")
+      : n.state === "pending" ? (stored.includes(n.prefix) ? T("waiting for {node}", { node }) : T("carried once saved"))
+      : n.state === "refused_by_node" ? T("refused by the node") : T("not carried")}</em></span>`)}</div>
+    ${t.networks.some(n => n.state === "pending" && stored.includes(n.prefix))
+      ? html`<div class="netwhy">${T("{node} hasn't routed it yet — it does on its next sync, usually within a minute.", { node })}</div>` : null}
+    ${/* One line per REASON, not per network: two networks refused for the same node-wide reason ("can't restrict") printed
+          the identical sentence twice, under a warning that had already said it. */""}
+    ${[...new Set(t.networks.filter(n => n.state !== "active" && n.state !== "pending").map(n => netWhy(n, node)))].map(s => html`<div class="netwhy">${s}</div>`)}
     ${/* NETWORKS §17 F1: the device is blocked or expired, so its networks go nowhere — and the people who used them are
           not told by anything on their side. Said here, where the block is visible, with the list one click away. */""}
     ${t.lost ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Blocked, so {peers} of {users} lose these networks until it is unblocked — their devices keep sending that traffic into the tunnel, where nothing answers.",
@@ -1349,13 +1489,10 @@ function NetNode({ t, open, toggle, kaOff, pid, testable }) {
         <span class="mono faint">${w.allowed}</span>
         <button class="btn btn-ghost btn-mini" onClick=${() => { const q = Store.peer(w.peer_id); if (q) openEditPeer(q, { node: t.node, iface: w.iface }); }}>${T("Edit routing")}</button></div>`)}
       ${t.widen_total > t.widen.length ? html`<div class="hint">${T("…and {v1} more", { v1: t.widen_total - t.widen.length })}</div>` : null}
+      <div class="hint">${T("A widened device reaches these networks only after its user re-imports the config or refreshes their subscription.")}</div>
     <//>` : null}
     ${active.length ? html`<${Disclosure} title=${T("Set up the device's side")} open=${!!open[t.node + "|s"]} onToggle=${() => toggle(t.node + "|s")}>
-      <div class="hint">${T("The node sends traffic to this device; the device has to pass it on and answer. On a Linux or OpenWrt device, run this with its LAN interface in place of <lan-device>:")}</div>
-      <div class="netsnip"><pre class="mono nixblock">${snip}</pre><button class="btn btn-ghost btn-mini" onClick=${() => copy(snip)}><${Ic} i="copy"/> ${T("Copy")}</button></div>
-      <div class="hint">${T("On any other router, add this static route on the network's own router instead:")}</div>
-      <div class="netsnip"><pre class="mono nixblock">${route}</pre><button class="btn btn-ghost btn-mini" onClick=${() => copy(route)}><${Ic} i="copy"/> ${T("Copy")}</button></div>
-      <div class="hint">${T("A Windows or Mac device can't be set up from here — it has to be told to forward and translate traffic by hand.")}</div>
+      <${NetSetup} sub=${sub}/>
     <//>` : null}
   </div>`;
 }

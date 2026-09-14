@@ -108,11 +108,27 @@ export function rotateAllUserKeys(user, after) {
     } });
 }
 
+// A device that carries networks takes them down with it, and nothing on the side of the people who used them says why — so
+// every confirm that cuts one off names what goes (docs/NETWORKS-PLAN.md §18).
+function _netsLost(peer, block) {
+  const p = (peer && peer.id && Store.peer(peer.id)) || peer || {};
+  const nets = p.routes || [];
+  if (!nets.length) return "";
+  const v = { device: p.title || p.name || T("This device"), nets: nets.join(", ") };
+  return " " + (block ? T("{device} carries {nets} — everyone who reaches them through it loses access until it's unblocked.", v)
+    : T("{device} carries {nets} — everyone who reaches them through it loses access.", v));
+}
+function _userNetsLost(user) {
+  const gws = Store.peersOfUser(user.id).filter(p => (p.routes || []).length);
+  return gws.length ? " " + T("Their devices that carry networks ({devices}) take them down too — everyone who reaches them through those devices loses access until the user is unblocked.",
+    { devices: gws.map(p => p.title || T("Untitled")).join(", ") }) : "";
+}
+
 // Confirmed unassign — revokes the holder (PSK rotates) and is irreversible (keys change).
 // `back` = where Cancel returns to (e.g. the peer view it was launched from).
 export function confirmUnassign(peer, back) {
   openConfirm({ title: peer.name ? T("Unassign peer · {name}", { name: peer.name }) : T("Unassign peer"), confirmLabel: T("Unassign"), danger: true, back,
-    body: T("This revokes access immediately and is irreversible — the keys change, so re-assigning later means sending the user a brand-new QR / config to import."),
+    body: T("This revokes access immediately and is irreversible — the keys change, so re-assigning later means sending the user a brand-new QR / config to import.") + _netsLost(peer),
     onConfirm: () => mutate({ key: "peer:" + peer.id,
       patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = null; },
       call: () => api.peerUnassign({ peer_id: peer.id }),
@@ -121,7 +137,7 @@ export function confirmUnassign(peer, back) {
 // Confirmed delete (unassigned peers only). `back` = Cancel target.
 export function confirmDeletePeer(peer, back, closeOwner) {
   openConfirm({ title: T("Delete peer"), confirmLabel: T("Delete"), danger: true, back,
-    body: T("This is irreversible — the peer's key is removed from every interface it's deployed on."),
+    body: T("This is irreversible — the peer's key is removed from every interface it's deployed on.") + _netsLost(peer),
     // `back` returns you where you came from, which is right for Cancel and wrong for a delete when the frame
     // you came from is a VIEW OF THIS PEER — it would return you to an editor for something that no longer
     // exists. But how far to close is the CALLER's fact, not this function's: deleting from the peer's own
@@ -349,7 +365,7 @@ export const now_s = () => Math.floor(Date.now() / 1000);
 const _peerName = p => p.title ? " · " + p.title : p.name ? " · " + p.name : "";
 export function confirmBlockPeer(peer, back) {
   openConfirm({ title: T("Block access") + _peerName(peer), confirmLabel: T("Block"), danger: true, back,
-    body: T("This removes the peer from every server it's deployed on, cutting its connection within a sync. The keys are unchanged, so unblocking later restores the same config — no new QR needed."),
+    body: T("This removes the peer from every server it's deployed on, cutting its connection within a sync. The keys are unchanged, so unblocking later restores the same config — no new QR needed.") + _netsLost(peer, true),
     onConfirm: () => mutate({ key: "peer:" + peer.id,
       patch: s => { const p = s.roster.peers[peer.id]; if (p) p.disabled = true; },
       call: () => api.peerBlock({ peer_id: peer.id }) }) });
@@ -363,7 +379,7 @@ export function confirmUnblockPeer(peer, back) {
 }
 export function confirmBlockUser(user, back) {
   openConfirm({ title: T("Block access · {name}", { name: user.name || T("kind|user") }), confirmLabel: T("Block"), danger: true, back,
-    body: T("This blocks every peer of this user and, if they have a subscription, disables its page — the link still resolves but shows “Subscription disabled”. Nothing is deleted: unblocking restores connectivity and the same subscription URL."),
+    body: T("This blocks every peer of this user and, if they have a subscription, disables its page — the link still resolves but shows “Subscription disabled”. Nothing is deleted: unblocking restores connectivity and the same subscription URL.") + _userNetsLost(user),
     onConfirm: () => mutate({ key: "user:" + user.id,
       patch: s => { const u = s.roster.users[user.id]; if (u) u.disabled = true; },
       call: () => api.userBlock({ user_id: user.id }) }) });

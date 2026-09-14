@@ -74,7 +74,7 @@ CP = N.subprocess.CompletedProcess
 REC = {}
 def setup(acl=None, install=(True, None, ""), deps=True, fresh=True):
     if fresh:
-        N._NET.update(refused={}, seen=set(), sig=[])
+        N._NET.update(refused={}, seen=set(), sig=[], kept=[])
         N._OP_BACKOFF.clear()
     REC.update(run=[], install=[], acl=[])
     N.run = lambda a, input_text=None, timeout=20: REC["run"].append(list(a)) or CP(a, 0, "", "")
@@ -116,6 +116,18 @@ kept, res = rec(D)
 check("installed once, on the provider's interface", REC["install"] == [("192.168.50.0/24", "wg0")], REC["install"])
 check("…and returned for the cascade's tables", kept == [("192.168.50.0/24", "wg0")], kept)
 check("…nothing deleted", REC["run"] == [], REC["run"])
+check("…and remembered as ROUTED for the snapshot's net_carried", N._NET["kept"] == [("192.168.50.0/24", "wg0")], N._NET["kept"])
+setup(acl=acl_for(D), install=(False, "rolled_back", "203.0.113.1"))
+rec(D)
+check("an install that failed is NOT reported as routed", N._NET["kept"] == [], N._NET["kept"])
+setup(acl={"wg0": {}})
+rec(D)
+check("a network the live ACL does not hold yet is NOT reported as routed (D14: ACL first)", N._NET["kept"] == [], N._NET["kept"])
+setup()
+rec(INERT)
+check("no networks: nothing reported as routed", N._NET["kept"] == [], N._NET["kept"])
+N._resolvers = lambda: (["198.51.100.53"], True)
+check("net_deps announces that this node reports net_carried", N.net_deps().get("carried") == 1, N.net_deps())
 
 print("\n[3] a network already routed is left alone (wg-quick installs the same route — §4.4)")
 setup(acl=acl_for(D))

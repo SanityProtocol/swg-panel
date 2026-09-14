@@ -5250,7 +5250,16 @@ def network_report(roster, pid, snaps):
             else:
                 nets.append(dict({"prefix": pre, "state": "inert"},
                                  **((plan["inert"].get(pid) or {}).get(pre) or {"why": _none})))
-        active = [n["prefix"] for n in nets if n["state"] == "active"]
+        # The node's own word on what it ROUTES (swg-noded `net_carried`, announced by `net_deps.carried`). "Active" is the
+        # panel's plan; until the node has routed it, the network is `pending` — the sheet said "carried" for a network
+        # that no node had installed yet. A node that does not report it is taken at the plan's word, as before.
+        _nd = snap.get("net_deps") if isinstance(snap.get("net_deps"), dict) else None
+        if _nd and _nd.get("carried"):
+            _held = set(snap.get("net_carried") or []) if isinstance(snap.get("net_carried"), list) else set()
+            for n in nets:
+                if n["state"] == "active" and n["prefix"] not in _held:
+                    n["state"] = "pending"
+        active = [n["prefix"] for n in nets if n["state"] in ("active", "pending")]   # what saving MEANS, routed yet or not
         # NETWORKS §17 F1: the gateway itself is blocked/expired, so these networks go nowhere — say who that cuts off.
         _blocked = any(n["state"] == "inert" and n.get("why") == "blocked" for n in nets)
         peers_n, users_s, widen, lost = 0, set(), [], []
@@ -5302,7 +5311,10 @@ def network_report(roster, pid, snaps):
         entry = {"node": nid, "iface": ifn, "subnet": meta.get("subnet") or "",
                  "address": (t.get("ip") or "").split("/")[0], "networks": nets,
                  "audience": {"peers": peers_n, "users": len(users_s)},
-                 "widen": widen[:200], "widen_total": len(widen)}
+                 "widen": widen[:200], "widen_total": len(widen),
+                 # P5: can this node limit who reaches a network at all? None = it has not said (too old to guard networks,
+                 # which the per-network reason already covers). False is the one the sheet warns about BEFORE a save.
+                 "can_share": bool(_nd.get("share")) if _nd is not None else None}
         if _blocked and lost:
             entry["lost"] = {"peers": peers_n, "users": len(users_s), "list": lost[:200], "total": len(lost)}
         # NETWORKS §17 F5: the node's OWN word on Force DNS (smart_status.dns_redirect, present only while it redirects).
@@ -5333,9 +5345,17 @@ def network_report(roster, pid, snaps):
             # this is exactly what there is to display). `reported` False means the node lists no such peer.
             row = next((q for q in (((snap.get("interfaces") or {}).get(ifn) or {}).get("peers") or [])
                         if isinstance(q, dict) and q.get("public_key") and q.get("public_key") == p.get("pubkey")), None)
+            # The device's OWN routing, from the config the panel renders for it (D8's rule, never a copy). `full_tunnel`: all
+            # its traffic goes into the tunnel — on a router, every device behind it browses through this node. `no_return`:
+            # its routing leaves out the tunnel subnet, so answers to the clients leave by its own internet link and never
+            # arrive. Neither is visible from the node; both are the first thing a working network needs.
+            _eff = effective_client_params(p, t, meta)
+            _subn = network_prefix(meta.get("subnet") or "")
             entry["gateway"] = dict({"reported": row is not None, "online": bool(row and row.get("online")),
                                      "handshake_age": (row or {}).get("handshake_age"),
-                                     "keepalive": effective_client_params(p, t, meta)["keepalive"]},
+                                     "keepalive": _eff["keepalive"],
+                                     "full_tunnel": _allowed_covers(_eff["allowed"], "0.0.0.0/0"),
+                                     "no_return": bool(_subn) and not _allowed_covers(_eff["allowed"], _subn)},
                                     **{k: (row or {}).get(k) or 0 for k in ("rx_bytes", "tx_bytes", "rx_speed", "tx_speed")})
         out.append(entry)
     # §4.9 — a gateway deployed to several nodes keeps its networks reachable through each only while it holds a

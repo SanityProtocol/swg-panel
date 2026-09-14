@@ -28,6 +28,11 @@
     en: {
       loading: "Loading…", noConfigs: "No configs yet",
       noConfigsSub: "There are no active peers on this subscription. New peers will appear here automatically.",
+      netsTitle: "Networks you can reach",
+      netsVia: "on {node} · through {via}",
+      netsNotCovered: "This device's settings leave it out — ask your administrator to include it.",
+      netsHowTo: "Open them by address — for example 192.168.50.10 in a browser, or \\\\192.168.50.10 for shared folders on Windows.",
+      netsNames: "A name from that network works only if your administrator set your device to use that network's DNS server. Automatic discovery — printers, the “Network” folder, .local names — doesn't reach across the tunnel.",
       peer: "Peer", primary: "Primary", download: "Download .conf", dl: "Download", copyConfig: "Copy config",
       copied: "Copied", copiedClip: "Copied to clipboard", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link", showQR: "Show QR",
       dlShort: "Download", enlarge: "Tap to enlarge", share: "Share",
@@ -86,6 +91,11 @@
     ru: {
       loading: "Загрузка…", noConfigs: "Пока нет конфигураций",
       noConfigsSub: "На этой подписке нет активных пиров. Новые появятся здесь автоматически.",
+      netsTitle: "Сети, к которым у вас есть доступ",
+      netsVia: "на {node} · через {via}",
+      netsNotCovered: "Настройки этого устройства её не включают — попросите администратора добавить.",
+      netsHowTo: "Открывайте их по адресу — например, 192.168.50.10 в браузере или \\\\192.168.50.10 для общих папок Windows.",
+      netsNames: "Имя из той сети работает, только если администратор настроил ваше устройство на DNS-сервер этой сети. Автоматический поиск — принтеры, папка «Сеть», имена .local — через туннель не работает.",
       peer: "Пир", primary: "Главный", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать",
       copied: "Скопировано", copiedClip: "Скопировано в буфер обмена", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
       dlShort: "Скачать", enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
@@ -2053,6 +2063,36 @@
   // A BLOCKED or EXPIRED peer still takes a slot in the carousel, but instead of QR/config/buttons it shows the peer
   // name + a centred BLOCKED / EXPIRED word + the same text as the whole-sub screen — so the holder sees WHY this one
   // config stopped working. One page per dead peer (no protocol split, no deployment arrows, no action bar).
+  // Networks this user's devices reach beyond the internet — the office LAN behind a colleague's router, shared with them
+  // (docs/NETWORKS-PLAN.md §18). The server lists only what a node reports routing. One page after the configs, walked like
+  // any other; it has no config, so no picker entry — the Connections button still leads off it.
+  function networksPage(nets) {
+    var page = el("section", "ppage");
+    page.setAttribute("data-mode", "nets");
+    var srow = el("div", "srow"), cell = el("div", "scell"), stage = el("div", "scell-stage");
+    var box = el("div", "netbox");
+    box.appendChild(el("p", "netbox-h", t("netsTitle")));
+    var list = el("ul", "netbox-list");
+    nets.forEach(function (n) {
+      var li = el("li", "netbox-row");
+      li.appendChild(el("span", "netbox-pre", n.prefix));
+      li.appendChild(el("span", "netbox-meta", n.via
+        ? t("netsVia").replace("{node}", function () { return n.node_name; }).replace("{via}", function () { return n.via; })
+        : n.node_name));
+      if (n.covered === false) li.appendChild(el("span", "netbox-warn", t("netsNotCovered")));
+      list.appendChild(li);
+    });
+    box.appendChild(list);
+    box.appendChild(el("p", "netbox-note", t("netsHowTo")));
+    box.appendChild(el("p", "netbox-note", t("netsNames")));
+    stage.appendChild(box); cell.appendChild(stage); srow.appendChild(cell); page.appendChild(srow);
+    // No up/down chevrons: their fixed offsets from the centre are sized for a QR, and this list is taller — the up one sat
+    // on the first network (seen in the real page). render() skips a page without them.
+    var switchEl = el("button", "pswitch", t("connections")); switchEl.type = "button"; switchEl.hidden = true;
+    switchEl.setAttribute("data-pick", "");
+    page.appendChild(switchEl);
+    return page;
+  }
   function deadPeerPage(row) {
     var peer = row.peer;
     var expired = !!peer.expired && !peer.disabled;   // an explicit block wins over a lapsed date if somehow both
@@ -2598,6 +2638,7 @@
           if (pg) { if (!firstOf[mode]) firstOf[mode] = pg; pager.appendChild(pg); }
         });
       });
+      if ((data.networks || []).length && liveRows.length) pager.appendChild(networksPage(data.networks));
       // blocked/expired peers last — one placeholder page each, so they're visible in the carousel but carry no config
       deadRows.forEach(function (row) { pager.appendChild(deadPeerPage(row)); });
       if (!pager.children.length) { showState(t("noConfigs"), t("noConfigsSub")); return; }

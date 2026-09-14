@@ -1129,6 +1129,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .adv{display:none}.adv.open{display:block;margin-top:6px}
 .sheet-foot{display:flex;gap:10px;align-items:center;padding:16px 20px;border-top:1px solid var(--line)}
 .sheet-foot .grow{flex:1}
+@media (max-width:640px){.sheet-foot{flex-wrap:wrap}}   /* a six-button footer (the peer view) ran off a phone's edge */
 .discard-msg{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--pending)}
 .discard-msg svg{flex:none}
 .formmsg{font-size:12.5px;font-family:var(--mono);min-height:16px;margin-top:10px}
@@ -3350,6 +3351,10 @@ a.tg:hover{filter:brightness(1.25)}
 .nettag.s-active{border-color:color-mix(in srgb,var(--brand) 45%,var(--line))}
 .nettag.s-active em{color:var(--brand)}
 .nettag.s-inert em,.nettag.s-refused_by_node em{color:var(--pending)}
+.nettag.s-pending{border-style:dashed;border-color:color-mix(in srgb,var(--brand) 35%,var(--line))}
+.netsetup .segrow{flex-wrap:wrap;margin:6px 0 8px}
+.netsteps{margin:4px 0 8px;padding-left:20px;font-size:12.5px;color:var(--dim)}
+.netsteps li{margin:4px 0}
 .netwhy{font-size:12.5px;color:var(--dim);margin:2px 0}
 .netexp{display:flex;gap:8px;align-items:flex-start;margin:8px 0 6px;font-size:13px;font-weight:600;color:var(--pending)}
 .netwiden{display:flex;gap:10px;align-items:center;font-size:12.5px;padding:3px 0}
@@ -3371,6 +3376,7 @@ a.tg:hover{filter:brightness(1.25)}
 .badge.b-nets.on{background:color-mix(in srgb,var(--brand) 13%,transparent);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 32%,transparent)}
 .badge.b-nets:hover{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 55%,var(--line-solid))}
 .badge.b-nets:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.badge.b-nets.warn{background:color-mix(in srgb,var(--pending) 12%,transparent);color:var(--pending);border-color:color-mix(in srgb,var(--pending) 35%,transparent)}
 .netshare .segrow{margin:5px 0 8px}
 .netshare .netwiden input[type=date]{flex:none;width:auto}
 .netshare .netrow .usercombo{flex:1;min-width:0}

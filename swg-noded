@@ -2291,9 +2291,12 @@ def net_deps():
     cannot guard itself, so the panel lowers nothing onto it. File reads only; no fork per sync (D1).
 
     `share`: this node enforces a RESTRICTED network (§15.2 S8). A panel carries one only onto a node that says so —
-    anywhere else the network would stay open to everyone while the operator believed it restricted."""
+    anywhere else the network would stay open to everyone while the operator believed it restricted.
+
+    `carried`: this node reports `net_carried` — the networks it has actually routed — so the panel can tell "sent" from
+    "routed" (a node without it is taken at the panel's word, as before)."""
     res, known = _resolvers()
-    return {"panel": _PANEL_PEER.get("addr") or "", "resolvers": res, "resolvers_known": known, "share": 1}
+    return {"panel": _PANEL_PEER.get("addr") or "", "resolvers": res, "resolvers_known": known, "share": 1, "carried": 1}
 
 
 # ───────────────────────── networks: the route reconciler ─────────────────────────
@@ -2304,7 +2307,7 @@ def net_deps():
 # guard above), and which routes on a client interface are stale (anything routed there that is not wanted).
 # No state file: a wiped /var/lib or a recreated container cannot leak a route, because nothing is remembered.
 
-_NET = {"refused": {}, "seen": set(), "sig": []}   # refused: prefix → {why, addr, iface?} from the last judgement
+_NET = {"refused": {}, "seen": set(), "sig": [], "kept": []}   # refused: prefix → {why, addr, iface?} from the last judgement; kept: [(prefix, iface)] routed now
 
 
 def _net_prefix(s):
@@ -2440,14 +2443,16 @@ def reconcile_net_routes(node_cfg, desired, res, _proc="/proc/net/route"):
     live = _net_live_main(node_cfg, _proc)
     if not members and not live:
         _NET["refused"] = {}
+        _NET["kept"] = []
         return []
-    if live is None:
+    if live is None:                                 # `kept` stays as last known: nothing was read, nothing changed
         res["errors"].append("networks: cannot read the routing table — nothing changed")
         return []
     deps = _net_guard_deps()
     if deps is None:                                 # a read failed: keep what is there, reap nothing blind
         res["errors"].append("networks: cannot read this node's addresses — nothing changed")
-        return sorted((p, i) for i, ps in live.items() for p in ps if p in (members.get(i) or {}))
+        _NET["kept"] = sorted((p, i) for i, ps in live.items() for p in ps if p in (members.get(i) or {}))
+        return _NET["kept"]
     refused, kept = {}, []
     for iface, nets in sorted(members.items()):
         carried = {_net_prefix(m) for v in (current_allowed(node_cfg, iface) or {}).values()
@@ -2485,6 +2490,7 @@ def reconcile_net_routes(node_cfg, desired, res, _proc="/proc/net/route"):
                 run(["ip", "route", "del", p, "dev", iface])
                 res["changed"] += 1
     _NET["refused"] = refused
+    _NET["kept"] = kept
     return kept
 
 
@@ -10552,6 +10558,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         snap["net_share"] = dict(_SHARE["status"])
     if _NET["refused"]:                               # networks this node will not carry, and why — absent when none (D1)
         snap["net_refused"] = {p: dict(v) for p, v in _NET["refused"].items()}
+    if _NET["kept"]:                                  # networks this node routes right now — absent when none (D1)
+        snap["net_carried"] = sorted({p for p, _i in _NET["kept"]})
     _probe = net_probe_status()
     if _probe:                                        # a reachability test's answer, waiting for the panel — absent otherwise (D1)
         snap["net_probe"] = _probe

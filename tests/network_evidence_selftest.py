@@ -66,7 +66,7 @@ rep = P.network_report(R, "gwA", SNAPS)
 g1 = next(e for e in rep["targets"] if e["node"] == "n1")["gateway"]
 g2 = next(e for e in rep["targets"] if e["node"] == "n2")["gateway"]
 check("n1: online, last handshake, traffic THROUGH the gateway",
-      g1 == {"reported": True, "online": True, "handshake_age": 12, "keepalive": 25,
+      g1 == {"reported": True, "online": True, "handshake_age": 12, "keepalive": 25, "full_tunnel": True, "no_return": False,
              "rx_bytes": 5000, "tx_bytes": 7000, "rx_speed": 10.0, "tx_speed": 20.0}, g1)
 check("n2: reported but offline, and its own keepalive (0, from that deployment's override)",
       g2["reported"] and not g2["online"] and g2["handshake_age"] == 900 and g2["keepalive"] == 0, g2)
@@ -95,6 +95,38 @@ check("a node without a private address has no LAN entry", "lan" not in next(t f
 RB = dict(R, users=dict(R["users"], u1={"name": "Alice", "disabled": True}))
 check("a blocked provider's network disappears from everyone's list",
       P.user_networks(RB, "u2", SNAPS)["peers"][0]["targets"][0]["networks"] == [])
+
+print("\n[5] the gateway's OWN routing — the config the panel renders for it")
+def gw(**ov):
+    r = dict(R, peers=dict(R["peers"], gwA=dict(R["peers"]["gwA"], targets=[T("10.8.0.10", overrides=ov)] if ov else [T("10.8.0.10")])))
+    return next(e for e in P.network_report(r, "gwA", SNAPS)["targets"] if e["node"] == "n1")["gateway"]
+g = gw()
+check("the default config sends everything into the tunnel — flagged full_tunnel, with a way back", g["full_tunnel"] and not g["no_return"], g)
+g = gw(allowed="10.8.0.0/24")
+check("routing only the tunnel subnet: neither flag", not g["full_tunnel"] and not g["no_return"], g)
+g = gw(allowed="10.8.0.0/16")
+check("a wider prefix that still holds the subnet: neither flag", not g["full_tunnel"] and not g["no_return"], g)
+g = gw(allowed="172.16.0.0/12")
+check("routing that leaves the tunnel subnet out: no_return (answers never come back)", g["no_return"] and not g["full_tunnel"], g)
+g = gw(allowed="0.0.0.0/1, 128.0.0.0/1")
+check("split halves are not a /0: not called full_tunnel, and the subnet IS covered", not g["full_tunnel"] and not g["no_return"], g)
+
+print("\n[6] routed, not just sent — the node's `net_carried`, and whether it can limit who reaches a network")
+e = lambda s: next(x for x in P.network_report(R, "gwA", dict(SNAPS, n1=s))["targets"] if x["node"] == "n1")
+s_old = SNAPS["n1"]
+check("a node that does not report routes: the plan's word stands (active), can_share False (no `share` flag)",
+      e(s_old)["networks"][0]["state"] == "active" and e(s_old)["can_share"] is False, e(s_old))
+s_new = dict(s_old, net_deps=dict(s_old["net_deps"], carried=1, share=1))
+check("a node that reports routes but has not routed it yet: pending", e(s_new)["networks"][0]["state"] == "pending", e(s_new))
+check("…pending still counts as what saving means (audience and routing checks run)",
+      e(s_new)["audience"]["peers"] >= 1 and e(s_new)["widen_total"] >= 1, e(s_new))
+s_done = dict(s_new, net_carried=["192.168.50.0/24"])
+check("once the node lists it in net_carried: active, and can_share True", e(s_done)["networks"][0]["state"] == "active"
+      and e(s_done)["can_share"] is True, e(s_done))
+s_ref = dict(s_new, net_refused={"192.168.50.0/24": {"why": "rolled_back", "addr": ""}})
+check("a refusal outranks pending", e(s_ref)["networks"][0]["state"] == "refused_by_node", e(s_ref))
+check("a node with no net_deps at all: can_share None (it can't guard networks; the reason line says so)",
+      e(dict(s_old, net_deps=None))["can_share"] is None)
 
 print("\n[4] §4.10 — on demand only")
 src = open(PANEL).read()
