@@ -20,13 +20,16 @@
 # a host-side decision: install amneziawg-dkms there and recreate the container.
 
 FROM public.ecr.aws/docker/library/golang:1.25-bookworm AS build
+# The SAME pinned upstream ref as bare metal (lib/common.sh AWG_GO_TAG), built static. This image uses its own Go, so
+# it is the same source as the published bare-metal asset, not the same bytes (that one: forks/amneziawg-go/build.sh).
+ARG AWG_GO_REF=v3.1.20260828
 RUN apt-get update && apt-get install -y --no-install-recommends git make build-essential \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 # userspace WireGuard/AmneziaWG datapath
-RUN for i in 1 2 3 4 5; do git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-go && break \
+RUN for i in 1 2 3 4 5; do git clone --depth=1 --branch "$AWG_GO_REF" https://github.com/amnezia-vpn/amneziawg-go && break \
       || { echo "git clone amneziawg-go failed (attempt $i) — retrying"; sleep 3; rm -rf amneziawg-go; }; done \
- && cd amneziawg-go && go build -o /out/amneziawg-go . \
+ && cd amneziawg-go && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -buildvcs=false -o /out/amneziawg-go . \
  && { strip /out/amneziawg-go || true; } \
  && test -x /out/amneziawg-go   # fail the build loudly if the datapath didn't build (don't ship a broken image)
 # awg / awg-quick userspace control tools

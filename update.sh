@@ -708,9 +708,35 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   # route first, then builds from source, and only then falls back to the userspace datapath.
   # Docker nodes run userspace amneziawg-go from their image → skipped by the HAVE_BNODE gate.
   [ "$HAVE_BNODE" = yes ] || return 0
-  local _tools=no _mod=no
+  local _tools=no _mod=no _hf=0
   have awg && have awg-quick && _tools=yes
   { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes
+  # D1: the pinned userspace fallback, install-if-missing, BEFORE the "already working" return — that return is exactly
+  # how a box whose module works never got one, and a reboot onto a kernel without a module then took every awg
+  # interface down (docs/AWG-DATAPATH-RESILIENCE-PLAN.md §1).
+  # Not gated on the tools being present: the heal below may install them in this very run, and they would then wait a
+  # whole update for their fallback. The binary alone is inert.
+  if awg_go_needs_install && ! $DRYRUN; then   # missing, or one of our earlier pinned builds
+    if awg_go_pinned; then DID_UPDATE=yes; ok "AmneziaWG: userspace fallback installed (pinned $AWG_GO_TAG) — a kernel without a module no longer takes awg interfaces down"
+    else note "AmneziaWG: the pinned userspace fallback could not be fetched — awg interfaces depend on the kernel module alone"; fi
+  fi
+  # D4: a box whose module loads TODAY still needs it for the kernel it boots NEXT. That early return is what let a
+  # client's box sail through an update on kernel 138 with 139 installed, no headers for it and no module for it.
+  # Install-if-missing only: the headers metapackage, then a DKMS build for every installed kernel that has headers.
+  if [ "$_tools" = yes ] && [ "$_mod" = yes ] && ! $DRYRUN; then
+    # ⚠️ rc is CAPTURED, never read from a bare call: this script runs under `set -e`, and the function returns 10
+    # (installed now), 1 (none) and 2 (failed) on perfectly normal paths — a bare call aborted the whole update right here.
+    _hf=0; ensure_awg_headers_follow || _hf=$?; case $_hf in 10) DID_UPDATE=yes; ok "AmneziaWG: kernel headers now follow kernel upgrades ($(awg_headers_meta | tr "\n" " " | sed "s/ $//")) — the module is rebuilt when a new kernel arrives" ;;
+      2) note "AmneziaWG: the kernel headers metapackage could not be installed — the next kernel will rely on the userspace fallback (tried again on the next update)" ;;
+    esac
+    # A module an older installer built with `make install` loads on THIS kernel and exists for no other. Register it
+    # with DKMS once — unless the amnezia package can own it (then the package route is the owner, never us).
+    if have dkms && [ -z "$(dkms status amneziawg 2>/dev/null)" ] && ! apt-cache show amneziawg-dkms >/dev/null 2>&1; then
+      if awg_dkms_register_source; then DID_UPDATE=yes; ok "AmneziaWG: the kernel module is now rebuilt by DKMS whenever a kernel is installed"
+      else note "AmneziaWG: could not register the kernel module with DKMS — the next kernel will rely on the userspace fallback"; fi
+    fi
+    awg_dkms_build_all_kernels
+  fi
   [ "$_tools" = yes ] && [ "$_mod" = yes ] && return 0           # already working → done, silent
   $DRYRUN && return 0
 
@@ -726,6 +752,8 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     run add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
     run apt-get update -qq 2>/dev/null || true
     run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
+    ensure_awg_headers_follow || true
+    awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
     run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
     # `apt install` is a NO-OP when the package is present but its module never built (headers were missing
     # then), so force a build for the RUNNING kernel — an old kernel with newer headers would otherwise build
@@ -753,6 +781,92 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   else
     DID_FAIL=yes; warn "AmneziaWG could not be installed on this node — awg interfaces cannot be created or taken over. See the log above for the failing step"
   fi
+}
+
+awg_kernel_takes(){ # <conf> — would the loaded kernel module accept this interface's configuration? 0 = yes
+  # Tried on a THROWAWAY device, before anything real is stopped. The live ListenPort is left out: the interface being
+  # asked about still holds it. Anything that goes wrong here is a "no" — the interface then simply stays where it is.
+  local p="swgprobe$$" t rc=1
+  t="$(mktemp)" || return 1
+  if ip link add "$p" type amneziawg 2>/dev/null; then
+    awg-quick strip "$1" 2>/dev/null | grep -v '^[[:space:]]*ListenPort' > "$t" && awg setconf "$p" "$t" >/dev/null 2>&1 && rc=0
+    ip link del "$p" 2>/dev/null
+  fi
+  rm -f "$t"
+  return $rc
+}
+
+ensure_awg_back_on_kernel(){   # SURGICAL — NOT part of the general heal: move AWG interfaces off the userspace fallback.
+  # docs/AWG-DATAPATH-RESILIENCE-PLAN.md D3. A node whose module was missing runs every awg interface on amneziawg-go
+  # (awg-quick falls back by itself). Once ensure_awg_datapath has made the module load again, nothing moves them back:
+  # they stay on the slower datapath until something restarts them. This does, and ONLY for that state:
+  #   · the module loads now                     — otherwise userspace is the best this box has; leave it
+  #   · the device is a tun (tun_flags)          — a kernel device has nothing to move
+  #   · it has OUR conf, or is an exit amneziawg-go serves — a tun that is neither is not ours (csqtt, WDTT, a VPN client)
+  #   · the kernel accepts its configuration      — tried on a throwaway device first (awg_kernel_takes)
+  # So a routine update restarts nothing. The restart costs the moved interfaces one sync interval without peers
+  # (awg-quick brings them up from the conf; swg-noded re-adds the live peers on its next pass). Whoever started the
+  # interface — its unit, or swg-agent (the unit then INACTIVE) — it is stopped the way it was started, and always started
+  # again THROUGH ITS UNIT, never restarted: restarting an inactive unit would run a second copy beside the live one.
+  # ⚠️ NOT "if the kernel bring-up fails, awg-quick falls back again": it falls back only when the module is ABSENT, and
+  # here it is loaded. So a configuration the kernel refuses is found BEFORE anything stops, and that interface stays
+  # degraded; a bring-up that still fails after that is reported as down.
+  # Outside the heal contract (START / ENABLE / INSTALL-IF-MISSING) on purpose, like the netctl StartLimitIntervalSec fix.
+  [ "$HAVE_BNODE" = yes ] || return 0
+  have awg-quick || return 0
+  $DRYRUN && return 0
+  modprobe amneziawg 2>/dev/null || return 0
+  local d n c conf sock xit _w moved="" stuck="" down="" xmoved="" refused="" xdir="${SWG_NODED_STATE:-/var/lib/swg-noded}/exits"
+  for d in /sys/class/net/*; do
+    n="${d##*/}"
+    [ -e "$d/tun_flags" ] || continue
+    sock="/var/run/amneziawg/$n.sock"; xit=no; conf=""
+    if [ -f "$xdir/$n.conf" ]; then
+      # An EXIT device — swg-noded's own, its conf in the node's state dir — and only one amneziawg-go serves: a tun exit
+      # can be something else entirely. It gets the same teardown (the same stale socket would shadow its new device), but
+      # no start: swg-noded's exit pass brings an absent exit back up on its next sync, in its own scope.
+      # --ns: THIS network namespace only. From the host pgrep sees every container too, and a container's own
+      # `amneziawg-go awg0` (an Amnezia server, say) is not ours to wait for, let alone to kill.
+      [ -S "$sock" ] || pgrep --ns $$ --nslist net -f "amneziawg-go $n\$" >/dev/null 2>&1 || continue
+      conf="$xdir/$n.conf"; xit=yes
+    else
+      for c in /etc/amnezia/amneziawg/$n.conf /etc/amneziawg/$n.conf; do [ -f "$c" ] && { conf="$c"; break; }; done
+      [ -n "$conf" ] || continue
+    fi
+    awg_kernel_takes "$conf" || { refused="$refused $n"; continue; }
+    # STOP, make sure the userspace instance is really gone, then START. `awg-quick down` only deletes the link:
+    # amneziawg-go exits on its own but not instantly, and while its UAPI socket exists the awg CLI configures IT instead
+    # of the new kernel device — the device comes up empty and swg-noded's peers go to a dead process. (Measured in the
+    # P0 rig: a surviving `amneziawg-go awgc` shadowed a new kernel client exactly this way.)
+    if [ "$xit" = no ] && have systemctl && systemctl is-active --quiet "awg-quick@$n" 2>/dev/null; then
+      run systemctl stop "awg-quick@$n" >/dev/null 2>&1 || true
+    else
+      run awg-quick down "$conf" >/dev/null 2>&1 || true
+    fi
+    for _w in 1 2 3 4 5 6 7 8 9 10; do
+      [ -S "$sock" ] || pgrep --ns $$ --nslist net -f "amneziawg-go $n\$" >/dev/null 2>&1 || break
+      sleep 1
+    done
+    pkill --ns $$ --nslist net -f "amneziawg-go $n\$" >/dev/null 2>&1 || true
+    rm -f "$sock"
+    for _w in 1 2 3 4 5; do [ -e "/sys/class/net/$n" ] || break; sleep 1; done   # the tun device goes with its process
+    [ "$xit" = yes ] && { xmoved="$xmoved $n"; continue; }
+    # START THROUGH THE UNIT, whatever started it before. Its oneshot + RemainAfterExit keeps what it starts alive; a plain
+    # `awg-quick up` from here would put a userspace daemon (should the kernel refuse after all) in THIS process's cgroup,
+    # and the one-click update runs as swg-update.service — a oneshot whose leftovers systemd kills when it finishes.
+    # ensure_awg_quick_unit ran just before, so the template exists; the plain call is only the last resort.
+    if have systemctl; then run systemctl start "awg-quick@$n" >/dev/null 2>&1 || run awg-quick up "$conf" >/dev/null 2>&1 || true
+    else run awg-quick up "$conf" >/dev/null 2>&1 || true; fi
+    if [ ! -e "/sys/class/net/$n" ]; then down="$down $n"
+    elif [ -e "/sys/class/net/$n/tun_flags" ]; then stuck="$stuck $n"
+    else moved="$moved $n"; fi
+  done
+  [ -n "$xmoved" ] && { DID_UPDATE=yes; note "AmneziaWG exits taken off the userspace fallback — swg-noded brings them back up on the kernel module:$xmoved"; }
+  [ -n "$moved" ] && { DID_UPDATE=yes; ok "AmneziaWG back on the kernel datapath:$moved"; }
+  [ -n "$refused" ] && warn "AmneziaWG stays on the userspace fallback:$refused — the kernel module does not accept its configuration (a module older than the interface needs?)"
+  [ -n "$stuck" ] && warn "AmneziaWG still on the userspace fallback after a restart:$stuck — the kernel module did not take them"
+  [ -n "$down" ] && { DID_FAIL=yes; warn "AmneziaWG interface(s) did not come back after moving them to the kernel datapath:$down — start them from the panel"; }
+  return 0
 }
 
 ensure_awg_quick_unit(){   # HEAL (install-if-missing) the awg-quick@ TEMPLATE unit on a bare-metal node.
@@ -1330,6 +1444,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   ensure_wg_apparmor     # HEAL: let the confined wg CLI reach the UAPI sockets (wdtt / csqtt / awg-userspace)
   ensure_awg_datapath    # HEAL: install AmneziaWG if missing, rebuild its module, else userspace
   ensure_awg_quick_unit  # HEAL: the awg-quick@ template + the per-interface enable, so awg survives a reboot
+  ensure_awg_back_on_kernel   # SURGICAL: interfaces left on the userspace fallback go back to the module once it loads
 fi
 
 # ───────────────────────── Docker (host / node / master) ─────────────────────────

@@ -5133,6 +5133,28 @@ def _exit_awg(rec):
     return {k: v for k, v in ((rec or {}).get("awg") or {}).items() if k in AWG_KEYS and str(v).strip()}
 
 
+def _scope_available():
+    """Can this host put a bring-up in a transient scope? Asked by making one, exactly as swg-agent's _scope_available does
+    and for the same reason (systemd-run's refusal wording differs between releases). run() never raises: a systemd-run
+    that cannot be executed comes back non-zero, which is a "no"."""
+    if NODE_KIND == "docker" or not os.path.isdir("/run/systemd/system") or not shutil.which("systemd-run"):
+        return False
+    return getattr(run(["systemd-run", "--scope", "--quiet", "--collect", "true"], timeout=15), "returncode", 1) == 0
+
+
+def _scoped_up(tool, target):
+    """`<tool> up <target>` for an EXIT device, in a transient systemd scope of its own — the one bring-up this daemon runs
+    itself rather than through swg-agent. An AmneziaWG exit on a node without the kernel module comes up on amneziawg-go, a
+    daemon awg-quick leaves running; as a plain child it would sit in swg-noded.service's cgroup and die on every restart
+    of this daemon (every update), taking the exit with it until the next pass re-ran `up`. Same reasoning and fallback as
+    swg-agent's _quick_up: no systemd, a docker node, or a host that cannot make a scope → the plain call.
+    Returns what run() returns."""
+    plain = [tool, "up", target]
+    if not _scope_available():
+        return run(plain)
+    return run(["systemd-run", "--scope", "--quiet", "--collect", "--description=swg exit " + os.path.basename(target)] + plain)
+
+
 def _exit_tool(rec):
     """`awg-quick` for an AmneziaWG exit, `wg-quick` for a WireGuard one.
 
@@ -5558,7 +5580,7 @@ def reconcile_exits(desired, res):
                 _state = "absent"
                 res["changed"] += 1
         if _state == "absent":
-            r = run([_exit_tool(rec), "up", conf])
+            r = _scoped_up(_exit_tool(rec), conf)
             if r.returncode != 0:
                 err = err or (r.stderr or "wg-quick up failed").strip()[:160]
                 res["errors"].append("exit %s: %s" % (xid, err))
@@ -8197,7 +8219,7 @@ def sample_catk():
     return dict(_CATK["rate"])
 
 
-def node_datapath_health():
+def node_datapath_health(interfaces=None):
     """This node's kernel-datapath health for the panel's self-heal check: is the AmneziaWG kernel module loadable
     when the node uses awg? Mirrors the panel's host_datapath_health. Nothing to report for a docker node —
     see below."""
@@ -8235,7 +8257,30 @@ def node_datapath_health():
                             break
                     except Exception:
                         continue
-            out["awg"] = {"needed": True, "ok": bool(loaded or built)}
+            # docs/AWG-DATAPATH-RESILIENCE-PLAN.md D2.
+            # `userspace`, only while non-empty — the managed AmneziaWG interfaces running on the fallback RIGHT NOW, by the
+            # kernel's own answer: tun_flags exists on a tun device and on no amneziawg/wireguard device.
+            us = sorted(n for n, e in (interfaces or {}).items()
+                        if ((e or {}).get("meta") or {}).get("tool") == "awg" and os.path.exists("/sys/class/net/%s/tun_flags" % n))
+            # …and EXIT devices, which are not in `interfaces`: an AmneziaWG exit on the fallback is just as slow and just as
+            # invisible otherwise. Only an exit amneziawg-go SERVES (its UAPI socket): a tun exit can be anything else — a
+            # WireGuard exit on an operator's own wireguard-go — and no update would move that one.
+            us += sorted(d for d in {(x or {}).get("device") for x in _EXITS.get("list") or []}
+                         if d and os.path.exists("/sys/class/net/%s/tun_flags" % d) and os.path.exists("/var/run/amneziawg/%s.sock" % d))
+            # `ok` — loaded, or built for this kernel (it loads on the first `ip link add`). NOT when AmneziaWG interfaces run
+            # on the fallback while it is unloaded: that first `ip link add` already happened, and the kernel refused the
+            # module (Secure Boot with an unsigned build, a build for another ABI). Calling that "ok" put up "update the node
+            # to move it back to the kernel module" — a promise no update can keep, since the move needs a module that loads.
+            ent = {"needed": True, "ok": bool(loaded or (built and not us))}
+            # `fallback`, only while not ok — is there a userspace datapath awg-quick falls back to? Without it "no module"
+            # and "no module AND nothing to fall back to" read the same, and only the second means awg interfaces cannot come
+            # up. Interfaces already running on it are proof enough; otherwise the binary where awg-quick looks for it.
+            if not ent["ok"]:
+                ent["fallback"] = bool(us) or bool(shutil.which("amneziawg-go")) or any(
+                    os.access(p, os.X_OK) for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go", "/usr/bin/amneziawg-go"))
+            if us:
+                ent["userspace"] = us
+            out["awg"] = ent
     except Exception:
         return {}
     return out
@@ -10359,7 +10404,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # Source-address validation, same shape. Only meaningful once a cascade/exit entry exists — an
             # asymmetric route is what strict rp_filter drops the return half of.
             "rp_filter": {"needed": bool(_RPF["needed"]), "bad": list(_RPF["bad"])},
-            "datapath": node_datapath_health(),          # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal)
+            "datapath": node_datapath_health(interfaces),          # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal)
             # Per-leg loss/RTT for every mesh link (see MESH_PROBE_EVERY_S). Handshake says the link is UP;
             # this says whether it is any GOOD, which is the question a cascade actually depends on.
             "mesh_health": mesh_health(),

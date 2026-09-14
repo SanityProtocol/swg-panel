@@ -1413,10 +1413,107 @@ host_bindable_ips(){
 # asks for a username, which GIT_TERMINAL_PROMPT=0 turns into a clean failure rather than a hang. The
 # HTTP/1.1 retry turns it back into a working clone. Ubuntu 24.04 (git 2.43 / nghttp2 1.59) never sees it.
 # Costs nothing where HTTP/2 works: the retry is only ever reached after a failure.
-git_clone_depth1(){ # <url> <dest>
-  run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 "$1" "$2" && return 0
+git_clone_depth1(){ # <url> <dest> [<tag or branch>]
+  run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 ${3:+--branch "$3"} "$1" "$2" && return 0
   rm -rf "${2:?}"
-  run env GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth=1 "$1" "$2"
+  run env GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth=1 ${3:+--branch "$3"} "$1" "$2"
+}
+
+# ── the kernel module rebuilds itself when the kernel changes (docs/AWG-DATAPATH-RESILIENCE-PLAN.md D4) ──────────
+# `linux-headers-$(uname -r)` is headers for ONE kernel. The next kernel arrives through the image metapackage with no
+# headers, DKMS skips it ("autoinstall for kernel … was skipped since the kernel headers for this kernel do not seem to
+# be installed" — measured on a client's box), and the reboot onto it takes every awg interface down. The metapackage
+# that installed the image names its twin: linux-image-virtual → linux-headers-virtual, linux-image-cloud-amd64 →
+# linux-headers-cloud-amd64 (Ubuntu and Debian both verified). A kernel no metapackage installed prints nothing — the
+# pinned userspace fallback (D1) is what covers that box.
+awg_headers_meta(){ # print the headers metapackage of every installed kernel IMAGE metapackage, one per line
+  # ⚠️ NOT "whatever depends on the RUNNING kernel's image". The moment an image metapackage has moved on to a newer kernel
+  # — the exact incident: running 138, 139 already installed — nothing depends on the running image any more and that
+  # question answers nothing, so no headers were ever installed for the kernel about to boot. The installed, UNVERSIONED
+  # image metapackages are what bring future kernels, and each names its twin: linux-image-virtual → linux-headers-virtual,
+  # linux-image-cloud-amd64 → linux-headers-cloud-amd64. A twin the archive does not have (linux-image-unsigned-…) is
+  # skipped; a box whose kernels no metapackage installed prints nothing — the userspace fallback (D1) covers it.
+  have dpkg-query && have apt-cache || return 0
+  local m h
+  for m in $(dpkg-query -W -f='${Package} ${db:Status-Abbrev}\n' 'linux-image-*' 2>/dev/null | awk '$2 ~ /^ii/ && $1 ~ /^linux-image-[a-z]/ {print $1}'); do
+    h="linux-headers-${m#linux-image-}"
+    apt-cache show "$h" >/dev/null 2>&1 && printf '%s\n' "$h"
+  done
+  return 0
+}
+ensure_awg_headers_follow(){ # install-if-missing every headers metapackage above. 0 = all present · 10 = installed now · 1 = none · 2 = failed
+  local h any=no inst=no fail=no
+  for h in $(awg_headers_meta); do
+    any=yes
+    [ "$(dpkg-query -W -f='${db:Status-Status}' "$h" 2>/dev/null)" = installed ] && continue   # held or not: dpkg says "hold ok installed"
+    if $DRYRUN; then echo "    [skip] apt-get install $h"; inst=yes; continue; fi
+    # One refresh and one retry: the lists this box last fetched can name a headers version the mirror no longer carries.
+    if run apt-get install -y --no-install-recommends "$h" >/dev/null 2>&1 \
+       || { run apt-get update -qq >/dev/null 2>&1; run apt-get install -y --no-install-recommends "$h" >/dev/null 2>&1; }; then inst=yes; else fail=yes; fi
+  done
+  [ "$any" = yes ] || return 1
+  [ "$fail" = yes ] && return 2          # before 10: one installed and one failed is still a failure worth saying
+  [ "$inst" = yes ] && return 10
+  return 0
+}
+awg_dkms_build_all_kernels(){ # the registered module, built for EVERY installed kernel that has headers — the next boot's included
+  # `dkms install amneziawg/<ver>`, never `dkms autoinstall -k`: autoinstall builds EVERY registered module on the box
+  # (nvidia, zfs, …), so one that fails for some kernel was recompiled on every update. Already installed → a 0.2 s no-op.
+  have dkms || return 0
+  local k s v
+  for k in /lib/modules/*; do
+    k="${k##*/}"
+    [ -e "/boot/vmlinuz-$k" ] && [ -e "/lib/modules/$k/build" ] || continue
+    for s in /var/lib/dkms/amneziawg/*/source; do
+      [ -e "$s" ] || continue
+      v="${s%/source}"; v="${v##*/}"
+      run dkms install -m amneziawg -v "$v" -k "$k" >/dev/null 2>&1 || true
+    done
+  done
+  return 0
+}
+awg_dkms_drop_unowned(){ # ONE DKMS owner: drop an amneziawg source tree no package owns (ours) before a package installs its own
+  # ⚠️ NOT for dpkg's sake, which is what this first guarded against. Measured (G6, dkms 3.0.11, Ubuntu 24.04): the package
+  # installs cleanly over our tree at the same, a newer and an older version, and `dpkg --audit` stays empty. What two
+  # registrations DO is take turns: every `dkms autoinstall` (each update) and every package reinstall (unattended
+  # upgrades) installs the OTHER one ("Diff between built and installed module!"), so which module the next boot loads
+  # depends on which of them ran last. One owner, the package.
+  have dkms || return 0
+  # Only once the package can really be had: lists can still name one the archive no longer serves, and our module removed
+  # before an install that then fails leaves the next boot with no module at all. No obtainable package → nothing removed.
+  run apt-get install -y --download-only amneziawg-dkms >/dev/null 2>&1 || return 0
+  local d v
+  for d in /usr/src/amneziawg-*; do
+    # A DKMS tree of THIS module only — never a checkout that merely matches the glob (amneziawg-linux-kernel-module).
+    grep -qs '^PACKAGE_NAME="\?amneziawg"\?[[:space:]]*$' "$d/dkms.conf" || continue
+    dpkg -S "$d" >/dev/null 2>&1 && continue
+    v="${d##*/amneziawg-}"
+    run dkms remove "amneziawg/$v" --all >/dev/null 2>&1 || true
+    run rm -rf "$d"
+  done
+  return 0
+}
+
+awg_dkms_register_dir(){ # <module src dir> — register upstream's module with DKMS and build it for every kernel with headers
+  # The only route that keeps a SOURCE-built module across kernel upgrades. Used by the source build below, and by the
+  # update heal for a box an older installer built with `make install` (every Debian node until D4).
+  local src="$1" ver
+  have dkms || return 1
+  ver="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$src/dkms.conf" 2>/dev/null)"
+  [ -n "$ver" ] || return 1
+  run make -C "$src" dkms-install && run dkms add -m amneziawg -v "$ver" \
+    && run dkms build -m amneziawg -v "$ver" -k "$(uname -r)" && run dkms install -m amneziawg -v "$ver" -k "$(uname -r)" || return 1
+  awg_dkms_build_all_kernels
+}
+awg_dkms_register_source(){ # clone upstream and register it — ONLY when no amneziawg tree is registered at all. 0 = registered now
+  have dkms && have git && have make || return 1
+  [ -z "$(dkms status amneziawg 2>/dev/null)" ] || return 1            # a tree exists (ours or the package's): its owner builds it
+  $DRYRUN && { echo "    [skip] register amneziawg with DKMS from source"; return 0; }
+  local w rc=1; w="$(mktemp -d)"
+  git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/log" 2>&1 \
+    && awg_dkms_register_dir "$w/mod/src" >>"$w/log" 2>&1 && rc=0
+  rm -rf "$w"
+  return $rc
 }
 
 awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstream. 0 = tools AND module.
@@ -1470,9 +1567,17 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
   info "building the AmneziaWG kernel module for $(uname -r)…"
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
-  { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" \
-      && run make -C "$w/mod/src" \
-      && run make -C "$w/mod/src" install; } >"$w/mod.log" 2>&1 || true
+  ensure_awg_headers_follow >/dev/null 2>&1 || true
+  if git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/mod.log" 2>&1; then
+    # D4: REGISTER WITH DKMS instead of `make install`. Upstream's `install` is modules_install for the build kernel
+    # only, so the next kernel upgrade left the box with no module — on every Debian node, headers or not. DKMS
+    # rebuilds it when a kernel is installed. A tree the amnezia package already registered is left to its owner.
+    if have dkms && [ -z "$(dkms status amneziawg 2>/dev/null)" ] && awg_dkms_register_dir "$w/mod/src" >>"$w/mod.log" 2>&1; then
+      :
+    else
+      { run make -C "$w/mod/src" && run make -C "$w/mod/src" install; } >>"$w/mod.log" 2>&1 || true
+    fi
+  fi
   run depmod -a >/dev/null 2>&1 || true
   rm -rf "$w"
   modprobe amneziawg 2>/dev/null || return 1
@@ -1599,6 +1704,52 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
   return 0
 }
 
+# ── the userspace AmneziaWG datapath, PINNED (docs/AWG-DATAPATH-RESILIENCE-PLAN.md D1) ─────────────────────────
+# awg-quick falls back to `amneziawg-go` by itself when the kernel module is missing — the day a kernel upgrade arrives
+# without headers, a DKMS build fails on a new kernel, or a provider kernel has no headers at all. It can only do that
+# if the binary is ALREADY on the box, so every bare-metal AWG node carries it, working module or not.
+#
+# One pinned upstream ref for the whole fleet: tag + sha256 here, the same ref in Dockerfile.node. The bare-metal binary
+# is published as a release asset of this repo, like the fork binaries, and rebuilt byte for byte by
+# forks/amneziawg-go/build.sh — static (CGO_ENABLED=0 -trimpath -ldflags "-s -w" -buildvcs=false) with Go 1.27.1, so
+# one file runs on any glibc. The node IMAGE builds the same ref with its own base image's Go, so it is the same
+# source, not the same bytes. Identify the asset by tag + sha256 only — its `--version` prints upstream's stale
+# 0.0.20250522. Verified before install: it runs as root at every boot.
+AWG_GO_TAG="amneziawg-go-3.1.20260828"          # upstream amnezia-vpn/amneziawg-go tag v3.1.20260828
+AWG_GO_SHA256_amd64="85ebee7e01d6a18dd05c1116ceb52df60b0a64778afdc00eb06bf1f554ec1524"
+AWG_GO_SHA256_arm64="de0eb94f5b09e57438f5fd86fb15cb1aac5a656b9c39b5c41300a24283b9601e"
+# sha256 of EARLIER pinned builds (any arch), space-separated. A box still carrying one of OURS is moved to the current pin;
+# an amneziawg-go that is not one of ours — installed by the operator, or by another tool — is never touched. When bumping
+# the pin, move the old AWG_GO_SHA256_* values here, or the new build reaches fresh installs only.
+AWG_GO_REPLACES=""
+awg_go_needs_install(){ # 0 = no amneziawg-go on PATH, or it is one of our EARLIER pinned builds
+  have amneziawg-go || return 0
+  local cur; cur="$(sha256sum "$(command -v amneziawg-go)" 2>/dev/null | cut -d' ' -f1)"
+  [ -n "$cur" ] || return 1
+  case " $AWG_GO_REPLACES " in *" $cur "*) return 0 ;; esac
+  return 1
+}
+awg_go_pinned(){ # fetch the pinned amneziawg-go, verify its sha256, install it. 0 = installed
+  local arch sha url tmp u
+  case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) return 1 ;; esac
+  eval "sha=\${AWG_GO_SHA256_$arch:-}"
+  [ -n "$sha" ] || return 1
+  url="https://github.com/SanityProtocol/swg-panel/releases/download/$AWG_GO_TAG/amneziawg-go-linux-$arch"
+  $DRYRUN && { echo "    [skip] fetch + verify $url"; return 0; }
+  have curl && have sha256sum || return 1
+  tmp="$(mktemp)"
+  # GitHub, then the operator's proxy mirrors (SWG_TURN_MIRROR, as for the turn binaries). A mirror is SAFE here, which it
+  # is not for those: whatever it serves must match the pin.
+  for u in "$url" $(for m in ${SWG_TURN_MIRROR:-}; do printf '%s ' "${m%/}/$url"; done); do
+    if curl -fsSL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 3 "$u" -o "$tmp" \
+       && printf '%s  %s\n' "$sha" "$tmp" | sha256sum -c - >/dev/null 2>&1; then
+      install -m 0755 "$tmp" /usr/local/bin/amneziawg-go || { rm -f "$tmp"; return 1; }   # a verified file that did not land is not "installed"
+      rm -f "$tmp"; return 0
+    fi
+  done
+  rm -f "$tmp"; return 1                                     # a download that does not match the pin is never installed
+}
+
 ensure_awg_userspace(){ # last rung: the userspace datapath, so AWG works even with no loadable module. 0/1
   # awg-quick falls back to this ON ITS OWN — its add_if() exits unless the module is missing AND
   # `amneziawg-go` is on PATH, so simply having the binary is the whole wiring. No env var, no config.
@@ -1606,11 +1757,15 @@ ensure_awg_userspace(){ # last rung: the userspace datapath, so AWG works even w
   # have always run, and it works on boxes where nothing else can: no matching headers, LXC/OpenVZ guests.
   have amneziawg-go && return 0
   $DRYRUN && return 0
+  # The pinned build first: no toolchain, no apt source, seconds instead of minutes. The source build below stays only
+  # for an architecture with no published asset, or a box that cannot reach it.
+  awg_go_pinned && { info "userspace AmneziaWG datapath installed (pinned $AWG_GO_TAG)"; return 0; }
   have go || { have apt-get && run apt-get install -y --no-install-recommends golang-go git ca-certificates >/dev/null 2>&1; }
   have go || { warn "no Go toolchain — install amneziawg-go by hand for a userspace AmneziaWG datapath"; return 1; }
   info "building the userspace AmneziaWG datapath (amneziawg-go)…"
   local w; w="$(mktemp -d)"
-  { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" \
+  # The same pinned upstream tag as the published build — same source, this box's own Go, so not the same bytes.
+  { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" "v${AWG_GO_TAG#amneziawg-go-}" \
       && ( cd "$w/go" && run go build -o /usr/local/bin/amneziawg-go . ); } >"$w/go.log" 2>&1 || true
   # Debian STABLE ships a Go far older than amneziawg-go asks for (bookworm: 1.19 vs a go.mod wanting 1.25),
   # and 1.19 predates Go fetching its own toolchain, so it cannot bootstrap out of it either. backports is

@@ -2588,6 +2588,9 @@ export const STR = {
   "{v1}: will not start after a reboot — update this node to repair it": "{v1}: не поднимется после перезагрузки — обновите ноду, чтобы это исправить",
   "{v1}: not running": "{v1}: не запущен",
   "{v1}: interface missing on the node (restore available)": "{v1}: интерфейс отсутствует на ноде (доступно восстановление)",
+  "AmneziaWG kernel module not built/loaded — awg interfaces run on the slower fallback datapath; update the node to rebuild the module": "Модуль ядра AmneziaWG не собран или не загружен — awg-интерфейсы работают на более медленном резервном датапасе в пользовательском пространстве; обновите ноду, чтобы пересобрать модуль",
+  "{v1}: on the slower fallback datapath — update the node to move it back to the kernel module": "{v1}: на более медленном резервном датапасе — обновите ноду, чтобы вернуть его на модуль ядра",
+  "AmneziaWG runs on the slower fallback datapath — its kernel module isn’t built or loaded; running Update rebuilds it": "AmneziaWG работает на более медленном резервном датапасе — модуль ядра не собран или не загружен; «Обновить» пересоберёт его",
   "AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it": "Модуль ядра AmneziaWG не собран или не загружен — awg-интерфейсы не поднимутся; обновите ноду, чтобы пересобрать его",
   "IP forwarding is off on this node — peers connect but nothing they send can leave it. Set net.ipv4.ip_forward=1 on the host (a container can't set it for itself).": "На этой ноде выключена IP-маршрутизация — пиры подключаются, но отправленный ими трафик не может уйти с сервера. Установите net.ipv4.ip_forward=1 на хосте (контейнер не может сделать это сам).",
   "{v1}: listens on UDP {v2}, outside this node's declared firewall range ({v3}) — clients cannot reach it until the range covers that port, or the interface moves inside it": "{v1}: слушает UDP {v2} вне объявленного диапазона фаервола этой ноды ({v3}) — клиенты не смогут подключиться, пока диапазон не покроет этот порт или интерфейс не переедет внутрь него",
@@ -2632,6 +2635,7 @@ export const STR = {
   "This node is on the latest version": "На этой ноде последняя версия",
   "A container or the datapath isn't running on this node — recreating it should fix it. ":
     "На этой ноде не работает контейнер или датапас — пересоздание должно помочь. ",
+  "AmneziaWG on this node is running on the slower fallback datapath — its kernel module isn't loaded, or its interfaces haven't moved back to it yet. ": "AmneziaWG на этой ноде работает на более медленном резервном датапасе — модуль ядра не загружен или интерфейсы ещё не вернулись на него. ",
   "The AmneziaWG kernel module isn't built or loaded on this node — awg interfaces can't come up. ":
     "На этой ноде не собран или не загружен модуль ядра AmneziaWG — интерфейсы awg не поднимутся. ",
   // budget-ok: hover caption fragment, wraps

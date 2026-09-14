@@ -29,11 +29,19 @@ recipe and the patch are in this repository, so any release can be reproduced an
 | WDTT — XXcipherX | [XXcipherX/proxy-turn-vk-android](https://github.com/XXcipherX/proxy-turn-vk-android) | **GPL-3.0** | `9a3a7b87` (v2.0.0.68) | [`forks/wdtt/xxcipherx/`](forks/wdtt/xxcipherx/) | `wdtt-xxcipherx-2.0.0.68` |
 | qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `854a72fe` (Release 1.4.1) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.1` |
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `de7afc23` (v2.1.5) † | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.0.1` † |
+| amneziawg-go (userspace AmneziaWG datapath — bare-metal nodes' fallback) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |
 
 † **csqtt's recipe is ahead of its release.** `forks/csqtt/` is ported to v2.1.5 (`de7afc23`) and builds the
 2.1.5 binary, but that release is not published yet, so the current release is still `csqtt-2.0.1` — built from
 upstream `31114cb7` with the patch as it stood at `929eddf8` in this repository. Every other row's recipe and
-release describe the same binary; this one will too once `csqtt-2.1.5` is cut.
+release describe the same binary (amneziawg-go's aside, §); this one will too once `csqtt-2.1.5` is cut.
+
+§ **amneziawg-go is not a patched fork, and its release is not published yet.** It is built from upstream unchanged:
+the recipe only pins the commit, the Go toolchain (go1.27.1) and the build flags, so the binary reproduces byte for
+byte against the sha256 every installer verifies (pinned in `lib/common.sh`). Bare-metal nodes install it as the
+userspace datapath `awg-quick` falls back to when the kernel module is missing. Until `amneziawg-go-3.1.20260828` is
+published, installers cannot fetch it, and a node builds it from source only where the kernel module will not load —
+from the same upstream tag, with that node's own Go: the same source, not the same bytes.
 
 ‡ **ildarmaga: two things this table cannot say in a cell.** The repository's `LICENSE` is the full text of
 the **GNU GPL v3**, with a copyright header for the WDTT server/panel and the bundled PWDTT client binaries

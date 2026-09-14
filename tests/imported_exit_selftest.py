@@ -83,8 +83,10 @@ check("§5.1: the conf we write carries `Table = off`", "Table = off" in conf, c
 check("…and AllowedIPs really is the whole internet, which is WHY it matters",
       "AllowedIPs = 0.0.0.0/0" in conf, conf)
 check("decision 6: no IPv6 anywhere in the conf", "::" not in conf, conf)
+# A systemd host wraps the bring-up in `systemd-run --scope` (swg-noded:_scoped_up), so this pins the COMMAND
+# and its conf, not its position in the argv.
 check("the device is brought up from the node's OWN state dir, not /etc/wireguard",
-      any(c.startswith("wg-quick up ") and d in c for c in calls), calls)
+      any(re.search(r"(^|\s)wg-quick up ", c) and d in c for c in calls), calls)
 
 # ── 2. secrets ───────────────────────────────────────────────────────────────────────────────────
 rep = N._EXITS["list"]

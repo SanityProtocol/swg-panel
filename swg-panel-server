@@ -400,6 +400,8 @@ def host_datapath_health(ttl=20):
                     except Exception:
                         continue
             out["awg"] = {"needed": True, "ok": bool(loaded or built), "updating": upd}
+            if not out["awg"]["ok"]:   # D2: degraded (a fallback runs the interfaces) vs down — the SPA words the two apart
+                out["awg"]["fallback"] = any(os.access(p, os.X_OK) for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go", "/usr/bin/amneziawg-go"))
     except Exception:
         return _DATAPATH_SVC["data"]                     # probe failed → keep last good; never break /api/state
     _DATAPATH_SVC["at"] = now; _DATAPATH_SVC["data"] = out
@@ -5729,6 +5731,21 @@ def _parse_port_ranges(spec):
     return out
 
 
+def _awg_datapath(snap):
+    """A node's AmneziaWG datapath report ({} when it sends none): needed · ok · fallback (only while the module is
+    missing) · userspace (only while non-empty). docs/AWG-DATAPATH-RESILIENCE-PLAN.md D2.
+    A node's snapshot is its own word: anything not shaped like that is no report, never an exception — _node_issues runs
+    inside the /api/state loop, where one node's malformed report would fail the poll for every node."""
+    dp = snap.get("datapath") if isinstance(snap, dict) else None
+    awg = dp.get("awg") if isinstance(dp, dict) else None
+    if not isinstance(awg, dict):
+        return {}
+    if "userspace" in awg:
+        us = awg.get("userspace")
+        awg = dict(awg, userspace=[u for u in us if isinstance(u, str) and u] if isinstance(us, list) else [])
+    return awg
+
+
 def _node_issues(c, snap, ivk_pub="", capped=()):
     """Health-check roll-up for one node: settings edited on the server (drift), an egress IP / WAN
     NIC the node no longer has, and turn-proxies that aren't running. Empty list = healthy.
@@ -5789,9 +5806,16 @@ def _node_issues(c, snap, ivk_pub="", capped=()):
             issues.append(perr("{v1}: not running", v1=(tp.get("service") or "turn-proxy")))
     for ifn in _missing_ifaces(c, snap, ivk_pub):
         issues.append(perr("{v1}: interface missing on the node (restore available)", v1=ifn))
-    _dp = (snap.get("datapath") or {}).get("awg")   # bare-metal node's AmneziaWG kernel module — a broken DKMS build the updater rebuilds
-    if _dp and _dp.get("needed") and not _dp.get("ok"):
-        issues.append(perr("AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it"))
+    _dp = _awg_datapath(snap)   # bare-metal node's AmneziaWG kernel module — a broken DKMS build the updater rebuilds
+    if _dp.get("needed") and not _dp.get("ok"):
+        # A node that has the userspace fallback is DEGRADED, not down: awg-quick brings every interface up on it. Only
+        # a node without one (or too old to say — no `fallback` key) keeps the "can't come up" sentence.
+        if _dp.get("fallback"):
+            issues.append(perr("AmneziaWG kernel module not built/loaded — awg interfaces run on the slower fallback datapath; update the node to rebuild the module"))
+        else:
+            issues.append(perr("AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it"))
+    elif _dp.get("userspace"):
+        issues.append(perr("{v1}: on the slower fallback datapath — update the node to move it back to the kernel module", v1=", ".join(_dp["userspace"])))
     # IP FORWARDING, read back from /proc rather than assumed. Every install path sets it and nothing ever
     # checked it stuck, so a host where it is off (dockerd --ip-forward=false, a hardened box, a dropped
     # sysctl.d) produced the least helpful failure this panel can have: every peer ONLINE, zero traffic, and
@@ -15516,11 +15540,11 @@ def api(method, path, qs, body, deps):
                         # own card badges itself, so the operator sees WHICH client is bypassing the DNS-based
                         # classification rather than only that someone on the interface is.
                         "doh_peers": (snap.get("doh_peers") or {}),
-                        "datapath_broken": bool((((snap.get("datapath") or {}).get("awg")) or {}).get("needed") and not (((snap.get("datapath") or {}).get("awg")) or {}).get("ok")),   # awg kernel module unloadable → offer "repair node" (node self-update rebuilds it) even when up-to-date
+                        "datapath_broken": bool(_awg_datapath(snap).get("needed") and not _awg_datapath(snap).get("ok") and not _awg_datapath(snap).get("fallback")),   # awg kernel module unloadable → offer "repair node" (node self-update rebuilds it) even when up-to-date
                         # a node self-update can REPAIR: bare-metal → rebuild the awg DKMS module; docker → `compose pull && up`
                         # recreates a crashed container / userspace datapath. True when there's such an issue AND the node is up.
                         "repairable": bool(
-                            (((snap.get("datapath") or {}).get("awg")) or {}).get("needed") and not (((snap.get("datapath") or {}).get("awg")) or {}).get("ok")
+                            _awg_datapath(snap).get("needed") and (not _awg_datapath(snap).get("ok") or _awg_datapath(snap).get("userspace"))
                             or ((snap.get("kind") or c.get("kind")) == "docker"
                                 and (any((e or {}).get("down") for e in (snap.get("interfaces") or {}).values())
                                      or any(tp.get("running") is False for tp in (snap.get("turn_proxies") or []))))),

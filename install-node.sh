@@ -193,6 +193,10 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
     have wg && { modprobe wireguard 2>/dev/null || true; return 0; }
     return 1
   fi
+  # D1 (docs/AWG-DATAPATH-RESILIENCE-PLAN.md): the userspace fallback goes on EVERY bare-metal AWG box, working module
+  # or not — awg-quick needs it on disk the day a reboot lands on a kernel with no module. Only the pinned download
+  # here; a Go build for a box whose module works is not worth its cost (ensure_awg_userspace keeps that rung).
+  awg_go_needs_install && { awg_go_pinned || warn "AmneziaWG: the pinned userspace fallback could not be fetched — awg interfaces depend on the kernel module alone until an update installs it"; }   # missing, or one of our earlier pinned builds
   if have awg && modprobe amneziawg 2>/dev/null; then return 0; fi
   # graceful degrade on a non-apt distro (Fedora/RHEL/Arch/Alpine): don't silently limp — tell the operator exactly
   # what to install with their own package manager. apt paths below stay for Debian/Ubuntu.
@@ -203,6 +207,8 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   run add-apt-repository -y ppa:amnezia/ppa || true
   run apt-get update -qq || true
   run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
+  ensure_awg_headers_follow || true   # D4: headers for the NEXT kernel too, so DKMS builds it when it arrives
+  awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
   run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
   build_awg_module
   $DRYRUN && return 0
@@ -225,6 +231,7 @@ build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the RUNNING
   # `-k $(uname -r)` targets the running kernel: a box on an OLD kernel with newer headers would otherwise build
   # for the wrong one and modprobe would still fail.
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
+  awg_dkms_build_all_kernels   # D4: every installed kernel with headers — an installed-but-not-booted kernel included
   modprobe amneziawg 2>/dev/null && return 0
   run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || true

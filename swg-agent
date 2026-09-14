@@ -861,6 +861,39 @@ def _ensure_quick_unit(tool):
     return _unit_known(unit)               # confirm systemd actually picked it up — never assume the write was enough
 
 
+def _scope_available():
+    """Can this host put a bring-up in a transient scope of its own? Asked by MAKING one — `systemd-run --scope true` —
+    never by reading systemd-run's refusal text: that wording differs between systemd releases (the bus failure alone is
+    printed three different ways across 249, 255 and 257), and a phrase list that misses one left the interface not up
+    at all. A systemd-run that cannot even be executed is a "no" too."""
+    if _IN_CONTAINER or not os.path.isdir("/run/systemd/system") or not shutil.which("systemd-run"):
+        return False
+    try:
+        return subprocess.run(["systemd-run", "--scope", "--quiet", "--collect", "true"],
+                              capture_output=True, text=True, timeout=15).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _quick_up(tool, iface):
+    """`<tool>-quick up <iface>`, in a transient systemd scope of its own wherever systemd runs this node.
+
+    A userspace datapath — amneziawg-go, which awg-quick starts by itself when the kernel module is missing — is a daemon
+    left running after awg-quick exits. Started as a plain child it lands in swg-noded.service's cgroup, and that unit's
+    KillMode=control-group ends it, and the interface with it, every time the node daemon restarts — which every update
+    does. Measured on a Debian node with the module blocked: amneziawg-go in /system.slice/swg-noded.service, gone 2 s after
+    `systemctl restart swg-noded` (docs/AWG-DATAPATH-RESILIENCE-PLAN.md, review finding 2). In a scope of its own it
+    survives. `--scope` runs the command right here, so its stderr and exit status still come back for the refusal
+    classification the callers do.
+
+    No systemd (a container, a non-systemd host), or a host that cannot make a scope right now → the plain call: an
+    interface that comes up and might die on a restart beats one that does not come up at all."""
+    plain = [tool + "-quick", "up", iface]
+    if not _scope_available():
+        return run(plain)
+    return run(["systemd-run", "--scope", "--quiet", "--collect", "--description=swg " + iface + " (" + tool + "-quick up)"] + plain)
+
+
 def _iface_unit(action, tool, iface):
     """enable/disable an interface's <tool>-quick@ unit. True = it took, False = it did not,
     None = not applicable on this host (units are declared elsewhere; see _units_persist).
@@ -1216,7 +1249,7 @@ def op_create_iface(cfg, req):
                 os.unlink(conf)
             raise AgentError("link_fail", f"couldn't link {link} -> {conf}: {e}")
     try:
-        run([tool + "-quick", "up", iface])
+        _quick_up(tool, iface)
     except Exception as e:
         with contextlib.suppress(Exception):
             os.unlink(conf)
@@ -1338,7 +1371,7 @@ def op_restart_iface(cfg, req):
     with contextlib.suppress(Exception):
         run([tool + "-quick", "down", iface])
     try:
-        run([tool + "-quick", "up", iface])
+        _quick_up(tool, iface)
     except Exception as e:
         # Same classification as op_create_iface: Restart is the button the panel offers for a failed
         # bring-up, so this is the path an operator hitting the refusal takes NEXT. Leaving the raw dump
@@ -1368,7 +1401,7 @@ def op_start_iface(cfg, req):
     ic = iface_cfg(cfg, iface)             # raises if it isn't managed here
     tool = (ic.get("cmd") or ["awg"])[0]
     try:
-        run([tool + "-quick", "up", iface])
+        _quick_up(tool, iface)
     except Exception as e:
         _denied = _denied_error(str(e))
         if _denied:
@@ -1396,7 +1429,7 @@ def op_restore_iface_key(cfg, req):
     with contextlib.suppress(Exception):
         run([tool + "-quick", "down", iface])
     try:
-        run([tool + "-quick", "up", iface])
+        _quick_up(tool, iface)
     except Exception as e:
         _denied = _denied_error(str(e))
         if _denied:

@@ -930,7 +930,11 @@ export function serviceIssues() {
   const dp = (Store.datapath || {}).awg;               // local node's AmneziaWG kernel module — a broken DKMS build is what Update rebuilds
   // …but NOT while an update is running: the module legitimately isn't loaded while it is being rebuilt, and
   // raising CRITICAL then invites a SECOND update on top of the first — which is exactly what one operator did.
-  if (dp && dp.needed && !dp.ok && !dp.updating) add("awg", "critical", "module", T("the AmneziaWG kernel module isn’t built or loaded — awg interfaces can’t come up; running Update rebuilds it"));
+  // With the userspace fallback on the box the interfaces are UP, just slower — a warning, not a critical "can't come up".
+  if (dp && dp.needed && !dp.ok && !dp.updating) {
+    if (dp.fallback) add("awg", "warn", "fallback", T("AmneziaWG runs on the slower fallback datapath — its kernel module isn’t built or loaded; running Update rebuilds it"));
+    else add("awg", "critical", "module", T("the AmneziaWG kernel module isn’t built or loaded — awg interfaces can’t come up; running Update rebuilds it"));
+  }
   out.sort((a, b) => (b.sev === "critical") - (a.sev === "critical"));
   return out;
 }

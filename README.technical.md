@@ -155,7 +155,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 | Panel · 4 | **Serve mode** | `internal` (default, self-contained) · `nginx` · `caddy` · `skip` |
 | Panel | **Port / admin** | port (default **443** for `internal`; the unit adds the bind capability for ports < 1024) and the web login — suggests `admin` + 3 digits; changeable later under **Settings → Authentication** |
 | Node · 1 | **Node name** | *(master)* this box's node name (default: hostname) |
-| Node · 2 | **Datapath tooling** | *(master)* no prompt. Installs nftables + dnsmasq (smart routing / Force-DNS), the AmneziaWG tools **and** the DKMS kernel module, and plain WireGuard — so the panel can create either type immediately — then detects the interfaces already on the box and hands them to the panel as adoption candidates. |
+| Node · 2 | **Datapath tooling** | *(master)* no prompt. Installs nftables + dnsmasq (smart routing / Force-DNS), the AmneziaWG tools **and** the DKMS kernel module — plus the kernel's headers metapackage, so the module is rebuilt whenever a new kernel is installed — the pinned userspace **`amneziawg-go`** that `awg-quick` falls back to if a boot ever finds no module, and plain WireGuard — so the panel can create either type immediately — then detects the interfaces already on the box and hands them to the panel as adoption candidates. |
 
 **TLS:**
 - **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
