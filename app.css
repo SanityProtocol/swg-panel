@@ -3386,14 +3386,54 @@ a.tg:hover{filter:brightness(1.25)}
 .dpsw.netsw-share button{min-width:0;padding:6px 15px}
 .netshare-add{flex:1 1 200px;min-width:180px}
 .netshare-add .usercombo{width:100%}
-.netgrants{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);margin:2px 0 6px;overflow:hidden}
-.netgrant{display:flex;align-items:center;gap:10px;min-height:40px;padding:5px 8px 5px 12px;font-size:13px;box-sizing:border-box}
-.netgrant+.netgrant{border-top:1px solid var(--line)}
-.netgrant .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--ink)}
-.netgrant-until{display:inline-flex;align-items:center;gap:7px;font-size:12px}
-.netgrant .datein{padding:4px 8px;font-size:12px}
-.netgrant.empty{color:var(--dim);font-size:12.5px}
-.netgrant.empty.err{color:var(--dangling)}
+/* "Shared with N users" — the way into the People window, in the pill row's register */
+.netshare-count{appearance:none;display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 14px;border:1px solid color-mix(in srgb,var(--brand) 40%,var(--line));
+  border-radius:18px;background:color-mix(in srgb,var(--brand) 9%,transparent);color:var(--brand);font:inherit;font-size:12.5px;font-weight:700;cursor:pointer}
+.netshare-count svg{width:14px;height:14px}
+.netshare-count:hover{background:color-mix(in srgb,var(--brand) 16%,transparent)}
+.netshare-count:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.netshare-count.bad{color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 45%,var(--line));background:color-mix(in srgb,var(--dangling) 8%,transparent)}
+/* the People window: add + filter, a grid of 15 rows, the pager */
+.sharelead{margin:0 0 10px}
+.sharebar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
+.sharebar-add{flex:1 1 240px;min-width:0}
+.sharebar-add .usercombo{width:100%}
+.sharebar-filter{flex:0 1 200px;min-width:140px}
+.sharegrid{border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;background:var(--surface-2)}
+.sharegrid-h,.sharegrid-r{display:grid;grid-template-columns:minmax(0,1fr) 128px 158px 36px;gap:10px;align-items:center;padding:0 8px 0 12px}
+.sharegrid-h{min-height:32px;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);font-weight:600;border-bottom:1px solid var(--line)}
+.sharegrid-r{min-height:42px;font-size:13px}
+.sharegrid-r+.sharegrid-r{border-top:1px solid var(--line)}
+.sharegrid-r .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--ink)}
+.sharegrid-r .datein{padding:4px 8px;font-size:12px;width:100%;box-sizing:border-box}
+.sharegrid-empty{padding:14px 12px;font-size:12.5px;color:var(--dim)}
+.netpager{margin-top:8px}
+@media (max-width:640px){.sharegrid-h{display:none}.sharegrid-r{grid-template-columns:minmax(0,1fr) auto 36px;padding:6px 8px 6px 12px}
+  .sharegrid-r>span:nth-child(3){grid-column:1 / -1;order:4}}
+/* a person's devices: colour-coded counts, detail on hover */
+.netdev{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;cursor:help}
+.netdev svg{width:12px;height:12px;color:var(--faint)}
+.netdev.none{font-family:inherit;color:var(--dim)}
+.netdev-n,.netcount .n{font-weight:700;font-variant-numeric:tabular-nums}
+.netdev-n.ok,.netcount .n.ok{color:var(--online)}
+.netdev-n.soon,.netcount .n.soon{color:var(--pending)}
+.netdev-n.no,.netcount .n.no{color:var(--dangling)}
+/* who can reach it on a node: four numbers on the networks' line */
+.netcount{display:inline-flex;align-items:center;gap:0;font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:999px;
+  background:var(--panel);cursor:help;overflow:hidden}
+.netcount .n{padding:2px 8px}
+.netcount .n+.n{border-left:1px solid var(--line)}
+.netcount .n.all{color:var(--ink)}
+.netbub-row{margin:3px 0}
+.netbub-row.sub{padding-left:10px;color:var(--dim)}
+/* nb-dot, not .dot — the panel's global .dot is a 9 px circle and squashed every row into one */
+.netbub-row.nb-dot{position:relative;padding-left:14px}
+.netbub-row.nb-dot::before{content:"";position:absolute;left:0;top:.55em;width:7px;height:7px;border-radius:50%;background:var(--faint)}
+.netbub-row.nb-dot.ok::before{background:var(--online)}
+.netbub-row.nb-dot.soon::before{background:var(--pending)}
+.netbub-row.nb-dot.no::before{background:var(--dangling)}
+.netlist{align-items:center}
+.netaddr{font-size:12px}
 .peergrid .srvcell .srvtags{display:inline-flex;align-items:center;gap:5px;flex:none}
 .peergrid .srvcell .srvtags .tg-gw{margin-left:0}
 .peergrid td.c-name>span.namewrap{display:inline-flex;align-items:center;gap:5px;max-width:100%;min-width:0;overflow:visible;vertical-align:bottom}
