@@ -1013,6 +1013,17 @@ function shareRefused(why) {
   }
 }
 const shareUser = id => { const u = Store.user(id); return u ? u.name : T("a user who no longer exists"); };
+// Why a grantee's turn-server devices do not reach it (swg-panel-server keyless_sources, docs/NETWORKS-PLAN.md §16).
+function shareKeyless(why, name, devices) {
+  const o = { name, devices };
+  switch (why) {
+    case "unenforced": return T("{name}: {devices} on a turn server whose build can't prove who is sending — they can't reach it.", o);
+    case "not_connected": return T("{name}: {devices} not connected yet — they reach it once connected.", o);
+    case "not_running": return T("{name}: {devices} on a turn server that isn't running.", o);
+    case "raw_excluded": return T("{name}: {devices} in ildarmaga's raw mode, which can't reach a restricted network.", o);
+    default: return T("{name}: {devices} not reported by the node yet.", o);
+  }
+}
 
 function NetShare({ peer, draft, setDraft, dirty, busy, onSave }) {
   const owner = peer.user_id ? Store.user(peer.user_id) : null;
@@ -1035,7 +1046,7 @@ function NetShare({ peer, draft, setDraft, dirty, busy, onSave }) {
           aria-label=${T("Stop sharing with {name}", { name: shareUser(id) })} onClick=${() => drop(id)}><${Ic} i="x"/></button></div>`)}
       <div class="netrow"><${UserPicker} value=${null} placeholder=${T("Share with someone…")}
         onChange=${id => { if (id && id !== peer.user_id && !(id in draft.users)) setUser(id, 0); }}/></div>
-      <div class="hint">${T("A date is the last day they can reach these networks; leave it empty for no end. Only their WireGuard and AmneziaWG devices on the same node count — a turn-server device can't reach a restricted network.")}</div>` : null}
+      <div class="hint">${T("A date is the last day they can reach these networks; leave it empty for no end. Their devices on the same node count — a turn-server device only when its server can prove who is sending.")}</div>` : null}
     <div class="netrow"><span class="grow"></span>
       <button class="btn" disabled=${busy || !dirty} onClick=${onSave}>${busy ? T("saving…") : T("Save access")}</button></div>
   </div>`;
@@ -1056,8 +1067,7 @@ function NetShareSays({ t, node }) {
     ${(s.grants || []).map(g => html`<div class="netwiden" key=${g.user_id}><span class="grow">${shareUser(g.user_id)}</span>
       <span class="faint">${g.owner ? T("owner") : g.until ? T("until {date}", { date: fmtDate(g.until) }) : T("no end")}</span>
       <span class="faint">${g.devices ? T("{devices} here", { devices: plural(g.devices, "device") }) : g.keyless ? "" : T("no device on {node}", { node })}</span></div>
-      ${g.keyless ? html`<div class="netwhy">${T("{name}: turn-server devices can't reach a restricted network ({devices}).",
-          { name: shareUser(g.user_id), devices: plural(g.keyless, "device") })}</div>` : null}`)}
+      ${Object.entries(g.keyless_why || {}).map(([w, n]) => html`<div class="netwhy">${shareKeyless(w, shareUser(g.user_id), plural(n, "device"))}</div>`)}`)}
     ${(s.lapsed || []).length ? html`<div class="netwhy">${T("Access has ended for {names}.", { names: s.lapsed.map(shareUser).join(", ") })}</div>` : null}
   </div>`;
 }

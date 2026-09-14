@@ -27,10 +27,17 @@ for, and the node enforces it with one prerouting table. What this holds:
  [11] ⚠️ fail closed (S7): a table that will not load takes the networks OUT of the ACL, own /32 kept, and says so.
  [12] a flushed table is rebuilt by the routing pass; a rebuild that fails is forgotten, so the next pass strips.
  [13] `net_deps` says the node can enforce (S8's other half), and the sync loop applies the restriction before the ACL.
+ §16 — KEYLESS
+ [14] a keyless grantee is a source only where its REPORTED server build vouches for its path: a capable qWDTT wire path is;
+      csqtt and ildarmaga builds not in the table, ildarmaga RAW, a device never connected, a deactivated password, a stopped
+      server and an ungranted user are not — each named with its reason in the report, and "Networks this user can reach"
+      follows the same rule.
+ [15] ⚠️ the capability table names only PUBLISHED builds (every entry is in WDTT_BUILDS / CSQTT_BUILDS) and never ildarmaga RAW.
 
 Hermetic. Run: python3 tests/network_share_selftest.py            (0 = pass)
      --perturb        grants a lapsed date again and expects RED on [1] and [5].
      --perturb-open   hands the ACL back UNSTRIPPED when the table will not load and expects RED on [11].
+     --perturb-keyless  vouches for every keyless build and expects RED on [14].
 """
 import importlib.machinery, importlib.util, inspect, json, os, sys, tempfile, time
 
@@ -40,6 +47,7 @@ PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-serv
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
 PERTURB_OPEN = "--perturb-open" in sys.argv
+PERTURB_KEYLESS = "--perturb-keyless" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -64,6 +72,8 @@ if PERTURB:
     P.share_grants = lambda p, users, nowv: _sg(p, users, 0)
 if PERTURB_OPEN:
     N._share_strip = lambda desired, plan: desired
+if PERTURB_KEYLESS:
+    P.keyless_share_capable = lambda fork, path, version: True
 
 NOW = int(time.time())
 DAY = 86400
@@ -188,8 +198,8 @@ check("the audience is owner + grantee devices that can reach it (keyless not co
       t1["audience"] == {"peers": 3, "users": 2}, t1["audience"])
 sh = t1.get("share") or {}
 check("each grant with its devices here — a keyless one named", sh.get("grants") == [
-      {"user_id": "anna", "until": 0, "owner": True, "devices": 1, "keyless": 0},
-      {"user_id": "boris", "until": NOW + DAY, "owner": False, "devices": 2, "keyless": 1}], sh.get("grants"))
+      {"user_id": "anna", "until": 0, "owner": True, "devices": 1, "keyless": 0, "keyless_why": {}},
+      {"user_id": "boris", "until": NOW + DAY, "owner": False, "devices": 2, "keyless": 1, "keyless_why": {"not_reported": 1}}], sh.get("grants"))
 check("who it cuts off on the node (a blocked user is nobody)", sh.get("cut_off") == {"peers": 1, "users": 1, "providers": []}, sh.get("cut_off"))
 check("what the node says about enforcing it", sh.get("node") == {"ok": True, "peers": [K("O")]}, sh.get("node"))
 repn = P.network_report(RN, "office", {"n1": SNAP})
@@ -342,6 +352,63 @@ check("the sync loop hands `reconcile` what reconcile_net_share returns, after n
 _bs = inspect.getsource(N.build_snapshot)
 check("the snapshot adds `net_share` only under a status", 'if _SHARE["status"]:' in _bs and 'snap["net_share"] = dict(_SHARE["status"])' in _bs
       and _bs.count('"net_share"') == 1)
+
+print("\n[14] §16 — keyless grantees")
+RK = roster()
+RK["peers"]["boris-wdtt"]["targets"] = [{"node": "n1", "iface": "wdtt1", "type": "wdtt"}]
+RK["peers"]["boris-csq"] = {"id": "boris-csq", "user_id": "boris", "csqtt_password": "cpw",
+                            "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"}]}
+RK["peers"]["anna-ild"] = {"id": "anna-ild", "user_id": "anna", "wdtt_password": "ipw", "targets": [{"node": "n1", "iface": "wdtt2", "type": "wdtt"}]}
+RK["peers"]["anna-new"] = {"id": "anna-new", "user_id": "anna", "wdtt_password": "npw", "targets": [{"node": "n1", "iface": "wdtt1", "type": "wdtt"}]}
+RK["peers"]["carol-wdtt"] = {"id": "carol-wdtt", "user_id": "carol", "wdtt_password": "cw", "targets": [{"node": "n1", "iface": "wdtt1", "type": "wdtt"}]}
+def sk(**over):
+    q = {"iface": "wdtt1", "fork": "qwdtt", "version": "1.4.3", "active": "active", "raw_iface": "wdttraw1",
+         "passwords": {"x": {"ip": "10.66.66.2", "raw_ip": "10.70.66.2"}, "npw": {"ip": "", "raw_ip": ""}, "cw": {"ip": "10.66.66.9"}}}
+    q.update(over)
+    return dict(SNAP, wdtt=[q, {"iface": "wdtt2", "fork": "ildarmaga", "version": "1.5.40-2", "active": "active", "raw_iface": "wdttraw2",
+                                "passwords": {"ipw": {"ip": "10.66.67.3", "raw_ip": "10.70.67.3"}}}],
+                csqtt=[{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9", "active": "active", "passwords": {"cpw": {"ip": "10.66.68.4"}}}])
+SK = sk()
+nk = P.net_share_for_node(RK, "n1", P.node_networks(RK, "n1", SK)["carry"], SK)
+els = {(e[0], e[1]): e[2] for e in nk[0]["from"]}
+check("a capable qWDTT wire path is a source — its address from the node's read-back, the grant's date",
+      els.get(("wdtt1", "10.66.66.2/32")) == NOW + DAY, nk)
+check("…its RAW path is not (qWDTT 1.4.3 raw is not in the table)", ("wdttraw1", "10.70.66.2/32") not in els, nk)
+check("csqtt 2.1.9 (no source check) is not; ildarmaga (not in the table) is not, on either path",
+      not any(a in ("10.66.68.4/32", "10.66.67.3/32", "10.70.67.3/32") for _i, a in els), nk)
+check("a device that never connected, and an ungranted user's device, are not", not any(a == "10.66.66.9/32" for _i, a in els) and
+      all(i != "wdtt1" or a == "10.66.66.2/32" for i, a in els), nk)
+check("no snapshot ⇒ no keyless source at all (fail closed)",
+      not any(i == "wdtt1" for i, _a, _u in P.net_share_for_node(RK, "n1", P.node_networks(RK, "n1", SK)["carry"])[0]["from"]))
+for name, snap_ in (("deactivated password", sk(passwords={"x": {"ip": "10.66.66.2", "is_deactivated": True}})),
+                    ("stopped server", sk(stopped=True)), ("server not active", sk(active="failed")),
+                    ("unknown build", sk(version="")), ("a DIFFERENT build of the fork", sk(version="1.4.1"))):
+    n_ = P.net_share_for_node(RK, "n1", P.node_networks(RK, "n1", snap_)["carry"], snap_)
+    check("%s ⇒ not a source" % name, not any(i == "wdtt1" for i, _a, _u in n_[0]["from"]), n_)
+ik = P._keyless_index(dict(SNAP, wdtt=[{"iface": "wdtt2", "fork": "ildarmaga", "version": "1.5.40-2", "active": "active",
+                                         "raw_iface": "wdttraw2", "passwords": {"ipw": {"ip": "", "raw_ip": "10.70.67.3"}}}]))
+_orig_tbl = dict(P.KEYLESS_SHARE_BUILDS)
+P.KEYLESS_SHARE_BUILDS["ildarmaga"] = {"wg": ("1.5.40-2",), "raw": ("1.5.40-2",)}
+check("ildarmaga RAW is excluded even if a table entry tried to list it",
+      P.keyless_sources(RK["peers"]["anna-ild"], RK["peers"]["anna-ild"]["targets"][0], ik) == ([], "raw_excluded"))
+P.KEYLESS_SHARE_BUILDS.clear(); P.KEYLESS_SHARE_BUILDS.update(_orig_tbl)
+rk = P.network_report(RK, "office", {"n1": SK})
+gk = {g["user_id"]: g for g in next(e for e in rk["targets"] if e["node"] == "n1")["share"]["grants"]}
+check("the report counts the vouched keyless device as reaching, and names why the others do not",
+      gk["boris"]["devices"] == 3 and gk["boris"]["keyless_why"] == {"unenforced": 1}
+      and gk["anna"]["devices"] == 1 and gk["anna"]["keyless_why"] == {"not_connected": 1, "unenforced": 1}, gk)
+ubk = P.user_networks(RK, "boris", {"n1": SK})
+_nets = lambda pid: [n["prefix"] for pr in ubk["peers"] if pr["peer_id"] == pid for t in pr["targets"] for n in t["networks"]]
+check("\"Networks this user can reach\": the vouched keyless device reaches the office, the csqtt one does not",
+      "192.168.1.0/24" in _nets("boris-wdtt") and "192.168.1.0/24" not in _nets("boris-csq"), ubk)
+
+print("\n[15] the capability table promises only published builds")
+for fork, paths in P.KEYLESS_SHARE_BUILDS.items():
+    published = {v for v, _t in (P.CSQTT_BUILDS if fork == "csqtt" else (P.WDTT_BUILDS.get(fork) or []))}
+    for path, vers in paths.items():
+        check("%s %s: a known path, every version published %s" % (fork, path, list(vers)),
+              path in ("wg", "raw") and vers and all(v in published for v in vers), published)
+check("ildarmaga RAW is never in the table", "raw" not in (P.KEYLESS_SHARE_BUILDS.get("ildarmaga") or {}))
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)

@@ -4931,6 +4931,71 @@ def node_networks(roster, nid, snap):
 # good. The panel decides who, per node; the node enforces it with one nft table (`swg-noded` `reconcile_net_share()`).
 NET_SHARE_MAX = 500        # grantees on one provider — bounds the reply, the node's sets and the sheet
 
+# NETWORKS §16 — a KEYLESS (WDTT / csqtt) device is a share source only on a server build proven to (a) drop a packet whose
+# source is not the session's own address, (b) keep one stable address per password, and (c) cut a revoked password's live
+# sessions — per path ("wg" = the WireGuard side, "raw" = a raw TUN: qWDTT RAW, csqtt).
+# ⚠️ A PROMISE ABOUT A BINARY, and the codebase's rule for those applies (`TURN_SERVERS[f]["raw"]`, `*_BUILDS`): an entry names
+# a PUBLISHED build and is added in the SAME change that publishes it — tests/network_share_selftest.py ties every entry to
+# WDTT_BUILDS / CSQTT_BUILDS. The fixed builds of §16.2 K5 are not published, so they are not here.
+# ildarmaga RAW never appears (operator, 2026-09-14): its raw addresses are memory-only and never reported.
+# PROVEN, not read: every entry is backed by a rig run of that build (real client, spoof counted at the server's device,
+# revocation cutting a live session). amurcanov 1.2.4-2 and WDTT Plus 15 qualify on a source reading and join the table
+# only with their rig proof.
+KEYLESS_SHARE_BUILDS = {
+    "qwdtt":     {"wg": ("1.4.3",)},    # §16.1 K0 + .campaign/rigs/networks-p1-netns.sh --p5k
+}
+
+
+def keyless_share_capable(fork, path, version):
+    """Does this fork's build, as the node REPORTS it installed, vouch for a source on this path? Unknown ⇒ no."""
+    return bool(version) and version in ((KEYLESS_SHARE_BUILDS.get(fork) or {}).get(path) or ())
+
+
+def _keyless_index(snap):
+    """{(kind, iface): instance} — a node snapshot's WDTT and csqtt read-backs."""
+    idx = {}
+    for kind in ("wdtt", "csqtt"):
+        for inst in ((snap or {}).get(kind) or []):
+            if isinstance(inst, dict) and inst.get("iface"):
+                idx[(kind, inst["iface"])] = inst
+    return idx
+
+
+def keyless_sources(p, t, idx):
+    """([(device, prefix)], reason) — the sources one keyless deployment is vouched as on its node, or none and why.
+
+    From the node's own read-back of the server's store (each password's `ip`, `raw_ip`, the instance's `raw_iface`), never
+    from the roster: the address is the server's to hand out. Fail closed everywhere the panel cannot see — reason
+    `not_reported` (no instance or password in the snapshot, or the password deactivated), `not_running`, `not_connected`
+    (no address yet), `unenforced` (the reported build is not in KEYLESS_SHARE_BUILDS for that path), `raw_excluded`."""
+    kind = "csqtt" if _is_csqtt_target(t) else "wdtt"
+    inst = idx.get((kind, t.get("iface")))
+    pw = p.get("csqtt_password") if kind == "csqtt" else p.get("wdtt_password")
+    pe = ((inst or {}).get("passwords") or {}).get(pw) if pw else None
+    if not inst or not isinstance(pe, dict) or pe.get("is_deactivated"):
+        return [], "not_reported"
+    if inst.get("stopped") or inst.get("active") not in (None, "active"):
+        return [], "not_running"
+    fork = str(inst.get("fork") or ("csqtt" if kind == "csqtt" else "amurcanov")).strip()
+    ver = str(inst.get("version") or "")
+    paths = ([("raw", inst.get("iface"), pe.get("ip"))] if kind == "csqtt" else
+             [("wg", inst.get("iface"), pe.get("ip")), ("raw", inst.get("raw_iface"), pe.get("raw_ip"))])
+    out, why, known = [], "", False
+    for path, dev, a in paths:
+        pre = ""
+        with contextlib.suppress(ValueError, TypeError):
+            pre = str(ipaddress.ip_network(str(a).split("/")[0] + "/32")) if a else ""
+        if not pre or not dev:
+            continue
+        known = True
+        if kind == "wdtt" and fork == "ildarmaga" and path == "raw":
+            why = why or "raw_excluded"
+        elif keyless_share_capable(fork, path, ver):
+            out.append((str(dev), pre))
+        else:
+            why = why or "unenforced"
+    return (out, "") if out else ([], why if known else "not_connected")
+
 
 def share_grants(p, users, nowv):
     """{uid: until (0 = no end)} — who may reach a RESTRICTED provider's networks right now, or None when it is not
@@ -4987,15 +5052,16 @@ def share_clean(roster, peer, raw, nowv):
     return {"users": dict(sorted(out.items()))}, None
 
 
-def net_share_for_node(roster, nid, carry):
+def net_share_for_node(roster, nid, carry, snap=None):
     """The sync reply's `net_share` for one node (§15.2 S3, S6) — every RESTRICTED provider this node carries, with the
     sources allowed to reach its networks; [] when there is none, and the reply then carries no key at all (D1).
 
         [{"peer": <provider pubkey>, "from": [[<iface>, <prefix>, <until>], …]}, …]
 
     A source is a deployment ON THIS NODE of a user in the audience: its tunnel /32 on its interface, plus every
-    network that peer itself carries here (site-to-site). Only wg/awg vouch for a source address, so a keyless
-    deployment is never one, and nothing arriving over a mesh link is on the list. No networks on the wire: the node
+    network that peer itself carries here (site-to-site). A keyless deployment is one only where its server build vouches
+    for the address it handed out (`keyless_sources`, §16) — never without the node's snapshot — and nothing arriving
+    over a mesh link is on the list. No networks on the wire: the node
     reads them from the provider's own accepted ACL members (D4), so a network it refused gets no rule.
 
     ONE pass over the roster however many providers are restricted (§15.8 Round 5)."""
@@ -5007,7 +5073,7 @@ def net_share_for_node(roster, nid, carry):
                          and peers[pid].get("pubkey")), key=lambda x: x[1]["pubkey"])
     if not restricted:
         return []
-    by_user = {}
+    by_user, kidx = {}, None
     for key, q in peers.items():
         if not isinstance(q, dict) or q.get("user_id") not in users:
             continue
@@ -5016,8 +5082,15 @@ def net_share_for_node(roster, nid, carry):
             continue
         src = by_user.setdefault(q["user_id"], set())
         for t in q.get("targets") or []:
+            if t.get("node") != nid or not t.get("iface"):
+                continue
+            if _is_self_contained_target(t):
+                if snap is not None:
+                    kidx = kidx if kidx is not None else _keyless_index(snap)
+                    src.update(keyless_sources(q, t, kidx)[0])
+                continue
             ip = (t.get("ip") or "").split("/")[0]
-            if t.get("node") != nid or not t.get("iface") or not ip or _is_self_contained_target(t):
+            if not ip:
                 continue
             with contextlib.suppress(ValueError):
                 src.add((t["iface"], str(ipaddress.ip_network(ip + "/32"))))
@@ -5152,7 +5225,8 @@ def network_report(roster, pid, snaps):
         peers_n, users_s, widen = 0, set(), []
         # P5 (§15.3): a restricted provider's audience is its owner and grantees, not the node. Everyone else ON the node
         # is who the restriction cuts off, and a grantee whose devices here are all keyless reaches nothing (S3).
-        cut_peers, cut_users, dev, kl = 0, set(), {}, {}
+        cut_peers, cut_users, dev, kl, klw = 0, set(), {}, {}, {}
+        kidx = _keyless_index(snap) if grants is not None else None
         for q in (roster.get("peers") or {}).values():
             if not isinstance(q, dict) or q.get("id") == pid:
                 continue
@@ -5170,9 +5244,13 @@ def network_report(roster, pid, snaps):
                         cut_users.add(quid)
                     continue
                 keyed = any(not _is_self_contained_target(x) for x in qts)
-                dev[quid] = dev.get(quid, 0) + (1 if keyed else 0)
-                kl[quid] = kl.get(quid, 0) + (0 if keyed else 1)
-                if not keyed:
+                kres = [keyless_sources(q, x, kidx) for x in qts if _is_self_contained_target(x)]
+                reach = keyed or any(src_ for src_, _w in kres)
+                dev[quid] = dev.get(quid, 0) + (1 if reach else 0)
+                if not reach:
+                    kl[quid] = kl.get(quid, 0) + 1
+                    _w = next((w for _s, w in kres if w), "not_reported")
+                    klw.setdefault(quid, {})[_w] = klw.get(quid, {}).get(_w, 0) + 1
                     continue
             peers_n += 1
             if q.get("user_id"):
@@ -5196,7 +5274,8 @@ def network_report(roster, pid, snaps):
             _peers = roster.get("peers") or {}
             entry["share"] = {
                 "grants": [{"user_id": u, "until": g, "owner": u == p.get("user_id"),
-                            "devices": dev.get(u, 0), "keyless": kl.get(u, 0)} for u, g in sorted(grants.items())],
+                            "devices": dev.get(u, 0), "keyless": kl.get(u, 0), "keyless_why": dict(sorted(klw.get(u, {}).items()))}
+                           for u, g in sorted(grants.items())],
                 "lapsed": sorted(u for u, g in _stored.items()
                                  if u in users and isinstance(g, int) and not isinstance(g, bool) and 0 < g <= nowv),
                 "cut_off": {"peers": cut_peers, "users": len(cut_users),
@@ -5253,14 +5332,16 @@ def user_networks(roster, uid, snaps, nodes=None):
                 plans[nid] = node_networks(roster, nid, snap)["carry"]
             meta = (((snap.get("interfaces") or {}).get(t.get("iface")) or {}).get("meta") or {})
             allowed = None if _is_self_contained_target(t) else effective_client_params(p, t, meta)["allowed"]
-            nets = []
+            nets, vouched = [], None
             for opid, ent in sorted(plans[nid].items()):
                 if opid == pid:
                     continue
-                # P5: a restricted network is listed only for its owner and live grantees, and never for a keyless
-                # deployment, whose source address nothing can vouch for (§15.2 S3)
+                # P5: a restricted network is listed only for its owner and live grantees — and for a keyless deployment
+                # only where its server build vouches for the address it handed out (§16, `keyless_sources`)
                 g = share_grants((roster.get("peers") or {}).get(opid), users, nowv)
-                if g is not None and (uid not in g or allowed is None):
+                if g is not None and allowed is None and vouched is None:
+                    vouched = bool(keyless_sources(p, t, _keyless_index(snap))[0])
+                if g is not None and (uid not in g or (allowed is None and not vouched)):
                     continue
                 for pre in ent["nets"]:
                     nets.append(dict({"prefix": pre, "via": opid,
@@ -22898,7 +22979,7 @@ class Handler(BaseHTTPRequestHandler):
         desired = desired_for_node(roster, nid, snap)   # the snapshot gates networks: absent net_deps ⇒ /32 only (D7)
         # NETWORKS P5 — who may reach each RESTRICTED network this node carries (docs/NETWORKS-PLAN.md §15 S6). Not even
         # computed unless some peer restricts a network, so a panel with no share sends exactly the reply it sent (D1).
-        _nshare = (net_share_for_node(roster, nid, node_networks(roster, nid, snap)["carry"])
+        _nshare = (net_share_for_node(roster, nid, node_networks(roster, nid, snap)["carry"], snap)
                    if snap is not None and any(isinstance(q, dict) and q.get("routes") and isinstance(q.get("share"), dict)
                                                for q in (roster.get("peers") or {}).values()) else [])
         _clists = {cl["id"]: cl for cl in ((Handler.deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")}
