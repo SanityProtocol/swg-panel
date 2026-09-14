@@ -9,6 +9,16 @@ Upstream: https://github.com/ildarmaga/wdtt — a Go workspace (`.` + `./panel` 
 server (`:2096`), SQLite panel, and Xray routing are NOT built or used — the swg-panel is the control
 plane.
 
+## Build label: `1.5.0-3` — and an honest word on the source
+
+⚠️ **ildarmaga publishes no source past `ef69799`.** Its tags `1.5.40`, `1.5.55` and `1.5.61` all point
+at that single docs commit, and the shipped `1.5.x` binaries were built from commits that were never
+pushed (the `1.5.61` binary's `vcs.revision` is not on GitHub). So the newest *buildable* source is the
+`v1.5.0` tree at `ef69799`. We build **that**, plus our patch, and label the result **`1.5.0-3`** rather
+than borrow a `1.5.40`/`1.5.61` number we cannot reproduce. What an earlier note called "1.5.40-2" was in
+truth source `1.5.0` + our patch; `1.5.0-3` is the same source with the K5 revocation/source fixes below.
+Nothing here is published — this is a local build + rig proof only.
+
 ## Build
 
 ```bash
@@ -18,10 +28,11 @@ GOARCH=arm64 ./build.sh    # → wdtt-ildarmaga-server-arm64
 
 Requires a Go 1.25 toolchain. `CGO_ENABLED=0` static build (pure-Go `modernc.org/sqlite`).
 
-## Patch (`wdtt-ildarmaga.patch`, pinned to upstream `ce79eeae` — v1.4.63)
+## Patch (`wdtt-ildarmaga.patch`, pinned to upstream `ef69799` — `v1.5.0`)
 
-~46 lines across `server/{config,server,server_util,server_wg}.go`. Adds these flags (defaults keep
-stock behavior when absent):
+Across `server/{config,server,server_conn,server_raw,server_util,server_wg}.go`, `cmd/wdtt/main.go`, and
+new files `server/desired_ingest.go` (+ tests). Adds these flags (defaults keep stock behavior when
+absent):
 
 | flag | effect |
 |---|---|
@@ -37,6 +48,37 @@ Headless run (server-only, no panel/SQLite — falls back to flags when there's 
 wdtt-ildarmaga-server -iface wdtt0 -wg-addr 10.66.66.1/24 -listen 0.0.0.0:56000 \
   -wg-port 56001 -config-dir /opt/swg-wdtt/wdtt0 -password <owner> -no-nat -max-users 200
 ```
+
+## Security fixes in `1.5.0-3` (NETWORKS §16 · K5)
+
+The patch also closes the keyless-fork revocation/source defects, each proven on a namespace rig
+(`cli ↔ local pion TURN ↔ server`) with the pre-fix build (`ef69799` + the flags patch only) as control:
+
+- **WG revocation now cuts access (the key defect).** `ingestDesiredFile` used `DeleteUser(sdb, pw, nil)`,
+  which left the `pw:<password>` row in `wdtt_devices`; on reload the leftover device resolved to no user,
+  `bindOrphanDeviceToMainLocked` re-homed it to the **owner** password, and its WG peer was re-added — the
+  revoked client kept its tunnel. Now `DeleteUser` is given the password's device rows (`pw:<password>` under
+  `-fixed-config`, plus any `wdtt_user_devices` bindings), and `passwordForDeviceLocked` /
+  `bindOrphanDeviceToMainLocked` resolve a `pw:<password>` device to exactly that password — never the owner —
+  so a revoked password's device becomes an orphan the reload drops. Measured: live session ping after
+  revoke went **3→0**; the address stays stable across reconnects and an unrelated roster change.
+- **RAW source check no longer skipped for qWDTT sessions.** The relay loop skipped
+  `rawIPv4SourceMatches` for `GETCONF_RAW` (qWDTT-protocol) sessions, letting such a client write any source
+  into the TUN. The check now applies to every session. Measured: spoofed-source packets reaching the server
+  RAW TUN went **3→0**, legit traffic unaffected.
+- **RAW revocation cuts live sessions + frees the address.** Removing a password now cancels its live RAW
+  sessions (`cancelRawSessionsForPassword`) and returns its pool address (`freeRawIPsForPassword`). Measured:
+  live RAW session ping after revoke went **3→0**.
+- **A revoke never deletes a device row another password still binds.** `wdtt_user_devices` is keyed
+  `(password, device_id)`, so one `wdtt_devices` row can belong to several passwords; the revocation fix hands
+  `DeleteUser` only the bindings no other password shares (unit test `TestRevokeKeepsSharedDeviceRow`, red on the
+  first version of this fix). Under `-fixed-config` — how the node runs it — generated passwords get no stock bindings,
+  so this guards stores that picked some up before.
+- Server CPU after a WG or RAW revoke stays at idle (3–6 ticks/10 s, control 4–5): the session cancel does not leave a
+  spinning reader behind.
+
+⚠️ **ildarmaga RAW stays excluded from network shares regardless** (fail-closed policy); its WG path and its
+revocation are fixed here so a revoked user loses access on every path.
 
 ## Validation (Phase 0 · R1, 2026-07-28)
 
