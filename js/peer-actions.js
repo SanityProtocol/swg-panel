@@ -550,7 +550,8 @@ export function UserPicker({ value, onChange, allowUnassigned, placeholder, excl
   const selText = sel ? sel.name + (sel.tag ? " · " + sel.tag : "") : "";
   const ql = q.toLowerCase();
   // `exclude`: ids this picker must not offer — people already on the list it adds to (offering them again read as a bug).
-  // Two users can share a name; an untagged pair then gets a short id each, or the operator picks one blind.
+  // Two users can share a name; an untagged pair then shows each one's device count and the day it was added, or the
+  // operator picks one blind. (A short id did this first — "pool-test #31cbfc" read as noise, not as a way to tell them apart.)
   const skip = exclude ? new Set(exclude) : null;
   const pool = skip ? users.filter(u => !skip.has(u.id)) : users;
   const named = {}; users.forEach(u => { named[u.name] = (named[u.name] || 0) + 1; });
@@ -567,7 +568,9 @@ export function UserPicker({ value, onChange, allowUnassigned, placeholder, excl
     ${open && pos ? html`<${Portal}><div class="uc-list uc-pop" ref=${listRef} style=${popStyle}>
       ${allowUnassigned ? html`<button class="uc-opt" onClick=${() => pick("")}><span class="faint">${T("— unassigned —")}</span></button>` : null}
       ${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>`
-          : named[u.name] > 1 ? html`<span class="faint mono">#${String(u.id).slice(0, 6)}</span>` : null}</button>`)
+          : named[u.name] > 1 ? html`<span class="faint">${u.created_at
+            ? T("{devices}, added {date}", { devices: plural(Store.peersOfUser(u.id).length, "device"), date: fmtDate(u.created_at) })
+            : plural(Store.peersOfUser(u.id).length, "device")}</span>` : null}</button>`)
         : html`<div class="uc-empty">${pool.length ? T("no match") : users.length ? T("everyone is already added") : T("no users yet")}</div>`}
     </div><//>` : null}
   </div>`;

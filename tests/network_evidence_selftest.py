@@ -66,7 +66,8 @@ rep = P.network_report(R, "gwA", SNAPS)
 g1 = next(e for e in rep["targets"] if e["node"] == "n1")["gateway"]
 g2 = next(e for e in rep["targets"] if e["node"] == "n2")["gateway"]
 check("n1: online, last handshake, traffic THROUGH the gateway",
-      g1 == {"reported": True, "online": True, "handshake_age": 12, "keepalive": 25, "full_tunnel": True, "no_return": False,
+      g1 == {"reported": True, "online": True, "handshake_age": 12, "keepalive": 25, "allowed": "0.0.0.0/0, ::/0",
+             "full_tunnel": True, "no_return": False,
              "rx_bytes": 5000, "tx_bytes": 7000, "rx_speed": 10.0, "tx_speed": 20.0}, g1)
 check("n2: reported but offline, and its own keepalive (0, from that deployment's override)",
       g2["reported"] and not g2["online"] and g2["handshake_age"] == 900 and g2["keepalive"] == 0, g2)

@@ -1116,7 +1116,14 @@ function NetShareSays({ t, node }) {
       ? T("On {node}, {peers} belonging to {users} can reach this.", { node, peers: plural(t.audience.peers, "peer"), users: plural(t.audience.users, "gen|user") })
       : T("Nobody on {node} can reach this yet.", { node })}</span></div>
     ${c.peers ? html`<div class="netwhy">${T("{peers} on {node} can't reach it.", { node, peers: plural(c.peers, "peer") })}</div>` : null}
-    ${(c.providers || []).length ? html`<div class="netwhy">${T("Networks behind {names} lose their way to it.", { names: c.providers.map(netPeerName).join(", ") })}</div>` : null}
+    ${/* Site to site: a device that itself fronts a network is a source too, so the devices on ITS network reach this one only
+          when its owner has access. "Networks behind X lose their way to it" said that as a riddle; now per device, with its
+          networks and the reason. */""}
+    ${(c.providers || []).map(o => { const q = Store.peer(o) || {};
+      const v = { device: netPeerName(o), nets: (q.routes || []).join(", "), owner: q.user_id ? shareUser(q.user_id) : "" };
+      return html`<div class="netwhy" key=${o}>${q.user_id
+        ? T("Devices on the network behind {device} ({nets}) can't reach it either — {owner} isn't among the people with access.", v)
+        : T("Devices on the network behind {device} ({nets}) can't reach it either — that device has no owner, so it can't be given access.", v)}</div>`; })}
     ${(s.grants || []).map(g => html`<div class="netwiden" key=${g.user_id}><span class="grow">${shareUser(g.user_id)}</span>
       <span class="faint">${g.owner ? T("owner") : g.until ? T("until {date}", { date: fmtDate(g.until) }) : T("no end")}</span>
       <span class="faint">${g.devices ? T("{devices} here", { devices: plural(g.devices, "device") }) : g.keyless ? "" : T("no device on {node}", { node })}</span></div>
@@ -1155,6 +1162,7 @@ function NetworksSheet({ pid }) {
   const [rep, setRep] = useState(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState({});
+  const [rk, setRk] = useState(0);                             // bumped when a deployment's routing is saved from a node's line
   const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null), base = useRef(null);
   const toggle = k => setOpen(o => ({ ...o, [k]: !o[k] }));
   const want = netList(draft);
@@ -1183,7 +1191,7 @@ function NetworksSheet({ pid }) {
       }
     }, 350);
     return () => { ok = false; clearTimeout(h); };
-  }, [wantKey, pid, storedKey, shareDraftKey]);
+  }, [wantKey, pid, storedKey, shareDraftKey, rk]);
   const refusals = (rep && rep.refusals) || [];
   // Compared NORMALISED: the operator types `172.30.9.9`, the roster stores `172.30.9.9/32`.
   const normKey = (rep && rep.routes && rep._for === wantKey) ? rep.routes.join(",") : wantKey;
@@ -1246,7 +1254,7 @@ function NetworksSheet({ pid }) {
       ${clash.length ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Many home routers use {list}. Anyone whose home network uses the same addresses can't reach it from home — their own network wins — though it still works on mobile data. If you can, renumber this network to something rarer, like 10.57.20.0/24.", { list: clash.join(", ") })}</span></div>` : null}
       ${want.length ? html`<${NetShare} peer=${peer} draft=${share} setDraft=${setShare} nodes=${nodes} noShare=${noShare}/>` : null}
       ${checking ? html`<div class="loading"><span class="spin"></span>${T("Checking these networks…")}</div>` : null}
-      ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle} stored=${stored}
+      ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle} stored=${stored} onSaved=${() => setRk(x => x + 1)}
           kaOff=${((rep && rep.keepalive_off) || []).includes(t.node)} pid=${pid} testable=${normKey === storedKey && !shareDirty}/>`)}
     </div>
   <//>`;
@@ -1431,15 +1439,62 @@ function NetSetup({ sub }) {
   </div>`;
 }
 
-function NetNode({ t, open, toggle, kaOff, pid, testable, stored = [] }) {
+// The device's own routing on this node, as a VALUE on the node's line: the config's AllowedIPs, what it means on hover, and
+// the gear that opens the same per-deployment settings as Edit peer's. ⚠️ A full tunnel was a yellow warning box on every
+// gateway, and it is the normal setup for a phone — it read as "something needs your attention". Only a config that leaves
+// the tunnel subnet out (answers never come back) is still a warning, under the line.
+function NetRouting({ t, node, sub, pid, onSaved }) {
+  const g = t.gateway, p = Store.peer(pid);
+  const tg = p && (p.targets || []).find(x => x.node === t.node && x.iface === t.iface);
+  const meta = Store.ifaceMeta(t.node, t.iface);
+  const fromOv = o => { const r = {}; if (!o) return r;              // roster overrides → the settings sheet's string fields
+    if (Array.isArray(o.dns)) r.dns = o.dns.join(", ");
+    if (o.mtu != null) r.mtu = String(o.mtu);
+    if (o.keepalive != null) r.keepalive = String(o.keepalive);
+    if (o.allowed) r.allowed = o.allowed;
+    return r; };
+  const opts = { ...tgtDefaults(meta), ...fromOv(p && p.overrides), ...fromOv(tg && tg.overrides) };   // target over peer over interface
+  const save = async cur => {
+    const r = await api.peerUpdateTarget({ peer_id: pid, node: t.node, iface: t.iface, overrides: configOverrides(cur, meta) });
+    if (!(r && r.ok)) { toast(srvText(r) || T("Settings weren't saved."), "err"); return; }
+    // The QR this panel shows is rebuilt from the stored config, as Edit peer does, so it carries the new routing.
+    try {
+      const c = p && await getConfig(p.pubkey, t.node, t.iface);
+      if (c) { const s = parseFullConf(c);
+        (Store.sessionConfigs[p.pubkey] = Store.sessionConfigs[p.pubkey] || {})[tkey(t.node, t.iface)] = buildConf({ privkey: s.privkey, address: s.address,
+          dns: String(cur.dns).split(",").map(x => x.trim()).filter(Boolean), mtu: String(cur.mtu).trim() || 1280, awg_params: s.awg_params,
+          server_pubkey: s.server_pubkey, psk: s.psk, endpoint: s.endpoint, allowed: String(cur.allowed).trim() || "0.0.0.0/0, ::/0", keepalive: String(cur.keepalive).trim() }); }
+    } catch (_) { /* the roster copy is saved; only this browser's QR stays as it was */ }
+    Store.configEpoch++;
+    toast(T("Saved. The device uses the new settings once its config is re-imported."), "ok");
+    await Store.poll();
+    if (onSaved) onSaved();
+  };
+  const says = g.no_return
+    ? T("This device's config doesn't route {subnet}, so its answers to clients leave through its own internet connection and never arrive. Add {subnet} with the gear, then re-import its config.", { subnet: sub })
+    : g.full_tunnel
+      ? T("This device's config sends all its traffic into the tunnel — the usual setup for a phone or laptop. On a router it means every device behind it browses the internet through {node} too; to carry only its networks, set the routing to {subnet}.", { node, subnet: sub })
+      : T("This device's config sends only {allowed} into the tunnel; everything else uses its own internet connection.", { allowed: g.allowed });
+  return html`<span class="netroute">
+    ${/* left-anchored, not alignRight: only that placement is clamped into the viewport, and on a phone the value sits at the
+          right edge — alignRight hung the bubble off the left side. */""}
+    <${Popover} hoverOnly cls="netroute-pop" popCls="netroute-bub"
+      trigger=${html`<span class=${"netroute-v mono" + (g.no_return ? " bad" : "")}>${g.allowed}</span>`}>
+      <span class="netroute-h">${T("Client allowed IPs (routing)")}</span>${says}<//>
+    <button type="button" class="btn btn-mini ico topt-gear" title=${T("Settings for this deployment (DNS, MTU, routing)")}
+      aria-label=${T("Settings for this deployment (DNS, MTU, routing)")} onClick=${() => openTargetSettings({ node: t.node, iface: t.iface, opts, meta, onSave: save })}><${Ic} i="gear"/></button>
+  </span>`;
+}
+
+function NetNode({ t, open, toggle, kaOff, pid, testable, stored = [], onSaved }) {
   const node = Store.nodeName(t.node);
-  const gwPeer = Store.peer(pid);
   // `pending` = sent to the node and not routed there yet (swg-noded net_carried). It still counts as what saving means —
   // who can reach it, whose routing leaves it out, the far-side setup — just not as "carried".
   const active = t.networks.filter(n => n.state === "active" || n.state === "pending");
   const sub = t.subnet || "<tunnel-subnet>";
   return html`<div class="netnode">
-    <div class="netnode-h"><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${node}</span><span class="tp">${t.iface}</span></div>
+    <div class="netnode-h"><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${node}</span><span class="tp">${t.iface}</span>
+      ${t.gateway && t.gateway.allowed != null ? html`<span class="grow"></span><${NetRouting} t=${t} node=${node} sub=${sub} pid=${pid} onSaved=${onSaved}/>` : null}</div>
     ${/* P3 evidence: is the gateway there to carry anything? Its traffic is the device's own and its networks'
           together — wg counts per peer — so it is labelled as traffic THROUGH the device. */""}
     ${t.gateway ? html`<div class=${"netgw" + (t.gateway.online ? " on" : "")}>
@@ -1450,12 +1505,10 @@ function NetNode({ t, open, toggle, kaOff, pid, testable, stored = [] }) {
       ${t.gateway.online ? html`${rateCell(t.gateway.rx_speed, t.gateway.tx_speed)}${xferCell(...dlul(t.gateway.rx_bytes, t.gateway.tx_bytes))}` : null}
     </div>` : null}
     ${kaOff ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This device's config for {node} sends no keepalive, so {node} loses its session when the device goes quiet — and these networks with it. Set a keepalive on that deployment.", { node })}</span></div>` : null}
-    ${/* The device's OWN routing (network_report gateway.full_tunnel / no_return). A new peer's config sends everything into
-          the tunnel — on an office router that is the whole office browsing through the node, which nobody asked for. */""}
-    ${t.gateway && (t.gateway.full_tunnel || t.gateway.no_return) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${t.gateway.full_tunnel
-        ? T("This device's config for {node} sends all its traffic into the tunnel. If it's a router, every device behind it browses the internet through {node} too. To carry only these networks, set its routing to {subnet} and re-import its config.", { node, subnet: sub })
-        : T("This device's config for {node} doesn't route {subnet}, so its answers to clients leave through its own internet connection and never arrive. Add {subnet} to its routing and re-import its config.", { node, subnet: sub })}
-      ${gwPeer ? html` <button type="button" class="btn btn-ghost btn-mini" onClick=${() => openEditPeer(gwPeer, { node: t.node, iface: t.iface })}>${T("Edit routing")}</button>` : null}</span></div>` : null}
+    ${/* Only a config that cannot work stays a warning (network_report gateway.no_return); the routing itself is on the line
+          above, with its meaning on hover and the gear to change it. */""}
+    ${t.gateway && t.gateway.no_return ? html`<div class="notice warn"><${Ic} i="warn"/><span>${
+        T("This device's config for {node} doesn't route {subnet}, so its answers to clients leave through its own internet connection and never arrive. Add {subnet} to its routing with the gear above and re-import its config.", { node, subnet: sub })}</span></div>` : null}
     <div class="netlist">${t.networks.map(n => html`<span class=${"nettag s-" + n.state}><span class="mono">${n.prefix}</span><em>${
       n.state === "active" ? T("carried")
       : n.state === "pending" ? (stored.includes(n.prefix) ? T("waiting for {node}", { node }) : T("carried once saved"))
@@ -1481,10 +1534,6 @@ function NetNode({ t, open, toggle, kaOff, pid, testable, stored = [] }) {
           names on it resolve — and a client that uses a resolver there skips Force DNS for everything it looks up. */""}
     ${t.force_dns ? t.force_dns.exempt.map(p => html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Clients of {ifaces} on {node} that use a DNS server on {p} skip Force DNS: those lookups aren't blocked or routed by name.",
         { ifaces: t.force_dns.ifaces.join(", "), node, p })}</span></div>`) : null}
-    ${/* Only for what is SAVED (a draft network is carried nowhere, so the panel would refuse the test) and only through a
-          keyed deployment — a turn server's has no peer to send it through. */""}
-    ${testable && t.gateway && t.networks.some(n => n.state !== "inert") ? html`<${NetProbe} pid=${pid} nid=${t.node} node=${node}
-        nets=${t.networks.filter(n => n.state !== "inert").map(n => n.prefix)} restricted=${!!t.share}/>` : null}
     ${active.length && !t.share ? html`<div class="netexp"><${Ic} i="warn"/><span>${t.audience.peers
       ? T("Every client on {node} can reach this: {peers} belonging to {users}. Choose who under “Who can reach these networks”.",
           { node, peers: plural(t.audience.peers, "peer"), users: plural(t.audience.users, "gen|user") })
@@ -1500,6 +1549,12 @@ function NetNode({ t, open, toggle, kaOff, pid, testable, stored = [] }) {
     <//>` : null}
     ${active.length ? html`<${Disclosure} title=${T("Set up the device's side")} open=${!!open[t.node + "|s"]} onToggle=${() => toggle(t.node + "|s")}>
       <${NetSetup} sub=${sub}/>
+    <//>` : null}
+    ${/* The test is a tool, not a status: it lives last, folded, after the setup it checks. Only for what is SAVED (a draft
+          network is carried nowhere, so the panel would refuse the test) and only through a keyed deployment. */""}
+    ${testable && t.gateway && t.networks.some(n => n.state !== "inert") ? html`<${Disclosure} title=${T("Connection test")}
+        open=${!!open[t.node + "|t"]} onToggle=${() => toggle(t.node + "|t")}>
+      <${NetProbe} pid=${pid} nid=${t.node} node=${node} nets=${t.networks.filter(n => n.state !== "inert").map(n => n.prefix)} restricted=${!!t.share}/>
     <//>` : null}
   </div>`;
 }

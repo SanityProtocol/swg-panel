@@ -5359,6 +5359,7 @@ def network_report(roster, pid, snaps):
             entry["gateway"] = dict({"reported": row is not None, "online": bool(row and row.get("online")),
                                      "handshake_age": (row or {}).get("handshake_age"),
                                      "keepalive": _eff["keepalive"],
+                                     "allowed": _eff["allowed"],   # shown on the node's line in the sheet, with a gear to change it
                                      "full_tunnel": _allowed_covers(_eff["allowed"], "0.0.0.0/0"),
                                      "no_return": bool(_subn) and not _allowed_covers(_eff["allowed"], _subn)},
                                     **{k: (row or {}).get(k) or 0 for k in ("rx_bytes", "tx_bytes", "rx_speed", "tx_speed")})

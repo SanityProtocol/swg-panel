@@ -74,11 +74,8 @@ export const STR = {
     "Диапазон {list} используют многие домашние роутеры. У кого дома сеть с такими же адресами, тот не попадёт в неё из дома — побеждает домашняя сеть, — хотя через мобильный интернет всё работает. Если можете, перенумеруйте эту сеть во что-то более редкое, например 10.57.20.0/24.",
   "Checking these networks…": "Проверяем эти сети…",
   // budget-ok: notice, wraps
-  "This device's config for {node} sends all its traffic into the tunnel. If it's a router, every device behind it browses the internet through {node} too. To carry only these networks, set its routing to {subnet} and re-import its config.":
-    "Конфиг этого устройства для {node} отправляет в туннель весь трафик. Если это роутер, то и все устройства за ним будут выходить в интернет через {node}. Чтобы проводить только эти сети, укажите в его маршрутах {subnet} и заново импортируйте конфиг.",
-  // budget-ok: notice, wraps
-  "This device's config for {node} doesn't route {subnet}, so its answers to clients leave through its own internet connection and never arrive. Add {subnet} to its routing and re-import its config.":
-    "Конфиг этого устройства для {node} не маршрутизирует {subnet}, поэтому его ответы клиентам уходят через его собственный интернет и не доходят. Добавьте {subnet} в его маршруты и заново импортируйте конфиг.",
+  "This device's config for {node} doesn't route {subnet}, so its answers to clients leave through its own internet connection and never arrive. Add {subnet} to its routing with the gear above and re-import its config.":
+    "Конфиг этого устройства для {node} не маршрутизирует {subnet}, поэтому его ответы клиентам уходят через его собственный интернет и не доходят. Добавьте {subnet} в маршруты шестерёнкой выше и заново импортируйте конфиг.",
   "waiting for {node}": "ждёт {node}",
   "carried once saved": "будет проводиться после сохранения",
   "{node} hasn't routed it yet — it does on its next sync, usually within a minute.": "{node} ещё не проложила маршрут — сделает это при следующей синхронизации, обычно в течение минуты.",
@@ -110,7 +107,22 @@ export const STR = {
   "On {node}, {peers} belonging to {users} can reach this.": "На {node} это доступно: {peers} у {users}.",
   "Nobody on {node} can reach this yet.": "На {node} это пока никому не доступно.",
   "{peers} on {node} can't reach it.": "На {node} не достучатся: {peers}.",
-  "Networks behind {names} lose their way to it.": "Сети за {names} теряют к этому доступ.",
+  "Devices on the network behind {device} ({nets}) can't reach it either — {owner} isn't among the people with access.":
+    "Устройства в сети за {device} ({nets}) тоже сюда не попадут — у владельца, {owner}, нет доступа.",
+  "Devices on the network behind {device} ({nets}) can't reach it either — that device has no owner, so it can't be given access.":
+    "Устройства в сети за {device} ({nets}) тоже сюда не попадут — у этого устройства нет владельца, поэтому ему нельзя открыть доступ.",
+  "{devices}, added {date}": "{devices}, добавлен {date}",
+  "Connection test": "Проверка связи",
+  "Saved. The device uses the new settings once its config is re-imported.": "Сохранено. Устройство применит новые настройки после повторного импорта конфига.",
+  "Settings weren't saved.": "Настройки не сохранены.",
+  // budget-ok: hover bubble, wraps
+  "This device's config doesn't route {subnet}, so its answers to clients leave through its own internet connection and never arrive. Add {subnet} with the gear, then re-import its config.":
+    "Конфиг этого устройства не маршрутизирует {subnet}, поэтому его ответы клиентам уходят через его собственный интернет и не доходят. Добавьте {subnet} через шестерёнку, затем заново импортируйте конфиг.",
+  // budget-ok: hover bubble, wraps
+  "This device's config sends all its traffic into the tunnel — the usual setup for a phone or laptop. On a router it means every device behind it browses the internet through {node} too; to carry only its networks, set the routing to {subnet}.":
+    "Конфиг этого устройства отправляет в туннель весь трафик — обычная настройка для телефона или ноутбука. На роутере это значит, что и все устройства за ним выходят в интернет через {node}; чтобы проводить только его сети, укажите маршрут {subnet}.",
+  "This device's config sends only {allowed} into the tunnel; everything else uses its own internet connection.":
+    "Конфиг этого устройства отправляет в туннель только {allowed}; всё остальное идёт через его собственный интернет.",
   "owner": "владелец",
   "until {date}": "до {date}",
   "no end": "без срока",
