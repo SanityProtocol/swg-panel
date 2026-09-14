@@ -2989,6 +2989,33 @@ def user_set(roster, uid, fields, now):
     return roster["users"][uid]
 
 
+GROUP_NAME_MAX = 64
+
+
+def group_name_clean(roster, raw, gid=None):
+    """(name, error sentence or None) for a group name (docs/GROUPS-PLAN.md G2): control characters stripped, 1–64
+    characters, and unique case-insensitively — two "Family" groups make the person-and-group picker a guess."""
+    name = strip_ctrl(str(raw or "")).strip()[:GROUP_NAME_MAX]
+    if not name:
+        return "", "name is required"
+    for ogid, g in (roster.get("groups") if isinstance(roster.get("groups"), dict) else {}).items():
+        if ogid != gid and isinstance(g, dict) and str(g.get("name") or "").casefold() == name.casefold():
+            return "", "a group with this name already exists"
+    return name, None
+
+
+def group_set(roster, gid, fields):
+    """One group's record, `{name, users}` (docs/GROUPS-PLAN.md G1). ⚠️ A WHITELIST REBUILD like `user_set`: a field not
+    passed is carried from the stored record. `users` sorted and unique, so a save that changes nothing changes no bytes."""
+    if not isinstance(roster.get("groups"), dict):
+        roster["groups"] = {}
+    g = roster["groups"].get(gid) if isinstance(roster["groups"].get(gid), dict) else {}
+    rec = {"name": fields.get("name", g.get("name") or ""),
+           "users": sorted({u for u in fields.get("users", g.get("users") or []) if isinstance(u, str)})}
+    roster["groups"][gid] = rec
+    return rec
+
+
 def peer_set(roster, pid, fields, now):
     p = roster["peers"].get(pid) or {}
     targets = fields.get("targets", p.get("targets", []))
@@ -4945,7 +4972,8 @@ def node_networks(roster, nid, snap):
 # A provider with no `share` is reachable by everyone on its node, exactly as before (D1, D5). One with a `share` is
 # reachable by its OWNER — always, never lapsing (§15.7 item 1) — and by the users it names, each until a date or for
 # good. The panel decides who, per node; the node enforces it with one nft table (`swg-noded` `reconcile_net_share()`).
-NET_SHARE_MAX = 500        # grantees on one provider — bounds the reply, the node's sets and the sheet
+NET_SHARE_MAX = 500        # grantees (users + groups) on one provider — bounds what is stored and the sheet; the node's sets
+                           # are bounded by the devices on the node, whatever a group expands to (docs/GROUPS-PLAN.md G4)
 
 # NETWORKS §16 — a KEYLESS (WDTT / csqtt) device is a share source only on a server build proven to (a) drop a packet whose
 # source is not the session's own address, (b) keep one stable address per password, and (c) cut a revoked password's live
@@ -5014,21 +5042,35 @@ def keyless_sources(p, t, idx):
     return (out, "") if out else ([], why if known else "not_connected")
 
 
-def share_grants(p, users, nowv):
+def share_grants(p, users, nowv, groups):
     """{uid: until (0 = no end)} — who may reach a RESTRICTED provider's networks right now, or None when it is not
     restricted. The owner is always in. A uid that no longer exists and a date that has passed grant nothing —
     filtered here, at plan time, never swept from the store (§6): a deleted user reaches nothing, and a grant whose
-    date is extended works again without anyone re-saving it."""
+    date is extended works again without anyone re-saving it.
+
+    A grant can name a GROUP (docs/GROUPS-PLAN.md G5): it reaches every existing member, and a group that no longer exists
+    grants nothing. A user covered by several live grants gets the widest — no end beats a date, else the latest — the
+    same rule `net_share_for_node` combines sources by. `groups` is REQUIRED: a caller that forgot it would silently drop
+    every group grant, and the node, the report and the subscription page would stop agreeing."""
     sh = p.get("share") if isinstance(p, dict) else None
     if not isinstance(sh, dict):
         return None
     out = {}
-    for uid, until in (sh.get("users") if isinstance(sh.get("users"), dict) else {}).items():
-        if uid not in users or isinstance(until, bool) or not isinstance(until, int) or until < 0:
-            continue
-        if until and until <= nowv:
-            continue
-        out[uid] = until
+
+    def grant(uid, until):
+        if isinstance(uid, str) and uid in users:
+            out[uid] = 0 if 0 in (until, out.get(uid)) else max(until, out.get(uid) or 0)
+
+    def live(d):
+        return [(k, u) for k, u in (d.items() if isinstance(d, dict) else ())
+                if not isinstance(u, bool) and isinstance(u, int) and u >= 0 and not (u and u <= nowv)]
+
+    for uid, until in live(sh.get("users")):
+        grant(uid, until)
+    for gid, until in live(sh.get("groups")):
+        g = groups.get(gid) if isinstance(groups, dict) else None
+        for uid in (g.get("users") if isinstance(g, dict) and isinstance(g.get("users"), list) else ()):
+            grant(uid, until)
     if p.get("user_id") in users:
         out[p["user_id"]] = 0
     return out
@@ -5042,31 +5084,44 @@ def share_clean(roster, peer, raw, nowv):
     would be dropped by the next update-target or rekey and silently re-open the network (§15.5); `{"users": {}}` is
     truthy. The owner is never stored as a grantee — it is in regardless, and a date on it would promise nothing.
     ASYMMETRIC, like `network_routes_clean`: a grant already stored whose date has passed or whose user was deleted is
-    dropped quietly, so the sheet can always save back what it was shown; a NEW past date or unknown user is refused."""
+    dropped quietly, so the sheet can always save back what it was shown; a NEW past date or unknown user is refused.
+
+    `groups` (docs/GROUPS-PLAN.md G4, G6) takes the same rules, and is stored only when it names one, so a share without
+    groups keeps its bytes. ⚠️ A body WITHOUT a `groups` key while groups are stored is refused (`groups_missing`) and
+    nothing is written: a browser tab opened before groups existed sends `users` only, and saving it would either wipe
+    the group grants without a word or keep them against that tab's explicit "only the owner". The SPA always sends
+    `groups` (`{}` clears them)."""
     if raw is None or raw is False:
         return None, None
-    if not isinstance(raw, dict) or set(raw) - {"users"} or not isinstance(raw.get("users", {}), dict):
+    if (not isinstance(raw, dict) or set(raw) - {"users", "groups"} or not isinstance(raw.get("users", {}), dict)
+            or not isinstance(raw.get("groups", {}), dict)):
         return None, "bad_shape"
-    users = roster.get("users") or {}
-    stored = ((peer.get("share") or {}).get("users") or {}) if isinstance(peer.get("share"), dict) else {}
-    out = {}
-    for uid, until in raw.get("users", {}).items():
-        if isinstance(until, bool) or not isinstance(until, int) or until < 0:
-            return None, "bad_date"
-        was = stored.get(uid, -1) == until
-        if uid not in users:
-            if was:
-                continue
-            return None, "unknown_user"
-        if until and until <= nowv:
-            if was:
-                continue
-            return None, "date_passed"
-        if uid != peer.get("user_id"):
-            out[uid] = until
-    if len(out) > NET_SHARE_MAX:
+    old = peer.get("share") if isinstance(peer.get("share"), dict) else {}
+    if "groups" not in raw and isinstance(old.get("groups"), dict) and old["groups"]:
+        return None, "groups_missing"
+    known = {"users": roster.get("users") or {},
+             "groups": roster.get("groups") if isinstance(roster.get("groups"), dict) else {}}
+    out = {"users": {}, "groups": {}}
+    for key, refusal in (("users", "unknown_user"), ("groups", "unknown_group")):
+        stored = old.get(key) if isinstance(old.get(key), dict) else {}
+        for k, until in raw.get(key, {}).items():
+            if isinstance(until, bool) or not isinstance(until, int) or until < 0:
+                return None, "bad_date"
+            was = stored.get(k, -1) == until
+            if k not in known[key]:
+                if was:
+                    continue
+                return None, refusal
+            if until and until <= nowv:
+                if was:
+                    continue
+                return None, "date_passed"
+            if key == "groups" or k != peer.get("user_id"):
+                out[key][k] = until
+    if len(out["users"]) + len(out["groups"]) > NET_SHARE_MAX:
         return None, "too_many"
-    return {"users": dict(sorted(out.items()))}, None
+    return dict({"users": dict(sorted(out["users"].items()))},
+                **({"groups": dict(sorted(out["groups"].items()))} if out["groups"] else {})), None
 
 
 def net_share_for_node(roster, nid, carry, snap=None):
@@ -5117,7 +5172,7 @@ def net_share_for_node(roster, nid, carry, snap=None):
     out = []
     for _pid, p in restricted:
         el = {}
-        for uid, until in share_grants(p, users, nowv).items():
+        for uid, until in share_grants(p, users, nowv, roster.get("groups")).items():
             for s_ in by_user.get(uid, ()):
                 el[s_] = 0 if (until == 0 or el.get(s_) == 0) else max(until, el.get(s_) or 0)
         out.append({"peer": p["pubkey"],
@@ -5228,7 +5283,7 @@ def network_report(roster, pid, snaps):
         return {"targets": []}
     users = roster.get("users") or {}
     nowv = int(time.time())
-    grants = share_grants(p, users, nowv)          # P5: None = open to everyone on the node, as before
+    grants = share_grants(p, users, nowv, roster.get("groups"))   # P5: None = open to everyone on the node, as before
     out, _tg = [], {}
     for t in p.get("targets") or []:                # one entry per node, on the deployment node_networks carries through:
         nid = t.get("node")                          # a keyed one when the node has any (first-seen node order kept)
@@ -5338,6 +5393,10 @@ def network_report(roster, pid, snaps):
                            for u, g in sorted(grants.items())],
                 "lapsed": sorted(u for u, g in _stored.items()
                                  if u in users and isinstance(g, int) and not isinstance(g, bool) and 0 < g <= nowv),
+                # GROUPS-PLAN G11: a group grant whose date has passed, named like a lapsed user
+                "lapsed_groups": sorted(g_ for g_, u_ in (p["share"].get("groups") if isinstance(p["share"].get("groups"), dict) else {}).items()
+                                        if g_ in (roster.get("groups") if isinstance(roster.get("groups"), dict) else {})
+                                        and isinstance(u_, int) and not isinstance(u_, bool) and 0 < u_ <= nowv),
                 "cut_off": {"peers": cut_peers, "users": len(cut_users),
                             "providers": sorted(o for o in plan["carry"]
                                                 if o != pid and (_peers.get(o) or {}).get("user_id") not in grants)},
@@ -5407,7 +5466,7 @@ def user_networks(roster, uid, snaps, nodes=None):
                     continue
                 # P5: a restricted network is listed only for its owner and live grantees — and for a keyless deployment
                 # only where its server build vouches for the address it handed out (§16, `keyless_sources`)
-                g = share_grants((roster.get("peers") or {}).get(opid), users, nowv)
+                g = share_grants((roster.get("peers") or {}).get(opid), users, nowv, roster.get("groups"))
                 if g is not None and allowed is None and vouched is None:
                     vouched = bool(keyless_sources(p, t, _keyless_index(snap))[0])
                 if g is not None and (uid not in g or (allowed is None and not vouched)):
@@ -8290,8 +8349,16 @@ def transfer_plan(deps, nodes, nid, snaps, seen, roster):
                 vk_fallback.append({"peer": pid, "title": p.get("title") or "",
                                     "user_name": ((users.get(p.get("user_id")) or {}).get("name") or "")})
 
+    # ── the groups these users are in (docs/GROUPS-PLAN.md G9), each narrowed to the users that move: a network shared with
+    #    a group lands shared with its arriving members, instead of with its owner alone and a group to rebuild by hand.
+    groups = {}
+    for gid, g in sorted((roster.get("groups") if isinstance(roster.get("groups"), dict) else {}).items()):
+        mem = sorted(u for u in (g.get("users") or []) if u in users) if isinstance(g, dict) else []
+        if mem:
+            groups[gid] = {"name": g.get("name") or "", "users": mem}
+
     return {"record": clean, "strip": stripped,
-            "users": users, "peers": peers, "escrow": escrow, "sub_users": sub_users, "blobs": blobs,
+            "users": users, "groups": groups, "peers": peers, "escrow": escrow, "sub_users": sub_users, "blobs": blobs,
             "blob_count": nblobs, "split": split, "unrecorded": unrecorded,
             "ifaces": sorted(clean.get("ifaces") or {}),
             "turn_family": ([{"iface": k, "kind": "wdtt"} for k in sorted(clean.get("wdtt") or {})] +
@@ -8315,10 +8382,33 @@ def transfer_bundle(deps, nodes, nid, plan, baseline=None):
             # not say which is a field that will be read as the wrong one.
             "from": {"url": _panel_public_url(deps), "node": nid,
                      "node_name": (nodes[nid].get("name") or nid)},
-            "order": ["node", "users", "peers", "escrow", "blobs"],
-            "node": plan["record"], "users": plan["users"], "peers": plan["peers"],
+            "order": ["node", "users", "groups", "peers", "escrow", "blobs"],
+            "node": plan["record"], "users": plan["users"], "groups": plan.get("groups") or {}, "peers": plan["peers"],
             "escrow": plan["escrow"], "sub_users": plan["sub_users"], "blobs": plan["blobs"],
             "baseline": baseline or None}
+
+
+def transfer_merge_groups(roster, arriving):
+    """Land a transfer bundle's `groups` in this panel's roster (docs/GROUPS-PLAN.md G9). A new id is inserted; an id this
+    panel already holds — the same group, carried here before — gains the arriving members and keeps its own name. Only
+    users this roster holds are added, so it runs AFTER the bundle's users. Returns how many groups it touched."""
+    if not isinstance(arriving, dict) or not arriving:
+        return 0
+    if not isinstance(roster.get("groups"), dict):
+        roster["groups"] = {}
+    n = 0
+    for gid, g in sorted(arriving.items()):
+        if not isinstance(g, dict) or not isinstance(gid, str):
+            continue
+        mem = {u for u in (g.get("users") or []) if isinstance(u, str) and u in (roster.get("users") or {})}
+        cur = roster["groups"].get(gid)
+        if isinstance(cur, dict):
+            group_set(roster, gid, {"users": sorted(set(cur.get("users") or []) | mem)})
+        else:
+            group_set(roster, gid, {"name": strip_ctrl(str(g.get("name") or "")).strip()[:GROUP_NAME_MAX] or gid,
+                                    "users": sorted(mem)})
+        n += 1
+    return n
 
 
 def fp_baseline_save(deps, nodes, nid, roster=None, label="", op="rebuild"):
@@ -18377,6 +18467,79 @@ def api(method, path, qs, body, deps):
                   detail_vars={"count": {"n": freed, "noun": "peer"}})
         return 200, {"ok": True, "data": {"id": uid, "unassigned_peers": freed}}
 
+    # ─────────────── groups (docs/GROUPS-PLAN.md) ───────────────
+    # Named sets of users, stored once at the roster's top level. Membership is written as a DELTA (`add` / `remove`):
+    # nothing locks the roster between handlers, so two operators each saving back the member list they opened with would
+    # undo each other. A deleted user stays in `users` and is filtered wherever membership is read (never swept).
+
+    if method == "POST" and path == "/api/groups/create":
+        roster = roster_load(roster_path)
+        name, why = group_name_clean(roster, body.get("name"))
+        if why:
+            return 400, {"ok": False, "error": why, "code": "bad_request"}
+        add = body.get("users") or []
+        if not isinstance(add, list) or any(not isinstance(u, str) for u in add):
+            return 400, {"ok": False, "error": "users must be a list of user ids", "code": "bad_request"}
+        if any(u not in roster["users"] for u in add):
+            return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
+        gid = gen_id()
+        while gid in (roster.get("groups") or {}):
+            gid = gen_id()
+        g = group_set(roster, gid, {"name": name, "users": add})
+        roster_save(roster_path, roster)
+        ev_append(roster_path, "group", gid, "Created group", name,
+                  f"{len(g['users'])} member{'' if len(g['users']) == 1 else 's'}" if g["users"] else "",
+                  detail_key="{count}" if g["users"] else "", detail_vars={"count": {"n": len(g["users"]), "noun": "member"}})
+        return 200, {"ok": True, "data": dict(g, id=gid)}
+
+    if method == "POST" and path == "/api/groups/update":
+        roster = roster_load(roster_path)
+        gid = body.get("id") or ""
+        cur = (roster.get("groups") if isinstance(roster.get("groups"), dict) else {}).get(gid)
+        if not isinstance(cur, dict):
+            return 404, {"ok": False, "error": "unknown group", "code": "not_found"}
+        add, rem = body.get("add") or [], body.get("remove") or []
+        if (not isinstance(add, list) or not isinstance(rem, list)
+                or any(not isinstance(u, str) for u in add + rem)):
+            return 400, {"ok": False, "error": "add and remove must be lists of user ids", "code": "bad_request"}
+        if any(u not in roster["users"] for u in add):
+            return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
+        fields = {}
+        if "name" in body:
+            name, why = group_name_clean(roster, body.get("name"), gid)
+            if why:
+                return 400, {"ok": False, "error": why, "code": "bad_request"}
+            if name != cur.get("name"):
+                fields["name"] = name
+        was = set(cur.get("users") or [])
+        now_set = (was | set(add)) - set(rem)
+        added, removed = now_set - was, was - now_set
+        if added or removed:
+            fields["users"] = sorted(now_set)
+        if not fields:
+            return 200, {"ok": True, "data": dict(cur, id=gid)}
+        old_name = cur.get("name") or ""
+        g = group_set(roster, gid, fields)
+        roster_save(roster_path, roster)
+        if "name" in fields:
+            ev_append(roster_path, "group", gid, "Renamed group", g["name"], old_name)
+        if "users" in fields:
+            ev_append(roster_path, "group", gid, "Changed group members", g["name"], f"+{len(added)} −{len(removed)}")
+        return 200, {"ok": True, "data": dict(g, id=gid)}
+
+    if method == "POST" and path == "/api/groups/delete":
+        roster = roster_load(roster_path)
+        gid = body.get("id") or ""
+        groups = roster.get("groups") if isinstance(roster.get("groups"), dict) else {}
+        if gid not in groups:
+            return 404, {"ok": False, "error": "unknown group", "code": "not_found"}
+        # A share naming this group keeps the id and grants nothing through it (GROUPS-PLAN G7): no peer is rewritten, and
+        # the id is dropped quietly the next time that device's networks are saved.
+        name = (groups.pop(gid) or {}).get("name") or ""
+        roster_save(roster_path, roster)
+        ev_append(roster_path, "group", gid, "Deleted group", name)
+        return 200, {"ok": True, "data": {"id": gid}}
+
     # ─────────────── peers (credential + targets) ───────────────
 
     if method == "POST" and path == "/api/peers/create":
@@ -24738,6 +24901,7 @@ class Handler(BaseHTTPRequestHandler):
             nu = np = 0
             for uid, u in sorted((b.get("users") or {}).items()):
                 roster["users"][uid] = u; nu += 1
+            transfer_merge_groups(roster, b.get("groups"))      # after the users it names (GROUPS-PLAN G9)
             for pid, pr in sorted((b.get("peers") or {}).items()):
                 cur_p = roster["peers"].get(pid)
                 if cur_p is None:

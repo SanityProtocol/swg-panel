@@ -69,7 +69,7 @@ CP = N.subprocess.CompletedProcess
 
 if PERTURB:
     _sg = P.share_grants
-    P.share_grants = lambda p, users, nowv: _sg(p, users, 0)
+    P.share_grants = lambda p, users, nowv, groups: _sg(p, users, 0, groups)
 if PERTURB_OPEN:
     N._share_strip = lambda desired, plan: desired
 if PERTURB_KEYLESS:
@@ -107,15 +107,15 @@ R = roster()
 U = R["users"]
 
 print("\n[1] share_grants")
-check("the owner (no end) and a dated grantee", P.share_grants(R["peers"]["office"], U, NOW) == {"anna": 0, "boris": NOW + DAY},
-      P.share_grants(R["peers"]["office"], U, NOW))
+check("the owner (no end) and a dated grantee", P.share_grants(R["peers"]["office"], U, NOW, {}) == {"anna": 0, "boris": NOW + DAY},
+      P.share_grants(R["peers"]["office"], U, NOW, {}))
 check("a date that has passed grants nothing — the owner stays",
-      P.share_grants(dict(R["peers"]["office"], share={"users": {"boris": NOW - 5}}), U, NOW) == {"anna": 0})
-check("a user that no longer exists grants nothing", P.share_grants(dict(R["peers"]["office"], share={"users": {"ghost": 0}}), U, NOW) == {"anna": 0})
+      P.share_grants(dict(R["peers"]["office"], share={"users": {"boris": NOW - 5}}), U, NOW, {}) == {"anna": 0})
+check("a user that no longer exists grants nothing", P.share_grants(dict(R["peers"]["office"], share={"users": {"ghost": 0}}), U, NOW, {}) == {"anna": 0})
 check("a date on the owner is ignored: the owner never lapses",
-      P.share_grants(dict(R["peers"]["office"], share={"users": {"anna": NOW - 5}}), U, NOW) == {"anna": 0})
-check("not restricted ⇒ None (open to everyone on the node)", P.share_grants(R["peers"]["boris-site"], U, NOW) is None)
-check("restricted with nobody named and no owner ⇒ {} (nobody)", P.share_grants({"share": {"users": {}}}, U, NOW) == {})
+      P.share_grants(dict(R["peers"]["office"], share={"users": {"anna": NOW - 5}}), U, NOW, {}) == {"anna": 0})
+check("not restricted ⇒ None (open to everyone on the node)", P.share_grants(R["peers"]["boris-site"], U, NOW, {}) is None)
+check("restricted with nobody named and no owner ⇒ {} (nobody)", P.share_grants({"share": {"users": {}}}, U, NOW, {}) == {})
 
 print("\n[2] share_clean")
 office = R["peers"]["office"]

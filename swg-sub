@@ -322,20 +322,30 @@ def _net_prefix(s):
     return ""
 
 
-def share_grants(p, users, nowv):
+def share_grants(p, users, nowv, groups):
     """{uid: until} for a RESTRICTED provider, None when it is open to everyone on its node. Byte-for-byte the same rule as
-    swg-panel-server's share_grants (tests/sub_networks_selftest.py holds them together): the owner always, a grant whose
-    user is gone or whose date has passed never."""
+    swg-panel-server's share_grants (tests/sub_networks_selftest.py holds them together, source and answers): the owner
+    always, a grant whose user or group is gone or whose date has passed never, a group grant reaching its members, and a
+    user covered twice getting the widest date."""
     sh = p.get("share") if isinstance(p, dict) else None
     if not isinstance(sh, dict):
         return None
     out = {}
-    for uid, until in (sh.get("users") if isinstance(sh.get("users"), dict) else {}).items():
-        if uid not in users or isinstance(until, bool) or not isinstance(until, int) or until < 0:
-            continue
-        if until and until <= nowv:
-            continue
-        out[uid] = until
+
+    def grant(uid, until):
+        if isinstance(uid, str) and uid in users:
+            out[uid] = 0 if 0 in (until, out.get(uid)) else max(until, out.get(uid) or 0)
+
+    def live(d):
+        return [(k, u) for k, u in (d.items() if isinstance(d, dict) else ())
+                if not isinstance(u, bool) and isinstance(u, int) and u >= 0 and not (u and u <= nowv)]
+
+    for uid, until in live(sh.get("users")):
+        grant(uid, until)
+    for gid, until in live(sh.get("groups")):
+        g = groups.get(gid) if isinstance(groups, dict) else None
+        for uid in (g.get("users") if isinstance(g, dict) and isinstance(g.get("users"), list) else ()):
+            grant(uid, until)
     if p.get("user_id") in users:
         out[p["user_id"]] = 0
     return out
@@ -398,7 +408,7 @@ def sub_networks(roster, uid, describe, nodes, nowv):
                 claimed.update(pres)                   # the first provider holding a prefix is the one the node routes
                 if opid == mine:
                     continue                           # a device's own networks are behind it, not reached through it
-                g = share_grants(o, users, nowv)
+                g = share_grants(o, users, nowv, roster.get("groups"))
                 if g is not None and (uid not in g or not keyed):
                     continue
                 for pre in pres:

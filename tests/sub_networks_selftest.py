@@ -10,17 +10,22 @@
   [6] one prefix on two providers: the one the panel's node_networks picks (earliest created_at) is the one judged
   [7] parity with swg-panel-server: share_grants and _allowed_covers answer the same on every fixture
   [8] read_data carries the list
+  [9] a network shared with a GROUP (docs/GROUPS-PLAN.md G5, G10): its members (through a keyed device) and nobody else; a
+      member removed, a group deleted, a group grant lapsed — nothing; a member also granted by name keeps the widest date
+      [7] also compares the two share_grants' SOURCE, statement for statement (docstrings aside), with groups in the fixtures
 
 Hermetic. Run: python3 tests/sub_networks_selftest.py            (0 = pass)
-     --perturb   makes every network open (share_grants → None) and expects RED on [2] and [6].
+     --perturb          makes every network open (share_grants → None) and expects RED on [2] and [6].
+     --perturb-groups   has swg-sub's share_grants ignore group grants and expects RED on [7] and [9].
 """
-import importlib.machinery, importlib.util, os, re, sys
+import ast, importlib.machinery, importlib.util, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 SUB = os.environ.get("SWG_SUB") or os.path.join(ROOT, "swg-sub")
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 PERTURB = "--perturb" in sys.argv
+PERTURB_GROUPS = "--perturb-groups" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -41,7 +46,9 @@ S = load("swgsub", SUB)
 P = load("swgpanel", PANEL)
 _real_grants = S.share_grants
 if PERTURB:
-    S.share_grants = lambda p, users, nowv: None
+    S.share_grants = lambda p, users, nowv, groups: None
+if PERTURB_GROUPS:
+    S.share_grants = lambda p, users, nowv, groups: _real_grants(p, users, nowv, None)
 
 NOW = 1_000_000
 T = lambda ip, node="n1", **k: dict({"node": node, "iface": "wg0", "ip": ip, "type": "wg"}, **k)
@@ -118,11 +125,25 @@ check("…and it matches the panel's own pick", list(P.node_networks(R, "n1", {"
 
 print("\n[7] parity with swg-panel-server")
 USERS = roster()["users"]
-for sh in (None, {"users": {}}, {"users": {"u2": 0, "u3": NOW + 50, "u4": NOW - 1, "ghost": 0, "u5": True, "u6": -3}}, {"x": 1}, "open"):
+GROUPS = {"g1": {"name": "family", "users": ["u3", "u4", "ghost"]}, "g2": {"name": "work", "users": ["u3", 7]}, "gx": "junk",
+          "g3": {"name": "bad", "users": "u2"}}
+for sh in (None, {"users": {}}, {"users": {"u2": 0, "u3": NOW + 50, "u4": NOW - 1, "ghost": 0, "u5": True, "u6": -3}}, {"x": 1}, "open",
+           {"users": {"u3": NOW + 50}, "groups": {"g1": 0}}, {"users": {"u4": 0}, "groups": {"g1": NOW - 1, "g2": NOW + 9}},
+           {"users": {}, "groups": {"g1": NOW + 9, "g2": NOW + 20, "gone": 0, "gx": 0, "g3": 0}}, {"users": {}, "groups": "bad"}):
     for owner in ("u1", None, "gone"):
-        p = {"user_id": owner, "share": sh}
-        check("share_grants(%r, owner=%r)" % (sh, owner), _real_grants(p, USERS, NOW) == P.share_grants(p, USERS, NOW),
-              (_real_grants(p, USERS, NOW), P.share_grants(p, USERS, NOW)))
+        for groups in (GROUPS, None, {}):
+            p = {"user_id": owner, "share": sh}
+            check("share_grants(%r, owner=%r, groups=%s)" % (sh, owner, "set" if groups else groups),
+                  S.share_grants(p, USERS, NOW, groups) == P.share_grants(p, USERS, NOW, groups),
+                  (S.share_grants(p, USERS, NOW, groups), P.share_grants(p, USERS, NOW, groups)))
+def _body(path, name):
+    """A function's AST with its docstring cut — what it DOES, not how it explains itself."""
+    fn = next(n for n in ast.parse(open(path).read()).body if isinstance(n, ast.FunctionDef) and n.name == name)
+    if fn.body and isinstance(fn.body[0], ast.Expr) and isinstance(fn.body[0].value, ast.Constant) and isinstance(fn.body[0].value.value, str):
+        fn.body = fn.body[1:]
+    return ast.dump(fn)
+check("share_grants: swg-sub's copy is the panel's, statement for statement (docstrings aside)",
+      _body(SUB, "share_grants") == _body(PANEL, "share_grants"))
 for allowed in ("0.0.0.0/0, ::/0", "10.8.0.0/24", "192.168.0.0/16,10.0.0.0/8", "junk, 192.168.50.0/24", ""):
     for pre in ("192.168.50.0/24", "10.8.0.0/24", "172.30.9.9/32"):
         check("_allowed_covers(%r, %s)" % (allowed, pre), S._allowed_covers(allowed, pre) == P._allowed_covers(allowed, pre))
@@ -132,6 +153,27 @@ src = open(SUB).read()
 body = src[src.index("def read_data("):]
 check('read_data returns "networks" from sub_networks', bool(re.search(r'"networks":\s*sub_networks\(roster, uid, describe, nodes, nowv\)', body)))
 check("describe mirrors the node's net_carried", '"net_carried": snap.get("net_carried")' in src)
+
+print("\n[9] a network shared with a group")
+def groups_roster(share, members):
+    r = roster(share=share)
+    if members is not None:
+        r["groups"] = {"g1": {"name": "family", "users": members}}
+    return r
+R = groups_roster({"users": {}, "groups": {"g1": 0}}, ["u3", "u4", "u5", "ghost"])
+check("a member: listed, via the router", nets(R, "u3") == ROW(True, "office router"), nets(R, "u3"))
+check("another member: listed", nets(R, "u4") == ROW(True, "office router"), nets(R, "u4"))
+check("not a member: nothing", nets(R, "u2") == [], nets(R, "u2"))
+check("a member whose only device is keyless: nothing (never promised)", nets(R, "u5") == [], nets(R, "u5"))
+check("the owner still: listed", nets(R, "u1") == ROW(True, "office router"), nets(R, "u1"))
+R = groups_roster({"users": {}, "groups": {"g1": 0}}, ["u4"])
+check("a member removed from the group: nothing", nets(R, "u3") == [], nets(R, "u3"))
+R = groups_roster({"users": {}, "groups": {"g1": 0}}, None)
+check("the group deleted (its id still in the share): nothing", nets(R, "u4") == [], nets(R, "u4"))
+R = groups_roster({"users": {}, "groups": {"g1": NOW - 1}}, ["u3", "u4"])
+check("a group grant whose date has passed: nothing", nets(R, "u4") == [], nets(R, "u4"))
+R = groups_roster({"users": {"u3": NOW - 1}, "groups": {"g1": NOW + 99}}, ["u3"])
+check("a lapsed grant by name and a live one through the group: listed — the widest wins", nets(R, "u3") == ROW(True, "office router"), nets(R, "u3"))
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)
