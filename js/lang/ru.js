@@ -38,7 +38,9 @@ export const STR = {
   "{node} runs a version that can't restrict who reaches a network, so it carries this one for nobody — update it.": "{node} работает на версии, которая не умеет ограничивать доступ к сети, поэтому эта сеть там никому не доступна — обновите её.",
   "One of these people no longer exists — remove them and save again.": "Одного из этих людей больше нет — уберите его и сохраните снова.",
   "A date has already passed — pick a later day or leave it empty.": "Дата уже прошла — выберите более поздний день или оставьте поле пустым.",
-  "A network can be shared with at most 500 people.": "Открыть сеть можно не более чем 500 людям.",
+  "A network can be shared with at most 500 people and groups.": "Открыть сеть можно не более чем 500 людям и группам.",
+  "One of these groups no longer exists — remove it and save again.": "Одной из этих групп больше нет — уберите её и сохраните снова.",
+  "This page is out of date — reload it, then save again.": "Страница устарела — обновите её и сохраните снова.",
   "Access wasn't saved.": "Доступ не сохранён.",
   "a user who no longer exists": "удалённый пользователь",
   "Networks": "Сети",
@@ -102,7 +104,7 @@ export const STR = {
   "Devices": "Устройства",
   "Access until": "Доступ до",
   "Nobody on the list matches “{q}”.": "В списке нет совпадений с «{q}».",
-  "Nobody yet — add people with the search above.": "Пока никого — добавьте людей через поиск выше.",
+  "Nobody yet — add people or groups with the search above.": "Пока никого — добавьте людей или группы через поиск выше.",
   "{peers} of {users} can reach it": "Доступ есть: {peers} у {users}",
   "Nobody on {node} can reach it yet": "На {node} пока ни у кого нет доступа",
   "Every client on {node} can reach it: {peers} of {users}": "Доступ есть у любого клиента на {node}: {peers} у {users}",
@@ -112,6 +114,63 @@ export const STR = {
   "{peers} aren't among the people with access": "Нет среди тех, у кого есть доступ: {peers}",
   "{devices} on turn servers that can't reach a restricted network": "За turn-серверами, которые не могут попасть в сеть с ограниченным доступом: {devices}",
   "Access has ended for {users}": "Доступ закончился: {users}",
+  // ── user groups (docs/GROUPS-PLAN.md) ──
+  // {groups}/{members}/{users} arrive already counted and nominative, so they sit after a colon or in a list — never as the subject
+  // a Russian verb would have to agree with (the plural() trap, NETWORKS §16).
+  "Access has ended for {groups}": "Доступ закончился: {groups}",
+  "Shared with {groups} and {users}": "Доступ: {groups} и {users}",
+  "Shared with {groups}": "Доступ: {groups}",
+  "{groups} and {users} chosen": "Выбрано: {groups} и {users}",
+  "{groups} chosen": "Выбрано: {groups}",
+  "Add a person or group…": "Добавить человека или группу…",
+  "{users} with no device here": "Без устройств здесь: {users}",
+  "Groups": "Группы",
+  "Users or groups": "Пользователи или группы",
+  "Search groups or members…": "Поиск по группам и участникам…",
+  "New group": "Новая группа",
+  "No groups yet": "Групп пока нет",
+  "Put people in a group to share a network with all of them at once, from a device's Networks window.":
+    "Объедините людей в группу, чтобы открывать сеть сразу всем — в окне «Сети» устройства.",
+  "Members": "Участники",
+  "No members yet.": "Участников пока нет.",
+  "{name}: {members}": "{name}: {members}",
+  "Devices whose networks are shared with {name}: {n}": "Устройства, чьи сети открыты группе {name}: {n}",
+  "Networks shared with this group": "Сети, открытые этой группе",
+  "None yet — share a network from a device's Networks window.": "Пока нет — сеть открывают в окне «Сети» устройства.",
+  "Edit group": "Изменить группу",
+  "Delete group": "Удалить группу",
+  "Delete group · {name}": "Удалить группу · {name}",
+  "Its members stay as users; only the group is deleted.": "Участники останутся пользователями — удаляется только группа.",
+  // budget-ok: confirm body, wraps
+  "Networks shared with it stop being reachable for its members, unless they're shared with them another way: {devices}.":
+    "Сети, открытые этой группе, станут недоступны её участникам, если доступ не открыт им иначе: {devices}.",
+  "Group deleted.": "Группа удалена.",
+  "The group wasn't deleted.": "Группа не удалена.",
+  "Group · {name}": "Группа · {name}",
+  "This group no longer exists.": "Этой группы больше нет.",
+  "Create group": "Создать группу",
+  "Ivanov family": "Семья Ивановых",
+  "Give the group a name.": "Дайте группе название.",
+  "The group wasn't saved.": "Группа не сохранена.",
+  "Group saved.": "Группа сохранена.",
+  "Group created.": "Группа создана.",
+  "Remove {name} from the group": "Убрать {name} из группы",
+  "No members yet — add people with the search above.": "Участников пока нет — добавьте людей через поиск выше.",
+  // budget-ok: hint, wraps
+  "Networks shared with this group: {devices}. Everyone you add reaches them; anyone you remove loses them, unless they're shared with them another way.":
+    "Этой группе открыты сети: {devices}. Каждый, кого вы добавите, получит к ним доступ; каждый, кого уберёте, потеряет его, если доступ не открыт ему иначе.",
+  "{names} and {n} more": "{names} и ещё {n}",
+  "Not in any group.": "Не состоит ни в одной группе.",
+  // the panel's own words for a group (activity verbs, refusals) — stored in English, translated on display
+  "Created group": "Создана группа",
+  "Renamed group": "Переименована группа",
+  "Changed group members": "Изменён состав группы",
+  "Deleted group": "Удалена группа",
+  "{count}": "{count}",
+  "a group with this name already exists": "группа с таким названием уже есть",
+  "unknown group": "неизвестная группа",
+  "users must be a list of user ids": "users должен быть списком id пользователей",
+  "add and remove must be lists of user ids": "add и remove должны быть списками id пользователей",
   "{total} other peers on {node}: {ok} can reach it, {soon} not yet, {no} can't": "Других пиров на {node}: {total}; доступ есть: {ok}, пока нет: {soon}, нет: {no}",
   "Who can reach it on {node}": "Кто может попасть сюда на {node}",
   "This device's address on {node}": "Адрес этого устройства на {node}",
@@ -6056,7 +6115,8 @@ export const PLURALS = {
   IP: ["IP", "IP", "IP"],   // indeclinable acronym: one form covers every count
   issue: ["проблему", "проблемы", "проблем"],
   "nom|issue": ["проблема", "проблемы", "проблем"],   // SUBJECT ("1 проблема на этой ноде"); bare `issue` stays accusative for "исправить / можно починить"
-  group: ["группа", "группы", "групп"],   // reads after "исправить" (accusative): исправить 1 проблему / 5 проблем
+  group: ["группа", "группы", "групп"],   // nominative: «Доступ: 2 группы» (user groups) and the attention list's own groups
+  member: ["участник", "участника", "участников"],   // a group's members — after a colon or a name, never a verb's subject
   minute: ["минуты", "минут", "минут"],          // reads after "больше" (genitive): больше 1 минуты / 5 минут
   address: ["адрес", "адреса", "адресов"],
   "sub link": ["ссылка", "ссылки", "ссылок"],   // a subscription URL — NOT `link`, which is a mesh link ("связь")

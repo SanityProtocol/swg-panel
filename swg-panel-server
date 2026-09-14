@@ -2993,14 +2993,15 @@ GROUP_NAME_MAX = 64
 
 
 def group_name_clean(roster, raw, gid=None):
-    """(name, error sentence or None) for a group name (docs/GROUPS-PLAN.md G2): control characters stripped, 1–64
-    characters, and unique case-insensitively — two "Family" groups make the person-and-group picker a guess."""
+    """(name, refusal or None) for a group name (docs/GROUPS-PLAN.md G2): control characters stripped, 1–64 characters,
+    and unique case-insensitively — two "Family" groups make the person-and-group picker a guess. The refusal is a
+    `perr()` dict for the reply, so the sentence is one the browser can translate."""
     name = strip_ctrl(str(raw or "")).strip()[:GROUP_NAME_MAX]
     if not name:
-        return "", "name is required"
+        return "", perr("name is required")
     for ogid, g in (roster.get("groups") if isinstance(roster.get("groups"), dict) else {}).items():
         if ogid != gid and isinstance(g, dict) and str(g.get("name") or "").casefold() == name.casefold():
-            return "", "a group with this name already exists"
+            return "", perr("a group with this name already exists")
     return name, None
 
 
@@ -18476,7 +18477,7 @@ def api(method, path, qs, body, deps):
         roster = roster_load(roster_path)
         name, why = group_name_clean(roster, body.get("name"))
         if why:
-            return 400, {"ok": False, "error": why, "code": "bad_request"}
+            return 400, {"ok": False, **why, "code": "bad_request"}
         add = body.get("users") or []
         if not isinstance(add, list) or any(not isinstance(u, str) for u in add):
             return 400, {"ok": False, "error": "users must be a list of user ids", "code": "bad_request"}
@@ -18508,7 +18509,7 @@ def api(method, path, qs, body, deps):
         if "name" in body:
             name, why = group_name_clean(roster, body.get("name"), gid)
             if why:
-                return 400, {"ok": False, "error": why, "code": "bad_request"}
+                return 400, {"ok": False, **why, "code": "bad_request"}
             if name != cur.get("name"):
                 fields["name"] = name
         was = set(cur.get("users") or [])

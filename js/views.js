@@ -164,7 +164,8 @@ export function pageScroll(e, dir) {
 export const connView = { mode: "peers", node: "", iface: "", q: "", online: true, page: 1, pageSize: 20, sort: "status", dir: -1, usort: "status", udir: -1 };   // Online filter ON by default → the Live view leads with what's connected now
 
 // Independent view-state per grid so search / server / interface / page never bleed across them.
-export const usersView = { q: "", node: "", iface: "", page: 1, pageSize: 20, sort: "status", dir: -1, expanded: {} };   // node/iface filter the LIST (expand shows all peers)
+export const usersView = { q: "", node: "", iface: "", page: 1, pageSize: 20, sort: "status", dir: -1, expanded: {},   // node/iface filter the LIST (expand shows all peers)
+  mode: "users", gq: "", gpage: 1, gpageSize: 20 };   // the Users | Groups switch, and the groups list's own search and page
 export const unassignedView = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 };
 export const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize, sort, dir } for the expanded grid
 
@@ -245,6 +246,20 @@ export function userPageOf(uid) {
 // Land on the Users screen at the PAGE where `userId` sits, expand that user's row and scroll it into view.
 // Optionally glow a just-assigned peer's row (peerId). Shared by "click a username anywhere" and the assign
 // flow (when it started on the Users screen).
+// USER GROUPS (docs/GROUPS-PLAN.md G11). The devices whose networks are shared with a group — what adding someone grants, and what
+// removing someone or deleting the group takes away — from the roster the poll already holds, never a request.
+export function groupShares(gid) {
+  return Store.recon.peers.filter(p => (p.routes || []).length && p.share && p.share.groups && typeof p.share.groups === "object"
+    && Object.prototype.hasOwnProperty.call(p.share.groups, gid));
+}
+// A device as a sentence names it: its title, else its owner's name.
+export const shareDeviceName = p => p.title || (p.user_id && Store.user(p.user_id) ? Store.user(p.user_id).name : T("Untitled"));
+// "Office router, Home NAS, Dacha and 4 more" — three named, the rest counted, as one translatable phrase.
+export function namedFew(names) {
+  if (names.length <= 3) return names.join(", ");
+  return T("{names} and {n} more", { names: names.slice(0, 3).join(", "), n: names.length - 3 });
+}
+
 export function revealUser(userId, peerId) {
   if (!userId) return;
   usersView.q = ""; usersView.expanded[userId] = true;
@@ -798,6 +813,7 @@ export function evItem(e) {
   const v = e.verb || "";
   if (e.kind === "peer") return "Peer";   // i18n-keys: canonical EV_ITEMS value
   if (e.kind === "user") return "User";
+  if (e.kind === "group") return "User";   // a group lives on the Users screen (docs/GROUPS-PLAN.md G11)
   if (e.kind === "panel") return v === "Panel updated" ? "Update" : "Settings";   // i18n-keys: e.verb is the SERVER's English — never compare it to a translation
   if (/interface/i.test(v)) return "Interface";       // kind === node from here
   if (/turn-proxy/i.test(v)) return "Turn-proxy";
@@ -816,6 +832,8 @@ export function evAction(e) {
 export function evClick(e) {
   const item = evItem(e), v = e.verb || "", gone = /\bdeleted\b/i.test(v);
   if (item === "Peer") return gone ? { href: "#/peers" } : { href: "#/peers", on: () => revealPeerInPeersById(e.id) };   // i18n-keys: canonical EV_ITEMS value
+  // a group's id is not a user's: it opens Users → Groups, never revealUser
+  if (e.kind === "group") return { href: "#/users", on: () => { usersView.mode = "groups"; usersView.gq = ""; go("#/users"); Store.apply(); } };
   if (item === "User") return gone ? { href: "#/users" } : { href: "#/users", on: () => revealUser(e.id) };
   if (item === "Settings") return { href: "#/panel/settings", on: () => { setPendingSection((e.id && e.id !== "settings") ? e.id : null); go("#/panel/settings"); } };
   if (item === "Update") return null;                 // panel version bump / update lifecycle — nothing to open

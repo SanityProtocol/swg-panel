@@ -1034,16 +1034,26 @@ function netWhy(r, node) {
 // THREE AUDIENCES, ONE STORED SHAPE: `null` = everyone on the node, `{users: {}}` = the owner only, `{users: {...}}` = the
 // owner and the people named. "Only the owner" was always storable — as "people you choose" with nobody chosen, which read
 // as a half-finished form — so it is a mode of the draft, not a new field.
-const shareOf = s => (s && typeof s === "object" && s.users && typeof s.users === "object")
-  ? { mode: Object.keys(s.users).length ? "chosen" : "owner", users: { ...s.users } } : { mode: "everyone", users: {} };
-const shareBody = d => d.mode === "everyone" ? null : { users: d.mode === "chosen" ? d.users : {} };
-const shareKey = d => d.mode === "everyone" ? "off"
-  : "on:" + (d.mode === "chosen" ? Object.keys(d.users).sort().map(k => k + "=" + (d.users[k] || 0)).join(",") : "");
+// GROUPS (docs/GROUPS-PLAN.md G4, G6): the same shape names groups beside people. The draft carries both, and the body always SENDS
+// `groups` — the panel refuses a save without it for a device whose share names groups, because that is what a tab opened before
+// groups existed sends. A deleted group's id is left out here: it grants nothing, and saving without it drops it.
+const shareOf = s => {
+  if (!(s && typeof s === "object" && s.users && typeof s.users === "object")) return { mode: "everyone", users: {}, groups: {} };
+  const groups = {};
+  for (const [k, v] of Object.entries(s.groups && typeof s.groups === "object" ? s.groups : {})) if (Store.group(k)) groups[k] = v;
+  return { mode: Object.keys(s.users).length || Object.keys(groups).length ? "chosen" : "owner", users: { ...s.users }, groups };
+};
+const shareBody = d => d.mode === "everyone" ? null
+  : { users: d.mode === "chosen" ? d.users : {}, groups: d.mode === "chosen" ? (d.groups || {}) : {} };
+const signOf = m => Object.keys(m || {}).sort().map(k => k + "=" + (m[k] || 0)).join(",");
+const shareKey = d => d.mode === "everyone" ? "off" : "on:" + (d.mode === "chosen" ? signOf(d.users) + "|" + signOf(d.groups) : "");
 function shareRefused(why) {
   switch (why) {
     case "unknown_user": return T("One of these people no longer exists — remove them and save again.");
     case "date_passed": return T("A date has already passed — pick a later day or leave it empty.");
-    case "too_many": return T("A network can be shared with at most 500 people.");
+    case "unknown_group": return T("One of these groups no longer exists — remove it and save again.");
+    case "groups_missing": return T("This page is out of date — reload it, then save again.");
+    case "too_many": return T("A network can be shared with at most 500 people and groups.");
     default: return T("Access wasn't saved.");
   }
 }
@@ -1065,22 +1075,25 @@ function NetShare({ peer, draft, setDraft, nodes, noShare, routes }) {
   // The owner is in regardless and never stored as a grantee; after a reassignment the new owner can still sit in the stored
   // list, and was shown twice — once as the owner, once as someone chosen.
   const ids = Object.keys(draft.users).filter(id => id !== peer.user_id).sort((a, b) => shareUser(a).localeCompare(shareUser(b)));
+  const gids = Object.keys(draft.groups || {}).filter(id => Store.group(id));
   const everyone = nodes.length === 1 ? T("Everyone on {node}", { node: nodes[0] }) : T("Everyone on its nodes");
   // ONE control, the panel's pill switch (the link datapath's Forward | Relay): the narrowest, the widest, then the one that
   // needs a list. ⚠️ The list lived here, one row per person, and a network shared with 100 people is not a form field — it
   // opens in its own window (ShareListSheet), searched and paged; here it is a count.
   const modes = [...(owner ? [["owner", T("Only {name}", { name: owner.name })]] : []), ["everyone", everyone], ["chosen", T("People you choose")]];
   const label = T("Who can reach these networks");
-  const openList = users => pushModal(html`<${ShareListSheet} peer=${peer} users=${users} routes=${routes}
-    onApply=${u => setDraft(d => ({ ...d, mode: "chosen", users: u }))}/>`);
-  const pick = m => { setDraft(d => ({ ...d, mode: m })); if (m === "chosen" && !ids.length) openList(draft.users); };
+  const openList = () => pushModal(html`<${ShareListSheet} peer=${peer} users=${draft.users} groups=${draft.groups || {}} routes=${routes}
+    onApply=${(u, g) => setDraft(d => ({ ...d, mode: "chosen", users: u, groups: g }))}/>`);
+  const pick = m => { setDraft(d => ({ ...d, mode: m })); if (m === "chosen" && !ids.length && !gids.length) openList(); };
   return html`<div class="netshare">
     <label class="netshare-l">${label}</label>
     <div class="netshare-row">
       <div class="dpsw netsw-share" role="radiogroup" aria-label=${label}>${modes.map(([m, l]) => html`<button type="button" role="radio"
         aria-checked=${draft.mode === m} class=${draft.mode === m ? "on" : ""} onClick=${() => pick(m)}>${l}</button>`)}</div>
-      ${draft.mode === "chosen" ? html`<button type="button" class=${"netshare-count" + (!ids.length && !owner ? " bad" : "")} onClick=${() => openList(draft.users)}>
-        <${Ic} i="users"/><span>${ids.length ? T("Shared with {users}", { users: plural(ids.length, "user") }) : T("Choose people")}</span></button>` : null}
+      ${draft.mode === "chosen" ? html`<button type="button" class=${"netshare-count" + (!ids.length && !gids.length && !owner ? " bad" : "")} onClick=${openList}>
+        <${Ic} i="users"/><span>${gids.length && ids.length ? T("Shared with {groups} and {users}", { groups: plural(gids.length, "group"), users: plural(ids.length, "user") })
+          : gids.length ? T("Shared with {groups}", { groups: plural(gids.length, "group") })
+          : ids.length ? T("Shared with {users}", { users: plural(ids.length, "user") }) : T("Choose people")}</span></button>` : null}
     </div>
     ${/* NETWORKS P5 S8: a node that can't enforce a restriction carries a restricted network for NOBODY. Said at the choice,
           before the save — further down it was one reason line among many, and "Only Alice" read as simply broken. */""}
@@ -1089,9 +1102,9 @@ function NetShare({ peer, draft, setDraft, nodes, noShare, routes }) {
         : T("{nodes} runs an older version that can't limit who reaches a network, so with this choice nobody reaches them there. Update {nodes}, or choose “{everyone}”.", { nodes: noShare.join(", "), everyone })}</span></div>` : null}
     ${draft.mode === "owner" && owner ? html`<div class="hint">${T("Only {name}'s own devices on the same node reach them.", { name: owner.name })}</div>` : null}
     ${draft.mode === "everyone" ? html`<div class="hint">${T("Every device on the same node reaches them — the report below says how many.")}</div>` : null}
-    ${draft.mode === "chosen" ? html`<div class=${"hint" + (!ids.length && !owner ? " err" : "")}>${owner
+    ${draft.mode === "chosen" ? html`<div class=${"hint" + (!ids.length && !gids.length && !owner ? " err" : "")}>${owner
         ? T("{name} always has access, as the owner, and so do the people you choose.", { name: owner.name })
-        : ids.length ? T("Only the people you choose have access.")
+        : ids.length || gids.length ? T("Only the people you choose have access.")
         : T("Nobody has access yet — choose people, or pick “{everyone}”.", { everyone })}</div>` : null}
   </div>`;
 }
@@ -1112,19 +1125,20 @@ function NetPagedRows({ rows, total, render }) {
 // The people a network is shared with, in their own window: add by search, filter, a paged grid. Each person's devices are a
 // colour-coded count — green reach it, amber will once connected, red can't — with the per-node detail on hover. The window
 // asks the panel what its own draft would mean (the same preview the Networks window uses), so the counts follow edits.
-function ShareListSheet({ peer, users: initial, routes, onApply }) {
+function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, onApply }) {
   const owner = peer.user_id ? Store.user(peer.user_id) : null;
   const [users, setUsers] = useState(() => { const u = { ...(initial || {}) }; delete u[peer.user_id]; return u; });
+  const [groups, setGroups] = useState(() => ({ ...(initialGroups || {}) }));
   const [q, setQ] = useState(""), [page, setPage] = useState(1), [rep, setRep] = useState(null), [err, setErr] = useState("");
   const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null), base = useRef(null);
-  const key = Object.keys(users).sort().map(k => k + "=" + (users[k] || 0)).join(",");
+  const key = signOf(users) + "|" + signOf(groups);
   if (base.current === null) base.current = key;
   dirtyRef.current = key !== base.current;
   useEffect(() => {
     let ok = true;
     const h = setTimeout(async () => {
       try {
-        const r = await api.peerNetworks({ peer_id: peer.id, routes, share: { users } });
+        const r = await api.peerNetworks({ peer_id: peer.id, routes, share: { users, groups } });
         if (!ok) return;
         if (r && r.ok) { setRep(r.data); setErr(""); } else setErr(r && r.code === "share_refused" ? shareRefused(r.why) : (srvText(r) || T("Couldn't check these networks.")));
       } catch (e) { if (ok) setErr(T("Couldn't check these networks.")); }
@@ -1140,16 +1154,26 @@ function ShareListSheet({ peer, users: initial, routes, onApply }) {
   }
   const byName = (a, b) => shareUser(a).localeCompare(shareUser(b));
   const all = Object.keys(users).sort(byName);
+  // GROUPS (docs/GROUPS-PLAN.md G11): a group is a row of its own, first; a deleted one is not shown (it grants nothing)
+  const gname = id => (Store.group(id) || {}).name || "";
+  const byGroup = (a, b) => gname(a).localeCompare(gname(b));
+  const allG = Object.keys(groups).filter(id => Store.group(id)).sort(byGroup);
+  const list = [...allG.map(id => ({ g: true, id })), ...all.map(id => ({ g: false, id }))];
   const ql = q.trim().toLowerCase();
-  const rows = ql ? all.filter(id => shareUser(id).toLowerCase().includes(ql)) : all;
+  const rows = ql ? list.filter(r => (r.g ? gname(r.id) : shareUser(r.id)).toLowerCase().includes(ql)) : list;
   const pages = Math.max(1, Math.ceil(rows.length / NET_PAGE)), pg = Math.min(page, pages);
   const add = id => {
     if (!id || id === peer.user_id || id in users) return;
     setUsers(u => ({ ...u, [id]: 0 })); setQ("");
-    setPage(Math.floor([...all, id].sort(byName).indexOf(id) / NET_PAGE) + 1);   // to the page the new person lands on
+    setPage(Math.floor((allG.length + [...all, id].sort(byName).indexOf(id)) / NET_PAGE) + 1);   // to the page the new person lands on
   };
-  const drop = id => setUsers(u => { const n = { ...u }; delete n[id]; return n; });
-  const apply = () => { onApply(users); dirtyRef.current = false; if (cleanRef.current) cleanRef.current(); closeModal(); };
+  const addGroup = id => {
+    if (!id || id in groups) return;
+    setGroups(g => ({ ...g, [id]: 0 })); setQ("");
+    setPage(Math.floor([...allG, id].sort(byGroup).indexOf(id) / NET_PAGE) + 1);
+  };
+  const drop = r => (r.g ? setGroups : setUsers)(m => { const n = { ...m }; delete n[r.id]; return n; });
+  const apply = () => { onApply(users, groups); dirtyRef.current = false; if (cleanRef.current) cleanRef.current(); closeModal(); };
   // Sheet marks itself dirty on ANY input event, so typing in the filter or the person search — which change nothing — asked
   // "Discard unsaved changes?" on close. What changed is known exactly (`dirtyRef`, the list's key against the one it
   // opened with), so every input here hands the guard back to that: this handler runs after Sheet's capture listener.
@@ -1168,33 +1192,58 @@ function ShareListSheet({ peer, users: initial, routes, onApply }) {
         ${Object.entries(g.keyless_why || {}).map(([w, n]) => html`<div class="netbub-row sub">${shareKeyless(w, shareUser(id), plural(n, "device"))}</div>`)}`)}
     <//>`;
   };
+  // A group's devices: the sum over its members, and the members on hover — ten named, the rest counted.
+  const groupDevices = id => {
+    if (!rep) return html`<span class="faint">…</span>`;
+    const mem = (Store.group(id) || { users: [] }).users;
+    let ok = 0, soon = 0, no = 0;
+    const withDev = [], without = [];
+    for (const u of mem) {
+      const r = reach[u];
+      if (r && r.ok + r.soon + r.no) { ok += r.ok; soon += r.soon; no += r.no; withDev.push([u, r]); } else without.push(u);
+    }
+    const parts = [[ok, "ok"], [soon, "soon"], [no, "no"]].filter(([n]) => n);
+    const trigger = html`<span class=${"netdev" + (parts.length ? "" : " none")}>${parts.length
+      ? parts.map(([n, c]) => html`<span class=${"netdev-n " + c}>${n}</span>`) : T("no device")}<${Ic} i="info"/></span>`;
+    return html`<${Popover} hoverOnly cls="netdev-pop" popCls="netroute-bub" trigger=${trigger}>
+      <span class="netroute-h">${gname(id)}</span>
+      ${!mem.length ? html`<div class="netbub-row sub">${T("No members yet.")}</div>` : null}
+      ${withDev.slice(0, 10).map(([u, r]) => html`<div class=${"netbub-row nb-dot " + (r.ok ? "ok" : r.soon ? "soon" : "no")}><b>${shareUser(u)}</b> — ${r.ok
+        ? T("{devices} reach it", { devices: plural(r.ok, "device") }) : T("no device reaches it yet")}</div>`)}
+      ${withDev.length > 10 ? html`<div class="netbub-row sub">${T("…and {v1} more", { v1: withDev.length - 10 })}</div>` : null}
+      ${without.length ? html`<div class="netbub-row sub">${T("{users} with no device here", { users: plural(without.length, "user") })}</div>` : null}
+    <//>`;
+  };
   return html`<${Sheet} title=${T("People with access")} width=${680} dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
     subject=${{ kind: "peer", id: peer.id }}
-    foot=${html`<${Fragment}><span class="faint">${T("{users} chosen", { users: plural(all.length, "user") })}</span><span class="grow"></span>
+    foot=${html`<${Fragment}><span class="faint">${allG.length && all.length ? T("{groups} and {users} chosen", { groups: plural(allG.length, "group"), users: plural(all.length, "user") })
+        : allG.length ? T("{groups} chosen", { groups: plural(allG.length, "group") }) : T("{users} chosen", { users: plural(all.length, "user") })}</span><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${!!err} onClick=${apply}>${T("Apply")}</button><//>`}>
     ${owner ? html`<div class="hint sharelead">${T("{name} always has access, as the owner.", { name: owner.name })}</div>` : null}
     <div class="sharebar" onInput=${typedOnly} onChange=${typedOnly}>
-      <div class="sharebar-add"><${UserPicker} value=${null} placeholder=${T("Add a person…")} exclude=${[peer.user_id, ...all].filter(Boolean)} onChange=${add}/></div>
-      ${all.length > NET_PAGE ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
+      <div class="sharebar-add"><${UserPicker} value=${null} placeholder=${T("Add a person or group…")} exclude=${[peer.user_id, ...all].filter(Boolean)}
+        groups=${Store.groups().filter(g => !(g.id in groups))} onGroup=${addGroup} onChange=${add}/></div>
+      ${list.length > NET_PAGE ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
           aria-label=${T("Filter the list…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
     </div>
     ${err ? html`<div class="formmsg err">${err}</div>` : null}
-    ${all.length ? html`<div class="sharegrid" role="table" onInput=${typedOnly} onChange=${typedOnly}>
+    ${list.length ? html`<div class="sharegrid" role="table" onInput=${typedOnly} onChange=${typedOnly}>
         <div class="sharegrid-h" role="row"><span>${T("col|User")}</span><span>${T("Devices")}</span><span>${T("Access until")}</span><span></span></div>
-        ${pageOf(rows, pg).map(id => html`<div class="sharegrid-r" role="row" key=${id}>
-          <span class="nm">${shareUser(id)}</span>
-          <span>${devices(id)}</span>
-          <span><input type="date" class="datein" value=${expiryInputVal(users[id])} data-enter="self" data-noautofocus
-            aria-label=${T("Last day {name} can reach them — leave empty for no end", { name: shareUser(id) })}
-            onInput=${e => { const v = expiryFromInput(e.target.value); setUsers(u => ({ ...u, [id]: v })); }}/></span>
-          <span><button type="button" class="btn btn-ghost btn-mini" title=${T("Stop sharing with {name}", { name: shareUser(id) })}
-            aria-label=${T("Stop sharing with {name}", { name: shareUser(id) })} onClick=${() => drop(id)}><${Ic} i="x"/></button></span></div>`)}
+        ${pageOf(rows, pg).map(r => { const nm = r.g ? gname(r.id) : shareUser(r.id), m = r.g ? groups : users;
+          return html`<div class=${"sharegrid-r" + (r.g ? " grp" : "")} role="row" key=${(r.g ? "g:" : "u:") + r.id}>
+          <span class="nm">${r.g ? html`<${Ic} i="users"/>${nm}<span class="faint sharegrid-sub">${plural((Store.group(r.id) || { users: [] }).users.length, "member")}</span>` : nm}</span>
+          <span>${r.g ? groupDevices(r.id) : devices(r.id)}</span>
+          <span><input type="date" class="datein" value=${expiryInputVal(m[r.id])} data-enter="self" data-noautofocus
+            aria-label=${T("Last day {name} can reach them — leave empty for no end", { name: nm })}
+            onInput=${e => { const v = expiryFromInput(e.target.value); (r.g ? setGroups : setUsers)(x => ({ ...x, [r.id]: v })); }}/></span>
+          <span><button type="button" class="btn btn-ghost btn-mini" title=${T("Stop sharing with {name}", { name: nm })}
+            aria-label=${T("Stop sharing with {name}", { name: nm })} onClick=${() => drop(r)}><${Ic} i="x"/></button></span></div>`; })}
         ${!rows.length ? html`<div class="sharegrid-empty">${T("Nobody on the list matches “{q}”.", { q })}</div>` : null}
       </div>
       <${NetPager} page=${pg} setPage=${setPage} total=${rows.length}/>
       <div class="hint">${T("A date is the last day they can reach these networks; leave it empty for no end.")}</div>`
-    : html`<div class="sharegrid-empty">${T("Nobody yet — add people with the search above.")}</div>`}
+    : html`<div class="sharegrid-empty">${T("Nobody yet — add people or groups with the search above.")}</div>`}
   <//>`;
 }
 
@@ -1224,6 +1273,7 @@ function NetCounts({ t, node }) {
       : T("Devices on the network behind {device} ({nets}) can't reach it either — that device has no owner, so it can't be given access.", v)]); });
   if (provs.length > 3) lines.push(["no", T("…and {v1} more", { v1: provs.length - 3 })]);
   if (s && (s.lapsed || []).length) lines.push(["off", T("Access has ended for {users}", { users: plural(s.lapsed.length, "user") })]);
+  if (s && (s.lapsed_groups || []).length) lines.push(["off", T("Access has ended for {groups}", { groups: plural(s.lapsed_groups.length, "group") })]);
   if (s && !st) lines.push(["off", T("{node} hasn't confirmed the restriction yet — it does on its next sync.", { node })]);
   const aria = T("{total} other peers on {node}: {ok} can reach it, {soon} not yet, {no} can't", { total: ok + soon + no, node, ok, soon, no });
   return html`<${Popover} hoverOnly cls="netcount-pop" popCls="netroute-bub" trigger=${html`<span class="netcount" aria-label=${aria}>
@@ -1271,7 +1321,7 @@ function NetworksSheet({ pid }) {
   // A NEW network starts private to its owner: open to everyone on the node the moment it is saved was the old default,
   // and the report explaining the exposure arrived only after the fact. A stored network keeps its stored audience.
   const [share, setShare] = useState(() => {
-    const d = stored.length ? shareOf(peer.share) : { mode: owner ? "owner" : "chosen", users: {} };
+    const d = stored.length ? shareOf(peer.share) : { mode: owner ? "owner" : "chosen", users: {}, groups: {} };
     return (!owner && d.mode === "owner") ? { ...d, mode: "chosen" } : d;
   });
   const shareDraftKey = shareKey(share);
@@ -1303,7 +1353,7 @@ function NetworksSheet({ pid }) {
   // old list back over theirs without a word. Caught on the poll that brings their change, before anything is written.
   const stale = storedKey + "|" + shareStoredKey !== base.current;
   // A device with no owner, restricted to nobody: a network no one can reach, saved as if it were a choice.
-  const nobody = want.length > 0 && !owner && share.mode === "chosen" && !Object.keys(share.users).length;
+  const nobody = want.length > 0 && !owner && share.mode === "chosen" && !Object.keys(share.users).length && !Object.keys(share.groups || {}).length;
   const noShare = ((rep && rep.targets) || []).filter(x => x.can_share === false).map(x => Store.nodeName(x.node));
   const clash = homeClash(want);
   const checking = (want.length > 0 || stored.length > 0) && (!rep || rep._key !== reqKey);

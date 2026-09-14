@@ -168,6 +168,10 @@ export const api = {
   userCreate(b) { return this.post("/api/users/create", b); },
   userUpdate(b) { return this.post("/api/users/update", b); },
   userDelete(b) { return this.post("/api/users/delete", b); },
+  // user groups (docs/GROUPS-PLAN.md) — membership travels as a delta: {id, name?, add?: [uid], remove?: [uid]}
+  groupCreate(b) { return this.post("/api/groups/create", b); },
+  groupUpdate(b) { return this.post("/api/groups/update", b); },
+  groupDelete(b) { return this.post("/api/groups/delete", b); },
   userBlock(b) { return this.post("/api/user/block", b); },       // revoke WG + suspend the subscription URL
   userUnblock(b) { return this.post("/api/user/unblock", b); },   // restore both
   // peers
@@ -490,6 +494,15 @@ export const Store = {
   },
   peer(id) { return this.recon.peers.find(p => p.id === id); },
   user(id) { return this.recon.users.find(u => u.id === id); },
+  // A user GROUP as the screens read it (docs/GROUPS-PLAN.md G1): the members that still exist — a deleted user stays in the stored
+  // list and is filtered here, where it is read. Sorted by name.
+  groups() {
+    const g = (this.roster && this.roster.groups) || {}, us = (this.roster && this.roster.users) || {};
+    return Object.keys(g).filter(id => g[id] && typeof g[id] === "object")
+      .map(id => ({ id, name: String(g[id].name || ""), users: (Array.isArray(g[id].users) ? g[id].users : []).filter(u => us[u]) }))
+      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  },
+  group(id) { return this.groups().find(g => g.id === id) || null; },
   peersOfUser(id) { return this.recon.peers.filter(p => p.user_id === id); },
   unassignedPeers() { return this.recon.peers.filter(p => p.unassigned); },
 };

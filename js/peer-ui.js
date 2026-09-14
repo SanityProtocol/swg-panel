@@ -22,7 +22,7 @@ import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
   Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
   openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, rowSingle, rowDouble, rowNoSelect, RowError,
-  useAnchoredList, goSettings, LogBody, rateCell, uncatPop, ListPager, LIST_PAGE, pageSlice,
+  useAnchoredList, goSettings, LogBody, rateCell, uncatPop, ListPager, LIST_PAGE, pageSlice, modalDepth,
 } from "./ui.js";
 import {
   QR, qrDataURL, qrZoom, copyQrImage, buildConf, parseFullConf, downloadConf, getConfig, configOverrides,
@@ -37,7 +37,7 @@ import {
   confirmReassign, assignPeerToUser, openRecreateRekey, confirmRestoreDeployment, confirmCorrectDeployment,
   now_s,
 } from "./peer-actions.js";
-import { searchMatch, userStats, userStatTag } from "./views.js";
+import { searchMatch, userStats, userStatTag, groupShares, shareDeviceName, namedFew } from "./views.js";
 import { AppDropdown, OsDropdown, ForkTag, turnForkPlatforms, WDTT_COLOR, appNameColor, turnEnabled,
          _OS_TABS } from "./turn.js";
 import { h, Fragment } from "preact";
@@ -761,6 +761,116 @@ function UserNetworksPanel({ user }) {
     <div class="hint">${T("Worked out when this sheet opens. A device whose routing leaves a network out can be widened from its own settings.")}</div></div>`;
 }
 
+// ── USER GROUPS (docs/GROUPS-PLAN.md G11) ────────────────────────────────────────────────────────────────────────────────────────
+// A user's groups on their sheet: chips that open each group, six shown and the rest counted with the names on hover. Not on the
+// Users list rows — that is every group walked for every row on every poll, for what this sheet already shows.
+function UserGroupsField({ user }) {
+  const mine = Store.groups().filter(g => g.users.includes(user.id));
+  const rest = mine.slice(6);
+  return html`<div class="field"><label>${T("Groups")}</label>
+    ${mine.length ? html`<div class="ugroups">
+      ${mine.slice(0, 6).map(g => html`<button type="button" class="ugroup" key=${g.id} onClick=${() => openGroup(g.id)}><${Ic} i="users"/><span>${g.name}</span></button>`)}
+      ${rest.length ? html`<${Popover} hoverOnly cls="ugroup-pop" popCls="netroute-bub" trigger=${html`<span class="ugroup more">+${rest.length}</span>`}>
+        ${rest.slice(0, 10).map(g => html`<div class="netbub-row">${g.name}</div>`)}
+        ${rest.length > 10 ? html`<div class="netbub-row sub">${T("…and {v1} more", { v1: rest.length - 10 })}</div>` : null}
+      <//>` : null}
+    </div>` : html`<div class="hint ugroups-none">${T("Not in any group.")}</div>`}
+  </div>`;
+}
+
+// One group: its name and its members, saved as ONE change — a rename plus an add/remove delta against the members this window
+// opened with, so two operators editing one group never undo each other. The members are the People window's list: search to add,
+// a filter past a page, 15 rows a page. When networks are shared with the group, the window says what adding or removing does.
+export function openGroup(gid) { (modalDepth() > 0 ? pushModal : openModal)(html`<${GroupSheet} gid=${gid}/>`); }
+export function openCreateGroup() { openModal(html`<${GroupSheet} gid=${null}/>`); }
+export function confirmDeleteGroup(g, inSheet) {
+  const shares = groupShares(g.id);
+  openConfirm({ title: T("Delete group · {name}", { name: g.name }), confirmLabel: T("Delete group"), danger: true,
+    body: T("Its members stay as users; only the group is deleted.") + (shares.length ? " " + T("Networks shared with it stop being reachable for its members, unless they're shared with them another way: {devices}.",
+      { devices: namedFew(shares.map(shareDeviceName)) }) : ""),
+    onConfirm: async () => {
+      const r = await api.groupDelete({ id: g.id });
+      closeModals(inSheet ? 2 : 1);
+      if (r && r.ok) { toast(T("Group deleted."), "ok"); Store.poll(); }
+      else toast(srvText(r) || T("The group wasn't deleted."), "err");
+    } });
+}
+function GroupSheet({ gid }) {
+  useStore();
+  const g = gid ? Store.group(gid) : null;
+  const base = useRef(null);
+  if (base.current === null) base.current = { name: g ? g.name : "", users: g ? g.users.slice() : [] };
+  const [name, setName] = useState(base.current.name);
+  const [members, setMembers] = useState(() => base.current.users.slice());
+  const [q, setQ] = useState(""), [page, setPage] = useState(1), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
+  const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null);
+  const uname = id => (Store.user(id) || {}).name || "";
+  const byName = (a, b) => uname(a).localeCompare(uname(b));
+  const list = members.filter(id => Store.user(id)).sort(byName);
+  const add = list.filter(u => !base.current.users.includes(u)), remove = base.current.users.filter(u => !members.includes(u));
+  dirtyRef.current = name.trim() !== base.current.name || add.length > 0 || remove.length > 0;
+  if (gid && !g) return html`<${Sheet} title=${T("Group · {name}", { name: base.current.name })}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><//>`}>
+    <div class="empty"><b>${T("This group no longer exists.")}</b></div><//>`;
+  const ql = q.trim().toLowerCase();
+  const rows = ql ? list.filter(id => uname(id).toLowerCase().includes(ql)) : list;
+  const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE)), pg = Math.min(page, pages);
+  const addOne = id => {
+    if (!id || members.includes(id)) return;
+    setMembers(m => [...m, id]); setQ("");
+    setPage(Math.floor([...list, id].sort(byName).indexOf(id) / LIST_PAGE) + 1);   // to the page the new member lands on
+  };
+  const drop = id => setMembers(m => m.filter(x => x !== id));
+  // Sheet marks itself dirty on ANY input; the filter and the person search change nothing, so they hand the guard back (§18.1).
+  const typedOnly = () => { if (cleanRef.current) cleanRef.current(); };
+  const shares = gid ? groupShares(gid) : [];
+  const save = async () => {
+    const nm = name.trim();
+    if (!nm) { setErr(T("Give the group a name.")); return; }
+    setBusy(true); setErr("");
+    let r = null;
+    try {
+      r = gid ? await api.groupUpdate({ id: gid, ...(nm !== base.current.name ? { name: nm } : {}), add, remove })
+              : await api.groupCreate({ name: nm, users: list });
+    } catch (e) { r = null; }
+    setBusy(false);
+    if (!r || !r.ok) { setErr(srvText(r) || T("The group wasn't saved.")); return; }
+    dirtyRef.current = false; if (cleanRef.current) cleanRef.current();
+    toast(gid ? T("Group saved.") : T("Group created."), "ok");
+    closeModal(); Store.poll();
+  };
+  return html`<${Sheet} title=${gid ? T("Group · {name}", { name: base.current.name }) : T("New group")} width=${620}
+    dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
+    foot=${html`<${Fragment}>
+      ${gid ? html`<button class="btn btn-danger" onClick=${() => confirmDeleteGroup(g, true)}><${Ic} i="trash"/> ${T("Delete group")}</button>` : null}
+      <span class="grow"></span>
+      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-primary" disabled=${busy || !name.trim() || (gid && !dirtyRef.current)} onClick=${save}>${gid ? T("Save") : T("Create group")}</button><//>`}>
+    <div class="field"><label>${T("Name")}</label><input value=${name} maxlength="64" placeholder=${T("Ivanov family")} onInput=${e => setName(e.target.value)}/></div>
+    <div class="field"><label>${T("Members")} <span class="faint gcount">${list.length}</span></label>
+      <div class="sharebar" onInput=${typedOnly} onChange=${typedOnly}>
+        <div class="sharebar-add"><${UserPicker} value=${null} placeholder=${T("Add a person…")} exclude=${list} onChange=${addOne}/></div>
+        ${list.length > LIST_PAGE ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
+          aria-label=${T("Filter the list…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
+      </div>
+      ${list.length ? html`<div class="sharegrid gmembers" role="table">
+          ${pageSlice(rows, pg).map(id => { const u = Store.user(id) || {};
+            return html`<div class="sharegrid-r" role="row" key=${id}>
+            <span class="nm">${uname(id)}${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</span>
+            <span class="faint">${plural(Store.peersOfUser(id).length, "device")}</span>
+            <span><button type="button" class="btn btn-ghost btn-mini" title=${T("Remove {name} from the group", { name: uname(id) })}
+              aria-label=${T("Remove {name} from the group", { name: uname(id) })} onClick=${() => drop(id)}><${Ic} i="x"/></button></span></div>`; })}
+          ${!rows.length ? html`<div class="sharegrid-empty">${T("Nobody on the list matches “{q}”.", { q })}</div>` : null}
+        </div>
+        <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>`
+      : html`<div class="sharegrid-empty gempty">${T("No members yet — add people with the search above.")}</div>`}
+    </div>
+    ${shares.length ? html`<div class="hint">${T("Networks shared with this group: {devices}. Everyone you add reaches them; anyone you remove loses them, unless they're shared with them another way.",
+      { devices: namedFew(shares.map(shareDeviceName)) })}</div>` : null}
+    ${err ? html`<div class="formmsg err">${err}</div>` : null}
+  <//>`;
+}
+
 export function UserEditCard({ user, done }) {
   useStore();          // re-render on poll, so the Block/Unblock button flips after the action without reopening
   const [name, setName] = useState(user.name || "");
@@ -802,6 +912,7 @@ export function UserEditCard({ user, done }) {
     <div class="field"><label>${T("Name")}</label><input value=${name} onInput=${e => setName(e.target.value)} maxlength="64"/></div>
     <div class="field"><label>${T("Tag")}</label><input value=${tag} onInput=${e => setTag(e.target.value)} placeholder=${T("Friend, Family, Work…")} maxlength="32"/></div>
     <div class="field"><label>${T("Note")}</label><input value=${note} onInput=${e => setNote(e.target.value)} placeholder=${T("Uses iPhone and router")} maxlength="200"/></div>
+    <${UserGroupsField} user=${user}/>
     <div class="field"><label>${T("Access expires")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— the whole subscription; blank = never")}</span></label>
       <div class="daterow"><input type="date" class="datein" value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
       <div class="hint">${T("On this date the subscription and all its peers stop working (they reappear if you extend it). A peer's own expiry can't be later than this.")}</div></div>

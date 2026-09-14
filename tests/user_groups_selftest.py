@@ -55,9 +55,10 @@ def base():
 print("\n[1] group_name_clean")
 R = base()
 check("control characters stripped, spaces trimmed", P.group_name_clean(R, "  Work\x07 team ") == ("Work team", None))
-check("empty refused", P.group_name_clean(R, "   ")[1] == "name is required" and P.group_name_clean(R, None)[1] == "name is required")
+check("empty refused", (P.group_name_clean(R, "   ")[1] or {}).get("error") == "name is required"
+      and (P.group_name_clean(R, None)[1] or {}).get("error") == "name is required")
 check("64 characters at most", len(P.group_name_clean(R, "x" * 100)[0]) == 64)
-check("a duplicate name refused, case-insensitively", P.group_name_clean(R, "fAMILY")[1] == "a group with this name already exists")
+check("a duplicate name refused, case-insensitively", (P.group_name_clean(R, "fAMILY")[1] or {}).get("error") == "a group with this name already exists")
 check("a group keeps its own name on a rename", P.group_name_clean(R, "family", "g1") == ("family", None))
 
 print("\n[2] group_set")
