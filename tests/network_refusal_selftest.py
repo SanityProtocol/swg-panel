@@ -236,5 +236,13 @@ check("an unmapped subnet names itself",
       (P.network_report(R, "pA", {"n1": dict(SNAP, smartroute=_sr3)})["targets"][0].get("force_dns") or {}).get("ifaces")
       == ["10.77.0.0/24"])
 
+# a WDTT / csqtt server is a tunnel too: a network over its pool is refused as a tunnel subnet, not as "the node's LAN"
+_ws = dict(SNAP, node_ips=list(SNAP.get("node_ips") or []) + ["10.11.0.1"],
+           wdtt=[{"iface": "wdtt1", "wg_addr": "10.11.0.1/24"}], csqtt=[{"iface": "csqtt2", "tun_addr": "10.31.0.1/24"}])
+check("a network over a WDTT pool reads as a tunnel subnet, naming the server's address",
+      P.network_subnet_refusal("10.11.0.0/24", _ws) == ("iface_subnet", "10.11.0.1"), P.network_subnet_refusal("10.11.0.0/24", _ws))
+check("…and over a csqtt pool", P.network_subnet_refusal("10.31.0.0/24", _ws) == ("iface_subnet", "10.31.0.1"),
+      P.network_subnet_refusal("10.31.0.0/24", _ws))
+
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)

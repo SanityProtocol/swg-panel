@@ -2778,13 +2778,51 @@ def lan_private(ip):
     return False
 
 
-def _node_lan_nets():
+def _node_lan_nets(owned=()):
     """The private networks on this box's own cards — `_node_addrs`' device filter (no tunnels, no bridges) over the
-    prefixes `_local_addrs` keeps. One `ip` fork. None if it could not be read."""
+    prefixes `_local_addrs` keeps, minus every device this node runs as its own tunnel (`owned`). One `ip` fork. None
+    if it could not be read."""
     local = _local_addrs()
     if local is None:
         return None
-    return sorted({sub for dev, ip, sub in local if not dev.startswith(_NODE_ADDR_SKIP) and lan_private(ip)})
+    return sorted({sub for dev, ip, sub in local
+                   if not dev.startswith(_NODE_ADDR_SKIP) and dev not in owned and lan_private(ip)})
+
+
+def _own_tunnel_devs(node_cfg=None):
+    """Every device this node RUNS as one of its own tunnels: its client interfaces (the agent's config and what the last
+    egress pass served), each WDTT instance and its RAW second TUN, each csqtt instance, and its exit devices.
+
+    ⚠️ NETWORKS P2 JUDGED A DEVICE BY ITS NAME, and only `_NODE_ADDR_SKIP` knew what a tunnel was called. A WDTT or csqtt
+    server names its TUN after the instance (`wdtt1`, `csqtt2`), so on a VPS with no LAN at all the node's own client
+    pools were disclosed as "the private network it sits on" (seen on swgt) — and closing it would have dropped traffic
+    into those pools, replies arriving over a mesh link included. Ownership is the fact; the name list stays a backstop.
+    A tunnel this node does NOT run (an OpenVPN `tun0` the operator added) is still disclosed: clients reach through it."""
+    own = set(str(d) for d in (_CLIENT_DEVS.get("list") or []))
+    own.update(str(ifn) for ifn in ((node_cfg or {}).get("interfaces") or {}))
+    with contextlib.suppress(Exception):
+        for ifn, inst in (_wdtt_load() or {}).items():
+            own.add(str(ifn))
+            raw = _wdtt_raw(inst)
+            if raw:
+                own.add(raw[1])
+    with contextlib.suppress(Exception):
+        own.update(str(ifn) for ifn in (_csqtt_load() or {}))
+    own.update(str(x["device"]) for x in (_EXITS.get("list") or []) if isinstance(x, dict) and x.get("device"))
+    own.update(str(x["dev"]) for x in (_DEVEXIT.get("list") or []) if isinstance(x, dict) and x.get("dev"))
+    return own
+
+
+def _node_lans_report(addrs, owned):
+    """[{ip, iface}] — the snapshot's `lans`: this node's addresses on private networks, on devices it does not run as its
+    own tunnels. The SAME device rule as `_node_lan_nets`, so the panel discloses exactly what closing would block. Sent
+    even when empty: a node that knows it sits on no LAN must not read to the panel like one too old to say."""
+    out = []
+    for dev, ip in addrs:
+        if dev in owned or not lan_private(ip) or any(o["ip"] == ip for o in out):
+            continue
+        out.append({"ip": ip, "iface": dev})
+    return out
 
 
 def _lan_ruleset(nets, devs):
@@ -2814,7 +2852,7 @@ def _lan_drop_table(res):
     return False
 
 
-def reconcile_lan_block(block, res):
+def reconcile_lan_block(block, res, owned=None):
     """Converge the opt-out. `block` True: clients may not reach this node's private networks. → the status the
     snapshot reports, or None while sharing (the snapshot then carries no key at all).
 
@@ -2835,7 +2873,7 @@ def reconcile_lan_block(block, res):
         _LAN["sig"] = None
         _LAN["status"] = None
         return None
-    nets = _node_lan_nets()
+    nets = _node_lan_nets(_own_tunnel_devs() if owned is None else owned)
     devs = sorted(d for d in _CLIENT_DEVS["list"] if re.match(r"^[A-Za-z0-9_.@-]{1,15}$", str(d)))
     if nets is None:
         _LAN["status"] = {"on": True, "ok": False, "why": "addresses_unreadable", "nets": []}
@@ -10428,7 +10466,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # What this node reaches its panel BY and which resolvers it depends on (NETWORKS-PLAN §4.1). Its
             # PRESENCE is the gate: a node too old to send it cannot guard itself, so no network lowers onto it.
             "net_deps": net_deps(),
-            "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status(),
+            "node_ip_ifaces": list_node_ip_ifaces(_addrs), "lans": _node_lans_report(_addrs, _own_tunnel_devs(node_cfg)),
+            "smartroute": smart_status(),
             # Whether the TCP-terminating relay's divert is ARMED RIGHT NOW, and if not, why not — §4 of
             # RELAY-FEATURE-PLAN. "why" is the whole point: a feature that silently disarms itself and
             # reports nothing is indistinguishable from one that was never switched on.
@@ -16537,7 +16576,7 @@ def main():
                     _nets = reconcile_net_routes(node_cfg, reply["desired"], nr)
                     # The node's own LAN: after reconcile_egress (it names the client tunnels this pass). The panel
                     # sends `lan_share` only when the operator closed it, so absent means share — today's behaviour.
-                    reconcile_lan_block(reply.get("lan_share") is False, nr)
+                    reconcile_lan_block(reply.get("lan_share") is False, nr, owned=_own_tunnel_devs(node_cfg))
                     net_share_verify(nr)          # P5: a restriction flushed away is rebuilt, never left open
                     cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"), _def_egress,
                                             panel_conn=panel, panel_cfg=reply.get("panel"),

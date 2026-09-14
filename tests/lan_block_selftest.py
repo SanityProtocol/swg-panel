@@ -18,7 +18,13 @@ discloses it and offers to close it, and the node enforces the close with one nf
   [7] `lan_share` is stored only as a departure from the default, and cleared rather than written `true`.
 
 Hermetic. Run: python3 tests/lan_block_selftest.py            (0 = pass)
-     --perturb   skips the once-per-process probe and expects RED on [4]'s restart case.
+     --perturb         skips the once-per-process probe and expects RED on [4]'s restart case.
+     --perturb-owned   the node forgets which devices are its own tunnels → RED on [8].
+
+  [8] ⚠️ the node judges a device by what it RUNS, not by its name: its client interfaces, WDTT instances and their RAW
+      TUN, csqtt instances and exit devices are never "the private network it sits on" — neither in the snapshot's
+      `lans` nor in what closing blocks. A tunnel it does not run is still disclosed. And the panel shows the node's
+      own `lans` over its name test.
 """
 import importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -27,6 +33,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
+PERTURB_OWNED = "--perturb-owned" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -44,6 +51,9 @@ def load(name, path):
     return m
 P = load("swgpanel", PANEL)
 N = load("swgnoded", NODED)
+REAL_LAN_NETS = N._node_lan_nets
+if PERTURB_OWNED:
+    N._own_tunnel_devs = lambda *a, **k: set()
 CP = N.subprocess.CompletedProcess
 
 print("\n[1] panel and node agree on what a private network is")
@@ -61,6 +71,13 @@ check("private addresses on cards only — public and mesh left out",
       P.node_lans(snap) == [{"ip": "192.168.1.50", "iface": "eth0"}, {"ip": "100.64.3.9", "iface": "ppp0"}], P.node_lans(snap))
 check("an old node with only node_ips still discloses", P.node_lans({"node_ips": ["10.1.2.3", "8.8.8.8"]}) == [{"ip": "10.1.2.3", "iface": ""}])
 check("no snapshot → nothing, never an error", P.node_lans(None) == [] and P.node_lans({}) == [])
+
+print("\n[2b] the node's own word comes first")
+sw = {"lans": [], "node_ip_ifaces": [{"ip": "10.11.0.1", "iface": "wdtt1"}, {"ip": "10.10.0.1", "iface": "csqtt1"}]}
+check("a node reporting lans: [] discloses nothing, whatever its tunnels are called (swgt)", P.node_lans(sw) == [], P.node_lans(sw))
+check("a reported LAN is shown as the node reported it — a public address still filtered",
+      P.node_lans({"lans": [{"ip": "192.168.1.50", "iface": "eth0"}, {"ip": "203.0.113.5", "iface": "x"}]})
+      == [{"ip": "192.168.1.50", "iface": "eth0"}])
 
 print("\n[3] the ruleset")
 rs = N._lan_ruleset(["192.168.1.0/24", "10.20.0.0/16"], ["awg0", "wg1"])
@@ -106,7 +123,7 @@ check("RESTART: a table left from before is found and removed — a re-opened LA
 
 print("\n[5] blocking")
 fresh(); stub({"list": 1})
-N._node_lan_nets = lambda: ["192.168.1.0/24"]
+N._node_lan_nets = lambda *a: ["192.168.1.0/24"]
 N._CLIENT_DEVS["list"] = ["awg0", 'bad"name', "wg1"]
 res = {"changed": 0, "errors": []}
 st = N.reconcile_lan_block(True, res)
@@ -130,22 +147,47 @@ check("sharing again removes it and reports nothing", st is None and ["nft", "de
 print("\n[6] failure never opens it")
 fresh(); stub({"list": 0})
 N._LAN.update(probed=True, installed=True, sig="old")
-N._node_lan_nets = lambda: None
+N._node_lan_nets = lambda *a: None
 res = {"changed": 0, "errors": []}
 st = N.reconcile_lan_block(True, res)
 check("addresses unreadable: the installed table is LEFT, and it says so",
       st["ok"] is False and st["why"] == "addresses_unreadable" and not any(c[0][:3] == ["nft", "delete", "table"] for c in CALLS)
       and res["errors"], (st, CALLS))
 fresh(); stub({"list": 1, "load": 1, "load_err": "Error: Could not process rule: No such file or directory"})
-N._node_lan_nets = lambda: ["192.168.1.0/24"]
+N._node_lan_nets = lambda *a: ["192.168.1.0/24"]
 st = N.reconcile_lan_block(True, {"changed": 0, "errors": []})
 check("a failed load says why, and forgets what it thought was installed",
       st["ok"] is False and st["why"] == "nft_failed" and "No such file" in st["detail"] and N._LAN["probed"] is False, st)
 fresh(); stub({"list": 0})
-N._node_lan_nets = lambda: []
+N._node_lan_nets = lambda *a: []
 st = N.reconcile_lan_block(True, {"changed": 0, "errors": []})
 check("no private network on any card: nothing to close, and a leftover table goes",
       st == {"on": True, "ok": True, "nets": []} and ["nft", "delete", "table", "inet", "swg_lan"] in [c[0] for c in CALLS], (st, CALLS))
+
+print("\n[8] the node judges a device by what it runs, not by its name")
+_winst = {"raw_port": "56003", "raw_iface": "wdtt1r", "raw_addr": "10.12.0.1/24", "listen": "0.0.0.0:56000"}
+N._CLIENT_DEVS["list"] = ["wg1"]
+N._wdtt_load = lambda: {"wdtt1": _winst}
+N._csqtt_load = lambda: {"csqtt1": {"tun_addr": "10.10.0.1/24"}}
+N._EXITS["list"] = [{"id": "x1", "device": "tun-exit"}]
+N._DEVEXIT["list"] = [{"dev": "tun0"}]
+_raw = N._wdtt_raw(_winst)
+check("(the fixture's WDTT instance runs a RAW TUN)", bool(_raw) and _raw[1] == "wdtt1r", _raw)
+own = N._own_tunnel_devs({"interfaces": {"awg2": {}}})
+check("owned: client and config interfaces, WDTT + its RAW TUN, csqtt, exit devices",
+      {"wg1", "awg2", "wdtt1", "wdtt1r", "csqtt1", "tun-exit", "tun0"} <= own, own)
+addrs = [("eth0", "192.168.1.50"), ("wdtt1", "10.11.0.1"), ("wdtt1r", "10.12.0.1"), ("csqtt1", "10.10.0.1"),
+         ("tun-lab0", "10.66.0.2"), ("eth2", "203.0.113.9")]
+rep = N._node_lans_report(addrs, own)
+check("the snapshot's lans: the LAN card and a tunnel the node does NOT run — never its own tunnels, never public",
+      rep == [{"ip": "192.168.1.50", "iface": "eth0"}, {"ip": "10.66.0.2", "iface": "tun-lab0"}], rep)
+N._local_addrs = lambda: [("eth0", "192.168.1.50", "192.168.1.0/24"), ("wdtt1", "10.11.0.1", "10.11.0.0/24"),
+                          ("wdtt1r", "10.12.0.1", "10.12.0.0/24"), ("csqtt1", "10.10.0.1", "10.10.0.0/24"),
+                          ("tun-lab0", "10.66.0.2", "10.66.0.2/32"), ("wg1", "10.8.0.1", "10.8.0.0/24")]
+nets = REAL_LAN_NETS(own)
+check("closing blocks exactly the networks the report shows", nets == ["10.66.0.2/32", "192.168.1.0/24"], nets)
+check("a VPS whose only private addresses are its own tunnels reports and blocks nothing",
+      N._node_lans_report(addrs[1:4], own) == [] and [n for n in nets if n.startswith("10.1")] == [], (addrs[1:4], nets))
 
 print("\n[7] lan_share is stored only as a departure from the default")
 TMP = tempfile.mkdtemp(prefix="lanblock-")

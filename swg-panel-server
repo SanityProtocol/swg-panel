@@ -4851,15 +4851,24 @@ def network_subnet_refusal(prefix, snap, target=None):
         with contextlib.suppress(ValueError, TypeError):
             return ipaddress.ip_address(str(a)) in net
         return False
-    for a in snap.get("node_ips") or []:
-        if _in(a):
-            return "node_lan", str(a)        # ⚠️ a REDIRECT, not a no: the node is already a provider for it (§4.1)
     for ifn, blk in sorted((snap.get("interfaces") or {}).items()):
         meta = (blk or {}).get("meta") or {}
         with contextlib.suppress(ValueError, TypeError):
             if meta.get("subnet") and net.overlaps(ipaddress.ip_network(meta["subnet"], strict=False)):
                 return ("mesh" if str(ifn).startswith("swg_") else "iface_subnet"), \
                        str(meta.get("address") or meta["subnet"]).split("/")[0]
+    # ⚠️ TUNNELS BEFORE THE NODE'S OWN ADDRESSES. A WDTT or csqtt server is a tunnel too, but its subnet lives in the
+    # snapshot's instance list, not under `interfaces` — so a network over one fell through to `node_ips` (the server's
+    # own address is one of them) and was refused as "the node is already on it". Still refused; now for the right reason.
+    for kind, keys in (("wdtt", ("wg_addr", "raw_addr")), ("csqtt", ("tun_addr",))):
+        for inst in (snap.get(kind) or []):
+            for k in keys:
+                with contextlib.suppress(ValueError, TypeError, AttributeError):
+                    if inst.get(k) and net.overlaps(ipaddress.ip_network(str(inst[k]), strict=False)):
+                        return "iface_subnet", str(inst[k]).split("/")[0]
+    for a in snap.get("node_ips") or []:
+        if _in(a):
+            return "node_lan", str(a)        # ⚠️ a REDIRECT, not a no: the node is already a provider for it (§4.1)
     gws = snap.get("ether_gws")
     for g in (gws.values() if isinstance(gws, dict) else ()):
         if g and _in(g):
@@ -5556,6 +5565,12 @@ def node_lans(snap, is_sysif=None):
     address is what an operator recognises on their own LAN. An old node without `node_ip_ifaces` falls back to its
     bare addresses."""
     snap = snap if isinstance(snap, dict) else {}
+    # THE NODE'S OWN WORD FIRST. Only the node knows which of its devices are its own tunnels — a WDTT or csqtt server's
+    # TUN is named after the instance, and the name test below read a VPS's client pools as a LAN (swgt, 2026-09-14).
+    # A node that sends `lans` has already judged every device; the name test is kept only for one that does not.
+    if isinstance(snap.get("lans"), list):
+        return [{"ip": str(p.get("ip")), "iface": str(p.get("iface") or "")} for p in snap["lans"]
+                if isinstance(p, dict) and lan_private(p.get("ip"))]
     pairs = snap.get("node_ip_ifaces")
     if not isinstance(pairs, list):
         pairs = [{"ip": ip, "iface": ""} for ip in (snap.get("node_ips") or [])]
