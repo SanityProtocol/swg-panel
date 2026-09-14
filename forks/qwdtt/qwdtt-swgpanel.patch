@@ -1,8 +1,28 @@
 diff --git a/connections.go b/connections.go
-index 393a64c..69524d9 100644
+index 393a64c..25bca26 100644
 --- a/connections.go
 +++ b/connections.go
-@@ -169,7 +169,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -1,6 +1,7 @@
+ package main
+ 
+ import (
++	"io"
+ 	"context"
+ 	"errors"
+ 	"log"
+@@ -83,7 +84,10 @@ func (c *directConn) Read(b []byte) (int, error) {
+ 		n, _, err := c.pc.ReadFrom(b)
+ 		if err != nil {
+ 			var netErr net.Error
+-			if errors.As(err, &netErr) {
++			// swg-panel: a closed conn never recovers — pion's packetio buffer answers every read after Close with
++			// io.EOF (not a net.Error), so retrying it spun this goroutine at a full core for as long as the process
++			// lived. Close is reached from disconnectCredentialConnections, which a password removal now calls.
++			if errors.As(err, &netErr) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+ 				return 0, err
+ 			}
+ 			continue
+@@ -169,7 +173,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  			log.Printf("[WG] Отказ: пароль %s деактивирован, запрос от %s", maskPassword(password), deviceID)
  			dbMutex.Unlock()
  			return
@@ -11,7 +31,7 @@ index 393a64c..69524d9 100644
  			// Достигнут лимит устройств или привязано к другому устройству
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			log.Printf("[WG] Отказ: пароль %s достиг лимита устройств (%d), запрос от %s", maskPassword(password), entry.MaxDevices, deviceID)
-@@ -182,9 +182,12 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -182,9 +186,12 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  			// Сохраняем БД, так как canConnectAndBind мог внести привязку нового устройства
  			saveDB()
  
@@ -26,7 +46,7 @@ index 393a64c..69524d9 100644
  				setDeviceOwner(dev, password)
  			}
  			// Устройство могло быть создано раньше только Raw-путём
-@@ -202,9 +205,9 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+@@ -202,9 +209,9 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
  				if keyErr == nil && dev.IP != "" {
  					dev.PrivKey = privB64
  					dev.PubKey = pubB64
@@ -324,14 +344,14 @@ index 8d4024d..bef48ca 100644
  	out, _ := runCmd("bash", "-c", "sysctl net.ipv4.tcp_congestion_control")
  	if strings.Contains(out, "bbr") {
 diff --git a/raw.go b/raw.go
-index d9e0554..f1c38b0 100644
+index d9e0554..ecb3426 100644
 --- a/raw.go
 +++ b/raw.go
 @@ -354,6 +354,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  	}
  
  	var assignedIP string
-+	dkey := swgRawKey(deviceID) // swg-panel: fixed-config device key (AUTH workers resolve it via the alias)
++	var dkey string // swg-panel: fixed-config device key, bound to the AUTHENTICATING password in each branch below
  
  	if isGetConf {
  		// Только этот воркер проверяет пароль и (при необходимости) создаёт
@@ -344,15 +364,16 @@ index d9e0554..f1c38b0 100644
  			dbMutex.Unlock()
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
-@@ -392,11 +393,15 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -392,11 +393,16 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			saveDB()
  		}
  
 -		dev, exists := db.Devices[deviceID]
 +		// swg-panel: same key as the WG path, so ONE password = ONE device record
-+		// carrying both its wg IP and its raw IP (see swgRawRemember).
++		// carrying both its wg IP and its raw IP. Keyed by the AUTHENTICATING
++		// password — never a client-supplied device id or alias — so a second
++		// valid password presenting this device's id cannot land on its raw address.
 +		dkey = getconfDeviceKey(isGenPass, deviceID, password)
-+		swgRawRemember(deviceID, dkey)
 +		dev, exists := db.Devices[dkey]
  		if !exists {
 -			dev = &ClientDevice{DeviceID: deviceID, IP: getNextIP(), RawIP: getNextRawIP(), RawOwnerID: ownerID}
@@ -363,7 +384,7 @@ index d9e0554..f1c38b0 100644
  			saveDB()
  		} else {
  			changed := false
-@@ -431,8 +436,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -431,8 +437,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  		isMainPass := password != "" && password == db.MainPassword
  		entry, isGenPass := db.Passwords[password]
  		valid := isMainPass || (isGenPass && !isPasswordExpired(entry) && !entry.IsDeactivated)
@@ -380,16 +401,20 @@ index d9e0554..f1c38b0 100644
  			bound = entry.DeviceID == deviceID
  			if !bound {
  				for _, id := range entry.DeviceIDs {
-@@ -448,7 +459,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -448,7 +460,11 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
  		}
 -		dev, exists := db.Devices[deviceID]
-+		dev, exists := db.Devices[dkey] // swg-panel: fixed-config key, as above
++		// swg-panel: bind the device key to THIS worker's authenticating password,
++		// exactly as the GETCONF branch does — an AUTH (data) worker of one password
++		// can therefore never resolve to another password's raw device/address.
++		dkey = getconfDeviceKey(isGenPass, deviceID, password)
++		dev, exists := db.Devices[dkey]
  		if exists && dev.OwnerID == "" {
  			setDeviceOwner(dev, password)
  		}
-@@ -469,19 +480,19 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -469,19 +485,19 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  	untrackCredential := trackCredentialConnection(password, deviceID, clientConn)
  	defer untrackCredential()
  
@@ -414,7 +439,7 @@ index d9e0554..f1c38b0 100644
  		}
  		activeDevicesMu.Unlock()
  	}()
-@@ -536,7 +547,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -536,7 +552,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			continue
  		}
  		atomic.AddInt64(&totalBytesFromClient, int64(nn))
@@ -425,10 +450,10 @@ index d9e0554..f1c38b0 100644
  				log.Printf("[RAW] Ошибка записи в TUN (ip=%s): %v", assignedIP, wErr)
 diff --git a/swgpanel.go b/swgpanel.go
 new file mode 100644
-index 0000000..afaa3a3
+index 0000000..7034055
 --- /dev/null
 +++ b/swgpanel.go
-@@ -0,0 +1,442 @@
+@@ -0,0 +1,434 @@
 +package main
 +
 +// swg-panel additions to the qWDTT (SpaceNeuroX) server.
@@ -462,7 +487,6 @@ index 0000000..afaa3a3
 +	"os"
 +	"os/exec"
 +	"strings"
-+	"sync"
 +	"time"
 +
 +	"golang.zx2c4.com/wireguard/device"
@@ -611,34 +635,18 @@ index 0000000..afaa3a3
 +
 +// ── raw-path device identity ────────────────────────────────────────────────
 +//
-+// Under -fixed-config a PASSWORD is the peer, so the raw path must key its device
-+// by "pw:<password>" exactly like the WG path — otherwise one peer ends up with two
++// Under -fixed-config a PASSWORD is the peer, so the raw path keys its device by
++// "pw:<password>" exactly like the WG path — otherwise one peer ends up with two
 +// device records (one per datapath), its raw traffic is credited to neither, and
 +// canConnectAndBind fills DeviceIDs with per-device bindings the panel never asked
-+// for. Only the GETCONF_RAW worker carries the password; the other workers of the
-+// group send bare AUTH, so remember the mapping for them.
-+var (
-+	swgRawAliasMu sync.Mutex
-+	swgRawAlias   = map[string]string{}
-+)
-+
-+func swgRawRemember(deviceID, dkey string) {
-+	if deviceID == "" || dkey == "" || deviceID == dkey {
-+		return
-+	}
-+	swgRawAliasMu.Lock()
-+	swgRawAlias[deviceID] = dkey
-+	swgRawAliasMu.Unlock()
-+}
-+
-+func swgRawKey(deviceID string) string {
-+	swgRawAliasMu.Lock()
-+	defer swgRawAliasMu.Unlock()
-+	if k, ok := swgRawAlias[deviceID]; ok {
-+		return k
-+	}
-+	return deviceID
-+}
++// for. Both the GETCONF_RAW worker and every AUTH (data) worker of a group carry
++// the password, so each derives its key from its OWN authenticating password
++// (getconfDeviceKey below) — there is no client-keyed alias table. An earlier
++// version of this patch remembered deviceID→key from GETCONF and let AUTH workers
++// look it up; because the table was keyed only by the client-supplied device id, a
++// second client with a DIFFERENT valid password but the FIRST client's device id
++// resolved to the first password's raw device and address. Deriving the key from
++// the authenticating password on every worker closes that.
 +
 +// getconfDeviceKey keys a GETCONF config by the PASSWORD (not the device) under
 +// -fixed-config, so a generated password behaves like a wg/awg config file: one
@@ -681,9 +689,18 @@ index 0000000..afaa3a3
 +}
 +
 +// swgDropDevices removes a password's devices from WireGuard and (optionally)
-+// from the store. Never touches devices that belong to another password or to
-+// the owner (main) password.
++// from the store, and disconnects the credential's LIVE sessions. Never touches
++// devices, or connections, that belong to another password or to the owner (main)
++// password.
++//
++// The disconnect is load-bearing for the RAW path: removing the wg peer cuts a
++// WireGuard tunnel, but a raw-IP session carries no wg peer — it is a live
++// directConn registered in the rawRouter and tracked in credentialConnections.
++// Closing it (disconnectCredentialConnections, upstream's own primitive, keyed by
++// wrapKeyID(password)) is the only thing that stops a revoked or deactivated
++// password's raw traffic in flight. It also belts the wg path's peer removal.
 +func swgDropDevices(wgDev *device.Device, password string, e *PasswordEntry, del bool) bool {
++	disconnectCredentialConnections(password)
 +	changed := false
 +	for _, k := range swgDevicesOf(password, e) {
 +		dev, ok := db.Devices[k]
