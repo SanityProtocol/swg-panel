@@ -1,5 +1,5 @@
 diff --git a/db.go b/db.go
-index fda0d9a..a33beab 100644
+index fda0d9a..6bcdeb6 100644
 --- a/db.go
 +++ b/db.go
 @@ -313,7 +313,7 @@ func getNextIP() string {
@@ -11,7 +11,7 @@ index fda0d9a..a33beab 100644
  		if !used[ip] {
  			return ip
  		}
-@@ -321,6 +321,120 @@ func getNextIP() string {
+@@ -321,6 +321,132 @@ func getNextIP() string {
  	return ""
  }
  
@@ -103,10 +103,22 @@ index fda0d9a..a33beab 100644
 +	// binds the device under "pw:<password>" and leaves PasswordEntry.DeviceID EMPTY, so the per-branch removals above
 +	// can't find it — resolve by the key here. Also reaps orphans (devices whose password was rotated away earlier).
 +	// Without this, rotate/block only deny NEW connections; the ACTIVE tunnel lingers until its handshake expires.
++	// Only a GENERATED password's device is judged here: a "pw:<password>" key, or a device a password entry is bound
++	// to by DeviceID (stock mode). Any other device belongs to the owner -password (server identity, never in
++	// desired.json) — reaping it on every reconcile cut the owner's live session and freed its address to the pool.
++	bound := make(map[string]string)
++	for p, e := range db.Passwords {
++		if e != nil && e.DeviceID != "" {
++			bound[e.DeviceID] = p
++		}
++	}
 +	for dkey, dev := range db.Devices {
-+		pw := dkey
-+		if len(pw) > 3 && pw[:3] == "pw:" {
-+			pw = pw[3:]
++		pw, gen := bound[dkey]
++		if len(dkey) > 3 && dkey[:3] == "pw:" {
++			pw, gen = dkey[3:], true
++		}
++		if !gen {
++			continue
 +		}
 +		e, ok := db.Passwords[pw]
 +		if !ok || e == nil || e.IsDeactivated {
@@ -134,13 +146,48 @@ index fda0d9a..a33beab 100644
  		return
 diff --git a/fixedconfig_test.go b/fixedconfig_test.go
 new file mode 100644
-index 0000000..5514bda
+index 0000000..1cd933b
 --- /dev/null
 +++ b/fixedconfig_test.go
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,83 @@
 +package main
 +
-+import "testing"
++import (
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++// The reconcile reap judges only generated passwords' devices: the owner -password's device (keyed by its client
++// deviceID, never in desired.json) survives any reconcile, while a removed or deactivated password's device goes.
++func TestReconcileKeepsOwnerDevice(t *testing.T) {
++	oldFixed, oldDesired, oldDB, oldFile := fixedConfig, desiredFile, db, dbFile
++	defer func() { fixedConfig, desiredFile, db, dbFile = oldFixed, oldDesired, oldDB, oldFile }()
++	dir := t.TempDir()
++	desiredFile, dbFile, fixedConfig = filepath.Join(dir, "desired.json"), filepath.Join(dir, "passwords.json"), true
++	db = &Database{
++		MainPassword: "owner-password",
++		Passwords: map[string]*PasswordEntry{
++			"pwA": {}, "pwGone": {}, "pwStock": {DeviceID: "phone-1", IsDeactivated: true},
++		},
++		Devices: map[string]*ClientDevice{
++			"owner-device": {DeviceID: "owner-device", IP: "10.66.66.2"},
++			"pw:pwA":       {DeviceID: "pw:pwA", IP: "10.66.66.3"},
++			"pw:pwGone":    {DeviceID: "pw:pwGone", IP: "10.66.66.4"},
++			"phone-1":      {DeviceID: "phone-1", IP: "10.66.66.5"},
++		},
++	}
++	body := `{"passwords":{"pwA":{},"pwB":{},"pwStock":{"is_deactivated":true}}}`
++	if err := os.WriteFile(desiredFile, []byte(body), 0600); err != nil {
++		t.Fatal(err)
++	}
++	reconcileDesired(nil)
++	for key, keep := range map[string]bool{"owner-device": true, "pw:pwA": true, "pw:pwGone": false, "phone-1": false} {
++		if _, ok := db.Devices[key]; ok != keep {
++			t.Fatalf("device %s: present=%v, want %v", key, ok, keep)
++		}
++	}
++}
 +
 +// -fixed-config: a GENERATED password owns ONE keypair+IP returned to ANY deviceID (wg/awg parity;
 +// device-agnostic). Mirrors the ildarmaga fork's fixedconfig test (byte-identical wire).
