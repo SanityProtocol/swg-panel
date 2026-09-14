@@ -1196,6 +1196,22 @@ export function Disclosure({ title, summary, sumCls, open, onToggle, children })
   <//>`;
 }
 
+// ── a list sized by the fleet, not by the operator ──────────────────────────────────────────────────────────────────────────
+// Everything must read as well with 2 rows as with 200 (operator, 2026-09-14): a list whose length the fleet decides is
+// paged, 15 rows at a time, with the panel's own pager markup (Activity's). Shared by the Networks window and the user sheet.
+export const LIST_PAGE = 15;
+export const pageSlice = (list, page) => list.slice((page - 1) * LIST_PAGE, page * LIST_PAGE);
+export function ListPager({ page, setPage, total }) {
+  if (total <= LIST_PAGE) return null;
+  const pages = Math.ceil(total / LIST_PAGE);
+  return html`<div class="pager netpager">
+    <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * LIST_PAGE + 1, to: Math.min(page * LIST_PAGE, total), total })}</span>
+    <button type="button" class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>${T("‹ Prev")}</button>
+    <span class="pager-pg">${page} / ${pages}</span>
+    <button type="button" class="btn btn-ghost" disabled=${page >= pages} onClick=${() => setPage(page + 1)}>${T("Next ›")}</button>
+  </div>`;
+}
+
 // dropdown of a node's known IPs + a trailing free-text "Custom IP / Host…". Shared by the interface
 // endpoint field and the turn-proxy listen-IP field so they look/behave identically. Parent owns the
 // sel/custom state; resolve the chosen value with ipPickerVal(sel, custom).

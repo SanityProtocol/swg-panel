@@ -38,6 +38,7 @@ if PERTURB:
 def snap(peers, lan=True):
     s = {"node_ips": ["203.0.113.5"] + (["192.168.1.50"] if lan else []),
          "node_ip_ifaces": [{"ip": "203.0.113.5", "iface": "eth0"}] + ([{"ip": "192.168.1.50", "iface": "eth1"}] if lan else []),
+         "lans": [{"ip": "192.168.1.50", "iface": "eth1"}] if lan else [],
          "interfaces": {"awg0": {"meta": {"subnet": "10.8.0.0/24", "address": "10.8.0.1/24"}, "peers": peers}},
          "ether_gws": {"eth0": "203.0.113.1"},
          "net_deps": {"panel": "198.51.100.10", "resolvers": ["198.51.100.53"], "resolvers_known": True}}
@@ -93,6 +94,10 @@ check("the node's own LAN, closed on this node", tB.get("lan") == {"addrs": ["19
 own = P.user_networks(R, "u1", SNAPS)["peers"][0]["targets"]
 check("the gateway's own networks are not listed as something it reaches", all(n["via"] != "gwA" for t in own for n in t["networks"]), own)
 check("a node without a private address has no LAN entry", "lan" not in next(t for t in own if t["node"] == "n2"), own)
+S_OLD = dict(SNAPS, n1={k: v for k, v in SNAPS["n1"].items() if k != "lans"})
+old = P.user_networks(R, "u2", S_OLD)["peers"][0]["targets"][0]
+check("a node that does not judge its own devices (no `lans`) claims no local network — its name test reads tunnel pools as LANs",
+      "lan" not in old, old)
 RB = dict(R, users=dict(R["users"], u1={"name": "Alice", "disabled": True}))
 check("a blocked provider's network disappears from everyone's list",
       P.user_networks(RB, "u2", SNAPS)["peers"][0]["targets"][0]["networks"] == [])

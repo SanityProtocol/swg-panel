@@ -5418,7 +5418,11 @@ def user_networks(roster, uid, snaps, nodes=None):
                                      **({"restricted": True, "until": g[uid]} if g is not None else {})))
             nets.sort(key=lambda n: ipaddress.ip_network(n["prefix"]))
             ent = {"node": nid, "iface": t.get("iface") or "", "networks": nets}
-            lans = node_lans(snap)
+            # Only a node that JUDGES its own devices (snapshot `lans`, 26c275e) is believed here. An older node falls back to
+            # a name test that reads WDTT/csqtt client pools as a LAN — seen on a user's sheet as nixos's five tunnel
+            # addresses "the node's local network". This list tells a person what they can reach; a wrong claim is worse
+            # than none.
+            lans = node_lans(snap) if isinstance(snap.get("lans"), list) else []
             if lans:
                 ent["lan"] = {"addrs": [l["ip"] for l in lans], "open": (nodes.get(nid) or {}).get("lan_share") is not False}
             tgs.append(ent)

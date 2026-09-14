@@ -17,7 +17,7 @@ import { targetType, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSu
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
          turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised } from "./model.js";
 import { turnFork, turnColor, turnForkList } from "./turn-catalog.js";
-import { Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals } from "./ui.js";
+import { Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
 import {
   genKeys, genPSK, buildConf, parseFullConf, downloadConf, getConfig, configOverrides, QR, qrDataURL,
   subFeatureOn, subPublishOrPrompt, ensureVaultUnlocked, subSKCached, VaultPromptSheet, ensurePeerBlob,
@@ -1099,18 +1099,7 @@ function NetShare({ peer, draft, setDraft, nodes, noShare, routes }) {
 // ── a list sized by the fleet, not by the operator ──────────────────────────────────────────────────────────────────────────
 // Everything here must read as well with 2 rows as with 200 (operator, 2026-09-14): a long list is paged, 15 rows at a time,
 // with the panel's own pager markup (Activity's).
-const NET_PAGE = 15;
-const pageOf = (list, page) => list.slice((page - 1) * NET_PAGE, page * NET_PAGE);
-function NetPager({ page, setPage, total }) {
-  if (total <= NET_PAGE) return null;
-  const pages = Math.ceil(total / NET_PAGE);
-  return html`<div class="pager netpager">
-    <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * NET_PAGE + 1, to: Math.min(page * NET_PAGE, total), total })}</span>
-    <button type="button" class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>${T("‹ Prev")}</button>
-    <span class="pager-pg">${page} / ${pages}</span>
-    <button type="button" class="btn btn-ghost" disabled=${page >= pages} onClick=${() => setPage(page + 1)}>${T("Next ›")}</button>
-  </div>`;
-}
+const NET_PAGE = LIST_PAGE, pageOf = pageSlice, NetPager = ListPager;   // the shared pager (js/ui.js), also the user sheet's
 // Rows inside a disclosure, paged; `total` is the server's count when it capped the list it sent.
 function NetPagedRows({ rows, total, render }) {
   const [page, setPage] = useState(1);

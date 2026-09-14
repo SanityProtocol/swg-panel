@@ -3466,9 +3466,16 @@ a.tg:hover{filter:brightness(1.25)}
 /* P3 — a gateway's tag on its peer row, and a user's reachable networks in their edit sheet */
 .tg.tg-gw{margin-left:5px;display:inline-flex;gap:3px;align-items:center;flex:none;font-variant-numeric:tabular-nums;color:var(--brand);border-color:color-mix(in srgb,var(--brand) 40%,var(--line))}
 .tg.tg-gw svg{width:10px;height:10px}
-.unets{display:grid;gap:8px}
-.unet-h{display:flex;gap:8px;align-items:baseline;font-size:13px}
-.unet-h .tp{color:var(--dim);font-family:var(--mono);font-size:12px}
+/* Networks this user can reach: one bordered list, a row per network on a node */
+.unets{display:grid;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);overflow:hidden}
+.unet{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;min-height:40px;padding:5px 10px 5px 12px;font-size:12.5px}
+.unet+.unet{border-top:1px solid var(--line)}
+.unet-p{font-weight:700;color:var(--ink);font-size:12.5px;overflow-wrap:anywhere}
+.unet-p.off{color:var(--dim)}
+.unet-how{color:var(--dim)}
+.unet-node{font-weight:600}
+.unet .grow{flex:1}
+.netcount .n.unk{color:var(--dim)}
 /* NETWORKS P2 — the node's own local network. A disclosure: the addresses and the sentence carry it, the switch is
    its one control, and the status line is the node's word on whether a close is in force. */
 .lanswitch{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--dim)}

@@ -22,7 +22,7 @@ import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
   Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
   openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, rowSingle, rowDouble, rowNoSelect, RowError,
-  useAnchoredList, goSettings, LogBody, rateCell, uncatPop,
+  useAnchoredList, goSettings, LogBody, rateCell, uncatPop, ListPager, LIST_PAGE, pageSlice,
 } from "./ui.js";
 import {
   QR, qrDataURL, qrZoom, copyQrImage, buildConf, parseFullConf, downloadConf, getConfig, configOverrides,
@@ -697,30 +697,67 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
 // NETWORKS P3 (feature 13) — what this user's devices can reach beyond the internet: networks other devices front
 // on the same node, and the node's own local network. Asked for ONCE when the sheet opens, never per poll — it is a
 // cross-product (docs/NETWORKS-PLAN.md §4.10). Renders nothing when there is nothing beyond the internet to show.
+// ⚠️ ONE ROW PER NETWORK ON A NODE, not per deployment. It listed every deployment of every device with the networks under it,
+// so a user with 8 devices read as 12 blocks, and a device's turn-server deployments (the "+3" in the peer grid) looked like
+// devices of their own. Each row: the network, how it is reached, the node, and how many of this user's devices there route
+// it — the devices themselves on hover, capped. Paged, so 2 rows and 200 read the same.
 function UserNetworksPanel({ user }) {
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(null), [page, setPage] = useState(1);
   useEffect(() => {
     let ok = true;
     api.userNetworks({ user_id: user.id }).then(r => { if (ok && r && r.ok) setData(r.data); }).catch(() => {});
     return () => { ok = false; };
   }, [user.id]);
-  const rows = ((data && data.peers) || []).filter(p => !p.blocked)
-    .flatMap(p => p.targets.filter(t => t.networks.length || t.lan).map(t => ({ p, t })));
-  if (!rows.length) return null;
-  const via = id => { const q = Store.peer(id); return q ? (q.title || q.name || "") : ""; };
+  const via = id => { const q = Store.peer(id); return q ? (q.title || q.name || T("Untitled")) : ""; };
+  const devName = (p, t) => {                               // the title, else where it is: its address, or its server
+    const q = Store.peer(p.peer_id), tg = q && (q.targets || []).find(x => x.node === t.node && x.iface === t.iface);
+    const where = tg && tg.ip ? String(tg.ip).split("/")[0] : t.iface;
+    return p.title ? p.title + " (" + where + ")" : where;
+  };
+  const rank = c => (c === true ? 2 : c === null ? 1 : 0);  // a device reaches it if ANY of its deployments there routes it
+  const rows = new Map();
+  for (const p of ((data && data.peers) || []).filter(p => !p.blocked)) for (const t of p.targets) {
+    const put = (key, seed, covered) => {
+      const r = rows.get(key) || Object.assign({ key, node: t.node, devs: new Map() }, seed);
+      const d = r.devs.get(p.peer_id);
+      if (!d) r.devs.set(p.peer_id, { name: devName(p, t), covered });
+      else if (rank(covered) > rank(d.covered)) d.covered = covered;
+      rows.set(key, r);
+    };
+    for (const n of t.networks) put(t.node + "|" + n.prefix, { prefix: n.prefix, via: n.via, restricted: !!n.restricted, until: n.until || 0 }, n.covered);
+    if (t.lan) put(t.node + "|lan", { prefix: t.lan.addrs.join(", "), lan: t.lan }, true);
+  }
+  const list = [...rows.values()].sort((a, b) => Store.nodeName(a.node).localeCompare(Store.nodeName(b.node))
+    || (a.lan ? 1 : 0) - (b.lan ? 1 : 0) || a.prefix.localeCompare(b.prefix));
+  if (!list.length) return null;
+  const pages = Math.max(1, Math.ceil(list.length / LIST_PAGE)), pg = Math.min(page, pages);
+  const how = r => r.lan ? (r.lan.open ? T("the node's local network") : T("the node's local network, closed"))
+    : r.restricted ? (r.until ? T("shared until {date}", { date: fmtDate(r.until) }) : T("shared with this user"))
+    : T("open to everyone on the node");
+  const row = r => {
+    const devs = [...r.devs.values()], node = Store.nodeName(r.node);
+    const ok = devs.filter(d => d.covered === true).length, no = devs.filter(d => d.covered === false).length;
+    const unk = devs.length - ok - no;
+    const state = d => d.covered === true ? T("reachable") : d.covered === false ? T("not in this device's routing") : T("routing unknown");
+    const cls = d => d.covered === true ? "ok" : d.covered === false ? "soon" : "off";
+    return html`<div class="unet" key=${r.key}>
+      <span class=${"mono unet-p" + (r.lan && !r.lan.open ? " off" : "")}>${r.prefix}</span>
+      <span class="unet-how">${how(r)}</span>
+      <span class="nm unet-node" style=${"color:" + (Store.nodeColor(r.node) || "var(--ink)")}>${node}</span>
+      <span class="grow"></span>
+      <${Popover} hoverOnly cls="netcount-pop" popCls="netroute-bub" trigger=${html`<span class="netcount"
+          aria-label=${T("{total} of this user's devices on {node}: {ok} reach it, {no} leave it out of their routing, {unk} unknown", { total: devs.length, node, ok, no, unk })}>
+        <span class="n all">${devs.length}</span>${ok ? html`<span class="n ok">${ok}</span>` : null}${no ? html`<span class="n soon">${no}</span>` : null}${unk ? html`<span class="n unk">${unk}</span>` : null}</span>`}>
+        <span class="netroute-h">${T("{prefix} on {node}", { prefix: r.prefix, node })}</span>
+        ${r.via ? html`<div class="netbub-row">${T("Through {via}", { via: via(r.via) })}</div>` : null}
+        ${devs.slice(0, 10).map(d => html`<div class=${"netbub-row nb-dot " + cls(d)}><b>${d.name}</b> <span class="faint">${state(d)}</span></div>`)}
+        ${devs.length > 10 ? html`<div class="netbub-row sub">${T("…and {v1} more", { v1: devs.length - 10 })}</div>` : null}
+      <//>
+    </div>`;
+  };
   return html`<div class="field"><label>${T("Networks this user can reach")}</label>
-    <div class="unets">${rows.map(({ p, t }) => html`<div class="unet">
-      <div class="unet-h"><b>${p.title || T("Untitled")}</b>
-        <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
-      <div class="netlist">
-        ${t.networks.map(n => html`<span class=${"nettag " + (n.covered === false ? "s-inert" : "s-active")} title=${T("Through {via}", { via: via(n.via) })}>
-          <span class="mono">${n.prefix}</span><em>${n.covered === false ? T("not in this device's routing")
-            : n.covered === null ? T("routing unknown")
-            : n.restricted ? (n.until ? T("shared until {date}", { date: fmtDate(n.until) }) : T("shared with this user"))
-            : T("reachable")}</em></span>`)}
-        ${t.lan ? html`<span class=${"nettag " + (t.lan.open ? "s-active" : "s-inert")}><span class="mono">${t.lan.addrs.join(", ")}</span><em>${
-          t.lan.open ? T("the node's local network") : T("the node's local network, closed")}</em></span>` : null}
-      </div></div>`)}</div>
+    <div class="unets">${pageSlice(list, pg).map(row)}</div>
+    <${ListPager} page=${pg} setPage=${setPage} total=${list.length}/>
     <div class="hint">${T("Worked out when this sheet opens. A device whose routing leaves a network out can be widened from its own settings.")}</div></div>`;
 }
 

@@ -149,6 +149,10 @@ export const STR = {
   "It's sent by {node} itself, so it answers the same whoever this is shared with.": "Проверку отправляет сама {node}, поэтому ответ не зависит от того, кому открыт доступ.",
   "shared until {date}": "доступ до {date}",
   "shared with this user": "доступ открыт этому пользователю",
+  "open to everyone on the node": "открыта всем на ноде",
+  "{prefix} on {node}": "{prefix} на {node}",
+  "{total} of this user's devices on {node}: {ok} reach it, {no} leave it out of their routing, {unk} unknown":
+    "Устройств этого пользователя на {node}: {total}; доходят: {ok}, не включают в маршруты: {no}, неизвестно: {unk}",
   "Couldn't check these networks.": "Не удалось проверить эти сети.",
   "Networks saved.": "Сети сохранены.",
   "Networks removed.": "Сети удалены.",
