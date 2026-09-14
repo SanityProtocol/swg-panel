@@ -4939,10 +4939,11 @@ NET_SHARE_MAX = 500        # grantees on one provider — bounds the reply, the 
 # WDTT_BUILDS / CSQTT_BUILDS. The fixed builds of §16.2 K5 are not published, so they are not here.
 # ildarmaga RAW never appears (operator, 2026-09-14): its raw addresses are memory-only and never reported.
 # PROVEN, not read: every entry is backed by a rig run of that build (real client, spoof counted at the server's device,
-# revocation cutting a live session). WDTT Plus 15 qualifies on a source reading and joins the table only with its rig proof.
+# revocation cutting a live session).
 KEYLESS_SHARE_BUILDS = {
     "amurcanov": {"wg": ("1.2.4-2",)},  # rig 2026-09-14: its source as control — reach, spoof dropped, revocation cut, stable address
     "qwdtt":     {"wg": ("1.4.3",)},    # §16.1 K0 + .campaign/rigs/networks-p1-netns.sh --p5k
+    "wdttplus":  {"wg": ("15",)},       # rig 2026-09-14: its source as control (kernel backend) — reach, spoof dropped, revocation cut, stable address
 }
 
 
