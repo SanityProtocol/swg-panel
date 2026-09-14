@@ -1188,7 +1188,7 @@ function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, o
     return html`<${Popover} hoverOnly cls="netdev-pop" popCls="netroute-bub" trigger=${trigger}>
       <span class="netroute-h">${shareUser(id)}</span>
       ${r.nodes.map(({ node, g }) => html`<div class="netbub-row"><b>${node}</b> — ${g.devices
-          ? T("{devices} reach it", { devices: plural(g.devices, "device") }) : (g.keyless ? T("no device reaches it yet") : T("no device here"))}</div>
+          ? T("{devices} with access",{ devices: plural(g.devices, "device") }) : (g.keyless ? T("no device reaches it yet") : T("no device here"))}</div>
         ${Object.entries(g.keyless_why || {}).map(([w, n]) => html`<div class="netbub-row sub">${shareKeyless(w, shareUser(id), plural(n, "device"))}</div>`)}`)}
     <//>`;
   };
@@ -1209,7 +1209,7 @@ function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, o
       <span class="netroute-h">${gname(id)}</span>
       ${!mem.length ? html`<div class="netbub-row sub">${T("No members yet.")}</div>` : null}
       ${withDev.slice(0, 10).map(([u, r]) => html`<div class=${"netbub-row nb-dot " + (r.ok ? "ok" : r.soon ? "soon" : "no")}><b>${shareUser(u)}</b> — ${r.ok
-        ? T("{devices} reach it", { devices: plural(r.ok, "device") }) : T("no device reaches it yet")}</div>`)}
+        ? T("{devices} with access",{ devices: plural(r.ok, "device") }) : T("no device reaches it yet")}</div>`)}
       ${withDev.length > 10 ? html`<div class="netbub-row sub">${T("…and {v1} more", { v1: withDev.length - 10 })}</div>` : null}
       ${without.length ? html`<div class="netbub-row sub">${T("{users} with no device here", { users: plural(without.length, "user") })}</div>` : null}
     <//>`;
@@ -1229,7 +1229,7 @@ function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, o
     </div>
     ${err ? html`<div class="formmsg err">${err}</div>` : null}
     ${list.length ? html`<div class="sharegrid" role="table" onInput=${typedOnly} onChange=${typedOnly}>
-        <div class="sharegrid-h" role="row"><span>${T("col|User")}</span><span>${T("Devices")}</span><span>${T("Access until")}</span><span></span></div>
+        <div class="sharegrid-h" role="row"><span>${allG.length ? T("col|User or group") : T("col|User")}</span><span>${T("Devices")}</span><span>${T("Access until")}</span><span></span></div>
         ${pageOf(rows, pg).map(r => { const nm = r.g ? gname(r.id) : shareUser(r.id), m = r.g ? groups : users;
           return html`<div class=${"sharegrid-r" + (r.g ? " grp" : "")} role="row" key=${(r.g ? "g:" : "u:") + r.id}>
           <span class="nm">${r.g ? html`<${Ic} i="users"/>${nm}<span class="faint sharegrid-sub">${plural((Store.group(r.id) || { users: [] }).users.length, "member")}</span>` : nm}</span>
