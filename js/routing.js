@@ -2441,7 +2441,9 @@ export function RoutingRules({ node, rows, catchAll, onChange }) {
               the empty blocking state still offers it, in a sentence that says what it is for. */""}
       </span>
     </div>
-    ${dispRows.length || catchAll ? null : html`<div class="hint">${Trich("No rules yet. Add a rule to send some destinations through another node, or set *Everything else* to channel everything.")}</div>`}
+    ${dispRows.length || catchAll ? null : html`<div class="hint">${others.length
+      ? Trich("No rules yet. Add a rule to send some destinations through another node, or set *Everything else* to channel everything.")
+      : Trich("No rules yet. Add a rule to send some destinations out a device on this node or block them, or set *Everything else* to say where the rest goes.")}</div>`}
   </div>`;
 }
 
@@ -2630,14 +2632,21 @@ export function EgressPicker({ node, value, onChange, noRules }) {
                           refuse: T("This interface forwards everything to a node that is not in this panel any more, so it routes nothing and its clients leave by this node's own address. Choose another destination.") }] : []),
         // A MODE, not a destination — last, outside every group, the way `Block` sits apart in the rule
         // picker.
-        ...(others.length ? [{ value: "smart", label: T("Routing (smart cascade)"), className: "egopt-mode" }] : []),
+        // ⚠️ NOT GATED ON OTHER NODES. It was offered only when the panel had a second node, so a single master with a
+        // WARP account or a custom exit could not send some destinations out by it — while every rule kind that needs no
+        // second node (leave by an exit on this node, direct, block) validates, plans and runs on it.
+        { value: "smart", label: T("Routing (smart cascade)"), className: "egopt-mode" },
       ]}/>
       ${/* The hint has to carry the same distinction the list does, or it re-merges the two things the
             labels just separated: pinning a source is not a way out, and the sentence used to call it one
             ("exit directly out a NIC") while the group below now offers actually leaving by that card. */""}
-      <div class="hint">${exits.length
-        ? T("Leave by a device on this node, channel everything through another node, or route per-destination (smart).")
-        : T("Leave normally, channel everything through another node, or route per-destination (smart).")}</div>
+      <div class="hint">${others.length
+        ? (exits.length
+          ? T("Leave by a device on this node, channel everything through another node, or route per-destination (smart).")
+          : T("Leave normally, channel everything through another node, or route per-destination (smart)."))
+        : (exits.length
+          ? T("Leave by a device on this node, or route per-destination (smart).")
+          : T("Leave normally, or route per-destination (smart)."))}</div>
       ${exNote ? html`<div class="hint err">${exNote}</div>` : null}
       ${exSrc ? html`<div class="hint">${exSrc}</div>` : null}</div>
     ${/* THE NAT PIN IS NOT HERE ANY MORE — it lives under each sheet's "Advanced settings", as

@@ -96,6 +96,8 @@ export const STR = {
   "{p} would send all of the node's internet traffic into this device.": "{p} отправил бы в это устройство весь интернет-трафик ноды.",
   "{p} is a reserved range — loopback, link-local, multicast or cloud metadata.": "{p} — зарезервированный диапазон: loopback, link-local, multicast или метаданные облака.",
   "{node} is already on {p} ({a}), so its clients reach it without a gateway device.": "{node} уже в сети {p} ({a}) — клиенты этой ноды попадают туда без шлюза.",
+  "{node} is already on {p} ({a}), but it keeps its clients off that network. Turn on “Clients can reach it” under Local network on {node} to let them in.":
+    "{node} уже в сети {p} ({a}), но не пускает туда своих клиентов. Чтобы пустить их, включите «Клиентам доступна» в разделе «Локальная сеть» на {node}.",
   "{p} overlaps a tunnel subnet on {node} ({a}).": "{p} пересекается с подсетью туннеля на {node} ({a}).",
   "{p} overlaps a mesh link on {node} ({a}).": "{p} пересекается с mesh-связью на {node} ({a}).",
   "{p} contains {a}, the gateway {node} reaches the internet through.": "В {p} входит {a} — шлюз, через который {node} выходит в интернет.",
@@ -313,6 +315,8 @@ export const STR = {
   "a more specific rule below wins these hosts: {toks}": "ниже есть более точное правило — эти адреса забирает оно: {toks}",
   "No rules yet. Add a rule to send some destinations through another node, or set *Everything else* to channel everything.":
     "Правил пока нет. Добавьте правило, чтобы отправить часть назначений через другую ноду, или укажите в *Всё остальное*, куда идёт весь трафик.",
+  "No rules yet. Add a rule to send some destinations out a device on this node or block them, or set *Everything else* to say where the rest goes.":
+    "Правил пока нет. Добавьте правило, чтобы выпустить часть назначений через устройство на этой ноде или заблокировать их, или укажите в *Всё остальное*, куда идёт остальной трафик.",
   // The egress option used to be named after the mechanism ("умная маршрутизация"); this names the outcome.
   "Routing (smart cascade)": "Маршрутизация (умный каскад)",
   "A rule needs at least one service, address or IP range.": "В правиле нужен хотя бы один сервис, адрес или диапазон IP.",
@@ -2269,6 +2273,10 @@ export const STR = {
     "Выходить через устройство на этом узле, направить весь трафик через другой узел или маршрутизировать по назначению (smart).",
   "Leave normally, channel everything through another node, or route per-destination (smart).":
     "Выходить обычным путём, направить весь трафик через другой узел или маршрутизировать по назначению (smart).",
+  "Leave by a device on this node, or route per-destination (smart).":
+    "Выходить через устройство на этом узле или маршрутизировать по назначению (smart).",
+  "Leave normally, or route per-destination (smart).":
+    "Выходить обычным путём или маршрутизировать по назначению (smart).",
   "Outbound (egress) IP": "IP выхода (egress)",
   "Auto (MASQUERADE)": "Авто (MASQUERADE)",
   "Forward to node (cascade)": "Переслать на ноду (каскад)",

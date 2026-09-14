@@ -975,7 +975,12 @@ function netWhy(r, node) {
     case "not_v4": return T("{p} is IPv6 — only IPv4 networks can be carried.", v);
     case "default_route": return T("{p} would send all of the node's internet traffic into this device.", v);
     case "reserved": return T("{p} is a reserved range — loopback, link-local, multicast or cloud metadata.", v);
-    case "node_lan": return T("{node} is already on {p} ({a}), so its clients reach it without a gateway device.", v);
+    // ⚠️ TRUE ONLY WHILE THE NODE SHARES ITS LAN. With "Clients can reach it" off (NETWORKS P2) its clients reach nothing on
+    // that network, and the sentence told the operator the opposite. The refusal still stands — the node is the provider —
+    // so the closed case names the switch that lets them in. `node` is a display name here; names are unique per panel.
+    case "node_lan": return ((Store.nodes || []).find(n => n.name === node) || {}).lan_share === false
+      ? T("{node} is already on {p} ({a}), but it keeps its clients off that network. Turn on “Clients can reach it” under Local network on {node} to let them in.", v)
+      : T("{node} is already on {p} ({a}), so its clients reach it without a gateway device.", v);
     case "iface_subnet": return T("{p} overlaps a tunnel subnet on {node} ({a}).", v);
     case "mesh": return T("{p} overlaps a mesh link on {node} ({a}).", v);
     case "node_gateway": return T("{p} contains {a}, the gateway {node} reaches the internet through.", v);
