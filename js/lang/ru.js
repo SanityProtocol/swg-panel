@@ -124,6 +124,7 @@ export const STR = {
   "{groups} chosen": "Выбрано: {groups}",
   "Add a person or group…": "Добавить человека или группу…",
   "col|User or group": "Пользователь или группа",
+  "a group that no longer exists": "удалённая группа",
   "{users} with no device here": "Без устройств здесь: {users}",
   "Groups": "Группы",
   "Users or groups": "Пользователи или группы",

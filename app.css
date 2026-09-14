@@ -3414,6 +3414,7 @@ a.tg:hover{filter:brightness(1.25)}
 /* user groups (docs/GROUPS-PLAN.md G11): a group row in the People window, a group's members, the Users → Groups list, a user's chips */
 .sharegrid-r.grp .nm svg{width:13px;height:13px;color:var(--dim);margin-right:7px;vertical-align:-2px}
 .sharegrid-sub{font-weight:400;margin-left:8px;font-size:12px}
+.sharegrid-r.gone .nm{color:var(--dangling);font-weight:500;font-style:italic}
 .sharegrid-r .nm .tagchip{margin-left:8px;vertical-align:1px}
 .sharegrid.gmembers .sharegrid-r{grid-template-columns:minmax(0,1fr) 104px 36px}
 @media (max-width:640px){.sharegrid.gmembers .sharegrid-r{grid-template-columns:minmax(0,1fr) auto 36px}

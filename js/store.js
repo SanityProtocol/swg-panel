@@ -496,13 +496,20 @@ export const Store = {
   user(id) { return this.recon.users.find(u => u.id === id); },
   // A user GROUP as the screens read it (docs/GROUPS-PLAN.md G1): the members that still exist — a deleted user stays in the stored
   // list and is filtered here, where it is read. Sorted by name.
+  // Built ONCE per roster: apply() replaces the roster object on every poll and every optimistic patch, so its identity is the
+  // cache key. group(id) is called inside sort comparators and per row — a rebuild per call was O(groups · members) each time.
   groups() {
-    const g = (this.roster && this.roster.groups) || {}, us = (this.roster && this.roster.users) || {};
-    return Object.keys(g).filter(id => g[id] && typeof g[id] === "object")
-      .map(id => ({ id, name: String(g[id].name || ""), users: (Array.isArray(g[id].users) ? g[id].users : []).filter(u => us[u]) }))
-      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    if (this._groupsOf !== this.roster) {
+      const g = (this.roster && this.roster.groups) || {}, us = (this.roster && this.roster.users) || {};
+      this._groupsList = Object.keys(g).filter(id => g[id] && typeof g[id] === "object")
+        .map(id => ({ id, name: String(g[id].name || ""), users: (Array.isArray(g[id].users) ? g[id].users : []).filter(u => us[u]) }))
+        .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      this._groupsById = new Map(this._groupsList.map(x => [x.id, x]));
+      this._groupsOf = this.roster;
+    }
+    return this._groupsList;
   },
-  group(id) { return this.groups().find(g => g.id === id) || null; },
+  group(id) { this.groups(); return this._groupsById.get(id) || null; },
   peersOfUser(id) { return this.recon.peers.filter(p => p.user_id === id); },
   unassignedPeers() { return this.recon.peers.filter(p => p.unassigned); },
 };

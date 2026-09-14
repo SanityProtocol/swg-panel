@@ -243,9 +243,6 @@ export function userPageOf(uid) {
   const idx = users.findIndex(u => u.id === uid);
   return idx < 0 ? 1 : Math.floor(idx / (usersView.pageSize || 20)) + 1;
 }
-// Land on the Users screen at the PAGE where `userId` sits, expand that user's row and scroll it into view.
-// Optionally glow a just-assigned peer's row (peerId). Shared by "click a username anywhere" and the assign
-// flow (when it started on the Users screen).
 // USER GROUPS (docs/GROUPS-PLAN.md G11). The devices whose networks are shared with a group — what adding someone grants, and what
 // removing someone or deleting the group takes away — from the roster the poll already holds, never a request.
 export function groupShares(gid) {
@@ -260,9 +257,12 @@ export function namedFew(names) {
   return T("{names} and {n} more", { names: names.slice(0, 3).join(", "), n: names.length - 3 });
 }
 
+// Land on the Users screen at the PAGE where `userId` sits, expand that user's row and scroll it into view.
+// Optionally glow a just-assigned peer's row (peerId). Shared by "click a username anywhere" and the assign
+// flow (when it started on the Users screen). It opens the USERS list even if the operator last left the screen on Groups.
 export function revealUser(userId, peerId) {
   if (!userId) return;
-  usersView.q = ""; usersView.expanded[userId] = true;
+  usersView.mode = "users"; usersView.q = ""; usersView.expanded[userId] = true;
   go("#/users");
   setTimeout(() => {                          // after the poll + re-render settles
     usersView.page = userPageOf(userId);      // the page this user actually lands on (not always page 1)
@@ -274,9 +274,9 @@ export function revealUser(userId, peerId) {
 // Clicking a PEER anywhere reveals its OWNER on the Users screen (row expanded, that peer's row glowing) — there
 // is no standalone peer page. An unassigned peer (no owner) just lands on the Users screen with its row glowing.
 export function revealPeer(peer) {
-  if (!peer) return go("#/users");
+  if (!peer) { usersView.mode = "users"; return go("#/users"); }
   if (peer.user_id != null) { revealUser(peer.user_id, peer.id); return; }
-  Store.recentlyCreated[peer.id] = Date.now(); go("#/users");
+  usersView.mode = "users"; Store.recentlyCreated[peer.id] = Date.now(); go("#/users");
 }
 // Land on the PEERS screen with a specific peer visible + its row flashing (activity-feed clicks). Filters
 // the grid to that peer (unique IP) so it's guaranteed on-page, then scrolls to + glows it for ~2.5s.

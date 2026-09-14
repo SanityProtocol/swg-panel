@@ -51,7 +51,7 @@ export function CreateUserSheet() {
     Store.recentlyCreated[r.data.id] = Date.now(); subAutoGenIfEnabled(r.data.id); await Store.poll();
     return r.data;
   };
-  const stayExpanded = uid => { usersView.expanded[uid] = true; usersView.q = ""; usersView.page = 1; closeModal(); go("#/users"); };
+  const stayExpanded = uid => { usersView.mode = "users"; usersView.expanded[uid] = true; usersView.q = ""; usersView.page = 1; closeModal(); go("#/users"); };
   const createOnly = async () => { const u = await createUser(); if (u) stayExpanded(u.id); };
   const createAndAdd = async () => { const u = await createUser(); if (u) openModal(html`<${AddPeersSheet} userId=${u.id} userName=${u.name}/>`); };
   return html`<${Sheet} title=${T("New user")}
@@ -1036,13 +1036,21 @@ function netWhy(r, node) {
 // as a half-finished form — so it is a mode of the draft, not a new field.
 // GROUPS (docs/GROUPS-PLAN.md G4, G6): the same shape names groups beside people. The draft carries both, and the body always SENDS
 // `groups` — the panel refuses a save without it for a device whose share names groups, because that is what a tab opened before
-// groups existed sends. A deleted group's id is left out here: it grants nothing, and saving without it drops it.
+// groups existed sends. ⚠️ A deleted group's id is KEPT here, exactly as stored: filtering it changed the stored key the moment
+// someone deleted a group, and an open Networks window then claimed "someone changed these networks" (G7). It grants nothing,
+// the panel drops a stored one quietly on the next save, and `shownGroups` decides what is on screen.
 const shareOf = s => {
   if (!(s && typeof s === "object" && s.users && typeof s.users === "object")) return { mode: "everyone", users: {}, groups: {} };
-  const groups = {};
-  for (const [k, v] of Object.entries(s.groups && typeof s.groups === "object" ? s.groups : {})) if (Store.group(k)) groups[k] = v;
+  const groups = s.groups && typeof s.groups === "object" ? { ...s.groups } : {};
   return { mode: Object.keys(s.users).length || Object.keys(groups).length ? "chosen" : "owner", users: { ...s.users }, groups };
 };
+const storedGroupsOf = peer => (peer && peer.share && peer.share.groups && typeof peer.share.groups === "object") ? peer.share.groups : {};
+// The draft's groups to SHOW: every group that exists, and a deleted one only when this draft added it — the panel refuses that one
+// until it is removed, so it has to be on screen to remove. A deleted group the device already had is dropped by the next save.
+const shownGroups = (draftGroups, stored) => Object.keys(draftGroups || {}).filter(id => Store.group(id) || !(id in stored));
+// Does the draft let anyone besides the owner in right now? A group counts only while it exists and has members.
+const draftReaches = (userIds, draftGroups) => userIds.length > 0
+  || Object.keys(draftGroups || {}).some(id => ((Store.group(id) || {}).users || []).length > 0);
 const shareBody = d => d.mode === "everyone" ? null
   : { users: d.mode === "chosen" ? d.users : {}, groups: d.mode === "chosen" ? (d.groups || {}) : {} };
 const signOf = m => Object.keys(m || {}).sort().map(k => k + "=" + (m[k] || 0)).join(",");
@@ -1075,7 +1083,8 @@ function NetShare({ peer, draft, setDraft, nodes, noShare, routes }) {
   // The owner is in regardless and never stored as a grantee; after a reassignment the new owner can still sit in the stored
   // list, and was shown twice — once as the owner, once as someone chosen.
   const ids = Object.keys(draft.users).filter(id => id !== peer.user_id).sort((a, b) => shareUser(a).localeCompare(shareUser(b)));
-  const gids = Object.keys(draft.groups || {}).filter(id => Store.group(id));
+  const gids = shownGroups(draft.groups, storedGroupsOf(peer));
+  const reaches = draftReaches(ids, draft.groups);
   const everyone = nodes.length === 1 ? T("Everyone on {node}", { node: nodes[0] }) : T("Everyone on its nodes");
   // ONE control, the panel's pill switch (the link datapath's Forward | Relay): the narrowest, the widest, then the one that
   // needs a list. ⚠️ The list lived here, one row per person, and a network shared with 100 people is not a form field — it
@@ -1090,7 +1099,7 @@ function NetShare({ peer, draft, setDraft, nodes, noShare, routes }) {
     <div class="netshare-row">
       <div class="dpsw netsw-share" role="radiogroup" aria-label=${label}>${modes.map(([m, l]) => html`<button type="button" role="radio"
         aria-checked=${draft.mode === m} class=${draft.mode === m ? "on" : ""} onClick=${() => pick(m)}>${l}</button>`)}</div>
-      ${draft.mode === "chosen" ? html`<button type="button" class=${"netshare-count" + (!ids.length && !gids.length && !owner ? " bad" : "")} onClick=${openList}>
+      ${draft.mode === "chosen" ? html`<button type="button" class=${"netshare-count" + (!reaches && !owner ? " bad" : "")} onClick=${openList}>
         <${Ic} i="users"/><span>${gids.length && ids.length ? T("Shared with {groups} and {users}", { groups: plural(gids.length, "group"), users: plural(ids.length, "user") })
           : gids.length ? T("Shared with {groups}", { groups: plural(gids.length, "group") })
           : ids.length ? T("Shared with {users}", { users: plural(ids.length, "user") }) : T("Choose people")}</span></button>` : null}
@@ -1102,9 +1111,9 @@ function NetShare({ peer, draft, setDraft, nodes, noShare, routes }) {
         : T("{nodes} runs an older version that can't limit who reaches a network, so with this choice nobody reaches them there. Update {nodes}, or choose “{everyone}”.", { nodes: noShare.join(", "), everyone })}</span></div>` : null}
     ${draft.mode === "owner" && owner ? html`<div class="hint">${T("Only {name}'s own devices on the same node reach them.", { name: owner.name })}</div>` : null}
     ${draft.mode === "everyone" ? html`<div class="hint">${T("Every device on the same node reaches them — the report below says how many.")}</div>` : null}
-    ${draft.mode === "chosen" ? html`<div class=${"hint" + (!ids.length && !gids.length && !owner ? " err" : "")}>${owner
+    ${draft.mode === "chosen" ? html`<div class=${"hint" + (!reaches && !owner ? " err" : "")}>${owner
         ? T("{name} always has access, as the owner, and so do the people you choose.", { name: owner.name })
-        : ids.length || gids.length ? T("Only the people you choose have access.")
+        : reaches ? T("Only the people you choose have access.")
         : T("Nobody has access yet — choose people, or pick “{everyone}”.", { everyone })}</div>` : null}
   </div>`;
 }
@@ -1155,9 +1164,9 @@ function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, o
   const byName = (a, b) => shareUser(a).localeCompare(shareUser(b));
   const all = Object.keys(users).sort(byName);
   // GROUPS (docs/GROUPS-PLAN.md G11): a group is a row of its own, first; a deleted one is not shown (it grants nothing)
-  const gname = id => (Store.group(id) || {}).name || "";
+  const gname = id => { const g = Store.group(id); return g ? g.name : T("a group that no longer exists"); };
   const byGroup = (a, b) => gname(a).localeCompare(gname(b));
-  const allG = Object.keys(groups).filter(id => Store.group(id)).sort(byGroup);
+  const allG = shownGroups(groups, storedGroupsOf(peer)).sort(byGroup);   // a deleted group this window added stays, to be removed
   const list = [...allG.map(id => ({ g: true, id })), ...all.map(id => ({ g: false, id }))];
   const ql = q.trim().toLowerCase();
   const rows = ql ? list.filter(r => (r.g ? gname(r.id) : shareUser(r.id)).toLowerCase().includes(ql)) : list;
@@ -1194,6 +1203,7 @@ function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, o
   };
   // A group's devices: the sum over its members, and the members on hover — ten named, the rest counted.
   const groupDevices = id => {
+    if (!Store.group(id)) return html`<span class="faint">—</span>`;
     if (!rep) return html`<span class="faint">…</span>`;
     const mem = (Store.group(id) || { users: [] }).users;
     let ok = 0, soon = 0, no = 0;
@@ -1231,8 +1241,9 @@ function ShareListSheet({ peer, users: initial, groups: initialGroups, routes, o
     ${list.length ? html`<div class="sharegrid" role="table" onInput=${typedOnly} onChange=${typedOnly}>
         <div class="sharegrid-h" role="row"><span>${allG.length ? T("col|User or group") : T("col|User")}</span><span>${T("Devices")}</span><span>${T("Access until")}</span><span></span></div>
         ${pageOf(rows, pg).map(r => { const nm = r.g ? gname(r.id) : shareUser(r.id), m = r.g ? groups : users;
-          return html`<div class=${"sharegrid-r" + (r.g ? " grp" : "")} role="row" key=${(r.g ? "g:" : "u:") + r.id}>
-          <span class="nm">${r.g ? html`<${Ic} i="users"/>${nm}<span class="faint sharegrid-sub">${plural((Store.group(r.id) || { users: [] }).users.length, "member")}</span>` : nm}</span>
+          const gone = r.g && !Store.group(r.id);
+          return html`<div class=${"sharegrid-r" + (r.g ? " grp" : "") + (gone ? " gone" : "")} role="row" key=${(r.g ? "g:" : "u:") + r.id}>
+          <span class="nm">${r.g ? html`<${Ic} i="users"/>${nm}${gone ? null : html`<span class="faint sharegrid-sub">${plural(Store.group(r.id).users.length, "member")}</span>`}` : nm}</span>
           <span>${r.g ? groupDevices(r.id) : devices(r.id)}</span>
           <span><input type="date" class="datein" value=${expiryInputVal(m[r.id])} data-enter="self" data-noautofocus
             aria-label=${T("Last day {name} can reach them — leave empty for no end", { name: nm })}
@@ -1353,7 +1364,8 @@ function NetworksSheet({ pid }) {
   // old list back over theirs without a word. Caught on the poll that brings their change, before anything is written.
   const stale = storedKey + "|" + shareStoredKey !== base.current;
   // A device with no owner, restricted to nobody: a network no one can reach, saved as if it were a choice.
-  const nobody = want.length > 0 && !owner && share.mode === "chosen" && !Object.keys(share.users).length && !Object.keys(share.groups || {}).length;
+  // A group counts only while it exists and has members — an empty or deleted one lets nobody in either.
+  const nobody = want.length > 0 && !owner && share.mode === "chosen" && !draftReaches(Object.keys(share.users), share.groups);
   const noShare = ((rep && rep.targets) || []).filter(x => x.can_share === false).map(x => Store.nodeName(x.node));
   const clash = homeClash(want);
   const checking = (want.length > 0 || stored.length > 0) && (!rep || rep._key !== reqKey);

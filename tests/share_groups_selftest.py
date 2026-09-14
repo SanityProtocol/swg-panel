@@ -15,7 +15,8 @@ nothing on the node changes shape. What this holds:
       written; deleting the group rewrites no peer and the grant then reaches nobody; `groups: {}` clears them.
   [4] `net_share_for_node`: a group grant yields EXACTLY the elements of granting its members by name; a date combines;
       a removed member and a member's blocked device are not sources.
-  [5] `network_report`: members listed with their devices, non-members cut off, a lapsed group grant named.
+  [5] `network_report`: members listed with their devices, non-members cut off, a lapsed group grant named; a person whose
+      own grant lapsed is not named as cut off while a group still lets them in.
   [6] `user_networks`: a member sees the restricted network, with the group grant's date; a removed member does not.
   [7] D1: groups in the roster and no share naming one — no `net_share`, and `desired_for_node` byte-identical.
 
@@ -203,6 +204,11 @@ check("members listed with their devices here", [(g["user_id"], g["until"], g["d
 check("nobody else on the node is left to cut off (Dora is blocked)", (sh.get("cut_off") or {}).get("peers") == 0, sh.get("cut_off"))
 rep2 = P.network_report(roster({"users": {}, "groups": {"fam": NOW + DAY}}, members=["boris"]), "office", {"n1": SNAP})
 check("Carol out of the group: cut off", (rep2["targets"][0]["share"]["cut_off"]).get("users") == 1, rep2["targets"][0]["share"]["cut_off"])
+_lc = P.network_report(roster({"users": {"boris": NOW - 5, "anna": NOW - 5}, "groups": {"fam": 0}}, members=["boris"]), "office", {"n1": SNAP})
+check("a person whose own grant lapsed but who is still in a granted group is NOT named as cut off",
+      _lc["targets"][0]["share"].get("lapsed") == [], _lc["targets"][0]["share"].get("lapsed"))
+_lx = P.network_report(roster({"users": {"carol": NOW - 5}, "groups": {"fam": 0}}, members=["boris"]), "office", {"n1": SNAP})
+check("…one with nothing else letting them in is", _lx["targets"][0]["share"].get("lapsed") == ["carol"], _lx["targets"][0]["share"].get("lapsed"))
 _rl = roster({"users": {}, "groups": {"fam": NOW - 5, "gone": NOW - 5, "empty": NOW + 5}})
 check("a lapsed group grant is named — a deleted group's is not",
       P.network_report(_rl, "office", {"n1": SNAP})["targets"][0]["share"].get("lapsed_groups") == ["fam"])

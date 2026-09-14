@@ -47,6 +47,23 @@ import htm from "htm";
 
 const html = htm.bind(h);
 
+// The roster lists' pager — Peers, Users, Groups: rows per page, where you are, Prev / Next with the scroll back to the list.
+// ONE copy, so a fix to paging lands on every list. Shown once a list is longer than the smallest page (20), so "Rows per page"
+// stays reachable after choosing a larger size.
+function RowsPager({ total, page, pageSize, onPage, onSize }) {
+  if (total <= 20) return null;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  return html`<div class="pager">
+    <label class="pager-size">${T("Rows per page")}
+      <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()} onChange=${onSize}/>
+    </label>
+    <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, total), total })}</span>
+    <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { onPage(page - 1); pageScroll(e, -1); }}>${T("‹ Prev")}</button>
+    <span class="pager-pg">${page} / ${pages}</span>
+    <button class="btn btn-ghost" disabled=${page >= pages} onClick=${e => { onPage(page + 1); pageScroll(e, 1); }}>${T("Next ›")}</button>
+  </div>`;
+}
+
 // One fleet entry: main block (identity/traffic/sync) on the left, health block on the right.
 export function PeersScreen() {
   useStore();
@@ -144,16 +161,8 @@ export function PeersScreen() {
       ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface}/>` : null}
     </span><span class="count">${rows.length}</span></div>
     <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
-    ${rows.length > 20 ? html`<div class="pager">
-      <label class="pager-size">${T("Rows per page")}
-        <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}
-          onChange=${v => { peersView.pageSize = v; peersView.page = 1; force(x => x + 1); }}/>
-      </label>
-      <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, rows.length), total: rows.length })}</span>
-      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>${T("‹ Prev")}</button>
-      <span class="pager-pg">${page} / ${totalPages}</span>
-      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>${T("Next ›")}</button>
-    </div>` : null}
+    <${RowsPager} total=${rows.length} page=${page} pageSize=${pageSize} onPage=${setPage}
+      onSize=${v => { peersView.pageSize = v; peersView.page = 1; force(x => x + 1); }}/>
 
     ${orphans.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--orphan)">${T("Unmanaged here")}</h2></div>
@@ -397,7 +406,8 @@ export function UserRow({ user, live, onlineOnly, q }) {
 function GroupsView({ modeSw, force }) {
   const all = Store.groups();
   const q = usersView.gq.trim().toLowerCase();
-  const uname = id => (Store.user(id) || {}).name || "";
+  const nameOf = new Map(Store.recon.users.map(u => [u.id, u.name]));      // one pass per render, not a search per member
+  const uname = id => nameOf.get(id) || "";
   const list = q ? all.filter(g => searchMatch(g.name, q) || g.users.some(u => searchMatch(uname(u), q))) : all;
   const pageSize = usersView.gpageSize || 20;
   const totalPages = Math.max(1, Math.ceil(list.length / pageSize));
@@ -439,15 +449,8 @@ function GroupsView({ modeSw, force }) {
     ${!all.length ? html`<div class="empty"><b>${T("No groups yet")}</b>${T("Put people in a group to share a network with all of them at once, from a device's Networks window.")}</div>`
       : !list.length ? html`<div class="empty"><b>${T("Nothing matches")}</b>${T("Clear the search.")}</div>`
       : html`<div class="grps">${list.slice((page - 1) * pageSize, page * pageSize).map(row)}</div>`}
-    ${list.length > pageSize ? html`<div class="pager">
-      <label class="pager-size">${T("Rows per page")}
-        <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}
-          onChange=${v => { usersView.gpageSize = v; usersView.gpage = 1; force(x => x + 1); }}/></label>
-      <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, list.length), total: list.length })}</span>
-      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>${T("‹ Prev")}</button>
-      <span class="pager-pg">${page} / ${totalPages}</span>
-      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>${T("Next ›")}</button>
-    </div>` : null}
+    <${RowsPager} total=${list.length} page=${page} pageSize=${pageSize} onPage=${setPage}
+      onSize=${v => { usersView.gpageSize = v; usersView.gpage = 1; force(x => x + 1); }}/>
   </div>`;
 }
 
@@ -502,15 +505,8 @@ export function UsersScreen() {
         <${UsersHeader} sort=${usersView.sort} dir=${usersView.dir} onSort=${c => { sortColToggle(usersView, "sort", "dir", c, USER_DEFDIR); usersView.page = 1; force(x => x + 1); }}/>
         <div class="urows">${pageUsers.map(u => html`<${UserRow} key=${u.id} user=${u} q=${q}/>`)}</div>
       <//>`}
-    ${users.length > pageSize ? html`<div class="pager">
-      <label class="pager-size">${T("Rows per page")}
-        <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}
-          onChange=${v => { usersView.pageSize = v; usersView.page = 1; force(x => x + 1); }}/></label>
-      <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, users.length), total: users.length })}</span>
-      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>${T("‹ Prev")}</button>
-      <span class="pager-pg">${page} / ${totalPages}</span>
-      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>${T("Next ›")}</button>
-    </div>` : null}
+    <${RowsPager} total=${users.length} page=${page} pageSize=${pageSize} onPage=${setPage}
+      onSize=${v => { usersView.pageSize = v; usersView.page = 1; force(x => x + 1); }}/>
 
     ${unassigned.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--faint)">${T("Unassigned peers")}</h2><span class="count">${unassigned.length}</span></div>

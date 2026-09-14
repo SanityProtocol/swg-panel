@@ -2992,6 +2992,13 @@ def user_set(roster, uid, fields, now):
 GROUP_NAME_MAX = 64
 
 
+def roster_groups(roster):
+    """The roster's `groups` map for READING (docs/GROUPS-PLAN.md G1) — `{}` when absent or not a map. A writer goes through
+    `group_set`, which creates the key."""
+    g = (roster or {}).get("groups")
+    return g if isinstance(g, dict) else {}
+
+
 def group_name_clean(roster, raw, gid=None):
     """(name, refusal or None) for a group name (docs/GROUPS-PLAN.md G2): control characters stripped, 1–64 characters,
     and unique case-insensitively — two "Family" groups make the person-and-group picker a guess. The refusal is a
@@ -2999,10 +3006,15 @@ def group_name_clean(roster, raw, gid=None):
     name = strip_ctrl(str(raw or "")).strip()[:GROUP_NAME_MAX]
     if not name:
         return "", perr("name is required")
-    for ogid, g in (roster.get("groups") if isinstance(roster.get("groups"), dict) else {}).items():
-        if ogid != gid and isinstance(g, dict) and str(g.get("name") or "").casefold() == name.casefold():
-            return "", perr("a group with this name already exists")
+    if group_name_taken(roster, name, gid):
+        return "", perr("a group with this name already exists")
     return name, None
+
+
+def group_name_taken(roster, name, gid=None):
+    """Does a group other than `gid` already carry `name`, ignoring case?"""
+    return any(ogid != gid and isinstance(g, dict) and str(g.get("name") or "").casefold() == name.casefold()
+               for ogid, g in roster_groups(roster).items())
 
 
 def group_set(roster, gid, fields):
@@ -5046,8 +5058,9 @@ def keyless_sources(p, t, idx):
 def share_grants(p, users, nowv, groups):
     """{uid: until (0 = no end)} — who may reach a RESTRICTED provider's networks right now, or None when it is not
     restricted. The owner is always in. A uid that no longer exists and a date that has passed grant nothing —
-    filtered here, at plan time, never swept from the store (§6): a deleted user reaches nothing, and a grant whose
-    date is extended works again without anyone re-saving it.
+    filtered here, at plan time (§6): a record carried in from another panel fails closed, and a grant whose date is
+    extended works again without anyone re-saving it. (`/api/users/delete` also takes the id out of every grant and group
+    in its own write, so the same id arriving later is not let back in — docs/GROUPS-PLAN.md G8.)
 
     A grant can name a GROUP (docs/GROUPS-PLAN.md G5): it reaches every existing member, and a group that no longer exists
     grants nothing. A user covered by several live grants gets the widest — no end beats a date, else the latest — the
@@ -5077,6 +5090,13 @@ def share_grants(p, users, nowv, groups):
     return out
 
 
+def grants_lapsed(stored, known, nowv):
+    """The ids in a stored grant map (`share.users` or `share.groups`) that still exist and whose date has passed — what the
+    Networks window names as "access has ended". Sorted."""
+    return sorted(k for k, until in (stored.items() if isinstance(stored, dict) else ())
+                  if k in known and isinstance(until, int) and not isinstance(until, bool) and 0 < until <= nowv)
+
+
 def share_clean(roster, peer, raw, nowv):
     """(share to store or None, refusal token or None) for a save of `peer`'s share. `null`/`false` clears it — its
     networks are open to everyone on the node again. A token, never a sentence: the SPA owns the words.
@@ -5100,8 +5120,7 @@ def share_clean(roster, peer, raw, nowv):
     old = peer.get("share") if isinstance(peer.get("share"), dict) else {}
     if "groups" not in raw and isinstance(old.get("groups"), dict) and old["groups"]:
         return None, "groups_missing"
-    known = {"users": roster.get("users") or {},
-             "groups": roster.get("groups") if isinstance(roster.get("groups"), dict) else {}}
+    known = {"users": roster.get("users") or {}, "groups": roster_groups(roster)}
     out = {"users": {}, "groups": {}}
     for key, refusal in (("users", "unknown_user"), ("groups", "unknown_group")):
         stored = old.get(key) if isinstance(old.get(key), dict) else {}
@@ -5392,12 +5411,10 @@ def network_report(roster, pid, snaps):
                 "grants": [{"user_id": u, "until": g, "owner": u == p.get("user_id"),
                             "devices": dev.get(u, 0), "keyless": kl.get(u, 0), "keyless_why": dict(sorted(klw.get(u, {}).items()))}
                            for u, g in sorted(grants.items())],
-                "lapsed": sorted(u for u, g in _stored.items()
-                                 if u in users and isinstance(g, int) and not isinstance(g, bool) and 0 < g <= nowv),
+                # a grant whose date has passed — a person only while nothing else still lets them in (a group can)
+                "lapsed": [u for u in grants_lapsed(_stored, users, nowv) if u not in grants],
                 # GROUPS-PLAN G11: a group grant whose date has passed, named like a lapsed user
-                "lapsed_groups": sorted(g_ for g_, u_ in (p["share"].get("groups") if isinstance(p["share"].get("groups"), dict) else {}).items()
-                                        if g_ in (roster.get("groups") if isinstance(roster.get("groups"), dict) else {})
-                                        and isinstance(u_, int) and not isinstance(u_, bool) and 0 < u_ <= nowv),
+                "lapsed_groups": grants_lapsed(p["share"].get("groups"), roster_groups(roster), nowv),
                 "cut_off": {"peers": cut_peers, "users": len(cut_users),
                             "providers": sorted(o for o in plan["carry"]
                                                 if o != pid and (_peers.get(o) or {}).get("user_id") not in grants)},
@@ -8353,7 +8370,7 @@ def transfer_plan(deps, nodes, nid, snaps, seen, roster):
     # ── the groups these users are in (docs/GROUPS-PLAN.md G9), each narrowed to the users that move: a network shared with
     #    a group lands shared with its arriving members, instead of with its owner alone and a group to rebuild by hand.
     groups = {}
-    for gid, g in sorted((roster.get("groups") if isinstance(roster.get("groups"), dict) else {}).items()):
+    for gid, g in sorted(roster_groups(roster).items()):
         mem = sorted(u for u in (g.get("users") or []) if u in users) if isinstance(g, dict) else []
         if mem:
             groups[gid] = {"name": g.get("name") or "", "users": mem}
@@ -8392,7 +8409,9 @@ def transfer_bundle(deps, nodes, nid, plan, baseline=None):
 def transfer_merge_groups(roster, arriving):
     """Land a transfer bundle's `groups` in this panel's roster (docs/GROUPS-PLAN.md G9). A new id is inserted; an id this
     panel already holds — the same group, carried here before — gains the arriving members and keeps its own name. Only
-    users this roster holds are added, so it runs AFTER the bundle's users. Returns how many groups it touched."""
+    users this roster holds are added, so it runs AFTER the bundle's users. A new group whose name another group here
+    already carries arrives as "Name (2)" — names stay unique (G2), so the person-and-group picker never has to guess.
+    Returns how many groups it touched."""
     if not isinstance(arriving, dict) or not arriving:
         return 0
     if not isinstance(roster.get("groups"), dict):
@@ -8406,8 +8425,12 @@ def transfer_merge_groups(roster, arriving):
         if isinstance(cur, dict):
             group_set(roster, gid, {"users": sorted(set(cur.get("users") or []) | mem)})
         else:
-            group_set(roster, gid, {"name": strip_ctrl(str(g.get("name") or "")).strip()[:GROUP_NAME_MAX] or gid,
-                                    "users": sorted(mem)})
+            base = strip_ctrl(str(g.get("name") or "")).strip()[:GROUP_NAME_MAX] or gid
+            name, i = base, 2
+            while group_name_taken(roster, name, gid):
+                sfx = " (%d)" % i
+                name, i = base[:GROUP_NAME_MAX - len(sfx)] + sfx, i + 1
+            group_set(roster, gid, {"name": name, "users": sorted(mem)})
         n += 1
     return n
 
@@ -18450,6 +18473,16 @@ def api(method, path, qs, body, deps):
             if p.get("user_id") == uid:
                 unassign_peer(p, store_configs, config_dir, now()); freed += 1
         del roster["users"][uid]
+        # docs/GROUPS-PLAN.md G8: the id leaves every group and every network grant in THIS write. Filtering it at plan time
+        # alone left it stored, so the same id arriving later — the node transferred back — walked straight into the
+        # memberships and the networks it had before the delete, with nobody granting them again.
+        for g in roster_groups(roster).values():
+            if isinstance(g, dict) and isinstance(g.get("users"), list) and uid in g["users"]:
+                g["users"] = [u for u in g["users"] if u != uid]
+        for p in roster["peers"].values():
+            su = p["share"].get("users") if isinstance(p, dict) and isinstance(p.get("share"), dict) else None
+            if isinstance(su, dict):
+                su.pop(uid, None)                # `{"users": {}}` stays truthy: the network stays restricted (§15.5)
         roster_save(roster_path, roster)
         # Clean up the user's encryption/subscription artifacts too — the blobs, the SK-wrapped escrow, and the
         # public token map. (Their peers are now unassigned, so the blobs would be GC'd on the next read anyway,
@@ -18484,7 +18517,7 @@ def api(method, path, qs, body, deps):
         if any(u not in roster["users"] for u in add):
             return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
         gid = gen_id()
-        while gid in (roster.get("groups") or {}):
+        while gid in roster_groups(roster):
             gid = gen_id()
         g = group_set(roster, gid, {"name": name, "users": add})
         roster_save(roster_path, roster)
@@ -18495,8 +18528,8 @@ def api(method, path, qs, body, deps):
 
     if method == "POST" and path == "/api/groups/update":
         roster = roster_load(roster_path)
-        gid = body.get("id") or ""
-        cur = (roster.get("groups") if isinstance(roster.get("groups"), dict) else {}).get(gid)
+        gid = body.get("id") if isinstance(body.get("id"), str) else ""      # an id that is not a string is no group's
+        cur = roster_groups(roster).get(gid)
         if not isinstance(cur, dict):
             return 404, {"ok": False, "error": "unknown group", "code": "not_found"}
         add, rem = body.get("add") or [], body.get("remove") or []
@@ -18530,8 +18563,8 @@ def api(method, path, qs, body, deps):
 
     if method == "POST" and path == "/api/groups/delete":
         roster = roster_load(roster_path)
-        gid = body.get("id") or ""
-        groups = roster.get("groups") if isinstance(roster.get("groups"), dict) else {}
+        gid = body.get("id") if isinstance(body.get("id"), str) else ""
+        groups = roster_groups(roster)
         if gid not in groups:
             return 404, {"ok": False, "error": "unknown group", "code": "not_found"}
         # A share naming this group keeps the id and grants nothing through it (GROUPS-PLAN G7): no peer is rewritten, and

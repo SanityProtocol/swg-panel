@@ -9,9 +9,11 @@
       (already in / not in: no-ops; a ghost can be removed), an update that changes nothing writes nothing and logs
       nothing, a duplicate name refused, an unknown group 404, delete — and every change in the activity log.
   [4] two operators' deltas compose: neither undoes the other.
-  [5] the roster envelope: a user update and a user delete leave groups as they are (a deleted user stays, filtered
-      where read); a save round trip keeps them.
-  [6] a node transfer carries the groups its users are in, narrowed to them, and the receiver merges them after the users.
+  [5] the roster envelope: a user update leaves groups as they are; a user delete takes the id out of every group and
+      every network grant in the same write, so the same id arriving later gets nothing back (G8); a save round trip
+      keeps them.
+  [6] a node transfer carries the groups its users are in, narrowed to them, and the receiver merges them after the users;
+      an arriving name already taken here is suffixed. Ids that are not strings get a 404, never a crash ([3]).
 
 Hermetic. Run: python3 tests/user_groups_selftest.py            (0 = pass)
      --perturb   has `group_set` rebuild without carrying what it was not given, and expects RED on [2], [3] and [4].
@@ -108,6 +110,9 @@ try:
     check("add must be a list", c == 400, (c, b))
     c, b = api("/api/groups/update", {"id": "nope", "name": "x"})
     check("an unknown group: 404", c == 404, (c, b))
+    c1, _ = api("/api/groups/update", {"id": ["g1"], "name": "x"})
+    c2, _ = api("/api/groups/delete", {"id": {"g1": 1}})
+    check("an id that is not a string: 404, never a crash", c1 == 404 and c2 == 404, (c1, c2))
     c, b = api("/api/groups/delete", {"id": gid})
     check("delete: gone, logged", c == 200 and gid not in now_()["groups"] and events()[-1].get("verb") == "Deleted group"
           and events()[-1].get("name") == "Work", (c, b))
@@ -127,12 +132,22 @@ except Exception as e:
 
 print("\n[5] the roster envelope")
 try:
-    json.dump(base(), open(roster_path, "w"))
+    RB = base()
+    RB["peers"] = {"gw": {"id": "gw", "user_id": "u1", "routes": ["192.168.1.0/24"], "targets": [],
+                          "share": {"users": {"u2": 0, "u3": 0}, "groups": {"g1": 0}}},
+                   "gw2": {"id": "gw2", "user_id": "u3", "routes": ["192.168.2.0/24"], "targets": [], "share": {"users": {"u2": 0}}}}
+    json.dump(RB, open(roster_path, "w"))
     c, _ = api("/api/users/update", {"id": "u1", "name": "Ivan I."})
     check("a user update leaves groups as they are", c == 200 and now_()["groups"] == base()["groups"])
     c, _ = api("/api/users/delete", {"id": "u2"})
-    check("a user delete leaves their id in the group (filtered where read, never swept)",
-          c == 200 and "u2" not in now_()["users"] and now_()["groups"]["g1"]["users"] == ["u1", "u2"], now_()["groups"])
+    _n = now_()
+    check("a user delete takes their id out of every group in the same write (G8)",
+          c == 200 and "u2" not in _n["users"] and _n["groups"]["g1"]["users"] == ["u1"], _n["groups"])
+    check("…and out of every network grant, leaving a restricted share restricted",
+          _n["peers"]["gw"]["share"] == {"users": {"u3": 0}, "groups": {"g1": 0}} and _n["peers"]["gw2"]["share"] == {"users": {}}, _n["peers"])
+    _n["users"]["u2"] = {"id": "u2", "name": "Maria, back from a transfer"}
+    check("…so the same id arriving again gets none of it back",
+          P.share_grants(_n["peers"]["gw"], _n["users"], 0, _n["groups"]) == {"u1": 0, "u3": 0})
     r = P.roster_load(roster_path); P.roster_save(roster_path, r)
     check("a load/save round trip keeps them", P.roster_load(roster_path).get("groups") == now_()["groups"])
 except Exception as e:
@@ -166,6 +181,9 @@ check("a new group is inserted, with only the users this roster holds", B["group
 check("a group already here gains the arriving members and keeps its own name",
       B["groups"]["g3"] == {"name": "Maria and friends", "users": ["u2", "x9"]} and n == 2, (B["groups"], n))
 check("nothing arriving: nothing changes", P.transfer_merge_groups(B, None) == 0 and P.transfer_merge_groups(B, {}) == 0)
+P.transfer_merge_groups(B, {"g8": {"name": "FAMILY", "users": ["u1"]}, "g9": {"name": "family", "users": ["u2"]}})
+check("a new group whose name is taken arrives renamed — names stay unique (G2)",
+      B["groups"]["g8"]["name"] == "FAMILY (2)" and B["groups"]["g9"]["name"] == "family (3)", {k: B["groups"][k]["name"] for k in ("g1", "g8", "g9")})
 _src = open(PANEL).read()
 _rx = _src[_src.index("roster[\"users\"][uid] = u; nu += 1"):]
 check("the receiver merges groups right after the users they name, before the roster is saved",

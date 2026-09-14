@@ -789,10 +789,11 @@ export function confirmDeleteGroup(g, inSheet) {
     body: T("Its members stay as users; only the group is deleted.") + (shares.length ? " " + T("Networks shared with it stop being reachable for its members, unless they're shared with them another way: {devices}.",
       { devices: namedFew(shares.map(shareDeviceName)) }) : ""),
     onConfirm: async () => {
-      const r = await api.groupDelete({ id: g.id });
-      closeModals(inSheet ? 2 : 1);
-      if (r && r.ok) { toast(T("Group deleted."), "ok"); Store.poll(); }
-      else toast(srvText(r) || T("The group wasn't deleted."), "err");
+      let r = null;
+      try { r = await api.groupDelete({ id: g.id }); } catch (e) { r = null; }
+      // only a delete that happened closes the group window — a failed one keeps it, and whatever was being edited in it
+      if (r && r.ok) { closeModals(inSheet ? 2 : 1); toast(T("Group deleted."), "ok"); Store.poll(); }
+      else { closeModal(); toast(srvText(r) || T("The group wasn't deleted."), "err"); Store.poll(); }
     } });
 }
 function GroupSheet({ gid }) {
@@ -804,9 +805,10 @@ function GroupSheet({ gid }) {
   const [members, setMembers] = useState(() => base.current.users.slice());
   const [q, setQ] = useState(""), [page, setPage] = useState(1), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
   const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null);
-  const uname = id => (Store.user(id) || {}).name || "";
+  const nameOf = new Map(Store.recon.users.map(u => [u.id, u.name]));      // one pass, not a search per member per comparison
+  const uname = id => nameOf.get(id) || "";
   const byName = (a, b) => uname(a).localeCompare(uname(b));
-  const list = members.filter(id => Store.user(id)).sort(byName);
+  const list = members.filter(id => nameOf.has(id)).sort(byName);
   const add = list.filter(u => !base.current.users.includes(u)), remove = base.current.users.filter(u => !members.includes(u));
   dirtyRef.current = name.trim() !== base.current.name || add.length > 0 || remove.length > 0;
   if (gid && !g) return html`<${Sheet} title=${T("Group · {name}", { name: base.current.name })}
