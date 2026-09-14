@@ -3362,6 +3362,15 @@ a.tg:hover{filter:brightness(1.25)}
    dot is STILL: a test result is a moment, not a live link, and a pulse would say otherwise. */
 .netprobe{margin:10px 0 4px}
 .netshare{margin:12px 0 4px}
+.netshare .segrow{flex-wrap:wrap}
+.netrow-sum{display:flex;gap:10px;align-items:center;min-height:34px}
+.netrow-sum .grow{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* the peer view's way in to the Networks window — a badge that is a button, beside the status badge it sits before */
+.badge.b-nets{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;font-size:11px;
+  font-weight:700;cursor:pointer}
+.badge.b-nets.on{background:color-mix(in srgb,var(--brand) 13%,transparent);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 32%,transparent)}
+.badge.b-nets:hover{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 55%,var(--line-solid))}
+.badge.b-nets:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
 .netshare .segrow{margin:5px 0 8px}
 .netshare .netwiden input[type=date]{flex:none;width:auto}
 .netshare .netrow .usercombo{flex:1;min-width:0}
@@ -3713,7 +3722,7 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .uc-opt:hover{background:var(--surface-2)}
 .uc-empty{padding:8px;color:var(--faint);font-size:12px}
 /* peer view sheet */
-.pv-head{display:flex;align-items:center;gap:12px}
+.pv-head{display:flex;align-items:center;gap:8px}
 .pv-id{flex:1;min-width:0}
 .pv-sub{font-size:13px;color:var(--dim)}
 .pv-sub .pv-user{color:var(--ready)} .pv-sub .pv-user:hover{text-decoration:underline}

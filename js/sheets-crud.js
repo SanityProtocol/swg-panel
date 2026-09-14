@@ -17,7 +17,7 @@ import { targetType, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSu
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
          turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised } from "./model.js";
 import { turnFork, turnColor, turnForkList } from "./turn-catalog.js";
-import { Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm } from "./ui.js";
+import { Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals } from "./ui.js";
 import {
   genKeys, genPSK, buildConf, parseFullConf, downloadConf, getConfig, configOverrides, QR, qrDataURL,
   subFeatureOn, subPublishOrPrompt, ensureVaultUnlocked, subSKCached, VaultPromptSheet, ensurePeerBlob,
@@ -626,6 +626,7 @@ export function PeerViewSheet({ pid, node, iface }) {
     <div class="pv-head">
       <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href="#/users" onClick=${e => { e.preventDefault(); closeModal(); revealUser(u.id); }}>${u.name}</a>`
           : html`<${UserCombo} onPick=${uid => assignPeer(p, uid)} placeholder=${T("Assign to a user…")}/>`}</div></div>
+      ${p.targets.some(t => !isSelfContainedKind(targetType(t))) ? html`<${NetworksBadge} peer=${p}/>` : null}
       ${badgeWithReason(p.unassigned ? "unassigned" : p.status, p.reason)}</div>
     <div class="lbl" style="margin:16px 2px 4px">${T("Deployments · {n}", { n: p.targets.length })}</div>
     <div class="pv-deps">${depsOrdered.map(t => {
@@ -947,7 +948,10 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
             : T("Changing an address moves the peer on that interface."))
         : T("These servers assign each address on connect; the user's link per server is on their subscription. There's no client config (key/DNS/MTU) — the server owns the datapath.")}</div>
     </div>
-    ${hasKeyed ? html`<${NetworksField} peer=${live}/>` : null}
+    ${hasKeyed ? html`<div class="field"><label>${T("Networks behind this device")}</label>
+      <div class="netrow-sum"><span class=${"grow " + ((live.routes || []).length ? "mono" : "faint")}>${(live.routes || []).length
+          ? live.routes.join(", ") : T("No networks yet")}</span>
+        <button class="btn btn-ghost" onClick=${() => openPeerNetworks(live)}><${Ic} i="network"/> ${T("Networks")}</button></div></div>` : null}
     ${(hasKeyed && !loaded) ? html`<div class="loading"><span class="spin"></span>${T("loading config…")}</div>` : null}
     ${(hasKeyed && loaded && !editable) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The client's private key isn't available, so DNS / MTU / routing can't be rebuilt")}${Store.storeConfigs ? "" : T(" (enable store_configs, or edit right after creating)")}${T(". Title and address can still change.")}</span></div>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -1005,10 +1009,14 @@ function netWhy(r, node) {
 // ── P5: who can reach these networks (docs/NETWORKS-PLAN.md §15) ─────────────────────────────────────────────────────
 // `share` null = everyone on the node, as before. An object = the device's owner, always, plus the people named, each
 // until a day or for good. The panel refuses with tokens (share_clean); the words are here.
+// THREE AUDIENCES, ONE STORED SHAPE: `null` = everyone on the node, `{users: {}}` = the owner only, `{users: {...}}` = the
+// owner and the people named. "Only the owner" was always storable — as "people you choose" with nobody chosen, which read
+// as a half-finished form — so it is a mode of the draft, not a new field.
 const shareOf = s => (s && typeof s === "object" && s.users && typeof s.users === "object")
-  ? { on: true, users: { ...s.users } } : { on: false, users: {} };
-const shareBody = d => d.on ? { users: d.users } : null;
-const shareKey = d => d.on ? "on:" + Object.keys(d.users).sort().map(k => k + "=" + (d.users[k] || 0)).join(",") : "off";
+  ? { mode: Object.keys(s.users).length ? "chosen" : "owner", users: { ...s.users } } : { mode: "everyone", users: {} };
+const shareBody = d => d.mode === "everyone" ? null : { users: d.mode === "chosen" ? d.users : {} };
+const shareKey = d => d.mode === "everyone" ? "off"
+  : "on:" + (d.mode === "chosen" ? Object.keys(d.users).sort().map(k => k + "=" + (d.users[k] || 0)).join(",") : "");
 function shareRefused(why) {
   switch (why) {
     case "unknown_user": return T("One of these people no longer exists — remove them and save again.");
@@ -1030,17 +1038,22 @@ function shareKeyless(why, name, devices) {
   }
 }
 
-function NetShare({ peer, draft, setDraft, dirty, busy, onSave }) {
+function NetShare({ peer, draft, setDraft, nodes }) {
   const owner = peer.user_id ? Store.user(peer.user_id) : null;
   const ids = Object.keys(draft.users).sort((a, b) => shareUser(a).localeCompare(shareUser(b)));
   const setUser = (id, until) => setDraft(d => ({ ...d, users: { ...d.users, [id]: until } }));
   const drop = id => setDraft(d => { const u = { ...d.users }; delete u[id]; return { ...d, users: u }; });
-  const mode = on => html`<button type="button" role="radio" aria-checked=${draft.on === on} class=${"seg" + (draft.on === on ? " on" : "")}
-    onClick=${() => setDraft(d => ({ ...d, on }))}>${on ? T("Only people you choose") : T("Everyone on its node")}</button>`;
+  const everyone = nodes.length === 1 ? T("Everyone on {node}", { node: nodes[0] }) : T("Everyone on its nodes");
+  const modes = [...(owner ? [["owner", T("Only {name}", { name: owner.name })], ["chosen", T("{name} and people you choose", { name: owner.name })]]
+    : [["chosen", T("Only people you choose")]]), ["everyone", everyone]];
+  const seg = ([m, label]) => html`<button type="button" role="radio" aria-checked=${draft.mode === m} class=${"seg" + (draft.mode === m ? " on" : "")}
+    onClick=${() => setDraft(d => ({ ...d, mode: m }))}>${label}</button>`;
   return html`<div class="netshare">
     <div class="netprobe-h">${T("Who can reach these networks")}</div>
-    <div class="segrow" role="radiogroup" aria-label=${T("Who can reach these networks")}>${mode(false)}${mode(true)}</div>
-    ${draft.on ? html`
+    <div class="segrow" role="radiogroup" aria-label=${T("Who can reach these networks")}>${modes.map(seg)}</div>
+    ${draft.mode === "owner" && owner ? html`<div class="hint">${T("Only {name}'s own devices on the same node reach them.", { name: owner.name })}</div>` : null}
+    ${draft.mode === "everyone" ? html`<div class="hint">${T("Every device on the same node reaches them — the report below says how many.")}</div>` : null}
+    ${draft.mode === "chosen" ? html`
       <div class="netwiden"><span class="grow">${owner ? owner.name : T("No owner")}</span>
         <span class="faint">${owner ? T("owns this device — always") : T("This device has no owner, so only the people below reach its networks.")}</span></div>
       ${ids.map(id => html`<div class="netwiden" key=${id}><span class="grow">${shareUser(id)}</span>
@@ -1052,8 +1065,6 @@ function NetShare({ peer, draft, setDraft, dirty, busy, onSave }) {
       <div class="netrow"><${UserPicker} value=${null} placeholder=${T("Share with someone…")}
         onChange=${id => { if (id && id !== peer.user_id && !(id in draft.users)) setUser(id, 0); }}/></div>
       <div class="hint">${T("A date is the last day they can reach these networks; leave it empty for no end. Their devices on the same node count — a turn-server device only when its server can prove who is sending.")}</div>` : null}
-    <div class="netrow"><span class="grow"></span>
-      <button class="btn" disabled=${busy || !dirty} onClick=${onSave}>${busy ? T("saving…") : T("Save access")}</button></div>
   </div>`;
 }
 
@@ -1077,30 +1088,50 @@ function NetShareSays({ t, node }) {
   </div>`;
 }
 
-function NetworksField({ peer }) {
+// The device's networks badge on the peer view: the way in to the Networks window, and a count once there are any.
+function NetworksBadge({ peer }) {
+  const n = (peer.routes || []).length;
+  return html`<button type="button" class=${"badge ic b-nets" + (n ? " on" : "")} onClick=${() => openPeerNetworks(peer)}
+    title=${n ? T("Networks behind this device: {list}", { list: peer.routes.join(", ") }) : T("Add networks behind this device")}>
+    <${Ic} i="network"/>${n ? T("Networks · {n}", { n }) : T("Networks")}</button>`;
+}
+
+export function openPeerNetworks(peer) { (modalDepth() > 0 ? pushModal : openModal)(html`<${NetworksSheet} pid=${peer.id}/>`); }
+
+// NETWORKS — the networks behind one device, who reaches them, and what that means on each node, in its own window. One
+// Save writes the networks and their audience together (one request, one roster write), so a network never lands open
+// to everyone for the moment before its restriction does. Removing them is its own, confirmed, action.
+function NetworksSheet({ pid }) {
+  useStore();
+  const found = Store.peer(pid);
+  const peer = found || { id: pid, routes: [], targets: [] };
+  const owner = peer.user_id ? Store.user(peer.user_id) : null;
   const stored = peer.routes || [];
   const storedKey = stored.join(",");
   const [draft, setDraft] = useState(stored.join(", "));
   const [rep, setRep] = useState(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState({});
+  const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null);
   const toggle = k => setOpen(o => ({ ...o, [k]: !o[k] }));
   const want = netList(draft);
   const wantKey = want.join(",");
-  // P5: its own draft and its own Save, like the networks. The preview judges both drafts together, so the report
-  // below shows what saving would do — who it would let in, and who it would cut off — before anything is written.
-  const shareStoredKey = shareKey(shareOf(peer.share));
-  const [share, setShare] = useState(() => shareOf(peer.share));
-  const [shareBusy, setShareBusy] = useState(false);
-  useEffect(() => { setShare(shareOf(peer.share)); }, [shareStoredKey]);
+  // A NEW network starts private to its owner: open to everyone on the node the moment it is saved was the old default,
+  // and the report explaining the exposure arrived only after the fact. A stored network keeps its stored audience.
+  const [share, setShare] = useState(() => {
+    const d = stored.length ? shareOf(peer.share) : { mode: owner ? "owner" : "chosen", users: {} };
+    return (!owner && d.mode === "owner") ? { ...d, mode: "chosen" } : d;
+  });
   const shareDraftKey = shareKey(share);
-  const shareDirty = shareDraftKey !== shareStoredKey;
+  const shareStoredKey = stored.length ? shareKey(shareOf(peer.share)) : "";
+  const shareDirty = want.length > 0 && shareDraftKey !== shareStoredKey;
+  const nodes = [...new Set((peer.targets || []).filter(t => !isSelfContainedKind(targetType(t))).map(t => Store.nodeName(t.node)))];
   useEffect(() => {
     if (!want.length && !stored.length) { setRep(null); return; }
     let ok = true;
     const h = setTimeout(async () => {
       try {
-        const r = await api.peerNetworks({ peer_id: peer.id, routes: want, ...(shareDirty ? { share: shareBody(share) } : {}) });
+        const r = await api.peerNetworks({ peer_id: pid, routes: want, ...(want.length ? { share: shareBody(share) } : {}) });
         if (ok) setRep(r && r.ok ? { ...r.data, _for: wantKey } : { targets: [], refusals: [],
           error: r && r.code === "share_refused" ? shareRefused(r.why) : (srvText(r) || T("Couldn't check these networks.")) });
       } catch (e) {
@@ -1108,51 +1139,56 @@ function NetworksField({ peer }) {
       }
     }, 350);
     return () => { ok = false; clearTimeout(h); };
-  }, [wantKey, peer.id, storedKey, shareDraftKey]);
+  }, [wantKey, pid, storedKey, shareDraftKey]);
   const refusals = (rep && rep.refusals) || [];
-  // Compared NORMALISED: the operator types `172.30.9.9`, the roster stores `172.30.9.9/32`. A raw compare kept
-  // "Save networks" lit after a successful save, reading as unsaved. The preview carries the server's own
-  // normalisation of the draft, so that is the spelling compared whenever it is for THIS draft.
+  // Compared NORMALISED: the operator types `172.30.9.9`, the roster stores `172.30.9.9/32`.
   const normKey = (rep && rep.routes && rep._for === wantKey) ? rep.routes.join(",") : wantKey;
+  const dirty = normKey !== storedKey || shareDirty;
+  dirtyRef.current = dirty;
+  const name = peer.title || (owner ? owner.name : T("Unassigned peer"));
   const save = async () => {
     setBusy(true);
     try {
-      const r = await api.peerUpdate({ peer_id: peer.id, routes: want });
+      const r = await api.peerUpdate({ peer_id: pid, routes: want, share: shareBody(share) });
       if (r && r.ok) {
-        const saved = (r.data && r.data.routes) || want;
-        setDraft(saved.join(", "));                    // the stored spelling, so the field reads saved
-        toast(want.length ? T("Networks saved.") : T("Networks removed."), "ok");
-        await Store.poll();
+        dirtyRef.current = false; if (cleanRef.current) cleanRef.current();
+        toast(T("Networks saved."), "ok");
+        closeModal(); Store.poll();
       }
       else if (r && r.refusals) setRep(x => ({ ...(x || { targets: [] }), refusals: r.refusals }));
-      else toast(srvText(r) || T("Networks weren't saved."), "err");
+      else toast(r && r.code === "share_refused" ? shareRefused(r.why) : (srvText(r) || T("Networks weren't saved.")), "err");
     } finally { setBusy(false); }
   };
-  const saveShare = async () => {
-    setShareBusy(true);
-    try {
-      const r = await api.peerUpdate({ peer_id: peer.id, share: shareBody(share) });
-      if (r && r.ok) { toast(share.on ? T("Access saved.") : T("Open to everyone on the node again."), "ok"); await Store.poll(); }
-      else toast(r && r.code === "share_refused" ? shareRefused(r.why) : (srvText(r) || T("Access wasn't saved.")), "err");
-    } finally { setShareBusy(false); }
-  };
-  return html`<div class="field netfield">
-    <label>${T("Networks behind this device")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label>
-    <div class="netrow">
+  const remove = () => pushModal(html`<${ConfirmSheet} title=${T("Remove networks?")} confirmLabel=${T("Remove networks")} danger=${true}
+    body=${T("{device} stops routing {nets}. Everyone who reaches them through it loses access.", { device: name, nets: stored.join(", ") })}
+    onConfirm=${async () => {
+      const r = await api.peerUpdate({ peer_id: pid, routes: [], share: null });
+      if (r && r.ok) { dirtyRef.current = false; toast(T("Networks removed."), "ok"); closeModals(2); Store.poll(); }
+      else toast(srvText(r) || T("Networks weren't saved."), "err");
+    }}/>`);
+  if (!found) return html`<${Sheet} title=${T("Networks")} foot=${html`<button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}><div class="empty"><b>${T("Peer not found")}</b>${T("It may have been removed.")}</div><//>`;
+  return html`<${Sheet} title=${T("Networks · {name}", { name })} width=${680} dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
+    subject=${{ kind: "peer", id: pid }}
+    foot=${html`<${Fragment}>
+      ${stored.length ? html`<button class="btn btn-danger" disabled=${busy} onClick=${remove}>${T("Remove networks")}</button>` : null}
+      <span class="grow"></span>
+      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-primary" disabled=${busy || !dirty || !want.length || refusals.length > 0} onClick=${save}>${busy ? T("saving…") : T("Save")}</button><//>`}>
+    <div class="field netfield">
+      <label>${T("Networks behind this device")}</label>
       <input class=${"mono" + (refusals.length ? " bad" : "")} value=${draft} onInput=${e => setDraft(e.target.value)}
-        placeholder="192.168.1.0/24, 10.20.0.0/16" autocomplete="off" spellcheck="false"/>
-      <button class="btn" disabled=${busy || normKey === storedKey || refusals.length > 0} onClick=${save}>${busy ? T("saving…") : T("Save networks")}</button>
+        placeholder="192.168.1.0/24, 10.20.0.0/16" autocomplete="off" spellcheck="false" autofocus/>
+      <div class="hint">${T("Networks this device routes for, like the office LAN behind a router. Clients on the same node reach them through it.")}</div>
+      ${/* Feature 11: peer-to-peer needs nothing built — two devices on a node already reach each other — and
+            operators do not know that. Said here, where someone reaching for "connect devices" will look. */""}
+      <div class="hint">${T("Devices on the same node already reach each other at their tunnel addresses — that needs nothing here.")}</div>
+      ${rep && rep.error ? html`<div class="formmsg err">${rep.error}</div>` : null}
+      ${refusals.length ? html`<div class="netref">${refusals.map(r => html`<div><${Ic} i="warn"/><span>${netWhy(r, r.node ? Store.nodeName(r.node) : "")}</span></div>`)}</div>` : null}
+      ${want.length ? html`<${NetShare} peer=${peer} draft=${share} setDraft=${setShare} nodes=${nodes}/>` : null}
+      ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle}
+          kaOff=${((rep && rep.keepalive_off) || []).includes(t.node)} pid=${pid} testable=${normKey === storedKey && !shareDirty}/>`)}
     </div>
-    <div class="hint">${T("Networks this device routes for, like the office LAN behind a router. Clients on the same node reach them through it. Saved on its own — the sheet's Save leaves it alone.")}</div>
-    ${/* Feature 11: peer-to-peer needs nothing built — two devices on a node already reach each other — and
-          operators do not know that. Said here, where someone reaching for "connect devices" will look. */""}
-    <div class="hint">${T("Devices on the same node already reach each other at their tunnel addresses — that needs nothing here.")}</div>
-    ${rep && rep.error ? html`<div class="formmsg err">${rep.error}</div>` : null}
-    ${refusals.length ? html`<div class="netref">${refusals.map(r => html`<div><${Ic} i="warn"/><span>${netWhy(r, r.node ? Store.nodeName(r.node) : "")}</span></div>`)}</div>` : null}
-    ${stored.length ? html`<${NetShare} peer=${peer} draft=${share} setDraft=${setShare} dirty=${shareDirty} busy=${shareBusy} onSave=${saveShare}/>` : null}
-    ${((rep && rep.targets) || []).map(t => html`<${NetNode} key=${t.node} t=${t} open=${open} toggle=${toggle}
-        kaOff=${((rep && rep.keepalive_off) || []).includes(t.node)} pid=${peer.id} testable=${normKey === storedKey}/>`)}
-  </div>`;
+  <//>`;
 }
 
 // ── P4: the reachability test (docs/NETWORKS-PLAN.md §8 P4) ────────────────────────────────────────────────────────
