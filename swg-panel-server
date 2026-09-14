@@ -29,6 +29,7 @@ import heapq
 import hmac
 import inspect
 import ipaddress
+import itertools
 import errno
 import json
 import os
@@ -10875,6 +10876,18 @@ def wg_catalog_view():
     return {aid: {**a, "platforms": _client_platforms_resolved(a)} for aid, a in WG_APPS.items()}
 PROV_STATUS_PATH = "/var/lib/swg-panel/provider-status.json"    # overridden from the state dir in main()
 _CATALOG = {"idx": None, "at": 0, "err": "", "perr": {}}        # in-memory cache
+# `catalog_gen` says WHEN the held index changed, so the SPA refetches exactly then and never has to guess from the
+# provider switches (docs/CATALOG-FRESHNESS-PLAN.md D1). Bumped AFTER every assignment of _CATALOG["idx"]: a
+# /api/state poll that reports the new value is then always looking at the new index. The start-time prefix keeps a
+# page left open across a restart from reading a reused counter as "nothing changed". next() on itertools.count is
+# one C call, so two threads bumping together still get two distinct values — each one differs from anything a poll
+# could have reported before its assignment, which is the only property the SPA relies on.
+_CATALOG_BOOT = int(time.time())
+_CATALOG_GEN = itertools.count(1)
+def _catalog_changed():
+    _CATALOG["gen"] = next(_CATALOG_GEN)
+def catalog_gen():
+    return "%d:%d" % (_CATALOG_BOOT, _CATALOG.get("gen", 0))
 # per-provider update state {prov: {status, at, last_updated, error}} — status = idle|updating|updated|uptodate|failed.
 # last_updated = last time this provider's data actually CHANGED (a resolved list's version moved). Persisted.
 _PROV_STATUS = {}
@@ -10927,6 +10940,7 @@ def catalog_refresh_provider(pid, gen):
         # `at` is the WHOLE catalog's freshness stamp and this refreshed exactly one provider. Moving it would
         # tell the background loop that the other four are fresh too, and it would stop re-fetching them.
         _CATALOG.update(idx=base, err="")
+        _catalog_changed()
         _CATALOG.pop("fail_at", None)
         with contextlib.suppress(Exception):
             atomic_write(CATALOG_PATH, json.dumps({"idx": base, "at": int(_CATALOG.get("at") or 0)}))
@@ -11208,7 +11222,7 @@ def catalog_index(force=False):
         try:
             d = json.load(open(CATALOG_PATH))
             if now - int(d.get("at") or 0) < CATALOG_TTL and d.get("idx"):
-                _CATALOG.update(idx=d["idx"], at=int(d["at"]), err=""); return d["idx"]
+                _CATALOG.update(idx=d["idx"], at=int(d["at"]), err=""); _catalog_changed(); return d["idx"]
         except Exception:
             pass
     # A TOTAL failure must not be retried on every call. _catalog_build() is 5 providers x _http_retry(tries=4)
@@ -11234,6 +11248,7 @@ def catalog_index(force=False):
         _CATALOG["err"] = _CATALOG["err"] or "every catalog provider failed to fetch"
         return _catalog_last_good()
     _CATALOG.update(idx=idx, at=now, err="")
+    _catalog_changed()
     _CATALOG.pop("fail_at", None)
     with contextlib.suppress(Exception):
         atomic_write(CATALOG_PATH, json.dumps({"idx": idx, "at": now}))
@@ -11273,6 +11288,7 @@ def catalog_cached():
             # Adopt into memory but KEEP the original timestamp: reading the disk copy must not look like a fresh
             # build, or the TTL would never expire and the background refresh would never re-fetch.
             _CATALOG.update(idx=idx, at=int(d.get("at") or 0))
+            _catalog_changed()
             return idx, True
     except Exception:
         pass
@@ -15670,6 +15686,7 @@ def api(method, path, qs, body, deps):
             "turn_catalog": turn_catalog_view(),         # single-source turn fork/client catalog (SPA reads this instead of a hardcoded TURN_FORKS)
             "turn_holds": _turn_holds_view(),            # {node: {fork: held_version}} → fork-row "held" flag (per node+fork rollback holds)
             "turn_updates": turn_updates_view(deps),      # deployed turn-family servers behind their newest build, one row per (fork, node) — the header badge reads this as a READY FACT, the way panel_outdated is, instead of the SPA fanning out a network check per fork on every click
+            "catalog_gen": catalog_gen(),                 # moves whenever the held catalog index changes → the SPA refetches it exactly then
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
             "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)
@@ -17130,7 +17147,9 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {"cancelled": True, "enabled": False}}
 
     if method == "GET" and path == "/api/catalog/index":        # the FULL catalog (enabled providers) → client searches by title/desc + paginates locally
-        idx = catalog_index()
+        # Never catalog_index() here: past its TTL it rebuilds from GitHub ON THIS THREAD — minutes where GitHub is
+        # unreachable. _catalog_refresh_loop keeps the index warm, and catalog_gen tells the SPA when it changed.
+        idx = catalog_cached()[0]
         en = (deps.get("panel_settings") or {}).get("providers") or {}
         items = [{"id": c, "provider": e.get("p", ""), "caps": {"host": e.get("host", False), "ip": e.get("ip", False)}}
                  for c, e in idx.items() if en.get(e.get("p", ""), False)]   # providers default OFF → only enabled ones are searchable

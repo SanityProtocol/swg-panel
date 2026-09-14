@@ -72,9 +72,6 @@ export function hsl2hex(h, s, l) {
 // free to be configurable). Talkers and destinations use a different start hue + saturation so the two lists read
 // as distinct colour families.
 export const dashRankColor = (i, kind) => kind === "talker" ? hsl2hex((205 + i * 137.508) % 360, 68, 62) : hsl2hex((32 + i * 137.508) % 360, 58, 55);
-// labels for catalog categories the CatPicker has fetched this session — lets a just-added (staged, not yet
-// saved+polled) catalog cat show its provider label immediately, before Store.catLabels carries it.
-const _CATALOG_LABEL_CACHE = {};
 // If a resolved label has NO capital letters (a bare list name like "timeweb"), capitalise its first letter —
 // but leave intentional casing alone ("iCloud", "YouTube" stay as-is).
 export const capFirst = s => (typeof s === "string" && s && !/[A-Z]/.test(s)) ? s.charAt(0).toUpperCase() + s.slice(1) : s;
@@ -85,8 +82,8 @@ export function catLabelOf(c) {   // built-in label · custom-list title (keyed 
   if (c === "uncat") return "Uncategorised";
   const lt = {};
   (Store.panelSettings?.custom_lists || []).forEach(l => { if (l && l.title) { if (l.id) lt[l.id] = l.title; if (l.name) lt[l.name] = l.title; } });
-  if (isProviderCat(c)) return capFirst(prettyCatLabel(c, (Store.catLabels || {})[c] || _CATALOG_LABEL_CACHE[c]));   // provider list → humanised (country names etc.)
-  return capFirst(SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || _CATALOG_LABEL_CACHE[c] || (String(c).startsWith("custom") ? "Custom" : c));
+  if (isProviderCat(c)) return capFirst(prettyCatLabel(c, (Store.catLabels || {})[c]));   // provider list → humanised (country names etc.)
+  return capFirst(SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || (String(c).startsWith("custom") ? "Custom" : c));
 }
 // Host/IP capability flags for a list — ALWAYS Host first, IP second (house rule).
 export const capBadges = caps => html`<span class="capbs">
@@ -245,11 +242,19 @@ export const CAT_DESC = () => (_cat_desc || (_cat_desc = {
   claude: T("Claude & the Anthropic API"), grok: T("Grok (xAI) — grok.com & x.ai"),
   gemini: T("Google Gemini AI — kept separate from the rest of Google"), copilot: T("Microsoft & GitHub Copilot"),
   signal: T("Signal private messenger"),
+  // Re-filter's lists, keyed by the FULL id. Their raw ids ("community", "ipsum") are generic enough that another
+  // provider could publish one, and it would silently inherit a description of a different list. Wording follows
+  // Re-filter's own README; `ooni_domains` is not described there, so it gets nothing here rather than a guess.
+  "rf:domains_all": T("Domains blocked in Russia — the RKN registry, filtered"),
+  "rf:ipsum": T("IP addresses blocked in Russia, merged into ranges"),
+  "rf:community": T("Community list: sites RKN does not block that refuse visitors from Russia"),
+  "rf:community_ips": T("Community list: networks RKN does not block that refuse addresses from Russia"),
+  "rf:discord_ips": T("Discord's networks"),
   ru_net: T("The whole Russian IP space (GeoIP) — works in every mode"),
   ru_blocked: T("Sites blocked inside Russia — comprehensive (~86k domains, heavy)"),
   ru_blocked_media: T("News / media blocked inside Russia — light subset (~130)"),
 }));
-export const catDescOf = id => CAT_DESC()[catRawId(id).toLowerCase()] || "";
+export const catDescOf = id => CAT_DESC()[String(id || "").toLowerCase()] || CAT_DESC()[catRawId(id).toLowerCase()] || "";   // a full-id entry wins over the raw id
 // Info icon that shows a description bubble on hover — used for curated presets (which have no external URL to link).
 export const DescInfo = ({ text }) => text ? html`<span class="catrow-info descinfo" tabindex="0" role="note" onClick=${e => e.stopPropagation()}>
   <${Ic} i="info"/><span class="descbub" role="tooltip">${text}</span></span>` : null;
@@ -927,7 +932,7 @@ let _ruleSeq = 0;
 export const newRid = () => "rr" + (++_ruleSeq);
 
 
-// The full catalog index, fetched once and searched CLIENT-side — so search matches the readable title
+// The full catalog index, fetched when the panel says it changed and searched CLIENT-side — so search matches the readable title
 // (country names, friendly names) and descriptions, not just the raw provider id. ~3.5k tiny rows.
 //
 // Each row is DECORATED once, here, with the two things the search needs: `disp` (the readable title, a regex
@@ -937,37 +942,45 @@ export const newRid = () => "rr" + (++_ruleSeq);
 // flat array, and prettyCatLabel runs once per row for the life of the page instead of once per row per key.
 let _CATALOG_INDEX = null;
 let _CATALOG_BY_ID = {};
-let _CATALOG_SIG = "";       // which providers the cached index was built from
-// ⚠️ AN EMPTY INDEX IS NOT A CACHED ANSWER, and treating it as one is why a provider you just switched on
-// showed nothing. `/api/catalog/index` returns ONLY the enabled providers, so with them all off it answers
-// `items: []` — and `[]` is truthy, so this returned that empty array for the life of the page. Enabling
-// MetaCubeX and v2fly then downloaded 3,335 lists the panel had and the field could not see, until a full
-// reload. The caller's guard was locked the same way (`!cidx` is false for `[]`), so neither could recover.
+// FRESHNESS IS THE PANEL'S CALL, NOT THE CALLER'S (docs/CATALOG-FRESHNESS-PLAN.md D1). Two earlier shapes each fixed
+// one symptom and moved the bug. Consumers that refetched only while their copy was EMPTY kept the first non-empty
+// index for the life of the page: switch a second provider on and its lists never appeared. A signature rebuilt
+// here from the provider switches then missed every change that is not a switch — the daily rebuild, "Check for
+// updates", a provider whose download failed and later succeeded.
 //
-// Cached only when it holds something AND the enabled set has not changed since — a toggle in Settings
-// invalidates it on the next poll, which is what makes "switch it on and search" work in one page.
-let _CATALOG_TRY = { sig: null, at: 0, p: null };   // last attempt: which providers, when, and its promise
-const _CATALOG_RETRY_MS = 20000;
+// The key is the panel's `catalog_gen` (it moves whenever the index the panel holds changes) plus the enabled
+// providers, SORTED so another tab saving the same set in a different order changes nothing. What comes back is
+// labelled with the key as it stood when the request STARTED: the key held here is never newer than what the panel
+// then reads, so a change landing mid-request costs one extra fetch and can never leave old rows under a new key.
+//
+// An answer — an EMPTY one included — stands for its key: the panel's index can only change when catalog_gen or the
+// enabled set moves, and either changes the key. (That is why the old 20 s retry timer is gone.) A FAILED request is
+// not an answer, so it is forgotten and the next open asks again. Callers key their effect on catalogKey() and never
+// judge freshness themselves, which is also what keeps this from running once per render.
+let _CATALOG_KEY = null;
+let _CATALOG_REQ = { key: null, p: null };   // the latest request: shared by every caller asking under the same key
+export const catalogKey = () => {
+  const on = (Store.panelSettings || {}).providers || {};
+  return (Store.catalogGen || "") + "|" + Object.keys(on).filter(k => on[k]).sort().join(",");
+};
 export function loadCatalogIndex() {
-  const sig = JSON.stringify((Store.panelSettings || {}).providers || {});
-  if (_CATALOG_INDEX && _CATALOG_INDEX.length && _CATALOG_SIG === sig) return Promise.resolve(_CATALOG_INDEX);
-  // ⚠️ BOUNDED, or "an empty index is not an answer" becomes a request per render. Measured right after that
-  // fix went in: opening the field on a panel with no catalog fired /api/catalog/index twice on the first
-  // open and three times on the second, because the caller's guard stays true while the answer stays empty
-  // and the effect re-runs on every render. Re-asking is right; re-asking in a loop is not.
-  // One attempt in flight is shared, and an empty answer is not retried for 20s unless the enabled providers
-  // change — which is the only thing that can make the answer different sooner.
-  const now = Date.now();
-  if (_CATALOG_TRY.sig === sig && _CATALOG_TRY.p && now - _CATALOG_TRY.at < _CATALOG_RETRY_MS) return _CATALOG_TRY.p;
+  const key = catalogKey();
+  if (_CATALOG_INDEX && _CATALOG_KEY === key) return Promise.resolve(_CATALOG_INDEX);
+  if (_CATALOG_REQ.key === key && _CATALOG_REQ.p) return _CATALOG_REQ.p;
+  const forget = () => { if (_CATALOG_REQ.p === p) _CATALOG_REQ = { key: null, p: null }; return _CATALOG_INDEX || []; };
   const p = api.catalogIndex().then(r => {
-    if (r && r.ok) { const pl = r.data.provider_labels || {}; _CATALOG_SIG = sig;
-      _CATALOG_INDEX = (r.data.items || []).map(it => { const disp = prettyCatLabel(it.id, "");
-        return { ...it, provider_label: pl[it.provider] || it.provider, disp,
-                 hay: (it.id + " " + catRawId(it.id) + " " + disp + " " + catDescOf(it.id)).toLowerCase() }; });
-      _CATALOG_BY_ID = Object.fromEntries(_CATALOG_INDEX.map(it => [it.id, it])); }
-    return _CATALOG_INDEX || [];
-  }).catch(() => []);
-  _CATALOG_TRY = { sig, at: now, p };
+    if (!(r && r.ok)) return forget();
+    const pl = r.data.provider_labels || {};
+    const idx = (r.data.items || []).map(it => { const disp = prettyCatLabel(it.id, "");
+      return { ...it, provider_label: pl[it.provider] || it.provider, disp,
+               hay: (it.id + " " + catRawId(it.id) + " " + disp + " " + catDescOf(it.id)).toLowerCase() }; });
+    if (_CATALOG_REQ.p === p) {                // a newer request superseded this one → it commits, not this
+      _CATALOG_INDEX = idx; _CATALOG_KEY = key;
+      _CATALOG_BY_ID = Object.fromEntries(idx.map(it => [it.id, it]));
+    }
+    return idx;
+  }).catch(forget);          // .catch, not a second .then argument: it must also catch a throw INSIDE the handler above
+  _CATALOG_REQ = { key, p };
   return p;
 }
 
@@ -1095,19 +1108,11 @@ export function NewBlockCatSheet({ existingIds, onCreate }) {
   <//>`;
 }
 
-// Searchable provider-catalog category picker — replaces the native <select> for routing rules. The
-// catalog holds ~3.5k categories (far too many for a dropdown), so this is a combobox: a button showing
-// the current label, opening a portal'd popover with a search box (filters the full index locally, by title/
-// id/description) plus the operator's own custom lists pinned on top. caps ({ip,host}) drive kernel greying —
-// a host-only category can't match by dest IP, so it's disabled (not hidden) in kernel mode with a note.
-// addMode: the picker becomes a multi-select "Add from catalog" affordance — it stays open on each pick,
-// shows a ✓ on already-added ids (from `selected`), and hides the Custom row, custom lists, and the 26
-// built-ins (those are managed by the checkboxes above it). Used by the Settings node-lens.
 /* Where a WIDE catalog popover goes. Rows carry a title, a description, sizes and caps, so it spans the
    container rather than the trigger — and the container is the nearest of the sheet body, a Settings card or
    a Settings pane. Anchoring to .card/.setpane alone walks straight past a modal to a card BEHIND it and
    lands the popover somewhere unrelated; nearest-ancestor-wins keeps Settings on exactly what it had.
-   Shared by the catalog browser (CatPicker addMode) and the rule field, so they open the same way. */
+   The rule field's dropdown opens here. */
 export function placeWide(el) {
   const r = el.getBoundingClientRect();
   const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
@@ -1116,138 +1121,6 @@ export function placeWide(el) {
   const flip = below < 360 && above > below;
   return { left: Math.round(br.left + pad), top: Math.round(flip ? r.top - 4 : r.bottom + 6),
     width: Math.round(br.width - pad * 2), flip, wide: true, maxh: Math.max(300, Math.round(flip ? above : below)) };
-}
-
-export function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange, onAdd, addMode, selected, triggerLabel, primary }) {
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(0);
-  const [cidx, setCidx] = useState(addMode ? _CATALOG_INDEX : null);   // the full catalog index (addMode only), loaded once
-  const [pos, setPos] = useState(null);
-  const ref = useRef(null), popRef = useRef(null), inRef = useRef(null), listRef = useRef(null);
-  const selSet = new Set(selected || []);
-  const curLabel = addMode ? (triggerLabel || T("Add from catalog"))
-    : value === "custom" ? T("Custom IPs / domains…")
-    : (SMART_CAT_LABEL[value] || (listTitle || {})[value] || (Store.catLabels || {})[value] || value || T("Choose a category…"));
-  const usable = caps => routeCapsUsable(mode, caps);   // shared routing rule: IP everywhere, domain needs a host layer (non-IP-only)
-  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
-    const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
-    if (addMode) { setPos(placeWide(el)); return; }   // the catalog browser spans its container, not its trigger
-    const flip = below < 300 && above > below;                 // not enough room under the trigger → open upward
-    setPos({ left: Math.round(r.left), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width),
-      flip, maxh: Math.max(200, Math.round(flip ? above : below)) }); };   // list caps to the space actually available
-  useEffect(() => {   // addMode: load the full index ONCE, then search/paginate locally (matches title + id + description)
-    if (open && addMode && !(cidx && cidx.length)) { let live = true; loadCatalogIndex().then(x => live && setCidx(x)); return () => { live = false; }; }
-  }, [open, addMode]);
-  useEffect(() => {   // position + outside-click/Esc/scroll handling while open
-    if (!open) return; place();
-    const onMove = () => place();
-    const onDoc = e => { const t = e.target; if (!((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)))) setOpen(false); };
-    const onKey = e => {
-      if (e.key === "Escape") { setOpen(false); ref.current && ref.current.focus(); return; }
-      // start typing anywhere while the dropdown is open (focus outside the box) → clear the box + focus it + start a
-      // FRESH search with the typed char, so you can search → select → search again without re-clicking the field.
-      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && inRef.current && document.activeElement !== inRef.current) {
-        e.preventDefault();
-        inRef.current.focus();
-        setQ(e.key); setPage(0);
-      }
-    };
-    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey); };
-  }, [open]);
-  // Focus-on-open is done via the input's ref-callback (fires exactly when the input MOUNTS — robust against the
-  // Portal render timing that made `[open]`/`[pos]` effects miss the very first open). `focusGuard` fires it once
-  // per open. Reset when the popover closes.
-  const focusGuard = useRef(false);
-  const sessionPicked = useRef(false);   // addMode: did the operator add/toggle anything this open session? (drives Enter-to-close)
-  useEffect(() => { if (!open) { focusGuard.current = false; sessionPicked.current = false; } }, [open]);
-  const pick = id => { if (addMode) sessionPicked.current = true; onChange(id); if (addMode) return; setOpen(false); setQ(""); setPage(0); };   // addMode stays open for multi-add
-  const capBadge = capBadges;   // shared Host-first renderer (defined near catLabelOf)
-  // addMode: filter the full index by title/id/description, sort by readable title, paginate 40/page locally.
-  const per = 50;
-  const goPage = (np, toTop) => { setPage(np); requestAnimationFrame(() => { const el = listRef.current; if (el) el.scrollTop = toTop ? 0 : el.scrollHeight; }); };
-  const _aq = q.trim().toLowerCase();
-  // Curated "Recommended presets" — pinned above the provider catalog, always shown in full (only ~26).
-  const _curatedAll = addMode ? SMART_CATEGORIES().filter(([id]) => id !== "all")
-    .map(([id, label]) => ({ id, provider: "curated", provider_label: T("Curated"), caps: catCap(id), recommended: true, disp: label })) : [];
-  const curatedFiltered = _curatedAll.filter(it => !_aq || it.id.toLowerCase().includes(_aq)
-    || it.disp.toLowerCase().includes(_aq) || catDescOf(it.id).toLowerCase().includes(_aq))
-    .sort((a, b) => a.disp.toLowerCase().localeCompare(b.disp.toLowerCase()));
-  // `hay` and `disp` are precomputed in loadCatalogIndex — one substring scan per row, no relabelling per key.
-  const filtered = addMode && cidx ? cidx.filter(it => !_aq || it.hay.includes(_aq))
-    .sort((a, b) => a.disp.toLowerCase().localeCompare(b.disp.toLowerCase())) : [];
-  const total = filtered.length;
-  const pages = Math.max(1, Math.ceil(total / per));
-  const items = filtered.slice(page * per, (page + 1) * per);
-  const _matchTotal = curatedFiltered.length + total, _firstMatch = curatedFiltered[0] || items[0];
-  const lists = customLists || [];
-  // Routing picker (non-addMode): TWO sections — Provider lists (the node's opted-in provider-catalog cats, each
-  // source-tagged) and Custom lists (your own). Never the full catalog — filtered client-side; add more via Settings.
-  // A currently-selected LEGACY built-in (existing rule) is shown under Provider lists so it stays editable.
-  const _ql = q.trim().toLowerCase();
-  const _match = (id, label) => !_ql || String(label).toLowerCase().includes(_ql) || String(id).toLowerCase().includes(_ql);
-  const _provRows = (catalogCats || []).map(c => ({ id: c.id, label: c.title, caps: catCap(c.id), src: provLabelOf(c.id) }));
-  if (!addMode && value && !isProviderCat(value) && value !== "custom" && !lists.some(l => l.id === value) && !_provRows.some(r => r.id === value))
-    _provRows.push({ id: value, label: catLabelOf(value), caps: catCap(value), src: provLabelOf(value) || T("Curated") });   // keep a curated/legacy rule visible + editable, tagged by its provider
-  const localGroups = addMode ? [] : [
-    { grp: T("Provider lists"), rows: _provRows.filter(r => _match(r.id, r.label)).sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase())) },
-    { grp: T("Custom lists"), rows: lists.filter(l => _match(l.id, l.title)).map(l => ({ id: l.id, label: l.title, caps: customCaps(l), src: T("Custom"), list: l })).sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase())) },
-  ].filter(g => g.rows.length);
-  const localEmpty = !addMode && !localGroups.length && !!_ql;
-  return html`<div class=${"catpick" + (addMode ? " catpick-add" : "")} ref=${ref}>
-    ${addMode ? html`<button type="button" class=${(primary ? "btn btn-add" : "btn btn-mini") + (open ? " on" : "")} onClick=${() => setOpen(o => !o)}><${Ic} i="plus"/> ${curLabel}</button>`
-      : html`<button type="button" class=${"catpick-btn" + (open ? " on" : "")} onClick=${() => setOpen(o => !o)}>
-      <span class="catpick-lbl">${curLabel}</span><span class="catpick-caret">▾</span>
-    </button>`}
-    ${open && pos ? html`<${Portal}><div ref=${popRef} class=${"catpick-pop" + (pos.flip ? " flip" : "") + (pos.wide ? " wide" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;" + (pos.wide ? "width:" + pos.width + "px;" : "min-width:" + Math.max(pos.width, 320) + "px;") + "--catpick-maxh:" + (pos.maxh - 108) + "px"}>
-      <div class="catpick-search">
-        <${Ic} i="search"/>
-        <input ref=${el => { inRef.current = el; if (el && open && !focusGuard.current) { focusGuard.current = true; requestAnimationFrame(() => el.focus()); } }} type="text" placeholder=${addMode ? T("Search {v1} lists — name, country, service…", { v1: (cidx && cidx.length) || "" }) : T("Filter this node's lists…")} value=${q}
-          onInput=${e => { setQ(e.target.value); setPage(0); }} spellcheck="false" autocomplete="off"
-          onKeyDown=${e => { if (e.key === "Enter" && addMode && _matchTotal === 1 && _firstMatch) {   // ONLY when exactly one result:
-            e.preventDefault(); e.stopPropagation();
-            (onAdd || pick)(_firstMatch.id);   // add-only (never toggles off)
-            setOpen(false);
-          } /* any other case (0 or many results): Enter does nothing */ }}/>
-      </div>
-      <div class="catpick-list" ref=${listRef}>
-        ${!addMode ? html`
-          ${!_ql ? html`<button type="button" class=${"catpick-row" + (value === "custom" ? " sel" : "")} onClick=${() => pick("custom")}>
-            <span class="catpick-rlbl"><${Ic} i="pencil"/> ${T("Custom IPs / domains…")}</span></button>` : null}
-          ${localGroups.map(g => html`<div class="catpick-grp">${g.grp}</div>
-            ${g.rows.map(it => { const ok = it.caps ? usable(it.caps) : true; return html`<button type="button" disabled=${!ok}
-              class=${"catpick-row" + (value === it.id ? " sel" : "") + (ok ? "" : " off")} onClick=${() => ok && pick(it.id)}
-              title=${ok ? "" : T("Host-only list — switch this node to Force-DNS to use it")}>
-              <span class="catpick-rlbl">${it.label}${it.src ? html`<${ProvTag} id=${it.id} label=${it.src} plain=${it.legacy || !!it.list}/>` : null}</span>
-              ${/* A curated preset is a first-class provider ("Curated") but keeps a BARE id, so isProviderCat()
-                    alone hid its size: the panel ships cat_sizes for curated cats too (they resolve on the panel,
-                    same as provider lists), the row just never asked for it. */
-                it.caps ? capBadge(it.caps) : null}${it.list ? html`<${ListInfo} list=${it.list}/>` : ((isProviderCat(it.id) || isCuratedCat(it.id)) ? html`<${ListInfo} cat=${it.id}/>` : null)}
-              ${isProviderCat(it.id) && catListUrl(it.id, it.caps) ? html`<a class="catrow-info" href=${catListUrl(it.id, it.caps)} target="_blank" rel="noopener" title=${T("View this list on GitHub")} onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>`
-                : (!isProviderCat(it.id) && catDescOf(it.id)) ? html`<${DescInfo} text=${catDescOf(it.id)}/>` : null}</button>`; })}`)}
-          ${localEmpty ? html`<div class="catpick-empty">${T("No list on this node matches “{q}”. Add more in Settings → Routing lists.", { q })}</div>` : null}
-        ` : html`
-          ${page === 0 && curatedFiltered.length ? html`<div class="catpick-grp">${T("Recommended presets")}</div>
-            ${curatedFiltered.map(it => html`<${CatalogRow} key=${it.id} it=${it} added=${selSet.has(it.id)} onPick=${pick}/>`)}` : null}
-          ${total ? html`<div class="catpick-grp">${T("Provider catalog")}</div>
-            ${items.map(it => html`<${CatalogRow} key=${it.id} it=${it} added=${selSet.has(it.id)} onPick=${pick}/>`)}` : null}
-          ${cidx == null && !curatedFiltered.length ? html`<div class="catpick-empty">${T("Loading catalog…")}</div>`
-            : _matchTotal === 0 ? html`<div class="catpick-empty">${T("No list matches “{q}”.", { q })}${cidx && cidx.length === 0 ? html`<br/><span class="faint">${T("Enable a provider in Settings → Geo data providers to search its catalog.")}</span>` : ""}</div>` : null}
-        `}
-      </div>
-      ${mode === "kernel" ? html`<div class="catpick-note">${Trich("Greyed lists match by *domain* only — this node is *IP-only* (no host layer). Switch it to Force-DNS or SNI to use them.")}</div>` : null}
-      ${addMode && total > per ? html`<div class="catpick-foot">
-        <span class="catpick-count">${page * per + 1}–${Math.min(total, (page + 1) * per)} of ${total}</span>
-        <span class="grow"></span>
-        <div class="catpick-nav">
-          <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => goPage(Math.max(0, page - 1), false)}>${T("‹ Prev")}</button>
-          <button type="button" class="btn btn-mini" disabled=${page >= pages - 1} onClick=${() => goPage(Math.min(pages - 1, page + 1), true)}>${T("Next ›")}</button>
-        </div>
-      </div>` : null}
-    </div><//>` : null}
-  </div>`;
 }
 
 /* ── the rule builder's field: one place to say everything a row sends somewhere ────────────────────────
@@ -1549,7 +1422,7 @@ const BADGE_CAP = 10;
 // IN rather than the foot going OUT. The alternative was `display:contents` on `.tfield` to flatten it into
 // the row's grid, which would have zeroed the very box the popover measures itself against.
 /* `listEditor` — this field is editing a LIST's contents, not a rule. One context flag rather than three
-   behaviour flags (`addMode` on CatPicker is the same shape): a caller cannot combine them wrongly, and
+   behaviour flags: a caller cannot combine them wrongly, and
    everything it switches follows from the one fact. It was briefly called `noLists`, which named one of the
    four things it does and left the other three — the copy, the toggle's placement, the absent catalog —
    reading as unrelated.
@@ -1787,9 +1660,11 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
     setSay(T("Removed {v1}", { v1: catLabelOf(id) }));
     if (inRef.current) inRef.current.focus(); };
 
-  // `!(cidx && cidx.length)` — an empty index means "nothing was enabled when we asked", not "asked and
-  // there is nothing", so opening the dropdown after switching a provider on has to ask again.
-  useEffect(() => { if (open && !(cidx && cidx.length)) { let live = true; loadCatalogIndex().then(x => live && setCidx(x)); return () => { live = false; }; } }, [open, cidx]);
+  // Asked on every open and whenever catalogKey() moves; whether the held index is still good is loadCatalogIndex's
+  // call, never this field's. Gating on what `cidx` held is how a provider switched on stayed invisible until a
+  // reload. Not keyed on `cidx` either: an empty answer would then re-run this on every render.
+  const ckey = catalogKey();
+  useEffect(() => { if (open) { let live = true; loadCatalogIndex().then(x => live && setCidx(x)); return () => { live = false; }; } }, [open, ckey]);
   const place = () => { const el = ref.current; if (!el) return; setPos(placeWide(el)); };
   useEffect(() => {
     if (!open) return; place();
@@ -1817,7 +1692,25 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
     .map(l => ({ id: l.id, provider: "custom", provider_label: T("Custom"), caps: customCaps(l),
                  disp: l.title || l.id, label: l.title || l.id, list: l }))
     .sort((a, b) => a.disp.toLowerCase().localeCompare(b.disp.toLowerCase()));
-  const _cat = (ql.length >= 2 && cidx) ? cidx.filter(it => it.hay.includes(ql)).sort((a, b) => a.disp.localeCompare(b.disp)) : [];
+  const _hits = (ql.length >= 2 && cidx) ? cidx.filter(it => it.hay.includes(ql)).sort((a, b) => a.disp.localeCompare(b.disp)) : [];
+  // A PROVIDER IS FOUND BY ITS NAME, AFTER THE ORDINARY MATCHES (docs/CATALOG-FRESHNESS-PLAN.md D3). Only when the
+  // query is the START of an enabled provider's name — 3+ characters, case and punctuation ignored, so "re-filter",
+  // "refilter" and "Re:filter" all work — and then only its lists the query did not already match, under their own
+  // heading. The name is never put into `hay`: there, "matrix" returned all 668 blackmatrix7 lists and "fly" all
+  // 1,539 of v2fly's, sorted around the one list that was wanted. Provider ids are not matched at all — two letters
+  // ("rf", "mc") would hit nearly every query.
+  // A star means a PATTERN is being written, not a search (the empty-state note below says the same): `*meta*` must not
+  // append all 1,796 MetaCubeX lists.
+  const _qn = ql.replace(/[^a-z0-9]/g, "");
+  const _provHit = _qn.length >= 3 && !q.includes("*") ? (Store.catalogProviders || []).filter(p => !p.builtin && p.enabled
+    && String(p.label || "").toLowerCase().replace(/[^a-z0-9]/g, "").startsWith(_qn)) : [];
+  const _provGroups = _provHit.map(p => ({ p, all: (cidx || []).filter(it => it.provider === p.id) }));
+  const _hitIds = new Set(_hits.map(it => it.id));
+  const _cat = _hits.concat(..._provGroups.map(g => g.all.filter(it => !_hitIds.has(it.id))
+    .sort((a, b) => a.disp.localeCompare(b.disp)).map(it => ({ ...it, grpProv: g.p.label }))));
+  // Matched by name but nothing of it in the index yet: say why, rather than "No list matches". A failed fetch in the full
+  // rebuild leaves the status `uptodate` and says so only in `error` — that is a failure too.
+  const _provWait = _provGroups.filter(g => !g.all.length && (g.p.status === "downloading" || g.p.status === "failed" || g.p.error)).map(g => g.p);
   const catPage = _cat.slice(page * per, (page + 1) * per);
   const pages = Math.max(1, Math.ceil(_cat.length / per));
   const has = id => badges.some(b => b.t === "list" && b.id === id);
@@ -1846,7 +1739,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   if (!listEditor) {                      // a list cannot hold a list, so it is not offered one
     _curated.forEach(it => rows.push({ k: "list", it, grp: T("Recommended presets") }));
     _mine.forEach(it => rows.push({ k: "list", it, grp: T("Your lists") }));
-    catPage.forEach(it => rows.push({ k: "list", it, grp: T("Provider catalog") }));
+    catPage.forEach(it => rows.push({ k: "list", it, grp: it.grpProv ? T("Lists from {v1}", { v1: it.grpProv }) : T("Provider catalog") }));
   }
   const activeRow = rows[Math.min(act, rows.length - 1)];
   /* ONE RESULT IS NOT A CHOICE. Narrow the search to a single row and there is nothing left to choose
@@ -2221,7 +2114,10 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
         ${/* All three report on a CATALOG SEARCH. A custom list has no catalog, so "nothing matches" is an
               answer to a question nobody asked — and the operator reads it as their own address being
               rejected, which is the opposite of what it means. */""}
-        ${!listEditor && ql.length >= 2 && !q.includes("*") && !_cat.length && cidx ? html`<div class="catpick-empty">${T("No list matches “{q}”.", { q })}</div>` : null}
+        ${!listEditor ? _provWait.map(p => html`<div class="catpick-empty">${p.status === "downloading"
+            ? T("{v1} is still downloading its list catalog — its lists appear here when it finishes.", { v1: p.label })
+            : T("{v1} could not download its list catalog — retry it in Settings ▸ Geo data providers.", { v1: p.label })}</div>`) : null}
+        ${!listEditor && ql.length >= 2 && !q.includes("*") && !_cat.length && !_provWait.length && cidx ? html`<div class="catpick-empty">${T("No list matches “{q}”.", { q })}</div>` : null}
         ${!listEditor && ql.length === 1 ? html`<div class="catpick-empty">${T("Keep typing to search the provider catalog.")}</div>` : null}
         ${!listEditor && !rows.length && !ql ? html`<div class="catpick-empty">${T("Type a service name, an address, an IP range or an AS number.")}</div>` : null}
       </div>

@@ -259,7 +259,7 @@ export const STR = {
     "Движок этой ноды пока не маршрутизирует такие адреса — а «{v1}» умеет.",
   "Switched off for this node in Settings ▸ Routing lists.": "Отключён для этой ноды в «Настройки ▸ Списки маршрутизации».",
   "This list's provider is switched off — turn it back on in Settings ▸ Geo data providers.":
-    "Источник этого списка выключен — включите его в «Настройки ▸ Источники geo-данных».",
+    "Источник этого списка выключен — включите его в «Настройки ▸ Провайдеры гео-данных».",
   "Stored and matched as {v1}.": "Хранится и сопоставляется как {v1}.",
   "{v1} matches by IP only — this needs a host layer.": "{v1} сопоставляет только по IP — здесь нужен слой доменов.",
   "{v1} only asks whether some text appears somewhere in a name — it never learns WHERE, so it can't anchor to a beginning, an ending or a label.": "{v1} лишь проверяет, встречается ли текст где-то в имени, и не узнаёт ГДЕ, — поэтому не может привязаться ни к началу, ни к окончанию, ни к части имени.",
@@ -2189,14 +2189,16 @@ export const STR = {
   "Add lists next — the category matches by domain or IP depending on the lists you pick.":
     "Дальше добавьте списки — категория совпадает по домену или по IP в зависимости от выбранных списков.",
   "A category with that name already exists.": "Категория с таким именем уже есть.",
-  "Custom IPs / domains…": "Свои IP / домены…",
   "Recommended presets": "Рекомендуемые наборы",
   "Provider catalog": "Каталог провайдера",
-  "Loading catalog…": "Загружаю каталог…",
-  "Enable a provider in Settings → Geo data providers to search its catalog.":
-    "Включите провайдера в «Настройки → Провайдеры гео-данных», чтобы искать по его каталогу.",
-  "Greyed lists match by *domain* only — this node is *IP-only* (no host layer). Switch it to Force-DNS or SNI to use them.":
-    "Серые списки совпадают только по *домену* — эта нода работает *только по IP* (без слоя хостов). Переключите её на Force-DNS или SNI, чтобы ими пользоваться.",
+  "Lists from {v1}": "Списки {v1}",
+  "{v1} is still downloading its list catalog — its lists appear here when it finishes.": "{v1} ещё загружает каталог списков — они появятся здесь, когда загрузка закончится.",
+  "{v1} could not download its list catalog — retry it in Settings ▸ Geo data providers.": "Не удалось загрузить каталог списков {v1} — повторите в «Настройки ▸ Провайдеры гео-данных».",
+  "Domains blocked in Russia — the RKN registry, filtered": "Домены, заблокированные в России, — реестр РКН после фильтрации",
+  "IP addresses blocked in Russia, merged into ranges": "IP-адреса, заблокированные в России, в виде диапазонов",
+  "Community list: sites RKN does not block that refuse visitors from Russia": "Список сообщества: сайты, которые РКН не блокирует, но которые не пускают посетителей из России",
+  "Community list: networks RKN does not block that refuse addresses from Russia": "Список сообщества: сети, которые РКН не блокирует, но которые не пускают адреса из России",
+  "Discord's networks": "Сети Discord",
   // budget-ok: toast, wraps
 
   // Routing rules
@@ -3652,8 +3654,6 @@ export const STR = {
   "Which {v1} proxy": "Какой прокси {v1}",
   "Not available with {v1}": "Не работает с {v1}",
   // budget-ok: empty-state prose in its own block — it wraps, nothing beside it to overlap
-  "No list on this node matches “{q}”. Add more in Settings → Routing lists.":
-    "На этой ноде нет списков по запросу «{q}». Добавьте их в «Настройках → Списки маршрутизации».",
   "{v1} on this node": "{v1} на этой ноде",
   "the node is creating it…": "нода создаёт его…",
   "the node is adding it…": "нода добавляет его…",
@@ -3933,10 +3933,6 @@ export const STR = {
   "Matched by domain name.": "По имени домена.",
   "No lists match.": "Списков не нашлось.",
   "Every available list is already added.": "Все доступные списки уже добавлены.",
-  "Add from catalog": "Добавить из каталога",
-  "Filter this node's lists…": "Отбор среди списков ноды…",
-  "Host-only list — switch this node to Force-DNS to use it":
-    "Список только по доменам — переключите нода на Force-DNS",
   "Couldn't switch mode": "Не удалось сменить режим",
   "→ not found": "→ не найдено",
   "Auto (target node default)": "Авто (как на ноде назначения)",
@@ -4478,7 +4474,6 @@ export const STR = {
   "Disney+ streaming": "Стриминг Disney+",
   "VKontakte": "ВКонтакте",
   "Grok (xAI) — grok.com & x.ai": "Grok (xAI) — grok.com и x.ai",
-  "Choose a category…": "Выберите категорию…",
   "val|Auto": "Авто",                  // the egress-IP picker's "no explicit IP" option
 
   // the protection tiles and their popover header
@@ -4708,7 +4703,6 @@ export const STR = {
   "IP learning is {v1} · click to turn it {v2}": "Запоминание адресов: {v1} · нажмите, чтобы {v2}",
   "val|off": "выкл",
   "val|on": "вкл",
-  "Search {v1} lists — name, country, service…": "Поиск среди {v1} списков — имя, страна, сервис…",
   "resolving…": "определяем…",
   "→ {v1}": "→ {v1}",
   "Cascade — exits via {v1}": "Каскад — выход через {v1}",

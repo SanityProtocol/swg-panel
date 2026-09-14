@@ -310,6 +310,7 @@ export const Store = {
     this.catDomains = d.cat_domains || this.catDomains || {};   // curated domains per host category → hover tooltip
     this.catLabels = d.cat_labels || this.catLabels || {};   // custom_<hash> → custom-list title (for the destination bars)
     this.catalogProviders = d.catalog_providers || this.catalogProviders || [];   // Geo-data provider registry [{id,label,url,tiers,enabled,error}]
+    this.catalogGen = d.catalog_gen || "";   // moves whenever the panel's catalog index changes → loadCatalogIndex refetches exactly then
     this.catSizes = d.cat_sizes || this.catSizes || {};   // {cat:{ip,host}} resolved-list record counts → list-size display
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
