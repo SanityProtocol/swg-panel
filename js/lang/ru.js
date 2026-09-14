@@ -2225,6 +2225,9 @@ export const STR = {
   // A rule whose destination has been removed from the panel. «Указывает в никуда» is the plain reading of
   // a control that renders blank while a real choice sits in the store.
   "{v1} pointing nowhere": "указывают в никуда: {v1}",
+  "This node itself": "Сама эта нода",
+  "This interface is set to forward everything to the node it is already on, which cannot work — the traffic would leave by this node's own address anyway. Choose another destination.":
+    "Этот интерфейс настроен пересылать всё на ту же ноду, на которой он и находится, а так не получится — трафик всё равно выйдет собственным адресом этой ноды. Выберите другое назначение.",
   "A node that is no longer here": "Ноды больше нет",
   "This interface forwards everything to a node that is not in this panel any more, so it routes nothing and its clients leave by this node's own address. Choose another destination.":
     "Этот интерфейс отправляет весь трафик на ноду, которой в панели больше нет, поэтому он не маршрутизирует ничего, и его клиенты выходят собственным адресом этой ноды. Выберите другое назначение.",
