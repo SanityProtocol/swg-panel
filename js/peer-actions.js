@@ -254,7 +254,10 @@ export function openRecreateRekey(node, iface, back) {
                 // `null` = the panel holds no opinion, so the sheet may use the fleet default. An empty
                 // LIST is an opinion ("no DNS line") and must reach the sheet as an empty field.
                 dns: Array.isArray(g.dns) ? g.dns.join(", ") : null,
-                keepalive: typeof g.keepalive === "number" ? g.keepalive : null };
+                keepalive: typeof g.keepalive === "number" ? g.keepalive : null,
+                // the device-access level, for the same reason: the sheet posts one unconditionally and create writes it
+                // onto the warm record, so an unseeded level resets a chosen Everyone or Nobody (DEVICE-ACCESS §11.2 F1)
+                reach: g.reach || null };
   const rekeyable = peers.filter(p => p.user_id).map(p => p.id);   // only ASSIGNED peers can be rekeyed (rekey needs a holder)
   // `warm` — the panel holds this interface's saved config, so the sheet is showing what it WAS rather than
   // what could be guessed from its peers. The notice says which, because "review the settings below" is only

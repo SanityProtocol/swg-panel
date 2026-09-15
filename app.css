@@ -3414,7 +3414,8 @@ a.tg:hover{filter:brightness(1.25)}
 .sharegrid-r .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--ink)}
 .sharegrid-r .datein{padding:4px 8px;font-size:12px;width:100%;box-sizing:border-box}
 .sharegrid-empty{padding:14px 12px;font-size:12.5px;color:var(--dim)}
-.netpager{margin-top:8px}
+.netpager{margin-top:8px;flex-wrap:wrap;row-gap:6px}
+.netpager .pager-info{white-space:nowrap}   /* at 400 px "1–15 из 40" broke into a column beside the buttons */
 @media (max-width:640px){.sharegrid-h{display:none}.sharegrid-r{grid-template-columns:minmax(0,1fr) auto 36px;padding:6px 8px 6px 12px}
   .sharegrid-r>span:nth-child(3){grid-column:1 / -1;order:4}}
 /* user groups (docs/GROUPS-PLAN.md G11): a group row in the People window, a group's members, the Users → Groups list, a user's chips */
@@ -3422,6 +3423,15 @@ a.tg:hover{filter:brightness(1.25)}
 .sharegrid-sub{font-weight:400;margin-left:8px;font-size:12px}
 .sharegrid-r.gone .nm{color:var(--dangling);font-weight:500;font-style:italic}
 .sharegrid-r .nm .tagchip{margin-left:8px;vertical-align:1px}
+/* DEVICE ACCESS §11.2 F6 — Settings → the interfaces set to Everyone: the share window's list look, one row per interface, each opening its editor */
+.reachev-filter{display:block;width:100%;max-width:280px;box-sizing:border-box;margin:10px 0 0}
+.reachev-list{border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;background:var(--surface-2);margin-top:10px}
+.reachev-row{display:flex;align-items:center;gap:10px;width:100%;min-height:42px;padding:0 12px;box-sizing:border-box;background:none;border:0;font:inherit;font-size:13px;color:var(--ink);text-align:left;cursor:pointer}
+.reachev-row+.reachev-row{border-top:1px solid var(--line)}
+.reachev-row:hover,.reachev-row:focus-visible{background:color-mix(in srgb,var(--brand) 7%,transparent)}
+.reachev-row .ifname{font-weight:600}
+.reachev-row .faint{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reachev-row svg{width:13px;height:13px;color:var(--dim);flex:none}
 .sharegrid.gmembers .sharegrid-r{grid-template-columns:minmax(0,1fr) 104px 36px}
 @media (max-width:640px){.sharegrid.gmembers .sharegrid-r{grid-template-columns:minmax(0,1fr) auto 36px}
   .sharegrid.gmembers .sharegrid-r>span:nth-child(3){grid-column:auto;order:0}}

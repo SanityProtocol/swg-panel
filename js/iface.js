@@ -988,7 +988,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   // the panel-wide default. The sheet posts all three unconditionally, so an unseeded field is not a blank
   // the server ignores, it is the default overwriting what the operator chose. See openRecreateRekey.
   const [dns, setDns] = useState(pre && pre.dns != null ? pre.dns : (_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String((pre && pre.mtu) || _idf.mtu || 1280)); const [ka, setKa] = useState(String(pre && pre.keepalive != null ? pre.keepalive : (_idf.keepalive || 25)));
-  const [reach, setReach] = useState(_idf.reach || "user");   // device access (§10.6): preselected from the panel-wide default
+  const [reach, setReach] = useState((pre && pre.reach) || _idf.reach || "user");   // device access (§10.6): a recreate keeps the level it had (§11.2 F1); a fresh create takes the panel-wide default
   const [conf, setConf] = useState("");
   const ips = ipChoices(nrec);
   // No creation seed: a new interface starts on AUTO and INHERITS the node's default exit live, exactly as
@@ -1214,7 +1214,9 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         open=${disc.routing} onToggle=${() => tog("routing")}>
         <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
       <//>` : null}
-      <${ReachField} value=${reach} onChange=${setReach} create=${true}/>
+      <${ReachField} value=${reach} onChange=${setReach} create=${true}
+        unvouched=${/* the build a create installs, as the catalog vouches for it (§11.2 F4) */ isWdtt ? !(_wdttForks.find(f => f.id === fork) || {}).reach_vouched
+          : isCsqtt ? !(_csqttForks.find(f => f.id === cfork) || {}).reach_vouched : false}/>
       <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
         summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
         open=${disc.filters} onToggle=${() => tog("filters")}>

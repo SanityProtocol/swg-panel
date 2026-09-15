@@ -32,6 +32,7 @@ import {
   goSettings, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
   useHostOnNode,
   exitRefusalText,
+  ListPager, LIST_PAGE, pageSlice,
 } from "./ui.js";
 import {
   AWG_ORDER,
@@ -2790,16 +2791,15 @@ const sectionLabel = k => ({
             <div class="field"><label>${T("Persistent keepalive (s)")}</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div></div>
           ${(() => {
             // DEVICE ACCESS §10.6 — preselects the level on the create sheet; it never changes an existing interface, and says so
-            // with the number that answers "what did I just not change?".
+            // with the number that answers "what did I just not change?" — and the way to those interfaces (§6, §11.2 F6).
             const label = T("Who can open connections to devices on new interfaces");
-            const everyone = (Store.nodes || []).reduce((a, nd) => a
-              + Object.values(Store.describe[nd.id] || {}).filter(mm => mm && !mm.system && mm.reach === "everyone").length
-              + Object.values(nd.wdtt_cfg || {}).filter(c => c && c.reach === "everyone").length
-              + Object.values(nd.csqtt_cfg || {}).filter(c => c && c.reach === "everyone").length, 0);
+            const everyone = reachEveryoneRows().length;
             return html`<div class="field reachfield"><label>${label}</label>
               <div class="dpsw netsw-share" role="radiogroup" aria-label=${label}>${[["everyone", T("Everyone on this node")], ["user", T("Same user and their groups")], ["none", T("Nobody")]].map(([mv, l]) => html`<button type="button" role="radio"
                 aria-checked=${reachDef === mv} class=${reachDef === mv ? "on" : ""} onClick=${() => setReachDef(mv)}>${l}</button>`)}</div>
-              <div class="hint">${T("Applies to interfaces created from now on. Interfaces set to Everyone on this node today: {n}.", { n: everyone })}</div></div>`;
+              <div class="hint">${T("Applies to interfaces created from now on.")} ${everyone
+                ? html`<button type="button" class="linkbtn" onClick=${() => openModal(html`<${ReachEveryoneSheet}/>`)}>${T("Existing interfaces set to “Everyone on this node”: {n}", { n: everyone })}</button>`
+                : T("No existing interface is set to “Everyone on this node”.")}</div></div>`;
           })()}
             <${Disclosure} title=${T("AmneziaWG obfuscation")}
               summary=${AWG_KEYS.some(k => String(awgDef[k] ?? "").trim() !== "") ? T("settings|customised") : T("settings|built-in")}
@@ -3014,6 +3014,39 @@ const sectionLabel = k => ({
    state: the header reads "New list" over the previous list's name and badges. Not reachable while the
    overlay covers the page, which is why it survives; keyed anyway, because "unreachable today" is a
    property of the modal host, not of this component. */
+// DEVICE ACCESS §6 / §11.2 F6 — which existing interfaces are set to Everyone. ONE reader for the Settings count and the window
+// behind it, so the number and the rows cannot disagree: wg/awg levels from the published interface meta, WDTT and csqtt from
+// their instance records.
+export function reachEveryoneRows() {
+  const out = [];
+  for (const nd of (Store.nodes || [])) {
+    for (const [ifn, mm] of Object.entries(Store.describe[nd.id] || {})) if (mm && !mm.system && mm.reach === "everyone") out.push({ node: nd.id, iface: ifn });
+    for (const [ifn, c] of Object.entries(nd.wdtt_cfg || {})) if (c && c.reach === "everyone") out.push({ node: nd.id, iface: ifn });
+    for (const [ifn, c] of Object.entries(nd.csqtt_cfg || {})) if (c && c.reach === "everyone") out.push({ node: nd.id, iface: ifn });
+  }
+  return out.sort((a, b) => Store.byNode(a.node, b.node) || a.iface.localeCompare(b.iface));   // the fleet's own order, never alphabetical (node_order_selftest)
+}
+// The window reads the same with 2 rows or 200: a filter once it pages, 15 rows a page, each row opening that interface's own
+// editor (`openIfaceEditor` picks the WG, WDTT or csqtt sheet). Nothing here is saved, so typing in the filter guards nothing.
+function ReachEveryoneSheet() {
+  useStore();
+  const [q, setQ] = useState(""), [page, setPage] = useState(1);
+  const all = reachEveryoneRows(), ql = q.trim().toLowerCase();
+  const rows = ql ? all.filter(r => (Store.nodeName(r.node) + " " + r.iface).toLowerCase().includes(ql)) : all;
+  const pg = Math.min(page, Math.max(1, Math.ceil(rows.length / LIST_PAGE)));
+  return html`<${Sheet} title=${T("Interfaces set to “Everyone on this node”")} width=${560} noGuard=${true}
+    foot=${html`<span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}>
+    <div class="hint">${T("Any device on the node can open connections to devices on these interfaces. Open one to change its level.")}</div>
+    ${all.length > LIST_PAGE ? html`<input class="reachev-filter" value=${q} data-enter="self" placeholder=${T("Filter by node or interface…")}
+      aria-label=${T("Filter by node or interface…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
+    ${rows.length ? html`<div class="reachev-list">${pageSlice(rows, pg).map(r => html`<button type="button" class="reachev-row" key=${r.node + "/" + r.iface}
+        title=${T("Edit interface · {v1}", { v1: r.iface })} onClick=${() => openIfaceEditor(r.node, r.iface)}>
+        <span class="ifname">${r.iface}</span><span class="faint">${Store.nodeName(r.node)}</span><span class="grow"></span><${Ic} i="pencil"/></button>`)}</div>`
+      : html`<div class="hint">${all.length ? T("No interface matches “{q}”.", { q }) : T("No existing interface is set to “Everyone on this node”.")}</div>`}
+    <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>
+  <//>`;
+}
+
 export function CustomListSheet({ list, onSave, onClose }) {
   const [title, setTitle] = useState(list?.title || "");
   // customTargets, not a second copy of it. This said `domains + cidrs` and left `asns` out, which would

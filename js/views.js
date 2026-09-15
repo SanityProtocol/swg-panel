@@ -36,18 +36,31 @@ const html = htm.bind(h);
 // the node's own word (snapshot `dev_reach`), never the panel's guess. Lives here because the interface sheets (iface.js)
 // and the WDTT/csqtt sheets (turn.js) both render it, and iface.js already imports turn.js.
 export const reachOpts = () => [["everyone", T("Everyone on this node")], ["user", T("Same user and their groups")], ["none", T("Nobody")]];
-export function ReachField({ node, iface, value, onChange, create, unvouched }) {
+// Why the node left a listed interface out of its table (snapshot `dev_reach.skipped`, §11.2 F2) — the node's own word, so
+// "not enforced" is never the panel's guess. Shared with the interface card's chip (screen-nodes.js `reachChip`).
+export const reachSkipText = (nname, why) => why === "overlap"
+  ? T("Not enforced on {node} — this interface's subnet overlaps another interface's.", { node: nname })
+  : why === "no_address" ? T("Not enforced on {node} — the node can't read this interface's address.", { node: nname })
+  : why === "not_here" ? T("Not enforced on {node} — the node doesn't run this interface.", { node: nname })
+  : T("Not enforced on {node}.", { node: nname });
+// A reload the node's nft refused leaves its PREVIOUS table in force (one transaction, §11.2 F3): not open, but not this setting.
+export const reachStaleText = (nname, st) => T("Couldn't apply the latest change on {node}: {detail}. The previous rules stay in force.",
+  { node: nname, detail: st.detail || st.why || "" });
+export function ReachField({ node, iface, value, onChange, create, unvouched, unvouchedRaw }) {
   const label = T("Who can open connections to devices here");
   const snap = node ? (Store.stats[node] || {}) : {};
   const st = snap.dev_reach;
   const nname = node ? Store.nodeName(node) : "";
   const mine = !!(st && (st.ifaces || []).includes(iface));
+  const skipped = st && st.skipped ? st.skipped[iface] : null;
   const when = s => { try { return new Date(s * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
   let status = null;
   // Only a node reporting now is believed: a stale snapshot says nothing about what is in force.
   if (!create && node && value !== "everyone" && Store.recon.nodeStatus[node] === "live") {
     if (!(snap.net_deps || {}).reach) status = html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Not enforced on {node} — it runs an older version. Update it.", { node: nname })}</span></div>`;
+    else if (st && st.ok === false && st.stale) status = html`<div class="formmsg err">${reachStaleText(nname, st)}</div>`;
     else if (st && st.ok === false && mine) status = html`<div class="formmsg err">${T("Couldn't apply on {node}: {detail}", { node: nname, detail: st.detail || st.why || "" })}</div>`;
+    else if (skipped) status = html`<div class="notice warn"><${Ic} i="warn"/><span>${reachSkipText(nname, skipped)}</span></div>`;
     else if (st && st.ok && mine) status = html`<div class="hint">${T("Packets to devices here stopped since {when}: {n}", { when: when(st.since), n: (st.blocked || {})[iface] || 0 })}</div>`;
     else status = html`<div class="hint">${T("Applies on {node}'s next sync.", { node: nname })}</div>`;
   }
@@ -61,6 +74,7 @@ export function ReachField({ node, iface, value, onChange, create, unvouched }) 
       ? T("No other device can open connections to devices here; their own connections still work. Internet access and networks behind devices are not affected.")
       : T("A device here can be reached by its user's other devices on this node and by users who share a group with them. Internet access and networks behind devices are not affected.")}</div>
     ${unvouched && value === "user" ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This server build can't prove which user a device belongs to, so no other device can reach any device here.")}</span></div>` : null}
+    ${unvouchedRaw && !unvouched && value === "user" ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This server build can't prove which user a device connected over RAW belongs to, so no other device can reach those devices.")}</span></div>` : null}
     ${status}
   </div>`;
 }

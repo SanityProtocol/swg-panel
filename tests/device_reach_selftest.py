@@ -32,12 +32,18 @@ table, `swg_reach`, whose map covers each protected subnet whole — listed devi
       keeps it; the interface meta, `wdtt_cfg` and `csqtt_cfg` publish it; the node's WDTT/csqtt replies never carry it;
       `interface_defaults.reach` defaults to "user" and survives a settings save that does not name it.
  [11] the sync reply names `dev_reach` once, behind that result, and the networks are computed once for both passes.
+ [12] P2 fixes (docs/DEVICE-ACCESS-PLAN.md §11.2): F1 a lost interface hands the recreate sheet its level · F2 the node says why
+      a listed interface is not in its table, also when it holds no table · F3 a refused RELOAD keeps counting the previous
+      table and says stale, a refused FIRST load stays open · F4 unvouched builds per path · F5 the pass after both mirrors ·
+      F7 no peer-to-peer claim for a device deployed nowhere.
 
 Hermetic. Run: python3 tests/device_reach_selftest.py            (0 = pass)
      --perturb         maps only the listed devices (no "rest is Nobody") and expects RED on [1].
      --perturb-reply   drops the reply exemption from every chain and expects RED on [2].
      --perturb-hold    forgets the last subnet on a failed read and expects RED on [7].
      --perturb-groups  forgets every group when planning and expects RED on [9].
+     --perturb-skipped forgets why interfaces were left out and expects RED on [12] F2.
+     --perturb-stale   hides the previous table from a refused reload and expects RED on [12] F3.
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, sys, tempfile
 
@@ -49,6 +55,8 @@ PERTURB = "--perturb" in sys.argv
 PERTURB_REPLY = "--perturb-reply" in sys.argv
 PERTURB_HOLD = "--perturb-hold" in sys.argv
 PERTURB_GROUPS = "--perturb-groups" in sys.argv
+PERTURB_SKIPPED = "--perturb-skipped" in sys.argv
+PERTURB_STALE = "--perturb-stale" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -82,6 +90,23 @@ if PERTURB_HOLD:
         N._REACH["seen"] = {}
         return _rd(cfg, names)
     N._reach_devices = _forget
+if PERTURB_SKIPPED:
+    _rp2 = N._reach_plan
+    def _no_why(cfg, wire):
+        p = _rp2(cfg, wire)
+        N._REACH["skipped"] = {}
+        return p
+    N._reach_plan = _no_why
+if PERTURB_STALE:
+    _rc = N.reconcile_dev_reach
+    def _blind(cfg, wire, r):
+        _rrc = N._reach_read_counters
+        N._reach_read_counters = lambda: None
+        try:
+            return _rc(cfg, wire, r)
+        finally:
+            N._reach_read_counters = _rrc
+    N.reconcile_dev_reach = _blind
 
 TMP = tempfile.mkdtemp(prefix="devreach-")
 def conf(name, addr):
@@ -96,7 +121,8 @@ N._wdtt_load = lambda: {"wdtt1": {"iface": "wdtt1", "wg_addr": "10.77.0.1/24", "
 N._csqtt_load = lambda: {"csqtt1": {"iface": "csqtt1", "tun_addr": "10.66.67.1/24"}}
 
 def fresh():
-    N._REACH.update(probed=False, installed=False, sig=None, plan=None, status=None, seen={}, loaded=[], base={}, live={}, since=0)
+    N._REACH.update(probed=False, installed=False, sig=None, plan=None, status=None, seen={}, loaded=[], base={}, live={}, since=0,
+                    skipped={}, stale=None)
 
 class Nft:
     """The kernel as `run` sees it: a table there or not, its named counters, and whether the next load is refused."""
@@ -406,6 +432,100 @@ check("the networks are computed once for both passes, only when one needs them"
       _handler.count("node_networks(") == 1
       and '_carry = node_networks(roster, nid, snap)["carry"] if (_share_any or (_routes_any and _dr_on)) else {}' in _handler
       and "net_share_for_node(roster, nid, _carry, snap)" in _handler, (_h0, _h1))
+
+print("\n[12] P2 fixes (§11.2)")
+fresh(); K = Nft(); N.run = K
+N.reconcile_dev_reach(CFG, WIRE, res())
+_sk = (N._REACH["status"] or {}).get("skipped") or {}
+check("F2: the node says why a listed interface is not in its table — overlap, mesh, not run here",
+      _sk.get("wgover") == "overlap" and _sk.get("swg_x") == "mesh" and _sk.get("nope") == "not_here" and "wg0" not in _sk, _sk)
+CFG["interfaces"]["awg0"]["conf"] = os.path.join(TMP, "missing.conf")
+fresh(); K = Nft(); N.run = K
+N.reconcile_dev_reach(CFG, {"ifaces": ["awg0"], "zones": []}, res())
+st = N._REACH["status"]
+check("F2: …and a reply none of whose interfaces could be protected still says so, with no table loaded",
+      bool(st) and st["ok"] is True and st["ifaces"] == [] and st.get("skipped") == {"awg0": "no_address"} and not K.loads, st)
+CFG["interfaces"]["awg0"]["conf"] = _saved
+N.reconcile_dev_reach(CFG, None, res())
+check("F2: …and no reply ⇒ no status at all (D1)", N._REACH["status"] is None, N._REACH["status"])
+
+fresh(); K = Nft(); N.run = K
+N.reconcile_dev_reach(CFG, WIRE, res())
+K.counters["c%d" % N._REACH["loaded"].index("wg0")] = 5
+K.refuse = True; r = res()
+N.reconcile_dev_reach(CFG, W2, r)
+st = N._REACH["status"]
+check("F3: a refused RELOAD says the latest change did not apply, and that the previous table holds",
+      bool(st) and st["ok"] is False and st.get("stale") is True and st.get("why") == "nft_failed" and bool(r["errors"]), st)
+check("F3: …still naming what that table enforces and what it stopped", bool(st) and st["ifaces"] == PLAN["ifaces"] and st.get("blocked", {}).get("wg0") == 5, st)
+if "wg0" in N._REACH["loaded"]:                 # absent only when the previous table was forgotten — the F3 defect itself
+    K.counters["c%d" % N._REACH["loaded"].index("wg0")] = 8
+N.dev_reach_verify(res())
+st = N._REACH["status"]
+check("F3: …the routing pass keeps counting that table and keeps saying stale", bool(st) and st.get("blocked", {}).get("wg0") == 8 and st.get("stale") is True, st)
+K.refuse = False
+N.reconcile_dev_reach(CFG, W2, res())
+st = N._REACH["status"]
+check("F3: …the retry loads, clears stale, and no count is lost or doubled",
+      bool(st) and st["ok"] is True and "stale" not in st and st.get("blocked", {}).get("wg0") == 8 and len(K.loads) == 2, (st, len(K.loads)))
+fresh(); K = Nft(); K.refuse = True; N.run = K
+N.reconcile_dev_reach(CFG, WIRE, res())
+check("F3: a refused FIRST load is still open and loud — never called stale",
+      N._REACH["status"]["ok"] is False and not N._REACH["status"].get("stale") and not N._REACH["installed"], N._REACH["status"])
+
+_mi = P._missing_ifaces({"ifaces": {"wgE": {"reach": "everyone", "_lastcfg": {"subnet": "10.10.0.0/24"}},
+                                    "wg0": {"_lastcfg": {"subnet": "10.8.0.0/24"}}}}, {"interfaces": {}}, None)
+check("F1: a lost interface hands the recreate sheet its level — absent said as 'user'",
+      _mi.get("wgE", {}).get("reach") == "everyone" and _mi.get("wg0", {}).get("reach") == "user", _mi)
+_rsnap = {"wdtt": [{"iface": "q1", "fork": "qwdtt", "version": "1.4.3", "raw_iface": "q1raw"},
+                   {"iface": "q2", "fork": "qwdtt", "version": "1.4.3", "raw_iface": ""},
+                   {"iface": "x1", "fork": "xxcipherx", "version": "2.0.0.70"}],
+          "csqtt": [{"iface": "c1", "version": "2.1.9"}]}
+_ur = P.reach_unvouched_report(_rsnap) if hasattr(P, "reach_unvouched_report") else None
+check("F4: unvouched per path — no path (xxcipherx, csqtt 2.1.9) vs only RAW (qWDTT 1.4.3 with RAW on); RAW off is not named",
+      _ur == (["c1", "x1"], ["q1"]), _ur)
+check("F4: the node list publishes both from that one helper",
+      '**dict(zip(("reach_unvouched", "reach_unvouched_raw"), reach_unvouched_report(snap))),' in _psrc)
+_i17 = _psrc.find('"Recorded an interface the node reports"')
+_i18 = _psrc.find('"Recorded a server the node runs"')
+_idr = _psrc.find("_dreach = dev_reach_for_node(")
+check("F5: the pass runs after the interface mirror AND the WDTT/csqtt mirror", 0 < _i17 < _idr and 0 < _i18 < _idr, (_i17, _i18, _idr))
+_js = {n: open(os.path.join(ROOT, "js", n), encoding="utf-8").read() for n in ("sheets-crud.js", "views.js", "screen-nodes.js")}
+check("F7: a device deployed nowhere gets no peer-to-peer claim", "(ts => ts.length > 0 && ts.every(t => {" in _js["sheets-crud.js"])
+check("F2/F3: the sheet and the card chip both read `skipped` and `stale`",
+      all("st.skipped[iface]" in _js[n] and "st.stale" in _js[n] for n in ("views.js", "screen-nodes.js")))
+_srv = [s for s in P.turn_catalog_view()["servers"] if s.get("kind") in ("wdtt", "csqtt")]
+check("F4: the catalog says whether the build a create installs is vouched — WDTT on its WG path, csqtt on RAW",
+      bool(_srv) and all(s.get("reach_vouched") is P.keyless_share_capable(s["id"], "wg" if s["kind"] == "wdtt" else "raw",
+                                                                         P._wdtt_current_version(s["id"]) if s["kind"] == "wdtt" else P._csqtt_current_version())
+                         for s in _srv), {s["id"]: s.get("reach_vouched") for s in _srv})
+_ifjs = open(os.path.join(ROOT, "js", "iface.js"), encoding="utf-8").read()
+check("F4: …and the create sheet warns from it for the chosen WDTT fork or csqtt build",
+      "create=${true}\n        unvouched=" in _ifjs and ".reach_vouched" in _ifjs)
+_setjs = open(os.path.join(ROOT, "js", "screen-settings.js"), encoding="utf-8").read()
+check("F6: the Settings count and the window behind it read ONE list, and the window pages",
+      "const everyone = reachEveryoneRows().length;" in _setjs and "pageSlice(rows, pg)" in _setjs and "<${ReachEveryoneSheet}/>" in _setjs)
+
+print("\n[12b] the fix pass's own review (§11.2 review)")
+fresh(); K = Nft(); K.refuse = True; N.run = K
+N.reconcile_dev_reach(CFG, WIRE, res())
+check("R3: a refused FIRST load still says why an interface was left out",
+      ((N._REACH["status"] or {}).get("skipped") or {}).get("wgover") == "overlap", N._REACH["status"])
+fresh(); K = Nft(table=True); K.refuse = True; N.run = K
+N.reconcile_dev_reach(CFG, WIRE, res())
+check("R4: a refused load over a table an EARLIER process left is stale — that table still holds — not open",
+      (N._REACH["status"] or {}).get("stale") is True and N._REACH["installed"] is True and K.table, N._REACH["status"])
+_g = P._ghost_ifaces({"ifaces": {"wgE": {"reach": "everyone"}, "wg0": {}}}, {"interfaces": {}},
+                     {"wgE": ["p1"], "wg0": ["p2"], "wgZ": ["p3"]}, True)
+check("R6: a cold ghost hands the recreate its level; with no record the panel-wide default stands",
+      _g.get("wgE", {}).get("reach") == "everyone" and _g.get("wg0", {}).get("reach") == "user" and "wgZ" in _g and "reach" not in _g["wgZ"], _g)
+check("R6: …and the cold path carries it to the sheet",
+      "subnet: null, reach: g.reach || null" in open(os.path.join(ROOT, "js", "model.js"), encoding="utf-8").read())
+_nodesjs = open(os.path.join(ROOT, "js", "screen-nodes.js"), encoding="utf-8").read()
+check("R1: the card chip says Nobody for an instance whose build can't prove ownership, and RAW in the hover",
+      "(nrec.reach_unvouched || []).includes(iface)" in _nodesjs and "(nrec.reach_unvouched_raw || []).includes(iface)" in _nodesjs
+      and 'lv === "none" || unv ?' in _nodesjs)
+check("R2: the Nodes notice counts a stale node's stopped packets", "st && (st.ok || st.stale) ?" in _nodesjs)
 
 shutil.rmtree(TMP2, ignore_errors=True)
 shutil.rmtree(TMP, ignore_errors=True)

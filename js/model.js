@@ -204,7 +204,7 @@ export function turnDown(tp) { return tp && tp.running === false; }
 export function ghostIface(node, iface) {
   const nr = (Store.nodes || []).find(n => n.id === node) || {};
   const g = (nr.ghost_ifaces || {})[iface];
-  if (g) return { cold: true, ripe: !!g.ripe, problemMs: g.problemMs || 0, subnet: null };
+  if (g) return { cold: true, ripe: !!g.ripe, problemMs: g.problemMs || 0, subnet: null, reach: g.reach || null };   // a cold record can still hold a chosen level (§11.2 review R6)
   const mi = (nr.missing_ifaces || {})[iface];
   // ⚠️ CARRY THE WHOLE SAVED CONFIG, NOT JUST THE SUBNET. A WARM ghost is an interface the panel still has
   // `_lastcfg` for — subnet, listen port, MTU and, decisively, its AmneziaWG parameters. Rebuilt here from a
@@ -226,7 +226,9 @@ export function ghostIface(node, iface) {
                                      // difference between "off" and "never set" before the sheet sees it.
                                      endpoint_host: mi.endpoint_host || "",
                                      dns: Array.isArray(mi.dns) ? mi.dns : null,
-                                     keepalive: typeof mi.keepalive === "number" ? mi.keepalive : null };
+                                     keepalive: typeof mi.keepalive === "number" ? mi.keepalive : null,
+                                     // the device-access level: a panel-owned setting like the three above (§11.2 F1)
+                                     reach: mi.reach || null };
   return null;
 }
 // the reconciled peers with a deployment on this (node, iface)

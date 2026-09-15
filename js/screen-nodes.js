@@ -29,7 +29,7 @@ import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, Rank
          RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, lossColor, histTime, ChartHover, IfaceThroughput,
          RANGE_CAP, lossColorMesh } from "./charts.js";
 import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsPop, LossPop, onlineUserRows, onlinePeerRows,
-         serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES } from "./views.js";
+         serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES, reachSkipText, reachStaleText } from "./views.js";
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
          openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet } from "./turn.js";
 import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
@@ -1002,13 +1002,27 @@ export function reachChip(node, iface, lv) {
   const snap = Store.stats[node] || {};
   const st = snap.dev_reach;
   const live = Store.recon.nodeStatus[node] === "live";
-  const off = live && lv !== "everyone" && !(snap.net_deps || {}).reach;
-  const failed = live && lv !== "everyone" && !!(st && st.ok === false && (st.ifaces || []).includes(iface));
-  if (off || failed) return html`<span class="egb egb-reach-bad" title=${off ? T("Not enforced on {node} — update it", { node: Store.nodeName(node) })
-    : T("Couldn't apply on {node}: {detail}", { node: Store.nodeName(node), detail: st.detail || st.why || "" })}><${Ic} i="warn"/>${T("reach|not enforced")}</span>`;
+  const guarded = live && lv !== "everyone";
+  const off = guarded && !(snap.net_deps || {}).reach;
+  // A refused reload keeps the previous table (§11.2 F3) — not open, not this setting: its own word, still red.
+  const stale = guarded && !off && !!(st && st.ok === false && st.stale);
+  const failed = guarded && !off && !stale && !!(st && st.ok === false && (st.ifaces || []).includes(iface));
+  // The node left this interface out of its table and said why (§11.2 F2): green would claim protection it does not have.
+  const skipped = guarded && !off && st && st.skipped ? st.skipped[iface] : null;
+  // A keyless build that can't prove a device's owner acts as Nobody at this level (A7): the chip says what is in force, not what
+  // is set (§11.2 review R1). A build that proves WG but not RAW keeps the level, and the hover says RAW.
+  const nrec = (Store.nodes || []).find(x => x.id === node) || {};
+  const unv = lv === "user" && (nrec.reach_unvouched || []).includes(iface);
+  const unvRaw = lv === "user" && !unv && (nrec.reach_unvouched_raw || []).includes(iface);
+  if (stale) return html`<span class="egb egb-reach-bad" title=${reachStaleText(Store.nodeName(node), st)}><${Ic} i="warn"/>${T("reach|not updated")}</span>`;
+  if (off || failed || skipped) return html`<span class="egb egb-reach-bad" title=${off ? T("Not enforced on {node} — update it", { node: Store.nodeName(node) })
+    : failed ? T("Couldn't apply on {node}: {detail}", { node: Store.nodeName(node), detail: st.detail || st.why || "" })
+    : reachSkipText(Store.nodeName(node), skipped)}><${Ic} i="warn"/>${T("reach|not enforced")}</span>`;
   return lv === "everyone" ? html`<span class="egb egb-reach-everyone" title=${T("Everyone on this node can open connections to devices here")}><${Ic} i="globe"/>${T("reach|everyone")}</span>`
-    : lv === "none" ? html`<span class="egb egb-reach-none" title=${T("Nobody can open connections to devices here")}><${Ic} i="stop"/>${T("reach|nobody")}</span>`
-    : html`<span class="egb egb-reach-user" title=${T("Only the same user's devices and their groups can open connections to devices here")}><${Ic} i="users"/>${T("reach|user + groups")}</span>`;
+    : lv === "none" || unv ? html`<span class="egb egb-reach-none" title=${unv ? T("This server build can't prove which user a device belongs to, so no other device can reach any device here.")
+      : T("Nobody can open connections to devices here")}><${Ic} i="stop"/>${T("reach|nobody")}</span>`
+    : html`<span class="egb egb-reach-user" title=${unvRaw ? T("This server build can't prove which user a device connected over RAW belongs to, so no other device can reach those devices.")
+      : T("Only the same user's devices and their groups can open connections to devices here")}><${Ic} i="users"/>${T("reach|user + groups")}</span>`;
 }
 // Shown while some interface in the fleet has stopped packets, until this browser dismisses it (a per-viewer convenience —
 // no server field). The history ("it used to be everyone") is the changelog's: a fresh install never had it (§10.8 Round 7).
@@ -1017,7 +1031,7 @@ let reachNoticeGone = (() => { try { return localStorage.getItem(REACH_NOTICE_KE
 function ReachNotice() {
   if (reachNoticeGone) return null;
   const n = (Store.nodes || []).reduce((a, nd) => { const st = (Store.stats[nd.id] || {}).dev_reach;
-    return a + (st && st.ok ? Object.values(st.blocked || {}).reduce((x, v) => x + (v || 0), 0) : 0); }, 0);
+    return a + (st && (st.ok || st.stale) ? Object.values(st.blocked || {}).reduce((x, v) => x + (v || 0), 0) : 0); }, 0);   // a stale table still stops packets (review R2)
   if (!n) return null;
   const dismiss = () => { reachNoticeGone = true; try { localStorage.setItem(REACH_NOTICE_KEY, "1"); } catch (_) { /* ignore */ } Store.apply(); };
   return html`<div class="notice reach-notice"><${Ic} i="info"/><span>${T("Devices now reach only their own user's devices and their groups' — {n} packets to other devices have been stopped. Put users who should reach each other in a group, or set an interface to Everyone.", { n })}</span>
