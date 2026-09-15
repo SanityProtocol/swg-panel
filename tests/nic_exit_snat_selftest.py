@@ -104,7 +104,7 @@ ex = [ln for ln in k.post if "swg-egress:exit:" in ln or "swg-devexit:" in ln]
 check("a SNAT is added for the exit's subnet out the NIC, not out the WAN",
       any("-s %s" % SUB in ln and "-o %s" % NIC in ln and "MASQUERADE" in ln for ln in ex), k.post)
 check("…tagged inside the swg-egress: namespace",
-      any('"swg-egress:exit:%s"' % SUB in ln for ln in ex), ex)
+      any('"swg-egress:exit:%s@%s"' % (SUB, NIC) in ln for ln in ex), ex)
 check("no errors from the pass", not res["errors"], res["errors"])
 
 print("\n[2] …and MASQUERADE is right here, unlike the unnumbered-device case the field exists for")

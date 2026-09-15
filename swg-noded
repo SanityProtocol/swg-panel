@@ -3233,7 +3233,23 @@ def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip="", dev
     want_dx = set()
     for e in _dx:
         S, dev = e["subnet"], e["dev"]
-        tag = "swg-egress:exit:" + S
+        # ⚠️ ONE RULE PER (SUBNET, DEVICE) — NOT PER SUBNET. A smart interface that sends two categories to two
+        # device exits hands us two entries with the SAME subnet. Keyed by subnet alone they shared one tag, and
+        # `_snat_reconcile_rule` keeps exactly one rule per tag, both compared against the list read at the top of
+        # this pass — so every pass rewrote the one rule to the other device, and the exit not holding it that
+        # minute sent its traffic out with the private 10.x source. Measured in a netns (two dummy exits, the
+        # real function, four passes): the rule alternated exA → exB → exA with one change a pass, and pings out
+        # the exit without it were not NATed at all. On swgt it was the steady `cascade~1` of every sync.
+        # The device is in the tag now, so both rules stand side by side (`-o` keeps them from matching the same
+        # packet), and a rule of the old shape is swept by the loop below — after the new ones are in.
+        # The device name also enters `iptables -S` output that the sweep re-runs through `sh`, so only a name
+        # the kernel could give an interface is used; anything else gets no rule and says so.
+        if not _WANIF_RE.match(str(dev or "")):
+            res["errors"].append("devexit snat " + S + ": refused device name " + repr(dev)[:40])
+            continue
+        tag = "swg-egress:exit:%s@%s" % (S, dev)
+        if tag in want_dx:
+            continue                          # one exit named twice (whole interface AND one rule): one rule
         want_dx.add(tag)
         # ⚠️ MASQUERADE IS NOT ALWAYS RIGHT HERE, and when it is wrong it is wrong SILENTLY. It asks the
         # kernel for the source of the route out `dev`. Measured in a netns:
