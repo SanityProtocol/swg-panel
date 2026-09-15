@@ -5760,6 +5760,48 @@ def reconcile_exits(desired, res):
     _EXITS["list"] = out
 
 
+def _cascade_local_routes(node_cfg, _proc="/proc/net/route"):
+    """[(subnet, dev)] — this node's OWN client subnets as `main` routes them right now: each client interface, each
+    WDTT instance and its RAW TUN, each csqtt instance. `reconcile_cascade` puts them beside the networks (§4.2) in
+    every table serving a client subnet.
+
+    ⚠️ WITHOUT THEM A NEIGHBOUR ON THE SAME NODE IS "THE INTERNET". `from S lookup T` holds `default dev <leg>` and
+    nothing else, so a forward-mode client's packet to another client of its own node went out the leg — the exit
+    node sent it back and it bounced until its TTL ran out (DEVICE-ACCESS P0 K5; the exit node refuses it since
+    e3b0d65). Every other interface reaches its neighbours through `main`; this gives forward ones the same.
+    Only a subnet `main` routes on that device now: a route to a device that is gone cannot be installed, and one
+    that fails every pass would read as drift for ever. Read from /proc, no fork."""
+    want = []
+    for ifn in sorted((node_cfg or {}).get("interfaces") or {}):
+        s = _iface_subnet(node_cfg, ifn)
+        if s and not _iface_is_mesh(node_cfg, ifn, s):
+            want.append((s, str(ifn)))
+    with contextlib.suppress(Exception):
+        for ifn, inst in sorted((_wdtt_load() or {}).items()):
+            want.append((_wdtt_subnet((inst or {}).get("wg_addr") or ""), str(ifn)))
+            raw = _wdtt_raw(inst)
+            if raw:
+                want.append((_wdtt_subnet(raw[2]), raw[1]))
+    with contextlib.suppress(Exception):
+        for ifn, inst in sorted((_csqtt_load() or {}).items()):
+            want.append((_csqtt_subnet((inst or {}).get("tun_addr") or ""), str(ifn)))
+    try:
+        with open(_proc) as f:
+            rows = f.read().splitlines()[1:]
+    except OSError:
+        return []
+    live = set()
+    for line in rows:
+        t = line.split()
+        if len(t) < 8:
+            continue
+        with contextlib.suppress(ValueError):
+            d, m = int(t[1], 16), int(t[7], 16)
+            live.add((t[0], "%d.%d.%d.%d/%d" % (d & 0xFF, (d >> 8) & 0xFF, (d >> 16) & 0xFF, (d >> 24) & 0xFF,
+                                                bin(m).count("1"))))
+    return sorted({(s, dev) for s, dev in want if s and (dev, s) in live})
+
+
 def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_conn=None, panel_cfg=None, nets=()):
     """Phase 2 cascade + Phase 3 smart routing. ENTRY (P2 forward): `ip rule from S lookup T`; ENTRY
     (P3 smart): nftables marks `ip saddr S ip daddr @<category> meta mark set T` then `ip rule fwmark T
@@ -5902,9 +5944,17 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # goes into every table that serves a client subnet, more specific than that table's default. A kill-switch
     # table too: a dead exit should fail the INTERNET closed, not the office LAN. Not `exit_` tables — those carry
     # other nodes' clients, and a network is reached from its own node (D12). Empty when there are none (D1).
-    _net_tables = sorted({str(e["table"]) for e in fwd + smart_exit} | {str(e["table"]) for e in _dxguard}) if nets else []
+    # The node's own client subnets go in beside them, for the same reason (`_cascade_local_routes`) — except one
+    # spelled like another node's exit subnet: an exit table can share a number with a smart one, and `replace`
+    # would take that route over.
+    _tbls = sorted({str(e["table"]) for e in fwd + smart_exit} | {str(e["table"]) for e in _dxguard})
+    _troutes = list(nets)
+    if _tbls:
+        _taken = {p for p, _ in _troutes} | {e["subnet"] for e in exit_}
+        _troutes += [(p, dev) for p, dev in _cascade_local_routes(node_cfg) if p not in _taken]
+    _net_tables = _tbls if _troutes else []
     want_sig = _cascade_want_sig(fwd, exit_, smart_exit, guard=_dxguard,
-                                 nets=nets, net_tables=_net_tables)   # only exit entries create fwmark→table policy routing
+                                 nets=_troutes, net_tables=_net_tables)   # only exit entries create fwmark→table policy routing
     # ⚠️ ONLY THE PRIORITIES THAT ARE ALSO TABLES. `band` now spans both bands, and an upstream priority
     # names no table of its own — so this asked the kernel for `route show table 6890` once per leg per
     # reconcile, for a table that cannot exist. Wasteful, and worse than wasteful: anything ELSE on the box
@@ -5987,7 +6037,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             run(["ip", "rule", "add", "to", S, "lookup", T, "priority", T])
             res["changed"] += 1
         for T in _net_tables:                                  # NETWORKS §4.2: outranks the table's default
-            for p, dev in nets:
+            for p, dev in _troutes:
                 run(["ip", "route", "replace", p, "dev", dev, "table", T])
                 res["changed"] += 1
         # UPSTREAM: a mark that names a LEG, for something on this box that has already chosen one. Below
