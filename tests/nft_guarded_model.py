@@ -97,6 +97,8 @@ class Model:
                 if not me:
                     raise NftError("syntax error in map element %r" % e)
                 lo, hi = _span(me.group(1), me.group(2))
+                if any(lo <= x_hi and x_lo <= hi for x_lo, x_hi, _v in els):
+                    raise NftError("conflicting intervals specified (%s)" % e)          # measured for maps too, 1.0.9 and 1.0.2
                 els.append((lo, hi, me.group(4) and ("jump", me.group(4)) or (me.group(3), None)))
             return
         m = re.fullmatch(r"chain (%s) \{ (.*) \}" % NAME, line)

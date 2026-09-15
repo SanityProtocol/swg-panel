@@ -47,6 +47,7 @@ Hermetic. Run: python3 tests/network_share_selftest.py            (0 = pass)
      --perturb-iface    matches a network grantee from any interface and expects RED on [8].
      --perturb-fault    removes the reconciler's own fault handler and expects RED on [16] A2.
      --perturb-nested   loads nested grantee networks as they come and expects RED on [16].
+     --perturb-retry    stops declaring after a refused swap and expects RED on [16].
 """
 import importlib.machinery, importlib.util, inspect, ipaddress, json, os, re, sys, tempfile, time
 
@@ -64,6 +65,7 @@ PERTURB_BARE = "--perturb-bare-drop" in sys.argv
 PERTURB_IFACE = "--perturb-iface" in sys.argv
 PERTURB_FAULT = "--perturb-fault" in sys.argv
 PERTURB_NESTED = "--perturb-nested" in sys.argv
+PERTURB_RETRY = "--perturb-retry" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -101,6 +103,15 @@ if PERTURB_IFACE:
                                                                               for l in _sg(plan, now, g)["lines"]])
 if PERTURB_FAULT:
     N.reconcile_net_share = lambda node_cfg, desired, share, res, now=None: N._share_converge(node_cfg, desired, share, res, now)
+if PERTURB_NESTED:
+    N._share_ranges = lambda items: items
+if PERTURB_RETRY:
+    def _no_retry(swap, declare):
+        if swap is not None:
+            return N.run(["nft", "-f", "-"], input_text=swap[0]), swap[1], True
+        text, gen = declare()
+        return N.run(["nft", "-f", "-"], input_text=text), gen, False
+    N._gtable_load = _no_retry
 
 NOW = int(time.time())
 DAY = 86400
@@ -507,6 +518,16 @@ check("A2: a fault inside the reconciler does not stop the pass — every provid
       and bool(r["errors"]) and r["errors"][0].startswith("sharing:"), (_raised, st, r))
 out = N.reconcile_net_share(CFG, DESIRED, SHARE, res(), now=NOW)
 check("A2: …and the next pass restricts again", out is DESIRED and (N._SHARE["status"] or {}).get("ok") is True and SH in KS.m.tables, N._SHARE["status"])
+fresh(); KS = Kernel(); N.run = KS
+N._share_plan = lambda *a: (_ for _ in ()).throw(RuntimeError("boom"))
+r, _raised, out = res(), False, None
+try:
+    out = N.reconcile_net_share(CFG, DESIRED, SHARE + [{"peer": ["x"], "from": 5}, "junk"], r, now=NOW)
+except Exception:
+    _raised = True
+N._share_plan = _sp
+check("A2: …and a malformed entry in the reply cannot break that fallback", not _raised and out is not None
+      and next(x for x in out["awg0"] if x["public_key"] == K("O"))["allowed_ips"] == "10.8.0.2/32", (_raised, r))
 _nm = N._net_members
 N._net_members = lambda *a: (_ for _ in ()).throw(RuntimeError("boom"))
 fresh(); _raised = False
@@ -517,20 +538,35 @@ except Exception:
 N._net_members = _nm
 check("A2: …only when that fallback fails too does the pass abort, as before — never an unstripped ACL", _raised)
 
-SN = [{"peer": K("O"), "from": [["wg1", "10.20.0.0/16", NOW + 3600], ["wg1", "10.20.7.0/24", 0], ["wg1", "10.9.0.4/32", 0]]}]
+SN = [{"peer": K("O"), "from": [["wg1", "10.20.0.0/16", NOW + 3600], ["wg1", "10.20.7.0/24", 0], ["wg1", "10.20.7.128/25", NOW + 60],
+                                ["wg1", "10.20.9.0/24", NOW + 7200], ["wg1", "10.9.0.4/32", 0]]}]
 fresh(); KS = Kernel(); N.run = KS
-_so = ipaddress.IPv4Network.subnet_of
-if PERTURB_NESTED:
-    ipaddress.IPv4Network.subnet_of = lambda self, other: False
 N.reconcile_net_share(CFG, DESIRED, SN, res(), now=NOW)
-check("nested grantee networks on one interface load — the widest one (a prefix inside another refuses the whole load, measured)",
+check("nested grantee networks on one interface load — split, never refused (a prefix inside another refuses the whole load, measured)",
       (N._SHARE["status"] or {}).get("ok") is True and not KS.last_refused
       and spk("wg1", "10.20.7.9", "192.168.1.5") == "accept" and spk("wg1", "10.20.200.9", "192.168.1.5") == "accept", (N._SHARE["status"], KS.calls[-1:]))
-check("…the narrower one outlives it by at most a pass: gone when the /16 lapses, back in the reload that lapse causes",
-      spk("wg1", "10.20.7.9", "192.168.1.5", at=3600) == "drop"
-      and N.reconcile_net_share(CFG, DESIRED, SN, res(), now=NOW + 3601) is DESIRED
-      and spk("wg1", "10.20.7.9", "192.168.1.5") == "accept" and spk("wg1", "10.20.200.9", "192.168.1.5") == "drop")
-ipaddress.IPv4Network.subnet_of = _so
+check("⚠️ every date stays exact IN THE KERNEL with no reload — the panel may be unreachable (S5): the wider grant lapses on its own, "
+      "the open-ended narrower one holds, a longer nested one outlives the wider",
+      spk("wg1", "10.20.200.9", "192.168.1.5", at=3600) == "drop" and spk("wg1", "10.20.7.9", "192.168.1.5", at=10 ** 8) == "accept"
+      and spk("wg1", "10.20.7.200", "192.168.1.5", at=10 ** 8) == "accept" and spk("wg1", "10.20.9.9", "192.168.1.5", at=3601) == "accept"
+      and spk("wg1", "10.20.9.9", "192.168.1.5", at=7200) == "drop")
+fresh(); KS = Kernel(nft102=True); N.run = KS
+N.reconcile_net_share(CFG, DESIRED, SHARE, res(), now=NOW)
+D23 = json.loads(json.dumps(DESIRED)); D23["awg0"][0]["allowed_ips"] = "10.8.0.2/32,192.168.0.0/23"
+r = res()
+out = N.reconcile_net_share(CFG, D23, SHARE, r, now=NOW)
+check("a swap nft 1.0.2 refuses (a restricted network grown in place, /24 → /23) is DECLARED in the same pass — every network stays "
+      "carried, none stripped", out is D23 and (N._SHARE["status"] or {}).get("ok") is True and len(KS.loads) == 2
+      and KS.loads[-1].startswith(DECLARE) and not r["errors"] and spk("awg0", "10.8.0.6", "192.168.0.5") == "drop"
+      and spk("awg0", "10.8.0.3", "192.168.1.5") == "accept", (N._SHARE["status"], r, len(KS.loads)))
+_mm = Kernel()
+try:
+    _mm.m.load("table inet t {\n  chain p0 { counter drop; }\n"
+               "  map m { type ipv4_addr : verdict; flags interval; elements = { 192.168.0.0/16 : jump p0, 192.168.1.0/24 : jump p0 } }\n}\n")
+    _mref = False
+except Exception:
+    _mref = True
+check("the model refuses overlapping map keys, as nft does (measured on 1.0.9 and 1.0.2)", _mref)
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)

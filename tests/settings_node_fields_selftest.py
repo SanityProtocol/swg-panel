@@ -134,8 +134,8 @@ check("every operator-editable exit field survives the SPA's own rebuild",
 # ── the server half: the three record builders that hand an interface's egress to the browser ────
 psrc = open(PANEL, encoding="utf-8").read()
 meta = re.search(r'ifc\["exit_id"\]', psrc)
-wd = block(psrc, r'"wdtt_cfg": \{ifn: \{k: ov\.get\(k\) for k in \(', "(", ")")
-cs = block(psrc, r'"csqtt_cfg": \{ifn: \{k: ov\.get\(k\) for k in \(', "(", ")")
+wd = block(psrc, r'"wdtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \(', "(", ")")
+cs = block(psrc, r'"csqtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \(', "(", ")")
 check("the interface meta publishes exit_id", bool(meta))
 check("wdtt_cfg publishes exit_id", '"exit_id"' in wd, wd[:120])
 check("csqtt_cfg publishes exit_id", '"exit_id"' in cs, cs[:120])

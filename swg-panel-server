@@ -5223,6 +5223,13 @@ def net_share_for_node(roster, nid, carry, snap=None):
 REACH_LEVELS = ("everyone", "user", "none")
 
 
+def reach_level(v):
+    """A stored level as the node enforces it: absent is "user" (A3), and a value this panel does not know — a hand edit, a
+    transfer from a newer panel — is "none" (§16 A4). Every place the panel plans or publishes a level reads it through here, so
+    the chip, the sheets and the table never disagree, and a sheet never posts back a value `reach_level_set` refuses."""
+    return "user" if not v else (v if v in REACH_LEVELS else "none")
+
+
 def reach_level_set(rec, body):
     """Store the `reach` a save carries onto an interface, WDTT or csqtt record (§10.4) → a refusal for the reply, or None.
 
@@ -5254,11 +5261,11 @@ def dev_reach_guarded(node_rec, snap):
     if not (type(rv) is int and rv >= 2):
         return {}
     rec = node_rec if isinstance(node_rec, dict) else {}
-    levels = {ifn: ov.get("reach") or "user" for ifn, ov in (rec.get("ifaces") or {}).items()
+    levels = {ifn: reach_level(ov.get("reach")) for ifn, ov in (rec.get("ifaces") or {}).items()
               if isinstance(ov, dict) and not ov.get("system")}
     for fam in ("wdtt", "csqtt"):
-        levels.update((ifn, inst.get("reach") or "user") for ifn, inst in (rec.get(fam) or {}).items() if isinstance(inst, dict))
-    return {ifn: (lv if lv in REACH_LEVELS else "none") for ifn, lv in levels.items() if lv != "everyone"}
+        levels.update((ifn, reach_level(inst.get("reach"))) for ifn, inst in (rec.get(fam) or {}).items() if isinstance(inst, dict))
+    return {ifn: lv for ifn, lv in levels.items() if lv != "everyone"}
 
 
 def dev_reach_for_node(roster, node_rec, nid, snap, carry=None):
@@ -6325,7 +6332,7 @@ def _missing_ifaces(c, snap, ivk_pub=None):
                                   and not isinstance(ov.get("keepalive"), bool) else None),
                     # the device-access level the record holds, absent said out loud as "user" (A3), so a recreate never
                     # seeds the panel-wide default over a chosen level (DEVICE-ACCESS §11.2 F1)
-                    "reach": ov.get("reach") or "user",
+                    "reach": reach_level(ov.get("reach")),
                     "public_key": blessed, "key_source": key_src,
                     # T-22: absent because the node is WAITING for the vault, not because anything broke.
                     # Same list, different sentence — "missing on the node" would send the operator looking
@@ -6455,7 +6462,7 @@ def _ghost_ifaces(c, snap, refs, online):
         out[ifn] = {"peer_ids": uniq, "peer_count": len(uniq),
                     # DEVICE ACCESS §11.2 review R6 — a record with no saved config can still hold a chosen level; with no record
                     # at all there is none to keep, so the recreate sheet's panel-wide default stands
-                    **({"reach": ov.get("reach") or "user"} if ifn in known else {})}
+                    **({"reach": reach_level(ov.get("reach"))} if ifn in known else {})}
     return out
 
 # Node lifecycle status. A script (install / convert / update / uninstall) signals the panel where it is:
@@ -9133,7 +9140,7 @@ def apply_iface_meta(node_cfg, interfaces, ivk_pub="", vault_restore_ok=False):
         # csqtt_cfg) and a gate compares them, because a fourth kind diverging is how this comes back.
         ifc["exit_id"] = ov.get("exit_id") or ""                 # egress via an exit DEVICE on this node (P2), by id
         ifc["routing"] = ov.get("routing") or []                 # smart-routing rule list (P3): [{category,action,node}]
-        ifc["reach"] = ov.get("reach") or "user"                 # device access: who may open connections to devices here (absent = user, A3)
+        ifc["reach"] = reach_level(ov.get("reach"))                 # device access: who may open connections to devices here (absent = user, A3)
         ifc["block"] = ov.get("block") or []                     # active block-category ids (content-filter + traffic/abuse); drives the Block-traffic modal section
         ifc["system"] = bool(ov.get("system"))         # panel-managed mesh link interface (a node↔node connection)
         ifc["link_node"] = ov.get("link_node") or ""   # the peer node this link connects to (SPA resolves the name)
@@ -15911,7 +15918,7 @@ def api(method, path, qs, body, deps):
                         "wdtt_vault": {ifn: (ov.get("key_blob") or {}) for ifn, ov in _w.items() if (ov.get("key_blob") or {}).get("ct")},
                         # DESIRED WDTT config (node store, not the readback) so the SPA edit modal can prefill egress /
                         # routing / filters. Config fields only — never the owner password / sealed key material.
-                        "wdtt_cfg": {ifn: {k: ov.get(k) for k in ("wg_addr", "listen", "fork", "wg_port", "max_passwords",
+                        "wdtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("wg_addr", "listen", "fork", "wg_port", "max_passwords",
                                                                    "stopped", "block", "egress_mode", "egress_node",
                                                                    "egress_ip", "wan_iface", "routing", "title", "params",
                                                                    "raw_port", "raw_iface", "raw_addr", "exit_id", "reach") if k in ov}
@@ -15929,7 +15936,7 @@ def api(method, path, qs, body, deps):
                             and (_wov.get("key_blob") or {}).get("vault") != _ivk_now},
                         # DESIRED csqtt config (node store) so the SPA edit modal can prefill listen / address / egress /
                         # routing / filters. Config fields only — never the owner password / minted access passwords.
-                        "csqtt_cfg": {ifn: {k: ov.get(k) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
+                        "csqtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
                                                                     "block", "egress_mode", "egress_node", "egress_ip",
                                                                     "wan_iface", "routing", "title", "params", "exit_id", "reach") if k in ov}
                                       for ifn, ov in _c.items()},

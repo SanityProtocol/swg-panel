@@ -63,6 +63,7 @@ Hermetic. Run: python3 tests/device_reach_selftest.py            (0 = pass)
      --perturb-fault    removes the reconciler's own fault handler and expects RED on [15] A1.
      --perturb-vanished calls a vanished table held and expects RED on [15] A3.
      --perturb-iface    matches a network source from any interface and expects RED on [15] C2.
+     --perturb-retry    stops declaring after a refused swap and expects RED on [13] (nft 1.0.2) and [15] A3.
 """
 import copy, importlib.machinery, importlib.util, inspect, ipaddress, json, os, re, shutil, sys, tempfile
 
@@ -86,6 +87,7 @@ PERTURB_COMPACT = "--perturb-compact" in ARGS
 PERTURB_FAULT = "--perturb-fault" in ARGS
 PERTURB_VANISHED = "--perturb-vanished" in ARGS
 PERTURB_IFACE = "--perturb-iface" in ARGS
+PERTURB_RETRY = "--perturb-retry" in ARGS
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -141,6 +143,13 @@ if PERTURB_FAULT:
 if PERTURB_VANISHED:
     _rcv = N._reach_read_counters
     N._reach_read_counters = lambda: _rcv() if T in N.run.m.tables else {}
+if PERTURB_RETRY:
+    def _no_retry(swap, declare):
+        if swap is not None:
+            return N.run(["nft", "-f", "-"], input_text=swap[0]), swap[1], True
+        text, gen = declare()
+        return N.run(["nft", "-f", "-"], input_text=text), gen, False
+    N._gtable_load = _no_retry
 if PERTURB_IFACE:
     _rg = N._reach_generation
     N._reach_generation = lambda plan, g: dict(_rg(plan, g), lines=[re.sub(r'iifname "[^"]+" ip saddr', "ip saddr", l) for l in _rg(plan, g)["lines"]])
@@ -460,8 +469,8 @@ _meta = P.apply_iface_meta({"ifaces": {"wgN": {"reach": "none"}}}, {"wgN": {}, "
 check("the interface meta publishes the level, 'user' when absent", _meta["wgN"]["reach"] == "none" and _meta["wg0"]["reach"] == "user", _meta)
 _psrc = open(PANEL, encoding="utf-8").read()
 check("wdtt_cfg and csqtt_cfg publish reach",
-      re.search(r'"wdtt_cfg": \{ifn: \{k: ov\.get\(k\) for k in \([^)]*"reach"\)', _psrc) is not None
-      and re.search(r'"csqtt_cfg": \{ifn: \{k: ov\.get\(k\) for k in \([^)]*"reach"\)', _psrc) is not None)
+      re.search(r'"wdtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \([^)]*"reach"\)', _psrc) is not None
+      and re.search(r'"csqtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \([^)]*"reach"\)', _psrc) is not None)
 _nodes = {"n1": {"wdtt": {"wdtt1": {"iface": "wdtt1", "reach": "none", "fork": "qwdtt"}}, "csqtt": {"csqtt1": {"iface": "csqtt1", "reach": "none"}}}}
 check("⚠️ the node's WDTT and csqtt replies never carry the level (§10.8 Round 9)",
       "reach" not in P._wdtt_reply(R, _nodes, "n1")["wdtt1"] and "reach" not in P._csqtt_reply(R, _nodes, "n1")["csqtt1"])
@@ -647,14 +656,15 @@ check("…and the next pass DECLARES rather than retrying that swap (nft 1.0.2 r
 fresh(); K = kernel(nft102=True)
 _W6 = {"ifaces": ["wg0"], "users": [], "zones": []}
 N.reconcile_dev_reach(CFG, _W6, res())
-_wide = conf("wg0", "10.8.0.1/23")
-N.reconcile_dev_reach(CFG, _W6, res())
+drops(3, "wg0", "10.8.0.9", "10.8.0.77")
+conf("wg0", "10.8.0.1/23")
+r6 = res()
+N.reconcile_dev_reach(CFG, _W6, r6)
 _st6 = dict(N._REACH["status"] or {})
-N.reconcile_dev_reach(CFG, _W6, res())
 conf("wg0", "10.8.0.1/24")
-check("nft 1.0.2: a subnet grown in place (/24 → /23) is refused as a swap, stale, then DECLARED next pass",
-      _st6.get("stale") is True and (N._REACH["status"] or {}).get("ok") is True and K.loads[-1].startswith(DECLARE)
-      and pk("wg0", "10.8.1.9", "10.8.1.7") == "drop", (_st6, N._REACH["status"]))
+check("nft 1.0.2: a subnet grown in place (/24 → /23) is refused as a swap and DECLARED in the same pass — enforced, never stale, its count kept",
+      _st6.get("ok") is True and not _st6.get("stale") and K.loads[-1].startswith(DECLARE) and not r6["errors"]
+      and pk("wg0", "10.8.1.9", "10.8.1.7") == "drop" and _st6.get("blocked", {}).get("wg0") == 3, (_st6, r6))
 fresh(); K = kernel(); K.leftover(T)
 N.reconcile_dev_reach(CFG, WIRE, res())
 check("a table an earlier process left is DECLARED over, never swapped", K.loads[-1].startswith(DECLARE) and "old" not in K.m.tables[T]["counters"])
@@ -710,15 +720,41 @@ N._reach_devices = _orig_dev
 st = N._REACH["status"] or {}
 check("A1: a fault before any table: ok false, why exception, NOT stale, naming what it meant to protect",
       not _raised and st.get("ok") is False and st.get("why") == "exception" and not st.get("stale") and "wg0" in st.get("ifaces", []), (_raised, st))
-
+def _fault(cfg, wire):
+    N._reach_devices = lambda c, names: (_ for _ in ()).throw(RuntimeError("boom"))
+    try:
+        N.reconcile_dev_reach(cfg, wire, res())
+    except Exception:
+        pass
+    N._reach_devices = _orig_dev
+    return N._REACH["status"] or {}
 fresh(); K = kernel()
 N.reconcile_dev_reach(CFG, WIRE, res())
 K.flush(T)
+st = _fault(CFG, W2)
+check("A1: the kernel is ASKED, not the process's memory — a fault after the table was flushed says open, never stale",
+      st.get("ok") is False and st.get("why") == "exception" and not st.get("stale"), st)
+fresh(); K = kernel(); K.leftover(T)
+st = _fault(CFG, WIRE)
+check("A1: …and a fault over a table an earlier process left says stale — that table still drops", st.get("stale") is True and st.get("why") == "exception", st)
+
+fresh(); K = kernel()
+N.reconcile_dev_reach(CFG, WIRE, res())
+drops(4, "wg0", "10.8.0.5", "10.8.0.77")
+N.dev_reach_verify(res())
+K.flush(T)
 N.reconcile_dev_reach(CFG, W2, res())
 st = N._REACH["status"] or {}
-check("A3: a swap refused because the table VANISHED is open — nothing holds — never stale", st.get("ok") is False and not st.get("stale"), st)
+check("A3: a swap refused because the table VANISHED is declared at once — enforced again in this pass, never stale, the counts "
+      "read before the flush kept", st.get("ok") is True and not st.get("stale") and T in K.m.tables and K.loads[-1].startswith(DECLARE)
+      and pk("wg0", "10.8.0.9", "10.8.0.5") == "drop" and st.get("blocked", {}).get("wg0") == 4, st)
+fresh(); K = kernel()
+N.reconcile_dev_reach(CFG, WIRE, res())
+K.flush(T); K.refuse = True
 N.reconcile_dev_reach(CFG, W2, res())
-check("A3: …and the next pass declares it", (N._REACH["status"] or {}).get("ok") is True and T in K.m.tables and K.loads[-1].startswith(DECLARE), N._REACH["status"])
+K.refuse = False
+st = N._REACH["status"] or {}
+check("A3: …and when the kernel refuses that declare too, it says OPEN — nothing holds — never stale", st.get("ok") is False and not st.get("stale"), st)
 
 _odd = json.loads(json.dumps(NREC)); _odd["ifaces"]["wg0"]["reach"] = "sometimes"; _odd["csqtt"]["csqtt1"]["reach"] = 3
 _gd4 = P.dev_reach_guarded(_odd, SNAP)
@@ -726,6 +762,13 @@ _dr4 = P.dev_reach_for_node(R, _odd, "n1", SNAP, CARRY)
 check("A4: a stored level this panel does not know is Nobody — guarded, and no device on it listed",
       _gd4.get("wg0") == "none" and _gd4.get("csqtt1") == "none" and "wg0" in _dr4.get("ifaces", [])
       and not any(ipaddress.ip_address(a) in ipaddress.ip_network("10.8.0.0/24") for z in _dr4.get("zones", []) for a in z["to"]), (_gd4, _dr4.get("zones")))
+_meta4 = P.apply_iface_meta({"ifaces": {"wg0": {"reach": "sometimes"}, "wgE": {"reach": "everyone"}}}, {"wg0": {}, "wgE": {}, "wgU": {}})
+_mi4 = P._missing_ifaces({"ifaces": {"wg0": {"reach": "sometimes", "_lastcfg": {"subnet": "10.8.0.0/24"}}}}, {"interfaces": {}}, None)
+check("A4: …and every place the panel publishes a level says Nobody for it — the chip and sheets agree with the table, and a save "
+      "posts back a level the door accepts",
+      getattr(P, "reach_level", None) is not None and _meta4["wg0"]["reach"] == "none" and _meta4["wgE"]["reach"] == "everyone"
+      and _meta4["wgU"]["reach"] == "user" and _mi4.get("wg0", {}).get("reach") == "none"
+      and '"reach": reach_level(ov.get("reach"))' in _psrc, (_meta4, _mi4))
 
 fresh(); K = kernel()
 N.reconcile_dev_reach(CFG, WIRE, res())

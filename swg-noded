@@ -2980,12 +2980,37 @@ def _gen_names(gen):
     return {"map": gen["map"], "chains": list(gen["chains"]), "sets": list(gen["sets"])}
 
 
+def _gtable_load(swap, declare):
+    """Load a plan: the SWAP `(text, gen)` when there is one and — refused — a DECLARE at once from `declare()` → `(text, gen)`
+    (§16 review). nft 1.0.2 refuses a guard element that grows in place (/24 → /23) inside a swap's batch yet loads it declared, and
+    a table flushed since the last pass cannot take a swap at all: one unguarded reload now beats a pass stale (devices) or a pass
+    with every restricted network stripped (networks). → (nft result, the generation of the last attempt, whether the swap loaded)."""
+    if swap is not None:
+        r = run(["nft", "-f", "-"], input_text=swap[0])
+        if r.returncode == 0:
+            return r, swap[1], True
+    text, gen = declare()
+    return run(["nft", "-f", "-"], input_text=text), gen, False
+
+
 SHARE_NFT_TABLE = "swg_share"
 SHARE_HOOK_PRI = "mangle - 5"
 SHARE_TIMEOUT_CAP = 7 * 86400
 # `gen` the live generation's suffix, `names` what that generation declared, `declared` whether THIS process loaded the table.
 _SHARE = {"probed": False, "installed": False, "declared": False, "gen": "a", "names": None, "sig": None, "plan": None, "status": None}
 _SHARE_IFNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,15}$")
+
+
+def _share_by_peer(node_cfg, desired, only=None):
+    """{peer pubkey: {network}} — the networks each peer carries in this pass's ACL (its accepted members, D4); with `only`, just
+    those peers. What the plan restricts and what a fault's fallback strips, read one way."""
+    by_peer = {}
+    for _iface, m in _net_members(node_cfg, desired).items():
+        for pre, pks in m.items():
+            for pk in pks:
+                if only is None or pk in only:
+                    by_peer.setdefault(pk, set()).add(pre)
+    return by_peer
 
 
 def _share_plan(node_cfg, desired, share):
@@ -2995,11 +3020,7 @@ def _share_plan(node_cfg, desired, share):
     carry gets no rule. A provider carrying nothing here is left out. An element that does not parse is dropped (fewer
     sources is the safe direction), and one source listed twice keeps the widest date (0 = no end)."""
     import ipaddress
-    by_peer = {}
-    for _iface, m in _net_members(node_cfg, desired).items():
-        for pre, pks in m.items():
-            for pk in pks:
-                by_peer.setdefault(pk, set()).add(pre)
+    by_peer = _share_by_peer(node_cfg, desired)
     plan, seen = [], set()
     for ent in (share if isinstance(share, list) else []):
         pk = ent.get("peer") if isinstance(ent, dict) else None
@@ -3041,6 +3062,28 @@ def _share_nets(plan):
     return sorted({x for _pk, nets, _e in plan for x in nets}, key=ipaddress.ip_network)
 
 
+def _share_ranges(items):
+    """[(network, timeout seconds or 0)] of one interface → the same addresses as NON-overlapping prefixes, each with the longest
+    timeout among the networks covering it (0, no timeout, outlasts every other) (§16 review). One prefix inside another refuses a
+    whole load (measured, 1.0.9 and 1.0.2), and keeping only the wider one would cut an open-ended narrower grant the moment a dated
+    wider one lapses in the kernel — for as long as the panel is unreachable (S5). Split prefixes, each with its own timeout, load
+    on both versions (measured)."""
+    import ipaddress
+    bounds = sorted({int(n.network_address) for n, _t in items} | {int(n.broadcast_address) + 1 for n, _t in items})
+    runs = []
+    for lo, nxt in zip(bounds, bounds[1:]):
+        cover = [t for n, t in items if int(n.network_address) <= lo and nxt - 1 <= int(n.broadcast_address)]
+        if not cover:
+            continue
+        t = 0 if 0 in cover else max(cover)
+        if runs and runs[-1][1] == lo - 1 and runs[-1][2] == t:
+            runs[-1][1] = nxt - 1
+        else:
+            runs.append([lo, nxt - 1, t])
+    return [(p, t) for lo, hi, t in runs
+            for p in ipaddress.summarize_address_range(ipaddress.IPv4Address(lo), ipaddress.IPv4Address(hi))]
+
+
 def _share_generation(plan, now, g):
     """Generation `g` of swg_share (§15.1, §16 C2): per restricted provider a HASH timeout set of its /32 grantees, and — only when a
     grantee carries networks — one PLAIN `ipv4_addr` interval set per arrival interface, matched by a rule that names the interface
@@ -3049,8 +3092,9 @@ def _share_generation(plan, now, g):
     that accepts its grantees and counts and drops the rest. One vmap lookup per packet however many providers (D11).
 
     ⚠️ ONE PREFIX INSIDE ANOTHER REFUSES THE WHOLE LOAD (§16 C2, measured on 1.0.9 and 1.0.2: "conflicting intervals specified")
-    — and a refused load strips every restricted network here. Of nested grantee networks on one interface only the widest is
-    loaded; a narrower one that outlives it returns in the load its lapse triggers (`_share_sig` drops a lapsed date), one pass later."""
+    — and a refused load strips every restricted network here. Nested grantee networks on one interface are split into
+    non-overlapping prefixes, each with the longest timeout covering it (`_share_ranges`), so the kernel keeps every date exact
+    while the panel is unreachable (S5)."""
     import ipaddress
     sets, vm, chains, names_c, names_s = [], [], [], [], []
     for n, (_pk, nets, els) in enumerate(plan):
@@ -3058,16 +3102,15 @@ def _share_generation(plan, now, g):
         live = _share_live(els, now)
         hosts = ['"%s" . %s%s' % (i, x[:-3], (" timeout %ds" % t) if t else "") for i, x, t in live if x.endswith("/32")]
         pref = {}
-        for i, x, t in sorted(live, key=lambda e: (ipaddress.ip_network(e[1]).prefixlen, e[0], e[1])):   # widest first
-            net = ipaddress.ip_network(x)
-            if net.prefixlen < 32 and not any(net.subnet_of(w) for w, _t in pref.get(i, [])):
-                pref.setdefault(i, []).append((net, t))
+        for i, x, t in live:
+            if not x.endswith("/32"):
+                pref.setdefault(i, []).append((ipaddress.ip_network(x), t))
         sets.append("  set a%d_%s { type ifname . ipv4_addr; flags timeout;%s }" % (n, g, (" elements = { %s }" % ", ".join(hosts)) if hosts else ""))
         names_s.append("a%d_%s" % (n, g))
         rules = ["iifname . ip saddr @a%d_%s accept" % (n, g)]
         for m, i in enumerate(sorted(pref)):
             sets.append("  set a%dn%d_%s { type ipv4_addr; flags interval, timeout; elements = { %s } }"
-                        % (n, m, g, ", ".join("%s%s" % (w, (" timeout %ds" % t) if t else "") for w, t in sorted(pref[i], key=lambda e: int(e[0].network_address)))))
+                        % (n, m, g, ", ".join("%s%s" % (p, (" timeout %ds" % t) if t else "") for p, t in _share_ranges(pref[i]))))
             names_s.append("a%dn%d_%s" % (n, m, g))
             rules.append('iifname "%s" ip saddr @a%dn%d_%s accept' % (i, n, m, g))
         chains.append("  chain p%d_%s { %s; counter drop; }" % (n, g, "; ".join(rules)))
@@ -3102,14 +3145,8 @@ def _share_drop_table(res):
 def _share_strip_named(node_cfg, desired, share):
     """S7 without a plan: every provider the wire names, with every network it carries in this ACL, taken out (§16 A2) — what a
     fault inside the reconciler falls back to, so the other peers still converge."""
-    named = {e.get("peer") for e in (share if isinstance(share, list) else []) if isinstance(e, dict)}
-    by_peer = {}
-    for _iface, m in _net_members(node_cfg, desired).items():
-        for pre, pks in m.items():
-            for pk in pks:
-                if pk in named:
-                    by_peer.setdefault(pk, set()).add(pre)
-    return _share_strip(desired, [(pk, sorted(nets), []) for pk, nets in by_peer.items()])
+    named = {e["peer"] for e in (share if isinstance(share, list) else []) if isinstance(e, dict) and isinstance(e.get("peer"), str)}
+    return _share_strip(desired, [(pk, sorted(nets), []) for pk, nets in _share_by_peer(node_cfg, desired, named).items()])
 
 
 def reconcile_net_share(node_cfg, desired, share, res, now=None):
@@ -3133,8 +3170,9 @@ def _share_converge(node_cfg, desired, share, res, now):
     """⚠️ INERT WHILE NOTHING IS RESTRICTED, AND SAFE ACROSS A RESTART (P2's pattern, `reconcile_lan_block`): the kernel is asked
     ONCE per process whether a table is left over — a restriction lifted while this daemon was down must not keep dropping — and
     never again. While restricting, a load happens only when the plan moves (`_share_sig`): a SWAP over the table this process
-    loaded, a DECLARE otherwise (§16 C1). A refused load strips (S7) either way — after a refused swap the previous table enforces the
-    PREVIOUS plan, so a provider newly restricted or a grant just removed is not in force — and the next pass declares."""
+    loaded, a DECLARE otherwise (§16 C1) — and a refused swap is declared at once (`_gtable_load`). Only a load refused both ways
+    strips (S7): the table left in force enforces an older plan, so a provider newly restricted or a grant just removed is not in
+    force. The next pass declares again."""
     if not _SHARE["probed"]:
         _SHARE["installed"] = run(["nft", "list", "table", "inet", SHARE_NFT_TABLE]).returncode == 0
         _SHARE.update(probed=True, declared=False)
@@ -3147,19 +3185,21 @@ def _share_converge(node_cfg, desired, share, res, now):
     now = int(time.time()) if now is None else now
     sig = _share_sig(plan, now)
     if not _SHARE["installed"] or sig != _SHARE["sig"]:
-        swap = bool(_SHARE["installed"] and _SHARE["declared"] and _SHARE["plan"] and _SHARE["names"])
-        g = ("b" if _SHARE["gen"] == "a" else "a") if swap else "a"
-        gen = _share_generation(plan, now, g)
-        text = (_gtable_swap(SHARE_NFT_TABLE, _share_nets(_SHARE["plan"]), _share_nets(plan), [], gen, _SHARE["names"]) if swap
-                else _gtable_declare(SHARE_NFT_TABLE, SHARE_HOOK_PRI, _share_nets(plan), [], gen))
-        r = run(["nft", "-f", "-"], input_text=text)
+        def declare():
+            gen = _share_generation(plan, now, "a")
+            return _gtable_declare(SHARE_NFT_TABLE, SHARE_HOOK_PRI, _share_nets(plan), [], gen), gen
+        swap = None
+        if _SHARE["installed"] and _SHARE["declared"] and _SHARE["plan"] and _SHARE["names"]:
+            gen = _share_generation(plan, now, "b" if _SHARE["gen"] == "a" else "a")
+            swap = (_gtable_swap(SHARE_NFT_TABLE, _share_nets(_SHARE["plan"]), _share_nets(plan), [], gen, _SHARE["names"]), gen)
+        r, gen, _swapped = _gtable_load(swap, declare)
         if r.returncode != 0:
             detail = (r.stderr or "").strip()[:160]
             _SHARE.update(probed=False, declared=False, sig=None, plan=None, names=None,   # no longer known what is installed: ask again
                           status={"ok": False, "why": "nft_failed", "detail": detail, "peers": [x[0] for x in plan]})
             res["errors"].append("sharing: " + detail)
             return _share_strip(desired, plan)
-        _SHARE.update(installed=True, declared=True, sig=sig, gen=g, names=_gen_names(gen))
+        _SHARE.update(installed=True, declared=True, sig=sig, gen=gen["map"].rsplit("_", 1)[1], names=_gen_names(gen))
         res["changed"] += 1
     _SHARE["plan"] = plan
     _SHARE["status"] = {"ok": True, "peers": [x[0] for x in plan]}
@@ -3462,25 +3502,31 @@ def reconcile_dev_reach(node_cfg, wire, res):
     """Converge who may open connections to the devices here (DEVICE-ACCESS §10.5, §13, §16). Runs before `reconcile` writes the
     peers, so a device this reply adds is protected before it exists.
 
-    ⚠️ A FAULT HERE SAYS SO (§16 A1): an exception is reported as `ok: false, why: exception` — `stale` while a table this process
-    loaded is in force — instead of leaving the last status standing, and the next pass declares afresh."""
+    ⚠️ A FAULT HERE SAYS SO (§16 A1): an exception is reported as `ok: false, why: exception` — `stale` while the kernel still holds
+    a table — instead of leaving the last status standing, and the next pass declares afresh."""
     try:
         _reach_converge(node_cfg, wire, res)
     except Exception as e:
         detail = ("%s: %s" % (type(e).__name__, e))[:160]
         res["errors"].append("device access: " + detail)
-        held = bool(_REACH["installed"] and _REACH["loaded"])
-        _REACH.update(sig=None, declared=False, stale={"why": "exception", "detail": detail} if held else None)
-        _REACH["status"] = (_reach_ok_status() if held else
+        try:                                          # ASKED, not assumed (§16 review): a flushed table holds nothing, a leftover one does
+            held = _reach_read_counters() if _REACH["installed"] else None
+        except Exception:
+            held = None
+        if held is not None and _REACH["loaded"]:
+            _REACH["live"] = held
+        _REACH.update(sig=None, declared=False, stale={"why": "exception", "detail": detail} if held is not None else None)
+        _REACH["status"] = (_reach_ok_status() if held is not None else
                             {"ok": False, "why": "exception", "detail": detail, "ifaces": _reach_names(wire)})
 
 
 def _reach_converge(node_cfg, wire, res):
     """⚠️ INERT WHILE EVERY LEVEL IS EVERYONE, AND SAFE ACROSS A RESTART (P5's pattern): the kernel is asked ONCE per process whether a
     table is left over, and never again. An unchanged reply over unchanged devices builds nothing (the memo); a plan change is a SWAP
-    over the table this process loaded, anything else a DECLARE (§16 C1). A refused load is `stale` while a table is there to hold —
-    this process's, or one an earlier process left — and OPEN when none is (A11; §16 A3: a swap refused because the table vanished
-    reports open). Either way the next pass declares. A reply none of whose interfaces can be protected reports why, with no table."""
+    over the table this process loaded, anything else a DECLARE (§16 C1) — and a refused swap is declared at once (`_gtable_load`), so
+    a table flushed since the last pass is enforced again in this one. A load refused both ways is `stale` while a table is there to
+    hold — this process's, or one an earlier process left — and OPEN when none is (A11, §16 A3); the next pass declares again. A
+    reply none of whose interfaces can be protected reports why, with no table."""
     if not _REACH["probed"]:
         _REACH["installed"] = run(["nft", "list", "table", "inet", REACH_NFT_TABLE]).returncode == 0
         _REACH.update(probed=True, declared=False)
@@ -3506,25 +3552,26 @@ def _reach_converge(node_cfg, wire, res):
         _REACH.update(sig=key, skipped=skipped)       # the devices read differently, the table would not: nothing to swap
         _REACH["status"] = _reach_ok_status()
         return
-    g = ("b" if _REACH["gen"] == "a" else "a") if swap else "a"
-    gen = _reach_generation(plan, g)
     counters = [_reach_counter(n) for n in plan["ifaces"]]
-    if swap:
-        text = _gtable_swap(REACH_NFT_TABLE, _REACH["plan"]["subnets"], plan["subnets"], counters, gen, _REACH["names"])
-    else:
+    def declare():
         before = _reach_read_counters() if _REACH["installed"] and _REACH["loaded"] else None
         if before is not None:
             _REACH["live"] = before                   # read just before a declare zeroes them
-        text = _gtable_declare(REACH_NFT_TABLE, REACH_HOOK_PRI, plan["subnets"], counters, gen)
-    r = run(["nft", "-f", "-"], input_text=text)
+        gen = _reach_generation(plan, "a")
+        return _gtable_declare(REACH_NFT_TABLE, REACH_HOOK_PRI, plan["subnets"], counters, gen), gen
+    attempt = None
+    if swap:
+        gen = _reach_generation(plan, "b" if _REACH["gen"] == "a" else "a")
+        attempt = (_gtable_swap(REACH_NFT_TABLE, _REACH["plan"]["subnets"], plan["subnets"], counters, gen, _REACH["names"]), gen)
+    r, gen, swapped = _gtable_load(attempt, declare)
     if r.returncode != 0:
         detail = (r.stderr or "").strip()[:160]
         res["errors"].append("device access: " + detail)
         held = _reach_read_counters() if _REACH["installed"] else None
         if held is not None:
             # ⚠️ NOT OPEN (§11.2 F3): a refused file changes nothing, and a table is there — this process's generation, or one an
-            # earlier process left. Its plan, names and memo stay; its counts are current (only ours are taken). The next pass DECLARES
-            # rather than retrying the same swap: nft 1.0.2 refuses a guard change that overlaps itself (/24 → /23) a declare loads.
+            # earlier process left. Its plan, names and memo stay; its counts are current (only ours are taken). Refused as a swap
+            # AND as the declare after it, so the next pass declares again.
             if _REACH["loaded"]:
                 _REACH["live"] = held
             _REACH.update(declared=False, stale={"why": "nft_failed", "detail": detail})
@@ -3534,12 +3581,12 @@ def _reach_converge(node_cfg, wire, res):
                       status={"ok": False, "why": "nft_failed", "detail": detail, "ifaces": plan["ifaces"],
                               **({"skipped": dict(skipped)} if skipped else {})})
         return
-    if not swap:
+    if not swapped:
         _reach_fold()                                 # a declare zeroed the kernel's counters: carry what was read into the base
-    _REACH.update(installed=True, declared=True, sig=key, plan=plan, gen=g, names=_gen_names(gen), loaded=list(plan["ifaces"]),
-                  skipped=skipped, since=_REACH["since"] or int(time.time()), stale=None)
+    _REACH.update(installed=True, declared=True, sig=key, plan=plan, gen=gen["map"].rsplit("_", 1)[1], names=_gen_names(gen),
+                  loaded=list(plan["ifaces"]), skipped=skipped, since=_REACH["since"] or int(time.time()), stale=None)
     res["changed"] += 1
-    if swap:
+    if swapped:
         now_counts = _reach_read_counters()           # one read per swap: an interface protected again shows its count at once (§11.8)
         if now_counts is not None:
             _REACH["live"] = now_counts
