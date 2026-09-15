@@ -3115,6 +3115,7 @@ def _cascade_want_sig(fwd, exit_, smart=None, guard=(), nets=(), net_tables=()):
             sig.add(f"T|{T}|default|{e['via_iface']}|{str(e.get('gw') or '')}")
     for e in exit_:
         T = str(e["table"]); sig.add(f"R|to|{e['subnet']}|{T}")
+        sig.add(f"R|backstop|{e['subnet']}|{e['via_iface']}|{T}")   # the reflection backstop, AHEAD of that rule
         sig.add(f"T|{T}|{e['subnet']}|{e['via_iface']}|{str(e.get('gw') or '')}")
     # ⚠️ ONE UPSTREAM RULE PER LEG THIS NODE CAN SEND OUT OF — `fwd` and `smart` both, because a leg is a
     # leg whichever kind of interface happens to use it, and the whole value of the band is that the
@@ -3137,6 +3138,7 @@ def _cascade_live_sig(tables):
     """Canonical signature of our LIVE policy rules (band priorities) + routes in the given tables —
     parsed from `ip rule show` / `ip route show table T` so it's robust to iproute2's output wording."""
     sig = set()
+    _seen_to = set()                                           # (priority, S) of exit rules already listed above
     try:
         for line in run(["ip", "rule", "show"]).stdout.splitlines():
             mp = re.match(r"^\s*(\d+):\s+(.*)$", line)
@@ -3154,11 +3156,19 @@ def _cascade_live_sig(tables):
             lk = re.search(r"lookup (\S+)", body); T = lk.group(1) if lk else str(pri)
             mto = re.search(r"\bto (\S+)", body); mfrom = re.search(r"\bfrom (\S+)", body)
             mfw = re.search(r"fwmark (0x[0-9a-fA-F]+|\d+)", body)
-            if mfw and _up:
+            mif = re.search(r"\biif (\S+)", body)
+            if mto and mif and re.search(r"\bprohibit\b", body):
+                # the reflection backstop (reconcile_cascade's exit loop). ⚠️ ITS PLACE IS PART OF IT: listed after
+                # the exit rule it guards it never matches, so that shape signs as a token no plan wants — drift,
+                # and the band is rebuilt in the right order instead of reading healthy while the loop is back.
+                late = "-late" if (pri, mto.group(1)) in _seen_to else ""
+                sig.add(f"R|backstop{late}|{mto.group(1)}|{mif.group(1)}|{pri}")
+            elif mfw and _up:
                 sig.add(f"R|upmark|{int(mfw.group(1), 0)}|{T}")
             elif mfw:
                 sig.add(f"R|fwmark|{int(mfw.group(1), 0)}|{T}")
             elif mto:
+                _seen_to.add((pri, mto.group(1)))
                 sig.add(f"R|to|{mto.group(1)}|{T}")
             elif mfrom and mfrom.group(1) != "all":
                 sig.add(f"R|from|{mfrom.group(1)}|{T}")
@@ -5963,6 +5973,17 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         for e in exit_:                                        # EXIT: to S → table T (S via link)
             T = str(e["table"]); S = e["subnet"]; dev = e["via_iface"]
             run(["ip", "route", "replace", S, "dev", dev, "table", T])
+            # ⚠️ THE REFLECTION BACKSTOP — added BEFORE the exit rule, at the same priority, so it is looked at first
+            # (the kernel keeps same-priority rules in the order they were added, and the live reader below checks it).
+            # A packet that arrived OVER this leg addressed to S came from S's own node, which routed it here instead
+            # of delivering it: a forward-mode client talking to another client of its own node, because `from S
+            # lookup T` sends everything into the leg. Without this the exit rule sends it straight back, the entry
+            # node sends it here again, and it bounces until its TTL runs out — measured on two real nodes
+            # (.campaign/rigs/device-access-p0-cascade.sh): 3 pings forwarded 96 times, ~30 mesh hops a packet.
+            # Refused with ICMP prohibited instead, so the sender learns at once. Nothing legitimate needs this path:
+            # S's own node reaches S directly, and every other packet here addressed to S (this node's clients, its
+            # own replies) did not arrive from this leg.
+            run(["ip", "rule", "add", "iif", dev, "to", S, "prohibit", "priority", T])
             run(["ip", "rule", "add", "to", S, "lookup", T, "priority", T])
             res["changed"] += 1
         for T in _net_tables:                                  # NETWORKS §4.2: outranks the table's default
