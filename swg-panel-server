@@ -5200,6 +5200,117 @@ def net_share_for_node(roster, nid, carry, snap=None):
     return out
 
 
+# ── DEVICE ACCESS P1 — who may open a connection to a device (docs/DEVICE-ACCESS-PLAN.md §10) ──────────────────────────
+# Per client interface: Everyone on this node (stored "everyone"), Same user and their groups (ABSENT — the operator decided
+# today's everyone-reaches-everyone was never chosen, so every interface that predates this isolates on upgrade, A3), or
+# Nobody ("none"). Judged at the destination (A1). The node enforces it with `swg-noded` `reconcile_dev_reach()`.
+REACH_LEVELS = ("everyone", "user", "none")
+
+
+def reach_level_set(rec, body):
+    """Store the `reach` a save carries onto an interface, WDTT or csqtt record (§10.4) → a refusal for the reply, or None.
+
+    Only a chosen Everyone or Nobody is stored; "user" REMOVES the key, because absent is "user" (A3). A body without
+    `reach` changes nothing, so the partial `wdttSet` / `csqttSet` saves in js/turn.js can never clear it."""
+    if "reach" not in body:
+        return None
+    lv = body.get("reach")
+    if lv not in REACH_LEVELS:
+        return perr("the access level must be everyone, user or none")
+    if lv == "user":
+        rec.pop("reach", None)
+    else:
+        rec["reach"] = lv
+    return None
+
+
+def dev_reach_guarded(node_rec, snap):
+    """{interface: "user" | "none"} — the client interfaces on a node that are NOT at Everyone, or {} when the node gets no
+    `dev_reach` at all: it cannot enforce one (no `net_deps.reach`, A10), or every level on it is an explicit Everyone (D1).
+
+    ⚠️ FROM THE NODE RECORD, NOT THE SNAPSHOT (§10.8 Round 3, reversed in review): a snapshot that briefly lacked an interface
+    would have taken its protection away for that pass. The record is the panel's mirror of what the node manages (T-17)
+    and does not blink; mesh links carry `system` there. An interface the node does not run is skipped by the node."""
+    nd = (snap or {}).get("net_deps")
+    if not (isinstance(nd, dict) and nd.get("reach")):
+        return {}
+    rec = node_rec if isinstance(node_rec, dict) else {}
+    levels = {ifn: ov.get("reach") or "user" for ifn, ov in (rec.get("ifaces") or {}).items()
+              if isinstance(ov, dict) and not ov.get("system")}
+    for fam in ("wdtt", "csqtt"):
+        levels.update((ifn, inst.get("reach") or "user") for ifn, inst in (rec.get(fam) or {}).items() if isinstance(inst, dict))
+    return {ifn: lv for ifn, lv in levels.items() if lv != "everyone"}
+
+
+def dev_reach_for_node(roster, node_rec, nid, snap, carry=None):
+    """The sync reply's `dev_reach` for one node (§10.3), or {} — and the reply then carries no key at all (D1):
+
+        {"ifaces": [<interface not at Everyone>, …],
+         "zones":  [{"to": [<device address on a "user" interface>, …], "from": [[<device>, <prefix>], …]}, …]}
+
+    Who may open a connection to a device at "user": the live deployments ON THIS NODE of its owner and of every user who
+    shares a group with the owner (A2, A5), each as P5's source (A6) — its tunnel /32 on its interface, the networks it
+    carries here (`carry`, the handler's one `node_networks()` for this sync), a keyless device only where its build vouches
+    for the address (`keyless_sources`). Nothing arriving over a mesh link is a source.
+
+    What is NOT listed is Nobody: the node sends every unlisted address of a protected subnet to its Nobody chain (§10.2 R1)
+    — an unassigned device, a keyless device on an unvouched build (A7), a device added since. A "none" interface simply has
+    no destinations. Zones are keyed by their source set, so one family's devices share one zone; a user's allowed set
+    depends only on its groups, so one large group is expanded once. ONE pass over the roster."""
+    guarded = dev_reach_guarded(node_rec, snap)
+    if not guarded:
+        return {}
+    users = roster.get("users") or {}
+    nowv = int(time.time())
+    src, dst, kidx = {}, [], None                 # src: uid → {(device, prefix)} · dst: [(address, owner uid)]
+    for key, q in (roster.get("peers") or {}).items():
+        if not isinstance(q, dict):
+            continue
+        qu = users.get(q.get("user_id")) or {}
+        if q.get("disabled") or qu.get("disabled") or is_expired(q, nowv) or is_expired(qu, nowv):
+            continue
+        uid = q.get("user_id") if q.get("user_id") in users else None
+        mine = src.setdefault(uid, set()) if uid else set()
+        for t in q.get("targets") or []:
+            if t.get("node") != nid or not t.get("iface"):
+                continue
+            protect = bool(uid) and guarded.get(t["iface"]) == "user"
+            if _is_self_contained_target(t):
+                kidx = kidx if kidx is not None else _keyless_index(snap)
+                pairs = keyless_sources(q, t, kidx)[0]
+                mine.update(pairs)
+                if protect:
+                    dst.extend((pre.split("/")[0], uid) for _d, pre in pairs)
+                continue
+            ip = (t.get("ip") or "").split("/")[0]
+            with contextlib.suppress(ValueError):
+                mine.add((t["iface"], str(ipaddress.ip_network(ip + "/32"))))
+                if protect:
+                    dst.append((ip, uid))
+        ent = (carry or {}).get(str(q.get("id") or key))
+        if ent:
+            mine.update((ent["iface"], n) for n in ent["nets"])
+    groups = roster_groups(roster)
+    ugids = {}
+    for gid, g in groups.items():
+        for u in (g.get("users") if isinstance(g, dict) and isinstance(g.get("users"), list) else ()):
+            if isinstance(u, str) and u in users:
+                ugids.setdefault(u, set()).add(gid)
+    memo, zones = {}, {}
+    for addr, uid in dst:
+        k = frozenset(ugids[uid]) if uid in ugids else uid
+        if k not in memo:
+            allowed = ({u for gid in k for u in groups[gid]["users"] if isinstance(u, str) and u in users}
+                       if uid in ugids else {uid})
+            memo[k] = frozenset(s for u in allowed for s in src.get(u, ()))
+        zones.setdefault(memo[k], set()).add(addr)
+    out = [{"to": sorted(to, key=ipaddress.ip_address),
+            "from": [list(s) for s in sorted(fr, key=lambda s: (s[0], ipaddress.ip_network(s[1])))]}
+           for fr, to in zones.items()]
+    out.sort(key=lambda z: ipaddress.ip_address(z["to"][0]))
+    return {"ifaces": sorted(guarded), "zones": out}
+
+
 def network_routes_clean(roster, peer, raw, snaps):
     """(clean routes, refusals) for a save of `peer`'s networks.
 
@@ -5788,6 +5899,7 @@ def _wdtt_reply(roster, nodes, node_id, fallback_vk=""):
     for iface, inst in insts.items():
         merged = dict(inst or {}); merged["iface"] = iface
         merged.pop("password", None)   # the owner password is node-owned — never ship it
+        merged.pop("reach", None)      # device access is the panel's to plan (`dev_reach`) — a copy here is one nobody reads (§10.8 Round 9)
         merged.pop("key_blob", None)   # the escrow blob lives in the store (dict(inst) copied it) — ship it ONLY as the HOLD signal below, so a fresh-recreate can actually suppress it
         merged["passwords"] = derived.get(iface) or {}   # authoritative: roster-derived, overriding any stale node-store copy
         if not merged.get("raw_port"):   # RAW off → ship nothing at all, so an old field can't half-enable it
@@ -5854,6 +5966,7 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk=""):
     for iface, inst in insts.items():
         merged = dict(inst or {}); merged["iface"] = iface
         merged.pop("password", None); merged.pop("web_pass", None)   # node-owned secrets
+        merged.pop("reach", None)                                    # planned into `dev_reach`, never shipped here (§10.8 Round 9)
         merged["passwords"] = derived.get(iface) or {}               # authoritative: roster-derived
         _cver = _turn_hold_get(node_id, "fork:csqtt") or _csqtt_current_version()   # normalised key — _turn_holds_migrate rewrites a bare "<nid>|csqtt" to "fork:csqtt" at startup, so the bare form never survives a restart
         if _cver:
@@ -8986,6 +9099,7 @@ def apply_iface_meta(node_cfg, interfaces, ivk_pub="", vault_restore_ok=False):
         # csqtt_cfg) and a gate compares them, because a fourth kind diverging is how this comes back.
         ifc["exit_id"] = ov.get("exit_id") or ""                 # egress via an exit DEVICE on this node (P2), by id
         ifc["routing"] = ov.get("routing") or []                 # smart-routing rule list (P3): [{category,action,node}]
+        ifc["reach"] = ov.get("reach") or "user"                 # device access: who may open connections to devices here (absent = user, A3)
         ifc["block"] = ov.get("block") or []                     # active block-category ids (content-filter + traffic/abuse); drives the Block-traffic modal section
         ifc["system"] = bool(ov.get("system"))         # panel-managed mesh link interface (a node↔node connection)
         ifc["link_node"] = ov.get("link_node") or ""   # the peer node this link connects to (SPA resolves the name)
@@ -12566,7 +12680,7 @@ SUB_LANGS = {"en": "English", "ru": "Русский"}
 # Panel settings (persisted to panel-settings.json; surfaced + edited via the Panel settings screen).
 # store_configs=None means "use the fleet.json default"; geo_epoch is bumped by the Refresh-geo button.
 PANEL_SETTINGS_DEFAULTS = {
-    "interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25, "awg_params": {}},
+    "interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25, "awg_params": {}, "reach": "user"},
     "mesh_awg": {},   # default AmneziaWG obfuscation for NEW mesh links ({} = auto-generate a fresh set per link)
     "mirrors": {"geo": "", "turn": ""},
     "store_configs": None,
@@ -15637,6 +15751,14 @@ def api(method, path, qs, body, deps):
                         "lan_share": c.get("lan_share") is not False,
                         "lan_block": snap.get("lan_block") if isinstance(snap.get("lan_block"), dict) else None,
                         "net_capable": isinstance(snap.get("net_deps"), dict),
+                        # DEVICE ACCESS §10.6 — WDTT/csqtt instances whose REPORTED build vouches for no path
+                        # (`keyless_share_capable`): at "Same user and their groups" their devices are reachable by nobody
+                        # (A7, §10.2 R1), and the edit sheet says why. An instance the node does not report is not named.
+                        "reach_unvouched": sorted(
+                            str(_ki["iface"]) for _kf, _kp in (("wdtt", ("wg", "raw")), ("csqtt", ("raw",)))
+                            for _ki in (snap.get(_kf) or []) if isinstance(_ki, dict) and _ki.get("iface")
+                            and not any(keyless_share_capable(str(_ki.get("fork") or ("csqtt" if _kf == "csqtt" else "amurcanov")).strip(),
+                                                              _p, str(_ki.get("version") or "")) for _p in _kp)),
                         # unmanaged wg/awg interfaces the node found on the box (Approach B) → adoption candidates.
                         # Split: active (offered for adopt/ignore) vs ignored (operator dismissed → Settings → Interfaces).
                         "iface_candidates": [x for x in _cands if x["name"] not in _ign],
@@ -15758,7 +15880,7 @@ def api(method, path, qs, body, deps):
                         "wdtt_cfg": {ifn: {k: ov.get(k) for k in ("wg_addr", "listen", "fork", "wg_port", "max_passwords",
                                                                    "stopped", "block", "egress_mode", "egress_node",
                                                                    "egress_ip", "wan_iface", "routing", "title", "params",
-                                                                   "raw_port", "raw_iface", "raw_addr", "exit_id") if k in ov}
+                                                                   "raw_port", "raw_iface", "raw_addr", "exit_id", "reach") if k in ov}
                                      for ifn, ov in _w.items()},
                         # …and the CIPHERTEXT of a WDTT escrow this panel cannot vouch for, so the browser —
                         # the only holder of the vault private key — can settle what the panel never can.
@@ -15775,7 +15897,7 @@ def api(method, path, qs, body, deps):
                         # routing / filters. Config fields only — never the owner password / minted access passwords.
                         "csqtt_cfg": {ifn: {k: ov.get(k) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
                                                                     "block", "egress_mode", "egress_node", "egress_ip",
-                                                                    "wan_iface", "routing", "title", "params", "exit_id") if k in ov}
+                                                                    "wan_iface", "routing", "title", "params", "exit_id", "reach") if k in ov}
                                       for ifn, ov in _c.items()},
                         "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
                         "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
@@ -15947,7 +16069,11 @@ def api(method, path, qs, body, deps):
                 "keepalive": int(idf.get("keepalive") or 25),
                 # AWG obfuscation handed to each NEW awg interface. sanitize drops blanks, and a blank field is
                 # the point: it leaves that one to the node, which rolls S1-S4/H1-H4 per interface.
-                "awg_params": sanitize_awg_params(idf.get("awg_params"))}
+                "awg_params": sanitize_awg_params(idf.get("awg_params")),
+                # DEVICE ACCESS §10.4 — the level the create sheet preselects. ⚠️ This dict is REBUILT from named keys, so a
+                # key missing here is dropped by every save. A save that does not carry it (an older tab) keeps the stored one.
+                "reach": (idf.get("reach") if idf.get("reach") in REACH_LEVELS
+                          else ((cur.get("interface_defaults") or {}).get("reach") or "user"))}
         if "mesh_awg" in incoming:   # default AmneziaWG obfuscation for new mesh links ({} = auto per link)
             cur["mesh_awg"] = sanitize_awg_params(incoming.get("mesh_awg"))
         mir = incoming.get("mirrors")
@@ -19660,6 +19786,9 @@ def api(method, path, qs, body, deps):
                 ov["block"] = b
             else:
                 ov.pop("block", None)
+        _rv = reach_level_set(ov, body)              # device access: who may open connections to devices here (§10.4)
+        if _rv:
+            return 400, {"ok": False, **_rv, "code": "bad_request"}
         for k in ("listen_port", "mtu", "awg_params"):   # a user-set value re-asserts: drop its drift + synced so it re-pushes
             if k in body:
                 (ov.get("_synced") or {}).pop(k, None); (ov.get("_drift") or {}).pop(k, None)
@@ -19824,6 +19953,9 @@ def api(method, path, qs, body, deps):
         if _awgput:
             req["awg_params"] = dict(_awgput)
         nodes[nid].setdefault("create", {})[iface] = req
+        _rv = reach_level_set({}, body)             # refuse a bad access level BEFORE the record below is touched
+        if _rv:
+            return 400, {"ok": False, **_rv, "code": "bad_request"}
         ov = nodes[nid].setdefault("ifaces", {}).setdefault(iface, {})   # config-render overrides
         if _awgput:
             ov["awg_params"] = dict(_awgput)
@@ -19873,6 +20005,7 @@ def api(method, path, qs, body, deps):
         _blk = _validate_block(body.get("block"), deps.get("panel_settings"))   # active block-category ids (default-on set applied by the UI at create; validated here)
         if _blk:
             ov["block"] = _blk
+        reach_level_set(ov, body)                    # the create sheet sends the level it preselected (§10.6); validated above
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Creating interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, **({"dropped": _rdrop} if _rdrop["total"] else {})}}
@@ -20296,6 +20429,9 @@ def api(method, path, qs, body, deps):
             except (TypeError, ValueError): pass
         if "block" in body:   # content/abuse filters (same catalog as interfaces); applied to the WDTT subnet by the plan builder
             inst["block"] = _validate_block(body.get("block"), deps.get("panel_settings"))
+        _rv = reach_level_set(inst, body)            # device access (§10.4) — `inst` is a copy, so a refusal changes nothing
+        if _rv:
+            return 400, {"ok": False, **_rv, "code": "bad_request"}
         if "egress_ip" in body:                          # per-instance source/egress IP ("" = clear → MASQUERADE)
             e = (body.get("egress_ip") or "").strip()
             if e:
@@ -20567,6 +20703,9 @@ def api(method, path, qs, body, deps):
         # one bit keyed to node_cfg["interfaces"] — a self-contained kind (WDTT and csqtt alike) doesn't get it.
         if "block" in body:
             inst["block"] = _validate_block(body.get("block"), deps.get("panel_settings"))
+        _rv = reach_level_set(inst, body)            # device access (§10.4) — `inst` is a copy, so a refusal changes nothing
+        if _rv:
+            return 400, {"ok": False, **_rv, "code": "bad_request"}
         if "egress_ip" in body:
             e = (body.get("egress_ip") or "").strip()
             if e:
@@ -23295,9 +23434,16 @@ class Handler(BaseHTTPRequestHandler):
         desired = desired_for_node(roster, nid, snap)   # the snapshot gates networks: absent net_deps ⇒ /32 only (D7)
         # NETWORKS P5 — who may reach each RESTRICTED network this node carries (docs/NETWORKS-PLAN.md §15 S6). Not even
         # computed unless some peer restricts a network, so a panel with no share sends exactly the reply it sent (D1).
-        _nshare = (net_share_for_node(roster, nid, node_networks(roster, nid, snap)["carry"], snap)
-                   if snap is not None and any(isinstance(q, dict) and q.get("routes") and isinstance(q.get("share"), dict)
-                                               for q in (roster.get("peers") or {}).values()) else [])
+        # DEVICE ACCESS (docs/DEVICE-ACCESS-PLAN.md §10.4) — who may open connections to the devices on this node. Absent unless
+        # the node can enforce it and some interface on it is not an explicit Everyone (D1). The networks this node carries
+        # are computed ONCE here for both passes, and only when one of them needs them (§10.8 Round 5).
+        _peers_all = [q for q in (roster.get("peers") or {}).values() if isinstance(q, dict)]
+        _routes_any = snap is not None and any(q.get("routes") for q in _peers_all)
+        _share_any = _routes_any and any(q.get("routes") and isinstance(q.get("share"), dict) for q in _peers_all)
+        _dr_on = snap is not None and bool(dev_reach_guarded(node, snap))
+        _carry = node_networks(roster, nid, snap)["carry"] if (_share_any or (_routes_any and _dr_on)) else {}
+        _nshare = net_share_for_node(roster, nid, _carry, snap) if _share_any else []
+        _dreach = dev_reach_for_node(roster, node, nid, snap, _carry) if _dr_on else {}
         _clists = {cl["id"]: cl for cl in ((Handler.deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")}
         cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {}, _clists)   # Phase 2/3: whole-fleet forward + smart plan (resolves custom-list rules)
         # Targets that fell off the 7000-band, kept for the node cards. The plan is fleet-wide, so ONE node
@@ -24469,6 +24615,8 @@ class Handler(BaseHTTPRequestHandler):
                                 **({"net_probe": _nprobe} if _nprobe else {}),
                                 # NETWORKS P5: only while this node carries a restricted network (D1).
                                 **({"net_share": _nshare} if _nshare else {}),
+                                # DEVICE ACCESS: only while some interface here is not at Everyone and the node can enforce it (D1).
+                                **({"dev_reach": _dreach} if _dreach else {}),
                                 "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
                                 "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
                                 "wdtt_vault_want": _wdtt_want,   # WDTT instances the panel needs a current sealed server identity for

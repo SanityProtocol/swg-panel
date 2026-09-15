@@ -189,7 +189,9 @@ _psrc = open(PANEL).read()
 check("the sync reply names `net_share` exactly once, behind that result",
       _psrc.count('"net_share":') == 1 and '**({"net_share": _nshare} if _nshare else {})' in _psrc)
 check("…and computes it only when some peer restricts a network",
-      "if snap is not None and any(isinstance(q, dict) and q.get(\"routes\") and isinstance(q.get(\"share\"), dict)" in _psrc)
+      '_share_any = _routes_any and any(q.get("routes") and isinstance(q.get("share"), dict) for q in _peers_all)' in _psrc
+      and '_nshare = net_share_for_node(roster, nid, _carry, snap) if _share_any else []' in _psrc
+      and '_routes_any = snap is not None and any(q.get("routes") for q in _peers_all)' in _psrc)
 
 print("\n[6] the reports")
 rep = P.network_report(R, "office", {"n1": dict(SNAP, net_share={"ok": True, "peers": [K("O")]})})

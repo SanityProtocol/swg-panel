@@ -19,6 +19,7 @@ Hermetic. Run: python3 tests/networks_inert_selftest.py            (0 = pass)
                  expects RED on [3].
      --perturb-probe   has the panel put a reachability test in every sync reply and expects RED on [5].
      --perturb-share   has the panel restrict every carried network and expects RED on [6].
+     --perturb-reach   has the panel guard an interface on a node where every level is Everyone and expects RED on [7].
 
   [5] P4: with no reachability test asked for, the panel's reply carries no `net_probe`, the node starts no thread
       and forks nothing, and the snapshot carries no answer.
@@ -35,6 +36,7 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
 PERTURB_PROBE = "--perturb-probe" in sys.argv
 PERTURB_SHARE = "--perturb-share" in sys.argv
+PERTURB_REACH = "--perturb-reach" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -230,6 +232,43 @@ for _ in range(3):
 check("…every later pass, ACL and routing alike: NO subprocess", FORKS == [], FORKS)
 check("…nothing to report", N._SHARE["status"] is None and res == {"changed": 0, "errors": []}, (N._SHARE, res))
 check("…and the snapshot adds `net_share` only under a status", 'if _SHARE["status"]:' in _bs and _bs.count('"net_share"') == 1)
+
+print("\n[7] DEVICE ACCESS: every level an explicit Everyone, so nothing computed, sent, installed or forked (docs/DEVICE-ACCESS-PLAN.md §10)")
+if PERTURB_REACH:
+    P.dev_reach_guarded = lambda node_rec, snap: {"wg0": "user"}
+_SNAP_R = dict(SNAP, net_deps=dict(SNAP.get("net_deps") or {}, reach=1))
+_ALL_EVERYONE = {"ifaces": {"wg0": {"reach": "everyone"}, "awg0": {"reach": "everyone"}, "swg_x": {"system": True}},
+                 "wdtt": {"wdtt1": {"reach": "everyone"}}, "csqtt": {"csqtt1": {"reach": "everyone"}}}
+_groups_real = P.roster_groups
+def _groups_trap(roster):
+    raise AssertionError("the device-access pass walked the roster with every level at Everyone")
+P.roster_groups = _groups_trap
+try:
+    check("the panel: every level an explicit Everyone ⇒ no `dev_reach` — and the roster is never walked",
+          P.dev_reach_for_node(RN, _ALL_EVERYONE, "n1", _SNAP_R, {}) == {})
+except AssertionError as e:
+    check("the panel: every level an explicit Everyone ⇒ no `dev_reach` — and the roster is never walked", False, e)
+try:
+    check("…and a node that cannot enforce it gets none either, whatever its levels (A10)",
+          P.dev_reach_for_node(RN, {"ifaces": {"wg0": {}}}, "n1", SNAP, {}) == {})
+except AssertionError as e:
+    check("…and a node that cannot enforce it gets none either, whatever its levels (A10)", False, e)
+P.roster_groups = _groups_real
+check("…and the reply names `dev_reach` exactly once, behind that result",
+      _psrc.count('"dev_reach":') == 1 and '**({"dev_reach": _dreach} if _dreach else {})' in _psrc)
+N._REACH.update(probed=False, installed=False, sig=None, plan=None, status=None, seen={}, loaded=[], base={}, live={}, since=0)
+del FORKS[:]
+res = {"changed": 0, "errors": []}
+N.reconcile_dev_reach(CFG, None, res)
+check("the node, first pass: exactly ONE kernel look (a protection lifted while the daemon was down must not keep dropping)",
+      FORKS == [["nft", "list", "table", "inet", "swg_reach"]], FORKS)
+del FORKS[:]
+for _ in range(3):
+    N.reconcile_dev_reach(CFG, None, res)
+    N.dev_reach_verify(res)
+check("…every later pass, reply and routing alike: NO subprocess", FORKS == [], FORKS)
+check("…nothing to report", N._REACH["status"] is None and res == {"changed": 0, "errors": []}, (N._REACH["status"], res))
+check("…and the snapshot adds `dev_reach` only under a status", 'if _REACH["status"]:' in _bs and _bs.count('"dev_reach"') == 1)
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)
