@@ -2297,10 +2297,11 @@ def net_deps():
     "routed" (a node without it is taken at the panel's word, as before).
 
     `reach`: this node enforces who may open connections to its devices (DEVICE-ACCESS §10). A panel sends `dev_reach` only
-    to a node that says so; anywhere else the interface reads "not enforced" (A10)."""
+    to a node that says so; anywhere else the interface reads "not enforced" (A10). `2`: it also reads the compact reply, each
+    user's sources once and zones naming users (DEVICE-ACCESS §14) — a panel sends that shape only to a node reporting 2."""
     res, known = _resolvers()
     return {"panel": _PANEL_PEER.get("addr") or "", "resolvers": res, "resolvers_known": known, "share": 1, "carried": 1,
-            "reach": 1}
+            "reach": 2}
 
 
 # ───────────────────────── networks: the route reconciler ─────────────────────────
@@ -3206,17 +3207,35 @@ def _reach_plan(node_cfg, wire, devices=None):
     _REACH["skipped"] = skipped
     if not ifaces:
         return None
+    def elements(lst):
+        out = set()
+        for e in (lst if isinstance(lst, list) else []):
+            if isinstance(e, list) and len(e) == 2 and isinstance(e[0], str) and _SHARE_IFNAME_RE.match(e[0]):
+                pre = _net_prefix(e[1]) if isinstance(e[1], str) else ""
+                if pre:
+                    out.add((e[0], pre))
+        return out
+    # THE COMPACT REPLY (§14): each user's sources once, a zone naming users by index — validated once per user, and an index that
+    # is out of range or not an int names nobody (fewer sources, fail closed). Without `users`, §10.3's per-zone `from`.
+    users = [elements(u) for u in wire["users"]] if isinstance(wire.get("users"), list) else None
+    order = {}                                              # a sort key per DISTINCT source, computed once (§14.5 Round 5)
+    def skey(s):
+        if s not in order:
+            n = ipaddress.ip_network(s[1])
+            order[s] = (s[0], int(n.network_address), n.prefixlen)
+        return order[s]
     where = {}                                              # address → (source set, j), or None once claimed twice
     for z in (wire.get("zones") if isinstance(wire.get("zones"), list) else []):
         if not isinstance(z, dict):
             continue
-        src = set()
-        for e in (z.get("from") if isinstance(z.get("from"), list) else []):
-            if isinstance(e, list) and len(e) == 2 and isinstance(e[0], str) and _SHARE_IFNAME_RE.match(e[0]):
-                pre = _net_prefix(e[1]) if isinstance(e[1], str) else ""
-                if pre:
-                    src.add((e[0], pre))
-        key = tuple(sorted(src, key=lambda s: (s[0], ipaddress.ip_network(s[1]))))
+        if users is not None:
+            src = set()
+            for i in (z.get("users") if isinstance(z.get("users"), list) else []):
+                if type(i) is int and 0 <= i < len(users):
+                    src |= users[i]
+        else:
+            src = elements(z.get("from"))
+        key = tuple(sorted(src, key=skey))
         for a in (z.get("to") if isinstance(z.get("to"), list) else []):
             try:
                 ip = ipaddress.ip_address(str(a).strip())

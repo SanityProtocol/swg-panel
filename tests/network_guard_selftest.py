@@ -255,7 +255,7 @@ d = N.net_deps()
 check("net_deps() ran no subprocess", forks == [], forks)
 check("net_deps() carries panel + resolvers + known + share (P5: this node enforces a restricted network) + reach (device access)",
       set(d) == {"panel", "resolvers", "resolvers_known", "share", "carried", "reach"} and d["share"] == 1 and d["carried"] == 1
-      and d["reach"] == 1, d)
+      and d["reach"] == 2, d)
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)

@@ -35,6 +35,8 @@ table, `swg_reach`, whose map covers each protected subnet whole — listed devi
       table`, the new generation declared, `sel` repointed, exactly the held generation deleted map → chains → sets, the suffix
       alternating; the guard moves with the protected subnets; a counter only for an interface the table lacks; a refused swap
       leaves generation, plan, slots and memo; a leftover table is declared over; the node's own address is a map `accept`.
+ [14] the compact wire (§14): it expands to exactly the v1 zones; each source once; a v1 node's reply unchanged; the node
+      plans the same table from either shape; a bad index names nobody; net_deps says 2; the handler's capability check.
  [12] P2 fixes (docs/DEVICE-ACCESS-PLAN.md §11.2): F1 a lost interface hands the recreate sheet its level · F2 the node says why
       a listed interface is not in its table, also when it holds no table · F3 a refused RELOAD keeps counting the previous
       table and says stale, a refused FIRST load stays open · F4 unvouched builds per path · F5 the pass after both mirrors ·
@@ -49,6 +51,7 @@ Hermetic. Run: python3 tests/device_reach_selftest.py            (0 = pass)
      --perturb-stale   calls every refused load open and expects RED on [12] F3.
      --perturb-swap    reloads a plan change by delete + recreate, as v1 (§11.7's leak), and expects RED on [13].
      --perturb-guard   drops the node's own `accept` from the map, so it falls into the guard, and expects RED on [1] and [13].
+     --perturb-compact makes the node ignore `users` (v1 reading only) and expects RED on [14].
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, sys, tempfile
 
@@ -64,6 +67,7 @@ PERTURB_SKIPPED = "--perturb-skipped" in sys.argv
 PERTURB_STALE = "--perturb-stale" in sys.argv
 PERTURB_SWAP = "--perturb-swap" in sys.argv
 PERTURB_GUARD = "--perturb-guard" in sys.argv
+PERTURB_COMPACT = "--perturb-compact" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -114,6 +118,11 @@ if PERTURB_GUARD:
         p = _rpg(cfg, wire, devices)
         return p and dict(p, map=[e for e in p["map"] if e[2] != "accept"])
     N._reach_plan = _no_accept
+if PERTURB_COMPACT:
+    _rpc = N._reach_plan
+    def _v1_only(cfg, wire, devices=None):
+        return _rpc(cfg, {k: v for k, v in wire.items() if k != "users"} if isinstance(wire, dict) else wire, devices)
+    N._reach_plan = _v1_only
 
 TMP = tempfile.mkdtemp(prefix="devreach-")
 def conf(name, addr):
@@ -316,7 +325,7 @@ check("…inside a guard, so a fault never stops the peer write",
 i_nv = SRC.find("net_share_verify(nr)")
 check("the routing pass verifies beside P5", i_nv > 0 and "dev_reach_verify(nr)" in SRC[i_nv:i_nv + 200])
 N._PANEL_PEER["addr"] = "198.51.100.1"
-check("net_deps says reach", N.net_deps().get("reach") == 1, N.net_deps())
+check("net_deps says reach — 2, the compact reply (§14)", N.net_deps().get("reach") == 2, N.net_deps())
 check("the snapshot names dev_reach only while a status is held",
       re.search(r"if _REACH\[\"status\"\]:[^\n]*\n\s+snap\[\"dev_reach\"\] = dict\(_REACH\[\"status\"\]\)", SRC) is not None)
 
@@ -455,7 +464,7 @@ check("names dev_reach exactly once, behind the pass's result",
       _psrc.count('"dev_reach":') == 1 and '**({"dev_reach": _dreach} if _dreach else {})' in _psrc)
 check("the pass runs only while the node can enforce and something is guarded",
       "_dr_on = snap is not None and bool(dev_reach_guarded(node, snap))" in _psrc
-      and "_dreach = dev_reach_for_node(roster, node, nid, snap, _carry) if _dr_on else {}" in _psrc)
+      and "_dreach = dev_reach_for_node(roster, node, nid, snap, _carry, compact=type(_rv) is int and _rv >= 2) if _dr_on else {}" in _psrc)
 _h0 = _psrc.find("_peers_all = [q for q in (roster.get(\"peers\") or {}).values() if isinstance(q, dict)]")
 _h1 = _psrc.find("_dreach = dev_reach_for_node(", _h0)
 _handler = _psrc[_h0:_h1] if 0 < _h0 < _h1 else ""
@@ -606,6 +615,24 @@ fresh(); K = Nft(table=True); N.run = K
 N.reconcile_dev_reach(CFG, WIRE, res())
 check("a table an earlier process left is DECLARED over, never swapped", K.loads[-1].startswith("table inet swg_reach\ndelete table"))
 check("⚠️ the node's own address stays reachable: a map `accept` inside the guard", "10.8.0.1 : accept" in K.loads[-1])
+
+print("\n[14] the compact wire (§14)")
+DC = P.dev_reach_for_node(R, NREC, "n1", SNAP, CARRY, compact=True)
+def _zones_of(d):
+    us = d.get("users")
+    return sorted([sorted(z["to"]), sorted({tuple(s) for i in z["users"] for s in us[i]} if us is not None else {tuple(s) for s in z["from"]})]
+                  for z in d["zones"])
+check("the compact reply expands to exactly the v1 reply's zones", _zones_of(DC) == _zones_of(DR) and len(DC["zones"]) == len(DR["zones"]), (DC, DR))
+check("…each source listed once, under its user", sum(len(u) for u in DC["users"]) == len({tuple(s) for u in DC["users"] for s in u}), DC["users"])
+check("…and a node reporting reach 1 gets the v1 shape: `from`, no `users`", "users" not in DR and all("from" in z and "users" not in z for z in DR["zones"]))
+_pv1, _pc = N._reach_plan(CFG, DR), N._reach_plan(CFG, DC)
+check("the node plans the same table from either shape", _pv1 is not None and _pv1 == _pc, (_pv1, _pc))
+_bad = json.loads(json.dumps(DC)); _bad["zones"][0]["users"] = [99, -1, "0", True] + _bad["zones"][0]["users"]
+check("an index out of range, negative, a string or a bool names nobody", N._reach_plan(CFG, _bad) == _pc)
+_narrow = json.loads(json.dumps(DC)); _narrow["zones"][0]["users"] = [99]
+check("…so a zone left with no valid user is reachable by nobody (fail closed)", N._reach_plan(CFG, _narrow) != _pc)
+check("the handler sends the compact shape only to a node reporting an int reach >= 2",
+      '_rv = (snap.get("net_deps") or {}).get("reach") if snap is not None else None' in _psrc)
 
 shutil.rmtree(TMP2, ignore_errors=True)
 shutil.rmtree(TMP, ignore_errors=True)
