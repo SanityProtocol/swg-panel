@@ -18,9 +18,10 @@ for, and the node enforces it with one prerouting table. What this holds:
       this user can reach" hides a network not shared with that user.
  NODE
   [7] the plan: networks from the ACL's own accepted members, never the wire; bad elements dropped; widest date kept.
-  [8] the ruleset: prerouting `mangle - 5`, one vmap, the reply exemption BEFORE the drop, dates as timeouts — a lapsed
-      one not loaded, one beyond the cap loaded without a timeout, a device name that could escape its quotes never
-      reaching nft.
+  [8] the table, by packet (tests/nft_guarded_model.py): the skeleton line at `mangle - 5` exact; a grantee in, a stranger out,
+      a network grantee only on its own interface; replies, IPv6 and everything outside the guard untouched; dates as timeouts —
+      a lapsed one not loaded, one beyond the cap without a timeout; no concat interval set; a device name that could escape its
+      quotes never reaching nft; a plan change SWAPS and the old generation is gone whole.
   [9] D1 and the restart: asked once, then nothing; a table left from before is removed.
  [10] steady state: nothing reloaded while the plan holds — including a countdown — and reloaded when a grant moves or
       a date comes within the cap.
@@ -33,6 +34,9 @@ for, and the node enforces it with one prerouting table. What this holds:
       server and an ungranted user are not — each named with its reason in the report, and "Networks this user can reach"
       follows the same rule.
  [15] ⚠️ the capability table names only PUBLISHED builds (every entry is in WDTT_BUILDS / CSQTT_BUILDS) and never ildarmaga RAW.
+ §16 — THE SHARED TABLE (DEVICE-ACCESS-PLAN §16)
+ [16] A2 a fault inside the reconciler carries every provider the reply names for nobody, says so, and the next pass restricts
+      again; nested grantee networks on one interface load, the narrower returning in the reload the wider one's lapse causes.
 
 Hermetic. Run: python3 tests/network_share_selftest.py            (0 = pass)
      --perturb        grants a lapsed date again and expects RED on [1] and [5].
@@ -40,11 +44,16 @@ Hermetic. Run: python3 tests/network_share_selftest.py            (0 = pass)
      --perturb-keyless  vouches for every keyless build and expects RED on [14].
      --perturb-swap     reloads a plan change by delete + recreate, as P5 shipped (DEVICE-ACCESS §15's leak), and expects RED on [10].
      --perturb-bare-drop  drops the guard's scope from the final rule (it would take every IPv6 packet) and expects RED on [8].
+     --perturb-iface    matches a network grantee from any interface and expects RED on [8].
+     --perturb-fault    removes the reconciler's own fault handler and expects RED on [16] A2.
+     --perturb-nested   loads nested grantee networks as they come and expects RED on [16].
 """
-import importlib.machinery, importlib.util, inspect, json, os, sys, tempfile, time
+import importlib.machinery, importlib.util, inspect, ipaddress, json, os, re, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
+sys.path.insert(0, HERE)
+from nft_guarded_model import Kernel, _span   # noqa: E402
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
@@ -52,6 +61,9 @@ PERTURB_OPEN = "--perturb-open" in sys.argv
 PERTURB_KEYLESS = "--perturb-keyless" in sys.argv
 PERTURB_SWAP = "--perturb-swap" in sys.argv
 PERTURB_BARE = "--perturb-bare-drop" in sys.argv
+PERTURB_IFACE = "--perturb-iface" in sys.argv
+PERTURB_FAULT = "--perturb-fault" in sys.argv
+PERTURB_NESTED = "--perturb-nested" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -79,10 +91,16 @@ if PERTURB_OPEN:
 if PERTURB_KEYLESS:
     P.keyless_share_capable = lambda fork, path, version: True
 if PERTURB_SWAP:
-    N._share_swap_text = lambda old, new, now, old_g, g: N._share_declare_text(new, now)
+    N._gtable_swap = lambda table, old_guard, guard, counters, gen, old: N._gtable_declare(table, N.SHARE_HOOK_PRI, guard, counters, gen)
 if PERTURB_BARE:
-    _sdt = N._share_declare_text
-    N._share_declare_text = lambda plan, now: _sdt(plan, now).replace('ip daddr @guard counter name "gc" drop', 'counter name "gc" drop')
+    _gd = N._gtable_declare
+    N._gtable_declare = lambda *a: _gd(*a).replace('ip daddr @guard counter name "gc" drop', 'counter name "gc" drop')
+if PERTURB_IFACE:
+    _sg = N._share_generation
+    N._share_generation = lambda plan, now, g: dict(_sg(plan, now, g), lines=[re.sub(r'iifname "[^"]+" ip saddr', "ip saddr", l)
+                                                                              for l in _sg(plan, now, g)["lines"]])
+if PERTURB_FAULT:
+    N.reconcile_net_share = lambda node_cfg, desired, share, res, now=None: N._share_converge(node_cfg, desired, share, res, now)
 
 NOW = int(time.time())
 DAY = 86400
@@ -250,35 +268,60 @@ check("bad elements dropped; one source twice keeps the widest date (0); the lap
       plan[0][2] == [("awg0", "10.8.0.3/32", 0), ("awg0", "10.8.0.9/32", NOW - 5), ("wg1", "10.9.0.4/32", NOW + 3600),
                      ("wg1", "192.168.7.0/24", NOW + 30 * DAY)], plan[0][2])
 
-print("\n[8] the declared table and the swap (DEVICE-ACCESS §15)")
-rs = N._share_declare_text(plan, NOW)
-check("DECLARED: created then deleted then declared — one load", rs.startswith("table inet swg_share\ndelete table inet swg_share\ntable inet swg_share {"), rs)
-check("PREROUTING at mangle - 5 (§15.2 S4), one vmap lookup through `sel`", "hook prerouting priority mangle - 5;" in rs
-      and "chain sel { ip daddr vmap @nets_a; }" in rs and "192.168.1.0/24 : jump p0_a" in rs, rs)
-check("⚠️ the skeleton: replies accepted first, the guard before the map, a miss INSIDE the guard dropped — never a bare drop",
-      'policy accept; ct direction reply accept; ip daddr != @guard accept; jump sel; ip daddr @guard counter name "gc" drop; }' in rs, rs)
-check("the guard holds exactly the restricted networks", "set guard { type ipv4_addr; flags interval; elements = { 192.168.1.0/24 } }" in rs, rs)
-check("a provider's chain accepts its grantees, counts and drops the rest", "chain p0_a { iifname . ip saddr @a0_a accept; counter drop; }" in rs, rs)
-_hash = N._share_declare_text([(K("O"), ["192.168.1.0/24"], [("awg0", "10.8.0.3/32", 0), ("wg1", "10.9.0.4/32", NOW + 3600)])], NOW)
-check("⚠️ grantees all /32: a HASH set with timeouts, addresses bare (an interval set costs ~0.32 MiB however small)",
-      'set a0_a { type ifname . ipv4_addr; flags timeout; elements = { "awg0" . 10.8.0.3, "wg1" . 10.9.0.4 timeout 3600s } }' in _hash, _hash)
-check("…a grantee carrying a network: interval", "set a0_a { type ifname . ipv4_addr; flags interval, timeout;" in rs, rs)
-_plan2 = [(plan[0][0], ["192.168.1.0/24", "192.168.9.0/24"], plan[0][2])]
-_sw = N._share_swap_text(plan, _plan2, NOW, "a", "b")
-check("SWAP: no delete table; the new generation; the guard gains the new network; `sel` repointed",
-      "delete table" not in _sw and _sw.startswith("table inet swg_share {") and "add element inet swg_share guard { 192.168.9.0/24 }" in _sw
-      and "flush chain inet swg_share sel\nadd rule inet swg_share sel ip daddr vmap @nets_b" in _sw, _sw)
-check("…then the old map, its chains, its sets — in the order their references allow",
-      [l for l in _sw.splitlines() if l.startswith("delete ")] == ["delete map inet swg_share nets_a", "delete chain inet swg_share p0_a",
-                                                                 "delete set inet swg_share a0_a"], _sw)
-check("no end ⇒ no timeout; within the cap ⇒ its remaining time; beyond the cap ⇒ no timeout; lapsed ⇒ not loaded",
-      '"awg0" . 10.8.0.3/32,' in rs and '"wg1" . 10.9.0.4/32 timeout 3600s' in rs and '"wg1" . 192.168.7.0/24 }' in rs
-      and "10.8.0.9" not in rs, rs)
-check("a device name that could escape its quotes never reaches nft", 'bad"name' not in rs and "garbage" not in rs)
-check("nobody allowed ⇒ a set with no elements, which still drops", "set a0_a { type ifname . ipv4_addr; flags timeout; }"
-      in N._share_declare_text([(K("O"), ["192.168.1.0/24"], [])], NOW))
-
 CALLS = []
+def fresh():
+    N._SHARE.update(probed=False, installed=False, sig=None, plan=None, status=None, declared=False, gen="a", names=None)
+    del CALLS[:]
+def res():
+    return {"changed": 0, "errors": []}
+SH = "swg_share"
+DECLARE = "table inet swg_share\ndelete table inet swg_share\ntable inet swg_share {"
+def spk(iif, saddr, daddr, **kw):
+    return KS.m.packet(SH, iif, saddr, daddr, **kw)[0]
+
+print("\n[8] the table, by packet (DEVICE-ACCESS §15, §16)")
+fresh(); KS = Kernel(); N.run = KS
+N.reconcile_net_share(CFG, DESIRED, SHARE, res(), now=NOW)
+rs = KS.loads[-1] if KS.loads else ""
+TS = KS.m.tables.get(SH) or {"sets": {}, "maps": {}, "chains": {}, "counters": {}}
+check("DECLARED: created then deleted then declared — one load", rs.startswith(DECLARE), rs[:80])
+check("⚠️ the skeleton at mangle - 5 (§15.2 S4): replies accepted first, the guard before the one vmap, a miss INSIDE the guard "
+      "dropped — never a bare drop, which took every IPv6 packet",
+      'chain pre { type filter hook prerouting priority mangle - 5; policy accept; ct direction reply accept; '
+      'ip daddr != @guard accept; jump sel; ip daddr @guard counter name "gc" drop; }' in rs, rs)
+check("the guard holds exactly the restricted networks", sorted((x["lo"], x["hi"]) for x in TS["sets"].get("guard", {}).get("els", [])) == [_span("192.168.1.0/24")])
+check("a grantee reaches the network; a stranger on the same interface does not",
+      spk("awg0", "10.8.0.3", "192.168.1.5") == "accept" and spk("awg0", "10.8.0.6", "192.168.1.5") == "drop")
+check("⚠️ a network grantee reaches it only arriving on its own interface (§16 C2)",
+      spk("wg1", "192.168.7.20", "192.168.1.5") == "accept" and spk("awg0", "192.168.7.20", "192.168.1.5") == "drop")
+check("⚠️ replies, IPv6 and everything outside the guard are never touched",
+      spk("awg0", "10.8.0.6", "192.168.1.5", reply=True) == "accept" and KS.m.packet(SH, "awg0", "", "", v6=True)[0] == "accept"
+      and spk("awg0", "10.8.0.6", "192.168.2.5") == "accept")
+check("no end ⇒ no timeout; within the cap ⇒ its remaining time; beyond the cap ⇒ no timeout; lapsed ⇒ not loaded",
+      spk("awg0", "10.8.0.3", "192.168.1.5", at=10 ** 8) == "accept" and spk("wg1", "10.9.0.4", "192.168.1.5", at=3599) == "accept"
+      and spk("wg1", "10.9.0.4", "192.168.1.5", at=3600) == "drop" and spk("wg1", "192.168.7.20", "192.168.1.5", at=10 ** 8) == "accept"
+      and spk("awg0", "10.8.0.9", "192.168.1.5") == "drop")
+check("⚠️ grantees in a HASH set with timeouts and plain per-interface sets — no concat interval set (~0.32 MiB each however small)",
+      bool(TS["sets"]) and not any("interval" in s["flags"] for s in TS["sets"].values() if s["type"] == "ifname . ipv4_addr")
+      and any(n != "guard" and s["type"] == "ipv4_addr" for n, s in TS["sets"].items()), {n: (s["type"], sorted(s["flags"])) for n, s in TS["sets"].items()})
+check("a device name that could escape its quotes never reaches nft", 'bad"name' not in rs and "garbage" not in rs)
+fresh(); KS = Kernel(); N.run = KS
+N.reconcile_net_share(CFG, DESIRED, [{"peer": K("O"), "from": []}], res(), now=NOW)
+check("nobody allowed ⇒ the network drops everyone", SH in KS.m.tables and spk("awg0", "10.8.0.3", "192.168.1.5") == "drop")
+fresh(); KS = Kernel(); N.run = KS
+N.reconcile_net_share(CFG, DESIRED, SHARE, res(), now=NOW)
+D2 = json.loads(json.dumps(DESIRED)); D2["awg0"][0]["allowed_ips"] += ",192.168.9.0/24"
+out = N.reconcile_net_share(CFG, D2, SHARE, res(), now=NOW)
+_sw = KS.loads[-1]
+_names = {n for k in ("sets", "maps", "chains") for n in (KS.m.tables.get(SH) or {}).get(k, {})}
+check("SWAP: no delete table; the guard gains the new network; `sel` repointed to generation b",
+      len(KS.loads) == 2 and "delete table" not in _sw and _sw.startswith("table inet swg_share {")
+      and sorted((x["lo"], x["hi"]) for x in KS.m.tables[SH]["sets"]["guard"]["els"]) == sorted([_span("192.168.1.0/24"), _span("192.168.9.0/24")])
+      and "flush chain inet swg_share sel\nadd rule inet swg_share sel ip daddr vmap @nets_b" in _sw, _sw[:200])
+check("…the old generation gone whole, in an order the kernel accepted, and the new network restricted at once",
+      not any(n.endswith("_a") for n in _names) and not KS.last_refused and out is D2
+      and spk("awg0", "10.8.0.6", "192.168.9.5") == "drop" and spk("awg0", "10.8.0.3", "192.168.9.5") == "accept", sorted(_names))
+
 def stub(rc=None):
     rc = rc or {}
     def run(a, input_text=None, timeout=20):
@@ -287,11 +330,6 @@ def stub(rc=None):
                else "load" if a[:2] == ["nft", "-f"] else "other")
         return CP(a, rc.get(key, 0), "", rc.get(key + "_err", ""))
     N.run = run
-def fresh():
-    N._SHARE.update(probed=False, installed=False, sig=None, plan=None, status=None, declared=False, gen="a")
-    del CALLS[:]
-def res():
-    return {"changed": 0, "errors": []}
 
 print("\n[9] D1 and the restart")
 fresh(); stub({"list": 1})
@@ -328,7 +366,7 @@ near = NOW + 30 * DAY - N.SHARE_TIMEOUT_CAP + 60
 N.reconcile_net_share(CFG, DESIRED, S2, res(), now=near)
 nl = [c for c in CALLS if c[0][:2] == ["nft", "-f"]]
 check("a date coming within the cap reloads once, now with its timeout",
-      len(nl) == 1 and '"wg1" . 192.168.7.0/24 timeout %ds' % (NOW + 30 * DAY - near) in nl[0][1], nl)
+      len(nl) == 1 and "192.168.7.0/24 timeout %ds" % (NOW + 30 * DAY - near) in nl[0][1], nl)
 del CALLS[:]
 N.reconcile_net_share(CFG, DESIRED, S2, res(), now=near + 300)
 check("…and not again", CALLS == [], CALLS)
@@ -451,6 +489,48 @@ for fork, paths in P.KEYLESS_SHARE_BUILDS.items():
         check("%s %s: a known path, every version published %s" % (fork, path, list(vers)),
               path in ("wg", "raw") and vers and all(v in published for v in vers), published)
 check("ildarmaga RAW is never in the table", "raw" not in (P.KEYLESS_SHARE_BUILDS.get("ildarmaga") or {}))
+
+print("\n[16] §16 — the shared table")
+fresh(); KS = Kernel(); N.run = KS
+_sp = N._share_plan
+N._share_plan = lambda *a: (_ for _ in ()).throw(RuntimeError("boom"))
+r, _raised, out = res(), False, None
+try:
+    out = N.reconcile_net_share(CFG, DESIRED, SHARE, r, now=NOW)
+except Exception:
+    _raised = True
+N._share_plan = _sp
+st = N._SHARE["status"] or {}
+check("A2: a fault inside the reconciler does not stop the pass — every provider the reply names is carried for nobody, and it says so",
+      not _raised and out is not None and next(x for x in out["awg0"] if x["public_key"] == K("O"))["allowed_ips"] == "10.8.0.2/32"
+      and out["wg1"] == DESIRED["wg1"] and st.get("ok") is False and st.get("why") == "exception" and "boom" in st.get("detail", "")
+      and bool(r["errors"]) and r["errors"][0].startswith("sharing:"), (_raised, st, r))
+out = N.reconcile_net_share(CFG, DESIRED, SHARE, res(), now=NOW)
+check("A2: …and the next pass restricts again", out is DESIRED and (N._SHARE["status"] or {}).get("ok") is True and SH in KS.m.tables, N._SHARE["status"])
+_nm = N._net_members
+N._net_members = lambda *a: (_ for _ in ()).throw(RuntimeError("boom"))
+fresh(); _raised = False
+try:
+    N.reconcile_net_share(CFG, DESIRED, SHARE, res(), now=NOW)
+except Exception:
+    _raised = True
+N._net_members = _nm
+check("A2: …only when that fallback fails too does the pass abort, as before — never an unstripped ACL", _raised)
+
+SN = [{"peer": K("O"), "from": [["wg1", "10.20.0.0/16", NOW + 3600], ["wg1", "10.20.7.0/24", 0], ["wg1", "10.9.0.4/32", 0]]}]
+fresh(); KS = Kernel(); N.run = KS
+_so = ipaddress.IPv4Network.subnet_of
+if PERTURB_NESTED:
+    ipaddress.IPv4Network.subnet_of = lambda self, other: False
+N.reconcile_net_share(CFG, DESIRED, SN, res(), now=NOW)
+check("nested grantee networks on one interface load — the widest one (a prefix inside another refuses the whole load, measured)",
+      (N._SHARE["status"] or {}).get("ok") is True and not KS.last_refused
+      and spk("wg1", "10.20.7.9", "192.168.1.5") == "accept" and spk("wg1", "10.20.200.9", "192.168.1.5") == "accept", (N._SHARE["status"], KS.calls[-1:]))
+check("…the narrower one outlives it by at most a pass: gone when the /16 lapses, back in the reload that lapse causes",
+      spk("wg1", "10.20.7.9", "192.168.1.5", at=3600) == "drop"
+      and N.reconcile_net_share(CFG, DESIRED, SN, res(), now=NOW + 3601) is DESIRED
+      and spk("wg1", "10.20.7.9", "192.168.1.5") == "accept" and spk("wg1", "10.20.200.9", "192.168.1.5") == "drop")
+ipaddress.IPv4Network.subnet_of = _so
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)

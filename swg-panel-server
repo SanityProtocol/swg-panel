@@ -5242,27 +5242,31 @@ def reach_level_set(rec, body):
 
 def dev_reach_guarded(node_rec, snap):
     """{interface: "user" | "none"} — the client interfaces on a node that are NOT at Everyone, or {} when the node gets no
-    `dev_reach` at all: it cannot enforce one (no `net_deps.reach`, A10), or every level on it is an explicit Everyone (D1).
+    `dev_reach` at all: it cannot enforce one (`net_deps.reach` below 2 — the compact reply, §14, §16 B1; A10), or every level on it
+    is an explicit Everyone (D1). ⚠️ A stored level this panel does not know (a hand edit, a transfer from a newer panel) is Nobody,
+    said here (§16 A4) — the one direction that cannot open a device by mistake.
 
     ⚠️ FROM THE NODE RECORD, NOT THE SNAPSHOT (§10.8 Round 3, reversed in review): a snapshot that briefly lacked an interface
     would have taken its protection away for that pass. The record is the panel's mirror of what the node manages (T-17)
     and does not blink; mesh links carry `system` there. An interface the node does not run is skipped by the node."""
     nd = (snap or {}).get("net_deps")
-    if not (isinstance(nd, dict) and nd.get("reach")):
+    rv = nd.get("reach") if isinstance(nd, dict) else None
+    if not (type(rv) is int and rv >= 2):
         return {}
     rec = node_rec if isinstance(node_rec, dict) else {}
     levels = {ifn: ov.get("reach") or "user" for ifn, ov in (rec.get("ifaces") or {}).items()
               if isinstance(ov, dict) and not ov.get("system")}
     for fam in ("wdtt", "csqtt"):
         levels.update((ifn, inst.get("reach") or "user") for ifn, inst in (rec.get(fam) or {}).items() if isinstance(inst, dict))
-    return {ifn: lv for ifn, lv in levels.items() if lv != "everyone"}
+    return {ifn: (lv if lv in REACH_LEVELS else "none") for ifn, lv in levels.items() if lv != "everyone"}
 
 
-def dev_reach_for_node(roster, node_rec, nid, snap, carry=None, compact=False):
-    """The sync reply's `dev_reach` for one node (§10.3), or {} — and the reply then carries no key at all (D1):
+def dev_reach_for_node(roster, node_rec, nid, snap, carry=None):
+    """The sync reply's `dev_reach` for one node (§14.1 — the one shape, §16 B1), or {} — and the reply then carries no key (D1):
 
         {"ifaces": [<interface not at Everyone>, …],
-         "zones":  [{"to": [<device address on a "user" interface>, …], "from": [[<device>, <prefix>], …]}, …]}
+         "users":  [[[<device>, <prefix>], …], …],                     # each user's sources ON THIS NODE, once
+         "zones":  [{"to": [<device address on a "user" interface>, …], "users": [<index into users>, …]}, …]}
 
     Who may open a connection to a device at "user": the live deployments ON THIS NODE of its owner and of every user who
     shares a group with the owner (A2, A5), each as P5's source (A6) — its tunnel /32 on its interface, the networks it
@@ -5328,18 +5332,11 @@ def dev_reach_for_node(roster, node_rec, nid, snap, carry=None, compact=False):
             n = ipaddress.ip_network(s[1])
             order[s] = (s[0], int(n.network_address), n.prefixlen)
         return order[s]
-    if compact:
-        # §14.1 — to a node reporting net_deps.reach >= 2: each user's sources once, zones naming users by index.
-        uids = sorted({u for us in zones for u in us})
-        idx = {u: i for i, u in enumerate(uids)}
-        out = [{"to": sorted(to, key=ipaddress.ip_address), "users": sorted(idx[u] for u in us)} for us, to in zones.items()]
-        out.sort(key=lambda z: ipaddress.ip_address(z["to"][0]))
-        return {"ifaces": sorted(guarded), "users": [[list(s) for s in sorted(src[u], key=skey)] for u in uids], "zones": out}
-    out = [{"to": sorted(to, key=ipaddress.ip_address),
-            "from": [list(s) for s in sorted({s for u in us for s in src[u]}, key=skey)]}
-           for us, to in zones.items()]
+    uids = sorted({u for us in zones for u in us})
+    idx = {u: i for i, u in enumerate(uids)}
+    out = [{"to": sorted(to, key=ipaddress.ip_address), "users": sorted(idx[u] for u in us)} for us, to in zones.items()]
     out.sort(key=lambda z: ipaddress.ip_address(z["to"][0]))
-    return {"ifaces": sorted(guarded), "zones": out}
+    return {"ifaces": sorted(guarded), "users": [[list(s) for s in sorted(src[u], key=skey)] for u in uids], "zones": out}
 
 
 def network_routes_clean(roster, peer, raw, snaps):
@@ -24623,8 +24620,7 @@ class Handler(BaseHTTPRequestHandler):
         _dr_on = snap is not None and bool(dev_reach_guarded(node, snap))
         _carry = node_networks(roster, nid, snap)["carry"] if (_share_any or (_routes_any and _dr_on)) else {}
         _nshare = net_share_for_node(roster, nid, _carry, snap) if _share_any else []
-        _rv = (snap.get("net_deps") or {}).get("reach") if snap is not None else None
-        _dreach = dev_reach_for_node(roster, node, nid, snap, _carry, compact=type(_rv) is int and _rv >= 2) if _dr_on else {}
+        _dreach = dev_reach_for_node(roster, node, nid, snap, _carry) if _dr_on else {}
         # Bind the two self-contained desired sets once: the removal lists below subtract them, so an iface name the
         # operator has reused can never be sent as "remove this" and "run this" in the same reply.
         # The panel-wide fallback VK link, resolved HERE so both families authorise exactly what the operator's

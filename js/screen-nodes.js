@@ -1003,7 +1003,7 @@ export function reachChip(node, iface, lv) {
   const st = snap.dev_reach;
   const live = Store.recon.nodeStatus[node] === "live";
   const guarded = live && lv !== "everyone";
-  const off = guarded && !(snap.net_deps || {}).reach;
+  const off = guarded && !((snap.net_deps || {}).reach >= 2);   // 2: the compact reply (§16 B1); a node below it is sent nothing
   // A refused reload keeps the previous table (§11.2 F3) — not open, not this setting: its own word, still red.
   const stale = guarded && !off && !!(st && st.ok === false && st.stale);
   const failed = guarded && !off && !stale && !!(st && st.ok === false && (st.ifaces || []).includes(iface));

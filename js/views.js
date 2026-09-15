@@ -57,7 +57,7 @@ export function ReachField({ node, iface, value, onChange, create, unvouched, un
   let status = null;
   // Only a node reporting now is believed: a stale snapshot says nothing about what is in force.
   if (!create && node && value !== "everyone" && Store.recon.nodeStatus[node] === "live") {
-    if (!(snap.net_deps || {}).reach) status = html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Not enforced on {node} — it runs an older version. Update it.", { node: nname })}</span></div>`;
+    if (!((snap.net_deps || {}).reach >= 2)) status = html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Not enforced on {node} — it runs an older version. Update it.", { node: nname })}</span></div>`;
     else if (st && st.ok === false && st.stale) status = html`<div class="formmsg err">${reachStaleText(nname, st)}</div>`;
     else if (st && st.ok === false && mine) status = html`<div class="formmsg err">${T("Couldn't apply on {node}: {detail}", { node: nname, detail: st.detail || st.why || "" })}</div>`;
     else if (skipped) status = html`<div class="notice warn"><${Ic} i="warn"/><span>${reachSkipText(nname, skipped)}</span></div>`;
