@@ -446,6 +446,7 @@ function GroupsView({ modeSw, force }) {
       <button class="btn btn-primary" onClick=${openCreateGroup}><span class="plus"><${Ic} i="plus"/></span> ${T("New group")}</button>
     </div>
     ${secTitle(T("Groups"), list.length, false)}
+    <p class="hint grp-hint">${T("Members of a group reach each other's devices on interfaces set to “Same user and their groups”, and a network can be shared with the whole group.")}</p>
     ${!all.length ? html`<div class="empty"><b>${T("No groups yet")}</b>${T("Put people in a group to share a network with all of them at once, from a device's Networks window.")}</div>`
       : !list.length ? html`<div class="empty"><b>${T("Nothing matches")}</b>${T("Clear the search.")}</div>`
       : html`<div class="grps">${list.slice((page - 1) * pageSize, page * pageSize).map(row)}</div>`}

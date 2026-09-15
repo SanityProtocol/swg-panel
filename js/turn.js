@@ -26,7 +26,7 @@ import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnProxi
          subnetServerAddr, suggestSubnet, ghostIface } from "./model.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules, reportDropped, rulesSummary } from "./routing.js";
-import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop, dropRate } from "./views.js";
+import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop, dropRate, ReachField } from "./views.js";
 import { IfaceThroughput, RangedHistory, lossColor } from "./charts.js";
 import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, subFeatureOn,
          ensureVaultUnlocked, wdttResealForNode } from "./crypto.js";
@@ -2046,6 +2046,7 @@ export function EditWdttSheet({ node, iface }) {
   const wgperr = portErrMsg(node, wgPort, [cfg.wg_port, w.wg_port, _dtls]);   // live collision check (this instance's own WG + DTLS ports don't count)
   const [eg, setEg] = useState(() => egressInit(cfg));
   const [blk, setBlk] = useState(() => [...(cfg.block || [])]);
+  const [reach, setReach] = useState(cfg.reach || "user");   // device access (§10.6) — absent is "user"
   const [disc, setDisc] = useState({ routing: true, filters: false });   // Routing opens by default (only shown in Smart mode)
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
@@ -2056,7 +2057,7 @@ export function EditWdttSheet({ node, iface }) {
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() };
     Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, ...egressBody(eg) })
+    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...egressBody(eg) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4; busy → applied via trackIfaceOps
       .catch(e => fail((e && e.message) || T("save failed")));
   };
@@ -2101,6 +2102,7 @@ export function EditWdttSheet({ node, iface }) {
       open=${disc.routing} onToggle=${() => tog("routing")}>
       <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
     <//>` : null}
+    <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
       summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
@@ -2305,6 +2307,7 @@ export function EditCsqttSheet({ node, iface }) {
   const cfg = (nrec.csqtt_cfg || {})[iface] || {};
   const c = ((Store.stats[node] || {}).csqtt || []).filter(Boolean).find(x => x.iface === iface) || {};
   const tunAddr = cfg.tun_addr || c.tun_addr || "";
+  const [reach, setReach] = useState(cfg.reach || "user");   // device access (§10.6) — absent is "user"
   const oldListen = cfg.listen || c.listen || "";
   const emode = nrec.routing_mode || "kernel";
   const [eg, setEg] = useState(() => egressInit(cfg));
@@ -2316,7 +2319,7 @@ export function EditCsqttSheet({ node, iface }) {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: oldListen, block: blk, ...egressBody(eg) })
+    api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...egressBody(eg) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
@@ -2344,6 +2347,7 @@ export function EditCsqttSheet({ node, iface }) {
       open=${disc.routing} onToggle=${() => tog("routing")}>
       <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
     <//>` : null}
+    <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
       summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>

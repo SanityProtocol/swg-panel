@@ -1691,6 +1691,7 @@ export function PanelSettingsScreen() {
   const [mtu, setMtu] = useState(String(idf.mtu || 1280));
   const [ka, setKa] = useState(String(idf.keepalive || 25));
   const [awgDef, setAwgDef] = useState(() => ({ ...(idf.awg_params || {}) }));   // new-interface AWG obfuscation
+  const [reachDef, setReachDef] = useState(idf.reach || "user");   // device access (§10.6): the level the create sheet preselects
   // only FILLED cells count: a blank one means "leave it to the node", so clearing a cell must read as
   // back-to-default rather than as a change, and must not be sent as an empty override.
   const awgTrim = o => AWG_KEYS.reduce((a, k) => { const v = String((o || {})[k] ?? "").trim(); if (v) a[k] = v; return a; }, {});
@@ -2082,7 +2083,7 @@ export function PanelSettingsScreen() {
       const r = await api.panelSettings({
         _ev: { first: (dirtySecs[0] || [""])[0], sections: dirtySecs.map(([s]) => secLabel[s]).join(", ") },   // display-only: which sections changed (drives the "Settings changed" activity row)
         interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25,
-          awg_params: awgTrim(awgDef) },
+          awg_params: awgTrim(awgDef), reach: reachDef },
         mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
         providers: provEnabled,
         block_providers: blockProvEdits,
@@ -2319,7 +2320,7 @@ const sectionLabel = k => ({
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
     sec === "security" ? secChanged() :
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).filter(p => !p.builtin).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
-    sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || JSON.stringify(awgTrim(awgDef)) !== JSON.stringify(awgTrim(idf.awg_params || {})) || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
+    sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || JSON.stringify(awgTrim(awgDef)) !== JSON.stringify(awgTrim(idf.awg_params || {})) || reachDef !== (idf.reach || "user") || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
     sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || tunit !== (ps.throughput_units === "bits" ? "bits" : "bytes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
@@ -2787,6 +2788,19 @@ const sectionLabel = k => ({
           <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder=${T("https://8.8.8.8/dns-query, 1.1.1.1")}/><div class="hint">${T("Comma-separated")}</div></div>
           <div class="row2"><div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
             <div class="field"><label>${T("Persistent keepalive (s)")}</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div></div>
+          ${(() => {
+            // DEVICE ACCESS §10.6 — preselects the level on the create sheet; it never changes an existing interface, and says so
+            // with the number that answers "what did I just not change?".
+            const label = T("Who can open connections to devices on new interfaces");
+            const everyone = (Store.nodes || []).reduce((a, nd) => a
+              + Object.values(Store.describe[nd.id] || {}).filter(mm => mm && !mm.system && mm.reach === "everyone").length
+              + Object.values(nd.wdtt_cfg || {}).filter(c => c && c.reach === "everyone").length
+              + Object.values(nd.csqtt_cfg || {}).filter(c => c && c.reach === "everyone").length, 0);
+            return html`<div class="field reachfield"><label>${label}</label>
+              <div class="dpsw netsw-share" role="radiogroup" aria-label=${label}>${[["everyone", T("Everyone on this node")], ["user", T("Same user and their groups")], ["none", T("Nobody")]].map(([mv, l]) => html`<button type="button" role="radio"
+                aria-checked=${reachDef === mv} class=${reachDef === mv ? "on" : ""} onClick=${() => setReachDef(mv)}>${l}</button>`)}</div>
+              <div class="hint">${T("Applies to interfaces created from now on. Interfaces set to Everyone on this node today: {n}.", { n: everyone })}</div></div>`;
+          })()}
             <${Disclosure} title=${T("AmneziaWG obfuscation")}
               summary=${AWG_KEYS.some(k => String(awgDef[k] ?? "").trim() !== "") ? T("settings|customised") : T("settings|built-in")}
               open=${awgOpen} onToggle=${() => setAwgOpen(o => !o)}>

@@ -27,7 +27,7 @@ import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCac
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules,
          SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog, reportDropped, rulesSummary, targetLabel } from "./routing.js";
 import { rulesToRows } from "./rulerows.js";
-import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, LossPop, meshHealth } from "./views.js";
+import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, LossPop, meshHealth, ReachField } from "./views.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
@@ -988,6 +988,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   // the panel-wide default. The sheet posts all three unconditionally, so an unseeded field is not a blank
   // the server ignores, it is the default overwriting what the operator chose. See openRecreateRekey.
   const [dns, setDns] = useState(pre && pre.dns != null ? pre.dns : (_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String((pre && pre.mtu) || _idf.mtu || 1280)); const [ka, setKa] = useState(String(pre && pre.keepalive != null ? pre.keepalive : (_idf.keepalive || 25)));
+  const [reach, setReach] = useState(_idf.reach || "user");   // device access (§10.6): preselected from the panel-wide default
   const [conf, setConf] = useState("");
   const ips = ipChoices(nrec);
   // No creation seed: a new interface starts on AUTO and INHERITS the node's default exit live, exactly as
@@ -1083,7 +1084,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       // The form takes the SUBNET (10.8.0.0/24) like wg/awg; the server lives on the first host (.1) — derive it here.
       const _dtlsHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.wdttSet({ node, iface: nm, wg_addr: subnetServerAddr(subnet.trim()), listen: _dtlsHost + ":" + (port.trim() || "56000"),
-        wg_port: wgPort.trim() || "56001", fork, block: blk, ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
+        wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
     } else if (isCsqtt) {
       // csqtt interface: ONE record — writes the same /api/csqtt/set the Turn-proxies card edits. Raw-TUN, so no
       // internal WG port and no fork; takes the SUBNET like wg/awg (server .1 derived), a UDP DTLS listen, a pw cap.
@@ -1093,7 +1094,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       if (maxPw.trim() && !/^\d+$/.test(maxPw.trim())) return fail(T("Max passwords must be a number."));
       const _lHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.csqttSet({ node, iface: nm, tun_addr: subnetServerAddr(subnet.trim()), listen: _lHost + ":" + (port.trim() || "46000"),
-        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, ...egressBody(eg) });
+        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...egressBody(eg) });
     } else {
       const nm = iface.trim();
       if (!nm || /[\s/]/.test(nm)) return fail(T("Interface name is required (no spaces or /)."));
@@ -1101,7 +1102,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail(T("Listen port must be a number."));
       const hostVal = ipPickerVal(hostSel, hostCustom);
       r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: hostVal,
-        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, ...egressBody(eg) });
+        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, reach, ...egressBody(eg) });
     }
     if (!r.ok) return fail(srvText(r) || T("Request failed."));
     reportDropped(r);   // §5.4 — create carries a routing block too (the new-interface sheet has the field)
@@ -1213,6 +1214,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         open=${disc.routing} onToggle=${() => tog("routing")}>
         <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
       <//>` : null}
+      <${ReachField} value=${reach} onChange=${setReach} create=${true}/>
       <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
         summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
         open=${disc.filters} onToggle=${() => tog("filters")}>
@@ -1550,6 +1552,7 @@ export function EditIfaceSheet({ node, iface }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const [eg, setEg] = useState(() => egressInit(meta));
   const [blk, setBlk] = useState(() => [...(meta.block || [])]);   // active block-category ids (Block-traffic section)
+  const [reach, setReach] = useState(meta.reach || "user");         // device access (§10.6) — absent is "user"
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
   const [awg, setAwg] = useState(() => Object.assign({}, meta.awg_params || {}));
   const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
@@ -1559,7 +1562,7 @@ export function EditIfaceSheet({ node, iface }) {
   const notup = !!idown || istopped;         // either way: Save brings it up; footer offers Start
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async () => {
-    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, ...egressBody(eg) };
+    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, reach, ...egressBody(eg) };
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
     // down → "start" (real bring-up); up → "apply" live (no restart). Optimistic: flip the lifecycle +
     // close the modal(s) NOW so the detail page shows starting/applying the instant Save is pressed.
@@ -1590,8 +1593,8 @@ export function EditIfaceSheet({ node, iface }) {
     doSave();
   };
   // enable Save only when something would change — mirror doSave()'s body; a down/stopped iface always allows Save (= bring-up)
-  const _ifBody = { endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), ...egressBody(eg) };
-  const _ifOrig = { endpoint_host: epHost, listen_port: String(meta.desired_port || meta.listen_port || ""), dns: (meta.dns || []).join(", "), mtu: String(meta.mtu || 1280), keepalive: String(meta.keepalive || 25), ...egressBody(egressInit(meta)) };
+  const _ifBody = { endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), reach, ...egressBody(eg) };
+  const _ifOrig = { endpoint_host: epHost, listen_port: String(meta.desired_port || meta.listen_port || ""), dns: (meta.dns || []).join(", "), mtu: String(meta.mtu || 1280), keepalive: String(meta.keepalive || 25), reach: meta.reach || "user", ...egressBody(egressInit(meta)) };
   const _awgTrim = src => AWG_ORDER.reduce((o, k) => { const v = String((src || {})[k] == null ? "" : (src || {})[k]).trim(); if (v) o[k] = v; return o; }, {});
   const ifaceDirty = notup
     || JSON.stringify(_ifBody) !== JSON.stringify(_ifOrig)
@@ -1684,6 +1687,7 @@ export function EditIfaceSheet({ node, iface }) {
       open=${disc.routing} onToggle=${() => tog("routing")}>
       <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
     <//>` : null}
+    <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
       summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>

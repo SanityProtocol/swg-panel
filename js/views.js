@@ -30,6 +30,41 @@ import htm from "htm";
 
 const html = htm.bind(h);
 
+// ── DEVICE ACCESS (docs/DEVICE-ACCESS-PLAN.md §10.6) ────────────────────────────────────────────────────────────────────
+// Who may OPEN a connection to a device on an interface — judged at the destination, never the source. Absent is "Same
+// user and their groups": every interface that predates this was isolated on upgrade (A3). The line under the control is
+// the node's own word (snapshot `dev_reach`), never the panel's guess. Lives here because the interface sheets (iface.js)
+// and the WDTT/csqtt sheets (turn.js) both render it, and iface.js already imports turn.js.
+export const reachOpts = () => [["everyone", T("Everyone on this node")], ["user", T("Same user and their groups")], ["none", T("Nobody")]];
+export function ReachField({ node, iface, value, onChange, create, unvouched }) {
+  const label = T("Who can open connections to devices here");
+  const snap = node ? (Store.stats[node] || {}) : {};
+  const st = snap.dev_reach;
+  const nname = node ? Store.nodeName(node) : "";
+  const mine = !!(st && (st.ifaces || []).includes(iface));
+  const when = s => { try { return new Date(s * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+  let status = null;
+  // Only a node reporting now is believed: a stale snapshot says nothing about what is in force.
+  if (!create && node && value !== "everyone" && Store.recon.nodeStatus[node] === "live") {
+    if (!(snap.net_deps || {}).reach) status = html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Not enforced on {node} — it runs an older version. Update it.", { node: nname })}</span></div>`;
+    else if (st && st.ok === false && mine) status = html`<div class="formmsg err">${T("Couldn't apply on {node}: {detail}", { node: nname, detail: st.detail || st.why || "" })}</div>`;
+    else if (st && st.ok && mine) status = html`<div class="hint">${T("Packets to devices here stopped since {when}: {n}", { when: when(st.since), n: (st.blocked || {})[iface] || 0 })}</div>`;
+    else status = html`<div class="hint">${T("Applies on {node}'s next sync.", { node: nname })}</div>`;
+  }
+  return html`<div class="field reachfield">
+    <label>${label}</label>
+    <div class="dpsw netsw-share" role="radiogroup" aria-label=${label}>${reachOpts().map(([m, l]) => html`<button type="button" role="radio"
+      aria-checked=${value === m} class=${value === m ? "on" : ""} onClick=${() => onChange(m)}>${l}</button>`)}</div>
+    <div class="hint">${value === "everyone"
+      ? T("Any device on this node can open connections to devices here. Internet access and networks behind devices are not affected.")
+      : value === "none"
+      ? T("No other device can open connections to devices here; their own connections still work. Internet access and networks behind devices are not affected.")
+      : T("A device here can be reached by its user's other devices on this node and by users who share a group with them. Internet access and networks behind devices are not affected.")}</div>
+    ${unvouched && value === "user" ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This server build can't prove which user a device belongs to, so no other device can reach any device here.")}</span></div>` : null}
+    ${status}
+  </div>`;
+}
+
 // `group` collapses the grid to ONE row per peer (its primary deployment) with the rest behind a +N —
 // the same +N the node/interface filters already produce, but chosen rather than a side effect of
 // filtering. A peer on five interfaces is five rows here by design (this is the DEPLOYMENT view); the

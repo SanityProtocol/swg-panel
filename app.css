@@ -1460,6 +1460,12 @@ button.nstat.asbtn:hover{text-decoration:underline}
    exits" (blue) from "another node exits" (cyan/purple), and the icon + the exit's own name carry the rest.
    Its own class so decision 14's per-exit colour has somewhere to land without inventing a hue now. */
 .egb-exit{color:#5B8CFF}
+.egb-reach-everyone{color:var(--warn)}    /* device access: everyone on the node may open connections here — the open one */
+.egb-reach-user,.egb-reach-none{color:var(--dim)}
+.egb-reach-bad{color:var(--dangling)}     /* a level the node is not enforcing, whatever it is set to */
+.reachfield .dpsw{margin:2px 0 8px}
+.reach-notice .iconbtn{margin-left:auto;flex:none}
+.grp-hint{margin:-6px 2px 12px}
 .egb-gone{color:var(--unknown)}           /* …and the exit it named is gone: stated, never shown as `direct` */
 /* on a node-connection card, the cascade badge + status dot sit at the TOP of the header (flex-start) so the
    dot is equidistant from the card's top and right borders (both = the card padding), not centred on the name */

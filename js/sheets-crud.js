@@ -1409,9 +1409,15 @@ function NetworksSheet({ pid }) {
       <input class=${"mono" + (refusals.length ? " bad" : "")} value=${draft} onInput=${e => setDraft(e.target.value)}
         placeholder="192.168.1.0/24, 10.20.0.0/16" autocomplete="off" spellcheck="false" autofocus/>
       <div class="hint">${T("Networks this device routes for, like the office LAN behind a router. Clients on the same node reach them through it.")}</div>
-      ${/* Feature 11: peer-to-peer needs nothing built — two devices on a node already reach each other — and
-            operators do not know that. Said here, where someone reaching for "connect devices" will look. */""}
-      <div class="hint">${T("Devices on the same node already reach each other at their tunnel addresses — that needs nothing here.")}</div>
+      ${/* Feature 11: peer-to-peer needs nothing built — two devices on a node reach each other — and operators do not know
+            that. Said here, where someone reaching for "connect devices" will look. ⚠️ DEVICE ACCESS (§10.6): only TRUE where
+            every interface this device is on is at Everyone; anywhere else its interface decides, and the sentence says so. */""}
+      <div class="hint">${(peer.targets || []).filter(t => t && t.node && t.iface).every(t => {
+          const nr = (Store.nodes || []).find(x => x.id === t.node) || {};
+          const c = (nr.wdtt_cfg || {})[t.iface] || (nr.csqtt_cfg || {})[t.iface];
+          return ((c ? c.reach : (Store.ifaceMeta(t.node, t.iface) || {}).reach) || "user") === "everyone"; })
+        ? T("Devices on the same node already reach each other at their tunnel addresses — that needs nothing here.")
+        : T("Other devices reach this one at its tunnel address only as its interface allows — “Who can open connections to devices here”, in the interface's settings.")}</div>
       ${!want.length && stored.length ? html`<div class="hint">${T("Saving with no networks removes them — you'll be asked first.")}</div>` : null}
       ${stale ? html`<div class="formmsg err">${T("Someone changed these networks while this window was open. Cancel and open it again to see the latest.")}</div>` : null}
       ${rep && rep.error ? html`<div class="formmsg err">${rep.error}</div>` : null}

@@ -837,6 +837,7 @@ export function NodeDetail({ node: rawName }) {
                 : wcfg.egress_mode === "smart"
                 ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (wcfg.routing || []).filter(r => r.action === "exit" || r.action === "dev").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                 : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
+              <div class="ifrow"><span class="l">${T("Reachable by")}</span><span class="r">${reachChip(name, w.iface, wcfg.reach)}</span></div>
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${w.iface} orphans=${0} orphHref=${href}
                     trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
@@ -893,6 +894,7 @@ export function NodeDetail({ node: rawName }) {
                 : ccfg.egress_mode === "smart"
                 ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (ccfg.routing || []).filter(r => r.action === "exit" || r.action === "dev").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                 : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
+              <div class="ifrow"><span class="l">${T("Reachable by")}</span><span class="r">${reachChip(name, c.iface, ccfg.reach)}</span></div>
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${c.iface} orphans=${0} orphHref=${href}
                     trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
@@ -961,6 +963,7 @@ export function NodeDetail({ node: rawName }) {
                     : m.egress_mode === "smart"
                     ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (m.routing || []).filter(r => r.action === "exit" || r.action === "dev").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                     : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
+                  <div class="ifrow"><span class="l">${T("Reachable by")}</span><span class="r">${reachChip(name, ifn, m.reach)}</span></div>
                   <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                     ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph} orphHref=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}
                         trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>${orph ? html` <span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>(${orph})</span>` : null}`}/>`
@@ -992,6 +995,34 @@ try { matchMedia("(prefers-color-scheme: light)").addEventListener("change", () 
 
 
 
+// DEVICE ACCESS (docs/DEVICE-ACCESS-PLAN.md §10.6) — the level on an interface card, in the egress chip's idiom. Colour says
+// exposure: Everyone is the open one; a level the node is not enforcing is the red one, whatever it is set to.
+export function reachChip(node, iface, lv) {
+  lv = lv || "user";
+  const snap = Store.stats[node] || {};
+  const st = snap.dev_reach;
+  const live = Store.recon.nodeStatus[node] === "live";
+  const off = live && lv !== "everyone" && !(snap.net_deps || {}).reach;
+  const failed = live && lv !== "everyone" && !!(st && st.ok === false && (st.ifaces || []).includes(iface));
+  if (off || failed) return html`<span class="egb egb-reach-bad" title=${off ? T("Not enforced on {node} — update it", { node: Store.nodeName(node) })
+    : T("Couldn't apply on {node}: {detail}", { node: Store.nodeName(node), detail: st.detail || st.why || "" })}><${Ic} i="warn"/>${T("reach|not enforced")}</span>`;
+  return lv === "everyone" ? html`<span class="egb egb-reach-everyone" title=${T("Everyone on this node can open connections to devices here")}><${Ic} i="globe"/>${T("reach|everyone")}</span>`
+    : lv === "none" ? html`<span class="egb egb-reach-none" title=${T("Nobody can open connections to devices here")}><${Ic} i="stop"/>${T("reach|nobody")}</span>`
+    : html`<span class="egb egb-reach-user" title=${T("Only the same user's devices and their groups can open connections to devices here")}><${Ic} i="users"/>${T("reach|user + groups")}</span>`;
+}
+// Shown while some interface in the fleet has stopped packets, until this browser dismisses it (a per-viewer convenience —
+// no server field). The history ("it used to be everyone") is the changelog's: a fresh install never had it (§10.8 Round 7).
+const REACH_NOTICE_KEY = "swg_reach_notice_dismissed";
+let reachNoticeGone = (() => { try { return localStorage.getItem(REACH_NOTICE_KEY) === "1"; } catch (_) { return false; } })();
+function ReachNotice() {
+  if (reachNoticeGone) return null;
+  const n = (Store.nodes || []).reduce((a, nd) => { const st = (Store.stats[nd.id] || {}).dev_reach;
+    return a + (st && st.ok ? Object.values(st.blocked || {}).reduce((x, v) => x + (v || 0), 0) : 0); }, 0);
+  if (!n) return null;
+  const dismiss = () => { reachNoticeGone = true; try { localStorage.setItem(REACH_NOTICE_KEY, "1"); } catch (_) { /* ignore */ } Store.apply(); };
+  return html`<div class="notice reach-notice"><${Ic} i="info"/><span>${T("Devices now reach only their own user's devices and their groups' — {n} packets to other devices have been stopped. Put users who should reach each other in a group, or set an interface to Everyone.", { n })}</span>
+    <button type="button" class="iconbtn" title=${T("Dismiss")} aria-label=${T("Dismiss")} onClick=${dismiss}><${Ic} i="x"/></button></div>`;
+}
 export function NodesScreen() {
   useStore();
   const ns = Store.nodes || [];
@@ -1004,6 +1035,7 @@ export function NodesScreen() {
     <div class="section-title" style="margin:6px 2px 16px"><h2>${T("col|Nodes")}</h2><span class="count">${plural(ns.length, "server")}</span>
       <span class="nodehint">${entryServersRun()}</span><span class="grow"></span>
       <button class="btn btn-primary" onClick=${openNodeCreate}><span class="plus"><${Ic} i="plus"/></span> ${T("Add node")}</button></div>
+    <${ReachNotice}/>
     ${!ns.length ? html`<div class="empty"><b>${T("No nodes yet")}</b>${T("Add your first entry server — you'll get a one-time command to run on it.")}</div>`
       : html`<div class="nodegrid" ...${nReorder.container()}>${ns.map(n => html`<${NodeCard} key=${n.id} n=${n} reorder=${nReorder}/>`)}</div>`}
   </div>`;
