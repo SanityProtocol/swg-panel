@@ -593,7 +593,10 @@ check("…and the next swap alternates back to a", N._REACH["gen"] == "a" and "v
 N.reconcile_dev_reach(CFG, {"ifaces": ["wg0"], "zones": []}, res())
 check("subnets no longer protected leave the guard in the swap", "delete element inet swg_reach guard { 10.9.0.0/24, 10.66.67.0/24, 10.77.0.0/24, 10.78.0.0/24 }"
       in K.loads[-1] and "add element" not in K.loads[-1], K.loads[-1][-300:])
+K.counters["c%d" % N._REACH["slots"]["awg0"]] = 7
 N.reconcile_dev_reach(CFG, WIRE, res())
+check("an interface protected AGAIN reports its count at once (7), not a routing pass later (§11.8, found live)",
+      (N._REACH["status"] or {}).get("blocked", {}).get("awg0") == 7, N._REACH["status"])
 check("…and arrive in it again", "add element inet swg_reach guard { 10.9.0.0/24, 10.66.67.0/24, 10.77.0.0/24, 10.78.0.0/24 }" in K.loads[-1]
       and not re.findall(r"counter c\d+ \{ \}", K.loads[-1]))
 CFG["interfaces"]["wg7"] = {"conf": conf("wg7", "10.21.0.1/24")}

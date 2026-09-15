@@ -3516,12 +3516,19 @@ def reconcile_dev_reach(node_cfg, wire, res):
                       status={"ok": False, "why": "nft_failed", "detail": detail, "ifaces": plan["ifaces"],
                               **({"skipped": dict(_REACH["skipped"])} if _REACH["skipped"] else {})})   # review R3
         return
+    readded = swap and [n for n in plan["ifaces"] if n not in _REACH["loaded"] and n in _REACH["slots"]]
     if not swap:
         _reach_fold()                                 # a declare zeroed the kernel's counters: carry what was read into the base
         _REACH["base"] = {n: _REACH["base"].get(n, 0) for n in plan["ifaces"]}
     _REACH.update(installed=True, declared=True, sig=key, plan=plan, gen=g, slots=slots, loaded=list(plan["ifaces"]),
                   since=_REACH["since"] or int(time.time()), stale=None)
     res["changed"] += 1
+    if readded:
+        # An interface protected AGAIN keeps its slot counter's count (a swap zeroes nothing), which the routing pass would only
+        # read up to 60 s later — the sheet read "stopped … 0" meanwhile (DEVICE-ACCESS §11.8, live). One read, only on such a swap.
+        cur = _reach_read_counters()
+        if cur is not None:
+            _REACH["live"] = cur
     _REACH["status"] = _reach_ok_status()
 
 
