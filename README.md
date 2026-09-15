@@ -47,6 +47,7 @@ subscription and no one else sitting in the middle of your traffic.
 - [Step 2 — Add your servers](#step-2--add-your-servers)
 - [Step 3 — Add users and hand out access](#step-3--add-users-and-hand-out-access)
 - [Subscriptions & access control](#subscriptions--access-control)
+- [Who can reach a device](#who-can-reach-a-device)
 - [Using it day to day](#using-it-day-to-day)
 - [Keeping it running](#keeping-it-running)
 - [A few things worth knowing](#a-few-things-worth-knowing)
@@ -261,6 +262,51 @@ Send it however you like — but treat it like a password: whoever holds it hold
 - **Rotate token** hands them a fresh link and kills the old one, without interrupting their access.
 
 You can also give a subscription an **expiry date**, and the panel warns you a few days before it runs out.
+
+## Who can reach a device
+
+Every device on a server has an address inside the tunnel, and without a rule any other device on that server
+could open connections to it — its shared folders, printer, remote desktop. Each interface has a setting for
+that, **Who can open connections to devices here**, with three levels:
+
+| Level | Who can open a connection to a device on this interface |
+|---|---|
+| **Everyone on this node** | any device on the same server |
+| **Same user and their groups** *(default)* | the owner's other devices, and the devices of people who share a group with the owner |
+| **Nobody** | no other device — the device's own connections still work |
+
+- **The default protects.** An interface nobody has set is at **Same user and their groups** — including every
+  interface that existed before this setting, so after the upgrade strangers' devices stop reaching each other.
+  **Settings → Interfaces** holds the level new interfaces start with; changing it never touches an existing
+  interface, and the same place lists the interfaces set to **Everyone on this node**.
+- **Groups.** Put people who should reach each other — a family, a team — in a group under **Users → Groups**.
+  A group only matters on interfaces set to **Same user and their groups**.
+- **You can see what it stopped.** An interface's settings show how many packets to its devices were stopped,
+  and the Nodes screen tells you while anything was.
+
+Its limits:
+
+- It never affects internet access, or the networks behind a device — those have their own "who can reach
+  them" setting.
+- A device at **Same user and their groups** or **Nobody** is never reached from another server, not even by
+  its owner's device there.
+- A WDTT or csqtt server whose build can't prove which user a device belongs to (today: csqtt 2.1.9, the WDTT
+  ildarmaga and xxcipherx builds, and qWDTT's RAW connections) treats **Same user and their groups** as
+  **Nobody**, and its settings say so.
+- The server's own LAN machines and containers can open connections only to devices at **Everyone on this
+  node**.
+- A proxy running on the server itself connects as the server, so the level does not apply to it.
+- IPv6 addresses added to a config by hand are not covered: any device on the server reaches them over IPv6.
+- With flow offloading on the server, a connection already open when a level tightens keeps working until it has
+  been idle for the offload timeout (30 s by default); new connections are refused at once.
+- The level relies on connection tracking: a host firewall rule that turns it off (NOTRACK) for client traffic
+  breaks the replies to a protected device's own connections.
+- A server running an older version doesn't enforce it: the interface shows **not enforced** until you update
+  that server.
+- Nothing is kept across a restart: after a server reboots, its devices can reach each other until it next hears
+  from the panel — seconds normally, the whole outage if the panel is unreachable.
+- Going back to a version without this setting leaves the last rules in force until the server reboots or you run
+  `nft delete table inet swg_reach` on it.
 
 ## Using it day to day
 
