@@ -5009,6 +5009,22 @@ def keyless_share_capable(fork, path, version):
     return bool(version) and version in ((KEYLESS_SHARE_BUILDS.get(fork) or {}).get(path) or ())
 
 
+def reach_unvouched_report(snap):
+    """DEVICE ACCESS (§10.6, §11.2 F4) → (instances whose REPORTED build vouches for NO path, WDTT instances with RAW on whose
+    build vouches for WG but not RAW — qWDTT 1.4.3). At "Same user and their groups" the first act as Nobody for every device
+    (A7, §10.2 R1); the second only for the devices connected over RAW. Each edit sheet says which. An instance the node does not
+    report is not named; nothing here is guessed from the record."""
+    def ok(ki, fam, path):
+        return keyless_share_capable(str(ki.get("fork") or ("csqtt" if fam == "csqtt" else "amurcanov")).strip(), path,
+                                     str(ki.get("version") or ""))
+    rep = [(fam, ki) for fam in ("wdtt", "csqtt") for ki in ((snap or {}).get(fam) or []) if isinstance(ki, dict) and ki.get("iface")]
+    none = sorted(str(ki["iface"]) for fam, ki in rep
+                  if not any(ok(ki, fam, p) for p in (("wg", "raw") if fam == "wdtt" else ("raw",))))
+    raw = sorted(str(ki["iface"]) for fam, ki in rep
+                 if fam == "wdtt" and ki.get("raw_iface") and ok(ki, fam, "wg") and not ok(ki, fam, "raw"))
+    return none, raw
+
+
 def _keyless_index(snap):
     """{(kind, iface): instance} — a node snapshot's WDTT and csqtt read-backs."""
     idx = {}
@@ -6295,6 +6311,9 @@ def _missing_ifaces(c, snap, ivk_pub=None):
                     "dns": list(ov["dns"]) if isinstance(ov.get("dns"), list) else None,
                     "keepalive": (ov["keepalive"] if isinstance(ov.get("keepalive"), int)
                                   and not isinstance(ov.get("keepalive"), bool) else None),
+                    # the device-access level the record holds, absent said out loud as "user" (A3), so a recreate never
+                    # seeds the panel-wide default over a chosen level (DEVICE-ACCESS §11.2 F1)
+                    "reach": ov.get("reach") or "user",
                     "public_key": blessed, "key_source": key_src,
                     # T-22: absent because the node is WAITING for the vault, not because anything broke.
                     # Same list, different sentence — "missing on the node" would send the operator looking
@@ -6421,7 +6440,10 @@ def _ghost_ifaces(c, snap, refs, online):
         if ov.get("_lastcfg"):               # has a saved config → surfaced (recoverable or keyless) via _missing_ifaces
             continue
         uniq = sorted(set(pids))
-        out[ifn] = {"peer_ids": uniq, "peer_count": len(uniq)}
+        out[ifn] = {"peer_ids": uniq, "peer_count": len(uniq),
+                    # DEVICE ACCESS §11.2 review R6 — a record with no saved config can still hold a chosen level; with no record
+                    # at all there is none to keep, so the recreate sheet's panel-wide default stands
+                    **({"reach": ov.get("reach") or "user"} if ifn in known else {})}
     return out
 
 # Node lifecycle status. A script (install / convert / update / uninstall) signals the panel where it is:
@@ -11192,6 +11214,12 @@ def turn_catalog_view():
                          "cli_authors": ([] if TURN_SERVERS[sid].get("kind") == "wdtt" else _TURN_CLI_AUTHORS.get(sid, ["samosvalishe"])),
                          # WDTT forks are OUR versioned builds — ship the published versions (newest first) so the SPA shows current + rollback targets
                          "wdtt_versions": [v for v, _ in _wdtt_versions(sid)],
+                         # DEVICE ACCESS §11.2 F4 — does the build a CREATE installs prove which user a device belongs to? The create
+                         # sheet warns before the instance exists; the edit sheet then reads the node's reported build instead.
+                         **({"reach_vouched": keyless_share_capable(sid, "wg", _wdtt_current_version(sid))
+                                              if TURN_SERVERS[sid].get("kind") == "wdtt"
+                                              else keyless_share_capable(sid, "raw", _csqtt_current_version())}
+                            if TURN_SERVERS[sid].get("kind") in ("wdtt", "csqtt") else {}),
                          "hidden": sid in TURN_HIDDEN_FORKS,   # in the catalog (deployed instances still resolve label/colour) but skipped by every operator-facing fork list
                          **TURN_SERVERS[sid]} for sid in TURN_SERVER_ORDER],
             "clients": {cid: {**c, "platforms": _client_platforms_resolved(c),
@@ -15751,14 +15779,8 @@ def api(method, path, qs, body, deps):
                         "lan_share": c.get("lan_share") is not False,
                         "lan_block": snap.get("lan_block") if isinstance(snap.get("lan_block"), dict) else None,
                         "net_capable": isinstance(snap.get("net_deps"), dict),
-                        # DEVICE ACCESS §10.6 — WDTT/csqtt instances whose REPORTED build vouches for no path
-                        # (`keyless_share_capable`): at "Same user and their groups" their devices are reachable by nobody
-                        # (A7, §10.2 R1), and the edit sheet says why. An instance the node does not report is not named.
-                        "reach_unvouched": sorted(
-                            str(_ki["iface"]) for _kf, _kp in (("wdtt", ("wg", "raw")), ("csqtt", ("raw",)))
-                            for _ki in (snap.get(_kf) or []) if isinstance(_ki, dict) and _ki.get("iface")
-                            and not any(keyless_share_capable(str(_ki.get("fork") or ("csqtt" if _kf == "csqtt" else "amurcanov")).strip(),
-                                                              _p, str(_ki.get("version") or "")) for _p in _kp)),
+                        # DEVICE ACCESS §10.6 + §11.2 F4 — keyless instances whose reported build can't prove a device's owner.
+                        **dict(zip(("reach_unvouched", "reach_unvouched_raw"), reach_unvouched_report(snap))),
                         # unmanaged wg/awg interfaces the node found on the box (Approach B) → adoption candidates.
                         # Split: active (offered for adopt/ignore) vs ignored (operator dismissed → Settings → Interfaces).
                         "iface_candidates": [x for x in _cands if x["name"] not in _ign],
@@ -23432,18 +23454,6 @@ class Handler(BaseHTTPRequestHandler):
                 nodes_save(Handler.deps["nodes_path"], nodes)
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid, snap)   # the snapshot gates networks: absent net_deps ⇒ /32 only (D7)
-        # NETWORKS P5 — who may reach each RESTRICTED network this node carries (docs/NETWORKS-PLAN.md §15 S6). Not even
-        # computed unless some peer restricts a network, so a panel with no share sends exactly the reply it sent (D1).
-        # DEVICE ACCESS (docs/DEVICE-ACCESS-PLAN.md §10.4) — who may open connections to the devices on this node. Absent unless
-        # the node can enforce it and some interface on it is not an explicit Everyone (D1). The networks this node carries
-        # are computed ONCE here for both passes, and only when one of them needs them (§10.8 Round 5).
-        _peers_all = [q for q in (roster.get("peers") or {}).values() if isinstance(q, dict)]
-        _routes_any = snap is not None and any(q.get("routes") for q in _peers_all)
-        _share_any = _routes_any and any(q.get("routes") and isinstance(q.get("share"), dict) for q in _peers_all)
-        _dr_on = snap is not None and bool(dev_reach_guarded(node, snap))
-        _carry = node_networks(roster, nid, snap)["carry"] if (_share_any or (_routes_any and _dr_on)) else {}
-        _nshare = net_share_for_node(roster, nid, _carry, snap) if _share_any else []
-        _dreach = dev_reach_for_node(roster, node, nid, snap, _carry) if _dr_on else {}
         _clists = {cl["id"]: cl for cl in ((Handler.deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")}
         cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {}, _clists)   # Phase 2/3: whole-fleet forward + smart plan (resolves custom-list rules)
         # Targets that fell off the 7000-band, kept for the node cards. The plan is fleet-wide, so ONE node
@@ -24584,6 +24594,21 @@ class Handler(BaseHTTPRequestHandler):
                 _wkb = (_wov2 or {}).get("key_blob") or {}
                 if _wi and _wp and _wov2 and (_wkb.get("pub") != _wp or _wkb.get("vault") != _ivk_pub):
                     _wdtt_want.append(_wi)
+        # NETWORKS P5 — who may reach each RESTRICTED network this node carries (docs/NETWORKS-PLAN.md §15 S6). Not even
+        # computed unless some peer restricts a network, so a panel with no share sends exactly the reply it sent (D1).
+        # DEVICE ACCESS (docs/DEVICE-ACCESS-PLAN.md §10.4) — who may open connections to the devices on this node. Absent unless
+        # the node can enforce it and some interface on it is not an explicit Everyone (D1). The networks this node carries
+        # are computed ONCE here for both passes, and only when one of them needs them (§10.8 Round 5).
+        # ⚠️ AFTER BOTH MIRRORS (T-17 interfaces, T-18 WDTT/csqtt, above). The guard reads the node RECORD, so the pass run
+        # before them left an interface or instance the node reported for the first time out of `dev_reach`: open for its
+        # first sync (DEVICE-ACCESS §11.2 F5). The users the T-18 mirror imports are in `roster` by now too.
+        _peers_all = [q for q in (roster.get("peers") or {}).values() if isinstance(q, dict)]
+        _routes_any = snap is not None and any(q.get("routes") for q in _peers_all)
+        _share_any = _routes_any and any(q.get("routes") and isinstance(q.get("share"), dict) for q in _peers_all)
+        _dr_on = snap is not None and bool(dev_reach_guarded(node, snap))
+        _carry = node_networks(roster, nid, snap)["carry"] if (_share_any or (_routes_any and _dr_on)) else {}
+        _nshare = net_share_for_node(roster, nid, _carry, snap) if _share_any else []
+        _dreach = dev_reach_for_node(roster, node, nid, snap, _carry) if _dr_on else {}
         # Bind the two self-contained desired sets once: the removal lists below subtract them, so an iface name the
         # operator has reused can never be sent as "remove this" and "run this" in the same reply.
         # The panel-wide fallback VK link, resolved HERE so both families authorise exactly what the operator's

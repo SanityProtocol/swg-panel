@@ -104,12 +104,12 @@ P.ev_append = lambda *a, **k: None
 AWG = {"Jc": "7", "Jmin": "50", "Jmax": "1000", "S1": "68", "S2": "149",
        "H1": "1122334455", "H2": "2", "H3": "3", "H4": "4"}
 OV = {"public_key": "PUB=", "endpoint_host": "hel.sanitygate.net", "mtu": 1420,
-      "dns": ["9.9.9.9", "149.112.112.112"], "keepalive": 15, "listen_port": 443,
+      "dns": ["9.9.9.9", "149.112.112.112"], "keepalive": 15, "listen_port": 443, "reach": "everyone",
       "awg_params": dict(AWG), "egress_mode": "exit", "exit_id": "aabbccdd",
       "_lastcfg": {"subnet": "10.10.1.0/24", "listen_port": 443, "address": "10.10.1.1/24",
                    "mtu": 1420, "awg_params": dict(AWG)}}
 # the panel-wide defaults the sheet falls back to for anything it was not seeded with
-IDF = {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25, "awg_params": {"Jc": "1", "S1": "15"}}
+IDF = {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25, "awg_params": {"Jc": "1", "S1": "15"}, "reach": "user"}
 
 
 def missing(ov=None, snap_ifaces=None):
@@ -133,6 +133,8 @@ def sheet_body(mi, node_ips=("89.167.2.2",)):
             "mtu": str(mi.get("mtu") or IDF["mtu"]),
             "keepalive": (str(mi["keepalive"]) if isinstance(mi.get("keepalive"), int)
                           else str(IDF["keepalive"])),
+            # iface.js `(pre && pre.reach) || _idf.reach` — posted unconditionally, like the three above (DEVICE-ACCESS §11.2 F1)
+            "reach": mi.get("reach") or IDF["reach"],
             # egressBody(AUTO) — empty strings, so create leaves the stored routing alone
             "egress_mode": "direct", "egress_node": "", "egress_ip": "", "wan_iface": ""}
 
@@ -159,7 +161,7 @@ def create(body, ov=None, snap_ifaces=None, idf=True):
 print("[1] the panel hands the browser every setting it holds — `ov` first, `_lastcfg` second")
 mi = missing()
 for k, want in (("listen_port", 443), ("mtu", 1420), ("endpoint_host", "hel.sanitygate.net"),
-                ("keepalive", 15), ("dns", ["9.9.9.9", "149.112.112.112"])):
+                ("keepalive", 15), ("dns", ["9.9.9.9", "149.112.112.112"]), ("reach", "everyone")):
     check("missing_ifaces carries `%s`" % k, mi.get(k) == want, "%r (want %r)" % (mi.get(k), want))
 check("…and the AmneziaWG band", (mi.get("awg_params") or {}).get("H1") == "1122334455", mi.get("awg_params"))
 # ⚠️ `ov` MUST WIN. `_lastcfg` is rebuilt from what the node last REPORTED, so a box that came back with a
@@ -190,7 +192,7 @@ print("\n[3] nothing the panel held is replaced by a fleet default")
 st, resp, after, req = create(sheet_body(mi), ov=OV)
 assert st == 200, (st, resp)
 for k, want in (("endpoint_host", "hel.sanitygate.net"), ("mtu", 1420), ("keepalive", 15),
-                ("dns", ["9.9.9.9", "149.112.112.112"]), ("listen_port", 443)):
+                ("dns", ["9.9.9.9", "149.112.112.112"]), ("listen_port", 443), ("reach", "everyone")):
     check("`%s` survives the recreate" % k, after.get(k) == want, "%r (was %r)" % (after.get(k), want))
 check("⚠️ the AmneziaWG band is not overwritten by the panel-wide default",
       (after.get("awg_params") or {}).get("H1") == "1122334455", after.get("awg_params"))
