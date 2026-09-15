@@ -2294,9 +2294,13 @@ def net_deps():
     anywhere else the network would stay open to everyone while the operator believed it restricted.
 
     `carried`: this node reports `net_carried` — the networks it has actually routed — so the panel can tell "sent" from
-    "routed" (a node without it is taken at the panel's word, as before)."""
+    "routed" (a node without it is taken at the panel's word, as before).
+
+    `reach`: this node enforces who may open connections to its devices (DEVICE-ACCESS §10). A panel sends `dev_reach` only
+    to a node that says so; anywhere else the interface reads "not enforced" (A10)."""
     res, known = _resolvers()
-    return {"panel": _PANEL_PEER.get("addr") or "", "resolvers": res, "resolvers_known": known, "share": 1, "carried": 1}
+    return {"panel": _PANEL_PEER.get("addr") or "", "resolvers": res, "resolvers_known": known, "share": 1, "carried": 1,
+            "reach": 1}
 
 
 # ───────────────────────── networks: the route reconciler ─────────────────────────
@@ -3076,6 +3080,263 @@ def net_share_verify(res, now=None):
         return
     _SHARE.update(installed=False, sig=None)
     res["errors"].append("sharing: the table was gone and could not be rebuilt: " + (r.stderr or "").strip()[:120])
+
+
+# ───────────────────────── device access (DEVICE-ACCESS P1) ─────────────────────────
+#
+# docs/DEVICE-ACCESS-PLAN.md §10. Per client interface, who may OPEN a connection to a device on it — judged at the
+# destination. The panel sends `dev_reach` only while some interface here is not at Everyone: the interfaces to protect,
+# and zones of device addresses with the sources allowed to reach them. Everything else is derived here.
+#
+#   THE REST OF A PROTECTED SUBNET IS NOBODY (§10.2 R1). The map covers each listed interface's whole subnet except this
+#       node's own address on it: a listed device jumps to its zone, every other address to that interface's `n` chain —
+#       a device the roster does not own, one on a keyless build nobody vouched for, one added since the last reply.
+#   PREROUTING `mangle - 4`, P5's reasons: a relay divert re-dials from this box where a forward hook never looks, and a
+#       drop here is spent before any mark, queue or divert. REPLIES exempt (`ct direction reply`), measured in P5 H.
+#   OPEN AND LOUD when nft refuses (A11): nothing to strip — a device cannot be withheld the way a network can.
+#   ⚠️ `dst` IS A RESERVED WORD in nft's file grammar, like `fwd` — the plan's first table never loaded (§10.1 M1). Every
+#       name here comes from a fixed grammar: dmap, pre, f<k>, c<j>, z<k>i<j>, n<j>.
+
+REACH_NFT_TABLE = "swg_reach"
+REACH_HOOK_PRI = "mangle - 4"
+_REACH = {"probed": False, "installed": False, "sig": None, "plan": None, "status": None,
+          "seen": {}, "loaded": [], "base": {}, "live": {}, "since": 0}
+
+
+def _reach_conf_addr(node_cfg, iface):
+    """A wg/awg interface's IPv4 address with its prefix, from its conf (`_iface_subnet`'s reader, keeping the host)."""
+    ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
+    try:
+        with open(ic.get("conf", "")) as f:
+            return conf_v4_address(parse_interface_section(f.read()).get("Address"))
+    except Exception:
+        return ""
+
+
+def _reach_devices(node_cfg, names):
+    """{name: [(device, network, own address)]} for the listed client interfaces this node runs: a wg/awg interface from
+    its conf, a WDTT instance (and its RAW TUN) from `wg_addr` / `raw_addr`, a csqtt instance from `tun_addr`. A mesh link
+    is never one, whatever the wire says.
+
+    ⚠️ HELD ACROSS A FAILED READ (§10.8 Round 3): a conf caught mid-rewrite would otherwise drop an interface for one pass —
+    the table reloaded open, then closed again. What this process last read for a name stands in until it reads again."""
+    import ipaddress
+    wd = cq = None
+    out = {}
+    for name in names:
+        addrs = []
+        if name in (node_cfg.get("interfaces") or {}):
+            a = _reach_conf_addr(node_cfg, name)
+            if a and _iface_is_mesh(node_cfg, name, a):
+                continue
+            addrs = [(name, a)] if a else []
+        else:
+            wd = _wdtt_load() if wd is None else wd
+            cq = _csqtt_load() if cq is None else cq
+            if name in wd:
+                raw = _wdtt_raw(wd[name])
+                addrs = [(name, wd[name].get("wg_addr") or "")] + ([(raw[1], raw[2])] if raw else [])
+            elif name in cq:
+                addrs = [(name, cq[name].get("tun_addr") or "")]
+        devs = []
+        for dev, a in addrs:
+            with contextlib.suppress(ValueError, TypeError):
+                i = ipaddress.ip_interface(str(a).strip())
+                if i.version == 4 and i.network.prefixlen < 31:
+                    devs.append((dev, i.network, i.ip))
+        if devs:
+            _REACH["seen"][name] = devs
+            out[name] = devs
+        elif name in _REACH["seen"]:
+            out[name] = _REACH["seen"][name]
+    return out
+
+
+def _reach_plan(node_cfg, wire):
+    """The table to load, or None when there is nothing to protect here:
+        {"ifaces": [name], "sets": [[(device, prefix)]], "chains": [(set, iface)], "map": [(first, last, verdict)]}
+
+    `ifaces` are the listed interfaces this node runs, sorted — index j names counter `c<j>` and chain `n<j>`. A zone's
+    address outside every listed subnet is dropped, and an address two zones name is in neither: it falls to the rest,
+    Nobody (fail closed). A source element that does not parse is dropped — fewer sources is the safe direction."""
+    import ipaddress
+    if not isinstance(wire, dict):
+        return None
+    names = sorted({n for n in (wire.get("ifaces") if isinstance(wire.get("ifaces"), list) else [])
+                    if isinstance(n, str) and _SHARE_IFNAME_RE.match(n)})
+    devices = _reach_devices(node_cfg, names)
+    ifaces, nets = [], []                                   # nets: (network, own address, j)
+    for name in names:
+        kept = False
+        for _dev, net, own in devices.get(name) or []:
+            if any(net.overlaps(n) for n, _o, _j in nets):
+                continue
+            nets.append((net, own, len(ifaces)))
+            kept = True
+        if kept:
+            ifaces.append(name)
+    if not ifaces:
+        return None
+    where = {}                                              # address → (source set, j), or None once claimed twice
+    for z in (wire.get("zones") if isinstance(wire.get("zones"), list) else []):
+        if not isinstance(z, dict):
+            continue
+        src = set()
+        for e in (z.get("from") if isinstance(z.get("from"), list) else []):
+            if isinstance(e, list) and len(e) == 2 and isinstance(e[0], str) and _SHARE_IFNAME_RE.match(e[0]):
+                pre = _net_prefix(e[1]) if isinstance(e[1], str) else ""
+                if pre:
+                    src.add((e[0], pre))
+        key = tuple(sorted(src, key=lambda s: (s[0], ipaddress.ip_network(s[1]))))
+        for a in (z.get("to") if isinstance(z.get("to"), list) else []):
+            try:
+                ip = ipaddress.ip_address(str(a).strip())
+            except ValueError:
+                continue
+            hit = next(((net, own, j) for net, own, j in nets if ip.version == 4 and ip in net), None)
+            if hit is None or ip == hit[1]:
+                continue
+            if ip in where and where[ip] != (key, hit[2]):
+                where[ip] = None
+            elif ip not in where:
+                where[ip] = (key, hit[2])
+    sets = sorted({v[0] for v in where.values() if v})
+    sidx = {s: k for k, s in enumerate(sets)}
+    chains = sorted({(sidx[v[0]], v[1]) for v in where.values() if v})
+    elems = []
+    for net, own, j in sorted(nets, key=lambda x: x[0]):
+        lo, hi = int(net.network_address), int(net.broadcast_address)
+        marks = sorted([(int(ip), "jump z%di%d" % (sidx[v[0]], v[1])) for ip, v in where.items()
+                        if v and v[1] == j and ip in net] + [(int(own), None)])
+        cur = lo
+        for n, verdict in marks:
+            if n > cur:
+                elems.append((cur, n - 1, "jump n%d" % j))
+            if verdict:
+                elems.append((n, n, verdict))
+            cur = n + 1
+        if cur <= hi:
+            elems.append((cur, hi, "jump n%d" % j))
+    return {"ifaces": ifaces, "sets": [list(s) for s in sets], "chains": chains, "map": elems}
+
+
+def _reach_ruleset(plan):
+    """The whole table as one atomic `nft -f`. Pure, so the selftest reads exactly what the kernel is handed — and the text
+    is also the signature: it is a function of the plan alone, so an unchanged plan reloads nothing."""
+    import ipaddress
+    T = REACH_NFT_TABLE
+    ip4 = lambda n: str(ipaddress.IPv4Address(n))
+    L = ["table inet %s" % T, "delete table inet %s" % T, "table inet %s {" % T]
+    L += ["  counter c%d { }" % j for j in range(len(plan["ifaces"]))]
+    for k, s in enumerate(plan["sets"]):
+        els = ", ".join('"%s" . %s' % (d, p) for d, p in s)
+        L.append("  set f%d { type ifname . ipv4_addr; flags interval;%s }" % (k, (" elements = { %s }" % els) if els else ""))
+    L.append("  map dmap { type ipv4_addr : verdict; flags interval; elements = { %s } }"
+             % ", ".join("%s : %s" % (ip4(a) if a == b else "%s-%s" % (ip4(a), ip4(b)), v) for a, b, v in plan["map"]))
+    L.append("  chain pre { type filter hook prerouting priority %s; policy accept; ip daddr vmap @dmap; }" % REACH_HOOK_PRI)
+    for k, j in plan["chains"]:
+        L.append('  chain z%di%d { ct direction reply return; iifname . ip saddr != @f%d counter name "c%d" drop; }' % (k, j, k, j))
+    for j in range(len(plan["ifaces"])):
+        L.append('  chain n%d { ct direction reply return; counter name "c%d" drop; }' % (j, j))
+    L.append("}")
+    return "\n".join(L) + "\n"
+
+
+def _reach_read_counters():
+    """{interface: packets} out of the LOADED table's named counters — one fork, O(interfaces) output (§10.1 M3). None
+    when the table is not there."""
+    r = run(["nft", "-j", "list", "counters", "table", "inet", REACH_NFT_TABLE])
+    if r.returncode != 0:
+        return None
+    out = {}
+    with contextlib.suppress(ValueError, TypeError, AttributeError):
+        for ent in json.loads(r.stdout or "{}").get("nftables") or []:
+            c = ent.get("counter") if isinstance(ent, dict) else None
+            m = re.match(r"^c(\d+)$", str((c or {}).get("name") or ""))
+            if m and int(m.group(1)) < len(_REACH["loaded"]):
+                out[_REACH["loaded"][int(m.group(1))]] = int(c.get("packets") or 0)
+    return out
+
+
+def _reach_fold():
+    """Carry the counts read so far into the base, before a reload or a rebuild zeroes the kernel's counters."""
+    for n, v in _REACH["live"].items():
+        _REACH["base"][n] = _REACH["base"].get(n, 0) + v
+    _REACH["live"] = {}
+
+
+def _reach_ok_status():
+    names = list(_REACH["loaded"])
+    return {"ok": True, "ifaces": names, "since": _REACH["since"],
+            "blocked": {n: _REACH["base"].get(n, 0) + _REACH["live"].get(n, 0) for n in names}}
+
+
+def _reach_drop_table(res):
+    r = run(["nft", "delete", "table", "inet", REACH_NFT_TABLE])
+    if r.returncode == 0 or "No such file" in (r.stderr or ""):
+        _REACH["installed"] = False
+        res["changed"] += 1
+        return
+    res["errors"].append("device access: could not remove %s: %s" % (REACH_NFT_TABLE, (r.stderr or "").strip()[:120]))
+
+
+def reconcile_dev_reach(node_cfg, wire, res):
+    """Converge who may open connections to the devices here (DEVICE-ACCESS §10.5). Runs before `reconcile` writes the
+    peers, so a device this reply adds is protected before it exists.
+
+    ⚠️ INERT WHILE EVERY LEVEL IS EVERYONE, AND SAFE ACROSS A RESTART (P5's pattern): the kernel is asked ONCE per process
+    whether a table is left over — a protection lifted while this daemon was down must not keep dropping — and never
+    again. While protecting, the table reloads only when its text changes. A load that fails leaves the devices OPEN and
+    says so (A11), and is retried on the next pass."""
+    if not _REACH["probed"]:
+        _REACH["installed"] = run(["nft", "list", "table", "inet", REACH_NFT_TABLE]).returncode == 0
+        _REACH["probed"] = True
+    plan = _reach_plan(node_cfg, wire) if wire else None
+    if not plan:
+        if _REACH["installed"]:
+            _reach_drop_table(res)
+        _REACH.update(sig=None, plan=None, status=None, loaded=[], base={}, live={}, since=0)
+        return
+    text = _reach_ruleset(plan)
+    if not _REACH["installed"] or text != _REACH["sig"]:
+        if _REACH["installed"] and _REACH["loaded"]:
+            live = _reach_read_counters()
+            if live is not None:
+                _REACH["live"] = live
+        _reach_fold()
+        r = run(["nft", "-f", "-"], input_text=text)
+        if r.returncode != 0:
+            detail = (r.stderr or "").strip()[:160]
+            _REACH.update(probed=False, sig=None, plan=None, loaded=[],
+                          status={"ok": False, "why": "nft_failed", "detail": detail, "ifaces": plan["ifaces"]})
+            res["errors"].append("device access: " + detail)
+            return
+        _REACH.update(installed=True, sig=text, loaded=list(plan["ifaces"]), since=_REACH["since"] or int(time.time()))
+        _REACH["base"] = {n: _REACH["base"].get(n, 0) for n in plan["ifaces"]}
+        res["changed"] += 1
+    _REACH["plan"] = plan
+    _REACH["status"] = _reach_ok_status()
+
+
+def dev_reach_verify(res):
+    """The routing pass's look (§10.5): ONE `list counters` — gone (a ruleset flush, a firewalld reload) ⇒ rebuilt from the
+    text already held; there ⇒ its counters read for the snapshot. Only while something is protected."""
+    if not _REACH["plan"] or not _REACH["installed"]:
+        return
+    live = _reach_read_counters()
+    if live is not None:
+        _REACH["live"] = live
+        _REACH["status"] = _reach_ok_status()
+        return
+    _reach_fold()
+    r = run(["nft", "-f", "-"], input_text=_REACH["sig"] or _reach_ruleset(_REACH["plan"]))
+    if r.returncode == 0:
+        res["changed"] += 1
+        return
+    detail = (r.stderr or "").strip()[:160]
+    _REACH.update(installed=False, sig=None,
+                  status={"ok": False, "why": "nft_failed", "detail": detail, "ifaces": _REACH["plan"]["ifaces"]})
+    res["errors"].append("device access: the table was gone and could not be rebuilt: " + detail)
 
 
 def _cascade_want_sig(fwd, exit_, smart=None, guard=(), nets=(), net_tables=()):
@@ -10643,6 +10904,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         snap["lan_block"] = dict(_LAN["status"])
     if _SHARE["status"]:                              # P5: the restriction, in force or not — absent while nothing is restricted (D1)
         snap["net_share"] = dict(_SHARE["status"])
+    if _REACH["status"]:                              # device access: in force or not — absent while every level is Everyone (D1)
+        snap["dev_reach"] = dict(_REACH["status"])
     if _NET["refused"]:                               # networks this node will not carry, and why — absent when none (D1)
         snap["net_refused"] = {p: dict(v) for p, v in _NET["refused"].items()}
     if _NET["kept"]:                                  # networks this node routes right now — absent when none (D1)
@@ -16633,6 +16896,14 @@ def main():
                 # A network this node will not carry never reaches the ACL (see net_filter_desired), and a RESTRICTED one
                 # reaches it only while its restriction is in force (reconcile_net_share, NETWORKS P5 — restriction first,
                 # ACL second). Both hand back the very object they were given when there is nothing to do.
+                # DEVICE ACCESS — who may open connections to the devices here (docs/DEVICE-ACCESS-PLAN.md §10). After the
+                # WDTT/csqtt records above are written (their subnets are read from them), before `reconcile` adds peers,
+                # so a device this reply adds is protected before it exists. A fault here must never stop the peer write.
+                _dar = {"changed": 0, "errors": []}
+                try:
+                    reconcile_dev_reach(node_cfg, reply.get("dev_reach"), _dar)
+                except Exception as e:
+                    _dar["errors"].append("device access: " + str(e)[:160])
                 _shr = {"changed": 0, "errors": []}
                 r = reconcile(node_cfg, reconcile_net_share(node_cfg, net_filter_desired(node_cfg, reply["desired"]),
                                                             reply.get("net_share"), _shr),
@@ -16673,6 +16944,7 @@ def main():
                     # sends `lan_share` only when the operator closed it, so absent means share — today's behaviour.
                     reconcile_lan_block(reply.get("lan_share") is False, nr, owned=_own_tunnel_devs(node_cfg))
                     net_share_verify(nr)          # P5: a restriction flushed away is rebuilt, never left open
+                    dev_reach_verify(nr)          # device access: rebuilt if flushed, its counters read for the snapshot
                     cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"), _def_egress,
                                             panel_conn=panel, panel_cfg=reply.get("panel"),
                                             nets=_nets)   # P2 forward + P3 smart + exit SNAT (+ panel-pull provider lists)
@@ -16737,7 +17009,7 @@ def main():
                     print("egress: " + e, flush=True)
                 for e in nr["errors"]:
                     print("networks: " + e, flush=True)
-                for e in _shr["errors"]:
+                for e in _shr["errors"] + _dar["errors"]:
                     print(e, flush=True)
                 for e in xr["errors"]:                  # an imported exit that could not register/come up
                     print("exit: " + e, flush=True)

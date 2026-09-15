@@ -253,8 +253,9 @@ forks = []
 N.run = lambda a, input_text=None, timeout=20: forks.append(a) or N.subprocess.CompletedProcess(a, 0, "", "")
 d = N.net_deps()
 check("net_deps() ran no subprocess", forks == [], forks)
-check("net_deps() carries panel + resolvers + known + share (P5: this node enforces a restricted network)",
-      set(d) == {"panel", "resolvers", "resolvers_known", "share", "carried"} and d["share"] == 1 and d["carried"] == 1, d)
+check("net_deps() carries panel + resolvers + known + share (P5: this node enforces a restricted network) + reach (device access)",
+      set(d) == {"panel", "resolvers", "resolvers_known", "share", "carried", "reach"} and d["share"] == 1 and d["carried"] == 1
+      and d["reach"] == 1, d)
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)
