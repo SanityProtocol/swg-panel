@@ -3100,7 +3100,7 @@ def net_share_verify(res, now=None):
 REACH_NFT_TABLE = "swg_reach"
 REACH_HOOK_PRI = "mangle - 4"
 _REACH = {"probed": False, "installed": False, "sig": None, "plan": None, "status": None,
-          "seen": {}, "loaded": [], "base": {}, "live": {}, "since": 0}
+          "seen": {}, "loaded": [], "base": {}, "live": {}, "since": 0, "skipped": {}, "stale": None}
 
 
 def _reach_conf_addr(node_cfg, iface):
@@ -3152,20 +3152,35 @@ def _reach_devices(node_cfg, names):
     return out
 
 
+def _reach_skip_reason(node_cfg, name, devices):
+    """Why a listed interface is not in the table (§11.2 F2): `overlap` (its subnet overlaps one already taken), `mesh`, `no_address`
+    (run here, but no v4 client subnet was ever read for it) or `not_here` (this node runs nothing by that name)."""
+    if devices.get(name):
+        return "overlap"
+    if name in (node_cfg.get("interfaces") or {}):
+        a = _reach_conf_addr(node_cfg, name)
+        return "mesh" if a and _iface_is_mesh(node_cfg, name, a) else "no_address"
+    return "no_address" if name in _wdtt_load() or name in _csqtt_load() else "not_here"
+
+
 def _reach_plan(node_cfg, wire):
     """The table to load, or None when there is nothing to protect here:
         {"ifaces": [name], "sets": [[(device, prefix)]], "chains": [(set, iface)], "map": [(first, last, verdict)]}
 
     `ifaces` are the listed interfaces this node runs, sorted — index j names counter `c<j>` and chain `n<j>`. A zone's
     address outside every listed subnet is dropped, and an address two zones name is in neither: it falls to the rest,
-    Nobody (fail closed). A source element that does not parse is dropped — fewer sources is the safe direction."""
+    Nobody (fail closed). A source element that does not parse is dropped — fewer sources is the safe direction.
+
+    Why a listed interface is NOT in the table goes to `_REACH["skipped"]` (§11.2 F2): the snapshot says it, so the panel shows
+    "not enforced" and the reason instead of "applies on the next sync" for ever."""
     import ipaddress
+    _REACH["skipped"] = {}
     if not isinstance(wire, dict):
         return None
     names = sorted({n for n in (wire.get("ifaces") if isinstance(wire.get("ifaces"), list) else [])
                     if isinstance(n, str) and _SHARE_IFNAME_RE.match(n)})
     devices = _reach_devices(node_cfg, names)
-    ifaces, nets = [], []                                   # nets: (network, own address, j)
+    ifaces, nets, skipped = [], [], {}                      # nets: (network, own address, j)
     for name in names:
         kept = False
         for _dev, net, own in devices.get(name) or []:
@@ -3175,6 +3190,9 @@ def _reach_plan(node_cfg, wire):
             kept = True
         if kept:
             ifaces.append(name)
+        else:
+            skipped[name] = _reach_skip_reason(node_cfg, name, devices)
+    _REACH["skipped"] = skipped
     if not ifaces:
         return None
     where = {}                                              # address → (source set, j), or None once claimed twice
@@ -3266,9 +3284,16 @@ def _reach_fold():
 
 
 def _reach_ok_status():
+    """The snapshot's `dev_reach` while a table is held: what it enforces and has stopped, why a listed interface is not in it
+    (F2), and — while a reload is refused and the previous table still holds — that the latest change did not apply (F3)."""
     names = list(_REACH["loaded"])
-    return {"ok": True, "ifaces": names, "since": _REACH["since"],
-            "blocked": {n: _REACH["base"].get(n, 0) + _REACH["live"].get(n, 0) for n in names}}
+    st = {"ok": True, "ifaces": names, "since": _REACH["since"],
+          "blocked": {n: _REACH["base"].get(n, 0) + _REACH["live"].get(n, 0) for n in names}}
+    if _REACH["skipped"]:
+        st["skipped"] = dict(_REACH["skipped"])
+    if _REACH["stale"]:
+        st.update(_REACH["stale"], ok=False, stale=True)
+    return st
 
 
 def _reach_drop_table(res):
@@ -3287,31 +3312,48 @@ def reconcile_dev_reach(node_cfg, wire, res):
     ⚠️ INERT WHILE EVERY LEVEL IS EVERYONE, AND SAFE ACROSS A RESTART (P5's pattern): the kernel is asked ONCE per process
     whether a table is left over — a protection lifted while this daemon was down must not keep dropping — and never
     again. While protecting, the table reloads only when its text changes. A load that fails leaves the devices OPEN and
-    says so (A11), and is retried on the next pass."""
+    says so (A11), and is retried on the next pass. A RELOAD that fails leaves the previous table in force — nft's file is one
+    transaction — so that table keeps being counted and verified, and the status says the latest change did not apply (§11.2 F3).
+    A reply that asks for protection none of its interfaces can get reports why, with no table (§11.2 F2)."""
     if not _REACH["probed"]:
         _REACH["installed"] = run(["nft", "list", "table", "inet", REACH_NFT_TABLE]).returncode == 0
         _REACH["probed"] = True
     plan = _reach_plan(node_cfg, wire) if wire else None
+    if not wire:
+        _REACH["skipped"] = {}
     if not plan:
         if _REACH["installed"]:
             _reach_drop_table(res)
-        _REACH.update(sig=None, plan=None, status=None, loaded=[], base={}, live={}, since=0)
+        skipped = dict(_REACH["skipped"])
+        _REACH.update(sig=None, plan=None, status=None, loaded=[], base={}, live={}, since=0, stale=None)
+        if skipped:                                   # asked to protect, and nothing here could be: say why (F2)
+            _REACH["status"] = {"ok": True, "ifaces": [], "since": 0, "blocked": {}, "skipped": skipped}
         return
     text = _reach_ruleset(plan)
     if not _REACH["installed"] or text != _REACH["sig"]:
-        if _REACH["installed"] and _REACH["loaded"]:
-            live = _reach_read_counters()
-            if live is not None:
-                _REACH["live"] = live
-        _reach_fold()
+        live = _reach_read_counters() if _REACH["installed"] and _REACH["loaded"] else None
+        if live is not None:
+            _REACH["live"] = live
         r = run(["nft", "-f", "-"], input_text=text)
         if r.returncode != 0:
             detail = (r.stderr or "").strip()[:160]
-            _REACH.update(probed=False, sig=None, plan=None, loaded=[],
-                          status={"ok": False, "why": "nft_failed", "detail": detail, "ifaces": plan["ifaces"]})
             res["errors"].append("device access: " + detail)
+            # A table an EARLIER process left (the probe found it; this process never loaded it, so it has no counters to read)
+            # holds just as firmly — asked once, and only on a refusal (§11.2 review R4).
+            if live is not None or (_REACH["installed"] and not _REACH["loaded"]
+                                    and run(["nft", "list", "table", "inet", REACH_NFT_TABLE]).returncode == 0):
+                # ⚠️ NOT OPEN (§11.2 F3). The previous table answered its counters a moment ago, and a refused file changes
+                # nothing: its plan, text and counts stay, so the routing pass keeps reading and rebuilding THAT table, and the
+                # next reply pass retries (`sig` is still the old text). Nothing was folded, so no count is lost or doubled.
+                _REACH["stale"] = {"why": "nft_failed", "detail": detail}
+                _REACH["status"] = _reach_ok_status()
+                return
+            _REACH.update(probed=False, sig=None, plan=None, loaded=[], stale=None,
+                          status={"ok": False, "why": "nft_failed", "detail": detail, "ifaces": plan["ifaces"],
+                                  **({"skipped": dict(_REACH["skipped"])} if _REACH["skipped"] else {})})   # review R3
             return
-        _REACH.update(installed=True, sig=text, loaded=list(plan["ifaces"]), since=_REACH["since"] or int(time.time()))
+        _reach_fold()                                 # the load zeroed the kernel's counters: carry what was read into the base
+        _REACH.update(installed=True, sig=text, loaded=list(plan["ifaces"]), since=_REACH["since"] or int(time.time()), stale=None)
         _REACH["base"] = {n: _REACH["base"].get(n, 0) for n in plan["ifaces"]}
         res["changed"] += 1
     _REACH["plan"] = plan
@@ -3334,7 +3376,7 @@ def dev_reach_verify(res):
         res["changed"] += 1
         return
     detail = (r.stderr or "").strip()[:160]
-    _REACH.update(installed=False, sig=None,
+    _REACH.update(installed=False, sig=None, stale=None,
                   status={"ok": False, "why": "nft_failed", "detail": detail, "ifaces": _REACH["plan"]["ifaces"]})
     res["errors"].append("device access: the table was gone and could not be rebuilt: " + detail)
 
