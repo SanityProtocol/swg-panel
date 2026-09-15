@@ -6,17 +6,16 @@ panel sends `dev_reach` only while some interface on a node is not at Everyone; 
 table, `swg_reach`, whose map covers each protected subnet whole — listed devices to their zone, the rest to Nobody.
 
  NODE
-  [1] the plan: the node's own address is never in the map, the network address and every unlisted address go to the
+  [1] the plan: the node's own address is a map `accept` and the subnets are listed whole for the guard, the network address and every unlisted address go to the
       interface's Nobody chain, a listed device to its zone; an address two zones claim falls to the rest; an address
       outside every listed subnet, an unknown interface, a mesh link and a source element that could escape its quotes
       never reach nft; a WDTT instance brings its RAW TUN under its own counter; an overlapping subnet is skipped.
-  [2] the ruleset: prerouting `mangle - 4`; every chain returns replies BEFORE it drops; each chain counts into its own
-      interface's named counter; created, deleted and declared in one load.
+  [2] the declared table: the skeleton (replies first, guard before map, a miss inside the guard dropped — never a bare drop,
+      which took IPv6), the guard == the subnets, zone and Nobody chains counting into slot counters, hash vs interval sets.
   [3] D1 and the restart: no `dev_reach` ⇒ the kernel asked once, then nothing; a table left from before is removed.
-  [4] steady state: the same reply twice loads once; a changed reply reloads, and the counters read just before the
-      reload survive it; the snapshot's `blocked` is the sum.
+  [4] steady state: the same reply twice loads once; a changed reply SWAPS and zeroes no counter; `blocked` is the sum.
   [5] ⚠️ open and loud (A11): a table nft refuses leaves the status `ok: false` with the reason, and is retried next pass.
-  [6] the routing pass: a table still there has its counters read (one fork); a flushed one is rebuilt from the held text;
+  [6] the routing pass: a table still there has its counters read (one fork); a flushed one is declared again from the held plan;
       a rebuild that fails is forgotten, so the next reply pass loads it again.
   [7] ⚠️ a conf that cannot be read this pass keeps the interface's last subnet — no reload open, then closed.
   [8] the sync loop protects before the peer write and after the WDTT/csqtt records; the routing pass verifies; `net_deps`
@@ -32,6 +31,10 @@ table, `swg_reach`, whose map covers each protected subnet whole — listed devi
       keeps it; the interface meta, `wdtt_cfg` and `csqtt_cfg` publish it; the node's WDTT/csqtt replies never carry it;
       `interface_defaults.reach` defaults to "user" and survives a settings save that does not name it.
  [11] the sync reply names `dev_reach` once, behind that result, and the networks are computed once for both passes.
+ [13] node table v2 (§13): the first load DECLARES; the same reply builds nothing (memo); a plan change SWAPS — no `delete
+      table`, the new generation declared, `sel` repointed, exactly the held generation deleted map → chains → sets, the suffix
+      alternating; the guard moves with the protected subnets; a counter only for an interface the table lacks; a refused swap
+      leaves generation, plan, slots and memo; a leftover table is declared over; the node's own address is a map `accept`.
  [12] P2 fixes (docs/DEVICE-ACCESS-PLAN.md §11.2): F1 a lost interface hands the recreate sheet its level · F2 the node says why
       a listed interface is not in its table, also when it holds no table · F3 a refused RELOAD keeps counting the previous
       table and says stale, a refused FIRST load stays open · F4 unvouched builds per path · F5 the pass after both mirrors ·
@@ -39,11 +42,13 @@ table, `swg_reach`, whose map covers each protected subnet whole — listed devi
 
 Hermetic. Run: python3 tests/device_reach_selftest.py            (0 = pass)
      --perturb         maps only the listed devices (no "rest is Nobody") and expects RED on [1].
-     --perturb-reply   drops the reply exemption from every chain and expects RED on [2].
+     --perturb-reply   drops the reply exemption from the declared table and expects RED on [2].
      --perturb-hold    forgets the last subnet on a failed read and expects RED on [7].
      --perturb-groups  forgets every group when planning and expects RED on [9].
      --perturb-skipped forgets why interfaces were left out and expects RED on [12] F2.
-     --perturb-stale   hides the previous table from a refused reload and expects RED on [12] F3.
+     --perturb-stale   calls every refused load open and expects RED on [12] F3.
+     --perturb-swap    reloads a plan change by delete + recreate, as v1 (§11.7's leak), and expects RED on [13].
+     --perturb-guard   drops the node's own `accept` from the map, so it falls into the guard, and expects RED on [1] and [13].
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, sys, tempfile
 
@@ -57,6 +62,8 @@ PERTURB_HOLD = "--perturb-hold" in sys.argv
 PERTURB_GROUPS = "--perturb-groups" in sys.argv
 PERTURB_SKIPPED = "--perturb-skipped" in sys.argv
 PERTURB_STALE = "--perturb-stale" in sys.argv
+PERTURB_SWAP = "--perturb-swap" in sys.argv
+PERTURB_GUARD = "--perturb-guard" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -77,13 +84,13 @@ CP = N.subprocess.CompletedProcess
 
 if PERTURB:
     _rp = N._reach_plan
-    def _no_rest(cfg, wire):
-        p = _rp(cfg, wire)
+    def _no_rest(cfg, wire, devices=None):
+        p = _rp(cfg, wire, devices)
         return p and dict(p, map=[e for e in p["map"] if not e[2].startswith("jump n")])
     N._reach_plan = _no_rest
 if PERTURB_REPLY:
-    _rr = N._reach_ruleset
-    N._reach_ruleset = lambda plan: _rr(plan).replace("ct direction reply return; ", "")
+    _rd = N._reach_declare_text
+    N._reach_declare_text = lambda plan, slots: _rd(plan, slots).replace("ct direction reply accept; ", "")
 if PERTURB_HOLD:
     _rd = N._reach_devices
     def _forget(cfg, names):
@@ -92,21 +99,21 @@ if PERTURB_HOLD:
     N._reach_devices = _forget
 if PERTURB_SKIPPED:
     _rp2 = N._reach_plan
-    def _no_why(cfg, wire):
-        p = _rp2(cfg, wire)
+    def _no_why(cfg, wire, devices=None):
+        p = _rp2(cfg, wire, devices)
         N._REACH["skipped"] = {}
         return p
     N._reach_plan = _no_why
 if PERTURB_STALE:
-    _rc = N.reconcile_dev_reach
-    def _blind(cfg, wire, r):
-        _rrc = N._reach_read_counters
-        N._reach_read_counters = lambda: None
-        try:
-            return _rc(cfg, wire, r)
-        finally:
-            N._reach_read_counters = _rrc
-    N.reconcile_dev_reach = _blind
+    N._reach_previous_holds = lambda swap, live: False
+if PERTURB_SWAP:
+    N._reach_swap_text = lambda old, new, old_slots, slots, old_g, g: N._reach_declare_text(new, slots)
+if PERTURB_GUARD:
+    _rpg = N._reach_plan
+    def _no_accept(cfg, wire, devices=None):
+        p = _rpg(cfg, wire, devices)
+        return p and dict(p, map=[e for e in p["map"] if e[2] != "accept"])
+    N._reach_plan = _no_accept
 
 TMP = tempfile.mkdtemp(prefix="devreach-")
 def conf(name, addr):
@@ -122,7 +129,7 @@ N._csqtt_load = lambda: {"csqtt1": {"iface": "csqtt1", "tun_addr": "10.66.67.1/2
 
 def fresh():
     N._REACH.update(probed=False, installed=False, sig=None, plan=None, status=None, seen={}, loaded=[], base={}, live={}, since=0,
-                    skipped={}, stale=None)
+                    skipped={}, stale=None, declared=False, gen="a", slots={})
 
 class Nft:
     """The kernel as `run` sees it: a table there or not, its named counters, and whether the next load is refused."""
@@ -133,9 +140,14 @@ class Nft:
         if args[:2] == ["nft", "-f"]:
             if self.refuse:
                 return CP(args, 1, "", "Error: Could not process rule: No such file or directory")
+            if (input_text or "").startswith("table inet swg_reach\ndelete table"):
+                self.counters = {}                    # a declare replaces the table, its counters included
+            elif not self.table:
+                return CP(args, 1, "", "Error: Could not process rule: No such file or directory")   # a swap needs the table
             self.table = True
             self.loads.append(input_text)
-            self.counters = {m: 0 for m in re.findall(r"counter (c\d+) \{ \}", input_text or "")}
+            for m in re.findall(r"counter (c\d+) \{ \}", input_text or ""):
+                self.counters.setdefault(m, 0)        # a swap keeps every counter it does not declare
             return CP(args, 0, "", "")
         if args[:3] == ["nft", "delete", "table"]:
             self.table = False
@@ -171,7 +183,10 @@ v = verdicts(PLAN)
 check("the interfaces enforced: listed, run here, not a mesh link, not overlapping, sorted",
       PLAN["ifaces"] == ["awg0", "csqtt1", "wdtt1", "wg0"], PLAN["ifaces"])
 j = {n: i for i, n in enumerate(PLAN["ifaces"])}
-check("the node's own address on each subnet is never in the map", all(v(a) is None for a in ("10.8.0.1", "10.9.0.1", "10.77.0.1", "10.78.0.1", "10.66.67.1")))
+check("⚠️ the node's own address on each subnet is a map `accept` — never a zone, never Nobody (§13.5 Round 6)",
+      all(v(a) == "accept" for a in ("10.8.0.1", "10.9.0.1", "10.77.0.1", "10.78.0.1", "10.66.67.1")), [v(a) for a in ("10.8.0.1", "10.9.0.1")])
+check("the protected subnets, whole, for the guard", PLAN["subnets"] == ["10.8.0.0/24", "10.9.0.0/24", "10.66.67.0/24", "10.77.0.0/24", "10.78.0.0/24"],
+      PLAN["subnets"])
 check("the network address and an unlisted device go to the interface's Nobody chain",
       v("10.8.0.0") == "jump n%d" % j["wg0"] and v("10.8.0.77") == "jump n%d" % j["wg0"] and v("10.66.67.200") == "jump n%d" % j["csqtt1"],
       (v("10.8.0.0"), v("10.8.0.77")))
@@ -190,18 +205,31 @@ check("an address inside a skipped overlapping subnet belongs to the first inter
 check("no protected interface ⇒ no plan", N._reach_plan(CFG, {"ifaces": ["nope", "swg_x"], "zones": []}) is None)
 check("ranges never overlap and are ordered", all(PLAN["map"][i][1] < PLAN["map"][i + 1][0] for i in range(len(PLAN["map"]) - 1)))
 
-print("\n[2] the ruleset")
-RS = N._reach_ruleset(PLAN)
-check("created, deleted and declared in one load",
+print("\n[2] the declared table (§13.1)")
+SLOTS = {n: jj for jj, n in enumerate(PLAN["ifaces"])}
+RS = N._reach_declare_text(PLAN, SLOTS)
+check("created, deleted and declared in one load — the DECLARE path",
       RS.startswith("table inet swg_reach\ndelete table inet swg_reach\ntable inet swg_reach {"), RS[:80])
-check("prerouting at mangle - 4, one vmap", "hook prerouting priority mangle - 4; policy accept; ip daddr vmap @dmap;" in RS)
+check("⚠️ the skeleton at mangle - 4: replies first, the guard before the map, a miss INSIDE the guard into a counted drop — "
+      "never a bare drop, which took every IPv6 packet (§13.3 M)",
+      'chain pre { type filter hook prerouting priority mangle - 4; policy accept; ct direction reply accept; '
+      'ip daddr != @guard accept; jump sel; ip daddr @guard counter name "gc" drop; }' in RS)
+check("…and `sel` holds the one vmap rule", "chain sel { ip daddr vmap @dmap_a; }" in RS)
+_guard = re.search(r"set guard \{ type ipv4_addr; flags interval; elements = \{ (.*?) \} \}", RS)
+check("the guard holds exactly the protected subnets", bool(_guard) and _guard.group(1).split(", ") == PLAN["subnets"], _guard and _guard.group(1))
 _chains = re.findall(r"chain ([zn]\w*) \{ (.*?) \}", RS)
-check("⚠️ every chain returns replies BEFORE it drops",
-      bool(_chains) and all(body.startswith("ct direction reply return; ") and body.endswith("drop;") for _c, body in _chains),
-      [c for c, b in _chains if not b.startswith("ct direction reply return; ")])
-check("each chain counts into its own interface's counter",
-      all(re.search(r'counter name "c%s"' % (re.match(r"^z\d+i(\d+)$", c) or re.match(r"^n(\d+)$", c)).group(1), b) for c, b in _chains))
-check("one counter per enforced interface", len(re.findall(r"counter c\d+ \{ \}", RS)) == len(PLAN["ifaces"]))
+check("a zone accepts its sources, then counts and drops; a Nobody chain counts and drops",
+      bool(_chains) and all(re.fullmatch(r'iifname \. ip saddr @f\d+_a accept; counter name "c\d+" drop;' if c.startswith("z")
+                                         else r'counter name "c\d+" drop;', b) for c, b in _chains), _chains[:3])
+check("each chain counts into its own interface's slot counter",
+      all('counter name "c%d"' % SLOTS[PLAN["ifaces"][int((re.match(r"^z\d+i(\d+)_a$", c) or re.match(r"^n(\d+)_a$", c)).group(1))]] in b
+          for c, b in _chains))
+check("one counter per enforced interface, and the guard's", len(re.findall(r"counter c\d+ \{ \}", RS)) == len(PLAN["ifaces"]) and "counter gc { }" in RS)
+_setl = re.findall(r"set f\d+_a \{ type ifname \. ipv4_addr;( flags interval;)?(?: elements = \{ (.*?) \})? \}", RS)
+check("⚠️ a source set is HASH while every member is a /32 (written bare) and interval once one is a prefix (§11.7 memory)",
+      bool(_setl) and any(not iv for iv, _e in _setl) and all(
+          bool(iv) == any("/" in e and not e.endswith("/32") for e in (els or "").split(", ")) and (bool(iv) or "/" not in (els or ""))
+          for iv, els in _setl), _setl)
 
 print("\n[3] D1 and the restart")
 fresh(); K = Nft(); N.run = K
@@ -224,14 +252,16 @@ K.counters["c%d" % j["wg0"]] = 7
 N.dev_reach_verify(res())
 check("the routing pass reads the counters with one fork", K.calls[-1][:4] == ["nft", "-j", "list", "counters"] and N._REACH["status"]["blocked"]["wg0"] == 7,
       N._REACH["status"])
-K.counters["c%d" % j["wg0"]] = 9
+K.counters["c%d" % N._REACH["slots"]["wg0"]] = 9
 W2 = json.loads(json.dumps(WIRE)); W2["zones"][1]["to"] = ["10.8.0.9", "10.8.0.10"]
 N.reconcile_dev_reach(CFG, W2, res())
-check("a changed reply reloads", len(K.loads) == 2)
-check("⚠️ the counts read just before the reload survive it (9, not 0)", N._REACH["status"]["blocked"]["wg0"] == 9, N._REACH["status"])
-K.counters["c%d" % N._REACH["loaded"].index("wg0")] = 3
+check("a changed reply reloads — by a swap, the table's counters kept", len(K.loads) == 2 and "delete table" not in K.loads[-1]
+      and K.counters.get("c%d" % N._REACH["slots"]["wg0"]) == 9, (len(K.loads), K.loads[-1][:60]))
 N.dev_reach_verify(res())
-check("…and later counts add to them", N._REACH["status"]["blocked"]["wg0"] == 12, N._REACH["status"])
+check("⚠️ a swap zeroes nothing: the count survives it (9, not 0)", N._REACH["status"]["blocked"]["wg0"] == 9, N._REACH["status"])
+K.counters["c%d" % N._REACH["slots"]["wg0"]] = 12
+N.dev_reach_verify(res())
+check("…and the counter keeps counting (12)", N._REACH["status"]["blocked"]["wg0"] == 12, N._REACH["status"])
 W3 = {"ifaces": ["wg0"], "zones": []}
 N.reconcile_dev_reach(CFG, W3, res())
 check("an interface no longer protected leaves the report", list(N._REACH["status"]["blocked"]) == ["wg0"], N._REACH["status"])
@@ -254,7 +284,8 @@ check("nothing protected ⇒ no fork", K.calls == [])
 N.reconcile_dev_reach(CFG, WIRE, res())
 K.table = False; K.calls = []; r = res()
 N.dev_reach_verify(r)
-check("a flushed table is rebuilt from the held text", K.table and K.loads[-1] == N._REACH["sig"] and r["changed"] == 1)
+check("a flushed table is DECLARED again from the held plan", K.table and r["changed"] == 1
+      and K.loads[-1] == N._reach_declare_text(N._REACH["plan"], N._REACH["slots"]))
 K.table = False; K.refuse = True; r = res()
 N.dev_reach_verify(r)
 check("a rebuild that fails is forgotten, loud", N._REACH["installed"] is False and N._REACH["sig"] is None and N._REACH["status"]["ok"] is False and r["errors"])
@@ -526,6 +557,55 @@ check("R1: the card chip says Nobody for an instance whose build can't prove own
       "(nrec.reach_unvouched || []).includes(iface)" in _nodesjs and "(nrec.reach_unvouched_raw || []).includes(iface)" in _nodesjs
       and 'lv === "none" || unv ?' in _nodesjs)
 check("R2: the Nodes notice counts a stale node's stopped packets", "st && (st.ok || st.stale) ?" in _nodesjs)
+
+print("\n[13] node table v2 — swap-safe reloads (§13)")
+fresh(); K = Nft(); N.run = K
+N.reconcile_dev_reach(CFG, WIRE, res())
+check("the first load of a process DECLARES the skeleton and generation a",
+      K.loads[-1].startswith("table inet swg_reach\ndelete table") and "@dmap_a" in K.loads[-1] and N._REACH["gen"] == "a" and N._REACH["declared"] is True)
+_ncalls, _built, _rp3 = len(K.calls), [], N._reach_plan
+N._reach_plan = lambda cfg, wire, devices=None: _built.append(1) or _rp3(cfg, wire, devices)
+N.reconcile_dev_reach(CFG, WIRE, res())
+N._reach_plan = _rp3
+check("the same reply over the same devices builds no plan and calls no nft (the memo)", not _built and len(K.calls) == _ncalls, (_built, K.calls[_ncalls:]))
+_held = N._REACH["plan"]
+N.reconcile_dev_reach(CFG, W2, res())
+_s = K.loads[-1]
+check("⚠️ a plan change SWAPS: no `delete table`, generation b declared, `sel` repointed to it",
+      "delete table" not in _s and _s.startswith("table inet swg_reach {") and N._REACH["gen"] == "b"
+      and "flush chain inet swg_reach sel\nadd rule inet swg_reach sel ip daddr vmap @dmap_b" in _s, _s[:200])
+_dels = [l for l in _s.splitlines() if l.startswith("delete ")]
+_want = (["delete map inet swg_reach dmap_a"] + ["delete chain inet swg_reach z%di%d_a" % c for c in _held["chains"]]
+         + ["delete chain inet swg_reach n%d_a" % jj for jj in range(len(_held["ifaces"]))]
+         + ["delete set inet swg_reach f%d_a" % k for k in range(len(_held["sets"]))])
+check("…deleting exactly the held generation's names, the map before its chains before their sets", _dels == _want, (_dels, _want))
+N.reconcile_dev_reach(CFG, WIRE, res())
+check("…and the next swap alternates back to a", N._REACH["gen"] == "a" and "vmap @dmap_a" in K.loads[-1] and "delete map inet swg_reach dmap_b" in K.loads[-1])
+N.reconcile_dev_reach(CFG, {"ifaces": ["wg0"], "zones": []}, res())
+check("subnets no longer protected leave the guard in the swap", "delete element inet swg_reach guard { 10.9.0.0/24, 10.66.67.0/24, 10.77.0.0/24, 10.78.0.0/24 }"
+      in K.loads[-1] and "add element" not in K.loads[-1], K.loads[-1][-300:])
+N.reconcile_dev_reach(CFG, WIRE, res())
+check("…and arrive in it again", "add element inet swg_reach guard { 10.9.0.0/24, 10.66.67.0/24, 10.77.0.0/24, 10.78.0.0/24 }" in K.loads[-1]
+      and not re.findall(r"counter c\d+ \{ \}", K.loads[-1]))
+CFG["interfaces"]["wg7"] = {"conf": conf("wg7", "10.21.0.1/24")}
+_W5 = json.loads(json.dumps(WIRE)); _W5["ifaces"].append("wg7")
+N.reconcile_dev_reach(CFG, _W5, res())
+check("a counter is declared only for an interface the table lacks, on a slot never used before",
+      re.findall(r"counter (c\d+) \{ \}", K.loads[-1]) == ["c4"] and N._REACH["slots"].get("wg7") == 4, (re.findall(r"counter (c\d+) \{ \}", K.loads[-1]), N._REACH["slots"]))
+del CFG["interfaces"]["wg7"]
+_snap = (N._REACH["gen"], N._REACH["plan"], dict(N._REACH["slots"]), N._REACH["sig"])
+K.refuse = True
+N.reconcile_dev_reach(CFG, W2, res())
+K.refuse = False
+check("a refused swap leaves generation, plan, slots and memo — and says stale",
+      (N._REACH["gen"], N._REACH["plan"], N._REACH["slots"], N._REACH["sig"]) == _snap and (N._REACH["status"] or {}).get("stale") is True, N._REACH["status"])
+N.reconcile_dev_reach(CFG, W2, res())
+check("…and the next pass DECLARES rather than retrying that swap (nft 1.0.2 refuses an overlapping guard change a declare loads)",
+      K.loads[-1].startswith("table inet swg_reach\ndelete table") and N._REACH["stale"] is None and N._REACH["gen"] == "a", K.loads[-1][:60])
+fresh(); K = Nft(table=True); N.run = K
+N.reconcile_dev_reach(CFG, WIRE, res())
+check("a table an earlier process left is DECLARED over, never swapped", K.loads[-1].startswith("table inet swg_reach\ndelete table"))
+check("⚠️ the node's own address stays reachable: a map `accept` inside the guard", "10.8.0.1 : accept" in K.loads[-1])
 
 shutil.rmtree(TMP2, ignore_errors=True)
 shutil.rmtree(TMP, ignore_errors=True)
