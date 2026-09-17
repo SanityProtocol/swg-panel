@@ -34,12 +34,14 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
   [B11] "Add to a group" is as wide as its words in English and in Russian, with the same room either side, and grows with a
         longer query
   [B12] the users grid's reach and networks chips stand at the end of the name cell, just before the Peers column
+  [B13] a footer is one row of equals: in the device view and the user sheet, Block / Unassign / Delete / Rotate all keys are
+        as tall as the buttons beside them, and in Russian the device view's six buttons stay on one row
   [i18n] B1's words in Russian; [console] no error or exception on any view
 
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth
-                       | probebtn | gwclick | pillwidth | chipsend
+                       | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -80,6 +82,8 @@ PERTURBATIONS = {
     "gwclick": ("js/grids.js", 'role="button" tabIndex="0" onClick=${() => openPeerNetworks(p)}', 'role="button" tabIndex="0"'),
     "pillwidth": ("app.css", "min-width:0;width:auto;height:28px;padding:0 10px;border-radius:999px;", "min-width:0;width:170px;height:28px;padding:0 10px;border-radius:999px;"),
     "chipsend": ("app.css", ".u-name>.ucounts{margin-left:auto;margin-right:10px}", ".u-name>.ucounts{}"),
+    "footsize": ("app.css", ".sheet-foot :is(.btn-danger,.btn-warn,.btn-exp),.editfoot :is(.btn-danger,.btn-warn,.btn-exp){padding:8px 13px;font-size:13px;border-radius:var(--r-sm);gap:7px}", ""),
+    "footwidth": ("js/sheets-crud.js", 'width=${700} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}', 'width=${640} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}'),
 }
 WEB = ROOT
 if PERTURB:
@@ -550,6 +554,39 @@ try:
             grown = tab.ev(m)
             check("[B11] %s: …and a longer query widens it rather than scrolling inside it" % lang, grown and grown["pill"] > pill["pill"] + 20 and abs(grown["input"] - grown["text"]) <= 2, grown)
         check("[console] %s: user sheet group pill: clean" % lang, not console_bad(tab), console_bad(tab)[:3])
+        tab.close()
+
+    # [B13] footers: one height, one row
+    FOOT = """(() => { const f = [...document.querySelectorAll('.sheet-foot, .editfoot')].filter(x => x.querySelector('.btn')).pop(); if (!f) return null;
+      const b = [...f.querySelectorAll(':scope > .btn')].map(e => { const r = e.getBoundingClientRect(); return {t: e.textContent.trim(), cls: e.className, h: Math.round(r.height * 10) / 10, mid: r.top + r.height / 2}; });
+      return b.length ? b : null; })()"""
+    def foot_of(tab):
+        got = None
+        for _ in range(30):
+            settle(tab, 250)
+            got = tab.ev(FOOT)
+            if got:
+                break
+        return got or []
+    STORE_JS = "const S = (await import(performance.getEntriesByType('resource').map(r => r.name).find(u => /\\/js\\/store\\.js\\?v=/.test(u)))).Store; "
+    for lang in ("en", "ru"):
+        tab = open_app(lang, viewport=(1400, 900))
+        ev_mod(tab, "sheets-crud", "M.openPeerView(%s); return true;" % json.dumps(PID["tester e0"]))
+        fv = foot_of(tab)
+        tinted = [b for b in fv if "btn-danger" in b["cls"]]
+        plain = [b for b in fv if "btn-ghost" in b["cls"]]
+        check("[B13] %s: the device view's Block and Unassign are as tall as QR and Edit beside them" % lang,
+              len(tinted) == 2 and plain and all(abs(t["h"] - plain[0]["h"]) <= 0.5 for t in tinted), fv)
+        if lang == "ru":
+            check("[B13] ru: …and its six buttons stay on one row", len(fv) == 6 and max(b["mid"] for b in fv) - min(b["mid"] for b in fv) <= 2, fv)
+        close_modals(tab)
+        ev_mod(tab, "peer-ui", STORE_JS + "M.openUserEdit(S.user(%s)); return true;" % json.dumps(uid["anna"]))
+        fu = foot_of(tab)
+        tinted = [b for b in fu if any(c in b["cls"] for c in ("btn-danger", "btn-warn"))]
+        plain = [b for b in fu if "btn-ghost" in b["cls"]]
+        check("[B13] %s: the user sheet's Delete user, Rotate all keys and Block are as tall as Cancel" % lang,
+              len(tinted) == 3 and plain and all(abs(t["h"] - plain[0]["h"]) <= 0.5 for t in tinted), fu)
+        check("[console] %s: footers: clean" % lang, not console_bad(tab), console_bad(tab)[:3])
         tab.close()
 
     OFFLINE.add(PK["gw"]); NOLAN[0] = True        # nothing anna reaches is live any more

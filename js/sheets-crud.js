@@ -625,7 +625,10 @@ export function PeerViewSheet({ pid, node, iface }) {
   // Same status treatment as the peer QR modal: in a subscription → subscription status in the header (right) + the
   // peer's own status on a line under it; not in a subscription → the peer's own status takes the header slot.
   const headExtra = u ? html`<${SubStatusLine} user=${u} pos="hr"/>` : html`<${PeerStatusLine} peer=${p} pos="hr"/>`;
-  return html`<${Sheet} title=${p.title || (u ? u.name : T("Unassigned peer"))} width=${640} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}
+  // ⚠️ MEASURED in Russian, the tight case: Close · QR · Targets · Edit · Block/Unblock · Unassign/Delete need 658–669px of
+  // footer (Unblock the widest), so at 640 the last button fell to a second row. 700 holds one row; a narrower window still wraps (the sheet caps
+  // itself at calc(100vw - 32px)).
+  return html`<${Sheet} title=${p.title || (u ? u.name : T("Unassigned peer"))} width=${700} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, { child: true })}><${Ic} i="qr"/>QR</button>

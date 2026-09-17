@@ -1283,6 +1283,11 @@ button.nstat.asbtn:hover{text-decoration:underline}
 .btn-warn .ic svg{width:13px;height:13px}
 .btn-warn:hover{background:color-mix(in srgb,#C0821A 20%,transparent)}
 .btn-warn:disabled{opacity:.5;cursor:not-allowed}
+/* ⚠️ MEASURED: in a footer these compact tinted buttons (28px, 12px text) sat beside ordinary ones (35px, 13px) and read as
+   misaligned — Block and Delete a size smaller than QR and Edit on the same row. A footer is one row of equals, so there
+   they take the ordinary size; everywhere else (list rows, cards) they stay compact. */
+.sheet-foot :is(.btn-danger,.btn-warn,.btn-exp),.editfoot :is(.btn-danger,.btn-warn,.btn-exp){padding:8px 13px;font-size:13px;border-radius:var(--r-sm);gap:7px}
+.sheet-foot .btn-warn .ic svg,.editfoot .btn-warn .ic svg{width:16px;height:16px}   /* the key's own size, as on its neighbours */
 :root[data-theme="dark"] .btn-warn{color:#EBB43C;border-color:color-mix(in srgb,#EBB43C 34%,transparent)}
 .btn-ok{background:color-mix(in srgb,#2E9E52 11%,transparent);color:#2E9E52;border:1px solid color-mix(in srgb,#2E9E52 34%,transparent);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease);display:inline-flex;align-items:center;gap:5px}
 .btn-ok .ic svg{width:13px;height:13px}
