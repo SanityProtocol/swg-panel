@@ -301,8 +301,136 @@ class State:
                 continue
             out[nid] = {"ifaces": apply_iface_meta(cfg, node_describe(snap)),
                         "turn": snap.get("turn_proxies") or [],
-                        "pub_host": node_public_host(snap)}   # reported public IP → WDTT link host when endpoint_host is unset
+                        "pub_host": node_public_host(snap),   # reported public IP → WDTT link host when endpoint_host is unset
+                        # the networks this node ROUTES right now (swg-noded net_carried) — what the page may promise a user
+                        "net_carried": snap.get("net_carried") if isinstance(snap.get("net_carried"), list) else []}
         return out
+
+
+# ── networks this user can reach (docs/NETWORKS-PLAN.md §18) ──
+# The end user was never told: the office LAN a colleague's router fronts, shared with them, appeared nowhere they look.
+
+_KEYLESS = ("wdtt", "csqtt")
+
+
+def _net_prefix(s):
+    """A v4 CIDR normalised the way the panel stores it (`10.0.0.5` → `10.0.0.5/32`), or ""."""
+    with contextlib.suppress(ValueError, TypeError):
+        n = ipaddress.ip_network(str(s).strip(), strict=False)
+        if n.version == 4:
+            return str(n)
+    return ""
+
+
+def share_grants(p, users, nowv, groups):
+    """{uid: until} for a RESTRICTED provider, None when it is open to everyone on its node. Byte-for-byte the same rule as
+    swg-panel-server's share_grants (tests/sub_networks_selftest.py holds them together, source and answers): the owner
+    always, a grant whose user or group is gone or whose date has passed never, a group grant reaching its members, and a
+    user covered twice getting the widest date."""
+    sh = p.get("share") if isinstance(p, dict) else None
+    # ⚠️ PRIVATE OUTRANKS EVERY SHARE. A private device's networks belong to its owner alone: not to a named grantee, not
+    # to a group it was shared with, and not to "everyone on the node" either — which is what an absent `share` means, so
+    # this has to be decided BEFORE that. An owner the roster no longer has grants nobody, which is the safe direction.
+    if isinstance(p, dict) and p.get("private"):
+        return {p["user_id"]: 0} if p.get("user_id") in users else {}
+    if not isinstance(sh, dict):
+        return None
+    out = {}
+
+    def grant(uid, until):
+        if isinstance(uid, str) and uid in users:
+            out[uid] = 0 if 0 in (until, out.get(uid)) else max(until, out.get(uid) or 0)
+
+    def live(d):
+        return [(k, u) for k, u in (d.items() if isinstance(d, dict) else ())
+                if not isinstance(u, bool) and isinstance(u, int) and u >= 0 and not (u and u <= nowv)]
+
+    for uid, until in live(sh.get("users")):
+        grant(uid, until)
+    for gid, until in live(sh.get("groups")):
+        g = groups.get(gid) if isinstance(groups, dict) else None
+        for uid in (g.get("users") if isinstance(g, dict) and isinstance(g.get("users"), list) else ()):
+            grant(uid, until)
+    if p.get("user_id") in users:
+        out[p["user_id"]] = 0
+    return out
+
+
+def _allowed_covers(allowed, prefix):
+    """Does a client AllowedIPs string route `prefix` into the tunnel? Same rule as swg-panel-server's `_allowed_covers`."""
+    n = ipaddress.ip_network(prefix)
+    for m in str(allowed or "").split(","):
+        with contextlib.suppress(ValueError, TypeError):
+            if n.subnet_of(ipaddress.ip_network(m.strip(), strict=False)):
+                return True
+    return False
+
+
+def sub_networks(roster, uid, describe, nodes, nowv):
+    """The networks this user's devices reach beyond the internet: [{prefix, node_name, via, covered}].
+
+    ⚠️ ONLY WHAT A NODE REPORTS ROUTING (`net_carried`). The page tells an end user what works, never what should: a network
+    the node refused, one waiting for its next sync, or one on a node too old to report is simply not listed.
+    A provider's network attaches to it on a node exactly as the panel's `node_networks` decides — earliest `created_at`, then
+    id, wins an identical prefix — so the provider named here is the one the node routes through.
+    A RESTRICTED network is listed for its owner and live grantees only, and only through a KEYED deployment: a turn-server
+    device reaches one only on a build the panel vouches for (§16), which this read-only page does not re-derive — left out
+    rather than promised. `via` (the provider's title) only for a restricted network — someone chose to share it; an open
+    one says where, not whose. `covered`: that device's own config routes it (None for a keyless deployment)."""
+    users = roster.get("users") or {}
+    peers = roster.get("peers") or {}
+
+    def live(q):
+        u = users.get(q.get("user_id")) or {}
+        return not (q.get("disabled") or u.get("disabled") or is_expired(q, nowv) or is_expired(u, nowv))
+
+    provs = sorted(((int(q.get("created_at") or 0), str(q.get("id") or k), q) for k, q in peers.items()
+                    if isinstance(q, dict) and q.get("routes") and live(q)), key=lambda x: (x[0], x[1]))
+    if not provs:
+        return []
+    out, seen = [], set()
+    for mk, q in sorted(peers.items()):
+        if not isinstance(q, dict) or q.get("user_id") != uid or not live(q):
+            continue
+        mine = str(q.get("id") or mk)
+        for t in q.get("targets") or []:
+            if not isinstance(t, dict):
+                continue
+            nid = t.get("node")
+            nd = describe.get(nid) or {}
+            held = set(nd.get("net_carried") or [])
+            if not held:
+                continue
+            keyed = (t.get("type") or "wg") not in _KEYLESS
+            meta = (nd.get("ifaces") or {}).get(t.get("iface")) or {}
+            allowed = effective_client_params(q, t, meta)["allowed"] if keyed else None
+            claimed = set()
+            for _c, opid, o in provs:
+                if not any(isinstance(x, dict) and x.get("node") == nid and x.get("iface") and (x.get("type") or "wg") not in _KEYLESS
+                           for x in o.get("targets") or []):
+                    continue
+                pres = [p_ for p_ in (_net_prefix(r) for r in o.get("routes") or []) if p_ in held and p_ not in claimed]
+                claimed.update(pres)                   # the first provider holding a prefix is the one the node routes
+                if opid == mine:
+                    continue                           # a device's own networks are behind it, not reached through it
+                g = share_grants(o, users, nowv, roster.get("groups"))
+                if g is not None and (uid not in g or not keyed):
+                    continue
+                for pre in pres:
+                    if (pre, nid, mine) in seen:
+                        continue
+                    seen.add((pre, nid, mine))
+                    out.append({"prefix": pre, "node_name": (nodes.get(nid) or {}).get("name") or nid,
+                                "via": (o.get("title") or "") if g is not None else "",
+                                "covered": None if allowed is None else _allowed_covers(allowed, pre)})
+    # one row per network per node: the device that routes it wins over one that doesn't, so a user with a phone and a
+    # narrowed laptop reads "reachable", with the narrowed device named only when nothing of theirs covers it
+    best = {}
+    for r in out:
+        k = (r["prefix"], r["node_name"])
+        if k not in best or (best[k]["covered"] is not True and r["covered"] is True):
+            best[k] = r
+    return sorted(best.values(), key=lambda r: (r["node_name"], ipaddress.ip_network(r["prefix"])))
 
 
 def _role_of(t):
@@ -577,6 +705,7 @@ def read_data(state, token):
     subs = state.subscriptions()
     langs = subs.get("languages") if isinstance(subs.get("languages"), dict) else {}
     return {"user": {"name": user.get("name") or ""}, "peers": peers_out,
+            "networks": sub_networks(roster, uid, describe, nodes, nowv),   # what their devices reach beyond the internet (§18)
             # PER-USER VK link only — subscriptions NEVER fall back to the panel-wide vk_link (that one is for
             # the admin's own testing + unassigned peers). Empty here → the sub page shows a "create one" warning.
             "turn_enabled": bool(subs.get("turn_enabled")), "vk_link": (user.get("vk_link") or ""),

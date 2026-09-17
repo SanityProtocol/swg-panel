@@ -33,7 +33,7 @@ if (PERTURB) {
   let s = fs.readFileSync(SRC, "utf8");
   // ⚠️ THE WHOLE LITERAL, not its first line. Typed by hand this anchor silently stopped matching the
   // day the record grew two more fields — and a perturbation that matches nothing leaves a clean PASS.
-  const a = "subnet: mi.subnet || null, listen_port: mi.listen_port || 0,\n                                     mtu: mi.mtu || 0, awg_params: mi.awg_params || null,\n                                     // ⚠️ PASSED THROUGH, NOT DEFAULTED. `dns: []` and `keepalive: 0` are\n                                     // both things an operator can mean; `|| 0` / `|| null` would erase the\n                                     // difference between \"off\" and \"never set\" before the sheet sees it.\n                                     endpoint_host: mi.endpoint_host || \"\",\n                                     dns: Array.isArray(mi.dns) ? mi.dns : null,\n                                     keepalive: typeof mi.keepalive === \"number\" ? mi.keepalive : null };";
+  const a = "subnet: mi.subnet || null, listen_port: mi.listen_port || 0,\n                                     mtu: mi.mtu || 0, awg_params: mi.awg_params || null,\n                                     // ⚠️ PASSED THROUGH, NOT DEFAULTED. `dns: []` and `keepalive: 0` are\n                                     // both things an operator can mean; `|| 0` / `|| null` would erase the\n                                     // difference between \"off\" and \"never set\" before the sheet sees it.\n                                     endpoint_host: mi.endpoint_host || \"\",\n                                     dns: Array.isArray(mi.dns) ? mi.dns : null,\n                                     keepalive: typeof mi.keepalive === \"number\" ? mi.keepalive : null,\n                                     // the device-access level: a panel-owned setting like the three above (§11.2 F1)\n                                     reach: mi.reach || null };";
   if (!s.includes(a)) { console.log("ANCHOR MISSING"); process.exit(1); }
   s = s.replace(a, "subnet: mi.subnet || null };");
   mod = path.join(ROOT, "js", "__perturb_model.js");
@@ -52,7 +52,9 @@ Store.nodes = [{
     awg0: { ripe: true, problemMs: 999999, key_source: "", subnet: "10.10.1.0/24",
             listen_port: 443, mtu: 1420, awg_params: AWG,
             // the panel-owned settings the sheet would otherwise post a fleet default for
-            endpoint_host: "hel.sanitygate.net", dns: ["9.9.9.9", "149.112.112.112"], keepalive: 15 },
+            endpoint_host: "hel.sanitygate.net", dns: ["9.9.9.9", "149.112.112.112"], keepalive: 15,
+            // a chosen device-access level — the create sheet posts one unconditionally (DEVICE-ACCESS §11.2 F1)
+            reach: "everyone" },
     wg9:  { ripe: true, problemMs: 999999, key_source: "", subnet: "10.15.0.0/24",
             listen_port: 51821, mtu: 1280 },
   },
@@ -72,6 +74,7 @@ check("⚠️ the AmneziaWG parameters survive — all nine", g.awg_params && Ob
 check("⚠️ the published ENDPOINT survives", g.endpoint_host === "hel.sanitygate.net", g.endpoint_host);
 check("⚠️ the resolvers survive", (g.dns || []).join(",") === "9.9.9.9,149.112.112.112", g.dns);
 check("⚠️ the keepalive survives", g.keepalive === 15, g.keepalive);
+check("⚠️ the device-access level survives — a recreate never resets Everyone to the panel default", g.reach === "everyone", g.reach);
 
 console.log("\n[2] …so the protocol is READ, not guessed from peers it may not have");
 // This is the exact shape that failed: an AmneziaWG interface with ZERO peers.
@@ -99,7 +102,7 @@ check("the panel's missing_ifaces record literal was found", !!emit,
 const emitted = new Set([...(emit ? emit[1] : "").matchAll(/"([a-z_]+)":/g)].map(m => m[1]));
 // every key the SPA reads off a missing_ifaces entry, taken from the readers themselves
 const READ = ["subnet", "listen_port", "mtu", "awg_params", "key_source",
-              "endpoint_host", "dns", "keepalive"];
+              "endpoint_host", "dns", "keepalive", "reach"];
 for (const k of READ)
   check(`the panel emits \`${k}\`, which the browser reads`, emitted.has(k),
         "emitted: " + [...emitted].sort().join(", "));
@@ -116,6 +119,8 @@ check("the recreate flow passes the port and MTU on", /port: g\.listen_port \|\|
 check("…and sets the protocol from the saved parameters", /if \(g\.awg_params && Object\.keys\(g\.awg_params\)\.length\) proto = "awg";/.test(paSrc));
 check("the port field prefers pre over a suggestion", /useState\(String\(\(pre && pre\.port\) \|\|/.test(ifaceSrc));
 check("the MTU field prefers pre over the panel default", /useState\(String\(\(pre && pre\.mtu\) \|\| _idf\.mtu/.test(ifaceSrc));
+check("the device-access level prefers pre over the panel default", /useState\(\(pre && pre\.reach\) \|\| _idf\.reach/.test(ifaceSrc));
+check("…and the recreate flow passes it on", /reach: g\.reach \|\| null/.test(paSrc));
 
 console.log("\n[6] the notice must say where the pre-filled values CAME from");
 // ⚠️ FOUND IN A BROWSER, NOT BY A GATE. The sheet said "Review the settings below (inferred from the peers)"

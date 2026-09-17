@@ -111,6 +111,15 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
    so it reads as belonging to the device name above it rather than floating between the two. */
 .peer-dead .state-word { font-size: clamp(22px, 8vw, 34px); margin: clamp(26px, 7vh, 54px) 0 clamp(16px, 4vh, 32px); }
 .peer-dead .state-sub { color: var(--muted); }
+/* Networks you can reach (docs/NETWORKS-PLAN.md §18) — a quiet list page between the configs and any blocked device */
+.netbox { display: flex; flex-direction: column; gap: 12px; margin: auto; padding: 24px 16px; width: 100%; max-width: 34em; box-sizing: border-box; }
+.netbox-h { margin: 0 0 4px; text-align: center; font-weight: 800; font-size: clamp(17px, 5vw, 21px); color: var(--ink); }
+.netbox-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.netbox-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.netbox-pre { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace; font-weight: 700; color: var(--ink); }
+.netbox-meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.netbox-warn { flex-basis: 100%; color: #d9a520; font-size: 13px; }
+.netbox-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
 .spin { width: 34px; height: 34px; margin: 0 auto 16px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -322,17 +331,21 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .cp-row .scell-role:not(.scell-role-on) { display: none; }
 .cp-row .scell-backup { color: var(--muted); }
 .cp-dead { color: #e5484d; }
+/* the picker's last row is not a device: it is the page listing the networks those devices reach */
+.cp-nets { border-top: 1px solid var(--line); }
+.cp-nets .cp-name { color: var(--brand); }
+.cp-nets-n { flex: none; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--muted); }
 /* ── The two ways into the picker ──────────────────────────────────────────────────────────────────────
    The device NAME (what you'd instinctively tap) and the labelled "Connections" button on the chevron line
    (what you'd look for). The name carries no mark of its own — no caret, no underline: it is the page's title
    first, and the button is the affordance that has to be seen. */
-.ppage-title.pickable, .peer-dead-name.pickable { cursor: pointer; }
+.ppage-title.pickable, .peer-dead-name.pickable, .netbox-h.pickable { cursor: pointer; }
 /* No focus BOX, ever — clicking the title and pressing Esc used to leave a rectangle around it. Keyboard focus
    is still shown as the brand colour rather than an outline. */
 .pickable:focus, .pickable:focus-visible, .pswitch:focus, .pswitch:focus-visible { outline: none; }
 .pickable:focus-visible { color: var(--brand); }
 @media (hover: hover) and (pointer: fine) {
-  .ppage-title.pickable:hover, .peer-dead-name.pickable:hover { color: var(--brand); }
+  .ppage-title.pickable:hover, .peer-dead-name.pickable:hover, .netbox-h.pickable:hover { color: var(--brand); }
 }
 
 /* "Connections" — the picker's labelled entry point. It wears the SELECTED protocol tab's treatment (panel

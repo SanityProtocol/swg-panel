@@ -24,12 +24,13 @@ import {
   trackIfaceOps, StoreOffBanner, ifaceColor, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
   rate,
 } from "./ui.js";
-import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
+import { T, Trich, Tsplit, plural, pluralWord, srvText, srvVars } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
          RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, lossColor, histTime, ChartHover, IfaceThroughput,
          RANGE_CAP, lossColorMesh } from "./charts.js";
 import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsPop, LossPop, onlineUserRows, onlinePeerRows,
-         serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES } from "./views.js";
+         serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES, reachSkipText, reachStaleText,
+         promotedAt, promotedBy } from "./views.js";
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
          openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet } from "./turn.js";
 import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
@@ -307,7 +308,11 @@ export function NodeDetail({ node: rawName }) {
           : (nrec.proc_status && isUpdateState(nrec.proc_status)) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec))
           : (nrec.local && Store.panelOutdated) ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateHost()} title=${T("Update this master (panel + co-located node) to the latest release")}>${T("update to")} <b>${Store.latestRemote || "?"}</b></button>`
           : nrec.outdated ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateNode(nrec)} title=${blocked ? T("Unavailable while the node is down / converting") : T("Update this node")}>${T("update node to")} <b>${nrec.latest || "?"}</b></button>`
-          : nrec.repairable ? html`<button class="livepill updpill fixpill" disabled=${blocked} onClick=${() => nrec.local ? updateHost() : updateNode(nrec)} title=${(nrec.kind === "docker" ? T("A container or the datapath isn't running on this node — recreating it should fix it. ") : T("The AmneziaWG kernel module isn't built or loaded on this node — awg interfaces can't come up. ")) + (nrec.local ? T("Re-run the updater to repair.") : T("Update this node to repair."))}><${Ic} i="warn"/> ${T("repair node")}</button>`
+          : nrec.repairable ? html`<button class="livepill updpill fixpill" disabled=${blocked} onClick=${() => nrec.local ? updateHost() : updateNode(nrec)} title=${(nrec.kind === "docker" ? T("A container or the datapath isn't running on this node — recreating it should fix it. ")
+            // D2: repairable no longer means DOWN. A node with the userspace fallback keeps its interfaces up; only
+            // datapath_broken (no module AND no fallback — or a node too old to say) keeps the "can't come up" sentence.
+            : nrec.datapath_broken ? T("The AmneziaWG kernel module isn't built or loaded on this node — awg interfaces can't come up. ")
+            : T("AmneziaWG on this node is running on the slower fallback datapath — its kernel module isn't loaded, or its interfaces haven't moved back to it yet. ")) + (nrec.local ? T("Re-run the updater to repair.") : T("Update this node to repair."))}><${Ic} i="warn"/> ${T("repair node")}</button>`
           : (nrec.local ? (Store.updFlash && Date.now() < Store.updFlash) : (Store.nodeUpdFlash && Store.nodeUpdFlash.id === nrec.id && Date.now() < Store.nodeUpdFlash.until))
           ? html`<span class="livepill upd-uptodate" title=${nrec.local ? T("This master is on the latest version") : T("This node is on the latest version")}><${Ic} i="check"/> ${T("up to date")}</span>`
           : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Check status")} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
@@ -346,6 +351,8 @@ export function NodeDetail({ node: rawName }) {
     ${nrec.health ? html`<${NodeHealthPanel} name=${name} nrec=${nrec}/>` : null}
 
     ${nrec.health_history ? html`<${NodeThroughput} name=${name} nrec=${nrec}/>` : null}
+
+    <${NodeLanPanel} nrec=${nrec}/>
 
     ${(nrec.mesh_peers || []).length ? html`<${Panel} icon="network" title=${T("Node connections")} tone="pending" count=${(nrec.mesh_peers || []).length}
         actions=${html`<${MeshStat} nodeId=${name} mode="in"/>`}>
@@ -831,6 +838,7 @@ export function NodeDetail({ node: rawName }) {
                 : wcfg.egress_mode === "smart"
                 ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (wcfg.routing || []).filter(r => r.action === "exit" || r.action === "dev").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                 : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
+              <div class="ifrow"><span class="l">${T("Peers reachable by")}</span><span class="r">${reachChip(name, w.iface, wcfg.reach)}</span></div>
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${w.iface} orphans=${0} orphHref=${href}
                     trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
@@ -887,6 +895,7 @@ export function NodeDetail({ node: rawName }) {
                 : ccfg.egress_mode === "smart"
                 ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (ccfg.routing || []).filter(r => r.action === "exit" || r.action === "dev").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                 : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
+              <div class="ifrow"><span class="l">${T("Peers reachable by")}</span><span class="r">${reachChip(name, c.iface, ccfg.reach)}</span></div>
               <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                 ? html`<${OnlinePeersTag} nodeId=${name} iface=${c.iface} orphans=${0} orphHref=${href}
                     trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>`
@@ -955,6 +964,7 @@ export function NodeDetail({ node: rawName }) {
                     : m.egress_mode === "smart"
                     ? html`<span class="egb egb-smart" title=${T("{v1} destination rule(s)", { v1: (m.routing || []).filter(r => r.action === "exit" || r.action === "dev").length })}><${Ic} i="cascade"/>${T("tag|smart")}</span>`
                     : html`<span class="egb egb-direct" title=${T("Exits directly from this node")}><${Ic} i="globe"/>${T("tag|direct")}</span>`}</span></div>
+                  <div class="ifrow"><span class="l">${T("Peers reachable by")}</span><span class="r">${reachChip(name, ifn, m.reach)}</span></div>
                   <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${ps.length
                     ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph} orphHref=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}
                         trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>${orph ? html` <span class="ifc-orph" title=${T("{v1} unmanaged (orphan)", { v1: plural(orph, "peer") })}>(${orph})</span>` : null}`}/>`
@@ -986,6 +996,57 @@ try { matchMedia("(prefers-color-scheme: light)").addEventListener("change", () 
 
 
 
+// DEVICE ACCESS (docs/DEVICE-ACCESS-PLAN.md §10.6) — the level on an interface card, in the egress chip's idiom. Colour says
+// exposure: Everyone is the open one; a level the node is not enforcing is the red one, whatever it is set to.
+export function reachChip(node, iface, lv) {
+  lv = lv || "user";
+  const snap = Store.stats[node] || {};
+  const st = snap.dev_reach;
+  const live = Store.recon.nodeStatus[node] === "live";
+  // ⚠️ A PROMOTED interface has a table though it is still SET to Everyone — a private device on it is guarded by address.
+  // Gating the failure states on `lv !== "everyone"` meant a refused or skipped reload there could not be reported at all.
+  const promoted = lv === "everyone" && promotedAt(node, iface);
+  const guarded = live && (lv !== "everyone" || promoted);
+  const off = guarded && !((snap.net_deps || {}).reach >= 2);   // 2: the compact reply (§16 B1); a node below it is sent nothing
+  // A refused reload keeps the previous table (§11.2 F3) — not open, not this setting: its own word, still red.
+  const stale = guarded && !off && !!(st && st.ok === false && st.stale);
+  const failed = guarded && !off && !stale && !!(st && st.ok === false && (st.ifaces || []).includes(iface));
+  // The node left this interface out of its table and said why (§11.2 F2): green would claim protection it does not have.
+  const skipped = guarded && !off && st && st.skipped ? st.skipped[iface] : null;
+  // A keyless build that can't prove a device's owner acts as Nobody at this level (A7): the chip says what is in force, not what
+  // is set (§11.2 review R1). A build that proves WG but not RAW keeps the level, and the hover says RAW.
+  const nrec = (Store.nodes || []).find(x => x.id === node) || {};
+  const unv = lv === "user" && (nrec.reach_unvouched || []).includes(iface);
+  const unvRaw = lv === "user" && !unv && (nrec.reach_unvouched_raw || []).includes(iface);
+  if (stale) return html`<span class="egb egb-reach-bad" title=${reachStaleText(Store.nodeName(node), st)}><${Ic} i="warn"/>${T("reach|not updated")}</span>`;
+  if (off || failed || skipped) return html`<span class="egb egb-reach-bad" title=${off ? T("Not enforced on {node} — update it", { node: Store.nodeName(node) })
+    : failed ? T("Couldn't apply on {node}: {detail}", { node: Store.nodeName(node), detail: st.detail || st.why || "" })
+    : reachSkipText(Store.nodeName(node), skipped)}><${Ic} i="warn"/>${T("reach|not enforced")}</span>`;
+  // Promoted: it IS Everyone for every device but the private ones, so it keeps the Everyone chip — and the hover counts the
+  // private devices, which is the one thing that differs and the thing an operator looking at this interface needs to know.
+  if (promoted) {
+    return html`<span class="egb egb-reach-everyone" title=${T("Everyone on this node can open connections to devices here, except Private ones, which only their user's own devices reach. Private here: {n}",
+      { n: promotedBy(node, iface).length })}><${Ic} i="globe"/>${T("reach|everyone")}</span>`;
+  }
+  return lv === "everyone" ? html`<span class="egb egb-reach-everyone" title=${T("Everyone on this node can open connections to devices here")}><${Ic} i="globe"/>${T("reach|everyone")}</span>`
+    : lv === "none" || unv ? html`<span class="egb egb-reach-none" title=${unv ? T("This server build can't prove which user a device belongs to, so no other device can reach any device here.")
+      : T("Nobody can open connections to devices here")}><${Ic} i="stop"/>${T("reach|nobody")}</span>`
+    : html`<span class="egb egb-reach-user" title=${unvRaw ? T("This server build can't prove which user a device connected over RAW belongs to, so no other device can reach those devices.")
+      : T("Only the same user's devices and their groups can open connections to devices here")}><${Ic} i="users"/>${T("reach|user + groups")}</span>`;
+}
+// Shown while some interface in the fleet has stopped packets, until this browser dismisses it (a per-viewer convenience —
+// no server field). The history ("it used to be everyone") is the changelog's: a fresh install never had it (§10.8 Round 7).
+const REACH_NOTICE_KEY = "swg_reach_notice_dismissed";
+let reachNoticeGone = (() => { try { return localStorage.getItem(REACH_NOTICE_KEY) === "1"; } catch (_) { return false; } })();
+function ReachNotice() {
+  if (reachNoticeGone) return null;
+  const n = (Store.nodes || []).reduce((a, nd) => { const st = (Store.stats[nd.id] || {}).dev_reach;
+    return a + (st && (st.ok || st.stale) ? Object.values(st.blocked || {}).reduce((x, v) => x + (v || 0), 0) : 0); }, 0);   // a stale table still stops packets (review R2)
+  if (!n) return null;
+  const dismiss = () => { reachNoticeGone = true; try { localStorage.setItem(REACH_NOTICE_KEY, "1"); } catch (_) { /* ignore */ } Store.apply(); };
+  return html`<div class="notice reach-notice"><${Ic} i="info"/><span>${T("Devices now reach only their own user's devices and their groups' — {n} packets to other devices have been stopped. Put users who should reach each other in a group, or set an interface to Everyone.", { n })}</span>
+    <button type="button" class="iconbtn" title=${T("Dismiss")} aria-label=${T("Dismiss")} onClick=${dismiss}><${Ic} i="x"/></button></div>`;
+}
 export function NodesScreen() {
   useStore();
   const ns = Store.nodes || [];
@@ -998,6 +1059,7 @@ export function NodesScreen() {
     <div class="section-title" style="margin:6px 2px 16px"><h2>${T("col|Nodes")}</h2><span class="count">${plural(ns.length, "server")}</span>
       <span class="nodehint">${entryServersRun()}</span><span class="grow"></span>
       <button class="btn btn-primary" onClick=${openNodeCreate}><span class="plus"><${Ic} i="plus"/></span> ${T("Add node")}</button></div>
+    <${ReachNotice}/>
     ${!ns.length ? html`<div class="empty"><b>${T("No nodes yet")}</b>${T("Add your first entry server — you'll get a one-time command to run on it.")}</div>`
       : html`<div class="nodegrid" ...${nReorder.container()}>${ns.map(n => html`<${NodeCard} key=${n.id} n=${n} reorder=${nReorder}/>`)}</div>`}
   </div>`;
@@ -1152,6 +1214,38 @@ export const TurnTag = (node, tp) =>
 // Node throughput panel: a Peers/Mesh toggle in the header (right-aligned) splits the graph into client (rx−mrx),
 // mesh (mrx), or both. Never both off — turning off the only-selected one switches to the other (like the doughnuts).
 // Node health panel: CPU/Mem/Disk meters + the CPU-load history, with the range picker hoisted into the header.
+// NETWORKS P2 — the private network this node sits on (docs/NETWORKS-PLAN.md D10, §8 P2). Measured: a client
+// already reaches it with nothing built, and nobody chose that. There is no save for this to announce itself at, so
+// it is said HERE, unprompted, with the way to close it beside it. A node with no private address (a VPS on public
+// addresses only) has nothing to disclose and shows nothing.
+function NodeLanPanel({ nrec }) {
+  const lans = nrec.lans || [];
+  // Switched off panel-wide, this whole subject is settled elsewhere: the networks are closed on every node and the
+  // panel does not show them. Drawing a per-node switch here would contradict that — which is exactly what it did.
+  if (!lans.length || (Store.panelSettings || {}).show_node_lans === false) return null;
+  const share = nrec.lan_share !== false;
+  const lb = nrec.lan_block;
+  const set = on => mutate({ key: "node:" + nrec.id, call: () => api.nodeUpdate({ id: nrec.id, lan_share: on }),
+    onOk: () => toast(on ? T("Clients of this node can reach its local network again.")
+                         : T("Clients of this node are now kept off its local network."), "ok") });
+  // The node's own word, never the panel's hope: closed only once the node says the table is in.
+  const status = share ? null
+    : !nrec.net_capable ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node runs a version that can't close its local network — update it. Until then its clients still reach it.")}</span></div>`
+    : !lb ? html`<div class="lanstat"><${Ic} i="clock"/> ${T("Waiting for the node to close it.")}</div>`
+    : lb.ok ? html`<div class="lanstat ok"><${Ic} i="check"/> ${T("Closed on the node.")}</div>`
+    : lb.why === "addresses_unreadable" ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The node couldn't read its own addresses, so it left the block as it was.")}</span></div>`
+    : html`<div class="notice warn"><${Ic} i="warn"/><span>${T("The node couldn't close it, so its clients still reach it: {why}", { why: lb.detail || lb.why || "" })}</span></div>`;
+  return html`<${Panel} icon="shield" title=${T("Local network")} tone=${share ? "pending" : "online"}
+      actions=${html`<span class="lanswitch">${T("Clients can reach it")}<${Switch} on=${share} onChange=${set}
+        title=${share ? T("Keep this node's clients off its local network") : T("Let this node's clients reach its local network")}/></span>`}>
+    <div class="lanlist">${lans.map(l => html`<span class="lanaddr"><span class="mono">${l.ip}</span>${l.iface ? html`<span class="faint">${l.iface}</span>` : null}</span>`)}</div>
+    <p class="lanmsg">${share
+      ? T("Clients of this node can reach the private network it sits on — every device on it, not only this node — and so can clients of other nodes whose traffic leaves through this one. A client whose traffic this node sends on to another node reaches that node's network instead. Nobody set this up: it is what routing does when the node's local network is also its way out.")
+      : T("Clients of this node, and of other nodes whose traffic leaves through it, are kept off the private network it sits on. They still reach the internet and this node itself.")}</p>
+    ${status}
+  <//>`;
+}
+
 export function NodeHealthPanel({ name, nrec }) {
   const [range, setRange] = useState("live");
   const removing = nrec.removing ? html`<span class="nstat removing"><${Ic} i="trash"/> ${T("tag|flagged for removal")}</span><button class="btn btn-mini" style="margin-left:9px" title=${T("Cancel removal — keep this node")} onClick=${() => unflagNode(nrec)}>${T("Cancel")}</button>` : null;
@@ -1344,7 +1438,12 @@ export async function checkForUpdate(e, nodeId) {
     const r = await api.checkUpdate();
     await Store.poll();
     if (!r.ok) toast(srvText(r) || T("Couldn't check for updates."), "err");
-    else if (r.data && !r.data.checked) toast(T("Couldn't reach the repo to check for updates."), "err");
+    // The panel now says WHY it could not reach the repo — no DNS, an unverifiable certificate, a reset, a
+    // rate limit — because the bare sentence was a dead end: it named no cause and left nothing behind, so a
+    // panel being supported from the outside could not be diagnosed at all. The generic line stays as the
+    // fallback for a panel too old to send a reason.
+    else if (r.data && !r.data.checked) toast(r.data.why_key ? T(r.data.why_key, srvVars(r.data.why_vars))
+                                                             : T("Couldn't reach the repo to check for updates."), "err");
     else if (nodeId) {                               // invoked from a NODE header → show the result THERE, not on the panel header
       const n = (Store.nodes || []).find(x => x.id === nodeId);   // outdated → its "update node" button appears; up-to-date → flash on the node row
       if (!(n && n.outdated)) { Store.nodeUpdFlash = { id: nodeId, until: Date.now() + 5000 }; Store.apply(); setTimeout(() => Store.apply(), 5100); }

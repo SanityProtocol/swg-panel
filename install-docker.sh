@@ -1360,13 +1360,13 @@ fi
 # "read-only file system". vault.json/escrow.json don't exist until a subscription vault is set up, panel-settings
 # not until the panel first boots, and the tls/ + configs/ dirs may not exist yet on a fresh install or a convert
 # that carried no vault. Pre-create them so swg-sub starts. (The node profile doesn't run swg-sub.)
+# ⚠️ ONE guarded block. The helper below used to be called on its own line AFTER this `! $DRYRUN` block, so a
+# `--dry-run` wrote four real (empty) files into /opt/swg-panel-docker — measured on a pristine box (1.8.7
+# qualification S7) — and a node-only install got panel files it never mounts. update.sh already guards its call.
 if [ "$PROFILE" != node ] && ! $DRYRUN; then
-  mkdir -p "$INSTALL_DIR/data/lib/subs" "$INSTALL_DIR/data/lib/configs" "$INSTALL_DIR/data/etc/tls" 2>/dev/null || true
-  for _mf in panel-settings.json subs/vault.json subs/escrow.json; do
-    [ -e "$INSTALL_DIR/data/lib/$_mf" ] || : > "$INSTALL_DIR/data/lib/$_mf" 2>/dev/null || true
-  done
+  mkdir -p "$INSTALL_DIR/data/lib/configs" "$INSTALL_DIR/data/etc/tls" 2>/dev/null || true
+  ensure_docker_mask_files "$INSTALL_DIR"   # auth, panel-settings, vault, escrow — the four files swg-sub /dev/null-masks
 fi
-ensure_docker_mask_files "$INSTALL_DIR"   # pre-create the files swg-sub /dev/null-masks, so a fresh install's read-only mount doesn't fail
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
 else
   for _c in $(case "$PROFILE" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"

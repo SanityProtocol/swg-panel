@@ -65,7 +65,7 @@ jobs:
           - { mode: channel, float: true  }
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # A flake reads the GIT tree, and nix wants a real revision — a depth-1 clone has bitten
           # enough projects that the two minutes this costs are not worth arguing about. It also
@@ -215,6 +215,8 @@ jobs:
           # shebang that no longer resolves, an asset that .gitignore swallowed — is reported as
           # itself instead of as a VM that would not boot.
           SECONDS=0
+          # shellcheck disable=SC2086  # NIX_ARGS is either empty or `--override-input nixpkgs <path>` — three words
+          # that must split into separate arguments; quoting passes them to nix as one unknown flag.
           nix build -L --out-link result-package $NIX_ARGS .#checks.x86_64-linux.package 2>&1 | tee -a nix-build.log
           echo "package built in ${SECONDS}s"
 
@@ -224,6 +226,7 @@ jobs:
         run: |
           set -o pipefail
           SECONDS=0
+          # shellcheck disable=SC2086  # NIX_ARGS must word-split (see the package build above)
           nix build -L --out-link result-fleet $NIX_ARGS .#checks.x86_64-linux.fleet-native 2>&1 | tee -a nix-build.log
           # `-L` streams the builder log, which is what makes a FAILURE readable in the run's own UI.
           # It streams nothing for a derivation that was substituted or already built, though, and
@@ -241,6 +244,7 @@ jobs:
         run: |
           set -o pipefail
           SECONDS=0
+          # shellcheck disable=SC2086  # NIX_ARGS must word-split (see the package build above)
           nix build -L --out-link result-container $NIX_ARGS .#checks.x86_64-linux.container-arm 2>&1 | tee -a nix-build.log
           grep -qF 'CA-ASSERT' nix-build.log || nix log "$(readlink -f result-container)" >> nix-build.log 2>/dev/null || true
           echo "CTR_SECONDS=${SECONDS}" >> "$GITHUB_ENV"
@@ -336,7 +340,7 @@ jobs:
 
       - name: Keep the build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nix-build-log-${{ matrix.mode }}
           path: nix-build.log

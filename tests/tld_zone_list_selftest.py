@@ -47,7 +47,17 @@ PERTURBATIONS = {
 }
 ASKED = [a.split("=", 1)[1] for a in sys.argv if a.startswith("--perturb=")]
 ALL = any(a == "--perturb" for a in sys.argv)
-WANT = list(PERTURBATIONS) if ALL else ASKED
+if ALL:
+    # ⚠️ ONE RUN PER PERTURBATION. `zone` and `reserved` rewrite the same line, so applying them together always
+    # matched the second one 0 times and the bare flag could never run at all — it only ever said HARNESS BROKEN.
+    import subprocess
+    bad = [n for n in PERTURBATIONS
+           if subprocess.run([sys.executable, os.path.abspath(__file__), "--perturb=" + n],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0]
+    print("PERTURB(all) %s — %d of %d perturbations went red%s" % ("OK" if not bad else "FAILED", len(PERTURBATIONS) - len(bad),
+                                                                len(PERTURBATIONS), (": not " + ", ".join(bad)) if bad else ""))
+    sys.exit(1 if bad else 0)
+WANT = ASKED
 PERTURB = bool(WANT)
 
 src = open(SERVER, encoding="utf-8").read()

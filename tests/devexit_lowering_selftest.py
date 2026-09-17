@@ -186,7 +186,7 @@ check("§5.7: its tag is inside the swg-egress: namespace, so the baseline is no
 # the consequence, asked of the real function rather than inferred from the tag
 newrule = next((c for c in added), "")
 tagged = '-A POSTROUTING -s 10.17.0.0/24 -o wgcf -m comment --comment "%s" -j MASQUERADE' % (
-    "swg-egress:exit:10.17.0.0/24" if "swg-egress:exit:" in newrule else "swg-devexit:10.17.0.0/24")
+    "swg-egress:exit:10.17.0.0/24@wgcf" if "swg-egress:exit:" in newrule else "swg-devexit:10.17.0.0/24@wgcf")
 check("§5.7 CONSEQUENCE: the interface's baseline MASQUERADE survives alongside it",
       N._has_foreign_egress("10.17.0.0/24", [BASE, tagged]) is False,
       "foreign=True ⇒ _egress_des returns None ⇒ baseline deleted")

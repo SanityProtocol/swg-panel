@@ -332,6 +332,13 @@ function reconcile(roster, stats, now, cfg) {
       name: user ? (user.name || "") : "", tag: user ? (user.tag || "") : "",
       unassigned: !user,
       sub_hide: Array.isArray(p.sub_hide) ? p.sub_hide : [],   // config kinds the operator keeps OFF this peer's subscription page
+      routes: Array.isArray(p.routes) ? p.routes : [],         // networks behind this device (docs/NETWORKS-PLAN.md §6)
+      share: (p.share && typeof p.share === "object" && !Array.isArray(p.share)) ? p.share : null,   // who may reach them (§15); null = everyone on the node
+      // ⚠️ CARRIED OR THE BROWSER HALF IS DEAD. This rebuild is a whitelist, exactly like peer_set's on the panel, and a
+      // field it does not name simply does not exist in the SPA — every `peer.private` test read undefined, so the
+      // sharing guard never fired and a private device's own sheet showed the switch OFF. The server was right the whole
+      // time, which is what made it look like it worked.
+      private: p.private === true,      // the owner keeps this device and its networks to themselves (§18.6)
       overrides: p.overrides || null,   // peer-wide render overrides (the fallback under each target's own) — see the target field
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,

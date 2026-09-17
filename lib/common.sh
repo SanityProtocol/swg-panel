@@ -613,7 +613,7 @@ lc_teardown_baremetal(){
     systemctl disable "awg-quick@$n" 2>/dev/null || true; systemctl disable "wg-quick@$n" 2>/dev/null || true
     rm -f "$f"; done
   for s in "$@"; do [ -n "$s" ] || continue; systemctl disable --now "$s" 2>/dev/null || true; rm -f "/etc/systemd/system/$s.service"; done   # migrated host turn-proxies only
-  rm -f /etc/systemd/system/swg-noded.service; systemctl daemon-reload 2>/dev/null || true
+  rm -rf /etc/systemd/system/swg-noded.service /etc/systemd/system/swg-noded.service.d; systemctl daemon-reload 2>/dev/null || true
   rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent; }
 # teardown_bare_panel — stop + remove the bare-metal panel (units + proxy vhost + binary), then move its STATE
 # dirs aside (already staged into data/) so the box no longer reads as a bare panel and a later convert-back
@@ -995,7 +995,23 @@ set -euo pipefail
 # — their URL then decides the ref, which is the whole point of deriving it from the URL.
 URL="\${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/${_swg_ref}/bootstrap.sh}"
 export SWG_BOOTSTRAP_URL="\$URL"
-curl -fsSL "\$URL" | bash -s update -y --no-components
+# ⚠️ DOWNLOADED FIRST, RUN SECOND — AND A SECOND DOOR WHEN RAW CANNOT BE HAD. Byte-identical in install-host.sh,
+# update.sh and lib/common.sh; tests/update_bootstrap_fallback_selftest.py runs all three and compares them.
+# \`curl | bash\` executes whatever arrived before the connection died, so a reset halfway through bootstrap.sh
+# ran half of it. A file is run only once curl says the whole of it arrived.
+# raw.githubusercontent.com resolves into the address range filtered in the networks this product is most used
+# in, and api.github.com does not (docs/UPDATE-RESILIENCE-PLAN.md, 0a). This one file is the ONLY thing an
+# update reads from raw — bootstrap.sh fetches the tree from github.com itself — so reading it through the API
+# is what lets a filtered box update at all. Same repo, same ref, same TLS: nothing new to trust. Only a GitHub
+# raw URL has that door; an operator's own SWG_BOOTSTRAP_URL mirror is not handed a source it never named.
+B="\$(mktemp)"; trap 'rm -f "\$B"' EXIT
+API="\$(printf '%s' "\$URL" | sed -nE 's#^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/([^?#]+).*#https://api.github.com/repos/\1/\2/contents/\4?ref=\3#p')"
+if ! curl -fsSL --connect-timeout 20 --max-time 120 "\$URL" -o "\$B"; then
+  [ -n "\$API" ] || exit 1
+  echo "swg-update: could not fetch bootstrap.sh from \$URL — trying api.github.com" >&2
+  curl -fsSL --connect-timeout 20 --max-time 120 -H 'Accept: application/vnd.github.raw' "\$API" -o "\$B"
+fi
+bash "\$B" update -y --no-components "\$@"   # extra flags (e.g. --node-only) pass through
 exit
 }
 WRAP
@@ -1397,10 +1413,107 @@ host_bindable_ips(){
 # asks for a username, which GIT_TERMINAL_PROMPT=0 turns into a clean failure rather than a hang. The
 # HTTP/1.1 retry turns it back into a working clone. Ubuntu 24.04 (git 2.43 / nghttp2 1.59) never sees it.
 # Costs nothing where HTTP/2 works: the retry is only ever reached after a failure.
-git_clone_depth1(){ # <url> <dest>
-  run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 "$1" "$2" && return 0
+git_clone_depth1(){ # <url> <dest> [<tag or branch>]
+  run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 ${3:+--branch "$3"} "$1" "$2" && return 0
   rm -rf "${2:?}"
-  run env GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth=1 "$1" "$2"
+  run env GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth=1 ${3:+--branch "$3"} "$1" "$2"
+}
+
+# ── the kernel module rebuilds itself when the kernel changes (docs/AWG-DATAPATH-RESILIENCE-PLAN.md D4) ──────────
+# `linux-headers-$(uname -r)` is headers for ONE kernel. The next kernel arrives through the image metapackage with no
+# headers, DKMS skips it ("autoinstall for kernel … was skipped since the kernel headers for this kernel do not seem to
+# be installed" — measured on a client's box), and the reboot onto it takes every awg interface down. The metapackage
+# that installed the image names its twin: linux-image-virtual → linux-headers-virtual, linux-image-cloud-amd64 →
+# linux-headers-cloud-amd64 (Ubuntu and Debian both verified). A kernel no metapackage installed prints nothing — the
+# pinned userspace fallback (D1) is what covers that box.
+awg_headers_meta(){ # print the headers metapackage of every installed kernel IMAGE metapackage, one per line
+  # ⚠️ NOT "whatever depends on the RUNNING kernel's image". The moment an image metapackage has moved on to a newer kernel
+  # — the exact incident: running 138, 139 already installed — nothing depends on the running image any more and that
+  # question answers nothing, so no headers were ever installed for the kernel about to boot. The installed, UNVERSIONED
+  # image metapackages are what bring future kernels, and each names its twin: linux-image-virtual → linux-headers-virtual,
+  # linux-image-cloud-amd64 → linux-headers-cloud-amd64. A twin the archive does not have (linux-image-unsigned-…) is
+  # skipped; a box whose kernels no metapackage installed prints nothing — the userspace fallback (D1) covers it.
+  have dpkg-query && have apt-cache || return 0
+  local m h
+  for m in $(dpkg-query -W -f='${Package} ${db:Status-Abbrev}\n' 'linux-image-*' 2>/dev/null | awk '$2 ~ /^ii/ && $1 ~ /^linux-image-[a-z]/ {print $1}'); do
+    h="linux-headers-${m#linux-image-}"
+    apt-cache show "$h" >/dev/null 2>&1 && printf '%s\n' "$h"
+  done
+  return 0
+}
+ensure_awg_headers_follow(){ # install-if-missing every headers metapackage above. 0 = all present · 10 = installed now · 1 = none · 2 = failed
+  local h any=no inst=no fail=no
+  for h in $(awg_headers_meta); do
+    any=yes
+    [ "$(dpkg-query -W -f='${db:Status-Status}' "$h" 2>/dev/null)" = installed ] && continue   # held or not: dpkg says "hold ok installed"
+    if $DRYRUN; then echo "    [skip] apt-get install $h"; inst=yes; continue; fi
+    # One refresh and one retry: the lists this box last fetched can name a headers version the mirror no longer carries.
+    if run apt-get install -y --no-install-recommends "$h" >/dev/null 2>&1 \
+       || { run apt-get update -qq >/dev/null 2>&1; run apt-get install -y --no-install-recommends "$h" >/dev/null 2>&1; }; then inst=yes; else fail=yes; fi
+  done
+  [ "$any" = yes ] || return 1
+  [ "$fail" = yes ] && return 2          # before 10: one installed and one failed is still a failure worth saying
+  [ "$inst" = yes ] && return 10
+  return 0
+}
+awg_dkms_build_all_kernels(){ # the registered module, built for EVERY installed kernel that has headers — the next boot's included
+  # `dkms install amneziawg/<ver>`, never `dkms autoinstall -k`: autoinstall builds EVERY registered module on the box
+  # (nvidia, zfs, …), so one that fails for some kernel was recompiled on every update. Already installed → a 0.2 s no-op.
+  have dkms || return 0
+  local k s v
+  for k in /lib/modules/*; do
+    k="${k##*/}"
+    [ -e "/boot/vmlinuz-$k" ] && [ -e "/lib/modules/$k/build" ] || continue
+    for s in /var/lib/dkms/amneziawg/*/source; do
+      [ -e "$s" ] || continue
+      v="${s%/source}"; v="${v##*/}"
+      run dkms install -m amneziawg -v "$v" -k "$k" >/dev/null 2>&1 || true
+    done
+  done
+  return 0
+}
+awg_dkms_drop_unowned(){ # ONE DKMS owner: drop an amneziawg source tree no package owns (ours) before a package installs its own
+  # ⚠️ NOT for dpkg's sake, which is what this first guarded against. Measured (G6, dkms 3.0.11, Ubuntu 24.04): the package
+  # installs cleanly over our tree at the same, a newer and an older version, and `dpkg --audit` stays empty. What two
+  # registrations DO is take turns: every `dkms autoinstall` (each update) and every package reinstall (unattended
+  # upgrades) installs the OTHER one ("Diff between built and installed module!"), so which module the next boot loads
+  # depends on which of them ran last. One owner, the package.
+  have dkms || return 0
+  # Only once the package can really be had: lists can still name one the archive no longer serves, and our module removed
+  # before an install that then fails leaves the next boot with no module at all. No obtainable package → nothing removed.
+  run apt-get install -y --download-only amneziawg-dkms >/dev/null 2>&1 || return 0
+  local d v
+  for d in /usr/src/amneziawg-*; do
+    # A DKMS tree of THIS module only — never a checkout that merely matches the glob (amneziawg-linux-kernel-module).
+    grep -qs '^PACKAGE_NAME="\?amneziawg"\?[[:space:]]*$' "$d/dkms.conf" || continue
+    dpkg -S "$d" >/dev/null 2>&1 && continue
+    v="${d##*/amneziawg-}"
+    run dkms remove "amneziawg/$v" --all >/dev/null 2>&1 || true
+    run rm -rf "$d"
+  done
+  return 0
+}
+
+awg_dkms_register_dir(){ # <module src dir> — register upstream's module with DKMS and build it for every kernel with headers
+  # The only route that keeps a SOURCE-built module across kernel upgrades. Used by the source build below, and by the
+  # update heal for a box an older installer built with `make install` (every Debian node until D4).
+  local src="$1" ver
+  have dkms || return 1
+  ver="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$src/dkms.conf" 2>/dev/null)"
+  [ -n "$ver" ] || return 1
+  run make -C "$src" dkms-install && run dkms add -m amneziawg -v "$ver" \
+    && run dkms build -m amneziawg -v "$ver" -k "$(uname -r)" && run dkms install -m amneziawg -v "$ver" -k "$(uname -r)" || return 1
+  awg_dkms_build_all_kernels
+}
+awg_dkms_register_source(){ # clone upstream and register it — ONLY when no amneziawg tree is registered at all. 0 = registered now
+  have dkms && have git && have make || return 1
+  [ -z "$(dkms status amneziawg 2>/dev/null)" ] || return 1            # a tree exists (ours or the package's): its owner builds it
+  $DRYRUN && { echo "    [skip] register amneziawg with DKMS from source"; return 0; }
+  local w rc=1; w="$(mktemp -d)"
+  git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/log" 2>&1 \
+    && awg_dkms_register_dir "$w/mod/src" >>"$w/log" 2>&1 && rc=0
+  rm -rf "$w"
+  return $rc
 }
 
 awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstream. 0 = tools AND module.
@@ -1454,12 +1567,226 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
   info "building the AmneziaWG kernel module for $(uname -r)…"
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
-  { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" \
-      && run make -C "$w/mod/src" \
-      && run make -C "$w/mod/src" install; } >"$w/mod.log" 2>&1 || true
+  ensure_awg_headers_follow >/dev/null 2>&1 || true
+  if git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/mod.log" 2>&1; then
+    # D4: REGISTER WITH DKMS instead of `make install`. Upstream's `install` is modules_install for the build kernel
+    # only, so the next kernel upgrade left the box with no module — on every Debian node, headers or not. DKMS
+    # rebuilds it when a kernel is installed. A tree the amnezia package already registered is left to its owner.
+    if have dkms && [ -z "$(dkms status amneziawg 2>/dev/null)" ] && awg_dkms_register_dir "$w/mod/src" >>"$w/mod.log" 2>&1; then
+      :
+    else
+      { run make -C "$w/mod/src" && run make -C "$w/mod/src" install; } >>"$w/mod.log" 2>&1 || true
+    fi
+  fi
   run depmod -a >/dev/null 2>&1 || true
   rm -rf "$w"
   modprobe amneziawg 2>/dev/null || return 1
+}
+
+# ── AppArmor accommodation for the node's WireGuard tools ───────────────────────────────────────
+# Shared by install-node.sh, install-host.sh (a master installs a local node) and update.sh, so a
+# FRESH install on an affected distribution is not left waiting for its first update to work.
+AA_DIR="${AA_DIR:-/etc/apparmor.d}"                                    # AppArmor policy, vendor + local/
+AA_PROFILES="${AA_PROFILES:-/sys/kernel/security/apparmor/profiles}"   # loaded profiles + their mode
+
+# Where the node's WireGuard tools are confined by AppArmor, the UAPI sockets that every USERSPACE
+# interface is driven through are not in the profile — so `wg show <iface>` is refused and the panel
+# reads those interfaces as having no peers at all. Retiring NoNewPrivileges does not touch this: it is
+# a file rule inside the profile, not an exec transition, and it bites whether or not the transition
+# happens. It is the same policy, reached through a different door, and it lands on exactly the
+# interface types the exec fault did NOT break — wdtt, csqtt, and any awg running the userspace
+# datapath, all of which live on a socket rather than in the kernel.
+#
+#     apparmor="DENIED" operation="connect" profile="wg" name="/run/wireguard/wdtt1.sock"
+#     apparmor="DENIED" operation="open"    profile="wg" name="/run/wireguard/"
+#
+# /var/run is a symlink to /run on any system this runs on, and AppArmor mediates the RESOLVED path, so
+# the /var/run rules are dead weight there — they are written anyway for the pre-merge layout, where the
+# node's own WG_SOCK_DIRS still looks, and a dead rule costs nothing.
+# ⚠️ FENCED AT BOTH ENDS. local/<profile> is a file the distribution and the operator may also write
+# in, so "delete the file to revert" would be wrong and un-reversing it by hand is worse. Between these
+# two markers is ours and only ours: uninstall.sh reaps exactly this span, and the idempotence check
+# below looks for the opening one. ⚠️ TWIN: uninstall.sh reaps this span by literal text and
+# deliberately does not source this file — change either marker and you must change both, or the
+# grant silently outlives the uninstall. Plain dashes, deliberately: `>>>`/`<<<` fences read as redirects and
+# here-strings to anything parsing this file as shell — the repo's own heredoc audit flagged them.
+APPARMOR_LOCAL_BEGIN='  # --- swgPanel: userspace WireGuard datapaths (begin) ---'
+APPARMOR_LOCAL_END='  # --- swgPanel: userspace WireGuard datapaths (end) ---'
+APPARMOR_LOCAL_BLOCK="$APPARMOR_LOCAL_BEGIN
+  # wireguard-go / amneziawg-go and the wdtt + csqtt forks are driven over a UAPI socket here. Without
+  # these the wg CLI cannot read them and every such interface reports zero peers. To revert, delete
+  # the lines between these two markers and: apparmor_parser -r <the profile that includes this file>
+  /run/wireguard/ r,
+  /run/wireguard/*.sock rw,
+  /var/run/wireguard/ r,
+  /var/run/wireguard/*.sock rw,
+$APPARMOR_LOCAL_END"
+
+_aa_profile_file(){   # echo the profile FILE name under $AA_DIR that holds tool $1's policy, or fail.
+  # Newer policy names it for the tool (`wg`), older for the path (`usr.bin.wg`). ONE list, because the
+  # guard below and the loop must never disagree about what counts as "this box has a profile for it".
+  local c; for c in "$1" "usr.bin.$1" "bin.$1"; do [ -f "$AA_DIR/$c" ] && { echo "$c"; return 0; }; done
+  return 1
+}
+
+ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confining the node's WireGuard tools.
+  # ⚠️ THIS EDITS A SECURITY POLICY ON SOMEONE ELSE'S MACHINE, so it is gated hard and narrowly:
+  #   · only a profile the distribution ships an enforcing copy of (complain mode already allows this);
+  #   · only through /etc/apparmor.d/local/<name>, the extension point the profile itself opts into by
+  #     including it — if the vendor profile carries no such include we do NOT touch the vendor file,
+  #     we say what to add and stop. Editing a packaged profile would be both wrong and lost on upgrade;
+  #   · APPEND-ONLY and marked, so a second run is a no-op and nothing already in that file is disturbed;
+  #   · SWG_NO_APPARMOR_FIX=1 declines it entirely.
+  # The grant is the narrowest one that restores the function: read the socket directory, talk to the
+  # sockets in it. Nothing else in the profile is widened.
+  [ "${SWG_NO_APPARMOR_FIX:-0}" = 1 ] && return 0
+  have apparmor_parser || return 0
+  local t prof base loc changed=no
+  # ⚠️ WE LOOKED, AND COULD NOT SEE. Without the loaded-profile list there is no way to tell enforce
+  # from complain, and complain needs no fix at all — so say so rather than act on a guess or pass in
+  # silence. (securityfs unmounted, or a confined/containerised context.)
+  if [ ! -r "$AA_PROFILES" ] && { _aa_profile_file wg >/dev/null || _aa_profile_file awg >/dev/null; }; then
+    warn "AppArmor policy for the WireGuard tools is present but $AA_PROFILES is unreadable — can't tell enforce from complain, so leaving it alone."
+    return 0
+  fi
+  # ⚠️ wg AND awg ONLY, and that is measured rather than assumed. On the node that reported this,
+  # `wg-quick` exec'd ip into a CHILD profile (target="wg-quick//ip") but exec'd wg into the STANDALONE
+  # one (target="wg"), and it was `profile="wg"` that then denied /run/wireguard — so local/wg is
+  # exactly the file that reaches it. Adding wg-quick here would write rules that no socket access ever
+  # consults; and a policy that did route wg through a `wg-quick//wg` child would be out of reach of
+  # local/ altogether, which is included at the profile's top level and not inside its children. That
+  # case degrades to the agent naming the refusal, which is the honest outcome for something we cannot
+  # repair from here.
+  for t in wg awg; do
+    # ⚠️ A PROFILE IS NAMED EITHER WAY, and so is the file that holds it: newer policy uses the tool
+    # name (`wg`, /etc/apparmor.d/wg), older uses the path (`/usr/bin/wg`, /etc/apparmor.d/usr.bin.wg).
+    # Matching only one spelling reads a confined box as unconfined and silently does nothing.
+    grep -Eqs "^[[:space:]]*(${t}|/usr/bin/${t}|/bin/${t}) \(enforce\)\$" "$AA_PROFILES" || continue
+    base="$(_aa_profile_file "$t")" || base=""
+    prof="${base:+$AA_DIR/$base}"
+    if [ -z "$prof" ]; then
+      warn "AppArmor enforces a profile for $t but no profile file was found under $AA_DIR — userspace interfaces (wdtt/csqtt/awg-userspace) will read 0 peers."
+      continue
+    fi
+    loc="$AA_DIR/local/$base"
+    # the profile must itself pull in local/<name>; that include is the distribution's own invitation
+    if ! grep -Eqs "include[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?<local/$base>" "$prof"; then
+      warn "AppArmor confines $t but $prof has no <local/$base> include — userspace interfaces (wdtt/csqtt/awg-userspace) will read 0 peers."
+      sub "add to $prof, then: apparmor_parser -r $prof"
+      printf '%s\n' "$APPARMOR_LOCAL_BLOCK"
+      continue
+    fi
+    if grep -qsF "$APPARMOR_LOCAL_BEGIN" "$loc" 2>/dev/null; then
+      # ⚠️ PRESENT IS NOT LOADED. The block is written first and the profile reloaded second, so a
+      # reload that failed once (a transient parse error, an abstraction missing mid-upgrade, the
+      # module not up yet) left the rules on disk and unread — and every later run would stop HERE,
+      # meaning the heal that exists to fix exactly this could never fire again. Reloading a profile
+      # that already carries them is a cheap no-op, so it is not conditional on anything.
+      ${DRYRUN:-false} && { echo "    [skip] re-assert $loc via apparmor_parser -r $prof"; continue; }
+      apparmor_parser -r "$prof" 2>/dev/null \
+        || warn "$loc carries the swgPanel rules but $prof would not reload — run: apparmor_parser -r $prof"
+      continue
+    fi
+    # NB: no `changed=yes` here. A dry-run that also prints the ✓ line below is claiming a policy
+    # change it did not make — the [skip] line is the whole report.
+    if ${DRYRUN:-false}; then echo "    [skip] append swgPanel socket rules to $loc + apparmor_parser -r $prof"; continue; fi
+    mkdir -p "$AA_DIR/local" 2>/dev/null || true
+    # A separator only when the file needs one: `$(tail -c1)` strips a trailing newline, so it is
+    # empty exactly when the file already ends in one. Always prepending it instead would leave one
+    # more blank line behind on every install/uninstall cycle, since the reap cuts marker-to-marker.
+    [ -s "$loc" ] && [ -n "$(tail -c 1 "$loc" 2>/dev/null)" ] && printf '\n' >> "$loc" 2>/dev/null
+    printf '%s\n' "$APPARMOR_LOCAL_BLOCK" >> "$loc" 2>/dev/null \
+      || { warn "couldn't write $loc — add the swgPanel block there by hand"; continue; }
+    if apparmor_parser -r "$prof" 2>/dev/null; then changed=yes
+    else warn "wrote $loc but couldn't reload $prof — run: apparmor_parser -r $prof"; fi
+  done
+  [ "$changed" = yes ] && ok "AppArmor: the wg CLI may read userspace interface sockets again (wdtt / csqtt / awg-userspace)"
+  return 0
+}
+
+# ── the userspace AmneziaWG datapath, PINNED (docs/AWG-DATAPATH-RESILIENCE-PLAN.md D1) ─────────────────────────
+# awg-quick falls back to `amneziawg-go` by itself when the kernel module is missing — the day a kernel upgrade arrives
+# without headers, a DKMS build fails on a new kernel, or a provider kernel has no headers at all. It can only do that
+# if the binary is ALREADY on the box, so every bare-metal AWG node carries it, working module or not.
+#
+# One pinned upstream ref for the whole fleet: tag + sha256 here, the same ref in Dockerfile.node. The bare-metal binary
+# is published as a release asset of this repo, like the fork binaries, and rebuilt byte for byte by
+# forks/amneziawg-go/build.sh — static (CGO_ENABLED=0 -trimpath -ldflags "-s -w" -buildvcs=false) with Go 1.27.1, so
+# one file runs on any glibc. The node IMAGE builds the same ref with its own base image's Go, so it is the same
+# source, not the same bytes. Identify the asset by tag + sha256 only — its `--version` prints upstream's stale
+# 0.0.20250522. Verified before install: it runs as root at every boot.
+AWG_GO_TAG="amneziawg-go-3.1.20260828"          # upstream amnezia-vpn/amneziawg-go tag v3.1.20260828
+AWG_GO_SHA256_amd64="85ebee7e01d6a18dd05c1116ceb52df60b0a64778afdc00eb06bf1f554ec1524"
+AWG_GO_SHA256_arm64="de0eb94f5b09e57438f5fd86fb15cb1aac5a656b9c39b5c41300a24283b9601e"
+# sha256 of EARLIER pinned builds (any arch), space-separated. A box still carrying one of OURS is moved to the current pin;
+# an amneziawg-go that is not one of ours — installed by the operator, or by another tool — is never touched. When bumping
+# the pin, move the old AWG_GO_SHA256_* values here, or the new build reaches fresh installs only.
+AWG_GO_REPLACES=""
+# ⚠️ A DOWNGRADE HAS TO TAKE THE DEVICE-ACCESS TABLES WITH IT, and on the box at that moment only SYSTEMD is still
+# ours. `reconcile_dev_reach` tears `swg_reach` down the moment the panel sends no plan — but that code is in the
+# binary a downgrade replaces. Start a swg-noded that predates device access and nothing can touch the table again:
+# it has no such function, and the panel stops sending `dev_reach` to a node reporting `net_deps.reach < 2`. The
+# last policy is frozen. Never LESS safe than the older release (which enforces nothing at all), but it goes on
+# DROPPING what the panel has since allowed: measured on msk-main (1.8.7 qualification S9), downgraded through
+# `bootstrap.sh update` with SWG_REF=main, `swg_reach` + `swg_share` stayed; the interface was set to Everyone on
+# the panel and a neighbour's probe still died, the frozen table's own `wgn2` drop counter rising 101 → 108.
+#
+# ⚠️ THIS USED TO LIVE IN update.sh, WHERE IT COULD NEVER RUN. `bootstrap.sh update` clones the REQUESTED ref and runs
+# THAT tree's update.sh — `SRC` is the script's own directory — so a downgrade is always performed by the OLDER
+# update.sh, which has no sweep. The gate only proved the call sat before the copy. What an older release does
+# leave alone is a drop-in: its update.sh heals the swg-noded unit only when the unit is MISSING and never touches
+# `swg-noded.service.d/`. So the sweep runs as ExecStartPre, on every start, against the binary about to run — a
+# bootstrap downgrade, a hand-copied binary and a restart are all the same moment.
+#
+# ⚠️ CONDITIONAL ON PURPOSE. The binary is asked directly (`def _reach_drop_table` is in the file or it is not — a
+# version string is a claim), so a build that manages the tables finds them untouched and an ordinary restart or
+# upgrade opens no unenforced window. `$$` is systemd's escape for `$`; `-` makes a failed sweep never block the start.
+# Not covered, by construction — no newer code runs there: a docker node started on an older image, and a NixOS node
+# rolled back to an older generation. Their remedy is `nft delete table inet swg_reach; nft delete table inet swg_share`.
+NODED_REACH_SWEEP_DROPIN=swg-noded.service.d/10-swg-reach-sweep.conf
+noded_reach_sweep_dropin(){ # <noded dir> → the drop-in, on stdout
+  cat <<EOF
+# written by swg-panel (lib/common.sh noded_reach_sweep_dropin) — rewritten on every update
+[Service]
+ExecStartPre=-/bin/sh -c 'grep -q "^def _reach_drop_table" ${1}/swg-noded 2>/dev/null && exit 0; command -v nft >/dev/null 2>&1 || exit 0; for t in swg_reach swg_share; do nft list table inet \$\$t >/dev/null 2>&1 || continue; nft delete table inet \$\$t && echo "swg-noded: removed nft table inet \$\$t, which this build cannot manage and which would otherwise enforce a frozen policy"; done; exit 0'
+EOF
+}
+ensure_noded_reach_sweep(){ # <noded dir> [<systemd dir>] — HEAL the drop-in beside an existing bare-metal swg-noded unit
+  local sd="${2:-/etc/systemd/system}" f want
+  [ -f "$sd/swg-noded.service" ] || return 0
+  f="$sd/$NODED_REACH_SWEEP_DROPIN"; want="$(noded_reach_sweep_dropin "$1")"
+  [ "$(cat "$f" 2>/dev/null)" = "$want" ] && return 0
+  if ${DRYRUN:-false}; then echo "    [skip] write $f (the downgrade sweep for the device-access tables)"; return 0; fi
+  mkdir -p "$(dirname "$f")" && printf '%s\n' "$want" > "$f" || { warn "couldn't write $f"; return 0; }
+  systemctl daemon-reload 2>/dev/null || true
+}
+
+awg_go_needs_install(){ # 0 = no amneziawg-go on PATH, or it is one of our EARLIER pinned builds
+  have amneziawg-go || return 0
+  local cur; cur="$(sha256sum "$(command -v amneziawg-go)" 2>/dev/null | cut -d' ' -f1)"
+  [ -n "$cur" ] || return 1
+  case " $AWG_GO_REPLACES " in *" $cur "*) return 0 ;; esac
+  return 1
+}
+awg_go_pinned(){ # fetch the pinned amneziawg-go, verify its sha256, install it. 0 = installed
+  local arch sha url tmp u
+  case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) return 1 ;; esac
+  eval "sha=\${AWG_GO_SHA256_$arch:-}"
+  [ -n "$sha" ] || return 1
+  url="https://github.com/SanityProtocol/swg-panel/releases/download/$AWG_GO_TAG/amneziawg-go-linux-$arch"
+  $DRYRUN && { echo "    [skip] fetch + verify $url"; return 0; }
+  have curl && have sha256sum || return 1
+  tmp="$(mktemp)"
+  # GitHub, then the operator's proxy mirrors (SWG_TURN_MIRROR, as for the turn binaries). A mirror is SAFE here, which it
+  # is not for those: whatever it serves must match the pin.
+  for u in "$url" $(for m in ${SWG_TURN_MIRROR:-}; do printf '%s ' "${m%/}/$url"; done); do
+    if curl -fsSL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 3 "$u" -o "$tmp" \
+       && printf '%s  %s\n' "$sha" "$tmp" | sha256sum -c - >/dev/null 2>&1; then
+      install -m 0755 "$tmp" /usr/local/bin/amneziawg-go || { rm -f "$tmp"; return 1; }   # a verified file that did not land is not "installed"
+      rm -f "$tmp"; return 0
+    fi
+  done
+  rm -f "$tmp"; return 1                                     # a download that does not match the pin is never installed
 }
 
 ensure_awg_userspace(){ # last rung: the userspace datapath, so AWG works even with no loadable module. 0/1
@@ -1469,11 +1796,15 @@ ensure_awg_userspace(){ # last rung: the userspace datapath, so AWG works even w
   # have always run, and it works on boxes where nothing else can: no matching headers, LXC/OpenVZ guests.
   have amneziawg-go && return 0
   $DRYRUN && return 0
+  # The pinned build first: no toolchain, no apt source, seconds instead of minutes. The source build below stays only
+  # for an architecture with no published asset, or a box that cannot reach it.
+  awg_go_pinned && { info "userspace AmneziaWG datapath installed (pinned $AWG_GO_TAG)"; return 0; }
   have go || { have apt-get && run apt-get install -y --no-install-recommends golang-go git ca-certificates >/dev/null 2>&1; }
   have go || { warn "no Go toolchain — install amneziawg-go by hand for a userspace AmneziaWG datapath"; return 1; }
   info "building the userspace AmneziaWG datapath (amneziawg-go)…"
   local w; w="$(mktemp -d)"
-  { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" \
+  # The same pinned upstream tag as the published build — same source, this box's own Go, so not the same bytes.
+  { git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-go "$w/go" "v${AWG_GO_TAG#amneziawg-go-}" \
       && ( cd "$w/go" && run go build -o /usr/local/bin/amneziawg-go . ); } >"$w/go.log" 2>&1 || true
   # Debian STABLE ships a Go far older than amneziawg-go asks for (bookworm: 1.19 vs a go.mod wanting 1.25),
   # and 1.19 predates Go fetching its own toolchain, so it cannot bootstrap out of it either. backports is

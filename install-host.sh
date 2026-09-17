@@ -460,6 +460,10 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
     return 1
   fi
   # awg
+  # D1 (docs/AWG-DATAPATH-RESILIENCE-PLAN.md): the userspace fallback goes on EVERY bare-metal AWG box, working module
+  # or not — awg-quick needs it on disk the day a reboot lands on a kernel with no module. Only the pinned download
+  # here; a Go build for a box whose module works is not worth its cost (ensure_awg_userspace keeps that rung).
+  awg_go_needs_install && { awg_go_pinned || warn "AmneziaWG: the pinned userspace fallback could not be fetched — awg interfaces depend on the kernel module alone until an update installs it"; }   # missing, or one of our earlier pinned builds
   if have awg && modprobe amneziawg 2>/dev/null; then return 0; fi     # already fully working (tool + loadable module)
   # graceful degrade on a non-apt distro (Fedora/RHEL/Arch/Alpine): tell the operator what to install by hand rather
   # than silently limp on with no datapath. The apt paths below stay for Debian/Ubuntu.
@@ -471,6 +475,8 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   run apt-get update -qq || true
   # REQUIRED so amneziawg-dkms can build against THIS kernel; try the exact headers, fall back to the meta package.
   run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
+  ensure_awg_headers_follow || true   # D4: headers for the NEXT kernel too, so DKMS builds it when it arrives
+  awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
   run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
   build_awg_module
   $DRYRUN && return 0
@@ -494,6 +500,7 @@ build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the RUNNING
   # explicitly — a box on an OLD kernel with newer headers installed would otherwise build for the wrong one and
   # `modprobe` would still fail. A --reinstall of the dkms package re-runs its build postinst as a fallback.
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
+  awg_dkms_build_all_kernels   # D4: every installed kernel with headers — an installed-but-not-booted kernel included
   modprobe amneziawg 2>/dev/null && return 0
   run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || true
@@ -938,6 +945,11 @@ run chown -R "$PANEL_USER:swg" "$STATE_DIR"
 # blobs, and serve.json; the vault inside stays 0600 (owner-only) so swg-sub still can't read it.
 mkdir -p "$PREFIX$STATE_DIR/subs/blobs"; run chown -R "$PANEL_USER:swg" "$STATE_DIR/subs"; run chmod 750 "$STATE_DIR/subs" "$STATE_DIR/subs/blobs"
 run chown "$PANEL_USER:swg" "$STATS_DIR"; run chmod 2775 "$STATS_DIR"   # panel writes node snapshots here for the dashboard
+# …and what is ALREADY in it, for the reason $STATE_DIR is re-chowned above. A docker→bare-metal convert carries the
+# graph history out of a container whose panel ran as root: measured (1.8.7 qualification S4), every health / presence /
+# interface rrd arrived root-owned, the panel logged "not writable (owned by another user) — recreated", and the history
+# the convert had just carried was thrown away.
+run chown -R "$PANEL_USER:swg" "$STATS_DIR"
 # the panel user must rewrite the auth file (Account tab) — that's an atomic temp+rename in
 # ETC_DIR, so the dir needs group(swg) write; setgid keeps new files in group swg.
 run chown root:swg "$ETC_DIR"; run chmod 2775 "$ETC_DIR"
@@ -1087,7 +1099,9 @@ Environment=SWG_AGENT_CONFIG=/etc/swg-agent/config.json
 Environment=SWG_NODED_STATE=/var/lib/swg-noded
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=true
+# ⚠️ NO NoNewPrivileges HERE — see install-node.sh's copy of this unit for why. It withheld no
+# privilege this root daemon did not already hold, and it blocked the AppArmor profile transition that
+# wg-quick needs to exec ip/wg at all.
 ProtectSystem=true
 ProtectHome=true
 PrivateTmp=true
@@ -1095,6 +1109,12 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
+  # the device-access tables must not outlive a downgrade — see noded_reach_sweep_dropin (lib/common.sh)
+  noded_reach_sweep_dropin "$NODED_DIR" | writef "/etc/systemd/system/$NODED_REACH_SWEEP_DROPIN" 644
+  # A master runs a local node, so it needs the same AppArmor accommodation install-node.sh applies:
+  # userspace interfaces (wdtt, csqtt, awg on amneziawg-go) are driven over a UAPI socket in
+  # /run/wireguard, which a distribution's wg profile does not permit. No-op without AppArmor.
+  ensure_wg_apparmor
 fi
 
 # ───────────────────────── nodes.json + fleet.json ─────────────────────────
@@ -1405,7 +1425,23 @@ set -euo pipefail
 # nothing and reading the wrapper it wrote (\`exports=0\`, where the update path writes 1).
 URL="\${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/${_swg_ref}/bootstrap.sh}"
 export SWG_BOOTSTRAP_URL="\$URL"
-curl -fsSL "\$URL" | bash -s update -y --no-components "\$@"   # extra flags (e.g. --node-only) pass through
+# ⚠️ DOWNLOADED FIRST, RUN SECOND — AND A SECOND DOOR WHEN RAW CANNOT BE HAD. Byte-identical in install-host.sh,
+# update.sh and lib/common.sh; tests/update_bootstrap_fallback_selftest.py runs all three and compares them.
+# \`curl | bash\` executes whatever arrived before the connection died, so a reset halfway through bootstrap.sh
+# ran half of it. A file is run only once curl says the whole of it arrived.
+# raw.githubusercontent.com resolves into the address range filtered in the networks this product is most used
+# in, and api.github.com does not (docs/UPDATE-RESILIENCE-PLAN.md, 0a). This one file is the ONLY thing an
+# update reads from raw — bootstrap.sh fetches the tree from github.com itself — so reading it through the API
+# is what lets a filtered box update at all. Same repo, same ref, same TLS: nothing new to trust. Only a GitHub
+# raw URL has that door; an operator's own SWG_BOOTSTRAP_URL mirror is not handed a source it never named.
+B="\$(mktemp)"; trap 'rm -f "\$B"' EXIT
+API="\$(printf '%s' "\$URL" | sed -nE 's#^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/([^?#]+).*#https://api.github.com/repos/\1/\2/contents/\4?ref=\3#p')"
+if ! curl -fsSL --connect-timeout 20 --max-time 120 "\$URL" -o "\$B"; then
+  [ -n "\$API" ] || exit 1
+  echo "swg-update: could not fetch bootstrap.sh from \$URL — trying api.github.com" >&2
+  curl -fsSL --connect-timeout 20 --max-time 120 -H 'Accept: application/vnd.github.raw' "\$API" -o "\$B"
+fi
+bash "\$B" update -y --no-components "\$@"   # extra flags (e.g. --node-only) pass through
 exit
 }
 WRAP
@@ -1889,7 +1925,12 @@ serve_skip(){
 }
 
 info "Login + TLS ($SERVE_MODE)"
-if [ "$KEEP_AUTH" = yes ]; then ok "keeping existing login ($BASIC_USER) — ${ETC_DIR}/auth untouched"; else mk_auth_file; fi
+# ⚠️ A KEPT login still gets the ownership mk_auth_file gives a new one. "Untouched" kept whatever owner the file came
+# with, and a docker→bare-metal convert stages it from a container that ran as root: measured (qualification S4),
+# /etc/swg-panel/auth arrived root:root 0600, the panel — running as $PANEL_USER — could not read it, and refused
+# EVERY request ("LOGIN IS CLOSED") while telling the operator the convert kept their login.
+if [ "$KEEP_AUTH" = yes ]; then ok "keeping existing login ($BASIC_USER)"; run chmod 640 "$ETC_DIR/auth"; run chown root:swg "$ETC_DIR/auth"
+else mk_auth_file; fi
 case "$SERVE_MODE" in
   internal) serve_internal;;
   nginx)    serve_nginx;;

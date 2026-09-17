@@ -12,7 +12,7 @@
  * injected opener rather than an import.
  */
 
-import { T, Tsplit, plural } from "./i18n.js";
+import { T, Tsplit, plural, locale } from "./i18n.js";   // locale: dates in the panel's language, not the browser's
 import { tkey, seen, targetRole } from "./util.js";
 import { Store, api, useStore } from "./store.js";
 import { targetType, iTypeOf, ghostIface, ghostPeers, peerSubSources, subHidden, subHides, isSelfContainedTgt } from "./model.js";
@@ -108,11 +108,27 @@ export function rotateAllUserKeys(user, after) {
     } });
 }
 
+// A device that carries networks takes them down with it, and nothing on the side of the people who used them says why — so
+// every confirm that cuts one off names what goes (docs/NETWORKS-PLAN.md §18).
+function _netsLost(peer, block) {
+  const p = (peer && peer.id && Store.peer(peer.id)) || peer || {};
+  const nets = p.routes || [];
+  if (!nets.length) return "";
+  const v = { device: p.title || p.name || T("This device"), nets: nets.join(", ") };
+  return " " + (block ? T("{device} carries {nets} — everyone who reaches them through it loses access until it's unblocked.", v)
+    : T("{device} carries {nets} — everyone who reaches them through it loses access.", v));
+}
+function _userNetsLost(user) {
+  const gws = Store.peersOfUser(user.id).filter(p => (p.routes || []).length);
+  return gws.length ? " " + T("Their devices that carry networks ({devices}) take them down too — everyone who reaches them through those devices loses access until the user is unblocked.",
+    { devices: gws.map(p => p.title || T("Untitled")).join(", ") }) : "";
+}
+
 // Confirmed unassign — revokes the holder (PSK rotates) and is irreversible (keys change).
 // `back` = where Cancel returns to (e.g. the peer view it was launched from).
 export function confirmUnassign(peer, back) {
   openConfirm({ title: peer.name ? T("Unassign peer · {name}", { name: peer.name }) : T("Unassign peer"), confirmLabel: T("Unassign"), danger: true, back,
-    body: T("This revokes access immediately and is irreversible — the keys change, so re-assigning later means sending the user a brand-new QR / config to import."),
+    body: T("This revokes access immediately and is irreversible — the keys change, so re-assigning later means sending the user a brand-new QR / config to import.") + _netsLost(peer),
     onConfirm: () => mutate({ key: "peer:" + peer.id,
       patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = null; },
       call: () => api.peerUnassign({ peer_id: peer.id }),
@@ -121,7 +137,7 @@ export function confirmUnassign(peer, back) {
 // Confirmed delete (unassigned peers only). `back` = Cancel target.
 export function confirmDeletePeer(peer, back, closeOwner) {
   openConfirm({ title: T("Delete peer"), confirmLabel: T("Delete"), danger: true, back,
-    body: T("This is irreversible — the peer's key is removed from every interface it's deployed on."),
+    body: T("This is irreversible — the peer's key is removed from every interface it's deployed on.") + _netsLost(peer),
     // `back` returns you where you came from, which is right for Cancel and wrong for a delete when the frame
     // you came from is a VIEW OF THIS PEER — it would return you to an editor for something that no longer
     // exists. But how far to close is the CALLER's fact, not this function's: deleting from the peer's own
@@ -238,7 +254,10 @@ export function openRecreateRekey(node, iface, back) {
                 // `null` = the panel holds no opinion, so the sheet may use the fleet default. An empty
                 // LIST is an opinion ("no DNS line") and must reach the sheet as an empty field.
                 dns: Array.isArray(g.dns) ? g.dns.join(", ") : null,
-                keepalive: typeof g.keepalive === "number" ? g.keepalive : null };
+                keepalive: typeof g.keepalive === "number" ? g.keepalive : null,
+                // the device-access level, for the same reason: the sheet posts one unconditionally and create writes it
+                // onto the warm record, so an unseeded level resets a chosen Everyone or Nobody (DEVICE-ACCESS §11.2 F1)
+                reach: g.reach || null };
   const rekeyable = peers.filter(p => p.user_id).map(p => p.id);   // only ASSIGNED peers can be rekeyed (rekey needs a holder)
   // `warm` — the panel holds this interface's saved config, so the sheet is showing what it WAS rather than
   // what could be guessed from its peers. The notice says which, because "review the settings below" is only
@@ -349,7 +368,7 @@ export const now_s = () => Math.floor(Date.now() / 1000);
 const _peerName = p => p.title ? " · " + p.title : p.name ? " · " + p.name : "";
 export function confirmBlockPeer(peer, back) {
   openConfirm({ title: T("Block access") + _peerName(peer), confirmLabel: T("Block"), danger: true, back,
-    body: T("This removes the peer from every server it's deployed on, cutting its connection within a sync. The keys are unchanged, so unblocking later restores the same config — no new QR needed."),
+    body: T("This removes the peer from every server it's deployed on, cutting its connection within a sync. The keys are unchanged, so unblocking later restores the same config — no new QR needed.") + _netsLost(peer, true),
     onConfirm: () => mutate({ key: "peer:" + peer.id,
       patch: s => { const p = s.roster.peers[peer.id]; if (p) p.disabled = true; },
       call: () => api.peerBlock({ peer_id: peer.id }) }) });
@@ -363,7 +382,7 @@ export function confirmUnblockPeer(peer, back) {
 }
 export function confirmBlockUser(user, back) {
   openConfirm({ title: T("Block access · {name}", { name: user.name || T("kind|user") }), confirmLabel: T("Block"), danger: true, back,
-    body: T("This blocks every peer of this user and, if they have a subscription, disables its page — the link still resolves but shows “Subscription disabled”. Nothing is deleted: unblocking restores connectivity and the same subscription URL."),
+    body: T("This blocks every peer of this user and, if they have a subscription, disables its page — the link still resolves but shows “Subscription disabled”. Nothing is deleted: unblocking restores connectivity and the same subscription URL.") + _userNetsLost(user),
     onConfirm: () => mutate({ key: "user:" + user.id,
       patch: s => { const u = s.roster.users[user.id]; if (u) u.disabled = true; },
       call: () => api.userBlock({ user_id: user.id }) }) });
@@ -447,7 +466,7 @@ export function PubTag({ peer, src, label, kind, dim }) {
 // timestamp; a <input type=date> maps to the END of the chosen day so it stays valid THROUGH that date. ──
 export const DAY_S = 86400;
 export const expiryWarnDays = () => { const d = +((Store.panelSettings || {}).expiry_warn_days); return (d >= 0 && d <= 365) ? d : 3; };
-export function fmtDate(sec) { if (!sec) return ""; try { return new Date(sec * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }); } catch (_) { return ""; } }
+export function fmtDate(sec) { if (!sec) return ""; try { return new Date(sec * 1000).toLocaleDateString(locale(), { year: "numeric", month: "short", day: "numeric" }); } catch (_) { return ""; } }
 export function expiryInputVal(sec) { if (!sec) return ""; const d = new Date(sec * 1000); if (isNaN(d.getTime())) return ""; const p = n => String(n).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); }
 export function expiryFromInput(str) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str || "").trim()); if (!m) return 0; const d = new Date(+m[1], +m[2] - 1, +m[3], 23, 59, 59); const s = Math.floor(d.getTime() / 1000); return s > 0 ? s : 0; }
 // The SUBSCRIPTION's lifecycle sentence for a user (block wins over a lapsed date; the soft "about to expire" warn
@@ -527,26 +546,41 @@ export function UserCombo({ onPick, placeholder }) {
 
 // A type-to-filter user *select* that holds a value (current owner) — used by the create/edit
 // peer forms. Like UserCombo but reflects a selection and can offer "— unassigned —".
-export function UserPicker({ value, onChange, allowUnassigned, placeholder }) {
+// `groups` + `onGroup` (docs/GROUPS-PLAN.md G11 — the People window): groups offered first, each with its member count, and picked
+// through their own callback, so a group's id never reaches a caller that expects a user's.
+export function UserPicker({ value, onChange, allowUnassigned, placeholder, exclude, groups, onGroup }) {
   const [q, setQ] = useState(""); const [open, setOpen] = useState(false);
   const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const sel = users.find(u => u.id === value);
   const selText = sel ? sel.name + (sel.tag ? " · " + sel.tag : "") : "";
   const ql = q.toLowerCase();
-  const shown = users.filter(u => searchMatch(u.name + " " + (u.tag || ""), ql)).slice(0, 8);
+  // `exclude`: ids this picker must not offer — people already on the list it adds to (offering them again read as a bug).
+  // Two users can share a name; an untagged pair then shows each one's device count and the day it was added, or the
+  // operator picks one blind. (A short id did this first — "pool-test #31cbfc" read as noise, not as a way to tell them apart.)
+  const skip = exclude ? new Set(exclude) : null;
+  const pool = skip ? users.filter(u => !skip.has(u.id)) : users;
+  const named = {}; users.forEach(u => { named[u.name] = (named[u.name] || 0) + 1; });
+  const shown = pool.filter(u => searchMatch(u.name + " " + (u.tag || ""), ql)).slice(0, 8);
+  const gshown = groups ? groups.filter(g => searchMatch(g.name, ql)).slice(0, 4) : [];
   const { wrapRef, listRef, pos, popStyle } = useAnchoredList(open, setOpen, [q]);
   const pick = uid => { setOpen(false); setQ(""); onChange(uid); };
+  const pickGroup = gid => { setOpen(false); setQ(""); onGroup(gid); };
   return html`<div class="usercombo" ref=${wrapRef}>
     <input class="uc-input" value=${open ? q : selText}
       placeholder=${placeholder || (allowUnassigned ? T("— unassigned —") : T("Assign to a user…"))}
       onClick=${() => { setOpen(true); setQ(""); }} onInput=${e => { setQ(e.target.value); setOpen(true); }}
       onKeyDown=${e => { if (e.key === "Escape") { setOpen(false); return; }
         // while actively filtering, Enter never saves the form: exactly one match selects it, anything else does nothing.
-        if (e.key === "Enter" && open && q) { e.preventDefault(); if (shown.length === 1) pick(shown[0].id); } }}/>
+        if (e.key === "Enter" && open && q) { e.preventDefault();
+          if (gshown.length + shown.length === 1) { if (gshown.length) pickGroup(gshown[0].id); else pick(shown[0].id); } } }}/>
     ${open && pos ? html`<${Portal}><div class="uc-list uc-pop" ref=${listRef} style=${popStyle}>
       ${allowUnassigned ? html`<button class="uc-opt" onClick=${() => pick("")}><span class="faint">${T("— unassigned —")}</span></button>` : null}
-      ${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
-        : html`<div class="uc-empty">${users.length ? T("no match") : T("no users yet")}</div>`}
+      ${gshown.map(g => html`<button class="uc-opt uc-group" key=${"g:" + g.id} onClick=${() => pickGroup(g.id)}><${Ic} i="users"/><span>${g.name}</span><span class="faint">${plural(g.users.length, "member")}</span></button>`)}
+      ${shown.length || gshown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>`
+          : named[u.name] > 1 ? html`<span class="faint">${u.created_at
+            ? T("{devices}, added {date}", { devices: plural(Store.peersOfUser(u.id).length, "device"), date: fmtDate(u.created_at) })
+            : plural(Store.peersOfUser(u.id).length, "device")}</span>` : null}</button>`)
+        : html`<div class="uc-empty">${pool.length || (groups || []).length ? T("no match") : users.length ? T("everyone is already added") : T("no users yet")}</div>`}
     </div><//>` : null}
   </div>`;
 }

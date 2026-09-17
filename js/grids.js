@@ -30,8 +30,8 @@ import {
   UserCombo, assignPeer, confirmUnassign, confirmDeletePeer, confirmRestoreDeployment,
   confirmCorrectDeployment, openRecreateRekey, peerBlockBtn,
 } from "./peer-actions.js";
-import { openPeerConfigs } from "./peer-ui.js";
-import { openEditPeer, openPeerView } from "./sheets-crud.js";
+import { openPeerConfigs, ReachedByBody } from "./peer-ui.js";
+import { openEditPeer, openPeerView, openPeerNetworks } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef } from "preact/hooks";
 import htm from "htm";
@@ -41,6 +41,22 @@ const html = htm.bind(h);
 // `live` (the Live monitor): status is the animated connDot (not the pill badge), an Endpoint column is added
 // (turn peers show "Local turn-proxy"), the row actions + assign-to-user dropdown are dropped (read-only).
 // `sort`/`dir`/`onSort` make every column header a clickable order-by.
+// NETWORKS P3 (feature 7) — this peer fronts networks: an icon + count chip beside its interface tag, lit while the deployment
+// shown is online; the networks themselves are on hover. Built from the peer record and the row's own online flag, so it
+// costs the grid nothing it did not already have. ⚠️ It used to follow the TITLE with the word "network(s)", and a long
+// title ran it into the next column (Peers, Online) — the interface tag's cell is sized for chips.
+// ⚠️ NO `title`. The caption listed the prefixes and whether the deployment was up; the bubble says that AND who actually
+// reaches them, which is the question the chip raises. A native tooltip would also sit on top of the bubble it competes with.
+// The chip also opens the device's Networks window (operator, 2026-09-17), and so does the bubble's View — a click on it never
+// reaches the row, which `_rowInteractive` skips by this class.
+const gwTag = (p, t) => html`<${Popover} hoverOnly cls="grp-pop" popCls="netroute-bub netbub-wide"
+  trigger=${html`<span class=${"tg tg-gw" + (t.online ? "" : " muted")} role="button" tabIndex="0" onClick=${() => openPeerNetworks(p)}
+    onKeyDown=${e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPeerNetworks(p); } }}
+    aria-label=${T("Who reaches the networks behind this device")}>
+    <${Ic} i="network"/>${p.routes.length}</span>`}>
+  <${ReachedByBody} peer=${p} blocked=${!!(p.selfDisabled || p.userDisabled) || p.status === "expired"} down=${!t.online} onView=${() => openPeerNetworks(p)}/>
+<//>`;
+
 export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live, grouped, sort, dir, onSort }) {
   const arrow = c => sort === c ? (dir < 0 ? "↓ " : "↑ ") : "";
   const th = (c, label, cls) => onSort ? html`<th class=${(cls ? cls + " " : "") + "clk"} onClick=${() => onSort(c)}>${arrow(c)}${label}</th>` : html`<th class=${cls || ""}>${label}</th>`;
@@ -60,30 +76,46 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
         const re = rowError("peer:" + p.id);   // pinned action failure → shown on the status hover bubble, not inline
+        const gw = (p.routes || []).length ? gwTag(p, t) : null;   // beside the interface tag, wherever this layout puts it
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} data-peer=${p.id} class=${"clk" + (fresh ? " pcreate" : "")} title=${T("Double-click for QR / configs")} onMouseDown=${rowNoSelect} onClick=${e => rowSingle(e, () => openPeerView(p.id, t.node, t.iface))} onDblClick=${e => rowDouble(e, () => openPeerConfigs(p))}>
           <td data-label=${T("col|Status")} class="c-status">${(() => {
+            // ⚠️ THE NETWORKS CHIP IS ITS OWN HOVER BUBBLE, so it must not sit inside the status wrappers below:
+            // .turnwrap opens its bubble on any hover in its subtree, and uncatPop is a Popover around whatever it is
+            // handed — with the chip inside either, hovering it opened two bubbles at once, anchored differently.
             const ifaceB = loc ? gridIfaceTag(t) : null;
-            if (!live) return html`${gridStatusBadge(t, p, re)}${ifaceB}`;
+            const gwB = loc ? gw : null;   // the Private tag is not here: it rides the title — see titleCell
+            if (!live) return html`${gridStatusBadge(t, p, re)}${ifaceB}${gwB}`;
             const dot = html`<span class=${"condot " + (t.status === "faulty" ? "faulty" : t.status === "blocked" ? "blocked" : t.online ? "on" : "off")}></span>`;
             if (re) {
               return html`<span class="turnwrap" title="">${dot}${ifaceB}
-                <span class="turnbub statusbub err"><span class="statusbub-h" style="color:var(--dangling)"><${Ic} i="err"/>${T("Error")}</span>${re.msg}</span></span>`;
+                <span class="turnbub statusbub err"><span class="statusbub-h" style="color:var(--dangling)"><${Ic} i="err"/>${T("Error")}</span>${re.msg}</span></span>${gwB}`;
             }
             // Uncategorised: the live view has no pill to recolour, so the DOT carries it — amber and pulsing,
             // "online, but not being category-routed". Same bubble as the grid badge, shared from ui.js so the
             // sentence exists once. Ranked below a real fault: a faulty/blocked peer has a worse problem.
             if (peerUncategorised(t) && t.status !== "faulty" && t.status !== "blocked") {
-              return uncatPop(html`<span class="condot uncat"></span>${ifaceB}`);
+              return html`${uncatPop(html`<span class="condot uncat"></span>${ifaceB}`)}${gwB}`;
             }
             // faulty / blocked → the "why" bubble on hovering the dot OR the interface badge (same as the peer-grid badge)
             if (t.status === "faulty" || t.status === "blocked") {
               return html`<span class="turnwrap" title="">${dot}${ifaceB}
-                <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${t.status === "blocked" ? T("status|Restricted") : T("status|Faulty")}</span>${statusReason(t.status)}</span></span>`;
+                <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${t.status === "blocked" ? T("status|Restricted") : T("status|Faulty")}</span>${statusReason(t.status)}</span></span>${gwB}`;
             }
-            return html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? "online" : "offline"}></span>${ifaceB}`;
+            return html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? T("status|Online") : T("Offline")}></span>${ifaceB}${gwB}`;
           })()}</td>
           ${(() => {
-            const titleCell = html`<td data-label=${T("col|Title")} class="c-name">${lifecycleIcon(p, t.status)}${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">${T("Untitled")}</span>`}</td>`;
+            const titleCell = html`<td data-label=${T("col|Title")} class="c-name">${lifecycleIcon(p, t.status)}${(() => {
+              const nm = p.title ? html`<b>${p.title}</b>` : html`<span class="faint">${T("Untitled")}</span>`;
+              // ⚠️ PRIVATE WAS INVISIBLE EVERYWHERE BUT ITS OWN EDIT SHEET, so it was given a tag — and the tag first went
+              // into the STATUS cell, a fixed-width column already holding a nowrap pill: on the Peers screen it ran 30px
+              // into the owner's name ("личное" over "n-anna", measured at 1420px). It belongs to the DEVICE, in every
+              // layout, so it sits by the title like the networks chip below: in one row with it, the TITLE truncating
+              // and the tags never pushed past the cell's edge.
+              const priv = p.private ? html`<span class="tg tg-priv" title=${T("Only this user's own devices reach it and the networks behind it")}>${T("tag|private")}</span>` : null;
+              // No interface column in this layout, so the networks chip stays by the title too.
+              const chip = !loc && !agg && gw ? gw : null;
+              return priv || chip ? html`<span class="namewrap">${nm}${priv}${chip}</span>` : nm;
+            })()}</td>`;
             const addrCell = html`<td data-label=${T("col|Address")}><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
             const epCell = html`<td data-label=${T("col|Endpoint")}>${endpointCell(t)}</td>`;
             const nodeCell = html`<td data-label=${T("col|Node")}><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
@@ -99,7 +131,8 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             if (loc) return html`${userCell}${titleCell}${live ? epCell : null}${addrCell}${nodeCell}`;
             const srvAgg = agg ? html`<td data-label=${node === "*" ? T("col|Node") : T("col|IF")}><div class="srvcell">
               ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
-              ${ifaceIsAll(iface) ? (grouped ? gridIfacesTag(t, matchedOf(p)) : gridIfaceTag(t)) : null}
+              ${gw ? html`<span class="srvtags">${ifaceIsAll(iface) ? (grouped ? gridIfacesTag(t, matchedOf(p)) : gridIfaceTag(t)) : null}${gw}</span>`
+                : (ifaceIsAll(iface) ? (grouped ? gridIfacesTag(t, matchedOf(p)) : gridIfaceTag(t)) : null)}
             </div></td>` : null;
             return html`${userCell}${titleCell}${srvAgg}${addrCell}${live ? epCell : null}`;
           })()}

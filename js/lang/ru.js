@@ -23,6 +23,423 @@ export const STR = {
   "{v1} is no longer a list the panel knows": "{v1} — панель больше не знает такого списка",
   "…and {v1} more": "…и ещё {v1}",
 
+  // ── networks behind a peer (docs/NETWORKS-PLAN.md) ──
+  // {node} is a node's own NAME, so no sentence here makes a verb or pronoun agree with it: «{node}: …» or
+  // «на {node}» throughout. {peers}/{users} arrive already counted; the users slot reads after «у», so the
+  // code passes the genitive noun (gen|user).
+  "Networks behind this device": "Сети за этим устройством",
+  // NETWORKS P5 — who can reach a network behind a device
+  "A date is the last day they can reach these networks; leave it empty for no end.": "Дата — последний день доступа к этим сетям; оставьте пустой, чтобы без срока.",
+  "{name}: {devices} on a turn server whose build can't prove who is sending — they can't reach it.": "{name}: {devices} за turn-сервером, сборка которого не подтверждает отправителя, — доступа нет.",
+  "{name}: {devices} not connected yet — they reach it once connected.": "{name}: {devices} — подключения ещё не было, доступ появится после него.",
+  "{name}: {devices} on a turn server that isn't running.": "{name}: {devices} за turn-сервером, который не запущен.",
+  "{name}: {devices} in ildarmaga's raw mode, which can't reach a restricted network.": "{name}: {devices} в raw-режиме ildarmaga, который не может достучаться до сети с ограниченным доступом.",
+  "{name}: {devices} not reported by the node yet.": "{name}: {devices} — данных от ноды ещё нет.",
+  "{node} runs a version that can't restrict who reaches a network, so it carries this one for nobody — update it.": "{node} работает на версии, которая не умеет ограничивать доступ к сети, поэтому эта сеть там никому не доступна — обновите её.",
+  "One of these people no longer exists — remove them and save again.": "Одного из этих людей больше нет — уберите его и сохраните снова.",
+  "A date has already passed — pick a later day or leave it empty.": "Дата уже прошла — выберите более поздний день или оставьте поле пустым.",
+  "A network can be shared with at most 500 people and groups.": "Открыть сеть можно не более чем 500 людям и группам.",
+  "One of these groups no longer exists — remove it and save again.": "Одной из этих групп больше нет — уберите её и сохраните снова.",
+  "This page is out of date — reload it, then save again.": "Страница устарела — обновите её и сохраните снова.",
+  "Access wasn't saved.": "Доступ не сохранён.",
+  "a user who no longer exists": "удалённый пользователь",
+  "Networks": "Сети",
+  "Networks · {n}": "Сети · {n}",
+  "Networks · {name}": "Сети · {name}",
+  // NETWORKS §18 — the gaps a use-case walk found: what cuts a gateway off, old nodes, the device's own routing, home ranges
+  "This device": "Это устройство",
+  "{device} carries {nets} — everyone who reaches them through it loses access.": "{device} проводит {nets} — все, кто попадает туда через него, потеряют доступ.",
+  "{device} carries {nets} — everyone who reaches them through it loses access until it's unblocked.": "{device} проводит {nets} — все, кто попадает туда через него, потеряют доступ до разблокировки.",
+  "Their devices that carry networks ({devices}) take them down too — everyone who reaches them through those devices loses access.":
+    "Через устройства этого пользователя проходят сети ({devices}) — все, кто попадает в них через эти устройства, потеряют доступ.",
+  "Their devices that carry networks ({devices}) take them down too — everyone who reaches them through those devices loses access until the user is unblocked.":
+    "Через устройства этого пользователя проходят сети ({devices}) — все, кто попадает в них через эти устройства, потеряют доступ до разблокировки пользователя.",
+  "{device} stops carrying {nets} on {where} — everyone who reaches them there loses access.": "{device} перестанет проводить {nets} на {where} — все, кто попадал туда там, потеряют доступ.",
+  "{device} carries {nets}. On a node you add, they're carried there too — for the same people as now.": "{device} проводит {nets}. На добавленной ноде они тоже будут проводиться — для тех же людей, что и сейчас.",
+  // budget-ok: notice, wraps
+  "{device} carries {nets}. On a node you add, they're carried there too, and every device on that node can reach them. Open Networks to limit who.":
+    "{device} проводит {nets}. На добавленной ноде они тоже будут проводиться, и туда сможет попасть любое устройство на этой ноде. Ограничить доступ можно в окне «Сети».",
+  // budget-ok: notice, wraps
+  "{nodes} runs an older version that can't limit who reaches a network, so with this choice nobody reaches them there — {name} included. Update {nodes}, or choose “{everyone}”.":
+    "{nodes} работает на старой версии, которая не умеет ограничивать доступ к сети, поэтому с таким выбором туда никто не попадёт — и {name} тоже. Обновите {nodes} или выберите «{everyone}».",
+  // budget-ok: notice, wraps
+  "{nodes} runs an older version that can't limit who reaches a network, so with this choice nobody reaches them there. Update {nodes}, or choose “{everyone}”.":
+    "{nodes} работает на старой версии, которая не умеет ограничивать доступ к сети, поэтому с таким выбором туда никто не попадёт. Обновите {nodes} или выберите «{everyone}».",
+  "Saving with no networks removes them — you'll be asked first.": "Если сохранить пустое поле, сети будут удалены — сначала появится подтверждение.",
+  "Someone changed these networks while this window was open. Cancel and open it again to see the latest.":
+    "Пока окно было открыто, кто-то изменил эти сети. Нажмите «Отмена» и откройте окно снова, чтобы увидеть актуальное.",
+  // budget-ok: notice, wraps
+  "Many home routers use {list}. Anyone whose home network uses the same addresses can't reach it from home — their own network wins — though it still works on mobile data. If you can, renumber this network to something rarer, like 10.57.20.0/24.":
+    "Диапазон {list} используют многие домашние роутеры. У кого дома сеть с такими же адресами, тот не попадёт в неё из дома — побеждает домашняя сеть, — хотя через мобильный интернет всё работает. Если можете, перенумеруйте эту сеть во что-то более редкое, например 10.57.20.0/24.",
+  "Checking these networks…": "Проверяем эти сети…",
+  // budget-ok: notice, wraps
+  "This device's config for {node} doesn't route {subnet}, so its answers to clients leave through its own internet connection and never arrive. Add {subnet} to its routing with the gear above and re-import its config.":
+    "Конфиг этого устройства для {node} не маршрутизирует {subnet}, поэтому его ответы клиентам уходят через его собственный интернет и не доходят. Добавьте {subnet} в маршруты шестерёнкой выше и заново импортируйте конфиг.",
+  "waiting for {node}": "ждёт {node}",
+  "carried once saved": "будет проводиться после сохранения",
+  "{node} hasn't routed it yet — it does on its next sync, usually within a minute.": "{node} ещё не проложила маршрут — сделает это при следующей синхронизации, обычно в течение минуты.",
+  "A widened device reaches these networks only after its user re-imports the config or refreshes their subscription.":
+    "Устройство с расширенными маршрутами попадёт в эти сети только после того, как пользователь заново импортирует конфиг или обновит подписку.",
+  "Networks this device routes for, like the office LAN behind a router. Clients on the same node reach them through it.":
+    "Сети, для которых это устройство служит шлюзом, например офисная сеть за роутером. Клиенты на той же ноде попадают туда через него.",
+  "Only {name}": "Только {name}",
+  "People you choose": "Выбранные люди",
+  // the People window and the per-node counts (NETWORKS §18.2) — sized for 2 people or 200
+  "Shared with {users}": "Доступ: {users}",
+  "Choose people": "Выбрать людей",
+  "{name} always has access, as the owner, and so do the people you choose.": "Владелец, {name}, имеет доступ всегда — как и выбранные люди.",
+  "Only the people you choose have access.": "Доступ есть только у выбранных людей.",
+  "Nobody has access yet — choose people, or pick “{everyone}”.": "Пока ни у кого нет доступа — выберите людей или «{everyone}».",
+  "no device": "нет устройств",
+  "{devices} with access": "с доступом: {devices}",
+  "no device reaches it yet": "пока ни одно устройство не доходит",
+  "no device here": "здесь нет устройств",
+  "People with access": "Кому открыт доступ",
+  "{users} chosen": "Выбрано: {users}",
+  "{name} always has access, as the owner.": "Владелец, {name}, имеет доступ всегда.",
+  "Filter the list…": "Фильтр по списку…",
+  "Devices": "Устройства",
+  "Access until": "Доступ до",
+  "Nobody on the list matches “{q}”.": "В списке нет совпадений с «{q}».",
+  "Nobody yet — add people or groups with the search above.": "Пока никого — добавьте людей или группы через поиск выше.",
+  "{peers} of {users} can reach it": "Доступ есть: {peers} у {users}",
+  "Nobody on {node} can reach it yet": "На {node} пока ни у кого нет доступа",
+  "Every client on {node} can reach it: {peers} of {users}": "Доступ есть у любого клиента на {node}: {peers} у {users}",
+  "No other client is on {node} yet — anyone added there will reach it": "На {node} пока нет других клиентов — любой, кого туда добавят, получит доступ",
+  "{peers} route around it — see “Narrowed routing” below": "Маршрутизация не включает эту сеть: {peers} — см. «Сужена маршрутизация» ниже",
+  "{devices} not connected yet — they reach it once connected": "Ещё не подключены: {devices} — доступ появится после подключения",
+  "{peers} aren't among the people with access": "Нет среди тех, у кого есть доступ: {peers}",
+  "{devices} on turn servers that can't reach a restricted network": "За turn-серверами, которые не могут попасть в сеть с ограниченным доступом: {devices}",
+  "Access has ended for {users}": "Доступ закончился: {users}",
+  // ── user groups (docs/GROUPS-PLAN.md) ──
+  // {groups}/{members}/{users} arrive already counted and nominative, so they sit after a colon or in a list — never as the subject
+  // a Russian verb would have to agree with (the plural() trap, NETWORKS §16).
+  "Access has ended for {groups}": "Доступ закончился: {groups}",
+  "Shared with {groups} and {users}": "Доступ: {groups} и {users}",
+  "Shared with {groups}": "Доступ: {groups}",
+  "{groups} and {users} chosen": "Выбрано: {groups} и {users}",
+  "{groups} chosen": "Выбрано: {groups}",
+  "Add a person or group…": "Добавить человека или группу…",
+  "col|User or group": "Пользователь или группа",
+  "a group that no longer exists": "удалённая группа",
+  "{users} with no device here": "Без устройств здесь: {users}",
+  "Groups": "Группы",
+  // ── a user's sheet: the way into a group, and the two counts a list shows beside a name ──
+  // «Добавить в группу…» is the placeholder of a list that ADDS: the chips below it are the groups they are already in, so the
+  // verb carries the whole meaning and no second word is needed. The toast avoids a past-tense verb agreeing with a name of
+  // unknown gender («добавлен/добавлена») — «теперь в группе» states the result instead.
+  "Add to a group": "Добавить в группу",
+  // The field's own one-line note, in the shape the other labels use («ДОСТУП ИСТЕКАЕТ — вся подписка…»): what a group DOES,
+  // short enough to sit under the label instead of a paragraph under the control.
+  "— members reach each other's devices, and a network can be shared with the group": "— участники видят устройства друг друга, а сеть можно открыть всей группе",
+  "{name} is no longer in {group}.": "{name} — больше не в группе «{group}».",
+  "They lose the networks shared with this group, unless they're shared with them another way: {devices}.": "Он потеряет сети, открытые этой группе, — если они не открыты ему другим способом: {devices}.",
+  "Create new group…": "Создать группу…",
+  "{name} is now in {group}.": "{name} — теперь в группе «{group}».",
+  // The counts' aria labels: no name in them, because a screen reader has just read the row's own name, and a Russian name
+  // interpolated into a case the sentence needs cannot be declined.
+  // The counts' aria labels name no person: a screen reader has just read the row's own name, and a Russian name interpolated
+  // into the case a sentence needs cannot be declined.
+  "Reaches {v1} online now": "Сейчас доступно {v1}",
+  "Reaches {v1}, none online": "Доступно {v1}, ни одна не онлайн",
+  "Can reach": "Есть доступ к",
+  "Devices the group can reach": "Устройства, доступные группе",
+  "none the group can reach": "нет доступных группе",
+  "{n} not counted: Private, or on an interface that doesn't let others in.": "{n} не в счёт: приватные или на интерфейсе, закрытом для других.",
+  "{name}: {n} the group can reach, of {total}": "{name}: доступно группе — {n} из {total}",
+  "Nobody — no shared group, and no interface here is open to everyone.": "Никого: общих групп нет, и ни один интерфейс здесь не открыт всем.",
+  "Nothing beyond the internet.": "Ничего, кроме интернета.",
+  "Users or groups": "Пользователи или группы",
+  "Search groups or members…": "Поиск по группам и участникам…",
+  "New group": "Новая группа",
+  "No groups yet": "Групп пока нет",
+  "Put people in a group to share a network with all of them at once, from a device's Networks window.":
+    "Объедините людей в группу, чтобы открывать сеть сразу всем — в окне «Сети» устройства.",
+  "Members": "Участники",
+  "No members yet.": "Участников пока нет.",
+  "{name}: {members}": "{name}: {members}",
+  "Devices whose networks are shared with {name}: {n}": "Устройства, чьи сети открыты группе {name}: {n}",
+  "Networks shared with this group": "Сети, открытые этой группе",
+  "None yet — share a network from a device's Networks window.": "Пока нет — сеть открывают в окне «Сети» устройства.",
+  "Edit group": "Изменить группу",
+  "Delete group": "Удалить группу",
+  "Delete group · {name}": "Удалить группу · {name}",
+  "Its members stay as users; only the group is deleted.": "Участники останутся пользователями — удаляется только группа.",
+  // budget-ok: confirm body, wraps
+  "Networks shared with it stop being reachable for its members, unless they're shared with them another way: {devices}.":
+    "Сети, открытые этой группе, станут недоступны её участникам, если доступ не открыт им иначе: {devices}.",
+  "Group deleted.": "Группа удалена.",
+  "The group wasn't deleted.": "Группа не удалена.",
+  "Group · {name}": "Группа · {name}",
+  "This group no longer exists.": "Этой группы больше нет.",
+  "Create group": "Создать группу",
+  "Ivanov family": "Семья Ивановых",
+  "Give the group a name.": "Дайте группе название.",
+  "The group wasn't saved.": "Группа не сохранена.",
+  "Group saved.": "Группа сохранена.",
+  "Group created.": "Группа создана.",
+  "Remove {name} from the group": "Убрать {name} из группы",
+  "No members yet — add people with the search above.": "Участников пока нет — добавьте людей через поиск выше.",
+  // budget-ok: hint, wraps
+  "Networks shared with this group: {devices}. Everyone you add reaches them; anyone you remove loses them, unless they're shared with them another way.":
+    "Этой группе открыты сети: {devices}. Каждый, кого вы добавите, получит к ним доступ; каждый, кого уберёте, потеряет его, если доступ не открыт ему иначе.",
+  "{names} and {n} more": "{names} и ещё {n}",
+  "Not in any group.": "Не состоит ни в одной группе.",
+  // the panel's own words for a group (activity verbs, refusals) — stored in English, translated on display
+  "Created group": "Создана группа",
+  "Renamed group": "Переименована группа",
+  "Changed group members": "Изменён состав группы",
+  "Deleted group": "Удалена группа",
+  "{count}": "{count}",
+  "a group with this name already exists": "группа с таким названием уже есть",
+  "the access level must be everyone, user or none": "уровень доступа должен быть everyone, user или none",
+  // DEVICE ACCESS (docs/DEVICE-ACCESS-PLAN.md §10.6)
+  "Who can open connections to devices here": "Кто может открывать соединения к устройствам здесь",
+  "Everyone on this node": "Все на этой ноде",
+  "Same user and their groups": "Тот же пользователь и его группы",
+  "Nobody": "Никто",
+  "Not enforced on {node} — it runs an older version. Update it.": "Не действует на {node} — там старая версия. Обновите ноду.",
+  "Couldn't apply on {node}: {detail}": "Не удалось применить на {node}: {detail}",
+  "Packets to devices here stopped since {when}: {n}": "Остановлено пакетов к устройствам здесь с {when}: {n}",
+  "Applies on {node}'s next sync.": "Применится при следующей синхронизации {node}.",
+  "Not enforced on {node} — this interface's subnet overlaps another interface's.": "Не действует на {node} — подсеть этого интерфейса пересекается с подсетью другого.",
+  "Not enforced on {node} — the node can't read this interface's address.": "Не действует на {node} — нода не может прочитать адрес этого интерфейса.",
+  "Not enforced on {node} — the node doesn't run this interface.": "Не действует на {node} — на ноде нет этого интерфейса.",
+  "Not enforced on {node}.": "Не действует на {node}.",
+  "Couldn't apply the latest change on {node}: {detail}. The previous rules stay in force.": "Не удалось применить последнее изменение на {node}: {detail}. Действуют прежние правила.",
+  "This server build can't prove which user a device connected over RAW belongs to, so no other device can reach those devices.": "Эта сборка сервера не может подтвердить, какому пользователю принадлежит устройство, подключённое через RAW, поэтому ни одно другое устройство до таких устройств не достучится.",
+  "reach|not updated": "не обновлено",
+  "Any device on this node can open connections to devices here. Internet access and networks behind devices are not affected.": "Любое устройство на этой ноде может открывать соединения к устройствам здесь. На доступ в интернет и на сети за устройствами это не влияет.",
+  "No other device can open connections to devices here; their own connections still work. Internet access and networks behind devices are not affected.": "Никакое другое устройство не может открывать соединения к устройствам здесь; их собственные соединения работают. На доступ в интернет и на сети за устройствами это не влияет.",
+  "A device here can be reached by its user's other devices on this node and by users who share a group with them. Internet access and networks behind devices are not affected.": "Устройство здесь доступно другим устройствам его пользователя на этой ноде и пользователям, с которыми у него общая группа. На доступ в интернет и на сети за устройствами это не влияет.",
+  "This server build can't prove which user a device belongs to, so no other device can reach any device here.": "Эта сборка сервера не может подтвердить, какому пользователю принадлежит устройство, поэтому ни одно другое устройство не достучится до устройств здесь.",
+  "Peers reachable by": "Пиры доступны",
+  "Not enforced on {node} — update it": "Не действует на {node} — обновите ноду",
+  "reach|not enforced": "не действует",
+  "Everyone on this node can open connections to devices here": "Все на этой ноде могут открывать соединения к устройствам здесь",
+  "reach|everyone": "всем на ноде",
+  "Nobody can open connections to devices here": "Никто не может открывать соединения к устройствам здесь",
+  "reach|nobody": "никому",
+  "Only the same user's devices and their groups can open connections to devices here": "Открывать соединения к устройствам здесь могут только устройства того же пользователя и его групп",
+  "reach|user + groups": "только своим",
+  "Devices now reach only their own user's devices and their groups' — {n} packets to other devices have been stopped. Put users who should reach each other in a group, or set an interface to Everyone.": "Теперь устройства видят только устройства своего пользователя и его групп — остановлено пакетов к чужим устройствам: {n}. Объедините в группу тех, кто должен видеть друг друга, или выберите для интерфейса «Все на этой ноде».",
+  "Other devices reach this one at its tunnel address only as its interface allows — “Who can open connections to devices here”, in the interface's settings.": "Другие устройства достучатся до этого по туннельному адресу, только если это разрешает его интерфейс — «Кто может открывать соединения к устройствам здесь» в настройках интерфейса.",
+  "Members of a group reach each other's devices on interfaces set to “Same user and their groups”, and a network can be shared with the whole group.": "Участники группы видят устройства друг друга на интерфейсах с уровнем «Тот же пользователь и его группы», и сетью можно поделиться со всей группой.",
+  "Who can open connections to devices on new interfaces": "Кто может открывать соединения к устройствам на новых интерфейсах",
+  "Applies to interfaces created from now on.": "Действует для интерфейсов, созданных с этого момента.",
+  "Existing interfaces set to “Everyone on this node”: {n}": "Существующих интерфейсов с уровнем «Все на этой ноде»: {n}",
+  "No existing interface is set to “Everyone on this node”.": "Ни у одного существующего интерфейса нет уровня «Все на этой ноде».",
+  "Interfaces set to “Everyone on this node”": "Интерфейсы с уровнем «Все на этой ноде»",
+  "Any device on the node can open connections to devices on these interfaces. Open one to change its level.": "Любое устройство на ноде может открывать соединения с устройствами на этих интерфейсах. Откройте интерфейс, чтобы изменить уровень.",
+  "Filter by node or interface…": "Фильтр по ноде или интерфейсу…",
+  "No interface matches “{q}”.": "Ни один интерфейс не подходит под «{q}».",
+  "unknown group": "неизвестная группа",
+  "users must be a list of user ids": "users должен быть списком id пользователей",
+  "add and remove must be lists of user ids": "add и remove должны быть списками id пользователей",
+  "{total} other peers on {node}: {ok} can reach it, {soon} not yet, {no} can't": "Других пиров на {node}: {total}; доступ есть: {ok}, пока нет: {soon}, нет: {no}",
+  "Who can reach it on {node}": "Кто может попасть сюда на {node}",
+  "This device's address on {node}": "Адрес этого устройства на {node}",
+  "Everyone on {node}": "Все на {node}",
+  "Everyone on its nodes": "Все на его нодах",
+  "Only {name}'s own devices on the same node reach them.": "Туда попадают только устройства {name} на той же ноде.",
+  "Every device on the same node reaches them — the report below says how many.": "Туда попадает любое устройство на той же ноде — сколько их, сказано ниже.",
+  "Remove networks": "Удалить сети",
+  "Remove networks?": "Удалить сети?",
+  "{device} stops routing {nets}. Everyone who reaches them through it loses access.":
+    "{device} перестанет маршрутизировать {nets}. Все, кто попадал туда через него, потеряют доступ.",
+  "Who can reach these networks": "Кому доступны эти сети",
+  "Add a person…": "Добавить человека…",
+  "Last day {name} can reach them — leave empty for no end": "Последний день доступа для {name} — оставьте пустым, чтобы без срока",
+  "Stop sharing with {name}": "Закрыть доступ для {name}",
+  "everyone is already added": "все уже добавлены",
+  "{node} couldn't apply the restriction, so nobody reaches these networks there until it can: {detail}": "{node} не смогла применить ограничение, поэтому там эти сети никому не доступны, пока не сможет: {detail}",
+  "{node} hasn't confirmed the restriction yet — it does on its next sync.": "{node} ещё не подтвердила ограничение — подтвердит при следующей синхронизации.",
+  "Devices on the network behind {device} ({nets}) can't reach it either — {owner} isn't among the people with access.":
+    "Устройства в сети за {device} ({nets}) тоже сюда не попадут — у владельца, {owner}, нет доступа.",
+  "Devices on the network behind {device} ({nets}) can't reach it either — that device has no owner, so it can't be given access.":
+    "Устройства в сети за {device} ({nets}) тоже сюда не попадут — у этого устройства нет владельца, поэтому ему нельзя открыть доступ.",
+  "{devices}, added {date}": "{devices}, добавлен {date}",
+  "Connection test": "Проверка связи",
+  "Saved. The device uses the new settings once its config is re-imported.": "Сохранено. Устройство применит новые настройки после повторного импорта конфига.",
+  "Settings weren't saved.": "Настройки не сохранены.",
+  // budget-ok: hover bubble, wraps
+  "This device's config doesn't route {subnet}, so its answers to clients leave through its own internet connection and never arrive. Add {subnet} with the gear, then re-import its config.":
+    "Конфиг этого устройства не маршрутизирует {subnet}, поэтому его ответы клиентам уходят через его собственный интернет и не доходят. Добавьте {subnet} через шестерёнку, затем заново импортируйте конфиг.",
+  // budget-ok: hover bubble, wraps
+  "This device's config sends all its traffic into the tunnel — the usual setup for a phone or laptop. On a router it means every device behind it browses the internet through {node} too; to carry only its networks, set the routing to {subnet}.":
+    "Конфиг этого устройства отправляет в туннель весь трафик — обычная настройка для телефона или ноутбука. На роутере это значит, что и все устройства за ним выходят в интернет через {node}; чтобы проводить только его сети, укажите маршрут {subnet}.",
+  "This device's config sends only {allowed} into the tunnel; everything else uses its own internet connection.":
+    "Конфиг этого устройства отправляет в туннель только {allowed}; всё остальное идёт через его собственный интернет.",
+  "It's sent by {node} itself, so it answers the same whoever this is shared with.": "Проверку отправляет сама {node}, поэтому ответ не зависит от того, кому открыт доступ.",
+  "shared until {date}": "доступ до {date}",
+  "shared with this user": "доступ открыт этому пользователю",
+  "open to everyone on the node": "открыта всем на ноде",
+  "{prefix} on {node}": "{prefix} на {node}",
+  "{total} of this user's devices on {node}: {ok} reach it, {no} leave it out of their routing, {unk} unknown":
+    "Устройств этого пользователя на {node}: {total}; доходят: {ok}, не включают в маршруты: {no}, неизвестно: {unk}",
+  "Couldn't check these networks.": "Не удалось проверить эти сети.",
+  "Networks saved.": "Сети сохранены.",
+  "Networks removed.": "Сети удалены.",
+  "Networks weren't saved.": "Сети не сохранены.",
+  "carried": "проводится",
+  "refused by the node": "нода отказала",
+  "not carried": "не проводится",
+  "Narrowed routing, can't reach it: {peers}": "Сужена маршрутизация, доступа нет: {peers}",
+  "Edit routing": "Изменить маршруты",
+  "Set up the device's side": "Настройка на стороне устройства",
+  // The far side, per kind of device (NETWORKS §18). Keenetic's own Russian UI labels are quoted as the router shows them.
+  "OpenWrt router": "Роутер OpenWrt",
+  "Linux computer": "Компьютер с Linux",
+  "Where the tunnel runs": "Где работает туннель",
+  "The node sends traffic to this device; the device has to pass it on to its network and send the answers back. Where does the tunnel run?":
+    "Нода отправляет трафик на это устройство, а оно должно передать его в свою сеть и вернуть ответы. Где работает туннель?",
+  // budget-ok: disclosure body, wraps
+  "Every client arrives from {subnet} — the node gives clients of its other interfaces its own address there — so the device only needs to send {subnet} back.":
+    "Все клиенты приходят из {subnet} — клиентам других своих интерфейсов нода даёт здесь свой адрес, — поэтому устройству достаточно отправлять обратно только {subnet}.",
+  // budget-ok: disclosure body, wraps
+  "On the OpenWrt router itself (22.03 or newer). Put the peer section that “{cmd}” prints in place of <peer-section>, and the tunnel's interface name in place of <wg-interface>. Nothing needs translating — the router is already its network's gateway.":
+    "На самом роутере OpenWrt (22.03 или новее). Вместо <peer-section> подставьте секцию пира, которую выводит «{cmd}», а вместо <wg-interface> — имя интерфейса туннеля. Транслировать ничего не нужно — роутер и так шлюз своей сети.",
+  // budget-ok: disclosure body, wraps
+  "Saved to the router's memory, so it survives a reboot, and safe to run again. The tunnel must be in no other firewall zone, wan or lan — “{cmd}” should name only swg.":
+    "Настройки сохраняются в память роутера и переживают перезагрузку, а команды можно запускать повторно. Туннель не должен входить ни в какую другую зону файрвола, ни в wan, ни в lan, — «{cmd}» должна называть только swg.",
+  // budget-ok: disclosure body, wraps
+  "On the MikroTik itself (RouterOS 7), with its WireGuard interface in place of <wg-interface>. Nothing needs translating, and RouterOS saves changes as you make them.":
+    "На самом MikroTik (RouterOS 7), подставив его интерфейс WireGuard вместо <wg-interface>. Транслировать ничего не нужно, а RouterOS сохраняет изменения сразу.",
+  // budget-ok: disclosure body, wraps
+  "Keep the tunnel out of the WAN interface list. The stock firewall then lets it reach the network; if yours isn't the stock one, allow forwarding from <wg-interface> to the LAN.":
+    "Не добавляйте туннель в список интерфейсов WAN — тогда стандартный файрвол пропускает его в сеть. Если файрвол у вас не стандартный, разрешите пересылку из <wg-interface> в LAN.",
+  "In the Keenetic web interface (KeeneticOS 5), no commands:": "В веб-интерфейсе Keenetic (KeeneticOS 5), без команд:",
+  // budget-ok: disclosure body, wraps
+  "Internet → Other connections → open this WireGuard connection. Check that “Use for accessing the Internet” is off, and in the peer's settings set “Allowed v4 IPs” to {subnet}. Save.":
+    "Интернет → Другие подключения → откройте это подключение WireGuard. Проверьте, что «Использовать для выхода в интернет» выключено, и в настройке пира укажите в «Разрешенные IPv4-подсети» {subnet}. Сохраните.",
+  // budget-ok: disclosure body, wraps
+  "Network Rules → Routing → IPv4 routes → Create: “Route to network”, destination network address {addr}, subnet mask {mask}, Interface: this WireGuard connection, “Add automatically” ticked. Save.":
+    "Сетевые правила → Маршрутизация → IPv4-маршруты → Добавить: «Маршрут до сети», адрес сети назначения {addr}, маска подсети {mask}, «Интерфейс» — это подключение WireGuard, «Добавлять автоматически» отмечено. Сохраните.",
+  // budget-ok: disclosure body, wraps
+  "Network Rules → Firewall → IPv4 → Add rule: Interface: this WireGuard connection, Action “Permit”, Source and Destination “Any”, Protocol “IPV4”. Save. The tunnel blocks incoming traffic until it has this rule.":
+    "Сетевые правила → Межсетевой экран → IPv4 → Добавить правило: «Интерфейс» — это подключение WireGuard, «Действие» — «Разрешить», источник и назначение — «Любой», «Протокол» — «IPV4». Сохраните. Пока этого правила нет, туннель блокирует входящий трафик.",
+  // budget-ok: disclosure body, wraps
+  "On a Linux computer on that network that runs the tunnel with wg-quick — a Raspberry Pi, a NAS, a server; NetworkManager ignores these lines. Add them to its tunnel config, with its network card (the name after “dev” in “ip route show default”) in place of <lan-device>:":
+    "На компьютере с Linux в этой сети, где туннель поднят через wg-quick, — Raspberry Pi, NAS, сервер; NetworkManager эти строки игнорирует. Добавьте их в конфиг туннеля, подставив вместо <lan-device> сетевую карту (имя после «dev» в выводе «ip route show default»):",
+  "Then run this once, as root, with the tunnel's name in place of <wg-interface>:": "Затем один раз выполните это от root, подставив имя туннеля вместо <wg-interface>:",
+  // budget-ok: disclosure body, wraps
+  "The rules come back every time the tunnel starts, and the tunnel starts at boot; the computer's own internet stays off the tunnel. If it runs ufw, also run “ufw allow in on <wg-interface>”.":
+    "Правила восстанавливаются при каждом запуске туннеля, а туннель запускается при загрузке; собственный интернет компьютера идёт мимо туннеля. Если на нём работает ufw, выполните ещё «ufw allow in on <wg-interface>».",
+  // budget-ok: disclosure body, wraps
+  "Devices on the network see these connections come from {subnet}. Some answer only their own network — Windows file sharing and ping, for example — and a computer running its own VPN may send its answers into that VPN. If one doesn't answer, allow {subnet} in its firewall, or route {subnet} to the router on it.":
+    "Устройства в сети видят эти подключения из {subnet}. Некоторые отвечают только своей сети — например, общие папки Windows и ping, — а компьютер со своим VPN может отправлять ответы в этот VPN. Если устройство не отвечает, разрешите {subnet} в его файрволе или направьте на нём {subnet} на роутер.",
+  // budget-ok: disclosure body, wraps
+  "Windows and macOS can be set up as the gateway, but not with a few lines that survive a restart — use a router or a Linux computer.":
+    "Windows и macOS можно настроить шлюзом, но не несколькими строками, которые переживут перезагрузку, — используйте роутер или компьютер с Linux.",
+  "an unnamed peer": "пир без имени",
+  "another peer": "другой пир",
+  "{p} isn't a network address.": "{p} — не адрес сети.",
+  "{p} is IPv6 — only IPv4 networks can be carried.": "{p} — это IPv6, а проводить можно только сети IPv4.",
+  "{p} would send all of the node's internet traffic into this device.": "{p} отправил бы в это устройство весь интернет-трафик ноды.",
+  "{p} is a reserved range — loopback, link-local, multicast or cloud metadata.": "{p} — зарезервированный диапазон: loopback, link-local, multicast или метаданные облака.",
+  "{node} is already on {p} ({a}), so its clients reach it without a gateway device.": "{node} уже в сети {p} ({a}) — клиенты этой ноды попадают туда без шлюза.",
+  "Blocked, so {peers} of {users} lose these networks until it is unblocked — their devices keep sending that traffic into the tunnel, where nothing answers.":
+    "Устройство заблокировано — эти сети недоступны до разблокировки: {peers} у {users}. Их устройства по-прежнему отправляют этот трафик в туннель, где никто не отвечает.",
+  "Who loses these networks: {peers}": "Кто теряет эти сети: {peers}",
+  "Clients of {ifaces} on {node} that use a DNS server on {p} skip Force DNS: those lookups aren't blocked or routed by name.":
+    "Клиенты {ifaces} на {node}, которые используют DNS-сервер в сети {p}, обходят Force DNS: такие запросы не блокируются и не маршрутизируются по имени.",
+  "{node} is already on {p} ({a}), but it keeps its clients off that network. Turn on “Clients can reach it” under Local network on {node} to let them in.":
+    "{node} уже в сети {p} ({a}), но не пускает туда своих клиентов. Чтобы пустить их, включите «Клиентам доступна» в разделе «Локальная сеть» на {node}.",
+  "{p} overlaps a tunnel subnet on {node} ({a}).": "{p} пересекается с подсетью туннеля на {node} ({a}).",
+  "{p} overlaps a mesh link on {node} ({a}).": "{p} пересекается с mesh-связью на {node} ({a}).",
+  "{p} contains {a}, the gateway {node} reaches the internet through.": "В {p} входит {a} — шлюз, через который {node} выходит в интернет.",
+  "{p} contains {a}, the address {node} reaches this panel by.": "В {p} входит {a} — адрес, по которому {node} достаёт до этой панели.",
+  "{p} contains {a}, the DNS server {node} depends on — it could no longer find this panel.": "В {p} входит {a} — DNS-сервер, от которого зависит {node}: без него панель будет не найти.",
+  "{node} can't tell which DNS server it depends on, so it carries no networks.": "{node}: не удаётся определить, от какого DNS-сервера зависит нода, поэтому сети не проводятся.",
+  "{node} runs a version that can't check a route is safe — update it to carry networks.": "{node}: версия ноды не умеет проверять безопасность маршрута — обновите её, чтобы проводить сети.",
+  "{node} hasn't reported yet; the network waits until it does.": "От {node} ещё нет отчёта — сеть ждёт его.",
+  "{node} hasn't finished a sync yet; the network waits.": "{node}: синхронизация ещё не завершилась, сеть ждёт.",
+  "A turn server deployment has no key, so nothing can be routed through it.": "У развёртывания на turn-сервере нет ключа, через него ничего не маршрутизировать.",
+  "{by} already carries {a} on {node} — a network has one device per node.": "{a} на {node} уже проводит {by}: у сети одно устройство на ноду.",
+  "{p} overlaps {a}, which this device already lists.": "{p} пересекается с {a}, которая уже есть у этого устройства.",
+  "A device can front at most 8 networks.": "Одно устройство проводит не больше 8 сетей.",
+  "This device is blocked or expired, so it carries nothing.": "Устройство заблокировано или его срок истёк — оно ничего не проводит.",
+  "{node} installed the route and took it straight back out — it moved the path to {a}.": "{node}: маршрут поставлен и сразу снят — он менял путь до {a}.",
+  "{node} already routes {p} through {a}, and leaves that route alone.": "{node}: {p} уже маршрутизируется через {a}, этот маршрут не трогаем.",
+  "{node} couldn't check the route to {p} safely, so it didn't install it.": "{node}: не удалось безопасно проверить маршрут до {p}, он не поставлен.",
+  // P3 evidence — the gateway as its node sees it, and the one thing operators don't know needs nothing
+  "Devices on the same node already reach each other at their tunnel addresses — that needs nothing here.": "Устройства на одной ноде и так видят друг друга по туннельным адресам — для этого здесь ничего не нужно.",
+  "{node} doesn't list this device yet.": "{node}: этого устройства пока нет в списке ноды.",
+  "Networks this user can reach": "Сети, доступные этому пользователю",
+  "Through {via}": "Через {via}",
+  "not in this device's routing": "не в маршрутах устройства",
+  "routing unknown": "маршруты неизвестны",
+  "reachable": "доступна",
+  "the node's local network": "локальная сеть ноды",
+  "the node's local network, closed": "локальная сеть ноды, закрыта",
+  "Worked out when this sheet opens. A device whose routing leaves a network out can be widened from its own settings.": "Рассчитано при открытии. Если сети нет в маршрутах устройства, её можно добавить в его собственных настройках.",
+  "The device is connected — traffic through it:": "Устройство подключено, трафик через него:",
+  "The device is offline, so nothing reaches these networks until it reconnects.": "Устройство не в сети — до переподключения в эти сети ничего не попадёт.",
+  // P4 — the reachability test: the node sends one probe into the network through the device and says what came back
+  "Test that the network answers — {node} sends it through this device:": "Проверка, что сеть отвечает: {node} отправит запрос через это устройство:",
+  "an address on {p}": "адрес в {p}",
+  "Address to test": "Адрес для проверки",
+  "Port to connect to — leave empty to ping": "Порт для подключения; пусто — ping",
+  "Test from the node": "Проверить с ноды",
+  "testing…": "проверяем…",
+  "Waiting for {node} to send it and report back — a few seconds.": "Ждём, пока {node} отправит запрос и сообщит результат, — несколько секунд.",
+  "{addr} answered through {node} in {ms} ms.": "{addr} ответил через {node} за {ms} мс.",
+  "That proves the path only if {addr} is a device on the network — this device's own address there answers even when it passes nothing on.": "Это доказывает путь, только если {addr} — устройство в самой сети: собственный адрес этого устройства там отвечает, даже когда оно ничего не пропускает дальше.",
+  "{addr} answered through {node} in {ms} ms — port {port} is closed, but the network is reachable.": "{addr} ответил через {node} за {ms} мс: порт {port} закрыт, но сеть доступна.",
+  "The device passed it on, and {from} replied that nothing is at {addr}. Check the address.": "Устройство передало запрос дальше, и {from} ответил, что по адресу {addr} никого нет. Проверьте адрес.",
+  "The device passed it on, but nothing is at {addr}. Check the address.": "Устройство передало запрос дальше, но по адресу {addr} никого нет. Проверьте адрес.",
+  "{node} sent it through the device, which is connected, and nothing came back. The device has to pass traffic on to its network and send the answers back — see “Set up the device's side”.": "{node}: запрос ушёл через устройство, оно подключено, но ответа нет. Устройство должно пропускать трафик в свою сеть и возвращать ответы — см. «Настройка на стороне устройства».",
+  "Some devices ignore pings. If {addr} might, test a port it listens on.": "Некоторые устройства не отвечают на ping. Если {addr} из таких, проверьте порт, который он слушает.",
+  "The device isn't connected to {node}, so nothing reaches {addr} through it.": "Устройство не подключено к {node}, поэтому через него до {addr} ничего не доходит.",
+  "{node} doesn't carry this network, so nothing was sent.": "{node} не проводит эту сеть, запрос не отправлен.",
+  "{node} would send {addr} out through {dev}, not through this device, so nothing was sent — clients on this interface can't reach it either.": "{node}: трафик к {addr} ушёл бы через {dev}, а не через это устройство, поэтому запрос не отправлен — клиенты этого интерфейса туда тоже не попадают.",
+  "{node} has no route to {addr} yet, so nothing was sent.": "{node}: маршрута к {addr} пока нет, запрос не отправлен.",
+  "{node} doesn't let this device carry {addr} yet, so nothing was sent. It catches up within a sync — test again in a moment.": "{node}: это устройство пока не допущено к {addr}, запрос не отправлен. Нода догонит за одну синхронизацию — проверьте ещё раз чуть позже.",
+  "{node} isn't sending {addr} through this device, so it didn't test it.": "{node}: {addr} не направляется через это устройство, проверка не выполнена.",
+  "{addr} is the network's own address or its broadcast — test a device on it.": "{addr} — адрес самой сети или широковещательный. Проверьте устройство в этой сети.",
+  "{node} can't read its own address on this interface, so it had nothing to send from.": "{node}: не удалось прочитать собственный адрес на этом интерфейсе — отправлять не с чего.",
+  "{node} took the test but never answered — it may run a version that can't test networks. Update it.": "{node}: запрос на проверку получен, но ответа так и не было — возможно, версия ноды не умеет проверять сети. Обновите ноду.",
+  "{node} didn't pick up the test in time. Check it's online, then test again.": "{node}: нода не забрала проверку вовремя. Убедитесь, что она в сети, и проверьте ещё раз.",
+  "{node} couldn't run the test: {detail}": "{node}: проверку выполнить не удалось: {detail}",
+  "{node} couldn't run the test.": "{node}: проверку выполнить не удалось.",
+  "{addr} isn't an IPv4 address.": "{addr} — не IPv4-адрес.",
+  "A port is a number from 1 to 65535.": "Порт — это число от 1 до 65535.",
+  "This device isn't on {node}.": "Этого устройства нет на {node}.",
+  "{node} isn't syncing, so it can't run a test right now.": "{node} не синхронизируется, проверку сейчас не запустить.",
+  // the networks endpoints' own errors — the SPA words every refusal token itself, so these reach a person only
+  // through an API call the sheet does not make, or a token newer than the sheet
+  "test refused: {v1}": "проверка отклонена: {v1}",
+  "a test is already running on this node": "на этой ноде уже идёт проверка",
+  "no such test": "такой проверки нет",
+  "network refused": "сеть отклонена",
+  "share refused": "настройки доступа не сохранены",
+  "routes must be a list of CIDR strings": "routes должен быть списком строк CIDR",
+  "{node} is already running a test — try again in a few seconds.": "{node} уже выполняет проверку — повторите через несколько секунд.",
+  "{addr} is in {p}, which this device doesn't carry:": "{addr} входит в {p}, а эту сеть устройство не проводит:",
+  "{addr} isn't in a network this device carries on {node}, so it can't be tested from there.": "{addr} не входит ни в одну сеть, которую это устройство проводит на {node}, поэтому проверить его оттуда нельзя.",
+  "Couldn't start the test.": "Не удалось запустить проверку.",
+  "The panel no longer has that test — run it again.": "Этой проверки в панели уже нет — запустите её снова.",
+  "Tested a network": "Проверена доступность сети",
+  // budget-ok: notice, wraps
+  "This device's config for {node} sends no keepalive, so {node} loses its session when the device goes quiet — and these networks with it. Set a keepalive on that deployment.": "Конфиг этого устройства для {node} не шлёт keepalive: когда устройство затихает, {node} теряет сессию, а с ней и эти сети. Задайте keepalive для этого развёртывания.",
+  // the node's own local network (P2) — a disclosure on the node page, with the switch that closes it
+  "Local network": "Локальная сеть",
+  "Clients can reach it": "Клиентам доступна",
+  "Keep this node's clients off its local network": "Закрыть локальную сеть ноды от её клиентов",
+  "Let this node's clients reach its local network": "Открыть локальную сеть ноды её клиентам",
+  "Clients of this node can reach its local network again.": "Клиентам ноды снова доступна её локальная сеть.",
+  "Clients of this node are now kept off its local network.": "Локальная сеть ноды закрыта от её клиентов.",
+  "This node runs a version that can't close its local network — update it. Until then its clients still reach it.": "Версия ноды не умеет закрывать локальную сеть — обновите ноду. Пока клиенты по-прежнему в неё попадают.",
+  "Waiting for the node to close it.": "Ждём, пока нода её закроет.",
+  "Closed on the node.": "Закрыто на ноде.",
+  "The node couldn't read its own addresses, so it left the block as it was.": "Нода не смогла прочитать свои адреса и оставила блокировку как была.",
+  "The node couldn't close it, so its clients still reach it: {why}": "Нода не смогла её закрыть, клиенты по-прежнему в неё попадают: {why}",
+  // budget-ok: panel body, wraps
+  "Clients of this node can reach the private network it sits on — every device on it, not only this node — and so can clients of other nodes whose traffic leaves through this one. A client whose traffic this node sends on to another node reaches that node's network instead. Nobody set this up: it is what routing does when the node's local network is also its way out.":
+    "Клиенты этой ноды попадают в частную сеть, в которой она стоит, — на любое устройство в ней, а не только на саму ноду, — как и клиенты других нод, чей трафик выходит через эту. Клиент, чей трафик эта нода отправляет дальше на другую ноду, попадает в сеть той ноды. Этого никто не настраивал: так работает маршрутизация, когда локальная сеть ноды — это и её выход в интернет.",
+  "Clients of this node, and of other nodes whose traffic leaves through it, are kept off the private network it sits on. They still reach the internet and this node itself.":
+    "Клиенты этой ноды и других нод, чей трафик выходит через неё, не попадают в частную сеть, в которой она стоит. Интернет и сама нода им по-прежнему доступны.",
+
   // ── geo providers: what turning one off actually costs (§6.4) ──
   // Reads on the row itself, in the same quiet register as «обновлён 3 ч назад» beside it. Both counts are
   // prepositional: «в 3 правилах на 2 интерфейсах» — see the prep| forms in PLURALS.
@@ -89,7 +506,7 @@ export const STR = {
     "Движок этой ноды пока не маршрутизирует такие адреса — а «{v1}» умеет.",
   "Switched off for this node in Settings ▸ Routing lists.": "Отключён для этой ноды в «Настройки ▸ Списки маршрутизации».",
   "This list's provider is switched off — turn it back on in Settings ▸ Geo data providers.":
-    "Источник этого списка выключен — включите его в «Настройки ▸ Источники geo-данных».",
+    "Источник этого списка выключен — включите его в «Настройки ▸ Провайдеры гео-данных».",
   "Stored and matched as {v1}.": "Хранится и сопоставляется как {v1}.",
   "{v1} matches by IP only — this needs a host layer.": "{v1} сопоставляет только по IP — здесь нужен слой доменов.",
   "{v1} only asks whether some text appears somewhere in a name — it never learns WHERE, so it can't anchor to a beginning, an ending or a label.": "{v1} лишь проверяет, встречается ли текст где-то в имени, и не узнаёт ГДЕ, — поэтому не может привязаться ни к началу, ни к окончанию, ни к части имени.",
@@ -145,6 +562,8 @@ export const STR = {
   "a more specific rule below wins these hosts: {toks}": "ниже есть более точное правило — эти адреса забирает оно: {toks}",
   "No rules yet. Add a rule to send some destinations through another node, or set *Everything else* to channel everything.":
     "Правил пока нет. Добавьте правило, чтобы отправить часть назначений через другую ноду, или укажите в *Всё остальное*, куда идёт весь трафик.",
+  "No rules yet. Add a rule to send some destinations out a device on this node or block them, or set *Everything else* to say where the rest goes.":
+    "Правил пока нет. Добавьте правило, чтобы выпустить часть назначений через устройство на этой ноде или заблокировать их, или укажите в *Всё остальное*, куда идёт остальной трафик.",
   // The egress option used to be named after the mechanism ("умная маршрутизация"); this names the outcome.
   "Routing (smart cascade)": "Маршрутизация (умный каскад)",
   "A rule needs at least one service, address or IP range.": "В правиле нужен хотя бы один сервис, адрес или диапазон IP.",
@@ -191,6 +610,7 @@ export const STR = {
   "The {v1} in the pool marked dead will be removed, and anyone still holding one moves to a live link.": "{v1} в пуле, отмеченные мёртвыми, будут удалены, а те, у кого они ещё остались, перейдут на живую.",
   "Remove dead ({v1})": "Удалить мёртвые ({v1})",
   "View all ({v1})": "Показать все ({v1})",
+  "View": "Открыть",
   "Enter a VK call link.": "Введите VK-ссылку.",
   "{v1} — moved {v2} to another link.": "{v1} {v2} переведено на другую ссылку.",
   "Link updated.": "Обновлена.",
@@ -456,6 +876,29 @@ export const STR = {
     "AmneziaWG на этой ноде установлен наполовину: awg есть, а awg-quick нет. Запустите установщик ноды swgPanel заново — он соберёт оба из исходников, — и интерфейс создастся сам на следующей синхронизации.",
   "WireGuard tools are not installed on this node. Install them with your package manager (on Debian/Ubuntu: apt-get install -y wireguard), then this interface creates itself on the next sync.":
     "На этой ноде не установлены инструменты WireGuard. Установите их пакетным менеджером (в Debian/Ubuntu: apt-get install -y wireguard), и интерфейс создастся сам на следующей синхронизации.",
+  "WireGuard tools are not installed on this node, and this node's installation is managed declaratively — installing them by hand would not survive its next rebuild. Add the WireGuard tools to the system configuration that declares this node and rebuild it, then this interface creates itself on the next sync.":
+    "На этой ноде не установлены инструменты WireGuard, а установка этой ноды описана декларативно — установка их вручную не переживёт следующую пересборку. Добавьте инструменты WireGuard в конфигурацию системы, которая описывает эту ноду, и пересоберите её — интерфейс создастся сам на следующей синхронизации.",
+  "AmneziaWG is only half-installed on this node: awg is present but awg-quick is missing. This node's installation is managed declaratively, so it has to be completed in the system configuration that declares this node rather than by an installer run here — add the full AmneziaWG tools and rebuild, then this interface creates itself on the next sync.":
+    "AmneziaWG на этой ноде установлен наполовину: awg есть, а awg-quick нет. Установка этой ноды описана декларативно, поэтому доводить её надо в конфигурации системы, которая описывает эту ноду, а не установщиком, запущенным здесь, — добавьте полный набор инструментов AmneziaWG и пересоберите, после чего интерфейс создастся сам на следующей синхронизации.",
+  "this node could not execute the tools that bring an interface up: the kernel refused to start them, so the bring-up never began. This is not a port or subnet conflict. This node's installation is managed declaratively, so this belongs in the system configuration that declares it rather than in a command here: the node daemon must not set NoNewPrivileges, and the security policy and capability set that configuration gives this node have to let the WireGuard tools execute. Restart the node daemon once the change is in — a rebuild does not restart it on its own, so the old unit keeps running.":
+    "эта нода не смогла запустить инструменты, которыми поднимается интерфейс: ядро отказалось их стартовать, поэтому подъём даже не начался. Это не конфликт порта или подсети. Установка этой ноды описана декларативно, поэтому это относится к конфигурации системы, которая её описывает, а не к команде здесь: демон ноды не должен выставлять NoNewPrivileges, а политика безопасности и набор capabilities, которые эта конфигурация даёт ноде, должны позволять запускать инструменты WireGuard. Перезапустите демон ноды, когда изменение внесено, — пересборка сама его не перезапускает, и продолжает работать старый юнит.",
+  "this node could not execute the tools that bring an interface up: AppArmor refused to start them, so the bring-up never began. This is not a port or subnet conflict. This distribution enforces an AppArmor profile for the WireGuard tools, and a confined program may not switch into its child profile while the calling service runs with NoNewPrivileges — which the node daemon does on an installation older than 1.8.7-beta; updating the node removes it. In dmesg the denial reads: apparmor=\"DENIED\" operation=\"exec\" info=\"no new privs\". To clear it by hand, put those profiles into complain mode on the node:  aa-complain /usr/bin/wg /usr/bin/wg-quick  (apt-get install -y apparmor-utils if that command is missing) — then this interface creates itself on the next sync.":
+    "эта нода не смогла запустить инструменты, которыми поднимается интерфейс: AppArmor отказался их стартовать, поэтому подъём даже не начался. Это не конфликт порта или подсети. В этом дистрибутиве для инструментов WireGuard включён профиль AppArmor в режиме enforce, а программа под профилем не может переключиться в дочерний профиль, пока вызывающая служба работает с NoNewPrivileges — так работает демон ноды на установках старше 1.8.7-beta; обновление ноды это убирает. В dmesg отказ выглядит так: apparmor=\"DENIED\" operation=\"exec\" info=\"no new privs\". Чтобы снять вручную, переведите эти профили в режим complain на ноде:  aa-complain /usr/bin/wg /usr/bin/wg-quick  (если команды нет — apt-get install -y apparmor-utils), после чего интерфейс создастся сам на следующей синхронизации.",
+  "this node could not execute the tools that bring an interface up: AppArmor refused to start them, so the bring-up never began. This is not a port or subnet conflict. A confined program may not switch into its child profile while the calling service runs with NoNewPrivileges, and this node's installation is managed declaratively — so the fix belongs in the system configuration that declares this node, not in a command here: the node daemon must not set NoNewPrivileges, and the AppArmor policy for the WireGuard tools has to allow /run/wireguard so userspace interfaces stay readable. Restart the node daemon once it is in — a rebuild does not restart it on its own, so the old unit keeps running. Then this interface creates itself on the next sync.":
+    "эта нода не смогла запустить инструменты, которыми поднимается интерфейс: AppArmor отказался их стартовать, поэтому подъём даже не начался. Это не конфликт порта или подсети. Программа под профилем не может переключиться в дочерний профиль, пока вызывающая служба работает с NoNewPrivileges, а установка этой ноды описана декларативно — поэтому исправление принадлежит конфигурации системы, которая описывает эту ноду, а не команде здесь: демон ноды не должен выставлять NoNewPrivileges, а политика AppArmor для инструментов WireGuard должна разрешать /run/wireguard, чтобы userspace-интерфейсы оставались читаемыми. Перезапустите демон ноды, когда это будет внесено, — пересборка сама его не перезапускает, и продолжает работать старый юнит. После этого интерфейс создастся сам на следующей синхронизации.",
+  "this node could not execute the tools that bring an interface up: the kernel refused to start them, so the bring-up never began. This is not a port or subnet conflict, and the datapath module is not the problem. Either those binaries carry file capabilities that this node's capability bounding set no longer covers, or an exec-control layer (SELinux, fapolicyd, or an AppArmor policy this node cannot read) is denying them. Run on the node:  getcap $(command -v ip) $(command -v wg) $(command -v awg)  for the first, and  dmesg | grep -i 'denied'  for the second — one of them names it. Once the tools run again, this interface creates itself on the next sync.":
+    "эта нода не смогла запустить инструменты, которыми поднимается интерфейс: ядро отказалось их стартовать, поэтому подъём даже не начался. Это не конфликт порта или подсети, и модуль датапаса тут ни при чём. Либо на этих бинарниках стоят файловые capabilities, которых больше нет в capability bounding set этой ноды, либо их запуск запрещает слой контроля запуска (SELinux, fapolicyd или политика AppArmor, которую нода не может прочитать). Выполните на ноде:  getcap $(command -v ip) $(command -v wg) $(command -v awg)  для первого и  dmesg | grep -i 'denied'  для второго — что-то из них назовёт причину. Как только инструменты снова запускаются, интерфейс создастся сам на следующей синхронизации.",
+  // The RTNETLINK refusal, split three ways in 1.8.7: it used to be ONE sentence naming the container
+  // fix and the host fix and no configuration at all, so a declaratively managed node was told to edit
+  // a docker-compose.yml it does not have. Same three arms, same order, as the exec-refused set above.
+  "the interface tools ran on this node, but the kernel refused the operation they asked for (\"RTNETLINK answers: Operation not permitted\"). This is not a port or subnet conflict: the tools are being denied the network privilege they need. This node's installation is managed declaratively, so this belongs in the system configuration that declares it rather than in a command here: the capability set and the security policy that configuration gives this node have to let the WireGuard tools change network state. Restart the node daemon once the change is in — a rebuild does not restart it on its own, so the old unit keeps running.":
+    "инструменты интерфейса на этой ноде запустились, но ядро отказало в операции, которую они запросили («RTNETLINK answers: Operation not permitted»). Это не конфликт порта или подсети: инструментам отказывают в сетевой привилегии, которая им нужна. Установка этой ноды описана декларативно, поэтому это относится к конфигурации системы, которая её описывает, а не к команде здесь: набор capabilities и политика безопасности, которые эта конфигурация даёт ноде, должны позволять инструментам WireGuard менять состояние сети. Перезапустите демон ноды, когда изменение внесено, — пересборка сама его не перезапускает, и продолжает работать старый юнит.",
+  "this node's container ran the interface tools, but the kernel refused the operation they asked for (\"RTNETLINK answers: Operation not permitted\"). This is not a port or subnet conflict: the tools are being denied the network privilege they need. A container gets this when its capability set no longer covers what those binaries ask for — give the node NET_ADMIN (in docker-compose.yml: cap_add: [NET_ADMIN]) and recreate it (docker compose up -d), then this interface creates itself on the next sync.":
+    "контейнер этой ноды запустил инструменты интерфейса, но ядро отказало в операции, которую они запросили («RTNETLINK answers: Operation not permitted»). Это не конфликт порта или подсети: инструментам отказывают в сетевой привилегии, которая им нужна. У контейнера так бывает, когда его набор capabilities больше не покрывает то, что запрашивают эти бинарники, — выдайте ноде NET_ADMIN (в docker-compose.yml: cap_add: [NET_ADMIN]) и пересоздайте её (docker compose up -d), после чего интерфейс создастся сам на следующей синхронизации.",
+  "the interface tools ran on this node, but the kernel refused the operation they asked for (\"RTNETLINK answers: Operation not permitted\"). This is not a port or subnet conflict: the tools are being denied the network privilege they need. On a host that means a security policy is confining them —  dmesg | grep -i 'denied'  names which one. Then this interface creates itself on the next sync.":
+    "инструменты интерфейса на этой ноде запустились, но ядро отказало в операции, которую они запросили («RTNETLINK answers: Operation not permitted»). Это не конфликт порта или подсети: инструментам отказывают в сетевой привилегии, которая им нужна. На хосте это значит, что их ограничивает политика безопасности —  dmesg | grep -i 'denied'  покажет какая. После этого интерфейс создастся сам на следующей синхронизации.",
+  "this node's container could not execute the tools that bring an interface up: the kernel refused to start them, so the bring-up never began. This is not a port or subnet conflict. A container gets this when its capability set no longer covers what those binaries ask for — give the node NET_ADMIN (in docker-compose.yml: cap_add: [NET_ADMIN]) and recreate it (docker compose up -d), then this interface creates itself on the next sync.":
+    "контейнер этой ноды не смог запустить инструменты, которыми поднимается интерфейс: ядро отказалось их стартовать, поэтому подъём даже не начался. Это не конфликт порта или подсети. У контейнера так бывает, когда его набор capabilities больше не покрывает то, что запрашивают эти бинарники, — выдайте ноде NET_ADMIN (в docker-compose.yml: cap_add: [NET_ADMIN]) и пересоздайте её (docker compose up -d), после чего интерфейс создастся сам на следующей синхронизации.",
   "interface conf has no Address": "в конфигурации интерфейса нет Address",
   "no free addresses in subnet": "в подсети не осталось свободных адресов",
   "public_key is not a valid WireGuard key": "public_key не является корректным ключом WireGuard",
@@ -797,6 +1240,7 @@ export const STR = {
   "Assign to a user…": "Назначить пользователю…",
   // budget-ok: combo popover, sizes to content
   "no match": "нет совпадений",
+  "{v1} more — type to narrow": "ещё {v1} — уточните поиском",
   // budget-ok: combo popover, sizes to content
   "no users yet": "пользователей пока нет",
 
@@ -1188,6 +1632,84 @@ export const STR = {
   "Nodes — what the node downloads / uploads": "Ноды — что нода принимает / отдаёт",
   "Peers — what the client downloads / uploads": "Пиры — что принимает / отдаёт клиент",
   "Which way ↓/↑ are labelled across the panel. Same numbers, swapped arrows.": "Как по всей панели подписаны ↓ и ↑. Числа те же, стрелки меняются местами.",
+  "Local networks": "Локальные сети",
+  "The private network each node sits on. Its clients reach it unless it is closed on that node — nobody sets this up, it is what routing does.":
+    "Частная сеть, в которой стоит каждая нода. Её клиенты попадают туда, пока это не закрыто на самой ноде: это никто не настраивал, так работает маршрутизация.",
+  "No node reports sitting on a private network.": "Ни одна нода не сообщает, что стоит в частной сети.",
+  "state|open": "открыта",
+  "state|closed": "закрыта",
+  "state|can't close": "не умеет закрывать",
+  "state|closing": "закрывается",
+  "This user's networks": "Сети этого пользователя",
+  "Shared with this user": "Открыты этому пользователю",
+  "Open to everyone on the node": "Открыты всем на ноде",
+  "The node's own local network": "Локальная сеть самой ноды",
+  "behind their own device {v1}": "за собственным устройством {v1}",
+  "shared by {v1}": "доступ открыт пользователем {v1}",
+  "shared by {v1} until {date}": "доступ открыт пользователем {v1} до {date}",
+  "via": "через",
+  // ⚠️ "prep|on", not "on": the catalog already carries "on" meaning ENABLED ("вкл"), later in the file, and a duplicate
+  // key in an object literal silently wins — the bubble's "X on <node>" rendered as "вкл" until this was disambiguated.
+  "prep|on": "на",
+  "filter|All": "Все",
+  "Can be reached by": "Кому доступны",
+  "Private": "Личное",
+  "This device is Private, so these networks are its owner's alone. Turn Private off in the device's own settings to share them.":
+    "Устройство помечено как личное, поэтому эти сети доступны только владельцу. Чтобы поделиться, снимите «Личное» в настройках устройства.",
+  "Only this user's own devices reach it and the networks behind it": "Доступ только с других устройств этого пользователя",
+  "Everyone on this node can open connections to devices here, except Private ones, which only their user's own devices reach. Private here: {n}":
+    "Все на этой ноде могут открывать соединения с устройствами здесь, кроме личных — к ним есть доступ только с устройств того же пользователя. Личных здесь: {n}",
+  "This device has no owner yet, so nobody reaches these networks. Assign it to a user, or turn Private off.":
+    "У устройства ещё нет владельца, поэтому эти сети недоступны никому. Назначьте его пользователю или снимите «Личное».",
+  "Any device on this node can open connections to devices here, except the ones marked Private — only their user's own devices reach those.":
+    "Любое устройство на этой ноде может открывать соединения с устройствами здесь, кроме помеченных как личные — к ним есть доступ только с устройств того же пользователя.",
+  "Not enforced on {node} — it runs an older version, or hasn't reported yet. Devices there still reach this one.":
+    "Не действует на {node} — там старая версия или нода ещё не отчиталась. Устройства на ней по-прежнему имеют доступ к этому устройству.",
+  "{by} carries {p} on {node}, and deploying this device there would take it over. Remove that network from this device first, or choose another node.":
+    "{by} обслуживает {p} на {node}, и размещение этого устройства там перехватит эту сеть. Сначала уберите сеть из этого устройства или выберите другую ноду.",
+  "{v1} is already carried on this node by another device — deploying this one there would take it over":
+    "{v1} на этой ноде уже обслуживает другое устройство — размещение этого устройства там перехватит эту сеть",
+  "Not enforced for {iface} on {node} — the device has no user, so every device there still reaches it.":
+    "Не действует для {iface} на {node} — у устройства нет пользователя, поэтому все устройства там по-прежнему имеют к нему доступ.",
+  "Not enforced for {iface} on {node} — this server build can't prove which address the device has, so every device there still reaches it.":
+    "Не действует для {iface} на {node} — эта сборка сервера не может подтвердить адрес устройства, поэтому все устройства там по-прежнему имеют к нему доступ.",
+  "Saving this opens it again.":
+    "После сохранения доступ снова откроется.",
+  "The device opens to everyone on {nodes}.":
+    "Устройство станет доступно всем на {nodes}.",
+  "The device opens as its interface allows.":
+    "Устройство станет доступно так, как разрешает интерфейс.",
+  "The networks behind it open to everyone on the node.":
+    "Сети за ним станут доступны всем на ноде.",
+  "The networks behind it open to {who}.":
+    "Сети за ним станут доступны: {who}.",
+  "The networks behind it stay with this user's own devices.":
+    "Сети за ним останутся доступны только устройствам этого пользователя.",
+  "tag|private": "личное",
+  "Only this user's own devices reach it and the networks behind it — not the people they share a group with, and not everyone on the node, whatever the interface allows.":
+    "Доступ только с других устройств этого же пользователя — ни участникам его групп, ни всем на ноде, что бы ни разрешал интерфейс.",
+  "Shared with": "Кому открыты",
+  "owner: {v1}": "владелец: {v1}",
+  "Who reaches the networks behind this device": "Кому доступны сети за этим устройством",
+  "Anyone on {v1}": "Любой на {v1}",
+  "Only {v1}'s devices": "Только устройства {v1}",
+  "Only its owner's devices": "Только устройства владельца",
+  "group · {v1}": "группа · {v1}",
+  "Blocked — nothing reaches these through it.": "Заблокировано — через него сюда никто не попадёт.",
+  "Offline — nothing reaches these until it reconnects.": "Не в сети — пока не подключится, сюда никто не попадёт.",
+  "{v1} can't restrict who reaches a network, so it carries these for nobody.":
+    "{v1} не умеет ограничивать доступ к сети, поэтому держит их ни для кого.",
+  "{v1} ({v2} online)": "{v1} ({v2} онлайн)",
+  "Can reach {v1} online now": "Сейчас доступно {v1}",
+  "Can reach {v1}, none online": "Доступно {v1}, никто не онлайн",
+  "until {date}": "до {date}",
+  "Not in this user's routing — they can't reach it": "Нет в маршрутах пользователя — он туда не попадёт",
+  "Routing unknown — this device's build doesn't say": "Маршруты неизвестны — сборка устройства их не сообщает",
+  "Display in panel": "Показывать в панели",
+  "Hide these and close them on every node": "Скрыть их и закрыть на всех нодах",
+  "Show these again — each node's own switch then decides who reaches it": "Снова показывать их — дальше доступ решает переключатель на самой ноде",
+  "Node local networks — shown in the panel": "Локальные сети нод — показаны в панели",
+  "Node local networks — hidden, and closed on every node": "Локальные сети нод — скрыты и закрыты на всех нодах",
   "Status timing": "Тайминги статусов",
   // budget-ok: field <label>, own line
   "Node stale after (s)": "Нода считается молчащей через (с)",
@@ -1626,7 +2148,19 @@ export const STR = {
   "DTLS listen (outside)": "Приём DTLS (снаружи)",
   "Loopback userspace-WG port (server-internal)": "Локальный порт userspace-WG (внутри сервера)",
   "Which WDTT server implements this instance": "Какой сервер WDTT реализует этот экземпляр",
-  "Datapath": "Датапас",
+  "Datapath": "Путь данных",
+  "The traffic on this leg comes from *{peer}*, so its datapath is chosen there — open this link from {peer}'s page.":
+    "Трафик на этом плече идёт со стороны *{peer}*, поэтому путь данных выбирается там — откройте эту связь со страницы {peer}.",
+  // Reachable when smart rules name this peer but the panel has not planned a leg for them — usually
+  // because no node sync has landed since the panel started. The sentence it replaced claimed only a
+  // whole-interface cascade can be accelerated, which stopped being true when smart legs became relayable.
+  "The panel hasn't worked out this link's routes yet, so there is nothing to accelerate here. The choice appears after *{node}*'s next sync.":
+    "Панель ещё не рассчитала маршруты этой связи, так что ускорять здесь пока нечего. Выбор появится после следующей синхронизации *{node}*.",
+  // Under a whole-interface cascade "accelerated" reads as "this interface"; under a smart one it does not.
+  "Only the destinations *{ifaces}* routes over this link are relayed — the rest of that traffic is untouched. And the relay terminates TCP, so UDP keeps forwarding either way.":
+    "В релей уходят только те назначения, которые *{ifaces}* маршрутизирует через эту связь, — остальной трафик не затрагивается. И релей терминирует TCP, поэтому UDP в любом случае остаётся на пересылке.",
+  "Nothing sends its whole traffic through this link yet. Set an interface's egress to *Forward to {peer}* and the datapath choice appears here.":
+    "Пока ни один интерфейс не отправляет через эту связь весь свой трафик. Задайте в выходе интерфейса *Переслать на {peer}* — и выбор пути данных появится здесь.",
   "Existing peers": "Существующие пиры",
   // budget-ok: card row label, own cell
   "Config file": "Файл конфигурации",
@@ -1908,8 +2442,8 @@ export const STR = {
     "Добавляет совпадение по доменам, разрешая DNS клиентов через ноду",
   "Per-service precise · fills before the first connection (no first-hit miss)":
     "Точность · заполняется до первого соединения (промаха на первом нет)",
-  "Intercepts & downgrades client DNS — blocks their DoH / DoT":
-    "Перехватывает и понижает DNS клиента — блокирует его DoH / DoT",
+  "Intercepts & downgrades client DNS — a client on encrypted DNS is flagged, not blocked":
+    "Перехватывает и понижает DNS клиента — клиента на шифрованном DNS помечает, но не блокирует",
   "Enforces domain content filters directly": "Применяет доменные контент-фильтры напрямую",
   // budget-ok: mode-card bullet, wraps
   "Long block lists cost CPU per DNS query — keep them small (≈100k domains)":
@@ -1982,14 +2516,16 @@ export const STR = {
   "Add lists next — the category matches by domain or IP depending on the lists you pick.":
     "Дальше добавьте списки — категория совпадает по домену или по IP в зависимости от выбранных списков.",
   "A category with that name already exists.": "Категория с таким именем уже есть.",
-  "Custom IPs / domains…": "Свои IP / домены…",
   "Recommended presets": "Рекомендуемые наборы",
   "Provider catalog": "Каталог провайдера",
-  "Loading catalog…": "Загружаю каталог…",
-  "Enable a provider in Settings → Geo data providers to search its catalog.":
-    "Включите провайдера в «Настройки → Провайдеры гео-данных», чтобы искать по его каталогу.",
-  "Greyed lists match by *domain* only — this node is *IP-only* (no host layer). Switch it to Force-DNS or SNI to use them.":
-    "Серые списки совпадают только по *домену* — эта нода работает *только по IP* (без слоя хостов). Переключите её на Force-DNS или SNI, чтобы ими пользоваться.",
+  "Lists from {v1}": "Списки {v1}",
+  "{v1} is still downloading its list catalog — its lists appear here when it finishes.": "{v1} ещё загружает каталог списков — они появятся здесь, когда загрузка закончится.",
+  "{v1} could not download its list catalog — retry it in Settings ▸ Geo data providers.": "Не удалось загрузить каталог списков {v1} — повторите в «Настройки ▸ Провайдеры гео-данных».",
+  "Domains blocked in Russia — the RKN registry, filtered": "Домены, заблокированные в России, — реестр РКН после фильтрации",
+  "IP addresses blocked in Russia, merged into ranges": "IP-адреса, заблокированные в России, в виде диапазонов",
+  "Community list: sites RKN does not block that refuse visitors from Russia": "Список сообщества: сайты, которые РКН не блокирует, но которые не пускают посетителей из России",
+  "Community list: networks RKN does not block that refuse addresses from Russia": "Список сообщества: сети, которые РКН не блокирует, но которые не пускают адреса из России",
+  "Discord's networks": "Сети Discord",
   // budget-ok: toast, wraps
 
   // Routing rules
@@ -2011,7 +2547,12 @@ export const STR = {
   // A rule whose destination has been removed from the panel. «Указывает в никуда» is the plain reading of
   // a control that renders blank while a real choice sits in the store.
   "{v1} pointing nowhere": "указывают в никуда: {v1}",
+  "This node itself": "Сама эта нода",
+  "This interface is set to forward everything to the node it is already on, which cannot work — the traffic would leave by this node's own address anyway. Choose another destination.":
+    "Этот интерфейс настроен пересылать всё на ту же ноду, на которой он и находится, а так не получится — трафик всё равно выйдет собственным адресом этой ноды. Выберите другое назначение.",
   "A node that is no longer here": "Ноды больше нет",
+  "This interface forwards everything to a node that is not in this panel any more, so it routes nothing and its clients leave by this node's own address. Choose another destination.":
+    "Этот интерфейс отправляет весь трафик на ноду, которой в панели больше нет, поэтому он не маршрутизирует ничего, и его клиенты выходят собственным адресом этой ноды. Выберите другое назначение.",
   "An exit that is no longer here": "Выхода больше нет",
   "This rule forwards to a node that is not in this panel any more, so it routes nothing and traffic takes the next matching rule instead. Choose another destination, or delete the rule.":
     "Это правило направляет на ноду, которой в панели больше нет: оно ничего не маршрутизирует, и трафик уходит по следующему подходящему правилу. Выберите другое назначение или удалите правило.",
@@ -2064,6 +2605,10 @@ export const STR = {
     "Выходить через устройство на этом узле, направить весь трафик через другой узел или маршрутизировать по назначению (smart).",
   "Leave normally, channel everything through another node, or route per-destination (smart).":
     "Выходить обычным путём, направить весь трафик через другой узел или маршрутизировать по назначению (smart).",
+  "Leave by a device on this node, or route per-destination (smart).":
+    "Выходить через устройство на этом узле или маршрутизировать по назначению (smart).",
+  "Leave normally, or route per-destination (smart).":
+    "Выходить обычным путём или маршрутизировать по назначению (smart).",
   "Outbound (egress) IP": "IP выхода (egress)",
   "Auto (MASQUERADE)": "Авто (MASQUERADE)",
   "Forward to node (cascade)": "Переслать на ноду (каскад)",
@@ -2242,6 +2787,10 @@ export const STR = {
   // the panel cannot prove it is the network, only that it looks like one.
   "The tunnel is up, but Cloudflare never answered it. Nothing here is yours to correct — the keys and the endpoint are the panel's own. Networks that block WARP look exactly like this, so try a pasted profile instead, or put this exit on another node.":
     "Туннель поднят, но Cloudflare ни разу не ответил. Здесь нечего исправлять — ключи и endpoint панель выдала сама. Сети, которые блокируют WARP, выглядят ровно так: попробуйте вставить свой профиль или перенести этот выход на другую ноду.",
+  "This exit has stopped carrying traffic, so the kill-switch is holding everything that uses it. It resumes by itself once the exit works again.":
+    "Этот выход перестал пропускать трафик, поэтому kill-switch удерживает всё, что через него идёт. Трафик возобновится сам, как только выход снова заработает.",
+  "This exit has stopped carrying traffic, so everything that uses it is going out through this node's own IP. It moves back by itself once the exit works again.":
+    "Этот выход перестал пропускать трафик, поэтому всё, что через него шло, уходит через собственный IP этой ноды. Трафик сам вернётся в выход, как только он снова заработает.",
   "Applying your changes on the node…": "Применяем изменения на ноде…",
   "external exits": "внешние exit'ы",
   "This node is sending something the panel cannot read, so it has stopped syncing: {v1}. Its peers are left exactly as they were.": "Нода присылает данные, которые панель не может прочитать, поэтому синхронизация остановлена: {v1}. Её пиры остались ровно такими, какими были.",
@@ -2357,6 +2906,8 @@ export const STR = {
   // budget-ok: hover caption
   "{v1}: the exit device {v2} is down — the kill-switch is holding {v3}, so nothing is leaving. Bring {v2} up to restore it.": "{v1}: устройство выхода {v2} выключено — kill-switch удерживает {v3}, наружу ничего не уходит. Поднимите {v2}, чтобы восстановить выход.",
   "{v1}: the exit device {v2} is down — {v3} is falling back to this node's own IP instead of the exit. Bring {v2} up, or turn the exit's kill-switch on to stop the traffic instead.": "{v1}: устройство выхода {v2} выключено — {v3} уходит через собственный IP этой ноды вместо exit'а. Поднимите {v2} или включите у этого exit'а kill-switch, чтобы трафик вместо этого останавливался.",
+  "{v1}: the tunnel through {v2} has stopped carrying traffic — the kill-switch is holding {v3}, so nothing is leaving. Traffic resumes by itself once the exit works again.": "{v1}: туннель через {v2} перестал пропускать трафик — kill-switch удерживает {v3}, наружу ничего не уходит. Трафик возобновится сам, как только exit снова заработает.",
+  "{v1}: the tunnel through {v2} has stopped carrying traffic — {v3} is going out through this node's own IP until it works again, then moves back by itself. Turn the exit's kill-switch on to stop the traffic instead.": "{v1}: туннель через {v2} перестал пропускать трафик — {v3} уходит через собственный IP этой ноды, пока exit не заработает, а затем сам вернётся обратно. Включите у этого exit'а kill-switch, чтобы трафик вместо этого останавливался.",
   "This node is at its limit of {v1} places it can route to, so these exits never got a slot: {v2}. Their kill-switch is holding nothing — that traffic is going out directly instead of stopping. Remove an exit or a forward to free a slot.": "Нода достигла предела в {v1} направлений маршрутизации, поэтому эти exit'ы не получили слот: {v2}. Их kill-switch ничего не удерживает — трафик уходит напрямую вместо того, чтобы остановиться. Удалите exit или переброс, чтобы освободить слот.",
   "This node is at its limit of {v1} places it can route to, so these never got a slot and their traffic is going out directly: {v2}. Remove an exit or a forward to free a slot.": "Нода достигла предела в {v1} направлений маршрутизации, поэтому эти не получили слот и их трафик уходит напрямую: {v2}. Удалите exit или переброс, чтобы освободить слот.",
   "This node is at its limit of {v1} places it can route to, and {v2} of the places it sends traffic never got a slot — that traffic is going out directly. Remove an exit or a forward to free a slot.": "Нода достигла предела в {v1} направлений маршрутизации, и {v2} из направлений, куда она шлёт трафик, не получили слот — этот трафик уходит напрямую. Удалите exit или переброс, чтобы освободить слот.",
@@ -2372,9 +2923,17 @@ export const STR = {
   "{v1}: interface stopped": "{v1}: интерфейс остановлен",
   "{v1}: will not start after a reboot — update this node to repair it": "{v1}: не поднимется после перезагрузки — обновите ноду, чтобы это исправить",
   "{v1}: not running": "{v1}: не запущен",
+  // «перезапусков: N» — the count after a colon, so it never has to agree with a noun (3 перезапуска / 5 перезапусков)
+  "{v1}: crash-looping — {v2} restarts in {v3} min": "{v1}: падает по кругу — перезапусков за {v3} мин: {v2}",
+  "the address clients dial ({v1}) is no longer on this node — new turn-proxies are created with it and will fail to start": "адрес, на который подключаются клиенты ({v1}), больше не принадлежит этой ноде — новые turn-прокси создаются с ним и не смогут запуститься",
+  "{v1} {v2} is bound to {v3}, which is no longer on this node": "{v1} {v2} привязан к {v3} — этого адреса больше нет на ноде",
   "{v1}: interface missing on the node (restore available)": "{v1}: интерфейс отсутствует на ноде (доступно восстановление)",
+  "AmneziaWG kernel module not built/loaded — awg interfaces run on the slower fallback datapath; update the node to rebuild the module": "Модуль ядра AmneziaWG не собран или не загружен — awg-интерфейсы работают на более медленном резервном датапасе в пользовательском пространстве; обновите ноду, чтобы пересобрать модуль",
+  "{v1}: on the slower fallback datapath — update the node to move it back to the kernel module": "{v1}: на более медленном резервном датапасе — обновите ноду, чтобы вернуть его на модуль ядра",
+  "AmneziaWG runs on the slower fallback datapath — its kernel module isn’t built or loaded; running Update rebuilds it": "AmneziaWG работает на более медленном резервном датапасе — модуль ядра не собран или не загружен; «Обновить» пересоберёт его",
   "AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it": "Модуль ядра AmneziaWG не собран или не загружен — awg-интерфейсы не поднимутся; обновите ноду, чтобы пересобрать его",
   "IP forwarding is off on this node — peers connect but nothing they send can leave it. Set net.ipv4.ip_forward=1 on the host (a container can't set it for itself).": "На этой ноде выключена IP-маршрутизация — пиры подключаются, но отправленный ими трафик не может уйти с сервера. Установите net.ipv4.ip_forward=1 на хосте (контейнер не может сделать это сам).",
+  "{v1}: this mesh link listens on UDP {v2}, outside this node's declared firewall range ({v3}) — other nodes cannot open the link to this one; it only comes up while this node dials out. Add the mesh port band to the range": "{v1}: меш-линк слушает UDP {v2} вне объявленного диапазона фаервола этой ноды ({v3}) — другие ноды не могут открыть линк к ней, он поднимается, только пока эта нода подключается сама. Добавьте в диапазон порты меш-линков",
   "{v1}: listens on UDP {v2}, outside this node's declared firewall range ({v3}) — clients cannot reach it until the range covers that port, or the interface moves inside it": "{v1}: слушает UDP {v2} вне объявленного диапазона фаервола этой ноды ({v3}) — клиенты не смогут подключиться, пока диапазон не покроет этот порт или интерфейс не переедет внутрь него",
   "A setting was edited directly on the server — open to Adopt or Restore":
     "Настройку правили прямо на сервере — откройте, чтобы принять или вернуть",
@@ -2417,6 +2976,7 @@ export const STR = {
   "This node is on the latest version": "На этой ноде последняя версия",
   "A container or the datapath isn't running on this node — recreating it should fix it. ":
     "На этой ноде не работает контейнер или датапас — пересоздание должно помочь. ",
+  "AmneziaWG on this node is running on the slower fallback datapath — its kernel module isn't loaded, or its interfaces haven't moved back to it yet. ": "AmneziaWG на этой ноде работает на более медленном резервном датапасе — модуль ядра не загружен или интерфейсы ещё не вернулись на него. ",
   "The AmneziaWG kernel module isn't built or loaded on this node — awg interfaces can't come up. ":
     "На этой ноде не собран или не загружен модуль ядра AmneziaWG — интерфейсы awg не поднимутся. ",
   // budget-ok: hover caption fragment, wraps
@@ -2471,6 +3031,30 @@ export const STR = {
   "Update started — the panel will restart shortly.": "Обновление запущено — панель скоро перезапустится.",
   "Update started — the panel will restart shortly. The nodes ({v1}) follow on their next sync.": "Обновление запущено — панель скоро перезапустится. Ноды ({v1}) подтянутся при следующей синхронизации.",
   "Couldn't reach the repo to check for updates.": "Не удалось достучаться до репозитория за обновлениями.",
+  // Why the repo could not be reached. The stem is repeated in every one of these rather than glued to a
+  // translated fragment: {v1} and the cause sit in a different order in Russian, and a translator needs the
+  // whole sentence to move them. «Достучаться» matches the generic line above, which operators already know.
+  "Couldn't reach {v1} to check for updates — its name could not be resolved.":
+    "Не удалось достучаться до {v1} за обновлениями — имя не резолвится.",
+  "Couldn't reach {v1} to check for updates — the connection was refused.":
+    "Не удалось достучаться до {v1} за обновлениями — соединение отклонено.",
+  "Couldn't reach {v1} to check for updates — the connection was reset.":
+    "Не удалось достучаться до {v1} за обновлениями — соединение сброшено.",
+  "Couldn't reach {v1} to check for updates — there is no route to it from this server.":
+    "Не удалось достучаться до {v1} за обновлениями — с этого сервера до него нет маршрута.",
+  "Couldn't reach {v1} to check for updates — it did not answer in time.":
+    "Не удалось достучаться до {v1} за обновлениями — он не ответил вовремя.",
+  // budget-ok: toast, wraps
+  "Couldn't reach {v1} to check for updates — its TLS certificate could not be verified. The CA certificates on this server may be missing or out of date.":
+    "Не удалось достучаться до {v1} за обновлениями — не удалось проверить его TLS-сертификат. Возможно, на этом сервере нет корневых сертификатов или они устарели.",
+  "Couldn't reach {v1} to check for updates — the TLS connection failed.":
+    "Не удалось достучаться до {v1} за обновлениями — не удалось установить TLS-соединение.",
+  "Couldn't reach {v1} to check for updates — {v2}.":
+    "Не удалось достучаться до {v1} за обновлениями — {v2}.",
+  "{v1} is rate-limiting this server's address — try the check again in a few minutes.":
+    "{v1} ограничивает запросы с адреса этого сервера — повторите проверку через несколько минут.",
+  "{v1} answered {v2} to the update check.": "{v1} ответил {v2} на проверку обновлений.",
+  "{v1} answered, but not with a version.": "{v1} ответил, но не версией.",
   "Loading changelog…": "Загружаю изменения…",
   "No changelog available.": "Список изменений недоступен.",
   // budget-ok: hover-bubble footer, wraps
@@ -3415,8 +3999,6 @@ export const STR = {
   "Which {v1} proxy": "Какой прокси {v1}",
   "Not available with {v1}": "Не работает с {v1}",
   // budget-ok: empty-state prose in its own block — it wraps, nothing beside it to overlap
-  "No list on this node matches “{q}”. Add more in Settings → Routing lists.":
-    "На этой ноде нет списков по запросу «{q}». Добавьте их в «Настройках → Списки маршрутизации».",
   "{v1} on this node": "{v1} на этой ноде",
   "the node is creating it…": "нода создаёт его…",
   "the node is adding it…": "нода добавляет его…",
@@ -3688,18 +4270,14 @@ export const STR = {
   "Drop known cryptomining / Stratum-pool traffic.": "Резать трафик известных майнинг-пулов (Stratum).",
   "Drop QUIC / HTTP-3 (UDP :443) so connections fall back to TCP and stay inspectable.":
     "Резать QUIC и HTTP-3 (UDP :443), чтобы соединения падали на TCP и оставались разбираемыми.",
-  "Drop DoH / DoT / DoQ so DNS can't slip past the tunnel's filtering.":
-    "Резать DoH, DoT и DoQ, чтобы DNS не проскакивал мимо фильтрации туннеля.",
+  "Drop DoH / DoT / DoQ so DNS can't slip past the tunnel's filtering. A client whose only resolver is encrypted stops resolving.":
+    "Резать DoH, DoT и DoQ, чтобы DNS не проскакивал мимо фильтрации туннеля. Клиент, у которого есть только шифрованный резолвер, перестанет разрешать имена.",
   "Block WebRTC / STUN — prevents the client's real IP leaking around the tunnel.":
     "Закрыть WebRTC и STUN — настоящий адрес клиента не утечёт мимо туннеля.",
   "Matched by IP address — works in every mode.": "По IP-адресу — работает в любом режиме.",
   "Matched by domain name.": "По имени домена.",
   "No lists match.": "Списков не нашлось.",
   "Every available list is already added.": "Все доступные списки уже добавлены.",
-  "Add from catalog": "Добавить из каталога",
-  "Filter this node's lists…": "Отбор среди списков ноды…",
-  "Host-only list — switch this node to Force-DNS to use it":
-    "Список только по доменам — переключите нода на Force-DNS",
   "Couldn't switch mode": "Не удалось сменить режим",
   "→ not found": "→ не найдено",
   "Auto (target node default)": "Авто (как на ноде назначения)",
@@ -3844,15 +4422,6 @@ export const STR = {
   "mesh AWG params": "параметры AWG сети",
   "Geo lists will refresh on each node's next sync.": "Гео-списки обновятся при следующей синхронизации нод.",
   "Couldn't save the list.": "Не удалось сохранить список.",
-  "Default — IP only. DNS not involved": "По умолчанию — только IP. DNS не при делах",
-  "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs.":
-    "Смотрит на IP назначения (GeoIP, ASN) — маршрут никогда не зависит от DNS, поэтому DoH, DoT и обычный DNS у клиентов работают как работали. Самый простой и надёжный вариант; он лишь не разделяет службы с общими адресами (YouTube и Google), а категория CDN тянет за собой всё, что за ней. Списки: GeoIP и свои адреса.",
-  "Force DNS — Host + IP. Overrides encrypted DNS": "Force DNS — домен и IP. Перебивает шифрованный DNS",
-  "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite (host) + GeoIP + Custom IPs/domains.":
-    "Сервер становится резолвером клиентов и закрывает их шифрованный DNS — и DoH известных провайдеров, и весь DoT — поэтому может вести трафик по именам, точно по службам. Взамен: он видит и понижает DNS клиента, ломает тех, кто держится за свой шифрованный DNS, а незнакомый сервер DoH всё равно проскочит. Списки: GeoSite (домены), GeoIP и свои адреса и домены.",
-  "SNI Sniffer — Host + IP. DNS stays private": "Чтение SNI — домен и IP. DNS остаётся приватным",
-  "Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains.":
-    "Ведёт трафик по именам, читая SNI из каждого рукопожатия TLS, поэтому DNS клиента — DoH, DoT или обычный — не трогается, не просматривается и не понижается: соединение остаётся зашифрованным до конца. Каждое назначение выучивается на первом подключении (совсем новое имя пойдёт правильно со второго); скрытые через ECH имена, а также QUIC и HTTP3 идут по адресам. Списки: GeoSite (домены), GeoIP и свои адреса и домены.",
   "Content filters": "Фильтры содержимого",
   "Routing lists": "Списки маршрутов",
   "Filtering runs on the entry node — where a client's tunnel lands. Exit and relay hops in a multi-hop path never see the client, so there's nothing there for them to filter.":
@@ -4019,7 +4588,7 @@ export const STR = {
   "Network & TLS helper": "Помощник сети и TLS",
   "One-click self-update": "Обновление одной кнопкой",
   "Panel server": "Сервер панели",
-  "AmneziaWG datapath": "Датапас AmneziaWG",
+  "AmneziaWG datapath": "Путь данных AmneziaWG",
   "the subscription server isn’t installed — subscribers can’t load their configs":
     "сервер подписок не установлен — подписчики не получат свои конфиги",
   "the subscription server isn’t running — subscribers can’t load their configs":
@@ -4121,6 +4690,9 @@ export const STR = {
   "the user": "пользователь",
   "no free address": "нет свободных",
   "service is not running on the node": "служба на ноде не запущена",
+  "Service keeps crashing on the node": "Служба на ноде постоянно падает",
+  "Clients can reach it, but every session through it is cut each time it dies. Its journal on the node says why.":
+    "Клиенты до него достучатся, но каждое падение обрывает все сессии через него. Почему он падает — видно в его журнале на ноде.",
   "no peers online": "пиров в сети нет",
   "no one online": "никого в сети",
   // budget-ok: the app-bar tabs — measured in the real header, not estimated (see below)
@@ -4155,6 +4727,10 @@ export const STR = {
   "tag|re-provisioning": "пересборка",
   "tag|flagged for removal": "помечен к удалению",
   "tag|restarted": "перезапущен",
+  // MEASURED in the real turn card (286px wide, its drag grip and TURN badge beside it): «падает по кругу» ran 125px
+  // against the English 113px and cut even a fork's default title (WINGS-N → WING…); «падает» is 70px and leaves it
+  // whole. The loop itself is spelled out where there is room — the tag's popup and the node's issue line.
+  "tag|crash-looping": "падает",
   "tag|pending": "ожидает",
   "tag|unsaved": "не сохр.",
   "tag|orphan": "сирота",
@@ -4162,7 +4738,8 @@ export const STR = {
   "The Encryption Vault is locked, so this peer's stored config can't be read. Unlock it to show the QR — the config has not been lost.": "Хранилище ключей заблокировано, поэтому сохранённый конфиг этого пира не прочитать. Разблокируйте его, чтобы показать QR — конфиг не потерян.",
   "This config was encrypted with a previous encryption key and can no longer be opened. Re-issue this peer to give it a fresh config and QR.": "Этот конфиг зашифрован предыдущим ключом шифрования и больше не открывается. Перевыпустите пир, чтобы получить новый конфиг и QR.",
   "its encryption bucket was sealed with a previous encryption key": "его хранилище запечатано предыдущим ключом шифрования",
-  "The node can't see this client's lookups, so nothing matches a category: routing rules don't apply and its traffic leaves by this node. Switch the client to plain DNS, or put this interface on SNI mode.": "Нода не видит DNS-запросы этого клиента, поэтому ничего не попадает в категории: правила маршрутизации не применяются, и трафик уходит через эту ноду. Переключите клиента на обычный DNS или переведите интерфейс в режим SNI.",
+  "This client resolves names over encrypted DNS, which the node can't see, so its hostname rules don't match and those sites leave by this node — rules by IP still route. Switch the client to plain DNS, move this node to an SNI mode, or turn on the interface's DoH / DoT / DoQ block.":
+    "Этот клиент разрешает имена через шифрованный DNS, которого нода не видит, поэтому его правила по имени хоста не срабатывают и эти сайты уходят через эту ноду — правила по IP при этом работают. Переключите клиента на обычный DNS, переведите ноду в режим SNI или включите на интерфейсе блокировку DoH / DoT / DoQ.",
   "tag|unassigned": "свободен",
   "val|total": "всего",
   "val|online": "в сети",
@@ -4241,7 +4818,6 @@ export const STR = {
   "Disney+ streaming": "Стриминг Disney+",
   "VKontakte": "ВКонтакте",
   "Grok (xAI) — grok.com & x.ai": "Grok (xAI) — grok.com и x.ai",
-  "Choose a category…": "Выберите категорию…",
   "val|Auto": "Авто",                  // the egress-IP picker's "no explicit IP" option
 
   // the protection tiles and their popover header
@@ -4471,7 +5047,6 @@ export const STR = {
   "IP learning is {v1} · click to turn it {v2}": "Запоминание адресов: {v1} · нажмите, чтобы {v2}",
   "val|off": "выкл",
   "val|on": "вкл",
-  "Search {v1} lists — name, country, service…": "Поиск среди {v1} списков — имя, страна, сервис…",
   "resolving…": "определяем…",
   "→ {v1}": "→ {v1}",
   "Cascade — exits via {v1}": "Каскад — выход через {v1}",
@@ -4823,6 +5398,9 @@ export const STR = {
   "Removed WDTT instance": "Сервер WDTT убран",
   "Removed deployment": "Развёртывание убрано",
   "Removed node": "Нода удалена",
+  "Egress reset to direct — its target node was removed": "Выход переключён на прямой — нода назначения удалена",
+  "Egress reset to direct — it forwarded to no node at all": "Выход переключён на прямой — каскад не указывал ни на одну ноду",
+  "An exit key restore expired without being applied": "Срок восстановления ключа выхода истёк, восстановление не выполнено",
   "Renamed node": "Нода переименована",
   "Renamed peer": "Пир переименован",
   "Renamed user": "Пользователь переименован",
@@ -4862,6 +5440,7 @@ export const STR = {
   "Updated block lists": "Списки блокировок обновлены",
   "Updated interface": "Интерфейс изменён",
   "Updated node": "Нода изменена",
+  "Closed its local network (panel setting)": "Локальная сеть ноды закрыта (настройка панели)",
   "Updated panel settings": "Настройки панели изменены",
   "{count} unassigned": "отвязано: {count}",
   "{count} · {where}": "{count} · {where}",
@@ -4945,6 +5524,7 @@ export const STR = {
   "username cannot contain ':'": "в логине не может быть «:»",
   "login is not enabled": "вход не включён",
   "login is not enabled on this panel": "на этой панели вход не включён",
+  "the password file {v1} cannot be read ({v2}) — this panel runs as {v3}, so nobody can sign in and every request is refused. Fix it over SSH or the provider console: chown root:swg {v1}; chmod 640 {v1}; systemctl restart swg-panel-server  (or run swg-passwd to set a new password). If this panel is MEANT to have no login — reached only over an SSH tunnel, say — clear SWG_PANEL_AUTH in its unit instead: blank means no login by design, and an empty file cannot say that.": "файл пароля {v1} не читается ({v2}) — панель работает от пользователя {v3}, поэтому войти не может никто и все запросы отклоняются. Исправьте по SSH или через консоль провайдера: chown root:swg {v1}; chmod 640 {v1}; systemctl restart swg-panel-server  (или запустите swg-passwd, чтобы задать новый пароль). Если панель ДОЛЖНА работать без входа — например, доступна только через SSH-туннель — очистите SWG_PANEL_AUTH в её юните: пустое значение означает «входа нет» намеренно, а пустой файл этого не выражает.",
   "no auth file configured (SWG_PANEL_AUTH unset)": "файл входа не настроен (SWG_PANEL_AUTH не задан)",
   "enter a valid authenticator or recovery code": "введите код из приложения или запасной код",
   "that code isn't valid": "код не подходит",
@@ -5490,7 +6070,7 @@ export const STR = {
   "{v1}% enforced, {v2}% set": "{v1}% применяется, задано {v2}%",
     "Forward": "Транзит",
   "Packets cross this link untouched. The simplest and cheapest option — *{node}* barely spends CPU on them and there is nothing in the path to fail. Right while the link to {peer} is healthy.": "Пакеты проходят через тоннель как есть, нода их не трогает. Самый простой и дешёвый вариант: *{node}* почти не тратит на них CPU, и ломаться по пути нечему. То, что нужно, пока связь с {peer} работает нормально.",
-  "*{node}* answers the client itself and opens its own connection to {peer}. Loss on the link stops reaching the client, so a bad leg costs the user far less. In exchange it uses noticeably more CPU, and on a link that is already healthy it buys nothing.": "*{node}* сам отвечает клиенту и открывает до {peer} отдельное соединение. Потери на связи дальше клиента не идут, поэтому плохое плечо бьёт по пользователю намного слабее. Взамен заметно растёт нагрузка на CPU, а на хорошей связи выигрыша не будет.",
+  "*{node}* answers the client itself and opens its own connection to {peer}. Loss on the link stops reaching the client, so a bad leg costs the user far less. In exchange it uses noticeably more CPU, and on a link that is already healthy it buys nothing. The cap is {node}'s whole relay budget, shared by every leg it accelerates.": "*{node}* сам отвечает клиенту и открывает до {peer} отдельное соединение. Потери на связи дальше клиента не идут, поэтому плохое плечо бьёт по пользователю намного слабее. Взамен заметно растёт нагрузка на CPU, а на хорошей связи выигрыша не будет. Лимит — это весь релейный бюджет {node}, общий для всех плеч, которые он ускоряет.",
       "{v1} configs are published again — saved.": "Конфиги {v1} снова публикуются — сохранено.",
   "{v1} configs hidden from the subscription — saved.": "Конфиги {v1} скрыты из подписки — сохранено.",
   "Routes": "Маршрутизирует",
@@ -5501,7 +6081,8 @@ export const STR = {
   "IP ranges, networks, sites, zones, name patterns, text patterns": "Диапазоны IP, сети, сайты, зоны, шаблоны имён, текстовые шаблоны",
   "First match — the order you set": "Первое совпадение — в заданном вами порядке",
   "Most specific name; IP rules in order": "Самое точное имя; правила по IP — по порядку",
-  "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. A client answering from its own cache never asks, so a rule you add after it looked a name up takes effect on its next lookup — the node caps what clients may keep at 60 seconds for exactly that reason.": "Нода становится резолвером клиентов и блокирует их шифрованный DNS — и DoH (известных провайдеров), и весь DoT — благодаря чему может маршрутизировать ещё и по имени хоста, точно до сервиса. Плата: она видит и понижает DNS клиента, может сломать клиент, который настаивает на своём шифрованном DNS, а незнакомый ей DoH-сервер всё же проскочит. Клиент, отвечающий из собственного кэша, вообще не спрашивает, поэтому правило, добавленное после того как он разрешил имя, сработает лишь на следующем запросе — именно поэтому нода ограничивает срок хранения ответа у клиента 60 секундами.",
+  "The node becomes your clients' resolver: it answers their plain DNS and routes by the hostnames it sees, per-service precise. Trade-off: it sees and downgrades the client's DNS. A client that uses its own encrypted DNS (DoH or DoT) goes unseen — its hostname rules don't match, though rules by IP still route — so the panel marks that device instead of cutting its DNS off. To stop encrypted DNS, turn on the interface's DoH / DoT / DoQ block: it drops known DoH providers and all DoT, a DoH server it doesn't recognise can still slip past, and a client whose only resolver is encrypted stops resolving. A client answering from its own cache never asks, so a rule you add after it looked a name up takes effect on its next lookup — the node caps what clients may keep at 60 seconds for exactly that reason.":
+    "Нода становится резолвером клиентов: отвечает на их обычный DNS и маршрутизирует по именам хостов, которые видит, точно до сервиса. Плата: она видит и понижает DNS клиента. Клиент со своим шифрованным DNS (DoH или DoT) остаётся ей невидим — его правила по имени хоста не срабатывают, хотя правила по IP работают, — поэтому панель помечает такое устройство, а не отрезает ему DNS. Чтобы остановить шифрованный DNS, включите на интерфейсе блокировку DoH / DoT / DoQ: она режет DoH известных провайдеров и весь DoT, незнакомый ей DoH-сервер всё же проскочит, а клиент, у которого есть только шифрованный резолвер, перестанет разрешать имена. Клиент, отвечающий из собственного кэша, вообще не спрашивает, поэтому правило, добавленное после того как он разрешил имя, сработает лишь на следующем запросе — именно поэтому нода ограничивает срок хранения ответа у клиента 60 секундами.",
   "Scans the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Needs the node's kernel to provide xt_string + ipset. It matches a run of characters, not a name: a rule for example.com also matches notexample.com.evil.net, which is why whole-ending rules like *.ru cannot be matched here at all — this node counts them and says so, so you can move them to Force-DNS or Hybrid SNI. Names hidden by ECH, and QUIC / HTTP3, fall back to IP routing.": "Читает SNI из каждого TLS-рукопожатия целиком в ядре (xt_string) и запоминает IP каждого назначения в маршрутный набор — без помощника в userspace, и DNS клиентов (DoH, DoT или обычный) не трогается вовсе. Работает параллельно по ядрам, поэтому остаётся лёгким даже при большом числе соединений. Требует xt_string и ipset в ядре ноды. Совпадает по последовательности символов, а не по имени: правило для example.com совпадёт и с notexample.com.evil.net — поэтому правила на целое окончание вроде *.ru здесь не сопоставляются вовсе — нода их считает и сообщает об этом, чтобы вы перевели их на Force-DNS или Hybrid SNI. Имена, скрытые ECH, а также QUIC / HTTP3 уходят на маршрутизацию по IP.",
   "Open {v1} and its routing rules": "Открыть {v1} и её правила маршрутизации",
   "Held on this node, but no rule on it names this list.": "Держится на этой ноде, но ни одно её правило этот список не называет.",
@@ -5698,7 +6279,9 @@ export const PLURALS = {
   IP: ["IP", "IP", "IP"],   // indeclinable acronym: one form covers every count
   issue: ["проблему", "проблемы", "проблем"],
   "nom|issue": ["проблема", "проблемы", "проблем"],   // SUBJECT ("1 проблема на этой ноде"); bare `issue` stays accusative for "исправить / можно починить"
-  group: ["группа", "группы", "групп"],   // reads after "исправить" (accusative): исправить 1 проблему / 5 проблем
+  group: ["группа", "группы", "групп"],   // nominative: «Доступ: 2 группы» (user groups) and the attention list's own groups
+  member: ["участник", "участника", "участников"],   // a group's members — after a colon or a name, never a verb's subject
+  person: ["человек", "человека", "человек"],        // how many PEOPLE a user's devices reach — «Доступны устройства: 2 человека»
   minute: ["минуты", "минут", "минут"],          // reads after "больше" (genitive): больше 1 минуты / 5 минут
   address: ["адрес", "адреса", "адресов"],
   "sub link": ["ссылка", "ссылки", "ссылок"],   // a subscription URL — NOT `link`, which is a mesh link ("связь")

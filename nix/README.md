@@ -13,7 +13,7 @@ This page is task-ordered: start at the top and end with a working install.
 
 - [What you need before you start](#what-you-need-before-you-start)
 - [Installing](#installing) — nine steps, from turning flakes on to checking it worked
-- [Updating](#updating) — the Update button, by hand, and what a failed rebuild tells you
+- [Updating](#updating) — the Update button, by hand, what a failed rebuild tells you, and going back to an older build
 - [Moving an existing install onto NixOS](#moving-an-existing-install-onto-nixos) — keeping every key your clients already trust
 - [Removing](#removing) — a node, the panel, or everything
 - [Reference](#reference) — the delivery methods, the support boundary, and the traps of a declarative host
@@ -371,10 +371,18 @@ it.
 
 In `/etc/nixos/configuration.nix`:
 ```nix
-services.swg-node.udpPortRanges = [ { from = 51820; to = 51899; } ];
+services.swg-node.udpPortRanges = [
+  { from = 51820; to = 51899; }   # interfaces — where the panel starts new ones
+  { from = 56000; to = 56099; }   # turn proxies, WDTT and csqtt servers
+  { from = 9999;  to = 10098; }   # mesh links between your nodes (Settings → System mesh defaults)
+];
 ```
 
-That opens the range **and** tells the node what was declared, so the **panel raises a node issue**
+The panel's **Nodes** screen prints exactly this block in the flake it gives you. Leave the mesh band out and a node can
+still link to one whose port is open — it dials out — but nothing can open a link *to* it, two such nodes never link, and
+the panel raises an issue on the link.
+
+That opens the ranges **and** tells the node what was declared, so the **panel raises a node issue**
 the moment an interface lands outside it, instead of leaving you to work it out from a connection
 that never handshakes. Keep the range in step with what you use in the UI. Leave it empty and the
 module says so at build time; `networking.firewall.enable = false` silences both.
@@ -551,6 +559,25 @@ zramSwap.enable = true;      # or a swapDevices entry
 
 Podman's `io.containers.autoupdate=registry` remains available on the container arm if you would
 rather the runtime chase the image; this module does not wire it.
+
+### Going back to an older build
+
+`nixos-rebuild --rollback`, or pinning an older `swg-panel` input, puts the older programs back —
+and nothing newer runs at that moment to tidy up after itself. Going back to a build older than
+1.8.7 leaves two things on a node, both measured on a live one. Once the older daemon is running:
+
+```bash
+sudo systemctl restart swg-noded        # native arm: the rebuild alone leaves the newer daemon running
+# the device-access tables: that build cannot manage them, and they go on refusing what the panel allows
+sudo nft delete table inet swg_reach; sudo nft delete table inet swg_share
+# relay units still running the newer store path, and the template they came from
+sudo systemctl stop 'swg-relay@*'
+sudo rm -f /run/systemd/system/swg-relay@.service && sudo systemctl daemon-reload
+```
+
+A reboot clears both. The older build writes its own relay template when it wants a relay. After a
+container → native switch, remove the relay containers too (see
+[Switching `delivery`](#switching-delivery-on-a-node-that-already-runs)).
 
 ---
 
@@ -899,12 +926,28 @@ both VM suites for exactly this — the early warning is meant to reach us befor
 
 Changing `delivery` and rebuilding is not a migration, and it is not a supported one — the two arms
 keep state in different places on purpose, so what the running node can see changes with it.
-Measured on a live master, native → container → native:
+Measured on a live master and on a fresh VM, native → container → native:
 
-- **Plain-WireGuard interfaces disappear.** Their confs are in `/etc/wireguard`, which the container
-  does not mount (it gets `confDir` only, and a container-arm install writes *every* conf there,
-  `wg` and `awg` alike). The interface itself keeps running — the panel reports it as **missing with
-  a restore offered**, and it comes back when you switch back.
+- **Expect an interface outage each way.** The interfaces change owner — the container re-creates
+  them, and on the way back the native bootstrap does — and each client is back once the node has
+  re-added its peers: 12–17 s on a small VM, about a minute on a box with seven interfaces.
+- **Plain-WireGuard interfaces are adopted, not lost.** Their confs are in `/etc/wireguard`, which
+  the container does not mount (it gets `confDir` only, and a container-arm install writes *every*
+  conf there, `wg` and `awg` alike). Seconds after it starts, the container finds the live interface
+  the panel manages and writes its conf into `confDir`, so the interface stays managed on both arms,
+  with its key and its peers. The old file in `/etc/wireguard` stays behind, out of date: the node
+  reads `confDir` first, and deleting the interface from the panel removes both. ⚠️ On a node older
+  than 1.8.7, remove `/etc/wireguard/<name>.conf` by hand after deleting such an interface, or it
+  comes back at the next boot.
+- **⚠️ A reboot on the container arm means a reboot on the way back.** The kernel datapath comes from
+  the generation the box *booted*, and the container generation carries no `amneziawg` module. Switch
+  back to native without rebooting and `awg-quick` falls back to nixpkgs' `amneziawg-go` (0.2.15,
+  older than AmneziaWG 2.0): the AWG interfaces come up, then die as traffic arrives, and the node's
+  page reads `Protocol not supported`. Reboot into the native generation.
+- **Relay legs stay behind on container → native.** The container arm runs each relayed leg as a
+  sibling container that restarts unless stopped, and the native arm does not know them. Remove them
+  after the switch: `sudo podman ps -a --filter name=swg-relay-`, then `sudo podman rm -f` each
+  (`docker` with `backend = "docker"`).
 - **turn / WDTT / csqtt go with the arm.** The native arm's fork servers are host units with their
   state under `/opt`; the container arm's are supervised subprocesses under the mounted state dir.
   Neither can see the other's, so the panel reports them missing on whichever arm did not install

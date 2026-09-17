@@ -28,10 +28,16 @@
     en: {
       loading: "Loading…", noConfigs: "No configs yet",
       noConfigsSub: "There are no active peers on this subscription. New peers will appear here automatically.",
+      netsTitle: "Networks you can reach",
+      netsPick: "Available networks",
+      netsVia: "on {node} · through {via}",
+      netsNotCovered: "This device's settings leave it out — ask your administrator to include it.",
+      netsHowTo: "Open them by address — for example 192.168.50.10 in a browser, or \\\\192.168.50.10 for shared folders on Windows.",
+      netsNames: "A name from that network works only if your administrator set your device to use that network's DNS server. Automatic discovery — printers, the “Network” folder, .local names — doesn't reach across the tunnel.",
       peer: "Peer", primary: "Primary", download: "Download .conf", dl: "Download", copyConfig: "Copy config",
       copied: "Copied", copiedClip: "Copied to clipboard", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link", showQR: "Show QR",
       dlShort: "Download", enlarge: "Tap to enlarge", share: "Share",
-      getApp: "Get {app}", getAppBy: "Get {app} by {author} manually", getAppManual: "Get {app} manually",
+      getApp: "Get {app}", getAppBy: "Get {app} by {author} manually", getAppManual: "Get {app} manually", by: " by {author}",
       getWgClient: "WireGuard clients", getAwgClient: "AmneziaWG clients",
       dlOpenPage: "Open {host}({app}) downloads page", dlLatest: "Latest release · {ver}",
       start: "Start", startOpen: "Start — opens {app}", startGet: "Start — installs {app} if you don't have it",
@@ -86,10 +92,16 @@
     ru: {
       loading: "Загрузка…", noConfigs: "Пока нет конфигураций",
       noConfigsSub: "На этой подписке нет активных пиров. Новые появятся здесь автоматически.",
+      netsTitle: "Сети, к которым у вас есть доступ",
+      netsPick: "Доступные сети",
+      netsVia: "на {node} · через {via}",
+      netsNotCovered: "Настройки этого устройства её не включают — попросите администратора добавить.",
+      netsHowTo: "Открывайте их по адресу — например, 192.168.50.10 в браузере или \\\\192.168.50.10 для общих папок Windows.",
+      netsNames: "Имя из той сети работает, только если администратор настроил ваше устройство на DNS-сервер этой сети. Автоматический поиск — принтеры, папка «Сеть», имена .local — через туннель не работает.",
       peer: "Пир", primary: "Главный", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать",
       copied: "Скопировано", copiedClip: "Скопировано в буфер обмена", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
       dlShort: "Скачать", enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
-      getApp: "Установить {app}", getAppBy: "Скачать {app} от {author} вручную", getAppManual: "Установить {app} вручную",
+      getApp: "Установить {app}", getAppBy: "Скачать {app} от {author} вручную", getAppManual: "Установить {app} вручную", by: " от {author}",
       getWgClient: "Клиенты WireGuard", getAwgClient: "Клиенты AmneziaWG",
       dlOpenPage: "Открыть страницу загрузок {host}({app})", dlLatest: "Последняя версия · {ver}",
       start: "Старт", startOpen: "Старт — откроет {app}", startGet: "Старт — установит {app}, если его нет",
@@ -679,7 +691,9 @@
     if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); dismissHints(); }
   }
   // peers: [{ title, dead, entries: [{ pi, ci, srv, color, badge }] }] · cur: {pi, ci} · jump(pi, ci)
-  function openConfigPicker(peers, cur, jump) {
+  // `extra` is the networks page, when this subscription has one: {pi, n}. It carries no config, so it is in no device's list —
+  // and nothing led to it, leaving the only way there a swipe past every config on the subscription.
+  function openConfigPicker(peers, cur, jump, extra) {
     // Raw close, not dismissHints: this is a TRANSITION between overlays, so the Back entry has to carry over —
     // disarming here would queue a history.back() that lands on the entry armOverlayBack() pushes below.
     closeAllHints();
@@ -699,6 +713,17 @@
     function isHere(en) { return cur && en.pi === cur.pi && en.ci === cur.ci; }
     function go(en) { dismissHints(); jump(en.pi, en.ci); }
     function row(on) { var r = el("button", "cp-row" + (on ? " on" : "")); r.type = "button"; return r; }
+    // Last, and named for what it is rather than for a device: the networks those devices reach. Shown at the top level of the
+    // picker only — inside one device's connections it would read as one of that device's.
+    function netsRow(list) {
+      if (!extra) return;
+      var r = row(!!cur && cur.pi === extra.pi);
+      r.className += " cp-nets";
+      r.appendChild(el("span", "cp-name", t("netsPick")));
+      r.appendChild(el("span", "cp-nets-n", String(extra.n)));
+      r.onclick = function () { dismissHints(); jump(extra.pi, 0); };
+      list.appendChild(r);
+    }
 
     function showConnections(g, back) {
       title.textContent = ""; list.textContent = "";
@@ -720,6 +745,7 @@
         r.onclick = function () { go(en); };
         list.appendChild(r);
       });
+      if (!back) netsRow(list);        // one device ⇒ the picker opens here, so this IS the top level
     }
     function showPeers() {
       title.textContent = ""; list.textContent = "";
@@ -742,6 +768,7 @@
         r.onclick = function () { g.entries.length === 1 ? go(g.entries[0]) : showConnections(g, true); };
         list.appendChild(r);
       });
+      netsRow(list);
     }
 
     if (peers.length === 1) showConnections(peers[0], false); else showPeers();
@@ -1261,6 +1288,9 @@
     if (txt != null) e.textContent = txt;
     return e;
   }
+  // The badge's "by <author>" tail. One string in the catalog, not " by " glued on in three cells: those three were
+  // English on a Russian page (since 07774a7), because a literal cannot follow the language selector.
+  function tagBy(author) { return el("span", "scell-tag-by", t("by").replace("{author}", author)); }
   // A chevron arrow as an inline SVG (built via the DOM so the strict CSP is happy). dir: l/r/u/d.
   function chevronEl(dir) {
     var NS = "http://www.w3.org/2000/svg";
@@ -1827,7 +1857,7 @@
         // server + app chips take the FORK colour (like the WDTT/turn cells); the role chip below keeps the iface colour.
         var csrv = el("span", null, csfork); csrv.style.color = cffork; ctag.appendChild(csrv);
         ctag.appendChild(el("span", "scell-tag-sep", " · ")); var capp = el("span", null, cAppName); capp.style.color = cffork; ctag.appendChild(capp);
-        if (cga && cga.author && cga.author !== csfork) ctag.appendChild(el("span", "scell-tag-by", " by " + cga.author));   // cross-author client only
+        if (cga && cga.author && cga.author !== csfork) ctag.appendChild(tagBy(cga.author));   // cross-author client only
         srvRow.appendChild(ctag);
         var crl = tgt.primary || "";
         var cBackup = multi && crl === "backup";                                // csqtt is its own protocol family → the "CSQTT" role chip, in the csqtt type colour
@@ -1848,6 +1878,9 @@
         ctrl.payload = cart.text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
         ctrl.isLink = true; ctrl.hasQR = false; ctrl.cmd = null; ctrl.wrapCfg = true;   // no scanner in the CSQTT app yet → hand out the csqtt:// link itself
         ctrl.openUri = cart.text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
+        // A one-tap csqtt app (the CSQTT app, La Lune on Android) is handed the link by the scheme — AND it is copied, so a
+        // visitor sent to install the app first still has the link when they come back to it.
+        ctrl.copyOnOpen = true;
         ctrl.view = "qr";
         draw();
       } else if (it.wdtt) {
@@ -1877,7 +1910,7 @@
         var wAppFork = (wga && wclients[wga.cid] && wclients[wga.cid].native_fork) || wfork;
         var wAppColor = forkColor(wAppFork);
         if (wHasApp) { wtag.appendChild(el("span", "scell-tag-sep", " · ")); var wapp = el("span", null, wAppName); wapp.style.color = wAppColor; wtag.appendChild(wapp);
-          if (wga && wga.author && wga.author !== wfork) wtag.appendChild(el("span", "scell-tag-by", " by " + wga.author)); }   // app author (e.g. luminescq)
+          if (wga && wga.author && wga.author !== wfork) wtag.appendChild(tagBy(wga.author)); }   // app author (e.g. luminescq)
         srvRow.appendChild(wtag);
         var wrl = tgt.primary || "";
         var wBackup = multi && wrl === "backup";                                 // WDTT is its own protocol family in the panel → the "WDTT" role chip (not the built-in WG), in the WDTT type colour
@@ -1954,7 +1987,7 @@
       if (hasAppName) {
         tag.appendChild(el("span", "scell-tag-sep", " · "));
         var appChip = el("span", null, appName); appChip.style.color = appColor; tag.appendChild(appChip);
-        if (ga && ga.author && ga.author !== forkId) tag.appendChild(el("span", "scell-tag-by", " by " + ga.author));   // app author (e.g. luminescq / SpaceNeuroX)
+        if (ga && ga.author && ga.author !== forkId) tag.appendChild(tagBy(ga.author));   // app author (e.g. luminescq / SpaceNeuroX)
       }
       srvRow.appendChild(tag);
       // role + interface next to the badge: multi → "Primary/Backup WG"; single → "WG". Primary/single = iface colour, backup = grey.
@@ -2053,6 +2086,37 @@
   // A BLOCKED or EXPIRED peer still takes a slot in the carousel, but instead of QR/config/buttons it shows the peer
   // name + a centred BLOCKED / EXPIRED word + the same text as the whole-sub screen — so the holder sees WHY this one
   // config stopped working. One page per dead peer (no protocol split, no deployment arrows, no action bar).
+  // Networks this user's devices reach beyond the internet — the office LAN behind a colleague's router, shared with them
+  // (docs/NETWORKS-PLAN.md §18). The server lists only what a node reports routing. One page after the configs, walked like
+  // any other; it has no config, so no picker entry, and every other page's Connections picker leads here.
+  function networksPage(nets) {
+    var page = el("section", "ppage");
+    page.setAttribute("data-mode", "nets");
+    var srow = el("div", "srow"), cell = el("div", "scell"), stage = el("div", "scell-stage");
+    var box = el("div", "netbox");
+    var head = el("p", "netbox-h", t("netsTitle"));
+    head.setAttribute("data-pick", "");   // the picker's trigger here, as a device's title is on its own page
+    box.appendChild(head);
+    var list = el("ul", "netbox-list");
+    nets.forEach(function (n) {
+      var li = el("li", "netbox-row");
+      li.appendChild(el("span", "netbox-pre", n.prefix));
+      li.appendChild(el("span", "netbox-meta", n.via
+        ? t("netsVia").replace("{node}", function () { return n.node_name; }).replace("{via}", function () { return n.via; })
+        : n.node_name));
+      if (n.covered === false) li.appendChild(el("span", "netbox-warn", t("netsNotCovered")));
+      list.appendChild(li);
+    });
+    box.appendChild(list);
+    box.appendChild(el("p", "netbox-note", t("netsHowTo")));
+    box.appendChild(el("p", "netbox-note", t("netsNames")));
+    stage.appendChild(box); cell.appendChild(stage); srow.appendChild(cell); page.appendChild(srow);
+    // No up/down chevrons: their fixed offsets from the centre are sized for a QR, and this list is taller — the up one sat
+    // on the first network (seen in the real page). render() skips a page without them.
+    // No Connections button either (operator, 2026-09-17): the phone layout has no per-page Connections buttons — a page's title
+    // opens the picker, and here the heading does. The wide layout keeps its one button in the header.
+    return page;
+  }
   function deadPeerPage(row) {
     var peer = row.peer;
     var expired = !!peer.expired && !peer.disabled;   // an explicit block wins over a lapsed date if somehow both
@@ -2070,11 +2134,8 @@
     stage.appendChild(box); cell.appendChild(stage); srow.appendChild(cell); page.appendChild(srow);
     // up/down peer-nav hints so the carousel still walks past this page (render hides the ends)
     page.appendChild(hint("vhint vhint-u", "u")); page.appendChild(hint("vhint vhint-d", "d"));
-    // Same Switch button as a live page — this page runs no layout pass, so it sits on the chevron line by its
-    // CSS default. Landing here is a dead end otherwise: there's no config to act on, only somewhere else to go.
-    var switchEl = el("button", "pswitch", t("connections")); switchEl.type = "button"; switchEl.hidden = true;
-    switchEl.setAttribute("data-pick", "");
-    page.appendChild(switchEl);
+    // No Connections button (operator, 2026-09-17): the phone layout has none per page — the device's name above opens the
+    // picker, and the wide layout keeps its one button in the header.
     // A blocked/expired device still gets a picker entry — reaching it is how the holder finds out WHY that
     // one config stopped working. Its "badge" is the state word, in place of a protocol tag.
     page._pick = { row: row, dead: true, title: peer.title || t("peer"),
@@ -2094,8 +2155,12 @@
           if ((((_lastData && _lastData.turn_client_default) || {})[wfk] || {})[subOs()] === "none") return;
           items.push({ tgt: tt, wdtt: tt.wdtt || {} }); return;
         }
-        if (tt.type === "csqtt") {   // csqtt peer → a cell in the Turn group (raw-TUN VK-turn server, one app: CSQTT)
-          if ((((_lastData && _lastData.turn_client_default) || {}).csqtt || {})[subOs()] === "none") return;
+        if (tt.type === "csqtt") {   // csqtt peer → a cell in the Turn group (raw-TUN VK-turn server)
+          // No csqtt client for the visitor's OS → no cell, the turn-proxy rule below. Unlike WDTT (a client ships for
+          // every OS, so its encoder fallback is honest) a csqtt link on macOS named an app that does not exist there —
+          // "amurcanov · CSQTT", a link and nothing to open it with. turnGetApp also answers "none" (the operator's
+          // "don't offer on this OS") with nothing, so that choice keeps hiding it too.
+          if (!turnGetApp("csqtt")) return;
           items.push({ tgt: tt, csqtt: tt.csqtt || {} }); return;
         }
         var seen = {}, tps = [], isAwg = (tt.type === "awg");
@@ -2452,6 +2517,7 @@
       // freeturn/samosvalishe: the app imports the config via its scheme but CAN'T auto-receive the VK call link →
       // copy the primary VK link so the user can paste it, THEN fire the scheme (below) as usual.
       if (c.vkPrimary) { if (navigator.clipboard) navigator.clipboard.writeText(c.vkPrimary).catch(function () {}); showToast(t("vkCopied")); }
+      else if (c.copyOnOpen && navigator.clipboard) navigator.clipboard.writeText(c.openUri).catch(function () {});   // csqtt: the link survives an install detour
       // Safari-on-iOS (+ in-app webviews it can't be told apart from): firing an unregistered scheme pops an
       // un-suppressable "address is invalid" modal, so ASK — Open (deliberate) fires the scheme with NO fallback,
       // Get goes to the store. Every OTHER browser fails silently → keep the clean auto-fire + fallback.
@@ -2580,6 +2646,16 @@
       // className without it flattened the wg/awg glyphs the first time a tab was clicked
       function highlight(cur) { groups.forEach(function (m) { var on = (m === cur); btns[m].className = "modetab mtab-" + m + (on ? " on" : ""); btns[m].disabled = on; }); }
       groups.forEach(function (mode) {
+        liveRows.forEach(function (row) {
+          var pg = peerProtoPage(mode, row, vkLink, userName);
+          if (pg) { if (!firstOf[mode]) firstOf[mode] = pg; pager.appendChild(pg); }
+        });
+      });
+      // A group is decided from the deployments, but a page from what can be OFFERED on this OS: a csqtt-only Turn group on
+      // macOS, or a turn proxy whose fork has no client here, builds no page. Its tab would then jump to nothing, so the tabs
+      // are the groups that produced a page.
+      groups = groups.filter(function (m) { return firstOf[m]; });
+      groups.forEach(function (mode) {
         var b = el("button", "modetab mtab-" + mode); b.type = "button"; b.title = t(mode); b.setAttribute("aria-label", t(mode));
         b.appendChild(protoIcon(mode));
         var mc = modeColor(mode); b.style.setProperty("--mc", mc); b.style.setProperty("--mc-ink", hexLum(mc) > 0.6 ? "#06222a" : "#EAFBFF");
@@ -2592,12 +2668,7 @@
         };
         btns[mode] = b; bar.appendChild(b);
       });
-      groups.forEach(function (mode) {
-        liveRows.forEach(function (row) {
-          var pg = peerProtoPage(mode, row, vkLink, userName);
-          if (pg) { if (!firstOf[mode]) firstOf[mode] = pg; pager.appendChild(pg); }
-        });
-      });
+      if ((data.networks || []).length && liveRows.length) pager.appendChild(networksPage(data.networks));
       // blocked/expired peers last — one placeholder page each, so they're visible in the carousel but carry no config
       deadRows.forEach(function (row) { pager.appendChild(deadPeerPage(row)); });
       if (!pager.children.length) { showState(t("noConfigs"), t("noConfigsSub")); return; }
@@ -2605,6 +2676,10 @@
       wrap.appendChild(pager);
 
       var pages = Array.prototype.slice.call(pager.children);
+      // Where the networks page landed, if this subscription has one. The pick index below is built from pages that carry a
+      // config (`_pick`), and this page carries none — so it is named here, once, and handed to the picker as its last row.
+      var netsIdx = -1;
+      for (var ni = 0; ni < pages.length; ni++) if (pages[ni].getAttribute("data-mode") === "nets") { netsIdx = ni; break; }
       // up/down hint per page: hint both directions, except no "up" on the first page and no "down" on the last
       // (a lone page hints neither). left/right hints are handled inside the page (per deployment).
       pages.forEach(function (pg, i) {
@@ -2646,9 +2721,14 @@
       // Every page carries two triggers for the picker: the device NAME (the thing you'd instinctively tap) and
       // the labelled "Switch" button on the chevron line (the thing you'd look for). Both are offered only when
       // there IS something to pick — a subscription with a single config needs no index.
-      var openPicker = function () { openConfigPicker(pickPeers, curPick(), jumpTo); };
-      headerSwitch(pickTotal > 1 ? openPicker : null);   // one button beside the username (wide layout only)
-      if (pickTotal > 1) {
+      var openPicker = function () {
+        openConfigPicker(pickPeers, curPick(), jumpTo, netsIdx >= 0 ? { pi: netsIdx, n: (data.networks || []).length } : null);
+      };
+      // ⚠️ A single config USED TO mean no picker at all — nothing to choose between. With a networks page there are still two
+      // places to be, and it is the one nothing else leads to, so the button is offered for it as well.
+      var pickOn = pickTotal > 1 || netsIdx >= 0;
+      headerSwitch(pickOn ? openPicker : null);   // one button beside the username (wide layout only)
+      if (pickOn) {
         pages.forEach(function (pg) {
           Array.prototype.forEach.call(pg.querySelectorAll("[data-pick]"), function (trg) {
             if (trg.tagName === "BUTTON") { trg.hidden = false; trg.style.visibility = ""; trg.onclick = openPicker; return; }

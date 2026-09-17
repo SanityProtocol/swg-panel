@@ -1,5 +1,5 @@
 diff --git a/rust-server/dataplane.rs b/rust-server/dataplane.rs
-index d9c5b15..3018a4e 100644
+index d9c5b15badd75f46f8a391ee143531041d25389c..2d4ed0bf429407a38475b0111e20d4d83a0a094c 100644
 --- a/rust-server/dataplane.rs
 +++ b/rust-server/dataplane.rs
 @@ -2,7 +2,6 @@
@@ -22,8 +22,31 @@ index d9c5b15..3018a4e 100644
              command_capacity: 4096,
              shards: configured_shard_count(),
          }
+@@ -796,7 +796,11 @@ where
+                             return;
+                         }
+                         let shard = crate::packet::extract_dst_ipv4(packet)
+-                            .and_then(|ip| (ip[..3] == [10, 66, 67]).then_some(ip[3] as usize))
++                            // swg-panel: the /24 prefix follows the instance's --tun-addr (stock: 10.66.67),
++                            // matching tun_device::route_index — a non-default subnet must shard the same way.
++                            .and_then(|ip| {
++                                (ip[..3] == crate::swgpanel::subnet_prefix()).then_some(ip[3] as usize)
++                            })
+                             .and_then(|index| tunnel_shards[index])
+                             .unwrap_or(0);
+                         let _ = input_txs[shard].try_send(WorkerInput::Tun { packet: forwarded });
+@@ -909,7 +913,8 @@ fn drain_router_commands<C: Send + 'static>(
+                 endpoints.insert(endpoint, shard);
+             }
+             RouterCommand::BindTunnel { ip, shard } => {
+-                if ip[..3] == [10, 66, 67] {
++                // swg-panel: index the shard table by the configured --tun-addr /24 (stock: 10.66.67).
++                if ip[..3] == crate::swgpanel::subnet_prefix() {
+                     tunnels[ip[3] as usize] = Some(shard);
+                 }
+             }
 diff --git a/rust-server/main.rs b/rust-server/main.rs
-index 0ae0f02..05b1414 100644
+index 0ae0f0211557df7de4ee366bf71ee9a6fc78900f..05b141419ef79ea3a003ed7ef106f5a3fdc63dbf 100644
 --- a/rust-server/main.rs
 +++ b/rust-server/main.rs
 @@ -38,6 +38,7 @@ mod proxy_route;
@@ -394,7 +417,7 @@ index 0ae0f02..05b1414 100644
      port: Option<u16>,
      status_path: Option<std::path::PathBuf>,
 diff --git a/rust-server/model.rs b/rust-server/model.rs
-index ab18990..4d38263 100644
+index ab18990b129926d081db0e9a659a0fac7fb796f2..9dd8bed8249275d3b4cfd917ddf0cf452119d754 100644
 --- a/rust-server/model.rs
 +++ b/rust-server/model.rs
 @@ -17,6 +17,7 @@ use std::{
@@ -420,8 +443,47 @@ index ab18990..4d38263 100644
          let is_used = db.devices.values().any(|d| d.ip == buf);
          if !is_used {
              return Some(buf);
+@@ -534,18 +537,27 @@ pub fn resolve_session_ip(
+     session_password: &str,
+     device_id: &str,
+ ) -> Option<String> {
+-    if !device_id.is_empty()
+-        && let Some(device) = db.devices.get(device_id)
+-    {
+-        return Some(device.ip.clone());
+-    }
+-    if session_password != db.main_password
+-        && let Some(entry) = db.passwords.get(session_password)
+-        && !entry.device_id.is_empty()
+-    {
+-        return db.devices.get(&entry.device_id).map(|d| d.ip.clone());
++    // swg-panel: resolve ONLY the device bound to the authenticating password — never a device the client
++    // merely names. Trusting a client-supplied device_id let a second valid password borrow the first
++    // client's address (a keyless share source could then reach a restricted network as someone else).
++    // The main password resolves the main device; a generated password resolves the device bound to it.
++    let bound_device_id = if !db.main_password.is_empty() && session_password == db.main_password {
++        if db.main_device_id.is_empty() {
++            return None;
++        }
++        db.main_device_id.as_str()
++    } else {
++        let entry = db.passwords.get(session_password)?;
++        if entry.device_id.is_empty() {
++            return None;
++        }
++        entry.device_id.as_str()
++    };
++    // A non-empty client-named device must match the password's own device, or the request is refused.
++    if !device_id.is_empty() && device_id != bound_device_id {
++        return None;
+     }
+-    None
++    db.devices.get(bound_device_id).map(|d| d.ip.clone())
+ }
+ 
+ pub fn generate_key_pair() -> (String, String) {
 diff --git a/rust-server/net_setup.rs b/rust-server/net_setup.rs
-index 7e148e8..fda3d90 100644
+index 7e148e8653181ca48f231e2987e943fe5c441e13..fda3d90ecb5b9ba2b10be5bd6477d3e19c89c637 100644
 --- a/rust-server/net_setup.rs
 +++ b/rust-server/net_setup.rs
 @@ -1,5 +1,10 @@
@@ -435,9 +497,172 @@ index 7e148e8..fda3d90 100644
  pub const TUN_IFACE: &str = "csqtt1";
 +#[allow(dead_code)]
  pub const TUN_ADDR: &str = "10.66.67.1";
+diff --git a/rust-server/packet.rs b/rust-server/packet.rs
+index 5b8653e79a550d21ed6ff2f75efdb3b6c107fa5e..d7029a312d030e74a8e4b89b9733d2a70628c0f9 100644
+--- a/rust-server/packet.rs
++++ b/rust-server/packet.rs
+@@ -216,6 +216,16 @@ pub fn extract_dst_ipv4(packet: &[u8]) -> Option<[u8; 4]> {
+     Some([packet[16], packet[17], packet[18], packet[19]])
+ }
+ 
++// swg-panel: the source address of an IPv4 packet (bytes 12..16). Used to reject an uplink packet whose
++// source is not the tunnel address the panel assigned to the sending session (a keyless share source must
++// prove which identity a packet belongs to). Non-IPv4 uplink returns None → dropped by the caller.
++pub fn extract_src_ipv4(packet: &[u8]) -> Option<[u8; 4]> {
++    if packet.len() < 20 || packet[0] >> 4 != 4 {
++        return None;
++    }
++    Some([packet[12], packet[13], packet[14], packet[15]])
++}
++
+ pub fn socket_addr_to_storage(
+     address: SocketAddr,
+     storage: &mut libc::sockaddr_storage,
+diff --git a/rust-server/protocol.rs b/rust-server/protocol.rs
+index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7c8f76fa5 100644
+--- a/rust-server/protocol.rs
++++ b/rust-server/protocol.rs
+@@ -1444,6 +1444,9 @@ impl HotSession {
+ 
+ struct IngressPacket {
+     slot: usize,
++    // swg-panel: the assigned tunnel address of the session that sent this packet, recorded at enqueue time
++    // so a slot reused by another session before the reassembled packet is flushed cannot misattribute it.
++    expected_ip: [u8; 4],
+     packet: PacketBuffer,
+ }
+ 
+@@ -1642,6 +1645,9 @@ pub(crate) enum ProtocolCommand {
+     },
+     InjectTun {
+         session_id: u64,
++        // swg-panel: the sending session's assigned tunnel address, so the executor can drop a spoofed source
++        // on this pre-tunnel path exactly as write_ingress_packet does on the steady-state path.
++        ip: [u8; 4],
+         payload: Vec<u8>,
+     },
+     UpdateEpoch {
+@@ -2666,7 +2672,9 @@ impl ProtocolEngine {
+             let _ = self.control_tx.try_send(event);
+             return;
+         }
+-        if session.tunnel_ip.is_some() && session.registration_id.is_some() {
++        // swg-panel: capture the sender's assigned tunnel address (Copy) so the borrow of `session` ends here
++        // and the recorded address travels with the packet through the reassembler.
++        if let (Some(expected_ip), Some(_)) = (session.tunnel_ip, session.registration_id) {
+             if let Some((header, payload)) = flow_frame::FrameHeader::decode(plain) {
+                 let mut packet = PacketBuffer::new();
+                 if !packet.copy_from(payload) {
+@@ -2674,12 +2682,16 @@ impl ProtocolEngine {
+                 }
+                 self.ingress_reassembler.push(
+                     header,
+-                    IngressPacket { slot, packet },
++                    IngressPacket {
++                        slot,
++                        expected_ip,
++                        packet,
++                    },
+                     &mut self.ingress_ready,
+                 );
+                 self.flush_ingress_ready(sink);
+             } else {
+-                self.write_ingress_packet(slot, transport_plain, sink);
++                self.write_ingress_packet(slot, expected_ip, transport_plain, sink);
+             }
+             return;
+         }
+@@ -2698,11 +2710,28 @@ impl ProtocolEngine {
+ 
+     fn flush_ingress_ready(&mut self, sink: &mut impl PacketOutput) {
+         while let Some(ingress) = self.ingress_ready.pop_front() {
+-            self.write_ingress_packet(ingress.slot, ingress.packet.as_slice(), sink);
++            self.write_ingress_packet(
++                ingress.slot,
++                ingress.expected_ip,
++                ingress.packet.as_slice(),
++                sink,
++            );
+         }
+     }
+ 
+-    fn write_ingress_packet(&mut self, slot: usize, packet: &[u8], sink: &mut impl PacketOutput) {
++    fn write_ingress_packet(
++        &mut self,
++        slot: usize,
++        expected_ip: [u8; 4],
++        packet: &[u8],
++        sink: &mut impl PacketOutput,
++    ) {
++        // swg-panel: drop an uplink packet unless it is IPv4 whose source is exactly the address the panel
++        // assigned to this session. Without this csqtt wrote any client-chosen source to its TUN, so a keyless
++        // client could impersonate another peer's address.
++        if crate::packet::extract_src_ipv4(packet) != Some(expected_ip) {
++            return;
++        }
+         let write_started = self
+             .crypto_profiler
+             .all
+@@ -3134,10 +3163,12 @@ impl DataplaneLogic for ProtocolEngine {
+                 .collect(),
+             ProtocolCommand::InjectTun {
+                 session_id,
++                ip,
+                 payload,
+             } => (0..count)
+                 .map(|_| ProtocolCommand::InjectTun {
+                     session_id,
++                    ip,
+                     payload: payload.clone(),
+                 })
+                 .collect(),
+@@ -3304,9 +3335,12 @@ impl DataplaneLogic for ProtocolEngine {
+             }
+             ProtocolCommand::InjectTun {
+                 session_id,
++                ip,
+                 payload,
+             } => {
+-                if let Some(slot) = self.by_id.get(&session_id).copied()
++                // swg-panel: same source guard as write_ingress_packet — never write a spoofed source to TUN.
++                if crate::packet::extract_src_ipv4(&payload) == Some(ip)
++                    && let Some(slot) = self.by_id.get(&session_id).copied()
+                     && sink.write_tun_priority(
+                         &payload,
+                         crate::striped_scheduler::packet_class(&payload),
+@@ -4235,11 +4269,14 @@ async fn process_ingress_before_tunnel_event(
+                 &format!("{address}: tunnel setup failed: {error}"),
+             );
+             drop_exact_session(&app, &session);
+-        } else {
++        } else if let Some(ip) = *lock_unpoison(&session.tunnel_ip) {
++            // swg-panel: ensure_control_tunnel resolved (and set) this session's assigned address; carry it so
++            // the executor can drop a spoofed source. No address ⇒ nothing to attribute the packet to ⇒ drop.
+             let _ = command(
+                 &app,
+                 ProtocolCommand::InjectTun {
+                     session_id,
++                    ip,
+                     payload,
+                 },
+             );
+@@ -4316,6 +4353,13 @@ fn getconf_credential_access(
+         return Err("DENIED:device_mismatch");
+     }
+     if entry.device_id.is_empty() {
++        // swg-panel: an unbound password may claim a device id ONLY if it is not already registered — an
++        // existing device row belongs to another credential (or the main device), so binding to it would
++        // let a second valid password adopt the first client's device and inherit its assigned address.
++        // A legitimate first connect always presents a fresh, unused device id and creates a new row.
++        if db.devices.contains_key(device_id) {
++            return Err("DENIED:device_mismatch");
++        }
+         Ok(CredentialAccess::Unbound)
+     } else {
+         Ok(CredentialAccess::Bound)
 diff --git a/rust-server/swgpanel.rs b/rust-server/swgpanel.rs
 new file mode 100644
-index 0000000..ac023e7
+index 0000000000000000000000000000000000000000..ac023e7321112b3db75bd0fe6254e6b6e62635dc
 --- /dev/null
 +++ b/rust-server/swgpanel.rs
 @@ -0,0 +1,125 @@
@@ -567,7 +792,7 @@ index 0000000..ac023e7
 +    Ok(cfg)
 +}
 diff --git a/rust-server/tun_device.rs b/rust-server/tun_device.rs
-index 4752da7..5373151 100644
+index 4752da79d1fe14c857b0ad98ccf85cad66727d24..537315182e370d1c9fd8b8211b4fc406e5122a25 100644
 --- a/rust-server/tun_device.rs
 +++ b/rust-server/tun_device.rs
 @@ -6,6 +6,7 @@ use std::net::Ipv4Addr;
@@ -590,7 +815,7 @@ index 4752da7..5373151 100644
  
  pub fn parse_ipv4(value: &str) -> Option<[u8; 4]> {
 diff --git a/rust-server/web_panel.rs b/rust-server/web_panel.rs
-index 455b71c..8ba8570 100644
+index 455b71c0ac9d0728169beff258447b659dfc6652..8ba8570a6c224017d13eb7a50d576be23fa5536e 100644
 --- a/rust-server/web_panel.rs
 +++ b/rust-server/web_panel.rs
 @@ -3,7 +3,7 @@

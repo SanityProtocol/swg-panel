@@ -33,9 +33,9 @@ def check(name, ok, detail=""):
 
 FILES = {
     "CHANGELOG.md":    {"title": "# Changelog",         "other": "CHANGELOG.ru.md",
-                        "secs": ("Added", "Changed", "Fixed", "Removed", "Security")},
+                        "secs": ("Added", "Changed", "Fixed", "Removed", "Security", "Upgrading")},
     "CHANGELOG.ru.md": {"title": "# История изменений", "other": "CHANGELOG.md",
-                        "secs": ("Добавлено", "Изменено", "Исправлено", "Удалено", "Безопасность")},
+                        "secs": ("Добавлено", "Изменено", "Исправлено", "Удалено", "Безопасность", "Обновление")},
 }
 src = {}
 for f in FILES:

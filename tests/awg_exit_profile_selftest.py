@@ -111,7 +111,10 @@ check("WG exit -> wg-quick", N._exit_tool(rec_w) == "wg-quick", N._exit_tool(rec
 check("junk keys cannot smuggle a tool switch", N._exit_tool({"awg": {"Nope": "1"}}) == "wg-quick")
 nsrc = open(NODED, encoding="utf-8").read()
 check("no bare wg-quick invocation is left for exits", 'run(["wg-quick"' not in nsrc)
-check("the bring-up asks _exit_tool", 'run([_exit_tool(rec), "up", conf])' in nsrc)
+# The bring-up runs inside a systemd scope on hosts that have one (swg-noded:_scoped_up — an AWG exit on a module-less node
+# would otherwise die with every restart of the daemon). What this pins is unchanged: the TOOL comes from _exit_tool, and
+# _scoped_up hands that tool through as the command it runs.
+check("the bring-up asks _exit_tool", '_scoped_up(_exit_tool(rec), conf)' in nsrc and 'plain = [tool, "up", target]' in nsrc)
 # ⚠️ TEARING DOWN GOES THROUGH `_exit_down`, WHICH ASKS THE KERNEL, not `_exit_tool`. Re-pasting a
 # WireGuard exit's profile as AmneziaWG rewrites the conf, so a tear-down keyed on the NEW config runs
 # `awg-quick down` against a still-`wireguard` device and is refused ("is not a WireGuard interface").

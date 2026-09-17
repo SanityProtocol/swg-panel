@@ -27,7 +27,7 @@ import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCac
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules,
          SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog, reportDropped, rulesSummary, targetLabel } from "./routing.js";
 import { rulesToRows } from "./rulerows.js";
-import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, LossPop, meshHealth } from "./views.js";
+import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, LossPop, meshHealth, ReachField } from "./views.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
@@ -988,6 +988,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   // the panel-wide default. The sheet posts all three unconditionally, so an unseeded field is not a blank
   // the server ignores, it is the default overwriting what the operator chose. See openRecreateRekey.
   const [dns, setDns] = useState(pre && pre.dns != null ? pre.dns : (_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String((pre && pre.mtu) || _idf.mtu || 1280)); const [ka, setKa] = useState(String(pre && pre.keepalive != null ? pre.keepalive : (_idf.keepalive || 25)));
+  const [reach, setReach] = useState((pre && pre.reach) || _idf.reach || "user");   // device access (§10.6): a recreate keeps the level it had (§11.2 F1); a fresh create takes the panel-wide default
   const [conf, setConf] = useState("");
   const ips = ipChoices(nrec);
   // No creation seed: a new interface starts on AUTO and INHERITS the node's default exit live, exactly as
@@ -1083,7 +1084,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       // The form takes the SUBNET (10.8.0.0/24) like wg/awg; the server lives on the first host (.1) — derive it here.
       const _dtlsHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.wdttSet({ node, iface: nm, wg_addr: subnetServerAddr(subnet.trim()), listen: _dtlsHost + ":" + (port.trim() || "56000"),
-        wg_port: wgPort.trim() || "56001", fork, block: blk, ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
+        wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
     } else if (isCsqtt) {
       // csqtt interface: ONE record — writes the same /api/csqtt/set the Turn-proxies card edits. Raw-TUN, so no
       // internal WG port and no fork; takes the SUBNET like wg/awg (server .1 derived), a UDP DTLS listen, a pw cap.
@@ -1093,7 +1094,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       if (maxPw.trim() && !/^\d+$/.test(maxPw.trim())) return fail(T("Max passwords must be a number."));
       const _lHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.csqttSet({ node, iface: nm, tun_addr: subnetServerAddr(subnet.trim()), listen: _lHost + ":" + (port.trim() || "46000"),
-        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, ...egressBody(eg) });
+        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...egressBody(eg) });
     } else {
       const nm = iface.trim();
       if (!nm || /[\s/]/.test(nm)) return fail(T("Interface name is required (no spaces or /)."));
@@ -1101,7 +1102,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail(T("Listen port must be a number."));
       const hostVal = ipPickerVal(hostSel, hostCustom);
       r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: hostVal,
-        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, ...egressBody(eg) });
+        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, reach, ...egressBody(eg) });
     }
     if (!r.ok) return fail(srvText(r) || T("Request failed."));
     reportDropped(r);   // §5.4 — create carries a routing block too (the new-interface sheet has the field)
@@ -1213,6 +1214,9 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         open=${disc.routing} onToggle=${() => tog("routing")}>
         <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
       <//>` : null}
+      <${ReachField} value=${reach} onChange=${setReach} create=${true}
+        unvouched=${/* the build a create installs, as the catalog vouches for it (§11.2 F4) */ isWdtt ? !(_wdttForks.find(f => f.id === fork) || {}).reach_vouched
+          : isCsqtt ? !(_csqttForks.find(f => f.id === cfork) || {}).reach_vouched : false}/>
       <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
         summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
         open=${disc.filters} onToggle=${() => tog("filters")}>
@@ -1408,10 +1412,51 @@ export function ConnectionEditSheet({ node, iface }) {
       // only while it has just re-proven the relay is serving, and drops it otherwise. A switch that showed
       // only its own position would be the one thing this feature must never ship.
       const rst = ((Store.stats[node] || {}).relay) || {};
+      // Keyed by relay INSTANCE (`<iface>` for a whole-interface cascade, `<iface>.<peer>` for one leg of
+      // a smart one), which is also the key the node reports each leg's health under — so `rst.ifaces[k]`
+      // needs no translation. `mark` is what separates the two kinds: 0 is the whole interface.
       const elig = Object.entries(((nrec.relay || {}).eligibility) || {}).filter(([, e]) => e.via === peer);
       const canRelay = elig.filter(([, e]) => !e.why).map(([k]) => k);
       const barred = elig.filter(([, e]) => e.why);
-      if (!elig.length) return null;                     // this leg carries no whole-interface cascade — no choice to offer
+      const smartLegs = elig.filter(([, e]) => !e.why && e.mark);
+      // ⚠️ FROM THE SMART LEGS, NOT FROM ALL OF THEM. This is the subject of a sentence that says only
+      // SELECTED destinations are relayed — true of a smart leg and false of a whole-interface cascade, where
+      // every packet the interface sends over this link is relayed. One link can carry both (one interface
+      // forwarding to the peer, another smart-routing to it), and built from `elig` the sentence named the
+      // forward interface too and told the operator something untrue about it.
+      const legIfaces = [...new Set(smartLegs.map(([k, e]) => e.iface || k))];
+      // ⚠️ NO CHOICE IS NOT NO ANSWER. This returned null, so a leg with nothing to accelerate showed
+      // NOTHING — and the card above it says "cascade" for BOTH kinds, so an operator comparing two legs
+      // sees the same badge with the control on one and not the other, with no way to find out why.
+      // Reported from the fleet as "the Forward/Relay switch is gone". It has three reachable causes and
+      // each has a different answer, so each gets its own sentence rather than a shared shrug.
+      if (!elig.length) {
+        // Does the FAR end forward to us? Then the choice exists — on their side, because the mode belongs
+        // to whoever sends the traffic. Read from the peer's own eligibility, the same field ours comes
+        // from, so the two ends cannot disagree about who owns the switch.
+        // `prec` is the same lookup, already in scope at the top of the sheet — a second copy is one
+        // more thing that can drift from the first.
+        const _fromPeer = Object.entries(((prec.relay || {}).eligibility) || {}).filter(([, e]) => e.via === node);
+        const _why = _fromPeer.length
+          ? Trich("The traffic on this leg comes from *{peer}*, so its datapath is chosen there — open this link from {peer}'s page.",
+                  { peer: Store.nodeName(peer) })
+          : smartCarried.length
+            // ⚠️ THIS USED TO SAY "only an interface that sends ALL its traffic through this link can be
+            // accelerated", which stopped being true the moment a smart leg could be relayed. What is
+            // actually true when smart rules name this peer and no leg is offered is that the panel has
+            // not planned one — it works the legs out on a node sync, so the usual cause is that none has
+            // landed since the panel started. If it stays empty the node's own card says why (a node that
+            // routes to more destinations than it has tables for drops the extras).
+            ? Trich("The panel hasn't worked out this link's routes yet, so there is nothing to accelerate here. The choice appears after *{node}*'s next sync.",
+                    { node: Store.nodeName(node) })
+            : Trich("Nothing sends its whole traffic through this link yet. Set an interface's egress to *Forward to {peer}* and the datapath choice appears here.",
+                    { peer: Store.nodeName(peer) });
+        return html`<div class="dp-sec">
+          <div class="dp-row"><span class="dp-l">${T("Datapath")}</span>
+            <span class="faint">${T("Forward")}</span></div>
+          <div class="hint" style="margin-top:6px">${_why}</div>
+        </div>`;
+      }
       const live = canRelay.map(k => [k, ((rst.ifaces || {})[k]) || null]);
       const running = live.filter(([, v]) => v && v.ok);
       const stalled = live.map(([, v]) => (v && !v.ok && v.why) || "").filter(Boolean)[0] || rst.why || "";
@@ -1446,8 +1491,20 @@ export function ConnectionEditSheet({ node, iface }) {
             ? html`<div class="hint dp-verdict warn"><${Ic} i="warn"/> ${Trich("This leg is losing *{v1}%* right now — that is the case for Relay.", { v1: String(_ls) })}</div>`
             : html`<div class="hint dp-verdict ok"><${Ic} i="check"/> ${Trich("This leg is clean right now — *Forward* is the cheaper choice.")}</div>`;
         })()}
+        ${smartLegs.length ? html`<div class="hint" style="margin-top:9px">${
+          // ⚠️ UNDER A CASCADE "accelerated" READS AS "THIS INTERFACE" AND UNDER SMART IT DOES NOT. Only the
+          // destinations these interfaces route over THIS link are relayed; everything else they send is
+          // untouched. And the relay terminates TCP, so half a rule's traffic staying on the forwarding
+          // path is a thing the sheet has to say out loud rather than leave to be discovered.
+          Trich("Only the destinations *{ifaces}* routes over this link are relayed — the rest of that traffic is untouched. And the relay terminates TCP, so UDP keeps forwarding either way.",
+                { ifaces: legIfaces.join(", ") })}</div>` : null}
         <div class="hint dp-why">${relayOn
-          ? Trich("*{node}* answers the client itself and opens its own connection to {peer}. Loss on the link stops reaching the client, so a bad leg costs the user far less. In exchange it uses noticeably more CPU, and on a link that is already healthy it buys nothing.", { node: Store.nodeName(node), peer: Store.nodeName(peer) })
+          // ⚠️ THE CAP IS NOT THIS LEG'S. It is written into one slice that every relay on the node shares,
+          // and one switch here can start several instances — a leg can carry smart rules from more than
+          // one interface. Measured on a 1-vCPU node at a 50% cap: two loaded legs together took 13% of a
+          // core with zero throttled periods, so the number defends the node's control plane rather than
+          // rationing throughput.
+          ? Trich("*{node}* answers the client itself and opens its own connection to {peer}. Loss on the link stops reaching the client, so a bad leg costs the user far less. In exchange it uses noticeably more CPU, and on a link that is already healthy it buys nothing. The cap is {node}'s whole relay budget, shared by every leg it accelerates.", { node: Store.nodeName(node), peer: Store.nodeName(peer) })
           : Trich("Packets cross this link untouched. The simplest and cheapest option — *{node}* barely spends CPU on them and there is nothing in the path to fail. Right while the link to {peer} is healthy.", { node: Store.nodeName(node), peer: Store.nodeName(peer) })}</div>
         ${relayOn0 ? html`<div class="conncard" style="margin-top:11px"><div class="conn-grid">
             ${Cell(T("col|State"), running.length
@@ -1468,7 +1525,8 @@ export function ConnectionEditSheet({ node, iface }) {
             })()}
         </div></div>` : null}
         ${barred.length ? html`<div class="notice warn" style="margin-top:11px"><${Ic} i="warn"/><span>
-          ${barred.map(([k, e]) => html`<div>${Trich("*{v1}* can't be relayed — {v2}. It keeps forwarding.", { v1: k, v2: e.why })}</div>`)}
+          ${/* the key is the relay INSTANCE id (`<iface>.<peer>` for a smart leg); the operator knows the interface */
+            barred.map(([k, e]) => html`<div>${Trich("*{v1}* can't be relayed — {v2}. It keeps forwarding.", { v1: e.iface || k, v2: e.why })}</div>`)}
         </span></div>` : null}
         ${quotaErr ? html`<div class="notice err" style="margin-top:9px"><${Ic} i="warn"/><span>${quotaErr}</span></div>` : null}
         ${relayOn !== relayOn0 ? html`<div class="notice warn" style="margin-top:11px"><${Ic} i="warn"/><span>
@@ -1496,6 +1554,7 @@ export function EditIfaceSheet({ node, iface }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const [eg, setEg] = useState(() => egressInit(meta));
   const [blk, setBlk] = useState(() => [...(meta.block || [])]);   // active block-category ids (Block-traffic section)
+  const [reach, setReach] = useState(meta.reach || "user");         // device access (§10.6) — absent is "user"
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
   const [awg, setAwg] = useState(() => Object.assign({}, meta.awg_params || {}));
   const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
@@ -1505,7 +1564,7 @@ export function EditIfaceSheet({ node, iface }) {
   const notup = !!idown || istopped;         // either way: Save brings it up; footer offers Start
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async () => {
-    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, ...egressBody(eg) };
+    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, reach, ...egressBody(eg) };
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
     // down → "start" (real bring-up); up → "apply" live (no restart). Optimistic: flip the lifecycle +
     // close the modal(s) NOW so the detail page shows starting/applying the instant Save is pressed.
@@ -1536,8 +1595,8 @@ export function EditIfaceSheet({ node, iface }) {
     doSave();
   };
   // enable Save only when something would change — mirror doSave()'s body; a down/stopped iface always allows Save (= bring-up)
-  const _ifBody = { endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), ...egressBody(eg) };
-  const _ifOrig = { endpoint_host: epHost, listen_port: String(meta.desired_port || meta.listen_port || ""), dns: (meta.dns || []).join(", "), mtu: String(meta.mtu || 1280), keepalive: String(meta.keepalive || 25), ...egressBody(egressInit(meta)) };
+  const _ifBody = { endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), reach, ...egressBody(eg) };
+  const _ifOrig = { endpoint_host: epHost, listen_port: String(meta.desired_port || meta.listen_port || ""), dns: (meta.dns || []).join(", "), mtu: String(meta.mtu || 1280), keepalive: String(meta.keepalive || 25), reach: meta.reach || "user", ...egressBody(egressInit(meta)) };
   const _awgTrim = src => AWG_ORDER.reduce((o, k) => { const v = String((src || {})[k] == null ? "" : (src || {})[k]).trim(); if (v) o[k] = v; return o; }, {});
   const ifaceDirty = notup
     || JSON.stringify(_ifBody) !== JSON.stringify(_ifOrig)
@@ -1630,6 +1689,7 @@ export function EditIfaceSheet({ node, iface }) {
       open=${disc.routing} onToggle=${() => tog("routing")}>
       <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
     <//>` : null}
+    <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
       summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>

@@ -34,7 +34,7 @@ jobs:
   publish:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Collect fingerprints
         env:
@@ -107,8 +107,16 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # An orphan branch that holds ONLY this file: nothing else should be fetchable from it, and its
           # history is a readable log of exactly when each client's upstream moved.
-          git fetch origin fingerprints:fingerprints 2>/dev/null && git checkout fingerprints \
-            || git checkout --orphan fingerprints
+          # ⚠️ `fetch && checkout || orphan` ran the orphan branch for EITHER failure, so a branch that exists
+          # but cannot be checked out was answered by starting its history again. The push is not forced, so git
+          # refused that as a non-fast-forward and nothing was lost — but the job failed one step later, naming
+          # the push rather than the checkout. Split, a failed checkout of a branch we DID fetch now stops here
+          # under `set -e`, and only a genuinely absent branch starts an orphan.
+          if git fetch origin fingerprints:fingerprints 2>/dev/null; then
+            git checkout fingerprints
+          else
+            git checkout --orphan fingerprints
+          fi
           git rm -rf --cached . >/dev/null 2>&1 || true
           find . -maxdepth 1 ! -name . ! -name .git ! -name out -exec rm -rf {} + 2>/dev/null || true
           mv out/client-fingerprints.json .

@@ -179,10 +179,22 @@
     var sm = csEnum(cs, "sessionMode", WINGSV_SESSION_MODES, 0); if (sm) turn.session_mode = sm;
     var bf = (cs || {}).browserFingerprint; if (bf && bf !== "auto") turn.browser_fingerprint = String(bf);   // TLS-imitation family
     var cg = csNum(cs, "credsGroupSize", 0); if (cg) turn.creds_group_size = cg;
-    if (csBool(cs, "manualCaptcha", false)) turn.manual_captcha = true;                  // force manual captcha (off → the app's default)
+    // ⚠️ AN OPTIONAL BOOL IS STATED EITHER WAY, NEVER ONLY WHEN TRUE. Writing one only when it is on makes
+    // it a ONE-WAY SWITCH: with the setting off the field vanishes from the link, and an absent field cannot
+    // clear what the device already stored — the app updates its existing profile in place and keeps the old
+    // value, so no number of re-imports can turn it back off and the panel has no way to reach it. Measured
+    // in the field 2026-09-16: a peer on an AWG interface behind a WINGS proxy carried no traffic for hours
+    // because the app was still obfuscation-off from a link issued while the setting was on, and therefore
+    // sending PLAIN WireGuard — which a wg interface happily accepts and an awg interface drops in silence,
+    // so it read as "the proxy cannot reach AWG". Nothing server-side names the flag; only the link can.
+    // `opt: true` is proto3 explicit presence and `pbEncodeMsg` already emits those at their zero value, so
+    // stating them costs one assignment. `use_udp` (num 4) has always been written this way — same rule.
+    // The same lesson is already recorded one fork over, on the anton48 branch: "emitted explicitly (even
+    // false) so the link fully defines the mode". It applies to every `opt: true` bool in Turn.
+    turn.manual_captcha = csBool(cs, "manualCaptcha", false);                            // num 13
     var cas = (cs || {}).captchaSolver; if (cas && cas !== "auto") turn.captcha_auto_solver = String(cas); // v2/v1/bypass; auto → app default (Enhanced), field omitted
-    if (csBool(cs, "restartOnNetworkChange", false)) turn.restart_on_network_change = true;
-    if (csBool(cs, "noObfuscation", false)) turn.no_obfuscation = true;                  // disable obfuscation (off → the app's default)
+    turn.restart_on_network_change = csBool(cs, "restartOnNetworkChange", false);        // num 15
+    turn.no_obfuscation = csBool(cs, "noObfuscation", false);                            // num 5
     var rmode = csEnum(cs, "runtimeMode", WINGSV_RUNTIME_MODES, 0); if (rmode) turn.runtime_mode = rmode;   // VPN vs local PROXY
     var udns = splitList((cs || {}).userDns); if (udns.length) turn.user_dns = udns;     // custom DNS resolvers (comma-separated)
     if (tp.wrap_key) { turn.wrap_mode = 2; turn.wrap_key = hexToBytes(tp.wrap_key); }   // WRAP_MODE_PREFERRED + key

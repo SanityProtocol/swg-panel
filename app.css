@@ -1127,8 +1127,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .advtoggle{background:none;border:0;color:var(--dim);font-size:12px;cursor:pointer;padding:2px 0;display:flex;align-items:center;gap:6px}
 .advtoggle:hover{color:var(--ink)}
 .adv{display:none}.adv.open{display:block;margin-top:6px}
-.sheet-foot{display:flex;gap:10px;align-items:center;padding:16px 20px;border-top:1px solid var(--line)}
-.sheet-foot .grow{flex:1}
+/* ⚠️ WRAPS AT ANY WIDTH, not just on a phone. A seven-button footer in Russian needs ~780px, and the sheet is capped at
+   calc(100vw - 32px) — so on a window narrower than the sheet's own width the buttons had nowhere to go and simply
+   crammed. Wrapping is the honest last resort: every button stays readable, on a second row if it must. */
+.sheet-foot{display:flex;flex-wrap:wrap;gap:10px;row-gap:10px;align-items:center;padding:16px 20px;border-top:1px solid var(--line)}
+/* …and the two groups never touch: the spacer collapsing to 0 is what made a footer that technically fit look cramped. */
+.sheet-foot .grow{flex:1;min-width:16px}
 .discard-msg{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--pending)}
 .discard-msg svg{flex:none}
 .formmsg{font-size:12.5px;font-family:var(--mono);min-height:16px;margin-top:10px}
@@ -1342,6 +1346,7 @@ button.nstat.asbtn:hover{text-decoration:underline}
 .pm-opt:hover{color:var(--ink)}
 .pm-peers.on{background:color-mix(in srgb,var(--online) 20%,transparent);color:var(--online)}
 .pm-users.on{background:color-mix(in srgb,var(--ready) 20%,transparent);color:var(--ready)}
+.pm-groups.on{background:color-mix(in srgb,var(--brand) 20%,transparent);color:var(--brand)}
 /* Online filter — a single click-to-toggle pill (cyan when on, grey when off) instead of a checkbox */
 .onlbtn{appearance:none;flex:none;height:36px;padding:0 18px;border:1px solid var(--line-solid);border-radius:9px;background:var(--surface-2);color:var(--dim);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;transition:background .12s var(--ease),color .12s var(--ease),border-color .12s var(--ease)}
 .onlbtn:hover{color:var(--ink)}
@@ -1458,6 +1463,16 @@ button.nstat.asbtn:hover{text-decoration:underline}
    exits" (blue) from "another node exits" (cyan/purple), and the icon + the exit's own name carry the rest.
    Its own class so decision 14's per-exit colour has somewhere to land without inventing a hue now. */
 .egb-exit{color:#5B8CFF}
+.egb-reach-everyone{color:var(--warn)}    /* device access: everyone on the node may open connections here — the open one */
+.egb-reach-user,.egb-reach-none{color:var(--dim)}
+.egb-reach-bad{color:var(--dangling)}     /* a level the node is not enforcing, whatever it is set to */
+/* It follows the routing-rules disclosure (or the egress picker), neither of which carries a bottom margin, so it sat
+   flush against the block above while every other section had air. Margins collapse in .sheet-body's block flow, so
+   this matches .field's 15px rhythm without doubling it after an ordinary field. */
+.reachfield{margin-top:15px}
+.reachfield .dpsw{margin:2px 0 8px}
+.reach-notice .iconbtn{margin-left:auto;flex:none}
+.grp-hint{margin:-6px 2px 12px}
 .egb-gone{color:var(--unknown)}           /* …and the exit it named is gone: stated, never shown as `direct` */
 /* on a node-connection card, the cascade badge + status dot sit at the TOP of the header (flex-start) so the
    dot is equidistant from the card's top and right borders (both = the card padding), not centred on the name */
@@ -1634,6 +1649,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tf-plbub-l{display:flex;flex-direction:column;gap:2px}
 .tf-plbub-app{color:var(--ink);font-weight:600}
 .tf-plbub-by{color:var(--dim);font-weight:400}
+.tf-plbub-who{font-weight:600}
 .tf-plbub-core{color:var(--dim)}
 .tf-plbub-obf{margin-left:auto;align-self:center;font-family:var(--mono);font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#A974F2;background:color-mix(in srgb,#A974F2 16%,transparent);border-radius:4px;padding:2px 6px}
 .tf-plbub-obf.plain{color:var(--dangling);background:color-mix(in srgb,var(--dangling) 15%,transparent)}
@@ -3069,6 +3085,14 @@ a.tg:hover{filter:brightness(1.25)}
 .u-name>a{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto} .u-name>a:hover{color:var(--brand)}
 .u-name>.un{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}   /* plain (non-link) username */
 .u-note{font-size:11.5px;font-weight:400;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:0 1 auto}
+/* ⚠️ WHO GIVES WAY, AND IN WHAT ORDER — the note, then the tag, then the name. Left to plain flex-shrink, the row shrinks
+   every item IN PROPORTION TO ITS CONTENT, so the long note took the NAME down with it: measured on the Users screen at
+   1420px (1.8.7 qualification §C), the name column is 244px beside the count chips, and "n-anna" rendered as "n…" at
+   16px while its tag "qual-n" wrapped onto three lines. The note is context, the tag is a label, the name is the row.
+   ⚠️ A basis of 0, not a large shrink factor: shrink is still PROPORTIONAL, so a factor of 1000 left the name 0.03px short
+   of its text (43.27 vs 43.30) and Chrome ellipsized it anyway. From 0 the note only GROWS into what is left over. */
+.u-name>.u-note{flex:1 1 0}
+.u-name>.tagchip{display:block;flex:0 50 auto;min-width:3.5em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* peers / online counts on one line — online GREEN only when actually online (>0) */
 .u-counts{font-size:12.5px;white-space:nowrap}
 .u-counts .u-pc{color:var(--ink-2)}
@@ -3219,6 +3243,7 @@ a.tg:hover{filter:brightness(1.25)}
 .appdd .osdd-menu{left:auto;right:0}   /* right-aligned menu (the picker sits at the row's right edge) */
 .appdd .osdd-lbl{display:inline-flex;align-items:center;gap:2px}
 .appdd .app-by{color:var(--dim);font-weight:400}
+.appdd .app-by-who{font-weight:600}
 .app-plain{color:var(--dangling);font-size:8.5px;font-weight:800;letter-spacing:.05em;border:1px solid color-mix(in srgb,var(--dangling) 42%,transparent);border-radius:4px;padding:0 4px;margin-left:4px;line-height:1.5}
 /* copy icon on config/link textareas — same affordance as the CLI command box */
 .turncfg-tawrap{position:relative}
@@ -3333,6 +3358,343 @@ a.tg:hover{filter:brightness(1.25)}
    Nix lines scroll inside the block — the settings card must not scroll sideways. */
 .nixblock{white-space:pre;overflow-x:auto;padding:10px 12px;border-radius:8px;border:1px solid var(--line);
   background:var(--code-bg,rgba(127,127,127,.09));margin:0 0 8px;font-size:.85em;line-height:1.5}
+/* NETWORKS behind a peer (docs/NETWORKS-PLAN.md §4.5–4.6). Dense like the deployment rows above it; the exposure
+   line is the one loud thing in the block, in the theme's pending tone like every other "you should know this" line.
+   A snippet gets the full width with its Copy under it — beside it, the iptables line was clipped mid-command. */
+.netfield .netrow{display:flex;gap:8px;align-items:center}
+.netfield .netrow input{flex:1;min-width:0}
+.netref{display:grid;gap:4px;margin-top:8px;font-size:12.5px;color:var(--dangling)}
+.netref>div{display:flex;gap:6px;align-items:flex-start}
+.netref svg,.netexp svg{flex:none;margin-top:2px}
+.netnode{margin-top:10px;padding:9px 12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2)}
+.netnode-h{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-weight:600;min-height:28px}
+.netnode-h .grow{flex:1}
+/* the device's routing on the node's line: a quiet value (help cursor — it explains on hover) and the deployment gear */
+.netroute{display:inline-flex;align-items:center;gap:6px;font-weight:400;min-width:0;max-width:100%}
+.netroute-v{display:inline-block;font-size:12px;color:var(--ink-2);padding:2px 8px;border:1px solid var(--line);border-radius:6px;
+  background:var(--panel);cursor:help;max-width:24em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+.netroute-v.bad{color:var(--pending);border-color:color-mix(in srgb,var(--pending) 45%,var(--line))}
+.netroute .topt-gear{flex:none;width:26px;height:26px;padding:0;color:var(--faint)}
+.netroute .topt-gear:hover{color:var(--brand)}
+.deppop.netroute-bub{width:max-content;max-width:min(340px,calc(100vw - 16px));box-sizing:border-box;padding:10px 12px;font-size:12.5px;line-height:1.5;color:var(--ink-2);white-space:normal}
+/* Popover clamps a left-anchored bubble into the viewport by a 300 px width guess (it places before measuring), so on a
+   phone this bubble is held to that width — at 340 it still ran off the right edge. */
+@media (max-width:640px){.deppop.netroute-bub{max-width:min(300px,calc(100vw - 16px))}}
+.netroute-h{display:block;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:4px}
+.netnode-h .tp,.netwiden .tp{color:var(--dim);font-family:var(--mono);font-weight:400;font-size:12px}
+.netlist{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 4px}
+.nettag{display:inline-flex;gap:7px;align-items:baseline;padding:2px 9px;border:1px solid var(--line);border-radius:999px;font-size:12px}
+.nettag em{font-style:normal;color:var(--dim)}
+.nettag.s-active{border-color:color-mix(in srgb,var(--brand) 45%,var(--line))}
+.nettag.s-active em{color:var(--brand)}
+.nettag.s-inert em,.nettag.s-refused_by_node em{color:var(--pending)}
+.nettag.s-pending{border-style:dashed;border-color:color-mix(in srgb,var(--brand) 35%,var(--line))}
+.dpsw.netsw{flex-wrap:wrap;margin:8px 0 10px;border-radius:18px}
+.dpsw.netsw button{min-width:0;padding:6px 13px}
+.netsteps{margin:4px 0 8px;padding-left:20px;font-size:12.5px;color:var(--dim)}
+.netsteps li{margin:4px 0}
+.netwhy{font-size:12.5px;color:var(--dim);margin:2px 0}
+.netexp{display:flex;gap:8px;align-items:flex-start;margin:8px 0 6px;font-size:13px;font-weight:600;color:var(--pending)}
+.netwiden{display:flex;gap:10px;align-items:center;font-size:12.5px;padding:3px 0}
+.netwiden .mono{max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.netsnip{display:flex;flex-direction:column;align-items:flex-end;gap:4px;margin-bottom:8px}
+.netsnip .nixblock{align-self:stretch;margin:0}
+.netgw{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--dim);margin:6px 0 2px}
+.netgw.on{color:var(--ink-2)}
+/* P4 — the reachability test. The row is the field's own; the answer uses the gateway line's words and dots, but the
+   dot is STILL: a test result is a moment, not a live link, and a pulse would say otherwise. */
+.netprobe{margin:10px 0 4px}
+.netshare{margin:18px 0 4px}
+.netshare-l{display:block;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:7px}   /* the .field>label register — this label is not the field's direct child */
+.netshare-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 8px}
+.dpsw.netsw-share button{min-width:0;padding:6px 15px}
+.netshare-add{flex:1 1 200px;min-width:180px}
+.netshare-add .usercombo{width:100%}
+/* "Shared with N users" — the way into the People window, in the pill row's register */
+.netshare-count{appearance:none;display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 14px;border:1px solid color-mix(in srgb,var(--brand) 40%,var(--line));
+  border-radius:18px;background:color-mix(in srgb,var(--brand) 9%,transparent);color:var(--brand);font:inherit;font-size:12.5px;font-weight:700;cursor:pointer}
+.netshare-count svg{width:14px;height:14px}
+.netshare-count:hover{background:color-mix(in srgb,var(--brand) 16%,transparent)}
+.netshare-count:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.netshare-count.bad{color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 45%,var(--line));background:color-mix(in srgb,var(--dangling) 8%,transparent)}
+/* the People window: add + filter, a grid of 15 rows, the pager */
+.sharelead{margin:0 0 10px}
+.sharebar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
+.sharebar-add{flex:1 1 240px;min-width:0}
+.sharebar-add .usercombo{width:100%}
+.sharebar-filter{flex:0 1 200px;min-width:140px}
+.sharegrid{border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;background:var(--surface-2)}
+.sharegrid-h,.sharegrid-r{display:grid;grid-template-columns:minmax(0,1fr) 128px 158px 36px;gap:10px;align-items:center;padding:0 8px 0 12px}
+.sharegrid-h{min-height:32px;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);font-weight:600;border-bottom:1px solid var(--line)}
+.sharegrid-r{min-height:42px;font-size:13px}
+.sharegrid-r+.sharegrid-r{border-top:1px solid var(--line)}
+.sharegrid-r .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--ink)}
+.sharegrid-r .datein{padding:4px 8px;font-size:12px;width:100%;box-sizing:border-box}
+.sharegrid-empty{padding:14px 12px;font-size:12.5px;color:var(--dim)}
+.netpager{margin-top:8px;flex-wrap:wrap;row-gap:6px}
+.netpager .pager-info{white-space:nowrap}   /* at 400 px "1–15 из 40" broke into a column beside the buttons */
+@media (max-width:640px){.sharegrid-h{display:none}.sharegrid-r{grid-template-columns:minmax(0,1fr) auto 36px;padding:6px 8px 6px 12px}
+  .sharegrid-r>span:nth-child(3){grid-column:1 / -1;order:4}}
+/* user groups (docs/GROUPS-PLAN.md G11): a group row in the People window, a group's members, the Users → Groups list, a user's chips */
+.sharegrid-r.grp .nm svg{width:13px;height:13px;color:var(--dim);margin-right:7px;vertical-align:-2px}
+.sharegrid-sub{font-weight:400;margin-left:8px;font-size:12px}
+.sharegrid-r.gone .nm{color:var(--dangling);font-weight:500;font-style:italic}
+.sharegrid-r .nm .tagchip{margin-left:8px;vertical-align:1px}
+/* DEVICE ACCESS §11.2 F6 — Settings → the interfaces set to Everyone: the share window's list look, one row per interface, each opening its editor */
+.reachev-filter{display:block;width:100%;max-width:280px;box-sizing:border-box;margin:10px 0 0}
+.reachev-list{border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;background:var(--surface-2);margin-top:10px}
+.reachev-row{display:flex;align-items:center;gap:10px;width:100%;min-height:42px;padding:0 12px;box-sizing:border-box;background:none;border:0;font:inherit;font-size:13px;color:var(--ink);text-align:left;cursor:pointer}
+.reachev-row+.reachev-row{border-top:1px solid var(--line)}
+.reachev-row:hover,.reachev-row:focus-visible{background:color-mix(in srgb,var(--brand) 7%,transparent)}
+.reachev-row .ifname{font-weight:600}
+.reachev-row .faint{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reachev-row svg{width:13px;height:13px;color:var(--dim);flex:none}
+.sharegrid.gmembers .sharegrid-r{grid-template-columns:minmax(0,1fr) 104px 36px}
+@media (max-width:640px){.sharegrid.gmembers .sharegrid-r{grid-template-columns:minmax(0,1fr) auto 36px}
+  .sharegrid.gmembers .sharegrid-r>span:nth-child(3){grid-column:auto;order:0}}
+.gcount{text-transform:none;letter-spacing:0;margin-left:4px}
+.grps{display:grid;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:hidden}
+.grp-r{display:grid;grid-template-columns:minmax(0,1fr) 76px 76px auto;align-items:center;gap:10px;min-height:50px;padding:4px 10px 4px 16px;cursor:pointer;transition:background .12s}
+.grp-r+.grp-r{border-top:1px solid var(--line)}
+.grp-r:hover{background:var(--surface-2)}
+.grp-nm{display:flex;align-items:center;gap:10px;min-width:0;font-weight:600;color:var(--ink);font-size:13.5px}
+.grp-nm>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grp-nm svg{width:15px;height:15px;color:var(--brand);flex:none}
+.grp-n{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;
+  color:var(--ink);padding:3px 10px;border:1px solid var(--line);border-radius:999px;cursor:help}
+.grp-n svg{width:12px;height:12px;color:var(--faint)}
+.grp-n.zero{color:var(--faint);font-weight:500}
+.grp-acts{display:flex;gap:2px;justify-content:flex-end}
+@media (max-width:640px){.grp-r{grid-template-columns:minmax(0,1fr) auto auto auto;gap:6px;padding:4px 6px 4px 12px}}
+/* the badges take the room and wrap among themselves; the way into a group is pinned beside them, on the first line */
+/* It follows the Tag/Note `.fieldrow`, whose inner fields have their bottom margin zeroed (.fieldrow > .field{margin:0})
+   and which carries none itself — so Groups sat flush against them while every other section had air. Margins collapse,
+   so this is 15px whatever precedes it. ⚠️ The general case is still there: anything after a .fieldrow has the same
+   problem, which is why one settings form patches it inline. */
+.ugroups-field{margin-top:15px}
+.ugroups{display:flex;align-items:flex-start;gap:10px}
+.ugroups-list{flex:1 1 auto;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-height:28px}
+.ugroup{appearance:none;display:inline-flex;align-items:center;gap:6px;max-width:100%;height:28px;padding:0 11px;border:1px solid var(--line);border-radius:999px;
+  background:var(--surface-2);color:var(--ink);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer}
+.ugroup span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ugroup svg{width:13px;height:13px;color:var(--brand);flex:none}
+.ugroup:hover{border-color:color-mix(in srgb,var(--brand) 45%,var(--line));background:color-mix(in srgb,var(--brand) 10%,var(--surface-2))}
+.ugroup:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.ugroup.more{cursor:help;color:var(--dim);font-weight:500;font-family:var(--mono)}
+.ugroups-none{margin-top:0;font-size:12.5px;color:var(--faint)}
+/* a badge is a pill of TWO controls — open the group, or leave it — so neither nests inside the other (invalid, and the inner
+   one stops taking clicks in some browsers) */
+.ugroup-nm{appearance:none;display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;padding:0;border:0;background:none;
+  font:inherit;font-size:12.5px;font-weight:600;color:inherit;cursor:pointer}
+/* .tfb-x carries the look (faint, red wash on hover); this only seats it inside the pill. */
+.ugroup-x{margin:0 -3px 0 1px}
+/* the way into a group sits at the END of the badges' own line: a themed +, no caret — it adds, it does not pick a value.
+   ⚠️ `.field .dropdown{width:100%}` (it replaced the native selects, which filled their column) catches this one too: left to it
+   the control took the whole row, the badges' box was squeezed to nothing, and every pill collapsed to an empty circle. */
+.ugroups .dropdown{width:auto}
+.ugroup{flex:none}
+.ugroup-combo,.ugroup-add-btn{flex:none}
+/* the same dashed pill the button beside it is, holding a search field: it looks like the way in, and types like a picker */
+.usercombo.ugroup-combo{display:flex;align-items:center;justify-content:center;gap:5px;min-width:0;width:auto;height:28px;padding:0 10px;border-radius:999px;
+  border:1px dashed color-mix(in srgb,var(--brand) 45%,var(--line));color:var(--brand)}
+.usercombo.ugroup-combo:hover,.usercombo.ugroup-combo:focus-within{background:color-mix(in srgb,var(--brand) 10%,transparent);border-style:solid}
+.ugroup-combo>.ic{display:inline-flex;flex:none} .ugroup-combo>.ic svg{width:13px;height:13px}
+.ugroup-combo .uc-input{border:0;background:none;padding:0;height:26px;min-width:0;flex:1;font-size:12.5px;font-weight:600;color:var(--ink);
+  grid-area:1/1;width:100%;-webkit-appearance:none;appearance:none}
+/* the field's width is its words': invisible copies of the label and of the query share its grid cell, so it is the wider */
+.ugroup-combo .uc-size{display:inline-grid;min-width:0}
+.ugroup-combo .uc-size::before,.ugroup-combo .uc-size::after{grid-area:1/1;visibility:hidden;white-space:pre;height:0;overflow:hidden;
+  font:inherit;font-size:12.5px;font-weight:600}
+.ugroup-combo .uc-size::before{content:attr(data-l)}
+.ugroup-combo .uc-size::after{content:attr(data-q)}
+
+.ugroup-combo .uc-input::placeholder{color:var(--brand);opacity:1}
+.ugroup-combo .uc-input::-webkit-search-cancel-button{display:none}
+.uc-list.uc-groups{max-height:300px}   /* six groups + the count line + "Create new group…", none of them scrolled away */
+/* Closed, the pill is a button — the hand over all of it, its field included, the same as the "Add to a group" button it stands
+   in for when no groups are left (operator, 2026-09-17). Open, the field takes typing, and there the text cursor is the honest one. */
+.usercombo.ugroup-combo,.ugroup-combo .uc-input{cursor:pointer}
+.ugroup-combo.open .uc-input{cursor:text}
+.uc-opt.uc-new{border-top:1px solid var(--line);margin-top:4px;padding-top:9px;border-radius:0 0 6px 6px;color:var(--brand);font-weight:600}
+.ugroup-add-btn{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;height:28px;padding:0 10px;border-radius:999px;
+  border:1px dashed color-mix(in srgb,var(--brand) 45%,var(--line));background:none;color:var(--brand);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer}
+.ugroup-add-btn:hover{background:color-mix(in srgb,var(--brand) 10%,transparent);border-style:solid}
+.ugroup-add-btn svg{width:13px;height:13px}
+/* the last row of a list of things to pick is not one of them — it makes a new one */
+.ddopt.ddopt-new{border-top:1px solid var(--line);margin-top:4px;padding-top:9px;color:var(--brand);font-weight:600}
+/* groups + networks as two counts wherever a user is listed — the Groups screen's chip, at the size of the line it sits on */
+.ucounts{display:inline-flex;align-items:center;gap:6px;flex:none}
+.u-name>.ucounts{margin-left:auto;margin-right:10px}   /* the row's chips stand at the end of the name cell, just before Peers (operator, 2026-09-17) */
+.ucounts .grp-n{height:22px;padding:0 9px;font-size:11.5px}
+.qrfoot-ucounts{margin-left:10px}
+@media (max-width:640px){.u-name .ucounts{display:none}}   /* the name and its tag come first when the row is this narrow */
+.uc-opt.uc-group svg{width:13px;height:13px;color:var(--brand);flex:none}
+.uc-opt.uc-group .faint{margin-left:auto;padding-left:10px;white-space:nowrap}
+/* a person's devices: colour-coded counts, detail on hover */
+.netdev{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;cursor:help}
+.netdev svg{width:12px;height:12px;color:var(--faint)}
+.netdev.none{font-family:inherit;color:var(--dim)}
+.netdev-n,.netcount .n{font-weight:700;font-variant-numeric:tabular-nums}
+.netdev-n.ok,.netcount .n.ok{color:var(--online)}
+.netdev-n.soon,.netcount .n.soon{color:var(--pending)}
+.netdev-n.no,.netcount .n.no{color:var(--dangling)}
+/* who can reach it on a node: four numbers on the networks' line */
+.netcount{display:inline-flex;align-items:center;gap:0;font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:999px;
+  background:var(--panel);cursor:help;overflow:hidden}
+.netcount .n{padding:2px 8px}
+.netcount .n+.n{border-left:1px solid var(--line)}
+.netcount .n.zero{color:var(--dim)}   /* nobody at all: one quiet 0, never an empty pill */
+.netbub-row{margin:3px 0}
+.netbub-row.sub{padding-left:10px;color:var(--dim)}
+/* the line standing for the rest of a capped bubble list (CapList): it opens them in place */
+.bub-more{display:block;appearance:none;border:0;background:none;margin:3px 0 0;padding:0 0 0 10px;font:inherit;font-size:12px;color:var(--brand);cursor:pointer;text-align:left}
+.bub-more:hover{text-decoration:underline}
+.gmem-pop .gmem-dev{cursor:default;border-bottom:1px dotted var(--line-bright)}
+/* a caveat under a bubble's list is not one more row of it */
+.netbub-row.sub.foot{padding-left:0;margin-top:7px;padding-top:6px;border-top:1px solid var(--line)}
+/* who a person reaches: one line per person, their devices as chips — online lit, the rest quiet. A device's title is the
+   operator's own words and can be a sentence ("office router in the basement behind the old rack"), so a chip is capped and
+   ellipsised: it names the device, it is not the place to read it. */
+.rb-user{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:5px 0;max-width:360px}
+.rb-user>b{color:var(--ink)}
+.rb-devs{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.rb-dev{display:inline-block;max-width:200px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom;
+  font-size:11.5px;line-height:1.75;padding:0 8px;border-radius:99px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.rb-dev.on{color:var(--online);border-color:color-mix(in srgb,var(--online) 45%,var(--line))}
+.rb-dev.more{border-style:dashed}
+/* The reach bubble, in the networks bubble's shape: a person heading with their device tally pushed right, then one line
+   per device — dot, name, address, node. The filter rides the header because it governs the whole list; it exists only
+   when something IS online, since with nothing live there is nothing to filter down to. */
+.rb-head{display:flex;align-items:center;gap:10px;margin-bottom:2px}
+.rb-head .netroute-h{margin-bottom:0}
+.rb-head .btn-mini{padding:2px 9px;font-size:11px;border-radius:12px}   /* as compact as the Online / All switch the other bubble carries here */
+.dpsw.rb-sw{padding:2px;border-radius:16px}
+.dpsw.rb-sw button{min-width:0;padding:2px 9px;font-size:11px}
+.rb-grp{margin:6px 0}
+.rb-grp+.rb-grp{margin-top:9px;padding-top:7px;border-top:1px solid var(--line)}
+.rb-u{display:flex;align-items:baseline;gap:10px;margin-bottom:2px}
+.rb-u>b{color:var(--ink)}
+.rb-d{display:flex;align-items:baseline;gap:6px;flex-wrap:nowrap;white-space:nowrap;margin:2px 0 2px 2px}
+.rb-d>b{font-weight:600;color:var(--ink-2);max-width:210px;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:640px){.rb-d{flex-wrap:wrap;white-space:normal}}
+/* Lit when the count is the ONLINE count — the tell that the bubble opens on what is live. */
+.grp-n.lit{color:var(--online);border-color:color-mix(in srgb,var(--online) 45%,var(--line))}
+/* …and the networks chip, lit the same way in the connection colour: the peers grid's network chip lights in --brand for a live
+   deployment, so one icon keeps one colour for "live" wherever it appears */
+.grp-n.lit-net{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 45%,var(--line))}
+/* the icon lights with its number (operator, 2026-09-17) — a faint glyph beside a lit count read as half an answer */
+.grp-n.lit svg{color:var(--online)}
+.grp-n.lit-net svg{color:var(--brand)}
+/* a network: what it is and how it is reached, then the device it sits behind and the node */
+.nb-net{display:flex;flex-direction:column;gap:3px;margin:7px 0;max-width:360px}
+.nb-net-top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.nb-net-top>b{font-family:var(--mono);color:var(--ink)}
+.nb-net-sub{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.nb-node{font-weight:600;font-size:12px}
+/* The networks bubble, grouped by HOW the user gets each one: the relationship is the heading, so every row below it
+   is the same shape — dot, prefix, the device carrying it, the node. One dot, reachability first: orange means this
+   user's own routing leaves the network out, so they cannot reach it whatever the carrying device is doing. */
+.nb-group{margin:6px 0}
+.nb-group+.nb-group{margin-top:9px;padding-top:7px;border-top:1px solid var(--line)}
+/* Subordinate to the bubble's own "NETWORKS" head (.netroute-h, 10.5px) — it was 11px and read as the louder of the two. */
+.nb-group-h{font-size:9.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin-bottom:3px;opacity:.85}
+.nb-row{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;margin:3px 0;max-width:360px}
+.nb-row>b{font-family:var(--mono);color:var(--ink)}
+.nb-dot2{flex:none;width:7px;height:7px;border-radius:50%;background:var(--dim);align-self:center}
+.nb-dot2.on{background:var(--online)}
+.nb-dot2.idle{background:var(--dim)}
+.nb-dot2.unk{background:var(--dim);opacity:.5}
+.nb-dot2.no{background:var(--fault)}   /* ⚠️ --warn is not a token in this sheet; --fault is the amber one, and it themes */
+/* The networks bubble sizes to its CONTENT: each row reads as one line — dot, prefix, via device, on node — where the
+   340px cap used to drop "on <node>" onto a line of its own. Widened only here, not for every .netroute-bub (the people
+   bubble and the Groups chips share that class). It cannot run away: .rb-dev still ellipsises a long device title at
+   200px, so the width is bounded by the row's fixed parts, and a phone wraps rather than overflows. */
+.deppop.netroute-bub.netbub-wide{max-width:min(620px,calc(100vw - 16px))}
+.netbub-wide .nb-row{flex-wrap:nowrap;white-space:nowrap;max-width:none}
+@media (max-width:640px){.netbub-wide .nb-row{flex-wrap:wrap;white-space:normal}
+  /* ⚠️ and the phone cap has to be restated at this specificity: .netroute-bub.netbub-wide is 0-3-0 and is declared
+     after the 0-2-0 rule in the breakpoint above, and a media query adds no specificity — so the wide max-width won
+     on a phone as well, quietly undoing the narrowing it was written to respect. */
+  .deppop.netroute-bub.netbub-wide{max-width:min(300px,calc(100vw - 16px))}}
+/* nb-dot, not .dot — the panel's global .dot is a 9 px circle and squashed every row into one */
+.netbub-row.nb-dot{position:relative;padding-left:14px}
+.netbub-row.nb-dot::before{content:"";position:absolute;left:0;top:.55em;width:7px;height:7px;border-radius:50%;background:var(--faint)}
+.netbub-row.nb-dot.ok::before{background:var(--online)}
+.netbub-row.nb-dot.soon::before{background:var(--pending)}
+.netbub-row.nb-dot.no::before{background:var(--dangling)}
+.netlist{align-items:center}
+.netaddr{font-size:12px}
+.peergrid .srvcell .srvtags{display:inline-flex;align-items:center;gap:5px;flex:none}
+.peergrid .srvcell .srvtags .tg-gw{margin-left:0}
+.peergrid td.c-name>span.namewrap{display:inline-flex;align-items:center;gap:5px;max-width:100%;min-width:0;overflow:visible;vertical-align:bottom}
+.peergrid td.c-name>span.namewrap>b,.peergrid td.c-name>span.namewrap>span.faint{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.peergrid td.c-name>span.namewrap>.tg-gw,.peergrid td.c-name>span.namewrap>.tg-priv{flex:none;margin-left:0}
+/* On a phone the access pill takes the row and each option keeps its words on one line; the pill wraps between options */
+@media (max-width:640px){.dpsw.netsw-share{display:flex;flex-wrap:wrap;width:100%;border-radius:18px}
+  .dpsw.netsw-share button{flex:1 1 auto;white-space:nowrap}}
+/* the peer view's way in to the Networks window — a badge that is a button, beside the status badge it sits before */
+.badge.b-nets{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;font-size:11px;
+  font-weight:700;cursor:pointer}
+.badge.b-nets.on{background:color-mix(in srgb,var(--brand) 13%,transparent);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 32%,transparent)}
+.badge.b-nets:hover{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 55%,var(--line-solid))}
+.badge.b-nets:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.badge.b-nets.warn{background:color-mix(in srgb,var(--pending) 12%,transparent);color:var(--pending);border-color:color-mix(in srgb,var(--pending) 35%,transparent)}
+/* One height for every pill on the peer view's header row: the networks badge is a <button>, whose `font:inherit` brought the
+   body's line-height back and made it taller than the status pill beside it. */
+.badge.b-nets{line-height:1}
+.pv-head .badge{height:22px;box-sizing:border-box}
+.netshare-says{margin:8px 0 4px}
+.netprobe-h{font-size:12.5px;color:var(--dim);margin-bottom:5px}
+.netfield .netprobe .netrow{flex-wrap:wrap;align-items:stretch}   /* the button stands as tall as the fields beside it */
+.netfield .netprobe .netrow input{min-width:11em}
+.netfield .netprobe .netrow input.netprobe-port{flex:0 0 5.5em;min-width:0}
+.netprobe .netgw{align-items:flex-start;flex-wrap:nowrap}
+.netprobe .condot{animation:none;flex:none;margin-top:5px}
+.netprobe .netgw.t-on{color:var(--ink-2)}
+.netprobe .netgw.t-blocked{color:var(--pending)}
+.netprobe .netgw.t-blocked .condot{background:var(--pending)}   /* one tone per line: the sentence's, not the grid's orange */
+/* P3 — a gateway's tag on its peer row, and a user's reachable networks in their edit sheet */
+.tg.tg-gw[role=button]{cursor:pointer}
+.tg.tg-gw{margin-left:5px;display:inline-flex;gap:3px;align-items:center;flex:none;font-variant-numeric:tabular-nums;color:var(--brand);border-color:color-mix(in srgb,var(--brand) 40%,var(--line))}
+.tg.tg-gw svg{width:10px;height:10px}
+/* Networks this user can reach: one bordered list, a row per network on a node */
+.unets{display:grid;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);overflow:hidden}
+.unet{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;min-height:40px;padding:5px 10px 5px 12px;font-size:12.5px}
+.unet+.unet{border-top:1px solid var(--line)}
+.unet-p{font-weight:700;color:var(--ink);font-size:12.5px;overflow-wrap:anywhere}
+.unet-p.off{color:var(--dim)}
+.unet-how{color:var(--dim)}
+.unet-node{font-weight:600}
+.unet .grow{flex:1}
+.netcount .n.unk{color:var(--dim)}
+/* NETWORKS P2 — the node's own local network. A disclosure: the addresses and the sentence carry it, the switch is
+   its one control, and the status line is the node's word on whether a close is in force. */
+.lanswitch{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--dim)}
+.lanlist{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.lanaddr{display:inline-flex;gap:7px;align-items:baseline;padding:2px 9px;border:1px solid var(--line);border-radius:999px;font-size:12px}
+.lanmsg{margin:0 0 8px;font-size:13px;color:var(--ink-2)}   /* the card's full width (operator, 2026-09-17) */
+.lanstat{display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--dim)}
+.lanstat.ok{color:var(--online)}
+/* …and the same disclosure fleet-wide, in Settings → Network: one row per node that sits on a private network, so
+   "which of my nodes have one" is a glance instead of opening every node in turn. The address pill is .lanaddr,
+   reused. `closed` reads as the GOOD state here, the same way the node's own panel tones it. */
+.lanfleet{display:flex;flex-direction:column;gap:2px;margin:0 0 12px}
+.lanfleet-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:7px 0;border-bottom:1px solid var(--line)}
+.lanfleet-row:last-child{border-bottom:0}
+.lanfleet-addrs{display:flex;flex-wrap:wrap;gap:6px}
+.lanfleet-st{font-size:12px;color:var(--dim)}
+.lanfleet-st.off{color:var(--online)}
+/* the node has NOT closed it (too old to, or the close has not landed): amber, because the list would otherwise
+   read as settled while clients are still reaching that network. */
+.lanfleet-st.warn{color:var(--fault)}
+/* a device its owner keeps to themselves — the reason an audience reads "owner only" rather than "nobody shared it" */
+.tg.tg-priv{border-color:color-mix(in srgb,var(--pending) 45%,var(--line));color:var(--pending)}
+/* The switch rides the section's own header, right-aligned: it governs the whole subject, so it belongs beside the
+   subject's name and not under the list as one more row. `.seclabel` is upper-case and tracked out — the control's
+   own label opts out of both, or it reads as another heading. */
+.lanfleet-head{display:flex;align-items:center;gap:12px}
+.lanfleet-head > span:first-child{flex:1;min-width:0}
+.lanfleet-sw{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--dim);text-transform:none;letter-spacing:0;cursor:pointer;white-space:nowrap}
 .segrow{display:flex;gap:6px;margin:0 0 10px}
 .seg{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;font-size:12px;
   font-weight:700;padding:5px 13px;border-radius:20px;cursor:pointer}
@@ -3478,7 +3840,9 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
    balanced % widths (Title roomy, the rest even). Embedded (user-expanded) grids override with px widths that
    mirror the user-row .u-right so Peers/Nodes/Online/Rate/Total align vertically above them. */
 .peergrid{width:100%;table-layout:fixed}
-.peergrid th.h-status{width:9%}
+.peergrid th.h-status{width:112px}   /* ⚠️ px, not 9%: the cell holds ONE nowrap status pill and nothing else here, and the
+   widest pill is 83px ("Restricted", "Неверный") + 28px of padding. At 9% the content box was 70px at a 1420px window and
+   ~45px at a narrow one, so a long status ran into the owner's name in the next column (measured, 1.8.7 qualification §C). */
 .peergrid.loc th.h-status{width:18%}   /* loc grids put the iface badge next to the status: it must hold a
    long interface name (qwdtt10009) as well as the status chip. table-layout is FIXED, so this % is the
    real width — at 11% the cell needed 167px and got 118, and the badge spilled out of it. */
@@ -3657,7 +4021,7 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .uc-opt:hover{background:var(--surface-2)}
 .uc-empty{padding:8px;color:var(--faint);font-size:12px}
 /* peer view sheet */
-.pv-head{display:flex;align-items:center;gap:12px}
+.pv-head{display:flex;align-items:center;gap:8px}
 .pv-id{flex:1;min-width:0}
 .pv-sub{font-size:13px;color:var(--dim)}
 .pv-sub .pv-user{color:var(--ready)} .pv-sub .pv-user:hover{text-decoration:underline}

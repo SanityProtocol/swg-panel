@@ -121,8 +121,22 @@ def parse_interface_section(conf_text):
             continue
         if in_iface and "=" in s and not s.startswith("#"):
             k, v = s.split("=", 1)
-            info[k.strip()] = v.strip()
+            k, v = k.strip(), v.strip()
+            # `Address` may be given on several lines (wg-quick adds every one) — keep them all, in order. Every other
+            # key keeps its last value, as before.
+            info[k] = (info[k] + ", " + v) if (k.lower() == "address" and info.get(k) and v) else v
     return info
+
+
+def conf_v4_address(address):
+    """The interface's IPv4 address with its prefix ("10.8.0.1/24") out of an `Address` value — its FIRST IPv4 entry,
+    wherever that sits. "" if there is none. Twin: `swg-noded` `conf_v4_address()` — the two must agree, or the node and
+    the agent disagree about which subnet an interface serves (tests/iface_address_selftest.py compares them)."""
+    for a in str(address or "").split("#", 1)[0].split(","):
+        with contextlib.suppress(ValueError):
+            if a.strip() and ipaddress.ip_interface(a.strip()).version == 4:
+                return a.strip()
+    return ""
 
 
 def awg_params(info):
@@ -135,7 +149,9 @@ def awg_params(info):
 
 
 def iface_net(info):
-    addr = info.get("Address", "").split(",")[0].strip()
+    # The IPv4 address (conf_v4_address), not the first entry: `Address = fd42::1/64, 10.8.0.1/24` made every peer add
+    # fail "not inside subnet fd42::/64". An interface with no IPv4 at all keeps its first address, as before.
+    addr = conf_v4_address(info.get("Address")) or info.get("Address", "").split(",")[0].strip()
     if not addr:
         raise AgentError("internal", "interface conf has no Address")
     return ipaddress.ip_interface(addr)          # .ip = server addr, .network = subnet
@@ -243,7 +259,11 @@ def set_iface_fields_in_conf(path, fields):
         if in_iface and "=" in s and not s.startswith("#"):
             k = s.split("=", 1)[0].strip().lower()
             if k in want:
-                name, val = want[k]; out.append(f"{name} = {val}"); seen.add(k); continue
+                # Written ONCE. A key given on several lines (Address may be) becomes one line carrying the whole value;
+                # writing the value onto each line would repeat every address, and wg-quick up fails on the repeat.
+                if k not in seen:
+                    name, val = want[k]; out.append(f"{name} = {val}"); seen.add(k)
+                continue
         out.append(line)
     missing = [(name, val) for k, (name, val) in want.items() if k not in seen]
     if missing:
@@ -637,12 +657,24 @@ def _ensure_tool(tool):
     if have and quick:
         return
     if tool == "wg":
+        if _declarative():
+            raise AgentError("no_tool", "WireGuard tools are not installed on this node, and this node's "
+                             "installation is managed declaratively — installing them by hand would not "
+                             "survive its next rebuild. Add the WireGuard tools to the system configuration "
+                             "that declares this node and rebuild it, then this interface creates itself on "
+                             "the next sync.")
         raise AgentError("no_tool", "WireGuard tools are not installed on this node. Install them with your "
                          "package manager (on Debian/Ubuntu: apt-get install -y wireguard), then this "
                          "interface creates itself on the next sync.")
     # Distinguish "nothing installed" from "half installed": awg without awg-quick is a real and confusing
     # state that reads from the panel exactly like the tools being absent.
     if have and not quick:
+        if _declarative():
+            raise AgentError("no_tool", "AmneziaWG is only half-installed on this node: awg is present but "
+                             "awg-quick is missing. This node's installation is managed declaratively, so it "
+                             "has to be completed in the system configuration that declares this node rather "
+                             "than by an installer run here — add the full AmneziaWG tools and rebuild, then "
+                             "this interface creates itself on the next sync.")
         if _IN_CONTAINER:
             raise AgentError("no_tool", "This node's container image has awg but not awg-quick. Update the node "
                              "(docker compose pull && docker compose up -d) so it runs a current swg-node image, "
@@ -653,21 +685,24 @@ def _ensure_tool(tool):
     # A DOCKER node gets its tools from the swg-node image, which fails its own build unless awg, awg-quick
     # and amneziawg-go are all present — so this should be unreachable there. If it ever is, "re-run the
     # installer" is the wrong instruction: nothing on the host owns those binaries. Pull the image instead.
-    if _IN_CONTAINER:
-        raise AgentError("no_tool", "AmneziaWG tools are missing from this node's container image. Update the "
-                         "node (docker compose pull && docker compose up -d) so it runs a current swg-node "
-                         "image, then this interface creates itself on the next sync.")
     # "Re-run the installer" is the wrong instruction where the installation is declared elsewhere:
-    # there is no installer to re-run, and one that ran would be invisible to the next rebuild. The
-    # read-only unit directory is the signal — a capability, not a distro name (a host whose units we
-    # cannot write is a host whose packages we have no business telling anyone to install by hand).
+    # there is no installer to re-run, and one that ran would be invisible to the next rebuild. ⚠️ THIS
+    # TEST GOES FIRST, above the container one: a declaratively managed node that happens to run in a
+    # container is both, and "docker compose pull" is the half of that it cannot act on.
     # Fixed sentence with nothing interpolated, like its sibling above, so the panel can translate it.
-    if not _units_persist():
+    if _declarative():
         raise AgentError("no_tool", "AmneziaWG tools are not installed on this node, and this node's "
                          "installation is managed declaratively — re-running an installer would not "
                          "survive its next rebuild. Add the AmneziaWG tools to the system configuration "
                          "that declares this node and rebuild it, then this interface creates itself on "
                          "the next sync.")
+    # A DOCKER node gets its tools from the swg-node image, which fails its own build unless awg, awg-quick
+    # and amneziawg-go are all present — so this should be unreachable there. If it ever is, "re-run the
+    # installer" is the wrong instruction: nothing on the host owns those binaries. Pull the image instead.
+    if _IN_CONTAINER:
+        raise AgentError("no_tool", "AmneziaWG tools are missing from this node's container image. Update the "
+                         "node (docker compose pull && docker compose up -d) so it runs a current swg-node "
+                         "image, then this interface creates itself on the next sync.")
     raise AgentError("no_tool", "AmneziaWG tools are not installed on this node. Re-run the swgPanel node "
                      "installer — it builds them from source on any distribution, and falls back to the "
                      "userspace datapath where the kernel module cannot load. Then this interface creates "
@@ -695,6 +730,37 @@ _IN_CONTAINER = os.path.exists("/.dockerenv") or os.path.exists("/run/.container
 
 _UNIT_DIR = "/etc/systemd/system"
 _UNIT_PERSIST = {"v": None}
+
+
+def _declarative():
+    """Is this node's installation DECLARED somewhere else — so a command typed here cannot stick?
+
+    Two signals, because neither alone is enough and the advice is wrong whenever this is:
+
+      · SWG_DECLARATIVE in the environment. nix/modules/node.nix sets it and swg-noded already reads
+        it; it is the only signal that survives the CONTAINER arm. A NixOS host running our image
+        declares the node, but inside that image /etc/systemd/system is an ordinary writable directory
+        on a Debian filesystem — so the probe below says "not declarative" and every message here then
+        names a docker-compose.yml that host does not have.
+      · a unit directory we cannot write — the native arm, and any other immutable-OS layout, where
+        there is no environment of ours to read.
+
+    ⚠️ THE ENV SIGNAL DOES NOT SURVIVE sudo. swg-noded prefixes `sudo -n` when node.sudo is true, and
+    sudo's env_reset drops SWG_DECLARATIVE — detection then falls back to the probe below. Left alone
+    deliberately: the combination that would need it is declarative AND containerised AND sudo, and a
+    container node runs the daemon as root (sudo false), while every shipped installer writes sudo
+    false too. `--preserve-env=` would be the fix, and it is NOT applied here because sudoers can
+    refuse that option outright, which would fail every agent call on such a node to repair a case
+    that cannot currently occur. Revisit if node.sudo ever becomes a default.
+
+    ⚠️ MESSAGE SELECTION ONLY, and it must be asked BEFORE the container test everywhere it is used:
+    a declaratively managed container is both, and only one of the two answers can be acted on.
+    _iface_unit keeps asking _units_persist() directly — what it needs to know is whether a unit
+    written here would survive, which is a different question with a different right answer.
+    """
+    if (os.environ.get("SWG_DECLARATIVE") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return not _units_persist()
 
 
 def _units_persist():
@@ -795,6 +861,59 @@ def _ensure_quick_unit(tool):
     return _unit_known(unit)               # confirm systemd actually picked it up — never assume the write was enough
 
 
+def _scope_available():
+    """Can this host put a bring-up in a transient scope of its own? Asked by MAKING one — `systemd-run --scope true` —
+    never by reading systemd-run's refusal text: that wording differs between systemd releases (the bus failure alone is
+    printed three different ways across 249, 255 and 257), and a phrase list that misses one left the interface not up
+    at all. A systemd-run that cannot even be executed is a "no" too."""
+    if _IN_CONTAINER or not os.path.isdir("/run/systemd/system") or not shutil.which("systemd-run"):
+        return False
+    try:
+        return subprocess.run(["systemd-run", "--scope", "--quiet", "--collect", "true"],
+                              capture_output=True, text=True, timeout=15).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _quick_target(ic, iface):
+    """What to hand `<tool>-quick` for a managed interface: its conf's PATH where that file names this interface, else
+    the name.
+
+    ⚠️ BY NAME, wg-quick LOOKS IN /etc/wireguard AND NOWHERE ELSE. A plain-WireGuard conf lives outside it on every
+    container node (the mount is /etc/amnezia/amneziawg; the link create leaves in /etc/wireguard is container-local and
+    gone after the first recreate — i.e. after the first update), and on a native node that took the documented
+    docker → native carry. There Restart, Stop, Start and key Restore failed with "`/etc/wireguard/wg9.conf' does not
+    exist", and Delete — whose bring-down is best-effort — removed the conf and left the device UP with its peers: the
+    panel forgot the interface while its devices could still reach the node. Measured on svo (docker) and on a NixOS
+    VM (1.8.7 qualification PART 4, A7). The bootstrap has always passed the path for exactly this reason.
+
+    The path only where its basename IS `<iface>.conf`: wg-quick names the device after the file, so an adopted conf
+    under another name must keep going by name rather than act on a different device."""
+    conf = (ic or {}).get("conf") or ""
+    if conf and os.path.basename(conf) == iface + ".conf" and os.path.isfile(conf):
+        return conf
+    return iface
+
+
+def _quick_up(tool, iface, target=""):
+    """`<tool>-quick up <target or iface>`, in a transient systemd scope of its own wherever systemd runs this node.
+
+    A userspace datapath — amneziawg-go, which awg-quick starts by itself when the kernel module is missing — is a daemon
+    left running after awg-quick exits. Started as a plain child it lands in swg-noded.service's cgroup, and that unit's
+    KillMode=control-group ends it, and the interface with it, every time the node daemon restarts — which every update
+    does. Measured on a Debian node with the module blocked: amneziawg-go in /system.slice/swg-noded.service, gone 2 s after
+    `systemctl restart swg-noded` (docs/AWG-DATAPATH-RESILIENCE-PLAN.md, review finding 2). In a scope of its own it
+    survives. `--scope` runs the command right here, so its stderr and exit status still come back for the refusal
+    classification the callers do.
+
+    No systemd (a container, a non-systemd host), or a host that cannot make a scope right now → the plain call: an
+    interface that comes up and might die on a restart beats one that does not come up at all."""
+    plain = [tool + "-quick", "up", target or iface]
+    if not _scope_available():
+        return run(plain)
+    return run(["systemd-run", "--scope", "--quiet", "--collect", "--description=swg " + iface + " (" + tool + "-quick up)"] + plain)
+
+
 def _iface_unit(action, tool, iface):
     """enable/disable an interface's <tool>-quick@ unit. True = it took, False = it did not,
     None = not applicable on this host (units are declared elsewhere; see _units_persist).
@@ -824,6 +943,202 @@ def _iface_unit(action, tool, iface):
                               capture_output=True, text=True).returncode == 0
     except Exception:
         return False
+
+
+# bash reports a failed execve as `<script>: line <n>: <path>: <reason>` — the tool never STARTED, so
+# nothing it would have said about ports, subnets or device types can be true.
+#
+# ⚠️ BOTH SPELLINGS, because both mean the same thing here. EPERM ("Operation not permitted") is the
+# no_new_privs transition denial this project caused and has now removed; EACCES ("Permission denied")
+# is what a policy that simply has no exec rule for the binary returns, and what a noexec mount returns
+# — SELinux and fapolicyd land there, and the general arm below names them, so matching only EPERM left
+# that advice permanently unreachable and dropped those hosts back onto "port/subnet may be in use".
+# Safe to widen here specifically: `<tool>-quick` redirects only to file descriptors and /dev/null, so
+# a failed REDIRECT — which bash reports in this same shape — cannot occur inside it.
+#
+# The English spelling is not luck: `<tool>-quick` does `export LC_ALL=C` on its ninth line, before it
+# runs anything, so every message below it is C-locale whatever the host is set to. Keep that in mind
+# before matching on any other stderr text here.
+_EXEC_DENIED_RE = re.compile(
+    r"(?:^|\n)[^\n]*: line \d+: (\S+): (?:Operation not permitted|Permission denied)")
+
+# The OTHER refusal: the tool really did run, and the kernel turned down the operation it asked for.
+# A different fault with a different fix, which is why the pattern above is anchored tightly enough to
+# leave it alone — and it became the LIKELIER of the two the moment this project stopped setting
+# NoNewPrivileges on the node daemon, because the tools now genuinely execute under whatever policy
+# confines them instead of being refused at the door. Left to the generic message, it would arrive as
+# "port/subnet may be in use" — the exact lie this whole block exists to stop telling.
+_NETLINK_DENIED_RE = re.compile(r"RTNETLINK answers: Operation not permitted")
+
+_AA_PROFILES = "/sys/kernel/security/apparmor/profiles"
+_AA_TOOLS = ("wg", "wg-quick", "awg", "awg-quick")
+
+
+def _aa_enforced_tools():
+    """Which of the WireGuard tools this box has an ENFORCING AppArmor profile for — [] if none.
+
+    This is the difference between a message that lists three things it might be and one that names the
+    file to edit. Measured on the node that reported this: `getcap` printed nothing at all (no file
+    capabilities anywhere), and the kernel audit log said what had really happened —
+
+        apparmor="DENIED" operation="exec" info="no new privs" error=-1
+          profile="wg-quick" name="/usr/bin/ip" target="wg-quick//ip"
+
+    — a distribution-shipped `wg-quick` profile trying to switch `ip` into its `wg-quick//ip` child
+    profile, which AppArmor must refuse outright while the calling process has no_new_privs set.
+
+    ⚠️ A PROFILE IS NAMED EITHER WAY. Newer Debian/Ubuntu policy names it for the tool (`wg`), older
+    policy names it for the path (`/usr/bin/wg`), and matching only the first would read a confined box
+    as unconfined and hand the operator the wrong advice. Both spellings count; a `//` child profile
+    never does, because the operator acts on the parent that carries it.
+
+    Only `(enforce)` counts. A profile in complain mode LOGS the same denial and then allows the exec, so
+    it can never be what refused this one — naming it would send the operator at the wrong file. Reading
+    the file can fail (no AppArmor, securityfs not mounted, a container that cannot see the host's): that
+    is not a diagnosis either way, so it falls through to the general advice rather than guessing."""
+    try:
+        with open(_AA_PROFILES) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    out = set()
+    for ln in lines:
+        name, _, mode = ln.strip().rpartition(" ")
+        if mode != "(enforce)" or "//" in name:
+            continue
+        if name.rsplit("/", 1)[-1] in _AA_TOOLS:
+            out.add(name.rsplit("/", 1)[-1])
+    return sorted(out)
+
+
+# The AppArmor arm's declarative twin, hoisted because TWO paths reach it: a declared host whose
+# policy confines the tools (caught above the container test, since a declared container is both),
+# and the host-policy branch further down.
+_AA_DECLARATIVE = ("this node could not execute the tools that bring an interface up: AppArmor refused to "
+                   "start them, so the bring-up never began. This is not a port or subnet conflict. A "
+                   "confined program may not switch into its child profile while the calling service runs "
+                   "with NoNewPrivileges, and this node's installation is managed declaratively \u2014 so the "
+                   "fix belongs in the system configuration that declares this node, not in a command "
+                   "here: the node daemon must not set NoNewPrivileges, and the AppArmor policy for the "
+                   "WireGuard tools has to allow /run/wireguard so userspace interfaces stay readable. "
+                   "Restart the node daemon once it is in \u2014 a rebuild does not restart it on its own, so "
+                   "the old unit keeps running. Then this interface creates itself on the next sync.")
+
+
+def _denied_error(msg):
+    """The AgentError for a bring-up the SYSTEM refused — None when it failed of anything else.
+
+    Returns rather than raises, so the four call sites read `raise _denied_error(...)` and a reader can
+    see the control flow at the site. A version of this that raised from in here left each caller looking
+    like it fell through to the generic message, which is precisely the message being corrected.
+
+    Every arm is a FIXED sentence, nothing interpolated, so the panel translates it by catalogue lookup
+    like any other string — see _ensure_tool. That is why none of them names the binary bash named: a path
+    is a value, a value bakes the key, and a baked key arrives as English inside a translated page.
+
+    ⚠️ THE ARMS ARE ORDERED BY WHAT THE HOST CAN ACT ON, not by likelihood. A node whose installation
+    is DECLARED elsewhere gets configuration, never a command, and that test runs first because such a
+    node may also be a container and only one of those two answers is actionable there. A container
+    comes next: its lever is its own capability set, and host AppArmor policy is not reachable from
+    inside it. Host policy is diagnosed last — only where host policy can be changed."""
+    if _EXEC_DENIED_RE.search(msg or ""):
+        aa = _aa_enforced_tools()
+        # ⚠️ ORDER IS THE WHOLE POINT. A declaratively managed node that runs in a container is BOTH, and
+        # only one of the two answers can be acted on there — so that test goes above the container one.
+        # Below it container still beats host policy: `aa-complain` on the host is not something a
+        # process inside a container can reach.
+        if _declarative():
+            if aa:
+                return AgentError("no_exec", _AA_DECLARATIVE)
+            return AgentError("no_exec",
+                              "this node could not execute the tools that bring an interface up: the "
+                              "kernel refused to start them, so the bring-up "
+                              "never began. This is not a port or subnet conflict. This node's installation "
+                              "is managed declaratively, so this belongs in the system configuration that "
+                              "declares it rather than in a command here: the node daemon must not set "
+                              "NoNewPrivileges, and the security policy and capability set that "
+                              "configuration gives this node have to let the WireGuard tools execute. "
+                              "Restart the node daemon once the change is in — a rebuild does not restart "
+                              "it on its own, so the old unit keeps running.")
+        if _IN_CONTAINER:
+            return AgentError("no_exec",
+                              "this node's container could not execute the tools that bring an interface "
+                              "up: the kernel refused to start them, so the "
+                              "bring-up never began. This is not a port or subnet conflict. A container "
+                              "gets this when its capability set no longer covers what those binaries ask "
+                              "for — give the node NET_ADMIN (in docker-compose.yml: cap_add: "
+                              "[NET_ADMIN]) and recreate it (docker compose up -d), then this interface "
+                              "creates itself on the next sync.")
+        if aa:
+            # ⚠️ THE ADVICE HAS TO SURVIVE THE HOST. `aa-complain` is a command, and on a host whose
+            # policy and units are declared elsewhere a command is a change that does not stick — the
+            # same reason _ensure_tool and the no_module branch each carry a declarative twin. It is
+            # also the only arm that prescribes rather than diagnoses, which is why only it needs one.
+            # And it names the restart on purpose: nix/modules/node.nix sets restartIfChanged to
+            # restartOnRebuild, which defaults to FALSE (a restart bounces every client), so a rebuild
+            # alone leaves the OLD unit running and the operator with no sign that it did.
+            return AgentError("no_exec",
+                              "this node could not execute the tools that bring an interface up: AppArmor "
+                              "refused to start them, so the bring-up never began. This is not a port or "
+                              "subnet conflict. This distribution enforces an AppArmor profile for the "
+                              "WireGuard tools, and a confined program may not switch into its child "
+                              "profile while the calling service runs with NoNewPrivileges — which the "
+                              "node daemon does on an installation older than 1.8.7-beta; updating the "
+                              "node removes it. In dmesg the denial reads: apparmor=\"DENIED\" "
+                              "operation=\"exec\" info=\"no new privs\". To clear it by hand, put those "
+                              "profiles into complain mode on the node:  aa-complain /usr/bin/wg "
+                              "/usr/bin/wg-quick  (apt-get install -y apparmor-utils if that command is "
+                              "missing) — then this interface creates itself on the next sync.")
+        return AgentError("no_exec",
+                          "this node could not execute the tools that bring an interface up: the kernel "
+                          "refused to start them, so the bring-up never "
+                          "began. This is not a port or subnet conflict, and the datapath module is not "
+                          "the problem. Either those binaries carry file capabilities that this node's "
+                          "capability bounding set no longer covers, or an exec-control layer (SELinux, "
+                          "fapolicyd, or an AppArmor policy this node cannot read) is denying them. Run "
+                          "on the node:  getcap $(command -v ip) $(command -v wg) $(command -v awg)  for "
+                          "the first, and  dmesg | grep -i \'denied\'  for the second — one of them names "
+                          "it. Once the tools run again, this interface creates itself on the next sync.")
+    if _NETLINK_DENIED_RE.search(msg or ""):
+        # ⚠️ THE SAME THREE ARMS, IN THE SAME ORDER, AND FOR THE SAME REASON as the exec case above.
+        # This one used to be a single sentence that named the container fix AND the host fix and no
+        # configuration at all — so a declaratively managed node was told to edit a docker-compose.yml
+        # it does not have and run `docker compose up -d`, which is the one instruction that cannot
+        # stick there. It was the only arm in this function without a declarative branch, and by the
+        # docstring above _NETLINK_DENIED_RE it is the arm that became the LIKELIER of the two the
+        # moment this project stopped setting NoNewPrivileges: the tools now genuinely execute under
+        # whatever policy confines them, so being turned down mid-operation is the realistic outcome.
+        # The message most likely to fire was the one that never asked what the host could act on.
+        if _declarative():
+            return AgentError("no_priv",
+                              "the interface tools ran on this node, but the kernel refused the "
+                              "operation they asked for (\"RTNETLINK answers: Operation not "
+                              "permitted\"). This is not a port or subnet conflict: the tools are being "
+                              "denied the network privilege they need. This node's installation is "
+                              "managed declaratively, so this belongs in the system configuration that "
+                              "declares it rather than in a command here: the capability set and the "
+                              "security policy that configuration gives this node have to let the "
+                              "WireGuard tools change network state. Restart the node daemon once the "
+                              "change is in — a rebuild does not restart it on its own, so the old unit "
+                              "keeps running.")
+        if _IN_CONTAINER:
+            return AgentError("no_priv",
+                              "this node's container ran the interface tools, but the kernel refused "
+                              "the operation they asked for (\"RTNETLINK answers: Operation not "
+                              "permitted\"). This is not a port or subnet conflict: the tools are being "
+                              "denied the network privilege they need. A container gets this when its "
+                              "capability set no longer covers what those binaries ask for — give the "
+                              "node NET_ADMIN (in docker-compose.yml: cap_add: [NET_ADMIN]) and "
+                              "recreate it (docker compose up -d), then this interface creates itself "
+                              "on the next sync.")
+        return AgentError("no_priv",
+                          "the interface tools ran on this node, but the kernel refused the operation "
+                          "they asked for (\"RTNETLINK answers: Operation not permitted\"). This is not a "
+                          "port or subnet conflict: the tools are being denied the network privilege "
+                          "they need. On a host that means a security policy is confining them — "
+                          " dmesg | grep -i \'denied\'  names which one. Then this interface creates "
+                          "itself on the next sync.")
+    return None
 
 
 def op_create_iface(cfg, req):
@@ -954,7 +1269,7 @@ def op_create_iface(cfg, req):
                 os.unlink(conf)
             raise AgentError("link_fail", f"couldn't link {link} -> {conf}: {e}")
     try:
-        run([tool + "-quick", "up", iface])
+        _quick_up(tool, iface)
     except Exception as e:
         with contextlib.suppress(Exception):
             os.unlink(conf)
@@ -962,6 +1277,13 @@ def op_create_iface(cfg, req):
             with contextlib.suppress(Exception):
                 os.unlink(link)
         msg = str(e)
+        # FIRST, before any pattern that reads the tools' own output: a tool that could not be EXECUTED
+        # printed none of that output, and every branch below would be guessing at a command that never
+        # ran. The refused-by-the-kernel case is classified here too, for the same reason in reverse —
+        # it DID run, and what it says has nothing to do with ports or subnets either.
+        _denied = _denied_error(msg)
+        if _denied:
+            raise _denied
         # "Unknown device type" / "Protocol not supported" == the kernel datapath module isn't loadable (the awg
         # DKMS module never built against this kernel, or a kernel upgrade left it stale). The agent is sandboxed
         # (can't apt-install), so translate the cryptic failure into the exact fix instead of blaming the port.
@@ -974,7 +1296,7 @@ def op_create_iface(cfg, req):
             # the whole difficulty on such a host, so say that rather than a command that will not
             # apply. This message interpolates (kernel release), so it is not catalogue-translated
             # either way and adds no i18n key.
-            if not _units_persist():
+            if _declarative():
                 raise AgentError("no_module",
                                  f"the {mod} kernel module isn't built or loaded on this node (kernel {kr}), "
                                  f"and this node's installation is managed declaratively. Add the module to the "
@@ -1052,12 +1374,61 @@ def op_delete_iface(cfg, req):
     with contextlib.suppress(Exception):
         conf_text = read_conf(ic["conf"])          # read BEFORE the down — the reap needs the rules it wrote
     with contextlib.suppress(Exception):
-        run([tool + "-quick", "down", iface])
+        run([tool + "-quick", "down", _quick_target(ic, iface)])
+    # ⚠️ THE DOWN IS BEST-EFFORT, THE DELETE IS NOT. A bring-down that failed for any reason left the device up with
+    # its peers while everything below forgot it — nothing reconciles an interface the node no longer manages, so a
+    # deleted interface kept admitting its devices. Whatever the cause, the device goes.
+    if os.path.exists(os.path.join(_SYS_NET, iface)):
+        with contextlib.suppress(Exception):
+            run(["ip", "link", "delete", "dev", iface])
     _reap_egress_rules(conf_text, iface)           # the down hook takes one copy; this takes the rest
     _iface_unit("disable", tool, iface)
     with contextlib.suppress(Exception):
         os.remove(ic["conf"])
+    for twin_text in _remove_conf_twins(iface, ic.get("conf") or ""):
+        _reap_egress_rules(twin_text, iface)
     return {"iface": iface, "deleted": True}
+
+
+# Both directories the node bootstrap brings interfaces up from (docker/node-entrypoint.sh: AWG_DIR, WG_DIR).
+_CONF_DIRS = ("/etc/amnezia/amneziawg", "/etc/wireguard")
+_SYS_NET = "/sys/class/net"
+
+
+def _remove_conf_twins(iface, removed):
+    """Remove the OTHER copies of a deleted interface's conf that would bring it back; return their texts.
+
+    ⚠️ A SECOND COPY RESURRECTS IT AT BOOT. A plain-WireGuard interface can hold a conf in both directories: a NixOS
+    node switched native → container → native (the container cannot see /etc/wireguard, finds the live device the
+    panel manages, and adopts it into its mount), or a carry, which copies rather than moves. The bootstrap brings up
+    every conf in either directory as a panel-created interface, so deleting only the one this config names put the
+    deleted interface back at the next boot — old key, old port, listed by the panel again, and its old peers until
+    the first reconcile. Measured on a NixOS VM (1.8.7 qualification PART 4, A7).
+
+    Only a conf WE wrote — a `#swg:` header, which every conf this node creates or adopts carries — or a link to the
+    conf just removed. An operator's own file of the same name is never touched."""
+    texts = []
+    for d in _CONF_DIRS:
+        p = os.path.join(d, iface + ".conf")
+        if removed and os.path.abspath(p) == os.path.abspath(removed):
+            continue
+        try:
+            if os.path.islink(p):
+                if not removed or os.path.realpath(p) != os.path.realpath(removed):
+                    continue                           # a link to something else is not ours to judge
+                text = ""
+            elif os.path.isfile(p):
+                with open(p) as f:
+                    text = f.read()
+                if not re.search(r"(?m)^#swg:", text.split("[Interface]", 1)[0]):
+                    continue
+            else:
+                continue
+            os.remove(p)
+            texts.append(text)
+        except OSError:
+            continue
+    return texts
 
 
 def op_restart_iface(cfg, req):
@@ -1066,11 +1437,18 @@ def op_restart_iface(cfg, req):
     iface = req["iface"]
     ic = iface_cfg(cfg, iface)             # raises if it isn't managed here
     tool = (ic.get("cmd") or ["awg"])[0]
+    target = _quick_target(ic, iface)      # by path: see _quick_target
     with contextlib.suppress(Exception):
-        run([tool + "-quick", "down", iface])
+        run([tool + "-quick", "down", target])
     try:
-        run([tool + "-quick", "up", iface])
+        _quick_up(tool, iface, target)
     except Exception as e:
+        # Same classification as op_create_iface: Restart is the button the panel offers for a failed
+        # bring-up, so this is the path an operator hitting the refusal takes NEXT. Leaving the raw dump
+        # here would put the cause back out of reach one click after we named it.
+        _denied = _denied_error(str(e))
+        if _denied:
+            raise _denied
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed: {e}")
     return {"iface": iface, "restarted": True}
 
@@ -1082,7 +1460,7 @@ def op_stop_iface(cfg, req):
     ic = iface_cfg(cfg, iface)             # raises if it isn't managed here
     tool = (ic.get("cmd") or ["awg"])[0]
     with contextlib.suppress(Exception):
-        run([tool + "-quick", "down", iface])
+        run([tool + "-quick", "down", _quick_target(ic, iface)])
     _iface_unit("disable", tool, iface)
     return {"iface": iface, "stopped": True}
 
@@ -1093,8 +1471,11 @@ def op_start_iface(cfg, req):
     ic = iface_cfg(cfg, iface)             # raises if it isn't managed here
     tool = (ic.get("cmd") or ["awg"])[0]
     try:
-        run([tool + "-quick", "up", iface])
+        _quick_up(tool, iface, _quick_target(ic, iface))
     except Exception as e:
+        _denied = _denied_error(str(e))
+        if _denied:
+            raise _denied
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed: {e}")
     _unit = _iface_unit("enable", tool, iface)      # see op_create_iface for what the three values mean
     return {"iface": iface, "started": True, "unit_enabled": _unit}
@@ -1115,11 +1496,15 @@ def op_restore_iface_key(cfg, req):
         fields["ListenPort"] = str(req["listen_port"])
     set_iface_fields_in_conf(ic["conf"], fields)
     tool = (ic.get("cmd") or ["awg"])[0]
+    target = _quick_target(ic, iface)
     with contextlib.suppress(Exception):
-        run([tool + "-quick", "down", iface])
+        run([tool + "-quick", "down", target])
     try:
-        run([tool + "-quick", "up", iface])
+        _quick_up(tool, iface, target)
     except Exception as e:
+        _denied = _denied_error(str(e))
+        if _denied:
+            raise _denied
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed after key restore: {e}")
     return {"iface": iface, "restored": True}
 

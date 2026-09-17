@@ -17,20 +17,20 @@ import {
   ifaceIsAll, ifaceMatch, targetType,
 } from "./model.js";
 import {
-  Dropdown, Ic, RowError, SearchBox, StoreOffBanner, Tag, dlul, lifecycleIcon, openConfirm, rateCell, rowDouble,
+  CapList, Dropdown, Ic, Popover, RowError, SearchBox, StoreOffBanner, Tag, dlul, lifecycleIcon, openConfirm, rateCell, rowDouble,
   rowNoSelect, rowSingle, secTitle, xferCell,
 } from "./ui.js";
 import {
   EV_ACTIONS, EV_ITEMS, evItemLabel, evActionLabel, peerStatusFilters, USER_DEFDIR, activityView, connView, evDecorate,
   ifaceFilterOptions, ifaceOptGroups, nodeFilterOptions, pageScroll, pageSizeOpts, peerMatchesQ, peerSortBy, peersView,
   searchMatch, sortColToggle, sortPeerRows, sortUsers, unassignedView, userIdentityMatchesQ, userMatchesQ,
-  userOnNodeIface, userPeerViews, userStatTag, userStats, usersView,
+  userOnNodeIface, userPeerViews, userStatTag, userStats, usersView, groupShares, shareDeviceName,
 } from "./views.js";
 import {
   confirmCorrectAll, confirmRestoreAll,
 } from "./peer-actions.js";
 import {
-  openUserConfigs, openUserEdit,
+  openUserConfigs, openUserEdit, openGroup, openCreateGroup, confirmDeleteGroup, UserCounts,
 } from "./peer-ui.js";
 import {
   openAddPeers, openCreatePeer, openCreateUser,
@@ -46,6 +46,23 @@ import { useState, useEffect } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
+
+// The roster lists' pager — Peers, Users, Groups: rows per page, where you are, Prev / Next with the scroll back to the list.
+// ONE copy, so a fix to paging lands on every list. Shown once a list is longer than the smallest page (20), so "Rows per page"
+// stays reachable after choosing a larger size.
+function RowsPager({ total, page, pageSize, onPage, onSize }) {
+  if (total <= 20) return null;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  return html`<div class="pager">
+    <label class="pager-size">${T("Rows per page")}
+      <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()} onChange=${onSize}/>
+    </label>
+    <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, total), total })}</span>
+    <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { onPage(page - 1); pageScroll(e, -1); }}>${T("‹ Prev")}</button>
+    <span class="pager-pg">${page} / ${pages}</span>
+    <button class="btn btn-ghost" disabled=${page >= pages} onClick=${e => { onPage(page + 1); pageScroll(e, 1); }}>${T("Next ›")}</button>
+  </div>`;
+}
 
 // One fleet entry: main block (identity/traffic/sync) on the left, health block on the right.
 export function PeersScreen() {
@@ -144,16 +161,8 @@ export function PeersScreen() {
       ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface}/>` : null}
     </span><span class="count">${rows.length}</span></div>
     <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
-    ${rows.length > 20 ? html`<div class="pager">
-      <label class="pager-size">${T("Rows per page")}
-        <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}
-          onChange=${v => { peersView.pageSize = v; peersView.page = 1; force(x => x + 1); }}/>
-      </label>
-      <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, rows.length), total: rows.length })}</span>
-      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>${T("‹ Prev")}</button>
-      <span class="pager-pg">${page} / ${totalPages}</span>
-      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>${T("Next ›")}</button>
-    </div>` : null}
+    <${RowsPager} total=${rows.length} page=${page} pageSize=${pageSize} onPage=${setPage}
+      onSize=${v => { peersView.pageSize = v; peersView.page = 1; force(x => x + 1); }}/>
 
     ${orphans.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--orphan)">${T("Unmanaged here")}</h2></div>
@@ -353,7 +362,7 @@ export function UserRow({ user, live, onlineOnly, q }) {
     <div class="urow-head" title=${T("Double-click for QR / configs")} onMouseDown=${rowNoSelect} onClick=${e => rowSingle(e, toggle)} onDblClick=${e => rowDouble(e, () => openUserConfigs(user))}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
       ${userStatTag(user, live)}
-      <span class="u-name">${lifecycleIcon(user, user.peerCount ? user.status : "empty")}<span class="un">${user.name}</span>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}${user.note ? html`<span class="u-note" title=${user.note}>${user.note}</span>` : null}</span>
+      <span class="u-name">${lifecycleIcon(user, user.peerCount ? user.status : "empty")}<span class="un">${user.name}</span>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}${user.note ? html`<span class="u-note" title=${user.note}>${user.note}</span>` : null}<${UserCounts} user=${user}/></span>
       <span class=${"u-right" + (live ? " live" : "")}>
         <span class="u-counts">${(() => {
           const onc = html`<span class=${"u-onc" + (user.onlineCount ? " on" : "")}>${T("{n} Online", { n: user.onlineCount })}</span>`;
@@ -390,9 +399,68 @@ export function UserRow({ user, live, onlineOnly, q }) {
   </div>`;
 }
 
+// ═════════════════════════ USERS → GROUPS (docs/GROUPS-PLAN.md G11) ═════════════════════════
+// One row per group: its name, its members, and the devices whose networks are shared with it — each a count with the names on
+// hover, so a family of three and a school of two hundred read alike. Paged like the Users list; the search matches a group's
+// name or any member's. A row opens the group; the pencil and the bin say so for keyboards.
+function GroupsView({ modeSw, force }) {
+  const all = Store.groups();
+  const q = usersView.gq.trim().toLowerCase();
+  const nameOf = new Map(Store.recon.users.map(u => [u.id, u.name]));      // one pass per render, not a search per member
+  const uname = id => nameOf.get(id) || "";
+  const list = q ? all.filter(g => searchMatch(g.name, q) || g.users.some(u => searchMatch(uname(u), q))) : all;
+  const pageSize = usersView.gpageSize || 20;
+  const totalPages = Math.max(1, Math.ceil(list.length / pageSize));
+  const page = Math.min(Math.max(1, usersView.gpage || 1), totalPages);
+  const setPage = p => { usersView.gpage = p; force(x => x + 1); };
+  const row = g => {
+    const shares = groupShares(g.id);
+    const names = g.users.map(uname).sort((a, b) => a.localeCompare(b));
+    return html`<div class="grp-r" key=${g.id} onClick=${e => { if (!e.target.closest("button")) openGroup(g.id); }}>
+      <span class="grp-nm"><${Ic} i="users"/><span>${g.name}</span></span>
+      <${Popover} hoverOnly cls="grp-pop" popCls="netroute-bub" trigger=${html`<span class=${"grp-n" + (names.length ? "" : " zero")}
+          aria-label=${T("{name}: {members}", { name: g.name, members: plural(names.length, "member") })}><${Ic} i="user"/>${names.length}</span>`}>
+        <span class="netroute-h">${T("Members")}</span>
+        ${names.length ? html`<${CapList} items=${names} cap=${10} row=${(n, i) => html`<div class="netbub-row" key=${i}>${n}</div>`}/>` : html`<div class="netbub-row sub">${T("No members yet.")}</div>`}
+      <//>
+      <${Popover} hoverOnly cls="grp-pop" popCls="netroute-bub" trigger=${html`<span class=${"grp-n" + (shares.length ? "" : " zero")}
+          aria-label=${T("Devices whose networks are shared with {name}: {n}", { name: g.name, n: shares.length })}><${Ic} i="network"/>${shares.length}</span>`}>
+        <span class="netroute-h">${T("Networks shared with this group")}</span>
+        ${shares.length ? html`<${CapList} items=${shares} cap=${10} row=${p => html`<div class="netbub-row" key=${p.id}><b>${shareDeviceName(p)}</b> <span class="faint">${(p.routes || []).join(", ")}</span></div>`}/>`
+          : html`<div class="netbub-row sub">${T("None yet — share a network from a device's Networks window.")}</div>`}
+      <//>
+      <span class="grp-acts">
+        <button type="button" class="iconbtn" title=${T("Edit group")} aria-label=${T("Edit group")} onClick=${() => openGroup(g.id)}><${Ic} i="pencil"/></button>
+        <button type="button" class="iconbtn danger" title=${T("Delete group")} aria-label=${T("Delete group")} onClick=${() => confirmDeleteGroup(g, false)}><${Ic} i="trash"/></button>
+      </span>
+    </div>`;
+  };
+  return html`<div class="screen">
+    <${StoreOffBanner}/>
+    <div class="toolbar">
+      ${modeSw}
+      <${SearchBox} placeholder=${T("Search groups or members…")} value=${usersView.gq} onInput=${e => { usersView.gq = e.target.value; usersView.gpage = 1; force(x => x + 1); }}/>
+      <button class="btn btn-primary" onClick=${openCreateGroup}><span class="plus"><${Ic} i="plus"/></span> ${T("New group")}</button>
+    </div>
+    ${secTitle(T("Groups"), list.length, false)}
+    <p class="hint grp-hint">${T("Members of a group reach each other's devices on interfaces set to “Same user and their groups”, and a network can be shared with the whole group.")}</p>
+    ${!all.length ? html`<div class="empty"><b>${T("No groups yet")}</b>${T("Put people in a group to share a network with all of them at once, from a device's Networks window.")}</div>`
+      : !list.length ? html`<div class="empty"><b>${T("Nothing matches")}</b>${T("Clear the search.")}</div>`
+      : html`<div class="grps">${list.slice((page - 1) * pageSize, page * pageSize).map(row)}</div>`}
+    <${RowsPager} total=${list.length} page=${page} pageSize=${pageSize} onPage=${setPage}
+      onSize=${v => { usersView.gpageSize = v; usersView.gpage = 1; force(x => x + 1); }}/>
+  </div>`;
+}
+
 export function UsersScreen() {
   useStore();
   const [, force] = useState(0);
+  const groupsMode = usersView.mode === "groups";
+  const modeSw = html`<div class="pmode" role="tablist" aria-label=${T("Users or groups")}>
+    <button type="button" role="tab" aria-selected=${!groupsMode} class=${"pm-opt pm-users" + (groupsMode ? "" : " on")} onClick=${() => { usersView.mode = "users"; force(x => x + 1); }}>${T("Users")}</button>
+    <button type="button" role="tab" aria-selected=${groupsMode} class=${"pm-opt pm-groups" + (groupsMode ? " on" : "")} onClick=${() => { usersView.mode = "groups"; force(x => x + 1); }}>${T("Groups")}</button>
+  </div>`;
+  if (groupsMode) return html`<${GroupsView} modeSw=${modeSw} force=${force}/>`;
   const q = usersView.q.toLowerCase();
   const allUsers = Store.recon.users;
   const allIfaces = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();
@@ -416,6 +484,7 @@ export function UsersScreen() {
   return html`<div class="screen">
     <${StoreOffBanner}/>
     <div class="toolbar">
+      ${modeSw}
       <${SearchBox} placeholder=${T("Search users, tags, notes, peers…")} value=${usersView.q} onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/>
       <${Dropdown} className="selwrap" ariaLabel=${T("All nodes")} value=${usersView.node}
         onChange=${v => { usersView.node = v; usersView.iface = ""; usersView.page = 1; force(x => x + 1); }}
@@ -434,15 +503,8 @@ export function UsersScreen() {
         <${UsersHeader} sort=${usersView.sort} dir=${usersView.dir} onSort=${c => { sortColToggle(usersView, "sort", "dir", c, USER_DEFDIR); usersView.page = 1; force(x => x + 1); }}/>
         <div class="urows">${pageUsers.map(u => html`<${UserRow} key=${u.id} user=${u} q=${q}/>`)}</div>
       <//>`}
-    ${users.length > pageSize ? html`<div class="pager">
-      <label class="pager-size">${T("Rows per page")}
-        <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}
-          onChange=${v => { usersView.pageSize = v; usersView.page = 1; force(x => x + 1); }}/></label>
-      <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * pageSize + 1, to: Math.min(page * pageSize, users.length), total: users.length })}</span>
-      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>${T("‹ Prev")}</button>
-      <span class="pager-pg">${page} / ${totalPages}</span>
-      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>${T("Next ›")}</button>
-    </div>` : null}
+    <${RowsPager} total=${users.length} page=${page} pageSize=${pageSize} onPage=${setPage}
+      onSize=${v => { usersView.pageSize = v; usersView.page = 1; force(x => x + 1); }}/>
 
     ${unassigned.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--faint)">${T("Unassigned peers")}</h2><span class="count">${unassigned.length}</span></div>

@@ -20,13 +20,13 @@ import {
   TURN_FORKS_FALLBACK, turnLabel, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel, forkPickLabel,
   forkSupportsAwg, turnColor, turnClientColor, turnClientAuthor,
 } from "./turn-catalog.js";
-import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnProxiesFor, wdttOn,
+import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLooping, turnLoopMins, turnProxiesFor, wdttOn,
          isWdttName, isSelfContainedName, turnIfaceNameError,
          suggestPort, portHolder, portErrMsg, nextWdttName, cidrNet, subnetsOverlap, subnetFleetConflict,
          subnetServerAddr, suggestSubnet, ghostIface } from "./model.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules, reportDropped, rulesSummary } from "./routing.js";
-import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop, dropRate } from "./views.js";
+import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop, dropRate, ReachField } from "./views.js";
 import { IfaceThroughput, RangedHistory, lossColor } from "./charts.js";
 import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, subFeatureOn,
          ensureVaultUnlocked, wdttResealForNode } from "./crypto.js";
@@ -40,6 +40,29 @@ const html = htm.bind(h);
 export function turnSheetTitle(fork, title) { return T("Turn-proxy · {v1}", { v1: ((title || "").trim() ? (title.trim() + " · ") : "") + fork }); }
 // a fresh 64-hex wrap key (browser crypto) — used to pre-fill the create form's params for obfuscation forks
 export function randWrapKey() { const a = new Uint8Array(32); crypto.getRandomValues(a); return Array.from(a, b => b.toString(16).padStart(2, "0")).join(""); }
+
+// Which listen address a NEW turn-proxy's form should PRE-SELECT.
+//
+// ⚠️ THE REPORTED ENDPOINT IS A CANDIDATE, NOT AN ANSWER. `epIp` is read out of the node's own snapshot,
+// and that value is built from the node's local config — which the panel never corrects, so it goes stale
+// the moment a provider moves the box. This form used to default to it unconditionally, and because
+// `ipChoices` also puts it FIRST in the candidate list, the "does this land on this box?" check validated
+// it against a list containing itself and always answered yes. Measured 2026-09-16: every proxy created
+// after an address change was born binding an address the kernel refused, panicked and crash-looped, and
+// the operator saw only clients that connected and carried no traffic.
+//
+// So: prefer the reported endpoint only when the node's OWN reported addresses corroborate it; otherwise
+// prefer an offered address that they do. `nodeIps` empty means the node has not said — no basis to doubt
+// anything, so nothing changes. And a bridge node keeps defaulting to `epIp`: its real addresses are
+// container-private and filtered out of the picker, so nothing there could ever corroborate, and that
+// absence must not be read as "the endpoint is wrong".
+export function listenHostInit(epIp, ips, nodeIps) {
+  const have = (nodeIps || []).filter(Boolean);
+  const own = (ips || []).filter(ip => have.includes(ip));
+  if (epIp && (have.includes(epIp) || !own.length)) return epIp;
+  if (own.length) return own[0];
+  return (ips || [])[0] || "__custom__";
+}
 
 
 
@@ -90,6 +113,13 @@ export function shownTitle(key, real) {
   if ((real || "") === o.title || Date.now() - o.at > 20000) { delete _optTitle[key]; return real || ""; }
   return o.title;
 }
+// A crash-looping proxy, said the same way by its card and its sheet — the first half IS the node card's sentence
+// (swg-panel-server `_node_issues`), so the three surfaces cannot tell the operator three different numbers.
+export function turnLoopText(tp) {
+  return T("{v1}: crash-looping — {v2} restarts in {v3} min", { v1: tp.service, v2: tp.flapping, v3: turnLoopMins(tp) })
+    + ". " + T("Clients can reach it, but every session through it is cut each time it dies. Its journal on the node says why.");
+}
+
 // One turn-proxy card — shared by the node detail (Forwards-to shown) and the interface detail
 // (showForwards=false, that view is already scoped to the fronted iface). Same data, status tags,
 // online/down dimming, click-to-manage. `metas` = the node's all-interface metas (Store.describe[node]).
@@ -107,7 +137,10 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
   const queued = !!tp.pending;          // not up yet, waiting its turn in the sequential reconcile
   const failed = !!tp.failed;
   const stopped = !!tp.stopped;   // intentionally stopped from the panel (kept down)
-  const down = tp.running === false && !installing && !queued && !failed && !stopped;   // not-running, not in any in-flight state
+  // The node's crash-loop verdict ranks ABOVE plain down: it says why, and a looping proxy reads `running` whenever
+  // it is caught between crashes — this card rendered green beside a node card saying "crash-looping".
+  const looping = turnLooping(tp) && !installing && !queued && !failed;
+  const down = turnDown(tp) && !looping && !installing && !queued && !failed && !stopped;   // not-running, not in any in-flight state
   const converting = (nrec.proc_status || "").startsWith("converting");   // node is mid bare↔docker convert → every card "converting"
   const k = node + "|" + tp.service;
   const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
@@ -121,10 +154,10 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
   // 'creating' phase (installing/queued/assigned) plus failed/down/stopped/deleting; only a settled card is
   // full-bright. `nblocked` = the NODE forbids editing (offline / converting / re-installing / updating), which
   // is exactly what disables the buttons — so every card on the page dims together, not just the mesh ones.
-  const dim = !justRestarted && (installing || queued || pend || failed || down || stopped || err);
+  const dim = !justRestarted && (installing || queued || pend || failed || looping || down || stopped || err);
   const nblocked = nodeStale(node) || inProc(nrec.proc_status);
   const _busy = !!(queued || installing || (pend && pend !== "delete"));   // any in-flight create / install / op
-  const _bad = !!(failed || down || converting || stopped);
+  const _bad = !!(failed || looping || down || converting || stopped);
   const _settled = !!fronted && !_bad && !_busy;                           // up + healthy
   if (turnWasInstalling[k] && !installing && !_bad) turnReady[k] = Date.now() + 5000;   // OPTIMISTIC: install just ended without failing → "ready" NOW
   if (turnWasBusy[k] && _settled) {                    // settled after any in-flight state
@@ -148,6 +181,7 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
       : failed ? html`<${StatusTag} cls="tg-busy del" icon="warn" label=${T("install failed")} msg=${err || T("the install failed on the node")} title=${T("Command failed on the node")}/>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>${T("tag|restarted")}</span>`
       : stopped ? html`<span class="tg-off" title=${T("Stopped from the panel — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
+      : looping ? html`<${StatusTag} cls="tg-busy del" icon="warn" label=${T("tag|crash-looping")} msg=${err || turnLoopText(tp)} title=${T("Service keeps crashing on the node")}/>`
       : down ? html`<${StatusTag} cls="tg-busy del" label="down" msg=${err || T("service is not running on the node")} title=${T("Service down on the node")}/>`
       : (!fronted ? html`<span class="tg tg-warn" title=${T("Forwards to a port with no managed interface behind it — likely a misconfiguration.")}>${T("tag|unbound")}</span>` : null)}</div>
     <div class="ifcard-rows">
@@ -417,12 +451,15 @@ export function TurnManageSheet({ node, tp }) {
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
   const lhost = ipPickerVal(lsel, lcustom);
-  const hostOnNode = useHostOnNode(lhost, ips);   // a hostname is fine — as long as it lands on THIS box
+  // ⚠️ Checked against the node's REPORTED addresses, not against `ips`. `ipChoices` builds `ips` from the
+  // candidate under test (the reported endpoint goes in first), so validating against it was circular and
+  // could only ever answer "ok" — the guard existed and could never fire.
+  const hostOnNode = useHostOnNode(lhost, (nrec || {}).ips || []);
   const installed = tp.version || "";
   const installing = !!tp.installing;
   const failed = !!tp.failed;
   const stopped = !!tp.stopped;
-  const down = tp.running === false;
+  const looping = turnLooping(tp);
   const owner = turnOwner(svc);
   const doReinstall = async (verb, tag) => {
     // `verb` stays a CANONICAL id — it is compared below — and is translated only where it is shown. It
@@ -480,7 +517,10 @@ export function TurnManageSheet({ node, tp }) {
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Start the service on the node")} onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> ${T("Start service")}</button>`
         : installing
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${true} title=${T("Installing…")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`
-        : (tp.running !== false && !failed)
+        // a looping proxy keeps Stop + Restart however its state flickers between crashes — systemd is still
+        // retrying it, so those are the controls that act on it, and a footer that swapped to Reinstall on every
+        // crash would blink as badly as the verdict once did
+        : ((!turnDown(tp) || looping) && !failed)
         ? html`<${Fragment}>
             <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Stop the service on the node (stays down until started)")} onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> ${T("Stop service")}</button>
             <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Restart the service on the node")} onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> ${T("Restart service")}</button>
@@ -488,6 +528,7 @@ export function TurnManageSheet({ node, tp }) {
         : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Re-download the binary and start the service on the node")} onClick=${() => doReinstall("reinstall")}><${Ic} i="refresh"/> ${T("Reinstall service")}</button>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${dis || !!tperr || !turnDirty} title=${tperr || (!turnDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
+    ${looping ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>${turnLoopText(tp)}</span></div>` : null}
     ${blocked ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>${T("This node is busy or offline")}${nrec.proc_status ? html` (${procLabel(nrec.proc_status)})` : ""}${T(" — turn-proxy actions are disabled until it's reporting again.")}</span></div>` : null}
     <${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.turnSeries(node, turnFork(svc), r).then(x => x && x.ok ? x.data : {})}/>
     <div class="iface-intro" style="margin-top:8px">
@@ -500,7 +541,7 @@ export function TurnManageSheet({ node, tp }) {
         <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder="203.0.113.7"/></div>
       <div class="field"><label>${T("Listen port")}</label><input class=${tperr ? "bad" : ""} value=${lport} onInput=${e => setLport(e.target.value)} placeholder="57000"/>${tperr ? html`<div class="hint err">${tperr}</div>` : null}</div>
     </div>
-    ${lsel === "__custom__" && lhost && hostOnNode === "bad" ? (isBridge
+    ${lhost && hostOnNode === "bad" ? (isBridge
       ? html`<div class="notice" style="margin:-6px 0 16px"><${Ic} i="info"/><span>${Trich("Bridge node: the proxy binds `0.0.0.0` inside the container and this port is published, so enter the node's *public* IP/host (what clients dial) here.")}</span></div>`
       : html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This doesn't resolve to an address on this node. The proxy *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.")}</span></div>`) : null}
     <div class="field"><label>${T("Forwards to")}</label>
@@ -757,7 +798,8 @@ export function AppDropdown({ value, options, onChange }) {
   const cur = opts.find(o => o.id === value) || opts[0];
   useEffect(() => { if (!open) return; const h = () => setOpen(false); document.addEventListener("click", h); return () => document.removeEventListener("click", h); }, [open]);
   if (!cur) return null;
-  const lbl = o => html`<span class="osdd-lbl"><b style=${o.nameColor ? "color:" + o.nameColor : ""}>${o.name}</b><span class="app-by"> by </span><span style=${"color:" + o.color}>${o.author || "—"}</span>${o.plain ? html`<span class="app-plain">PLAIN</span>` : null}${autostartIcon(o.autostart)}</span>`;
+  // "by <author>" is one translated phrase (the key ClientEntryLabel already uses): a literal " by " stayed English on a RU panel.
+  const lbl = o => html`<span class="osdd-lbl"><b style=${o.nameColor ? "color:" + o.nameColor : ""}>${o.name}</b><span class="app-by">${Trich("by {v1}", { v1: html`<span class="app-by-who" style=${"color:" + o.color}>${o.author || "—"}</span>` })}</span>${o.plain ? html`<span class="app-plain">PLAIN</span>` : null}${autostartIcon(o.autostart)}</span>`;
   return html`<div class="osdd appdd" onClick=${e => e.stopPropagation()}>
     <button type="button" class=${"osdd-btn" + (open ? " open" : "")} onClick=${() => setOpen(o => !o)}>
       ${lbl(cur)}<span class="osdd-car">${open ? "▴" : "▾"}</span></button>
@@ -982,7 +1024,7 @@ export function TurnAppsPicker({ ctl, offered }) {
           </span>
           ${many ? html`<span class="osapp-car">▾</span>` : null}
           ${oe && oe.none ? html`<span class="osapp-bub"><span class="osapp-bub-txt"><b>${T("Not offered")}</b><span class="ce-by">${T(" — {os} users get no card for this server", { os: label })}</span></span></span>`
-            : oe ? html`<span class="osapp-bub"><span class="osapp-bub-txt"><b>${oe.name}</b>${oe.coreFork ? html`<span class="ce-by"> ${T("val|with")} </span><span style=${"color:" + turnColor(oe.coreFork)}>${oe.coreFork}</span><span class="ce-by"> ${T("val|core")}</span>` : html`<span class="ce-by"> by </span><span style=${"color:" + oe.color}>${oe.author}</span>`}${offered ? html`<span class="ce-by">${T(" offered to {v1} users", { v1: label })}</span>` : null}</span><${ClientEntryBadges} e=${oe}/></span>` : null}
+            : oe ? html`<span class="osapp-bub"><span class="osapp-bub-txt"><b>${oe.name}</b>${oe.coreFork ? html`<span class="ce-by"> ${T("val|with")} </span><span style=${"color:" + turnColor(oe.coreFork)}>${oe.coreFork}</span><span class="ce-by"> ${T("val|core")}</span>` : html`<span class="ce-by"> ${Trich("by {v1}", { v1: html`<span style=${"color:" + oe.color}>${oe.author}</span>` })}</span>`}${offered ? html`<span class="ce-by">${T(" offered to {v1} users", { v1: label })}</span>` : null}</span><${ClientEntryBadges} e=${oe}/></span>` : null}
         </button>`;
       })}
     </div>
@@ -1557,7 +1599,7 @@ export function SetupTurnSheet({ node, forwardIface }) {
   // a WireGuard-only fork can't front an AmneziaWG interface → hide awg interfaces from its picker
   const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
   const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
-  const lInit = epIp ? (ips.includes(epIp) ? epIp : "__custom__") : (ips[0] || "__custom__");
+  const lInit = listenHostInit(epIp, ips, (nrec || {}).ips);
   const [lsel, setLsel] = useState(lInit);
   const [lcustom, setLcustom] = useState(lInit === "__custom__" ? epIp : "");
   const [lport, setLport] = useState(String(suggestPort(node, "turn")));
@@ -1579,7 +1621,10 @@ export function SetupTurnSheet({ node, forwardIface }) {
   const isCustom = fwd === "__custom__";
   const f = turnForkList().find(x => x.id === fork) || FORKS[0] || turnForkList()[0];
   const lhost = ipPickerVal(lsel, lcustom);
-  const hostOnNode = useHostOnNode(lhost, ips);   // a hostname is fine — as long as it lands on THIS box
+  // ⚠️ Checked against the node's REPORTED addresses, not against `ips`. `ipChoices` builds `ips` from the
+  // candidate under test (the reported endpoint goes in first), so validating against it was circular and
+  // could only ever answer "ok" — the guard existed and could never fire.
+  const hostOnNode = useHostOnNode(lhost, (nrec || {}).ips || []);
   // WDTT (kind:"wdtt") owns its OWN built-in userspace-WG interface, so there's no Forwards-to. The internals
   // (iface / subnet / internal WG port) are auto-assigned to avoid collisions with this node's existing wdtt
   // instances + interfaces, and stay advanced-editable. Listen IP/port above are the PUBLIC DTLS endpoint.
@@ -1664,7 +1709,7 @@ export function SetupTurnSheet({ node, forwardIface }) {
           <div class="hint">${T("An address on this server — the proxy binds to it")}</div></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${tsperr ? "bad" : ""} value=${lport} onInput=${e => setLport(e.target.value)} placeholder="56000"/>${tsperr ? html`<div class="hint err">${tsperr}</div>` : null}</div>
       </div>
-      ${lsel === "__custom__" && lhost && hostOnNode === "bad" ? (isBridge
+      ${lhost && hostOnNode === "bad" ? (isBridge
         ? html`<div class="notice" style="margin:-6px 0 16px"><${Ic} i="info"/><span>${Trich("Bridge node: the proxy binds `0.0.0.0` inside the container and this port is published, so enter the node's *public* IP/host (what clients dial) here.")}</span></div>`
         : html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This doesn't resolve to an address on this node. The proxy *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.")}</span></div>`) : null}
       ${isCsqtt ? html`<${CsqttInstanceBody} node=${node} snap=${snap} saveRef=${csqttSaveRef} setBusy=${setBusy} setMsg=${setMsg} fail=${fail}/>`
@@ -2046,6 +2091,7 @@ export function EditWdttSheet({ node, iface }) {
   const wgperr = portErrMsg(node, wgPort, [cfg.wg_port, w.wg_port, _dtls]);   // live collision check (this instance's own WG + DTLS ports don't count)
   const [eg, setEg] = useState(() => egressInit(cfg));
   const [blk, setBlk] = useState(() => [...(cfg.block || [])]);
+  const [reach, setReach] = useState(cfg.reach || "user");   // device access (§10.6) — absent is "user"
   const [disc, setDisc] = useState({ routing: true, filters: false });   // Routing opens by default (only shown in Smart mode)
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
@@ -2056,7 +2102,7 @@ export function EditWdttSheet({ node, iface }) {
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() };
     Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, ...egressBody(eg) })
+    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...egressBody(eg) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4; busy → applied via trackIfaceOps
       .catch(e => fail((e && e.message) || T("save failed")));
   };
@@ -2101,6 +2147,7 @@ export function EditWdttSheet({ node, iface }) {
       open=${disc.routing} onToggle=${() => tog("routing")}>
       <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
     <//>` : null}
+    <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)} unvouchedRaw=${(nrec.reach_unvouched_raw || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
       summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
@@ -2305,6 +2352,7 @@ export function EditCsqttSheet({ node, iface }) {
   const cfg = (nrec.csqtt_cfg || {})[iface] || {};
   const c = ((Store.stats[node] || {}).csqtt || []).filter(Boolean).find(x => x.iface === iface) || {};
   const tunAddr = cfg.tun_addr || c.tun_addr || "";
+  const [reach, setReach] = useState(cfg.reach || "user");   // device access (§10.6) — absent is "user"
   const oldListen = cfg.listen || c.listen || "";
   const emode = nrec.routing_mode || "kernel";
   const [eg, setEg] = useState(() => egressInit(cfg));
@@ -2316,7 +2364,7 @@ export function EditCsqttSheet({ node, iface }) {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: oldListen, block: blk, ...egressBody(eg) })
+    api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...egressBody(eg) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
@@ -2344,6 +2392,7 @@ export function EditCsqttSheet({ node, iface }) {
       open=${disc.routing} onToggle=${() => tog("routing")}>
       <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
     <//>` : null}
+    <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
       summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>

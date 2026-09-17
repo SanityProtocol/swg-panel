@@ -20,9 +20,9 @@ import { go } from "./router.js";
 import { turnFork, turnLabel, turnColor, turnClientColor, turnClientAuthor, turnForkList, forkLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
-  Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
+  Popover, CapList, useCapped, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
   openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, rowSingle, rowDouble, rowNoSelect, RowError,
-  useAnchoredList, goSettings, LogBody, rateCell, uncatPop,
+  useAnchoredList, goSettings, LogBody, rateCell, uncatPop, ListPager, LIST_PAGE, pageSlice, modalDepth,
 } from "./ui.js";
 import {
   QR, qrDataURL, qrZoom, copyQrImage, buildConf, parseFullConf, downloadConf, getConfig, configOverrides,
@@ -37,7 +37,9 @@ import {
   confirmReassign, assignPeerToUser, openRecreateRekey, confirmRestoreDeployment, confirmCorrectDeployment,
   now_s,
 } from "./peer-actions.js";
-import { searchMatch, userStats, userStatTag } from "./views.js";
+import { searchMatch, userStats, userStatTag, groupShares, shareDeviceName, namedFew,
+         deviceLabel, deviceNameAt, ownerNameAt, userReach, reachTally, netsCached, netsFetch, netTally, netRowOnline, wantNetsCount,
+         peerAudience, peerAudCached, peerAudFetch, reachableByGroup } from "./views.js";
 import { AppDropdown, OsDropdown, ForkTag, turnForkPlatforms, WDTT_COLOR, appNameColor, turnEnabled,
          _OS_TABS } from "./turn.js";
 import { h, Fragment } from "preact";
@@ -162,11 +164,15 @@ export function VaultUnlockPanel({ need } = {}) {
   };
   return html`<div class="unlockpanel">
     <div class="unlockpanel-msg"><${Ic} i="key"/><span>${T("Unlock the Encryption Vault to see configs, QR codes and the subscription link.")}</span></div>
-    <div class="unlockpanel-row">
-      <input class="subpw" type="password" autofocus autocomplete="off" placeholder=${T("Panel password")} value=${pw}
-        onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
-      <button class="btn btn-primary" disabled=${busy || !pw} onClick=${unlock}>${busy ? T("Unlocking…") : T("Unlock")}</button>
-    </div>
+    ${/* ⚠️ A FORM OF ITS OWN, so a password manager looks for this password's username INSIDE it. Loose in a sheet, Chrome took
+          the nearest text field before it — the user sheet's group search — and wrote the saved login there (measured: the
+          picker opened reading "snproto"). autocomplete=off does not stop that; a form boundary does. Enter still unlocks
+          once: keydown handles it and cancels the implicit submit. */""}
+    <form class="unlockpanel-row" onSubmit=${e => e.preventDefault()}>
+      <input class="subpw" type="password" autofocus autocomplete="current-password" placeholder=${T("Panel password")} value=${pw}
+        onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); unlock(); } }} onInput=${e => setPw(e.target.value)}/>
+      <button type="button" class="btn btn-primary" disabled=${busy || !pw} onClick=${unlock}>${busy ? T("Unlocking…") : T("Unlock")}</button>
+    </form>
     <label class="vp-keep-row"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/> <span>${T("Trust this device and keep it unlocked")}</span></label>
   </div>`;
 }
@@ -490,10 +496,12 @@ export function QRUserFoot({ uid }) {
   const peers = Store.peersOfUser(uid);
   const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
   const count = plural(peers.length, "peer") + (nCfg > 1 ? " (" + T("{v1} configs)", { v1: nCfg }) : "");
-  return html`<${Fragment}><span class="qrfoot-count">${count}</span><span class="grow"></span><button class=${"btn btn-exp" + (hasExp ? " on" : "")} onClick=${() => openSetExpiry("user", uid)}><${Ic} i="clock"/> ${hasExp ? T("Reset expiry") : T("Set expiry")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(u)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(u)}<//>`;
+  return html`<${Fragment}><span class="qrfoot-count">${count}</span><${UserCounts} user=${u} className="qrfoot-ucounts"/><span class="grow"></span><button class=${"btn btn-exp" + (hasExp ? " on" : "")} onClick=${() => openSetExpiry("user", uid)}><${Ic} i="clock"/> ${hasExp ? T("Reset expiry") : T("Set expiry")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(u)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(u)}<//>`;
 }
 export function openUserEdit(user) {
-  openModal(html`<${Sheet} title=${T("Edit · {v1}", { v1: user.name })} subject=${{ kind: "user", id: user.id }}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
+  // Wider than the default sheet: this one carries the widest thing in the panel that is not a table — the user's networks, a row
+  // per network with its node and device counts — and at 640 those rows wrapped while the fields beside them sat half empty.
+  openModal(html`<${Sheet} title=${T("Edit · {v1}", { v1: user.name })} width=${780} subject=${{ kind: "user", id: user.id }}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
 }
 // Every QR/config the user owns, grouped by peer — one horizontal row of deployment QRs per peer (the peer's
 // PRIMARY deployment first, tagged, when it has more than one). Same TargetCard the peer QR modal uses, so a
@@ -694,6 +702,504 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
 
 // Inline-editable peer title (optimistic). The operator's label to tell a user's devices apart.
 
+// NETWORKS P3 (feature 13) — what this user's devices can reach beyond the internet: networks other devices front
+// on the same node, and the node's own local network. Asked for ONCE when the sheet opens, never per poll — it is a
+// cross-product (docs/NETWORKS-PLAN.md §4.10). Renders nothing when there is nothing beyond the internet to show.
+// ⚠️ ONE ROW PER NETWORK ON A NODE, not per deployment. It listed every deployment of every device with the networks under it,
+// so a user with 8 devices read as 12 blocks, and a device's turn-server deployments (the "+3" in the peer grid) looked like
+// devices of their own. Each row: the network, how it is reached, the node, and how many of this user's devices there route
+// it — the devices themselves on hover, capped. Paged, so 2 rows and 200 read the same.
+function UserNetworksPanel({ user }) {
+  const [data, setData] = useState(null), [page, setPage] = useState(1);
+  useEffect(() => {
+    let ok = true;
+    api.userNetworks({ user_id: user.id }).then(r => { if (ok && r && r.ok) setData(r.data); }).catch(() => {});
+    return () => { ok = false; };
+  }, [user.id]);
+  const via = id => { const q = Store.peer(id); return q ? (q.title || q.name || T("Untitled")) : ""; };
+  const devName = (p, t) => {                               // the title, else where it is: its address, or its server
+    const q = Store.peer(p.peer_id), tg = q && (q.targets || []).find(x => x.node === t.node && x.iface === t.iface);
+    const where = tg && tg.ip ? String(tg.ip).split("/")[0] : t.iface;
+    return p.title ? p.title + " (" + where + ")" : where;
+  };
+  const rank = c => (c === true ? 2 : c === null ? 1 : 0);  // a device reaches it if ANY of its deployments there routes it
+  const rows = new Map();
+  for (const p of ((data && data.peers) || []).filter(p => !p.blocked)) for (const t of p.targets) {
+    const put = (key, seed, covered) => {
+      const r = rows.get(key) || Object.assign({ key, node: t.node, devs: new Map() }, seed);
+      const d = r.devs.get(p.peer_id);
+      if (!d) r.devs.set(p.peer_id, { name: devName(p, t), covered });
+      else if (rank(covered) > rank(d.covered)) d.covered = covered;
+      rows.set(key, r);
+    };
+    for (const n of t.networks) put(t.node + "|" + n.prefix, { prefix: n.prefix, via: n.via, restricted: !!n.restricted, until: n.until || 0 }, n.covered);
+    // ⚠️ NEVER `true`: a node's LAN is reached only where this device's own routing names it, which is the panel's answer
+    // in `lan.covered`. An answer from a panel that predates the field is unknown (null), never reachable.
+    if (t.lan) put(t.node + "|lan", { prefix: t.lan.addrs.join(", "), lan: t.lan }, t.lan.covered === undefined ? null : t.lan.covered);
+  }
+  const list = [...rows.values()].sort((a, b) => Store.nodeName(a.node).localeCompare(Store.nodeName(b.node))
+    || (a.lan ? 1 : 0) - (b.lan ? 1 : 0) || a.prefix.localeCompare(b.prefix));
+  if (!list.length) return null;
+  const pages = Math.max(1, Math.ceil(list.length / LIST_PAGE)), pg = Math.min(page, pages);
+  // ⚠️ OWNERSHIP IS ASKED FIRST. `share_grants` always puts the owner into its own grant list, so a restricted device of
+  // this user's own granted to them and the row read "shared with this user" — about their own device. It is not shared
+  // with them; it is theirs, and it sits behind one of their own devices.
+  const ownDev = r => { const p = r.via ? Store.peer(r.via) : null; return !!(p && p.user_id === user.id); };
+  // Which of their devices it sits behind — "their own device" alone left the operator to go and look it up. The address
+  // is the one that device answers on THIS node, since that is the deployment carrying the network.
+  const devOf = r => {
+    const p = r.via ? Store.peer(r.via) : null;
+    if (!p) return "";
+    return deviceNameAt(p, r.node);
+  };
+  // WHO opened it, not just that it is open: "shared with this user" said nothing about whom to go to in order to change it.
+  const sharerOf = r => { const p = r.via ? Store.peer(r.via) : null; const u = p && p.user_id ? Store.user(p.user_id) : null; return u ? u.name : ""; };
+  const how = r => r.lan ? (r.lan.open ? T("the node's local network") : T("the node's local network, closed"))
+    : ownDev(r) ? T("behind their own device {v1}", { v1: devOf(r) })
+      : r.restricted ? (sharerOf(r)
+        ? (r.until ? T("shared by {v1} until {date}", { v1: sharerOf(r), date: fmtDate(r.until) }) : T("shared by {v1}", { v1: sharerOf(r) }))
+        : (r.until ? T("shared until {date}", { date: fmtDate(r.until) }) : T("shared with this user")))
+        : T("open to everyone on the node");
+  const row = r => {
+    const devs = [...r.devs.values()], node = Store.nodeName(r.node);
+    const ok = devs.filter(d => d.covered === true).length, no = devs.filter(d => d.covered === false).length;
+    const unk = devs.length - ok - no;
+    const state = d => d.covered === true ? T("reachable") : d.covered === false ? T("not in this device's routing") : T("routing unknown");
+    const cls = d => d.covered === true ? "ok" : d.covered === false ? "soon" : "off";
+    return html`<div class="unet" key=${r.key}>
+      <span class=${"mono unet-p" + (r.lan && !r.lan.open ? " off" : "")}>${r.prefix}</span>
+      <span class="unet-how">${how(r)}</span>
+      <span class="nm unet-node" style=${"color:" + (Store.nodeColor(r.node) || "var(--ink)")}>${node}</span>
+      <span class="grow"></span>
+      <${Popover} hoverOnly cls="netcount-pop" popCls="netroute-bub" trigger=${html`<span class="netcount"
+          aria-label=${T("{total} of this user's devices on {node}: {ok} reach it, {no} leave it out of their routing, {unk} unknown", { total: devs.length, node, ok, no, unk })}>
+        ${ok ? html`<span class="n ok">${ok}</span>` : null}${no ? html`<span class="n soon">${no}</span>` : null}${unk ? html`<span class="n unk">${unk}</span>` : null}</span>`}>
+        <span class="netroute-h">${T("{prefix} on {node}", { prefix: r.prefix, node })}</span>
+        ${r.via ? html`<div class="netbub-row">${T("Through {via}", { via: via(r.via) })}</div>` : null}
+        <${CapList} items=${devs} cap=${10} row=${d => html`<div class=${"netbub-row nb-dot " + cls(d)} key=${d.name}><b>${d.name}</b> <span class="faint">${state(d)}</span></div>`}/>
+      <//>
+    </div>`;
+  };
+  return html`<div class="field"><label>${T("Networks this user can reach")}</label>
+    <div class="unets">${pageSlice(list, pg).map(row)}</div>
+    <${ListPager} page=${pg} setPage=${setPage} total=${list.length}/>
+    <div class="hint">${T("Worked out when this sheet opens. A device whose routing leaves a network out can be widened from its own settings.")}</div></div>`;
+}
+
+// ── USER GROUPS (docs/GROUPS-PLAN.md G11) ────────────────────────────────────────────────────────────────────────────────────────
+// A user's groups on their sheet: chips that open each group, six shown and the rest counted with the names on hover — and, on the
+// label's own line, the way IN. Putting someone in a group used to mean leaving this sheet for Users → Groups, opening the group
+// and searching for them there: the one screen that knows who this person is could not do the one thing you came to it for. The
+// list offers the groups they are NOT in, and ends with a new group that opens already holding them.
+// A type-to-filter GROUP picker for a person's sheet. It replaced a Dropdown listing every group there is — five rows on this
+// fleet, and 200 groups rendered one 7,300px list with nothing to search it by (measured, 1.8.7 qualification §C9). The first
+// matches, how many more there are, and "Create new group…" always last and always in view, the way UserPicker offers people.
+function GroupCombo({ groups, onPick, onCreate, disabled }) {
+  const [q, setQ] = useState(""); const [open, setOpen] = useState(false);
+  const hits = groups.filter(g => searchMatch(g.name, q.toLowerCase()));
+  const shown = hits.slice(0, 6);   // six, not UserPicker's eight: with the count line and "Create new group…" the list then fits unscrolled (.uc-groups)
+  const { wrapRef, listRef, pos, popStyle } = useAnchoredList(open, setOpen, [q]);
+  const done = () => { setOpen(false); setQ(""); };
+  const inRef = useRef(null);
+  // the whole pill is the control — its "+" included, which opened nothing when only the field inside it listened
+  const openFromPill = e => { if (disabled || e.target === inRef.current) return; setOpen(true); if (inRef.current) inRef.current.focus(); };
+  return html`<div class=${"usercombo ugroup-combo" + (open ? " open" : "")} ref=${wrapRef} onClick=${openFromPill}>
+    <${Ic} i="plus"/>
+    ${/* ⚠️ type=search, autocomplete=off: this sheet also holds the vault's password field, and Chrome filled the text input
+          before it with the SAVED LOGIN — the picker opened reading "snproto" (measured). A search field is not a username. */""}
+    ${/* The pill is as wide as its words, in either language, and never narrower than them while you type: the field shares a
+          grid cell with invisible copies of the label and of the query, so it takes the wider of the two (.uc-size). It was a fixed 170 px, which left
+          the English label off-centre with a gap after it (operator, 2026-09-17). */""}
+    <span class="uc-size" data-l=${T("Add to a group")} data-q=${q}><input ref=${inRef} class="uc-input" type="search" size="1" autocomplete="off" value=${q} disabled=${disabled} placeholder=${T("Add to a group")} aria-label=${T("Add to a group")}
+      onClick=${() => setOpen(true)} onInput=${e => { setQ(e.target.value); setOpen(true); }}
+      onKeyDown=${e => { if (e.key === "Escape") { done(); return; }
+        // while the list is open Enter never saves the sheet: exactly one match picks it, anything else does nothing
+        if (e.key === "Enter" && open) { e.preventDefault(); if (q && hits.length === 1) { done(); onPick(hits[0].id); } } }}/></span>
+    ${open && pos ? html`<${Portal}><div class="uc-list uc-pop uc-groups" ref=${listRef} style=${popStyle}>
+      ${shown.map(g => html`<button class="uc-opt uc-group" key=${g.id} onClick=${() => { done(); onPick(g.id); }}><${Ic} i="users"/><span>${g.name}</span><span class="faint">${plural(g.users.length, "member")}</span></button>`)}
+      ${hits.length > shown.length ? html`<div class="uc-empty">${T("{v1} more — type to narrow", { v1: hits.length - shown.length })}</div>`
+        : hits.length ? null : html`<div class="uc-empty">${T("no match")}</div>`}
+      <button class="uc-opt uc-new" onClick=${() => { done(); onCreate(); }}>${T("Create new group…")}</button>
+    </div><//>` : null}
+  </div>`;
+}
+function UserGroupsField({ user }) {
+  // ⚠️ OPTIMISTIC. A membership is one delta against a roster that only refreshes on the next poll, so waiting for the
+  // round trip left a badge sitting there after it had been removed — the click looked ignored. `pend` holds what this
+  // sheet has just done, is applied over the store's answer, and each entry clears itself the moment the roster agrees;
+  // a refusal puts it straight back and says so, so the optimism is never a lie that outlives the request.
+  const [pend, setPend] = useState({});          // gid -> "in" | "out"
+  const base = Store.groupsByUser(user.id);
+  const baseIds = new Set(base.map(g => g.id));
+  useEffect(() => {
+    const next = {};
+    for (const [gid, want] of Object.entries(pend)) if ((want === "in") !== baseIds.has(gid)) next[gid] = want;
+    if (Object.keys(next).length !== Object.keys(pend).length) setPend(next);
+  });
+  const mine = [...base.filter(g => pend[g.id] !== "out"),
+    ...Object.keys(pend).filter(gid => pend[gid] === "in" && !baseIds.has(gid)).map(gid => Store.group(gid)).filter(Boolean)]
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const rest = mine.slice(6);
+  const [busy, setBusy] = useState(false);
+  const mineIds = new Set(mine.map(g => g.id));
+  const others = Store.groups().filter(g => !mineIds.has(g.id));
+  const write = async (call, ok, gid, want) => {
+    if (busy) return;
+    setBusy(true);
+    if (gid) setPend(p => ({ ...p, [gid]: want }));       // show it at once
+    let r = null;
+    try { r = await call(); } catch (e) { r = null; }
+    setBusy(false);
+    if (r && r.ok) { toast(ok, "ok"); Store.poll(); }
+    else {
+      if (gid) setPend(p => { const n = { ...p }; delete n[gid]; return n; });   // refused → put it back
+      toast(srvText(r) || T("The group wasn't saved."), "err");
+    }
+  };
+  const add = v => {
+    if (v === "__new") { openCreateGroup([user.id]); return; }
+    const g = Store.group(v);
+    if (g) write(() => api.groupUpdate({ id: v, add: [user.id] }), T("{name} is now in {group}.", { name: user.name, group: g.name }), v, "in");
+  };
+  // ⚠️ Taking someone OUT takes away what the group grants, so a group that grants networks asks first — the same sentence the
+  // group's own delete uses, because it is the same loss. A group that grants nothing just goes.
+  const drop = g => {
+    const go = () => write(() => api.groupUpdate({ id: g.id, remove: [user.id] }),
+      T("{name} is no longer in {group}.", { name: user.name, group: g.name }), g.id, "out");
+    const shares = groupShares(g.id);
+    if (!shares.length) return go();
+    openConfirm({ title: T("Remove {name} from the group", { name: user.name }), confirmLabel: T("Remove"), danger: true,
+      body: T("They lose the networks shared with this group, unless they're shared with them another way: {devices}.",
+              { devices: namedFew(shares.map(shareDeviceName)) }),
+      onConfirm: go });
+  };
+  return html`<div class="field ugroups-field">
+    <label>${T("Groups")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— members reach each other's devices, and a network can be shared with the group")}</span></label>
+    <div class="ugroups">
+      ${/* The badges wrap inside their OWN box: with the control as a sibling of the pills it wrapped to a line of its own the
+            moment there were more than a few, which is the opposite of sitting with them. */""}
+      <div class="ugroups-list">
+        ${mine.slice(0, 6).map(g => html`<span class="ugroup" key=${g.id}>
+          <button type="button" class="ugroup-nm" onClick=${() => openGroup(g.id)}><${Ic} i="users"/><span>${g.name}</span></button>
+          ${/* The same × every other tag in the panel is removed by (.tfb-x, the routing rule builder's): faint until
+                hovered, then a red wash. The circled `iconbtn danger` it used to be was a control this panel uses
+                nowhere else for taking a tag off. */""}
+          <button type="button" class="tfb-x ugroup-x" disabled=${busy} title=${T("Remove {name} from the group", { name: user.name })}
+            aria-label=${T("Remove {name} from the group", { name: user.name })} onClick=${() => drop(g)}><${Ic} i="x"/></button>
+        </span>`)}
+        ${rest.length ? html`<${Popover} hoverOnly cls="ugroup-pop" popCls="netroute-bub" trigger=${html`<span class="ugroup more">+${rest.length}</span>`}>
+          <${CapList} items=${rest} cap=${10} row=${g => html`<div class="netbub-row" key=${g.id}>${g.name}</div>`}/>
+        <//>` : null}
+        ${mine.length ? null : html`<span class="ugroups-none">${T("Not in any group.")}</span>`}
+      </div>
+      ${/* The way in sits with the badges, at the right of their first line. With groups left to join it opens that list
+            (ending in a new one); with none, there is nothing to list — so it opens the new-group window itself. */""}
+      ${others.length
+        ? html`<${GroupCombo} groups=${others} disabled=${busy} onPick=${add} onCreate=${() => openCreateGroup([user.id])}/>`
+        : html`<button type="button" class="ugroup-add-btn" disabled=${busy} onClick=${() => openCreateGroup([user.id])}>
+            <${Ic} i="plus"/>${T("Add to a group")}</button>`}
+    </div>
+  </div>`;
+}
+
+// ⚠️ A BUBBLE'S BODY IS A COMPONENT, not inline markup: Popover is handed its children already built, so anything written inline
+// here would be computed for every row of the list on every poll. As a component it renders only while the bubble is open.
+
+// Who this person's devices can open connections to: each person, then their devices, online ones lit. Group NAMES used to be
+// listed here and said nothing — a group is a means, and what an operator is looking for is who ends up reaching whom.
+function ReachBody({ user }) {
+  const rows = userReach(user.id);
+  const anyOnline = rows.some(r => r.online);
+  // Open on what is live when anything is: an operator looking at a lit chip is asking who is reachable NOW. With nothing
+  // online there is no such question, so it opens on everything rather than on an empty list. Mounted per opening, so the
+  // default is decided each time the bubble is shown.
+  const [all, setAll] = useState(!anyOnline);
+  const show = all ? rows : rows.filter(r => r.online);
+  const devs = r => (all ? r.devices : r.devices.filter(d => d.online));
+  const count = r => (r.online && r.online !== r.devices.length
+    ? T("{v1} ({v2} online)", { v1: plural(r.devices.length, "device"), v2: r.online })
+    : plural(r.devices.length, "device"));
+  return html`<${Fragment}>
+    <div class="rb-head"><span class="netroute-h">${T("Can reach")}</span><span class="grow"></span>
+      ${anyOnline ? html`<div class="dpsw rb-sw" role="radiogroup" aria-label=${T("Can reach")}>
+        <button type="button" role="radio" aria-checked=${!all} class=${!all ? "on" : ""} onClick=${() => setAll(false)}>${T("Online")}</button>
+        <button type="button" role="radio" aria-checked=${all} class=${all ? "on" : ""} onClick=${() => setAll(true)}>${T("filter|All")}</button>
+      </div>` : null}</div>
+    ${show.length ? html`<${CapList} items=${show} cap=${8} row=${r => html`<div class="rb-grp" key=${r.user.id}>
+      <div class="rb-u"><b>${r.user.name}</b><span class="grow"></span><span class="faint">${count(r)}</span></div>
+      <${CapList} items=${devs(r)} cap=${6} row=${d => html`<div class="rb-d" key=${d.peer.id}>
+        <span class=${"nb-dot2 " + (d.online ? "on" : "idle")}></span>
+        <b>${deviceNameAt(d.peer, d.node)}</b>
+        <span class="faint">${T("prep|on")}</span>
+        <span class="nb-node" style=${"color:" + (Store.nodeColor(d.node) || "var(--dim)")}>${Store.nodeName(d.node)}</span>
+      </div>`}/>
+    </div>`}/>` : html`<div class="netbub-row sub">${T("Nobody — no shared group, and no interface here is open to everyone.")}</div>`}
+  <//>`;
+}
+
+// Who reaches the networks behind ONE device — the inverse of the bubble above, hung off every networks indicator (the grid's
+// chip and the peer view's badge). ⚠️ SHARING IS PER DEVICE, NOT PER NETWORK, so this is ONE audience rather than one per
+// prefix: its owner alone, everyone on the node, or the people and groups it was shared with. Each grantee is shown what the
+// grant is actually worth — devices on a node this one is deployed to, since reach is judged per node and a grantee whose
+// devices are all elsewhere reaches nothing.
+export function ReachedByBody({ peer, blocked, down, onView }) {
+  useStore();
+  const rep = peerAudCached(peer.id);
+  useEffect(() => { peerAudFetch(peer.id); }, [peer.id]);
+  const a = peerAudience(peer);
+  const until = u => (u ? html`<span class="faint">${T("until {date}", { date: fmtDate(u) })}</span>` : null);
+  // ⚠️ The NODE'S verdict outranks the roster's intent: one that cannot restrict carries a restricted network for nobody, so
+  // naming its grantees without saying this would be confidently wrong. Asked, never assumed.
+  const cantShare = ((rep && rep.targets) || []).filter(t => t.can_share === false).map(t => Store.nodeName(t.node));
+  return html`<${Fragment}>
+    <div class="rb-head"><span class="netroute-h">${T("Can be reached by")}</span><span class="grow"></span>
+      ${onView ? html`<button type="button" class="btn btn-mini" onClick=${onView}>${T("View")}</button>` : null}</div>
+    ${(peer.routes || []).length ? html`<div class="rb-d"><b class="mono">${(peer.routes || []).join(", ")}</b></div>` : null}
+    ${blocked ? html`<div class="netbub-row sub">${T("Blocked — nothing reaches these through it.")}</div>`
+      : down ? html`<div class="netbub-row sub">${T("Offline — nothing reaches these until it reconnects.")}</div>` : null}
+    <div class="rb-grp">
+      ${a.mode === "everyone" ? html`<div class="rb-u"><b>${T("Anyone on {v1}", { v1: namedFew(a.nodes.map(n => Store.nodeName(n))) })}</b></div>`
+        : a.mode === "owner" ? html`<div class="rb-u"><b>${a.owner ? T("Only {v1}'s devices", { v1: a.owner.name }) : T("Only its owner's devices")}</b>
+            ${a.private ? html`<span class="grow"></span><span class="tg tg-priv">${T("tag|private")}</span>` : null}</div>`
+        // ⚠️ NO DOTS HERE. A grant is not a connection: a green dot beside a name would read as "online" when all it means
+        // is "allowed". The number beside each name is the honest signal — devices on a node this one is deployed to, so a
+        // grant worth nothing shows as 0 rather than looking the same as one that works.
+        : html`<${Fragment}>
+          <div class="rb-u"><b>${T("Shared with")}</b><span class="grow"></span><span class="faint">${a.owner ? T("owner: {v1}", { v1: a.owner.name }) : ""}</span></div>
+          <${CapList} items=${a.users} cap=${8} row=${u => html`<div class=${"rb-d" + (u.devices ? "" : " none")} key=${u.id}><b>${u.name}</b>
+            <span class="faint">${plural(u.devices, "device")}</span>${until(u.until)}</div>`}/>
+          <${CapList} items=${a.groups} cap=${6} row=${g => html`<div class="rb-d" key=${g.id}><b>${g.name}</b>
+            <span class="faint">${T("group · {v1}", { v1: plural(g.members, "member") })}</span>${until(g.until)}</div>`}/>
+        <//>`}
+    </div>
+    ${cantShare.length ? html`<div class="netbub-row sub foot">${T("{v1} can't restrict who reaches a network, so it carries these for nobody.", { v1: namedFew(cantShare) })}</div>` : null}
+  <//>`;
+}
+
+// The networks they reach, as the PANEL answers it — the same list their sheet shows, with the device each network sits behind.
+function NetsBody({ user }) {
+  const [, force] = useState(0);
+  const hit = netsCached(user.id);
+  useEffect(() => { if (!hit) netsFetch(user.id).then(() => force(x => x + 1)); }, [user.id]);
+  // ⚠️ THE REACH BUBBLE'S RULE, for the chip that now says the same thing: open on what is live when anything is, on everything
+  // when nothing is. The choice is decided when the rows are KNOWN, not at mount — a bubble opened before its answer lands
+  // would otherwise have settled on "all" while it still read "Loading…".
+  const rows = hit ? hit.rows : [];
+  const anyOnline = rows.some(netRowOnline);
+  const [pick, setPick] = useState(null);
+  const all = pick == null ? !anyOnline : pick;
+  const [shown, more] = useCapped(all ? rows : rows.filter(netRowOnline), 12);   // before the early return: a hook runs on every render
+  if (!hit) return html`<${Fragment}><span class="netroute-h">${T("Networks")}</span>
+    <div class="netbub-row sub">${T("Loading…")}</div><//>`;
+  // ⚠️ GROUPED BY HOW THEY GET IT, and "how" is the heading rather than a phrase buried mid-row — so every row can then be
+  // the same shape: prefix, the device carrying it, the node. ⚠️ The first bucket used to read "shared with this user",
+  // which was WRONG for a user's own device: `share_grants` always puts the owner in its own grant list, so a restricted
+  // device of theirs granted to them and the row repeated it back. Ownership is asked BEFORE sharing is.
+  const ownerOf = r => (r.via ? Store.peer(r.via) : null);
+  const mine = r => { const p = ownerOf(r); return !!(p && p.user_id === user.id); };
+  const BUCKETS = [
+    [T("This user's networks"), r => !r.lan && mine(r)],
+    [T("Shared with this user"), r => !r.lan && !mine(r) && r.restricted],
+    [T("Open to everyone on the node"), r => !r.lan && !mine(r) && !r.restricted],
+    [T("The node's own local network"), r => !!r.lan],
+  ];
+  // One dot, reachability first (operator's choice): a network this user's devices do not route is unreachable whatever the
+  // device carrying it is doing, and that is the thing worth seeing first. Otherwise it is live or not by `netRowOnline` — the
+  // rule the chip counts with, so a green dot here is exactly one of the chip's online number.
+  const dot = r => r.covered === false ? "no" : r.covered == null ? "unk" : netRowOnline(r) ? "on" : "idle";
+  const dotTitle = r => r.covered === false ? T("Not in this user's routing — they can't reach it")
+    : r.covered == null ? T("Routing unknown — this device's build doesn't say") : "";
+  const row = r => {
+    const dev = ownerOf(r);
+    // Their own device is named by its title (they can see and edit it); anyone else's is named by WHOSE it is.
+    const who = mine(r) ? deviceNameAt(dev, r.node) : ownerNameAt(dev, r.node);
+    return html`<div class="nb-row" key=${r.node + r.prefix}>
+      <span class=${"nb-dot2 " + dot(r)} title=${dotTitle(r)}></span>
+      <b class="mono">${r.prefix}</b>
+      ${dev ? html`<span class="faint">${T("via")}</span><span class=${"rb-dev" + (netRowOnline(r) ? " on" : "")} title=${who}>${who}</span>` : null}
+      <span class="faint">${T("prep|on")}</span>
+      <span class="nb-node" style=${"color:" + (Store.nodeColor(r.node) || "var(--dim)")}>${Store.nodeName(r.node)}</span>
+      ${r.until ? html`<span class="faint">${T("until {date}", { date: fmtDate(r.until) })}</span>` : null}
+    </div>`;
+  };
+  return html`<${Fragment}>
+    <div class="rb-head"><span class="netroute-h">${T("Networks")}</span><span class="grow"></span>
+      ${anyOnline ? html`<div class="dpsw rb-sw" role="radiogroup" aria-label=${T("Networks")}>
+        <button type="button" role="radio" aria-checked=${!all} class=${!all ? "on" : ""} onClick=${() => setPick(false)}>${T("Online")}</button>
+        <button type="button" role="radio" aria-checked=${all} class=${all ? "on" : ""} onClick=${() => setPick(true)}>${T("filter|All")}</button>
+      </div>` : null}</div>
+    ${rows.length ? BUCKETS.map(([label, inBucket]) => {
+      const rs = shown.filter(inBucket);
+      return rs.length ? html`<div class="nb-group" key=${label}>
+        <div class="nb-group-h">${label}</div>${rs.map(row)}</div>` : null;
+    }) : html`<div class="netbub-row sub">${T("Nothing beyond the internet.")}</div>`}
+    ${more}
+  <//>`;
+}
+
+// The two things a LIST can say about a person: who their devices reach, and which networks they reach. Same chip and bubble as
+// the Groups screen's counts, so one fact reads the same wherever it appears. A zero count renders nothing — a row of zeroes on
+// every line is noise. ⚠️ The networks count is the roster's own (their devices' networks + what is shared with them) until the
+// bubble has been opened once; from then on it is the panel's number, which is what the user's sheet shows.
+export function UserCounts({ user, className }) {
+  useStore();                                     // both the batch and netsFetch() emit when an answer lands
+  useEffect(() => { wantNetsCount(user.id); });   // this row asks for its own number; the asks go out as one request
+  // The chip counts DEVICES, and says the number worth acting on: online while any are, otherwise all of them. It is lit
+  // in the same case, which is what tells you the bubble will open on the live ones.
+  const reach = reachTally(user.id);
+  const people = reach.shown;
+  // The networks chip says it the same way (operator, 2026-09-17): the online count, lit in the connection colour, while any
+  // network is live; otherwise all of them — and its bubble opens on the same set. The panel's rows the moment they are known,
+  // never replaced by the roster's guess afterwards; the guess is only what the very first paint shows, and cannot say what is
+  // live, so it is never lit.
+  const nt = netTally(user.id);
+  const nets = nt.shown;
+  if (!people && !nets) return null;
+  // ⚠️ title="" ON PURPOSE. The user ROW carries title="Double-click for QR / configs", and a title on an ancestor is
+  // what the browser shows over every descendant — so hovering these chips raised a caption about something else
+  // entirely, on top of the bubble they do open. An empty title on the way down suppresses it.
+  return html`<span class=${"ucounts" + (className ? " " + className : "")} title="" onClick=${e => e.stopPropagation()}>
+    ${people ? html`<${Popover} hoverOnly cls="grp-pop" popCls="netroute-bub netbub-wide"
+      trigger=${html`<span class=${"grp-n" + (reach.online ? " lit" : "")} data-chip="reach" aria-label=${reach.online
+        ? T("Can reach {v1} online now", { v1: plural(reach.online, "device") })
+        : T("Can reach {v1}, none online", { v1: plural(reach.total, "device") })}><${Ic} i="users"/>${people}</span>`}>
+      <${ReachBody} user=${user}/>
+    <//>` : null}
+    ${nets ? html`<${Popover} hoverOnly cls="grp-pop" popCls="netroute-bub netbub-wide"
+      trigger=${html`<span class=${"grp-n" + (nt.online ? " lit-net" : "")} data-chip="networks" aria-label=${nt.online
+        ? T("Reaches {v1} online now", { v1: plural(nt.online, "network") })
+        : T("Reaches {v1}, none online", { v1: plural(nt.total, "network") })}><${Ic} i="network"/>${nets}</span>`}>
+      <${NetsBody} user=${user}/>
+    <//>` : null}
+  </span>`;
+}
+
+// One group: its name and its members, saved as ONE change — a rename plus an add/remove delta against the members this window
+// opened with, so two operators editing one group never undo each other. The members are the People window's list: search to add,
+// a filter past a page, 15 rows a page. When networks are shared with the group, the window says what adding or removing does.
+export function openGroup(gid) { (modalDepth() > 0 ? pushModal : openModal)(html`<${GroupSheet} gid=${gid}/>`); }
+// `seed` are the members a new group opens with — the user whose sheet asked for it. It is also wired straight to a click handler
+// ("New group" on the Groups screen), so anything that is not a list of ids is no seed at all.
+export function openCreateGroup(seed) {
+  const ids = Array.isArray(seed) ? seed : [];
+  (modalDepth() > 0 ? pushModal : openModal)(html`<${GroupSheet} gid=${null} seed=${ids}/>`);
+}
+export function confirmDeleteGroup(g, inSheet) {
+  const shares = groupShares(g.id);
+  openConfirm({ title: T("Delete group · {name}", { name: g.name }), confirmLabel: T("Delete group"), danger: true,
+    body: T("Its members stay as users; only the group is deleted.") + (shares.length ? " " + T("Networks shared with it stop being reachable for its members, unless they're shared with them another way: {devices}.",
+      { devices: namedFew(shares.map(shareDeviceName)) }) : ""),
+    onConfirm: async () => {
+      let r = null;
+      try { r = await api.groupDelete({ id: g.id }); } catch (e) { r = null; }
+      // only a delete that happened closes the group window — a failed one keeps it, and whatever was being edited in it
+      if (r && r.ok) { closeModals(inSheet ? 2 : 1); toast(T("Group deleted."), "ok"); Store.poll(); }
+      else { closeModal(); toast(srvText(r) || T("The group wasn't deleted."), "err"); Store.poll(); }
+    } });
+}
+// A member's devices the rest of the group can reach: the number, and the devices on hover (the users grid's reach bubble idiom).
+// ⚠️ The bubble body is a component: the member list pages 15 rows and each row would otherwise build its list on every poll.
+function GroupMemberDevices({ uid, name }) {
+  const devs = reachableByGroup(uid);
+  const all = Store.peersByUser(uid).filter(p => !p.unassigned).length;
+  const aria = T("{name}: {n} the group can reach, of {total}", { name, n: plural(devs.length, "device"), total: all });
+  if (!devs.length) return html`<span class="faint gmem-dev" aria-label=${aria}>${T("none the group can reach")}</span>`;
+  return html`<${Popover} hoverOnly cls="grp-pop gmem-pop" popCls="netroute-bub netbub-wide" trigger=${html`<span class="faint gmem-dev" aria-label=${aria}>${plural(devs.length, "device")}</span>`}>
+    <${GroupMemberDevicesBody} devs=${devs} all=${all}/>
+  <//>`;
+}
+function GroupMemberDevicesBody({ devs, all }) {
+  return html`<${Fragment}>
+    <span class="netroute-h">${T("Devices the group can reach")}</span>
+    <${CapList} items=${devs} cap=${6} row=${d => html`<div class="rb-d" key=${d.peer.id}>
+      <span class=${"nb-dot2 " + (d.online ? "on" : "idle")}></span>
+      <b>${deviceNameAt(d.peer, d.node)}</b>
+      <span class="faint">${T("prep|on")}</span>
+      <span class="nb-node" style=${"color:" + (Store.nodeColor(d.node) || "var(--dim)")}>${Store.nodeName(d.node)}</span>
+    </div>`}/>
+    ${all > devs.length ? html`<div class="netbub-row sub foot">${T("{n} not counted: Private, or on an interface that doesn't let others in.", { n: plural(all - devs.length, "device") })}</div>` : null}
+  <//>`;
+}
+
+function GroupSheet({ gid, seed }) {
+  useStore();
+  const g = gid ? Store.group(gid) : null;
+  const base = useRef(null);
+  if (base.current === null) base.current = { name: g ? g.name : "", users: g ? g.users.slice() : [] };
+  // A new group opens holding whoever asked for it (a user's sheet), as an unsaved change against an empty group — so Cancel
+  // leaves nothing behind and Create sends them as its members.
+  const [name, setName] = useState(base.current.name);
+  const [members, setMembers] = useState(() => (gid ? base.current.users : (seed || [])).slice());
+  const [q, setQ] = useState(""), [page, setPage] = useState(1), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
+  const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null);
+  const nameOf = new Map(Store.recon.users.map(u => [u.id, u.name]));      // one pass, not a search per member per comparison
+  const uname = id => nameOf.get(id) || "";
+  const byName = (a, b) => uname(a).localeCompare(uname(b));
+  const list = members.filter(id => nameOf.has(id)).sort(byName);
+  const add = list.filter(u => !base.current.users.includes(u)), remove = base.current.users.filter(u => !members.includes(u));
+  dirtyRef.current = name.trim() !== base.current.name || add.length > 0 || remove.length > 0;
+  if (gid && !g) return html`<${Sheet} title=${T("Group · {name}", { name: base.current.name })}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><//>`}>
+    <div class="empty"><b>${T("This group no longer exists.")}</b></div><//>`;
+  const ql = q.trim().toLowerCase();
+  const rows = ql ? list.filter(id => uname(id).toLowerCase().includes(ql)) : list;
+  const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE)), pg = Math.min(page, pages);
+  const addOne = id => {
+    if (!id || members.includes(id)) return;
+    setMembers(m => [...m, id]); setQ("");
+    setPage(Math.floor([...list, id].sort(byName).indexOf(id) / LIST_PAGE) + 1);   // to the page the new member lands on
+  };
+  const drop = id => setMembers(m => m.filter(x => x !== id));
+  // Sheet marks itself dirty on ANY input; the filter and the person search change nothing, so they hand the guard back (§18.1).
+  const typedOnly = () => { if (cleanRef.current) cleanRef.current(); };
+  const shares = gid ? groupShares(gid) : [];
+  const save = async () => {
+    const nm = name.trim();
+    if (!nm) { setErr(T("Give the group a name.")); return; }
+    setBusy(true); setErr("");
+    let r = null;
+    try {
+      r = gid ? await api.groupUpdate({ id: gid, ...(nm !== base.current.name ? { name: nm } : {}), add, remove })
+              : await api.groupCreate({ name: nm, users: list });
+    } catch (e) { r = null; }
+    setBusy(false);
+    if (!r || !r.ok) { setErr(srvText(r) || T("The group wasn't saved.")); return; }
+    dirtyRef.current = false; if (cleanRef.current) cleanRef.current();
+    toast(gid ? T("Group saved.") : T("Group created."), "ok");
+    closeModal(); Store.poll();
+  };
+  return html`<${Sheet} title=${gid ? T("Group · {name}", { name: base.current.name }) : T("New group")} width=${620}
+    dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
+    foot=${html`<${Fragment}>
+      ${gid ? html`<button class="btn btn-danger" onClick=${() => confirmDeleteGroup(g, true)}><${Ic} i="trash"/> ${T("Delete group")}</button>` : null}
+      <span class="grow"></span>
+      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-primary" disabled=${busy || !name.trim() || (gid && !dirtyRef.current)} onClick=${save}>${gid ? T("Save") : T("Create group")}</button><//>`}>
+    <div class="field"><label>${T("Name")}</label><input value=${name} maxlength="64" placeholder=${T("Ivanov family")} onInput=${e => setName(e.target.value)}/></div>
+    <div class="field"><label>${T("Members")} <span class="faint gcount">${list.length}</span></label>
+      <div class="sharebar" onInput=${typedOnly} onChange=${typedOnly}>
+        <div class="sharebar-add"><${UserPicker} value=${null} placeholder=${T("Add a person…")} exclude=${list} onChange=${addOne}/></div>
+        ${list.length > LIST_PAGE ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
+          aria-label=${T("Filter the list…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
+      </div>
+      ${list.length ? html`<div class="sharegrid gmembers" role="table">
+          ${pageSlice(rows, pg).map(id => { const u = Store.user(id) || {};
+            return html`<div class="sharegrid-r" role="row" key=${id}>
+            <span class="nm">${uname(id)}${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</span>
+            <${GroupMemberDevices} uid=${id} name=${uname(id)}/>
+            <span><button type="button" class="iconbtn danger" title=${T("Remove {name} from the group", { name: uname(id) })}
+              aria-label=${T("Remove {name} from the group", { name: uname(id) })} onClick=${() => drop(id)}><${Ic} i="x"/></button></span></div>`; })}
+          ${!rows.length ? html`<div class="sharegrid-empty">${T("Nobody on the list matches “{q}”.", { q })}</div>` : null}
+        </div>
+        <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>`
+      : html`<div class="sharegrid-empty gempty">${T("No members yet — add people with the search above.")}</div>`}
+    </div>
+    ${shares.length ? html`<div class="hint">${T("Networks shared with this group: {devices}. Everyone you add reaches them; anyone you remove loses them, unless they're shared with them another way.",
+      { devices: namedFew(shares.map(shareDeviceName)) })}</div>` : null}
+    ${err ? html`<div class="formmsg err">${err}</div>` : null}
+  <//>`;
+}
+
 export function UserEditCard({ user, done }) {
   useStore();          // re-render on poll, so the Block/Unblock button flips after the action without reopening
   const [name, setName] = useState(user.name || "");
@@ -717,7 +1223,12 @@ export function UserEditCard({ user, done }) {
     });
   };
   const del = () => openConfirm({ title: T("Delete user · {name}", { name: user.name }), confirmLabel: T("Delete user"), danger: true, back: done,
-    body: T("Their peers are revoked and become unassigned.") + " " + T("This can't be undone."),
+    body: T("Their peers are revoked and become unassigned.") + " " + T("This can't be undone.") + (() => {
+      // A gateway among them takes its networks down for everyone who used them (docs/NETWORKS-PLAN.md §18).
+      const gws = Store.peersOfUser(user.id).filter(p => (p.routes || []).length);
+      return gws.length ? " " + T("Their devices that carry networks ({devices}) take them down too — everyone who reaches them through those devices loses access.",
+        { devices: gws.map(p => p.title || T("Untitled")).join(", ") }) : "";
+    })(),
     // Delete closes the editor it was opened from — see confirmDeletePeer for why `back` is not enough.
     // Two frames, not the whole stack: the confirm and this editor. Identical when the editor is the only
     // thing open (the usual case), and correct rather than lucky when something opened it.
@@ -725,17 +1236,21 @@ export function UserEditCard({ user, done }) {
       return mutate({ key: "user:" + user.id,
         patch: s => { delete s.roster.users[user.id]; for (const p of Object.values(s.roster.peers)) if (p.user_id === user.id) p.user_id = null; },
         call: () => api.userDelete({ id: user.id }) }); } });
-  return html`<div class="card" style="max-width:600px">
+  return html`<div class="card" style="max-width:740px">
     <${SubStatusLine} user=${user} pos="center"/>
     <div class="field"><label>${T("Name")}</label><input value=${name} onInput=${e => setName(e.target.value)} maxlength="64"/></div>
-    <div class="field"><label>${T("Tag")}</label><input value=${tag} onInput=${e => setTag(e.target.value)} placeholder=${T("Friend, Family, Work…")} maxlength="32"/></div>
-    <div class="field"><label>${T("Note")}</label><input value=${note} onInput=${e => setNote(e.target.value)} placeholder=${T("Uses iPhone and router")} maxlength="200"/></div>
+    <div class="fieldrow">
+      <div class="field"><label>${T("Tag")}</label><input value=${tag} onInput=${e => setTag(e.target.value)} placeholder=${T("Friend, Family, Work…")} maxlength="32"/></div>
+      <div class="field"><label>${T("Note")}</label><input value=${note} onInput=${e => setNote(e.target.value)} placeholder=${T("Uses iPhone and router")} maxlength="200"/></div>
+    </div>
+    <${UserGroupsField} user=${user}/>
     <div class="field"><label>${T("Access expires")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— the whole subscription; blank = never")}</span></label>
       <div class="daterow"><input type="date" class="datein" value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>${T("Clear")}</button>` : null}</div>
       <div class="hint">${T("On this date the subscription and all its peers stop working (they reappear if you extend it). A peer's own expiry can't be later than this.")}</div></div>
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
     ${showVk ? html`<${VkLinkField} user=${user}/>` : null}
+    <${UserNetworksPanel} user=${user}/>
     <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> ${T("Delete user")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!dirty} onClick=${save}>${T("Save")}</button></div>
   </div>`;
 }

@@ -123,9 +123,13 @@ for ref, want in (("dev", "dev"), ("v1.9.0", "v1.9.0"), ("", "main")):
 print("\n[4] THE NODE — it has no wrapper, so the ref has to reach it another way")
 nsrc = {f: open(os.path.join(ROOT, f), encoding="utf-8").read() for f in NODE_SRC}
 if PERTURB:
-    nsrc["swg-noded"] = nsrc["swg-noded"].replace(
-        'UPDATE_CMD_TMPL = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/{ref}/"',
-        'UPDATE_CMD_TMPL = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"')
+    # ⚠️ PLANT ACROSS THE WHOLE ASSIGNMENT, AND ASSERT IT WAS FOUND. This used to replace one exact first line;
+    # when the template grew an API door (86b46f6) that line no longer existed, `.replace` changed nothing, and
+    # the node checks below stayed GREEN under --perturb. The template now carries {ref} three times (raw URL,
+    # API door, SWG_REF), so the hardcoded-main shape is every one of them.
+    _tm = re.search(r"^UPDATE_CMD_TMPL = \(.*?\)\n", nsrc["swg-noded"], re.S | re.M)
+    assert _tm and "{ref}" in _tm.group(0), "UPDATE_CMD_TMPL not found — this perturbation would plant nothing"
+    nsrc["swg-noded"] = nsrc["swg-noded"].replace(_tm.group(0), _tm.group(0).replace("{ref}", "main"), 1)
     for f in ("install-node.sh", "install-host.sh"):
         nsrc[f] = re.sub(r'\n\s*"update_ref": "\$\{_swg_[a-z_]*ref\}"', "", nsrc[f])
     nsrc["update.sh"] = nsrc["update.sh"].replace("  ensure_node_update_ref #", "  #")

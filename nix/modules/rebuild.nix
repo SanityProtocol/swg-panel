@@ -123,6 +123,16 @@ let
     # mount, so a `.path` unit never sees the write a container makes to the trigger). Stamp BEFORE
     # rebuilding, never after: a rebuild restarts this very host's services, and a stamp written
     # afterwards would be missed by a run that was interrupted — which then loops for ever.
+    #
+    # ⚠️ AN EMPTY TRIGGER IS NOT A REQUEST. tmpfiles creates the file empty at activation (the daemon writes it across
+    # a bind mount, so it must exist first), and every real request writes a timestamp into it — swg-noded and the
+    # panel both do. Without this test a FRESH install has a trigger and no stamp, so the container arm's first 30 s
+    # timer tick ran a full update nobody asked for: pull, flake update, rebuild, restart of the node container, and
+    # "updated" reported to the panel. Measured on a fresh NixOS 26.05 podman node (1.8.7 qualification PART 4, A1):
+    # the container went down 08:45:48 → 08:45:58, 37 s after the install finished.
+    if [ ! -s ${triggerFile} ]; then
+      exit 0
+    fi
     if [ -e ${stampFile} ] && [ ! ${triggerFile} -nt ${stampFile} ]; then
       exit 0
     fi

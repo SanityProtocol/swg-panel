@@ -52,10 +52,12 @@ def _load(path, name):
 
 if PERTURB:
     _src = open(NODED, encoding="utf-8").read()
-    _cut = 'for e in _dxs if e["state"] == "up" and e.get("scope") != "rule"]'
+    # The comprehension wraps onto a second line (the gatewayless guard follows), so the anchor ends at the scope test —
+    # an anchor carrying the closing `]` matched nothing once that line was split, and the run refused rather than false-pass.
+    _cut = 'for e in _dxs if e["state"] == "up" and e.get("scope") != "rule"\n'
     assert _src.count(_cut) == 1, "perturbation anchor missing — this run would FALSE-PASS"
     _tmp = os.path.join(HERE, ".perturbed-noded.py")
-    open(_tmp, "w", encoding="utf-8").write(_src.replace(_cut, 'for e in _dxs if e["state"] == "up"]', 1))
+    open(_tmp, "w", encoding="utf-8").write(_src.replace(_cut, 'for e in _dxs if e["state"] == "up"\n', 1))
     NODED = _tmp
 
 N, P = _load(NODED, "swgnoded"), _load(PANEL, "swgpanel")

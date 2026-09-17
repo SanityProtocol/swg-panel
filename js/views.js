@@ -23,12 +23,70 @@ import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
 import { go } from "./router.js";
 import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
-import { T, plural, pluralWord, fmtNum, srvText } from "./i18n.js";
+import { T, plural, pluralWord, fmtNum, srvText, locale } from "./i18n.js";
 import { h } from "preact";
 import { useState } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
+
+// ── DEVICE ACCESS (docs/DEVICE-ACCESS-PLAN.md §10.6) ────────────────────────────────────────────────────────────────────
+// Who may OPEN a connection to a device on an interface — judged at the destination, never the source. Absent is "Same
+// user and their groups": every interface that predates this was isolated on upgrade (A3). The line under the control is
+// the node's own word (snapshot `dev_reach`), never the panel's guess. Lives here because the interface sheets (iface.js)
+// and the WDTT/csqtt sheets (turn.js) both render it, and iface.js already imports turn.js.
+export const reachOpts = () => [["everyone", T("Everyone on this node")], ["user", T("Same user and their groups")], ["none", T("Nobody")]];
+// Why the node left a listed interface out of its table (snapshot `dev_reach.skipped`, §11.2 F2) — the node's own word, so
+// "not enforced" is never the panel's guess. Shared with the interface card's chip (screen-nodes.js `reachChip`).
+export const reachSkipText = (nname, why) => why === "overlap"
+  ? T("Not enforced on {node} — this interface's subnet overlaps another interface's.", { node: nname })
+  : why === "no_address" ? T("Not enforced on {node} — the node can't read this interface's address.", { node: nname })
+  : why === "not_here" ? T("Not enforced on {node} — the node doesn't run this interface.", { node: nname })
+  : T("Not enforced on {node}.", { node: nname });
+// A reload the node's nft refused leaves its PREVIOUS table in force (one transaction, §11.2 F3): not open, but not this setting.
+export const reachStaleText = (nname, st) => T("Couldn't apply the latest change on {node}: {detail}. The previous rules stay in force.",
+  { node: nname, detail: st.detail || st.why || "" });
+/** A moment, in the PANEL's language — "17 Sept, 09:20" / "17 сент., 09:20". `undefined` as the locale meant the BROWSER's, so a
+ *  Russian panel on an English browser read "Sep 17, 09:20 AM" inside a Russian sentence (1.8.7 qualification PART 3, P3-3). */
+export const fmtWhen = s => { try { return new Date(s * 1000).toLocaleString(locale(), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } };
+
+export function ReachField({ node, iface, value, onChange, create, unvouched, unvouchedRaw }) {
+  const label = T("Who can open connections to devices here");
+  const snap = node ? (Store.stats[node] || {}) : {};
+  const st = snap.dev_reach;
+  const nname = node ? Store.nodeName(node) : "";
+  const mine = !!(st && (st.ifaces || []).includes(iface));
+  const skipped = st && st.skipped ? st.skipped[iface] : null;
+  const when = fmtWhen;
+  let status = null;
+  // Only a node reporting now is believed: a stale snapshot says nothing about what is in force.
+  // ⚠️ A promoted interface is ENFORCED though it is set to Everyone, so it gets the same status line as any guarded one —
+  // without this it showed none at all: no "packets stopped since", and no way to report a refused or skipped reload.
+  const _promoted = value === "everyone" && !create && node && promotedAt(node, iface);
+  if (!create && node && (value !== "everyone" || _promoted) && Store.recon.nodeStatus[node] === "live") {
+    if (!((snap.net_deps || {}).reach >= 2)) status = html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Not enforced on {node} — it runs an older version. Update it.", { node: nname })}</span></div>`;
+    else if (st && st.ok === false && st.stale) status = html`<div class="formmsg err">${reachStaleText(nname, st)}</div>`;
+    else if (st && st.ok === false && mine) status = html`<div class="formmsg err">${T("Couldn't apply on {node}: {detail}", { node: nname, detail: st.detail || st.why || "" })}</div>`;
+    else if (skipped) status = html`<div class="notice warn"><${Ic} i="warn"/><span>${reachSkipText(nname, skipped)}</span></div>`;
+    else if (st && st.ok && mine) status = html`<div class="hint">${T("Packets to devices here stopped since {when}: {n}", { when: when(st.since), n: (st.blocked || {})[iface] || 0 })}</div>`;
+    else status = html`<div class="hint">${T("Applies on {node}'s next sync.", { node: nname })}</div>`;
+  }
+  return html`<div class="field reachfield">
+    <label>${label}</label>
+    <div class="dpsw netsw-share" role="radiogroup" aria-label=${label}>${reachOpts().map(([m, l]) => html`<button type="button" role="radio"
+      aria-checked=${value === m} class=${value === m ? "on" : ""} onClick=${() => onChange(m)}>${l}</button>`)}</div>
+    <div class="hint">${value === "everyone" && _promoted
+      ? T("Any device on this node can open connections to devices here, except the ones marked Private — only their user's own devices reach those.")
+      : value === "everyone"
+      ? T("Any device on this node can open connections to devices here. Internet access and networks behind devices are not affected.")
+      : value === "none"
+      ? T("No other device can open connections to devices here; their own connections still work. Internet access and networks behind devices are not affected.")
+      : T("A device here can be reached by its user's other devices on this node and by users who share a group with them. Internet access and networks behind devices are not affected.")}</div>
+    ${unvouched && value === "user" ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This server build can't prove which user a device belongs to, so no other device can reach any device here.")}</span></div>` : null}
+    ${unvouchedRaw && !unvouched && value === "user" ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This server build can't prove which user a device connected over RAW belongs to, so no other device can reach those devices.")}</span></div>` : null}
+    ${status}
+  </div>`;
+}
 
 // `group` collapses the grid to ONE row per peer (its primary deployment) with the rest behind a +N —
 // the same +N the node/interface filters already produce, but chosen rather than a side effect of
@@ -164,7 +222,8 @@ export function pageScroll(e, dir) {
 export const connView = { mode: "peers", node: "", iface: "", q: "", online: true, page: 1, pageSize: 20, sort: "status", dir: -1, usort: "status", udir: -1 };   // Online filter ON by default → the Live view leads with what's connected now
 
 // Independent view-state per grid so search / server / interface / page never bleed across them.
-export const usersView = { q: "", node: "", iface: "", page: 1, pageSize: 20, sort: "status", dir: -1, expanded: {} };   // node/iface filter the LIST (expand shows all peers)
+export const usersView = { q: "", node: "", iface: "", page: 1, pageSize: 20, sort: "status", dir: -1, expanded: {},   // node/iface filter the LIST (expand shows all peers)
+  mode: "users", gq: "", gpage: 1, gpageSize: 20 };   // the Users | Groups switch, and the groups list's own search and page
 export const unassignedView = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 };
 export const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize, sort, dir } for the expanded grid
 
@@ -242,12 +301,460 @@ export function userPageOf(uid) {
   const idx = users.findIndex(u => u.id === uid);
   return idx < 0 ? 1 : Math.floor(idx / (usersView.pageSize || 20)) + 1;
 }
+// USER GROUPS (docs/GROUPS-PLAN.md G11). The devices whose networks are shared with a group — what adding someone grants, and what
+// removing someone or deleting the group takes away — from the roster the poll already holds, never a request.
+// ⚠️ A PRIVATE device grants a group NOTHING, whatever its stored share still says. Marking a device private does not clear
+// the share (and should not — turning the flag off has to give it back), so the grant sits in the roster while share_grants
+// hands the group nobody. Without this test the Groups screen counted it, its bubble named the device and its prefixes, and
+// two DESTRUCTIVE confirms — removing a member, deleting the group — warned about losing networks nobody ever reached.
+export function groupShares(gid) {
+  return Store.recon.peers.filter(p => !p.private && (p.routes || []).length && p.share && p.share.groups && typeof p.share.groups === "object"
+    && Object.prototype.hasOwnProperty.call(p.share.groups, gid));
+}
+// A device as a sentence names it: its title, else its owner's name.
+export const shareDeviceName = p => p.title || (p.user_id && Store.user(p.user_id) ? Store.user(p.user_id).name : T("Untitled"));
+// A device as a LIST names it: its title, else where it is — its address, else the interface it sits on. `shareDeviceName` falls
+// back to the OWNER's name, which reads as the person rather than the device the moment a device is untitled.
+export function deviceLabel(peer) {
+  if (!peer) return T("Untitled");
+  if (peer.title) return peer.title;
+  const t = (peer.targets || []).find(x => x && (x.ip || x.iface));
+  const where = t ? (t.ip ? String(t.ip).split("/")[0] : t.iface) : "";
+  return where || T("Untitled");
+}
+export const peerOnline = p => !!(p && (p.targets || []).some(t => t && t.online));
+// "Title (address)" — or just the address when the device has no title, because `deviceLabel` already falls back to it and
+// "10.8.0.3 (10.8.0.3)" is what that produced. `node` picks the address it answers on there, since a device may be deployed
+// to several and the row is about one of them.
+export function deviceNameAt(peer, node) {
+  const nm = deviceLabel(peer);
+  const t = (peer && (peer.targets || []).find(x => x && (!node || x.node === node) && x.ip)) || null;
+  const ip = t && t.ip ? String(t.ip).split("/")[0] : "";
+  return ip && nm !== ip ? nm + " (" + ip + ")" : nm;
+}
+// SOMEBODY ELSE'S device is named by its OWNER, not by its title: "whose is it" is the actionable fact when the network is
+// theirs and you want it changed — the title belongs to a device you cannot see or edit. Falls back to the device's own name
+// for an unassigned peer, which has no owner to name.
+export function ownerNameAt(peer, node) {
+  const u = peer && peer.user_id ? Store.user(peer.user_id) : null;
+  if (!u) return deviceNameAt(peer, node);
+  const t = (peer.targets || []).find(x => x && (!node || x.node === node) && x.ip) || null;
+  const ip = t && t.ip ? String(t.ip).split("/")[0] : "";
+  return ip ? u.name + " (" + ip + ")" : u.name;
+}
+
+// ── DEVICE ACCESS on a user's line (docs/DEVICE-ACCESS-PLAN.md §10) ──────────────────────────────────────────────────────────
+// The level in force on ONE deployment's interface, as the panel publishes it (absent = "user", A3).
+// Where a private device is NOT protected, and why — [{node, why: "old"}] once per node too old or not reporting now, and
+// [{node, iface, why}] for an interface at Everyone where the node has no address to guard it by. The switch promises "not
+// everyone on the node, whatever the interface allows"; where that is not kept, saying so is the rule this file already
+// states for sharing: claiming isolation a box does not have is the one answer worse than no answer.
+// ⚠️ On an interface at Everyone the node guards a private device BY ITS ADDRESS and passes the rest of the subnet (that is
+// what keeps everyone else's reach), so a device the panel cannot place has nothing guarding it: no user (dev_reach_promotes
+// skips it) or a keyless build that can't prove which address a device has (A7). At "user" the same two are Nobody instead,
+// which keeps the promise.
+export function privateUnenforced(peer) {
+  if (!peer || peer.disabled || peer.expired) return [];
+  const out = [], seen = new Set();
+  for (const t of (peer.targets || [])) {
+    if (!t || !t.node) continue;
+    if (!nodeEnforces(t.node)) {
+      if (!seen.has(t.node)) { seen.add(t.node); out.push({ node: t.node, why: "old" }); }
+    } else if (ifaceLevelOf(t) === "everyone" && (!Store.user(peer.user_id) || unvouchedTarget(t))) {
+      out.push({ node: t.node, iface: t.iface, why: Store.user(peer.user_id) ? "unvouched" : "no_user" });
+    }
+  }
+  return out;
+}
+// What turning Private OFF opens — in the TWO halves the node enforces separately. The device's own address follows its
+// interface's level; the networks behind it follow its share. ⚠️ The sheet used to read the share alone: measured on msk-main
+// (1.8.7 qualification D5), a private gateway on an Everyone interface, shared with one user, said "opens again to n-erin" —
+// and on save carol's device reached the gateway itself too, as everyone on the node did. With no share on a "user"
+// interface it said "everyone on the node reaches it", which the device's own address was not.
+export function privateOffOpens(peer) {
+  const p = { ...(peer || {}), private: false };
+  const everyoneAt = [...new Set((p.targets || []).filter(t => t && t.node && targetOpen(t) === "everyone").map(t => t.node))];
+  return { everyoneAt, nets: (p.routes || []).length ? peerAudience(p) : null };
+}
+const ifaceLevelOf = t => {
+  const nr = (Store.nodes || []).find(x => x.id === t.node) || {};
+  const c = (nr.wdtt_cfg || {})[t.iface] || (nr.csqtt_cfg || {})[t.iface];
+  return (c ? c.reach : (Store.ifaceMeta(t.node, t.iface) || {}).reach) || "user";
+};
+// ⚠️ A node below `reach: 2`, or one not reporting now, ENFORCES NOTHING — so everything on it reaches everything, and that is
+// what this says. Claiming isolation a box does not have is the one answer worse than no answer.
+const nodeEnforces = nid => ((Store.stats[nid] || {}).net_deps || {}).reach >= 2 && Store.recon.nodeStatus[nid] === "live";
+// A7: an instance whose REPORTED build cannot prove who owns a device acts as Nobody; one that proves only its WireGuard path
+// does so for the devices on its RAW TUN — the node names the INSTANCE, so its RAW tun is found through the node's wdtt_cfg.
+const unvouchedTarget = t => {
+  const nr = (Store.nodes || []).find(x => x.id === t.node) || {};
+  if ((nr.reach_unvouched || []).includes(t.iface)) return true;
+  return (nr.reach_unvouched_raw || []).some(ifn => ((nr.wdtt_cfg || {})[ifn] || {}).raw_iface === t.iface);
+};
+// PROMOTED: an interface set to Everyone with a private device on it, so the node has a table for it — it guards the private
+// devices by address and passes everything else. The PANEL decides which (it builds the table) and publishes it per node;
+// this reads that verdict rather than deriving a second one. It changes nobody's reach but the private devices' — it is what
+// lets the interface's status line report a refused or skipped reload there.
+export const promotedAt = (node, iface) =>
+  (((Store.nodes || []).find(x => x.id === node) || {}).reach_promoted || []).includes(iface);
+// Which devices caused it — display only. The verdict above is the panel's; this only names the devices that match it.
+export const promotedBy = (node, iface) => (Store.recon.peers || []).filter(p => p.private && !p.disabled && !p.expired
+  && Store.user(p.user_id) && (p.targets || []).some(t => t && t.node === node && t.iface === iface));
+// The level IN FORCE on a deployment for everyone but a private device (userReach excludes those per device). A promoted
+// interface stays Everyone: the node passes everything there but the private devices.
+// ⚠️ An unvouched build is Nobody only at "user" (A7) — at Everyone nothing guards it, and reading it as Nobody there told a
+// viewer that devices everybody on the node reaches could not be reached.
+const targetOpen = t => {
+  if (!nodeEnforces(t.node)) return "everyone";
+  const lv = ifaceLevelOf(t);
+  return lv === "user" && unvouchedTarget(t) ? "none" : lv;
+};
+
+// Who every user's devices can open connections to — ONE pass per poll, because a list asks it per row. Judged AT THE
+// DESTINATION and per node (§10.2): a device is reachable when it sits on a node this user also has a device on, and that
+// interface allows it — Everyone to anyone there, Nobody to nobody, "user" to the same person and whoever shares a group with
+// them. Cross-node reach is never claimed: it does not exist (§12). Blocked and expired are off the node, so neither reaches
+// nor is reached.
+let _reachOf = null, _reachIdx = null;
+function reachIndex() {
+  if (_reachOf === Store.recon && _reachIdx) return _reachIdx;
+  const open = new Map(), lvl = new Map(), here = new Map();
+  const put = (m, k, v) => (m.get(k) || m.set(k, new Set()).get(k)).add(v);
+  for (const p of Store.recon.peers) {
+    const u = p.user_id ? Store.user(p.user_id) : null;
+    if (!u || p.unassigned || p.disabled || p.expired || u.disabled) continue;
+    for (const t of p.targets || []) {
+      if (!t || !t.node) continue;
+      put(here, t.node, p.user_id);
+      const lv = targetOpen(t);
+      if (lv === "everyone") put(open, t.node, p.user_id);
+      else if (lv === "user") put(lvl, t.node, p.user_id);
+    }
+  }
+  const out = new Map();
+  const add = (uid, other) => { if (other !== uid) put(out, uid, other); };
+  for (const [nid, users] of here) {
+    for (const uid of users) for (const o of open.get(nid) || []) add(uid, o);
+    // "user": every member of a group reaches every other member's devices there — walked per GROUP, never per pair of people
+    const atUser = lvl.get(nid) || new Set();
+    for (const g of Store.groups()) {
+      const mates = g.users.filter(x => users.has(x));
+      if (mates.length < 2) continue;
+      for (const a of mates) for (const b of mates) if (atUser.has(b)) add(a, b);
+    }
+  }
+  _reachOf = Store.recon; _reachIdx = out;
+  return out;
+}
+export const reachOwners = uid => reachIndex().get(uid) || new Set();
+
+// The devices of ONE person that the other members of a group can open connections to — the group sheet's per-member number
+// and its bubble. Same test the reach index applies at the destination: a live device (not blocked, expired, unassigned, of a
+// blocked user), not Private where its node enforces Private, on a deployment at Everyone or at "Same user and their groups".
+// A device at Nobody, or Private, is not reachable by the group whatever the membership — counting every device ("tester · 8
+// devices") promised access the membership does not give (operator, 2026-09-17). Online first, then by name.
+export function reachableByGroup(uid) {
+  const u = Store.user(uid);
+  if (!u || u.disabled) return [];
+  const out = [];
+  for (const p of Store.peersByUser(uid)) {
+    if (p.disabled || p.expired || p.unassigned) continue;
+    const t = (p.targets || []).find(x => x && x.node && !(p.private && nodeEnforces(x.node))
+      && (targetOpen(x) === "everyone" || targetOpen(x) === "user"));
+    if (t) out.push({ peer: p, node: t.node, online: (p.targets || []).some(x => x && x.online) });
+  }
+  return out.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0) || deviceLabel(a.peer).localeCompare(deviceLabel(b.peer)));
+}
+
+// The same answer in detail, for the bubble: each person they reach and which of that person's devices, online first. Computed
+// when the bubble opens, not per row.
+// ⚠️ MEMOISED PER POLL, because the chip beside every name now asks for it too — it counts devices, and a device count
+// cannot come from `reachIndex` (which knows who, not how many). Without this the list would walk every reachable owner's
+// peers per row per poll. Only the uids actually asked about are computed: the rows on screen, and whichever bubble is open.
+let _urOf = null, _urCache = new Map();
+export function userReach(uid) {
+  if (_urOf !== Store.recon) { _urOf = Store.recon; _urCache = new Map(); }
+  const hit = _urCache.get(uid);
+  if (hit) return hit;
+  const mates = new Set(Store.groupsByUser(uid).flatMap(g => g.users));
+  const myNodes = new Set();
+  // ⚠️ THE SAME FILTER reachIndex applies (a blocked, expired or unassigned device is off the node and is not presence).
+  // Without it a blocked device of this user's made its node count as somewhere they are, and every destination there was
+  // listed as reachable — a standing wrong answer for as long as that device existed.
+  for (const p of Store.peersByUser(uid)) {
+    if (p.disabled || p.expired || p.unassigned) continue;
+    for (const t of p.targets || []) if (t && t.node) myNodes.add(t.node);
+  }
+  const allows = (t, owner) => {
+    if (!t || !t.node || !myNodes.has(t.node)) return false;
+    const lv = targetOpen(t);
+    return lv === "everyone" || (lv === "user" && mates.has(owner));
+  };
+  const rows = [];
+  for (const other of reachOwners(uid)) {
+    const u = Store.user(other);
+    if (!u) continue;
+    const devices = [];
+    for (const p of Store.peersByUser(other)) {
+      if (p.disabled || p.expired) continue;
+      // The deployment that ALLOWS it names the row: its address and its node. A device reachable on two shared nodes is
+      // still one device — it is listed once, at the first deployment that lets this user in.
+      // ⚠️ Every device in this loop belongs to SOMEBODY ELSE (reachOwners never returns the viewer), so a private one is
+      // not reachable — but only WHERE THE NODE ENFORCES IT. Private was applied before targetOpen() was consulted, so on a
+      // node too old to restrict, or one not reporting, the bubble reported a device as reached by nobody while everything
+      // on that subnet still reached it: claiming an isolation the box does not have, which is the one answer this file
+      // says is worse than none. The panel plans the node's table the same way, so the two cannot disagree.
+      const t = (p.targets || []).find(x => allows(x, other) && !(p.private && nodeEnforces(x.node)));
+      if (!t) continue;
+      devices.push({ peer: p, online: !!t.online, node: t.node, ip: t.ip ? String(t.ip).split("/")[0] : "" });
+    }
+    devices.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0) || deviceLabel(a.peer).localeCompare(deviceLabel(b.peer)));
+    if (devices.length) rows.push({ user: u, devices, online: devices.filter(d => d.online).length });
+  }
+  const out = rows.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0)
+    || String(a.user.name).localeCompare(String(b.user.name)));
+  _urCache.set(uid, out);
+  return out;
+}
+// ── ONE RULE FOR EVERYTHING THIS FILE ASKS THE PANEL ─────────────────────────────────────────────────────────────────────────
+// The reach bubble, the networks bubble and the chip's count all ask `/api/users|peers/networks`, which §4.10 forbids running
+// for every user on every poll. They used to cache their answers three different ways — two on a 60 s clock, one on an input
+// signature — so a bubble could show minute-old rows beside a chip that was current. One rule now:
+//
+//   SIGNATURE   what the answer actually depends on — which devices carry which networks, who they are shared with, group
+//               membership, where each device is deployed, whether a node can restrict, and whether node LANs count at all.
+//               A clock was always the wrong question: traffic counters tick constantly and change none of this.
+//   BACKSTOP    ⚠️ and yet not signature alone. The browser cannot see a node PICKING UP a route (`net_carried` lands in a
+//               snapshot, not the roster), so a pure signature would hold a stale answer for as long as nothing else moved.
+//               Five minutes, which is far too long to flicker and far too short to be wrong for a shift.
+const ASK_TTL = 300000;
+let SIG = "", SIG_KEY = null;
+export function askSig() {
+  if (SIG_KEY === Store.recon) return SIG;
+  const parts = [];
+  for (const p of (Store.recon && Store.recon.peers) || []) {
+    const tg = (p.targets || []).map(t => t.node + "/" + t.iface).join(",");
+    // ⚠️ `dead` on BOTH branches. node_networks drops a blocked or expired provider outright, so blocking the device that
+    // fronts a network changes every grantee's answer — and the signature has to see it, or the old count stands until the
+    // backstop expires. It was on the non-carrying branch only, which is the branch that matters least.
+    // ⚠️ `private` IS IN HERE, on both branches, for the same reason `dead` is. It is the FIRST thing share_grants reads,
+    // so flipping it changes every grantee's answer — and without it in the signature the networks chip and both bubbles
+    // served the pre-Private answer until the 5-minute backstop expired. Turning it OFF withheld the network just as long.
+    const dead = (p.disabled ? 1 : 0) + (p.expired ? 2 : 0) + (p.userDisabled ? 4 : 0) + (p.private ? 8 : 0);
+    if ((p.routes || []).length) parts.push("R" + p.id + ":" + (p.routes || []).join("|") + ":" + JSON.stringify(p.share || null) + ":" + tg + ":" + dead);
+    else parts.push("P" + p.id + ":" + (p.user_id || "") + ":" + tg + ":" + dead);
+  }
+  for (const g of (Store.groups ? Store.groups() : [])) parts.push("G" + g.id + ":" + (g.users || []).join("|"));
+  // `net_capable` is in here because it is what decides whether a node can restrict a network at all — the audience bubble
+  // reads that verdict, so a node being updated has to invalidate the answer.
+  for (const n of (Store.nodes || [])) parts.push("N" + n.id + ":" + (n.lan_share === false ? 0 : 1) + ":" + ((n.lans || []).length) + ":" + (n.net_capable ? 1 : 0));
+  parts.push("S" + ((Store.panelSettings || {}).show_node_lans === false ? 0 : 1));
+  SIG_KEY = Store.recon; SIG = parts.join(";");
+  return SIG;
+}
+export const askFresh = e => !!(e && e.sig === askSig() && Date.now() - e.at < ASK_TTL);
+
+// ── WHO REACHES THE NETWORKS BEHIND ONE DEVICE (docs/NETWORKS-PLAN.md §18) ───────────────────────────────────────────────────
+// ⚠️ SHARING IS PER DEVICE, NOT PER NETWORK — `share_grants` takes the peer — so one audience covers every network behind it.
+// The names, dates and device counts are roster facts and are read here; whether a NODE can enforce the restriction is not, and
+// is fetched (`peerAudFetch`) rather than guessed: a node too old to restrict carries a restricted network for NOBODY, so a
+// bubble that named its grantees without saying so would be confidently wrong.
+export function peerAudience(peer) {
+  const sh = peer && peer.share && typeof peer.share === "object" ? peer.share : null;
+  const owner = peer && peer.user_id ? Store.user(peer.user_id) : null;
+  const nodes = [...new Set((peer.targets || []).map(t => t && t.node).filter(Boolean))];
+  // ⚠️ PRIVATE OUTRANKS EVERY SHARE, exactly as `share_grants` decides it on the panel: the owner alone, no grantee and
+  // no group, and not "everyone on the node" either — which is what an absent share would otherwise mean.
+  if (peer && peer.private) return { mode: "owner", nodes, owner, users: [], groups: [], private: true };
+  const now = Math.floor(Date.now() / 1000);
+  const live = u => typeof u === "number" && u >= 0 && (!u || u > now);
+  // "Devices here" means on a node this device is deployed to — a grantee whose devices are all elsewhere reaches nothing,
+  // because reach is judged per node (§12). A global device count would overstate what the grant actually gives them.
+  const here = uid => Store.peersByUser(uid).filter(q => !q.disabled && !q.expired
+    && (q.targets || []).some(t => t && nodes.includes(t.node))).length;
+  if (!sh) return { mode: "everyone", nodes, owner, users: [], groups: [] };
+  const users = [], groups = [];
+  for (const [uid, until] of Object.entries(sh.users || {})) {
+    const u = live(until) ? Store.user(uid) : null;
+    if (!u || u.disabled || uid === (peer.user_id || "")) continue;   // the owner is always in; it is not a "share"
+    users.push({ id: uid, name: u.name, devices: here(uid), until: until || 0 });
+  }
+  for (const [gid, until] of Object.entries(sh.groups || {})) {
+    const g = live(until) ? Store.group(gid) : null;
+    if (!g) continue;
+    groups.push({ id: gid, name: g.name, members: (g.users || []).length, until: until || 0 });
+  }
+  // Grantees who actually reach it first: a grant to somebody with no device on the right node is worth nothing, and with
+  // a long list those are exactly the rows that should fall past the cap rather than crowd out the ones that work.
+  users.sort((a, b) => b.devices - a.devices || String(a.name).localeCompare(String(b.name)));
+  groups.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  return { mode: users.length || groups.length ? "shared" : "owner", nodes, owner, users, groups };
+}
+// The node's own verdict, asked once when the bubble opens and cached by the SAME rule as everything else asked of the panel.
+const AUD = new Map();
+export const peerAudCached = pid => { const e = AUD.get(pid); return e && e.rep && askFresh(e) ? e.rep : null; };
+export async function peerAudFetch(pid) {
+  const e = AUD.get(pid);
+  if (e && (e.busy || (e.rep && askFresh(e)))) return;
+  // ⚠️ KEEP THE OLD STAMP while the new answer is in flight. Carrying the previous payload forward is right;
+  // carrying it under the NEW signature is what made a revoked share read as current for a whole round trip.
+  AUD.set(pid, { ...(e || {}), busy: true });
+  let rep = { targets: [] };
+  try {
+    const r = await api.peerNetworks({ peer_id: pid });
+    rep = (r && r.data) || { targets: [] };
+  } catch (_) { rep = { targets: [] }; }
+  AUD.set(pid, { at: Date.now(), sig: askSig(), rep });
+  bus.emit();
+}
+
+// What the chip says: online devices while any are online, otherwise all of them — so the number is the one worth acting on.
+export function reachTally(uid) {
+  let total = 0, online = 0;
+  for (const r of userReach(uid)) { total += r.devices.length; online += r.online; }
+  return { total, online, shown: online || total };
+}
+
+// ── NETWORKS on a user's line (docs/NETWORKS-PLAN.md §18) ────────────────────────────────────────────────────────────────────
+// ⚠️ THE PANEL'S ANSWER, NOT A GUESS. Which networks a node actually carries — an overlapping prefix resolved to ONE device, one
+// a node refuses, a restricted one on a node that cannot enforce it, a blocked provider, a keyless device whose build cannot
+// vouch for it, the node's own local network — is decided by `node_networks` / `user_networks` and nothing in the roster says
+// it. A list that derived its own version disagreed with the very sheet it sits next to (seen 2026-09-16: one row here, four
+// there). So the bubble asks `/api/users/networks`, the same call the sheet makes — once, when it is opened, cached a minute.
+const NETS = new Map();
+export function netsCached(uid) { const e = NETS.get(uid); return e && e.rows && askFresh(e) ? e : null; }
+export async function netsFetch(uid) {
+  const e = NETS.get(uid);
+  if (e && (e.busy || (e.rows && askFresh(e)))) return;
+  // ⚠️ KEEP THE OLD STAMP while the new answer is in flight. Carrying the previous payload forward is right;
+  // carrying it under the NEW signature is what made a revoked share read as current for a whole round trip.
+  NETS.set(uid, { ...(e || {}), busy: true });
+  let rows = [];
+  try {
+    const r = await api.userNetworks({ user_id: uid });
+    // ONE row per (node, network) — the same shape the sheet lists, not one per deployment that reaches it.
+    // `covered` follows the sheet's rule: the user reaches it if ANY of their devices there routes it, and an
+    // unknown (keyless) deployment never outranks a device that does.
+    const rank = c => (c === true ? 2 : c == null ? 1 : 0);
+    const seen = new Map();
+    for (const p of ((r && r.data && r.data.peers) || []).filter(x => !x.blocked)) for (const t of p.targets || []) {
+      for (const n of t.networks || []) {
+        const k = t.node + "|" + n.prefix, cur = seen.get(k);
+        if (!cur) seen.set(k, { node: t.node, prefix: n.prefix, via: n.via || "", restricted: !!n.restricted, until: n.until || 0, covered: n.covered });
+        else if (rank(n.covered) > rank(cur.covered)) cur.covered = n.covered;
+      }
+      if (t.lan && (t.lan.addrs || []).length) {
+        const k = t.node + "|lan", cur = seen.get(k);
+        if (!cur) seen.set(k, { node: t.node, prefix: t.lan.addrs.join(", "), lan: t.lan, covered: t.lan.covered });
+        else if (rank(t.lan.covered) > rank(cur.covered)) cur.covered = t.lan.covered;
+      }
+    }
+    rows = [...seen.values()].sort((a, b) => String(Store.nodeName(a.node)).localeCompare(String(Store.nodeName(b.node)))
+      || (a.lan ? 1 : 0) - (b.lan ? 1 : 0) || String(a.prefix).localeCompare(String(b.prefix)));
+  } catch (_) { rows = []; }
+  NETS.set(uid, { at: Date.now(), sig: askSig(), rows });
+  COUNTS.set(uid, { sig: askSig(), at: Date.now(), n: rows.length,       // ⚠️ THE SAME SHAPE flushNetsCounts writes:
+    rows: rows.map(r => ({ node: r.node, via: r.via || "", lan: !!r.lan, covered: r.covered })) });
+  // a bare number here read back as `undefined` through netsCount and as stale through askFresh, so opening a bubble both
+  // blanked the chip and re-queued that uid on every render — the flicker this cache exists to remove.
+  bus.emit();     // the chip's count was the roster's guess until now — it says the panel's number from here on
+}
+
+// ── the CHIP'S number ────────────────────────────────────────────────────────────────────────────────────────────────────────
+// ⚠️ ONE-WAY. A count here is only ever replaced by another answer from the panel, never reverted to the roster's guess. The
+// chip used to read 1, correct itself to 4 when hovered, and fall back to 1 a minute later: a number that changes when you
+// look at it is worse than no number.
+const COUNTS = new Map();
+export const netsCount = uid => { const e = COUNTS.get(uid); return e ? e.n : null; };
+// The rows behind that number, in brief ({node, via, lan, covered}) — what a chip needs to count the ONLINE ones. Null from a
+// panel that answers counts alone.
+export const netsBrief = uid => { const e = COUNTS.get(uid); return e && Array.isArray(e.rows) ? e.rows : null; };
+
+// ⚠️ ONE ANSWER TO "IS THIS NETWORK LIVE", for the chip's number, the bubble's Online list and every dot in it — the reach chip's
+// rule, and the reason its number and its bubble never disagree. Live means reachable NOW: this user's routing covers it (a row
+// it does not route, or cannot tell, is never counted), and what carries it is up where it is carried — the device behind the
+// network online ON THAT NODE (a row's node is where its device sits: the carry plan is per node), or, for a node's own LAN,
+// the node itself.
+let _pbOf = null, _pb = null;             // peers by id, rebuilt once per roster snapshot — every chip on a page asks per row
+const peerById = id => {
+  if (_pbOf !== Store.recon) { _pbOf = Store.recon; _pb = new Map(Store.recon.peers.map(p => [p.id, p])); }
+  return _pb.get(id);
+};
+export function netRowOnline(r) {
+  if (!r || r.covered === false || r.covered == null) return false;
+  if (r.lan) return (Store.recon.nodeStatus || {})[r.node] === "live";
+  const dev = r.via ? peerById(r.via) : null;
+  return !!(dev && (dev.targets || []).some(t => t && t.node === r.node && t.online));
+}
+// The chip's number, as reachTally says it for devices: the online count while any are, otherwise all of them. `known` false
+// = only the roster's guess so far, which cannot say what is live.
+export function netTally(uid) {
+  const hit = netsCached(uid);
+  const rows = hit ? hit.rows : netsBrief(uid);
+  const n = netsCount(uid);
+  if (!rows) {
+    const total = n != null ? n : new Set(userNets(uid).map(x => x.prefix)).size;
+    return { total, online: 0, shown: total, known: n != null };
+  }
+  const online = rows.filter(netRowOnline).length;
+  return { total: rows.length, online, shown: online || rows.length, known: true };
+}
+let PEND = new Set(), PEND_T = null;
+// A chip asks for its own number; the asks are collected and go out as ONE request for the rows actually on screen.
+export function wantNetsCount(uid) {
+  if (!uid) return;
+  if (askFresh(COUNTS.get(uid))) return;
+  PEND.add(uid);
+  if (!PEND_T) PEND_T = setTimeout(flushNetsCounts, 60);
+}
+async function flushNetsCounts() {
+  PEND_T = null;
+  const ids = [...PEND];
+  PEND.clear();
+  if (!ids.length) return;
+  const sig = askSig(), at = Date.now();
+  try {
+    const r = await api.userNetworks({ user_ids: ids });
+    const c = ((r && r.data) || {}).counts, rw = ((r && r.data) || {}).rows || {};
+    if (!c) return;                       // an older panel without the batch: keep whatever is on screen
+    for (const k of Object.keys(c)) COUNTS.set(k, { sig, at, n: c[k], rows: Array.isArray(rw[k]) ? rw[k] : null });
+    bus.emit();
+  } catch (_) { /* leave the numbers alone rather than flicker back to a guess */ }
+}
+
+// What the roster alone knows, which is what the chip counts UNTIL the panel has answered once: the networks their own devices
+// carry, and the ones shared with them by name or through a group.
+export function userNets(uid) {
+  const gids = new Set(Store.groupsByUser(uid).map(g => g.id));
+  const out = [];
+  for (const p of Store.recon.peers) {
+    if (!(p.routes || []).length) continue;
+    const sh = p.share && typeof p.share === "object" ? p.share : null;
+    const own = p.user_id === uid;
+    // ⚠️ Private outranks the stored share here too — this is the count the chip shows BEFORE the panel answers, so
+    // without it a grantee's chip briefly included a private device's networks and then corrected itself downward,
+    // which is the flicker the one-way COUNTS rule exists to prevent. The owner still sees their own.
+    if (p.private && !own) continue;
+    const named = !!(sh && sh.users && Object.prototype.hasOwnProperty.call(sh.users, uid));
+    const via = sh && sh.groups && !own && !named ? Object.keys(sh.groups).find(g => gids.has(g)) : null;
+    if (!own && !named && !via) continue;
+    const vname = via ? (Store.group(via) || {}).name || "" : "";
+    for (const prefix of p.routes) out.push({ prefix, peer: p, own, via: vname });
+  }
+  return out.sort((a, b) => (a.own === b.own ? 0 : a.own ? -1 : 1) || a.prefix.localeCompare(b.prefix));
+}
+// "Office router, Home NAS, Dacha and 4 more" — three named, the rest counted, as one translatable phrase.
+export function namedFew(names) {
+  if (names.length <= 3) return names.join(", ");
+  return T("{names} and {n} more", { names: names.slice(0, 3).join(", "), n: names.length - 3 });
+}
+
 // Land on the Users screen at the PAGE where `userId` sits, expand that user's row and scroll it into view.
 // Optionally glow a just-assigned peer's row (peerId). Shared by "click a username anywhere" and the assign
-// flow (when it started on the Users screen).
+// flow (when it started on the Users screen). It opens the USERS list even if the operator last left the screen on Groups.
 export function revealUser(userId, peerId) {
   if (!userId) return;
-  usersView.q = ""; usersView.expanded[userId] = true;
+  usersView.mode = "users"; usersView.q = ""; usersView.expanded[userId] = true;
   go("#/users");
   setTimeout(() => {                          // after the poll + re-render settles
     usersView.page = userPageOf(userId);      // the page this user actually lands on (not always page 1)
@@ -259,9 +766,9 @@ export function revealUser(userId, peerId) {
 // Clicking a PEER anywhere reveals its OWNER on the Users screen (row expanded, that peer's row glowing) — there
 // is no standalone peer page. An unassigned peer (no owner) just lands on the Users screen with its row glowing.
 export function revealPeer(peer) {
-  if (!peer) return go("#/users");
+  if (!peer) { usersView.mode = "users"; return go("#/users"); }
   if (peer.user_id != null) { revealUser(peer.user_id, peer.id); return; }
-  Store.recentlyCreated[peer.id] = Date.now(); go("#/users");
+  usersView.mode = "users"; Store.recentlyCreated[peer.id] = Date.now(); go("#/users");
 }
 // Land on the PEERS screen with a specific peer visible + its row flashing (activity-feed clicks). Filters
 // the grid to that peer (unique IP) so it's guaranteed on-page, then scrolls to + glows it for ~2.5s.
@@ -798,6 +1305,7 @@ export function evItem(e) {
   const v = e.verb || "";
   if (e.kind === "peer") return "Peer";   // i18n-keys: canonical EV_ITEMS value
   if (e.kind === "user") return "User";
+  if (e.kind === "group") return "User";   // a group lives on the Users screen (docs/GROUPS-PLAN.md G11)
   if (e.kind === "panel") return v === "Panel updated" ? "Update" : "Settings";   // i18n-keys: e.verb is the SERVER's English — never compare it to a translation
   if (/interface/i.test(v)) return "Interface";       // kind === node from here
   if (/turn-proxy/i.test(v)) return "Turn-proxy";
@@ -816,6 +1324,8 @@ export function evAction(e) {
 export function evClick(e) {
   const item = evItem(e), v = e.verb || "", gone = /\bdeleted\b/i.test(v);
   if (item === "Peer") return gone ? { href: "#/peers" } : { href: "#/peers", on: () => revealPeerInPeersById(e.id) };   // i18n-keys: canonical EV_ITEMS value
+  // a group's id is not a user's: it opens Users → Groups, never revealUser
+  if (e.kind === "group") return { href: "#/users", on: () => { usersView.mode = "groups"; usersView.gq = ""; go("#/users"); Store.apply(); } };
   if (item === "User") return gone ? { href: "#/users" } : { href: "#/users", on: () => revealUser(e.id) };
   if (item === "Settings") return { href: "#/panel/settings", on: () => { setPendingSection((e.id && e.id !== "settings") ? e.id : null); go("#/panel/settings"); } };
   if (item === "Update") return null;                 // panel version bump / update lifecycle — nothing to open
@@ -930,7 +1440,11 @@ export function serviceIssues() {
   const dp = (Store.datapath || {}).awg;               // local node's AmneziaWG kernel module — a broken DKMS build is what Update rebuilds
   // …but NOT while an update is running: the module legitimately isn't loaded while it is being rebuilt, and
   // raising CRITICAL then invites a SECOND update on top of the first — which is exactly what one operator did.
-  if (dp && dp.needed && !dp.ok && !dp.updating) add("awg", "critical", "module", T("the AmneziaWG kernel module isn’t built or loaded — awg interfaces can’t come up; running Update rebuilds it"));
+  // With the userspace fallback on the box the interfaces are UP, just slower — a warning, not a critical "can't come up".
+  if (dp && dp.needed && !dp.ok && !dp.updating) {
+    if (dp.fallback) add("awg", "warn", "fallback", T("AmneziaWG runs on the slower fallback datapath — its kernel module isn’t built or loaded; running Update rebuilds it"));
+    else add("awg", "critical", "module", T("the AmneziaWG kernel module isn’t built or loaded — awg interfaces can’t come up; running Update rebuilds it"));
+  }
   out.sort((a, b) => (b.sev === "critical") - (a.sev === "critical"));
   return out;
 }

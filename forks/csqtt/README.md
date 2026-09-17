@@ -4,12 +4,39 @@
 VK-TURN proxy (no WireGuard), its own web panel. This directory holds the patch that makes it manageable by
 swg-panel the same way the `wdtt/` forks are, plus a reproducible build.
 
-- **`csqtt-swgpanel.patch`** — pinned to upstream `de7afc23` (**v2.1.5**, 2026-08-28). Applies with
-  `git apply` from the repo root of a fresh csqtt clone. Verified apply-clean + build-clean on amd64 + arm64.
+- **`csqtt-swgpanel.patch`** — pinned to upstream `446293aa` (**v2.1.9**, 2026-09-02). Applies with
+  `git apply` from the repo root of a fresh csqtt clone. Verified apply-clean + build-clean on amd64.
+  Our build label is **2.1.9-2** (source 2.1.9 + this patch, including the 2026-09-14 keyless source-integrity
+  fixes below), published as `csqtt-2.1.9-2` (2026-09-17), amd64 + arm64, and rig-proven on the published amd64 bytes.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
   Needs rustup 1.97.1 + zig + cargo-zigbuild.
 
-## What the patch adds (every flag defaults to STOCK when absent → an un-flagged binary is byte-for-byte upstream)
+## Keyless source-integrity fixes (build 2.1.9-2, 2026-09-14)
+
+For a csqtt instance to be a **share source** for a restricted network, a packet's source address must prove
+which identity sent it. Stock csqtt did not enforce this. This patch adds:
+
+- **Uplink source check at both TUN writers** (`protocol.rs`: `write_ingress_packet` and the `InjectTun`
+  command path). A packet is written to the server TUN only if it is IPv4 whose source equals the address the
+  panel assigned to that session. The assigned address is recorded **with** the ingress packet, so a session
+  slot reused before a reassembled packet is flushed cannot misattribute it. Stock wrote any client-chosen
+  source unchecked (an in-tunnel spoof).
+- **Address is bound to the authenticating password.** `resolve_session_ip` (`model.rs`) now resolves only the
+  device bound to the session's password (or the main device for the main password), never a device the client
+  merely names; and `getconf_credential_access` (`protocol.rs`) refuses to bind an *unbound* password to a
+  device id that is already registered. Together these stop a second valid password from adopting the first
+  client's device id and inheriting its address ("device borrow").
+- **Shard tables follow `--tun-addr`.** The two hardcoded `[10, 66, 67]` prefixes in `dataplane.rs` (the TUN-RX
+  shard index and `BindTunnel`) now read `swgpanel::subnet_prefix()`, matching the already-fixed
+  `tun_device::route_index` — a non-default `--tun-addr` shards downlink consistently on multi-shard nodes.
+- ⚠️ **Side effect on csqtt's own web panel** (off under `--no-web`, which is how the node runs it): *unbind* clears a
+  password's binding but keeps the device row, so that same device reconnecting is now refused `device_mismatch`; a
+  new device id binds normally.
+- Measured on a namespace rig (real client through a local pion TURN relay, 2.1.9 as control): spoofed source
+  **+4 → +0** at the server TUN; a second password presenting the first's device id was handed its address → now
+  refused. Reach, revocation cut and a stable address hold on both. The `InjectTun` path and shards > 1 are not rigged.
+
+## What the patch adds (every flag defaults to STOCK when absent; the source-integrity fixes above apply with or without flags)
 
 | flag | effect |
 |---|---|

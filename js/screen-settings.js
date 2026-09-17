@@ -32,6 +32,7 @@ import {
   goSettings, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
   useHostOnNode,
   exitRefusalText,
+  ListPager, LIST_PAGE, pageSlice,
 } from "./ui.js";
 import {
   AWG_ORDER,
@@ -453,7 +454,7 @@ export function WebhookSheet({ hook, onSaved, onClose }) {
     onSaved && onSaved(); onClose && onClose();
   };
   return html`<${Sheet} title=${hook ? T("Edit webhook") : T("Add webhook")} onClose=${onClose}
-    foot=${secret ? html`<${Fragment}><span class="grow"></span><button class="btn" onClick=${onClose}>${T("Done")}</button></>`
+    foot=${secret ? html`<${Fragment}><span class="grow"></span><button class="btn btn-primary" onClick=${onClose}>${T("Done")}</button></>`
       : html`<${Fragment}><span class="grow"></span>
         <button class="btn btn-ghost" onClick=${onClose}>${T("Cancel")}</button>
         <button class="btn btn-primary" disabled=${busy || !valid} onClick=${save}>${hook ? T("Save") : T("Add webhook")}</button></>`}>
@@ -1691,6 +1692,7 @@ export function PanelSettingsScreen() {
   const [mtu, setMtu] = useState(String(idf.mtu || 1280));
   const [ka, setKa] = useState(String(idf.keepalive || 25));
   const [awgDef, setAwgDef] = useState(() => ({ ...(idf.awg_params || {}) }));   // new-interface AWG obfuscation
+  const [reachDef, setReachDef] = useState(idf.reach || "user");   // device access (§10.6): the level the create sheet preselects
   // only FILLED cells count: a blank one means "leave it to the node", so clearing a cell must read as
   // back-to-default rather than as a change, and must not be sent as an empty override.
   const awgTrim = o => AWG_KEYS.reduce((a, k) => { const v = String((o || {})[k] ?? "").trim(); if (v) a[k] = v; return a; }, {});
@@ -1789,6 +1791,8 @@ export function PanelSettingsScreen() {
   const [topTalk, setTopTalk] = useState(String(ps.top_talkers || 10));
   const [topDest, setTopDest] = useState(String(ps.top_destinations || 10));
   const [warnDays, setWarnDays] = useState(String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days));
+  // On unless an operator has switched it off — which closes these networks rather than merely hiding them.
+  const [showLans, setShowLans] = useState(ps.show_node_lans !== false);
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: customTargets(l) })));
   const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
   const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || TURN_FORKS_DEFAULT));   // forks offered in the install picker
@@ -2082,7 +2086,7 @@ export function PanelSettingsScreen() {
       const r = await api.panelSettings({
         _ev: { first: (dirtySecs[0] || [""])[0], sections: dirtySecs.map(([s]) => secLabel[s]).join(", ") },   // display-only: which sections changed (drives the "Settings changed" activity row)
         interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25,
-          awg_params: awgTrim(awgDef) },
+          awg_params: awgTrim(awgDef), reach: reachDef },
         mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
         providers: provEnabled,
         block_providers: blockProvEdits,
@@ -2097,6 +2101,7 @@ export function PanelSettingsScreen() {
         top_talkers: Math.max(1, Math.min(50, parseInt(topTalk) || 10)),
         top_destinations: Math.max(1, Math.min(50, parseInt(topDest) || 10)),
         expiry_warn_days: Math.max(0, Math.min(365, parseInt(warnDays) || 3)),
+        show_node_lans: showLans,
         reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
         mesh_awg: awgSet ? awg : {},
         advanced: { node_stale_ms: (+staleS || 30) * 1000, peer_grace_ms: (+graceS || 60) * 1000, geo_ttl_days: +ttlD || 3 },
@@ -2186,7 +2191,10 @@ export function PanelSettingsScreen() {
     if (glDirty("configs")) out.push(T("Client configs → {v1}", { v1: sc === "off" ? T("val|off") : T("val|encrypted") }));
     if (glDirty("subs")) out.push(T("Subscriptions — enable / languages"));
     if (glDirty("display")) out.push(T("Display — theme / status timing"));
-    if (glDirty("mesh")) out.push(T("System mesh defaults"));
+    // Two changes share this section, so the line names the one that actually moved rather than reporting
+    // "mesh defaults" for a disclosure toggle that is not one.
+    if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
+    if (glDirty("mesh") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}))) out.push(T("System mesh defaults"));
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
       // The LABEL, not the slug. This line is the last thing an operator reads before applying, and it
@@ -2319,11 +2327,11 @@ const sectionLabel = k => ({
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
     sec === "security" ? secChanged() :
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).filter(p => !p.builtin).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
-    sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || JSON.stringify(awgTrim(awgDef)) !== JSON.stringify(awgTrim(idf.awg_params || {})) || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
+    sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || JSON.stringify(awgTrim(awgDef)) !== JSON.stringify(awgTrim(idf.awg_params || {})) || reachDef !== (idf.reach || "user") || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
     sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || tunit !== (ps.throughput_units === "bits" ? "bits" : "bytes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
-    sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {})) : false;
+    sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || showLans !== (ps.show_node_lans !== false)) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
   const anyDirty = SECTIONS.some(([s]) => secDirty(s));
@@ -2338,11 +2346,6 @@ const sectionLabel = k => ({
   // LEAVE_MSG() — it is a function so the lookup happens after loadLang(); passing it uncalled hands
   // confirm() a function, which it stringifies, and the dialog shows this line's source instead of the question.
   const leaveSettings = () => { if (!anyDirty || confirm(LEAVE_MSG())) { clearUnsavedGuard(); history.back(); } };
-  const MODES = [
-    ["kernel", T("Default — IP only. DNS not involved"), T("Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs.")],
-    ["forcedns", T("Force DNS — Host + IP. Overrides encrypted DNS"), T("The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite (host) + GeoIP + Custom IPs/domains.")],
-    ["sni", T("SNI Sniffer — Host + IP. DNS stays private"), T("Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains.")],
-  ];
   return html`<div class="screen setscreen">
     <div class="sethead">${Trich("*Panel settings*")}</div>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
@@ -2636,7 +2639,7 @@ const sectionLabel = k => ({
                   : p.disabled
                   ? html`<span class="tf-plbub-l"><span class="tf-plbub-app">${T("No {v1} app for {v2} yet", { v1: f.label, v2: p.label })}</span></span>`
                   : html`<${Fragment}><span class="tf-plbub-l">
-                      <span class="tf-plbub-app">${p.name}<span class="tf-plbub-by"> by </span><span style=${"color:" + (p.color || turnColor(p.author))}>${p.author}</span></span>
+                      <span class="tf-plbub-app">${p.name}<span class="tf-plbub-by"> ${Trich("by {v1}", { v1: html`<span class="tf-plbub-who" style=${"color:" + (p.color || turnColor(p.author))}>${p.author}</span>` })}</span></span>
                       ${p.coreFork ? html`<span class="tf-plbub-core">${Trich("with {v1} core", { v1: html`<span style=${"color:" + turnColor(p.coreFork)}>${p.coreFork}</span>` })}</span>` : null}
                     </span>
                     <span class=${"tf-plbub-obf" + (p.obfLabel ? "" : " plain")}>${p.obfLabel || "plain"}</span><//>`}
@@ -2787,6 +2790,18 @@ const sectionLabel = k => ({
           <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder=${T("https://8.8.8.8/dns-query, 1.1.1.1")}/><div class="hint">${T("Comma-separated")}</div></div>
           <div class="row2"><div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
             <div class="field"><label>${T("Persistent keepalive (s)")}</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div></div>
+          ${(() => {
+            // DEVICE ACCESS §10.6 — preselects the level on the create sheet; it never changes an existing interface, and says so
+            // with the number that answers "what did I just not change?" — and the way to those interfaces (§6, §11.2 F6).
+            const label = T("Who can open connections to devices on new interfaces");
+            const everyone = reachEveryoneRows().length;
+            return html`<div class="field reachfield"><label>${label}</label>
+              <div class="dpsw netsw-share" role="radiogroup" aria-label=${label}>${[["everyone", T("Everyone on this node")], ["user", T("Same user and their groups")], ["none", T("Nobody")]].map(([mv, l]) => html`<button type="button" role="radio"
+                aria-checked=${reachDef === mv} class=${reachDef === mv ? "on" : ""} onClick=${() => setReachDef(mv)}>${l}</button>`)}</div>
+              <div class="hint">${T("Applies to interfaces created from now on.")} ${everyone
+                ? html`<button type="button" class="linkbtn" onClick=${() => openModal(html`<${ReachEveryoneSheet}/>`)}>${T("Existing interfaces set to “Everyone on this node”: {n}", { n: everyone })}</button>`
+                : T("No existing interface is set to “Everyone on this node”.")}</div></div>`;
+          })()}
             <${Disclosure} title=${T("AmneziaWG obfuscation")}
               summary=${AWG_KEYS.some(k => String(awgDef[k] ?? "").trim() !== "") ? T("settings|customised") : T("settings|built-in")}
               open=${awgOpen} onToggle=${() => setAwgOpen(o => !o)}>
@@ -2980,6 +2995,32 @@ const sectionLabel = k => ({
             <${NodeMeshForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>
           <//>`
             : html`<p class="hint" style="margin:0">${T("No nodes yet — enroll a node to configure how it is reached, how it exits, and how it links.")}</p>`}
+          ${/* FLEET-WIDE, deliberately OUTSIDE the node picker above: "which of my nodes sit on a private network"
+                has no answer on a per-node page — it means opening every node in turn. Reported, never configured:
+                a node discloses the private addresses it holds on devices it does not run as its own tunnels. */""}
+          <div class="seclabel lanfleet-head"><span>${T("Local networks")}</span>
+            <span class="lanfleet-sw" title=${showLans ? T("Hide these and close them on every node") : T("Show these again — each node's own switch then decides who reaches it")}>
+              <span>${T("Display in panel")}</span><${Switch} on=${showLans} onChange=${v => setShowLans(v)}
+                title=${showLans ? T("Hide these and close them on every node") : T("Show these again — each node's own switch then decides who reaches it")}/></span></div>
+          <p class="hint" style="margin:0 0 12px">${T("The private network each node sits on. Its clients reach it unless it is closed on that node — nobody sets this up, it is what routing does.")}</p>
+          <div class="lanfleet">
+            ${(Store.nodes || []).filter(n => (n.lans || []).length).map(n => html`<div class="lanfleet-row" key=${n.id}>
+              <span class="nm">${n.name}</span>
+              <span class="lanfleet-addrs">${(n.lans || []).map(l => html`<span class="lanaddr" key=${l.ip + "|" + (l.iface || "")}><span class="mono">${l.ip}</span>${l.iface ? html`<span class="faint">${l.iface}</span>` : null}</span>`)}</span>
+              <span class="grow"></span>
+              ${/* ⚠️ THE NODE'S STATE, NOT THE PANEL'S INTENT. `lan_share` here is what the panel wants; whether the LAN
+                    is actually shut is the node's own word (`lan_block`), and a node too old to close one never will.
+                    Printing "closed" off the intent meant this list asserted a network was shut while its clients were
+                    still reaching it — and with the panel-wide switch off, the node's own page (which is the only screen
+                    that tells that truth) is hidden. Same three states NodeLanPanel shows, in one chip. */""}
+              ${(st => html`<span class=${"lanfleet-st" + st.cls}>${st.t}</span>`)(
+                n.lan_share !== false ? { cls: "", t: T("state|open") }
+                  : !n.net_capable ? { cls: " warn", t: T("state|can't close") }
+                    : (n.lan_block && n.lan_block.ok) ? { cls: " off", t: T("state|closed") }
+                      : { cls: " warn", t: T("state|closing") })}
+            </div>`)}
+            ${!(Store.nodes || []).some(n => (n.lans || []).length) ? html`<p class="hint" style="margin:0">${T("No node reports sitting on a private network.")}</p>` : null}
+          </div>
         </div>` : null}
         <div class="setfoot">
           ${section === "access"
@@ -3000,6 +3041,40 @@ const sectionLabel = k => ({
    state: the header reads "New list" over the previous list's name and badges. Not reachable while the
    overlay covers the page, which is why it survives; keyed anyway, because "unreachable today" is a
    property of the modal host, not of this component. */
+// DEVICE ACCESS §6 / §11.2 F6 — which existing interfaces are set to Everyone. ONE reader for the Settings count and the window
+// behind it, so the number and the rows cannot disagree: wg/awg levels from the published interface meta, WDTT and csqtt from
+// their instance records.
+export function reachEveryoneRows() {
+  const out = [];
+  // A PROMOTED interface is listed like any other: everything on it but its private devices is still reached by everyone.
+  for (const nd of (Store.nodes || [])) {
+    for (const [ifn, mm] of Object.entries(Store.describe[nd.id] || {})) if (mm && !mm.system && mm.reach === "everyone") out.push({ node: nd.id, iface: ifn });
+    for (const [ifn, c] of Object.entries(nd.wdtt_cfg || {})) if (c && c.reach === "everyone") out.push({ node: nd.id, iface: ifn });
+    for (const [ifn, c] of Object.entries(nd.csqtt_cfg || {})) if (c && c.reach === "everyone") out.push({ node: nd.id, iface: ifn });
+  }
+  return out.sort((a, b) => Store.byNode(a.node, b.node) || a.iface.localeCompare(b.iface));   // the fleet's own order, never alphabetical (node_order_selftest)
+}
+// The window reads the same with 2 rows or 200: a filter once it pages, 15 rows a page, each row opening that interface's own
+// editor (`openIfaceEditor` picks the WG, WDTT or csqtt sheet). Nothing here is saved, so typing in the filter guards nothing.
+function ReachEveryoneSheet() {
+  useStore();
+  const [q, setQ] = useState(""), [page, setPage] = useState(1);
+  const all = reachEveryoneRows(), ql = q.trim().toLowerCase();
+  const rows = ql ? all.filter(r => (Store.nodeName(r.node) + " " + r.iface).toLowerCase().includes(ql)) : all;
+  const pg = Math.min(page, Math.max(1, Math.ceil(rows.length / LIST_PAGE)));
+  return html`<${Sheet} title=${T("Interfaces set to “Everyone on this node”")} width=${560} noGuard=${true}
+    foot=${html`<span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button>`}>
+    <div class="hint">${T("Any device on the node can open connections to devices on these interfaces. Open one to change its level.")}</div>
+    ${all.length > LIST_PAGE ? html`<input class="reachev-filter" value=${q} data-enter="self" placeholder=${T("Filter by node or interface…")}
+      aria-label=${T("Filter by node or interface…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
+    ${rows.length ? html`<div class="reachev-list">${pageSlice(rows, pg).map(r => html`<button type="button" class="reachev-row" key=${r.node + "/" + r.iface}
+        title=${T("Edit interface · {v1}", { v1: r.iface })} onClick=${() => openIfaceEditor(r.node, r.iface)}>
+        <span class="ifname">${r.iface}</span><span class="faint">${Store.nodeName(r.node)}</span><span class="grow"></span><${Ic} i="pencil"/></button>`)}</div>`
+      : html`<div class="hint">${all.length ? T("No interface matches “{q}”.", { q }) : T("No existing interface is set to “Everyone on this node”.")}</div>`}
+    <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>
+  <//>`;
+}
+
 export function CustomListSheet({ list, onSave, onClose }) {
   const [title, setTitle] = useState(list?.title || "");
   // customTargets, not a second copy of it. This said `domains + cidrs` and left `asns` out, which would

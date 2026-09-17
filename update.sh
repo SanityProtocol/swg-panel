@@ -60,6 +60,7 @@ SUB_DIR="${SUB_DIR:-/opt/swg-sub}"
 AGENT_DIR="${AGENT_DIR:-/opt/swg-agent}"
 NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
+NODED_UNIT="${NODED_UNIT:-/etc/systemd/system/swg-noded.service}"
 
 # colours FIRST — must be detected on the real tty BEFORE lc_init's tee redirect makes stdout a pipe (else
 # [ -t 1 ] is false and the whole run prints uncoloured). The helper fns below resolve these vars at call time.
@@ -401,7 +402,23 @@ set -euo pipefail
 # — their URL then decides the ref, which is the whole point of deriving it from the URL.
 URL="\${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/${_swg_ref}/bootstrap.sh}"
 export SWG_BOOTSTRAP_URL="\$URL"
-curl -fsSL "\$URL" | bash -s update -y --no-components "\$@"   # extra flags (e.g. --node-only) pass through
+# ⚠️ DOWNLOADED FIRST, RUN SECOND — AND A SECOND DOOR WHEN RAW CANNOT BE HAD. Byte-identical in install-host.sh,
+# update.sh and lib/common.sh; tests/update_bootstrap_fallback_selftest.py runs all three and compares them.
+# \`curl | bash\` executes whatever arrived before the connection died, so a reset halfway through bootstrap.sh
+# ran half of it. A file is run only once curl says the whole of it arrived.
+# raw.githubusercontent.com resolves into the address range filtered in the networks this product is most used
+# in, and api.github.com does not (docs/UPDATE-RESILIENCE-PLAN.md, 0a). This one file is the ONLY thing an
+# update reads from raw — bootstrap.sh fetches the tree from github.com itself — so reading it through the API
+# is what lets a filtered box update at all. Same repo, same ref, same TLS: nothing new to trust. Only a GitHub
+# raw URL has that door; an operator's own SWG_BOOTSTRAP_URL mirror is not handed a source it never named.
+B="\$(mktemp)"; trap 'rm -f "\$B"' EXIT
+API="\$(printf '%s' "\$URL" | sed -nE 's#^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/([^?#]+).*#https://api.github.com/repos/\1/\2/contents/\4?ref=\3#p')"
+if ! curl -fsSL --connect-timeout 20 --max-time 120 "\$URL" -o "\$B"; then
+  [ -n "\$API" ] || exit 1
+  echo "swg-update: could not fetch bootstrap.sh from \$URL — trying api.github.com" >&2
+  curl -fsSL --connect-timeout 20 --max-time 120 -H 'Accept: application/vnd.github.raw' "\$API" -o "\$B"
+fi
+bash "\$B" update -y --no-components "\$@"   # extra flags (e.g. --node-only) pass through
 exit
 }
 WRAP
@@ -611,7 +628,7 @@ ensure_noded_unit(){   # HEAL (install-if-missing) the swg-noded systemd unit on
   # an existing unit. Template MUST mirror install-node.sh's swg-noded.service.
   [ -f "$SRC/swg-noded" ] || return 0
   [ -f "$NODED_DIR/swg-noded" ] && [ -f /etc/swg-agent/config.json ] || return 0   # a configured bare-metal node
-  local unit=/etc/systemd/system/swg-noded.service
+  local unit="$NODED_UNIT"
   if [ -f "$unit" ]; then
     $DRYRUN || systemctl is-enabled --quiet swg-noded 2>/dev/null || systemctl enable --quiet swg-noded 2>/dev/null || true
     return 0
@@ -632,7 +649,8 @@ Environment=SWG_AGENT_CONFIG=/etc/swg-agent/config.json
 Environment=SWG_NODED_STATE=/var/lib/swg-noded
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=true
+# ⚠️ NO NoNewPrivileges HERE — mirrors the installers; ensure_noded_no_nnp retires it from units
+# written before this. It blocked the AppArmor profile transition wg-quick needs to exec ip/wg.
 ProtectSystem=true
 ProtectHome=true
 PrivateTmp=true
@@ -643,6 +661,38 @@ EOF
   systemctl daemon-reload
   systemctl enable --quiet --now swg-noded 2>/dev/null || warn "couldn't enable swg-noded"
   ok "swg-noded unit healed — the node will sync + survive a reboot now"
+}
+
+ensure_noded_no_nnp(){   # MIGRATE (retract-one-directive) NoNewPrivileges out of an existing swg-noded unit.
+  # We put `NoNewPrivileges=true` in this unit and we are taking it back out. It withheld nothing:
+  # swg-noded is root with the full capability set, so there is no privilege left for it to refuse. What
+  # it DID do is make the kernel refuse to exec any tool that has to change AppArmor profile — a process
+  # with no_new_privs cannot be switched into one, so on a distribution that confines the WireGuard tools
+  # `wg-quick`/`awg-quick` cannot exec `ip` or `wg`/`awg` at ALL:
+  #
+  #     apparmor="DENIED" operation="exec" info="no new privs" profile="wg-quick"
+  #       name="/usr/bin/ip" target="wg-quick//ip"
+  #
+  # The interface then fails before the tool runs, which is nothing the operator can find from the panel.
+  # Tool-agnostic on purpose: nothing here names wg. Any confined `*-quick` was blocked the same way, and
+  # any that a distribution confines later is un-blocked by the same removal.
+  #
+  # ⚠️ THIS IS THE ONE THING ensure_noded_unit WON'T DO — it never rewrites an existing unit, on purpose,
+  # because that unit may carry operator edits. So this is a SURGICAL retraction, not a rewrite: it deletes
+  # exactly the line we wrote, only from our own unit, only when it is there, and leaves every other line
+  # (including anything the operator added) untouched. A drop-in under swg-noded.service.d/ that sets it
+  # again is the operator's own decision and is deliberately not touched.
+  local unit="$NODED_UNIT"
+  [ -f "$unit" ] || return 0
+  # ⚠️ A SYMLINK IS NOT OUR UNIT. The installers write a regular file; a link here means something else
+  # owns this service, and `sed -i` would quietly replace the link with a file and take it over.
+  [ -L "$unit" ] && { warn "$unit is a symlink — something else manages it; remove its NoNewPrivileges= line there."; return 0; }
+  grep -q '^NoNewPrivileges=' "$unit" 2>/dev/null || return 0
+  if $DRYRUN; then echo "    [skip] drop NoNewPrivileges= from $unit + daemon-reload + restart swg-noded"; return 0; fi
+  sed -i '/^NoNewPrivileges=/d' "$unit" || { warn "couldn't edit $unit — remove its NoNewPrivileges= line by hand"; return 0; }
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl restart swg-noded 2>/dev/null || warn "couldn't restart swg-noded — run: systemctl restart swg-noded"
+  ok "swg-noded: NoNewPrivileges retired — it can stop the interface tools executing under a security policy"
 }
 
 ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a bare-metal node/master.
@@ -658,9 +708,35 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   # route first, then builds from source, and only then falls back to the userspace datapath.
   # Docker nodes run userspace amneziawg-go from their image → skipped by the HAVE_BNODE gate.
   [ "$HAVE_BNODE" = yes ] || return 0
-  local _tools=no _mod=no
+  local _tools=no _mod=no _hf=0
   have awg && have awg-quick && _tools=yes
   { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes
+  # D1: the pinned userspace fallback, install-if-missing, BEFORE the "already working" return — that return is exactly
+  # how a box whose module works never got one, and a reboot onto a kernel without a module then took every awg
+  # interface down (docs/AWG-DATAPATH-RESILIENCE-PLAN.md §1).
+  # Not gated on the tools being present: the heal below may install them in this very run, and they would then wait a
+  # whole update for their fallback. The binary alone is inert.
+  if awg_go_needs_install && ! $DRYRUN; then   # missing, or one of our earlier pinned builds
+    if awg_go_pinned; then DID_UPDATE=yes; ok "AmneziaWG: userspace fallback installed (pinned $AWG_GO_TAG) — a kernel without a module no longer takes awg interfaces down"
+    else note "AmneziaWG: the pinned userspace fallback could not be fetched — awg interfaces depend on the kernel module alone"; fi
+  fi
+  # D4: a box whose module loads TODAY still needs it for the kernel it boots NEXT. That early return is what let a
+  # client's box sail through an update on kernel 138 with 139 installed, no headers for it and no module for it.
+  # Install-if-missing only: the headers metapackage, then a DKMS build for every installed kernel that has headers.
+  if [ "$_tools" = yes ] && [ "$_mod" = yes ] && ! $DRYRUN; then
+    # ⚠️ rc is CAPTURED, never read from a bare call: this script runs under `set -e`, and the function returns 10
+    # (installed now), 1 (none) and 2 (failed) on perfectly normal paths — a bare call aborted the whole update right here.
+    _hf=0; ensure_awg_headers_follow || _hf=$?; case $_hf in 10) DID_UPDATE=yes; ok "AmneziaWG: kernel headers now follow kernel upgrades ($(awg_headers_meta | tr "\n" " " | sed "s/ $//")) — the module is rebuilt when a new kernel arrives" ;;
+      2) note "AmneziaWG: the kernel headers metapackage could not be installed — the next kernel will rely on the userspace fallback (tried again on the next update)" ;;
+    esac
+    # A module an older installer built with `make install` loads on THIS kernel and exists for no other. Register it
+    # with DKMS once — unless the amnezia package can own it (then the package route is the owner, never us).
+    if have dkms && [ -z "$(dkms status amneziawg 2>/dev/null)" ] && ! apt-cache show amneziawg-dkms >/dev/null 2>&1; then
+      if awg_dkms_register_source; then DID_UPDATE=yes; ok "AmneziaWG: the kernel module is now rebuilt by DKMS whenever a kernel is installed"
+      else note "AmneziaWG: could not register the kernel module with DKMS — the next kernel will rely on the userspace fallback"; fi
+    fi
+    awg_dkms_build_all_kernels
+  fi
   [ "$_tools" = yes ] && [ "$_mod" = yes ] && return 0           # already working → done, silent
   $DRYRUN && return 0
 
@@ -676,6 +752,8 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     run add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
     run apt-get update -qq 2>/dev/null || true
     run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
+    ensure_awg_headers_follow || true
+    awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
     run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
     # `apt install` is a NO-OP when the package is present but its module never built (headers were missing
     # then), so force a build for the RUNNING kernel — an old kernel with newer headers would otherwise build
@@ -703,6 +781,92 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   else
     DID_FAIL=yes; warn "AmneziaWG could not be installed on this node — awg interfaces cannot be created or taken over. See the log above for the failing step"
   fi
+}
+
+awg_kernel_takes(){ # <conf> — would the loaded kernel module accept this interface's configuration? 0 = yes
+  # Tried on a THROWAWAY device, before anything real is stopped. The live ListenPort is left out: the interface being
+  # asked about still holds it. Anything that goes wrong here is a "no" — the interface then simply stays where it is.
+  local p="swgprobe$$" t rc=1
+  t="$(mktemp)" || return 1
+  if ip link add "$p" type amneziawg 2>/dev/null; then
+    awg-quick strip "$1" 2>/dev/null | grep -v '^[[:space:]]*ListenPort' > "$t" && awg setconf "$p" "$t" >/dev/null 2>&1 && rc=0
+    ip link del "$p" 2>/dev/null
+  fi
+  rm -f "$t"
+  return $rc
+}
+
+ensure_awg_back_on_kernel(){   # SURGICAL — NOT part of the general heal: move AWG interfaces off the userspace fallback.
+  # docs/AWG-DATAPATH-RESILIENCE-PLAN.md D3. A node whose module was missing runs every awg interface on amneziawg-go
+  # (awg-quick falls back by itself). Once ensure_awg_datapath has made the module load again, nothing moves them back:
+  # they stay on the slower datapath until something restarts them. This does, and ONLY for that state:
+  #   · the module loads now                     — otherwise userspace is the best this box has; leave it
+  #   · the device is a tun (tun_flags)          — a kernel device has nothing to move
+  #   · it has OUR conf, or is an exit amneziawg-go serves — a tun that is neither is not ours (csqtt, WDTT, a VPN client)
+  #   · the kernel accepts its configuration      — tried on a throwaway device first (awg_kernel_takes)
+  # So a routine update restarts nothing. The restart costs the moved interfaces one sync interval without peers
+  # (awg-quick brings them up from the conf; swg-noded re-adds the live peers on its next pass). Whoever started the
+  # interface — its unit, or swg-agent (the unit then INACTIVE) — it is stopped the way it was started, and always started
+  # again THROUGH ITS UNIT, never restarted: restarting an inactive unit would run a second copy beside the live one.
+  # ⚠️ NOT "if the kernel bring-up fails, awg-quick falls back again": it falls back only when the module is ABSENT, and
+  # here it is loaded. So a configuration the kernel refuses is found BEFORE anything stops, and that interface stays
+  # degraded; a bring-up that still fails after that is reported as down.
+  # Outside the heal contract (START / ENABLE / INSTALL-IF-MISSING) on purpose, like the netctl StartLimitIntervalSec fix.
+  [ "$HAVE_BNODE" = yes ] || return 0
+  have awg-quick || return 0
+  $DRYRUN && return 0
+  modprobe amneziawg 2>/dev/null || return 0
+  local d n c conf sock xit _w moved="" stuck="" down="" xmoved="" refused="" xdir="${SWG_NODED_STATE:-/var/lib/swg-noded}/exits"
+  for d in /sys/class/net/*; do
+    n="${d##*/}"
+    [ -e "$d/tun_flags" ] || continue
+    sock="/var/run/amneziawg/$n.sock"; xit=no; conf=""
+    if [ -f "$xdir/$n.conf" ]; then
+      # An EXIT device — swg-noded's own, its conf in the node's state dir — and only one amneziawg-go serves: a tun exit
+      # can be something else entirely. It gets the same teardown (the same stale socket would shadow its new device), but
+      # no start: swg-noded's exit pass brings an absent exit back up on its next sync, in its own scope.
+      # --ns: THIS network namespace only. From the host pgrep sees every container too, and a container's own
+      # `amneziawg-go awg0` (an Amnezia server, say) is not ours to wait for, let alone to kill.
+      [ -S "$sock" ] || pgrep --ns $$ --nslist net -f "amneziawg-go $n\$" >/dev/null 2>&1 || continue
+      conf="$xdir/$n.conf"; xit=yes
+    else
+      for c in /etc/amnezia/amneziawg/$n.conf /etc/amneziawg/$n.conf; do [ -f "$c" ] && { conf="$c"; break; }; done
+      [ -n "$conf" ] || continue
+    fi
+    awg_kernel_takes "$conf" || { refused="$refused $n"; continue; }
+    # STOP, make sure the userspace instance is really gone, then START. `awg-quick down` only deletes the link:
+    # amneziawg-go exits on its own but not instantly, and while its UAPI socket exists the awg CLI configures IT instead
+    # of the new kernel device — the device comes up empty and swg-noded's peers go to a dead process. (Measured in the
+    # P0 rig: a surviving `amneziawg-go awgc` shadowed a new kernel client exactly this way.)
+    if [ "$xit" = no ] && have systemctl && systemctl is-active --quiet "awg-quick@$n" 2>/dev/null; then
+      run systemctl stop "awg-quick@$n" >/dev/null 2>&1 || true
+    else
+      run awg-quick down "$conf" >/dev/null 2>&1 || true
+    fi
+    for _w in 1 2 3 4 5 6 7 8 9 10; do
+      [ -S "$sock" ] || pgrep --ns $$ --nslist net -f "amneziawg-go $n\$" >/dev/null 2>&1 || break
+      sleep 1
+    done
+    pkill --ns $$ --nslist net -f "amneziawg-go $n\$" >/dev/null 2>&1 || true
+    rm -f "$sock"
+    for _w in 1 2 3 4 5; do [ -e "/sys/class/net/$n" ] || break; sleep 1; done   # the tun device goes with its process
+    [ "$xit" = yes ] && { xmoved="$xmoved $n"; continue; }
+    # START THROUGH THE UNIT, whatever started it before. Its oneshot + RemainAfterExit keeps what it starts alive; a plain
+    # `awg-quick up` from here would put a userspace daemon (should the kernel refuse after all) in THIS process's cgroup,
+    # and the one-click update runs as swg-update.service — a oneshot whose leftovers systemd kills when it finishes.
+    # ensure_awg_quick_unit ran just before, so the template exists; the plain call is only the last resort.
+    if have systemctl; then run systemctl start "awg-quick@$n" >/dev/null 2>&1 || run awg-quick up "$conf" >/dev/null 2>&1 || true
+    else run awg-quick up "$conf" >/dev/null 2>&1 || true; fi
+    if [ ! -e "/sys/class/net/$n" ]; then down="$down $n"
+    elif [ -e "/sys/class/net/$n/tun_flags" ]; then stuck="$stuck $n"
+    else moved="$moved $n"; fi
+  done
+  [ -n "$xmoved" ] && { DID_UPDATE=yes; note "AmneziaWG exits taken off the userspace fallback — swg-noded brings them back up on the kernel module:$xmoved"; }
+  [ -n "$moved" ] && { DID_UPDATE=yes; ok "AmneziaWG back on the kernel datapath:$moved"; }
+  [ -n "$refused" ] && warn "AmneziaWG stays on the userspace fallback:$refused — the kernel module does not accept its configuration (a module older than the interface needs?)"
+  [ -n "$stuck" ] && warn "AmneziaWG still on the userspace fallback after a restart:$stuck — the kernel module did not take them"
+  [ -n "$down" ] && { DID_FAIL=yes; warn "AmneziaWG interface(s) did not come back after moving them to the kernel datapath:$down — start them from the panel"; }
+  return 0
 }
 
 ensure_awg_quick_unit(){   # HEAL (install-if-missing) the awg-quick@ TEMPLATE unit on a bare-metal node.
@@ -831,7 +995,7 @@ for name, ic in (cfg.get("interfaces") or {}).items():
   done <<< "$ifaces"
 }
 
-ensure_cert_perms(){   # HEAL (fix-if-wrong) TLS key ownership so the panel can still read its key after a restart.
+ensure_cert_perms(){   # HEAL (fix-if-wrong) ownership of the files the panel must READ: its TLS key and its auth file.
   # The panel runs as swgpanel (group swg) and loads the cert IN-PROCESS, so a root:root 0600 key means
   # load_cert_chain raises PermissionError and the service never comes back. The catch is that it fails only
   # at the NEXT restart: a panel that is already running holds its loaded context, so the box looks healthy
@@ -843,7 +1007,12 @@ ensure_cert_perms(){   # HEAL (fix-if-wrong) TLS key ownership so the panel can 
   # content, so fixing them is not a rewrite; the file itself is never touched.
   getent group swg >/dev/null 2>&1 || return 0
   local f grp mode fixed=""
-  for f in "${TLS_DIR:-/etc/swg-panel/tls}/key.pem" /etc/swg-sub/tls/key.pem; do
+  # The AUTH FILE is in this list for the same reason and with the same test: root:root 0600 means the
+  # service user cannot read it — and for that file the consequence is worse than a failed restart. The panel
+  # cannot tell "unreadable" from "not configured", so it used to fail OPEN and serve the whole roster with no
+  # login (found in the field 2026-09-16 on an internet-facing panel). The panel now refuses instead, and this
+  # heals the cause on the next update. root:swg 0640 is exactly what mk_auth_file and swg-passwd write.
+  for f in "${TLS_DIR:-/etc/swg-panel/tls}/key.pem" /etc/swg-sub/tls/key.pem /etc/swg-panel/auth; do
     [ -f "$f" ] || continue
     grp="$(stat -c '%G' "$f" 2>/dev/null)"; mode="$(stat -c '%a' "$f" 2>/dev/null)"
     # Already group swg WITH the group-read bit? Leave it exactly as the operator has it. Test the bit
@@ -854,8 +1023,8 @@ ensure_cert_perms(){   # HEAL (fix-if-wrong) TLS key ownership so the panel can 
     chown root:swg "$f" 2>/dev/null || true; chmod 640 "$f" 2>/dev/null || true
     [ "$(stat -c '%G' "$f" 2>/dev/null)" = swg ] && fixed="$fixed $f"
   done
-  [ -n "$fixed" ] && { DID_UPDATE=yes; ok "TLS key permissions healed —$fixed (the service user couldn't read it; the panel would not have survived a restart)"
-                       note "TLS key perms: healed$fixed"; }
+  [ -n "$fixed" ] && { DID_UPDATE=yes; ok "credential permissions healed —$fixed (the service user couldn't read it: a TLS key would not have survived the next restart, and an unreadable auth file used to leave the panel with no login at all)"
+                       note "credential perms: healed$fixed"; }
   return 0; }
 
 ACME_HOME_CANON="${ACME_HOME_CANON:-/root/.acme.sh}"   # the ONE acme store — see ensure_acme_home below
@@ -1267,7 +1436,9 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   if should_update "bare-metal swg-node" "$NODED_DIR"; then
     info "updating bare-metal swg-node ($AGENT_DIR + $NODED_DIR)"
     [ -d "$AGENT_DIR" ] && [ -f "$SRC/swg-agent" ] && { run cp "$SRC/swg-agent" "$AGENT_DIR/"; run chmod 755 "$AGENT_DIR/swg-agent"; }
-    [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-noded" ] && { run cp "$SRC/swg-noded" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-noded"; }
+    if [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-noded" ]; then
+      run cp "$SRC/swg-noded" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-noded"
+    fi
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-sni" ] && { run cp "$SRC/swg-sni" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-sni"; }   # SNI-router classifier
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-relay" ] && { run cp "$SRC/swg-relay" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-relay"; }   # TCP-terminating relay
     stamp "$NODED_DIR"
@@ -1276,8 +1447,12 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   else note "bare-metal swg-node: unchanged (${nold})"; fi
   ensure_node_update_ref # HEAL: record the ref this box tracks, so the node's self-update doesn't fall to main
   ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
+  ensure_noded_no_nnp    # MIGRATE: retract NoNewPrivileges — it blocked the AppArmor transition wg-quick/awg-quick need
+  ensure_noded_reach_sweep "$NODED_DIR"   # HEAL: the drop-in that sweeps the device-access tables when an OLDER swg-noded starts
+  ensure_wg_apparmor     # HEAL: let the confined wg CLI reach the UAPI sockets (wdtt / csqtt / awg-userspace)
   ensure_awg_datapath    # HEAL: install AmneziaWG if missing, rebuild its module, else userspace
   ensure_awg_quick_unit  # HEAL: the awg-quick@ template + the per-interface enable, so awg survives a reboot
+  ensure_awg_back_on_kernel   # SURGICAL: interfaces left on the userspace fallback go back to the module once it loads
 fi
 
 # ───────────────────────── Docker (host / node / master) ─────────────────────────
@@ -1378,6 +1553,25 @@ PYSC
       printf '%s\n' 'SWG_NODE_SECCOMP=unconfined   # this node runs csqtt servers, whose io_uring dataplane the default profile denies' \
         >> "$DOCKER_DIR/.env" \
         && note ".env: SWG_NODE_SECCOMP=unconfined (this node runs csqtt — its io_uring dataplane needs it)"
+    fi ;;
+  esac
+  # 1c) The host resolver's server list, read-only (networks — docs/NETWORKS-PLAN.md §4.1). In a host-net container
+  #    /etc/resolv.conf is systemd-resolved's stub, so without this the node cannot name the DNS server it depends
+  #    on and refuses to carry any network behind a peer. A read-only directory bind with nothing to decide, so it
+  #    is simply added. Anchored on the node's state-dir mount, which every compose this project ever shipped has.
+  case "$prof" in node|master|host-node)
+    if ! $DRYRUN && ! grep -q 'run/systemd/resolve' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null \
+       && grep -q '\./data/node:/var/lib/swg-noded' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
+      python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYRES' && note "docker-compose.yml: mounted the host's DNS server list read-only (networks behind a peer need it)"
+import sys
+f=sys.argv[1]; o=[]; done=False
+for l in open(f).read().split("\n"):
+    o.append(l)
+    if not done and l.strip().startswith("- ./data/node:/var/lib/swg-noded"):
+        o.append(l[:len(l)-len(l.lstrip())] + "- /run/systemd/resolve:/run/systemd/resolve:ro")
+        done=True
+open(f,"w").write("\n".join(o))
+PYRES
     fi ;;
   esac
   # 2) The operator console's own port. Shipped in 1.8.3 as three lines — a ports publish plus two env keys —

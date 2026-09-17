@@ -122,10 +122,10 @@ index ab78a82..5dfab36 100644
  
 diff --git a/server/desired_ingest.go b/server/desired_ingest.go
 new file mode 100644
-index 0000000..0f433b0
+index 0000000..163905a
 --- /dev/null
 +++ b/server/desired_ingest.go
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,249 @@
 +package server
 +
 +// swg-panel integration: the node pushes the panel-owned password SET as a desired.json file (the SAME
@@ -141,6 +141,7 @@ index 0000000..0f433b0
 +	"log"
 +	"os"
 +	"path/filepath"
++	"strings"
 +
 +	"github.com/ildarmaga/wdtt/pkg/paneldb"
 +)
@@ -245,21 +246,22 @@ index 0000000..0f433b0
 +}
 +
 +// ingestDesiredFile upserts the desired password set into wdtt_users and revokes DB users no longer
-+// desired. SQLite-only; the caller reloads memory. No-op without -desired or before the DB is open.
-+func ingestDesiredFile() error {
++// desired, returning the revoked passwords. SQLite-only; the caller reloads memory. No-op without
++// -desired or before the DB is open.
++func ingestDesiredFile() ([]string, error) {
 +	if desiredPath == "" || !serverPanelDBReady() {
-+		return nil
++		return nil, nil
 +	}
 +	raw, err := os.ReadFile(desiredPath)
 +	if err != nil {
 +		if os.IsNotExist(err) {
-+			return nil // not written yet (or removed) — leave the store as-is
++			return nil, nil // not written yet (or removed) — leave the store as-is
 +		}
-+		return err
++		return nil, err
 +	}
 +	var d desiredFile
 +	if err := json.Unmarshal(raw, &d); err != nil {
-+		return err
++		return nil, err
 +	}
 +	sdb := serverPanelDB
 +
@@ -281,20 +283,49 @@ index 0000000..0f433b0
 +			VkHash:        e.VkHash,
 +		}
 +		if err := paneldb.UpsertUser(sdb, main, pw, u); err != nil {
-+			return err
++			return nil, err
 +		}
 +	}
 +
 +	stale, err := staleUserPasswords(sdb, main, want)
 +	if err != nil {
-+		return err
++		return nil, err
 +	}
 +	for _, pw := range stale {
-+		if err := paneldb.DeleteUser(sdb, pw, nil); err != nil {
++		// swg-panel: pass the password's device rows so DeleteUser actually removes them. With nil
++		// (the original) the wdtt_devices row survived, and on reload passwordForDeviceLocked found no
++		// owner match, bindOrphanDeviceToMainLocked re-homed the leftover device to the owner, and the
++		// WG peer was re-added — the revoked client kept access. Under -fixed-config the device key is
++		// "pw:<password>"; stock bindings live in wdtt_user_devices.
++		if err := paneldb.DeleteUser(sdb, pw, revokeDeviceIDs(sdb, pw)); err != nil {
 +			log.Printf("[DESIRED] revoke %s: %v", maskPassword(pw), err)
 +		}
 +	}
-+	return nil
++	return stale, nil
++}
++
++// revokeDeviceIDs returns the wdtt_devices rows to delete with a revoked password: its
++// -fixed-config key ("pw:<password>") plus any stock device bindings no other password shares.
++// wdtt_user_devices is keyed (password, device_id), so one device row can be bound to several
++// passwords; deleting a shared row would take a live user's keypair and address with it. swg-panel.
++func revokeDeviceIDs(sdb *sql.DB, pw string) []string {
++	var ids []string
++	if fixedConfig {
++		ids = append(ids, "pw:"+pw)
++	}
++	rows, err := sdb.Query(`SELECT device_id FROM wdtt_user_devices WHERE password = ?
++		AND device_id NOT IN (SELECT device_id FROM wdtt_user_devices WHERE password <> ?)`, pw, pw)
++	if err != nil {
++		return ids
++	}
++	defer rows.Close()
++	for rows.Next() {
++		var id string
++		if err := rows.Scan(&id); err == nil && strings.TrimSpace(id) != "" {
++			ids = append(ids, id)
++		}
++	}
++	return ids
 +}
 +
 +// staleUserPasswords = DB user passwords absent from `want` (never the owner/main password).
@@ -319,7 +350,8 @@ index 0000000..0f433b0
 +
 +// reloadDesired ingests the file then applies it to memory + the live WG device (nil-safe at startup).
 +func reloadDesired() {
-+	if err := ingestDesiredFile(); err != nil {
++	stale, err := ingestDesiredFile()
++	if err != nil {
 +		log.Printf("[DESIRED] ingest %s: %v", desiredPath, err)
 +		return
 +	}
@@ -330,7 +362,18 @@ index 0000000..0f433b0
 +		log.Printf("[DESIRED] reload: %v", err)
 +		return
 +	}
-+	log.Printf("[DESIRED] password set reloaded from %s", desiredPath)
++	// swg-panel: a revoked password's live RAW sessions are keyed by the client's deviceID, not by its
++	// pw: device, so reloadDBFromDisk (which cuts the WG peer) does not cut them. Cut them here and
++	// return the raw addresses to the pool.
++	for _, pw := range stale {
++		if n := cancelRawSessionsForPassword(pw); n > 0 {
++			log.Printf("[DESIRED] revoke %s: cut %d raw session(s)", maskPassword(pw), n)
++		}
++		freeRawIPsForPassword(pw)
++	}
++	if desiredPath != "" {
++		log.Printf("[DESIRED] password set reloaded from %s", desiredPath)
++	}
 +}
 diff --git a/server/fixedconfig_test.go b/server/fixedconfig_test.go
 new file mode 100644
@@ -436,8 +479,110 @@ index 0000000..1065043
 +		t.Logf("%s -> %d draws, all inside, %d distinct", c.subnet, in, len(seen))
 +	}
 +}
+diff --git a/server/revoke_test.go b/server/revoke_test.go
+new file mode 100644
+index 0000000..5faa4fb
+--- /dev/null
++++ b/server/revoke_test.go
+@@ -0,0 +1,96 @@
++package server
++
++import (
++	"database/sql"
++	"path/filepath"
++	"testing"
++
++	_ "modernc.org/sqlite"
++)
++
++// K5: a revoked -fixed-config password must NOT keep access. The device key "pw:<password>" resolves
++// to exactly that password, and once the password is gone the device is an orphan that is never
++// re-homed to the owner — so the reload drops its WG peer instead of re-adding it.
++func TestFixedConfigRevokeDoesNotRebindToOwner(t *testing.T) {
++	oldFixed, oldDB := fixedConfig, db
++	defer func() { fixedConfig, db = oldFixed, oldDB }()
++
++	fixedConfig = true
++	db = &Database{
++		MainPassword: "OWNER",
++		Passwords: map[string]*PasswordEntry{
++			"OWNER":  {},
++			"pwLive": {},
++		},
++		Devices: map[string]*ClientDevice{
++			"pw:OWNER":  {DeviceID: "pw:OWNER", IP: "10.66.66.2"},
++			"pw:pwLive": {DeviceID: "pw:pwLive", IP: "10.66.66.3"},
++			"pw:pwGone": {DeviceID: "pw:pwGone", IP: "10.66.66.4"}, // password already deleted from db.Passwords
++		},
++	}
++
++	// a live generated password resolves to itself, never to the owner
++	if got := passwordForDeviceLocked("pw:pwLive"); got != "pwLive" {
++		t.Fatalf("live device: got %q, want pwLive", got)
++	}
++	// the owner's own device resolves to the owner
++	if got := passwordForDeviceLocked("pw:OWNER"); got != "OWNER" {
++		t.Fatalf("owner device: got %q, want OWNER", got)
++	}
++	// THE DEFECT: a revoked password's leftover device must resolve to nothing, not the owner
++	if got := passwordForDeviceLocked("pw:pwGone"); got != "" {
++		t.Fatalf("revoked device re-homed to %q — the revocation defect", got)
++	}
++	// and orphan-adoption must refuse a fixed-config device outright
++	if got := bindOrphanDeviceToMainLocked("pw:pwGone"); got != "" {
++		t.Fatalf("bindOrphanDeviceToMainLocked adopted revoked device to %q", got)
++	}
++	if got := bindOrphanDeviceToMainLocked("pw:pwLive"); got != "" {
++		t.Fatalf("bindOrphanDeviceToMainLocked must not adopt any fixed-config device (got %q)", got)
++	}
++
++	// stock (non-pw:) device ids are unaffected by the fixed-config shortcut
++	if _, ok := fixedConfigDevicePassword("some-real-device-id"); ok {
++		t.Fatalf("stock device id parsed as a fixed-config pw: key")
++	}
++	// and with -fixed-config off, even a "pw:"-looking id is not treated as a fixed-config key
++	fixedConfig = false
++	if _, ok := fixedConfigDevicePassword("pw:whatever"); ok {
++		t.Fatalf("fixedConfigDevicePassword must be inert when -fixed-config is off")
++	}
++	fixedConfig = true
++}
++
++// A revoked password's stock device binding may be shared with a live password (wdtt_user_devices is keyed
++// (password, device_id)). revokeDeviceIDs must hand DeleteUser only the rows no other password binds — deleting
++// the shared wdtt_devices row would take the live user's keypair and address with it.
++func TestRevokeKeepsSharedDeviceRow(t *testing.T) {
++	oldFixed := fixedConfig
++	defer func() { fixedConfig = oldFixed }()
++	fixedConfig = true
++
++	sdb, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
++	if err != nil {
++		t.Fatalf("open: %v", err)
++	}
++	defer sdb.Close()
++	for _, q := range []string{
++		baseWDTTSchema,
++		`INSERT INTO wdtt_users (password) VALUES ('pwGone'), ('pwLive')`,
++		`INSERT INTO wdtt_user_devices (password, device_id) VALUES ('pwGone', 'phone-shared'), ('pwGone', 'tablet-own'), ('pwLive', 'phone-shared')`,
++	} {
++		if _, err := sdb.Exec(q); err != nil {
++			t.Fatalf("exec: %v", err)
++		}
++	}
++	got := map[string]bool{}
++	for _, id := range revokeDeviceIDs(sdb, "pwGone") {
++		got[id] = true
++	}
++	if len(got) != 2 || !got["pw:pwGone"] || !got["tablet-own"] {
++		t.Fatalf("revokeDeviceIDs(pwGone) = %v, want pw:pwGone and tablet-own", got)
++	}
++	if got["phone-shared"] {
++		t.Fatalf("revokeDeviceIDs deleted a device row pwLive still binds")
++	}
++}
 diff --git a/server/server.go b/server/server.go
-index 5f7877b..0880201 100644
+index 5f7877b..97a54b9 100644
 --- a/server/server.go
 +++ b/server/server.go
 @@ -50,18 +50,40 @@ func rawDirectListenAddr(dtlsAddr string, rawPort int) (string, error) {
@@ -492,7 +637,48 @@ index 5f7877b..0880201 100644
  	defaultStatsIntervalSec = 2
  )
  
-@@ -485,7 +507,7 @@ func getNextIP() string {
+@@ -230,10 +252,28 @@ func isTrafficExceeded(entry *PasswordEntry) bool {
+ 	return entry.UpBytes+entry.DownBytes >= entry.TotalBytes
+ }
+ 
++// fixedConfigDevicePassword reports the password a -fixed-config device key ("pw:<password>")
++// encodes. ok is false for a stock (deviceID-keyed) device. swg-panel.
++func fixedConfigDevicePassword(deviceID string) (string, bool) {
++	if !fixedConfig {
++		return "", false
++	}
++	return strings.CutPrefix(deviceID, "pw:")
++}
++
+ func passwordForDeviceLocked(deviceID string) string {
+ 	if deviceID == "" {
+ 		return ""
+ 	}
++	// swg-panel: under -fixed-config a device is keyed "pw:<password>" and belongs to exactly that
++	// password. Resolve it directly so a revoked password's leftover device is NOT re-homed to the
++	// owner (the revocation defect): if the password is gone, the device is an orphan → "".
++	if p, ok := fixedConfigDevicePassword(deviceID); ok {
++		if _, live := db.Passwords[p]; live {
++			return p
++		}
++		return ""
++	}
+ 	var fallback string
+ 	for pass, entry := range db.Passwords {
+ 		if entry == nil || !entryHasDevice(entry, deviceID) {
+@@ -255,6 +295,11 @@ func bindOrphanDeviceToMainLocked(deviceID string) string {
+ 	if deviceID == "" || db.MainPassword == "" {
+ 		return ""
+ 	}
++	// swg-panel: a -fixed-config device already names its own password; it must never be adopted by
++	// the owner. If its password is gone it stays an orphan (revoked) and the reload drops its peer.
++	if _, ok := fixedConfigDevicePassword(deviceID); ok {
++		return ""
++	}
+ 	if _, ok := db.Devices[deviceID]; !ok {
+ 		return ""
+ 	}
+@@ -485,7 +530,7 @@ func getNextIP() string {
  		used[dev.IP] = true
  	}
  	for i := 2; i <= 250; i++ {
@@ -501,7 +687,7 @@ index 5f7877b..0880201 100644
  		if !used[ip] {
  			return ip
  		}
-@@ -507,11 +529,24 @@ func RunManaged() {
+@@ -507,11 +552,24 @@ func RunManaged() {
  	log.Println("══════════════════════════════════════════")
  
  	cfg := baseServerConfigFromFlags()
@@ -526,7 +712,7 @@ index 5f7877b..0880201 100644
  	for {
  		ctx, cancel := context.WithCancel(context.Background())
  		restartCh := make(chan struct{}, 1)
-@@ -550,6 +585,7 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
+@@ -550,6 +608,7 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
  	cfg.applyGlobals()
  
  	initDB(cfg.MainPass, cfg.AdminID, cfg.BotToken)
@@ -534,7 +720,7 @@ index 5f7877b..0880201 100644
  	log.Printf("[CFG] Admin HTTP: %s (hot-reload /health, restart /admin/restart)", adminListenAddr)
  
  	if disabled {
-@@ -631,7 +667,25 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
+@@ -631,7 +690,25 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
  
  	rawAcceptDone := make(chan struct{})
  	close(rawAcceptDone) // default: no direct listener
@@ -621,7 +807,7 @@ index b43ad24..911974e 100644
  						log.Printf("[DB] regen keys save: %v", err)
  						persistFail()
 diff --git a/server/server_raw.go b/server/server_raw.go
-index 16fa8a4..8e24879 100644
+index 16fa8a4..b0e0623 100644
 --- a/server/server_raw.go
 +++ b/server/server_raw.go
 @@ -22,11 +22,18 @@ import (
@@ -739,6 +925,56 @@ index 16fa8a4..8e24879 100644
  		deny("DENIED:device_mismatch")
  		return false, false
  	}
+@@ -1246,14 +1301,13 @@ func runRawRelay(ctx context.Context, clientConn net.Conn, deviceID, ip, passwor
+ 			}
+ 			continue
+ 		}
+-		// qWDTT server.go пишет любой non-keepalive uplink в TUN без source-check.
+-		if !sess.qwdtt && !rawIPv4SourceMatches(buf[:n], sess.ip) {
+-			continue // не IPv4 и не frame
+-		}
+-		if sess.qwdtt {
+-			if n < 20 || buf[0]>>4 != 4 {
+-				continue
+-			}
++		// swg-panel: enforce the assigned source for EVERY session, qWDTT included. Upstream skipped
++		// the check for qWDTT-protocol sessions ("qWDTT server.go writes any non-keepalive uplink to
++		// the TUN without a source check"), which let a qWDTT-protocol client spoof any source address
++		// into the TUN. rawIPv4SourceMatches also rejects non-IPv4 / short packets, so this one guard
++		// subsumes both the old !qwdtt source check and the qwdtt length/version guard.
++		if !rawIPv4SourceMatches(buf[:n], sess.ip) {
++			continue
+ 		}
+ 		group.noteUplink(sess, buf[:n])
+ 		if err := writeRawTUN(dev, buf[:n]); err != nil {
+@@ -1364,6 +1418,27 @@ func isRawConfPacket(firstStr string) bool {
+ 		strings.HasPrefix(firstStr, "AUTH:")
+ }
+ 
++// freeRawIPsForPassword releases the raw pool addresses a password held. rawIPByDevice is keyed
++// "<deviceID>:<sha256(password)[:8]>" (rawDeviceIdentity), so a password's entries share that
++// suffix. Without this a revoked password's address is never returned to the pool. swg-panel.
++func freeRawIPsForPassword(password string) int {
++	password = strings.TrimSpace(password)
++	if password == "" {
++		return 0
++	}
++	sum := sha256.Sum256([]byte(password))
++	suffix := fmt.Sprintf(":%x", sum[:8])
++	n := 0
++	rawIPByDevice.Range(func(k, _ any) bool {
++		if s, ok := k.(string); ok && strings.HasSuffix(s, suffix) {
++			rawIPByDevice.Delete(s)
++			n++
++		}
++		return true
++	})
++	return n
++}
++
+ // cancelRawSessionsForPassword рвёт все RAW-сессии пароля (аналог removePeerFromWG).
+ func cancelRawSessionsForPassword(password string) int {
+ 	password = strings.TrimSpace(password)
 diff --git a/server/server_util.go b/server/server_util.go
 index 45c39ae..ec18a9a 100644
 --- a/server/server_util.go

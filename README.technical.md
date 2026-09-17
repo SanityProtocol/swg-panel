@@ -1,12 +1,13 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.6-beta</code></p>
+<p align="center"><code>1.8.7-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.6-beta** — [full changelog](CHANGELOG.md)
-> - **A node can now leave by something other than its own address.** Register a free Cloudflare WARP account in one click, paste a WireGuard profile from anywhere else, or point at a network card or tunnel the box already runs. Any of them can be the node's default way out, one interface's way out, or the destination of a single routing rule — and each carries a kill-switch, so traffic is refused the moment that exit stops working instead of quietly falling back to the node's own address.
-> - **An exit's original account survives losing the node's key.** The key is sealed under your encryption key and the panel only ever holds ciphertext it cannot open. If a node re-registers and the address websites see changes, the row says so and offers the old account back.
-> - **Hybrid SNI routing, and rules that admit what they cannot do.** The kernel matches IP categories and reads the TLS handshake for host categories in one pass, with no helper process. A rule now says when this node's mode cannot match its target, and separately when its destination has been deleted — counted in the summary, without opening the section.
+> **What's new in 1.8.7-beta** — [full changelog](CHANGELOG.md)
+> - **Networks behind a device.** A device can front a network — the office LAN behind a router, the home network behind a Raspberry Pi — and the node carries it to clients whether their interface sends traffic direct, forwards it to another node or routes it by rule. The node can test that the network answers, and you choose who reaches it: everyone on the node, or only its owner and the people and groups you share it with.
+> - **Who can reach a device, and Private devices.** Every interface, WDTT server and csqtt server sets who may open connections to the devices on it — Everyone on this node, Same user and their groups, or Nobody — and a device marked Private is reachable only by its owner's other devices. ⚠️ Interfaces you already have start at Same user and their groups, so after the update devices of different users stop reaching each other until you put those people in a group or set the interface to Everyone on this node.
+> - **User groups.** Put people in named groups: members reach each other's devices, and a network can be shared with a whole group at once.
+> - **Relay works on smart-routing legs.** Forward or Relay is now a choice for a mesh leg that carries only some of an interface's destinations, not only for one that carries the whole interface.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -35,6 +36,7 @@ Multi-hop in mind (edge entry → distant exit), and built to scale — from a c
 - [Installing the panel](#installing-the-panel)
 - [Adding a node](#adding-a-node)
 - [Managing peers](#managing-peers)
+- [Networks, device access and groups](#networks-device-access-and-groups)
 - [Subscriptions & access control](#subscriptions--access-control)
 - [Docker](#docker)
 - [Converting between bare-metal and Docker](#converting-between-bare-metal-and-docker)
@@ -155,7 +157,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 | Panel · 4 | **Serve mode** | `internal` (default, self-contained) · `nginx` · `caddy` · `skip` |
 | Panel | **Port / admin** | port (default **443** for `internal`; the unit adds the bind capability for ports < 1024) and the web login — suggests `admin` + 3 digits; changeable later under **Settings → Authentication** |
 | Node · 1 | **Node name** | *(master)* this box's node name (default: hostname) |
-| Node · 2 | **Datapath tooling** | *(master)* no prompt. Installs nftables + dnsmasq (smart routing / Force-DNS), the AmneziaWG tools **and** the DKMS kernel module, and plain WireGuard — so the panel can create either type immediately — then detects the interfaces already on the box and hands them to the panel as adoption candidates. |
+| Node · 2 | **Datapath tooling** | *(master)* no prompt. Installs nftables + dnsmasq (smart routing / Force-DNS), the AmneziaWG tools **and** the DKMS kernel module — plus the kernel's headers metapackage, so the module is rebuilt whenever a new kernel is installed — the pinned userspace **`amneziawg-go`** that `awg-quick` falls back to if a boot ever finds no module, and plain WireGuard — so the panel can create either type immediately — then detects the interfaces already on the box and hands them to the panel as adoption candidates. |
 
 **TLS:**
 - **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
@@ -215,6 +217,53 @@ Live status (online, partial, dangling, …) is computed every refresh from the 
 **WDTT peers** — a peer on a WDTT interface holds a **password** instead of a keypair (the panel owns it; the server never mints its own). Everything else is the same object: assign, block, expire, rotate and delete work identically, and **Rotate all keys** on a user re-keys their wg/awg peers and re-issues their WDTT passwords in one action.
 
 **Authentication** — change the panel username/password under the **Authentication** tab; it takes effect immediately (you're asked to sign in again). Resetting it leaves the encryption vault intact — the recovery key is what restores access to escrowed keys.
+
+## Networks, device access and groups
+
+**Networks behind a device.** A peer can front up to 8 IPv4 networks (its **Networks** window) — an office LAN
+behind a router, a home network behind a Raspberry Pi. The panel lowers them onto every node the peer is deployed
+to as extra `allowed_ips` members after the peer's own `/32`. The node refuses a prefix that overlaps its own
+addresses, an interface or mesh subnet, or the path to its gateway, the panel and its resolvers — checked from its
+own kernel, and taken back if a route it installed moved any of them — and a node that does not report those
+dependencies is sent no network at all. An accepted network is routed into the tunnel and added to every forward,
+smart-routing and kill-switch table, so clients reach it whatever their interface's egress. One device carries a
+given prefix per node (the earliest-created wins; the other is shown as inert with the reason), and a blocked or
+expired device carries nothing. **Test** asks the node to probe an address on the network through the device. On a
+Force-DNS node, DNS to a server on a carried network is exempted from the redirect. A device sends back only its own
+interface's subnet, so the node translates the clients of its other interfaces to its address on the device's interface
+(one `MASQUERADE` rule per network, `swg-net-snat:` in `nat POSTROUTING`); the device's own interface is not translated,
+and who may reach the network is decided before the translation.
+
+**Who reaches a network.** Without a share, everyone on the node. With one, only the device's owner and the users
+and groups it names, each until a date or for good. The node enforces it with one nft table, `inet swg_share`, in
+prerouting; dates are kernel timeouts, so a grant lapses on time even with the panel unreachable. A node too old to
+enforce a share carries that network for nobody. A WDTT or csqtt deployment counts as a source only where the build
+the node **reports** is listed in `KEYLESS_SHARE_BUILDS` for that path — it must drop a spoofed source, keep one
+address per password and cut a revoked password's live session.
+
+**A node's own local network.** A client's traffic to the private network a node sits on (RFC 1918 or CGNAT) leaves
+by the node's own card, so clients reach it by default. The node's page shows it; closing it loads `inet swg_lan`, a drop
+from every client tunnel and mesh link to those networks. **Settings → Network** hides and closes it on every node.
+
+**Who can reach a device.** Every interface, WDTT instance and csqtt instance has a level: **Everyone on this node**,
+**Same user and their groups** (the default, and what an interface with no stored level gets), or **Nobody**. The
+sync reply carries zones of device addresses and the sources allowed to open connections to them; the node enforces
+them with `inet swg_reach` in prerouting, where an unlisted address of a protected subnet reaches nobody and replies always
+pass, and reports per-interface drop counters. A peer marked **Private** is reachable only by its owner's other
+devices, and its networks by its owner alone. A node that does not report the capability enforces nothing and the
+interface reads **not enforced**. Internet access is not affected; a device at **Same user and their groups** or
+**Nobody** is never reached from another node; and a proxy on the node itself connects as the node, so no level
+applies to it.
+
+**Groups.** The roster's top-level `groups` (`{id: {name, users}}`) is managed under **Users → Groups** or from a
+user's sheet. The panel expands a group to its members wherever a share or a device-access zone is planned, so nodes
+only ever receive per-device elements.
+
+**Forward or Relay on a smart-routing leg.** Relay eligibility is decided per (interface, leg): a whole-interface
+cascade is one instance, `<iface>`, and each peer node a smart-routing interface sends destinations to is another,
+`<iface>.<peer>`, whose divert matches that leg's routing mark. The divert takes only a new TCP connection whose
+destination the kernel routes into a mesh link, and a watchdog removes it whenever the relay cannot be proven to be
+accepting what it is handed. Every relay on a node shares one CPU-capped slice.
 
 ## Subscriptions & access control
 
@@ -498,7 +547,8 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
 
 - [amurcanov](https://github.com/amurcanov/csqtt) — the original, and csqtt, its successor
-- [luminescq](https://github.com/luminescq/PWDTT)
+- [luminescq](https://github.com/luminescq/focsq)
+- [Endlad2](https://github.com/Endlad2/LaLune)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
 - [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)

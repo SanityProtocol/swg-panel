@@ -20,13 +20,16 @@
 # a host-side decision: install amneziawg-dkms there and recreate the container.
 
 FROM public.ecr.aws/docker/library/golang:1.25-bookworm AS build
+# The SAME pinned upstream ref as bare metal (lib/common.sh AWG_GO_TAG), built static. This image uses its own Go, so
+# it is the same source as the published bare-metal asset, not the same bytes (that one: forks/amneziawg-go/build.sh).
+ARG AWG_GO_REF=v3.1.20260828
 RUN apt-get update && apt-get install -y --no-install-recommends git make build-essential \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 # userspace WireGuard/AmneziaWG datapath
-RUN for i in 1 2 3 4 5; do git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-go && break \
+RUN for i in 1 2 3 4 5; do git clone --depth=1 --branch "$AWG_GO_REF" https://github.com/amnezia-vpn/amneziawg-go && break \
       || { echo "git clone amneziawg-go failed (attempt $i) — retrying"; sleep 3; rm -rf amneziawg-go; }; done \
- && cd amneziawg-go && go build -o /out/amneziawg-go . \
+ && cd amneziawg-go && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -buildvcs=false -o /out/amneziawg-go . \
  && { strip /out/amneziawg-go || true; } \
  && test -x /out/amneziawg-go   # fail the build loudly if the datapath didn't build (don't ship a broken image)
 # awg / awg-quick userspace control tools
@@ -43,8 +46,11 @@ ARG TARGETARCH=amd64
 # wireguard-tools ships `wg`: without it the only tool here is `awg`, which lists amneziawg-module
 # interfaces only — so a plain-WireGuard interface already on the box (the common case when adopting an
 # existing install) was invisible to iface_candidates and could never be offered for adoption.
+# iputils-ping is the mesh probe's `ping`: without it every probe returns 127, `mesh_health` stays empty, and every
+# container node — docker and the NixOS podman arm alike — reads "mesh 0/N" while its links carry traffic (measured on
+# svo-im and nixos, 1.8.7 qualification PART 3). tests/nix_node_path_selftest.py holds this list to the daemon's commands.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      iproute2 iptables nftables ipset dnsmasq ca-certificates procps curl util-linux wireguard-tools \
+      iproute2 iptables nftables ipset dnsmasq ca-certificates procps curl util-linux wireguard-tools iputils-ping \
  && case "$TARGETARCH" in amd64) A=x86_64;; arm64) A=aarch64;; *) A=x86_64;; esac \
  && curl -fsSL "https://download.docker.com/linux/static/stable/${A}/docker-27.3.1.tgz" -o /tmp/d.tgz \
  && tar -xzf /tmp/d.tgz -C /tmp && install /tmp/docker/docker /usr/bin/docker \

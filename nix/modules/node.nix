@@ -707,7 +707,12 @@ in
           # comes back with a new owner password. The daemon only ever COPIES out of them.
           "/opt/swg-wdtt:/opt/swg-wdtt:ro"
           "/opt/swg-csqtt:/opt/swg-csqtt:ro"
-        ] ++ optional cfg.turnManage
+        ]
+        # The DNS servers resolved forwards to, READ-ONLY: in the container /etc/resolv.conf is only the stub, and a
+        # node that cannot name its resolver carries no networks behind a peer (docs/NETWORKS-PLAN.md §4.1). Only
+        # when resolved runs — podman refuses to start a container whose bind source does not exist.
+        ++ optional config.services.resolved.enable "/run/systemd/resolve:/run/systemd/resolve:ro"
+        ++ optional cfg.turnManage
           (if cfg.backend == "podman"
            then "/run/podman/podman.sock:/var/run/docker.sock"
            else "/var/run/docker.sock:/var/run/docker.sock");
@@ -885,6 +890,11 @@ in
           # when a unit PATH is first computed), so neither probe run reached it.
           bash
           procps conntrack-tools curl gnutar openssl kmod gnused gnugrep coreutils
+          # ⚠️ `ping` — the DAEMON's, not the bootstrap's: the mesh probe runs it on every leg, and a missing binary is a
+          # probe that returns nothing, so `mesh_health` stays empty and every NixOS native node reads "mesh 0/N" while its
+          # links carry traffic. Measured on the nixos fleet box (1.8.7 qualification PART 3). It survived because
+          # .campaign/nix-path-audit.mjs reads only node-entrypoint.sh, never swg-noded's own commands.
+          iputils
         ];
 
         # ⚠️ `wants` as well as `after`: ordering alone does not PULL the secrets unit in, and being
@@ -921,7 +931,16 @@ in
           # Root, because it samples kernel interfaces and runs swg-agent, which writes interface
           # .confs under /etc. ProtectSystem=true and NOT strict for exactly that reason: strict
           # would make /etc read-only and peers would stop persisting.
-          NoNewPrivileges = true;
+          # ⚠️ Do NOT add NoNewPrivileges. It withholds no privilege this daemon does not already
+          # hold (it is root with the full capability set), and a process with no_new_privs cannot be
+          # switched into an AppArmor profile — so where the WireGuard tools are confined, the kernel
+          # refuses to EXEC them and wg-quick/awg-quick die before creating anything. Retired from the
+          # bare-metal units in the same change (ensure_noded_no_nnp in update.sh).
+          #
+          # ⚠️ ON THIS ARM THE REMOVAL IS NOT LIVE UNTIL A RESTART. restartIfChanged follows
+          # restartOnRebuild, which is false by default, so `nixos-rebuild switch` writes the new
+          # unit and leaves the OLD one running — with nothing on screen saying the fix has not
+          # taken. An operator hitting the AppArmor refusal is told to restart the daemon; this is why.
           ProtectSystem = true;
         } // lib.optionalAttrs (cfg.tokenFile != null) {
           # The token lands in a per-unit tmpfs the bootstrap reads once through

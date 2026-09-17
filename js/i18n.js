@@ -222,11 +222,16 @@ export const srvVerb = v => (v ? T(v) : "");
    an acronym like "IP" must stay "IPs", not become "IPes".
 
    Only the HEAD noun inflects: "broken address" → "broken addresses", "new host" → "new hosts". */
+// English has no catalog, so its plurals are DERIVED — right for regular nouns, wrong for the few that are not.
+// "Reaches the devices of 2 persons" reached a user's row before anyone noticed: the word is "people".
+const EN_IRREGULAR = { person: "people", child: "children", man: "men", woman: "women" };
 function enPlural(w) {
   const at = w.lastIndexOf(" ") + 1, head = w.slice(at);
-  const p = /[^aeiou]y$/.test(head) ? head.slice(0, -1) + "ies"
-    : /(s|x|z|ch|sh)$/.test(head) ? head + "es"
-      : head + "s";
+  const irr = EN_IRREGULAR[head.toLowerCase()];
+  const p = irr ? (head[0] === head[0].toUpperCase() ? irr[0].toUpperCase() + irr.slice(1) : irr)
+    : /[^aeiou]y$/.test(head) ? head.slice(0, -1) + "ies"
+      : /(s|x|z|ch|sh)$/.test(head) ? head + "es"
+        : head + "s";
   return w.slice(0, at) + p;
 }
 

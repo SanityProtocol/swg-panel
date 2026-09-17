@@ -78,6 +78,28 @@ def _flag_vault():
             os.chown(os.path.join(SUBS, "vault.reset"), 0, grp.getgrnam("swg").gr_gid)
 
 
+def _revoke_sessions():
+    """End every signed-in session: a NEW session-signing secret, written into the panel's existing session.key.
+
+    The in-panel password change has always done this (swg-panel-server rotate_session_secret: "a captured cookie
+    dies"), and this tool — the one reached for when a password is lost or leaked — did not: it restarted the panel,
+    which reloaded the same secret, so every cookie signed before the reset stayed valid for its full week. Measured
+    (1.8.7 qualification PART 4, A2): a browser session opened before `swg-passwd` still answered 200 after it.
+
+    Written IN PLACE, never replaced: the file belongs to the panel's own user with mode 0600, and a root-owned copy
+    would leave the panel unable to read its secret. A missing file is fine — the panel mints one when it starts."""
+    path = os.path.join(STATE, "session.key")
+    if not os.path.exists(path):
+        return "none"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_TRUNC)
+        with os.fdopen(fd, "wb") as f:
+            f.write(base64.b64encode(os.urandom(48)))
+        return "ok"
+    except OSError as e:
+        return e.strerror or str(e)
+
+
 def _restart_panel():
     in_container = os.path.exists("/.dockerenv") or os.environ.get("container") == "docker"
     if not in_container:
@@ -143,8 +165,10 @@ def main():
 
     new_hash = _hash(pw) if pw else (cur_hash or _hash(""))   # keep the existing hash when only the username changes
     _write_auth(user, new_hash)
+    revoked = ""
     if pw:
         _flag_vault()
+        revoked = _revoke_sessions()          # BEFORE the restart, which is what loads the new secret
     applied = _restart_panel()
 
     # ── summary ──
@@ -160,6 +184,11 @@ def main():
         print("    interface key was touched. Signing in with the new password will ask you to re-connect it")
         print("    with your " + B("old panel password") + " or your " + B("encryption key") + " (shown when this panel")
         print("    set up config encryption, and revealable in Settings while the vault is unlocked).")
+        if revoked in ("ok", "none"):
+            print("  • Signed-in sessions:  ended — every browser signs in again with the new password")
+        else:
+            print("  • Signed-in sessions:  " + B("NOT ended") + " (could not rewrite " + os.path.join(STATE, "session.key")
+                  + ": " + revoked + ") — sessions opened before this reset stay valid until they expire")
     else:
         print("  • Password:  unchanged")
 

@@ -1,0 +1,190 @@
+# Build the server binaries we host for the WDTT/csqtt forks and the userspace AmneziaWG datapath.
+#
+# WHY THIS EXISTS. Every one of these releases was built on a workstation and uploaded by hand. The builds are
+# pinned — upstream commit, our patch, `-trimpath` — but nobody ever checked that a rebuild produces the same
+# bytes, so "reproducible" was an assertion. Here it is evidence: the build runs in the open, the log says which
+# commit and which toolchain, the artifact carries provenance attestation, and for amneziawg-go the job FAILS
+# unless the bytes match the sha256 the installer will verify against (`AWG_GO_SHA256_*` in lib/common.sh).
+#
+# ⚠️ MANUAL ONLY, and publishing is opt-in. Publishing a binary is outward-facing and is the operator's call, so
+# there is no push/schedule trigger: the default run builds, verifies and uploads artifacts, and changes nothing
+# anyone can download. Pass publish=true (with a tag) to cut the release.
+#
+# ⚠️ The toolchain is pinned HERE, not in most of the build scripts. Only forks/amneziawg-go/build.sh refuses a
+# wrong Go (its sha256 pins reproduce only with go1.27.1); the WDTT/qwdtt scripts build with whatever Go is on
+# PATH, so their bytes have never been comparable between two builds. Pinning it in one place is what makes a
+# rebuild-and-compare meaningful for them from now on — it does NOT retroactively match what was published by hand.
+name: fork binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      fork:
+        description: which fork to build
+        required: true
+        type: choice
+        options: [amneziawg-go, wdtt-amurcanov, wdtt-ildarmaga, wdtt-wdttplus, wdtt-xxcipherx, qwdtt, csqtt]
+      publish:
+        description: "publish a release (leave OFF to build + verify only)"
+        required: false
+        default: false
+        type: boolean
+      tag:
+        description: "release tag, e.g. amneziawg-go-3.1.20260828 or wdtt-ildarmaga-1.5.61 (required when publishing)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  GO_PIN: "1.27.1"          # forks/amneziawg-go/build.sh REQUIRES go1.27.1; the rest are pinned here for reproducibility
+  RUST_PIN: "1.97.1"        # forks/csqtt/build.sh installs this toolchain itself
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      # One place that knows how each fork is built and what its asset is called. The WDTT/csqtt releases we
+      # already publish name their assets `server-linux-<arch>`; amneziawg-go uses its own name because the
+      # installer fetches it by that exact path (lib/common.sh awg_go_pinned).
+      - name: resolve the fork
+        id: f
+        run: |
+          case "${{ inputs.fork }}" in
+            amneziawg-go)   script=forks/amneziawg-go/build.sh;      asset=amneziawg-go-linux ; kind=go   ;;
+            wdtt-amurcanov) script=forks/wdtt/build.sh;              asset=server-linux       ; kind=go   ;;
+            wdtt-ildarmaga) script=forks/wdtt/ildarmaga/build.sh;    asset=server-linux       ; kind=go   ;;
+            wdtt-wdttplus)  script=forks/wdtt/wdttplus/build.sh;     asset=server-linux       ; kind=go   ;;
+            wdtt-xxcipherx) script=forks/wdtt/xxcipherx/build.sh;    asset=server-linux       ; kind=go   ;;
+            qwdtt)          script=forks/qwdtt/build.sh;             asset=server-linux       ; kind=go   ;;
+            csqtt)          script=forks/csqtt/build.sh;             asset=server-linux       ; kind=rust ;;
+            *) echo "unknown fork ${{ inputs.fork }}" >&2; exit 1 ;;
+          esac
+          [ -f "$script" ] || { echo "$script is missing" >&2; exit 1; }
+          { echo "script=$script"
+            echo "asset=$asset-${{ matrix.arch }}"
+            echo "kind=$kind"; } >> "$GITHUB_OUTPUT"
+          echo "pinned upstream ref/sha in $script:"
+          grep -nE 'UPSTREAM_SHA=|UPSTREAM_REPO=|^PIN=|GO_VERSION=' "$script" || true
+
+      - uses: actions/setup-go@v5
+        if: steps.f.outputs.kind == 'go'
+        with:
+          go-version: ${{ env.GO_PIN }}
+          cache: false        # a warm module cache cannot change the output, but it can hide a fetch failure
+
+      # csqtt is Rust + musl via cargo-zigbuild; its build.sh installs the rust toolchain itself and only needs
+      # rustup, zig and cargo-zigbuild present.
+      - name: rust toolchain (csqtt)
+        if: steps.f.outputs.kind == 'rust'
+        run: |
+          rustup toolchain install "${{ env.RUST_PIN }}" --profile minimal
+          cargo install cargo-zigbuild --locked
+      - uses: mlugg/setup-zig@v2
+        if: steps.f.outputs.kind == 'rust'
+
+      - name: build
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [ "${{ steps.f.outputs.kind }}" = "rust" ]; then
+            bash "${{ steps.f.outputs.script }}" "$PWD/out" "${{ matrix.arch }}"
+            # the rust script writes into a directory; normalise whatever it produced to the asset name
+            f="$(find out -maxdepth 1 -type f ! -name '*.sha256' | head -1)"
+            [ -n "$f" ] || { echo "csqtt build produced no file" >&2; exit 1; }
+            [ "$f" = "out/${{ steps.f.outputs.asset }}" ] || mv "$f" "out/${{ steps.f.outputs.asset }}"
+          else
+            GOARCH="${{ matrix.arch }}" bash "${{ steps.f.outputs.script }}" "$PWD/out/${{ steps.f.outputs.asset }}"
+          fi
+          chmod 0755 "out/${{ steps.f.outputs.asset }}"
+          sha256sum "out/${{ steps.f.outputs.asset }}" | tee "out/${{ steps.f.outputs.asset }}.sha256"
+          file "out/${{ steps.f.outputs.asset }}" || true
+
+      # ⚠️ THE CHECK WORTH HAVING. The installer refuses a download whose sha256 is not the pinned one, so a build
+      # that does not reproduce that value is a build nobody can install — better to fail here than to publish an
+      # asset the fleet will reject. Only amneziawg-go carries such a pin today; the others say so rather than
+      # pretending to verify.
+      - name: verify against the installer's pin
+        run: |
+          set -euo pipefail
+          got="$(cut -d' ' -f1 < "out/${{ steps.f.outputs.asset }}.sha256")"
+          if [ "${{ inputs.fork }}" = "amneziawg-go" ]; then
+            want="$(grep -oP 'AWG_GO_SHA256_${{ matrix.arch }}="\K[a-f0-9]+' lib/common.sh)"
+            [ -n "$want" ] || { echo "no AWG_GO_SHA256_${{ matrix.arch }} in lib/common.sh" >&2; exit 1; }
+            echo "pinned : $want"; echo "built  : $got"
+            [ "$want" = "$got" ] || { echo "::error::rebuild does NOT match the pin the installer verifies — not publishable"; exit 1; }
+            echo "::notice::reproduced the pinned sha256 exactly"
+          else
+            echo "::notice::no installer-side sha256 pin for ${{ inputs.fork }} (only amneziawg-go has one) — recording $got"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.fork }}-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write         # create the release
+      id-token: write         # sign the provenance
+      attestations: write     # attach it
+    steps:
+      - uses: actions/checkout@v4
+      - name: the tag is required to publish
+        run: |
+          [ -n "${{ inputs.tag }}" ] || { echo "::error::publish=true needs a tag"; exit 1; }
+          if gh release view "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release ${{ inputs.tag }} already exists — delete it first, or pick another tag"; exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - uses: actions/download-artifact@v4
+        with: { path: dl, merge-multiple: true }
+      # ⚠️ The .sha256 sidecars go BEFORE attestation, not after: the attest action globs with @actions/glob, which
+      # has no bash extglob, so `dl/!(*.sha256)` would be taken literally and attest nothing. Deleting them first
+      # means `dl/*` is exactly the set of binaries we attest and then upload — one list, no second filter to drift.
+      - name: keep only the binaries
+        run: |
+          set -euo pipefail
+          ls -l dl
+          sha256sum dl/* | grep -v '\.sha256$'
+          rm -f dl/*.sha256
+          echo "attesting and publishing:"; ls -1 dl
+
+      # Provenance: ties each binary to this workflow, this commit and these inputs, verifiable with
+      # `gh attestation verify <file> --repo <owner>/<repo>`. This is the part a hand-built upload cannot have.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dl/*'
+
+      - name: create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "swg-panel build of **${{ inputs.fork }}**, built by CI from \`${GITHUB_SHA:0:12}\`."
+            echo
+            echo "Toolchain: Go \`${{ env.GO_PIN }}\` / Rust \`${{ env.RUST_PIN }}\`. Upstream commit and patch are pinned in the build script."
+            echo
+            echo '| asset | sha256 |'; echo '|---|---|'
+            for f in dl/*; do case "$f" in *.sha256) continue;; esac
+              echo "| \`$(basename "$f")\` | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"; done
+            echo
+            echo "Built by [this run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) with provenance attestation — verify with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`."
+          } > notes.md
+          gh release create "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+            --title "${{ inputs.fork }} — ${{ inputs.tag }}" --notes-file notes.md dl/*

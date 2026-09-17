@@ -18,6 +18,12 @@ tasks.txt
 # have pushed them. The rule belongs with the repo, not with one machine's config.
 .campaign/
 docs/
+# …and how we work ON the product is not part of it. `.claude/settings.local.json` below is ignored
+# for a different reason (one machine's config); this one is a shared, deliberate non-shipment.
+# ⚠️ NO TRAILING COMMENTS IN THIS FILE — `#` only starts a comment at line start, so a pattern with
+# one appended is read as literal text and silently matches nothing. That is how this line's first
+# version was written, and `git check-ignore` is what caught it.
+.claude/skills/
 # ⚠️ `tests/` has no leading slash, so it matches at ANY depth — `nix/tests/` included. A flake
 # builds from the GIT TREE, so a VM test written there would reach `nix build` as ABSENT, the
 # same way amneziawg.png would have (below). The shipped VM tests live in `nix/checks/`, which

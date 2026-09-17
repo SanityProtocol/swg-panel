@@ -168,11 +168,18 @@ export const api = {
   userCreate(b) { return this.post("/api/users/create", b); },
   userUpdate(b) { return this.post("/api/users/update", b); },
   userDelete(b) { return this.post("/api/users/delete", b); },
+  // user groups (docs/GROUPS-PLAN.md) — membership travels as a delta: {id, name?, add?: [uid], remove?: [uid]}
+  groupCreate(b) { return this.post("/api/groups/create", b); },
+  groupUpdate(b) { return this.post("/api/groups/update", b); },
+  groupDelete(b) { return this.post("/api/groups/delete", b); },
   userBlock(b) { return this.post("/api/user/block", b); },       // revoke WG + suspend the subscription URL
   userUnblock(b) { return this.post("/api/user/unblock", b); },   // restore both
   // peers
   peerCreate(b) { return this.post("/api/peers/create", b); },
   peerUpdate(b) { return this.post("/api/peers/update", b); },
+  peerNetworks(b) { return this.post("/api/peers/networks", b); },   // {peer_id, routes?} — routes = a draft, judged and reported, never saved
+  userNetworks(b) { return this.post("/api/users/networks", b); },   // {user_id} — what that user's devices can reach; on demand, never per poll
+  peerNetworkProbe(b) { return this.post("/api/peers/networks/probe", b); },   // {peer_id, node, addr, port?} arms one reachability test from that node · {peer_id, id} reads it · {peer_id} lists this peer's
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
   peerUpdateTarget(b) { return this.post("/api/peers/update-target", b); },
   peerRemoveTarget(b) { return this.post("/api/peers/remove-target", b); },
@@ -307,6 +314,7 @@ export const Store = {
     this.catDomains = d.cat_domains || this.catDomains || {};   // curated domains per host category → hover tooltip
     this.catLabels = d.cat_labels || this.catLabels || {};   // custom_<hash> → custom-list title (for the destination bars)
     this.catalogProviders = d.catalog_providers || this.catalogProviders || [];   // Geo-data provider registry [{id,label,url,tiers,enabled,error}]
+    this.catalogGen = d.catalog_gen || "";   // moves whenever the panel's catalog index changes → loadCatalogIndex refetches exactly then
     this.catSizes = d.cat_sizes || this.catSizes || {};   // {cat:{ip,host}} resolved-list record counts → list-size display
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
@@ -486,6 +494,46 @@ export const Store = {
   },
   peer(id) { return this.recon.peers.find(p => p.id === id); },
   user(id) { return this.recon.users.find(u => u.id === id); },
+  // A user GROUP as the screens read it (docs/GROUPS-PLAN.md G1): the members that still exist — a deleted user stays in the stored
+  // list and is filtered here, where it is read. Sorted by name.
+  // Built ONCE per roster: apply() replaces the roster object on every poll and every optimistic patch, so its identity is the
+  // cache key. group(id) is called inside sort comparators and per row — a rebuild per call was O(groups · members) each time.
+  groups() {
+    if (this._groupsOf !== this.roster) {
+      const g = (this.roster && this.roster.groups) || {}, us = (this.roster && this.roster.users) || {};
+      this._groupsList = Object.keys(g).filter(id => g[id] && typeof g[id] === "object")
+        .map(id => ({ id, name: String(g[id].name || ""), users: (Array.isArray(g[id].users) ? g[id].users : []).filter(u => us[u]) }))
+        .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      this._groupsById = new Map(this._groupsList.map(x => [x.id, x]));
+      this._groupsOf = this.roster;
+    }
+    return this._groupsList;
+  },
+  group(id) { this.groups(); return this._groupsById.get(id) || null; },
+  // A user's groups, keyed by MEMBER and built once per roster beside groups(). The users list asks this per row on every poll
+  // (5 s), and filtering every group per row was O(rows · groups · members) each time — the reason the sheet's field kept it off
+  // the list until now (docs/GROUPS-PLAN.md G11).
+  groupsByUser(id) {
+    if (this._gByUserOf !== this.roster) {
+      const m = new Map();
+      for (const g of this.groups()) for (const u of g.users) (m.get(u) || m.set(u, []).get(u)).push(g);
+      this._gByUser = m;
+      this._gByUserOf = this.roster;
+    }
+    return this._gByUser.get(id) || [];
+  },
   peersOfUser(id) { return this.recon.peers.filter(p => p.user_id === id); },
+  // The same, by OWNER, built once per RECON (not per roster: these are the reconciled peers, rebuilt on every poll, and a stale
+  // map would hand back devices with last poll's online state). peersOfUser() walks every peer per call — fine for one sheet,
+  // O(users · peers) for a list that asks per row.
+  peersByUser(id) {
+    if (this._pByUserOf !== this.recon) {
+      const m = new Map();
+      for (const p of this.recon.peers) if (p.user_id) (m.get(p.user_id) || m.set(p.user_id, []).get(p.user_id)).push(p);
+      this._pByUser = m;
+      this._pByUserOf = this.recon;
+    }
+    return this._pByUser.get(id) || [];
+  },
   unassignedPeers() { return this.recon.peers.filter(p => p.unassigned); },
 };

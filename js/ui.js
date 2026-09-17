@@ -227,7 +227,7 @@ let _sheetStack = [];   // mounted Sheet tokens (LIFO) — only the topmost hand
 // instead (open the QR modal). Clicks on interactive children (buttons/links/inputs/the assign combo) pass
 // through untouched. One shared timer is enough — a person clicks one row at a time.
 let _rowClickT = null;
-const _rowInteractive = e => !!(e.target.closest && e.target.closest("button, a, input, select, textarea, label, .assigncell, .rowacts, .selwrap"));
+const _rowInteractive = e => !!(e.target.closest && e.target.closest("button, a, input, select, textarea, label, .assigncell, .rowacts, .selwrap, .tg-gw"));
 export function rowSingle(e, fn) { if (_rowInteractive(e)) return; clearTimeout(_rowClickT); _rowClickT = setTimeout(() => { _rowClickT = null; fn(); }, 200); }
 export function rowDouble(e, fn) { if (_rowInteractive(e)) return; clearTimeout(_rowClickT); _rowClickT = null; fn(); }
 export const rowNoSelect = e => { if (e.detail > 1) e.preventDefault(); };   // stop the 2nd click of a double-click from selecting the row text
@@ -279,7 +279,7 @@ function useNoNativeTitle(ref, active) {
   }, [active]);
 }
 
-export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly, autoOpen, flipFit, clickOnly }) {
+export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly, autoOpen, clickOnly }) {   // flipFit: now every bubble's behaviour (callers may still pass it)
   const [open, setOpen] = useState(false), [pinned, setPinned] = useState(!!autoOpen), [pos, setPos] = useState(null);
   const ref = useRef(null), popRef = useRef(null), closeT = useRef(null);
   const show = open || pinned;
@@ -287,14 +287,41 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
   const scheduleClose = () => { cancelClose(); closeT.current = setTimeout(() => setOpen(false), 140); };
   // alignRight: anchor the popover's left to the trigger's RIGHT edge, then translateX(-100%) so its own right
   // edge lines up there (under the value, not the label) — scrollbar-proof, no width guessing.
+  // ⚠️ EVERY BUBBLE STAYS ON SCREEN. Flipping above was opt-in (`flipFit`), so a bubble whose trigger sat low — the user
+  // configs window's footer counts, measured on a 834px viewport: trigger at 807–829, bubble placed at top 836 — opened
+  // wholly below the fold, and at a small window that was most of them (operator, 2026-09-17). Now: below when it fits, above
+  // when it does not and above has more room, and when neither side holds it the height is capped to the room (the bubble
+  // scrolls). The size is the bubble's REAL one, measured once it has rendered — the first pass can only guess.
   const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
-    // flip ABOVE the trigger when there's little room below and more room above (bounded popovers scroll internally)
-    const ph = (popRef.current && popRef.current.offsetHeight) || 340;
-    const pw = (popRef.current && popRef.current.offsetWidth) || 300;
-    const below = window.innerHeight - r.bottom, above = r.top, flip = !!flipFit && below < ph + 12 && above > below;
-    // left-anchored popovers can run off the RIGHT edge (a trigger near the viewport edge) — clamp into view (8px margin).
-    let left = alignRight ? r.right + 3 : Math.max(8, Math.min(r.left, window.innerWidth - pw - 8));
-    setPos({ left: Math.round(left), top: Math.round(flip ? r.top - 6 : r.bottom + 6), flip }); };   // alignRight: +3px so the bubble's right edge sits a touch past where the value ends
+    const pop = popRef.current, M = 8, vw = window.innerWidth, vh = window.innerHeight;
+    let ph = 340, pw = 300;
+    if (pop) {                                  // its natural height: without the cap a previous placement put on it
+      const cap = pop.style.maxHeight; pop.style.maxHeight = ""; ph = pop.offsetHeight; pw = pop.offsetWidth; pop.style.maxHeight = cap;
+    }
+    const below = vh - r.bottom - 6 - M, above = r.top - 6 - M;
+    const flip = ph > below && above > below;
+    const room = Math.max(60, Math.floor(flip ? above : below));
+    const maxH = ph > room ? room : 0;
+    let left = alignRight ? Math.min(Math.max(r.right + 3, M + pw), vw - M) : Math.max(M, Math.min(r.left, vw - pw - M));
+    left = Math.round(left);
+    const top = Math.round(flip ? r.top - 6 : r.bottom + 6);
+    setPos(p => (p && p.left === left && p.top === top && p.flip === flip && p.maxH === maxH) ? p : { left, top, flip, maxH }); };
+  // the second pass: once the bubble exists its real size decides; setPos above returns the SAME object when nothing moved, so
+  // this settles in one step instead of re-rendering for ever
+  // ⚠️ AND AGAIN WHENEVER THE BUBBLE ITSELF CHANGES SIZE. Its content can grow after it opened — "+194 more" re-renders only the
+  // list inside, never this component — and a bubble placed for its folded size then grew off the window: measured at 1024×640,
+  // 200 devices unfolded to 320px (.onlpop's 50vh cap) from top 349, bottom 669. Observing the element re-places it on any
+  // change of its own size; placing again returns the same state when nothing moved, so the observer settles.
+  const roRef = useRef(null);
+  useLayoutEffect(() => {
+    if (show && pos && popRef.current) place();
+    const el = show ? popRef.current : null;
+    if (roRef.current && roRef.current.el !== el) { roRef.current.ro.disconnect(); roRef.current = null; }
+    if (el && !roRef.current && typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => place()); ro.observe(el); roRef.current = { ro, el };
+    }
+  });
+  useEffect(() => () => { if (roRef.current) roRef.current.ro.disconnect(); }, []);
   useEffect(() => {
     if (!show) return; place();
     const onMove = () => place();
@@ -317,7 +344,7 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
   return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
     onClick=${hoverOnly ? null : (e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
     onMouseEnter=${clickOnly ? null : () => { cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
-    ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "") + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;transform:" + (alignRight ? "translateX(-100%)" : "") + (pos.flip ? " translateY(-100%)" : "")}
+    ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "") + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;transform:" + (alignRight ? "translateX(-100%)" : "") + (pos.flip ? " translateY(-100%)" : "") + (pos.maxH ? ";max-height:" + pos.maxH + "px;overflow:auto" : "")}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${children}</div><//>` : null}
   </span>`;
 }
@@ -841,7 +868,7 @@ export function churnReason() { return T("the tunnel keeps collapsing and being 
 export function uncatPop(trigger) {
   return html`<${Popover} hoverOnly flipFit cls="turnwrap" popCls="uncatpop" trigger=${trigger}>
     <div class="onpop-h" style="color:var(--partial)">${T("hdr|Encrypted DNS")}</div>
-    <div class="onrow hrow"><span class="on-name">${T("The node can't see this client's lookups, so nothing matches a category: routing rules don't apply and its traffic leaves by this node. Switch the client to plain DNS, or put this interface on SNI mode.")}</span></div>
+    <div class="onrow hrow"><span class="on-name">${T("This client resolves names over encrypted DNS, which the node can't see, so its hostname rules don't match and those sites leave by this node — rules by IP still route. Switch the client to plain DNS, move this node to an SNI mode, or turn on the interface's DoH / DoT / DoQ block.")}</span></div>
   <//>`;
 }
 
@@ -1196,6 +1223,41 @@ export function Disclosure({ title, summary, sumCls, open, onToggle, children })
   <//>`;
 }
 
+// ── a list sized by the fleet, not by the operator ──────────────────────────────────────────────────────────────────────────
+// Everything must read as well with 2 rows as with 200 (operator, 2026-09-14): a list whose length the fleet decides is
+// paged, 15 rows at a time, with the panel's own pager markup (Activity's). Shared by the Networks window and the user sheet.
+export const LIST_PAGE = 15;
+export const pageSlice = (list, page) => list.slice((page - 1) * LIST_PAGE, page * LIST_PAGE);
+export function ListPager({ page, setPage, total }) {
+  if (total <= LIST_PAGE) return null;
+  const pages = Math.ceil(total / LIST_PAGE);
+  return html`<div class="pager netpager">
+    <span class="pager-info">${T("{from}–{to} of {total}", { from: (page - 1) * LIST_PAGE + 1, to: Math.min(page * LIST_PAGE, total), total })}</span>
+    <button type="button" class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>${T("‹ Prev")}</button>
+    <span class="pager-pg">${page} / ${pages}</span>
+    <button type="button" class="btn btn-ghost" disabled=${page >= pages} onClick=${() => setPage(page + 1)}>${T("Next ›")}</button>
+  </div>`;
+}
+
+// ── a list capped inside a hover bubble ─────────────────────────────────────────────────────────────────────────────────────
+// A bubble shows the first rows of a long list and a line for the rest. That line costs a row, so it is only worth it when it
+// stands for at least TWO: up to cap+1 rows show in full ("…and 1 more" in place of the one row it hides is never the answer),
+// past that the first `cap` show and the line says how many more — and opens them, in place, since the bubble is where the
+// reader already is (operator, 2026-09-17). The bubble's own max-height scrolls a long expansion. `capShown` is the same rule
+// for a caller that renders the rows itself.
+export const capShown = (n, cap) => (n <= cap + 1 ? n : cap);
+export function useCapped(items, cap = 6) {
+  const [all, setAll] = useState(false);
+  const list = items || [], n = list.length;
+  const shown = all ? n : capShown(n, cap);
+  const btn = (label, v) => html`<button type="button" class="bub-more" onClick=${e => { e.stopPropagation(); setAll(v); }}>${label}</button>`;
+  return [list.slice(0, shown), n > shown ? btn(T("+{v1} more", { v1: n - shown }), true) : (all && n > cap + 1 ? btn(T("show fewer"), false) : null)];
+}
+export function CapList({ items, cap = 6, row }) {
+  const [shown, more] = useCapped(items, cap);
+  return html`<${Fragment}>${shown.map(row)}${more}<//>`;
+}
+
 // dropdown of a node's known IPs + a trailing free-text "Custom IP / Host…". Shared by the interface
 // endpoint field and the turn-proxy listen-IP field so they look/behave identically. Parent owns the
 // sel/custom state; resolve the chosen value with ipPickerVal(sel, custom).
@@ -1317,11 +1379,15 @@ export function useHostOnNode(host, ips) {
     const h = String(host || "").trim().toLowerCase().replace(/\.$/, "");
     const have = (ips || []).filter(Boolean);
     if (!h) { setState(""); return; }
+    // ⚠️ THE SILENCE RULE COMES FIRST, for an IP literal as much as for a name. It used to sit BELOW the
+    // literal branch, so a node that had not reported its addresses yet (a fresh enrolment, a node that has
+    // been down since this panel booted) made every typed address answer "bad" — a warning built entirely
+    // out of missing data. "I cannot compare" is not "that is wrong".
+    if (!have.length) { setState(""); return; }          // nothing to compare against yet — say nothing
     if (/^[\d.]+$/.test(h) || h.includes(":")) {        // an IP literal answers itself
       setState(have.includes(h) || ["0.0.0.0", "::", "*"].includes(h) ? "ok" : "bad");
       return;
     }
-    if (!have.length) { setState(""); return; }          // nothing to compare against yet — say nothing
     if (_resolveCache.has(h)) {
       const got = _resolveCache.get(h);
       setState(got.some(ip => have.includes(ip)) ? "ok" : "bad");

@@ -197,14 +197,23 @@ export function peerUncategorised(t) {
   return !!ip && Object.prototype.hasOwnProperty.call(nrec.doh_peers || {}, ip);
 }
 export function ifaceNotUp(node, ifn) { const s = (((Store.stats[node] || {}).interfaces) || {})[ifn] || {}; return !!s.down || !!s.stopped; }  // down OR stopped → grey chips
-export function turnDown(tp) { return tp && tp.running === false; }
+// A turn-proxy's health, for EVERY surface that shows one — read through these two and nowhere else.
+// ⚠️ `running` alone is not health: a crash-looping unit reads `active` whenever it is caught between crashes,
+// so the proxy card rendered green beside a node card saying "crash-looping", the two built from one snapshot.
+// The loop is the node's own verdict (swg-noded `_attach_turn_running`: `flapping` = restarts in the episode,
+// `flapping_for` = seconds it has gone on); a proxy stopped from the panel is not looping, whatever it did.
+export function turnLooping(tp) { return !!(tp && tp.flapping && !tp.stopped); }
+export function turnDown(tp) { return !!tp && (tp.running === false || turnLooping(tp)); }
+// How long a loop has gone on, in whole minutes rounded UP — a loop caught in its first seconds reads "1 min", never
+// "0 min". The node card's sentence rounds the same way; an older node that sends no duration reads 1.
+export function turnLoopMins(tp) { return Math.max(1, Math.ceil(((tp && tp.flapping_for) || 0) / 60)); }
 
 // ── ghost interfaces: lost AND keyless, so the identity cannot be restored — only recreated ──
 // Restore, so a brief blip is never called a ghost.
 export function ghostIface(node, iface) {
   const nr = (Store.nodes || []).find(n => n.id === node) || {};
   const g = (nr.ghost_ifaces || {})[iface];
-  if (g) return { cold: true, ripe: !!g.ripe, problemMs: g.problemMs || 0, subnet: null };
+  if (g) return { cold: true, ripe: !!g.ripe, problemMs: g.problemMs || 0, subnet: null, reach: g.reach || null };   // a cold record can still hold a chosen level (§11.2 review R6)
   const mi = (nr.missing_ifaces || {})[iface];
   // ⚠️ CARRY THE WHOLE SAVED CONFIG, NOT JUST THE SUBNET. A WARM ghost is an interface the panel still has
   // `_lastcfg` for — subnet, listen port, MTU and, decisively, its AmneziaWG parameters. Rebuilt here from a
@@ -226,7 +235,9 @@ export function ghostIface(node, iface) {
                                      // difference between "off" and "never set" before the sheet sees it.
                                      endpoint_host: mi.endpoint_host || "",
                                      dns: Array.isArray(mi.dns) ? mi.dns : null,
-                                     keepalive: typeof mi.keepalive === "number" ? mi.keepalive : null };
+                                     keepalive: typeof mi.keepalive === "number" ? mi.keepalive : null,
+                                     // the device-access level: a panel-owned setting like the three above (§11.2 F1)
+                                     reach: mi.reach || null };
   return null;
 }
 // the reconciled peers with a deployment on this (node, iface)

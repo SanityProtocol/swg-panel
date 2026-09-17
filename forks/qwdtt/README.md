@@ -19,7 +19,10 @@ GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate 
 - Pinned upstream: **`fae121ef`** (`v1.4.3`, 2026-08-31).
   ⚠️ **Pin a commit, never a tag** — `v1.3.8`/`v1.3.9`/`v1.4.0`/`v1.4.0-beta` all still point at the
   July commit `2dd5d37f`.
-- Static (`CGO_ENABLED=0`), **Go 1.25** (upstream `go.mod`).
+- swg-panel build label: **`1.4.3-2`** — pin `fae121ef` plus this patch, which adds the RAW keyless-gap
+  fixes below. Published as `wdtt-qwdtt-1.4.3-2` (2026-09-17), amd64 + arm64, and rig-proven on the published amd64
+  bytes.
+- Static (`CGO_ENABLED=0`). Upstream `go.mod` says Go 1.25; the published build used Go 1.27.1.
 - Layout differs from amurcanov's: the server lives under **`server/`** (`SRC_SUBDIR`), not under
   `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.
   ⚠️ **v1.4.3 split the server.** Up to v1.4.1 it was one flat `server.go` (3,413 lines) plus
@@ -83,6 +86,32 @@ traffic was credited to neither (the flush matches on `DeviceID`/`DeviceIDs`, wh
 empty), and per-device bindings appeared that the panel never asked for. The raw path now uses the same
 `pw:<password>` key as the WG path — one password, one device record carrying both a wg IP and a raw IP,
 traffic credited to the password.
+
+Two RAW keyless-gap fixes (build `1.4.3-2`, NETWORKS P5 — each proven on the rig with `1.4.3` as the
+control, defect red / fix green):
+
+- ⚠️ **RAW device key was not bound to the authenticating password (alias hijack).** An earlier version of
+  this patch let the GETCONF_RAW worker remember `device-id → pw:<password>` in a **global map keyed only by
+  the client-supplied device id**, and every AUTH (data) worker resolved its key through that map. Because
+  the data-path admission check is only `bound := isMainPass || (fixedConfig && isGenPass)` — any valid
+  generated password — a worker of password **B** that reused another peer's device id could register at
+  **that peer's raw address** and receive its downlink. It requires an AUTH-only worker (a client that stays
+  up re-establishes a dropped worker with AUTH, no GETCONF), so the initial connect race hides it, but a
+  worker reconnect after a rival GETCONF flipped the alias reproduces it deterministically. The fix removes
+  the alias table entirely: **both the GETCONF and the AUTH branch derive the device key from the worker's
+  OWN authenticating password** (`getconfDeviceKey`, `"pw:"+password` under `-fixed-config`). A second valid
+  password can no longer land on the first's raw address, whatever the timing.
+- ⚠️ **Password removal / deactivation did not cut a LIVE raw session.** `reconcileDesired` removed the wg
+  peer (which cuts a WireGuard tunnel), but a raw-IP session carries no wg peer — it is a live `directConn`
+  registered in the raw router and tracked in `credentialConnections` — so a revoked or deactivated
+  password kept passing raw traffic until it idled out. `swgDropDevices` now calls upstream's own
+  `disconnectCredentialConnections(password)` (keyed by `wrapKeyID(password)`), which closes the credential's
+  live connections at every removal/deactivation site in `reconcileDesired`. This also belts the WG path.
+- ⚠️ **A closed direct/RAW conn no longer spins a core.** `directConn.Read` retried every error that is not a
+  `net.Error`, and pion's packetio buffer answers every read after `Close()` with `io.EOF` — so the session goroutine
+  a disconnect closed looped forever. Measured on the rig: one revoked RAW session (4 workers) held the server at
+  **~5 cores** (4994 ticks/10 s, still there 30 s later); with `io.EOF`/`net.ErrClosed` treated as terminal, **0–1
+  ticks**. Upstream's own admin/bot deletes reach the same close; the WG (DTLS) path never spun.
 
 ### `desired.json` schema (panel writes; the server reads)
 

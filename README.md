@@ -1,12 +1,13 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.6-beta</code></p>
+<p align="center"><code>1.8.7-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.6-beta** — [full changelog](CHANGELOG.md)
-> - **A node can now leave by something other than its own address.** Register a free Cloudflare WARP account in one click, paste a WireGuard profile from anywhere else, or point at a network card or tunnel the box already runs. Any of them can be the node's default way out, one interface's way out, or the destination of a single routing rule — and each carries a kill-switch, so traffic is refused the moment that exit stops working instead of quietly falling back to the node's own address.
-> - **An exit's original account survives losing the node's key.** The key is sealed under your encryption key and the panel only ever holds ciphertext it cannot open. If a node re-registers and the address websites see changes, the row says so and offers the old account back.
-> - **Hybrid SNI routing, and rules that admit what they cannot do.** The kernel matches IP categories and reads the TLS handshake for host categories in one pass, with no helper process. A rule now says when this node's mode cannot match its target, and separately when its destination has been deleted — counted in the summary, without opening the section.
+> **What's new in 1.8.7-beta** — [full changelog](CHANGELOG.md)
+> - **Networks behind a device.** A device can front a network — the office LAN behind a router, the home network behind a Raspberry Pi — and the node carries it to clients whether their interface sends traffic direct, forwards it to another node or routes it by rule. The node can test that the network answers, and you choose who reaches it: everyone on the node, or only its owner and the people and groups you share it with.
+> - **Who can reach a device, and Private devices.** Every interface, WDTT server and csqtt server sets who may open connections to the devices on it — Everyone on this node, Same user and their groups, or Nobody — and a device marked Private is reachable only by its owner's other devices. ⚠️ Interfaces you already have start at Same user and their groups, so after the update devices of different users stop reaching each other until you put those people in a group or set the interface to Everyone on this node.
+> - **User groups.** Put people in named groups: members reach each other's devices, and a network can be shared with a whole group at once.
+> - **Relay works on smart-routing legs.** Forward or Relay is now a choice for a mesh leg that carries only some of an interface's destinations, not only for one that carries the whole interface.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -47,6 +48,7 @@ subscription and no one else sitting in the middle of your traffic.
 - [Step 2 — Add your servers](#step-2--add-your-servers)
 - [Step 3 — Add users and hand out access](#step-3--add-users-and-hand-out-access)
 - [Subscriptions & access control](#subscriptions--access-control)
+- [Who can reach a device](#who-can-reach-a-device)
 - [Using it day to day](#using-it-day-to-day)
 - [Keeping it running](#keeping-it-running)
 - [A few things worth knowing](#a-few-things-worth-knowing)
@@ -262,6 +264,52 @@ Send it however you like — but treat it like a password: whoever holds it hold
 
 You can also give a subscription an **expiry date**, and the panel warns you a few days before it runs out.
 
+## Who can reach a device
+
+Every device on a server has an address inside the tunnel, and without a rule any other device on that server
+could open connections to it — its shared folders, printer, remote desktop. Each interface has a setting for
+that, **Who can open connections to devices here**, with three levels:
+
+| Level | Who can open a connection to a device on this interface |
+|---|---|
+| **Everyone on this node** | any device on the same server |
+| **Same user and their groups** *(default)* | the owner's other devices, and the devices of people who share a group with the owner |
+| **Nobody** | no other device — the device's own connections still work |
+
+- **The default protects.** An interface nobody has set is at **Same user and their groups** — including every
+  interface that existed before this setting, so after the upgrade strangers' devices stop reaching each other.
+  **Settings → Interfaces** holds the level new interfaces start with; changing it never touches an existing
+  interface, and the same place lists the interfaces set to **Everyone on this node**.
+- **Groups.** Put people who should reach each other — a family, a team — in a group under **Users → Groups**.
+  A group only matters on interfaces set to **Same user and their groups**.
+- **You can see what it stopped.** An interface's settings show how many packets to its devices were stopped,
+  and the Nodes screen tells you while anything was.
+
+Its limits:
+
+- It never affects internet access, or the networks behind a device — those have their own "who can reach
+  them" setting.
+- A device at **Same user and their groups** or **Nobody** is never reached from another server, not even by
+  its owner's device there.
+- A WDTT or csqtt server whose build can't prove which user a device belongs to (today: csqtt before 2.1.9-2,
+  xxcipherx before 2.0.0.72, ildarmaga before 1.5.0-3, qWDTT's RAW connections before 1.4.3-2, and ildarmaga's
+  RAW connections on every build) treats **Same user and their groups** as **Nobody**, and its settings say so.
+- The server's own LAN machines and containers can open connections only to devices at **Everyone on this
+  node**.
+- A proxy running on the server itself connects as the server, so the level does not apply to it.
+- IPv6 addresses added to a config by hand are not covered: any device on the server reaches them over IPv6.
+- With flow offloading on the server, a connection already open when a level tightens keeps working until it has
+  been idle for the offload timeout (30 s by default); new connections are refused at once.
+- The level relies on connection tracking: a host firewall rule that turns it off (NOTRACK) for client traffic
+  breaks the replies to a protected device's own connections.
+- A server running an older version doesn't enforce it: the interface shows **not enforced** until you update
+  that server.
+- Nothing is kept across a restart: after a server reboots, its devices can reach each other until it next hears
+  from the panel — seconds normally, the whole outage if the panel is unreachable.
+- Going back to a version without this setting on a **Docker** or **NixOS** server leaves the last rules in force
+  until the server reboots or you run `nft delete table inet swg_reach` on it. A bare-metal server removes them
+  itself.
+
 ## Using it day to day
 
 - **Watch the dashboard.** The **Overview** page shows who’s online, the busiest servers, and where
@@ -288,6 +336,19 @@ keeping all your settings and users:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
 ```
+
+**Coming from 1.8.6?** A plain-WireGuard interface you **restored** under 1.8.6 came back as AmneziaWG.
+1.8.7 restores the right kind, but it can't tell such an interface from one that really is AmneziaWG, so it
+stays that way: its users need the **AmneziaWG** app with the config the panel shows now — or delete the
+interface and create it again as WireGuard.
+
+**Going back to an older version?** On a bare-metal server there is nothing to do. A **Docker** server started on
+an image older than 1.8.7 keeps two firewall tables that version can't manage, and they go on refusing
+connections the panel has since allowed. Remove them on that server (a reboot clears them too):
+```bash
+sudo nft delete table inet swg_reach; sudo nft delete table inet swg_share
+```
+On NixOS there is a little more — see [Going back to an older build](nix/README.md#going-back-to-an-older-build).
 
 ### Backups — automatic, and manual
 
@@ -361,6 +422,10 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   and everything goes back on its own if you don't.
 - **A hiccup won’t lock anyone out.** If the panel is briefly unreachable, your servers keep running with
   the access they already have and catch up on the next check-in.
+- **Force-DNS sees encrypted DNS; it doesn’t stop it.** In the Force-DNS routing mode a server answers its
+  users’ ordinary DNS and routes by the site names it sees. A device that uses its own encrypted DNS (DoH, DoT
+  or DoQ) is marked instead of cut off: its rules by site name don’t match, its rules by IP still do. To stop
+  encrypted DNS, turn on the interface’s **DoH / DoT / DoQ** block.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more
@@ -391,7 +456,8 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
 
 - [amurcanov](https://github.com/amurcanov/csqtt) — the original, and csqtt, its successor
-- [luminescq](https://github.com/luminescq/PWDTT)
+- [luminescq](https://github.com/luminescq/focsq)
+- [Endlad2](https://github.com/Endlad2/LaLune)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
 - [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)

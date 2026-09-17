@@ -37,7 +37,10 @@ import { ROOT, check, done } from "./spa_env.mjs";
 // which is exactly how this shipped — so section [2b] has to be the thing that catches it.
 const PSTALE = process.argv.includes("--perturb-stale");
 const PWARP = process.argv.includes("--perturb-warp");
-const PERTURB = PSTALE || PWARP || process.argv.includes("--perturb");
+// `--perturb-stalled`: the row ignores the node's dead-tunnel verdict (how it read before `no_traffic` existed)
+// and section [5] has to be what goes red.
+const PSTALLED = process.argv.includes("--perturb-stalled");
+const PERTURB = PSTALE || PWARP || PSTALLED || process.argv.includes("--perturb");
 const SRC = path.join(ROOT, "js", "routing.js");
 let mod = SRC;
 
@@ -48,6 +51,10 @@ if (PERTURB) {
     ['said((ex.provider || "warp") === "warp"', "said((false)"],
   ] : PSTALE ? [
     ["&& !nodeStale((node || {}).id))", ")"],
+  ] : PSTALLED ? [
+    // ⚠️ ITS OWN ARM. Without one the flag fell through to the default guards below: something went red, and
+    // none of it was section [5] — a perturbation of a flag nothing reads.
+    ["if (l.no_traffic) return", "if (false) return"],
   ] : [
     ["if (ex.cfg_sig && l.cfg_sig && l.cfg_sig !== ex.cfg_sig && !nodeStale((node || {}).id))", "if (false)"],
     ["l.handshake === 0 && !(l.trace || {}).ip", "l.handshake === 0"],
@@ -161,5 +168,23 @@ check("…and the node's probe error is still appended to the WARP sentence",
       /timed out/.test(why({ provider: "warp" }, { ...dead, trace: { err: "TimeoutError: timed out" } })),
       why({ provider: "warp" }, { ...dead, trace: { err: "TimeoutError: timed out" } }));
 
+// ── [5] a tunnel the NODE judged dead (`no_traffic`) — the row says where the traffic went ──────────────────
+// The node reports `no_traffic` only once it has already routed around the tunnel, and what happened to the
+// traffic depends on this exit's own kill-switch — so the two sentences must never be worded alike, and the
+// verdict must outrank the handshake/trace readings below it (a dead WARP edge can still handshake).
+const gone = { no_traffic: { since: 1789482000, why: "TimeoutError: timed out" } };
+check("[5] a tunnel the node judged dead reads `stalled`, not ok", st({}, gone) === "stalled", st({}, gone));
+check("[5] …even while its last handshake still looks fresh", st({}, { ...gone, handshake: 12 }) === "stalled",
+      st({}, { ...gone, handshake: 12 }));
+const offWhy = why({ killswitch: false }, gone), onWhy = why({ killswitch: true }, gone);
+check("[5] kill-switch OFF: says the traffic is going out through the node's own IP",
+      /node's own IP/.test(offWhy) && !/kill-switch is holding/.test(offWhy), offWhy);
+check("[5] kill-switch ON: says the kill-switch is holding it, never that it went direct",
+      /kill-switch is holding/.test(onWhy) && !/own IP/.test(onWhy), onWhy);
+check("[5] …and both say it recovers by itself", /by itself/.test(offWhy) && /by itself/.test(onWhy));
+check("[5] a node too old to judge (no `no_traffic`) reads exactly as before", st({}, {}) === "ok", st({}, {}));
+check("[5] it draws a clickable fault marker", exitHealthMark(exitHealth(ex({}, gone), NODE)) !== null);
+
 done(PERTURB, PWARP ? "the WARP arm of the never-answered advice removed"
-                    : PSTALE ? "the staleness half of `configuring` removed" : "both freshness guards removed");
+                    : PSTALE ? "the staleness half of `configuring` removed"
+                    : PSTALLED ? "the node's dead-tunnel verdict ignored" : "both freshness guards removed");

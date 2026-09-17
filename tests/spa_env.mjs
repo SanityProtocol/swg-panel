@@ -42,8 +42,13 @@ export const spa = m => import(pathToFileURL(path.join(ROOT, "js", m)).href);
 
 // ── the same reporting shape the Python selftests use, so a run reads identically whichever it is ────
 export const FAILS = [];
+// ⚠️ A detail that is an object has to READ as one. String concatenation rendered every object and array-of-objects as
+// "[object Object]", so a failing check named the assertion and never the observed value — which is most of what a gate
+// is for. The Python selftests' `str(detail)` has always shown dicts; this now matches them.
+const show = d => (d == null || typeof d === "string" ? d
+  : (() => { try { return JSON.stringify(d); } catch (_) { return String(d); } })());
 export function check(name, cond, detail = "") {
-  console.log((cond ? "  PASS " : "  FAIL ") + name + ((detail && !cond) ? "  — " + detail : ""));
+  console.log((cond ? "  PASS " : "  FAIL ") + name + ((detail && !cond) ? "  — " + show(detail) : ""));
   if (!cond) FAILS.push(name);
 }
 export function done(perturbed, what = "") {

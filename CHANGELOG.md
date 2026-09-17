@@ -3,6 +3,203 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.7-beta] — 2026-09-17
+
+### Added
+
+- **Networks behind a device.** A device can front a network — the office LAN behind a router, the home
+  network behind a Raspberry Pi. List it in the device's **Networks** window and the node carries it, so
+  clients reach it whether their interface sends traffic direct, forwards it to another node or routes it by
+  rule. The window shows how to set up the device's side — an OpenWrt, MikroTik or Keenetic router, or a Linux
+  computer — and the device only has to send its own interface's subnet back: the node gives clients of its
+  other interfaces its own address there. The node can test on request that the network answers. You choose
+  who reaches it: everyone on the node, or only its owner and the people and groups you share it with, each
+  until a date or for good — enforced on the node itself. WDTT and csqtt users count where their server build
+  can prove which user is sending. A user's sheet lists the networks they can reach, their subscription page
+  does too, and DNS to a server on the network gets past Force-DNS, so its names resolve.
+- **Who can reach a device, and Private devices.** Every interface, WDTT server and csqtt server has a setting,
+  **Who can open connections to devices here**: **Everyone on this node**, **Same user and their groups**, or
+  **Nobody**. The node enforces it, and the interface shows how many packets it stopped. A device's own
+  connections, its internet access and the networks behind devices are not affected. A device marked
+  **Private** is reachable only by its owner's other devices, and the networks behind it are the owner's alone,
+  whatever its interface allows. ⚠️ The default applies to the interfaces you already have — see Changed.
+- **User groups.** Put people in named groups under **Users → Groups** or from a person's own sheet. Members
+  reach each other's devices on interfaces set to **Same user and their groups**, and a network can be shared
+  with a whole group at once.
+- **Relay works on smart-routing legs.** Forward or Relay was a choice only for a mesh leg carrying a whole
+  interface. A leg that an interface uses for some destinations now has the same switch: only those
+  destinations are relayed and the rest of its traffic goes on as before. The relay terminates TCP, so a rule's
+  UDP always forwards. One switch can start several relays, and the CPU cap is shared by every relay on the node.
+- **AmneziaWG survives a kernel upgrade.** A reboot onto a kernel without matching headers took every
+  AmneziaWG interface down, mesh links included, with "Unknown device type". Bare-metal installs and updates
+  now put in headers that follow the kernel and a pinned userspace AmneziaWG to fall back on. The panel says
+  an interface is running on the slower fallback instead of calling it broken, and an update moves it back to
+  the kernel module once the module loads.
+- **Desktop apps for csqtt.** A csqtt server offered desktop users nothing. FOCSQ (Windows, Linux) and La Lune
+  (Windows, Linux, Android) are now offered, and La Lune on Android is one-tap, like the CSQTT app.
+
+### Changed
+
+- **⚠️ After the update, devices of different users on one interface stop reaching each other.** An interface
+  nobody has set is at **Same user and their groups**, and that includes every interface that existed before.
+  Where people should reach each other's devices, put them in a group or set the interface to **Everyone on
+  this node**. **Settings → Interfaces** holds the level new interfaces start with and lists the interfaces set
+  to Everyone.
+- **A node says that its clients can reach its own local network, and you can close it.** A client's traffic
+  to the private network a node sits on has always left by the node's own network card, and nothing said so.
+  The node's page now shows that network with a switch to keep clients off it, and **Settings → Network**
+  hides and closes it on every node at once. Nothing changes until you use either.
+- **Smart routing is offered on a single node.** It appeared only once the panel had a second node, so a lone
+  server with a WARP account or another exit could not send chosen destinations out through it.
+- **Updates get through where GitHub is filtered.** The version check, the release notes and the updater's
+  first download came from `raw.githubusercontent.com`, the address such networks block. Each now falls back
+  to GitHub's API — the same files from the same repository. The updater is also downloaded in full before any
+  of it runs; a dropped connection used to run part of it.
+- **The update check says what stopped it, and an update says how it ended.** The check retries within a short
+  budget and names the cause when it cannot get through: DNS, a certificate, a refused or reset connection, no
+  route, a rate limit, or a page that was not a version. A node's update reports one of three outcomes —
+  updated, already up to date, or failed with the last of the updater's output — on its next sync, instead of
+  "never reported a new version" five minutes later on a node that was already current.
+- **A mesh leg without a Forward/Relay choice says why.** The control used to vanish. It now names the reason:
+  the other end sends the traffic and owns the choice, nothing forwards through the link yet, or its routes
+  have not been worked out yet.
+- **Arming and disarming a relay is written to the node's log,** with the interface, the port and, when it is
+  disarmed, the reason.
+- **Force-DNS says what it does with encrypted DNS.** The mode card promised to block DoH and DoT; it flags a
+  client that bypasses it, and the interface's DoH / DoT / DoQ block is what stops one. The flag now fires only
+  where a lookup really got past Force-DNS, and it offers the remedies that exist.
+- **Newer server builds.** WDTT-Plus 18, xxcipherx 2.0.0.72, amurcanov 1.2.4-3, qWDTT 1.4.3-2, ildarmaga
+  1.5.0-3 and csqtt 2.1.9-2; what they fix is under Fixed and Security. ildarmaga is labelled 1.5.0-3 because
+  v1.5.0 is the newest source its author has published — the builds called 1.5.40 were made from it too.
+  WDTT-Plus 18 refuses the in-tunnel update, download, HTTPS and deploy requests that upstream 18 adds.
+
+### Fixed
+
+- **A relay could be driven into connecting to itself.** One TCP connection to its port, from anywhere that
+  could reach the node, made it dial itself over and over: 6 open files to 47,780 in six seconds, then no
+  answer at all. The port is closed to everything but the divert, and the relay refuses its own address.
+- **A relay that had stopped serving anyone still counted as healthy,** so its interface swallowed every TCP
+  connection while the panel showed it working. The node now compares the traffic handed to the relay with the
+  connections it took, and withdraws the divert when one moves without the other.
+- **On a relay-mode interface, a device could not accept a TCP connection from elsewhere on its node.** The
+  divert took every TCP packet from the interface: the device's replies went to the relay, the watchdog read
+  them as failures and switched the relay off, and a client dialling the node's own address looped through the
+  relay thousands of times. The divert now takes only a new connection that leaves by a mesh link.
+- **A relay switched back to Forward kept running after a restart** — a listener on every address that nothing
+  supervised. It is now stopped on the next pass.
+- **Removing a node left every interface that forwarded to it pointing at a ghost.** Their clients quietly left
+  by the node's own address and the egress control rendered blank. They are reset to direct, on the removal and
+  on any later save, and the node whose routing changed is named.
+- **A client on a forward-mode interface could not reach other devices on its own node.** Its packets went out
+  the mesh leg and bounced between the two nodes until they expired.
+- **An interface routing to two device exits NATed only one of them at a time.** The rule moved between the
+  exits on every pass, so traffic out the other one left with the client's private address.
+- **An imported exit whose tunnel stopped carrying traffic still counted as up.** A WARP account or a pasted
+  profile whose device is up but whose far side has answered nothing for 30 seconds is now routed around like
+  a down exit — by the node's own address with the kill-switch off, refused with it on — and the node says
+  which happened.
+- **An interface whose `Address` line lists IPv6 first was read as IPv6.** Its clients got no NAT and no
+  forwarding, and every peer add was refused.
+- **A newly enabled routing-list provider showed no lists until the page was reloaded,** and no provider could
+  be found by its own name.
+- **After Reset learned IPs or Reset routing, Force-DNS sent cached sites out the wrong way.** Names dnsmasq
+  already had cached stayed out of their sets until their TTL ran out, so they left by the entry node instead
+  of their rule's exit. The node now clears dnsmasq's cache when it empties a set.
+- **Restoring a plain WireGuard interface brought it back as AmneziaWG,** and its clients could no longer
+  connect. See Upgrading.
+- **A plain WireGuard interface outside `/etc/wireguard` could not be restarted, stopped or deleted** — on every
+  Docker node once its container was recreated, and on a node carried from Docker to bare metal. Delete removed
+  the config but left the device up with its peers, and a copy in the other directory brought it back at boot.
+- **A peer whose preshared key was changed in the panel could stay disconnected for days.** The node now
+  compares the live key and re-applies one that has drifted.
+- **A new peer could be given an address the node already uses itself.** The picker skipped other peers and the
+  interface's own address, but not an exit's tunnel address inside the same range — an imported profile's
+  address, say. That peer showed online while nothing reached it. The picker now skips every address the node
+  holds, a disabled exit's included; a peer already given one keeps it until its address is changed.
+- **Mesh links read 0/N on NixOS and Docker nodes.** Neither had `ping`, so the probe never measured a link;
+  links named with a custom prefix were never measured on any node.
+- **On a distribution that confines the WireGuard tools with AppArmor, no interface could be created.** The node
+  daemon ran with `NoNewPrivileges`, which stopped the kernel executing `ip`, `wg` and `awg`, and the panel
+  blamed the port. The directive is gone, including from installed units, and a refused bring-up now says which
+  of the two refusals happened. Interfaces read through `/run/wireguard/*.sock` (WDTT, csqtt, userspace
+  AmneziaWG) showed no peers on those hosts; installing or updating a node adds the two AppArmor rules they need,
+  or says where to add them.
+- **A NixOS node was told to run commands that cannot stick,** such as editing a `docker-compose.yml` its host
+  does not have. Advice now asks whether the node is declared before it asks whether it is a container.
+- **The abuse-blocking table stayed empty after being flushed in place.** SMTP, QUIC, torrent and port-scan
+  blocking read as applied while it blocked nothing; the node now rebuilds it.
+- **A Docker node pinned to a build ran its host helpers from `swg-node:latest`** — an image nobody chose,
+  pulled on hosts that had never fetched it. Helpers now run from the node's own image.
+- **samosvalishe was not offered for AmneziaWG interfaces,** although it has carried AmneziaWG since v3.2.0.
+- **A turn-proxy that kept crashing read as running.** A proxy bound to an address its box no longer had died
+  262 times in ninety minutes behind a green card, cutting every session each time. The node now reports a
+  crash loop for as long as it lasts, and the node card, the proxy's card and its sheet say the same.
+- **A new turn-proxy was offered an address the box no longer had,** and the warning meant for that could never
+  fire. The form now pre-selects the address only while the node reports having it.
+- **When a box changed its address, nothing said what still pointed at the old one.** A node whose stored dial
+  address has left the box says so on its card, and so does a WDTT server, a csqtt server or an exit still bound
+  to a departed address.
+- **A `wingsv://` link could switch a client option on but never off.** A device that had once imported "no
+  obfuscation" kept sending plain WireGuard, which an AmneziaWG interface drops in silence. Links now state
+  every option either way.
+- **A NixOS node's take-over of a WDTT or csqtt server running in a container left two servers.** The stop never
+  ran and the container's restart policy brought the old server back. The node now stops the container with
+  the right tool, or refuses the take-over and says why; podman containers are stopped too.
+- **The subscription page offered macOS a csqtt cell for an app that does not exist there,** plus a tab that
+  led nowhere. "by" before an app's author was English on Russian pages and in the panel's app pickers.
+- **The NixOS enrolment the panel prints failed on a stock box.** It needed git, which NixOS does not ship, and
+  opened no UDP ports, so clients never connected while the node reported healthy.
+- **A fresh NixOS container node rebuilt itself about half a minute after installing,** restarting the node
+  container for an update nobody asked for.
+- **`uninstall.sh --dry-run` without root reported that the host was NixOS.**
+- **Converting from Docker to bare metal left the kept login unreadable by the panel,** which then refused every
+  request, and lost the graph history.
+- **`--dry-run` on the Docker installer wrote four files into the install directory.**
+- **Dates followed the browser's language instead of the panel's.**
+- **A password manager could fill a saved login into a user's sheet,** where the vault unlock field sits beside
+  other text fields.
+- **«Датапас» was not a Russian word.** Two labels now read «Путь данных».
+- **amurcanov and WDTT-Plus servers deleted the owner password's device on every reconcile,** cutting its
+  session. Fixed in amurcanov 1.2.4-3 and WDTT-Plus 18.
+- **xxcipherx 2.0.0.70 broke under ordinary roster changes.** A password added from the panel could not connect
+  until a restart, any removal made the next start fail and loop, and every change reassigned addresses between
+  users. Fixed in 2.0.0.72.
+
+### Security
+
+- **A panel that could not read its password file served everything without a login.** An unreadable file was
+  treated like no password at all — a documented mode — so a published panel whose `/etc/swg-panel/auth` only
+  root could read handed its roster to anyone. A named password file that cannot be read, or is empty, now
+  closes the panel: every data request is refused, `/metrics` and the API included, and the login page names
+  the file and the fix. Nodes keep syncing throughout.
+- **`swg-passwd` left signed-in sessions valid.** Resetting a lost or leaked password with it kept every existing
+  session for its full week; it now ends them, as a change inside the panel does.
+- **On Docker older than 28 with a FORWARD policy of DROP, VPN clients could reach containers' unpublished
+  ports.** The node's tunnel accepts sat above Docker's own rules. Traffic bound into Docker's bridges now goes
+  back to Docker to decide.
+- **A WDTT or csqtt client with a valid password could take another client's address or outlast its own
+  revocation.** csqtt accepted any source address inside the tunnel and let a second password adopt another
+  client's device; qWDTT's RAW path let a second password take a device's address and receive its traffic, and
+  kept a revoked password's live RAW session; ildarmaga kept a revoked password's WireGuard and RAW sessions, and
+  accepted a spoofed source on RAW. Fixed in csqtt 2.1.9-2, qWDTT 1.4.3-2 and ildarmaga 1.5.0-3.
+
+### Upgrading
+
+- **⚠️ Devices of different users on one interface stop reaching each other** as soon as a node is updated —
+  the first entry under Changed. Decide per interface before or right after updating: a group, or **Everyone on
+  this node**.
+- **Update the nodes as well as the panel.** A node still on 1.8.6 carries no networks, does not enforce who can
+  reach a device (its interfaces show **not enforced**), and keeps its node-side defects. On a NixOS native node
+  a rebuild does not restart the daemon: run `sudo systemctl restart swg-noded` once it is done.
+- **WDTT and csqtt servers move to the new builds on their next sync** and restart once, so their clients
+  reconnect. A server you rolled back to a chosen build stays on it.
+- **A plain WireGuard interface you restored under 1.8.6 stays AmneziaWG.** 1.8.7 cannot tell it from a real
+  AmneziaWG interface. Its users need the AmneziaWG app with the config the panel shows now, or delete the
+  interface and create it again as WireGuard.
+- **Going back to 1.8.6.** Bare metal needs nothing. A Docker node keeps two firewall tables that version cannot
+  manage: `sudo nft delete table inet swg_reach; sudo nft delete table inet swg_share`, or reboot. On NixOS, see
+  [Going back to an older build](nix/README.md#going-back-to-an-older-build).
+
 ## [1.8.6-beta] — 2026-09-11
 
 ### Added
