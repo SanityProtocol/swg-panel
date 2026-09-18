@@ -17875,6 +17875,15 @@ def api(method, path, qs, body, deps):
             _p = dict(pend)   # snapshot the fields we need OUTSIDE the lock (the dry-run can take a while)
         rid = _netctl_enqueue(deps, "dryrun", [_p["tls"], _p.get("domain") or "", str(_p["port"])])
         ok, msg = _netctl_wait(deps, rid, timeout=220)
+        # ⚠️ Is it still OUR change? The dry-run takes up to 220 s, and a change left unconfirmed EXPIRES meanwhile
+        # (_docker_step1_expire, DOCKER_STEP1_TTL — its own thread, which takes only _APPLY["lock"], never _api_lock):
+        # its settings are already rolled back. Going on would recreate the container onto the new address against
+        # settings that name the old one — or, on a failed dry-run, bring back a card for a change that no longer exists.
+        with _APPLY["lock"]:
+            _now_pend = _APPLY["pending"]
+            _ours = bool(_now_pend) and _now_pend.get("kind") == "docker-restart" and hmac.compare_digest(_now_pend.get("nonce", ""), nonce)
+        if not _ours:
+            return 409, {"ok": False, "error": "the change expired while the new address was being checked — nothing was changed", "code": "expired"}
         if not ok:
             _apply_status("docker-restart", "the dry-run failed — nothing was changed. %s" % (msg or "the new address wouldn't work"),
                           nonce=nonce, arm_secs=0, url_changed=_p.get("url_changed"), dryrun_failed=True,

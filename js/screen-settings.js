@@ -1207,6 +1207,9 @@ export function AccessTLSCard({ onChange }) {
         return setMsg({ ok: true, t: r.message || T("Restarting the panel container. Reconnect at {v1} once it's back.", { v1: r.new_url || dockerRestart.new_url }) });
       }
       setBusy(false);
+      // EXPIRED while the dry-run ran: the server already rolled the change back, so there is nothing left to confirm or
+      // revert — the card goes (its buttons would only be refused) and the page says what happened.
+      if (r && r.code === "expired") { setDockerRestart(null); return setMsg({ ok: false, t: srvText(r) }); }
       // ONE rendering, in the confirm box — that is where Confirm/Revert live, so the failure belongs beside the
       // actions it applies to. Setting the page banner to the SAME string as well showed the identical sentence
       // twice on one screen (three times, with the box's own lead-in and trailing hint duplicating the server's).

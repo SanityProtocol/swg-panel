@@ -5641,6 +5641,7 @@ export const STR = {
   "no free addresses across selected nodes": "на выбранных нодах нет свободных адресов",
   "no matching address change is waiting to be confirmed": "подходящей смены адреса на подтверждении нет",
   "no matching change is waiting to be confirmed": "подходящего изменения на подтверждении нет",
+  "the change expired while the new address was being checked — nothing was changed": "изменение истекло, пока проверялся новый адрес, — ничего не изменено",
   "no matching pending change": "подходящего запланированного изменения нет",
   "no pending change to revert": "откатывать нечего",
   "no pending drift for that setting": "по этой настройке расхождений нет",
