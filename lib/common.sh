@@ -535,19 +535,25 @@ lc_emit_post(){ [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ] || return 0
   # *-aborted state must never be announced as done. Both lines below said "this finished" / "the conversion
   # itself is done" for every op and every outcome — so `bootstrap.sh update` on a box with no install at all
   # ended its "no swg-panel install found" error with a line claiming a conversion had completed.
-  local _tries _phase; case "$1" in
-    updating|reinstalling|converting-bare|converting-docker|uninstalling) _tries=4; _phase="started";;
-    *) _tries=25; _phase="finished";; esac
+  local _secs _phase; case "$1" in
+    updating|reinstalling|converting-bare|converting-docker|uninstalling) _secs=6; _phase="started";;
+    *) _secs=25; _phase="finished";; esac
   # SAY SO while waiting. This runs from the EXIT trap, i.e. AFTER the completion summary has printed, so a
-  # silent 25-retry loop looks exactly like a hang at the very moment the operator has been told it's done —
+  # silent 25-second loop looks exactly like a hang at the very moment the operator has been told it's done —
   # and the run then exits fine, which is more baffling still. One line on the first failure, one on give-up.
-  _i=0
-  while [ "$_i" -lt "$_tries" ]; do
-    auth_curl "$LC_TOKEN" -fsS $ins --max-time 6 -X POST -H "Content-Type: application/json" \
+  # ⚠️ The budget is WALL-CLOCK seconds and each attempt gets only what is left of it. It was an attempt COUNT printed
+  # as seconds: true while a restarting panel refuses at once, but a panel address that DROPS packets made every attempt
+  # wait out `--max-time 6` — 29 × 7 s ≈ 3.4 min after "Update complete" (measured on a Debian VM, 2026-09-18). A
+  # refusing panel still gets a retry about every second for the whole budget. 6 s, not less, for an in-progress state:
+  # its first attempt keeps the full 6 s it always had — `reinstalling` is where the panel adopts the box's current
+  # keys, which no sync repeats, and a node with a dead first nameserver spends ~5 s in DNS alone.
+  local _end=$((SECONDS + _secs)) _left; _i=0
+  while _left=$((_end - SECONDS)); [ "$_left" -gt 0 ]; do
+    auth_curl "$LC_TOKEN" -fsS $ins --max-time "$(( _left < 6 ? _left : 6 ))" -X POST -H "Content-Type: application/json" \
       --data "$data" "${LC_URL%/}/api/node/proc-status" >/dev/null 2>&1 && {
         [ "$_i" -gt 0 ] && echo "    panel reached — status recorded." || true; return 0; }
-    [ "$_i" -eq 0 ] && echo "    telling the panel this $_phase (it may still be restarting) — up to ${_tries}s…"
-    _i=$((_i + 1)); sleep 1
+    [ "$_i" -eq 0 ] && echo "    telling the panel this $_phase (it may still be restarting) — up to ${_secs}s…"
+    _i=$((_i + 1)); [ $((_end - SECONDS)) -gt 0 ] || break; sleep 1
   done
   # Name the state we could not record and stop there. Whether the op succeeded is not this function's news to
   # break: it only failed to POST, which changes nothing either way about what happened on the box.
