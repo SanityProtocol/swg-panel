@@ -1715,7 +1715,7 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
 # one file runs on any glibc. The node IMAGE builds the same ref with its own base image's Go, so it is the same
 # source, not the same bytes. Identify the asset by tag + sha256 only — its `--version` prints upstream's stale
 # 0.0.20250522. Verified before install: it runs as root at every boot.
-AWG_GO_TAG="amneziawg-go-3.1.20260828"          # upstream amnezia-vpn/amneziawg-go tag v3.1.20260828
+AWG_GO_TAG="amneziawg-go-3.1.20260828"          # upstream amnezia-vpn/amneziawg-go tag v3.1.20260828 — ≥ 3.1, or awg_go_needs_install reinstalls it every run
 AWG_GO_SHA256_amd64="85ebee7e01d6a18dd05c1116ceb52df60b0a64778afdc00eb06bf1f554ec1524"
 AWG_GO_SHA256_arm64="de0eb94f5b09e57438f5fd86fb15cb1aac5a656b9c39b5c41300a24283b9601e"
 # sha256 of EARLIER pinned builds (any arch), space-separated. A box still carrying one of OURS is moved to the current pin;
@@ -1761,11 +1761,18 @@ ensure_noded_reach_sweep(){ # <noded dir> [<systemd dir>] — HEAL the drop-in b
   systemctl daemon-reload 2>/dev/null || true
 }
 
-awg_go_needs_install(){ # 0 = no amneziawg-go on PATH, or it is one of our EARLIER pinned builds
+awg_go_needs_install(){ # 0 = no amneziawg-go on PATH, one of our EARLIER pinned builds, or a stale build at OUR path
   have amneziawg-go || return 0
-  local cur; cur="$(sha256sum "$(command -v amneziawg-go)" 2>/dev/null | cut -d' ' -f1)"
+  local bin cur; bin="$(command -v amneziawg-go)"
+  cur="$(sha256sum "$bin" 2>/dev/null | cut -d' ' -f1)"
   [ -n "$cur" ] || return 1
   case " $AWG_GO_REPLACES " in *" $cur "*) return 0 ;; esac
+  # Before the pin, ensure_awg_userspace built upstream HEAD into /usr/local/bin — swgt still carries a 3.0 build from
+  # 2026-07-30 (sha dfe3b143…) that no sha list can name, and it is the datapath every awg interface there falls back
+  # to. A build without `random_trailers` in its UAPI is older than AmneziaWG 3.1 (version strings lie; this key does
+  # not — docs/AWG3-PLAN.md §4.2). Only OUR file is replaced — we write a regular file there, never a link: a binary
+  # anywhere else, or a symlink here pointing at one, is the operator's or a package's.
+  [ "$bin" = /usr/local/bin/amneziawg-go ] && [ ! -L "$bin" ] && ! grep -aq random_trailers "$bin" 2>/dev/null && return 0
   return 1
 }
 awg_go_pinned(){ # fetch the pinned amneziawg-go, verify its sha256, install it. 0 = installed

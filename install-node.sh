@@ -382,10 +382,16 @@ reconstruct_live_orphans(){
       # configuration. Persisting it would pin a client's IP into a file that backups and the bare<->docker
       # conversion copy around, and wg re-learns it on the first authenticated packet anyway. A peer that
       # also sets PersistentKeepalive is a dial-OUT (mesh) peer: there the Endpoint IS config, so it stays.
+      # A 3.x kernel also prints eight AWG3 keys at 0/off and `AdvancedSecurity = off` on every peer. That text comes up
+      # only on the same kind of kernel — amneziawg-go (our pinned fallback included), a 3.0 go, 2.0 tools and a 2.0
+      # module refuse it — so those lines are dropped; a non-zero AWG3 value is real config and stays (swg-noded
+      # _strip_showconf_only is the twin).
       { echo '#swg:onboarded'; printf '%s\n' "$sc" | awk -v a="$addr" -v u="$up" -v d="$down" '
         function flush(  i) { if (np == 0) return
           for (i = 1; i <= np; i++) if (ka || peer[i] !~ /^[ \t]*[Ee]ndpoint[ \t]*=/) print peer[i]
           np = 0; ka = 0 }
+        /^[ \t]*AdvancedSecurity[ \t]*=/ { next }
+        /^[ \t]*(ContentPaddingAddition|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts|RandomTrailers|DisableCookies)[ \t]*=[ \t]*(0|off)[ \t]*$/ { next }
         /^[ \t]*\[Interface\]/ { flush(); print; print "Address = " a; print "MTU = 1420"; print "PostUp = " u; print "PostDown = " d; next }
         /^[ \t]*\[Peer\]/      { flush(); peer[++np] = $0; next }
         np > 0                  { peer[++np] = $0; if ($0 ~ /^[ \t]*[Pp]ersistentKeepalive[ \t]*=/) ka = 1; next }

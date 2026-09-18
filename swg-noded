@@ -12101,6 +12101,21 @@ def _strip_learned_endpoints(body):
     return "\n".join(out)
 
 
+# What a 3.x kernel's `showconf` prints for "unset": eight AWG3 interface keys at 0/off, and `AdvancedSecurity = off`
+# on every peer (the module never acts on that flag). As conf text it comes up only on that same kind of kernel —
+# amneziawg-go refuses the AdvancedSecurity line (EINVAL, our pinned fallback included), and a 3.0 go, 2.0 tools and a
+# 2.0 module refuse the zero AWG3 keys (docs/AWG3-PLAN.md §7.6). Measured from swgt's live text. A non-zero value is a
+# real 3.x setting on an interface being adopted, so it stays.
+_SHOWCONF_ONLY = re.compile(r"(?i)^\s*(?:AdvancedSecurity\s*=.*|(?:ContentPaddingAddition|RekeyAfterTime|RekeyTimeout"
+                            r"|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts|RandomTrailers|DisableCookies)"
+                            r"\s*=\s*(?:0|off)\s*)$")
+
+
+def _strip_showconf_only(body):
+    """Drop the lines `showconf` prints that no conf needs and most datapaths refuse — see _SHOWCONF_ONLY."""
+    return "\n".join(l for l in body.splitlines() if not _SHOWCONF_ONLY.match(l))
+
+
 def _reconstruct_conf(iface, cmd):
     """Rebuild an interface's .conf from the LIVE device and return its path ('' if that isn't possible).
 
@@ -12119,7 +12134,7 @@ def _reconstruct_conf(iface, cmd):
         body = (r.stdout or "").strip()
         if not body or "[Interface]" not in body:
             return ""
-        body = _strip_learned_endpoints(body)
+        body = _strip_showconf_only(_strip_learned_endpoints(body))
         addr = ""
         with contextlib.suppress(Exception):
             for ln in (run(["ip", "-4", "-o", "addr", "show", iface]).stdout or "").splitlines():

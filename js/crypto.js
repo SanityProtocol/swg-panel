@@ -980,7 +980,10 @@ export function parseFullConf(text) {
   const m = re => (text.match(re) || [])[1];
   const dnsLine = m(/DNS\s*=\s*(.+)/);
   const awg = {};
-  for (const k of AWG_ORDER) { const v = m(new RegExp("^" + k + "\\s*=\\s*(\\S+)", "m")); if (v != null) awg[k] = v; }
+  // To the end of the line: an I1–I5 value has spaces (`<b 0xc000000001><r 64><t>`), and stopping at the first one
+  // re-emitted `I1 = <b`, which every AmneziaWG datapath refuses. Within the line: an empty `I2 = ` stays absent
+  // rather than taking the next line as its value.
+  for (const k of AWG_ORDER) { const v = m(new RegExp("^" + k + "[ \\t]*=[ \\t]*(.*\\S)", "m")); if (v != null) awg[k] = v; }
   return {
     privkey: m(/PrivateKey\s*=\s*(\S+)/) || "",
     address: m(/Address\s*=\s*(.+)/) || "",
