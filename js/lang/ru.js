@@ -5487,6 +5487,7 @@ export const STR = {
   "internal": "внутренняя ошибка",
   "invalid JSON body": "тело запроса — не JSON",
   "invalid node token": "неверный токен ноды",
+  "the panel is busy — this sync is skipped, the next one retries": "панель занята — эта синхронизация пропущена, следующая повторит",
   "invalid owner repo": "неверный репозиторий",
   "invalid version tag": "неверный тег версии",
   "invalid service name": "неверное имя службы",

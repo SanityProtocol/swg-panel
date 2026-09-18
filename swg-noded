@@ -1136,7 +1136,12 @@ def post_json(url, token, obj, panel, timeout=20, source_ip="", peer=None):
         resp = conn.getresponse()
         data = (resp.read().decode() or "{}")
         if resp.status >= 400:
-            return resp.status, {"error": data[:200]}
+            out = {"error": data[:200]}
+            with contextlib.suppress(Exception):         # the panel's own machine-readable reason, when it sent one
+                code = json.loads(data).get("code")
+                if isinstance(code, str):
+                    out["code"] = code[:40]
+            return resp.status, out
         return resp.status, json.loads(data)
     except Exception as e:
         return 0, {"error": str(e)}
@@ -12678,6 +12683,12 @@ def _norm_url(u):
     except Exception:
         return (u or "").rstrip("/")
 
+def _panel_busy(status, reply):
+    """A 503 carrying the panel's own `busy` code (post_json parses it out of the body): our blessed address ANSWERED —
+    the panel was mid-way through a long operator action and skipped this pass. A proxy's 503 carries no such code."""
+    return status == 503 and (reply or {}).get("code") == "busy"
+
+
 def _verify_panel(base_url, token, panel):
     """True iff the panel at base_url answers /api/node/whoami with our token UNDER OUR CURRENT TLS POSTURE
     (existing pin / CA verify). This is the gate that stops a MITM from redirecting us."""
@@ -17913,6 +17924,11 @@ def main():
                 _nu = _failover_candidate(panel, node_cfg) or _heal_local_panel(panel, node_cfg)
                 if _nu:
                     url = _nu
+            elif _panel_busy(status, reply):
+                # ⚠️ A BUSY PANEL IS A LIVE PANEL — skip the pass and NOTHING ELSE. The two re-points below exist for an
+                # address that stopped answering; this one answered. Failing over on it could move us, during a pending
+                # address swap, onto a candidate the operator is about to cancel.
+                print("sync skipped: the panel is busy with a long operator action — retrying next pass", flush=True)
             else:
                 print(f"sync HTTP {status}: {reply.get('error')}", flush=True)
                 _nu = _failover_candidate(panel, node_cfg) or _heal_local_panel(panel, node_cfg)

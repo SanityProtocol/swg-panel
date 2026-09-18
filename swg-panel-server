@@ -209,7 +209,16 @@ _ALT_BASE = None
 NODE_OFFLINE = 30   # seconds since last sync before a node reads "offline"
 MAX_BODY = 8 * 1024 * 1024         # cap on a general API POST body (bytes) — reject larger with 413 (anti-OOM)
 MAX_SYNC_BODY = 64 * 1024 * 1024   # node-sync snapshots can be big on large fleets — a looser cap, still bounded
-_api_lock = threading.Lock()   # serialize roster/node read-modify-write across handler threads
+_api_lock = threading.RLock()  # serialize roster/node read-modify-write across handler threads AND node syncs
+# ⚠️ RE-ENTRANT ON PURPOSE. A node sync runs ~200 functions under it (_node_sync_apply); with a plain Lock, one future
+# helper that takes it again would freeze every POST and every sync, silently.
+SYNC_LOCK_WAIT = 10   # s a node sync waits for _api_lock before answering 503 — the node skips that pass, safe by design
+# POSTs that only ASK the network and write no store: they run WITHOUT _api_lock, so a slow GitHub or a dead transfer
+# target never holds the fleet's syncs (503) or every other click. Each one's network call already runs lock-free in a
+# background loop. Adding a path here is a promise it saves nothing — tests/rmw_lock_selftest.py runs each one without
+# the lock and checks both stores come out untouched.
+_LOCKLESS_POST = frozenset({"/api/update/check", "/api/turn/check-updates", "/api/catalog/refresh",
+                            "/api/integrations/webhook/test", "/api/nodes/transfer/preflight"})
 
 # /api/state is identical for every poller and rebuilt from scratch on each call (roster read off disk,
 # per-node health-RRD reads, then a full-bundle JSON encode). Every open SPA tab polls it every 5s, so on a
@@ -1314,7 +1323,7 @@ def _turn_hold_key(kind, fork):
 def _turn_deployed(deps):
     """[(fork, kind, node, iface_or_service, installed_version)] for every turn-family server the fleet reports."""
     out = []
-    for nid, snap in (deps.get("node_snaps") or {}).items():
+    for nid, snap in list((deps.get("node_snaps") or {}).items()):   # a copy — syncs insert and removals pop meanwhile
         if not isinstance(snap, dict):
             continue
         for c in (snap.get("csqtt") or []):
@@ -1440,10 +1449,13 @@ def _turn_autoupdate_tick():
     now_ts = int(time.time())
     if not _turn_update_due(sched, last_ts, now_ts):
         return
-    snaps = deps.get("node_snaps") or {}
+    snaps = dict(deps.get("node_snaps") or {})
     nodes = nodes_load(deps["nodes_path"])
     latest = {}                                           # fork -> latest release tag (one resolve per fork)
-    changed = False
+    # ⚠️ TWO PASSES. Pass 1 asks GitHub (seconds each, OUTSIDE _api_lock — a sync must never wait on it); pass 2
+    # re-reads the store under the lock and stages. Staging onto pass 1's copy saved a store that could be minutes
+    # old, erasing every edit and sync made while GitHub answered.
+    todo = []                                             # (nid, svc, owner, tag) — what pass 1 found out of date
     for nid, snap in snaps.items():
         if nid not in nodes or not isinstance(snap, dict):
             continue
@@ -1477,17 +1489,36 @@ def _turn_autoupdate_tick():
             tag = latest[fork]
             if not tag or tag == ver:                    # unreachable, or already current
                 continue
-            pend = (nodes[nid].get("turn") or {}).get(svc)
-            if pend and pend.get("action") == "reinstall":   # a reinstall is already staged — don't double-stage
+            if (nodes[nid].get("turn") or {}).get(svc):     # ANY pending action (re-checked under the lock) — skip its pin fetch
                 continue
-            nodes[nid].setdefault("turn", {})[svc] = {"action": "reinstall", "at": now_ts, "owner": owner, "auto": True,
-                                                      "pin": turn_pin(owner, _node_arch(deps, nid))}   # checksum gate (this node's arch; bounded+bg)
-            changed = True
+            todo.append((nid, svc, fork, owner, tag))
+    if todo:
+        pins = {(nid, owner): turn_pin(owner, _node_arch(deps, nid)) for nid, _svc, _f, owner, _tag in todo}   # checksum gate (this node's arch; bounded+bg)
+        with _api_lock:
+            nodes = nodes_load(deps["nodes_path"])       # the store as it is NOW
+            live = deps.get("node_snaps") or {}
+            staged = []
+            for nid, svc, fork, owner, tag in todo:
+                if nid not in nodes:                     # removed while GitHub answered
+                    continue
+                # ⚠️ ANY pending action wins — a delete, stop, install or rotate the operator staged is theirs; overwriting
+                # it with a reinstall resurrected a deleted proxy (the pre-2026-09-18 check looked only for "reinstall").
+                if (nodes[nid].get("turn") or {}).get(svc):
+                    continue
+                if _turn_hold_get(nid, "fork:" + fork):  # rolled back while pass 1 fetched → the hold stands
+                    continue
+                _now_v = {(t or {}).get("service"): (t or {}).get("version") for t in ((live.get(nid) or {}).get("turn_proxies") or [])}
+                if svc not in _now_v or _now_v[svc] == tag:
+                    continue                             # gone from the node, or already updated, meanwhile — nothing to do
+                nodes[nid].setdefault("turn", {})[svc] = {"action": "reinstall", "at": now_ts, "owner": owner, "auto": True,
+                                                          "pin": pins[(nid, owner)]}
+                staged.append((nid, svc, tag))
+            if staged:
+                nodes_save(deps["nodes_path"], nodes)
+                _invalidate_state_cache()
+        for nid, svc, tag in staged:
             with contextlib.suppress(Exception):
                 ev_append(deps["roster_path"], "node", nid, "Auto-updating turn-proxy", svc + " → " + tag)
-    if changed:
-        nodes_save(deps["nodes_path"], nodes)
-        _invalidate_state_cache()
     with contextlib.suppress(Exception):                 # record the check ran (even if nothing changed) → fire once per window
         atomic_write(marker, str(now_ts))
 
@@ -4745,6 +4776,14 @@ def _verify_node_sig(token_sha, ts, mac, body):
                 _NODE_SIG_SEEN.pop(k, None)
         _NODE_SIG_SEEN[mac] = now + NODE_SIG_WINDOW + 5
     return True, ""
+
+
+def _node_cred_same(before, now):
+    """Does the node record `now` still carry the credential `before` was authenticated against? O(1) and pbkdf2-free
+    (a sync re-checks this under _api_lock): a rotation replaces token_sha, a legacy node's token_hash, or both."""
+    if now.get("token_sha") and before.get("token_sha"):
+        return hmac.compare_digest(now["token_sha"], before["token_sha"])
+    return bool(now.get("token_hash")) and now.get("token_hash") == before.get("token_hash")
 
 
 def find_node_by_token(nodes, token):
@@ -22705,8 +22744,23 @@ def api(method, path, qs, body, deps):
             # a tidiness point: it is a key to someone else's fleet sitting in this one's nodes.json.
             x.pop("token", None)
             x["state"] = "done"; x["done_at"] = _ls
-            nodes[nid]["transfer"] = x
-            nodes_save(deps["nodes_path"], nodes)
+            # A GET runs OUTSIDE _api_lock and this one waited on a network call since `nodes` was read — so re-read
+            # under the lock and mark it done only if the record is STILL the transfer this answer is about: a Cancel or
+            # a new transfer made meanwhile is not overwritten, and two tabs polling at once log it once.
+            with _api_lock:
+                _nn = nodes_load(deps["nodes_path"])
+                _cur = (_nn.get(nid) or {}).get("transfer") or {}
+                _mine = (_cur.get("state") != "done" and _cur.get("at") == x.get("at")
+                         and _cur.get("url") == x.get("url"))
+                if _mine:
+                    _nn[nid]["transfer"] = x
+                    nodes_save(deps["nodes_path"], _nn)
+            if not _mine:                                # cancelled or replaced meanwhile: answer about what is there NOW
+                if not _cur:
+                    return 404, {"ok": False, "error": "no transfer in flight for this node", "code": "not_found"}
+                return 200, {"ok": True, "data": {"id": nid, "state": _cur.get("state") or "pending", "at": _cur.get("at"),
+                                                  "url": _cur.get("url"), **({"done_at": _cur.get("done_at")}
+                                                                             if _cur.get("state") == "done" else {})}}
             ev_append(roster_path, "node", nid, "Transferred", nodes[nid].get("name", nid), x.get("url") or "")
             return 200, {"ok": True, "data": {"id": nid, "state": "done", "at": x.get("at"),
                                               "done_at": _ls, "url": x.get("url")}}
@@ -22998,7 +23052,7 @@ def _ext_peers_from(deps, nodes, snaps, seen, roster):
     now = deps.get("now", lambda: int(time.time()))()
     users = roster.get("users") or {}
     obs = {}
-    for nid, snap in snaps.items():
+    for nid, snap in list(snaps.items()):               # a copy — syncs insert and removals pop meanwhile
         for blk in (snap.get("interfaces") or {}).values():
             for p in (blk.get("peers") or []):
                 obs[(nid, p.get("public_key"))] = p
@@ -23706,14 +23760,21 @@ class Handler(BaseHTTPRequestHandler):
             if _d:
                 time.sleep(_d)
             self._send(401, {"error": "invalid node token"}); return None, None, None
-        if token and not node.get("token_sha"):        # one-time upgrade of a legacy node → fast-lookup index (H3)
-            with contextlib.suppress(Exception):
-                with _api_lock:
-                    nn = nodes_load(Handler.deps["nodes_path"])
-                    if nid in nn and not nn[nid].get("token_sha"):
-                        nn[nid]["token_sha"] = hashlib.sha256(token.encode()).hexdigest()
-                        nodes_save(Handler.deps["nodes_path"], nn)
-                        node["token_sha"] = nn[nid]["token_sha"]
+        # One-time upgrade of a legacy node → fast-lookup index (H3). The index is set in MEMORY first: noded signs every
+        # request and _node_sig_ok keys the HMAC on it, so a skipped save must never turn into a 401 (the installers strip
+        # token_sha on a re-install). The save waits for _api_lock at most 2 s — this runs before the sync's bounded
+        # acquire; busy → the next sync persists it.
+        if token and not node.get("token_sha"):
+            node["token_sha"] = hashlib.sha256(token.encode()).hexdigest()
+            if _api_lock.acquire(timeout=2):
+                try:
+                    with contextlib.suppress(Exception):
+                        nn = nodes_load(Handler.deps["nodes_path"])
+                        if nid in nn and not nn[nid].get("token_sha"):
+                            nn[nid]["token_sha"] = node["token_sha"]
+                            nodes_save(Handler.deps["nodes_path"], nn)
+                finally:
+                    _api_lock.release()
         return nid, node, nodes
 
     def _node_sig_ok(self, node, body, require=None):
@@ -23755,115 +23816,52 @@ class Handler(BaseHTTPRequestHandler):
         # written only when it CHANGES: a node repeating a bad snapshot every 5s must not rewrite the store
         # every 5s, and the first occurrence is the one worth timestamping.
         _serr = _snap_sanitise(snap)
-        _prev_serr = (node.get("snap_err") or {}).get("why")
-        if _serr:
-            if _prev_serr != _serr:
-                node["snap_err"] = {"why": _serr, "at": int(time.time())}
-                with contextlib.suppress(Exception):
-                    nodes_save(Handler.deps["nodes_path"], nodes)
-            return self._send(400, {"ok": False, "error": _serr, "code": "bad_snapshot"})
-        if _prev_serr:
-            node.pop("snap_err", None)                   # it is reporting properly again
-            with contextlib.suppress(Exception):
-                nodes_save(Handler.deps["nodes_path"], nodes)
-        Handler.deps.setdefault("node_snaps", {})[nid] = snap
-        Handler.deps.setdefault("node_seen", {})[nid] = int(time.time())
-        net_probe_absorb(nid, snap)                     # NETWORKS P4: a reachability test's answer, when one rode this snapshot
-        if not (node.get("endpoint_host") or "").strip():   # mesh needs a dial host — auto-fill from the reported
-            _pub = node_public_ip(snap)                      # public IP (operator can still override it later)
-            if _pub:
-                node["endpoint_host"] = _pub
-                with contextlib.suppress(Exception):
-                    nodes_save(Handler.deps["nodes_path"], nodes)
-        if node.pop("uninstalled", None) is not None:   # node is back (re-installed with the same token) → clear the grey "Uninstalled" tag
-            nodes_save(Handler.deps["nodes_path"], nodes)
-        # ACK the explicit WDTT removals: once the node stops reporting an instance it has done the delete, so the
-        # entry comes off the list. Without this the reply would carry every removal ever made, forever.
-        _wdel = node.get("wdtt_delete") or {}
-        if _wdel:
-            _live = {(w or {}).get("iface") for w in (snap.get("wdtt") or [])}
-            _done = [i for i in list(_wdel) if i not in _live]
-            if _done:
-                for i in _done:
-                    _wdel.pop(i, None)
-                if _wdel: node["wdtt_delete"] = _wdel
-                else: node.pop("wdtt_delete", None)
-                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
-        # The SAME ack for csqtt, which shipped without one. csqtt_delete was written on every delete and cleared
-        # nowhere, so a node carried each removal for the rest of its life — harmless until an operator reused the
-        # iface name (csqtt1 is the default first name), at which point the node was told to remove and to create
-        # the same instance on every sync: stop, rm -rf the config dir, reinstall, re-mint the owner password, five
-        # seconds later again. Found on a live node doing exactly that.
-        _cdel = node.get("csqtt_delete") or {}
-        if _cdel:
-            _clive = {(c or {}).get("iface") for c in (snap.get("csqtt") or [])}
-            _cdone = [i for i in list(_cdel) if i not in _clive]
-            if _cdone:
-                for i in _cdone:
-                    _cdel.pop(i, None)
-                if _cdel: node["csqtt_delete"] = _cdel
-                else: node.pop("csqtt_delete", None)
-                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
-        # An interface can become managed WITHOUT an adopt: a re-install or a bare<->docker convert rebuilds the
-        # node's config.json from what is on disk. The ignore entry then outlives the thing it was about. Use the
-        # node's OWN managed set as the signal — never mere absence from the candidate list, which also happens
-        # when a node is briefly not reporting, and pruning on that would silently re-offer a dismissed interface.
-        if isinstance(snap.get("interfaces"), dict) and (node.get("ignore_ifaces") or []):
-            # list(), NOT any(): any() short-circuits on the first True, so a second stale entry would be left
-            # for the next sync to find.
-            if [1 for _mi in list(snap["interfaces"].keys()) if unignore_iface(node, _mi)]:
-                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
-        if snap.get("kind") and node.get("kind") != snap["kind"]:   # remember the method persistently, so a DOWN node (no live snapshot) still knows it (Recover shows the right command)
-            node["kind"] = snap["kind"]
-            with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
-        # …and the same for what OWNS the installation, for the same reason: Recover is reached for
-        # precisely when the node is not reporting, and handing a `curl | sudo bash` to a host whose
-        # installation is declared elsewhere is the wrong answer whether or not it is online now.
-        # CLEARED when a report stops carrying them — the module sets both from env on every start,
-        # so their absence means this host is no longer managed that way. Gated on `kind`, which every
-        # snapshot from every version of the daemon carries: that says "this is a real snapshot", so a
-        # malformed body cannot silently drop the flags. It is not a version check — the panel never
-        # branches on node version — and it does mean a node downgraded to a daemon that predates
-        # these fields forgets them until it is upgraded again.
-        if snap.get("kind"):
-            _own = {"platform": (snap.get("platform") or None), "declarative": (True if snap.get("declarative") else None),
-                    "runtime": (snap.get("runtime") or None),
-                    "platform_info": (snap.get("platform_info") or None)}   # persisted with them so a stale node still labels
-            if any(node.get(k) != v for k, v in _own.items()):
-                for k, v in _own.items():
-                    if v is None: node.pop(k, None)
-                    else:         node[k] = v
-                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
-        # A convert is DONE the moment the node reports on its TARGET method (kind), even if the script's
-        # terminal POST was lost (killed / power-cut / network) — otherwise "converting…" would hang until the
-        # 10-min grace flips it to "failed", while the node is already reporting green. Staging keeps reporting
-        # the OLD kind, so this never fires mid-convert; re-install/update don't change kind, so they're untouched.
-        _cv = {"converting-docker": ("docker", "converted-docker"),
-               "converting-bare":   ("baremetal", "converted-bare")}
-        _tgt = _cv.get((node.get("proc_status") or {}).get("state"))
-        if _tgt and snap.get("kind") == _tgt[0]:
-            node["proc_status"] = {"state": _tgt[1], "at": int(time.time())}   # green confirmation for ~8s, then clears
-            with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
-        # Same idea for an "updating" tag on the co-located node: a MASTER host-update pre-sets it directly
-        # (see /api/host/update), then the updater restarts the panel and POSTs the node's "updated" — which can
-        # hit the API mid-restart and never land (the local host_proc write does, so the header goes green while
-        # the tile hangs). The node reporting the panel's TARGET version is proof the update finished, so clear
-        # it here. The still-old noded keeps reporting the OLD version until it restarts, so this never fires
-        # mid-update; the small age guard keeps the tag visible briefly for feedback on a real update.
-        # ALSO clears a stale "update-failed": if the grace timeout already flipped it to failed but the node is
-        # in fact reporting the panel's exact version (e.g. the update was a no-op because the box was already
-        # current, so noded never re-reported), it's up to date — a node on the target version has NOT failed.
-        _ps = node.get("proc_status") or {}
-        if _ps.get("state") in ("updating", "update-failed") and snap.get("noded_version") \
-           and snap.get("noded_version") == (VERSIONS.get("panel") or None) \
-           and (time.time() - (_ps.get("at") or 0)) > 8:
-            node["proc_status"] = {"state": "updated", "at": int(time.time())}   # green confirmation, then clears
-            with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
-        # NB: an in-progress proc_status (reinstalling / updating / converting…) is otherwise NOT cleared by a
-        # sync — swg-noded keeps syncing right through a re-install/update, so clearing here would hide the tag
-        # immediately. The lifecycle script's TERMINAL (success/aborted/failed) replaces it; a stuck op with
-        # no terminal falls back to "<op> failed" after PROC_GRACE (see _proc_view). The re-install key
-        # re-bless now happens when "reinstalling" is received (see _node_proc_status), not on sync.
+        # ⚠️ LIVENESS FIRST, OUTSIDE THE LOCK. `node_seen` is what the SPA's online dot and the node.offline webhooks
+        # (_node_watch_loop, 30 s) read. Stamped after the lock, an operator action that holds _api_lock across a slow
+        # network call (a transfer to an unreachable panel: 25–85 s; a GitHub check that times out) would mark every
+        # node offline and fire false alerts.
+        if not _serr:
+            Handler.deps.setdefault("node_snaps", {})[nid] = snap
+            Handler.deps.setdefault("node_seen", {})[nid] = int(time.time())
+            try:                                         # telemetry, before the lock — see _node_sync_history
+                self._node_sync_history(nid, node, nodes, snap)
+            except Exception as e:                       # non-essential: a bug here must not fail the fleet's syncs
+                print("stats: history for %s not recorded: %s" % (nid, e), flush=True)
+        # ⚠️ A SYNC IS A READ-MODIFY-WRITE of nodes.json (29 saves) and users.json (5), so it takes _api_lock like every
+        # operator POST and re-reads under it. It did not: _node_token's copy was loaded before the snapshot body was
+        # even read and saved over whatever an operator had written meanwhile (live on swgt 2026-09-18; the rig lost
+        # 39 of 40 edits). Bounded: a panel busy with a long action answers 503 and the node retries next pass —
+        # noded reconciles only on a 200 carrying `desired`, so a skipped pass changes nothing on the node.
+        if not _api_lock.acquire(timeout=SYNC_LOCK_WAIT):
+            if not _serr and nid not in nodes_load(Handler.deps["nodes_path"]):   # removed while this waited → un-stamp
+                (Handler.deps.get("node_snaps") or {}).pop(nid, None)
+                (Handler.deps.get("node_seen") or {}).pop(nid, None)
+            # `code` is what noded reads (post_json → _panel_busy) to tell a busy panel — alive, never fail over —
+            # from a proxy's 503, whose upstream may really be gone.
+            return self._send(503, {"ok": False, "error": "the panel is busy — this sync is skipped, the next one retries",
+                                    "code": "busy"})
+        try:
+            tnode, nodes = node, nodes_load(Handler.deps["nodes_path"])
+            node = nodes.get(nid)
+            if not isinstance(node, dict):               # removed while this request was waiting
+                (Handler.deps.get("node_snaps") or {}).pop(nid, None)   # …so un-stamp it (memory; its stats files are as at HEAD)
+                (Handler.deps.get("node_seen") or {}).pop(nid, None)
+                code, obj = 401, {"error": "invalid node token"}
+            elif not _node_cred_same(tnode, node):       # its token was rotated while this waited: nothing for the old one
+                if (Handler.deps.get("node_snaps") or {}).get(nid) is snap:
+                    Handler.deps["node_snaps"].pop(nid, None)   # …and its snapshot is not the node's state (the node re-stamps in 5 s)
+                code, obj = 401, {"error": "invalid node token"}
+            else:
+                code, obj = self._node_sync_apply(nid, node, nodes, snap, _serr)
+        finally:
+            _api_lock.release()
+        return self._send(code, obj)                     # written to the socket AFTER the lock is released
+
+    def _node_sync_history(self, nid, node, nodes, snap):
+        """A sync's stats mirror, live samples and history rings — run by _node_sync OUTSIDE _api_lock, before it.
+        It reads the snapshot and two record fields (`ifaces`, `stats_file`), writes no store, and is ~80% of a sync's
+        time (fsync'd files, measured 15 of 19 ms): under the lock it would serialise every node's disk writes, and
+        a busy panel (503) would leave a hole in every graph. Pure telemetry — each node's own keys and files."""
         stats_dir = Handler.deps.get("stats_dir")
         if stats_dir and snap and stats_disk_ok(stats_dir):   # skip the non-essential stats/RRD writes on a full disk
             sf = node.get("stats_file", f"stats-{nid}.json")
@@ -24147,6 +24145,117 @@ class Handler(BaseHTTPRequestHandler):
                     iM = [0] * HRRD_NM; iM[3] = int(w.get("rx_speed", 0) or 0); iM[4] = int(w.get("tx_speed", 0) or 0)
                     with contextlib.suppress(Exception):
                         hrrd_update(iface_rrd_path(stats_dir, nid, wifn), now_i, iM)
+
+    def _node_sync_apply(self, nid, node, nodes, snap, _serr):
+        """The body of a node sync, run under _api_lock by _node_sync (on its fresh re-read). Returns (code, reply)."""
+        _prev_serr = (node.get("snap_err") or {}).get("why")
+        if _serr:
+            if _prev_serr != _serr:
+                node["snap_err"] = {"why": _serr, "at": int(time.time())}
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
+            return 400, {"ok": False, "error": _serr, "code": "bad_snapshot"}
+        if _prev_serr:
+            node.pop("snap_err", None)                   # it is reporting properly again
+            with contextlib.suppress(Exception):
+                nodes_save(Handler.deps["nodes_path"], nodes)
+        # (node_snaps / node_seen were stamped by _node_sync before the lock — liveness must not wait on it)
+        net_probe_absorb(nid, snap)                     # NETWORKS P4: a reachability test's answer, when one rode this snapshot
+        if not (node.get("endpoint_host") or "").strip():   # mesh needs a dial host — auto-fill from the reported
+            _pub = node_public_ip(snap)                      # public IP (operator can still override it later)
+            if _pub:
+                node["endpoint_host"] = _pub
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
+        if node.pop("uninstalled", None) is not None:   # node is back (re-installed with the same token) → clear the grey "Uninstalled" tag
+            nodes_save(Handler.deps["nodes_path"], nodes)
+        # ACK the explicit WDTT removals: once the node stops reporting an instance it has done the delete, so the
+        # entry comes off the list. Without this the reply would carry every removal ever made, forever.
+        _wdel = node.get("wdtt_delete") or {}
+        if _wdel:
+            _live = {(w or {}).get("iface") for w in (snap.get("wdtt") or [])}
+            _done = [i for i in list(_wdel) if i not in _live]
+            if _done:
+                for i in _done:
+                    _wdel.pop(i, None)
+                if _wdel: node["wdtt_delete"] = _wdel
+                else: node.pop("wdtt_delete", None)
+                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # The SAME ack for csqtt, which shipped without one. csqtt_delete was written on every delete and cleared
+        # nowhere, so a node carried each removal for the rest of its life — harmless until an operator reused the
+        # iface name (csqtt1 is the default first name), at which point the node was told to remove and to create
+        # the same instance on every sync: stop, rm -rf the config dir, reinstall, re-mint the owner password, five
+        # seconds later again. Found on a live node doing exactly that.
+        _cdel = node.get("csqtt_delete") or {}
+        if _cdel:
+            _clive = {(c or {}).get("iface") for c in (snap.get("csqtt") or [])}
+            _cdone = [i for i in list(_cdel) if i not in _clive]
+            if _cdone:
+                for i in _cdone:
+                    _cdel.pop(i, None)
+                if _cdel: node["csqtt_delete"] = _cdel
+                else: node.pop("csqtt_delete", None)
+                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # An interface can become managed WITHOUT an adopt: a re-install or a bare<->docker convert rebuilds the
+        # node's config.json from what is on disk. The ignore entry then outlives the thing it was about. Use the
+        # node's OWN managed set as the signal — never mere absence from the candidate list, which also happens
+        # when a node is briefly not reporting, and pruning on that would silently re-offer a dismissed interface.
+        if isinstance(snap.get("interfaces"), dict) and (node.get("ignore_ifaces") or []):
+            # list(), NOT any(): any() short-circuits on the first True, so a second stale entry would be left
+            # for the next sync to find.
+            if [1 for _mi in list(snap["interfaces"].keys()) if unignore_iface(node, _mi)]:
+                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        if snap.get("kind") and node.get("kind") != snap["kind"]:   # remember the method persistently, so a DOWN node (no live snapshot) still knows it (Recover shows the right command)
+            node["kind"] = snap["kind"]
+            with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # …and the same for what OWNS the installation, for the same reason: Recover is reached for
+        # precisely when the node is not reporting, and handing a `curl | sudo bash` to a host whose
+        # installation is declared elsewhere is the wrong answer whether or not it is online now.
+        # CLEARED when a report stops carrying them — the module sets both from env on every start,
+        # so their absence means this host is no longer managed that way. Gated on `kind`, which every
+        # snapshot from every version of the daemon carries: that says "this is a real snapshot", so a
+        # malformed body cannot silently drop the flags. It is not a version check — the panel never
+        # branches on node version — and it does mean a node downgraded to a daemon that predates
+        # these fields forgets them until it is upgraded again.
+        if snap.get("kind"):
+            _own = {"platform": (snap.get("platform") or None), "declarative": (True if snap.get("declarative") else None),
+                    "runtime": (snap.get("runtime") or None),
+                    "platform_info": (snap.get("platform_info") or None)}   # persisted with them so a stale node still labels
+            if any(node.get(k) != v for k, v in _own.items()):
+                for k, v in _own.items():
+                    if v is None: node.pop(k, None)
+                    else:         node[k] = v
+                with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # A convert is DONE the moment the node reports on its TARGET method (kind), even if the script's
+        # terminal POST was lost (killed / power-cut / network) — otherwise "converting…" would hang until the
+        # 10-min grace flips it to "failed", while the node is already reporting green. Staging keeps reporting
+        # the OLD kind, so this never fires mid-convert; re-install/update don't change kind, so they're untouched.
+        _cv = {"converting-docker": ("docker", "converted-docker"),
+               "converting-bare":   ("baremetal", "converted-bare")}
+        _tgt = _cv.get((node.get("proc_status") or {}).get("state"))
+        if _tgt and snap.get("kind") == _tgt[0]:
+            node["proc_status"] = {"state": _tgt[1], "at": int(time.time())}   # green confirmation for ~8s, then clears
+            with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # Same idea for an "updating" tag on the co-located node: a MASTER host-update pre-sets it directly
+        # (see /api/host/update), then the updater restarts the panel and POSTs the node's "updated" — which can
+        # hit the API mid-restart and never land (the local host_proc write does, so the header goes green while
+        # the tile hangs). The node reporting the panel's TARGET version is proof the update finished, so clear
+        # it here. The still-old noded keeps reporting the OLD version until it restarts, so this never fires
+        # mid-update; the small age guard keeps the tag visible briefly for feedback on a real update.
+        # ALSO clears a stale "update-failed": if the grace timeout already flipped it to failed but the node is
+        # in fact reporting the panel's exact version (e.g. the update was a no-op because the box was already
+        # current, so noded never re-reported), it's up to date — a node on the target version has NOT failed.
+        _ps = node.get("proc_status") or {}
+        if _ps.get("state") in ("updating", "update-failed") and snap.get("noded_version") \
+           and snap.get("noded_version") == (VERSIONS.get("panel") or None) \
+           and (time.time() - (_ps.get("at") or 0)) > 8:
+            node["proc_status"] = {"state": "updated", "at": int(time.time())}   # green confirmation, then clears
+            with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # NB: an in-progress proc_status (reinstalling / updating / converting…) is otherwise NOT cleared by a
+        # sync — swg-noded keeps syncing right through a re-install/update, so clearing here would hide the tag
+        # immediately. The lifecycle script's TERMINAL (success/aborted/failed) replaces it; a stuck op with
+        # no terminal falls back to "<op> failed" after PROC_GRACE (see _proc_view). The re-install key
+        # re-bless now happens when "reinstalling" is received (see _node_proc_status), not on sync.
         # self-heal the full mesh BEFORE computing desired, so a node that entered the store outside
         # /api/nodes/create (auto-enrolled master/local node) or lost a link conf (convert/re-install)
         # gets its links (re)staged on its very next sync.
@@ -25335,7 +25444,7 @@ class Handler(BaseHTTPRequestHandler):
         # ignore it and behave as before.
         owned_ifaces = sorted((node.get("ifaces") or {}).keys())
         _nprobe = net_probe_reply(nid)
-        return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
+        return (200, {"desired": desired, "desired_ifaces": desired_ifaces,
                                 "owned_ifaces": owned_ifaces,
                                 **({"adopt_container": _adc} if _adc else {}),
                                 # NETWORKS P2: only when the operator closed this node's LAN — absent means share,
@@ -25518,7 +25627,11 @@ class Handler(BaseHTTPRequestHandler):
         state = (body.get("state") or "").strip()
         err = (body.get("err") or "").strip()[:4000]   # failed-state log tail for the error popup
         with _api_lock:
-            if _proc_inprogress(state) or _proc_terminal(state):
+            nodes = nodes_load(Handler.deps["nodes_path"])   # re-read under the lock: _node_token's copy predates the body
+            _gone = nid not in nodes                         # removed while this request was in flight
+            if _gone:
+                pass
+            elif _proc_inprogress(state) or _proc_terminal(state):
                 ps = {"state": state, "at": int(time.time())}
                 if err and (state.endswith("-failed") or state == "failed"):
                     ps["err"] = err
@@ -25555,7 +25668,10 @@ class Handler(BaseHTTPRequestHandler):
                                 ov.pop("_drift", None)
             else:
                 nodes[nid].pop("proc_status", None)          # blank/unknown = clear it
-            nodes_save(Handler.deps["nodes_path"], nodes)
+            if not _gone:
+                nodes_save(Handler.deps["nodes_path"], nodes)
+        if _gone:                                            # replies go out AFTER the lock, as _node_sync's do
+            return self._send(404, {"ok": False, "error": "unknown node"})
         return self._send(200, {"ok": True, "data": {"id": nid, "state": state}})
 
     def _node_whoami(self):
@@ -25660,10 +25776,16 @@ class Handler(BaseHTTPRequestHandler):
         name = strip_ctrl((body.get("name") or "").strip())[:40]   # node names itself (node-token) — drop control chars
         if not name:
             return self._send(400, {"ok": False, "error": "empty name"})
+        # ⚠️ This wrote through `nodes` without ever binding it (_node_token's copy is discarded above), so every
+        # self-rename raised NameError and dropped the connection — silent, the installer's call ends in `|| true`.
         with _api_lock:
-            old = nodes[nid].get("name", nid)
-            nodes[nid]["name"] = name
-            nodes_save(Handler.deps["nodes_path"], nodes)
+            nodes = nodes_load(Handler.deps["nodes_path"])   # re-read under the lock, as _node_goodbye / _node_transfer do
+            old = (nodes.get(nid) or {}).get("name", nid)
+            if nid in nodes:
+                nodes[nid]["name"] = name
+                nodes_save(Handler.deps["nodes_path"], nodes)
+        if nid not in nodes:                             # removed meanwhile — replied AFTER the lock, as _node_sync does
+            return self._send(404, {"ok": False, "error": "unknown node"})
         if name != old:
             ev_append(Handler.deps["roster_path"], "node", nid, "Renamed node", name)
         return self._send(200, {"ok": True, "data": {"id": nid, "name": name}})
@@ -26007,8 +26129,11 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError):
             return self._send(400, {"ok": False, "error": "invalid JSON body", "code": "bad_request"})
         try:
-            with _api_lock:                       # mutations are read-modify-write; serialize them
+            if path in _LOCKLESS_POST:            # read-only, network-bound → never holds the lock (see _LOCKLESS_POST)
                 code, obj = api("POST", path, {}, bodyobj, self.deps)
+            else:
+                with _api_lock:                   # mutations are read-modify-write; serialize them
+                    code, obj = api("POST", path, {}, bodyobj, self.deps)
         except Exception as e:
             code, obj = 500, {"ok": False, "error": str(e), "code": "internal"}
         if 200 <= code < 300:
