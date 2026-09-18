@@ -9,7 +9,10 @@
 #       kernels with both an image and headers
 #   [4] awg_dkms_drop_unowned removes only an amneziawg DKMS tree no package owns, and only once the package downloads
 #   [5] the source route registers with DKMS (dkms-install → add → build → install) before any `make install`
-# Run: bash tests/awg_kernel_follow_selftest.sh     --perturb lets versioned image packages match and drops the refresh-and-retry, expects RED on [1], [2].
+#   [8] awg tools that predate AmneziaWG 3 never get the master module — neither registered (S1) nor built (S2) — and every
+#       caller names that reason instead of advising headers
+# Run: bash tests/awg_kernel_follow_selftest.sh     --perturb lets versioned image packages match, drops the refresh-and-retry, calls
+#      ensure_awg_headers_follow bare and deletes both [8] gates; expects RED on [1], [2], [7] and the two [8] 2.0-tools checks.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 FAILS=0; check(){ if [ "$2" = 0 ]; then echo "  PASS $1"; else echo "  FAIL $1 ${3:-}"; FAILS=$((FAILS+1)); fi; }
@@ -107,15 +110,51 @@ check "[6] heal migrates only with no registered tree and no installable package
 #     runs it (update.sh and both installers are `set -euo pipefail`). A regex over the code with its comments stripped —
 #     the failure is the CALL SITE, and a `#` inside `${v#x}` or `$#` is not a comment.
 bare=""
-for fnn in ensure_awg_headers_follow awg_go_needs_install awg_go_pinned awg_kernel_takes awg_dkms_register_source; do
+for fnn in ensure_awg_headers_follow awg_go_needs_install awg_go_pinned awg_kernel_takes awg_dkms_register_source awg_tools_drive_3x; do
   for f in update.sh install-host.sh install-node.sh lib/common.sh; do
     t="$ROOT/$f"; [ "${1:-}" = "--perturb" ] && [ "$f" = update.sh ] && { sed 's/_hf=0; ensure_awg_headers_follow || _hf=\$?; case \$_hf in/ensure_awg_headers_follow; case $? in/' "$ROOT/$f" > "$T/perturbed-update.sh"; t="$T/perturbed-update.sh"; }
     while IFS= read -r ln; do
       code="$(printf '%s' "$ln" | sed -E 's/(^|[[:space:]])#.*$//')"
       printf '%s' "$code" | grep -qE "(^|[^_a-z])$fnn([^(_a-z]|\$)" || continue
-      printf '%s' "$code" | grep -qE "$fnn.*(\|\||&&)|(if|elif|while|until)[[:space:]]+(! )?$fnn|(\|\||&&)[[:space:]]*(! )?$fnn" || bare="$bare $f:$fnn"
+      # The guard must follow the call's OWN arguments (up to a `;` or `|`): an `&&` further along the line guards nothing.
+      printf '%s' "$code" | grep -qE "$fnn([[:space:]][^|;]*)?(\|\||&&)|(if|elif|while|until)[[:space:]]+(! )?$fnn|(\|\||&&)[[:space:]]*(! )?$fnn" || bare="$bare $f:$fnn"
     done < <(grep -E "(^|[^_a-z])$fnn([^(_a-z]|\$)" "$t")
   done
 done
 check "[7] no bare call, under set -e, of a function that returns non-zero on normal paths" "$([ -z "$bare" ]; echo $?)" "bare:$bare"
+# [8] tools that predate AmneziaWG 3 never get the master module: not registered with DKMS (S1), not built (S2). Measured on a
+#     Debian 12 VM 2026-09-18: either path left 2.0 tools with a 3.1 module and every awg interface down after the reboot.
+#     The stubs carry the parser's words the way the real binaries do (v1.0.x: no HeaderProtectionKey; v3.0/v3.1: present).
+g8="$(grab awg_tools_drive_3x; grab awg_tools_old_why; grab awg_dkms_register_source; grab awg_build_from_source)"
+[ "${1:-}" = "--perturb" ] && g8="$(printf '%s\n' "$g8" | grep -v 'awg_tools_drive_3x || return 3\|awg_tools_drive_3x || { warn')"   # perturbation: both gates gone
+eval "$g8"
+for g in 2 3; do mkdir -p "$T/awg$g"
+  printf '#!/bin/sh\n# %s\necho "amneziawg-tools v%s - https://amnezia.org"\n' "$([ $g = 3 ] && echo 'HeaderProtectionKey RandomTrailers' || echo 'Jc Jmin H1 I1')" "$([ $g = 3 ] && echo 3.1.20260812 || echo 1.0.20260618-2)" > "$T/awg$g/awg"
+  printf '#!/bin/sh\n' > "$T/awg$g/awg-quick"; chmod +x "$T/awg$g/awg" "$T/awg$g/awg-quick"; done
+mkdir -p "$T/noawg"
+( PATH="$T/awg3:$PATH"; awg_tools_drive_3x ); r3=$?; ( PATH="$T/awg2:$PATH"; awg_tools_drive_3x ); r2=$?; ( PATH="$T/noawg"; awg_tools_drive_3x ); r0=$?
+check "[8] the probe: 3.x parser → 0 · 2.0 parser → 1 · no awg → 1" "$([ $r3 = 0 ] && [ $r2 = 1 ] && [ $r0 = 1 ]; echo $?)" "3x=$r3 2.0=$r2 none=$r0"
+printf '#!/bin/sh\necho "dkms $*" >> "$SBX/calls"\n' > "$T/bin/dkms"; chmod +x "$T/bin/dkms"                  # no tree registered
+printf '#!/bin/sh\nexit 1\n' > "$T/bin/modprobe"; printf '#!/bin/sh\n' > "$T/bin/depmod"; chmod +x "$T/bin/modprobe" "$T/bin/depmod"
+info(){ :; }; warn(){ echo "$*" >> "$T/warns"; }
+reset; ( PATH="$T/awg2:$PATH"; awg_dkms_register_source ); r=$?
+check "[8] S1 — 2.0 tools: register_source answers 3 and clones nothing" "$([ $r = 3 ] && ! grep -q clone "$T/calls"; echo $?)" "rc=$r $(cat "$T/calls")"
+reset; ( PATH="$T/awg3:$PATH"; awg_dkms_register_source ); r=$?
+check "[8] S1 control — 3.x tools: register_source clones the module" "$(grep -q 'clone .*amneziawg-linux-kernel-module' "$T/calls"; echo $?)" "rc=$r $(cat "$T/calls")"
+reset; : > "$T/warns"; ( PATH="$T/awg2:$PATH"; awg_build_from_source ); r=$?
+check "[8] S2 — 2.0 tools, no loadable module: rc 1, no clone, no dkms/headers install, the reason said" "$([ $r = 1 ] && ! grep -q clone "$T/calls" && ! grep -q 'install .*dkms' "$T/calls" && grep -q 'v1.0.20260618-2) predate AmneziaWG 3' "$T/warns"; echo $?)" "rc=$r $(cat "$T/calls") | $(cat "$T/warns")"
+reset; : > "$T/warns"; ( PATH="$T/awg3:$PATH"; awg_build_from_source ); r=$?
+check "[8] S2 control — 3.x tools: the module is cloned and built" "$(grep -q 'clone .*amneziawg-linux-kernel-module' "$T/calls" && [ ! -s "$T/warns" ]; echo $?)" "rc=$r $(cat "$T/calls") | $(cat "$T/warns")"
+# Tools built in THIS run are master, like the module: never probed. Here the fresh build lacks the word (as a parser that
+# one day renames it would) — the module must still be built, or every fresh node would quietly lose its kernel datapath.
+mkdir -p "$T/fresh"; printf '#!/bin/sh\necho "$0 $*" >> "$SBX/calls"; case "$*" in *install*) cp "$SBX/awg2/awg" "$SBX/awg2/awg-quick" "$SBX/fresh/";; esac\n' > "$T/bin/make"; chmod +x "$T/bin/make"
+git_clone_depth1(){ echo "clone $*" >> "$T/calls"; case "$1" in *amneziawg-tools) mkdir -p "$2/src";; *) return 1;; esac; }
+# (`have` sees awg only where this run installs it: the workstation running the test may have a real one in /usr/bin)
+reset; : > "$T/warns"; ( PATH="$T/fresh:$PATH"; have(){ case "$1" in git|make) return 0;; awg|awg-quick) [ -x "$T/fresh/$1" ];; *) command -v "$1" >/dev/null 2>&1;; esac; }; awg_build_from_source ); r=$?
+check "[8] S2 — tools built in this run are not probed: the module is cloned even when their parser lacks the word" "$(grep -q 'clone .*amneziawg-tools' "$T/calls" && grep -q 'clone .*amneziawg-linux-kernel-module' "$T/calls" && [ ! -s "$T/warns" ]; echo $?)" "rc=$r $(cat "$T/calls") | $(cat "$T/warns")"
+git_clone_depth1(){ echo "clone $*" >> "$T/calls"; return 1; }
+# …and every caller says the real reason instead of "install matching linux-headers", which cannot help such a box
+check "[8] update.sh gives register_source's rc 3 its own note; the userspace advice and the D3 refusal ask the probe" "$(printf '%s' "$u" | grep -q '3) note "AmneziaWG: $(awg_tools_old_why)' && printf '%s' "$u" | grep -q 'userspace (amneziawg-go); $(awg_tools_drive_3x && echo' && grep -qF 'does not accept its configuration ($(awg_tools_drive_3x && echo '"'"'a module older than the interface needs?'"'"' || echo "$(awg_tools_old_why);' "$ROOT/update.sh"; echo $?)"
+check "[8] the headers line promises a module rebuild only where a DKMS tree exists (none: nothing rebuilds it — measured)" "$(printf '%s' "$u" | grep -q '$(\[ -n "$(dkms status amneziawg 2>/dev/null)" \] && echo " — the module is rebuilt when a new kernel arrives")' && [ "$(printf '%s' "$u" | grep -c 'the module is rebuilt when a new kernel arrives')" = 1 ]; echo $?)"
+check "[8] both installers offer the headers advice only to tools that can drive the module" "$(for f in install-node.sh install-host.sh; do grep -q "have apt-get && awg_tools_drive_3x && printf ' %s' 'Installing matching linux-headers" "$ROOT/$f" || exit 1; done; echo 0)"
 echo; [ "$FAILS" = 0 ] && echo "GREEN — 0 failed" || echo "RED — $FAILS failed"; [ "$FAILS" = 0 ]

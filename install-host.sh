@@ -489,7 +489,7 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # back to userspace so the node can still serve AmneziaWG — awg-quick picks it up by itself.
   if ensure_awg_userspace; then
     warn "AmneziaWG will run on the SLOWER userspace datapath — no loadable kernel module on $(uname -r).$(
-      have apt-get && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
+      have apt-get && awg_tools_drive_3x && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
     return 0
   fi
   return 1

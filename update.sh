@@ -708,7 +708,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   # route first, then builds from source, and only then falls back to the userspace datapath.
   # Docker nodes run userspace amneziawg-go from their image → skipped by the HAVE_BNODE gate.
   [ "$HAVE_BNODE" = yes ] || return 0
-  local _tools=no _mod=no _hf=0
+  local _tools=no _mod=no _hf=0 _rs=0
   have awg && have awg-quick && _tools=yes
   { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes
   # D1: the pinned userspace fallback, install-if-missing, BEFORE the "already working" return — that return is exactly
@@ -726,14 +726,17 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   if [ "$_tools" = yes ] && [ "$_mod" = yes ] && ! $DRYRUN; then
     # ⚠️ rc is CAPTURED, never read from a bare call: this script runs under `set -e`, and the function returns 10
     # (installed now), 1 (none) and 2 (failed) on perfectly normal paths — a bare call aborted the whole update right here.
-    _hf=0; ensure_awg_headers_follow || _hf=$?; case $_hf in 10) DID_UPDATE=yes; ok "AmneziaWG: kernel headers now follow kernel upgrades ($(awg_headers_meta | tr "\n" " " | sed "s/ $//")) — the module is rebuilt when a new kernel arrives" ;;
+    _hf=0; ensure_awg_headers_follow || _hf=$?; case $_hf in 10) DID_UPDATE=yes; ok "AmneziaWG: kernel headers now follow kernel upgrades ($(awg_headers_meta | tr "\n" " " | sed "s/ $//"))$([ -n "$(dkms status amneziawg 2>/dev/null)" ] && echo " — the module is rebuilt when a new kernel arrives")" ;;
       2) note "AmneziaWG: the kernel headers metapackage could not be installed — the next kernel will rely on the userspace fallback (tried again on the next update)" ;;
     esac
     # A module an older installer built with `make install` loads on THIS kernel and exists for no other. Register it
     # with DKMS once — unless the amnezia package can own it (then the package route is the owner, never us).
     if have dkms && [ -z "$(dkms status amneziawg 2>/dev/null)" ] && ! apt-cache show amneziawg-dkms >/dev/null 2>&1; then
-      if awg_dkms_register_source; then DID_UPDATE=yes; ok "AmneziaWG: the kernel module is now rebuilt by DKMS whenever a kernel is installed"
-      else note "AmneziaWG: could not register the kernel module with DKMS — the next kernel will rely on the userspace fallback"; fi
+      _rs=0; awg_dkms_register_source || _rs=$?
+      case $_rs in 0) DID_UPDATE=yes; ok "AmneziaWG: the kernel module is now rebuilt by DKMS whenever a kernel is installed" ;;
+        3) note "AmneziaWG: $(awg_tools_old_why) — the module is left as it is; the next kernel will rely on the userspace fallback" ;;
+        *) note "AmneziaWG: could not register the kernel module with DKMS — the next kernel will rely on the userspace fallback" ;;
+      esac
     fi
     awg_dkms_build_all_kernels
   fi
@@ -775,7 +778,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     note "AmneziaWG: kernel module ready for $(uname -r)"
   elif have awg && have awg-quick && have amneziawg-go; then
     DID_UPDATE=yes; ok "AmneziaWG healed — running the slower USERSPACE datapath (no loadable kernel module)"
-    note "AmneziaWG: userspace (amneziawg-go); install matching linux-headers for the faster kernel module"
+    note "AmneziaWG: userspace (amneziawg-go); $(awg_tools_drive_3x && echo 'install matching linux-headers for the faster kernel module' || awg_tools_old_why)"
   elif have awg && have awg-quick; then
     DID_FAIL=yes; warn "AmneziaWG tools are installed but its kernel module will not load on $(uname -r), and the userspace datapath could not be built — awg interfaces cannot come up"
   else
@@ -863,7 +866,9 @@ ensure_awg_back_on_kernel(){   # SURGICAL — NOT part of the general heal: move
   done
   [ -n "$xmoved" ] && { DID_UPDATE=yes; note "AmneziaWG exits taken off the userspace fallback — swg-noded brings them back up on the kernel module:$xmoved"; }
   [ -n "$moved" ] && { DID_UPDATE=yes; ok "AmneziaWG back on the kernel datapath:$moved"; }
-  [ -n "$refused" ] && warn "AmneziaWG stays on the userspace fallback:$refused — the kernel module does not accept its configuration (a module older than the interface needs?)"
+  # The loaded module refusing a conf is either a module older than the interface needs, or tools older than the module —
+  # the second only on a box whose own awg predates AmneziaWG 3, and there a reboot takes these interfaces down for good.
+  [ -n "$refused" ] && warn "AmneziaWG stays on the userspace fallback:$refused — the kernel module does not accept its configuration ($(awg_tools_drive_3x && echo 'a module older than the interface needs?' || echo "$(awg_tools_old_why); until then a reboot takes them down"))"
   [ -n "$stuck" ] && warn "AmneziaWG still on the userspace fallback after a restart:$stuck — the kernel module did not take them"
   [ -n "$down" ] && { DID_FAIL=yes; warn "AmneziaWG interface(s) did not come back after moving them to the kernel datapath:$down — start them from the panel"; }
   return 0

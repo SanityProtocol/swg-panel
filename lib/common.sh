@@ -1505,9 +1505,27 @@ awg_dkms_register_dir(){ # <module src dir> — register upstream's module with 
     && run dkms build -m amneziawg -v "$ver" -k "$(uname -r)" && run dkms install -m amneziawg -v "$ver" -k "$(uname -r)" || return 1
   awg_dkms_build_all_kernels
 }
-awg_dkms_register_source(){ # clone upstream and register it — ONLY when no amneziawg tree is registered at all. 0 = registered now
+awg_tools_drive_3x(){ # 0 = the `awg` on PATH can configure an AmneziaWG 3.x kernel module — the only kind we build from source
+  # Every module below is upstream master: AmneziaWG 3.x since 2026-07-31. Tools older than 3.0 cannot configure one AT ALL
+  # (H1–H4 and a peer's keepalive changed type), so `awg setconf` answers "Invalid argument" and every awg interface fails to
+  # come up — silently at first, because the old module keeps serving until the next reboot. Measured on Debian 12
+  # (2026-09-18): tools v1.0.x → EINVAL on the 3.1 module; v3.0 and v3.1 → configured. Our own source route has built 3.1
+  # tools since it began (2026-08-20) and the PPA builds both packages from upstream master, so what this catches is tools
+  # WE did not install — built by hand before AmneziaWG 3. Those stay the operator's: never rebuilt, only not outrun.
+  # Asked of the PARSER, not a version: versions lie (the PPA's 3.1 tools PACKAGE is 1.0.20210914-…). HeaderProtectionKey
+  # is a 3.x key that 2.0 tools do not contain. A wrong "no" costs a box its kernel module (userspace instead), never its
+  # interfaces. ⚠️ Generation-specific: a future module that 3.x tools cannot drive needs its own probe here.
+  local a; a="$(command -v awg 2>/dev/null)" || return 1
+  grep -qa HeaderProtectionKey "$a" 2>/dev/null
+}
+awg_tools_old_why(){ # the operator-facing reason awg_tools_drive_3x said no, and what to do about it
+  local v; v="$(awg --version 2>/dev/null | awk '{print $2; exit}')"
+  printf 'the awg tools on this node%s predate AmneziaWG 3 and cannot configure the kernel module upstream ships now — rebuild amneziawg-tools to use it' "${v:+ ($v)}"
+}
+awg_dkms_register_source(){ # clone upstream and register it — ONLY when no amneziawg tree is registered at all. 0 = registered now · 3 = tools too old
   have dkms && have git && have make || return 1
   [ -z "$(dkms status amneziawg 2>/dev/null)" ] || return 1            # a tree exists (ours or the package's): its owner builds it
+  awg_tools_drive_3x || return 3   # registering master would outrun the tools: every awg interface down at the next boot
   $DRYRUN && { echo "    [skip] register amneziawg with DKMS from source"; return 0; }
   local w rc=1; w="$(mktemp -d)"
   git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/log" 2>&1 \
@@ -1534,7 +1552,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # because its template comes from the distro's own wireguard-tools.
   #
   # This alone does NOT heal a box that already has the tools — see ensure_awg_quick_unit in update.sh.
-  local w; w="$(mktemp -d)"
+  local w built=no; w="$(mktemp -d)"
   if ! have awg || ! have awg-quick; then
     info "building AmneziaWG tools from source (the amnezia PPA is Ubuntu-only)…"
     # ca-certificates is NOT optional here: without it every https git clone below fails cert verification.
@@ -1553,6 +1571,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
         && run make -C "$w/tools/src" \
         && run make -C "$w/tools/src" install PREFIX=/usr WITH_BASHCOMPLETION=no \
                 WITH_WGQUICK=yes; } >"$w/build.log" 2>&1 || true
+    built=yes   # master, like the module below — never probed (a parser that renames the word must not cost a fresh node its module)
   fi
   $DRYRUN && { rm -rf "$w"; return 0; }
   have awg && have awg-quick || {
@@ -1565,6 +1584,9 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # by falling through to userspace rather than returning modprobe's 127 to the caller.
   have modprobe || { rm -rf "$w"; return 1; }
   if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
+  # Tools we did not build (they were already here) may be too old for the master module below: it would load now or at
+  # the next boot and take every awg interface down. The caller's next rung, userspace, serves them instead.
+  [ "$built" = yes ] || awg_tools_drive_3x || { warn "AmneziaWG: $(awg_tools_old_why) — not building it; awg interfaces use the userspace datapath"; rm -rf "$w"; return 1; }
   info "building the AmneziaWG kernel module for $(uname -r)…"
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
   ensure_awg_headers_follow >/dev/null 2>&1 || true
