@@ -1633,6 +1633,13 @@ export const STR = {
   "Peers — what the client downloads / uploads": "Пиры — что принимает / отдаёт клиент",
   "Which way ↓/↑ are labelled across the panel. Same numbers, swapped arrows.": "Как по всей панели подписаны ↓ и ↑. Числа те же, стрелки меняются местами.",
   "Local networks": "Локальные сети",
+  "A full mesh links every pair of nodes: every leg is measured and a new forward target works at once, but each node carries one link per other node. On demand links only the pairs a forward or a smart rule routes over, and removes a link nothing has used for an hour.": "Полный меш связывает каждую пару нод: измеряется каждое плечо, и новая цель пересылки работает сразу, но на каждой ноде держится по линку до каждой другой. «По требованию» связывает только пары, через которые идёт пересылка или умное правило, и удаляет линк, которым никто не пользуется час.",
+  "This fleet is linked on demand now.": "Сейчас ноды этого флота связываются по требованию.",
+  "Every pair in this fleet is linked now.": "Сейчас связана каждая пара нод этого флота.",
+  "Full mesh": "Полный меш",
+  "On demand": "По требованию",
+  "Auto": "Авто",
+  "Auto — a full mesh up to {v1} nodes, on demand above": "Авто — полный меш до {v1} нод, больше — по требованию",
   "The private network each node sits on. Its clients reach it unless it is closed on that node — nobody sets this up, it is what routing does.":
     "Частная сеть, в которой стоит каждая нода. Её клиенты попадают туда, пока это не закрыто на самой ноде: это никто не настраивал, так работает маршрутизация.",
   "No node reports sitting on a private network.": "Ни одна нода не сообщает, что стоит в частной сети.",
@@ -1709,6 +1716,7 @@ export const STR = {
   "Hide these and close them on every node": "Скрыть их и закрыть на всех нодах",
   "Show these again — each node's own switch then decides who reaches it": "Снова показывать их — дальше доступ решает переключатель на самой ноде",
   "Node local networks — shown in the panel": "Локальные сети нод — показаны в панели",
+  "Mesh links — {v1}": "Связи в меше — {v1}",
   "Node local networks — hidden, and closed on every node": "Локальные сети нод — скрыты и закрыты на всех нодах",
   "Status timing": "Тайминги статусов",
   // budget-ok: field <label>, own line
@@ -2373,6 +2381,7 @@ export const STR = {
   " — smart-routed by destination": " — с умной маршрутизацией по назначению",
   "This is a panel-managed mesh link to *{node}*. It's created and torn down automatically as nodes are added or removed. To route a user interface's traffic out through this node, set that interface's egress to *Forward to {node}*.":
     "Это меш-линк до *{node}*, которым управляет панель. Он создаётся и сносится автоматически по мере добавления и удаления нод. Чтобы направить трафик пользовательского интерфейса через эту ноду, задайте её в выходе того интерфейса: *Переслать на {node}*.",
+  "This is a panel-managed mesh link to *{node}*. It exists because a forward, a smart rule or this link's own settings use it, and it is removed an hour after nothing does. To route a user interface's traffic out through this node, set that interface's egress to *Forward to {node}*.": "Это меш-линк до *{node}*, которым управляет панель. Он есть, потому что им пользуется пересылка, умное правило или собственные настройки этого линка, и удаляется через час после того, как пользоваться перестанут. Чтобы направить трафик пользовательского интерфейса через эту ноду, задайте её в выходе того интерфейса: *Переслать на {node}*.",
   "Changing the *endpoint* or *port* will break the existing clients' connections; you will need to re-distribute the configs / QR codes.":
     "Смена *эндпоинта* или *порта* разорвёт соединения существующих клиентов; конфиги и QR придётся раздать заново.",
 
@@ -5054,6 +5063,7 @@ export const STR = {
   "resolving…": "определяем…",
   "→ {v1}": "→ {v1}",
   "Cascade — exits via {v1}": "Каскад — выход через {v1}",
+  "Linking to {v1} — this interface's traffic resumes once the link is up": "Связываемся с {v1} — трафик этого интерфейса пойдёт, как только поднимется линк",
   "Cascade: relays {v1} out via {v2}": "Каскад: выводит {v1} через {v2}",
   "{v1} interfaces": "{v1} интерфейсов",
   "Looks like {v1} — {v2}": "Похоже на {v1} — {v2}",
@@ -5345,6 +5355,7 @@ export const STR = {
   "*{v1}* orphan on {v2} ({v3}) on {v4}": "*{v1}* чужих на {v2} ({v3}) на {v4}",
   "connecting…": "подключаемся…",
   "cascade →": "каскад →",
+  "linking →": "связь →",
   "No list matches “{q}”.": "Ничего по «{q}».",
   "Add a second step at sign-in using an authenticator app (Google Authenticator, Authy, 1Password…).":
     "Добавьте второй шаг при входе — код из приложения-аутентификатора (Google Authenticator, Authy, 1Password…).",
@@ -5390,6 +5401,9 @@ export const STR = {
   "Imported WDTT user from adopted server": "Пользователь WDTT перенесён с принятого сервера",
   "Installed turn-proxy": "Установлен turn-прокси",
   "Linked node": "Ноды связаны",
+  "Removed unused mesh links": "Неиспользуемые меш-линки удалены",
+  "{count} · on demand, {nodes}": "{count} · по требованию, {nodes}",
+  "Linked more node pairs": "Связаны ещё пары нод",
   "Node uninstalled — kept for re-install": "Нода удалена — оставлена для переустановки",
   "Onboarding interface": "Подключаем интерфейс",
   "Onboarding turn-proxy": "Подключаем turn-прокси",
@@ -5553,6 +5567,7 @@ export const STR = {
   "max_passwords must be an integer": "max_passwords должен быть целым",
   "mesh port must be 1–65535 (or blank)": "порт сети — от 1 до 65535 (или пусто)",
   "mesh subnet must be a CIDR (or blank)": "подсеть сети — CIDR (или пусто)",
+  "mesh_mode must be auto, full or demand": "mesh_mode: auto, full или demand",
   "mesh subnet must be an IPv4 range of /31 or larger (or blank)": "подсеть меша — диапазон IPv4 размером /31 или шире (или пусто)",
   "{v1} holds too few mesh links for this node ({v2} fit, {v3} needed) — choose a larger subnet, or leave it blank to use the panel's": "В подсети {v1} слишком мало места для меш-линков этой ноды (помещается: {v2}, нужно: {v3}) — выберите подсеть шире или оставьте поле пустым, чтобы взять подсеть панели",
   "mtu must be 576–9200": "MTU — от 576 до 9200",

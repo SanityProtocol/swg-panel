@@ -20,6 +20,7 @@ import { rulesToRows, rowsToRules, badgeIdentity, badgeCovers, rowHasBadge, newG
          customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count } from "./rulerows.js";
 import { esc, seen } from "./util.js";
 import { isSelfContainedName, nodeStale } from "./model.js";
+import { meshHealth } from "./views.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed } from "./theme.js";
 import { Ic, Tag, Panel, Switch, Dropdown, Disclosure, autoGrow, Sheet, footRow, secTitle, SearchBox,
@@ -3142,7 +3143,18 @@ export const exitOf = (node, id) => (((Store.nodes || []).find(n => n.id === nod
   .find(x => String(x.id) === String(id)) || null;
 
 export function ifTrafficBadge(mode, egNode, node, exitId) {
-  if (mode === "forward" && egNode) return html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(egNode)} title=${T("Cascade — exits via {v1}", { v1: Store.nodeName(egNode) })}><${Ic} i="cascade"/>${T("cascade →")} ${Store.nodeName(egNode)}</span>`;
+  if (mode === "forward" && egNode) {
+    // ON DEMAND ONLY: a newly chosen target's link is made when it is chosen, and until both ends have handshaken the
+    // interface's traffic is held (fail closed — the node creates the link before it routes over it). Say so here,
+    // where the operator just made the choice. Only while a link RECORD exists and has not handshaken: no record means
+    // the pool could not place it (the node card says why), and a link that is DOWN is a fault the node card reports,
+    // not a wait. No time is promised — a link that never comes up would make one a lie. In a full mesh every pair is
+    // linked already, so this never shows there.
+    const linking = (Store.panelSettings || {}).mesh_effective === "demand" && node && (p => !!p && p.out === "connecting")(
+      meshHealth(node).peers.find(x => x.peer === egNode));
+    if (linking) return html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(egNode)} title=${T("Linking to {v1} — this interface's traffic resumes once the link is up", { v1: Store.nodeName(egNode) })}><${Ic} i="cascade"/>${T("linking →")} ${Store.nodeName(egNode)}</span>`;
+    return html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(egNode)} title=${T("Cascade — exits via {v1}", { v1: Store.nodeName(egNode) })}><${Ic} i="cascade"/>${T("cascade →")} ${Store.nodeName(egNode)}</span>`;
+  }
   if (mode === "smart") return html`<span class="egb egb-smart" title=${T("Per-destination smart routing")}><${Ic} i="cascade"/>${T("smart cascade")}</span>`;
   if (mode === "forward") return html`<span class="egb egb-cascade"><${Ic} i="cascade"/>${T("tag|cascade")}</span>`;
   if (mode === "exit") {

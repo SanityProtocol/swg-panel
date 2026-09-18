@@ -1533,7 +1533,9 @@ export function ConnectionEditSheet({ node, iface }) {
           ${Trich("Saving this drops every TCP connection currently crossing this link. Clients reconnect on their own.")}</span></div>` : null}
       </div>`;
     })()}
-    <div class="hint" style="margin-top:14px">${Trich("This is a panel-managed mesh link to *{node}*. It's created and torn down automatically as nodes are added or removed. To route a user interface's traffic out through this node, set that interface's egress to *Forward to {node}*.", { node: Store.nodeName(peer) })}</div>
+    <div class="hint" style="margin-top:14px">${(Store.panelSettings || {}).mesh_effective === "demand"
+      ? Trich("This is a panel-managed mesh link to *{node}*. It exists because a forward, a smart rule or this link's own settings use it, and it is removed an hour after nothing does. To route a user interface's traffic out through this node, set that interface's egress to *Forward to {node}*.", { node: Store.nodeName(peer) })
+      : Trich("This is a panel-managed mesh link to *{node}*. It's created and torn down automatically as nodes are added or removed. To route a user interface's traffic out through this node, set that interface's egress to *Forward to {node}*.", { node: Store.nodeName(peer) })}</div>
   <//>`;
 }
 export function EditIfaceSheet({ node, iface }) {

@@ -10049,6 +10049,11 @@ def _link_iface_name(node, link_id, prefix="swg_"):
     """`<prefix><8hex>` (≤ IFNAMSIZ 15), same on both ends of a link. On the rare 8-hex collision
     within one node, slide along the hash until a free window is found."""
     existing = {lr.get("iface") for lr in (node.get("links") or {}).values()}
+    # …nor is a name this node has not finished DELETING. On demand a retired pair can be needed again, and its link id
+    # is deterministic, so it would get the very name being torn down — and the node runs create before delete in one
+    # pass: the create finds that device "already ours" and does nothing, then the delete removes it, and a forward
+    # over the pair routes out the node's own address (measured: a missing link device purges the table's route).
+    existing |= set(node.get("delete") or {})
     for i in range(0, len(link_id) - 8 + 1):
         nm = prefix + link_id[i:i + 8]
         if nm not in existing:
@@ -10174,9 +10179,15 @@ def _mesh_in(sub, net):
         return False
 
 
-def _mesh_anchored(nodes):
+def _mesh_anchored(nodes, deps=None):
     """{node id: how many links it ANCHORS} — every linked pair takes its /31 from the pool of its smaller id, the same
-    rule _mesh_make_link allocates by, so a door that counts with this cannot disagree with the allocator."""
+    rule _mesh_make_link allocates by, so a door that counts with this cannot disagree with the allocator. In the pair
+    set of the mode in force: every pair in a full mesh, the needed ones on demand (given `deps` to say which)."""
+    if deps is not None and mesh_mode_effective(deps, nodes) == "demand":
+        out = {}
+        for p in mesh_need(nodes, deps):
+            out[min(p)] = out.get(min(p), 0) + 1
+        return out
     ids = sorted(nodes)
     return {x: len(ids) - 1 - i for i, x in enumerate(ids)}
 
@@ -10258,7 +10269,7 @@ def mesh_reprovision_node(nodes, nid):
     me["links"] = {}
 
 
-def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None):
+def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
     """Create the link between nodes a and b on BOTH ends (link records + create requests + matching
     awg_params/psk overrides). Caller ensures the pair isn't already linked. False when the x-end's pool cannot place
     it — `alloc.miss` says which pool and why."""
@@ -10291,14 +10302,124 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None):
         n.setdefault("ifaces", {})[iface] = {"awg_params": dict(awg), "system": True, "link_node": peer}
         if _stale and _stale != str(sub):
             alloc.release(_stale)
-    ev_append(deps["roster_path"], "node", a, "Linked node", nodes[b].get("name", b))
+    if log:
+        ev_append(deps["roster_path"], "node", a, "Linked node", nodes[b].get("name", b))
     return True
 
 
+# ── On demand: link the pairs something needs, not every pair (docs/MESH-ON-DEMAND-PLAN.md) ─────────────────────────
+# A full mesh is N(N-1)/2 links — an AmneziaWG interface, a /31 and a UDP port on both ends of every pair, all stored in
+# nodes.json. Measured (full mesh, whole sync, laptop): 2.9 % of a core at 20 nodes, 7.9 % at 30, 17 % at 40, 30 % at
+# 50 — a slow VPS ~2.5× that, its core full near 55 — and the store is 68 MB at 200. Typical fleets route over ~3 % of
+# those links. Only two things route over a link, and both name the far node in the store: a forward target and a
+# smart rule's exit node (verified 2026-09-18; networks, device access and every exit device need none).
+#
+# ⚠️ SMALL FLEETS FEEL NOTHING (operator, 2026-09-18). `auto` keeps the full mesh through MESH_AUTO_FULL_MAX nodes,
+# where it costs little and buys every pair's latency/loss and instant retargeting; there the code below does not run.
+MESH_MODES = ("auto", "full", "demand")
+MESH_AUTO_FULL_MAX = 30       # auto = a full mesh up to this many nodes, on demand above
+MESH_RETIRE_GRACE_S = 3600    # a link nothing has needed for this long is retired (so flipping a target back and forth is free)
+MESH_LINK_EVENTS_MAX = MESH_AUTO_FULL_MAX   # per-pair "Linked node" events one reconcile writes; any more are one summary
+#                             line. Tied to the auto line so an enrolment in any full mesh auto keeps logs exactly as before.
+_MESH_IDLE = {}               # frozenset({a, b}) -> time.time() it was first found unneeded. Memory only: a restart
+#                               restarts the grace, which only ever keeps a link longer.
+
+
+def mesh_mode_effective(deps, nodes):
+    """"full" or "demand" — the mode in force. ONE place, read by the reconcile, the node door and the SPA (the
+    threshold is never copied into the browser)."""
+    m = str((deps.get("panel_settings") or {}).get("mesh_mode") or "auto")
+    if m in ("full", "demand"):
+        return m
+    return "full" if len(nodes) <= MESH_AUTO_FULL_MAX else "demand"
+
+
+def mesh_need(nodes, deps):
+    """Every pair (frozenset of two node ids) that must be linked in demand mode. From the STORE, never from snapshots:
+    a node offline for longer than the grace must not lose the links its configuration names.
+
+    ⚠️ A SUPERSET OF WHAT `cascade_plan` ROUTES OVER, BY CONSTRUCTION. The plan reaches a peer node only through a
+    forward's `egress_node` and a smart exit rule's `node`, on interfaces, WDTT and csqtt instances, and every other
+    filter it applies (subnet reported, category resolves, table in the band, a list enabled here) only removes
+    entries — so those two, mode-gated the way the plan gates them, cover it. Plus a link the operator CONFIGURED (relay,
+    dial overrides — they live on the link record and would be thrown away), and, as a runtime backstop, every pair the
+    last plan actually routed over (`cas_legs`): if the plan ever learns a third way to reach a peer, a link that
+    already exists is kept rather than retired an hour later with its traffic sent direct. ⚠️ It cannot CREATE a link
+    for such a source — the plan skips a pair with no link — which is what tests/mesh_demand_selftest.py [2] is for.
+    (A log line for "in the backstop, not in the config" was dropped in review: `cas_legs` is the PREVIOUS sync's plan,
+    so every ordinary retarget tripped it.)"""
+    need = set()
+    def want(a, b):
+        if a and b and a != b and a in nodes and b in nodes:
+            need.add(frozenset((a, b)))
+    for nid, n in nodes.items():
+        if not isinstance(n, dict):
+            continue
+        recs = [ov for ov in (n.get("ifaces") or {}).values() if isinstance(ov, dict) and not ov.get("system")]
+        recs += [v for k in ("wdtt", "csqtt") for v in (n.get(k) or {}).values() if isinstance(v, dict)]
+        for ov in recs:
+            mode = ov.get("egress_mode")
+            if mode == "forward":                    # `egress_node` exists only in forward mode
+                want(nid, str(ov.get("egress_node") or ""))
+            elif mode == "smart":                    # `routing` is kept, inert, outside smart mode
+                for r in (ov.get("routing") or []):
+                    if isinstance(r, dict) and r.get("enabled", True) is not False and r.get("action") == "exit":
+                        want(nid, str(r.get("node") or ""))
+        for peer, lr in (n.get("links") or {}).items():
+            lr = lr if isinstance(lr, dict) else {}
+            if ((((lr.get("relay") or {}).get("mode") or "forward") == "relay")
+                    or str(lr.get("dial_endpoint") or "").strip() or str(lr.get("dial_src") or "").strip()):
+                want(nid, peer)
+    for nid, legs in (deps.get("cas_legs") or {}).items():
+        for lg in legs or ():
+            want(nid, str((lg or {}).get("peer") or ""))
+    return need
+
+
+def _mesh_retire(nodes, need, deps):
+    """Demand mode: a linked pair nothing needs starts a timer; after MESH_RETIRE_GRACE_S it is unlinked on every end
+    that holds a record (a half-link whose other end or peer node is gone included) — pending create cancelled, delete
+    staged, interface override and link record dropped: what `mesh_reprovision_node` does per pair, and the delete verb
+    every node already honours (`orphan_mesh_links` is its backstop). One event per reconcile. True if it changed
+    anything."""
+    now_ = time.time()
+    linked = {frozenset((a, b)) for a, n in nodes.items() for b in (n.get("links") or {}) if a != b}
+    for p in [p for p in _MESH_IDLE if p not in linked or p in need]:
+        _MESH_IDLE.pop(p, None)
+    gone = []
+    for p in linked:
+        if p in need or now_ - _MESH_IDLE.setdefault(p, now_) < MESH_RETIRE_GRACE_S:
+            continue
+        _MESH_IDLE.pop(p, None)
+        a, b = tuple(p)
+        for x, y in ((a, b), (b, a)):
+            n = nodes.get(x)
+            lr = ((n or {}).get("links") or {}).get(y)
+            if lr is None:
+                continue
+            ifc = (lr or {}).get("iface")
+            if ifc:
+                (n.get("create") or {}).pop(ifc, None)
+                n.setdefault("delete", {})[ifc] = {"at": int(now_)}
+                (n.get("ifaces") or {}).pop(ifc, None)
+            n["links"].pop(y, None)
+        gone.append(p)
+    if gone:
+        names = sorted(" ↔ ".join(sorted(str((nodes.get(x) or {}).get("name") or x) for x in p)) for p in gone)
+        # …and WHY: an auto fleet that has just grown past the line sees links go, and the row says it is on demand now.
+        ev_append(deps["roster_path"], "node", "", "Removed unused mesh links",
+                  ", ".join(names[:5]) + ((", … (+%d)" % (len(names) - 5)) if len(names) > 5 else ""),
+                  "%d link(s) · on demand, %d node(s)" % (len(gone), len(nodes)),
+                  detail_key="{count} · on demand, {nodes}",
+                  detail_vars={"count": {"n": len(gone), "noun": "link"}, "nodes": {"n": len(nodes), "noun": "node"}})
+    return bool(gone)
+
+
 def reconcile_mesh(nodes, snaps, deps):
-    """Self-healing full mesh — run on every sync AND on node-add, so the mesh integrates with EVERY
+    """Self-healing mesh — run on every sync AND on node-add, so the mesh integrates with EVERY
     node lifecycle (panel add, auto-enrolled master/local node, convert, re-install, manual edits):
-      1. ensure every node PAIR is linked (covers a node that entered nodes.json outside /api/nodes/create);
+      1. ensure every node PAIR is linked (covers a node that entered nodes.json outside /api/nodes/create) — in
+         demand mode (mesh_mode_effective) every NEEDED pair, and a pair nothing needs is retired after the grace;
       2. re-stage a `create` for any link interface a node isn't currently reporting AND isn't already
          creating (covers a lost/replaced conf after convert/re-install).
     Returns True if it changed anything (so the caller persists)."""
@@ -10306,18 +10427,37 @@ def reconcile_mesh(nodes, snaps, deps):
     changed = False
     ids = list(nodes.keys())
     alloc, unplaced = _MeshAlloc(nodes), {}
-    for i, a in enumerate(ids):                                  # 1) every pair linked
-        for b in ids[i + 1:]:
-            if b not in (nodes[a].get("links") or {}):
-                if _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc):
-                    changed = True
-                    continue
-                # …and a pair that cannot be placed is SAID, on the node whose pool it is (see _node_issues). Rebuilt
-                # whole on every reconcile, so a pair placed later simply stops being named.
-                _x = min(a, b); _pool, _why = alloc.miss
-                unplaced.setdefault(_x, {"pool": _pool, "why": _why, "own": bool(nodes[_x].get("mesh_subnet")),
-                                         "peers": []})["peers"].append(b if _x == a else a)
+    mode = mesh_mode_effective(deps, nodes)
+    if mode == "full":                                           # 1) every pair linked — today's loop, today's order
+        _MESH_IDLE.clear()
+        pairs = ((a, b) for i, a in enumerate(ids) for b in ids[i + 1:])
+    else:                                                        # …or every NEEDED pair, in the same order
+        need = mesh_need(nodes, deps)
+        pos = {x: i for i, x in enumerate(ids)}
+        pairs = sorted((tuple(sorted(p, key=pos.__getitem__)) for p in need), key=lambda ab: (pos[ab[0]], pos[ab[1]]))
+    made = 0
+    for a, b in pairs:
+        if b not in (nodes[a].get("links") or {}):
+            if _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc, log=made < MESH_LINK_EVENTS_MAX):
+                made += 1
+                changed = True
+                continue
+            # …and a pair that cannot be placed is SAID, on the node whose pool it is (see _node_issues). Rebuilt
+            # whole on every reconcile, so a pair placed later simply stops being named.
+            _x = min(a, b); _pool, _why = alloc.miss
+            unplaced.setdefault(_x, {"pool": _pool, "why": _why, "own": bool(nodes[_x].get("mesh_subnet")),
+                                     "peers": []})["peers"].append(b if _x == a else a)
+    # A mass link (a switch to full at 100 nodes is 4 950 pairs) wrote one event per pair, and every event past the log's
+    # trim size re-reads and rewrites the whole 1 000-line log — under _api_lock, pushing the operator's history out.
+    # The first MESH_LINK_EVENTS_MAX keep today's event exactly (an enrolment in any full mesh `auto` keeps logs what it
+    # always did); the rest are one line, its count declined by the browser.
+    if made > MESH_LINK_EVENTS_MAX:
+        _more = made - MESH_LINK_EVENTS_MAX
+        ev_append(deps["roster_path"], "node", "", "Linked more node pairs", "", "%d link(s)" % _more,
+                  detail_key="{count}", detail_vars={"count": {"n": _more, "noun": "link"}})
     deps["mesh_unplaced"] = unplaced
+    if mode == "demand":
+        changed = _mesh_retire(nodes, need, deps) or changed
     for nid, n in nodes.items():                                 # 2) re-stage any missing link iface
         snap_ifs = set((((snaps or {}).get(nid) or {}).get("interfaces") or {}))
         pending = set(n.get("create") or {})
@@ -13461,6 +13601,9 @@ PANEL_SETTINGS_DEFAULTS = {
     # contradicted each other). Turning it back on only un-hides: it never re-opens a private network on your behalf.
     # The fleet list in Settings → Network stays visible either way — it is where the switch lives.
     "show_node_lans": True,
+    # Which node pairs get a mesh link: "auto" (a full mesh up to MESH_AUTO_FULL_MAX nodes, on demand above), "full" or
+    # "demand". See the on-demand block above reconcile_mesh.
+    "mesh_mode": "auto",
     # reserved ranges for the panel-managed inter-node mesh — user interfaces / turn-proxies may NOT use these
     "reserved": {"mesh_subnet": "10.255.0.0/16", "mesh_port_base": 9999, "port_span": 100, "iface_prefix": "swg_"},
     "advanced": {"node_stale_ms": 30000, "peer_grace_ms": 60000, "geo_ttl_days": 3},
@@ -16783,7 +16926,9 @@ def api(method, path, qs, body, deps):
             "exit_psk_keep": EXIT_PSK_KEEP,
             "configs_plaintext": count_plaintext_configs(config_dir),   # LEGACY plaintext files still on disk → drives the migration prompt
             "versions": VERSIONS,
-            "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps)},   # Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
+            "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps),
+                               "mesh_effective": mesh_mode_effective(deps, nodes),   # the mode in force (auto resolved here, never in the browser)
+                               "mesh_auto_max": MESH_AUTO_FULL_MAX},   # Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "panel_public_url": _panel_public_url(deps),   # the CONFIRMED canonical address (advances only on confirm) → SPA flags a tab sitting on a previous/old panel address
             "panel_migrate_revertable": bool(_mstat.get("revert_to")) and _mgrace,   # a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move"; auto-clears at grace end (no stale flag)
             "panel_migrate_prev": (_mstat.get("revert_to") or None) if _mgrace else None,   # the OLD address to POST /api/access/cancel with (only while the undo is still possible)
@@ -16895,6 +17040,11 @@ def api(method, path, qs, body, deps):
             except Exception: cur["expiry_warn_days"] = 3
         if "show_node_lans" in incoming:
             cur["show_node_lans"] = incoming["show_node_lans"] is not False    # default is on; only an explicit false turns it off
+        if "mesh_mode" in incoming:
+            _mm = str(incoming.get("mesh_mode") or "auto")
+            if _mm not in MESH_MODES:
+                return 400, {"ok": False, "error": "mesh_mode must be auto, full or demand", "code": "bad_request"}
+            cur["mesh_mode"] = _mm
         rsv = incoming.get("reserved")
         if isinstance(rsv, dict):
             base = dict(cur.get("reserved") or PANEL_SETTINGS_DEFAULTS["reserved"])
@@ -20176,7 +20326,7 @@ def api(method, path, qs, body, deps):
                       "created": now()}
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Enrolled node", name)
-        reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)   # full-mesh link to every existing node
+        reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)   # full mesh: a link to every existing node (demand: none yet)
         nodes_save(deps["nodes_path"], nodes)
         return 200, {"ok": True, "data": {"id": nid, "name": name, "token": token}}
 
@@ -20343,7 +20493,7 @@ def api(method, path, qs, body, deps):
                 _room = mesh_pool_room(ms) - len({(lr or {}).get("subnet") for k, n in nodes.items() if k != nid
                                                   for p, lr in (n.get("links") or {}).items()
                                                   if p != nid and _mesh_in((lr or {}).get("subnet"), _net)})
-                _need = _mesh_anchored(nodes).get(nid, 0)
+                _need = _mesh_anchored(nodes, deps).get(nid, 0)
                 if _need > _room:
                     return 400, {"ok": False, **perr("{v1} holds too few mesh links for this node ({v2} fit, {v3} "
                                                      "needed) — choose a larger subnet, or leave it blank to use the "

@@ -265,6 +265,17 @@ cascade is one instance, `<iface>`, and each peer node a smart-routing interface
 destination the kernel routes into a mesh link, and a watchdog removes it whenever the relay cannot be proven to be
 accepting what it is handed. Every relay on a node shares one CPU-capped slice.
 
+**Mesh links.** **Settings → Network → Mesh links** decides which node pairs get a link. A **full mesh** links every
+pair: every leg is measured and a newly chosen forward target works at once, and each node carries one AmneziaWG
+interface, one `/31` and one UDP port per other node. **On demand** links only the pairs a forward or a smart rule's
+exit routes over (plus a link the operator configured — relay, dial address), creates a link in the same sync that
+plans the traffic over it (the entry node creates the interface before it routes, so the interface's traffic is held
+until the link is up, typically 10–15 s, never sent out directly), and removes a link nothing has used for an hour.
+**Auto**, the default, is a full mesh up to 30 nodes and on demand above. A mesh subnet — per node or the panel's —
+must be an IPv4 range of `/31` or larger, and a node's own must hold the links it anchors (every link takes its `/31`
+from the pool of the pair's smaller node id); a pool that runs out is reported on that node, naming the peers it
+cannot link.
+
 ## Subscriptions & access control
 
 **Subscriptions (`swg-sub`)** — a separate, public-facing, **read-only** surface that serves each user a personal page at `https://sub.<domain>/<token>#<unlock-key>` with their config + QR for **every** node they're on: **WireGuard**, **AmneziaWG**, and each **TURN-PROXY fork** they're assigned (WINGS-N, samosvalishe, Moroka8, cacggghp, …), plus a FreeTurn VK-call-link field, protocol/relay badges, light/dark, RU/EN, and copy / download / share. **WDTT** peers appear in the same turn group with their import link (or QR, for the apps that scan one) and a per-OS **get the app** row resolved from the client you set as that fork's default. **Off by default** — enable it in **Settings → Subscriptions**.

@@ -35,8 +35,8 @@ SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-ser
 PLANTS = [
     ("alloc-guard", "        why = mesh_pool_refusal(pool)\n        if why:",
      "        why = \"\"\n        if why:", "a /32 panel pool: reconcile does not raise"),
-    ("record", "                unplaced.setdefault(_x, {",
-     "                0 and unplaced.setdefault(_x, {", "the /29 anchor records its two unplaced peers"),
+    ("record", "            unplaced.setdefault(_x, {",
+     "            0 and unplaced.setdefault(_x, {", "the /29 anchor records its two unplaced peers"),
     ("issue", "    if unplaced and unplaced.get(\"peers\"):", "    if False:",
      "the node issue names the pool and both peers"),
     ("half-release", "            alloc.release(_stale)", "            pass",
@@ -198,6 +198,7 @@ pools = {"n03": "10.60.0.0/26", "n07": "10.60.0.0/27", "n11": "10.61.0.0/24"}   
 nodes = {("n%02d" % i): {"id": "n%02d" % i, "name": "node%02d" % i,
                           **({"mesh_subnet": pools["n%02d" % i]} if "n%02d" % i in pools else {})} for i in range(40)}
 d = deps(panel_pool="10.62.0.0/20")
+d["panel_settings"]["mesh_mode"] = "full"      # a mass link is what a switch to full does (40 nodes > auto's line)
 del WALKS[:]
 P.reconcile_mesh(nodes, {}, d)
 check("one reconcile walks each pool at most once", len(WALKS) == len(set(WALKS)) and len(WALKS) <= 4, WALKS)
