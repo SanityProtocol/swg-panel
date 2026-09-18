@@ -6424,7 +6424,7 @@ def _awg_datapath(snap):
     return awg
 
 
-def _node_issues(c, snap, ivk_pub="", capped=()):
+def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None):
     """Health-check roll-up for one node: settings edited on the server (drift), an egress IP / WAN
     NIC the node no longer has, and turn-proxies that aren't running. Empty list = healthy.
 
@@ -6684,6 +6684,25 @@ def _node_issues(c, snap, ivk_pub="", capped=()):
                                "places it sends traffic never got a slot — that traffic is going out "
                                "directly. Remove an exit or a forward to free a slot.",
                                v1=SWG_RT_BAND, v2=_cn))
+    # Mesh links this node's pool cannot place (reconcile_mesh records them per ANCHOR — the pair's smaller id, whose
+    # pool the /31 comes from). Silent until now: the pair simply never linked, and anything routed over it went direct.
+    # `peers` arrive as NAMES from the caller, which has the fleet; bounded like the list above.
+    if unplaced and unplaced.get("peers"):
+        _ps = sorted(unplaced["peers"])
+        _pl = ", ".join(_ps[:5]) + ((", … (+%d)" % (len(_ps) - 5)) if len(_ps) > 5 else "")
+        _pool = unplaced.get("pool") or ""
+        if unplaced.get("why") == "bad":
+            issues.append(perr("This node's mesh subnet {v1} is not an IPv4 range of /31 or larger, so its links to {v2} "
+                               "cannot be made. Fix it in this node's settings.", v1=_pool, v2=_pl)
+                          if unplaced.get("own") else
+                          perr("The panel's mesh subnet {v1} is not an IPv4 range of /31 or larger, so this node's links "
+                               "to {v2} cannot be made. Fix it in Panel settings.", v1=_pool, v2=_pl))
+        else:
+            issues.append(perr("This node's mesh subnet {v1} has no free /31 left, so its links to {v2} cannot be made. "
+                               "Widen it in this node's settings.", v1=_pool, v2=_pl)
+                          if unplaced.get("own") else
+                          perr("The panel's mesh subnet {v1} has no free /31 left, so this node's links to {v2} cannot "
+                               "be made. Widen it in Panel settings.", v1=_pool, v2=_pl))
     # NOTE: peers on encrypted DNS are NOT reported here. Being un-category-routed is a property of the PEER,
     # not of the node — a node with one such peer is otherwise healthy, and burying the fact in a node-level
     # roll-up meant the operator could not see WHICH client it was without reading the line. It rides the peer's
@@ -10119,13 +10138,87 @@ def _alloc_port(used, base):
     return p
 
 
-def _alloc_link_subnet(nodes, mesh_subnet):
-    taken = {lr.get("subnet") for n in nodes.values() for lr in (n.get("links") or {}).values()}
-    net = ipaddress.ip_network(mesh_subnet, strict=False)
-    for sub in net.subnets(new_prefix=31):
-        if str(sub) not in taken:
-            return sub
-    return None
+# ── The mesh pool: what a mesh subnet must be, and what happens when one runs out ───────────────────────────────────
+# Every link is a /31 carved from the pool of its SMALLER-id end (that node's own mesh subnet, else the panel's). Two
+# failures here used to be silent or worse (measured 2026-09-18 on a real panel process, .campaign/rigs/mesh-pool-repro.py):
+#   • a pool that cannot hold a /31 at all — a /32, an IPv6 range — was accepted by both settings doors, and the next pair
+#     that needed a link RAISED inside reconcile_mesh, which runs in every node's sync: every sync in the fleet answered
+#     500 until someone found the setting (the per-node door only refused it by accident, with the raw exception text);
+#   • a pool that is merely FULL left pairs unlinked with no event and no issue — and re-walked the whole pool, rebuilding
+#     the taken-set over every link, once per unlinked pair on every sync: ~85–130 ms added to every sync at 65 nodes on a
+#     /20 (laptop, .campaign/rigs/mesh-pool-rescan.py), 3–4 ms with the allocator below.
+
+
+def mesh_pool_refusal(subnet):
+    """"" when `subnet` can serve as a mesh pool — an IPv4 network with room for at least one /31 — else why not:
+    "cidr" (not a network at all), "range" (IPv6, or narrower than a /31). Both doors and the allocator ask this one
+    question, so a value the allocator would choke on can neither be saved nor, if it arrives some other way
+    (fleet.json, a hand edit, a store written before the door checked), take the sync down."""
+    try:
+        net = ipaddress.ip_network(str(subnet or "").strip(), strict=False)
+    except (TypeError, ValueError):
+        return "cidr"
+    return "range" if net.version != 4 or net.prefixlen > 31 else ""
+
+
+def mesh_pool_room(subnet):
+    """How many links (/31s) a valid pool holds."""
+    return 2 ** (31 - ipaddress.ip_network(str(subnet).strip(), strict=False).prefixlen)
+
+
+def _mesh_in(sub, net):
+    """True when the stored link subnet `sub` lies inside `net` (a malformed stored value is simply not inside)."""
+    try:
+        return ipaddress.ip_network(sub, strict=False).subnet_of(net)
+    except (TypeError, ValueError):
+        return False
+
+
+def _mesh_anchored(nodes):
+    """{node id: how many links it ANCHORS} — every linked pair takes its /31 from the pool of its smaller id, the same
+    rule _mesh_make_link allocates by, so a door that counts with this cannot disagree with the allocator."""
+    ids = sorted(nodes)
+    return {x: len(ids) - 1 - i for i, x in enumerate(ids)}
+
+
+class _MeshAlloc:
+    """One reconcile's /31 allocator. The taken-set is built once, and each pool is walked by ONE cursor per reconcile:
+    everything behind the cursor is taken or was just handed out, so the answer is exactly the first-free /31 a walk
+    from the start would find — at linear cost however many pairs are linked in one pass. `miss` holds (pool, why) for
+    the last pair that could not be placed.
+
+    ⚠️ Reversed in review: a full pool used to be remembered for 60 s and not walked again. A re-provision frees /31s
+    without telling it, so "Rebuild links" right after the pool filled rebuilt NOTHING (measured: HEAD 4 links, the memo
+    0) and the node read "no free /31 left" with four free. The cursor alone already takes a full pool from one walk per
+    unlinked pair to one per reconcile, which is what the cost was."""
+
+    def __init__(self, nodes):
+        self.nodes, self.taken, self.walk, self.miss = nodes, None, {}, None
+
+    def release(self, sub):
+        """A /31 a link record held and no longer does (a stale half-record just overwritten). The walk from the start
+        would now find it free, so every cursor restarts — rare, and it keeps the answer identical to that walk."""
+        if self.taken is not None and sub in self.taken:
+            self.taken.discard(sub)
+            self.walk = {}
+
+    def take(self, pool):
+        why = mesh_pool_refusal(pool)
+        if why:
+            self.miss = (str(pool or ""), "bad")
+            return None
+        key = str(ipaddress.ip_network(str(pool).strip(), strict=False))
+        if self.taken is None:
+            self.taken = {lr.get("subnet") for n in self.nodes.values() for lr in (n.get("links") or {}).values()}
+        it = self.walk.get(key)
+        if it is None:
+            it = self.walk[key] = ipaddress.ip_network(key).subnets(new_prefix=31)
+        for sub in it:
+            if str(sub) not in self.taken:
+                self.taken.add(str(sub))
+                return sub
+        self.miss = (key, "full")
+        return None
 
 
 def _link_id(nodes, a, b):
@@ -10165,12 +10258,14 @@ def mesh_reprovision_node(nodes, nid):
     me["links"] = {}
 
 
-def _mesh_make_link(nodes, snaps, deps, a, b, mc):
+def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None):
     """Create the link between nodes a and b on BOTH ends (link records + create requests + matching
-    awg_params/psk overrides). Caller ensures the pair isn't already linked."""
+    awg_params/psk overrides). Caller ensures the pair isn't already linked. False when the x-end's pool cannot place
+    it — `alloc.miss` says which pool and why."""
     link_id = _link_id(nodes, a, b)
     x_nid = min(a, b)                            # the smaller id is the .0 end (deterministic, both ends agree)
-    sub = _alloc_link_subnet(nodes, node_mesh_cfg(deps, nodes[x_nid])["subnet"])   # link /31 from the x-end's mesh subnet
+    alloc = alloc or _MeshAlloc(nodes)
+    sub = alloc.take(node_mesh_cfg(deps, nodes[x_nid])["subnet"])   # link /31 from the x-end's mesh subnet
     if sub is None:
         return False
     hosts = list(sub)                            # /31 → [.0, .1]
@@ -10185,6 +10280,7 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc):
         iface = _link_iface_name(n, link_id, nmc.get("iface_prefix") or "swg_")
         mine, theirs = (hosts[0], hosts[1]) if nid == x_nid else (hosts[1], hosts[0])
         port = _alloc_port(_used_ports(nodes, snaps, nid), nmc["port_base"])
+        _stale = ((n.get("links") or {}).get(peer) or {}).get("subnet")   # a half-link's leftover record, replaced below
         n.setdefault("links", {})[peer] = {
             "iface": iface, "link_id": link_id, "subnet": str(sub),
             "address": str(mine), "peer_address": str(theirs),
@@ -10193,6 +10289,8 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc):
             "cmd": ["awg"], "subnet": str(sub), "address": f"{mine}/31",
             "listen_port": port, "mtu": nmc["mtu"], "table": "off"}   # Table=off: cascade manages routing, no /0 hijack
         n.setdefault("ifaces", {})[iface] = {"awg_params": dict(awg), "system": True, "link_node": peer}
+        if _stale and _stale != str(sub):
+            alloc.release(_stale)
     ev_append(deps["roster_path"], "node", a, "Linked node", nodes[b].get("name", b))
     return True
 
@@ -10207,10 +10305,19 @@ def reconcile_mesh(nodes, snaps, deps):
     mc = mesh_cfg(deps)
     changed = False
     ids = list(nodes.keys())
+    alloc, unplaced = _MeshAlloc(nodes), {}
     for i, a in enumerate(ids):                                  # 1) every pair linked
         for b in ids[i + 1:]:
             if b not in (nodes[a].get("links") or {}):
-                changed = _mesh_make_link(nodes, snaps, deps, a, b, mc) or changed
+                if _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc):
+                    changed = True
+                    continue
+                # …and a pair that cannot be placed is SAID, on the node whose pool it is (see _node_issues). Rebuilt
+                # whole on every reconcile, so a pair placed later simply stops being named.
+                _x = min(a, b); _pool, _why = alloc.miss
+                unplaced.setdefault(_x, {"pool": _pool, "why": _why, "own": bool(nodes[_x].get("mesh_subnet")),
+                                         "peers": []})["peers"].append(b if _x == a else a)
+    deps["mesh_unplaced"] = unplaced
     for nid, n in nodes.items():                                 # 2) re-stage any missing link iface
         snap_ifs = set((((snaps or {}).get(nid) or {}).get("interfaces") or {}))
         pending = set(n.get("create") or {})
@@ -16265,7 +16372,10 @@ def api(method, path, qs, body, deps):
             # ONE call: this walks every interface and calls _broken_ifaces/_missing_ifaces, and both wire
             # shapes below are views of the same result — computing it twice would double that per node,
             # on every /api/state build.
-            _iss = _node_issues(c, snap, _ivk_now, (Handler.deps.get("cas_capped") or {}).get(nid) or ())
+            _unp = (Handler.deps.get("mesh_unplaced") or {}).get(nid)
+            if _unp:   # peer ids → names: _node_issues is handed one record, not the fleet
+                _unp = dict(_unp, peers=[(nodes.get(p) or {}).get("name") or p for p in _unp.get("peers") or ()])
+            _iss = _node_issues(c, snap, _ivk_now, (Handler.deps.get("cas_capped") or {}).get(nid) or (), _unp)
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https", "mesh_awg": _mawg, "mesh_awg_set": c.get("mesh_awg") or {},   # actual (live) vs the per-node override the UI edits
                         "mesh_peers": _mesh_peers,
@@ -16788,12 +16898,25 @@ def api(method, path, qs, body, deps):
         rsv = incoming.get("reserved")
         if isinstance(rsv, dict):
             base = dict(cur.get("reserved") or PANEL_SETTINGS_DEFAULTS["reserved"])
-            if rsv.get("mesh_subnet"):
-                try:
-                    ipaddress.ip_network(str(rsv["mesh_subnet"]).strip(), strict=False)
-                    base["mesh_subnet"] = str(rsv["mesh_subnet"]).strip()
-                except Exception:
+            # Judged only when it CHANGES (from the pool in force — this setting, else fleet.json, else the default), so a
+            # save of some other setting never trips over a value stored before this door existed; that one is reported
+            # by the node issues instead.
+            _ms = str(rsv.get("mesh_subnet") or "").strip()
+            if _ms and _ms != mesh_cfg(deps)["subnet"]:
+                _why = mesh_pool_refusal(_ms)
+                if _why == "cidr":
                     return 400, {"ok": False, "error": "reserved mesh subnet must be a CIDR", "code": "bad_request"}
+                # ⚠️ A /32 or an IPv6 range used to be SAVED here, and then every node's sync answered 500 from the
+                # moment a pair needed a link (measured, D5). Refused at the door; the allocator refuses it too.
+                if _why:
+                    return 400, {"ok": False, "error": "reserved mesh subnet must be an IPv4 range of /31 or larger",
+                                 "code": "bad_request"}
+                # NOT size-checked, unlike a node's own subnet. ⚠️ Reversed in review: a check here ("must hold what the
+                # nodes using it anchor") refused changes that work — changing this pool re-provisions nothing, existing
+                # links keep their /31s in the old range, and a /29 at five nodes takes the next node's links fine. A pool
+                # that later runs out is reported by the node issue, on the node whose links it cannot place.
+            if _ms:
+                base["mesh_subnet"] = _ms
             if str(rsv.get("mesh_port_base") or "").strip():
                 base["mesh_port_base"] = max(1, min(65000, int(rsv["mesh_port_base"])))
             if rsv.get("iface_prefix"):
@@ -20204,11 +20327,27 @@ def api(method, path, qs, body, deps):
             nodes[nid]["mesh_port"] = int(mp) if mp else ""
         if "mesh_subnet" in body:
             ms = (body.get("mesh_subnet") or "").strip()
-            if ms:
-                try:
-                    ipaddress.ip_network(ms, strict=False)
-                except Exception:
+            # Judged only when it CHANGES. An unchanged value must never make an unrelated edit (a rename) unsavable —
+            # one stored before this door existed is reported by the node's issues instead (see _node_issues).
+            if ms and ms != (nodes[nid].get("mesh_subnet") or ""):
+                _why = mesh_pool_refusal(ms)
+                if _why == "cidr":
                     return 400, {"ok": False, "error": "mesh subnet must be a CIDR (or blank)", "code": "bad_request"}
+                if _why:
+                    return 400, {"ok": False, "error": "mesh subnet must be an IPv4 range of /31 or larger (or blank)",
+                                 "code": "bad_request"}
+                # A changed subnet re-provisions this node's links at once (below), so it must hold every link the node
+                # anchors — measured: a /29 on a node anchoring six linked four and left two pairs unlinked, silently.
+                # Links that do not touch this node keep their /31s, so any of those inside the new range is not room.
+                _net = ipaddress.ip_network(ms, strict=False)
+                _room = mesh_pool_room(ms) - len({(lr or {}).get("subnet") for k, n in nodes.items() if k != nid
+                                                  for p, lr in (n.get("links") or {}).items()
+                                                  if p != nid and _mesh_in((lr or {}).get("subnet"), _net)})
+                _need = _mesh_anchored(nodes).get(nid, 0)
+                if _need > _room:
+                    return 400, {"ok": False, **perr("{v1} holds too few mesh links for this node ({v2} fit, {v3} "
+                                                     "needed) — choose a larger subnet, or leave it blank to use the "
+                                                     "panel's", v1=ms, v2=max(0, _room), v3=_need), "code": "bad_request"}
             nodes[nid]["mesh_subnet"] = ms
         if "mesh_prefix" in body:
             nodes[nid]["mesh_prefix"] = re.sub(r"[^a-z0-9_]", "", (body.get("mesh_prefix") or "").lower())[:6]
