@@ -1988,6 +1988,7 @@ EXIT_ALIVE_AFTER_S = 60          # and carrying traffic again for this long befo
 # the path) and NOT Cloudflare's, so a problem with www.cloudflare.com alone never reads as a dead tunnel.
 EXIT_REACH_TARGETS = (("8.8.8.8", 443), ("9.9.9.9", 443))
 EXIT_REACH_TIMEOUT_S = 3
+EXIT_PROBE_BOUND_S = 40         # a pass waits this long at most for all exit probes together (one device's worst case)
 
 
 def _dev_link_state(dev):
@@ -6213,7 +6214,10 @@ def _exit_ping(endpoint, timeout=1.5):
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
         s.settimeout(timeout)
-        ident = os.getpid() & 0xFFFF
+        # ⚠️ A RANDOM ident, and the reply must come from `ip`: every raw ICMP socket receives a copy of EVERY echo
+        # reply, and the exits are probed at once (_exit_probe_all) — with the pid as ident and no source check, each
+        # probe took the first reply from ANY exit's server, so a far exit read the near one's latency.
+        ident = secrets.randbelow(0xFFFF) + 1
         def _ck(d):
             if len(d) % 2:
                 d += b"\0"
@@ -6232,12 +6236,12 @@ def _exit_ping(endpoint, timeout=1.5):
             r, _, _ = select.select([s], [], [], left)
             if not r:
                 return None
-            data, _ = s.recvfrom(2048)
+            data, frm = s.recvfrom(2048)
             ihl = (data[0] & 0x0F) * 4
             if len(data) < ihl + 8:
                 continue
             typ, _c2, _s2, rid, _sq = struct.unpack("!BBHHH", data[ihl:ihl + 8])
-            if typ == 0 and rid == ident:          # our echo reply, not someone else's traffic
+            if typ == 0 and rid == ident and frm[0] == ip:   # OUR echo reply, from the server we pinged
                 # ONE DECIMAL, because the interesting exits are the near ones. A node one hop from its
                 # exit measures 0.4-1.5 ms, and `int()` floored that to a bare "0 ms" — which reads as
                 # broken rather than as fast, and is the one number a local exit exists to show off.
@@ -6397,6 +6401,32 @@ def _exit_reach(dev, targets=EXIT_REACH_TARGETS, timeout=EXIT_REACH_TIMEOUT_S):
                 s.close()
 
 
+def _exit_probe_all(devs):
+    """This pass's evidence for every live exit device — the trace, the reach probe when the trace failed, the ping to
+    its server — taken AT ONCE, one thread per device; {dev: (trace, reach, ping_ms)}.
+
+    ⚠️ ONE DEVICE AFTER ANOTHER, AN OUTAGE COST EVERY DEVICE ITS FULL TIMEOUTS — the trace's 10 s, the reach probe's
+    3 s, the ping's 1.5 s — and all of it inside the sync loop. Measured on swgt 2026-09-18 with four WARP exits and
+    WARP's data dropped (.campaign/fo-cfshape.sh — the Cloudflare outage this judge exists for): every pass went from
+    5 s to ~55 s, past the panel's 30 s offline threshold, so the node read offline and its webhooks flapped for the
+    whole outage, every other reconcile waited, and the verdict, which needs three passes, took 174 s. Together, a
+    pass pays one device's timeouts. Only the evidence is gathered here; the verdict stays in the caller's thread,
+    which alone touches _EXIT_HEALTH. A probe still out at EXIT_PROBE_BOUND_S, or one that raised, is no evidence."""
+    res = {}
+    def one(dev, rec):
+        tr = _exit_trace(dev)
+        rch = None if (tr or {}).get("ip") else _exit_reach(dev)
+        res[dev] = (tr, rch, None)               # the verdict's evidence is in: a ping that overruns the bound loses only itself
+        res[dev] = (tr, rch, _exit_ping(rec.get("endpoint")))
+    ths = [threading.Thread(target=one, args=(d, r), daemon=True) for d, r in devs]
+    for t in ths:
+        t.start()
+    end = time.monotonic() + EXIT_PROBE_BOUND_S
+    for t in ths:
+        t.join(max(0.0, end - time.monotonic()))
+    return dict(res)                             # a copy: a probe finishing after the bound changes nothing
+
+
 def _exit_judge(dev, tr, now=None, reach=None):
     """Update and return this exit device's tunnel verdict from one pass's evidence. `tr` is that pass's
     `_exit_trace` result; `reach` is a seam for the selftest (defaults to `_exit_reach`).
@@ -6465,215 +6495,10 @@ def reconcile_exits(desired, res):
     and a new egress IP.)"""
     want = {str((e or {}).get("id") or ""): e for e in (desired or []) if isinstance(e, dict)}
     out = []
-    with contextlib.suppress(Exception):
-        os.makedirs(EXIT_DIR, mode=0o700, exist_ok=True)
-
-    for xid, d in sorted(want.items()):
-        dev = str(d.get("device") or "").strip()
-        # the kernel's own grammar, and the same test _dev_link_state applies — a name it could never give
-        # an interface is refused here rather than turning into an unexplained missing device later.
-        if not xid or not dev or len(dev) > 15 or "/" in dev or any(c.isspace() for c in dev):
-            res["errors"].append("exit %s: unusable device name" % (xid or "?"))
-            # ⚠️ REFUSING IS STILL A REPORT. Skipping the append leaves the panel with NO live record for
-            # this exit, and no record reads as "the node has not got to it yet" — so the row sits on
-            # "Waiting for the node to set this up…" for ever while the reason is buried in the node's
-            # error list, attached to the node rather than to the exit. That is the same lie the freshness
-            # stamp beside this loop exists to remove, reached from the other side: a state that does not
-            # mean what it says. An id we cannot even name is the one case with nothing to attach to.
-            if xid:
-                out.append({"id": xid, "device": dev, "provider": str(d.get("provider") or "warp"),
-                            "up": False, "error": "unusable device name"})
-            continue
-        sp = os.path.join(EXIT_DIR, xid + ".json")
-        rec = {}
-        with contextlib.suppress(Exception):
-            with open(sp) as f:
-                rec = json.load(f)
-        prov = str(d.get("provider") or "warp")
-        err = ""
-        # Set when a relayed escrow blob could not be opened but the exit has a key of its own and keeps
-        # running. Reset per exit, or one exit's failure would be reported against the next one.
-        _blob_err = ""
-        # DECISION 3, and it has to mean PAUSE here or the word is a lie. A disabled exit keeps its key
-        # material — for WARP that IS the account, and re-registering would hand the operator a different
-        # egress IP than the one they turned off. Down, kept, and never created in the first place if it was
-        # switched off before it ever came up: we do not register an account for something nobody enabled.
-        if d.get("down"):
-            if rec.get("priv") and _dev_link_state(dev) != "absent":
-                _exit_down(dev, rec)
-                res["changed"] += 1
-            out.append({"id": xid, "device": dev, "provider": prov, "up": False, "paused": True,
-                        "address": rec.get("address", ""), "public_key": rec.get("pub", ""),
-                        "account_type": rec.get("account_type", ""), "trace": {}, "error": ""})
-            continue
-        # 1) key material. `warp` registers once and keeps the account; `profile` is handed to us whole.
-        if prov == "profile":
-            pr = d.get("profile") or {}
-            rec = {"provider": "profile", "priv": pr.get("private_key") or rec.get("priv") or "",
-                   "address": pr.get("address") or "", "peer_key": pr.get("peer_key") or "",
-                   "endpoint": pr.get("endpoint") or "", "mtu": pr.get("mtu") or 1280,
-                   # The peer's preshared key and keepalive. Without the PSK a server that has one rejects
-                   # every handshake, and the exit reads "up" while receiving nothing at all.
-                   "psk": pr.get("psk") or "", "keepalive": pr.get("keepalive") or 0,
-                   # ⚠️ THE OBFUSCATION, or this is a WireGuard device pretending to be an AmneziaWG one.
-                   # Kept only for the keys we know (the panel already sanitised, this is the node's own
-                   # floor), so a profile carrying junk cannot put junk in a conf file.
-                   "awg": {k: v for k, v in (pr.get("awg") or {}).items() if k in AWG_KEYS and str(v).strip()}}
-            if not (rec["priv"] and rec["address"] and rec["peer_key"] and rec["endpoint"]):
-                res["errors"].append("exit %s: incomplete profile" % xid)
-                # Reported, for the reason above: without this the row reads "waiting for the node" for
-                # ever about a profile the node has already looked at and rejected. Which PART is missing
-                # is the whole diagnosis, so name it rather than saying "incomplete".
-                _gone = ", ".join(k for k, v in (("private key", rec["priv"]), ("address", rec["address"]),
-                                                 ("peer key", rec["peer_key"]), ("endpoint", rec["endpoint"]))
-                                  if not v)
-                out.append({"id": xid, "device": dev, "provider": prov, "up": False,
-                            "error": "the profile is missing its " + _gone})
-                continue
-        elif isinstance(d.get("key_blob"), dict) and d["key_blob"].get("ct"):
-            # DECISION 8's restore half. The panel escrows ciphertext it cannot open; the browser (which
-            # holds the vault private key) opened it and re-sealed it to THIS node's transport key, so the
-            # panel relayed ciphertext end to end. Restoring beats re-registering because it is the same
-            # account and therefore the SAME EGRESS IP.
-            #
-            # ⚠️ NO `not rec.get("priv")` GUARD, AND THAT IS THE POINT. A `key_blob` is only ever on the wire
-            # because the panel armed a one-shot relay, which only happens because an operator pressed a
-            # button — so it is never something to be careful about clobbering, it IS the instruction. The
-            # guard was written when the only reachable restore was for a node that had no key at all; once
-            # the panel started keeping the key a re-registration displaced, the case that matters became
-            # precisely the one it excluded. Measured on msk-main: the relay armed and rode every sync for
-            # ninety seconds while this node held its own freshly-registered key and ignored it, and the row
-            # went on offering a restore that could never happen.
-            _opened = None
-            with contextlib.suppress(Exception):
-                _opened = json.loads(ivk_unseal(transport_priv(), d["key_blob"]).decode())
-            if isinstance(_opened, dict) and _opened.get("priv"):
-                rec = dict(_opened, provider="warp")
-                print("exit %s: restored from the operator vault (%s)" % (xid, rec.get("account_type") or "free"), flush=True)
-                res["changed"] += 1
-            else:
-                # ⚠️ NOT THE LOOP'S `err`. That variable is this exit's own HEALTH, and further down
-                # `err = err or (r.stderr or "wg-quick up failed")` only fills it when it is still empty —
-                # so parking a restore message in it would swallow the real reason a tunnel failed to come
-                # up, and report a vault problem for a routing one. Its own name, its own meaning.
-                _kerr = "the escrowed key did not open — it may be sealed to a different vault"
-                res["errors"].append("exit %s: %s" % (xid, _kerr))
-                # ⚠️ A BLOB WE CANNOT OPEN MUST NOT TAKE A WORKING EXIT DOWN. Dropping the old
-                # `not rec.get("priv")` guard (just above) is right — a relayed key_blob IS the instruction
-                # — but it also routed a node that HAS a key into this arm, and reporting `up: False` here
-                # put a healthy exit down on every pass for ever: the relay is only cleared when the node
-                # reports the key that was sent, and a reply with no key never satisfies that, so nothing
-                # ends the loop. The reachable causes are ordinary — a blob sealed to a transport key the
-                # node has since rotated (a rebuild), or to a vault that has moved.
-                #
-                # So: report the failure, and keep serving. The exit falls through to the existing-key path
-                # exactly as it did before the guard came off, carrying the error so the panel can say why
-                # the restore has not happened instead of showing a down exit with a working device.
-                if not rec.get("priv"):
-                    out.append({"id": xid, "device": dev, "provider": prov, "up": False, "error": _kerr})
-                    continue
-                _blob_err = _kerr
-        elif not rec.get("priv"):
-            # ⚠️ BACK OFF, OR A FAILURE BECOMES A RETRY STORM. This runs every sync (5s), and registration is
-            # a one-shot call to somebody else's free API. Without a delay a single failure is retried ~17k
-            # times a day from one IP — which is not merely rude, it is self-defeating: measured on a live
-            # node, Cloudflare answered 429 `error code: 1015` and the exit could then never register at all.
-            # Exponential from a minute, capped at an hour, remembered ACROSS RESTARTS in the state file so
-            # bouncing the daemon is not a way to keep hammering.
-            _now, _fails = time.time(), int(rec.get("reg_fails") or 0)
-            _next = float(rec.get("reg_next") or 0)
-            if _fails and _now < _next:
-                out.append({"id": xid, "device": dev, "provider": prov, "up": False,
-                            "error": str(rec.get("reg_error") or "registration failed"),
-                            "retry_in": int(_next - _now)})
-                continue
-            reg, err = _warp_register()
-            if not reg:
-                _fails += 1
-                rec = dict(rec, provider="warp", reg_fails=_fails, reg_error=err,
-                           reg_next=_now + min(3600, 60 * (2 ** (_fails - 1))))
-                with contextlib.suppress(Exception):
-                    with open(sp + ".tmp", "w") as f:
-                        os.fchmod(f.fileno(), 0o600)
-                        json.dump(rec, f)
-                    os.replace(sp + ".tmp", sp)
-                out.append({"id": xid, "device": dev, "provider": prov, "up": False, "error": err,
-                            "retry_in": int(rec["reg_next"] - _now)})
-                res["errors"].append("exit %s: %s (retry in %ds)" % (xid, err, int(rec["reg_next"] - _now)))
-                continue
-            rec = dict(reg, provider="warp", mtu=1280)   # success clears the backoff counters with it
-            print("exit %s: registered a WARP account (%s)" % (xid, rec.get("account_type")), flush=True)
-            res["changed"] += 1
-        # 2) a WARP+ licence the operator supplied, applied ONCE per distinct key
-        lic = str(d.get("licence") or "").strip()
-        if prov == "warp" and lic and lic != rec.get("licence_applied"):
-            acct, lerr = _warp_apply_licence(rec, lic)
-            rec["account_type"] = acct
-            rec["licence_applied"] = lic if not lerr else rec.get("licence_applied", "")
-            err = lerr
-            if lerr:
-                print("exit %s: WARP+ licence rejected — %s" % (xid, lerr), flush=True)
-            else:
-                print("exit %s: WARP+ licence applied (%s)" % (xid, acct), flush=True)
-                res["changed"] += 1
-        rec["device"] = dev
-        with contextlib.suppress(Exception):
-            with open(sp + ".tmp", "w") as f:
-                os.fchmod(f.fileno(), 0o600)
-                json.dump(rec, f)
-            os.replace(sp + ".tmp", sp)
-        # 3) the conf + the device. Rewritten only when the text changes, so a settled exit costs one read.
-        conf = os.path.join(EXIT_DIR, dev + ".conf")
-        text = _exit_conf_text(rec)
-        cur = ""
-        with contextlib.suppress(Exception):
-            with open(conf) as f:
-                cur = f.read()
-        # ⚠️ THE LINK STATE IS READ ONCE, and re-read only after something CHANGES it. Each read shells out
-        # to `ip`, and this loop runs per exit per sync; three consecutive reads of a value nothing has
-        # touched is three processes for one answer. (It also stops the reconciler from depending on how
-        # many times it happens to ask, which is a thing a test can only model by counting calls.)
-        _state = _dev_link_state(dev)
-        if cur != text:
-            with contextlib.suppress(Exception):
-                with open(conf + ".tmp", "w") as f:
-                    os.fchmod(f.fileno(), 0o600)
-                    f.write(text)
-                os.replace(conf + ".tmp", conf)
-            if _state != "absent":                    # config changed under a live device → bounce it
-                _exit_down(dev, rec)
-                _state = "absent"
-            res["changed"] += 1
-        # A device whose KIND no longer matches the config is as wrong as a stale conf — and it cannot be
-        # spotted by comparing text, because the text is already correct. Ask the kernel and rebuild.
-        _want_kind = "awg" if _exit_awg(rec) else "wg"
-        if _state != "absent":
-            _have_kind = _link_kind(dev)
-            if _have_kind not in ("", _want_kind):
-                print("exit %s: device is %s but the profile is %s — rebuilding"
-                      % (xid, _have_kind, _want_kind), flush=True)
-                _exit_down(dev, rec)
-                _state = "absent"
-                res["changed"] += 1
-        if _state == "absent":
-            # A tunnel built this pass is a NEW tunnel — possibly a new profile or account — and is judged from
-            # scratch rather than inheriting the verdict of the one it replaces.
-            _EXIT_HEALTH.pop(dev, None)
-            r = _scoped_up(_exit_tool(rec), conf)
-            if r.returncode != 0:
-                err = err or (r.stderr or "wg-quick up failed").strip()[:160]
-                res["errors"].append("exit %s: %s" % (xid, err))
-            else:
-                res["changed"] += 1
-                _state = _dev_link_state(dev)     # re-read: the bring-up is the thing that changed it
-        # 4) health (§7.2) — and it is what triggers the first handshake, since WireGuard is lazy and a
-        # tunnel nothing has ever sent through has never handshaken.
-        _live = _state == "up"
-        tr = _exit_trace(dev) if _live else {}
-        # …and the VERDICT the routing acts on (`_devexit_state`). Only a live device is judged: a down or absent
-        # one already fails over by its link state, and a stale "dead" left behind would outlive the device.
-        _hl = _exit_judge(dev, tr) if _live else _EXIT_HEALTH.pop(dev, None) and None
-        out.append({"id": xid, "device": dev, "provider": prov, "up": _live,
+    _slots = []                                  # live devices awaiting their probe: (slot in out, xid, dev, prov, rec, err, blob_err)
+    def _exit_row(xid, dev, prov, rec, err, _blob_err, _live, tr, _hl, ping):
+        # ONE shape for every exit that reached its health step, judged now or after the loop (4b).
+        return {"id": xid, "device": dev, "provider": prov, "up": _live,
                     # Present only while the node is routing around this tunnel, so its presence alone is the
                     # fact the panel shows; an older node never sends it and the row reads as it always did.
                     "no_traffic": ({"since": int(_hl["since"]), "why": _hl["why"]}
@@ -6696,10 +6521,235 @@ def reconcile_exits(desired, res):
                     "handshake": (_exit_handshake(rec, dev) if _live else None),
                     # How far away the exit's own server is — the hop the tunnel rides on. See _exit_ping
                     # for why this, and not the through-tunnel request time beside it in `trace`.
-                    "ping_ms": (_exit_ping(rec.get("endpoint")) if _live else None),
+                    "ping_ms": (ping if _live else None),
                     # The obfuscation this device was actually built with, so the panel can say WHICH kind
                     # of tunnel it is looking at rather than inferring from a profile it no longer holds.
-                    "awg": bool(_exit_awg(rec))})
+                    "awg": bool(_exit_awg(rec))}
+    with contextlib.suppress(Exception):
+        os.makedirs(EXIT_DIR, mode=0o700, exist_ok=True)
+
+    try:
+        for xid, d in sorted(want.items()):
+            dev = str(d.get("device") or "").strip()
+            # the kernel's own grammar, and the same test _dev_link_state applies — a name it could never give
+            # an interface is refused here rather than turning into an unexplained missing device later.
+            if not xid or not dev or len(dev) > 15 or "/" in dev or any(c.isspace() for c in dev):
+                res["errors"].append("exit %s: unusable device name" % (xid or "?"))
+                # ⚠️ REFUSING IS STILL A REPORT. Skipping the append leaves the panel with NO live record for
+                # this exit, and no record reads as "the node has not got to it yet" — so the row sits on
+                # "Waiting for the node to set this up…" for ever while the reason is buried in the node's
+                # error list, attached to the node rather than to the exit. That is the same lie the freshness
+                # stamp beside this loop exists to remove, reached from the other side: a state that does not
+                # mean what it says. An id we cannot even name is the one case with nothing to attach to.
+                if xid:
+                    out.append({"id": xid, "device": dev, "provider": str(d.get("provider") or "warp"),
+                                "up": False, "error": "unusable device name"})
+                continue
+            sp = os.path.join(EXIT_DIR, xid + ".json")
+            rec = {}
+            with contextlib.suppress(Exception):
+                with open(sp) as f:
+                    rec = json.load(f)
+            prov = str(d.get("provider") or "warp")
+            err = ""
+            # Set when a relayed escrow blob could not be opened but the exit has a key of its own and keeps
+            # running. Reset per exit, or one exit's failure would be reported against the next one.
+            _blob_err = ""
+            # DECISION 3, and it has to mean PAUSE here or the word is a lie. A disabled exit keeps its key
+            # material — for WARP that IS the account, and re-registering would hand the operator a different
+            # egress IP than the one they turned off. Down, kept, and never created in the first place if it was
+            # switched off before it ever came up: we do not register an account for something nobody enabled.
+            if d.get("down"):
+                if rec.get("priv") and _dev_link_state(dev) != "absent":
+                    _exit_down(dev, rec)
+                    res["changed"] += 1
+                out.append({"id": xid, "device": dev, "provider": prov, "up": False, "paused": True,
+                            "address": rec.get("address", ""), "public_key": rec.get("pub", ""),
+                            "account_type": rec.get("account_type", ""), "trace": {}, "error": ""})
+                continue
+            # 1) key material. `warp` registers once and keeps the account; `profile` is handed to us whole.
+            if prov == "profile":
+                pr = d.get("profile") or {}
+                rec = {"provider": "profile", "priv": pr.get("private_key") or rec.get("priv") or "",
+                       "address": pr.get("address") or "", "peer_key": pr.get("peer_key") or "",
+                       "endpoint": pr.get("endpoint") or "", "mtu": pr.get("mtu") or 1280,
+                       # The peer's preshared key and keepalive. Without the PSK a server that has one rejects
+                       # every handshake, and the exit reads "up" while receiving nothing at all.
+                       "psk": pr.get("psk") or "", "keepalive": pr.get("keepalive") or 0,
+                       # ⚠️ THE OBFUSCATION, or this is a WireGuard device pretending to be an AmneziaWG one.
+                       # Kept only for the keys we know (the panel already sanitised, this is the node's own
+                       # floor), so a profile carrying junk cannot put junk in a conf file.
+                       "awg": {k: v for k, v in (pr.get("awg") or {}).items() if k in AWG_KEYS and str(v).strip()}}
+                if not (rec["priv"] and rec["address"] and rec["peer_key"] and rec["endpoint"]):
+                    res["errors"].append("exit %s: incomplete profile" % xid)
+                    # Reported, for the reason above: without this the row reads "waiting for the node" for
+                    # ever about a profile the node has already looked at and rejected. Which PART is missing
+                    # is the whole diagnosis, so name it rather than saying "incomplete".
+                    _gone = ", ".join(k for k, v in (("private key", rec["priv"]), ("address", rec["address"]),
+                                                     ("peer key", rec["peer_key"]), ("endpoint", rec["endpoint"]))
+                                      if not v)
+                    out.append({"id": xid, "device": dev, "provider": prov, "up": False,
+                                "error": "the profile is missing its " + _gone})
+                    continue
+            elif isinstance(d.get("key_blob"), dict) and d["key_blob"].get("ct"):
+                # DECISION 8's restore half. The panel escrows ciphertext it cannot open; the browser (which
+                # holds the vault private key) opened it and re-sealed it to THIS node's transport key, so the
+                # panel relayed ciphertext end to end. Restoring beats re-registering because it is the same
+                # account and therefore the SAME EGRESS IP.
+                #
+                # ⚠️ NO `not rec.get("priv")` GUARD, AND THAT IS THE POINT. A `key_blob` is only ever on the wire
+                # because the panel armed a one-shot relay, which only happens because an operator pressed a
+                # button — so it is never something to be careful about clobbering, it IS the instruction. The
+                # guard was written when the only reachable restore was for a node that had no key at all; once
+                # the panel started keeping the key a re-registration displaced, the case that matters became
+                # precisely the one it excluded. Measured on msk-main: the relay armed and rode every sync for
+                # ninety seconds while this node held its own freshly-registered key and ignored it, and the row
+                # went on offering a restore that could never happen.
+                _opened = None
+                with contextlib.suppress(Exception):
+                    _opened = json.loads(ivk_unseal(transport_priv(), d["key_blob"]).decode())
+                if isinstance(_opened, dict) and _opened.get("priv"):
+                    rec = dict(_opened, provider="warp")
+                    print("exit %s: restored from the operator vault (%s)" % (xid, rec.get("account_type") or "free"), flush=True)
+                    res["changed"] += 1
+                else:
+                    # ⚠️ NOT THE LOOP'S `err`. That variable is this exit's own HEALTH, and further down
+                    # `err = err or (r.stderr or "wg-quick up failed")` only fills it when it is still empty —
+                    # so parking a restore message in it would swallow the real reason a tunnel failed to come
+                    # up, and report a vault problem for a routing one. Its own name, its own meaning.
+                    _kerr = "the escrowed key did not open — it may be sealed to a different vault"
+                    res["errors"].append("exit %s: %s" % (xid, _kerr))
+                    # ⚠️ A BLOB WE CANNOT OPEN MUST NOT TAKE A WORKING EXIT DOWN. Dropping the old
+                    # `not rec.get("priv")` guard (just above) is right — a relayed key_blob IS the instruction
+                    # — but it also routed a node that HAS a key into this arm, and reporting `up: False` here
+                    # put a healthy exit down on every pass for ever: the relay is only cleared when the node
+                    # reports the key that was sent, and a reply with no key never satisfies that, so nothing
+                    # ends the loop. The reachable causes are ordinary — a blob sealed to a transport key the
+                    # node has since rotated (a rebuild), or to a vault that has moved.
+                    #
+                    # So: report the failure, and keep serving. The exit falls through to the existing-key path
+                    # exactly as it did before the guard came off, carrying the error so the panel can say why
+                    # the restore has not happened instead of showing a down exit with a working device.
+                    if not rec.get("priv"):
+                        out.append({"id": xid, "device": dev, "provider": prov, "up": False, "error": _kerr})
+                        continue
+                    _blob_err = _kerr
+            elif not rec.get("priv"):
+                # ⚠️ BACK OFF, OR A FAILURE BECOMES A RETRY STORM. This runs every sync (5s), and registration is
+                # a one-shot call to somebody else's free API. Without a delay a single failure is retried ~17k
+                # times a day from one IP — which is not merely rude, it is self-defeating: measured on a live
+                # node, Cloudflare answered 429 `error code: 1015` and the exit could then never register at all.
+                # Exponential from a minute, capped at an hour, remembered ACROSS RESTARTS in the state file so
+                # bouncing the daemon is not a way to keep hammering.
+                _now, _fails = time.time(), int(rec.get("reg_fails") or 0)
+                _next = float(rec.get("reg_next") or 0)
+                if _fails and _now < _next:
+                    out.append({"id": xid, "device": dev, "provider": prov, "up": False,
+                                "error": str(rec.get("reg_error") or "registration failed"),
+                                "retry_in": int(_next - _now)})
+                    continue
+                reg, err = _warp_register()
+                if not reg:
+                    _fails += 1
+                    rec = dict(rec, provider="warp", reg_fails=_fails, reg_error=err,
+                               reg_next=_now + min(3600, 60 * (2 ** (_fails - 1))))
+                    with contextlib.suppress(Exception):
+                        with open(sp + ".tmp", "w") as f:
+                            os.fchmod(f.fileno(), 0o600)
+                            json.dump(rec, f)
+                        os.replace(sp + ".tmp", sp)
+                    out.append({"id": xid, "device": dev, "provider": prov, "up": False, "error": err,
+                                "retry_in": int(rec["reg_next"] - _now)})
+                    res["errors"].append("exit %s: %s (retry in %ds)" % (xid, err, int(rec["reg_next"] - _now)))
+                    continue
+                rec = dict(reg, provider="warp", mtu=1280)   # success clears the backoff counters with it
+                print("exit %s: registered a WARP account (%s)" % (xid, rec.get("account_type")), flush=True)
+                res["changed"] += 1
+            # 2) a WARP+ licence the operator supplied, applied ONCE per distinct key
+            lic = str(d.get("licence") or "").strip()
+            if prov == "warp" and lic and lic != rec.get("licence_applied"):
+                acct, lerr = _warp_apply_licence(rec, lic)
+                rec["account_type"] = acct
+                rec["licence_applied"] = lic if not lerr else rec.get("licence_applied", "")
+                err = lerr
+                if lerr:
+                    print("exit %s: WARP+ licence rejected — %s" % (xid, lerr), flush=True)
+                else:
+                    print("exit %s: WARP+ licence applied (%s)" % (xid, acct), flush=True)
+                    res["changed"] += 1
+            rec["device"] = dev
+            with contextlib.suppress(Exception):
+                with open(sp + ".tmp", "w") as f:
+                    os.fchmod(f.fileno(), 0o600)
+                    json.dump(rec, f)
+                os.replace(sp + ".tmp", sp)
+            # 3) the conf + the device. Rewritten only when the text changes, so a settled exit costs one read.
+            conf = os.path.join(EXIT_DIR, dev + ".conf")
+            text = _exit_conf_text(rec)
+            cur = ""
+            with contextlib.suppress(Exception):
+                with open(conf) as f:
+                    cur = f.read()
+            # ⚠️ THE LINK STATE IS READ ONCE, and re-read only after something CHANGES it. Each read shells out
+            # to `ip`, and this loop runs per exit per sync; three consecutive reads of a value nothing has
+            # touched is three processes for one answer. (It also stops the reconciler from depending on how
+            # many times it happens to ask, which is a thing a test can only model by counting calls.)
+            _state = _dev_link_state(dev)
+            if cur != text:
+                with contextlib.suppress(Exception):
+                    with open(conf + ".tmp", "w") as f:
+                        os.fchmod(f.fileno(), 0o600)
+                        f.write(text)
+                    os.replace(conf + ".tmp", conf)
+                if _state != "absent":                    # config changed under a live device → bounce it
+                    _exit_down(dev, rec)
+                    _state = "absent"
+                res["changed"] += 1
+            # A device whose KIND no longer matches the config is as wrong as a stale conf — and it cannot be
+            # spotted by comparing text, because the text is already correct. Ask the kernel and rebuild.
+            _want_kind = "awg" if _exit_awg(rec) else "wg"
+            if _state != "absent":
+                _have_kind = _link_kind(dev)
+                if _have_kind not in ("", _want_kind):
+                    print("exit %s: device is %s but the profile is %s — rebuilding"
+                          % (xid, _have_kind, _want_kind), flush=True)
+                    _exit_down(dev, rec)
+                    _state = "absent"
+                    res["changed"] += 1
+            if _state == "absent":
+                # A tunnel built this pass is a NEW tunnel — possibly a new profile or account — and is judged from
+                # scratch rather than inheriting the verdict of the one it replaces.
+                _EXIT_HEALTH.pop(dev, None)
+                r = _scoped_up(_exit_tool(rec), conf)
+                if r.returncode != 0:
+                    err = err or (r.stderr or "wg-quick up failed").strip()[:160]
+                    res["errors"].append("exit %s: %s" % (xid, err))
+                else:
+                    res["changed"] += 1
+                    _state = _dev_link_state(dev)     # re-read: the bring-up is the thing that changed it
+            # 4) health (§7.2) — for a live device, gathered after this loop (4b) together with every other one.
+            _live = _state == "up"
+            tr = {}
+            if _live:
+                # 4b, after the loop: every live device is probed AT ONCE (_exit_probe_all), then judged here in order.
+                _slots.append((len(out), xid, dev, prov, rec, err, _blob_err))
+                out.append(None)
+                continue
+            # …and the VERDICT the routing acts on (`_devexit_state`). Only a live device is judged: a down or absent
+            # one already fails over by its link state, and a stale "dead" left behind would outlive the device.
+            _EXIT_HEALTH.pop(dev, None)
+            out.append(_exit_row(xid, dev, prov, rec, err, _blob_err, False, tr, None, None))
+    finally:
+        # ⚠️ IN A `finally`: a later exit whose setup raises (a malformed state file, say) must not leave the ones
+        # before it unjudged — probed inline, as they were, they were judged that pass; the exception still propagates.
+        # 4b) health (§7.2) for every live device — which is also what triggers a tunnel's first handshake, since
+        # WireGuard is lazy and a tunnel nothing has ever sent through has never handshaken. Probed together
+        # (_exit_probe_all), judged here in this thread, in order: _EXIT_HEALTH is only ever touched by this loop.
+        _pr = _exit_probe_all([(dev, rec) for _s, _x, dev, _p, rec, _e, _b in _slots])
+        for _s, xid, dev, prov, rec, err, _blob_err in _slots:
+            tr, _rch, _png = _pr.get(dev) or ({}, None, None)
+            _hl = _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
+            out[_s] = _exit_row(xid, dev, prov, rec, err, _blob_err, True, tr, _hl, _png)
 
     # …and stamp EVERY report with the config revision it describes. Done here, in one place, rather than
     # at each `out.append` above: this loop has five exits from it (paused, escrow refused, registration
