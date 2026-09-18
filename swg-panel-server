@@ -9934,6 +9934,41 @@ def link_awg_params(deps):
     return pa or gen_awg_params()
 
 
+# ── A mesh link's S4 must fit its MTU ──────────────────────────────────────────────────────────────────────────────
+# S4 is padding in front of EVERY data packet, so a full-size packet leaves as `mtu + 60 + S4` bytes (IPv4 20 + UDP 8 +
+# WireGuard data header 16 + auth tag 16, plus S4), and over a 1500-byte path anything larger goes out as two fragments.
+# Measured kernel ↔ kernel (.campaign/rigs/awg3-mesh-s4.sh, 2026-09-18): at MTU 1420, S4 = 47 and S4 = 100 fragmented every
+# full-size packet — 3.9 M fragments per 2.5 GB — and roughly halved throughput, while S4 ≤ 20 made none; at MTU 1320 (the
+# default mesh_mtu) no S4 up to 100 did. H, I, Jc and S1–S3 cost nothing measurable. Mesh links ONLY: a user interface's
+# S4 is baked into every client config already handed out, and user interfaces default to MTU 1280, where every S4 our
+# generators draw fits. IPv4 is assumed — a link dials node_public_ip unless an operator set an endpoint host.
+MESH_WIRE_OVERHEAD = 60
+
+
+def mesh_s4_room(mtu):
+    """The largest S4 that keeps a full-size packet of a link with this MTU inside 1500 bytes; None when mtu is not a number."""
+    try:
+        return max(0, 1500 - MESH_WIRE_OVERHEAD - int(mtu))
+    except (TypeError, ValueError):
+        return None
+
+
+def mesh_s4_fits(s4, mtu):
+    """True when S4 fits — or when either value is not a number, because nothing can be judged then (never refit on a
+    guess: a refit breaks the link until both ends have it)."""
+    room = mesh_s4_room(mtu)
+    try:
+        return room is None or int(str(s4).strip()) <= room
+    except (TypeError, ValueError):
+        return True
+
+
+def mesh_s4_draw(mtu):
+    """A fresh S4 inside the room, from 15 up like the generators (the whole room when it is smaller than 15)."""
+    room = mesh_s4_room(mtu) or 0
+    return random.randint(min(15, room), room)
+
+
 def _link_iface_name(node, link_id, prefix="swg_"):
     """`<prefix><8hex>` (≤ IFNAMSIZ 15), same on both ends of a link. On the rare 8-hex collision
     within one node, slide along the hash until a free window is found."""
@@ -10084,7 +10119,9 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc):
     hosts = list(sub)                            # /31 → [.0, .1]
     # the link's obfuscation = the X-end node's per-node mesh AWG if it set one, else the panel default / a fresh set.
     # both ends share it (the handshake requires matching params); editing a node's AWG re-provisions the links it anchors.
-    psk = gen_psk(); awg = sanitize_awg_params(nodes[x_nid].get("mesh_awg")) or link_awg_params(deps)
+    psk = gen_psk(); awg = dict(sanitize_awg_params(nodes[x_nid].get("mesh_awg")) or link_awg_params(deps))
+    if not mesh_s4_fits(awg.get("S4"), mc["mtu"]):   # the LINK is fitted; the operator's stored mesh_awg is never rewritten
+        awg["S4"] = mesh_s4_draw(mc["mtu"])
     for nid, peer in ((a, b), (b, a)):
         n = nodes[nid]
         nmc = node_mesh_cfg(deps, n)             # per-node prefix / port base
@@ -10139,6 +10176,33 @@ def reconcile_mesh(nodes, snaps, deps):
                 ov = n.setdefault("ifaces", {}).setdefault(ifc, {})
                 ov.setdefault("system", True); ov.setdefault("link_node", peer)
                 changed = True
+    # 3) every link's S4 fits its MTU (mesh_s4_room). A link that does not — made before this rule, or left behind by a
+    #    raised mesh_mtu — gets ONE fresh S4 on BOTH ends' records, and the converge machine that already carries the MTU
+    #    above takes it from there: desired_ifaces -> reconcile_ifaces -> set-iface -> a live `awg set`. The link stalls
+    #    only while the two ends disagree (at most a sync) and needs no re-handshake — measured on kernel links,
+    #    .campaign/rigs/awg3-mesh-s4-live.sh. Whatever the params' source, the LINK is refitted and never the operator's
+    #    stored mesh_awg, so a mesh_awg over the room cannot make this loop: once refitted the link fits, and it is left alone.
+    seen = set()
+    for a, n in nodes.items():
+        for b, lr in (n.get("links") or {}).items():
+            pair = (a, b) if a < b else (b, a)
+            if pair in seen or b not in nodes:
+                continue
+            seen.add(pair)
+            back = (nodes[b].get("links") or {}).get(a) or {}
+            ends = [((x.get("ifaces") or {}).get(l.get("iface")) or {}).get("awg_params")
+                    for x, l in ((n, lr), (nodes[b], back))]
+            if not all(isinstance(p, dict) and p for p in ends):
+                continue                                         # a link still being made: _mesh_make_link fitted it
+            if all(mesh_s4_fits(p.get("S4"), mc["mtu"]) for p in ends):
+                continue
+            old = "/".join(sorted({str(p.get("S4")) for p in ends}))
+            s4 = mesh_s4_draw(mc["mtu"])
+            for p in ends:
+                p["S4"] = s4
+            ev_append(deps["roster_path"], "node", a, "Fitted mesh link padding to its MTU (live)",
+                      n.get("name", a) + " ↔ " + nodes[b].get("name", b), f"S4 {old} → {s4} · MTU {mc['mtu']}")
+            changed = True
     return changed
 
 

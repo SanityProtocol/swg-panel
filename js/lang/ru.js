@@ -5380,6 +5380,7 @@ export const STR = {
   "Enabled subscription": "Подписка включена",
   "Enabled two-factor auth": "Двухфакторный вход включён",
   "Enrolled node": "Нода подключена",
+  "Fitted mesh link padding to its MTU (live)": "Паддинг связи сети подогнан под её MTU (на лету)",
   "Flagged node for removal": "Нода помечена к удалению",
   "Host update started": "Обновление хоста запущено",
   "Imported WDTT user from adopted server": "Пользователь WDTT перенесён с принятого сервера",
