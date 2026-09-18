@@ -46,6 +46,9 @@ PERTURB = [   # the tree before each guard, one at a time — each must turn its
     ("reuse trusts the save counter alone — a write from outside the panel is missed",
      "    return (_NODES_SAVES[0], st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)",
      "    return (_NODES_SAVES[0],)"),
+    ("reuse trusts the inode alone — an in-place rewrite is missed",
+     "    return (_NODES_SAVES[0], st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)",
+     "    return (_NODES_SAVES[0], st.st_dev, st.st_ino)"),
     ("the mark is taken AFTER the auth read",
      "        self._nodes_mark = nodes_mark(Handler.deps[\"nodes_path\"])   # before the read — see nodes_mark\n        nodes = nodes_load(Handler.deps[\"nodes_path\"])\n",
      "        nodes = nodes_load(Handler.deps[\"nodes_path\"])\n        self._nodes_mark = nodes_mark(Handler.deps[\"nodes_path\"])\n"),
@@ -201,6 +204,13 @@ def external(name):                                      # a writer outside the 
 got, *_ = sync_while(lambda: external("written-outside-the-panel"))
 check("a write from OUTSIDE the panel while the sync waited is re-read, not saved over",
       (got or (0,))[0] == 200 and P.nodes_load(NP)["n1"].get("name") == "written-outside-the-panel", (got and got[0], P.nodes_load(NP)["n1"].get("name")))
+def in_place(name):                                      # an outside writer that rewrites the SAME inode (install-host.sh writef)
+    cur = _real_load(NP); cur["n1"]["name"] = name
+    with open(NP, "r+") as f:
+        f.seek(0); f.write(json.dumps(cur, indent=4)); f.truncate()
+got, *_ = sync_while(lambda: in_place("rewritten-in-place"))
+check("a write IN PLACE from outside the panel (same inode) while the sync waited is re-read, not saved over",
+      (got or (0,))[0] == 200 and P.nodes_load(NP)["n1"].get("name") == "rewritten-in-place", (got and got[0], P.nodes_load(NP)["n1"].get("name")))
 frozen = [None]
 def frozen_stat(path, *a, **k):                          # the file LOOKS unchanged (same inode, size and time)
     if path == NP and frozen[0] is not None:
