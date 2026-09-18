@@ -4342,7 +4342,25 @@ def nodes_load(path):
 
 
 def nodes_save(path, nodes):
+    _NODES_SAVES[0] += 1                             # before the write: a parse racing it is never taken for current
     save_critical(path, json.dumps(nodes, indent=2) + "\n", mode=0o640)   # group(swg)-readable for swg-sub (token HASHES only, no raw secrets)
+
+
+# Has nodes.json changed since a given parse of it? A node sync reads the store to authenticate and must read it again
+# under _api_lock (b19ec24 — the auth copy predates the body, and saving it lost operators' edits). At scale the parse
+# is most of a sync (85 % at 200 nodes, where the store is 68 MB), so the second one cut the fleet ceiling by ~a fifth.
+# When NOTHING has saved since, the first parse is the store as it is now. Both halves must agree: no save by this
+# process (the counter), and the same file (every save is an atomic rename → a new inode; a writer outside the panel
+# changes it too). Taken BEFORE the read it vouches for, so a save racing that read costs a re-parse, never a reuse.
+_NODES_SAVES = [0]
+
+
+def nodes_mark(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (_NODES_SAVES[0], st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
 def migrate_node_ids(nodes_path, roster_path, store_configs, config_dir):
@@ -23748,6 +23766,7 @@ class Handler(BaseHTTPRequestHandler):
         one-time legacy→token_sha index upgrade. Signature (if any) is checked by _node_sig_ok once the body is read."""
         hdr = self.headers.get("Authorization", "")
         token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
+        self._nodes_mark = nodes_mark(Handler.deps["nodes_path"])   # before the read — see nodes_mark
         nodes = nodes_load(Handler.deps["nodes_path"])
         nid, node = find_node_by_token(nodes, token)
         if not nid:
@@ -23841,7 +23860,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(503, {"ok": False, "error": "the panel is busy — this sync is skipped, the next one retries",
                                     "code": "busy"})
         try:
-            tnode, nodes = node, nodes_load(Handler.deps["nodes_path"])
+            tnode = node
+            _mk = getattr(self, "_nodes_mark", None)
+            if _mk is None or nodes_mark(Handler.deps["nodes_path"]) != _mk:   # saved since _node_token's read → re-read
+                nodes = nodes_load(Handler.deps["nodes_path"])
             node = nodes.get(nid)
             if not isinstance(node, dict):               # removed while this request was waiting
                 (Handler.deps.get("node_snaps") or {}).pop(nid, None)   # …so un-stamp it (memory; its stats files are as at HEAD)

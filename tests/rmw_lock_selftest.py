@@ -35,8 +35,20 @@ def check(name, cond, detail=""):
 
 PERTURB = [   # the tree before each guard, one at a time — each must turn its checks red
     ("the sync keeps _node_token's stale copy (the bug)",
-     "            tnode, nodes = node, nodes_load(Handler.deps[\"nodes_path\"])\n",
-     "            tnode = node\n"),
+     "            if _mk is None or nodes_mark(Handler.deps[\"nodes_path\"]) != _mk:",
+     "            if False:"),
+    ("the re-read is never skipped (the second parse is back)",
+     "            if _mk is None or nodes_mark(Handler.deps[\"nodes_path\"]) != _mk:",
+     "            if True:"),
+    ("reuse trusts the file alone — no save counter",
+     "    return (_NODES_SAVES[0], st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)",
+     "    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)"),
+    ("reuse trusts the save counter alone — a write from outside the panel is missed",
+     "    return (_NODES_SAVES[0], st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)",
+     "    return (_NODES_SAVES[0],)"),
+    ("the mark is taken AFTER the auth read",
+     "        self._nodes_mark = nodes_mark(Handler.deps[\"nodes_path\"])   # before the read — see nodes_mark\n        nodes = nodes_load(Handler.deps[\"nodes_path\"])\n",
+     "        nodes = nodes_load(Handler.deps[\"nodes_path\"])\n        self._nodes_mark = nodes_mark(Handler.deps[\"nodes_path\"])\n"),
     ("a waiting sync no longer re-checks the credential",
      "            elif not _node_cred_same(tnode, node):", "            elif False:"),
     ("a timed-out sync keeps a removed node's stamps",
@@ -157,6 +169,64 @@ LEGACY = {"name": "edge", "token_hash": P.make_token_hash(TOK)}   # a re-install
 got, _s, _hs, _ = sync_while(lambda: None, wait=0.5, record=LEGACY, sign=True)
 check("a SIGNED sync from a legacy node while the panel is busy gets 503 busy — never 401 bad_signature",
       (got or (0,))[0] == 503, got)
+
+
+print("[rmw] the re-read is skipped only when nothing has written nodes.json since the auth read")
+# A sync parses the store to authenticate and must see it as it is NOW under the lock (the bug above). Parsing is most of
+# a sync's cost at scale (85 % at 200 nodes), so when nothing has written the store since, the auth parse is reused —
+# judged by nodes_mark: this process's save counter AND the file's identity, taken before the read.
+_real_load, _real_stat = P.nodes_load, os.stat
+def loads_during(fn):
+    n = [0]
+    def counting(path):
+        if path == NP:
+            n[0] += 1
+        return _real_load(path)
+    P.nodes_load = counting
+    try:
+        out = fn()
+    finally:
+        P.nodes_load = _real_load
+    return out, n[0]
+def fresh(record=None):
+    P.Handler.deps = {"fleet": {}, "nodes_path": NP, "roster_path": RP, "node_snaps": {}, "node_seen": {}, "panel_settings": {}}
+    with P._api_lock:
+        P.nodes_save(NP, {"n1": record or {"name": "edge", "token_sha": sha(TOK), "kind": "baremetal"}})
+fresh(); run_sync(TOK)                                   # settle: the first sync writes its bookkeeping
+got, n = loads_during(lambda: run_sync(TOK))
+check("steady state: a sync with nothing written since its auth read parses nodes.json ONCE", (got or (0,))[0] == 200 and n == 1, (got and got[0], n))
+def external(name):                                      # a writer outside the panel: its own rename, no nodes_save
+    cur = _real_load(NP); cur["n1"]["name"] = name
+    tmp = NP + ".ext"; open(tmp, "w").write(json.dumps(cur)); os.replace(tmp, NP)
+got, *_ = sync_while(lambda: external("written-outside-the-panel"))
+check("a write from OUTSIDE the panel while the sync waited is re-read, not saved over",
+      (got or (0,))[0] == 200 and P.nodes_load(NP)["n1"].get("name") == "written-outside-the-panel", (got and got[0], P.nodes_load(NP)["n1"].get("name")))
+frozen = [None]
+def frozen_stat(path, *a, **k):                          # the file LOOKS unchanged (same inode, size and time)
+    if path == NP and frozen[0] is not None:
+        return frozen[0]
+    return _real_stat(path, *a, **k)
+fresh(); frozen[0] = _real_stat(NP); os.stat = frozen_stat
+try:
+    got, *_ = sync_while(edit)
+finally:
+    os.stat = _real_stat; frozen[0] = None
+check("a save by the panel while the sync waited is re-read even when the file looks unchanged (the save counter)",
+      (got or (0,))[0] == 200 and P.nodes_load(NP)["n1"].get("name") == "edited-while-waiting", (got and got[0], P.nodes_load(NP)["n1"].get("name")))
+fresh({"name": "edge", "token_sha": sha(TOK)})          # no `kind` yet: this sync WRITES — a stale copy would be saved over the edit
+def racing(path):                                        # the auth read parses the old store, and a write lands right after it
+    out = _real_load(path)
+    if path == NP and not racing.done:
+        racing.done = True; external("written-during-the-auth-read")
+    return out
+racing.done = False; P.nodes_load = racing
+try:
+    got = run_sync(TOK)
+finally:
+    P.nodes_load = _real_load
+check("a write landing during the auth read is re-read (the mark is taken BEFORE that read)",
+      (got or (0,))[0] == 200 and P.nodes_load(NP)["n1"].get("name") == "written-during-the-auth-read"
+      and P.nodes_load(NP)["n1"].get("kind") == "baremetal", (got and got[0], P.nodes_load(NP)["n1"]))
 
 
 print("[rmw] a transfer poll marks done only the transfer it asked about")
