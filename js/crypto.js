@@ -962,17 +962,41 @@ export function guardAllowed(a) {
   if (parts.includes("0.0.0.0/0") && !parts.some(p => p.includes(":"))) parts.push("::/0");
   return parts.join(", ");
 }
+// The AmneziaWG lines of a client config (docs/AWG3-PLAN.md §7.5). A 3.x key is rendered only for a 3.1 interface — one
+// whose dict holds a HeaderProtectionKey (§7.1) — because a 2.0 app refuses the whole config over any key it does not know,
+// and on a 2.0 interface such a key can only be a one-sided server setting. RandomTrailers is written `1`, the one spelling
+// every client parser takes (`on` fails free-turn 3.2.0, `true` fails the tools — §3); DisableCookies never (D-cookies).
+// A 2.0 dict renders exactly as it always has. Twin: sub.js buildConf.
+const AWG3_FROM = AWG_ORDER.indexOf("HeaderProtectionKey");
+export function awgConfLines(awg) {
+  awg = awg || {};
+  const g31 = awg.HeaderProtectionKey != null && String(awg.HeaderProtectionKey).trim() !== "";
+  const L = [];
+  AWG_ORDER.forEach((k, i) => {
+    if (awg[k] == null || (i >= AWG3_FROM && (!g31 || k === "DisableCookies"))) return;
+    if (k === "RandomTrailers") { if (!/^\s*(0|off)\s*$/i.test(String(awg[k]))) L.push(k + " = 1"); return; }   // 0/off = unset, as on the node
+    L.push(k + " = " + awg[k]);
+  });
+  return L;
+}
+// The client keepalive: on a 3.1 interface the integer the panel resolves is rendered `k-(k+10)` — Amnezia's own 3.1 default
+// shape, 25 → 25-35 (D-scope) — derived here rather than stored, so every integer-only reader stays as it is. 0 stays off.
+export function clientKeepalive(ka, awg) {
+  const k = ka != null && ka !== "" ? ka : 25;
+  const g31 = !!(awg && awg.HeaderProtectionKey != null && String(awg.HeaderProtectionKey).trim() !== "");
+  return g31 && /^\s*\d+\s*$/.test(String(k)) && +k > 0 ? (+k) + "-" + (+k + 10) : k;
+}
 /* Builds a WireGuard .conf. Every line here is FILE TEXT the client parses — not one byte of it is UI,
    so nothing in this function is translated.   // i18n-keys */
 export function buildConf(o) {
   const L = ["[Interface]", "PrivateKey = " + o.privkey, "Address = " + o.address];   // i18n-keys: generated WireGuard .conf — file text
   if (o.dns && o.dns.length) L.push("DNS = " + o.dns.join(", "));   // i18n-keys: generated WireGuard .conf — file text
   L.push("MTU = " + (o.mtu || 1280));   // i18n-keys: generated WireGuard .conf — file text
-  for (const k of AWG_ORDER) if (o.awg_params && o.awg_params[k] != null) L.push(k + " = " + o.awg_params[k]);
+  L.push(...awgConfLines(o.awg_params));
   L.push("", "[Peer]", "PublicKey = " + o.server_pubkey);   // i18n-keys: generated WireGuard .conf — file text
   if (o.psk) L.push("PresharedKey = " + o.psk);   // i18n-keys: generated WireGuard .conf — file text
   L.push("AllowedIPs = " + guardAllowed(o.allowed), "Endpoint = " + o.endpoint,   // i18n-keys: generated WireGuard .conf — file text
-    "PersistentKeepalive = " + (o.keepalive != null && o.keepalive !== "" ? o.keepalive : 25));   // i18n-keys: generated WireGuard .conf — file text
+    "PersistentKeepalive = " + clientKeepalive(o.keepalive, o.awg_params));   // i18n-keys: generated WireGuard .conf — file text
   return L.join("\n") + "\n";
 }
 // Full parse of a client config back into buildConf()'s shape — so an edit/copy can
@@ -1181,12 +1205,36 @@ export function rerenderConf(text, node, iface) {
   let out = text;
   if (meta.endpoint) out = out.replace(/^([ \t]*Endpoint[ \t]*=).*$/m, (m, p1) => p1 + " " + meta.endpoint);
   const awg = meta.awg_params || {};
-  for (const k of AWG_ORDER) {
-    if (awg[k] == null) continue;
-    const re = new RegExp("^([ \\t]*" + k + "[ \\t]*=).*$", "m");
-    if (re.test(out)) out = out.replace(re, (m, p1) => p1 + " " + awg[k]);
+  const lineRe = k => new RegExp("^([ \\t]*" + k + "[ \\t]*=).*$", "m");
+  if (!Object.keys(awg).length) return out;   // no AWG dict to render from (a report without one): leave the block as it is
+  if (!AWG_ORDER.slice(AWG3_FROM).some(k => awg[k] != null || lineRe(k).test(out))) {
+    for (const k of AWG_ORDER) {
+      if (awg[k] == null) continue;
+      const re = lineRe(k);
+      if (re.test(out)) out = out.replace(re, (m, p1) => p1 + " " + awg[k]);
+    }
+    return out;
   }
-  return out;
+  // …but where AmneziaWG 3.x is in play — the interface has a 3.x key, or this config was built while it did — the whole
+  // AWG block and the keepalive are rebuilt from the live meta (docs/AWG3-PLAN.md §7.5, trap 9): refreshing only the lines
+  // a config already has froze it at the generation it was built with, so one built before a switch to 3.1 never gained
+  // the HeaderProtectionKey, and one built before a switch back kept it — neither connects. The block goes where it was
+  // (or after MTU, where buildConf puts it); lines outside [Interface] are never touched.
+  const L = out.split("\n");
+  let end = L.findIndex(l => /^[ \t]*\[Peer\]/i.test(l));
+  if (end < 0) end = L.length;
+  const keep = [];
+  let at = -1, mtuAt = -1;
+  L.forEach((l, i) => {
+    const m = i < end && l.match(/^[ \t]*([A-Za-z0-9]+)[ \t]*=/);
+    if (m && AWG_ORDER.includes(m[1])) { if (at < 0) at = keep.length; return; }
+    if (m && m[1] === "MTU") mtuAt = keep.length + 1;
+    keep.push(l);
+  });
+  if (at < 0) at = mtuAt >= 0 ? mtuAt : keep.findIndex(l => /^[ \t]*\[Peer\]/i.test(l)) - 1;
+  keep.splice(Math.max(at, 1), 0, ...awgConfLines(awg));
+  return keep.join("\n").replace(/^([ \t]*PersistentKeepalive[ \t]*=[ \t]*)(\d+)(?:[ \t]*-[ \t]*\d+)?[ \t]*$/m,
+    (m, p1, k) => p1 + clientKeepalive(k, awg));
 }
 // The four non-secret render parameters for ONE deployment of one peer (DNS / MTU / AllowedIPs / keepalive):
 // the interface's LIVE defaults, under the peer-wide overrides, under THIS target's own. Byte-for-byte the

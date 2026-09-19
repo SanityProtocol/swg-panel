@@ -163,6 +163,11 @@ def node_public_host(snap):
     return ""
 
 
+# The AmneziaWG 3.x keys — the tail of swg-panel-server's AWG_FIELDS (tests/cross_language_twins_selftest.py [3]).
+AWG3_FIELDS = ("HeaderProtectionKey", "RandomTrailers", "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout",
+               "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts", "DisableCookies")
+
+
 def apply_iface_meta(node_cfg, interfaces):
     """Overlay the panel-side per-interface overrides (public endpoint host/port, DNS, MTU, keepalive,
     AmneziaWG obfuscation) onto node-reported metadata — exactly what the panel emits into client configs,
@@ -190,7 +195,10 @@ def apply_iface_meta(node_cfg, interfaces):
         ovawg = ov.get("awg_params")
         if isinstance(ovawg, dict) and ovawg:
             rep_awg = dict(ifc.get("awg_params") or {})
-            ifc["awg_params"] = {**rep_awg, **{k: ovawg[k] for k in ovawg if ovawg[k] not in (None, "")}}
+            # The RECORD decides the generation (docs/AWG3-PLAN.md §7.1), as in the panel: a 3.x key the node still reports
+            # after a switch back to 2.0 — until it has applied it, or for as long as it stays offline — is not rendered.
+            ifc["awg_params"] = {**{k: v for k, v in rep_awg.items() if k not in AWG3_FIELDS},
+                                 **{k: ovawg[k] for k in ovawg if ovawg[k] not in (None, "")}}
     return interfaces
 
 

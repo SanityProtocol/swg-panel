@@ -244,8 +244,12 @@
   }
   // Strip comments, blank lines and any MTU line (MTU rides in its own link field) — shorter link, denser
   // QR. Mirrors ShareLinkBuilder.normalizeConf so our links look like the app's own.
+  // A ranged keepalive (an AmneziaWG 3.1 interface's `k-(k+10)`) goes as its `k`: FreeTurn 4.3.0 pins free-turn-proxy core
+  // 3.2.0, which reads PersistentKeepalive with Atoi and rejects the range (docs/AWG3-PLAN.md §3). A 2.0 config has none.
   function freeturnConf(conf) {
-    return String(conf || "").split("\n").map(function (l) { return l.trim(); }).filter(function (l) {
+    return String(conf || "").split("\n").map(function (l) {
+      return l.trim().replace(/^(PersistentKeepalive\s*=\s*)(\d+)\s*-\s*\d+$/i, "$1$2");
+    }).filter(function (l) {
       if (!l || l.charAt(0) === "#" || l.charAt(0) === ";") return false;
       if (/^MTU/i.test(l) && l.indexOf("=") >= 0) return false;
       return true;

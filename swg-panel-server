@@ -10114,6 +10114,83 @@ def awg_gen_refusal(snap, name, iface=None):
     return None
 
 
+def awg31_rendered(rec, rep):
+    """Is an interface AmneziaWG 3.1 in the configs its clients are given? The dict apply_iface_meta renders — the record's
+    3.x keys when there is a record, else the node's report — holds a HeaderProtectionKey (§7.1)."""
+    d = rec if isinstance(rec, dict) and rec else (rep if isinstance(rep, dict) else {})
+    return bool(str(d.get("HeaderProtectionKey") or "").strip())
+
+
+def turn_awg3_blockers(deps, nodes, nid, ports):
+    """The turn proxies on node `nid` that point at one of `ports` and whose fork cannot serve an AmneziaWG 3.1 interface
+    (catalog `awg3: False`) — [{service, title, connect, fork}], by service name. "Points" is the rule turnProxiesFor and
+    swg-sub use to hang a proxy under an interface: its connect port is the interface's port — where the node REPORTS it,
+    or where a pending install or manage will put it. A re-point or a delete still pending does not clear it: the node may
+    never apply it (a request expires, a node can have turn management off), and counting it as done would let a switch
+    through for good while the proxy stays."""
+    ports = {str(p) for p in ports if str(p or "").strip().isdigit()}
+    rep = {tp.get("service"): tp for tp in ((((deps.get("node_snaps") or {}).get(nid) or {}).get("turn_proxies")) or [])
+           if isinstance(tp, dict) and tp.get("service")}
+    pend = {s: r for s, r in (((nodes.get(nid) or {}).get("turn")) or {}).items() if isinstance(r, dict)}
+    out = []
+    for svc in sorted(set(rep) | set(pend)):
+        req, tp = pend.get(svc) or {}, rep.get(svc) or {}
+        if not ports or (TURN_SERVERS.get(turn_fork(svc)) or {}).get("awg3", True):
+            continue
+        conns = [tp.get("connect") or ""] + ([req["connect"]] if req.get("action") in ("install", "manage") and req.get("connect") else [])
+        hit = [c for c in conns if _port_of(c) in ports]
+        if hit:
+            out.append({"service": svc, "title": req.get("title") or tp.get("title") or "", "connect": hit[0],
+                        "fork": turn_fork(svc)})
+    return out
+
+
+def turn_connect_now(deps, nodes, nid, svc):
+    """Where turn proxy `svc` on node `nid` points: a pending install/manage's connect, else what the node reports."""
+    req = (((nodes.get(nid) or {}).get("turn")) or {}).get(svc) or {}
+    if req.get("action") in ("install", "manage") and req.get("connect"):
+        return req["connect"]
+    for tp in ((((deps.get("node_snaps") or {}).get(nid) or {}).get("turn_proxies")) or []):
+        if isinstance(tp, dict) and tp.get("service") == svc:
+            return tp.get("connect") or ""
+    return ""
+
+
+def _turn_awg3_app(fork):
+    """The app a fork is served to natively (the compat matrix's `native` client) — the one that cannot carry 3.x."""
+    return ", ".join(sorted((TURN_CLIENTS.get(c) or {}).get("name") or c
+                            for c, cls in (_TURN_CLIENT_COMPAT.get(fork) or {}).items() if cls == "native")) or fork
+
+
+def turn_awg3_refusal(blockers, iface):
+    """The perr refusing to make `iface` AmneziaWG 3.1 while `blockers` (turn_awg3_blockers) point at it — each named,
+    so the operator can move or delete it (D-apps, operator 2026-09-19: refuse and name, no automatic unlink)."""
+    names = "; ".join("%s (%s · %s)" % (b["title"] or b["service"], (TURN_SERVERS.get(b["fork"]) or {}).get("label")
+                                         or b["fork"], _turn_awg3_app(b["fork"])) for b in blockers)   # proper nouns only: {v2} is not translated
+    return perr("{v1} cannot run AmneziaWG 3.1 while a turn proxy whose app carries AmneziaWG 2.0 only points at its port: "
+                "{v2}. Point it at a 2.0 interface, or delete it, and try again once the node has applied that", v1=iface, v2=names)
+
+
+def turn_awg3_target(deps, nodes, nid, fork, connect):
+    """The perr refusing to point a proxy of `fork` at `connect` on node `nid` — the interface whose port it names is AmneziaWG
+    3.1 and the fork's app cannot carry 3.x — else None."""
+    if (TURN_SERVERS.get(fork) or {}).get("awg3", True):
+        return None
+    port = _port_of(connect)
+    snap = (deps.get("node_snaps") or {}).get(nid) or {}
+    recs = (nodes.get(nid) or {}).get("ifaces") or {}
+    made = (nodes.get(nid) or {}).get("create") or {}          # an interface asked for, not yet reported: its port is only here
+    for ifn in sorted(set(snap.get("interfaces") or {}) | set(recs)):   # (a create writes its record — the dict — at once)
+        meta = ((snap.get("interfaces") or {}).get(ifn) or {}).get("meta") or {}
+        ov, mk = recs.get(ifn) or {}, made.get(ifn) or {}
+        if port and port in (str(meta.get("listen_port") or ""), str(ov.get("listen_port") or ""), str(mk.get("listen_port") or "")) \
+                and awg31_rendered(ov.get("awg_params") or mk.get("awg_params"), meta.get("awg_params")):
+            return perr("{v1} proxies cannot point at {v2}: it runs AmneziaWG 3.1, and their app ({v3}) carries AmneziaWG 2.0 "
+                        "only — point it at a 2.0 interface", v1=(TURN_SERVERS.get(fork) or {}).get("label") or fork, v2=ifn,
+                        v3=_turn_awg3_app(fork))
+    return None
+
+
 def link_awg_params(deps):
     """AWG params for a NEW mesh link: the panel-settings default if the operator set one, else a fresh set."""
     pa = sanitize_awg_params(((deps.get("panel_settings") or {}).get("mesh_awg")))
@@ -11093,6 +11170,12 @@ TURN_SERVERS = {
                                   {"key": "password", "flag": "-password", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Password", "help": "Shared secret the core HKDFs to the AEAD key — must match the client. Required when WRAP is on. Auto-generated."}],
                      "client_settings": _MYSOREZ_CORE_CS},   # the VK TURN Proxy app loads the MYSOREZ CORE here → captcha/vk-auth/device knobs (the vktgz encoder emits -password + these)
     "WINGS-N":      {"label": "WINGS-N",      "owner": "WINGS-N/vk-turn-proxy",          "wrap": "-wrap-mode on",        "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#C98BE0", "light": "#9B4FC7"}, "clients": ["wingsv", "vkturnproxy", "sidecar", "freeturn", "wgturn"],     "reload": "restart",
+                     # ⚠️ NEVER IN FRONT OF AN AmneziaWG 3.1 INTERFACE (D-apps, docs/AWG3-PLAN.md §7.5). The server relays UDP and
+                     # does not care; its app does. WINGS V (Android, v6.0.0) pins amneziawg-android 2.0.1, which throws
+                     # UNKNOWN_ATTRIBUTE on any 3.x key, and WINGS DeX (desktop) parses Jc–H4 only and drops the rest, so
+                     # neither can import a 3.1 config — and every other client of this fork is `plain` (no obfuscation on the
+                     # TURN leg) or cannot carry AWG at all. Absent = true. Read by turn_awg3_blockers.
+                     "awg3": False,
                      "settings": [{"key": "wrap_mode", "flag": "-wrap-mode", "type": "enum", "values": ["on", "off"], "default": "on", "label": "Obfuscation"},
                                   {"key": "wrap_cipher", "flag": "-wrap-cipher", "type": "enum", "values": ["any", "srtp-aes-gcm", "srtp-chacha20-poly1305"], "default": "any", "label": "WRAP cipher", "help": "AEAD the server accepts for WRAP (-wrap-cipher, WINGS-N v2.1.0). any = accept either; or pin one — the client must offer it."},
                                   _TS_WRAPKEY],
@@ -20990,6 +21073,20 @@ def api(method, path, qs, body, deps):
         _rv = reach_level_set(ov, body)              # device access: who may open connections to devices here (§10.4)
         if _rv:
             return 400, {"ok": False, **_rv, "code": "bad_request"}
+        # ⚠️ A TURN PROXY WHOSE APP CARRIES AmneziaWG 2.0 ONLY (WINGS-N) NEVER SERVES A 3.1 INTERFACE (D-apps, §7.5): a save that
+        # makes this interface 3.1 — the switch, or an HPK in a raw dict — or moves a 3.1 one onto such a proxy's port is
+        # refused, naming each proxy (the operator's choice, 2026-09-19: refuse and name — no automatic unlink, which no node
+        # can do today: an unknown turn action restarts the proxy, and a stop leaves it on the port).
+        _rm = (((((deps.get("node_snaps") or {}).get(nid) or {}).get("interfaces") or {}).get(iface) or {}).get("meta") or {})
+        _was = (nodes[nid].get("ifaces") or {}).get(iface) or {}
+        if awg31_rendered(ov.get("awg_params"), _rm.get("awg_params")):
+            _lp = lambda r: (r.get("listen_port") or _rm.get("listen_port") or r.get("desired_port")
+                             or (r.get("_lastcfg") or {}).get("listen_port"))   # the port clients dial; a lost one's last
+            _t3p = ({_lp(ov), _rm.get("listen_port")} if not awg31_rendered(_was.get("awg_params"), _rm.get("awg_params"))
+                    else ({_lp(ov)} if str(_lp(ov)) != str(_lp(_was)) else set()))   # the Edit sheet re-sends an unmoved port
+            _bl = turn_awg3_blockers(deps, nodes, nid, _t3p)
+            if _bl:
+                return 409, {"ok": False, **turn_awg3_refusal(_bl, iface), "code": "turn_awg3", "turn_proxies": _bl}
         for k in ("listen_port", "mtu", "awg_params"):   # a user-set value re-asserts: drop its drift + synced so it re-pushes
             if k in body:
                 (ov.get("_synced") or {}).pop(k, None); (ov.get("_drift") or {}).pop(k, None)
@@ -21167,6 +21264,9 @@ def api(method, path, qs, body, deps):
             _awgput, _e3 = awg3_check(awg3_full(_awgput))
             if _e3:
                 return 400, {"ok": False, **_e3, "code": "bad_request"}
+            _bl = turn_awg3_blockers(deps, nodes, nid, {req.get("listen_port")})   # a proxy left on this port by an older interface
+            if _bl:
+                return 409, {"ok": False, **turn_awg3_refusal(_bl, iface), "code": "turn_awg3", "turn_proxies": _bl}
         elif _gen == "2.0":
             _awgput = {k: v for k, v in _awgput.items() if k not in AWG3_FIELDS}
         if any(k in _awgput for k in AWG3_FIELDS) and not awg_gen_reported((deps.get("node_snaps") or {}).get(nid)):
@@ -21347,6 +21447,13 @@ def api(method, path, qs, body, deps):
             ev_append(roster_path, "node", nid, verb, iface)
             return 200, {"ok": True, "data": {"node": nid, "iface": iface, "key": key}}
         if path.endswith("/adopt"):
+            # Adopting what the node runs can make the record AmneziaWG 3.1 (the drift carries the 3.x keys since P1) — the same
+            # line a switch crosses, so the same refusal: a WINGS-N proxy never serves a 3.1 interface (D-apps). Restore stays open.
+            if key == "awg_params" and awg31_rendered(ov["_drift"][key], None) and not awg31_rendered(ov.get("awg_params"), None):
+                _rm = (((((deps.get("node_snaps") or {}).get(nid) or {}).get("interfaces") or {}).get(iface) or {}).get("meta") or {})
+                _bl = turn_awg3_blockers(deps, nodes, nid, {ov.get("listen_port") or _rm.get("listen_port"), _rm.get("listen_port")})
+                if _bl:
+                    return 409, {"ok": False, **turn_awg3_refusal(_bl, iface), "code": "turn_awg3", "turn_proxies": _bl}
             ov[key] = ov["_drift"][key]                 # panel override ← the node's actual value
             ov.setdefault("_synced", {})[key] = ov[key]
             verb = "Adopted server-edited value"
@@ -21457,6 +21564,9 @@ def api(method, path, qs, body, deps):
         _lc = _port_conflict(deps, nodes, nid, listen.rsplit(":", 1)[1])   # not already bound by an interface / proxy / WDTT / mesh link on this node
         if _lc:
             return 400, {"ok": False, **perr("listen port {v1} is already used by {v2} on this node — pick another port", v1=listen.rsplit(":", 1)[1], v2=_lc), "code": "bad_request"}
+        _t3 = turn_awg3_target(deps, nodes, nid, fork, connect)   # a WINGS-N proxy never serves an AmneziaWG 3.1 interface
+        if _t3:
+            return 400, {"ok": False, **_t3, "code": "bad_request"}
         svc = "vk-turn-proxy-" + fork + "-" + listen.rsplit(":", 1)[1]
         if svc in (nodes[nid].get("turn") or {}):
             return 409, {"ok": False, "error": "an install for this fork+port is already pending", "code": "conflict"}
@@ -21490,6 +21600,10 @@ def api(method, path, qs, body, deps):
                         _lc = _port_conflict(deps, nodes, nid, _np, own=[_cp] if _cp.isdigit() else [])
                         if _lc:
                             return 400, {"ok": False, **perr("listen port {v1} is already used by {v2} on this node — pick another port", v1=_np, v2=_lc), "code": "bad_request"}
+                    elif _port_of(body[k].strip()) != _port_of(turn_connect_now(deps, nodes, nid, svc)):   # the Edit sheet re-sends an unchanged one
+                        _t3 = turn_awg3_target(deps, nodes, nid, turn_fork(svc), body[k].strip())
+                        if _t3:
+                            return 400, {"ok": False, **_t3, "code": "bad_request"}
                     req[k] = body[k].strip()
             if "params" in body:                        # free-text ExecStart tail after -connect (node uses it verbatim)
                 if not no_ctrl(body.get("params") or ""):

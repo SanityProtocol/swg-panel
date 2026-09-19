@@ -19,7 +19,8 @@ the direction to the other half had rotted, which is how a twin stops being main
 
 Run: python3 tests/cross_language_twins_selftest.py      (0 = pass)
      --perturb           nudges pairs [1] and [2] out of step and expects RED.
-     --perturb-awg <n>   drops one key from AmneziaWG key list <n> (0-5, see [3]) and expects RED in [3] alone.
+     --perturb-awg <n>   drops one key from AmneziaWG key list <n> (0-5, see [3]; 6 = swg-sub's 3.x tail) and expects RED
+                         in [3] alone.
 """
 import ast, os, re, sys
 
@@ -93,7 +94,7 @@ LISTS = [("swg-panel-server AWG_FIELDS", _list("swg-panel-server", r'^AWG_FIELDS
          ("js/crypto.js AWG_ORDER", _list("js/crypto.js", r'^export const AWG_ORDER = (\[.*?"\]);')),
          ("sub.js AWG_ORDER", _list("sub.js", r'^  var AWG_ORDER = (\[.*?"\]);')),
          ("turn-artifacts.js AWG_ORDER", _list("turn-artifacts.js", r'^  var AWG_ORDER = (\[.*?"\]);'))]
-if PERTURB_AWG is not None:
+if PERTURB_AWG is not None and PERTURB_AWG < len(LISTS):
     LISTS[PERTURB_AWG][1].remove("RekeyTimeout")
 _ref_name, _ref = LISTS[0]
 # Named here, not taken from any one list: equality alone would stay green if a key vanished from all six at once.
@@ -105,6 +106,12 @@ for _name, _lst in LISTS[1:]:
     check("%s == %s" % (_name, _ref_name), _lst == _ref,
           "missing %s, extra %s" % (sorted(set(_ref) - set(_lst)), sorted(set(_lst) - set(_ref))) if set(_lst) != set(_ref)
           else "same keys, another order")
+# swg-sub needs only the 3.x half — its apply_iface_meta takes those from the record alone, like the panel's — so it holds
+# that tail and nothing else.
+_sub3 = _list("swg-sub", r'^AWG3_FIELDS = (\(.*?"\))$')
+if PERTURB_AWG == 6:
+    _sub3.remove("RekeyTimeout")
+check("swg-sub AWG3_FIELDS == the 3.x tail of %s" % _ref_name, _sub3 == _ref[len(AWG20):], _sub3)
 check("…the retired copies stay gone (panel AWG_PARAM_KEYS, noded _AWG_CONF_KEYS, swg-sub AWG_PARAM_KEYS)",
       not re.search(r"^AWG_PARAM_KEYS\s*=", src("swg-panel-server"), re.M)
       and not re.search(r"^_AWG_CONF_KEYS\s*=", src("swg-noded"), re.M)
@@ -117,7 +124,7 @@ print()
 if PERTURB_AWG is not None:
     _red = [f for f in FAILS if "AWG" in f or "==" in f]
     print("PERTURB OK — %s went red" % _red if _red and len(_red) == len(FAILS)
-          else "PERTURB FAILED — dropping a key from %s left [3] green (or reddened something else: %s)" % (LISTS[PERTURB_AWG][0], FAILS))
+          else "PERTURB FAILED — dropping a key from %s left [3] green (or reddened something else: %s)" % (LISTS[PERTURB_AWG][0] if PERTURB_AWG < len(LISTS) else "swg-sub AWG3_FIELDS", FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB:
     print("PERTURB OK — %d checks went red" % len(FAILS) if FAILS

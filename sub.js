@@ -1251,18 +1251,26 @@
     if (parts.indexOf("0.0.0.0/0") >= 0 && !parts.some(function (p) { return p.indexOf(":") >= 0; })) parts.push("::/0");
     return parts.join(", ");
   }
+  // AmneziaWG 3.x keys only for a 3.1 interface (a HeaderProtectionKey in its dict), RandomTrailers as `1`, never
+  // DisableCookies, and there the keepalive k becomes k-(k+10) — js/crypto.js awgConfLines/clientKeepalive, rule for rule.
   function buildConf(o) {
     var L = ["[Interface]", "PrivateKey = " + o.privkey, "Address = " + o.address];
     if (o.dns && o.dns.length) L.push("DNS = " + o.dns.join(", "));
     L.push("MTU = " + (o.mtu || 1280));
+    var awg = o.awg_params || {}, from = AWG_ORDER.indexOf("HeaderProtectionKey");
+    var g31 = awg.HeaderProtectionKey != null && String(awg.HeaderProtectionKey).trim() !== "";
     for (var i = 0; i < AWG_ORDER.length; i++) {
       var k = AWG_ORDER[i];
-      if (o.awg_params && o.awg_params[k] != null) L.push(k + " = " + o.awg_params[k]);
+      if (awg[k] == null || (i >= from && (!g31 || k === "DisableCookies"))) continue;
+      if (k === "RandomTrailers") { if (!/^\s*(0|off)\s*$/i.test(String(awg[k]))) L.push(k + " = 1"); continue; }
+      L.push(k + " = " + awg[k]);
     }
+    var ka = o.keepalive != null && o.keepalive !== "" ? o.keepalive : 25;
+    if (g31 && /^\s*\d+\s*$/.test(String(ka)) && +ka > 0) ka = (+ka) + "-" + (+ka + 10);
     L.push("", "[Peer]", "PublicKey = " + o.server_pubkey);
     if (o.psk) L.push("PresharedKey = " + o.psk);
     L.push("AllowedIPs = " + guardAllowed(o.allowed), "Endpoint = " + o.endpoint,
-      "PersistentKeepalive = " + (o.keepalive != null && o.keepalive !== "" ? o.keepalive : 25));
+      "PersistentKeepalive = " + ka);
     return L.join("\n") + "\n";
   }
 
