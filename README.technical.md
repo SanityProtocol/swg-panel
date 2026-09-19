@@ -270,7 +270,8 @@ pair: every leg is measured and a newly chosen forward target works at once, and
 interface, one `/31` and one UDP port per other node. **On demand** links only the pairs a forward or a smart rule's
 exit routes over (plus a link the operator configured — relay, dial address), creates a link in the same sync that
 plans the traffic over it (the entry node creates the interface before it routes, so the interface's traffic is held
-until the link is up, typically 10–15 s, never sent out directly), and removes a link nothing has used for an hour.
+until the link is up, typically 10–15 s, rather than sent out directly — only a link the node fails to create lets it
+out, as a failed rebuild already can), and removes a link nothing has used for an hour.
 **Auto**, the default, is a full mesh up to 30 nodes and on demand above. A mesh subnet — per node or the panel's —
 must be an IPv4 range of `/31` or larger, and a node's own must hold the links it anchors (every link takes its `/31`
 from the pool of the pair's smaller node id); a pool that runs out is reported on that node, naming the peers it

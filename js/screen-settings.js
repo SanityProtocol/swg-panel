@@ -3013,7 +3013,9 @@ const sectionLabel = k => ({
           <p class="hint" style="margin:0 0 8px">${T("A full mesh links every pair of nodes: every leg is measured and a new forward target works at once, but each node carries one link per other node. On demand links only the pairs a forward or a smart rule routes over, and removes a link nothing has used for an hour.")}</p>
           <div class="field" style="max-width:460px;margin-bottom:6px"><${Dropdown} value=${meshMode} onChange=${v => setMeshMode(v)} options=${
             ["auto", "full", "demand"].map(v => ({ value: v, label: meshModeLabel(v, ps.mesh_auto_max) }))}/></div>
-          ${meshMode === "auto" && ps.mesh_effective ? html`<p class="hint" style="margin:0 0 14px">${ps.mesh_effective === "demand"
+          ${/* What auto is doing NOW — so only while the dropdown shows the SAVED mode: `mesh_effective` is the server's answer
+                for what is saved, and read against an unsaved pick it would describe a mode the operator is leaving. */""}
+          ${meshMode === "auto" && (ps.mesh_mode || "auto") === "auto" && ps.mesh_effective ? html`<p class="hint" style="margin:0 0 14px">${ps.mesh_effective === "demand"
             ? T("This fleet is linked on demand now.")
             : T("Every pair in this fleet is linked now.")}</p>` : html`<div style="height:8px"></div>`}
           ${/* FLEET-WIDE, deliberately OUTSIDE the node picker above: "which of my nodes sit on a private network"
