@@ -12113,6 +12113,17 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                 applied_ep.pop(iface + "|" + pk, None); ep_dirty = True
             else:
                 res["errors"].append(f"remove {pk[:8]}: {r.get('error')}")
+    # Forget what the panel no longer wants. An entry used to leave this map only when its peer was removed from an
+    # interface that is still here, so every deleted interface's entries — each rebuilt, transferred or (on an
+    # on-demand mesh) retired link's — stayed for ever: 6 of msk-main's 10 on swgt, 2026-09-19. Harmless to routing (a
+    # recreated link has new keys, and an ADD never reads this map) but unbounded. Kept: exactly the peers the panel
+    # still wants, with an endpoint, on an interface this node manages — taken from the reply, not from which
+    # interfaces the loop above got through, so one that could not be read this pass keeps its entries. Losing an entry
+    # costs nothing: the adopt branch above re-learns it from the live peer without touching the tunnel.
+    _want_ep = {i + "|" + p["public_key"] for i in (node_cfg.get("interfaces") or {})
+                for p in (desired_by_iface.get(i) or []) if p.get("endpoint") and p.get("public_key")}
+    for _k in [k for k in applied_ep if k not in _want_ep]:
+        applied_ep.pop(_k, None); ep_dirty = True
     if ep_dirty:
         with contextlib.suppress(Exception):
             with open(EP_FILE + ".tmp", "w") as f:
