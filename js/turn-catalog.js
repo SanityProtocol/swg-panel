@@ -62,6 +62,7 @@ export function turnForkList() {
       settings: Array.isArray(s.settings) ? s.settings : [], client_settings: Array.isArray(s.client_settings) ? s.client_settings : [], clients: s.clients || [], compat: s.compat || {}, client_schemas: s.client_schemas || {},
       wdtt_versions: Array.isArray(s.wdtt_versions) ? s.wdtt_versions : [],   // published builds; EMPTY = nothing a node could install yet
       reach_vouched: s.reach_vouched === true,   // DEVICE ACCESS §11.2 F4: the build a create installs proves a device's owner (else the create sheet warns)
+      awg3: s.awg3 !== false,   // can its app carry AmneziaWG 3.1? The catalog says false for WINGS-N only; absent = yes (docs/AWG3-PLAN.md D-apps)
       default_client: s.default_client || "",   // the fork's own preferred app, when it should win over the one-tap rule
       cli_authors: Array.isArray(s.cli_authors) ? s.cli_authors : ["samosvalishe"] }));
   return TURN_FORKS_FALLBACK;
@@ -93,6 +94,12 @@ export function forkPickLabel(fork) {   // fork dropdowns: "author · product" (
   const f = turnForkList().find(x => x.id === fork) || {};
   const lbl = f.label || fork || "";
   return f.product ? lbl + " · " + f.product : lbl;
+}
+// Can this fork's app carry an AmneziaWG 3.1 interface? The catalog says `awg3: false` for WINGS-N only (its app, WINGS V,
+// parses AmneziaWG 2.0); unknown → yes, the panel refuses what it has to (docs/AWG3-PLAN.md D-apps).
+export function forkSupportsAwg3(fork) {
+  const f = turnForkList().find(x => x.id === fork);
+  return !f || f.awg3 !== false;
 }
 export function forkSupportsAwg(fork) {
   const f = turnForkList().find(x => x.id === fork);

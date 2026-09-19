@@ -66,6 +66,11 @@ subscription and no one else sitting in the middle of your traffic.
 - **Panel here or apart.** Run the panel on the same server as a VPN node, or on a separate box that only manages your nodes — either works.
 - **Hard to block.** Uses **AmneziaWG** (a stealthier WireGuard) and can route traffic cleverly by
   destination, so it keeps working where plain VPNs get blocked.
+- **AmneziaWG 3.1 when you want it.** Each AmneziaWG interface runs 2.0, which every AmneziaWG app
+  understands, or 3.1, which adds header protection and random trailers. Pick it when you create the
+  interface and switch either way later: the panel first shows who the switch cuts off until they
+  re-import, network gateways first, and refuses while a WINGS-N turn proxy points there. A 3.1 interface
+  wears a magenta badge. [Which apps connect ↓](#a-few-things-worth-knowing)
 - **Filter out the junk.** Block ads, trackers, malware, adult content, gambling and more — per server, from
   curated category lists — and watch a live **Protection** panel show what's being caught, per category, plus
   which user is behind the torrents and port-scans it flags.
@@ -426,6 +431,14 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   users’ ordinary DNS and routes by the site names it sees. A device that uses its own encrypted DNS (DoH, DoT
   or DoQ) is marked instead of cut off: its rules by site name don’t match, its rules by IP still do. To stop
   encrypted DNS, turn on the interface’s **DoH / DoT / DoQ** block.
+- **AmneziaWG 3.1 needs a 3.1 app.** These connect: Amnezia VPN 5.0.1.5 or newer, AmneziaWG on iPhone
+  and Mac (App Store), on Android (the GitHub release — the Google Play build is still 2.0) and on Windows,
+  WG Tunnel 5.6 or newer, FreeTurn 4.3. These cannot: the Google Play AmneziaWG, WINGS V, Keenetic and
+  MikroTik routers — and Amnezia VPN 5.0.0.5 or older imports a 3.1 config without complaint and never
+  connects. The server needs 3.1 too (its AmneziaWG kernel module, or `amneziawg-go` where there is none,
+  and its `awg` tools); on one that isn't, the switch is greyed out and says which part. The cost,
+  measured: +1–2 % CPU at the rates a VPS carries; a server that is already CPU-bound loses 7–20 % of its
+  throughput ceiling to the header masks, and no setting takes that back.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more

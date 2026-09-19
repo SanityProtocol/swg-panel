@@ -38,6 +38,7 @@
   --partial-r:#F19AA4;   /* the "partial" badge's soft-red (a problem that isn't a stopper) */
   --dangling:#F26B82; --orphan:#B79BD6; --unknown:#62748B; --removing:#E2C84A;
   --brand:#1FC8D6; --brand-2:#5FE2EC; --brand-ink:#04232A; --smart:#F472B6;   /* smart routing — rose/pink, distinct from cascade purple */
+  --awg3:#DA70D6;   /* AmneziaWG 3.1 — orchid: DarkMagenta's family, the one of it readable on this ground (docs/AWG3-PLAN.md D-colour) */
   --relay:#7C5CFF; --relay-2:#B9A6FF;   /* datapath RELAY — electric violet: the deliberate, more expensive path,
                                            deliberately NOT the theme cyan so the two modes never read as one control in two states */
   --tp-rx:#1FC8D6; --tp-tx:#818CF8;   /* throughput chart: rx (down) cyan, tx (up) indigo — kept distinct */
@@ -77,6 +78,7 @@
   --online:#0E9E63; --ready:#2B7CD3; --pending:#6A50D6; --partial:#B07A16; --fault:#D9772A;
   --partial-r:#D65468; --dangling:#D63A55; --orphan:#8A5CC4; --unknown:#5E7085; --removing:#B07A16;
   --smart:#D6247E;
+  --awg3:#8B008B;   /* AmneziaWG 3.1 — DarkMagenta on white (8.5:1 as text, 6.4:1 on its own 15% tint) */
   --tport-bare:#2472C4; --tport-dock:#8B45D0;   /* deploy pills deepened for white (point 6) */
   --tport-nix:#2E6C93; --tport-os:#2C7A6E;   /* …and both platform pills with them */
   --sel-ink:color-mix(in srgb, var(--brand) 58%, #000);   /* a SELECTED control's text is a darker shade of the theme on white */
@@ -767,6 +769,10 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .iftype{font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:6px}
 .iftype.wg{background:rgba(63,216,154,.14);color:var(--online)}
 .iftype.awg{background:rgba(31,200,214,.15);color:var(--brand)}
+/* Every AWG badge of an AmneziaWG 3.1 interface (model.js awg3Cls / ui.js tgt3) — a fixed colour pair plus the "AmneziaWG 3.1"
+   tooltip, so colour is not the only carrier. Out-specifies the tunable awg colour applyThemeColors injects (.iftype.awg, .tg-awg);
+   .tg.muted's !important still greys an inactive row's tag. */
+.iftype.awg.awg3,.tg-awg.awg3{background:color-mix(in srgb,var(--awg3) 15%,transparent);color:var(--awg3)}
 .iftype.wdtt{background:rgba(129,181,18,.16);color:#81B512}   /* WDTT type badge fallback until applyThemeColors injects the tunable colour */
 .iftype.csqtt{background:rgba(249,115,22,.16);color:#F97316}   /* csqtt type badge fallback until applyThemeColors injects the tunable colour */
 /* Approach-B adoption candidates — a wg/awg interface found on the node the panel doesn't manage yet: orange
@@ -2748,6 +2754,24 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .awg-f>span{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
 .awg-f input{font-size:12px;padding:6px 8px}
 @media(max-width:560px){.awg-cols{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* The AmneziaWG version switch (create form + Edit sheet): the .dpsw segmented control, two short options; 3.1 selected wears
+   the 3.1 colour, the same one every 3.1 badge wears. */
+.dpsw.awgsw button{min-width:64px}
+.dpsw.awgsw button.on.sw-awg3{background:color-mix(in srgb,var(--awg3) 20%,transparent);color:var(--awg3)}
+.field.awggen .hint{max-width:62ch}
+/* …the 3.1 keys as a fifth group under the 2.0 grid (Edit sheet) and as their own row on the interface page. The key names are
+   long, so a label may wrap rather than push its column wider. */
+.awg3-cap{margin:14px 0 7px;padding-top:10px;border-top:1px dashed var(--line-solid);font-family:var(--mono);font-size:9px;
+  letter-spacing:.06em;text-transform:uppercase;color:var(--awg3)}
+.awg3-cols .awg-f>span{overflow-wrap:anywhere}
+.iface-grid.awg3-row{margin-top:10px}
+/* the switch window: gateways and blocking proxies listed under their notice */
+.awgsw-list{margin:6px 0 4px;padding-left:18px;display:flex;flex-direction:column;gap:3px}
+.awgsw-list .mono{font-size:11.5px;word-break:break-all}
+.awgsw-list.awgsw-facts{margin:0;padding-left:16px;gap:6px}
+.reachev-row.awgdev{cursor:default}
+.reachev-row.awgdev .mono{font-size:11.5px;flex:none}   /* the address is the one column that must not shrink */
+.reachev-filter.awgdev-filter{max-width:none}
 /* interface public key inline next to its label with a small copy icon */
 .ipk-field{display:flex;align-items:center;gap:10px;margin-top:4px;margin-bottom:-6px}
 .ipk-field>label{margin:0;white-space:nowrap}

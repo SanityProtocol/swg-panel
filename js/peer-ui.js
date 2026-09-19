@@ -22,7 +22,7 @@ import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
   Popover, CapList, useCapped, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
   openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, rowSingle, rowDouble, rowNoSelect, RowError,
-  useAnchoredList, goSettings, LogBody, rateCell, uncatPop, ListPager, LIST_PAGE, pageSlice, modalDepth,
+  useAnchoredList, goSettings, LogBody, rateCell, uncatPop, ListPager, LIST_PAGE, pageSlice, modalDepth, tgt3,
 } from "./ui.js";
 import {
   QR, qrDataURL, qrZoom, copyQrImage, buildConf, parseFullConf, downloadConf, getConfig, configOverrides,
@@ -252,7 +252,7 @@ export function UserPeerCard({ peer, onOpen }) {
       // below did not reach it — that branch only renders when no head is passed, and one always is.
       ? uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(lt.status)}</span>`)
       : html`<${Badge} s=${lt.status}/>`}</div>
-    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps" title=${kinds.join(" · ")}>${kinds.length > 1 ? kinds.join(" · ") : plural(targets.length, "deployment")}</span>` : null}</div>
+    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface} gen3=${tgt3(t)}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps" title=${kinds.join(" · ")}>${kinds.length > 1 ? kinds.join(" · ") : plural(targets.length, "deployment")}</span>` : null}</div>
   </div>`;
   // Only a MULTI-config peer opens its own modal (a single-config peer has nothing extra to show — it's already
   // fully presented here). When it does: the whole card opens it EXCEPT the QR image (enlarges) and the action
@@ -1535,10 +1535,10 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
   const ltype = targetType(t);
   const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : esc(T("val|Unassigned"))}</span>`
-    + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-${ltype}">${esc(t.iface)}</span>`;
+    + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-${ltype}${tgt3(t) ? " awg3" : ""}">${esc(t.iface)}</span>`;
 
   return html`<div class="deploy">
-    ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span>${peerUncategorised(t) && lt.status !== "blocked" && lt.status !== "faulty"
+    ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind=${ltype} label=${t.iface} gen3=${tgt3(t)}/><span class="grow"></span>${peerUncategorised(t) && lt.status !== "blocked" && lt.status !== "faulty"
       ? uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(lt.status)}</span>`)
       : html`<${Badge} s=${lt.status}/>`}</div>`}
     <div class="deploy-body">

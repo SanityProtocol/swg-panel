@@ -14,11 +14,11 @@ import {
   Store, api, useStore,
 } from "./store.js";
 import {
-  ifaceIsAll, ifaceMatch, targetType,
+  ifaceIsAll, ifaceMatch, targetType, awgGen,
 } from "./model.js";
 import {
   CapList, Dropdown, Ic, Popover, RowError, SearchBox, StoreOffBanner, Tag, dlul, lifecycleIcon, openConfirm, rateCell, rowDouble,
-  rowNoSelect, rowSingle, secTitle, xferCell,
+  rowNoSelect, rowSingle, secTitle, xferCell, tgt3,
 } from "./ui.js";
 import {
   EV_ACTIONS, EV_ITEMS, evItemLabel, evActionLabel, peerStatusFilters, USER_DEFDIR, activityView, connView, evDecorate,
@@ -158,7 +158,7 @@ export function PeersScreen() {
 
     <div class="section-title"><h2>${agg ? T("Peers") : T("Peers on")}</h2><span class="tags">
       ${node !== "*" ? html`<${Tag} kind="iface" label=${Store.nodeName(node) || "—"} color=${Store.nodeColor(node)}/>` : null}
-      ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface}/>` : null}
+      ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface} gen3=${itype === "awg" && awgGen(node, iface) === "3.1"}/>` : null}
     </span><span class="count">${rows.length}</span></div>
     <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
     <${RowsPager} total=${rows.length} page=${page} pageSize=${pageSize} onPage=${setPage}
@@ -350,7 +350,7 @@ export function UserRow({ user, live, onlineOnly, q }) {
   const _nm = {};
   for (const p of allPeers) for (const t of p.targets) {
     const nn = _nm[t.node] = _nm[t.node] || {};
-    if (!nn[t.iface]) nn[t.iface] = { iface: t.iface, type: targetType(t), count: 0 };
+    if (!nn[t.iface]) nn[t.iface] = { iface: t.iface, type: targetType(t), gen3: tgt3(t), count: 0 };
     nn[t.iface].count++;
   }
   const srvNodes = Object.keys(_nm).map(nid => ({ node: nid, ifaces: Object.values(_nm[nid]).sort((a, b) => a.iface.localeCompare(b.iface)) }))
@@ -377,7 +377,7 @@ export function UserRow({ user, live, onlineOnly, q }) {
           </span>
           <span class="turnbub servbub">${srvNodes.flatMap(n => n.ifaces.map(f => html`<span class="servbub-row">
             <span class="nsrv" style=${"--c:" + Store.nodeColor(n.node)}>${Store.nodeName(n.node)}</span>
-            <${Tag} kind=${f.type} label=${f.iface}/>
+            <${Tag} kind=${f.type} label=${f.iface} gen3=${f.gen3}/>
             <span class="servbub-pc">${plural(f.count, "cap|Peer")}</span>
           </span>`))}</span>
         </span>` : html`<span class="faint">—</span>`}</span>

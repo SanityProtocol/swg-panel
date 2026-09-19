@@ -19,7 +19,7 @@ import { go } from "./router.js";
 import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText, srvVars } from "./i18n.js";
 import { IFACE_COLOR_DEFAULTS, THEME_COLOR_DEFAULT, THEME_COLOR_LIGHT_DEFAULT, THEME_MODES,
          clampBrand, hexLum, pickThemed, resolvedTheme, themeMode } from "./theme.js";
-import { targetType, peerUncategorised } from "./model.js";
+import { targetType, peerUncategorised, awgGen, awgGenPending, nodeStale, tip3 } from "./model.js";
 import { turnColor, turnLabel, turnForkList } from "./turn-catalog.js";
 import { h, render, Fragment } from "preact";
 import { useState, useEffect, useLayoutEffect, useRef } from "preact/hooks";
@@ -389,8 +389,23 @@ export const registerSectionSetter = fn => { _setSection = fn || (() => {}); };
 export const gotoSettingsSection = s => _setSection(s);
 
 // The generic inline tag chip — every dense row signature is built from these. `color` tints via --tgc.
-export function Tag({ kind, label, color, muted }) {
-  return html`<span class=${"tg tg-" + (kind || "gen") + (muted ? " muted" : "")} style=${color && !muted ? "--tgc:" + color : ""}>${label}</span>`;
+// `gen3`: an AWG tag of an AmneziaWG 3.1 interface — the 3.1 colour and its tooltip (docs/AWG3-PLAN.md D-colour); `notip` for a
+// tag that is itself a hover bubble's trigger, where a native tooltip would sit on top of the bubble.
+export function Tag({ kind, label, color, muted, gen3, notip }) {
+  return html`<span class=${"tg tg-" + (kind || "gen") + (gen3 ? " awg3" : "") + (muted ? " muted" : "")} style=${color && !muted ? "--tgc:" + color : ""} ...${notip ? {} : tip3(gen3)}>${label}</span>`;
+}
+// Is this roster target an AWG deployment on an AmneziaWG 3.1 interface? What every protocol tag of a target passes as `gen3`.
+export const tgt3 = t => !!t && awgGen(t.node, t.iface) === "3.1";
+// A generation switch the node has not applied yet (model.js awgGenPending) — from the moment the operator confirms it until the
+// node reports the new version, however long that is: new QR codes already carry the new config, and until the node switches they
+// do not connect. Nothing for an interface with no switch in flight, which is every interface of a 2.0 fleet. `short` on the interface
+// card, where the version is already said by the badge's colour and a long tag squeezes the name.
+export function awgSwitchTag(node, iface, short) {
+  const to = awgGenPending(node, iface);
+  if (!to) return null;
+  return html`<span class="tg tg-pending" title=${nodeStale(node)
+      ? T("{v1} is not reporting — the switch applies when it is back. Until then its clients keep working on the old config, and new QR codes already show the new one.", { v1: Store.nodeName(node) })
+      : T("Waiting for the node to apply it — until then its clients keep working on the old config, and new QR codes already show the new one.")}><${Ic} i="clock"/>${short ? T("tag|switching") : to === "3.1" ? T("tag|switching to 3.1") : T("tag|switching to 2.0")}</span>`;
 }
 
 // ───────────────────────── sheets, section furniture, confirms ─────────────────────────
@@ -816,9 +831,9 @@ export function turnProxyTitle(node, service) {
   const tp = ((Store.stats[node] || {}).turn_proxies || []).find(x => x && x.service === service);
   return (tp && tp.title) || "";
 }
-// The interface badge for one peer-grid row (protocol + iface name).
-export function gridIfaceTag(t) {
-  return html`<${Tag} kind=${targetType(t)} label=${t.iface} muted=${!t.online}/>`;
+// The interface badge for one peer-grid row (protocol + iface name). `notip` where it sits inside a status bubble's trigger.
+export function gridIfaceTag(t, notip) {
+  return html`<${Tag} kind=${targetType(t)} label=${t.iface} muted=${!t.online} gen3=${tgt3(t)} notip=${notip}/>`;
 }
 // …and for a GROUPED row, which stands for several deployments at once. Naming just the representative's
 // interface there is simply wrong — the row is the peer, not that one deployment — so a peer on more than
@@ -832,11 +847,11 @@ export function gridIfacesTag(prim, all) {
   // is a WRAPPING FLEX ROW meant for a handful of chips, and it laid the deployments out side by side.
   // One deployment per line, same as the +N bubble this sits beside.
   return html`<${Popover} hoverOnly cls="tgt-frontpop" popCls="iflistbub"
-    trigger=${html`<${Tag} kind=${targetType(prim)} label=${T("{n} interfaces", { n: ds.length })} muted=${!ds.some(d => d.online)}/>`}>
+    trigger=${html`<${Tag} kind=${targetType(prim)} label=${T("{n} interfaces", { n: ds.length })} muted=${!ds.some(d => d.online)} gen3=${tgt3(prim)} notip=${true}/>`}>
     <span class="tgt-frontlbl">${T("This peer's interfaces")}</span>
     ${ds.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
       <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
-      <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online}/>
+      <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online} gen3=${tgt3(d)}/>
       <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
   <//>`;
 }
@@ -1029,7 +1044,7 @@ export function DepBadge({ others }) {
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>
       ${others.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
         <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
-        <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online}/>
+        <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online} gen3=${tgt3(d)}/>
         <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
     </div><//>` : null}
   </span>`;

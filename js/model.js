@@ -101,6 +101,38 @@ export function kindOf(node, iface, type) {
   if (m) return (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
   return (String(type || "wg").toLowerCase() === "awg") ? "awg" : "wg";
 }
+// ── the AmneziaWG GENERATION of an interface (docs/AWG3-PLAN.md §7.1, §7.7) ─────────────────────────
+// No mode field: an AWG dict holding a HeaderProtectionKey is 3.1, one without is 2.0. The dict the panel serves in
+// `describe` is the RECORD's for the 3.x keys, so a key a node still reports after a switch back does not count.
+// ONE question, asked here, for every badge, sheet and window — never a second copy of the test at a call site.
+export const awgDict3 = a => !!(a && String(a.HeaderProtectionKey || "").trim());
+// Why the panel would refuse to make this interface 3.1 (its perr, from /api/state), or null. An interface on the userspace
+// fallback has its own answer (`awg31_no_us`) — judged by that fallback, not by the module — and it wins; every other one takes
+// the node's (`awg31_no`), which is also the create form's. Never the rule re-derived here.
+export function awg31No(nrec, iface) {
+  const us = (nrec || {}).awg31_no_us;
+  return (us && Object.prototype.hasOwnProperty.call(us, iface)) ? us[iface] : ((nrec || {}).awg31_no || null);
+}
+export function awgGen(node, iface) {
+  const m = (Store.describe[node] || {})[iface], a = m && m.awg_params;
+  return (a && Object.keys(a).length) ? (awgDict3(a) ? "3.1" : "2.0") : null;
+}
+// What every AWG badge of an interface adds when it is 3.1 (D-colour): the `.awg3` colour and a tooltip, so colour is not
+// the only carrier. A 2.0 interface gets "" and {} — no class, and no title ATTRIBUTE, spread in with `...${}`: Preact writes
+// `title=${null}` as title="", which is not nothing — an empty title hides the tooltip of the element around the badge. For the
+// same reason the 3.1 badge carries its own `key`: a switch back remounts it instead of leaving the cleared title="" behind.
+export const tip3 = (on, id) => on ? { title: T("AmneziaWG 3.1"), key: "awg3" + (id ? ":" + id : "") } : {};
+export const awg3Cls = (node, iface) => awgGen(node, iface) === "3.1" ? " awg3" : "";
+export const awg3Tip = (node, iface) => tip3(awgGen(node, iface) === "3.1", node + "|" + iface);   // keyed by the interface: badges in a list are siblings
+// A switch the node has not applied yet — the version the panel's record (what configs render) asks for, when the node still
+// reports the other one; null when nothing is in flight. `awg_reported` exists only where the panel holds a record. Compared
+// by generation, never key by key, so a 2.0 interface whose node lags on some 2.0 value never reads as a switch.
+export function awgGenPending(node, iface) {   // (the tag that says so: awgSwitchTag in ui.js)
+  const m = (Store.describe[node] || {})[iface];
+  if (!m || !m.awg_reported || !m.awg_params) return null;
+  const want = awgDict3(m.awg_params);
+  return want === awgDict3(m.awg_reported) ? null : (want ? "3.1" : "2.0");
+}
 /* ── how a node was DEPLOYED, and what OWNS that installation ──────────────────────────────────
    Two different facts, and a NixOS host running our image answers BOTH: it is a container for every
    behavioural purpose (`kind`) and its installation belongs to its configuration (`platform`).

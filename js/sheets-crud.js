@@ -17,7 +17,7 @@ import { targetType, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSu
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
          turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised } from "./model.js";
 import { turnFork, turnColor, turnForkList } from "./turn-catalog.js";
-import { Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, CapList, capShown, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
+import { Ic, ICON, Tag, tgt3, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, CapList, capShown, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
 import {
   genKeys, genPSK, buildConf, parseFullConf, downloadConf, getConfig, configOverrides, QR, qrDataURL,
   subFeatureOn, subPublishOrPrompt, ensureVaultUnlocked, subSKCached, VaultPromptSheet, ensurePeerBlob,
@@ -96,8 +96,8 @@ export function PeerBlockGrid({ peers, mode, act }) {
           // they are on the deployment cards — the operator was already used to clicking them there and had
           // to leave this sheet to do it. Left plain in the unassigned pool: publishing is about what a
           // HOLDER is offered, and an unassigned peer has no holder for the switch to mean anything to.
-          ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${p} dim=${!t.online}/><${PubTag} peer=${p} src=${targetType(t)} label=${targetType(t)} dim=${!t.online}/>`
-          : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/><${Tag} kind=${targetType(t)} label=${targetType(t)}/>`) : null}</span>
+          ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${p} dim=${!t.online}/><${PubTag} peer=${p} src=${targetType(t)} label=${targetType(t)} dim=${!t.online} gen3=${tgt3(t)}/>`
+          : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface}/><${Tag} kind=${targetType(t)} label=${targetType(t)} gen3=${tgt3(t)}/>`) : null}</span>
         <span class="pg2-c pg2-ifn">${t.node ? t.iface : ""}</span>
         <span class="pg2-c pg2-ip">${t.node ? (String(t.ip || "").split("/")[0] || "—") : ""}</span>
         <span class="pg2-c pg2-ctl">${i === 0 ? html`<${Fragment}>${mode === "mine" ? html`<button type="button" class="pg2-act add" title=${T("Add or edit interface deployments")} onClick=${() => openAddTarget(p)}><${Ic} i="plus"/></button>` : null}<button type="button" class=${"pg2-act " + mode} title=${mode === "mine" ? T("Unassign from this user") : T("Assign to this user (keeps its key)")} onClick=${() => act(p)}><${Ic} i=${mode === "mine" ? "link" : "plus"}/></button><//>` : null}</span>
@@ -283,7 +283,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
         <span class="tp">${t.iface}</span>
         ${t.missing ? html`<span class="topt-missing" title=${T("This interface is gone from the node — uncheck to remove this deployment from the peer")}>${T("tag|missing")}</span>` : null}</label>
       <div class="topt-right hasprim">
-        ${(pubPeer && pubHave.has(k)) ? html`<${PubTag} peer=${pubPeer} src=${ity} label=${ity}/>` : html`<${Tag} kind=${ity} label=${ity}/>`}
+        ${(pubPeer && pubHave.has(k)) ? html`<${PubTag} peer=${pubPeer} src=${ity} label=${ity} gen3=${tgt3(t)}/>` : html`<${Tag} kind=${ity} label=${ity} gen3=${tgt3(t)}/>`}
         ${t.missing ? null : html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${(pubPeer && pubHave.has(k)) ? pubPeer : null}/>`}
         ${(s && (s.wdtt || s.csqtt || isSelfContainedKind(ity)))
           // `ity` (the interface's real type), not just the flag set when a row is TOGGLED: an already-deployed
@@ -658,7 +658,7 @@ export function PeerViewSheet({ pid, node, iface }) {
           ? uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(t.status)}</span>`)
           : badgeWithReason(t.status, t.status === "blocked" ? blockedReason(t.type) : statusReason(t.status))}
           <span class="tags">
-            <${PubTag} peer=${p} src=${proto} label=${proto} dim=${!t.online}/>
+            <${PubTag} peer=${p} src=${proto} label=${proto} dim=${!t.online} gen3=${tgt3(t)}/>
             ${turnEnabled() ? html`<${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${p} dim=${!t.online}/>` : null}
           </span>
           <span class="grow"></span>
@@ -985,7 +985,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
           <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
           <div class="topt-right hasprim">
             <${RoleToggle} peer=${peer} t=${t} compact=${true}/>
-            <${PubTag} peer=${live} src=${ity} label=${ity} dim=${!t.online}/>
+            <${PubTag} peer=${live} src=${ity} label=${ity} dim=${!t.online} gen3=${tgt3(t)}/>
             <${TargetFrontBadge} node=${t.node} iface=${t.iface} peer=${live}/>
             ${sc
               ? html`<span class="topt-ip faint" title=${ity === "csqtt" ? T("csqtt assigns the address on connect") : T("WDTT assigns the address on connect")}>${T("val|auto IP")}</span>`

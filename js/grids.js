@@ -82,7 +82,7 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             // ⚠️ THE NETWORKS CHIP IS ITS OWN HOVER BUBBLE, so it must not sit inside the status wrappers below:
             // .turnwrap opens its bubble on any hover in its subtree, and uncatPop is a Popover around whatever it is
             // handed — with the chip inside either, hovering it opened two bubbles at once, anchored differently.
-            const ifaceB = loc ? gridIfaceTag(t) : null;
+            const ifaceB = loc ? gridIfaceTag(t, live) : null;   // live: inside the status bubbles below — no native tooltip over them
             const gwB = loc ? gw : null;   // the Private tag is not here: it rides the title — see titleCell
             if (!live) return html`${gridStatusBadge(t, p, re)}${ifaceB}${gwB}`;
             const dot = html`<span class=${"condot " + (t.status === "faulty" ? "faulty" : t.status === "blocked" ? "blocked" : t.online ? "on" : "off")}></span>`;

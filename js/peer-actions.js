@@ -15,7 +15,7 @@
 import { T, Tsplit, plural, locale } from "./i18n.js";   // locale: dates in the panel's language, not the browser's
 import { tkey, seen, targetRole } from "./util.js";
 import { Store, api, useStore } from "./store.js";
-import { targetType, iTypeOf, ghostIface, ghostPeers, peerSubSources, subHidden, subHides, isSelfContainedTgt } from "./model.js";
+import { targetType, iTypeOf, ghostIface, ghostPeers, peerSubSources, subHidden, subHides, isSelfContainedTgt, awgDict3 } from "./model.js";
 import { searchMatch, revealAssignedPeer } from "./views.js";
 import { Ic, toast, mutate, openModal, pushModal, openConfirm, closeModal, closeAllModals, closeModals, Tag,
          Portal, useAnchoredList } from "./ui.js";
@@ -257,7 +257,9 @@ export function openRecreateRekey(node, iface, back) {
                 keepalive: typeof g.keepalive === "number" ? g.keepalive : null,
                 // the device-access level, for the same reason: the sheet posts one unconditionally and create writes it
                 // onto the warm record, so an unseeded level resets a chosen Everyone or Nobody (DEVICE-ACCESS §11.2 F1)
-                reach: g.reach || null };
+                reach: g.reach || null,
+                // …and the AmneziaWG version it had, so a Settings preset of 3.1 cannot turn a 2.0 interface into a 3.1 one
+                gen: proto === "awg" ? (awgDict3(g.awg_params) ? "3.1" : "2.0") : null };
   const rekeyable = peers.filter(p => p.user_id).map(p => p.id);   // only ASSIGNED peers can be rekeyed (rekey needs a holder)
   // `warm` — the panel holds this interface's saved config, so the sheet is showing what it WAS rather than
   // what could be guessed from its peers. The notice says which, because "review the settings below" is only
@@ -453,10 +455,10 @@ export function pubState(peer, src) {
 // Classes shared by every publish switch, whatever it renders inside.
 export const pubCls = (st, extra) => "pubtg" + (st.hidden ? " off" : "") + (st.only ? " lone" : "") + (extra ? " " + extra : "");
 
-export function PubTag({ peer, src, label, kind, dim }) {
+export function PubTag({ peer, src, label, kind, dim, gen3 }) {   // gen3: an AWG deployment on an AmneziaWG 3.1 interface wears its colour
   useStore();                                            // the flag lives in the roster — re-render when a poll lands
   const st = pubState(peer, src);
-  return html`<button type="button" class=${"tg tg-" + (kind || src) + " " + pubCls(st, dim ? "dim" : "")}
+  return html`<button type="button" class=${"tg tg-" + (kind || src) + (gen3 ? " awg3" : "") + " " + pubCls(st, dim ? "dim" : "")}
     title=${st.title} aria-pressed=${!st.hidden} onClick=${e => { e.preventDefault(); e.stopPropagation(); st.flip(); }}>${label}${st.hidden ? html`<${Ic} i="off"/>` : null}</button>`;
 }
 

@@ -10087,8 +10087,10 @@ def awg3_check(d):
 
 def awg_gen_reported(snap):
     """Does this node report its AmneziaWG generation (`datapath.awg.gen`)? Every node that knows the 3.x keys does, on every
-    snapshot — so False means an older node, which must be sent none of them and asked for no switch (§7.2, §7.8)."""
-    return isinstance((((snap if isinstance(snap, dict) else {}).get("datapath") or {}).get("awg") or {}).get("gen"), dict)
+    snapshot — so False means an older node, which must be sent none of them and asked for no switch (§7.2, §7.8).
+    Read through _awg_datapath: a snapshot is remote input, and since P3 this runs inside the /api/state loop (awg31_no),
+    where one node's malformed `datapath` must never fail the poll for every node."""
+    return isinstance(_awg_datapath(snap).get("gen"), dict)
 
 
 def awg_gen_refusal(snap, name, iface=None):
@@ -10099,7 +10101,7 @@ def awg_gen_refusal(snap, name, iface=None):
     unlocks itself when it moves."""
     if not awg_gen_reported(snap):
         return perr("{v1}: this node does not report its AmneziaWG version — update it", v1=name)
-    g = snap["datapath"]["awg"]["gen"]
+    g = {k: v for k, v in _awg_datapath(snap)["gen"].items() if isinstance(v, str)}   # a version is a string; anything else is none
     order = {"2.0": 0, "3.0": 1, "3.1": 2}
     on_fallback = bool(iface) and iface in (_awg_datapath(snap).get("userspace") or [])
     if g.get("module") and not on_fallback and order.get(g.get("module"), -1) < 2:
@@ -16961,6 +16963,14 @@ def api(method, path, qs, body, deps):
                         # classification rather than only that someone on the interface is.
                         "doh_peers": (snap.get("doh_peers") or {}),
                         "datapath_broken": bool(_awg_datapath(snap).get("needed") and not _awg_datapath(snap).get("ok") and not _awg_datapath(snap).get("fallback")),   # awg kernel module unloadable → offer "repair node" (node self-update rebuilds it) even when up-to-date
+                        # Why a NEW interface here cannot be AmneziaWG 3.1 — the panel's own refusal (perr), None when it can. The
+                        # create form greys its 3.1 switch with this sentence rather than re-deriving the rule (docs/AWG3-PLAN.md §7.7).
+                        "awg31_no": awg_gen_refusal(snap, c.get("name", nid)),
+                        # …and, per interface, where the answer can differ: one running on the userspace fallback is judged by that
+                        # fallback, not by the module (awg_gen_refusal's on_fallback) — the Edit sheet's switch reads it from here.
+                        # Absent on a node with no interface on the fallback, which is every node with its kernel module in place.
+                        **({"awg31_no_us": {i: awg_gen_refusal(snap, c.get("name", nid), i) for i in _awg_datapath(snap)["userspace"]}}
+                           if _awg_datapath(snap).get("userspace") else {}),
                         # a node self-update can REPAIR: bare-metal → rebuild the awg DKMS module; docker → `compose pull && up`
                         # recreates a crashed container / userspace datapath. True when there's such an issue AND the node is up.
                         "repairable": bool(
@@ -17174,6 +17184,7 @@ def api(method, path, qs, body, deps):
         idf = incoming.get("interface_defaults")
         if isinstance(idf, dict):
             dns = idf.get("dns")
+            _ag = idf.get("awg_gen") if idf.get("awg_gen") in ("2.0", "3.1") else (cur.get("interface_defaults") or {}).get("awg_gen")
             cur["interface_defaults"] = {
                 "dns": (dns if isinstance(dns, list) else [s.strip() for s in str(dns or "").split(",") if s.strip()]),
                 "mtu": int(idf.get("mtu") or 1280),
@@ -17185,6 +17196,11 @@ def api(method, path, qs, body, deps):
                 # key missing here is dropped by every save. A save that does not carry it (an older tab) keeps the stored one.
                 "reach": (idf.get("reach") if idf.get("reach") in REACH_LEVELS
                           else ((cur.get("interface_defaults") or {}).get("reach") or "user"))}
+            # The AmneziaWG version the create form's switch starts on (D-default, docs/AWG3-PLAN.md §6) — a preset in the
+            # browser, never a parameter: the panel-wide awg_params above stay 2.0. Stored only as "3.1" (2.0 is its
+            # absence, so a fleet that never picks 3.1 keeps the file it has); a save that does not carry it keeps the stored one.
+            if _ag == "3.1":
+                cur["interface_defaults"]["awg_gen"] = "3.1"
         if "mesh_awg" in incoming:   # default AmneziaWG obfuscation for new mesh links ({} = auto per link)
             cur["mesh_awg"] = sanitize_awg_params(incoming.get("mesh_awg"))
         mir = incoming.get("mirrors")

@@ -382,7 +382,7 @@ export function RankBars({ rows }) {
     // a talker aggregating several peers carries a per-peer breakdown, shown on hover as its own mini bar list
     const bmx = (r.bub && r.bub.length) ? Math.max(1, ...r.bub.map(b => b.value || 0)) : 1;
     const bub = (r.bub && r.bub.length) ? html`<span class="rb-bub">${r.bub.map(b => html`<${Fragment}>
-        <span class="rb-bub-n">${b.kind ? html`<${Tag} kind=${b.kind} label=${b.kind}/>` : ""}<span class="rb-bub-nm" title=${b.name}>${b.name}</span></span>
+        <span class="rb-bub-n">${b.kind ? html`<${Tag} kind=${b.kind} label=${b.kind} gen3=${b.gen3}/>` : ""}<span class="rb-bub-nm" title=${b.name}>${b.name}</span></span>
         <span class="rb-bub-track"><i style=${"width:" + Math.max(3, (b.value || 0) / bmx * 100) + "%;background:" + (r.color || "var(--brand)")}></i></span>
         <span class="rb-bub-v">${b.sub}</span><//>`)}</span>` : null;
     // rows with an href/onClick are interactive; rows without (e.g. destinations — nothing to open) render static

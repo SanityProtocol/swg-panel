@@ -13,7 +13,7 @@ import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
-         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName } from "./model.js";
+         turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3 } from "./model.js";
 import { turnFork, turnLabel, turnColor, turnForkList, forkProduct, forkPickLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
@@ -22,7 +22,7 @@ import {
   dismissNodeProc, dismissHostProc, statusLabel, LogBody, logRaw, useReorder, GRIP_SVG,
   orderById, rowSingle, rowDouble, rowNoSelect, RowError, goSettings, ifaceReady, ifaceWasBusy, ifaceFlash, adoptSeen,
   trackIfaceOps, StoreOffBanner, ifaceColor, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
-  rate,
+  rate, awgSwitchTag,
 } from "./ui.js";
 import { T, Trich, Tsplit, plural, pluralWord, srvText, srvVars } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
@@ -413,7 +413,7 @@ export function NodeDetail({ node: rawName }) {
                 onClick=${e => { e.preventDefault(); e.stopPropagation(); }}><${LossPop} l=${_lk} pl=${_pl}
                   peerName=${Store.nodeName(peer)} node=${name} iface=${ifn} trigger=${_val}/></span></div>`;
             })()}
-            ${carried.length ? html`<div class="ifrow"><span class="l">${T("Carrying")}</span><span class="r"><span class="carry-tags">${carried.map(k => html`<span class=${"tg tg-" + ((meta[k].awg_params && Object.keys(meta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`)}</span></span></div>` : null}
+            ${carried.length ? html`<div class="ifrow"><span class="l">${T("Carrying")}</span><span class="r"><span class="carry-tags">${carried.map(k => html`<span class=${"tg tg-" + ((meta[k].awg_params && Object.keys(meta[k].awg_params).length) ? "awg" : "wg") + awg3Cls(name, k)} ...${awg3Tip(name, k)}>${k}</span>`)}</span></span></div>` : null}
           </div></div>`;
       })}</div>
     <//>` : null}
@@ -448,7 +448,7 @@ export function NodeDetail({ node: rawName }) {
         // client-optimistic create: the FULL card with the values just entered, dimmed + "creating" + × in the
         // header — identical layout to the turn-proxy optimistic card. Shown until the node reports the iface.
         const optIfCard = (ifn, e) => html`<div class="ifcard down" key=${"new:" + ifn}>
-          <div class="ifcard-top"><span class=${"iftype " + (e.type || "turn")}>${e.type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span>${(() => {
+          <div class="ifcard-top"><span class=${"iftype " + (e.type || "turn") + (e.gen === "3.1" ? " awg3" : "")} ...${tip3(e.gen === "3.1")}>${e.type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span>${(() => {
               // A create that FAILED left this card reading "creating" for ever: the optimistic card clears only
               // when the node reports the interface, and a failed one never arrives — so the card sat in-progress
               // next to its own error icon. If the node reported an error for this name, say so instead.
@@ -474,7 +474,7 @@ export function NodeDetail({ node: rawName }) {
           const _t = g.type || (_w ? "wdtt" : (_m.awg_params && Object.keys(_m.awg_params).length) ? "awg" : "wg");
           const _port = _w ? String(_w.listen || "").split(":").pop() : "";
           return html`<div class=${"ifcard pending down"} key=${"del:" + ifn}>
-            <div class="ifcard-top"><span class=${"iftype " + _t}>${_t === "wdtt" ? "WDTT" : _t}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/></div>
+            <div class="ifcard-top"><span class=${"iftype " + _t + (_t === "awg" && (g.gen3 || awgDict3(_m.awg_params)) ? " awg3" : "")} ...${tip3(_t === "awg" && (g.gen3 || awgDict3(_m.awg_params)))}>${_t === "wdtt" ? "WDTT" : _t}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/></div>
             <div class="ifcard-rows">
               <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${g.listen || (_w
                 ? (_w.fork || "wdtt") + (_port ? ":" + _port : "")
@@ -539,7 +539,7 @@ export function NodeDetail({ node: rawName }) {
             : goneSentence(T("The node no longer reports interface {iface} (subnet {subnet}). {verdict}, so Restore recreates it with a new key — clients re-import.",
                 { iface: ifn, subnet: mi.subnet || "?" }), false, T("Its original server key can't be recovered"));
           return html`<a class="ifcard missing" key=${"missing:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${T("Open the interface (read-only) — peers, saved config, and Restore")}>
-            <div class="ifcard-top"><span class=${"iftype " + mtype}>${mtype}</span><span class="ifname">${ifn}</span><span class="grow"></span>
+            <div class="ifcard-top"><span class=${"iftype " + mtype + (awgDict3(mi.awg_params) ? " awg3" : "")} ...${tip3(awgDict3(mi.awg_params))}>${mtype}</span><span class="ifname">${ifn}</span><span class="grow"></span>
               <button class="mi-restore" disabled=${blocked || !mi.ripe} title=${mi.ripe ? T("Recreate this interface with its original identity — recovers every peer on it") : T("Confirming it's really gone (a couple of minutes) before Restore is offered")} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> ${T("Restore")}</button>
               <${StatusTag} cls="tg-del" icon="warn" label="missing" title=${T("This interface is gone from the node")}/></div>
             <div class="ifcard-rows"><div class="mi-text">${sentence}</div></div></a>`; };
@@ -938,7 +938,7 @@ export function NodeDetail({ node: rawName }) {
               const idim = deleting || idown || istopped || irestarting || iopBusy || !!iprog || !!(nrec.cmd_errors || {})[ifn];
               const iflash = ifaceFlash[name + "|" + ifn] && Date.now() < ifaceFlash[name + "|" + ifn];
               return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + (blocked ? " locked" : "") + (iflash ? " flash" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
-                <div class="ifcard-top"><span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>${(blocked || iopBusy || deleting || irestarting) ? html`<span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>` : html`<button class="ifc-edit" title=${T("Edit interface · {v1}", { v1: type.toUpperCase() })} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditIface(name, ifn); }}><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span>${_unmanaged.has(ifn) ? html`<span class="tg tg-pending" title=${T("The node runs this interface, but this panel holds no record of it: nothing here manages its peers or its settings, and a rebuild can't bring it back. Adopt it from Create new interface, giving it this exact name — the node then adds it to what it manages without touching the peers already on it.")}><${Ic} i="info"/>${T("tag|unclaimed")}</span>` : null}${ifaceTurnBadges(name, fwdTurns, tight)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title=${T("Working on the node")}/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${ifopBusy(iop.verb)}</span>` : iconverting ? html`<span class="tg tg-convert" title=${T("The node is converting between bare-metal and docker")}><${Ic} i="clock"/>${T("tag|converting")}</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title=${T("Command failed on the node")}/>` : istopped ? html`<span class="tg-off" title=${T("Stopped by you — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || (T("interface is down on the node — awg-quick couldn't bring it up: {v1}", { v1: idown }))} title=${T("Interface down on the node")}/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${T("tag|restarting")}</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title=${T("Command failed on the node")}/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title=${T("A setting was edited directly on the server — open to Adopt or Restore")}><${Ic} i="warn"/>${T("tag|modified")}</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>${T("tag|ready")}</span>` : null)}</div>
+                <div class="ifcard-top"><span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>${(blocked || iopBusy || deleting || irestarting) ? html`<span class=${"iftype " + type + awg3Cls(name, ifn)} ...${awg3Tip(name, ifn)}>${type}</span><span class="ifname">${ifn}</span>` : html`<button class="ifc-edit" title=${T("Edit interface · {v1}", { v1: type.toUpperCase() })} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditIface(name, ifn); }}><span class=${"iftype " + type + awg3Cls(name, ifn)} ...${awg3Tip(name, ifn)}>${type}</span><span class="ifname">${ifn}</span><span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span>${_unmanaged.has(ifn) ? html`<span class="tg tg-pending" title=${T("The node runs this interface, but this panel holds no record of it: nothing here manages its peers or its settings, and a rebuild can't bring it back. Adopt it from Create new interface, giving it this exact name — the node then adds it to what it manages without touching the peers already on it.")}><${Ic} i="info"/>${T("tag|unclaimed")}</span>` : null}${ifaceTurnBadges(name, fwdTurns, tight)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title=${T("Working on the node")}/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${ifopBusy(iop.verb)}</span>` : iconverting ? html`<span class="tg tg-convert" title=${T("The node is converting between bare-metal and docker")}><${Ic} i="clock"/>${T("tag|converting")}</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title=${T("Command failed on the node")}/>` : istopped ? html`<span class="tg-off" title=${T("Stopped by you — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || (T("interface is down on the node — awg-quick couldn't bring it up: {v1}", { v1: idown }))} title=${T("Interface down on the node")}/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${T("tag|restarting")}</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title=${T("Command failed on the node")}/>` : awgSwitchTag(name, ifn, true) ? awgSwitchTag(name, ifn, true) : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title=${T("A setting was edited directly on the server — open to Adopt or Restore")}><${Ic} i="warn"/>${T("tag|modified")}</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>${T("tag|ready")}</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1193,7 +1193,7 @@ export const IfaceTag = (node, { ifn, type, muted }) => {
   const stop = e => e.stopPropagation();        // the fleet card is itself a link; the ribbon has nothing to bubble to
   return (op && op.phase === "busy")
     ? html`<a class="tg tg-busy" href=${href} onClick=${stop}><${Ic} i="clock"/>${ifn} ${ifopBusy(op.verb)}</a>`
-    : html`<a class=${"tg tg-" + type + (muted ? " muted" : "")} href=${href} onClick=${stop}>${ifn}</a>`;
+    : html`<a class=${"tg tg-" + type + (type === "awg" ? awg3Cls(node, ifn) : "") + (muted ? " muted" : "")} ...${type === "awg" ? awg3Tip(node, ifn) : {}} href=${href} onClick=${stop}>${ifn}</a>`;
 };
 // interface tags for a node: each iface coloured by protocol, linking to its detail.
 export const ifaceTags = node => nodeIfaces(node).map(x => IfaceTag(node, x));

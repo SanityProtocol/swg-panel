@@ -19,11 +19,11 @@ import {
   turnColor, turnFork, turnForkList, forkLabel,
 } from "./turn-catalog.js";
 import {
-  targetType,
+  targetType, awgDict3, tip3,
 } from "./model.js";
 import {
   Badge, Popover, STATUS_RANK, Sheet, StoreOffBanner, closeModal, dlul, ifaceColor, modalDepth, openModal,
-  rateCell, secTitle, toast, xferCell,
+  rateCell, secTitle, toast, xferCell, tgt3,
   Ic,
   rate,
 } from "./ui.js";
@@ -68,14 +68,15 @@ export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presenc
   let sync = T("no data"); if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); sync = live ? T("{v1} ago", { v1: seen(a) }) : T("stale · {v1}", { v1: seen(a) }); }
   const al = healthAlerts(health);
   // client interface-type badges — one per type present, "awg" / "awg ×5" (mesh/system ifaces excluded)
-  const ifs = Store.describe[n.id] || {}; let wg = 0, awg = 0;
-  for (const ifn in ifs) { const m = ifs[ifn]; if (!m || m.system) continue; if (m.awg_params && Object.keys(m.awg_params).length) awg++; else wg++; }
+  // An AmneziaWG 3.1 interface is counted on its own badge, in the 3.1 colour (docs/AWG3-PLAN.md D-colour) — one badge per colour.
+  const ifs = Store.describe[n.id] || {}; let wg = 0, awg = 0, awg3 = 0;
+  for (const ifn in ifs) { const m = ifs[ifn]; if (!m || m.system) continue; if (awgDict3(m.awg_params)) awg3++; else if (m.awg_params && Object.keys(m.awg_params).length) awg++; else wg++; }
   const wdtt = ((Store.stats[n.id] || {}).wdtt || []).filter(w => w && w.iface).length;   // WDTT interfaces (own their TUN; not in describe)
   const csqtt = ((Store.stats[n.id] || {}).csqtt || []).filter(c => c && c.iface).length;   // csqtt interfaces (own their raw TUN; not in describe)
-  const ifBadges = []; if (awg) ifBadges.push(["awg", awg]); if (wg) ifBadges.push(["wg", wg]); if (wdtt) ifBadges.push(["wdtt", wdtt]); if (csqtt) ifBadges.push(["csqtt", csqtt]);
+  const ifBadges = []; if (awg) ifBadges.push(["awg", awg]); if (awg3) ifBadges.push(["awg", awg3, true]); if (wg) ifBadges.push(["wg", wg]); if (wdtt) ifBadges.push(["wdtt", wdtt]); if (csqtt) ifBadges.push(["csqtt", csqtt]);
   return html`<a class=${"fnode " + (live ? "" : "stale")} href=${"#/node/" + encodeURIComponent(n.id)}>
     <div class="fnode-main">
-      <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span>${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c]) => html`<span key=${t} class=${"iftype " + t}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}<span class="rowarrow"><${Ic} i="arrow"/></span></div>
+      <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span>${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c, g3]) => html`<span key=${t + (g3 ? "3" : "")} class=${"iftype " + t + (g3 ? " awg3" : "")} ...${tip3(g3)}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}<span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
         <div><span class="fl">${T("Throughput")}</span>${trafCell}</div>
         <div><span class="fl">${T("status|Online")}</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${histRange} trigger=${(c, w) => html`<span class="faint">${plural(c, w || "user")}</span>`}/></span></div>
@@ -1406,7 +1407,7 @@ export function Overview() {
       // Each row carries its protocol (wg/awg, from the live interface) + a name: the peer's title, or — when it has
       // none — "Peer .<last octet of its tunnel IP>" (e.g. 10.99.3.43 → "Peer .43"), never the user's name.
       bub: peers.length > 1 ? peers.map(pp => { const t = (pp.p.targets || [])[0] || {}; const oct = (t.ip || "").split(".").pop();
-        return { kind: targetType(t), name: pp.p.title || (oct ? T("Peer .{v1}", { v1: oct }) : T("Peer")), value: pp.rx + pp.tx,
+        return { kind: targetType(t), gen3: tgt3(t), name: pp.p.title || (oct ? T("Peer .{v1}", { v1: oct }) : T("Peer")), value: pp.rx + pp.tx,
           sub: dRanged ? xferCell(...dlul(pp.rx, pp.tx)) : rateCell(pp.rx, pp.tx) }; }) : null,
       color: dashRankColor(i, "talker"), href: "#/users",
       onClick: e => { e.preventDefault(); g.user ? revealUser(g.user.id) : revealPeer(g.sample); },

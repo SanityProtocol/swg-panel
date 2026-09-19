@@ -18,9 +18,9 @@ import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
   TURN_FORKS_FALLBACK, turnLabel, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel, forkPickLabel,
-  forkSupportsAwg, turnColor, turnClientColor, turnClientAuthor,
+  forkSupportsAwg, forkSupportsAwg3, turnColor, turnClientColor, turnClientAuthor,
 } from "./turn-catalog.js";
-import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLooping, turnLoopMins, turnProxiesFor, wdttOn,
+import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLooping, turnLoopMins, turnProxiesFor, wdttOn, awg3Cls, awg3Tip, awgGen,
          isWdttName, isSelfContainedName, turnIfaceNameError,
          suggestPort, portHolder, portErrMsg, nextWdttName, cidrNet, subnetsOverlap, subnetFleetConflict,
          subnetServerAddr, suggestSubnet, ghostIface } from "./model.js";
@@ -129,6 +129,9 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
   const lp = portOf(tp.connect);
   const fronted = Object.keys(metas).find(i => String((metas[i] || {}).listen_port) === lp);
   const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
+  // A proxy whose app carries AmneziaWG 2.0 only, in front of a 3.1 interface — the panel refuses to make it so, but one taken
+  // over as it ran, or pointed by an older panel, can already be there: its clients cannot connect, and nothing else says so.
+  const off3 = !!fronted && !forkSupportsAwg3(turnFork(tp.service)) && awgGen(node, fronted) === "3.1";
   const _pendRaw = (nrec.turn_pending || {})[tp.service];
   const pend = _pendRaw === "title" ? undefined : _pendRaw;   // a cosmetic title rename is not a disruptive pending — never dim / "creating" / busy the card for it
   const err = (nrec.cmd_errors || {})[tp.service];
@@ -198,7 +201,7 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
           onClick=${e => { e.preventDefault(); e.stopPropagation(); }}><${ProxyDropsPop} d=${_pd} service=${tp.service}
             trigger=${html`<span class="dp-num" style=${"color:" + lossColor(Math.min(5, (_pd.per_min || 0) / 20))}>${dropRate(_pd.per_min)}${T("unit|/min")}</span>`}/></span></div>`;
       })()}
-      ${showForwards ? html`<div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + ((nodeStale(node) || ifaceNotUp(node, fronted)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
+      ${showForwards ? html`<div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + awg3Cls(node, fronted) + ((nodeStale(node) || ifaceNotUp(node, fronted)) ? " muted" : "")} ...${awg3Tip(node, fronted)} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}${off3 ? html` <span class="tg tg-warn" title=${T("{v1} runs AmneziaWG 3.1, and this proxy's app carries AmneziaWG 2.0 only — its clients cannot connect. Point it at a 2.0 interface.", { v1: fronted })}><${Ic} i="warn"/>${T("tag|2.0 app")}</span>` : null}</span></div>` : null}
     </div></div>`;
 }
 
@@ -249,7 +252,7 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
       <div class="ifcard-rows">
         <div class="ifrow"><span class="l">${T("Turn-proxy fork")}</span><span class="r">${turnFork(svc)}</span></div>
         <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${d.listen || "—"}</span></div>
-        <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
+        <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + awg3Cls(node, fronted)} ...${awg3Tip(node, fronted)} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
       </div></div>`; };
   return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length + wdttInsts.length + csqttInsts.length}
       actions=${nrec.turn_manage ? html`<${Fragment}>${(() => {
@@ -430,12 +433,15 @@ export function TurnManageSheet({ node, tp }) {
   const [lport, setLport] = useState(lp);
   const tperr = portErrMsg(node, lport, [lp]);   // live listen-port collision check (this proxy's own port doesn't count)
   const allIfaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isSelfContainedName(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isSelfContainedName(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length,
+                        awg3: awgGen(node, n) === "3.1" }))   // the version the panel's record gives it — what its clients are handed
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
-  // this proxy's fork is fixed here; a WireGuard-only fork can't front an AmneziaWG interface → hide awg ones
+  // this proxy's fork is fixed here; a WireGuard-only fork can't front an AmneziaWG interface → hide awg ones — and a fork
+  // whose app carries AmneziaWG 2.0 only (WINGS-N) can't front a 3.1 one, which the panel refuses (docs/AWG3-PLAN.md D-apps)
   const fork = turnFork(svc);
-  const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
+  const ifaces = allIfaces.filter(i => (forkSupportsAwg(fork) || !i.awg) && (forkSupportsAwg3(fork) || !i.awg3));
   const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
+  const hideAwg3 = forkSupportsAwg(fork) && !forkSupportsAwg3(fork) && allIfaces.some(i => i.awg3);
   const conPort = con.includes(":") ? con.slice(con.lastIndexOf(":") + 1) : con;
   const match = ifaces.find(i => i.port === conPort);
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
@@ -549,6 +555,7 @@ export function TurnManageSheet({ node, tp }) {
         options=${[...ifaces.map(i => ({ value: i.name, label: i.name + " · 127.0.0.1:" + i.port })),
                    { value: "__custom__", label: T("Custom IP:Port…") }]}/>
       ${hideAwg ? html`<div class="hint">${T("{v1} is WireGuard-only — AmneziaWG interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
+      ${hideAwg3 ? html`<div class="hint">${T("{v1} serves an app that carries AmneziaWG 2.0 only — AmneziaWG 3.1 interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
     </div>
     ${isCustom ? html`<${Fragment}>
       <div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>
@@ -1582,11 +1589,12 @@ export function SetupTurnSheet({ node, forwardIface }) {
   const snap = Store.stats[node] || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";
   const allIfaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isSelfContainedName(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isSelfContainedName(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length,
+                        awg3: awgGen(node, n) === "3.1" }))   // the version the panel's record gives it — what its clients are handed
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
   // launched from an interface's page → pre-select it as the forwards-to (and, if it's AmneziaWG, start on a fork that can front it)
   const fwdPre = forwardIface ? allIfaces.find(i => i.name === forwardIface) : null;
-  const [fork, setFork] = useState(((fwdPre && fwdPre.awg ? FORKS.find(x => forkSupportsAwg(x.id)) : null) || FORKS[0] || turnForkList()[0]).id);
+  const [fork, setFork] = useState(((fwdPre && fwdPre.awg ? FORKS.find(x => forkSupportsAwg(x.id) && (!fwdPre.awg3 || forkSupportsAwg3(x.id))) : null) || FORKS[0] || turnForkList()[0]).id);
   const epIp = (() => {   // the node's PUBLIC endpoint (what clients dial); on bridge the proxy rebinds it to 0.0.0.0
     for (const b of Object.values(snap.interfaces || {})) {
       const ep = (b.meta || {}).endpoint || "";
@@ -1596,9 +1604,12 @@ export function SetupTurnSheet({ node, forwardIface }) {
   })();
   // include the public endpoint so bridge nodes (whose reported ips are container-private + filtered) still offer it
   const ips = ipChoices(nrec, epIp);
-  // a WireGuard-only fork can't front an AmneziaWG interface → hide awg interfaces from its picker
-  const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
+  // a WireGuard-only fork can't front an AmneziaWG interface → hide awg interfaces from its picker; a fork whose app carries
+  // AmneziaWG 2.0 only (WINGS-N) can't front a 3.1 one → hide those (the panel refuses it, docs/AWG3-PLAN.md D-apps)
+  const fits = (id, i) => (forkSupportsAwg(id) || !i.awg) && (forkSupportsAwg3(id) || !i.awg3);
+  const ifaces = allIfaces.filter(i => fits(fork, i));
   const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
+  const hideAwg3 = forkSupportsAwg(fork) && !forkSupportsAwg3(fork) && allIfaces.some(i => i.awg3);
   const lInit = listenHostInit(epIp, ips, (nrec || {}).ips);
   const [lsel, setLsel] = useState(lInit);
   const [lcustom, setLcustom] = useState(lInit === "__custom__" ? epIp : "");
@@ -1641,9 +1652,10 @@ export function SetupTurnSheet({ node, forwardIface }) {
     const cf = turnForkList().find(x => x.id === fork) || turnForkList()[0];
     const nf = turnForkList().find(x => x.id === id) || turnForkList()[0];
     if (params === dflParams(cf)) setParams(dflParams(nf));
-    // switching to a WG-only fork while an awg interface is selected → move to the first WG interface (or custom)
-    if (!forkSupportsAwg(id) && fwd !== "__custom__" && !allIfaces.some(i => i.name === fwd && !i.awg)) {
-      const firstWg = allIfaces.find(i => !i.awg); setFwd(firstWg ? firstWg.name : "__custom__");
+    // switching to a fork that cannot front the selected interface (WG-only onto AmneziaWG, a 2.0-only app onto 3.1) → move to
+    // the first interface it can front (or custom)
+    if (fwd !== "__custom__" && !allIfaces.some(i => i.name === fwd && fits(id, i))) {
+      const first = allIfaces.find(i => fits(id, i)); setFwd(first ? first.name : "__custom__");
     }
     setFork(id);
   };
@@ -1719,6 +1731,7 @@ export function SetupTurnSheet({ node, forwardIface }) {
           options=${[...ifaces.map(i => ({ value: i.name, label: i.name + " · 127.0.0.1:" + i.port })),
                      { value: "__custom__", label: T("Custom IP:Port…") }]}/>
         ${hideAwg ? html`<div class="hint">${T("{v1} is WireGuard-only — AmneziaWG interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
+        ${hideAwg3 ? html`<div class="hint">${T("{v1} serves an app that carries AmneziaWG 2.0 only — AmneziaWG 3.1 interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
       <${Disclosure} title=${T("Server parameters")} summary=${forkSettings(fork).length ? null : html`<span class="faint">${T("val|none")}</span>`} open=${openSec === "server"} onToggle=${() => setOpenSec(s => s === "server" ? null : "server")}>
