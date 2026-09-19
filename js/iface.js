@@ -1534,7 +1534,7 @@ export function ConnectionEditSheet({ node, iface }) {
       </div>`;
     })()}
     <div class="hint" style="margin-top:14px">${(Store.panelSettings || {}).mesh_effective === "demand"
-      ? Trich("This is a panel-managed mesh link to *{node}*. It exists because a forward, a smart rule or this link's own settings use it, and it is removed an hour after nothing does. To route a user interface's traffic out through this node, set that interface's egress to *Forward to {node}*.", { node: Store.nodeName(peer) })
+      ? Trich("This is a panel-managed mesh link to *{node}*. On demand, a link exists while a forward, a smart rule or its own settings use it, and is removed an hour after nothing does. To route a user interface's traffic out through this node, set that interface's egress to *Forward to {node}*.", { node: Store.nodeName(peer) })
       : Trich("This is a panel-managed mesh link to *{node}*. It's created and torn down automatically as nodes are added or removed. To route a user interface's traffic out through this node, set that interface's egress to *Forward to {node}*.", { node: Store.nodeName(peer) })}</div>
   <//>`;
 }

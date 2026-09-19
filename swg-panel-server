@@ -10426,7 +10426,7 @@ def reconcile_mesh(nodes, snaps, deps):
     mc = mesh_cfg(deps)
     changed = False
     ids = list(nodes.keys())
-    alloc, unplaced = _MeshAlloc(nodes), {}
+    alloc, unplaced, need = _MeshAlloc(nodes), {}, None
     mode = mesh_mode_effective(deps, nodes)
     if mode == "full":                                           # 1) every pair linked — today's loop, today's order
         _MESH_IDLE.clear()
