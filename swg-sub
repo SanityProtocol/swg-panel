@@ -99,10 +99,6 @@ def strip_base(path):
             return path[len(b):]
     return path                                              # root mount, or outside every mount (e.g. /healthz) → untouched
 
-AWG_PARAM_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
-                  "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
-
-
 def _read_version():
     for p in (os.path.join(WEB_DIR, "VERSION"),
               os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")):

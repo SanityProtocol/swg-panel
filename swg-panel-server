@@ -9576,10 +9576,6 @@ def node_describe(snapshot):
             "data": {"hostname": snapshot.get("hostname"), "interfaces": interfaces}}
 
 
-AWG_PARAM_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
-                  "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
-
-
 def apply_iface_meta(node_cfg, interfaces, ivk_pub="", vault_restore_ok=False):
     """Overlay panel-side per-interface overrides onto node-reported metadata, in place:
     a public endpoint host/port (what clients dial — may differ from the node's listen port
@@ -9676,7 +9672,10 @@ def apply_iface_meta(node_cfg, interfaces, ivk_pub="", vault_restore_ok=False):
         if isinstance(ovawg, dict) and ovawg:
             rep_awg = dict(ifc.get("awg_params") or {})
             ifc["awg_reported"] = rep_awg
-            ifc["awg_params"] = {**rep_awg, **{k: ovawg[k] for k in ovawg if ovawg[k] not in (None, "")}}
+            # The RECORD decides the generation (docs/AWG3-PLAN.md §7.1): a 3.x key the node still reports after a switch
+            # back to 2.0 is not rendered into a single config.
+            ifc["awg_params"] = {**{k: v for k, v in rep_awg.items() if k not in AWG3_FIELDS},
+                                 **{k: ovawg[k] for k in ovawg if ovawg[k] not in (None, "")}}
             ifc["awg_pending"] = ifc["awg_params"] != rep_awg
     return interfaces
 
@@ -9988,20 +9987,131 @@ def gen_awg_params():
 
 
 AWG_FIELDS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4",
-              "I1", "I2", "I3", "I4", "I5")
+              "I1", "I2", "I3", "I4", "I5",
+              # AmneziaWG 3.x (docs/AWG3-PLAN.md §7.1) — DisableCookies is never written, but known. Twins: swg-noded,
+              # swg-agent, js/crypto.js, sub.js, turn-artifacts.js (tests/cross_language_twins_selftest.py [3]).
+              "HeaderProtectionKey", "RandomTrailers", "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout",
+              "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts", "DisableCookies")
+AWG3_FIELDS = AWG_FIELDS[AWG_FIELDS.index("HeaderProtectionKey"):]
 
 
-def sanitize_awg_params(raw):
-    """Keep only recognised AmneziaWG obfuscation fields with non-empty values, as strings. Empty → {}."""
+def sanitize_awg_params(raw, gen3=False):
+    """Keep only recognised AmneziaWG obfuscation fields with non-empty values, as strings. Empty → {}.
+    The 3.x keys only with `gen3` — an interface's own record. What else passes through here stays 2.0: the panel-wide
+    interface defaults (one HeaderProtectionKey on every interface would be no key at all), mesh_awg (mesh links stay
+    2.0, D-mesh) and an imported exit's profile."""
     if not isinstance(raw, dict):
         return {}
     out = {}
     for k in AWG_FIELDS:
         v = raw.get(k)
-        if v is None or str(v).strip() == "":
+        if v is None or str(v).strip() == "" or (k in AWG3_FIELDS and not gen3):
             continue
         out[k] = str(v).strip()
     return out
+
+
+# The AmneziaWG 3.1 set an interface switched — or created — at 3.1 gets (D-scope, docs/AWG3-PLAN.md §6, §7.1): Amnezia's
+# own 3.1 server defaults minus DisableCookies, which removes the handshake-flood defence (§1.4). ContentPaddingAddition is
+# not optional: RandomTrailers without it pads every small packet ~5× (§2.4). The HeaderProtectionKey is born per interface.
+AWG31_SET = {"RandomTrailers": "1", "ContentPaddingAddition": "10-100", "RekeyAfterTime": "100-120", "RekeyTimeout": "3-7",
+             "RejectAfterTime": "150-180", "KeepaliveTimeout": "5-15", "MaxHandshakeAttempts": "15-20"}
+_AWG3_RANGED = ("ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout",
+                "MaxHandshakeAttempts")
+
+
+def awg3_full(base, reported=None):
+    """The FULL 3.1 dict for a switch or a 3.1 create (§7.1): what the interface has — the record over the node's report,
+    over a fresh generator set for whatever neither holds (a create, or a switch while the node is away) — plus the 3.1
+    set wherever it has none, so switching twice changes nothing (the HeaderProtectionKey is generated only when absent;
+    a second one would cut every client again). S1–S4 are re-drawn together when any is under 12: header protection
+    refuses them, and the switch re-issues every client config anyway. Stored WHOLE, because a restore sends the record
+    and the agent fills what a partial one lacks with random values — new S/H, every client cut."""
+    d = {k: str(v).strip() for k, v in {**gen_awg_params(), **(reported or {}), **(base or {})}.items()
+         if k in AWG_FIELDS and k != "DisableCookies" and v is not None and str(v).strip() != ""}   # D-cookies: never by us
+    for k, v in AWG31_SET.items():
+        d.setdefault(k, v)
+    d.setdefault("HeaderProtectionKey", base64.b64encode(os.urandom(32)).decode())
+    if any(not d.get(k, "").isdigit() or int(d[k]) < 12 for k in ("S1", "S2", "S3", "S4")):
+        g = gen_awg_params()
+        d.update({k: str(g[k]) for k in ("S1", "S2", "S3", "S4")})
+    return d
+
+
+def awg3_check(d):
+    """(the dict with its 3.x values in their one spelling, None) — or (None, a perr naming the field). The checks a save
+    makes while an interface's dict holds a 3.x key (§7.1): header protection wants S1–S4 ≥ 12 (the kernel refuses less,
+    netlink.c:812-850 — the edit would fail in silence and the next restart be refused), and the timings must not cross:
+    RekeyAfterTime + RekeyTimeout + KeepaliveTimeout (upper bounds) ≤ RejectAfterTime's lower bound, else the node drops
+    data a client still sends with an aging key (go timers.go:262-299; absent ones at WireGuard's defaults). Booleans
+    become "1", the one spelling every parser takes (§3), and off removes the key; a range is `a` or `a-b` with a ≤ b."""
+    out = dict(d)
+    for k in ("RandomTrailers", "DisableCookies"):
+        if k in out:
+            v = str(out[k]).strip().lower()
+            if v in ("1", "on", "true", "yes"):
+                out[k] = "1"
+            elif v in ("0", "off", "false", "no"):
+                out.pop(k)
+            else:
+                return None, perr("{v1} must be on or off", v1=k)
+    for k in _AWG3_RANGED:
+        if k in out:
+            m = re.fullmatch(r"\s*(\d+)\s*(?:-\s*(\d+)\s*)?", str(out[k]))
+            if not m or (m.group(2) and int(m.group(1)) > int(m.group(2))):
+                return None, perr("{v1} must be a number or a range like 10-100", v1=k)
+            out[k] = m.group(1) + ("-" + m.group(2) if m.group(2) else "")
+            if out[k] == "0":
+                out.pop(k)                        # what a 3.1 kernel prints for "unset" — not a setting
+    if "HeaderProtectionKey" in out:
+        try:
+            _hk = base64.b64decode(str(out["HeaderProtectionKey"]).strip(), validate=True)
+            _ok = len(_hk) == 32 and any(_hk)     # all-zero: ON in the kernel, OFF in amneziawg-go — never a handshake
+        except Exception:
+            _ok = False
+        if not _ok:
+            return None, perr("HeaderProtectionKey must be a 32-byte key in base64, not all zeros")
+        low = [k for k in ("S1", "S2", "S3", "S4") if not str(out.get(k, "")).strip().isdigit() or int(str(out[k]).strip()) < 12]
+        if low:
+            return None, perr("{v1} must be 12 or more while header protection is on", v1=", ".join(low))
+    if any(k in out for k in ("RekeyAfterTime", "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout")):
+        hi = lambda k, dflt: int(str(out.get(k, dflt)).split("-")[-1])
+        lo = int(str(out.get("RejectAfterTime", 180)).split("-")[0])
+        tot = hi("RekeyAfterTime", 120) + hi("RekeyTimeout", 5) + hi("KeepaliveTimeout", 10)
+        if tot > lo:
+            return None, perr("RekeyAfterTime + RekeyTimeout + KeepaliveTimeout (up to {v1} s) must not exceed "
+                              "RejectAfterTime ({v2} s at least) — the node would drop data a client still sends",
+                              v1=tot, v2=lo)
+    return out, None
+
+
+def awg_gen_reported(snap):
+    """Does this node report its AmneziaWG generation (`datapath.awg.gen`)? Every node that knows the 3.x keys does, on every
+    snapshot — so False means an older node, which must be sent none of them and asked for no switch (§7.2, §7.8)."""
+    return isinstance((((snap if isinstance(snap, dict) else {}).get("datapath") or {}).get("awg") or {}).get("gen"), dict)
+
+
+def awg_gen_refusal(snap, name, iface=None):
+    """Why node `name` cannot run an AmneziaWG 3.1 interface — a perr — or None when it can (§7.2). The datapath first — the
+    one `iface` already runs on when the node reports it on the userspace fallback, else what a new interface gets (the
+    kernel module when one is loaded, else the fallback) — then the awg tools, as the node's own generation report says;
+    an older node makes none and is told to update. Nothing NixOS-specific: a channel that ships 2.0 lands here, and
+    unlocks itself when it moves."""
+    if not awg_gen_reported(snap):
+        return perr("{v1}: this node does not report its AmneziaWG version — update it", v1=name)
+    g = snap["datapath"]["awg"]["gen"]
+    order = {"2.0": 0, "3.0": 1, "3.1": 2}
+    on_fallback = bool(iface) and iface in (_awg_datapath(snap).get("userspace") or [])
+    if g.get("module") and not on_fallback and order.get(g.get("module"), -1) < 2:
+        return perr("{v1}: its AmneziaWG kernel module is {v2} — an AmneziaWG 3.1 interface needs 3.1", v1=name,
+                    v2=g.get("module"))
+    if (not g.get("module") or on_fallback) and order.get(g.get("fallback"), -1) < 2:
+        return perr("{v1}: its userspace AmneziaWG (amneziawg-go), which this interface would run on, is {v2} — an "
+                    "AmneziaWG 3.1 interface needs 3.1", v1=name, v2=g.get("fallback") or "none")
+    if order.get(g.get("tools"), -1) < 2:
+        return perr("{v1}: its awg tools are AmneziaWG {v2} — an AmneziaWG 3.1 interface needs 3.1", v1=name,
+                    v2=g.get("tools") or "none")
+    return None
 
 
 def link_awg_params(deps):
@@ -20789,14 +20899,48 @@ def api(method, path, qs, body, deps):
             if not awg:
                 ov.pop("awg_params", None)
             elif isinstance(awg, dict):
-                clean = {k: str(awg[k]).strip() for k in AWG_PARAM_KEYS
-                         if k in awg and str(awg.get(k, "")).strip() != ""}
+                clean = sanitize_awg_params(awg, gen3=True)
                 if clean:
                     ov["awg_params"] = clean
                 else:
                     ov.pop("awg_params", None)
             else:
                 return 400, {"ok": False, "error": "awg_params must be an object", "code": "bad_request"}
+        # A GENERATION SWITCH (docs/AWG3-PLAN.md §7.1) — an intent, never stored: "3.1" adds the 3.1 set to what the interface
+        # has, "2.0" removes every 3.x key. The node applies either as a recreate, and every client re-imports.
+        _gen = body.get("awg_gen")
+        if _gen not in (None, "", "2.0", "3.1"):
+            return 400, {"ok": False, "error": "awg_gen must be \"2.0\" or \"3.1\"", "code": "bad_request"}
+        if _gen:
+            if ov.get("system"):
+                return 400, {"ok": False, **perr("{v1} is a mesh link — mesh links stay AmneziaWG 2.0", v1=iface),
+                             "code": "bad_request"}
+            # EITHER way: an older node can neither apply a 3.x key nor take one away (its agent keeps what it does not
+            # know), so a switch back there would read as synced while the device kept the key (§7.8).
+            if not awg_gen_reported((deps.get("node_snaps") or {}).get(nid)):
+                return 400, {"ok": False, **perr("{v1}: this node does not report its AmneziaWG version — update it",
+                                                 v1=nodes[nid].get("name") or nid), "code": "bad_request"}
+            _rmeta = (((((deps.get("node_snaps") or {}).get(nid) or {}).get("interfaces") or {}).get(iface) or {})
+                      .get("meta") or {})
+            if _gen == "3.1":
+                if not (ov.get("awg_params") or _rmeta.get("awg_params")) or (_rmeta.get("tool") or "awg") != "awg":
+                    return 400, {"ok": False, **perr("{v1} is a plain WireGuard interface — only an AmneziaWG interface "
+                                                     "can switch to AmneziaWG 3.1", v1=iface), "code": "bad_request"}
+                _no3 = awg_gen_refusal((deps.get("node_snaps") or {}).get(nid), nodes[nid].get("name") or nid, iface)
+                if _no3:
+                    return 400, {"ok": False, **_no3, "code": "bad_request"}
+                ov["awg_params"] = awg3_full(ov.get("awg_params"), _rmeta.get("awg_params"))
+            else:
+                _a2 = {k: v for k, v in (ov.get("awg_params") or {}).items() if k not in AWG3_FIELDS}
+                if _a2:
+                    ov["awg_params"] = _a2
+                else:
+                    ov.pop("awg_params", None)
+        if ("awg_params" in body or _gen) and any(k in (ov.get("awg_params") or {}) for k in AWG3_FIELDS):
+            _a3, _e3 = awg3_check(ov["awg_params"])
+            if _e3:
+                return 400, {"ok": False, **_e3, "code": "bad_request"}
+            ov["awg_params"] = _a3
         if body.get("mesh_reset"):
             # Empty this mesh leg's probe window at BOTH ends (see mesh_leg_ends). Same nonce shape as
             # drops_reset — the node acts on it once, a node that is down picks it up when it returns.
@@ -21007,6 +21151,27 @@ def api(method, path, qs, body, deps):
         # held the params kept pushing them back on every set-iface.
         _awgprev = _prev_ov.get("awg_params") if (cmd == ["awg"] and isinstance(_prev_ov.get("awg_params"), dict)) else None
         _awgput = dict(_awgprev) if _awgprev else (dict(_awgdef) if _awgdef else {})
+        # AmneziaWG 3.1 at create (docs/AWG3-PLAN.md §7.1, §7.2) — `awg_gen`, the same intent /api/iface/update takes. The
+        # panel draws the WHOLE set itself (generator ∪ interface defaults ∪ the 3.1 set), so the record and the node agree
+        # from the first sync and a restore sends the same S/H; "2.0" rebuilds a 3.1 interface's record without the 3.x keys.
+        _gen = body.get("awg_gen")
+        if _gen not in (None, "", "2.0", "3.1"):
+            return 400, {"ok": False, "error": "awg_gen must be \"2.0\" or \"3.1\"", "code": "bad_request"}
+        if _gen == "3.1":
+            if cmd != ["awg"]:
+                return 400, {"ok": False, **perr("{v1} is a plain WireGuard interface — only an AmneziaWG interface "
+                                                 "can switch to AmneziaWG 3.1", v1=iface), "code": "bad_request"}
+            _no3 = awg_gen_refusal((deps.get("node_snaps") or {}).get(nid), nodes[nid].get("name") or nid)
+            if _no3:
+                return 400, {"ok": False, **_no3, "code": "bad_request"}
+            _awgput, _e3 = awg3_check(awg3_full(_awgput))
+            if _e3:
+                return 400, {"ok": False, **_e3, "code": "bad_request"}
+        elif _gen == "2.0":
+            _awgput = {k: v for k, v in _awgput.items() if k not in AWG3_FIELDS}
+        if any(k in _awgput for k in AWG3_FIELDS) and not awg_gen_reported((deps.get("node_snaps") or {}).get(nid)):
+            return 400, {"ok": False, **perr("{v1}: this node does not report its AmneziaWG version — update it",
+                                             v1=nodes[nid].get("name") or nid), "code": "bad_request"}
         if _awgput:
             req["awg_params"] = dict(_awgput)
         nodes[nid].setdefault("create", {})[iface] = req
@@ -21109,6 +21274,10 @@ def api(method, path, qs, body, deps):
         req = iface_restore_req(ov, _current_ivk_pub(deps), fresh=bool(body.get("fresh")))
         if req is None:
             return 400, {"ok": False, "error": "no saved config for that interface — cannot recreate", "code": "bad_request"}
+        if any(k in (req.get("awg_params") or {}) for k in AWG3_FIELDS) and not awg_gen_reported(snap):
+            # an older node's agent drops the 3.x keys: the interface would come back 2.0 under a record that says 3.1
+            return 400, {"ok": False, **perr("{v1}: this node does not report its AmneziaWG version — update it",
+                                             v1=nodes[nid].get("name") or nid), "code": "bad_request"}
         # Vault path (full wipe — the node lost its on-disk backup): the browser unsealed the key from the operator
         # vault and RE-sealed it to this node's transport key, so we relay only ciphertext. The node unseals it.
         _sk = body.get("sealed_key")
@@ -24863,19 +25032,31 @@ class Handler(BaseHTTPRequestHandler):
             # AmneziaWG params
             if isinstance(ov.get("awg_params"), dict) and ov["awg_params"]:
                 want = ov["awg_params"]; ra = rep.get("awg_params") or {}
+                # ⚠️ A NODE THAT DOES NOT REPORT `gen` GETS NO 3.x KEY (docs/AWG3-PLAN.md §7.2) — it is older than them: its
+                # agent filters them out, the readback never matches, and this would re-push every sync for ever. Its conf
+                # keeps whatever it has; it is sent the 2.0 half, which is all it can compare.
+                if not awg_gen_reported(snap):
+                    want = {k: v for k, v in want.items() if k not in AWG3_FIELDS}
+                # …and SYNCED MEANS THE WHOLE GENERATION MATCHES (§7.3): a 3.x key the node still has and the record does not
+                # — a switch back to 2.0 — is a difference that comparing only the wanted keys never sees.
+                extra = [k for k in AWG3_FIELDS if k in ra and k not in want]
                 if not ra:
                     d["awg_params"] = want
-                elif all(str(ra.get(k)) == str(want[k]) for k in want):
+                elif not extra and all(str(ra.get(k)) == str(want[k]) for k in want):
                     if synced.get("awg_params") != want:
                         synced["awg_params"] = dict(want); ifaces_dirty = True
                     ifaces_dirty = _clear_drift("awg_params") or ifaces_dirty
                 elif synced.get("awg_params") == want and not sysif:    # confirmed, then diverged → drift (user ifaces)
-                    nd = {k: ra.get(k) for k in want}
+                    nd = {k: ra.get(k) for k in list(want) + extra}     # the extra keys too, or Adopt could never take them
                     if drift.get("awg_params") != nd:
                         drift["awg_params"] = nd; ifaces_dirty = True
                 else:                                                   # not yet confirmed (or a system link) → re-push the panel value
                     ifaces_dirty = _clear_drift("awg_params") or ifaces_dirty
                     d["awg_params"] = want
+                    if extra:
+                        # The set is WHOLE: the node drops the 3.x keys it lacks. Sent only for such a removal, so every other
+                        # reply is what it was; a node that ignores it keeps its keys, exactly as before.
+                        d["awg_params_exact"] = True
             elif (rep.get("awg_params") and not sysif and ifn not in _inflight
                   # ...but NEVER from an interface the node says it drives with plain `wg`. Blessing there
                   # made the record agree with a conf that should never have carried the params, and the

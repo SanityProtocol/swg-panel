@@ -399,8 +399,9 @@ export function AccountScreen() {
   </div>`;
 }
 
-export const AWG_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4",
-  "I1", "I2", "I3", "I4", "I5"];
+// The 2.0 set — what Settings edits: the interface defaults and mesh_awg stay AmneziaWG 2.0 (docs/AWG3-PLAN.md D-default,
+// D-mesh). Derived from AWG_ORDER, the SPA's one list, instead of a second copy of it.
+export const AWG_KEYS = AWG_ORDER.slice(0, AWG_ORDER.indexOf("HeaderProtectionKey"));
 // client-side AmneziaWG obfuscation generator — mirrors the panel's gen_awg_params (for the "Generate" button)
 export function genAwg() {
   const r = n => Math.floor(Math.random() * n), w = 15;

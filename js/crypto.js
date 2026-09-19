@@ -951,7 +951,8 @@ export async function runConfigMigration() {
            remaining: (pr && pr.data && pr.data.remaining) || 0 };
 }
 
-export const AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];   // i18n-keys: AmneziaWG parameter names, as the protocol spells them
+export const AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",   // i18n-keys: AmneziaWG parameter names, as the protocol spells them
+  "HeaderProtectionKey", "RandomTrailers", "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts", "DisableCookies"];   // i18n-keys: AmneziaWG 3.x (docs/AWG3-PLAN.md §7.1); twins in the panel, node, agent, sub.js, turn-artifacts.js
 // IPv6 leak-guard: a FULL v4 tunnel (AllowedIPs contains 0.0.0.0/0) MUST also capture v6 (::/0), else the client's
 // IPv6 traffic escapes the tunnel over its real IP (the tunnels are v4-only, so captured v6 is dropped node-side and
 // apps fall back to v4 — no leak). Append ::/0 when it's missing. Split-tunnel (specific v4 CIDRs, no 0.0.0.0/0) is

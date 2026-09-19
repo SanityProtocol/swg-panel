@@ -38,7 +38,19 @@ VERSION     = "1.0"
 
 PUBKEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
 AWG_KEYS  = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
-             "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
+             "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",
+             # AmneziaWG 3.x (docs/AWG3-PLAN.md §7.1). DisableCookies is never written, but KNOWN, so an edit drops one an
+             # onboarded interface brought. Twins: swg-noded, swg-panel-server, js/crypto.js, sub.js, turn-artifacts.js
+             # (tests/cross_language_twins_selftest.py [3]).
+             "HeaderProtectionKey", "RandomTrailers", "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout",
+             "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts", "DisableCookies"]
+AWG3_KEYS = AWG_KEYS[AWG_KEYS.index("HeaderProtectionKey"):]
+
+
+def awg3_unset(k, v):
+    """A 3.x key at what a 3.1 kernel's showconf prints for "not set" (`= 0` / `= off`): read as absent. Twin of swg-noded's
+    awg3_unset — the two must agree on what a conf's generation is."""
+    return k in AWG3_KEYS and k != "HeaderProtectionKey" and str(v).strip().lower() in ("0", "off")
 
 
 class AgentError(Exception):
@@ -142,7 +154,7 @@ def conf_v4_address(address):
 def awg_params(info):
     out = {}
     for k in AWG_KEYS:
-        if k in info:
+        if k in info and not awg3_unset(k, info[k]):
             v = info[k]
             out[k] = int(v) if v.isdigit() else v
     return out
@@ -525,6 +537,97 @@ def set_awg_in_conf(path, awg):
     write_conf_atomic(path, "\n".join(out).rstrip("\n") + "\n")
 
 
+def _awg3_norm(v):
+    """One spelling per AmneziaWG 3 value, so a device's readback compares with what was asked: unset, 0 and off are one
+    thing (a 3.1 kernel prints every unset key that way), on and 1 another, and a range `a-a` is `a`."""
+    s = re.sub(r"\s+", "", "" if v is None else str(v))
+    if s.lower() in ("", "0", "off", "false", "no"):
+        return ""
+    if s.lower() in ("1", "on", "true", "yes"):
+        return "1"
+    m = re.fullmatch(r"(\d+)-(\d+)", s)
+    return m.group(1) if m and m.group(1) == m.group(2) else s
+
+
+def _unit_started(tool, iface):
+    """Is this interface running under its <tool>-quick@ unit? Asked ONCE per change, before anything stops: a start that
+    fails leaves the unit `failed`, and the rollback must still come back up under it."""
+    if not shutil.which("systemctl") or _IN_CONTAINER:
+        return False
+    with contextlib.suppress(Exception):
+        return subprocess.run(["systemctl", "is-active", "--quiet", f"{tool}-quick@{iface}"],
+                              capture_output=True).returncode == 0
+    return False
+
+
+def _bounce(ic, iface, tool, by_unit):
+    """Down, then up, THE WAY THE INTERFACE WAS STARTED: through its <tool>-quick@ unit when it ran under one — a userspace
+    daemon then stays in the unit's cgroup, one copy — else as op_restart_iface does (resilience plan D3). The old
+    device, and a userspace daemon's UAPI socket, must be gone before the up: while the socket exists the awg CLI
+    configures the dying daemon instead of the new device."""
+    target = _quick_target(ic, iface)
+    unit = f"{tool}-quick@{iface}"
+    if by_unit:
+        run(["systemctl", "stop", unit], check=False)
+    else:
+        with contextlib.suppress(Exception):
+            run([tool + "-quick", "down", target])
+    sock = f"/var/run/amneziawg/{iface}.sock"
+    for _ in range(100):
+        if not os.path.exists(f"/sys/class/net/{iface}") and not os.path.exists(sock):
+            break
+        time.sleep(0.1)
+    if not os.path.exists(f"/sys/class/net/{iface}"):
+        with contextlib.suppress(OSError):
+            os.unlink(sock)                 # a daemon that outlived its device: its socket would take the new config
+    if not by_unit:
+        _quick_up(tool, iface, target)
+        return
+    p = subprocess.run(["systemctl", "start", unit], capture_output=True, text=True)
+    if p.returncode != 0:
+        log = subprocess.run(["journalctl", "-u", unit, "-n", "6", "--no-pager", "-o", "cat"],
+                             capture_output=True, text=True).stdout.strip()
+        raise AgentError("up_failed", f"{unit} did not start: {log or p.stderr.strip()}")
+
+
+def _awg_recreate(ic, iface, awg, before):
+    """An AmneziaWG edit on an interface whose conf or request holds a 3.x key: write the full dict, recreate the device
+    through the restart path, and prove it carries the 3.x keys asked for — or put `before` back up and refuse.
+
+    docs/AWG3-PLAN.md §7.4. Not a live `awg set`: the kernel keeps HeaderProtectionKey and RandomTrailers on a live device
+    whatever setconf says (an all-zero key is ON), the 3.x flags are kebab-case and the key wants a FILE, and that path
+    swallows its error while the conf takes the change — the next restart would then be refused. EVERY AWG edit on such
+    an interface comes here, a 2.0-key one included: one `awg set` carries the whole dict, fails on its first 3.x
+    argument, and a changed Jc never reaches the device. The interface ends where it started, never down; its peers come
+    back from the conf, and noded re-adds any other on its next pass."""
+    tool = (ic.get("cmd") or ["awg"])[0]
+    if not os.path.exists(f"/sys/class/net/{iface}"):
+        # Stopped, or down: the conf takes it and nothing is brought up — exactly what the live path does for such an
+        # interface. It applies at the next start, which noded has already checked this datapath can run.
+        set_awg_in_conf(ic["conf"], awg)
+        return awg
+    by_unit = _unit_started(tool, iface)
+    set_awg_in_conf(ic["conf"], awg)                 # the full dict: every KNOWN key it lacks is dropped
+    try:
+        _bounce(ic, iface, tool, by_unit)
+        dev = parse_interface_section(run([tool, "showconf", iface]))
+        bad = [k for k in AWG3_KEYS if _awg3_norm(awg.get(k)) != _awg3_norm(dev.get(k))]
+        if not bad:
+            return awg
+        err = f"{iface} came up without {', '.join(bad)} as asked"
+    except Exception as e:
+        err = e.msg if isinstance(e, AgentError) else str(e)
+    write_conf_atomic(ic["conf"], before)
+    try:
+        _bounce(ic, iface, tool, by_unit)
+    except Exception as e:
+        raise AgentError("awg_gen_refused", f"this node's AmneziaWG refused the change ({err}), and {iface} did not come "
+                                            f"back on its previous configuration either: "
+                                            f"{e.msg if isinstance(e, AgentError) else e}")
+    raise AgentError("awg_gen_refused", f"this node's AmneziaWG refused the change — {iface} is back on its previous "
+                                        f"configuration: {err}")
+
+
 def op_set_iface(cfg, req):
     """Change the interface's UDP listen port, link MTU and/or AmneziaWG obfuscation params on the
     live interface + its .conf. Peers (keys / AllowedIPs) are untouched; existing client tunnels
@@ -532,6 +635,11 @@ def op_set_iface(cfg, req):
     iface = req["iface"]
     ic = iface_cfg(cfg, iface)
     out = {"iface": iface}
+    # The conf as it stood before this request touched it — what an AmneziaWG 3 recreate rolls back to (_awg_recreate).
+    before = None
+    if isinstance(req.get("awg_params"), dict) and req["awg_params"]:
+        with contextlib.suppress(Exception):
+            before = read_conf(ic["conf"])
     if req.get("listen_port") is not None:
         try:
             port = int(req.get("listen_port"))
@@ -571,8 +679,15 @@ def op_set_iface(cfg, req):
         out["awg_params_skipped"] = "not an AmneziaWG interface"
         awg = None
     if isinstance(awg, dict) and awg:
-        awg = {k: str(awg[k]) for k in AWG_KEYS if k in awg and str(awg.get(k, "")) != ""}
-        if awg:
+        awg = {k: str(awg[k]) for k in AWG_KEYS if k in awg and str(awg.get(k, "")) != "" and not awg3_unset(k, awg[k])}
+        cur3 = {k: v for k, v in parse_interface_section(before or "").items() if k in AWG3_KEYS and not awg3_unset(k, v)}
+        if awg and cur3 and not req.get("awg_params_exact"):
+            # A set that does not say it is WHOLE never drops a 3.x key the conf has: an older panel knows none, and its
+            # 2.0-only edit must not switch a 3.1 interface back (plan §7.8). The panel says so when it switches back.
+            awg = {**{k: v for k, v in cur3.items() if k not in awg}, **awg}
+        if awg and before is not None and (cur3 or any(k in awg for k in AWG3_KEYS)):
+            out["awg_params"] = _awg_recreate(ic, iface, awg, before)
+        elif awg:
             # apply live where the awg tool supports it (best-effort), then persist to the conf
             args = ic["cmd"] + ["set", iface]
             for k in AWG_KEYS:

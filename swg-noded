@@ -27,6 +27,7 @@ import ipaddress
 import http.client
 import io
 import json
+import mmap
 import os
 import re
 import secrets
@@ -84,7 +85,19 @@ def _shared_record(name, legacy, env):
 
 TURN_RECORD = _shared_record("turn-proxy.json", "/etc/swg-agent/turn-proxy.json", "SWG_TURN_RECORD")
 AWG_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
-            "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
+            "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",
+            # AmneziaWG 3.x (docs/AWG3-PLAN.md §7.1) — DisableCookies is never written, but known. Twins: swg-agent,
+            # swg-panel-server, js/crypto.js, sub.js, turn-artifacts.js (tests/cross_language_twins_selftest.py [3]).
+            "HeaderProtectionKey", "RandomTrailers", "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout",
+            "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts", "DisableCookies"]
+AWG3_KEYS = AWG_KEYS[AWG_KEYS.index("HeaderProtectionKey"):]
+
+
+def awg3_unset(k, v):
+    """A 3.x key at what a 3.1 kernel's showconf prints for "not set" — `= 0` / `= off` (the _SHOWCONF_ONLY lines). Not a
+    3.x setting, and read as absent everywhere: confs rebuilt before c387e03 on such a kernel carry these lines, and
+    counting them made a 2.0 interface report eight 3.x keys, drift, and recreate on every AWG edit (review of 9f40ac2)."""
+    return k in AWG3_KEYS and k != "HeaderProtectionKey" and str(v).strip().lower() in ("0", "off")
 
 
 _VERSION_PATHS = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
@@ -286,7 +299,7 @@ def conf_v4_address(address):
 def awg_params(info):
     out = {}
     for k in AWG_KEYS:
-        if k in info:
+        if k in info and not awg3_unset(k, info[k]):
             v = info[k]
             out[k] = int(v) if v.isdigit() else v
     return out
@@ -9532,6 +9545,125 @@ def node_datapath_health(interfaces=None):
     return out
 
 
+# ── AmneziaWG GENERATION — what this node can run, asked of the parts themselves (docs/AWG3-PLAN.md §4.2, §7.2) ──────────
+# Every version string lies (go --version, awg --version and /sys/module/amneziawg/version all measured wrong), so:
+#   module    the kernel's generic-netlink family `amneziawg`, version·maxattr: 2·25 = 2.0, 3·32 = 3.0, 3·34 = 3.1 (a later
+#             version-3 family reads as 3.1, the newest this knows). None = not loaded; "unknown" = loaded and none of
+#             those — another family's numbers or a new major version are never guessed upward.
+#   fallback  the UAPI keys in the amneziawg-go awg-quick would start: random_trailers = 3.1, header_protection = 3.0.
+#   tools     the parser keys in the awg binary noded runs: RandomTrailers = 3.1, HeaderProtectionKey = 3.0.
+# On a docker node the genl answer is the HOST's module — the container shares its kernel, and uses the module whenever
+# the host has one loaded. Reported on every snapshot, so its ABSENCE can only mean an older node. Cached like
+# boot_persist: it changes when someone installs something, not per sync.
+_AWG_GEN = {"at": 0.0, "v": None}
+_AWG_GEN_TTL = 300
+AWG_GEN_ORDER = {"2.0": 0, "3.0": 1, "3.1": 2}
+
+
+def _genl_family(name):
+    """(version, maxattr) of a generic-netlink family; None when the kernel has no such family (the module is not loaded)."""
+    s = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 16)                 # NETLINK_GENERIC
+    try:
+        s.settimeout(2)
+        s.bind((0, 0))
+        n = name.encode() + b"\0"
+        attr = struct.pack("HH", 4 + len(n), 2) + n                             # CTRL_ATTR_FAMILY_NAME
+        attr += b"\0" * ((4 - len(attr) % 4) % 4)
+        body = struct.pack("BBH", 3, 1, 0) + attr                               # CTRL_CMD_GETFAMILY
+        s.send(struct.pack("IHHII", 16 + len(body), 0x10, 1, 1, 0) + body)     # GENL_ID_CTRL, NLM_F_REQUEST
+        d = s.recv(65536)
+    finally:
+        s.close()
+    ln, typ = struct.unpack("IH", d[:6])
+    if typ == 2:                                                                 # NLMSG_ERROR
+        err = -struct.unpack("i", d[16:20])[0]
+        if err == 2:                                                             # ENOENT: no such family
+            return None
+        raise OSError(err, os.strerror(err))
+    out, p = {}, 20
+    while p + 4 <= ln:
+        al, at = struct.unpack("HH", d[p:p + 4])
+        if al < 4:
+            break
+        if at in (3, 5):                                                         # CTRL_ATTR_VERSION, CTRL_ATTR_MAXATTR
+            out[at] = struct.unpack("I", d[p + 4:p + 8])[0]
+        p += (al + 3) & ~3
+    return out.get(3), out.get(5)
+
+
+def _awg_module_gen():
+    try:
+        vm = _genl_family("amneziawg")
+    except Exception:
+        return "unknown"
+    if vm is None:
+        return None
+    v, m = vm[0], vm[1] or 0
+    return "2.0" if v == 2 and m >= 25 else ("3.1" if v == 3 and m >= 34 else ("3.0" if v == 3 and m >= 32 else "unknown"))
+
+
+def _bin_gen(path, k31, k30):
+    """The AmneziaWG generation a binary speaks, from the keys compiled into it; None when there is no such binary. Mapped,
+    not read: an amneziawg-go is megabytes, and this runs on the smallest boxes too."""
+    if not path or not os.path.isfile(path):
+        return None
+    with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+        return "3.1" if m.find(k31) >= 0 else ("3.0" if m.find(k30) >= 0 else "2.0")
+
+
+def awg_gen_report(now=None):
+    """{"module", "fallback", "tools"} — see above. Each part that cannot be read is None, never a guess."""
+    now = now or time.monotonic()
+    if _AWG_GEN["v"] is not None and now - _AWG_GEN["at"] < _AWG_GEN_TTL:
+        return dict(_AWG_GEN["v"])
+    g = {"module": _awg_module_gen(), "fallback": None, "tools": None}
+    with contextlib.suppress(Exception):
+        go = shutil.which(os.environ.get("WG_QUICK_USERSPACE_IMPLEMENTATION") or "amneziawg-go") or next(
+            (p for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go",
+                         "/usr/bin/amneziawg-go") if os.access(p, os.X_OK)), "")
+        g["fallback"] = _bin_gen(go, b"random_trailers", b"header_protection")
+    with contextlib.suppress(Exception):
+        g["tools"] = _bin_gen(shutil.which("awg"), b"RandomTrailers", b"HeaderProtectionKey")
+    _AWG_GEN.update(at=now, v=g)
+    return dict(g)
+
+
+def _with_awg_gen(dp):
+    """node_datapath_health's report plus `awg.gen`, on every kind of node — a docker node reports no health, and gen too."""
+    dp = dict(dp or {})
+    dp["awg"] = dict(dp.get("awg") or {}, gen=awg_gen_report())
+    return dp
+
+
+def awg_need(awg):
+    """The AmneziaWG generation an interface dict needs: "3.1" with RandomTrailers or DisableCookies, "3.0" with any other
+    3.x key, None for 2.0. A key at zero or off counts: a 2.0 module refuses those too (plan §2.3)."""
+    ks = {k for k, v in (awg or {}).items() if k in AWG3_KEYS and str(v).strip() != ""}
+    return "3.1" if ks & {"RandomTrailers", "DisableCookies"} else ("3.0" if ks else None)
+
+
+def awg_gen_refusal(iface, awg):
+    """Why this node must NOT be asked to apply `awg` on `iface` — "" when it can, or when the dict needs nothing past 2.0.
+
+    docs/AWG3-PLAN.md §7.2. The datapath is the one the interface runs on — a kernel device the module, a tun the
+    userspace fallback, one that is not up yet whatever awg-quick would pick — and the tools must be at least as new.
+    Refused BEFORE the agent is called: a failed set-iface is retried every ≤ 300 s, and the agent's recreate-and-rollback
+    would otherwise bounce a WORKING interface on every retry, for ever."""
+    need = awg_need(awg)
+    if not need:
+        return ""
+    g = awg_gen_report()
+    dev = "/sys/class/net/%s" % iface
+    if os.path.exists(dev + "/tun_flags") or (not os.path.exists(dev) and not g.get("module")):
+        dp = ("userspace AmneziaWG (amneziawg-go)", g.get("fallback"))
+    else:
+        dp = ("AmneziaWG kernel module", g.get("module"))
+    for part, have in (dp, ("awg tools", g.get("tools"))):
+        if AWG_GEN_ORDER.get(have, -1) < AWG_GEN_ORDER[need]:
+            return "not applied: AmneziaWG %s needs %s %s or newer, and this node's is %s" % (need, part, need, have or "missing")
+    return ""
+
+
 def _uapi_lines(iface):
     """Raw UAPI `get=1` response lines from a userspace wireguard-go/amneziawg-go socket, or [] if there is none.
 
@@ -10640,10 +10772,6 @@ def container_iface_read(container, want_iface=None, timeout=25):
     return out
 
 
-_AWG_CONF_KEYS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4",
-                  "I1", "I2", "I3", "I4", "I5")
-
-
 # Which container each taken-over interface came from, mirrored OUT of config.json into the node's STATE dir.
 # config.json is authoritative, but on a docker node it lives inside the node container and does not survive a
 # recreate, while the state dir is a bind mount — and the uninstaller runs on the HOST, where it can read
@@ -10741,7 +10869,7 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
                         "that is fine — each has its own network namespace — but taking it over moves it here, "
                         "where one subnet cannot be served twice. Take over only one of them, or renumber the "
                         "other first. Nothing was changed.", i=iface, c=container, s=str(_want), o=_ifn)
-    awg = {k: v for k, v in (r.get("interface") or {}).items() if k in _AWG_CONF_KEYS}
+    awg = {k: v for k, v in (r.get("interface") or {}).items() if k in AWG_KEYS and not awg3_unset(k, v)}
     cmd = ["awg"] if awg else ["wg"]          # obfuscation params present => it is AmneziaWG, not plain WireGuard
 
     # what the daemon will restore on failure
@@ -11665,7 +11793,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # Source-address validation, same shape. Only meaningful once a cascade/exit entry exists — an
             # asymmetric route is what strict rp_filter drops the return half of.
             "rp_filter": {"needed": bool(_RPF["needed"]), "bad": list(_RPF["bad"])},
-            "datapath": node_datapath_health(interfaces),          # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal)
+            "datapath": _with_awg_gen(node_datapath_health(interfaces)),   # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal); awg.gen on every node
             # Per-leg loss/RTT for every mesh link (see MESH_PROBE_EVERY_S). Handshake says the link is UP;
             # this says whether it is any GOOD, which is the question a cascade actually depends on.
             "mesh_health": mesh_health(),
@@ -11913,12 +12041,23 @@ def reconcile_ifaces(node_cfg, desired_ifaces, agent, sudo):
             if cur_mtu is None or int(cur_mtu) != int(mtu):
                 payload["mtu"] = int(mtu)
         awg = want.get("awg_params")
+        refused = ""
         if isinstance(awg, dict) and awg:
             cur_awg = current_awg(node_cfg, iface) or {}
             want_s = {k: str(v) for k, v in awg.items()}
-            if any(str(cur_awg.get(k)) != v for k, v in want_s.items()):
-                payload["awg_params"] = awg
+            if (any(str(cur_awg.get(k)) != v for k, v in want_s.items())
+                    # …or the conf still holds a 3.x key the panel dropped — a switch back to 2.0 (docs/AWG3-PLAN.md §7.3),
+                    # which the compare above never sees. Only when the panel says its set is the whole truth: an older
+                    # panel knows no 3.x key, and its 2.0-only set must never strip one from a foreign 3.x interface.
+                    or (want.get("awg_params_exact") and any(k in cur_awg and k not in want_s for k in AWG3_KEYS))):
+                refused = awg_gen_refusal(iface, awg)
+                if not refused:
+                    payload["awg_params"] = awg
+                    if want.get("awg_params_exact"):
+                        payload["awg_params_exact"] = True     # the agent drops the 3.x keys the set lacks; else it keeps them
         akey = "setiface|" + iface
+        if refused:                           # never sent — see awg_gen_refusal; reported every pass until it clears
+            res["errors"].append(f"set-iface {iface}: {refused}")
         if len(payload) <= 2:                 # only op + iface — nothing differs
             _op_ok(akey)                      # nothing left to apply IS convergence: drop any prior backoff
             continue
@@ -11932,13 +12071,20 @@ def reconcile_ifaces(node_cfg, desired_ifaces, agent, sudo):
         # backoff's own comment states.
         _op_cfg_changed(akey, json.dumps(payload, sort_keys=True))
         if not _op_ready(akey):
-            res["errors"].append(f"set-iface {iface}: {_op_err(akey) or 'repeated failure'} (retrying)")
+            _held = (_OP_BACKOFF.get(akey) or [0, 0])[1] == float("inf")
+            res["errors"].append(f"set-iface {iface}: {_op_err(akey) or 'repeated failure'}" + ("" if _held else " (retrying)"))
             continue
         r = run_agent(agent, sudo, payload)
         if r.get("ok"):
             _op_ok(akey); res["changed"] += 1
         else:
             _op_fail(akey, err=r.get("error")); res["errors"].append(f"set-iface {iface}: {r.get('error')}")
+            if r.get("code") == "awg_gen_refused":
+                # ⚠️ NOT RETRIED WITH THE SAME SET. The agent took the interface down, the change was refused, and it put the
+                # old conf back up: every retry is that double bounce again, so the backoff would make it an outage every
+                # ≤ 300 s for ever (plan trap 19). The refusal keeps being reported; a changed desired set tries again at
+                # once (_op_cfg_changed), and so does a restart of this daemon.
+                _OP_BACKOFF[akey][1] = float("inf")
     return res
 
 
@@ -13119,6 +13265,10 @@ def create_ifaces(node_cfg, create, agent, sudo):
     changed = False
     _live = None                            # datapath asked at most once per pass, and only if we need it
     for iface, want in create.items():
+        _no3 = awg_gen_refusal(iface, (want or {}).get("awg_params"))   # an AmneziaWG 3 set this node cannot bring up
+        if _no3:
+            res["errors"].append(f"{iface}: {_no3}")
+            continue
         if iface in ifaces:
             # Already ours. Normally this is just the panel not having seen our report yet — say nothing.
             if _live is None:

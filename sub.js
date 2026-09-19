@@ -161,7 +161,8 @@
     return n + " " + (n === 1 ? "server" : "servers");
   }
 
-  var AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
+  var AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",
+    "HeaderProtectionKey", "RandomTrailers", "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts", "DisableCookies"];   // + AmneziaWG 3.x; twin of js/crypto.js AWG_ORDER
   // Turn-proxy fork display order, wg-only set and colours are driven by the panel's turn_catalog (single source of
   // truth — the keystone). The hardcoded *_FALLBACK values are the last-known set for an OLDER panel that doesn't
   // serve the catalog in the sub bundle yet; catalog-driven is also more CURRENT (the fallback lacks MYSOREZ, which
