@@ -38,6 +38,13 @@ Hermetic: no iptables, no ipset, no root. Run: python3 tests/ksni_src_selftest.p
      i   the row's set binds the address alone, not (address, device)
      s1  a scratch `swgs_<wid>t` left by an interrupted swap is never destroyed
      s2  a set whose member count drifted is not replaced (a flushed set stays empty)
+     d6  an IP-learning change destroys the learned sets again (refused while SWG_CATK counts with them — D6)
+     d6b a learned-IP lifetime that could not be applied still stamps the chain's signature (never retried)
+     r1  Reset routing destroys the learned sets without emptying them (the destroy is refused; every IP survives)
+     t1  leaving Kernel SNI tears SWGK down before the counters (the learned sets outlive the pass)
+
+Also, not tied to rows (a 1.8.7 bug found by P1b, D6): an IP-learning change reaches the learned sets while SWG_CATK counts
+with them, Reset routing empties them, and a node leaving Kernel SNI drops them in the same pass.
 """
 import importlib.machinery, importlib.util, ipaddress, json, os, shutil, subprocess, sys, tempfile
 
@@ -100,6 +107,18 @@ PLANTS = {
           ('''_xts_srcsetname(e["src"]), "src,src"]''', '''_xts_srcsetname(e["src"]), "src"]''')],
     "s1": ('''        if setn.startswith("swgs_") and not (_XTS_SRC_RE.fullmatch(setn) or _XTS_SRC_RE.fullmatch(setn[:-1])):''',
            '''        if setn.startswith("swgs_") and not _XTS_SRC_RE.fullmatch(setn):'''),
+    "d6": ('''            r = run(["ipset", "restore"], input_text="create swgk_TTL hash:ip family inet timeout %s\\nswap swgk_TTL %s\\n"
+                                                         "destroy swgk_TTL\\n" % (ttl, setn))''',
+           '''            r = run(["ipset", "destroy", setn]); r = run(["ipset", "create", setn, "hash:ip", "family", "inet", "timeout", str(ttl), "-exist"])'''),
+    "d6b": ('''    if _ok[0] and _ttl_ok:''', '''    if _ok[0]:'''),
+    "r1": ('''        run(["ipset", "flush", setn])      # the learned IPs go even where the destroy is refused: SWG_CATK still counts with''',
+           '''        pass'''),
+    "t1": ('''        _ensure_sni_router(None, [], res)                     # not SNI → stop the classifier + drop its map
+        reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain FIRST:
+        _ensure_smart_xtstring([], {}, 0, res, active=False)  # it names the learned sets, whose destroy is refused while it does''',
+           '''        _ensure_sni_router(None, [], res)                     # not SNI → stop the classifier + drop its map
+        _ensure_smart_xtstring([], {}, 0, res, active=False)
+        reconcile_catk_chain([])'''),
     "s2": ('''        if sn in have and _XTS_SRC.get(sn) == msig and have[sn] == len(mem):''',
            '''        if sn in have and _XTS_SRC.get(sn) == msig:'''),
 }
@@ -129,6 +148,7 @@ if PLANT:
     path = os.path.join(STATE, "planted-noded.py")
     open(path, "w", encoding="utf-8").write(src)
 N = load(path, "swgnoded_ksni")
+REAL_CATK = N.reconcile_catk_chain
 
 
 # ── the model: iptables mangle + ipset, as the kernel decides ───────────────────────────────────────────────────────────
@@ -142,7 +162,7 @@ DIMS = {"hash:ip": 1, "hash:net": 1, "hash:net,iface": 2}
 
 class Box:
     def __init__(self, netiface=True, nft=None):
-        self.sets, self.chains, self.hooked = {}, {}, False
+        self.sets, self.chains, self.hooked, self.fail_swap = {}, {}, False, False
         self.netiface, self.nft = netiface, nft
         self.builds = self.restores = 0
         self.refused = []
@@ -174,9 +194,11 @@ class Box:
             n, typ = a[1], a[2]
             if typ == "hash:net,iface" and not self.netiface:
                 return R(1, "", "ipset v7: Kernel error received: set type not supported")
-            if n in self.sets:
-                return R(0) if ("-exist" in a or exist) and self.sets[n]["type"] == typ else R(1, "", "set already exists")
-            self.sets[n] = {"type": typ, "m": set()}
+            tmo = a[a.index("timeout") + 1] if "timeout" in a else None
+            if n in self.sets:                                 # -exist forgives only the SAME set (type and parameters)
+                same = self.sets[n]["type"] == typ and self.sets[n].get("timeout") == tmo
+                return R(0) if ("-exist" in a or exist) and same else R(1, "", "set with the same name already exists")
+            self.sets[n] = {"type": typ, "m": set(), "timeout": tmo}
             return R(0)
         if op == "destroy":
             if a[1] not in self.sets:
@@ -201,9 +223,9 @@ class Box:
             return R(0)
         if op == "swap":
             x, y = self.sets.get(a[1]), self.sets.get(a[2])
-            if not x or not y or x["type"] != y["type"]:
+            if not x or not y or x["type"] != y["type"] or self.fail_swap:
                 return R(1, "", "cannot swap")
-            x["m"], y["m"] = y["m"], x["m"]
+            self.sets[a[1]], self.sets[a[2]] = y, x            # the kernel swaps the SETS (timeout included); names stay put
             return R(0)
         if op == "restore":
             self.restores += 1
@@ -219,7 +241,8 @@ class Box:
     def ipt(self, a):
         while a and a[0] in ("-w",):
             a = a[2:]
-        assert a[:2] == ["-t", "mangle"], a
+        if a[:2] != ["-t", "mangle"]:
+            return R(0)                                        # nat / filter: not this test's business
         op, ch, rest = a[2], a[3] if len(a) > 3 else "", a[4:]
         if ch == "PREROUTING":
             if op == "-C":
@@ -233,13 +256,30 @@ class Box:
                     return R(1, "", "no chain")
                 self.hooked = True
                 return R(0)
-        if ch != "SWGK":
-            return R(0)                                        # SWG_CATK and the rest: not this test's business
+        if ch in ("FORWARD", "OUTPUT", "POSTROUTING", "INPUT"):   # built-in chains: only their jumps matter here
+            fw = self.chains.setdefault("@" + ch, [])
+            if op == "-S":
+                return R(0, "".join("-A %s %s\n" % (ch, " ".join(r)) for r in fw))
+            if op in ("-A", "-I"):
+                r = rest[1:] if op == "-I" and rest and rest[0].isdigit() else rest
+                fw.insert(0, r) if op == "-I" else fw.append(r)
+                return R(0)
+            if op == "-D":
+                if rest in fw:
+                    fw.remove(rest); return R(0)
+                return R(1)
+            return R(0)
+        if op == "-nL":
+            return R(0 if ch in self.chains else 1)
+        if op == "-S":
+            if ch not in self.chains:
+                return R(1)
+            return R(0, "-N %s\n" % ch + "".join("-A %s %s\n" % (ch, " ".join(r)) for r in self.chains[ch]))
         if op == "-N":
             if ch in self.chains:
                 return R(1, "", "Chain already exists")
             self.chains[ch] = []
-            self.builds += 1
+            self.builds += ch == "SWGK"
             return R(0)
         if op == "-F":
             if ch not in self.chains:
@@ -247,7 +287,8 @@ class Box:
             self.chains[ch] = []
             return R(0)
         if op == "-X":
-            if ch not in self.chains or self.hooked:
+            if ch not in self.chains or (ch == "SWGK" and self.hooked) or \
+                    any(r[-2:] == ["-j", ch] for k, rs in self.chains.items() for r in rs):
                 return R(1)
             del self.chains[ch]
             return R(0)
@@ -500,6 +541,52 @@ for ok in (False, True):
     else:
         check(tag + "not one rule references a swgs_ set", not any("swgs_" in " ".join(x) for x in rules), rules[:3])
     check(tag + "the node reports `src: %d`" % (2 if ok else 1), N.smart_status().get("src") == (2 if ok else 1), N.smart_status())
+N._KSNI_SRC["ok"] = None
+
+# ── 7b. D6 — the learned sets while SWG_CATK counts with them (a 1.8.7 bug, not the rows') ─────────────────────────────
+print("\n[D6: an IP-learning change, Reset routing, leaving Kernel SNI — with the byte counters naming the sets]")
+N.reconcile_catk_chain = REAL_CATK
+CY = N._xts_setname("custom_yt")
+def kpass(B, ttl, entries=(EV_YT,)):
+    res = {"changed": 0, "errors": []}
+    cats = N._ensure_smart_xtstring([dict(e) for e in entries], DOMS, RESET, res, ttl=ttl, srcs=SRCS)
+    N.reconcile_catk_chain(cats)
+    return res
+B = fresh()
+kpass(B, 3600)
+check("the counters name the learned set (the condition D6 needs)", B.referenced(CY) and "SWG_CATK" in B.chains, sorted(B.chains))
+B.sets[CY]["m"].add((ipaddress.ip_network("198.51.100.1/32"), None))
+b0 = B.builds
+r = kpass(B, 120)
+check("IP learning turned off: the learned set now lives 120 s", (B.sets.get(CY) or {}).get("timeout") == "120", B.sets.get(CY))
+check("…its learned IPs are gone, as the recreate always meant", not (B.sets.get(CY) or {}).get("m"), B.sets.get(CY))
+check("…the counters still name it, no error, and no scratch set is left", B.referenced(CY) and not r["errors"] and "swgk_TTL" not in B.sets,
+      (r["errors"], sorted(B.sets)))
+check("…the new lifetime is recorded", open(os.path.join(N.GEO_DIR, ".xtstring-ttl")).read().strip() == "120")
+b1 = B.builds; kpass(B, 120)
+check("…and the next pass is quiet (no rebuild)", B.builds == b1, (b1, B.builds))
+B.fail_swap = True
+r = kpass(B, 3600)
+check("a lifetime the kernel refuses is reported", any("lifetime" in e for e in r["errors"]), r["errors"])
+check("…and not recorded as applied", open(os.path.join(N.GEO_DIR, ".xtstring-ttl")).read().strip() == "120")
+B.fail_swap = False
+b2 = B.builds; kpass(B, 3600)
+check("…so the next pass tries again, and it lands", B.builds == b2 + 1 and (B.sets.get(CY) or {}).get("timeout") == "3600",
+      (B.builds - b2, B.sets.get(CY)))
+B.sets[CY]["m"].add((ipaddress.ip_network("198.51.100.2/32"), None))
+N._apply_full_reset(9, {"changed": 0, "errors": []})
+check("Reset routing empties the learned sets even while the counters still name them",
+      all(not v["m"] for k, v in B.sets.items() if k.startswith("swgk_")), {k: len(v["m"]) for k, v in B.sets.items()})
+# leaving Kernel SNI, through the real reconcile_cascade: one pass must take the learned sets with it
+B = fresh(nft=SmartKernel())
+N._KSNI_SRC["ok"] = True
+base = {"entries": [dict(EV_YT)], "categories": ["custom_yt"], "srcs": {}, "domains": DOMS}
+N.reconcile_cascade({"interfaces": {}}, {}, dict(base, mode="sni_kernel"), "")
+had = sorted(k for k in B.sets if k.startswith("swgk_"))
+N.reconcile_cascade({"interfaces": {}}, {}, dict(base, mode="kernel", domains={}), "")
+check("leaving Kernel SNI: the learned sets go in the same pass (the counters are dropped first)",
+      had and not [k for k in B.sets if k.startswith("swgk_")] and "SWG_CATK" not in B.chains and "SWGK" not in B.chains,
+      (had, sorted(B.sets), sorted(B.chains)))
 N._KSNI_SRC["ok"] = None
 
 # ── 7. a plan without `src` renders and signs exactly as P1 did ────────────────────────────────────────────────────────

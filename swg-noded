@@ -6282,7 +6282,8 @@ def _apply_full_reset(reset_val, res):
     run(["iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", "SWGK"])
     run(["iptables", "-t", "mangle", "-F", "SWGK"]); run(["iptables", "-t", "mangle", "-X", "SWGK"])
     for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
-        run(["ipset", "destroy", setn])
+        run(["ipset", "flush", setn])      # the learned IPs go even where the destroy is refused: SWG_CATK still counts with
+        run(["ipset", "destroy", setn])    # the set (rebuilt later this pass) — destroy alone left them all in place
     # 4) restart the userspace SNI reader so its in-memory learned set clears (relaunched by _ensure_sni_router)
     p = _SNI_PROC.get("p")
     if p and p.poll() is None:
@@ -7484,8 +7485,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     if host_engine == "sni_user":                             # userspace swg-sni fills the domain cats from the TLS
         domains, _pats = _smart_shadowed(domains, _pats, _shw)   # the shadow categories beside their claimers (_smart_shadows)
         _ensure_sni_router(domains, _subs, res, learn_ttl, map_key=(dom_sig, (_shw or {}).get("sig", "")), patterns=_pats)   # handshake (client DNS untouched)
-        _ensure_smart_xtstring([], {}, 0, res, active=False)  # ensure the kernel engine is torn down
-        reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain
+        reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain FIRST:
+        _ensure_smart_xtstring([], {}, 0, res, active=False)  # it names the learned sets, whose destroy is refused while it does
         if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq({}, [], res, unchanged=False)
     elif host_engine == "sni_kernel":                         # in-kernel xt_string reader — no userspace daemon at all
@@ -7511,8 +7512,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             _ensure_smart_dnsmasq({}, [], res, unchanged=False)
     else:                                                     # forcedns (dnsmasq oracle) or kernel/IP-only (nothing)
         _ensure_sni_router(None, [], res)                     # not SNI → stop the classifier + drop its map
-        _ensure_smart_xtstring([], {}, 0, res, active=False)  # ensure the kernel engine is torn down
-        reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain
+        reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain FIRST:
+        _ensure_smart_xtstring([], {}, 0, res, active=False)  # it names the learned sets, whose destroy is refused while it does
         # ⚠️ `host_engine == "dns"` IS THE REACHABILITY HALF, and without it the idle flag below is set in a
         # function this line skips. The guard's four conditions are all FALSE on a node just switched to
         # Force-DNS with no smart interface yet — nothing to route, nothing running, no conf on disk — so
@@ -7975,11 +7976,26 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
     prev_ttl = ""
     with contextlib.suppress(Exception):
         prev_ttl = open(ttl_marker).read().strip()
+    _ttl_ok = True
     if entries and str(ttl) != prev_ttl:
+        # ⚠️ REPLACED BY SWAP, NOT DESTROYED. SWG_CATK (the per-category byte counters in mangle FORWARD, rebuilt only
+        # after this returns) still names every set here, so `ipset destroy` was refused ("in use by a kernel
+        # component"), the recreate with the new timeout was refused too (same name, other parameters) — and the
+        # marker was written anyway: an IP-learning change never reached a running node's learned sets (D6, measured).
+        # An empty set at the new timeout swapped in keeps every reference and drops the learned IPs, which is what the
+        # recreate meant. `swgk_TTL` cannot be a category's set: _xts_setname lowercases.
         for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
-            run(["ipset", "destroy", setn])
-        with contextlib.suppress(OSError):
-            os.makedirs(GEO_DIR, exist_ok=True); open(ttl_marker, "w").write(str(ttl))
+            if setn == "swgk_TTL":
+                continue
+            run(["ipset", "destroy", "swgk_TTL"])              # one an interrupted pass left behind
+            r = run(["ipset", "restore"], input_text="create swgk_TTL hash:ip family inet timeout %s\nswap swgk_TTL %s\n"
+                                                         "destroy swgk_TTL\n" % (ttl, setn))
+            if r.returncode != 0:
+                _ttl_ok = False
+                res["errors"].append("kernel-sni: learned-IP lifetime not applied to %s: %s" % (setn, (r.stderr or "").strip()[:80]))
+        if _ttl_ok:                                            # …only once it is true, or it is never tried again
+            with contextlib.suppress(OSError):
+                os.makedirs(GEO_DIR, exist_ok=True); open(ttl_marker, "w").write(str(ttl))
     if not entries:                                            # teardown: drop the chain + our learned ipsets
         for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
             run(["ipset", "destroy", setn])
@@ -7999,7 +8015,7 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
     for a in rules:                                            # exactly what was signed, in the order it was signed
         _ipt(*a)
     _ipt("-A", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", CHAIN)   # hook once, last
-    if _ok[0]:
+    if _ok[0] and _ttl_ok:                                     # a lifetime not applied leaves the signature unstamped: retried
         res["changed"] += 1
         with contextlib.suppress(OSError):
             os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
