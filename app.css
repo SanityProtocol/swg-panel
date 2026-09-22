@@ -1955,6 +1955,19 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rrdest{display:block;min-width:0}
 .rrdest .ddbtn{font-size:12.5px;padding:7px 10px}
 .rrcatch{min-width:0}   /* the routing catch-all ("everything else") — matches the per-rule route-to control exactly */
+/* A PER-PERSON ROW (ROUTING-PEERS-MESH-PLAN §7.1): whom it is for, as a count, beside its destination — the one new thing on the
+   row, so it is quiet: the list's own surface and line, the People window's amber where a device escapes the rule. */
+.whochip{display:inline-flex;align-items:center;gap:5px;flex:none;padding:3px 9px;border:1px solid var(--line);border-radius:20px;
+  background:var(--surface-2);color:var(--ink-2);font-size:11.5px;font-weight:600;white-space:nowrap;cursor:help}
+.whochip svg{width:12px;height:12px;color:var(--dim)}
+.whochip.warn{color:var(--partial);border-color:color-mix(in srgb,var(--partial) 45%,var(--line))}
+.whochip.bad{color:var(--partial);background:color-mix(in srgb,var(--partial) 12%,transparent);border-color:color-mix(in srgb,var(--partial) 45%,var(--line));cursor:default}
+.whochip.warn svg,.whochip.bad svg{color:var(--partial)}
+.tf-trail .rrgear{width:26px;height:26px;flex:none}
+/* "Advanced…" opens a window; it is not one more destination, so it sits under a line, in the list's quieter weight */
+.ddopt.ddopt-adv{margin-top:3px;border-top:1px solid var(--line);border-radius:0 0 6px 6px;font-weight:500;color:var(--dim)}
+.rsdest{max-width:360px}
+.tf-trail:has(.whochip){flex-wrap:wrap;justify-content:flex-end;row-gap:6px}   /* only a row that carries the chip: the chips wrap above the destination rather than push it out of the row */
 /* Phase 3 smart-routing rule editor. Row + catch-all footer share ONE grid template (grip · dropdown · arrow ·
    dropdown · xbtn), so the "everything else" dropdown + arrow line up exactly under the per-rule ones. The side
    columns are `auto` (icon-width) and identical in both, so the two 1fr dropdown columns come out equal. A flex

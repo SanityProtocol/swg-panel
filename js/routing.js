@@ -17,15 +17,16 @@ import { classify, classifyAll, patternTier, TIER2_MIN } from "./classify.js";
 import { idnHost, idnDiffers } from "./idn.js";
 import { rulesToRows, rowsToRules, badgeIdentity, badgeCovers, rowHasBadge, newGid,
          badgeText, readToken as rrReadToken,
-         customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count } from "./rulerows.js";
+         customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho } from "./rulerows.js";
 import { esc, seen } from "./util.js";
 import { isSelfContainedName, nodeStale } from "./model.js";
-import { meshHealth } from "./views.js";
+import { meshHealth, deviceLabel } from "./views.js";
+import { UserPicker } from "./peer-actions.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed } from "./theme.js";
 import { Ic, Tag, Panel, Switch, Dropdown, Disclosure, autoGrow, Sheet, footRow, secTitle, SearchBox,
          Popover, Portal, toast, openModal, pushModal, closeModal, closeAllModals, openConfirm, goSettings,
-         useReorder, GRIP_SVG, NodeIpPick, ConfirmPhrase } from "./ui.js";
+         useReorder, GRIP_SVG, NodeIpPick, ConfirmPhrase, CapList, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -510,7 +511,7 @@ export function rulesSummary(nodeId, rows, catchAll) {
   const mode = rec ? (rec.routing_mode || "kernel") : "";
   let off = 0;
   if (mode) for (const r of list) if (!r.locked)
-    for (const bg of (r.badges || [])) if (!badgeGate(mode, nodeId, bg).ok) off++;
+    for (const bg of (r.badges || [])) if (!rowGate(r, mode, nodeId, bg).ok) off++;
   // ⚠️ AND A DESTINATION THAT IS GONE, which is a different fact from a target this engine cannot run and
   // must not be folded into it: one says "this node's mode can't match that", the other says "the place you
   // told it to send the traffic is not there any more". Counted HERE because this section is COLLAPSED by
@@ -1169,6 +1170,20 @@ export function listGate(mode, id, node) {
 }
 /** The verdict for any badge — the one call every gate in the field and in egressSaveBlock goes through. */
 export const badgeGate = (mode, node, b) => b.t === "list" ? listGate(mode, b.id, node) : targetGate(mode, b.kind);
+/* …and for a badge IN A ROW, which adds P1's interim Kernel-SNI gate (ROUTING-PEERS-MESH-PLAN §6.3). A per-person row never
+   reaches xt_string — its `-s <subnet>` would widen the row to everyone — so on Kernel SNI the row's IP targets route through
+   the nft row and its hostnames route nobody, until the node reports `src: 2`. A hostname badge there is inert with the
+   switch to Hybrid SNI; a list holding both kinds routes its IP half and says so. */
+const _ipKind = k => k === "ip" || k === "asn";
+export function rowGate(row, mode, node, b) {
+  const g = badgeGate(mode, node, b);
+  if (!g.ok || !(row && row.who) || mode !== "sni_kernel" || ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) >= 2) return g;
+  const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
+  const host = caps ? !!caps.host : !_ipKind(b.kind);
+  if (!host) return g;
+  return caps && caps.ip ? { ...g, note: T("Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.") }
+    : { ok: false, why: "person_ksni", fix: "sni" };
+}
 
 /* Why a badge cannot run here, said in one sentence, plus the label of the mode that would fix it. Never a
    bare "unsupported": the operator has to be able to act on it, and for three of the five reasons the action
@@ -1185,6 +1200,7 @@ export function gateReason(g, modeLabel) {
       ? T("No engine on this node routes this kind yet — {v1} does.", { v1: (MODE_META[g.fix] || {}).label || g.fix })
       : T("This panel doesn't route this kind of address yet — it's classified and stored, but no node can match it.");
     case "list_off_node": return T("Switched off for this node in Settings ▸ Routing lists.");
+    case "person_ksni": return T("Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.");
     case "prov_off": return T("This list's provider is switched off — turn it back on in Settings ▸ Geo data providers.");
     case "engine": return T("{v1} matches by IP only — this needs a host layer.", { v1: modeLabel });
     // ⚠️ ONE SENTENCE PER ENGINE MUST BE TRUE OF EVERY KIND THAT ENGINE REFUSES — five each, and both of
@@ -1395,7 +1411,8 @@ function Badge({ b, gate, node, modeLabel, onRemove, onEdit, onFix, onRetry, onR
       // same operand goes quiet the moment it becomes a badge, which is the half of §10.5 item 9 that is
       // about a rule the operator has already finished writing.
       + opTooLongNote(node, b.kind, b.value)
-      + (gate.degraded ? " · " + T("On this node it is matched as text anywhere in the name.") : "");
+      + (gate.degraded ? " · " + T("On this node it is matched as text anywhere in the name.") : "")
+      + (gate.note ? " · " + gate.note : "");
   return html`<span class=${"tfbadge" + (isList ? " list" : " tgt") + (wide ? " wide" : "") + (inert ? " inert" : "") + (gate.degraded ? " degraded" : "") + (editing ? " editing" : "")} title=${title}>
     ${inert ? html`<span class="tfb-g" aria-hidden="true">⊘</span>` : null}
     ${/* A LIST BADGE WAS INERT. Clicking it fell through to the box, which opens the dropdown at the top —
@@ -2027,7 +2044,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
     ${/* Badges cannot be selected, so without this a rule can be built and never read back out. */""}
     ${listEditor ? null : vtog(false)}
     <div class="tf-box" onClick=${() => inRef.current && inRef.current.focus()}>
-      ${shown.map((b, i) => html`<${Badge} key=${badgeIdentity(b) + i} b=${b} gate=${badgeGate(mode, node, b)} node=${node} modeLabel=${modeLabel}
+      ${shown.map((b, i) => html`<${Badge} key=${badgeIdentity(b) + i} b=${b} gate=${rowGate(row, mode, node, b)} node=${node} modeLabel=${modeLabel}
         editing=${!!(editing && editing.b === b)}
         onRemove=${() => remove(i)} onEdit=${() => edit(i)} onFix=${onSwitchMode} onRetry=${() => bump(x => x + 1)}
         onReveal=${revealList}/>`)}
@@ -2137,7 +2154,7 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
 // and it is the whole story on Kernel-SNI — but it does not decide an overlap between two DIFFERENT targets:
 // swg-sni and dnsmasq both answer that by specificity (measured, plan §10.4x), which is what the label over
 // the list now says and what the `takenBy` lint below points at where the two disagree.
-export function RoutingRules({ node, rows, catchAll, onChange }) {
+export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
   const others = (Store.nodes || []).filter(n => n.id !== node);
   const _nrec = (Store.nodes || []).find(n => n.id === node);
   // what "the node default" resolves to here, if the node has one — see `catchVal`
@@ -2153,7 +2170,8 @@ export function RoutingRules({ node, rows, catchAll, onChange }) {
   const addRow = () => emit([...dispRows, { _gid: newGid(), enabled: true, badges: [], action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
   const destVal = r => r.action === "exit" ? "exit|" + (r.node || "")
     : r.action === "dev" ? "dev|" + (r.exit_id || "") : r.action;
-  const onDest = (gid, v) => setRow(gid, destPatch(v));
+  // "Advanced…" is not a destination: it opens Rule settings for the row and leaves the row's destination as it was.
+  const onDest = (gid, v) => v === "__adv__" ? openRule(dispRows.find(r => r._gid === gid)) : setRow(gid, destPatch(v));
   // ⚠️ ONE FUNCTION, BOTH CONTROLS. The row's destination and the catch-all's used to build their patch
   // separately from the same `split("|")`, and they had already drifted — the catch-all listed its options
   // in a different order and could not name an exit at all. A destination is one grammar; it gets one
@@ -2190,7 +2208,7 @@ export function RoutingRules({ node, rows, catchAll, onChange }) {
                why: T("This rule leaves by an exit that is not on this node any more, so it routes nothing and traffic takes the next matching rule instead. Choose another destination, or delete the rule.") };
     return null;
   };
-  const destOpts = (withDefault, held) => { const _gone = goneDest(held); return [
+  const destOpts = (withDefault, held, adv) => { const _gone = goneDest(held); return [
     ...(withDefault && _dflt ? [{ value: "__dflt__",
       label: T("Node default ({v1})", { v1: _dflt.label || _dflt.device || _dflt.id }) }] : []),
     { value: "direct", label: T("Direct (this node)") },
@@ -2210,7 +2228,16 @@ export function RoutingRules({ node, rows, catchAll, onChange }) {
     // up — "a stored selection that has since broken must stay visible and nameable" — reached from the
     // other side, and it is the same reason: a blank is not a report.
     ...(_gone ? [{ value: _gone.value, label: _gone.label, className: "bad", refuse: _gone.why }] : []),
+    // LAST OF ALL, and only on a rule's own dropdown (ROUTING-PEERS-MESH-PLAN §7.1): it opens the rule's settings — where it
+    // leaves by, and for whom. The catch-all is for everyone on the interface (D10), so its dropdown does not offer it.
+    ...(adv ? [{ value: "__adv__", label: T("Advanced…"), className: "ddopt-adv" }] : []),
   ]; };
+  // PER-PERSON ROWS: what each selection covers here is asked of the panel (the resolver the sync uses), so the chip, the
+  // window and the node cannot disagree. Asked only while a row names people — a list with none sends nothing.
+  const whoOf = useWhoReport(node, iface, dispRows.filter(r => r.who).map(r => r.who));
+  const openRule = row => row && pushModal(html`<${RuleSettingsSheet} node=${node} iface=${iface} row=${row}
+    dests=${destOpts(false, destVal(row))} dest=${destVal(row)} mode=${_mode}
+    onApply=${(v, who) => setRow(row._gid, { ...destPatch(v), who: who || undefined })}/>`);
   // A rule this node's engine can't run is a dead end unless the operator can leave it — so every gate that
   // names a mode also offers the switch. Generalised from the old Force-DNS-only affordance: the field's
   // capability table names whichever engine would run the badge, and this reprovisions the node into it.
@@ -2271,7 +2298,7 @@ export function RoutingRules({ node, rows, catchAll, onChange }) {
             takenBy.push(nb);
       }
       const self = row.action === "exit" && row.node === node;
-      const inert = badges.filter(b => !badgeGate(_mode, node, b).ok);
+      const inert = badges.filter(b => !rowGate(row, _mode, node, b).ok);
       const asns = badges.filter(b => b.t === "target" && b.kind === "asn").map(b => b.raw).join(", ");
       const it = rs.item(row._gid);
       return html`<div key=${row._gid} class=${"rrrow rrrow-b" + it.cls + ((dupes.length || self || inert.length || takenBy.length || row.locked) ? " warn" : "")} data-rid=${it.rid}>
@@ -2282,9 +2309,10 @@ export function RoutingRules({ node, rows, catchAll, onChange }) {
         ${/* NO `rrarrow` HERE. The exit options are themselves written "→ nixos", so the row read
               "→  → nixos" — two arrows for one destination. The catch-all below keeps its arrow: there it
               is the only one, and it is what joins "Everything else" to the control. */""}
-        ${(() => { const dest = html`<span class="rrdest" title=${row.locked ? T("Stored as written — this rule is kept exactly as it is.") : ""}>
+        ${(() => { const dest = html`${row.who ? html`<${WhoChip} who=${row.who} rep=${whoOf(row.who)}/>
+              <button type="button" class="iconbtn rrgear" title=${T("Rule settings")} aria-label=${T("Rule settings")} onClick=${() => openRule(row)}><${Ic} i="gear"/></button>` : null}<span class="rrdest" title=${row.locked ? T("Stored as written — this rule is kept exactly as it is.") : ""}>
             <${Dropdown} disabled=${!!row.locked} value=${destVal(row)}
-              onChange=${v => onDest(row._gid, v)} options=${destOpts(false, destVal(row))}/>
+              onChange=${v => onDest(row._gid, v)} options=${destOpts(false, destVal(row), !row.locked)}/>
           </span>`;
           /* ASKED FIRST — but only when there is something to lose. A row still being built (no targets
              yet) goes with one click, because confirming the removal of an empty thing teaches the operator
@@ -2342,6 +2370,141 @@ export function RoutingRules({ node, rows, catchAll, onChange }) {
       ? Trich("No rules yet. Add a rule to send some destinations through another node, or set *Everything else* to channel everything.")
       : Trich("No rules yet. Add a rule to send some destinations out a device on this node or block them, or set *Everything else* to say where the rest goes.")}</div>`}
   </div>`;
+}
+
+// ── PER-PERSON RULES: the row's chip and the Rule settings window (ROUTING-PEERS-MESH-PLAN §7.1–7.2) ──────────────────────────
+// A rule may apply to chosen people, groups and single devices instead of everyone on the interface. What a selection covers
+// here is never derived in the browser: the panel answers with the resolver the node's sync uses (`/api/routing/who`), so a
+// keyless device on a build that can't prove its source reads red here exactly when the node leaves it out.
+
+/** {selection → report} for the rows of one interface. Asked once per change of the set of selections, debounced. */
+function useWhoReport(node, iface, whos) {
+  const key = JSON.stringify([node, iface || "", whos.map(canonWho)]);
+  const [rep, setRep] = useState({});
+  useEffect(() => {
+    if (!whos.length || !iface) return;
+    let ok = true;
+    const h = setTimeout(async () => {
+      try {
+        const r = await api.routingWho({ node, iface, rows: whos.map(canonWho) });
+        if (ok && r && r.ok) setRep(Object.fromEntries(whos.map((w, i) => [JSON.stringify(canonWho(w)), ((r.data || {}).rows || [])[i] || null])));
+      } catch (e) { /* the chip says "…" until the next change asks again */ }
+    }, 250);
+    return () => { ok = false; clearTimeout(h); };
+  }, [key]);
+  return w => rep[JSON.stringify(canonWho(w))] || null;
+}
+
+// A report's devices, counted: in the set · keyless, not connected yet · on a build that can't tell them apart.
+const whoTally = (rep, only) => { const c = { ok: 0, soon: 0, no: 0 };
+  for (const [pid, st] of Object.entries((rep || {}).devices || {})) if (!only || only(pid)) c[st] = (c[st] || 0) + 1;
+  return c; };
+// Which of a report's devices one entry of the selection accounts for — a user's own, a group's members', or the one device.
+const whoEntryHas = (e, pid) => { const p = Store.peer(pid), uid = p && p.user_id;
+  return e.k === "p" ? pid === e.id : e.k === "u" ? uid === e.id : !!uid && ((Store.group(e.id) || {}).users || []).includes(uid); };
+const whoEntryName = e => e.k === "g" ? ((Store.group(e.id) || {}).name || T("a group that no longer exists"))
+  : e.k === "u" ? ((Store.user(e.id) || {}).name || T("a user who no longer exists"))
+  : (Store.peer(e.id) ? deviceLabel(Store.peer(e.id)) : T("a device that no longer exists"));
+const whoEntries = w => [...(w.groups || []).map(id => ({ k: "g", id })), ...(w.users || []).map(id => ({ k: "u", id })),
+                         ...(w.peers || []).map(id => ({ k: "p", id }))];
+
+// The colour-coded device count of one entry, with what each colour means on hover — the People window's idiom.
+function WhoDevices({ rep, e }) {
+  if (!rep) return html`<span class="faint">…</span>`;
+  const c = whoTally(rep, pid => whoEntryHas(e, pid));
+  const parts = [[c.ok, "ok"], [c.soon, "soon"], [c.no, "no"]].filter(([n]) => n);
+  const trigger = html`<span class=${"netdev" + (parts.length ? "" : " none")}>${parts.length
+    ? parts.map(([n, k]) => html`<span class=${"netdev-n " + k}>${n}</span>`) : T("no device here")}${parts.length ? html`<${Ic} i="info"/>` : null}</span>`;
+  if (!parts.length) return trigger;
+  return html`<${Popover} hoverOnly cls="netdev-pop" popCls="netroute-bub" trigger=${trigger}>
+    <span class="netroute-h">${whoEntryName(e)}</span>
+    ${c.ok ? html`<div class="netbub-row nb-dot ok">${T("{devices} in the rule", { devices: plural(c.ok, "device") })}</div>` : null}
+    ${c.soon ? html`<div class="netbub-row nb-dot soon">${plural(c.soon, "device")} — ${T("Not connected yet — the rule applies once it connects.")}</div>` : null}
+    ${c.no ? html`<div class="netbub-row nb-dot no">${plural(c.no, "device")} — ${T("Can't be told apart on this build — the rule doesn't apply to it.")}</div>` : null}
+  <//>`;
+}
+
+/** The row's chip: whom it names and how many devices here it covers — and, amber, how many it cannot. */
+function WhoChip({ who, rep }) {
+  const c = whoTally(rep), people = (rep || {}).people || 0, list = whoEntries(who);
+  const text = !rep ? "…" : people ? T("{people} · {devices}", { people: plural(people, "person"), devices: plural(c.ok, "device") }) : plural(c.ok, "device");
+  const trigger = html`<span class=${"whochip" + (rep && !c.ok ? " warn" : "")}><${Ic} i="users"/>${text}</span>`;
+  return html`<${Fragment}><${Popover} hoverOnly cls="whochip-pop" popCls="netroute-bub" trigger=${trigger}>
+      <span class="netroute-h">${T("Chosen people and devices")}</span>
+      <${CapList} items=${list} cap=${10} row=${e => html`<div class="netbub-row" key=${e.k + e.id}><b>${whoEntryName(e)}</b> — ${rep
+        ? plural(whoTally(rep, pid => whoEntryHas(e, pid)).ok, "device") : "…"}</div>`}/>
+      ${rep && !c.ok && !c.soon && !c.no ? html`<div class="netbub-row sub">${T("None of the chosen people has a device on this interface — the rule routes nothing until one does.")}</div>` : null}
+    <//>
+    ${c.no ? html`<span class="whochip bad" title=${T("Can't be told apart on this build — the rule doesn't apply to it.")}><${Ic} i="warn"/>${T("{devices} not covered", { devices: plural(c.no, "device") })}</span>` : null}<//>`;
+}
+
+/* RULE SETTINGS — where a rule leaves by, and for whom. Built from what exists: `ShareListSheet`'s layout (search-to-add with
+   `UserPicker`, a filter above 15 rows, the shared pager, per-row ×, the count in the foot), the Networks window's audience
+   switch, and its colour-coded device counts. Nothing here is written until the interface is saved. */
+function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, onApply }) {
+  useStore();
+  const [dest, setDest] = useState(dest0);
+  const [chosen, setChosen] = useState(!!row.who);
+  const [sel, setSel] = useState(() => canonWho(row.who || {}));
+  const [q, setQ] = useState(""), [page, setPage] = useState(1);
+  const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null), base = useRef(null);
+  const key = JSON.stringify([dest, chosen, chosen ? sel : null]);
+  if (base.current === null) base.current = key;
+  dirtyRef.current = key !== base.current;
+  const typedOnly = () => { if (cleanRef.current) cleanRef.current(); };      // the filter and the search change nothing
+  const whoOf = useWhoReport(node, iface, chosen ? [sel] : []);
+  const rep = chosen ? whoOf(sel) : null;
+  const here = Store.recon.peers.filter(p => (p.targets || []).some(t => t && t.node === node && t.iface === iface));
+  const list = [...sel.groups.slice().sort((a, b) => whoEntryName({ k: "g", id: a }).localeCompare(whoEntryName({ k: "g", id: b }))).map(id => ({ k: "g", id })),
+                ...sel.users.slice().sort((a, b) => whoEntryName({ k: "u", id: a }).localeCompare(whoEntryName({ k: "u", id: b }))).map(id => ({ k: "u", id })),
+                ...sel.peers.slice().sort((a, b) => whoEntryName({ k: "p", id: a }).localeCompare(whoEntryName({ k: "p", id: b }))).map(id => ({ k: "p", id }))];
+  const ql = q.trim().toLowerCase();
+  const rows = ql ? list.filter(e => whoEntryName(e).toLowerCase().includes(ql)) : list;
+  const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE)), pg = Math.min(page, pages);
+  const addTo = (k, id) => { if (!id || sel[k].includes(id)) return; setSel(s => ({ ...s, [k]: [...s[k], id].sort() })); setQ(""); };
+  const drop = e => { const k = { g: "groups", u: "users", p: "peers" }[e.k]; setSel(s => ({ ...s, [k]: s[k].filter(x => x !== e.id) })); };
+  const empty = chosen && !list.length;
+  const c = whoTally(rep);
+  const apply = () => { if (empty) return; onApply(dest, chosen ? sel : null); dirtyRef.current = false; if (cleanRef.current) cleanRef.current(); closeModal(); };
+  const count = [sel.groups.length ? plural(sel.groups.length, "group") : "", sel.users.length ? plural(sel.users.length, "user") : "",
+                 sel.peers.length ? plural(sel.peers.length, "device") : ""].filter(Boolean).join(", ");
+  const kSni = chosen && mode === "sni_kernel" && ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) < 2;
+  return html`<${Sheet} title=${T("Rule settings")} width=${680} dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
+    foot=${html`<${Fragment}><span class="faint">${chosen && count ? T("{v1} chosen", { v1: count }) : ""}</span><span class="grow"></span>
+      <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
+      <button class="btn btn-primary" disabled=${empty} title=${empty ? T("Choose at least one person or device, or pick “Everyone on this interface”.") : ""} onClick=${apply}>${T("Apply")}</button><//>`}>
+    <div class="field"><label>${T("Leaves by")}</label>
+      <span class="rrdest rsdest"><${Dropdown} value=${dest} onChange=${setDest} options=${dests}/></span></div>
+    <div class="field"><label>${T("For whom")}</label>
+      <div class="dpsw netsw-share" role="radiogroup" aria-label=${T("For whom")}>${[[false, T("Everyone on this interface")], [true, T("Chosen people and devices")]].map(([v, l]) => html`<button type="button" role="radio"
+        aria-checked=${chosen === v} class=${chosen === v ? "on" : ""} onClick=${() => setChosen(v)}>${l}</button>`)}</div></div>
+    ${chosen ? html`<${Fragment}>
+      <div class="sharebar" onInput=${typedOnly} onChange=${typedOnly}>
+        <div class="sharebar-add"><${UserPicker} value=${null} placeholder=${T("Add a person, group or device…")} exclude=${sel.users}
+          groups=${Store.groups().filter(g => !sel.groups.includes(g.id))} onGroup=${id => addTo("groups", id)} onChange=${id => addTo("users", id)}
+          devices=${here.filter(p => !sel.peers.includes(p.id)).map(p => ({ id: p.id, name: deviceLabel(p), sub: (Store.user(p.user_id) || {}).name || "" }))}
+          onDevice=${id => addTo("peers", id)}/></div>
+        ${list.length > LIST_PAGE ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
+            aria-label=${T("Filter the list…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
+      </div>
+      ${list.length ? html`<div class="sharegrid gmembers" role="table">
+          <div class="sharegrid-h" role="row"><span>${T("col|User, group or device")}</span><span>${T("Devices here")}</span><span></span></div>
+          ${pageSlice(rows, pg).map(e => { const gone = e.k === "g" ? !Store.group(e.id) : e.k === "u" ? !Store.user(e.id) : !Store.peer(e.id);
+            return html`<div class=${"sharegrid-r" + (e.k === "u" ? "" : " grp") + (gone ? " gone" : "")} role="row" key=${e.k + ":" + e.id}>
+            <span class="nm">${e.k === "g" ? html`<${Ic} i="users"/>` : e.k === "p" ? html`<${Ic} i="device"/>` : null}${whoEntryName(e)}${e.k === "g" && !gone
+              ? html`<span class="faint sharegrid-sub">${plural(Store.group(e.id).users.length, "member")}</span>` : e.k === "p" && !gone && Store.user(Store.peer(e.id).user_id)
+              ? html`<span class="faint sharegrid-sub">${Store.user(Store.peer(e.id).user_id).name}</span>` : null}</span>
+            <span><${WhoDevices} rep=${rep} e=${e}/></span>
+            <span><button type="button" class="btn btn-ghost btn-mini" title=${T("Remove {name}", { name: whoEntryName(e) })}
+              aria-label=${T("Remove {name}", { name: whoEntryName(e) })} onClick=${() => drop(e)}><${Ic} i="x"/></button></span></div>`; })}
+          ${!rows.length ? html`<div class="sharegrid-empty">${T("Nobody on the list matches “{q}”.", { q })}</div>` : null}
+        </div>
+        <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>
+        ${rep && !c.ok && !c.soon && !c.no ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("None of the chosen people has a device on this interface — the rule routes nothing until one does.")}</span></div>` : null}`
+      : html`<div class="sharegrid-empty">${T("Choose at least one person or device, or pick “Everyone on this interface”.")}</div>`}
+      ${kSni ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.")}</span></div>` : null}
+    <//>` : null}
+  <//>`;
 }
 
 /* ⚠️ DON'T WRITE A TARGET VALIDATOR HERE. A private one lived at this spot — `validTarget`, `isIpTarget`,
@@ -3183,8 +3346,10 @@ export function ifTrafficBadge(mode, egNode, node, exitId) {
 }
 
 // serialise an egress selection into the API body shape (shared by the interface and WDTT save paths)
+// `routing_v: 2` tells the panel this tab knows per-person rules: a save WITHOUT it over a stored one is refused (D7), because an
+// older tab's rowsToRules drops `who` and would re-save the rule without its people.
 export const egressBody = eg => eg.mode === "smart"
-  ? { egress_mode: "smart", routing: rowsToRules(eg.rows, eg.catchAll) }
+  ? { egress_mode: "smart", routing: rowsToRules(eg.rows, eg.catchAll), routing_v: 2 }
   // An exit carries an ID and nothing else — not a NIC and not a node. Sending the others alongside would
   // be harmless today (the server's ladder pops them) and a trap tomorrow, since a stale `wan_iface` riding
   // along is how a mode ends up meaning two things.

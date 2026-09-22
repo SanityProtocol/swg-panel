@@ -6300,6 +6300,35 @@ export const STR = {
   "On for every AmneziaWG 3.1 interface the panel sets up.": "Включено у каждого интерфейса AmneziaWG 3.1, который настраивает панель.",
   "Changes only through the version switch — every device has to re-import after it.": "Меняется только переключением версии — после него каждому устройству нужно заново импортировать конфиг.",
   "Given to an interface when it is created on 3.1 or switched to it; one already on 3.1 keeps its own. A blank cell is Amnezia's default.": "Их получает интерфейс, который создают на 3.1 или переводят на 3.1; интерфейс, уже работающий на 3.1, сохраняет свои. Пустая ячейка — значение Amnezia по умолчанию.",
+  // Per-person rules (ROUTING-PEERS-MESH-PLAN §7.1–7.2, §7.4): a rule for chosen people, groups and devices
+  "Advanced…": "Дополнительно…",
+  "Rule settings": "Настройки правила",
+  "Leaves by": "Выход через",
+  "For whom": "Для кого",
+  "Everyone on this interface": "Все на этом интерфейсе",
+  "Chosen people and devices": "Выбранные люди и устройства",
+  "Add a person, group or device…": "Добавить человека, группу или устройство…",
+  "{people} · {devices}": "{people} · {devices}",
+  "Devices here": "Устройства здесь",
+  "col|User, group or device": "Пользователь, группа или устройство",
+  "Can't be told apart on this build — the rule doesn't apply to it.": "На этой сборке это устройство не отличить от других — правило к нему не применяется.",
+  "Not connected yet — the rule applies once it connects.": "Ещё не подключалось — правило заработает после подключения.",
+  "None of the chosen people has a device on this interface — the rule routes nothing until one does.": "Ни у кого из выбранных нет устройства на этом интерфейсе — правило ничего не направляет, пока оно не появится.",
+  "Choose at least one person or device, or pick “Everyone on this interface”.": "Выберите хотя бы одного человека или устройство либо «Все на этом интерфейсе».",
+  "Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.":
+    "Kernel SNI на этом узле не умеет сопоставлять имена хостов для выбранных людей — здесь действуют только IP-адреса и сети этого правила. Переключите узел на Hybrid SNI, чтобы они работали.",
+  "{devices} not covered": "не охвачено: {devices}",
+  "{devices} in the rule": "в правиле: {devices}",
+  "{v1} chosen": "Выбрано: {v1}",
+  "Remove {name}": "Убрать {name}",
+  "a device that no longer exists": "устройство, которого больше нет",
+  // …and the panel's refusals and the node card's line for them
+  "“For whom” must list users, groups or devices": "«Для кого» должно перечислять пользователей, группы или устройства",
+  "“Everything else” applies to everyone on the interface": "«Всё остальное» действует на всех на интерфейсе",
+  "A chosen user, group or device no longer exists — reload and choose again": "Выбранного пользователя, группы или устройства больше нет — перезагрузите страницу и выберите снова",
+  "This browser tab is older than the panel — reload it before saving routing.": "Эта вкладка старее панели — перезагрузите её перед сохранением маршрутизации.",
+  "{v1} needs an update to route per person — these rules apply to nobody there until it is.": "{v1} нужно обновить для маршрутизации по людям — до обновления эти правила там ни на кого не действуют.",
+  "rows must be a list of selections": "rows должен быть списком выборок",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the

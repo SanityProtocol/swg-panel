@@ -51,9 +51,20 @@ const isLegacy = r => !!(r && (r.match || r.tlds));          // a `tld` rule: sh
 // ⚠️ THE DESTINATION'S IDENTITY, WHOLE. `dev` rules name an exit, and if the key ignored it, two rules
 // pointing at DIFFERENT exits would group into one row, be re-emitted with the first row's exit, and the
 // second exit would be silently gone on the next save — §5.8's collapse, in the shape P5 introduces.
+// ⚠️ …AND WHOM IT IS FOR. Two runs with different selections must never merge, or the second is re-emitted with the
+// first one's people (ROUTING-PEERS-MESH-PLAN T13). Appended only when a rule has one, so every other key is unchanged.
 const rowKey = r => [r.action || "exit",
                      r.action === "exit" ? (r.node || "") : r.action === "dev" ? (r.exit_id || "") : "",
-                     r.enabled === false ? 0 : 1].join("|");
+                     ruleOn(r) ? 1 : 0].join("|") + (r.who ? "|" + JSON.stringify(canonWho(r.who)) : "");
+
+/* PER-PERSON RULES (ROUTING-PEERS-MESH-PLAN §4.2). A rule with `who` applies only to the users, groups and devices it names,
+   on its own interface. It is STORED `enabled: false`, so every older reader skips it — a released panel would otherwise
+   route it for the whole subnet — and its real switch is `who.on`. A row reads that switch as its `enabled` and carries the
+   selection as `who`; `rowsToRules` writes the guarded shape back. The panel's `rule_on` is the same test. */
+const ruleOn = r => r && r.who && typeof r.who === "object" ? r.who.on === true : !!r && r.enabled !== false;
+/** A selection's three lists, sorted and unique — the form the key, the window and the wire all use. */
+export const canonWho = w => ({ users: [...new Set((w && w.users) || [])].sort(), groups: [...new Set((w && w.groups) || [])].sort(),
+                                peers: [...new Set((w && w.peers) || [])].sort() });
 
 /** The badges one stored rule contributes.
  *  {t:"list", id}                  — a curated preset, a provider-catalog category, or a custom list
@@ -84,9 +95,10 @@ export function rulesToRows(rules) {
     const key = rowKey(rule);
     const last = rows[rows.length - 1];
     if (last && !last.locked && last._key === key) { last.badges.push(...badgesOf(rule)); continue; }
-    rows.push({ _gid: newGid(), _key: key, enabled: rule.enabled !== false, action: rule.action || "exit",
+    rows.push({ _gid: newGid(), _key: key, enabled: ruleOn(rule), action: rule.action || "exit",
                 node: rule.action === "exit" ? (rule.node || "") : "",
-                exit_id: rule.action === "dev" ? (rule.exit_id || "") : "", badges: badgesOf(rule) });
+                exit_id: rule.action === "dev" ? (rule.exit_id || "") : "", badges: badgesOf(rule),
+                ...(rule.who && typeof rule.who === "object" ? { who: canonWho(rule.who) } : {}) });
   }
   return { rows, catchAll };
 }
@@ -103,6 +115,8 @@ export function rowsToRules(rows, catchAll) {
     const base = { enabled: row.enabled !== false, action: row.action || "exit" };
     if (base.action === "exit") base.node = row.node || "";
     if (base.action === "dev") base.exit_id = row.exit_id || "";
+    // the guarded shape: off to every older reader, the switch and the people in `who`
+    if (row.who) { base.who = { on: base.enabled, ...canonWho(row.who) }; base.enabled = false; }
     for (const b of badges) if (b.t === "list") out.push({ ...base, category: b.id });
     const typed = badges.filter(b => b.t === "target");
     // One custom rule for the whole row: identical bundles share an nft set on the node, and `targets` is

@@ -550,7 +550,9 @@ export function UserCombo({ onPick, placeholder }) {
 // peer forms. Like UserCombo but reflects a selection and can offer "— unassigned —".
 // `groups` + `onGroup` (docs/GROUPS-PLAN.md G11 — the People window): groups offered first, each with its member count, and picked
 // through their own callback, so a group's id never reaches a caller that expects a user's.
-export function UserPicker({ value, onChange, allowUnassigned, placeholder, exclude, groups, onGroup }) {
+// `devices` + `onDevice` (ROUTING-PEERS-MESH-PLAN §7.2 — Rule settings): single devices offered after the people, `{id, name, sub}`,
+// through their own callback for the same reason groups have one.
+export function UserPicker({ value, onChange, allowUnassigned, placeholder, exclude, groups, onGroup, devices, onDevice }) {
   const [q, setQ] = useState(""); const [open, setOpen] = useState(false);
   const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const sel = users.find(u => u.id === value);
@@ -564,25 +566,28 @@ export function UserPicker({ value, onChange, allowUnassigned, placeholder, excl
   const named = {}; users.forEach(u => { named[u.name] = (named[u.name] || 0) + 1; });
   const shown = pool.filter(u => searchMatch(u.name + " " + (u.tag || ""), ql)).slice(0, 8);
   const gshown = groups ? groups.filter(g => searchMatch(g.name, ql)).slice(0, 4) : [];
+  const dshown = devices ? devices.filter(d => searchMatch(d.name + " " + (d.sub || ""), ql)).slice(0, 6) : [];
   const { wrapRef, listRef, pos, popStyle } = useAnchoredList(open, setOpen, [q]);
   const pick = uid => { setOpen(false); setQ(""); onChange(uid); };
   const pickGroup = gid => { setOpen(false); setQ(""); onGroup(gid); };
+  const pickDevice = pid => { setOpen(false); setQ(""); onDevice(pid); };
   return html`<div class="usercombo" ref=${wrapRef}>
-    <input class="uc-input" value=${open ? q : selText}
+    <input class="uc-input" value=${open ? q : selText} data-enter=${open ? "self" : null}
       placeholder=${placeholder || (allowUnassigned ? T("— unassigned —") : T("Assign to a user…"))}
       onClick=${() => { setOpen(true); setQ(""); }} onInput=${e => { setQ(e.target.value); setOpen(true); }}
       onKeyDown=${e => { if (e.key === "Escape") { setOpen(false); return; }
         // while actively filtering, Enter never saves the form: exactly one match selects it, anything else does nothing.
         if (e.key === "Enter" && open && q) { e.preventDefault();
-          if (gshown.length + shown.length === 1) { if (gshown.length) pickGroup(gshown[0].id); else pick(shown[0].id); } } }}/>
+          if (gshown.length + shown.length + dshown.length === 1) { if (gshown.length) pickGroup(gshown[0].id); else if (shown.length) pick(shown[0].id); else pickDevice(dshown[0].id); } } }}/>
     ${open && pos ? html`<${Portal}><div class="uc-list uc-pop" ref=${listRef} style=${popStyle}>
       ${allowUnassigned ? html`<button class="uc-opt" onClick=${() => pick("")}><span class="faint">${T("— unassigned —")}</span></button>` : null}
       ${gshown.map(g => html`<button class="uc-opt uc-group" key=${"g:" + g.id} onClick=${() => pickGroup(g.id)}><${Ic} i="users"/><span>${g.name}</span><span class="faint">${plural(g.users.length, "member")}</span></button>`)}
-      ${shown.length || gshown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>`
+      ${shown.length || gshown.length || dshown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>`
           : named[u.name] > 1 ? html`<span class="faint">${u.created_at
             ? T("{devices}, added {date}", { devices: plural(Store.peersOfUser(u.id).length, "device"), date: fmtDate(u.created_at) })
             : plural(Store.peersOfUser(u.id).length, "device")}</span>` : null}</button>`)
-        : html`<div class="uc-empty">${pool.length || (groups || []).length ? T("no match") : users.length ? T("everyone is already added") : T("no users yet")}</div>`}
+        : html`<div class="uc-empty">${pool.length || (groups || []).length || (devices || []).length ? T("no match") : users.length ? T("everyone is already added") : T("no users yet")}</div>`}
+      ${dshown.map(d => html`<button class="uc-opt uc-group" key=${"d:" + d.id} onClick=${() => pickDevice(d.id)}><${Ic} i="device"/><span>${d.name}</span>${d.sub ? html`<span class="faint">${d.sub}</span>` : null}</button>`)}
     </div><//>` : null}
   </div>`;
 }
