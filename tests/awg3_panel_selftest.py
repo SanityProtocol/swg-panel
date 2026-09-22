@@ -42,7 +42,8 @@ SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-ser
 PLANTS = {   # name: (section it must redden, anchor, replacement)
     "withhold": ("[1]", "                if not awg_gen_reported(snap):\n                    want = {k: v for k, v in want.items() if k not in AWG3_FIELDS}\n",
                  "                if False:\n                    want = {k: v for k, v in want.items() if k not in AWG3_FIELDS}\n"),
-    "refuse": ("[2]", "    g = snap[\"datapath\"][\"awg\"][\"gen\"]\n", "    return None\n"),
+    "refuse": ("[2]", "    g = {k: v for k, v in _awg_datapath(snap)[\"gen\"].items() if isinstance(v, str)}   # a version is a string; anything else is none\n",
+               "    return None\n"),
     "on-fallback": ("[2]", "    on_fallback = bool(iface) and iface in (_awg_datapath(snap).get(\"userspace\") or [])\n",
                     "    on_fallback = False\n"),
     "old-node": ("[10]", "            if not awg_gen_reported((deps.get(\"node_snaps\") or {}).get(nid)):\n                return 400,",
@@ -60,7 +61,7 @@ PLANTS = {   # name: (section it must redden, anchor, replacement)
     "timing": ("[5]", "        if tot > lo:\n", "        if False:\n"),
     "hpk-once": ("[6]", "    d.setdefault(\"HeaderProtectionKey\", base64.b64encode(os.urandom(32)).decode())\n",
                  "    d[\"HeaderProtectionKey\"] = base64.b64encode(os.urandom(32)).decode()\n"),
-    "full": ("[7]", "    for k, v in AWG31_SET.items():\n        d.setdefault(k, v)\n",
+    "full": ("[7]", "    for k, v in {**AWG31_SET, **{k: v for k, v in (defaults or {}).items() if k in _AWG3_RANGED}}.items():\n        d.setdefault(k, v)\n",
              "    d = {k: v for k, v in d.items() if k in AWG3_FIELDS}\n    for k, v in AWG31_SET.items():\n        d.setdefault(k, v)\n"),
     "presence": ("[8]", "                elif not extra and all(str(ra.get(k)) == str(want[k]) for k in want):\n",
                  "                elif all(str(ra.get(k)) == str(want[k]) for k in want):\n"),

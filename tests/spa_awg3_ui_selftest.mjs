@@ -17,8 +17,11 @@
  * [7] the 3.1 colour is tunable like every protocol's — ifaceColor("awg3") is its default until Settings → Interfaces saves a
  *     pick, and applyThemeColors puts the pick on --awg3, the one property every 3.1 badge, the switch and the caption read.
  *     A 3.1 pick leaves the 2.0 colour alone.
+ * [8] Awg3Grid (js/iface.js) — the 3.1 cells the Edit sheet and Settings' defaults both draw: six inputs, never one for the
+ *     HeaderProtectionKey or RandomTrailers; with no `placeholders` (the Edit sheet) an input carries NO placeholder prop —
+ *     Preact writes a null one as placeholder="", the title trap again — and with them (Settings) each shows its built-in value.
  *
- * Run: node tests/spa_awg3_ui_selftest.mjs     --perturb tip|samekey|gen|tag|catalog|pending|fork3|us|colour|var   plants one and expects RED.
+ * Run: node tests/spa_awg3_ui_selftest.mjs     --perturb tip|samekey|gen|tag|catalog|pending|fork3|us|colour|var|ph   plants one and expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -42,6 +45,7 @@ const PLANTS = {
        "  return (nrec || {}).awg31_no || null;"],
   colour: ["ui.js", 'const k = t === "awg" ? "awg" : t === "awg3" ? "awg3" : t === "wdtt"', 'const k = t === "awg" ? "awg" : t === "wdtt"'],
   var: ["ui.js", '  de.style.setProperty("--awg3", awg3);', ""],
+  ph: ["iface.js", '...${placeholders ? { placeholder: placeholders[k] || "" } : {}}', 'placeholder=${placeholders ? placeholders[k] || "" : null}'],
 };
 const made = [];
 const load = async name => {
@@ -52,8 +56,8 @@ const load = async name => {
   const p = path.join(ROOT, "js", "__perturb_" + name); fs.writeFileSync(p, s.replace(a, b)); made.push(p);
   return import(pathToFileURL(p).href);
 };
-let M, U, C;
-try { M = await load("model.js"); U = await load("ui.js"); C = await load("turn-catalog.js"); }
+let M, U, C, IF;
+try { M = await load("model.js"); U = await load("ui.js"); C = await load("turn-catalog.js"); IF = await load("iface.js"); }
 finally { made.forEach(p => { try { fs.unlinkSync(p); } catch (_) { /* already gone */ } }); }   // a plant never outlives this run
 const { Store } = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href);
 
@@ -139,5 +143,19 @@ check("a saved pick: the pick", U.ifaceColor("awg3") === "#FF00AA", U.ifaceColor
 U.applyThemeColors();
 check("…on --awg3", props["--awg3"] === "#FF00AA", props["--awg3"]);
 check("…and the 2.0 colour is left alone", U.ifaceColor("awg") === IFACE_COLOR_DEFAULTS.awg.dark, U.ifaceColor("awg"));
+
+console.log("\n[8] the 3.1 cells: six inputs, a placeholder only where Settings gives one");
+const inputs = n => { const out = []; const walk = x => { if (Array.isArray(x)) x.forEach(walk);
+  else if (x && typeof x === "object" && x.props) { if (x.type === "input") out.push(x.props); walk(x.props.children); } }; walk(n); return out; };
+const labels = n => { const out = []; const walk = x => { if (Array.isArray(x)) x.forEach(walk);
+  else if (x && typeof x === "object" && x.props) { if (x.type === "span" && typeof x.props.children === "string") out.push(x.props.children); walk(x.props.children); } }; walk(n); return out; };
+const edit = IF.Awg3Grid({ value: { ContentPaddingAddition: "10-100" }, onKey: () => {}, hpk: "set", rt: "on" });
+const setg = IF.Awg3Grid({ value: {}, onKey: () => {}, hpk: "new", rt: "on", placeholders: { ContentPaddingAddition: "10-100", MaxHandshakeAttempts: "15-20" } });
+check("six inputs — the key and RandomTrailers are read, never typed", inputs(edit).length === 6
+      && labels(edit).includes("HeaderProtectionKey") && labels(edit).includes("RandomTrailers"), inputs(edit).length);
+check("the Edit sheet (no placeholders): no input carries a placeholder prop", inputs(edit).every(p => !("placeholder" in p)),
+      inputs(edit).map(p => p.placeholder));
+check("Settings: each input shows its built-in value, blank where none is given", JSON.stringify(inputs(setg).map(p => p.placeholder))
+      === JSON.stringify(["10-100", "15-20", "", "", "", ""]), inputs(setg).map(p => p.placeholder));
 
 done(!!MODE, MODE);

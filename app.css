@@ -2761,11 +2761,12 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .dpsw.awgsw button{min-width:64px}
 .dpsw.awgsw button.on.sw-awg3{background:color-mix(in srgb,var(--awg3) 20%,transparent);color:var(--awg3)}
 .field.awggen .hint{max-width:62ch}
-/* …the 3.1 keys as a fifth group under the 2.0 grid (Edit sheet) and as their own row on the interface page. The key names are
+/* …the 3.1 keys as a fifth group under the 2.0 grid (Edit sheet, and Settings' defaults — Awg3Grid) and as their own row on the interface page. The key names are
    long, so a label may wrap rather than push its column wider. */
 .awg3-cap{margin:14px 0 7px;padding-top:10px;border-top:1px dashed var(--line-solid);font-family:var(--mono);font-size:9px;
   letter-spacing:.06em;text-transform:uppercase;color:var(--awg3)}
 .awg3-cols .awg-f>span{overflow-wrap:anywhere}
+.awg3-hint{margin:0 0 10px;max-width:72ch}   /* Settings: what the 3.1 defaults are given to */
 .iface-grid.awg3-row{margin-top:10px}
 /* the switch window: gateways and blocking proxies listed under their notice */
 .awgsw-list{margin:6px 0 4px;padding-left:18px;display:flex;flex-direction:column;gap:3px}

@@ -18,10 +18,14 @@ auth; three nodes played by POSTing snapshots; `curl` shimmed so nothing is fetc
       kernel interface on the same node stays refused; a node with nothing on the fallback carries no such key
   [5] Settings → Interfaces colours: the AmneziaWG 3.1 badge colour (`iface_colors.awg3`) is kept and served like the other
       protocols' — a key the panel does not know, or a value that is not a colour, is dropped
+  [6] Settings → Interfaces' AmneziaWG 3.1 defaults (`interface_defaults.awg3_params`): only the six values an interface's
+      Edit sheet may change are kept (never a HeaderProtectionKey, never RandomTrailers), checked the way an interface's
+      save checks them — timings that cross are refused at the save, not by every 3.1 create after it — and a 3.1 create
+      and a switch to 3.1 both take them, each with its own key; /api/state serves the built-in set the blank cells stand for
 
 Run: python3 tests/awg3_ui_selftest.py        (0 = pass)
      --perturb <name>   plants one regression in a copy of the panel and expects RED on exactly its sections:
-                        refusal [1][3][4] · store20 [2] · keep [2] · fragile [3][4] · us [4] · colour [5]
+                        refusal [1][3][4] · store20 [2] · keep [2] · fragile [3]–[6] · us [4] · colour [5] · a3def [6] · a3check [6]
 """
 import json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
@@ -37,7 +41,10 @@ PLANTS = {
     "keep": ('            _ag = idf.get("awg_gen") if idf.get("awg_gen") in ("2.0", "3.1") else (cur.get("interface_defaults") or {}).get("awg_gen")\n',
              '            _ag = idf.get("awg_gen")\n', ["[2]"]),
     "fragile": ('    return isinstance(_awg_datapath(snap).get("gen"), dict)\n',
-                '    return isinstance((((snap if isinstance(snap, dict) else {}).get("datapath") or {}).get("awg") or {}).get("gen"), dict)\n', ["[3]", "[4]"]),   # the poll fails for every node after it
+                '    return isinstance((((snap if isinstance(snap, dict) else {}).get("datapath") or {}).get("awg") or {}).get("gen"), dict)\n', ["[3]", "[4]", "[5]", "[6]"]),   # the poll fails for every node after it — every later /api/state read
+    "a3def": ('    for k, v in {**AWG31_SET, **{k: v for k, v in (defaults or {}).items() if k in _AWG3_RANGED}}.items():\n',
+              '    for k, v in AWG31_SET.items():\n', ["[6]"]),
+    "a3check": ('                _a3c, _e3 = awg3_check({**AWG31_SET, **_a3})\n', '                _a3c, _e3 = dict(_a3), None\n', ["[6]"]),
     "colour": ('            for k in ("wg", "awg", "awg3", "wdtt", "csqtt"):',
                '            for k in ("wg", "awg", "wdtt", "csqtt"):', ["[5]"]),
 }
@@ -175,6 +182,44 @@ try:
     check("/api/state serves it to the SPA", st.get("awg3") == {"dark": "#FF00AA", "light": "#1D3FD6"}, st)
     req("/api/panel/settings", {"iface_colors": {}})
     check("Reset (an empty map) clears it", ic() == {}, ic())
+
+    SECTION[0] = "[6]"; print("[6] the AmneziaWG 3.1 defaults — the six values, checked at the save, taken by a 3.1 create and a switch")
+    a3 = lambda: idf().get("awg3_params")
+    c, r = req("/api/panel/settings", {"interface_defaults": {**base, "awg3_params": {
+        "ContentPaddingAddition": " 20 - 80 ", "MaxHandshakeAttempts": "0", "RekeyTimeout": "",
+        "HeaderProtectionKey": "ZPx7sT8PpJ3aUVTMYCWgSVhdLbq0uVpO6hZe3mO2yJ0=", "RandomTrailers": "0", "Jc": "9"}}})
+    check("kept: ContentPaddingAddition, in its one spelling — a key, RandomTrailers, a 2.0 value, a blank and a 0 are not (%d)" % c,
+          c == 200 and a3() == {"ContentPaddingAddition": "20-80"}, (c, a3()))
+    check("…and the 2.0 defaults stay 2.0", idf().get("awg_params") == {}, idf())
+    req("/api/panel/settings", {"interface_defaults": dict(base)})
+    check("a save that does not carry them (an older tab) keeps them", a3() == {"ContentPaddingAddition": "20-80"}, a3())
+    c, r = req("/api/panel/settings", {"interface_defaults": {**base, "awg3_params": {"RekeyAfterTime": "170-175"}}})
+    check("timings that cross are refused at the save, with the sentence an interface's save uses (%d)" % c, c == 400
+          and str(r.get("error_key") or "").startswith("RekeyAfterTime + RekeyTimeout + KeepaliveTimeout"), r)
+    check("…and the stored ones stand", a3() == {"ContentPaddingAddition": "20-80"}, a3())
+    c, r = req("/api/panel/settings", {"interface_defaults": {**base, "awg3_params": {"KeepaliveTimeout": "9-x"}}})
+    check("a value that is not a number or a range is refused (%d)" % c, c == 400 and "number or a range" in str(r.get("error_key")), r)
+    b31 = (((req("/api/state")[1].get("data") or {}).get("panel_settings") or {}).get("awg31_builtin")) or {}
+    check("/api/state serves the built-in set the blank cells stand for", b31.get("ContentPaddingAddition") == "10-100"
+          and b31.get("MaxHandshakeAttempts") == "15-20", b31)
+    rec = lambda i: ((json.load(open(NODES)).get("m31") or {}).get("ifaces") or {}).get(i, {}).get("awg_params") or {}
+    c, r = req("/api/iface/create", {"node": "m31", "iface": "awg9", "protocol": "awg", "subnet": "10.99.9.0/24", "listen_port": 51899, "awg_gen": "3.1"})
+    a9 = rec("awg9")
+    check("a 3.1 create takes the default, and the built-in set where there is none (%d)" % c, c == 200
+          and a9.get("ContentPaddingAddition") == "20-80" and a9.get("MaxHandshakeAttempts") == "15-20" and a9.get("RandomTrailers") == "1"
+          and len(a9.get("HeaderProtectionKey") or "") == 44, (c, r if c != 200 else a9))
+    c, r = req("/api/node/sync", {"snapshot": {"hostname": "m31", "generated_at": int(time.time()), "noded_version": "t",
+                                               "interfaces": {"awg8": ifc(51828, "10.58.0")},
+                                               "datapath": {"awg": {"needed": True, "ok": True, "gen": GEN["m31"]}}}}, tok["m31"])
+    req("/api/panel/settings", {"interface_defaults": {**base, "awg3_params": {"ContentPaddingAddition": "30-60", "KeepaliveTimeout": "4-9"}}})
+    c, r = req("/api/iface/update", {"node": "m31", "iface": "awg8", "awg_gen": "3.1"})
+    a8 = rec("awg8")
+    check("a switch to 3.1 takes the defaults in force then, with a key of its own (%d)" % c, c == 200
+          and a8.get("ContentPaddingAddition") == "30-60" and a8.get("KeepaliveTimeout") == "4-9"
+          and a8.get("HeaderProtectionKey") not in (None, "", a9.get("HeaderProtectionKey")), (c, r if c != 200 else a8))
+    check("…and the one created earlier keeps its own", rec("awg9").get("ContentPaddingAddition") == "20-80", rec("awg9"))
+    req("/api/panel/settings", {"interface_defaults": {**base, "awg3_params": {}}})
+    check("emptied: stored as nothing", "awg3_params" not in idf(), idf())
 finally:
     proc.terminate()
     try:

@@ -956,6 +956,19 @@ function Awg3Row({ ap }) {
     ${cell(T("Timings"), tim.length ? tim.map(l => html`<span>${l}</span>`) : "—")}
   </div>`;
 }
+// The 3.1 set as a fifth group of AWG cells, drawn by the Edit sheet (an interface's own values) and by Settings (the defaults a
+// 3.1 create or switch takes). HeaderProtectionKey and RandomTrailers are never typed — `hpk` / `rt` say what they read — and
+// the six the panel checks are cells. `placeholders` only where given: Preact writes a null placeholder as placeholder="".
+export const AWG3_EDIT_COLS = [["ContentPaddingAddition", "MaxHandshakeAttempts"], ["RekeyAfterTime", "RekeyTimeout"], ["RejectAfterTime", "KeepaliveTimeout"]];   // i18n-keys: conf key names, as the conf spells them
+export function Awg3Grid({ value, onKey, hpk, rt, hint, placeholders }) {
+  const v = value || {};
+  return html`<div class="awg3-cap">${T("AmneziaWG 3.1")}</div>${hint ? html`<p class="hint awg3-hint">${hint}</p>` : null}<div class="awg-cols awg3-cols">
+    <div class="awg-col"><label class="awg-f"><span>HeaderProtectionKey</span><span class="awg-val">${hpk}</span></label>
+      <label class="awg-f"><span>RandomTrailers</span><span class="awg-val">${rt}</span></label></div>
+    ${AWG3_EDIT_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${v[k] == null ? "" : v[k]}
+      ...${placeholders ? { placeholder: placeholders[k] || "" } : {}} onInput=${e => onKey(k, e.target.value)}/></label>`)}</div>`)}
+  </div>`;
+}
 // The one sentence that says which apps carry 3.1 (docs/AWG3-PLAN.md §3) — under the switch and in the switch window alike.
 const awg3Apps = () => T("Only apps that carry AmneziaWG 3.1 can connect: Amnezia VPN 5.0.1.5 or newer, AmneziaWG from the App Store or from GitHub (not the Google Play build), WG Tunnel 5.6 or newer. WINGS V, Keenetic and MikroTik cannot.");
 // The AmneziaWG version switch — the create form, the Edit sheet, and Settings' preset for new interfaces (`label`, `hint`).
@@ -1859,11 +1872,8 @@ export function EditIfaceSheet({ node, iface }) {
         ${/* The 3.1 set as a fifth group — only while the interface IS 3.1 and stays so. HeaderProtectionKey and RandomTrailers
               change only through the switch (an editable key was a one-keystroke way to cut every client with no window), so
               they read set / on and ride along unchanged; the panel checks the rest (S ≥ 12, timings that do not cross). */
-          genWas === "3.1" && gen === "3.1" ? html`<div class="awg3-cap">${T("AmneziaWG 3.1")}</div><div class="awg-cols awg3-cols">
-          <div class="awg-col"><label class="awg-f"><span>HeaderProtectionKey</span><span class="awg-val">${awg.HeaderProtectionKey ? T("val|set") : "—"}</span></label>
-            <label class="awg-f"><span>RandomTrailers</span><span class="awg-val">${awg.RandomTrailers ? T("val|on") : "—"}</span></label></div>
-          ${[["ContentPaddingAddition", "MaxHandshakeAttempts"], ["RekeyAfterTime", "RekeyTimeout"], ["RejectAfterTime", "KeepaliveTimeout"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}
-        </div>` : null}</div>` : null}
+          genWas === "3.1" && gen === "3.1" ? html`<${Awg3Grid} value=${awg} onKey=${setAwgK}
+            hpk=${awg.HeaderProtectionKey ? T("val|set") : "—"} rt=${awg.RandomTrailers ? T("val|on") : "—"}/>` : null}</div>` : null}
       <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
     <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}

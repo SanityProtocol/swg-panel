@@ -6298,6 +6298,9 @@ export const STR = {
   "tag|switching to 2.0": "переход на 2.0",
   "tag|switching": "переход",
   "The panel's QR codes show the new config at once; each device still has to import it.": "QR-коды панели сразу показывают новый конфиг; импортировать его каждому устройству всё равно нужно.",
+  // Settings → Interfaces: the AmneziaWG 3.1 defaults (the six values a 3.1 create or switch takes)
+  "val|per interface": "свой у каждого",
+  "Given to an interface when it is created on 3.1 or switched to it; one already on 3.1 keeps its own. A blank cell is Amnezia's default.": "Их получает интерфейс, который создают на 3.1 или переводят на 3.1; интерфейс, уже работающий на 3.1, сохраняет свои. Пустая ячейка — значение Amnezia по умолчанию.",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the

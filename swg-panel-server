@@ -10020,16 +10020,26 @@ _AWG3_RANGED = ("ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout", "Rej
                 "MaxHandshakeAttempts")
 
 
-def awg3_full(base, reported=None):
+def awg3_defaults(deps):
+    """The operator's AmneziaWG 3.1 defaults (Settings → Interfaces, `interface_defaults.awg3_params`): only the six values an
+    interface's Edit sheet may change too — ContentPaddingAddition and the timings. Never the HeaderProtectionKey (one key on
+    every interface would be no key) and never RandomTrailers (on is the 3.1 set). Filtered here again because the file is
+    the panel's, not proof of what the save let in."""
+    a = (((deps.get("panel_settings") or {}).get("interface_defaults") or {}).get("awg3_params")) or {}
+    return {k: str(a[k]).strip() for k in _AWG3_RANGED if isinstance(a, dict) and a.get(k) not in (None, "") and str(a[k]).strip()}
+
+
+def awg3_full(base, reported=None, defaults=None):
     """The FULL 3.1 dict for a switch or a 3.1 create (§7.1): what the interface has — the record over the node's report,
     over a fresh generator set for whatever neither holds (a create, or a switch while the node is away) — plus the 3.1
-    set wherever it has none, so switching twice changes nothing (the HeaderProtectionKey is generated only when absent;
-    a second one would cut every client again). S1–S4 are re-drawn together when any is under 12: header protection
-    refuses them, and the switch re-issues every client config anyway. Stored WHOLE, because a restore sends the record
-    and the agent fills what a partial one lacks with random values — new S/H, every client cut."""
+    set wherever it has none (the operator's `defaults`, awg3_defaults, over AWG31_SET), so switching twice changes nothing
+    (the HeaderProtectionKey is generated only when absent; a second one would cut every client again). S1–S4 are re-drawn
+    together when any is under 12: header protection refuses them, and the switch re-issues every client config anyway.
+    Stored WHOLE, because a restore sends the record and the agent fills what a partial one lacks with random values — new
+    S/H, every client cut."""
     d = {k: str(v).strip() for k, v in {**gen_awg_params(), **(reported or {}), **(base or {})}.items()
          if k in AWG_FIELDS and k != "DisableCookies" and v is not None and str(v).strip() != ""}   # D-cookies: never by us
-    for k, v in AWG31_SET.items():
+    for k, v in {**AWG31_SET, **{k: v for k, v in (defaults or {}).items() if k in _AWG3_RANGED}}.items():
         d.setdefault(k, v)
     d.setdefault("HeaderProtectionKey", base64.b64encode(os.urandom(32)).decode())
     if any(not d.get(k, "").isdigit() or int(d[k]) < 12 for k in ("S1", "S2", "S3", "S4")):
@@ -17131,7 +17141,9 @@ def api(method, path, qs, body, deps):
             "versions": VERSIONS,
             "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps),
                                "mesh_effective": mesh_mode_effective(deps, nodes),   # the mode in force (auto resolved here, never in the browser)
-                               "mesh_auto_max": MESH_AUTO_FULL_MAX},   # Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
+                               "mesh_auto_max": MESH_AUTO_FULL_MAX,
+                               "awg31_builtin": AWG31_SET},   # the 3.1 set a blank cell of Settings' 3.1 defaults stands for (their placeholders)
+            # ↑ Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "panel_public_url": _panel_public_url(deps),   # the CONFIRMED canonical address (advances only on confirm) → SPA flags a tab sitting on a previous/old panel address
             "panel_migrate_revertable": bool(_mstat.get("revert_to")) and _mgrace,   # a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move"; auto-clears at grace end (no stale flag)
             "panel_migrate_prev": (_mstat.get("revert_to") or None) if _mgrace else None,   # the OLD address to POST /api/access/cancel with (only while the undo is still possible)
@@ -17185,6 +17197,19 @@ def api(method, path, qs, body, deps):
         if isinstance(idf, dict):
             dns = idf.get("dns")
             _ag = idf.get("awg_gen") if idf.get("awg_gen") in ("2.0", "3.1") else (cur.get("interface_defaults") or {}).get("awg_gen")
+            # The AmneziaWG 3.1 defaults (awg3_defaults): the six values, checked the way an interface's save checks them —
+            # over the built-in set, so timings that cross are refused HERE, not by every 3.1 create after it. A blank cell
+            # is the built-in value; "0" is what a 3.1 kernel prints for unset, so it is no value either. A save that does
+            # not carry the key (an older tab) keeps the stored one; an empty set is stored as nothing.
+            _a3 = idf.get("awg3_params")
+            if isinstance(_a3, dict):
+                _a3 = {k: str(_a3[k]).strip() for k in _AWG3_RANGED if _a3.get(k) is not None and str(_a3[k]).strip()}
+                _a3c, _e3 = awg3_check({**AWG31_SET, **_a3})
+                if _e3:
+                    return 400, {"ok": False, **_e3, "code": "bad_request"}
+                _a3 = {k: _a3c[k] for k in _a3 if k in _a3c}
+            else:
+                _a3 = (cur.get("interface_defaults") or {}).get("awg3_params")
             cur["interface_defaults"] = {
                 "dns": (dns if isinstance(dns, list) else [s.strip() for s in str(dns or "").split(",") if s.strip()]),
                 "mtu": int(idf.get("mtu") or 1280),
@@ -17201,6 +17226,8 @@ def api(method, path, qs, body, deps):
             # absence, so a fleet that never picks 3.1 keeps the file it has); a save that does not carry it keeps the stored one.
             if _ag == "3.1":
                 cur["interface_defaults"]["awg_gen"] = "3.1"
+            if _a3:
+                cur["interface_defaults"]["awg3_params"] = _a3
         if "mesh_awg" in incoming:   # default AmneziaWG obfuscation for new mesh links ({} = auto per link)
             cur["mesh_awg"] = sanitize_awg_params(incoming.get("mesh_awg"))
         mir = incoming.get("mirrors")
@@ -21028,7 +21055,7 @@ def api(method, path, qs, body, deps):
                 _no3 = awg_gen_refusal((deps.get("node_snaps") or {}).get(nid), nodes[nid].get("name") or nid, iface)
                 if _no3:
                     return 400, {"ok": False, **_no3, "code": "bad_request"}
-                ov["awg_params"] = awg3_full(ov.get("awg_params"), _rmeta.get("awg_params"))
+                ov["awg_params"] = awg3_full(ov.get("awg_params"), _rmeta.get("awg_params"), awg3_defaults(deps))
             else:
                 _a2 = {k: v for k, v in (ov.get("awg_params") or {}).items() if k not in AWG3_FIELDS}
                 if _a2:
@@ -21277,7 +21304,7 @@ def api(method, path, qs, body, deps):
             _no3 = awg_gen_refusal((deps.get("node_snaps") or {}).get(nid), nodes[nid].get("name") or nid)
             if _no3:
                 return 400, {"ok": False, **_no3, "code": "bad_request"}
-            _awgput, _e3 = awg3_check(awg3_full(_awgput))
+            _awgput, _e3 = awg3_check(awg3_full(_awgput, None, awg3_defaults(deps)))
             if _e3:
                 return 400, {"ok": False, **_e3, "code": "bad_request"}
             _bl = turn_awg3_blockers(deps, nodes, nid, {req.get("listen_port")})   # a proxy left on this port by an older interface
