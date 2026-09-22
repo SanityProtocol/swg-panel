@@ -444,8 +444,11 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 - **A rule for chosen people covers the devices a server can tell apart.** Their WireGuard and AmneziaWG devices
   always; WDTT and csqtt devices only where the server's build can prove which user is sending — the same builds as
   in **Who can reach a device** — and the rule's row says how many devices it doesn't cover. A server running an
-  older version applies such rules to nobody until you update it, and its card says so. On **Kernel SNI** these
-  rules match by IP address and network only, not by site name; **Hybrid SNI** matches both. Going back to an
+  older version applies such rules to nobody until you update it, and its card says so. They match site names in
+  every mode that does, **Kernel SNI** included — except on a server whose kernel can't tie an address to its device:
+  there they match by IP address and network only, and the rule's list says so. On **Kernel SNI**, an address or
+  network **Block** rule that overlaps a site-name rule blocks those sites whatever order the two rules are in, for
+  everyone as for chosen people: the site name is checked after the address. Going back to an
   older panel and saving an interface there drops the chosen people from its rules for good. Going back to an
   older version on a server that ran these rules — or, on **Hybrid SNI** or **Kernel SNI**, a **Block** rule below an
   Exit or Direct rule — run `nft delete table inet swg_smart` on it once: it rebuilds its routing within a minute.
