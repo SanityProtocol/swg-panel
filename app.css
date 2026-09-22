@@ -38,7 +38,7 @@
   --partial-r:#F19AA4;   /* the "partial" badge's soft-red (a problem that isn't a stopper) */
   --dangling:#F26B82; --orphan:#B79BD6; --unknown:#62748B; --removing:#E2C84A;
   --brand:#1FC8D6; --brand-2:#5FE2EC; --brand-ink:#04232A; --smart:#F472B6;   /* smart routing — rose/pink, distinct from cascade purple */
-  --awg3:#DA70D6;   /* AmneziaWG 3.1 — orchid: DarkMagenta's family, the one of it readable on this ground (docs/AWG3-PLAN.md D-colour) */
+  --awg3:#32B69C;   /* AmneziaWG 3.1 — teal (the operator's pick, 2026-09-22; docs/AWG3-PLAN.md D-colour): 7.2:1 on this ground */
   --relay:#7C5CFF; --relay-2:#B9A6FF;   /* datapath RELAY — electric violet: the deliberate, more expensive path,
                                            deliberately NOT the theme cyan so the two modes never read as one control in two states */
   --tp-rx:#1FC8D6; --tp-tx:#818CF8;   /* throughput chart: rx (down) cyan, tx (up) indigo — kept distinct */
@@ -78,7 +78,7 @@
   --online:#0E9E63; --ready:#2B7CD3; --pending:#6A50D6; --partial:#B07A16; --fault:#D9772A;
   --partial-r:#D65468; --dangling:#D63A55; --orphan:#8A5CC4; --unknown:#5E7085; --removing:#B07A16;
   --smart:#D6247E;
-  --awg3:#8B008B;   /* AmneziaWG 3.1 — DarkMagenta on white (8.5:1 as text, 6.4:1 on its own 15% tint) */
+  --awg3:#187A67;   /* AmneziaWG 3.1 — the same teal deepened for white, like every accent here: 5.2:1 as text (#32B69C reads 2.5:1) */
   --tport-bare:#2472C4; --tport-dock:#8B45D0;   /* deploy pills deepened for white (point 6) */
   --tport-nix:#2E6C93; --tport-os:#2C7A6E;   /* …and both platform pills with them */
   --sel-ink:color-mix(in srgb, var(--brand) 58%, #000);   /* a SELECTED control's text is a darker shade of the theme on white */
