@@ -4311,7 +4311,7 @@ def _smart_shadows(smart_e, domains, pats, engine, insig=None):
     kinds = ("zone",) if engine == "dns" else ("first", "zone", "any", "starts", "ends", "contains")   # what each engine runs
     aud = {}                                                   # category → subnet → {selection id, or None for everyone}
     for e in smart_e:                                          # the entries _ensure_smart_nft lowers, and only those
-        if e.get("category") and e["category"] != "all" and (not e.get("src") or _SRC_WID_RE.fullmatch(str(e["src"]))):
+        if e.get("category") and e["category"] != "all" and ("src" not in e or _SRC_WID_RE.fullmatch(str(e["src"]))):
             aud.setdefault(e["category"], {}).setdefault(e["subnet"], set()).add(e.get("src") or None)
     keyed = [c for c in aud if (domains or {}).get(c) or any(c in ((pats or {}).get(k) or {}) for k in kinds)]
     def gap(c1, c2):                                           # does some rule of c2 reach a device no rule of c1 reaches?
@@ -4529,11 +4529,13 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     # block=drop. Each specific rule ends in `return` so the FIRST match wins — a direct/block exception genuinely
     # overrides a later catch-all exit, and block is a real kill-switch (not a silent fall-through to direct). "all"
     # is the catch-all → emitted after the specific rules for its subnet. Order is preserved from the panel plan.
-    spec = [e for e in smart_e if e["category"] != "all" and (not e.get("src") or _SRC_WID_RE.fullmatch(str(e["src"])))]
-    allr = [e for e in smart_e if e["category"] == "all" and not e.get("src")]   # a catch-all is for everyone (D10): never widened from a selection
+    # THE KEY DECIDES, NOT ITS VALUE: an entry carrying `src` at all is per-person, so an empty or null one is dropped with the
+    # malformed ones rather than lowered for the whole subnet. Narrower, never wider.
+    spec = [e for e in smart_e if e["category"] != "all" and ("src" not in e or _SRC_WID_RE.fullmatch(str(e["src"])))]
+    allr = [e for e in smart_e if e["category"] == "all" and "src" not in e]   # a catch-all is for everyone (D10): never widened from a selection
     # A per-person entry adds its selection as a FIFTH element; everyone else's stays a 4-tuple, so a plan without one
     # signs exactly as it always has (T3). Read by index below, never unpacked to four names.
-    want = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) + ((e["src"],) if e.get("src") else ())
+    want = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) + ((e["src"],) if "src" in e else ())
             for e in spec + allr]
     # A ROW is one run of consecutive entries with the same (subnet, selection) — one chain `sr<k>`, reached by ONE
     # lookup of its source set, so a device that is not chosen skips the whole row at once (§5.1: free).
@@ -4570,10 +4572,39 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 if None not in cov and not (len(w) > 4 and w[4] in cov):
                     sh_of.setdefault(i, []).append((sh, sorted(x for x in cov if x)))
     shw = [[i, sh, ex] for i, lst in sorted(sh_of.items()) for sh, ex in lst]
+    # ⚠️ PIN MODE: A BLOCK BELOW AN EXIT OR A DIRECT. Exit and Direct decide on a connection's first packet (`ct state new`);
+    # a Block matches every packet — it must, because swg-sni adds a learned address to the Block's set a few milliseconds
+    # after its first hit, and a connection that slipped through that gap (a parallel one, a preconnect) is cut by the next
+    # packet that meets the set; a Block added by the operator cuts running flows the same way. But a destination in both an
+    # earlier Exit/Direct set and a later Block set then left by the Exit on its SYN and lost every packet after it: "first
+    # match wins" broken for exactly the exceptions it exists for, on both SNI engines (measured on the 1.8.7 node, rig cells
+    # BHxsni/BHxks). So such a Block jumps to `pb<i>`, which accepts a packet whose destination is ALSO in one of the sets
+    # above it, for the same devices (a row's source set, a shadow's exclusions), and drops the rest. On Hybrid SNI it first
+    # hands the connection's first packets to swg-sni, as the base chain's last rule would have. A packet outside the Block's
+    # set pays nothing new; content-block unions come first in the plan, so nothing above them decides and they are unchanged.
+    pb_of = {}
+    if pin:
+        for i, w in enumerate(want):
+            if w[2] != "block" or w[1] == "all" or str(w[1]).startswith("blku"):
+                continue
+            ex = []
+            for j in range(i):
+                wj = want[j]
+                if wj[0] != w[0] or wj[2] not in ("exit", "direct") or wj[1] == "all":
+                    continue
+                cond = ["iifname", ".", "ip", "saddr", "@" + _smart_srcsetname(wj[4])] if len(wj) > 4 else []
+                for c, cnd in [(wj[1], cond)] + [(sh, cond + [t for x in xs for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))])
+                                                  for sh, xs in sh_of.get(j, ())]:
+                    ex += [[cnd, snm] for snm in [_smart_setname(c)] + ([_smart_learnsetname(c)] if queue else [])]
+            if ex:
+                pb_of[i] = ex
+    want_pb = {"pb%d" % i for i in pb_of}
     v6f = sorted(set(v6_ifaces))                                # smart routing is IPv4-only → drop forwarded v6 on these ifaces (fail-closed, no leak)
     sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]   # s9: reverted the per-source blkd meter (its duplicate name killed the catl_blku drop rule → hybrid blocking broke); s7: +counter on the blku content-block drop; s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
     if shw:                                                     # only then — a plan with no shadow signs exactly as before
         sig = hashlib.sha1((sig + "|sh:" + json.dumps(shw)).encode()).hexdigest()[:16]
+    if pb_of:                                                   # likewise: only a pin-mode node with a Block below an Exit/Direct rebuilds
+        sig = hashlib.sha1((sig + "|pb:" + json.dumps(sorted(pb_of.items()))).encode()).hexdigest()[:16]
     _sigf = os.path.join(GEO_DIR, ".smart-sig")
     try:
         stored = open(_sigf).read().strip()
@@ -4586,8 +4617,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)   # exit/block rules, rows + pin (queue/restore) all emit `saddr` prerouting rules
     pre_ok = (not expect_pre) or ("saddr" in _cbody("prerouting"))
     rows_ok = {c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"sr\d+", c)} == want_sr
+    pb_ok = {c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"pb\d+", c)} == want_pb
     fwd_ok = ((not v6f) or ("drop" in _cbody("forward"))) and ((not (pin and reset_mark)) or ("reject" in _cbody("forward")))
-    if stored != sig or not chain_present or not pre_ok or not fwd_ok or not rows_ok:   # drift-gate: signature change, or a chain was emptied externally
+    if stored != sig or not chain_present or not pre_ok or not fwd_ok or not rows_ok or not pb_ok:   # drift-gate: signature change, or a chain was emptied externally
         stored = ""                                            # force the sig file to be rewritten below
         bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "prerouting")
         if queue:                                              # apply an ip_learning TTL change to the learned sets (an nft set's
@@ -4605,7 +4637,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 # set carrying 30 rules — smart routing silently stopped reconciling while looking healthy,
                 # because the last good ruleset simply stayed in place. Flushing here costs nothing: both
                 # chains are rebuilt or deleted further down regardless.
-                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"sr\d+", c))):
+                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"sr\d+|pb\d+", c))):
                     if re.search(r"chain " + _c + r" \{", body):
                         bat.add("flush", "chain", "inet", SMART_NFT_TABLE, _c)
                 for c in cats:
@@ -4641,6 +4673,20 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             if c not in want_sr:
                 bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)
                 bat.add("delete", "chain", "inet", SMART_NFT_TABLE, c)
+        for c in sorted(want_pb):                              # the pin-mode Block chains (see pb_of), the same way
+            bat.add("add", "chain", "inet", SMART_NFT_TABLE, c)
+            bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)
+        for c in sorted(c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"pb\d+", c)):
+            if c not in want_pb:
+                bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)
+                bat.add("delete", "chain", "inet", SMART_NFT_TABLE, c)
+        for i, ex in sorted(pb_of.items()):
+            for cnd, snm in ex:
+                if queue:                                      # swg-sni still reads the connection's first packets
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "tcp", "dport", "443",
+                            "ct", "state", "established", "ct", "packets", "lt", "12", "queue", "num", str(SNI_NFQUEUE), "bypass")
+                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "accept")
+            bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pb%d" % i, "drop")
 
         _row_of = {i: k for k, r in enumerate(rows) for i in range(r["start"], r["end"])}
 
@@ -4654,7 +4700,8 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                     elif a2 == "direct":
                         emit(*xm, *_new, "ip", "daddr", "@" + snm, fin)
                     elif a2 == "block":
-                        emit(*xm, "ip", "daddr", "@" + snm, *(["counter"] if str(c2).startswith("blku") else []), "drop")
+                        emit(*xm, "ip", "daddr", "@" + snm, *(["jump", "pb%d" % i] if i in pb_of else
+                                                            (["counter"] if str(c2).startswith("blku") else []) + ["drop"]))
 
         for i, w in enumerate(want):
             S, cat, act, T = w[:4]
@@ -4668,8 +4715,8 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                         bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "accept")
                     elif act == "direct":
                         bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "accept")
-                    elif act == "block":
-                        bat.add(*_row, "ip", "daddr", "@" + snm, "drop")
+                    elif act == "block":                       # …or to its pin-mode chain (see pb_of)
+                        bat.add(*_row, "ip", "daddr", "@" + snm, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))
                 _shadow_rules(i, lambda *m, _k=k: bat.add("add", "rule", "inet", SMART_NFT_TABLE, "sr%d" % _k, *m), "accept")
                 continue
             if cat == "all":                                   # catch-all — no dest set, emitted last for its subnet
@@ -4688,8 +4735,8 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                     if str(cat).startswith("blku"):    # content-block union → aggregate COUNTER (growing "blocked" metric); zero
                         _add("ip", "saddr", S, "ip", "daddr", "@" + snm, "counter", "drop")   # CPU (only ticks on dropped pkts). Emitted
                         #                                                                       for BOTH cat_ and catl_ (Hybrid learned) sets
-                    else:
-                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, "drop")
+                    else:                                      # …or to its pin-mode chain (see pb_of)
+                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))
             _shadow_rules(i, lambda *m, _S=S: _add("ip", "saddr", _S, *m), "return")
         if pin and queue:                                       # feed each connection's first packets to swg-sni (userspace SNI); kernel-SNI reads them via xt_string instead → no queue
             for S in subnets:
@@ -7429,7 +7476,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _SMART_MODE.pop("no_lower", None)          # same lifetime as `lowered`: set by whichever engine installs
     if host_engine == "sni_user":                             # userspace swg-sni fills the domain cats from the TLS
         domains, _pats = _smart_shadowed(domains, _pats, _shw)   # the shadow categories beside their claimers (_smart_shadows)
-        _ensure_sni_router(domains, _subs, res, learn_ttl, patterns=_pats)   # handshake (client DNS untouched); enriched lists OK here
+        _ensure_sni_router(domains, _subs, res, learn_ttl, map_key=(dom_sig, (_shw or {}).get("sig", "")), patterns=_pats)   # handshake (client DNS untouched)
         _ensure_smart_xtstring([], {}, 0, res, active=False)  # ensure the kernel engine is torn down
         reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain
         if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
@@ -7441,7 +7488,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         # star-forms need an anchor it does not have and are not sent down this road at all (plan §4.1).
         # A per-person entry never reaches xt_string: its rules match `-s <subnet>` and would widen it to everyone. Its IP
         # targets route through the nft row; its hostnames wait for P1b (`src: 2`, ROUTING-PEERS-MESH-PLAN §6.3).
-        _built = _ensure_smart_xtstring([e for e in smart_exit if not e.get("src")], domains, SNI_RESET_MARK, res, ttl=learn_ttl,
+        _built = _ensure_smart_xtstring([e for e in smart_exit if "src" not in e], domains, SNI_RESET_MARK, res, ttl=learn_ttl,
                                         contains=_pats.get("contains") or {})   # enriched domains + contains, one capped budget
         _report_unrunnable(_pats, {"contains"})               # …and say what it could NOT run — see the helper
         # ASK, don't re-derive. This used to recompute "which categories have something to match on" beside
@@ -7942,7 +7989,10 @@ def _sni_tier2_cap(patterns, cap=None):
     return out, {"capped": sorted(dropped_cats), "missed": missed, "sample": sample}
 
 
-def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, patterns=None):
+_SNI_MAP_LAST = {"key": None, "stat": None, "n": 0}          # what the map was last written from, the file it left, passes since
+
+
+def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, map_key=None, patterns=None):
     """SNI mode: write the domain→category map for swg-sni and keep the classifier running; any other mode stops it
     and drops the map. swg-sni reads each connection's ClientHello off the NFQUEUE that _ensure_smart_nft set up
     and adds the dst IP to the matched category set, so the kernel routes FUTURE connections to that IP — the
@@ -7978,15 +8028,28 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, patterns=None):
         with contextlib.suppress(Exception): p.terminate()            # TTL matches the new learned-set timeout (else a 3600→120 flip leaks)
         _SNI_PROC["p"] = None; p = None
     try:                                                       # write the map only when it changes (cheap; swg-sni reloads on mtime)
-        newmap = json.dumps({c: sorted(d) for c, d in (domains or {}).items() if d}, sort_keys=True)
-        old = ""
+        # …AND BUILD IT ONLY WHEN IT CAN HAVE CHANGED. Sorting and serialising every name of every list, then reading the
+        # file back to compare, ran on every pass: 25 ms at 150 000 names on a fast core, several times that on a small VPS,
+        # every five seconds, to learn that nothing changed. `map_key` names the inputs (the enriched lists' signature and
+        # the shadow categories'); with the same key and the file exactly as this process left it, there is nothing to do.
+        # Any other file — deleted, rewritten by hand — is rebuilt as before.
+        _st = None
         with contextlib.suppress(OSError):
-            with open(SNI_MAP_PATH) as f: old = f.read()
-        if newmap != old:
-            os.makedirs(os.path.dirname(SNI_MAP_PATH), exist_ok=True)
-            with open(SNI_MAP_PATH + ".tmp", "w") as f: f.write(newmap)
-            os.replace(SNI_MAP_PATH + ".tmp", SNI_MAP_PATH)
-            res["changed"] += 1
+            _s = os.stat(SNI_MAP_PATH); _st = (_s.st_size, _s.st_mtime_ns, _s.st_ino)
+        _SNI_MAP_LAST["n"] += 1                                # …and once in 60 passes (~5 min) regardless: an edit the stat
+        if not (map_key is not None and _st and _SNI_MAP_LAST["key"] == map_key and _SNI_MAP_LAST["stat"] == _st   # cannot see heals
+                and _SNI_MAP_LAST["n"] % 60):
+            newmap = json.dumps({c: sorted(d) for c, d in (domains or {}).items() if d}, sort_keys=True)
+            old = ""
+            with contextlib.suppress(OSError):
+                with open(SNI_MAP_PATH) as f: old = f.read()
+            if newmap != old:
+                os.makedirs(os.path.dirname(SNI_MAP_PATH), exist_ok=True)
+                with open(SNI_MAP_PATH + ".tmp", "w") as f: f.write(newmap)
+                os.replace(SNI_MAP_PATH + ".tmp", SNI_MAP_PATH)
+                res["changed"] += 1
+            with contextlib.suppress(OSError):
+                _s = os.stat(SNI_MAP_PATH); _SNI_MAP_LAST.update(key=map_key, stat=(_s.st_size, _s.st_mtime_ns, _s.st_ino))
         # Patterns, same rule, own file. The default for "not there" is "{}" and not "" so that a node with
         # no patterns does not report a change every single cycle trying to remove a file never written.
         #
@@ -7996,6 +8059,7 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, patterns=None):
         # whole plan is written against, and the panel learns of this one exactly where it learns of
         # kernel-SNI's (`smart_status`, beside `xts_cap`).
         _capped_pats, _sni_notes = _sni_tier2_cap(patterns)
+        _sni_notes["capped"] = [c for c in (_sni_notes.get("capped") or []) if not re.fullmatch(r"sw_[0-9a-f]{10}", str(c))]   # a shadow is not a rule
         if _sni_notes["missed"]:
             _SMART_MODE["sni_cap"] = {"cap": _SNI_TIER2_MAX, **_sni_notes}
         else:
@@ -8183,8 +8247,8 @@ def smart_status():
                 **({"block": _block_activity()} if _MECH_ON["subs"] else {})}
     rules = len(_SMART_MARK_RE.findall(t["out"]))
     resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\d+)", t["out"]))   # SNI first-hit RSTs
-    return {**base, "active": rules > 0,                        # a shadow set repeats its claimer's hosts: not a destination of its own
-            "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}", k)}, "rules": rules,
+    return {**base, "active": rules > 0,                        # a shadow set repeats its claimer's hosts, a src_ set holds devices: neither is a destination
+            "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}|src_[0-9a-f]{12}", k)}, "rules": rules,
             "bytes": dict(t["bytes"]), "resets": resets,   # bytes: {cat:{up,dn}} cumulative destination stats
             "block": _block_activity(),                    # {subnet:{torrent,scan}} blocking activity from existing state (reach is in `sets`)
             "blk_domains": _blk_domains_read()}            # {host:count} blocked-domain top-K (SNI mode) → panel buckets into categories

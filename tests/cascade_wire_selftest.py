@@ -74,7 +74,7 @@ _smart = re.search(r'"smart": \{"entries": my_plan\.get\("smart"\) or \[\],(.*?)
 check("the reply's `smart` block carries `srcs`", bool(_smart) and '"srcs": my_plan["srcs"]' in _smart.group(1),
       _smart.group(1)[:200] if _smart else "no smart block")
 check("the node reads `srcs` off the `smart` block", '(smart or {}).get("srcs")' in nsrc)
-check("the node reads `src` off an entry", 'e.get("src")' in nsrc and '(e["src"],)' in nsrc)
+check("the node reads `src` off an entry", ('"src" in e' in nsrc or 'e.get("src")' in nsrc) and '(e["src"],)' in nsrc)
 
 if PERTURB:
     if FAILS:

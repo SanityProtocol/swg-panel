@@ -25,7 +25,7 @@ Hermetic: no nft, no ip, no root. Run: python3 tests/smart_src_selftest.py   (0 
   --plant a|b|c|d|e|f|g1|g2|g3|h   plant one defect and expect RED on its own check (exit 0 when caught):
      a  the source set is never created, so the row's jump names a set that is not there
      b  a row chain's rules end in `return`
-     c  the learned-set TTL swap forgets the row chains
+     c  the learned-set TTL swap forgets the row chains (and the pin-mode Block chains)
      d  the signature gains a marker for everyone, `src` or not (every node's chain rebuilds on upgrade)
      e  the chain signature signs the set MEMBERS (a member change rebuilds the chain)
      f  the Kernel-SNI filter is removed
@@ -43,6 +43,15 @@ Hermetic: no nft, no ip, no root. Run: python3 tests/smart_src_selftest.py   (0 
      s10 the blocked metric ignores a block list's shadow rule (Bob's blocked packets go uncounted)
      s11 Hybrid SNI ranks a zone above a site (the broader `*.example` rule takes Bob's `h2.example` host)
      s12 Force-DNS ranks every key alike (same, on dnsmasq's longest-key ladder)
+     n1 an entry whose `src` is empty is lowered for the whole subnet (the key no longer decides)
+     pb1 pin mode: the Block's chain exempts nothing (an Exit above it keeps the SYN and loses the rest)
+     pb2 pin mode: an exemption forgets whose rule it was (a device outside the row above is let through the Block)
+     pb3 the Block chains do not reach the signature (a running SNI node keeps the old rules)
+     pb4 Hybrid SNI: an exempted connection skips swg-sni (its first packets are no longer queued)
+     pb5 pin mode: a Block decides at the first packet only (a connection that beat swg-sni's learning stays up)
+     c2 the learned-set TTL swap forgets the pin-mode Block chains (they match catl_ sets too — the whole batch is refused)
+     sc the swg-sni map is rebuilt on every pass again (every name sorted and serialised to learn nothing changed)
+     sc2 the swg-sni map is never rebuilt while its inputs and file look unchanged (an edit the stat cannot see never heals)
 """
 import hashlib, importlib.machinery, ipaddress, importlib.util, json, os, shutil, sys, tempfile
 
@@ -71,13 +80,13 @@ PLANTS = {
           '''"meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")
                     elif act == "direct":
                         bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "return")'''),
-    "c": ('                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+", c))):',
+    "c": ('                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+|pb\\d+", c))):',
           '                for _c in ("catcount", "catany", "forward"):'),
     "d": ('''("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]''',
           '''("|lttl:" + str(learn_ttl) if queue else "") + "|s9|src").encode()).hexdigest()[:16]'''),
     "e": ('''    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) +''',
           '''    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + json.dumps(want_src) +'''),
-    "f": ('''        _built = _ensure_smart_xtstring([e for e in smart_exit if not e.get("src")], domains,''',
+    "f": ('''        _built = _ensure_smart_xtstring([e for e in smart_exit if "src" not in e], domains,''',
           '''        _built = _ensure_smart_xtstring(smart_exit, domains,'''),
     "g1": ('''    expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)''',
            '''    expect_pre = pin or any(a != "direct" for (_, _, a, _) in want)'''),
@@ -94,7 +103,7 @@ PLANTS = {
     "s4": ('''        return any(None not in cov.get(S, ()) and not (w and w in cov.get(S, ())) for S, ws in aud[c2].items() for w in ws)''',
            '''        return True'''),
     "s5": ('''                if None not in cov and not (len(w) > 4 and w[4] in cov):''', '''                if True:'''),
-    "s6": ('''            "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}", k)}, "rules": rules,''',
+    "s6": ('''            "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}|src_[0-9a-f]{12}", k)}, "rules": rules,''',
            '''            "sets": dict(t["counts"]), "rules": rules,'''),
     "s7": ('''            dom_unchanged, _SHADOW["dns"] = False, (_shw or {}).get("sig", "")''',
            '''            _SHADOW["dns"] = (_shw or {}).get("sig", "")'''),
@@ -109,6 +118,22 @@ PLANTS = {
             return (1, -99)'''),
     "s12": ('''            return (-(n.count(".") + 1),)                      # dnsmasq: the longest key (a zone is a one-label key)''',
             '''            return (0,)'''),
+    "n1": [('''    spec = [e for e in smart_e if e["category"] != "all" and ("src" not in e or _SRC_WID_RE.fullmatch(str(e["src"])))]''',
+            '''    spec = [e for e in smart_e if e["category"] != "all" and (not e.get("src") or _SRC_WID_RE.fullmatch(str(e["src"])))]'''),
+           ('''e.get("table")) + ((e["src"],) if "src" in e else ())''', '''e.get("table")) + ((e["src"],) if e.get("src") else ())''')],
+    "c2": ('                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+|pb\\d+", c))):',
+           '                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+", c))):'),
+    "pb1": ('''                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "accept")''',
+            '''                pass'''),
+    "pb2": ('''                    ex += [[cnd, snm] for snm in''', '''                    ex += [[[], snm] for snm in'''),
+    "pb3": ('''        sig = hashlib.sha1((sig + "|pb:" + json.dumps(sorted(pb_of.items()))).encode()).hexdigest()[:16]''', '''        pass'''),
+    "pb4": ('''                if queue:                                      # swg-sni still reads the connection's first packets''',
+            '''                if False:'''),
+    "pb5": ('''                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))''',
+            '''                        _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))'''),
+    "sc": ('''        if not (map_key is not None and _st and _SNI_MAP_LAST["key"] == map_key and _SNI_MAP_LAST["stat"] == _st   # cannot see heals''',
+           '''        if True or not (map_key is not None and _st and _SNI_MAP_LAST["key"] == map_key and _SNI_MAP_LAST["stat"] == _st'''),
+    "sc2": ('''                and _SNI_MAP_LAST["n"] % 60):''', '''                ):'''),
     "g3": ('''        _routed_cats = {w[1] for w in want if w[1] != "all"} if queue else set()''',
            '''        _routed_cats = {c for (_S, c, _a, _T) in want if c != "all"} if queue else set()'''),
 }
@@ -120,10 +145,11 @@ if PLANT:
     if PLANT not in PLANTS:
         sys.exit("unknown plant %r" % PLANT)
     src = open(NODED, encoding="utf-8").read()
-    old, new = PLANTS[PLANT]
-    assert src.count(old) == 1, "plant anchor missing — this run would FALSE-PASS: %r" % old[:80]
+    for old, new in (PLANTS[PLANT] if isinstance(PLANTS[PLANT], list) else [PLANTS[PLANT]]):   # a plant may need two lines
+        assert src.count(old) == 1, "plant anchor missing — this run would FALSE-PASS: %r" % old[:80]
+        src = src.replace(old, new, 1)
     path = os.path.join(STATE, "planted-noded.py")
-    open(path, "w", encoding="utf-8").write(src.replace(old, new, 1))
+    open(path, "w", encoding="utf-8").write(src)
 
 _l = importlib.machinery.SourceFileLoader("swgnoded_src", path)
 N = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgnoded_src", _l))
@@ -323,6 +349,14 @@ _rules = [x["text"] for c in ((K.m.tables.get(T) or {}).get("chains") or {}).val
 check("an entry whose selection id is not 12 hex is dropped, never lowered for the whole subnet",
       not r["errors"] and _rules and not any("custom_b" in x for x in _rules), _rules)
 K = fresh()
+emp = [dict(e, src="") if e.get("src") == W1 else e for e in ENTRIES]
+for _ in range(3):
+    r = npass(K, emp, False, False)
+fill(K, DEST)
+v = walk(K, "wg0", OTHER, "203.0.113.9")
+check("an entry whose selection id is EMPTY is dropped, never lowered for the whole subnet (the key decides, not its value)",
+      not r["errors"] and v["mark"] == 7000 and "sr0" not in v["via"], (r["errors"], v))
+K = fresh()
 allsrc = [dict(e, src=W1) if e["category"] == "all" else e for e in ENTRIES]
 for _ in range(3):
     npass(K, allsrc, False, False)
@@ -348,6 +382,63 @@ check("rows removed: no sr chain and no src set is left behind",
       not [c for c in tb["chains"] if c.startswith("sr")] and not [s for s in tb["sets"] if s.startswith("src_")],
       (sorted(tb["chains"]), sorted(tb["sets"])))
 check("…and nothing was refused on the way", not K.refused, K.refused)
+
+# ── 5b. the swg-sni map is built only when it can have changed ─────────────────────────────────────────────────────────────
+print("\n[the swg-sni map: built only when its inputs or the file changed]")
+
+
+class _Doms(dict):                                              # counts how often the writer walks the name lists
+    walks = 0
+
+    def items(self):
+        _Doms.walks += 1
+        return super().items()
+
+
+class _Running:                                                 # a classifier that is already up: nothing is (re)launched
+    def poll(self):
+        return None
+
+    def terminate(self):
+        pass
+
+
+N.SNI_MAP_PATH, N.SNI_PATTERNS_PATH = os.path.join(STATE, "sni-map.json"), os.path.join(STATE, "sni-patterns.json")
+N._SNI_PROC.update(p=_Running(), ttl=3600)
+N._SNI_MAP_LAST.update(key=None, stat=None)
+D1 = _Doms({"custom_a": ["a.example", "b.example"]})
+
+
+def sni(doms, key):
+    res = {"changed": 0, "errors": []}
+    N._ensure_sni_router(doms, [S], res, 3600, map_key=key, patterns={})
+    return res
+
+
+sni(D1, ("k1", ""))
+w1 = _Doms.walks
+check("the first pass writes the map", os.path.exists(N.SNI_MAP_PATH) and w1 == 1, (w1, os.path.exists(N.SNI_MAP_PATH)))
+sni(D1, ("k1", ""))
+check("an unchanged pass walks nothing (same inputs, the file as this process left it)", _Doms.walks == w1, _Doms.walks)
+sni(D1, ("k1", "shadowsig"))
+check("a changed shadow signature rebuilds it", _Doms.walks == w1 + 1, _Doms.walks)
+os.remove(N.SNI_MAP_PATH)
+sni(D1, ("k1", "shadowsig"))
+check("a deleted map is written again on the next pass", os.path.exists(N.SNI_MAP_PATH) and _Doms.walks == w1 + 2, _Doms.walks)
+open(N.SNI_MAP_PATH, "w").write('{"x": ["edited.example"]}')
+sni(D1, ("k1", "shadowsig"))
+check("a map edited by hand is put back", json.load(open(N.SNI_MAP_PATH)) == {"custom_a": ["a.example", "b.example"]},
+      open(N.SNI_MAP_PATH).read())
+N._SNI_MAP_LAST["n"] = 59
+w0 = _Doms.walks
+sni(D1, ("k1", "shadowsig"))
+check("…and once in 60 passes it is rebuilt anyway (an edit the file's size and time cannot show still heals)", _Doms.walks == w0 + 1, _Doms.walks)
+sni(D1, ("k1", "shadowsig"))
+check("…then quiet again", _Doms.walks == w0 + 1, _Doms.walks)
+n0 = _Doms.walks
+sni(D1, None); sni(D1, None)
+check("with no key (a caller that names no inputs) it builds every pass, as before", _Doms.walks == n0 + 2, _Doms.walks)
+N._SNI_PROC.update(p=None)
 
 # ── 6. the interim Kernel-SNI gate (plan §6.3): no `src` entry reaches xt_string ───────────────────────────────────────────
 print("\n[Kernel SNI: the interim gate]")
@@ -485,6 +576,8 @@ for label, pin, queue, eng in SH_MODES:
     rep = set(N.smart_status().get("sets") or {})
     check("%s: the table holds the shadow sets, the report leaves them out" % label,
           any(s.startswith("cat_sw_") for s in have) and not any("_sw_" in s for s in rep), (sorted(have), sorted(rep)))
+    check("%s: …and a per-person source set is not reported as a destination either" % label,
+          any(s.startswith("src_") for s in have) and not any(s.startswith("src_") for s in rep), (sorted(have), sorted(rep)))
     # G — rules gone: the shadow sets go with them, and nothing is refused on the way (smart_status above asked the model a
     # `list chain` it does not answer — that is the harness, so only this step's own refusals count)
     n_ref = len(K.refused)
@@ -565,11 +658,92 @@ check("Force-DNS takes only the kinds dnsmasq runs (the contains-pattern makes n
                                 {"zone": {"custom_z": ["example"]}, "contains": {"custom_c": ["h2.ex"]}}, "dns").get("by_target") or {}))
       == ["custom_z"])
 
+# ── 7b. pin mode (Hybrid / Kernel SNI): a Block below an Exit or a Direct ─────────────────────────────────────────────────────
+# The 1.8.7 node let an Exit above an overlapping Block keep the SYN and then dropped every packet after it (rig BHxsni/BHxks).
+# A Block still meets EVERY packet — swg-sni's learning lands a few ms after its first hit, and a Block added later must cut
+# running flows — so only a destination ALSO in a set above it, for the same devices, is let through.
+print("\n[pin mode: a Block below an Exit or a Direct]")
+D5N, BLKN = "192.0.2.81", "192.0.2.80"
+PX = {"subnet": S, "category": "custom_px", "action": "exit", "via_iface": "swg_q", "table": 7001}
+PD = {"subnet": S, "category": "custom_pd", "action": "direct"}
+PB = {"subnet": S, "category": "custom_pb", "action": "block"}
+PR = dict(PX, category="custom_pr", src=W1)
+PDEST = {"custom_px": [D5N + "/32"], "custom_pd": [D5N + "/32"], "custom_pr": [D5N + "/32"], "custom_pb": ["192.0.2.0/24"]}
+
+
+def pb_setup(entries, pin, queue):
+    K = fresh()
+    for _ in range(3):
+        npass(K, entries, pin, queue)
+    for c, cidrs in PDEST.items():
+        if N._smart_setname(c) in ((K.m.tables.get(T) or {}).get("sets") or {}):
+            K.load_set(T, N._smart_setname(c), cidrs)
+    return K
+
+
+def pk(K, src, dst, **kw):
+    return K.m.packet(T, "wg0", src, dst, **kw)
+
+
+for label, pin, queue in MODES:
+    K = pb_setup([PX, PB, CA], pin, queue)
+    v1 = pk(K, OTHER, D5N)
+    check("%s: Exit above an overlapping Block — the first packet leaves by the Exit (7001)" % label, v1["mark"] == 7001, v1)
+    v2 = pk(K, OTHER, D5N, ct="established", ctmark=7001, dport=80)
+    check("%s: …and the packets after it are not dropped by the Block below" % label, v2["verdict"] == "accept" and v2["mark"] == 7001, v2)
+    check("%s: …while the Block alone still stops a connection at its first packet" % label, pk(K, OTHER, BLKN)["verdict"] == "drop")
+    v3 = pk(K, OTHER, BLKN, ct="established", ctmark=7000, dport=80)
+    check("%s: …AND a running flow to the Block's own destination is still cut (a Block added mid-flow cuts it)" % label,
+          v3["verdict"] == "drop", v3)
+    if queue:
+        v4 = pk(K, OTHER, D5N, ct="established", ctmark=7001, dport=443, ctpackets=3)
+        check("%s: an exempted connection's first packets still go to swg-sni (the queue), as the base chain's last rule would send them" % label,
+              v4["verdict"] == "queue", v4)
+    K = pb_setup([PD, PB, CA], pin, queue)
+    v2 = pk(K, OTHER, D5N, ct="established", dport=80)
+    check("%s: Direct above an overlapping Block — the packets after the first go Direct too" % label, v2["verdict"] == "accept" and v2["mark"] == 0, v2)
+    K = pb_setup([PR, PB, CA], pin, queue)
+    v2 = pk(K, CHOSEN, D5N, ct="established", ctmark=7001, dport=80)
+    check("%s: a per-person Exit row above an everyone Block keeps its connection" % label, v2["verdict"] == "accept" and v2["mark"] == 7001, v2)
+    v2 = pk(K, OTHER, D5N, ct="established", ctmark=7000, dport=80)
+    check("%s: …and a device outside that row is not let through the Block by it (first packet or later)" % label,
+          pk(K, OTHER, D5N)["verdict"] == "drop" and v2["verdict"] == "drop", v2)
+    K = pb_setup([PX, dict(PB, src=W1), CA], pin, queue)
+    v2 = pk(K, CHOSEN, D5N, ct="established", ctmark=7001, dport=80)
+    check("%s: an everyone Exit above a per-person Block row: the chosen device's connection is not cut by its row" % label,
+          v2["verdict"] == "accept" and v2["mark"] == 7001, v2)
+    # the swg-sni race (review of this fix, finding 1): a connection whose SYN beat the learning is cut once the address lands
+    for setname in (["catl_custom_pb", "cat_custom_pb"] if queue else ["cat_custom_pb"]):
+        K = pb_setup([PB, CA], pin, queue)
+        s = K.m.tables[T]["sets"][setname]; s["els"] = set()
+        syn = pk(K, OTHER, "198.18.0.77")                      # in no set yet
+        K.m._add_elements(s, "198.18.0.77")                    # swg-sni's flusher (or a list refresh) lands the address
+        late = pk(K, OTHER, "198.18.0.77", ct="established", ctmark=syn["mark"], dport=443, ctpackets=40)
+        check("%s: a connection that passed before the Block learned its address (%s) is cut by the next packet" % (label, setname),
+              syn["verdict"] == "accept" and late["verdict"] == "drop", (syn, late))
+K = pb_setup([PX, PB, CA], True, True)
+rt = npass(K, [PX, PB, CA], True, True, ttl=120)
+check("Hybrid SNI: a learned-set TTL change lands while a Block chain matches the learned sets",
+      not rt["errors"] and K.m.tables.get(T, {}).get("sets", {}).get("catl_custom_px", {}).get("timeout") == 120, rt["errors"] or K.refused[-1:])
+for label, pin, queue in MODES:
+    for ents, tag in (([PX, PB, CA], "a Block below an Exit"), ([PB, PX, CA], "a Block ABOVE the Exit")):
+        K = fresh()
+        npass(K, ents, pin, queue)
+        spec_ = [e for e in ents if e["category"] != "all"]
+        w4 = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) for e in spec_ + [CA]]
+        rst = N.SNI_RESET_MARK if pin else 0
+        old = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(w4) + "|v6:" + "" + "|rst:" + str(rst)
+                            + ("|lttl:3600" if queue else "") + "|s9").encode()).hexdigest()[:16]
+        have = open(os.path.join(N.GEO_DIR, ".smart-sig")).read().strip() if os.path.exists(os.path.join(N.GEO_DIR, ".smart-sig")) else ""
+        changes = pin and tag == "a Block below an Exit"
+        check("%s, %s: %s" % (label, tag, "the node rebuilds once (the chain reaches the signature)" if changes
+                              else "signed exactly as HEAD did (nothing new is built)"), (have != old) if changes else (have == old), (have, old))
+
 # ── 8. the engines are handed the shadow categories, and dnsmasq rebuilds when only they change ────────────────────────────
 print("\n[shadow sets reach the engines]")
 _dq, _sq = [], []
 N._ensure_smart_dnsmasq = lambda domains, smart_e, res, unchanged=False, zones=None, nets=(): _dq.append((dict(domains), unchanged))
-N._ensure_sni_router = lambda domains, subnets, res, learn_ttl=3600, patterns=None: _sq.append(dict(domains or {}))
+N._ensure_sni_router = lambda domains, subnets, res, learn_ttl=3600, map_key=None, patterns=None: _sq.append(dict(domains or {}))
 
 
 def rc(entries, mode):
