@@ -447,8 +447,8 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   older version applies such rules to nobody until you update it, and its card says so. On **Kernel SNI** these
   rules match by IP address and network only, not by site name; **Hybrid SNI** matches both. Going back to an
   older panel and saving an interface there drops the chosen people from its rules for good. Going back to an
-  older version on a server that ran these rules: run `nft delete table inet swg_smart` on it once — it rebuilds
-  its routing within a minute.
+  older version on a server that ran these rules — or, on **Hybrid SNI** or **Kernel SNI**, a **Block** rule below an
+  Exit or Direct rule — run `nft delete table inet swg_smart` on it once: it rebuilds its routing within a minute.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more
