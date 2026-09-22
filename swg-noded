@@ -4248,6 +4248,36 @@ def _smart_learnsetname(cat):
     return "catl_" + re.sub(r"[^a-z0-9]", "_", str(cat).lower())
 
 
+# PER-PERSON ROWS (docs/ROUTING-PEERS-MESH-PLAN.md §6.1–6.2). A smart entry carrying `src: <wid>` applies only to the
+# devices the panel resolved for that selection, sent as `smart.srcs = {wid: [[device, "a.b.c.d/32"], …]}`. They live in
+# ONE `ifname . ipv4_addr` hash set per selection, so a chosen device's address arriving on another device is not taken for
+# it; a member is written BARE, because a hash concat set refuses `/32` spelled out. The chain signature names the sets,
+# never their members: a re-address, a new phone or a keyless reconnect replaces the set whole in the pass's single
+# transaction (measured packet-atomic, `.campaign` 4220d38) and rebuilds nothing. Member signatures are held here, in
+# memory — a restart replaces every set once.
+_SRC_WID_RE = re.compile(r"[0-9a-f]{12}")
+_SRC_DEV_RE = re.compile(r"[A-Za-z0-9_.@:+-]{1,15}")
+_SRC_SETS = {}                          # src_<wid> → signature of the members last loaded into it
+
+
+def _smart_srcsetname(wid):
+    return "src_" + wid
+
+
+def _smart_src_members(pairs):
+    """[[device, "a.b.c.d/32"], …] → sorted unique nft members `"dev" . a.b.c.d`. Anything that is not a device name and
+    one IPv4 host is left out: a member the node cannot write is a device the row does not cover — narrower, never wider."""
+    out = set()
+    for p in (pairs if isinstance(pairs, list) else ()):
+        if not (isinstance(p, (list, tuple)) and len(p) == 2 and _SRC_DEV_RE.fullmatch(str(p[0]))):
+            continue
+        a, _, ln = str(p[1]).partition("/")
+        with contextlib.suppress(ValueError):
+            if ln in ("", "32"):
+                out.add('"%s" . %s' % (p[0], ipaddress.IPv4Address(a)))
+    return sorted(out)
+
+
 _LOOP = {"n": 0}                       # reconcile-loop counter — drives per-loop caches (bumped at the top of main's loop)
 _SMART_TABLE = {"n": -1, "rc": 1, "out": "", "counts": {}, "setnames": set(), "bytes": {}}
 
@@ -4323,7 +4353,7 @@ class _NftBatch:
         return True
 
 
-def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_mark=0, queue=True, learn_ttl=3600):
+def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_mark=0, queue=True, learn_ttl=3600, srcs=None):
     """Phase 3 marking: keep an inet table `swg_smart` with one interval set per category (populated from
     shipped geo CIDR lists — see _smart_geo_refresh) and a prerouting chain that marks
     `ip saddr <S> ip daddr @cat_<c> meta mark set <T>`. Idempotent + drift-gated (flush+rebuild the chain
@@ -4377,9 +4407,33 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     # block=drop. Each specific rule ends in `return` so the FIRST match wins — a direct/block exception genuinely
     # overrides a later catch-all exit, and block is a real kill-switch (not a silent fall-through to direct). "all"
     # is the catch-all → emitted after the specific rules for its subnet. Order is preserved from the panel plan.
-    spec = [e for e in smart_e if e["category"] != "all"]
-    allr = [e for e in smart_e if e["category"] == "all"]
-    want = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) for e in spec + allr]
+    spec = [e for e in smart_e if e["category"] != "all" and (not e.get("src") or _SRC_WID_RE.fullmatch(str(e["src"])))]
+    allr = [e for e in smart_e if e["category"] == "all" and not e.get("src")]   # a catch-all is for everyone (D10): never widened from a selection
+    # A per-person entry adds its selection as a FIFTH element; everyone else's stays a 4-tuple, so a plan without one
+    # signs exactly as it always has (T3). Read by index below, never unpacked to four names.
+    want = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) + ((e["src"],) if e.get("src") else ())
+            for e in spec + allr]
+    # A ROW is one run of consecutive entries with the same (subnet, selection) — one chain `sr<k>`, reached by ONE
+    # lookup of its source set, so a device that is not chosen skips the whole row at once (§5.1: free).
+    rows = []
+    for i, w in enumerate(want):
+        if len(w) > 4:
+            if rows and rows[-1]["key"] == (w[0], w[4]) and rows[-1]["end"] == i:
+                rows[-1]["end"] = i + 1
+            else:
+                rows.append({"key": (w[0], w[4]), "start": i, "end": i + 1})
+    want_sr = {"sr%d" % k for k in range(len(rows))}
+    want_src = {_smart_srcsetname(r["key"][1]): _smart_src_members((srcs or {}).get(r["key"][1])) for r in rows}
+    src_stamps = {}                                            # member signatures to hold only once the batch has landed
+    for sn, mem in sorted(want_src.items()):                   # per-person source sets: created here, members replaced WHOLE in
+        if sn not in have_sets:                                # the batch (flush + add, one transaction) when they changed, when the
+            run(["nft", "add", "set", "inet", SMART_NFT_TABLE, sn, "{ type ifname . ipv4_addr; }"])   # set is new, or when
+        msig = hashlib.sha1(json.dumps(mem).encode()).hexdigest()[:16]                                    # its count drifted
+        if sn not in have_sets or _SRC_SETS.get(sn) != msig or _t["counts"].get(sn, 0) != len(mem):
+            bat.add("flush", "set", "inet", SMART_NFT_TABLE, sn)
+            for i in range(0, len(mem), 2000):
+                bat.add("add", "element", "inet", SMART_NFT_TABLE, sn, "{ " + ", ".join(mem[i:i + 2000]) + " }")
+            src_stamps[sn] = msig
     v6f = sorted(set(v6_ifaces))                                # smart routing is IPv4-only → drop forwarded v6 on these ifaces (fail-closed, no leak)
     sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]   # s9: reverted the per-source blkd meter (its duplicate name killed the catl_blku drop rule → hybrid blocking broke); s7: +counter on the blku content-block drop; s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
     _sigf = os.path.join(GEO_DIR, ".smart-sig")
@@ -4391,10 +4445,11 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     def _cbody(name):                                          # the rules inside one chain of our table (per-chain, so a full external flush is detected)
         m = re.search(r"chain " + name + r" \{(.*?)\n\s*\}", body, re.S)
         return m.group(1) if m else ""
-    expect_pre = pin or any(a != "direct" for (_, _, a, _) in want)   # exit/block rules + pin (queue/restore) all emit `ip saddr` prerouting rules
+    expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)   # exit/block rules, rows + pin (queue/restore) all emit `saddr` prerouting rules
     pre_ok = (not expect_pre) or ("saddr" in _cbody("prerouting"))
+    rows_ok = {c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"sr\d+", c)} == want_sr
     fwd_ok = ((not v6f) or ("drop" in _cbody("forward"))) and ((not (pin and reset_mark)) or ("reject" in _cbody("forward")))
-    if stored != sig or not chain_present or not pre_ok or not fwd_ok:   # drift-gate: signature change, or a chain was emptied externally
+    if stored != sig or not chain_present or not pre_ok or not fwd_ok or not rows_ok:   # drift-gate: signature change, or a chain was emptied externally
         stored = ""                                            # force the sig file to be rewritten below
         bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "prerouting")
         if queue:                                              # apply an ip_learning TTL change to the learned sets (an nft set's
@@ -4412,7 +4467,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 # set carrying 30 rules — smart routing silently stopped reconciling while looking healthy,
                 # because the last good ruleset simply stayed in place. Flushing here costs nothing: both
                 # chains are rebuilt or deleted further down regardless.
-                for _c in ("catcount", "catany", "forward"):
+                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"sr\d+", c))):
                     if re.search(r"chain " + _c + r" \{", body):
                         bat.add("flush", "chain", "inet", SMART_NFT_TABLE, _c)
                 for c in cats:
@@ -4435,7 +4490,33 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             for S in subnets:                                  # SNI can't parse the ENCRYPTED QUIC ClientHello → drop UDP/443 so HTTP/3 falls back to TCP (which swg-sni reads). No accuracy loss (TCP still routes by SNI/IP); just no HTTP/3 on smart ifaces.
                 _add("ip", "saddr", S, "udp", "dport", "443", "drop")
         _new = ["ct", "state", "new"] if pin else []           # pin: decide once per connection at ct state new
-        for (S, cat, act, T) in want:
+        # Row chains, emptied here and refilled below; a row that is gone is deleted. After prerouting's flush above, so
+        # no jump still names one — and still inside the same transaction as the rules that jump to them.
+        _here_sr = sorted(c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"sr\d+", c))
+        for c in sorted(want_sr):
+            bat.add("add", "chain", "inet", SMART_NFT_TABLE, c)
+            bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)
+        for c in _here_sr:
+            if c not in want_sr:
+                bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)
+                bat.add("delete", "chain", "inet", SMART_NFT_TABLE, c)
+
+        _row_of = {i: k for k, r in enumerate(rows) for i in range(r["start"], r["end"])}
+        for i, w in enumerate(want):
+            S, cat, act, T = w[:4]
+            if len(w) > 4:                                     # a per-person entry: its row's ONE jump, then its rules inside the row,
+                k = _row_of[i]                                 # each ending in `accept` — in a jumped chain that ends this table's
+                if rows[k]["start"] == i:                      # walk exactly as `return` does in the base chain (policy accept), so
+                    _add("iifname", ".", "ip", "saddr", "@" + _smart_srcsetname(w[4]), "jump", "sr%d" % k)   # first match holds
+                for snm in [_smart_setname(cat)] + ([_smart_learnsetname(cat)] if queue else []):
+                    _row = ("add", "rule", "inet", SMART_NFT_TABLE, "sr%d" % k)
+                    if act == "exit":
+                        bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "accept")
+                    elif act == "direct":
+                        bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "accept")
+                    elif act == "block":
+                        bat.add(*_row, "ip", "daddr", "@" + snm, "drop")
+                continue
             if cat == "all":                                   # catch-all — no dest set, emitted last for its subnet
                 if act == "exit":
                     _add("ip", "saddr", S, *_new, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []))
@@ -4494,7 +4575,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         subnets = sorted({e["subnet"] for e in smart_e})           # every client subnet under smart routing (incl catch-all)
         # In Hybrid-SNI a category's dsts can live ONLY in its learned set (catl_) with an empty geoip set (cat_),
         # so also count any ROUTED category when queueing — else swg-sni-learned traffic falls through to c_uncat.
-        _routed_cats = {c for (_S, c, _a, _T) in want if c != "all"} if queue else set()
+        _routed_cats = {w[1] for w in want if w[1] != "all"} if queue else set()
         count_cats = sorted(c for c in cats if c != "all" and (_t["counts"].get(_smart_setname(c), 0) > 0 or c in _routed_cats))
         catw = [(S, c) for S in subnets for c in count_cats]
         have_cnt = set(re.findall(r"counter (\S+) {", body))
@@ -4569,6 +4650,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             with contextlib.suppress(OSError):
                 os.makedirs(GEO_DIR, exist_ok=True)
                 open(_f, "w").write(_v)
+        _SRC_SETS.update(src_stamps)
     # drop sets we no longer want (a category was un-ticked, or 'ru' was split into 'ru_net'/'ru_blocked'): after the
     # chain rebuild above they're unreferenced, so delete them — else the stale set lingers with old IPs forever.
     # AFTER the apply on purpose — the rules that reference them are only gone once the transaction has landed.
@@ -4577,9 +4659,11 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     wanted_sn = {_smart_setname(c) for c in cats if c != "all"}
     wanted_ln = {_smart_learnsetname(c) for c in cats if c != "all"}
     for sn in have_sets:
-        if (sn.startswith("cat_") and sn not in wanted_sn) or (sn.startswith("catl_") and sn not in wanted_ln):
+        if ((sn.startswith("cat_") and sn not in wanted_sn) or (sn.startswith("catl_") and sn not in wanted_ln)
+                or (sn.startswith("src_") and sn not in want_src)):                              # …and a per-person row's source set
             if run(["nft", "delete", "set", "inet", SMART_NFT_TABLE, sn]).returncode == 0:   # still-referenced → fails, retried next pass
                 res["changed"] += 1
+                _SRC_SETS.pop(sn, None)
     # …and their COUNTERS, which had no reaper at all. A custom rule's category id is derived from its CONTENT,
     # so every edit to the rule — and every routing-mode switch, which changes which targets survive — mints a
     # new id and a new `c_<id>_up` / `_dn` pair. Nothing removed the old ones: a two-day-old test node carried
@@ -7116,7 +7200,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                         | {ifn for ifn, c in _csqtt_load().items() if _csqtt_subnet((c or {}).get("tun_addr") or "") in _smart_subs})) if _smart_subs else []
     set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=is_sni, v6_ifaces=smart_ifs,
                                     reset_mark=(SNI_RESET_MARK if is_sni else 0), queue=(host_engine == "sni_user"),
-                                    learn_ttl=learn_ttl)
+                                    learn_ttl=learn_ttl, srcs=(smart or {}).get("srcs"))
     domains = dict((smart or {}).get("domains") or {})         # domain-tier bundles {cat:[domain]} → dnsmasq/sni/kernel-filled
     if mode != "kernel":                                       # CATALOG host cats (no curated bundle) → seed empty so the node domain-fills them from MetaCubeX
         for _c, _caps in _CAT_CAPS.items():
@@ -7192,7 +7276,9 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         # `contains` is the ONE pattern kind this engine runs, and it runs it natively: xt_string asks only
         # whether some bytes appear anywhere, which is the whole of what `*google*` means. The other five
         # star-forms need an anchor it does not have and are not sent down this road at all (plan §4.1).
-        _built = _ensure_smart_xtstring(smart_exit, domains, SNI_RESET_MARK, res, ttl=learn_ttl,
+        # A per-person entry never reaches xt_string: its rules match `-s <subnet>` and would widen it to everyone. Its IP
+        # targets route through the nft row; its hostnames wait for P1b (`src: 2`, ROUTING-PEERS-MESH-PLAN §6.3).
+        _built = _ensure_smart_xtstring([e for e in smart_exit if not e.get("src")], domains, SNI_RESET_MARK, res, ttl=learn_ttl,
                                         contains=_pats.get("contains") or {})   # enriched domains + contains, one capped budget
         _report_unrunnable(_pats, {"contains"})               # …and say what it could NOT run — see the helper
         # ASK, don't re-derive. This used to recompute "which categories have something to match on" beside
@@ -7894,7 +7980,8 @@ def smart_status():
     elif engine == "dns":        engine_ok = (dns_alive or bool(_SMART_MODE.get("dns_idle"))) and _route_localnet_ok()
     else:                        engine_ok = True               # IP-only → no host engine to be down
     base = {"mode": mode, "engine": engine, "engine_ok": engine_ok, "sni_alive": sni_alive,
-            "dnsmasq": dns_alive, "route_localnet": _route_localnet_ok()}   # false in dns mode ⇒ client DNS blackholed (container)
+            "dnsmasq": dns_alive, "route_localnet": _route_localnet_ok(),   # false in dns mode ⇒ client DNS blackholed (container)
+            "src": 1}   # runs per-person rows (`src` entries) in the nft chain; 2 would add Kernel-SNI hostnames (P1b)
     # §10.5 item 9. `_XTS_MAXLEN` is a fact about xt_string — it refuses a pattern longer than this outright —
     # and it lived ONLY here, so an over-long operand was accepted by the field, stored, shipped, and dropped
     # at the node with a report. The failure ORDERING is right and item 5 is why: the panel must never grow a
