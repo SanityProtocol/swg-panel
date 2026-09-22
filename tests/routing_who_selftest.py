@@ -19,12 +19,14 @@ interface. What the panel has to get right, each checked on the real functions:
       interfaces and WDTT / csqtt alike (they share the helper); a list with no `who` still saves.
 
 Run: python3 tests/routing_who_selftest.py   (0 = pass)
-  --plant a|b|c|d|e   plant one defect and expect RED on its own check (exit 0 when caught):
+  --plant a|b|c|d|e|f|g   plant one defect and expect RED on its own check (exit 0 when caught):
      a  the door stores `who` with `enabled: true` (an older panel would route it for the whole subnet)
      b  mesh_need reads the raw `enabled` (a demand-mode link a live per-person rule needs is retired)
      c  resolution takes a keyless device's roster address instead of what `keyless_sources` vouches for
      d  the sync ignores the node's capability (an old node would widen the rule to the subnet)
      e  no `routing_v` refusal (an old tab re-saves the rule without its people)
+     f  a roster address is trusted unparsed (an adopted "(none)" raises in the sync — the node's whole sync fails)
+     g  the report ignores the node's capability (an old node's rows read "covered" while it withholds them all)
 """
 import copy, importlib.machinery, importlib.util, json, os, re, sys, tempfile, time
 
@@ -51,6 +53,9 @@ PLANTS = {
     "d": ('''    if ((snap or {}).get("smartroute") or {}).get("src"):
         here = _who_here(roster, node_id, snap)''', '''    if True:
         here = _who_here(roster, node_id, snap)'''),
+    "f": ('''            elif t.get("iface") and valid_addr(str(t.get("ip") or "")):''',
+          '''            elif (t.get("ip") or "").split("/")[0] and t.get("iface"):'''),
+    "g": ('''    old = bool(snap) and not ((snap.get("smartroute") or {}).get("src"))''', '''    old = False'''),
     "e": ('''        return "This browser tab is older than the panel — reload it before saving routing.", None''',
           '''        pass'''),
 }
@@ -274,6 +279,22 @@ check("…and a device on an unvouched build as `no` (can't be told apart)", rep
 rep_g = P.who_report(ROSTER, "n1", SNAP1, "wg0", [{"groups": ["g1"]}, {"peers": ["p5", "p10"]}])
 check("a group counts its live members' devices and names its existing people; a blocked device is not counted",
       rep_g[0] == {"devices": {"p3": "ok"}, "people": 2} and rep_g[1] == {"devices": {"p5": "ok"}, "people": 0}, rep_g)
+rep_old = P.who_report(ROSTER, "n1", dict(SNAP1, smartroute={"mode": "kernel"}), "wg0", [{"users": ["u1"]}])[0]
+check("on a node that reports without `src` the report says what the sync does: every device `no`, and why (D4)",
+      rep_old == {"devices": {"p1": "no", "p2": "no"}, "people": 1, "node_old": True}, rep_old)
+check("…a capable node's report carries no such flag, and a node not heard from yet is not called old",
+      "node_old" not in rep_wg and "node_old" not in P.who_report(ROSTER, "n1", {}, "wg0", [{"users": ["u1"]}])[0])
+bad = copy.deepcopy(ROSTER)
+bad["peers"]["p13"] = {"id": "p13", "user_id": "u1", "title": "adopted", "targets": [{"node": "n1", "iface": "wg0", "ip": "(none)"}]}
+bad["peers"]["p14"] = {"id": "p14", "user_id": "u1", "title": "spaced", "targets": [{"node": "n1", "iface": "wg0", "ip": " 10.8.0.14"}]}
+try:
+    r_bad, raised = resolve([rule(users=["u1"])], roster=bad), ""
+except Exception as x:
+    r_bad, raised = {}, "%s: %s" % (type(x).__name__, x)
+check("a malformed roster address (an adopted \"(none)\") is no source — the sync does not raise",
+      not raised and ["wg0", "10.8.0.5/32"] in (r_bad.get("srcs") or {}).get(w_wg, []) and "(none)" not in json.dumps(r_bad.get("srcs")),
+      raised or r_bad.get("srcs"))
+check("…and a padded one is read as its address", ["wg0", "10.8.0.14/32"] in (r_bad.get("srcs") or {}).get(w_wg, []), r_bad.get("srcs"))
 check("the report is its own on-demand endpoint, not the poll path",
       'path == "/api/routing/who"' in hsrc and hsrc.count("who_report(") == 2)
 

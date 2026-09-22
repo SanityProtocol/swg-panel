@@ -6287,8 +6287,10 @@ def _who_here(roster, node_id, snap):
                 idx = _keyless_index(snap) if idx is None else idx
                 prs, why = keyless_sources(p, t, idx)
                 ts.append((t.get("iface"), prs, why))
-            elif (t.get("ip") or "").split("/")[0] and t.get("iface"):
-                ts.append((t.get("iface"), [(str(t["iface"]), str(t["ip"]).split("/")[0] + "/32")], ""))
+            # ⚠️ PARSED HERE, not trusted: the sync compares these addresses, and a raise there fails the node's whole sync —
+            # every block and removal with it. Container adoption copies `wg show`'s first allowed-ips token, "(none)" included.
+            elif t.get("iface") and valid_addr(str(t.get("ip") or "")):
+                ts.append((t.get("iface"), [(str(t["iface"]), str(t["ip"]).split("/")[0].strip() + "/32")], ""))
         if ts:
             here[pid] = (p.get("user_id"), ts)
     return here
@@ -6330,10 +6332,15 @@ def who_plan_for_node(my, roster, node_id, snap):
 
 def who_report(roster, node_id, snap, iface, whos):
     """What each selection covers on one interface, for the Rule settings window and the row's chip — answered by the
-    reader the sync uses, so the screen and the node cannot disagree. Per selection: its devices here, each `ok` (in the
-    set), `soon` (keyless, no address yet) or `no` (a build that cannot prove a source — the rule does not apply to it),
-    and how many people it names."""
+    reader the sync uses (`_who_here`, and the node's own `src` as `who_plan_for_node` reads it). Per selection: its
+    devices here, each `ok` (in the set), `soon` (keyless, no address yet) or `no` (a build that cannot prove a source, or
+    a node that runs no per-person rule — `node_old`; the rule does not apply to it), and how many people it names.
+    Not checked here: that an address lies inside the interface's subnet, which the sync also asks — a device outside
+    its own interface's subnet is misaddressed, and reads `ok` here while the node leaves it out."""
     here, users, out = _who_here(roster, node_id, snap), roster.get("users") or {}, []
+    # a node that has reported, without `src`, gets none of these rules (D4) — so nothing here is covered. Nothing reported
+    # yet (a panel restart) is not "old": the first sync says.
+    old = bool(snap) and not ((snap.get("smartroute") or {}).get("src"))
     for who in whos:
         uids, pids = _who_names(roster, who if isinstance(who, dict) else {})
         dev = {}
@@ -6342,8 +6349,8 @@ def who_report(roster, node_id, snap, iface, whos):
                 continue
             for ifn, prs, why in ts:
                 if ifn == iface:
-                    dev[pid] = "ok" if prs else "no" if why in ("unenforced", "raw_excluded") else "soon"
-        out.append({"devices": dev, "people": len({u for u in uids if u in users})})
+                    dev[pid] = "no" if old else "ok" if prs else "no" if why in ("unenforced", "raw_excluded") else "soon"
+        out.append({"devices": dev, "people": len({u for u in uids if u in users}), **({"node_old": True} if old else {})})
     return out
 
 
