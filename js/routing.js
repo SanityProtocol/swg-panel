@@ -15,9 +15,9 @@
 import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
 import { classify, classifyAll, patternTier, TIER2_MIN } from "./classify.js";
 import { idnHost, idnDiffers } from "./idn.js";
-import { rulesToRows, rowsToRules, badgeIdentity, badgeCovers, rowHasBadge, newGid,
+import { rulesToRows, rowsToRules, badgeIdentity, rowHasBadge, newGid,
          badgeText, readToken as rrReadToken,
-         customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho } from "./rulerows.js";
+         customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho, rowLints } from "./rulerows.js";
 import { esc, seen } from "./util.js";
 import { isSelfContainedName, nodeStale } from "./model.js";
 import { meshHealth, deviceLabel } from "./views.js";
@@ -2273,7 +2273,7 @@ export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
   // so both rules resolve to one key and the chain takes the earlier. (This is the one place row order really
   // is the answer, which is why this check survived the label change unaltered.) Per badge, not per row: one
   // row of fifteen services shadowing one entry of the next is what the old per-rule check couldn't see.
-  const seenB = {};
+  const lints = rowLints(dispRows, destVal);   // per row: dupes, takenBy, takenFew — see rulerows.js
   // §12.1's budget is the INTERFACE's, so it is counted here — the one place that holds every row — and each
   // field is told what the OTHER rows have already spent. A field counting only itself would let ten rows of
   // a hundred through, which is the scan this cap exists to prevent.
@@ -2281,27 +2281,23 @@ export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
   return html`<div class="field"><label>${T("Routing rules")} <span class="faint" style="text-transform:none;letter-spacing:0">${(MODE_META[_mode] || {}).winsLabel || ""}</span></label>
     <div class="rrlist" ...${rs.container()}>${dispRows.map((row, ri) => {
       const badges = row.badges || [];
-      const dupes = [];
-      for (const b of badges) { const k = badgeIdentity(b); if (seenB[k]) dupes.push(b); seenB[k] = true; }
+      const { dupes, takenBy } = lints[ri];   // a later row is judged only against rows that reach the same devices
+      // …and "for the people it names" only where specificity decides (Hybrid SNI, Force-DNS): on Kernel SNI a per-person
+      // hostname is not built at all (the interim gate), and IP-only has no hostnames.
+      const takenFew = _mode === "sni" || _mode === "forcedns" ? lints[ri].takenFew : [];
       // ROW ORDER AND SPECIFICITY DISAGREE HERE — the one case the operator cannot see and cannot fix by
       // dragging. The engines answer an overlap by SPECIFICITY (swg-sni's kind ladder then longest operand;
       // dnsmasq's longest matching key on Force-DNS, measured — plan §10.4x), so a broad rule placed ABOVE
       // a narrower one still loses that narrower one's hosts. Below-only on purpose: a narrower rule placed
       // above is the arrangement that reads correctly anyway, and warning there would fire on every list of
       // a zone plus its exceptions. Different destination only — two rules sending the same hosts to the
-      // same place is not something anyone needs told.
-      const takenBy = [];
-      for (const lower of dispRows.slice(ri + 1)) {
-        if (destVal(lower) === destVal(row)) continue;
-        for (const nb of lower.badges || [])
-          if (badges.some(b => badgeCovers(b, nb)) && !takenBy.some(x => badgeIdentity(x) === badgeIdentity(nb)))
-            takenBy.push(nb);
-      }
+      // same place is not something anyone needs told. (Computed in rowLints, which also knows a rule below
+      // that is for chosen people takes those hosts for its people alone — `takenFew`.)
       const self = row.action === "exit" && row.node === node;
       const inert = badges.filter(b => !rowGate(row, _mode, node, b).ok);
       const asns = badges.filter(b => b.t === "target" && b.kind === "asn").map(b => b.raw).join(", ");
       const it = rs.item(row._gid);
-      return html`<div key=${row._gid} class=${"rrrow rrrow-b" + it.cls + ((dupes.length || self || inert.length || takenBy.length || row.locked) ? " warn" : "")} data-rid=${it.rid}>
+      return html`<div key=${row._gid} class=${"rrrow rrrow-b" + it.cls + ((dupes.length || self || inert.length || takenBy.length || takenFew.length || row.locked) ? " warn" : "")} data-rid=${it.rid}>
         <span class="drag-grip" title=${T("Drag to reorder")} ...${rs.grip(row._gid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
         ${/* Built once and handed to BOTH branches: the destination now rides in the field's foot (see
               TargetField's `trailing`), and a locked row has to carry the identical control or the two
@@ -2346,7 +2342,8 @@ export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
               onChange=${bs => setRow(row._gid, { badges: bs })}/>`; })()}
         ${self ? html`<span class="rrlint">${T("can't exit via itself")}</span>`
           : dupes.length ? html`<span class="rrlint">${T("already sent somewhere else above: {toks}", { toks: dupes.slice(0, 3).map(b => b.t === "list" ? catLabelOf(b.id) : targetLabel(b.kind, b.value)).join(", ") + (dupes.length > 3 ? "…" : "") })}</span>`
-          : takenBy.length ? html`<span class="rrlint">${T("a more specific rule below wins these hosts: {toks}", { toks: takenBy.slice(0, 3).map(b => targetLabel(b.kind, b.value)).join(", ") + (takenBy.length > 3 ? "…" : "") })}</span>` : null}
+          : takenBy.length ? html`<span class="rrlint">${T("a more specific rule below wins these hosts: {toks}", { toks: takenBy.slice(0, 3).map(b => targetLabel(b.kind, b.value)).join(", ") + (takenBy.length > 3 ? "…" : "") })}</span>`
+          : takenFew.length ? html`<span class="rrlint">${T("a more specific rule below wins these hosts for the people it names: {toks}", { toks: takenFew.slice(0, 3).map(b => targetLabel(b.kind, b.value)).join(", ") + (takenFew.length > 3 ? "…" : "") })}</span>` : null}
         ${asns ? html`<${AsnHint} targets=${asns}/>` : null}
       </div>`;
     })}</div>

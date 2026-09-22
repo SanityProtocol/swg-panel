@@ -63,8 +63,45 @@ const rowKey = r => [r.action || "exit",
    selection as `who`; `rowsToRules` writes the guarded shape back. The panel's `rule_on` is the same test. */
 const ruleOn = r => r && r.who && typeof r.who === "object" ? r.who.on === true : !!r && r.enabled !== false;
 /** A selection's three lists, sorted and unique — the form the key, the window and the wire all use. */
-export const canonWho = w => ({ users: [...new Set((w && w.users) || [])].sort(), groups: [...new Set((w && w.groups) || [])].sort(),
-                                peers: [...new Set((w && w.peers) || [])].sort() });
+const whoList = v => Array.isArray(v) ? v.filter(x => typeof x === "string") : [];   // a stored shape the panel names nobody with
+export const canonWho = w => ({ users: [...new Set(whoList(w && w.users))].sort(), groups: [...new Set(whoList(w && w.groups))].sort(),
+                                peers: [...new Set(whoList(w && w.peers))].sort() });
+/** Does row `a` reach every device row `b` reaches? A row for everyone reaches all of them; a per-person row only a row
+ *  for the same selection. Only then can `a`'s badge make the same badge in `b` unreachable, or `a` take hosts from `b`
+ *  for everyone `b` is for. */
+export const rowCovers = (a, b) => !(a && a.who) || (!!(b && b.who) && JSON.stringify(canonWho(a.who)) === JSON.stringify(canonWho(b.who)));
+
+/** The row lints, per row: `dupes` — badges an earlier row that reaches the same devices already sends somewhere (they can
+ *  never fire); `takenBy` — this row's hosts a more specific badge below takes, for everyone this row is for; `takenFew` — the
+ *  same, where this row is for everyone and the rule below for chosen people only, so it takes them for those people alone
+ *  (the node keeps them on this row for everyone else). Two different selections are not compared: which people they share
+ *  is the panel's to resolve, and a warning about an overlap that may not exist is worse than none. `destOf` is the caller's
+ *  destination key: two rules sending the same hosts to the same place are not worth a word. */
+export function rowLints(rows, destOf) {
+  const seen = new Map();                                   // badge identity → the earlier rows (and this one) holding it
+  return (rows || []).map((row, ri) => {
+    const badges = row.badges || [];
+    const dupes = [];
+    for (const b of badges) {
+      const k = badgeIdentity(b), held = seen.get(k) || [];
+      if (held.some(e => rowCovers(e, row))) dupes.push(b);
+      seen.set(k, [...held, row]);
+    }
+    const taken = new Map();                                // identity → {b, all}: `all` once ANY rule below reaches everyone here
+    for (const lower of rows.slice(ri + 1)) {
+      if (destOf(lower) === destOf(row)) continue;
+      const all = rowCovers(lower, row);
+      if (!all && row.who) continue;                       // two different selections: not ours to judge (see above)
+      for (const nb of lower.badges || []) {
+        if (!badges.some(b => badgeCovers(b, nb))) continue;
+        const k = badgeIdentity(nb), t = taken.get(k);
+        taken.set(k, { b: t ? t.b : nb, all: (t && t.all) || all });
+      }
+    }
+    const tv = [...taken.values()];
+    return { dupes, takenBy: tv.filter(t => t.all).map(t => t.b), takenFew: tv.filter(t => !t.all).map(t => t.b) };
+  });
+}
 
 /** The badges one stored rule contributes.
  *  {t:"list", id}                  — a curated preset, a provider-catalog category, or a custom list

@@ -560,6 +560,7 @@ export const STR = {
   "Stored as written — this rule is kept exactly as it is.": "Хранится как записано — это правило остаётся ровно таким.",
   "already sent somewhere else above: {toks}": "выше уже отправлено в другое место: {toks}",
   "a more specific rule below wins these hosts: {toks}": "ниже есть более точное правило — эти адреса забирает оно: {toks}",
+  "a more specific rule below wins these hosts for the people it names: {toks}": "ниже есть более точное правило для выбранных людей — у них эти адреса забирает оно: {toks}",
   "No rules yet. Add a rule to send some destinations through another node, or set *Everything else* to channel everything.":
     "Правил пока нет. Добавьте правило, чтобы отправить часть назначений через другую ноду, или укажите в *Всё остальное*, куда идёт весь трафик.",
   "No rules yet. Add a rule to send some destinations out a device on this node or block them, or set *Everything else* to say where the rest goes.":
