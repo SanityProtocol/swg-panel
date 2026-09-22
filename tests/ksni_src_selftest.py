@@ -39,7 +39,10 @@ Hermetic: no iptables, no ipset, no root. Run: python3 tests/ksni_src_selftest.p
      s1  a scratch `swgs_<wid>t` left by an interrupted swap is never destroyed
      s2  a set whose member count drifted is not replaced (a flushed set stays empty)
      d6  an IP-learning change destroys the learned sets again (refused while SWG_CATK counts with them — D6)
-     d6b a learned-IP lifetime that could not be applied still stamps the chain's signature (never retried)
+     d6b a failed `ipset list` is read as "no sets" (nothing checked, nothing reported)
+     d6c every learned set is swapped whatever its lifetime already is (one refused swap re-empties the others every pass)
+     d6d the lifetime pass walks every `swgk_*` set, not the ones this node routes (a set about to be reaped holds it up)
+     d6e the lifetime is taken from a note on disk again (a node 1.8.7 left believing it is never healed)
      r1  Reset routing destroys the learned sets without emptying them (the destroy is refused; every IP survives)
      t1  leaving Kernel SNI tears SWGK down before the counters (the learned sets outlive the pass)
 
@@ -86,10 +89,10 @@ PLANTS = {
         body += ["swap %s %s" % (tmp, sn), "destroy " + tmp]''',
            '''        body = ["create %s hash:net,iface family inet" % sn, "destroy " + sn, "create %s hash:net,iface family inet" % sn]
         body += ["add %s %s,%s" % (sn, a, d) for d, a in sorted(mem)]''')],
-    "e2": [('''    _xts_src_sets(want_srcs, res)
-    if stored == sig and (hooked or not entries):''', '''    _xts_src_sets(want_srcs, res)
+    "e2": [('''    _xts_src_sets(want_srcs, res, hdrs)
+''', '''    _xts_src_sets(want_srcs, res, hdrs)
     _xts_reap(want_cats, want_srcs)
-    if stored == sig and (hooked or not entries):'''),
+'''),
            ('''    _xts_reap(want_cats, want_srcs)
     _ok = [True]''', '''    _ok = [True]''')],
     "f": ('''    sig = hashlib.sha1((json.dumps(rules) + "|ttl:" + str(ttl)).encode()).hexdigest()[:16]''',
@@ -107,10 +110,19 @@ PLANTS = {
           ('''_xts_srcsetname(e["src"]), "src,src"]''', '''_xts_srcsetname(e["src"]), "src"]''')],
     "s1": ('''        if setn.startswith("swgs_") and not (_XTS_SRC_RE.fullmatch(setn) or _XTS_SRC_RE.fullmatch(setn[:-1])):''',
            '''        if setn.startswith("swgs_") and not _XTS_SRC_RE.fullmatch(setn):'''),
-    "d6": ('''            r = run(["ipset", "restore"], input_text="create swgk_TTL hash:ip family inet timeout %s\\nswap swgk_TTL %s\\n"
-                                                         "destroy swgk_TTL\\n" % (ttl, setn))''',
-           '''            r = run(["ipset", "destroy", setn]); r = run(["ipset", "create", setn, "hash:ip", "family", "inet", "timeout", str(ttl), "-exist"])'''),
-    "d6b": ('''    if _ok[0] and _ttl_ok:''', '''    if _ok[0]:'''),
+    "d6": ('''        r = run(["ipset", "restore"], input_text="create swgk_TTL hash:ip family inet timeout %s\\nswap swgk_TTL %s\\n"
+                                                     "destroy swgk_TTL\\n" % (ttl, setn))''',
+           '''        r = run(["ipset", "destroy", setn]); r = run(["ipset", "create", setn, "hash:ip", "family", "inet", "timeout", str(ttl), "-exist"])'''),
+    "d6b": ('''    r = run(["ipset", "list", "-t"])
+    if r.returncode != 0:
+        return None
+    out = {}''', '''    r = run(["ipset", "list", "-t"])
+    out = {}'''),
+    "d6c": ('''        if setn not in hdrs or hdrs[setn]["timeout"] == str(ttl):''', '''        if setn not in hdrs:'''),
+    "d6d": ('''    for c in (want_cats if hdrs else ()):
+        setn = _xts_setname(c)''', '''    for setn in (sorted(k for k in hdrs if k.startswith("swgk_") and k != "swgk_TTL") if hdrs else ()):'''),
+    "d6e": ('''        if setn not in hdrs or hdrs[setn]["timeout"] == str(ttl):''',
+            '''        if setn not in hdrs or hdrs[setn]["timeout"] == str(ttl) or (lambda f: os.path.exists(f) and open(f).read().strip() == str(ttl))(os.path.join(GEO_DIR, ".xtstring-ttl")):'''),
     "r1": ('''        run(["ipset", "flush", setn])      # the learned IPs go even where the destroy is refused: SWG_CATK still counts with''',
            '''        pass'''),
     "t1": ('''        _ensure_sni_router(None, [], res)                     # not SNI → stop the classifier + drop its map
@@ -162,7 +174,7 @@ DIMS = {"hash:ip": 1, "hash:net": 1, "hash:net,iface": 2}
 
 class Box:
     def __init__(self, netiface=True, nft=None):
-        self.sets, self.chains, self.hooked, self.fail_swap = {}, {}, False, False
+        self.sets, self.chains, self.hooked, self.fail_swap, self.fail_list, self.swaps = {}, {}, False, False, False, []
         self.netiface, self.nft = netiface, nft
         self.builds = self.restores = 0
         self.refused = []
@@ -187,9 +199,12 @@ class Box:
         if op == "list" and a[1:] == ["-name"]:
             return R(0, "".join(n + "\n" for n in self.sets))
         if op == "list" and a[1:] == ["-t"]:
-            return R(0, "".join("Name: %s\nType: %s\nRevision: 1\nHeader: family inet\nSize in memory: 1\nReferences: %d\n"
-                                "Number of entries: %d\n" % (n, s["type"], int(self.referenced(n)), len(s["m"]))
-                                for n, s in self.sets.items()))
+            if self.fail_list:
+                return R(124, "", "")
+            return R(0, "".join("Name: %s\nType: %s\nRevision: 1\nHeader: family inet hashsize 1024 maxelem 65536%s\n"
+                                "Size in memory: 1\nReferences: %d\nNumber of entries: %d\n"
+                                % (n, s["type"], " timeout %s bucketsize 12" % s["timeout"] if s.get("timeout") else "",
+                                   int(self.referenced(n)), len(s["m"])) for n, s in self.sets.items()))
         if op == "create":
             n, typ = a[1], a[2]
             if typ == "hash:net,iface" and not self.netiface:
@@ -223,8 +238,9 @@ class Box:
             return R(0)
         if op == "swap":
             x, y = self.sets.get(a[1]), self.sets.get(a[2])
-            if not x or not y or x["type"] != y["type"] or self.fail_swap:
+            if not x or not y or x["type"] != y["type"] or self.fail_swap is True or a[2] in (self.fail_swap or ()):
                 return R(1, "", "cannot swap")
+            self.swaps.append(a[2])
             self.sets[a[1]], self.sets[a[2]] = y, x            # the kernel swaps the SETS (timeout included); names stay put
             return R(0)
         if op == "restore":
@@ -552,27 +568,63 @@ def kpass(B, ttl, entries=(EV_YT,)):
     cats = N._ensure_smart_xtstring([dict(e) for e in entries], DOMS, RESET, res, ttl=ttl, srcs=SRCS)
     N.reconcile_catk_chain(cats)
     return res
+CT = N._xts_setname("custom_tg")
+lrn = lambda B, sn, ip: B.sets[sn]["m"].add((ipaddress.ip_network(ip + "/32"), None))
+B = fresh()
+kpass(B, 3600, (EV_YT, EV_TG))
+check("the counters name the learned sets (the condition D6 needs)", B.referenced(CY) and B.referenced(CT), sorted(B.chains))
+lrn(B, CY, "198.51.100.1"); lrn(B, CT, "203.0.113.1")
+r = kpass(B, 120, (EV_YT, EV_TG))
+check("IP learning turned off: both learned sets now live 120 s", [B.sets[x]["timeout"] for x in (CY, CT)] == ["120", "120"],
+      [B.sets.get(x) for x in (CY, CT)])
+check("…their learned IPs are gone, as the recreate always meant", not B.sets[CY]["m"] and not B.sets[CT]["m"])
+check("…the counters still name them, no error, and no scratch set is left",
+      B.referenced(CY) and not r["errors"] and "swgk_TTL" not in B.sets, (r["errors"], sorted(B.sets)))
+check("…and nothing is kept on disk to believe instead of the kernel", not os.path.exists(os.path.join(N.GEO_DIR, ".xtstring-ttl")))
+lrn(B, CY, "198.51.100.5"); b1, w1 = B.builds, len(B.swaps)
+r = kpass(B, 120, (EV_YT, EV_TG))
+check("…the next pass is quiet: no rebuild, no swap, what was learned since stays",
+      B.builds == b1 and len(B.swaps) == w1 and B.sets[CY]["m"] and not r["errors"], (B.builds - b1, B.swaps[w1:], r["errors"]))
+# one set's swap refused, the other's lands
+B.fail_swap = {CT}
+lrn(B, CY, "198.51.100.6")
+r = kpass(B, 3600, (EV_YT, EV_TG))
+check("one set refuses the new lifetime: that set is named in the error", any(CT in e for e in r["errors"]) and
+      not any(CY in e for e in r["errors"]), r["errors"])
+check("…and the other took it", B.sets[CY]["timeout"] == "3600" and B.sets[CT]["timeout"] == "120", [B.sets[x]["timeout"] for x in (CY, CT)])
+lrn(B, CY, "198.51.100.7"); b2, w2 = B.builds, len(B.swaps)
+r = kpass(B, 3600, (EV_YT, EV_TG))
+check("…while it keeps refusing, the set that took it is never swapped again — its learned IPs stay",
+      B.sets[CY]["m"] and CY not in B.swaps[w2:], (B.swaps[w2:], B.sets[CY]["m"]))
+check("…and the chain is not rebuilt for it (a retry that rebuilt SWGK every pass would be T33's churn)", B.builds == b2, B.builds - b2)
+B.fail_swap = False
+lrn(B, CT, "203.0.113.9")
+r = kpass(B, 3600, (EV_YT, EV_TG))
+check("…once the kernel takes it: applied, emptied, no error that pass",
+      B.sets[CT]["timeout"] == "3600" and not B.sets[CT]["m"] and not r["errors"], (B.sets[CT], r["errors"]))
+# a failed listing
+B.fail_list = True
+r = kpass(B, 120, (EV_YT, EV_TG))
+check("the listing fails: nothing is swapped, and it is said", B.sets[CY]["timeout"] == "3600" and any("list" in e for e in r["errors"]),
+      (B.sets[CY]["timeout"], r["errors"]))
+B.fail_list = False
+r = kpass(B, 120, (EV_YT, EV_TG))
+check("…the next pass applies it", [B.sets[x]["timeout"] for x in (CY, CT)] == ["120", "120"] and not r["errors"], r["errors"])
+# a set this node no longer routes: the reaper's, never held up by a swap
+B.fail_swap = {CT}
+w3 = len(B.swaps)
+r = kpass(B, 3600, (EV_YT,))
+check("a category no longer routed: its set is never swapped (the reaper takes it), and no refusal of it is reported",
+      CT not in B.swaps[w3:] and CY in B.swaps[w3:] and not any(CT in e for e in r["errors"]), (B.swaps[w3:], r["errors"]))
+B.fail_swap = False
+# a node 1.8.7 left hit: the marker said 120, the set still lives 3600
 B = fresh()
 kpass(B, 3600)
-check("the counters name the learned set (the condition D6 needs)", B.referenced(CY) and "SWG_CATK" in B.chains, sorted(B.chains))
-B.sets[CY]["m"].add((ipaddress.ip_network("198.51.100.1/32"), None))
-b0 = B.builds
-r = kpass(B, 120)
-check("IP learning turned off: the learned set now lives 120 s", (B.sets.get(CY) or {}).get("timeout") == "120", B.sets.get(CY))
-check("…its learned IPs are gone, as the recreate always meant", not (B.sets.get(CY) or {}).get("m"), B.sets.get(CY))
-check("…the counters still name it, no error, and no scratch set is left", B.referenced(CY) and not r["errors"] and "swgk_TTL" not in B.sets,
-      (r["errors"], sorted(B.sets)))
-check("…the new lifetime is recorded", open(os.path.join(N.GEO_DIR, ".xtstring-ttl")).read().strip() == "120")
-b1 = B.builds; kpass(B, 120)
-check("…and the next pass is quiet (no rebuild)", B.builds == b1, (b1, B.builds))
-B.fail_swap = True
-r = kpass(B, 3600)
-check("a lifetime the kernel refuses is reported", any("lifetime" in e for e in r["errors"]), r["errors"])
-check("…and not recorded as applied", open(os.path.join(N.GEO_DIR, ".xtstring-ttl")).read().strip() == "120")
-B.fail_swap = False
-b2 = B.builds; kpass(B, 3600)
-check("…so the next pass tries again, and it lands", B.builds == b2 + 1 and (B.sets.get(CY) or {}).get("timeout") == "3600",
-      (B.builds - b2, B.sets.get(CY)))
+open(os.path.join(N.GEO_DIR, ".xtstring-ttl"), "w").write("120")
+lrn(B, CY, "198.51.100.1")
+kpass(B, 120)
+check("a node 1.8.7 left believing its lifetime was applied (marker 120, set 3600) heals on its first pass",
+      B.sets[CY]["timeout"] == "120", B.sets[CY])
 B.sets[CY]["m"].add((ipaddress.ip_network("198.51.100.2/32"), None))
 N._apply_full_reset(9, {"changed": 0, "errors": []})
 check("Reset routing empties the learned sets even while the counters still name them",

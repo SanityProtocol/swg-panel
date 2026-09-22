@@ -7600,20 +7600,32 @@ def _xts_srcsetname(wid):
     return "swgs_" + wid
 
 
-def _xts_src_sets(want, res):
+def _ipset_headers():
+    """{set name: {"timeout": "<s>" or None, "n": <entries>}} from ONE `ipset list -t` (headers only), or None when the
+    listing failed — a caller must then change nothing it would have decided from it."""
+    r = run(["ipset", "list", "-t"])
+    if r.returncode != 0:
+        return None
+    out = {}
+    for blk in (r.stdout or "").split("Name: ")[1:]:
+        nm = blk.split("\n", 1)[0].strip()
+        h = re.search(r"^Header: (.*)$", blk, re.M)
+        t = re.search(r"\btimeout (\d+)", h.group(1)) if h else None
+        n = re.search(r"^Number of entries: (\d+)", blk, re.M)
+        out[nm] = {"timeout": t.group(1) if t else None, "n": int(n.group(1)) if n else -1}
+    return out
+
+
+def _xts_src_sets(want, res, hdrs=None):
     """Make each wanted `swgs_<wid>` hold exactly its members: {set name: [(device, address)]}. Created empty first, so a rule
     can name it before it is filled; its members are then replaced WHOLE — a scratch `swgs_<wid>t` filled and `swap`ped in,
     one `ipset restore`, so a packet sees the old members or the new ones and never a half-built set. Replaced only when the
     wanted members changed (or on the first pass after a restart) or the kernel's count drifted from what was loaded. A
-    scratch set an interrupted swap left behind is destroyed by _xts_reap."""
+    scratch set an interrupted swap left behind is destroyed by _xts_reap. `hdrs` is _ipset_headers(); where the listing
+    failed, every set is replaced (a swap is atomic, and it is what creates a set a rule is about to name)."""
     if not want:
         return
-    have = {}
-    for blk in (run(["ipset", "list", "-t"]).stdout or "").split("Name: ")[1:]:
-        nm = blk.split("\n", 1)[0].strip()
-        if _XTS_SRC_RE.fullmatch(nm):
-            m = re.search(r"^Number of entries: (\d+)", blk, re.M)
-            have[nm] = int(m.group(1)) if m else -1
+    have = {k: v["n"] for k, v in (hdrs or {}).items() if _XTS_SRC_RE.fullmatch(k)}
     for sn, mem in sorted(want.items()):
         msig = hashlib.sha1(json.dumps(sorted(mem)).encode()).hexdigest()[:16]
         if sn in have and _XTS_SRC.get(sn) == msig and have[sn] == len(mem):
@@ -7852,7 +7864,9 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
     # taken the steady-state return, and kept the OLD UNCONFINED RULES FOR EVER. Reproduced before fixing.
     # Rendering first also makes the ORDER part of the signature, which is correct here in a way the old
     # sorted() was not: Phase 1's RETURN means these rules are order-dependent.
-    # (`ttl` is the one thing no rule carries — it lives on the ipset — so it is appended by hand.)
+    # (`ttl` is the one thing no rule carries — it lives on the ipset — so it is appended by hand. It is kept although the
+    # lifetime is applied by a swap now, which needs no rebuild: dropping it would change every Kernel-SNI node's signature
+    # and rebuild each once on upgrade, against one rebuild per operator toggle.)
     rules = []
     for e in entries:                                          # Phase 1: route KNOWN learned IPs to their exit, then RETURN
         setn = _xts_setname(e["category"]); T = str(e.get("table"))   # (so a known flow never re-learns / re-resets)
@@ -7962,7 +7976,29 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
     hooked = run(["iptables", "-t", "mangle", "-C", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", CHAIN]).returncode == 0
     # A selection's members are not in the rules, so they never rebuild the chain: they are swapped in here, on either path,
     # and each set exists before the rebuild below names it.
-    _xts_src_sets(want_srcs, res)
+    hdrs = _ipset_headers() if entries else {}
+    _xts_src_sets(want_srcs, res, hdrs)
+    # THE LEARNED-IP LIFETIME (IP learning toggled) is read from the KERNEL, set by set, never from a note of our own: a
+    # learned set whose timeout is not `ttl` is replaced by an empty one at `ttl`, SWAPPED in under its name — a set's
+    # lifetime cannot change in place. ⚠️ Not destroyed and recreated, and not remembered in a marker. SWG_CATK (the
+    # per-category byte counters in mangle FORWARD) still names every set, so the destroy was refused, the recreate with
+    # other parameters was refused too, and the marker `.xtstring-ttl` was written anyway: an IP-learning change never
+    # reached a running node (D6, measured) — and a node that took that marker from 1.8.7 would have believed it for ever.
+    # Read from the kernel, such a node heals on its first pass; a set that is already right is never touched again, so one
+    # refused swap costs only its own set (reported, retried next pass) and never empties the others; a failed listing
+    # changes nothing. A swap keeps every reference, SWGK's and the counters'. Only the sets this node still routes: the
+    # rest are the reaper's. `swgk_TTL` cannot be a category's set: _xts_setname lowercases.
+    if entries and hdrs is None:
+        res["errors"].append("kernel-sni: ipset list failed — learned-IP lifetime not checked this pass")
+    for c in (want_cats if hdrs else ()):
+        setn = _xts_setname(c)
+        if setn not in hdrs or hdrs[setn]["timeout"] == str(ttl):
+            continue                                           # absent: created at `ttl` below · right already: left alone
+        run(["ipset", "destroy", "swgk_TTL"])                  # one an interrupted pass left behind
+        r = run(["ipset", "restore"], input_text="create swgk_TTL hash:ip family inet timeout %s\nswap swgk_TTL %s\n"
+                                                     "destroy swgk_TTL\n" % (ttl, setn))
+        if r.returncode != 0:
+            res["errors"].append("kernel-sni: learned-IP lifetime not applied to %s: %s" % (setn, (r.stderr or "").strip()[:80]))
     if stored == sig and (hooked or not entries):              # steady state: keep the ipsets alive (they hold learned IPs — NEVER flush here)
         for c in want_cats:
             run(["ipset", "create", _xts_setname(c), "hash:ip", "family", "inet", "timeout", str(ttl), "-exist"])
@@ -7972,30 +8008,6 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
         res["errors"].append("kernel-sni: ipset/xt_string unavailable"); return []   # no sets made → nothing to count
     run(["iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", CHAIN])   # unhook, rebuild fresh
     run(["iptables", "-t", "mangle", "-F", CHAIN]); run(["iptables", "-t", "mangle", "-X", CHAIN])
-    ttl_marker = os.path.join(GEO_DIR, ".xtstring-ttl")         # a TTL change (IP-learning toggled) can't be applied to a live set → recreate
-    prev_ttl = ""
-    with contextlib.suppress(Exception):
-        prev_ttl = open(ttl_marker).read().strip()
-    _ttl_ok = True
-    if entries and str(ttl) != prev_ttl:
-        # ⚠️ REPLACED BY SWAP, NOT DESTROYED. SWG_CATK (the per-category byte counters in mangle FORWARD, rebuilt only
-        # after this returns) still names every set here, so `ipset destroy` was refused ("in use by a kernel
-        # component"), the recreate with the new timeout was refused too (same name, other parameters) — and the
-        # marker was written anyway: an IP-learning change never reached a running node's learned sets (D6, measured).
-        # An empty set at the new timeout swapped in keeps every reference and drops the learned IPs, which is what the
-        # recreate meant. `swgk_TTL` cannot be a category's set: _xts_setname lowercases.
-        for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
-            if setn == "swgk_TTL":
-                continue
-            run(["ipset", "destroy", "swgk_TTL"])              # one an interrupted pass left behind
-            r = run(["ipset", "restore"], input_text="create swgk_TTL hash:ip family inet timeout %s\nswap swgk_TTL %s\n"
-                                                         "destroy swgk_TTL\n" % (ttl, setn))
-            if r.returncode != 0:
-                _ttl_ok = False
-                res["errors"].append("kernel-sni: learned-IP lifetime not applied to %s: %s" % (setn, (r.stderr or "").strip()[:80]))
-        if _ttl_ok:                                            # …only once it is true, or it is never tried again
-            with contextlib.suppress(OSError):
-                os.makedirs(GEO_DIR, exist_ok=True); open(ttl_marker, "w").write(str(ttl))
     if not entries:                                            # teardown: drop the chain + our learned ipsets
         for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
             run(["ipset", "destroy", setn])
@@ -8015,7 +8027,7 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
     for a in rules:                                            # exactly what was signed, in the order it was signed
         _ipt(*a)
     _ipt("-A", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", CHAIN)   # hook once, last
-    if _ok[0] and _ttl_ok:                                     # a lifetime not applied leaves the signature unstamped: retried
+    if _ok[0]:
         res["changed"] += 1
         with contextlib.suppress(OSError):
             os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
