@@ -4610,16 +4610,17 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         stored = open(_sigf).read().strip()
     except OSError:
         stored = ""
-    chain_present = "prerouting" in re.findall(r"chain (\S+) {", body)
+    _chs = re.findall(r"chain (\S+) {", body)                 # the table's chain names, read ONCE for the checks below
+    chain_present = "prerouting" in _chs
     def _cbody(name):                                          # the rules inside one chain of our table (per-chain, so a full external flush is detected)
         m = re.search(r"chain " + name + r" \{(.*?)\n\s*\}", body, re.S)
         return m.group(1) if m else ""
     expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)   # exit/block rules, rows + pin (queue/restore) all emit `saddr` prerouting rules
     pre_ok = (not expect_pre) or ("saddr" in _cbody("prerouting"))
-    rows_ok = {c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"sr\d+", c)} == want_sr
-    pb_ok = {c for c in re.findall(r"chain (\S+) {", body) if re.fullmatch(r"pb\d+", c)} == want_pb
+    rows_ok = ({c for c in _chs if re.fullmatch(r"sr\d+", c)} == want_sr        # the row chains, and the pin-mode Block
+               and {c for c in _chs if re.fullmatch(r"pb\d+", c)} == want_pb)   # chains (see pb_of) — the same scan
     fwd_ok = ((not v6f) or ("drop" in _cbody("forward"))) and ((not (pin and reset_mark)) or ("reject" in _cbody("forward")))
-    if stored != sig or not chain_present or not pre_ok or not fwd_ok or not rows_ok or not pb_ok:   # drift-gate: signature change, or a chain was emptied externally
+    if stored != sig or not chain_present or not pre_ok or not fwd_ok or not rows_ok:   # drift-gate: signature change, or a chain was emptied externally
         stored = ""                                            # force the sig file to be rewritten below
         bat.add("flush", "chain", "inet", SMART_NFT_TABLE, "prerouting")
         if queue:                                              # apply an ip_learning TTL change to the learned sets (an nft set's
