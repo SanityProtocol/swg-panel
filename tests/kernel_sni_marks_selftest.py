@@ -52,16 +52,16 @@ def check(name, ok, detail=""):
         FAILS.append(name)
 
 NSRC = open(NODED, encoding="utf-8").read()
-_P1 = '''        rules.append(["-A", CHAIN, "-s", e["subnet"], "-m", "set", "--match-set", setn, "dst", "-j", "MARK", "--set-mark", T])
+_P1 = '''        rules.append(["-A", CHAIN, "-s", e["subnet"], "-m", "set", "--match-set", setn, "dst", *who, "-j", "MARK", "--set-mark", T])
 '''
-_P2 = '''                rules.append(["-A", CHAIN, *_xts_scan(e["subnet"]), "--string", d, "-j", "MARK", "--set-mark", hex(reset_mark)])
+_P2 = '''                rules.append(["-A", CHAIN, *_xts_scan(S), "--string", d, "-j", "MARK", "--set-mark", hex(reset_mark)])
 '''
 # The ct-mark save sits OUTSIDE the operand loop, so reverting the reset half means putting the per-operand
 # CONNMARK back AND taking this away — otherwise the perturbed tree is neither shape.
-_SAVE = '''            rules.append(["-A", CHAIN, "-s", e["subnet"], "-m", "mark", "--mark", hex(reset_mark),
+_SAVE = '''            rules.append(["-A", CHAIN, "-s", S, "-m", "mark", "--mark", hex(reset_mark),
                           "-j", "CONNMARK", "--save-mark"])
 '''
-_SHIPPED = '''                rules.append(["-A", CHAIN, *_xts_scan(e["subnet"]), "--string", d, "-j", "CONNMARK", "--set-mark", hex(reset_mark)])
+_SHIPPED = '''                rules.append(["-A", CHAIN, *_xts_scan(S), "--string", d, "-j", "CONNMARK", "--set-mark", hex(reset_mark)])
 '''
 # ⚠️ ASSERT BEFORE PERTURBING. A replacement that matches nothing leaves the tree intact and the run reads
 # as a clean PASS while measuring the code it was supposed to break.

@@ -14,7 +14,9 @@ actually hands nft, through the swg_smart transaction model (tests/nft_guarded_m
     rebuilds nothing on upgrade;
   · churn — a member change replaces the set in the pass's one transaction and rebuilds no chain;
   · the TTL swap — `delete set catl_*` while a row chain still matches it rejects the WHOLE batch (T2);
-  · the interim Kernel-SNI gate — no `src` entry reaches `_ensure_smart_xtstring`, whose `-s <subnet>` would widen it;
+  · the Kernel-SNI hand-off — a `src` entry reaches `_ensure_smart_xtstring` (with its selection's members) only where the
+    `hash:net,iface` probe passed; where it failed, none does and the node reports `src: 1` (tests/ksni_src_selftest.py
+    gates what xt_string then builds, and its plant (g) replaces this file's retired plant (f));
   · the three positional readers of the want-tuple — driven in all three engine shapes (kernel/Force-DNS,
     Hybrid SNI with the queue, Kernel SNI), because one of them runs only with the queue on;
   · shadow sets — on Force-DNS and Hybrid SNI a host goes only to its MOST SPECIFIC name's set, so a name used by some
@@ -22,13 +24,12 @@ actually hands nft, through the swg_smart transaction model (tests/nft_guarded_m
     Direct un-blocked `h2.example`'s Block for everyone else). Each case has its control without shadows.
 
 Hermetic: no nft, no ip, no root. Run: python3 tests/smart_src_selftest.py   (0 = pass)
-  --plant a|b|c|d|e|f|g1|g2|g3|h   plant one defect and expect RED on its own check (exit 0 when caught):
+  --plant a|b|c|d|e|g1|g2|g3|h   plant one defect and expect RED on its own check (exit 0 when caught):
      a  the source set is never created, so the row's jump names a set that is not there
      b  a row chain's rules end in `return`
      c  the learned-set TTL swap forgets the row chains (and the pin-mode Block chains)
      d  the signature gains a marker for everyone, `src` or not (every node's chain rebuilds on upgrade)
      e  the chain signature signs the set MEMBERS (a member change rebuilds the chain)
-     f  the Kernel-SNI filter is removed
      g1/g2/g3  one positional reader of the want-tuple left at four names (expect_pre · the emit loop · `_routed_cats`)
      h  the drift gate forgets that a row emits prerouting rules (an all-Direct per-person chain emptied from outside stays empty)
      s1 a shadow rule loses its "not these devices" (Alice's own name, placed below the Block, is blocked for her)
@@ -91,8 +92,6 @@ PLANTS = {
           '''("|lttl:" + str(learn_ttl) if queue else "") + "|s9|src").encode()).hexdigest()[:16]'''),
     "e": ('''    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) +''',
           '''    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + json.dumps(want_src) +'''),
-    "f": ('''        _built = _ensure_smart_xtstring([e for e in smart_exit if "src" not in e], domains,''',
-          '''        _built = _ensure_smart_xtstring(smart_exit, domains,'''),
     "g1": ('''    expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)''',
            '''    expect_pre = pin or any(a != "direct" for (_, _, a, _) in want)'''),
     "g2": ('''            S, cat, act, T = w[:4]
@@ -454,28 +453,44 @@ sni(D1, None); sni(D1, None)
 check("with no key (a caller that names no inputs) it builds every pass, as before", _Doms.walks == n0 + 2, _Doms.walks)
 N._SNI_PROC.update(p=None)
 
-# ── 6. the interim Kernel-SNI gate (plan §6.3): no `src` entry reaches xt_string ───────────────────────────────────────────
-print("\n[Kernel SNI: the interim gate]")
+# ── 6. the Kernel-SNI hand-off (plan §6.3, P1b): per-person entries reach xt_string only where the probe passed ─────────
+# P1's plant (f) ("a `src` entry reaches _ensure_smart_xtstring") is RETIRED with P1b: on a box whose probe passes that is
+# now the correct code. What stays true either way is checked here; what xt_string builds is tests/ksni_src_selftest.py's.
+print("\n[Kernel SNI: the hand-off to xt_string]")
 _seen = []
-N._ensure_smart_xtstring = lambda host_entries, *a, **k: (_seen.append([dict(e) for e in host_entries]), [])[1]
+N._ensure_smart_xtstring = lambda host_entries, *a, **k: (_seen.append(([dict(e) for e in host_entries], k.get("srcs"))), [])[1]
 N._kernel_sni_ok = lambda: True
 N._ensure_sni_router = lambda *a, **k: None
 N.reconcile_catk_chain = lambda *a, **k: None
-K = fresh()
-N.run = lambda args, input_text=None, timeout=20: K(args, input_text, timeout) if args and args[0] == "nft" else \
-    __import__("subprocess").CompletedProcess(args, 0, "", "")
-smart = {"entries": [dict(e) for e in ENTRIES], "categories": sorted({e["category"] for e in ENTRIES}), "mode": "sni_kernel",
-         "srcs": SRCS, "domains": {c: ["x-%s.example" % c] for c in DEST}}
-try:
-    N.reconcile_cascade({"interfaces": {}}, {}, smart, "")
-    _err = ""
-except Exception as e:
-    _err = "%s: %s" % (type(e).__name__, e)
-check("reconcile_cascade runs a Kernel-SNI node with per-person entries", not _err, _err)
-check("xt_string was asked to build (the everyone-rules still go there)", bool(_seen) and any(_seen), _seen)
-check("…but no entry carrying `src` reached it (its `-s <subnet>` would widen the row to everyone)",
-      bool(_seen) and not any(e.get("src") for call in _seen for e in call), [e for c in _seen for e in c if e.get("src")])
-check("the node reports the capability the panel withholds on (`src: 1`)", N.smart_status().get("src") == 1, N.smart_status())
+for probe in (False, True):
+    _seen.clear()
+    N._KSNI_SRC["ok"] = probe
+    K = fresh()
+    N.run = lambda args, input_text=None, timeout=20: K(args, input_text, timeout) if args and args[0] == "nft" else \
+        __import__("subprocess").CompletedProcess(args, 0, "", "")
+    smart = {"entries": [dict(e) for e in ENTRIES], "categories": sorted({e["category"] for e in ENTRIES}), "mode": "sni_kernel",
+             "srcs": SRCS, "domains": {c: ["x-%s.example" % c] for c in DEST}}
+    try:
+        N.reconcile_cascade({"interfaces": {}}, {}, smart, "")
+        _err = ""
+    except Exception as e:
+        _err = "%s: %s" % (type(e).__name__, e)
+    tag = "probe %s: " % ("passed" if probe else "failed")
+    check(tag + "reconcile_cascade runs a Kernel-SNI node with per-person entries", not _err, _err)
+    check(tag + "xt_string was asked to build (the everyone-rules still go there)",
+          bool(_seen) and any(c for c, _ in _seen), _seen)
+    got = [e for c, _ in _seen for e in c if e.get("src")]
+    if probe:
+        check(tag + "every entry carrying `src` reached it, in plan order beside the rest",
+              bool(_seen) and [e.get("src") for e in _seen[-1][0]] == [e.get("src") for e in ENTRIES
+                                                                      if e.get("action", "exit") == "exit"], _seen[-1:])
+        check(tag + "…with the selections' members", bool(_seen) and _seen[-1][1] == SRCS, _seen[-1:])
+    else:
+        check(tag + "no entry carrying `src` reached it (its rules would be refused one by one, T33)", not got, got)
+        check(tag + "…and it was handed no members", bool(_seen) and not any(m for _, m in _seen), _seen)
+    check(tag + "the node reports `src: %d`" % (2 if probe else 1), N.smart_status().get("src") == (2 if probe else 1),
+          N.smart_status())
+N._KSNI_SRC["ok"] = None
 
 # ── 7. a more specific name never takes a host from rules for other devices (shadow sets, review B1) ─────────────────────
 # What the engines do is simulated exactly as measured: a host lands in the sets of the category whose name matches it MOST

@@ -745,7 +745,7 @@ EOS
 # by an swg-OWNED name so a co-resident firewall/VPN is never touched:
 #   • iptables rules whose --comment starts with "swg-"  (nat/filter/mangle: egress, fwd, inet, catk tags)
 #   • the "swg_smart" nftables table (smart-routing / blocking)
-#   • "swgk_*" ipsets (Kernel-SNI categories)
+#   • "swgk_*" / "swgs_*" ipsets (Kernel-SNI categories, and its per-person selections)
 #   • policy-routing rules + tables in swg's OWN band 7000-7099 (SWG_RT_BASE..SWG_RT_MAX; priority == table id)
 #   • the forwarding sysctl drop-in the installer wrote
 rm_node_netobjects(){
