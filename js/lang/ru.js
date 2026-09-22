@@ -6244,10 +6244,6 @@ export const STR = {
   "Round trip from this node to the exit's own server. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.": "Круговая задержка от этой ноды до собственного сервера выхода. Запрос через туннель к публичному сайту занимает {v1} мс — но туда входит и то, насколько далёк сам сайт.",
   // ── AmneziaWG 3.1 (docs/AWG3-PLAN.md §7.7): the version switch, its window, the 3.1 badges' tooltip, the Settings preset ──
   "AmneziaWG 3.1": "AmneziaWG 3.1",
-  "Header protection": "Защита заголовков",
-  "Random trailers": "Случайные хвосты",
-  "Padding": "Паддинг",
-  "Timings": "Тайминги",
   "val|set": "задан",
   "Only apps that carry AmneziaWG 3.1 can connect: Amnezia VPN 5.0.1.5 or newer, AmneziaWG from the App Store or from GitHub (not the Google Play build), WG Tunnel 5.6 or newer. WINGS V, Keenetic and MikroTik cannot.": "Подключатся только приложения с поддержкой AmneziaWG 3.1: Amnezia VPN 5.0.1.5 и новее, AmneziaWG из App Store или с GitHub (не сборка из Google Play), WG Tunnel 5.6 и новее. WINGS V, Keenetic и MikroTik — нет.",
   "AmneziaWG version": "Версия AmneziaWG",
@@ -6300,6 +6296,9 @@ export const STR = {
   "The panel's QR codes show the new config at once; each device still has to import it.": "QR-коды панели сразу показывают новый конфиг; импортировать его каждому устройству всё равно нужно.",
   // Settings → Interfaces: the AmneziaWG 3.1 defaults (the six values a 3.1 create or switch takes)
   "val|per interface": "свой у каждого",
+  "Each interface gets a key of its own — one key shared by every interface would protect nothing.": "У каждого интерфейса свой ключ — один ключ на все интерфейсы ничего бы не защищал.",
+  "On for every AmneziaWG 3.1 interface the panel sets up.": "Включено у каждого интерфейса AmneziaWG 3.1, который настраивает панель.",
+  "Changes only through the version switch — every device has to re-import after it.": "Меняется только переключением версии — после него каждому устройству нужно заново импортировать конфиг.",
   "Given to an interface when it is created on 3.1 or switched to it; one already on 3.1 keeps its own. A blank cell is Amnezia's default.": "Их получает интерфейс, который создают на 3.1 или переводят на 3.1; интерфейс, уже работающий на 3.1, сохраняет свои. Пустая ячейка — значение Amnezia по умолчанию.",
 };
 

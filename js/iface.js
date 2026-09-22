@@ -940,31 +940,31 @@ export function BridgePortSheet({ iface, port }) {   // shown after creating an 
 // ═════════════════════════ AmneziaWG 3.1 (docs/AWG3-PLAN.md §7.7) ═════════════════════════
 // The 3.x keys — the tail of AWG_ORDER, the SPA's one list, never a second copy of it.
 const AWG3_KEYS = AWG_ORDER.slice(AWG_ORDER.indexOf("HeaderProtectionKey"));
-const AWG3_TIMINGS = ["RekeyAfterTime", "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts"];
-// An interface's 3.x keys as their own row under the four 2.0 columns (§7.5): named for what they do, and the 44-character
-// HeaderProtectionKey never printed — it is shown as set, like the Edit sheet does. Nothing at all for a dict without one.
+// An interface's 3.x keys on its page (§7.5): the four columns and the pairs the Edit sheet and Settings draw (AWG3_EDIT_COLS),
+// under the same caption, written the way the 2.0 columns above them are (key=value); the 44-character HeaderProtectionKey
+// never printed — it reads set. A DisableCookies the panel never writes (an onboarded interface) joins the first column.
+// Nothing at all for a dict without a 3.x key.
 function Awg3Row({ ap }) {
   const has = k => String((ap || {})[k] ?? "").trim() !== "";
   if (!AWG3_KEYS.some(has)) return null;
-  const HPK = "HeaderProtectionKey", RT = "RandomTrailers", CPA = "ContentPaddingAddition";   // i18n-keys: conf key names, as the conf spells them
-  const tim = [...AWG3_TIMINGS, "DisableCookies"].filter(has).map(k => k + "=" + ap[k]);   // i18n-keys: conf key names, as the conf spells them
-  const cell = (l, v) => html`<div class="ig-item"><span class="ig-l">${l}</span><span class="ig-v">${v}</span></div>`;
-  return html`<div class="iface-grid awg3-row">
-    ${cell(T("Header protection"), has(HPK) ? T("val|set") : "—")}
-    ${cell(T("Random trailers"), has(RT) ? T("val|on") : "—")}
-    ${cell(T("Padding"), has(CPA) ? CPA + "=" + ap[CPA] : "—")}
-    ${cell(T("Timings"), tim.length ? tim.map(l => html`<span>${l}</span>`) : "—")}
+  // a narrow column (a phone) breaks a line after its "=" or between the words of the key — never inside a value or a word
+  const words = k => k.split(/(?=[A-Z])/).flatMap((w, i) => i ? [html`<wbr/>`, w] : [w]);
+  const kv = k => html`<span>${words(k)}=<wbr/><span class="awg3-v">${k === "HeaderProtectionKey" ? T("val|set") : k === "RandomTrailers" ? T("val|on") : ap[k]}</span></span>`;
+  const cols = [["HeaderProtectionKey", "RandomTrailers", "DisableCookies"], ...AWG3_EDIT_COLS].map(g => g.filter(has).map(kv));   // i18n-keys: conf key names, as the conf spells them
+  return html`<div class="awg3-cap">${T("AmneziaWG 3.1")}</div><div class="iface-grid awg3-row">
+    ${cols.map(g => html`<div class="ig-item"><span class="ig-v">${g.length ? g : "—"}</span></div>`)}
   </div>`;
 }
 // The 3.1 set as a fifth group of AWG cells, drawn by the Edit sheet (an interface's own values) and by Settings (the defaults a
-// 3.1 create or switch takes). HeaderProtectionKey and RandomTrailers are never typed — `hpk` / `rt` say what they read — and
-// the six the panel checks are cells. `placeholders` only where given: Preact writes a null placeholder as placeholder="".
+// 3.1 create or switch takes). HeaderProtectionKey and RandomTrailers are never typed — `hpk` / `rt` are what they read, in
+// read-only inputs so they sit in the same box as their neighbours, and `hpkTip` / `rtTip` say why — and the six the panel
+// checks are cells. `placeholders` only where given: Preact writes a null placeholder as placeholder="".
 export const AWG3_EDIT_COLS = [["ContentPaddingAddition", "MaxHandshakeAttempts"], ["RekeyAfterTime", "RekeyTimeout"], ["RejectAfterTime", "KeepaliveTimeout"]];   // i18n-keys: conf key names, as the conf spells them
-export function Awg3Grid({ value, onKey, hpk, rt, hint, placeholders }) {
+export function Awg3Grid({ value, onKey, hpk, rt, hpkTip, rtTip, hint, placeholders }) {
   const v = value || {};
   return html`<div class="awg3-cap">${T("AmneziaWG 3.1")}</div>${hint ? html`<p class="hint awg3-hint">${hint}</p>` : null}<div class="awg-cols awg3-cols">
-    <div class="awg-col"><label class="awg-f"><span>HeaderProtectionKey</span><span class="awg-val">${hpk}</span></label>
-      <label class="awg-f"><span>RandomTrailers</span><span class="awg-val">${rt}</span></label></div>
+    <div class="awg-col"><label class="awg-f"><span>HeaderProtectionKey</span><input class="awg-ro" readonly value=${hpk} title=${hpkTip}/></label>
+      <label class="awg-f"><span>RandomTrailers</span><input class="awg-ro" readonly value=${rt} title=${rtTip}/></label></div>
     ${AWG3_EDIT_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${v[k] == null ? "" : v[k]}
       ...${placeholders ? { placeholder: placeholders[k] || "" } : {}} onInput=${e => onKey(k, e.target.value)}/></label>`)}</div>`)}
   </div>`;
@@ -1873,7 +1873,9 @@ export function EditIfaceSheet({ node, iface }) {
               change only through the switch (an editable key was a one-keystroke way to cut every client with no window), so
               they read set / on and ride along unchanged; the panel checks the rest (S ≥ 12, timings that do not cross). */
           genWas === "3.1" && gen === "3.1" ? html`<${Awg3Grid} value=${awg} onKey=${setAwgK}
-            hpk=${awg.HeaderProtectionKey ? T("val|set") : "—"} rt=${awg.RandomTrailers ? T("val|on") : "—"}/>` : null}</div>` : null}
+            hpk=${awg.HeaderProtectionKey ? T("val|set") : "—"} rt=${awg.RandomTrailers ? T("val|on") : "—"}
+            hpkTip=${T("Changes only through the version switch — every device has to re-import after it.")}
+            rtTip=${T("Changes only through the version switch — every device has to re-import after it.")}/>` : null}</div>` : null}
       <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
     <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}

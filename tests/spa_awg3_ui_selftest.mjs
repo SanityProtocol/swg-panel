@@ -17,9 +17,10 @@
  * [7] the 3.1 colour is tunable like every protocol's — ifaceColor("awg3") is its default until Settings → Interfaces saves a
  *     pick, and applyThemeColors puts the pick on --awg3, the one property every 3.1 badge, the switch and the caption read.
  *     A 3.1 pick leaves the 2.0 colour alone.
- * [8] Awg3Grid (js/iface.js) — the 3.1 cells the Edit sheet and Settings' defaults both draw: six inputs, never one for the
- *     HeaderProtectionKey or RandomTrailers; with no `placeholders` (the Edit sheet) an input carries NO placeholder prop —
- *     Preact writes a null one as placeholder="", the title trap again — and with them (Settings) each shows its built-in value.
+ * [8] Awg3Grid (js/iface.js) — the 3.1 cells the Edit sheet and Settings' defaults both draw: six typed inputs, and the
+ *     HeaderProtectionKey and RandomTrailers as READ-ONLY inputs (the same box, never typed) carrying what they read and why;
+ *     with no `placeholders` (the Edit sheet) an input carries NO placeholder prop — Preact writes a null one as
+ *     placeholder="", the title trap again — and with them (Settings) each typed cell shows its built-in value.
  *
  * Run: node tests/spa_awg3_ui_selftest.mjs     --perturb tip|samekey|gen|tag|catalog|pending|fork3|us|colour|var|ph   plants one and expects RED.
  */
@@ -149,13 +150,16 @@ const inputs = n => { const out = []; const walk = x => { if (Array.isArray(x)) 
   else if (x && typeof x === "object" && x.props) { if (x.type === "input") out.push(x.props); walk(x.props.children); } }; walk(n); return out; };
 const labels = n => { const out = []; const walk = x => { if (Array.isArray(x)) x.forEach(walk);
   else if (x && typeof x === "object" && x.props) { if (x.type === "span" && typeof x.props.children === "string") out.push(x.props.children); walk(x.props.children); } }; walk(n); return out; };
-const edit = IF.Awg3Grid({ value: { ContentPaddingAddition: "10-100" }, onKey: () => {}, hpk: "set", rt: "on" });
-const setg = IF.Awg3Grid({ value: {}, onKey: () => {}, hpk: "new", rt: "on", placeholders: { ContentPaddingAddition: "10-100", MaxHandshakeAttempts: "15-20" } });
-check("six inputs — the key and RandomTrailers are read, never typed", inputs(edit).length === 6
-      && labels(edit).includes("HeaderProtectionKey") && labels(edit).includes("RandomTrailers"), inputs(edit).length);
+const edit = IF.Awg3Grid({ value: { ContentPaddingAddition: "10-100" }, onKey: () => {}, hpk: "set", rt: "on", hpkTip: "why-k", rtTip: "why-r" });
+const setg = IF.Awg3Grid({ value: {}, onKey: () => {}, hpk: "new", rt: "on", hpkTip: "k", rtTip: "r", placeholders: { ContentPaddingAddition: "10-100", MaxHandshakeAttempts: "15-20" } });
+const typed = n => inputs(n).filter(p => !p.readonly), ro = n => inputs(n).filter(p => p.readonly);
+check("six typed inputs; the key and RandomTrailers read-only, with what they read and why", typed(edit).length === 6
+      && JSON.stringify(ro(edit).map(p => [p.value, p.title])) === JSON.stringify([["set", "why-k"], ["on", "why-r"]])
+      && labels(edit).includes("HeaderProtectionKey") && labels(edit).includes("RandomTrailers"), inputs(edit).map(p => Object.keys(p)));
 check("the Edit sheet (no placeholders): no input carries a placeholder prop", inputs(edit).every(p => !("placeholder" in p)),
       inputs(edit).map(p => p.placeholder));
-check("Settings: each input shows its built-in value, blank where none is given", JSON.stringify(inputs(setg).map(p => p.placeholder))
-      === JSON.stringify(["10-100", "15-20", "", "", "", ""]), inputs(setg).map(p => p.placeholder));
+check("Settings: each typed cell shows its built-in value, blank where none is given — the read-only two none",
+      JSON.stringify(typed(setg).map(p => p.placeholder)) === JSON.stringify(["10-100", "15-20", "", "", "", ""])
+      && ro(setg).every(p => !("placeholder" in p)), inputs(setg).map(p => p.placeholder));
 
 done(!!MODE, MODE);

@@ -2835,6 +2835,8 @@ const sectionLabel = k => ({
               <p class="hint" style="margin:0 0 10px">${T("Given to every new AmneziaWG interface. Leave a cell blank to keep what the node does today — S and H are rolled fresh for each interface, so two interfaces never look alike. WireGuard interfaces ignore all of it.")}</p>
               <${AwgGrid} value=${awgDef} onChange=${setAwgDef} placeholders=${awgBlankHints()}/>
               <${Awg3Grid} value=${awg3Def} onKey=${(k, v) => setAwg3Def(o => ({ ...o, [k]: v }))} hpk=${T("val|per interface")} rt=${T("val|on")}
+                hpkTip=${T("Each interface gets a key of its own — one key shared by every interface would protect nothing.")}
+                rtTip=${T("On for every AmneziaWG 3.1 interface the panel sets up.")}
                 placeholders=${ps.awg31_builtin || {}}
                 hint=${T("Given to an interface when it is created on 3.1 or switched to it; one already on 3.1 keeps its own. A blank cell is Amnezia's default.")}/>
             <//>

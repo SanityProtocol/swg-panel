@@ -2767,7 +2767,11 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
   letter-spacing:.06em;text-transform:uppercase;color:var(--awg3)}
 .awg3-cols .awg-f>span{overflow-wrap:anywhere}
 .awg3-hint{margin:0 0 10px;max-width:72ch}   /* Settings: what the 3.1 defaults are given to */
-.iface-grid.awg3-row{margin-top:10px}
+.awg-f input.awg-ro{cursor:default;color:var(--ink-2);background:transparent;border-style:dashed}   /* the key + RandomTrailers: a fixed value, not a blank cell — no fill, a dashed edge */
+.iface-grid.awg3-row{margin-top:0}
+.awg3-row .ig-v{word-break:normal;overflow-wrap:anywhere}   /* a narrow column breaks at Awg3Row's <wbr>s (after "=", between */
+.awg3-v{white-space:nowrap}                                      /* the key's words), never inside a value */
+.iface-amnezia .awg3-cap{margin:8px 0 0}   /* the page: the caption sits between the 2.0 columns and the 3.1 ones */
 /* the switch window: gateways and blocking proxies listed under their notice */
 .awgsw-list{margin:6px 0 4px;padding-left:18px;display:flex;flex-direction:column;gap:3px}
 .awgsw-list .mono{font-size:11.5px;word-break:break-all}
