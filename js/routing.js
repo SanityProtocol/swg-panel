@@ -2309,7 +2309,7 @@ export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
         ${/* NO `rrarrow` HERE. The exit options are themselves written "→ nixos", so the row read
               "→  → nixos" — two arrows for one destination. The catch-all below keeps its arrow: there it
               is the only one, and it is what joins "Everything else" to the control. */""}
-        ${(() => { const dest = html`${row.who ? html`<${WhoChip} who=${row.who} rep=${whoOf(row.who)}/>
+        ${(() => { const dest = html`${row.who ? html`<${WhoChip} who=${row.who} rep=${whoOf(row.who)} node=${node}/>
               <button type="button" class="iconbtn rrgear" title=${T("Rule settings")} aria-label=${T("Rule settings")} onClick=${() => openRule(row)}><${Ic} i="gear"/></button>` : null}<span class="rrdest" title=${row.locked ? T("Stored as written — this rule is kept exactly as it is.") : ""}>
             <${Dropdown} disabled=${!!row.locked} value=${destVal(row)}
               onChange=${v => onDest(row._gid, v)} options=${destOpts(false, destVal(row), !row.locked)}/>
@@ -2408,8 +2408,13 @@ const whoEntryName = e => e.k === "g" ? ((Store.group(e.id) || {}).name || T("a 
 const whoEntries = w => [...(w.groups || []).map(id => ({ k: "g", id })), ...(w.users || []).map(id => ({ k: "u", id })),
                          ...(w.peers || []).map(id => ({ k: "p", id }))];
 
+// Why a device reads red: its build can't prove its source — or the node runs no per-person rule yet (D4), and then none do.
+const whoNoWhy = (rep, node) => rep && rep.node_old
+  ? T("{v1} needs an update to route per person — these rules apply to nobody there until it is.", { v1: Store.nodeName(node) })
+  : T("Can't be told apart on this build — the rule doesn't apply to it.");
+
 // The colour-coded device count of one entry, with what each colour means on hover — the People window's idiom.
-function WhoDevices({ rep, e }) {
+function WhoDevices({ rep, e, node }) {
   if (!rep) return html`<span class="faint">…</span>`;
   const c = whoTally(rep, pid => whoEntryHas(e, pid));
   const parts = [[c.ok, "ok"], [c.soon, "soon"], [c.no, "no"]].filter(([n]) => n);
@@ -2420,12 +2425,12 @@ function WhoDevices({ rep, e }) {
     <span class="netroute-h">${whoEntryName(e)}</span>
     ${c.ok ? html`<div class="netbub-row nb-dot ok">${T("{devices} in the rule", { devices: plural(c.ok, "device") })}</div>` : null}
     ${c.soon ? html`<div class="netbub-row nb-dot soon">${plural(c.soon, "device")} — ${T("Not connected yet — the rule applies once it connects.")}</div>` : null}
-    ${c.no ? html`<div class="netbub-row nb-dot no">${plural(c.no, "device")} — ${T("Can't be told apart on this build — the rule doesn't apply to it.")}</div>` : null}
+    ${c.no ? html`<div class="netbub-row nb-dot no">${plural(c.no, "device")} — ${whoNoWhy(rep, node)}</div>` : null}
   <//>`;
 }
 
 /** The row's chip: whom it names and how many devices here it covers — and, amber, how many it cannot. */
-function WhoChip({ who, rep }) {
+function WhoChip({ who, rep, node }) {
   const c = whoTally(rep), people = (rep || {}).people || 0, list = whoEntries(who);
   const text = !rep ? "…" : people ? T("{people} · {devices}", { people: plural(people, "person"), devices: plural(c.ok, "device") }) : plural(c.ok, "device");
   const trigger = html`<span class=${"whochip" + (rep && !c.ok ? " warn" : "")}><${Ic} i="users"/>${text}</span>`;
@@ -2435,7 +2440,7 @@ function WhoChip({ who, rep }) {
         ? plural(whoTally(rep, pid => whoEntryHas(e, pid)).ok, "device") : "…"}</div>`}/>
       ${rep && !c.ok && !c.soon && !c.no ? html`<div class="netbub-row sub">${T("None of the chosen people has a device on this interface — the rule routes nothing until one does.")}</div>` : null}
     <//>
-    ${c.no ? html`<span class="whochip bad" title=${T("Can't be told apart on this build — the rule doesn't apply to it.")}><${Ic} i="warn"/>${T("{devices} not covered", { devices: plural(c.no, "device") })}</span>` : null}<//>`;
+    ${c.no ? html`<span class="whochip bad" title=${whoNoWhy(rep, node)}><${Ic} i="warn"/>${T("{devices} not covered", { devices: plural(c.no, "device") })}</span>` : null}<//>`;
 }
 
 /* RULE SETTINGS — where a rule leaves by, and for whom. Built from what exists: `ShareListSheet`'s layout (search-to-add with
@@ -2494,7 +2499,7 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, onApply
             <span class="nm">${e.k === "g" ? html`<${Ic} i="users"/>` : e.k === "p" ? html`<${Ic} i="device"/>` : null}${whoEntryName(e)}${e.k === "g" && !gone
               ? html`<span class="faint sharegrid-sub">${plural(Store.group(e.id).users.length, "member")}</span>` : e.k === "p" && !gone && Store.user(Store.peer(e.id).user_id)
               ? html`<span class="faint sharegrid-sub">${Store.user(Store.peer(e.id).user_id).name}</span>` : null}</span>
-            <span><${WhoDevices} rep=${rep} e=${e}/></span>
+            <span><${WhoDevices} rep=${rep} e=${e} node=${node}/></span>
             <span><button type="button" class="btn btn-ghost btn-mini" title=${T("Remove {name}", { name: whoEntryName(e) })}
               aria-label=${T("Remove {name}", { name: whoEntryName(e) })} onClick=${() => drop(e)}><${Ic} i="x"/></button></span></div>`; })}
           ${!rows.length ? html`<div class="sharegrid-empty">${T("Nobody on the list matches “{q}”.", { q })}</div>` : null}
@@ -2502,6 +2507,7 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, onApply
         <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>
         ${rep && !c.ok && !c.soon && !c.no ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("None of the chosen people has a device on this interface — the rule routes nothing until one does.")}</span></div>` : null}`
       : html`<div class="sharegrid-empty">${T("Choose at least one person or device, or pick “Everyone on this interface”.")}</div>`}
+      ${rep && rep.node_old ? html`<div class="notice warn"><${Ic} i="warn"/><span>${whoNoWhy(rep, node)}</span></div>` : null}
       ${kSni ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.")}</span></div>` : null}
     <//>` : null}
   <//>`;

@@ -177,8 +177,8 @@ export const api = {
   // peers
   peerCreate(b) { return this.post("/api/peers/create", b); },
   peerUpdate(b) { return this.post("/api/peers/update", b); },
-  peerNetworks(b) { return this.post("/api/peers/networks", b); },
-  routingWho(b) { return this.post("/api/routing/who", b); },   // {node, iface, rows:[who]} — what each per-person selection covers there   // {peer_id, routes?} — routes = a draft, judged and reported, never saved
+  peerNetworks(b) { return this.post("/api/peers/networks", b); },   // {peer_id, routes?} — routes = a draft, judged and reported, never saved
+  routingWho(b) { return this.post("/api/routing/who", b); },   // {node, iface, rows:[who]} — what each per-person selection covers there
   userNetworks(b) { return this.post("/api/users/networks", b); },   // {user_id} — what that user's devices can reach; on demand, never per poll
   peerNetworkProbe(b) { return this.post("/api/peers/networks/probe", b); },   // {peer_id, node, addr, port?} arms one reachability test from that node · {peer_id, id} reads it · {peer_id} lists this peer's
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
