@@ -206,9 +206,18 @@ def parse_sni(p):
 #
 # Learned IPs land in the per-cat `catl_` set (flags timeout, default = learn_ttl) so they SELF-EXPIRE — no stale
 # entry can misroute a rotated IP, and the set can't grow without bound. We see every new connection's ClientHello
-# (the NFQUEUE rule doesn't skip known dsts), so on a repeat connection past refresh_age we re-add the IP, which
+# (the NFQUEUE rule doesn't skip known dsts), so on a repeat connection past refresh_age we write the IP again, which
 # resets its set timeout → an actively-used dst never expires, while a rotated/idle one ages out on its own. Only a
 # genuine first learn (dst not in / expired from the set) gets the RST.
+#
+# ⚠️ "WRITE AGAIN" IS ADD + DELETE + ADD, IN ONE TRANSACTION — NOT A SECOND `add`. `nft add element` of an element that
+# is already there returns 0 and leaves its expiry exactly where it was, with or without an explicit `timeout` (measured,
+# 6.17 / nft 1.0.9). This used to be the plain add, so NOTHING was ever refreshed: every learned address expired one
+# learn_ttl after its first learn however busy it was, while `seen` below believed it fresh — so for up to refresh_age
+# after that, new connections to it matched no set, left by the wrong route, and were neither re-added nor reset (rig
+# `.campaign` bxl, Bxlt2). The add makes the element exist, the delete removes it, the second add writes it with a fresh
+# timeout; one `nft -f` commits all three at once, so no packet sees it missing. A first learn goes the same way: after a
+# swg-sni restart `seen` is empty while the set still holds the address with part of its old lifetime.
 FLUSH_INTERVAL = 0.025      # s — max time a learned IP waits before it's in the set
 MAX_BATCH      = 128        # flush early once this many IPs are pending (bounds latency + argv length)
 PRUNE_EVERY    = 30.0       # s — how often the in-memory seen cache is swept of expired entries
@@ -327,7 +336,7 @@ class Classifier:
         self.table = table
         self.reset_mark = reset_mark               # >0: RST the FIRST flow to each newly-learned dst so it reconnects routed
         self.learn_ttl = learn_ttl                 # learned catl_ entry lifetime (matches the set's default timeout)
-        self.refresh_age = learn_ttl / 2.0         # re-add (refresh the set timeout) once a seen entry is this old → active dsts never expire
+        self.refresh_age = learn_ttl / 2.0         # write again (refresh the set timeout) once a seen entry is this old → active dsts never expire
         self.map_mtime = None                          # each file is stat-gated and PARSED on its own — see _reload
         self.pat_mtime = None
         self.dom2cat = {}                              # exact domain → [category, ...] — see _reload
@@ -534,7 +543,7 @@ class Classifier:
                     first = True
                 elif now - ts < self.refresh_age:              # fresh → already routing in this category, nothing to do
                     continue
-                #  else: still in the set, aging → re-add to refresh its timeout (no RST on account of this one)
+                #  else: still in the set, aging → write it again to refresh its timeout (no RST on account of this one)
                 self.seen[key] = now
                 self._pending.append((cat, dst))           # buffered; the flusher adds it to catl_ within FLUSH_INTERVAL
             if len(self._pending) >= MAX_BATCH:
@@ -556,8 +565,8 @@ class Classifier:
             pass
 
     def _flush_loop(self):
-        """Background: drain the pending buffer into batched `nft add element` calls (one per category), and sweep the
-        seen cache of expired entries. Adds go to catl_ (the self-expiring learned set); re-adding refreshes the timeout."""
+        """Background: drain the pending buffer into batched nft writes (one transaction per category), and sweep the
+        seen cache of expired entries. Adds go to catl_ (the self-expiring learned set) — see _write_learned for how."""
         while True:
             self._wake.wait(FLUSH_INTERVAL)
             self._wake.clear()
@@ -576,17 +585,25 @@ class Classifier:
                 batch, self._pending = self._pending, []
             if blk_snap is not None:
                 self._write_blk(blk_snap)
-            bycat = {}
-            for cat, ip in batch:
-                bycat.setdefault(cat, []).append(ip)
-            for cat, ips in bycat.items():
-                r = subprocess.run(["nft", "add", "element", "inet", self.table, _learnsetname(cat),
-                                    "{ " + ", ".join(ips) + " }"], capture_output=True, text=True)
-                if r.returncode != 0:                  # set may not exist yet → forget these so they re-learn next time
-                    with self._lock:
-                        for ip in ips:
-                            self.seen.pop((ip, cat), None)
-                    print("swg-sni: batch add failed for %s (%d ips): %s" % (cat, len(ips), (r.stderr or "").strip()[:120]), flush=True)
+            self._write_learned(batch)
+
+    def _write_learned(self, batch):
+        """[(cat, ip)] → one `nft -f` transaction per category that (re)writes each address with a FRESH timeout: add, delete,
+        add (see the note above FLUSH_INTERVAL — a plain second add does not refresh). Addresses are unique per category, since
+        the delete of one listed twice would fail and take the whole transaction with it."""
+        bycat = {}
+        for cat, ip in batch:
+            if ip not in bycat.setdefault(cat, []):
+                bycat[cat].append(ip)
+        for cat, ips in bycat.items():
+            el = "inet %s %s { %s }" % (self.table, _learnsetname(cat), ", ".join(ips))
+            r = subprocess.run(["nft", "-f", "-"], input="add element %s\ndelete element %s\nadd element %s\n" % (el, el, el),
+                               capture_output=True, text=True)
+            if r.returncode != 0:                      # set may not exist yet → forget these so they re-learn next time
+                with self._lock:
+                    for ip in ips:
+                        self.seen.pop((ip, cat), None)
+                print("swg-sni: batch add failed for %s (%d ips): %s" % (cat, len(ips), (r.stderr or "").strip()[:120]), flush=True)
 
 
 def main():
