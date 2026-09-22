@@ -324,6 +324,8 @@ Its limits:
 - **Change the panel’s login** under **Settings → Authentication** — it takes effect immediately. While you’re there, switch on **two-factor authentication** (Google Authenticator) for stronger sign-in security.
 - **Route certain sites through a certain country (optional).** For example, send streaming out through a
   server abroad and keep everything else local. Set it per server under **Settings → Routing & Blocking**.
+  A rule can also apply to chosen people only: pick **Advanced…** at the end of its destination list and choose
+  people, groups or single devices.
 - **Get past tougher blocks (optional).** If plain VPN traffic is blocked on a network, swgPanel can wrap
   it through a **turn-proxy** — set up under a server’s details and in **Settings → Turn proxies**.
 - **Feed other tools (optional).** The panel can share live status with dashboards like **Grafana** or
@@ -439,6 +441,14 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   and its `awg` tools); on one that isn't, the switch is greyed out and says which part. The cost,
   measured: +1–2 % CPU at the rates a VPS carries; a server that is already CPU-bound loses 7–20 % of its
   throughput ceiling to the header masks, and no setting takes that back.
+- **A rule for chosen people covers the devices a server can tell apart.** Their WireGuard and AmneziaWG devices
+  always; WDTT and csqtt devices only where the server's build can prove which user is sending — the same builds as
+  in **Who can reach a device** — and the rule's row says how many devices it doesn't cover. A server running an
+  older version applies such rules to nobody until you update it, and its card says so. On **Kernel SNI** these
+  rules match by IP address and network only, not by site name; **Hybrid SNI** matches both. Going back to an
+  older panel and saving an interface there drops the chosen people from its rules for good. Going back to an
+  older version on a server that ran these rules: run `nft delete table inet swg_smart` on it once — it rebuilds
+  its routing within a minute.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more
