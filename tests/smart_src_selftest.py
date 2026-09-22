@@ -49,6 +49,11 @@ Hermetic: no nft, no ip, no root. Run: python3 tests/smart_src_selftest.py   (0 
      pb3 the Block chains do not reach the signature (a running SNI node keeps the old rules)
      pb4 Hybrid SNI: an exempted connection skips swg-sni (its first packets are no longer queued)
      pb5 pin mode: a Block decides at the first packet only (a connection that beat swg-sni's learning stays up)
+     pb6 Hybrid SNI: a shadow's exemption forgets its "not these devices" (Alice passes a Block above her own row)
+     pb7 Hybrid SNI: the exemption leaves out the learned sets (a hostname Exit loses its connection after the SYN again)
+     pb8 Hybrid SNI: the queue rule in a Block chain forgets whose rule it was (a device outside the row is queued past the Block)
+     pb9 Hybrid SNI: the queue rule in a Block chain matches any address (a connection that beat the learning keeps 11 packets)
+     pb10 a Block chain no longer wanted is left behind (the Exit sets it matches can never be reaped)
      c2 the learned-set TTL swap forgets the pin-mode Block chains (they match catl_ sets too — the whole batch is refused)
      sc the swg-sni map is rebuilt on every pass again (every name sorted and serialised to learn nothing changed)
      sc2 the swg-sni map is never rebuilt while its inputs and file look unchanged (an edit the stat cannot see never heals)
@@ -131,6 +136,15 @@ PLANTS = {
             '''                if False:'''),
     "pb5": ('''                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))''',
             '''                        _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))'''),
+    "pb6": ('''[(sh, cond + [t for x in xs for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))])''',
+            '''[(sh, cond)'''),
+    "pb7": ('''                    ex += [[cnd, snm] for snm in [_smart_setname(c)] + ([_smart_learnsetname(c)] if queue else [])]''',
+            '''                    ex += [[cnd, snm] for snm in [_smart_setname(c)]]'''),
+    "pb8": ('''"pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "tcp", "dport", "443",''', '''"pb%d" % i, "ip", "daddr", "@" + snm, "tcp", "dport", "443",'''),
+    "pb9": ('''"pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "tcp", "dport", "443",''', '''"pb%d" % i, *cnd, "tcp", "dport", "443",'''),
+    "pb10": ('''            if c not in want_pb:
+                bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)''', '''            if False:
+                bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)'''),
     "sc": ('''        if not (map_key is not None and _st and _SNI_MAP_LAST["key"] == map_key and _SNI_MAP_LAST["stat"] == _st   # cannot see heals''',
            '''        if True or not (map_key is not None and _st and _SNI_MAP_LAST["key"] == map_key and _SNI_MAP_LAST["stat"] == _st'''),
     "sc2": ('''                and _SNI_MAP_LAST["n"] % 60):''', '''                ):'''),
@@ -725,6 +739,51 @@ K = pb_setup([PX, PB, CA], True, True)
 rt = npass(K, [PX, PB, CA], True, True, ttl=120)
 check("Hybrid SNI: a learned-set TTL change lands while a Block chain matches the learned sets",
       not rt["errors"] and K.m.tables.get(T, {}).get("sets", {}).get("catl_custom_px", {}).get("timeout") == 120, rt["errors"] or K.refused[-1:])
+
+# A shadow's exemption keeps its "not these devices": Alice's own name sits BELOW the Block, so for her the Block above it wins,
+# while Bob keeps the everyone Exit's connection through the shadow (review of this fix, F2)
+XD = {"custom_x": ["h2.example"], "custom_al": ["sh.h2.example"]}
+XEX = dict(PX, category="custom_x")
+K = fresh()
+r = [shpass(K, [XEX, PB, AL, CA], True, True, "sni_user", doms=XD) for _ in range(3)]
+K.load_set(T, "cat_custom_pb", ["192.0.2.0/24"])
+claim(K, r[-1]["shw"], True, {"custom_al": [D5N]})
+check("Hybrid SNI: an everyone Exit above a Block has a shadow for Alice's name below the Block (the case under test)",
+      bool(((r[-1]["shw"] or {}).get("by_target") or {}).get("custom_x")) and "pb1" in K.m.tables[T]["chains"], r[-1]["shw"])
+v = pk(K, CHOSEN, D5N)
+check("Hybrid SNI: Alice → her name, her Direct row BELOW the Block — the Block above it drops her (the shadow's exemption is not hers)",
+      v["verdict"] == "drop", v)
+v1, v2 = pk(K, OTHER, D5N), pk(K, OTHER, D5N, ct="established", ctmark=7001, dport=80)
+check("Hybrid SNI: …while Bob leaves by the everyone Exit through its shadow, and keeps the connection past the Block",
+      v1["mark"] == 7001 and v2["verdict"] == "accept" and v2["mark"] == 7001, (v1, v2))
+# The exemption covers what swg-sni LEARNED for the Exit, not only its static set: a hostname Exit is the usual Hybrid rule (F3)
+K = pb_setup([PX, PB, CA], True, True)
+K.m.tables[T]["sets"]["cat_custom_px"]["els"] = set()
+K.m._add_elements(K.m.tables[T]["sets"]["catl_custom_px"], D5N)
+v1, v2 = pk(K, OTHER, D5N), pk(K, OTHER, D5N, ct="established", ctmark=7001, dport=80)
+check("Hybrid SNI: an Exit whose address swg-sni learned (catl_ only) keeps its connection past the Block below",
+      v1["mark"] == 7001 and v2["verdict"] == "accept" and v2["mark"] == 7001, (v1, v2))
+# The swg-sni rule inside the Block chain queues only what the chain would let through — a queued packet is accepted by
+# swg-sni, so a wider rule lets a connection's first packets past the Block (F4). Inside that window: packet 3, port 443.
+K = pb_setup([PR, PB, CA], True, True)
+v = pk(K, OTHER, D5N, ct="established", ctmark=7000, dport=443, ctpackets=3)
+check("Hybrid SNI: a device outside the per-person Exit row, early in a 443 connection to its address — dropped, not queued past the Block",
+      v["verdict"] == "drop", v)
+K = pb_setup([PX, PB, CA], True, True)
+v = pk(K, OTHER, BLKN, ct="established", ctmark=7000, dport=443, ctpackets=3)
+check("Hybrid SNI: early in a 443 connection to the Block's own address (one that beat the learning) — dropped, not queued",
+      v["verdict"] == "drop", v)
+# A Block chain no longer wanted is deleted, so the Exit sets it matched can be reaped when their rule goes (F5)
+for label, pin, queue in MODES[1:]:
+    K = fresh()
+    for ents in ([PX, PB, CA], [PX, PB, CA], [PX, CA], [PX, CA]):
+        npass(K, ents, pin, queue)
+    left = sorted(c for c in K.m.tables[T]["chains"] if c.startswith("pb"))
+    for _ in range(2):
+        rr = npass(K, [CA], pin, queue)
+    sets_ = sorted(s for s in K.m.tables[T]["sets"] if s.endswith("custom_px"))
+    check("%s: the Block removed — its chain goes, and then the Exit's sets go with the Exit rule" % label,
+          not left and not sets_ and not rr["errors"], (left, sets_, rr["errors"]))
 for label, pin, queue in MODES:
     for ents, tag in (([PX, PB, CA], "a Block below an Exit"), ([PB, PX, CA], "a Block ABOVE the Exit")):
         K = fresh()
