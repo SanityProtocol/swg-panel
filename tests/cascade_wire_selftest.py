@@ -14,6 +14,7 @@ inside a request handler that cannot be called without a live server.
 
 Run: python3 tests/cascade_wire_selftest.py (0 = pass)
      --perturb  drops `devexit` from the reply, the way it shipped, and expects RED.
+     --perturb-srcs  drops `smart.srcs` from the reply (per-person rows, ROUTING-PEERS-MESH-PLAN §4.3) and expects RED.
 """
 import importlib.machinery, importlib.util, os, re, sys
 
@@ -21,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
-PERTURB = "--perturb" in sys.argv
+PERTURB = "--perturb" in sys.argv or "--perturb-srcs" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -30,10 +31,14 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 src = open(PANEL, encoding="utf-8").read()
-if PERTURB:
+if "--perturb" in sys.argv:
     cut = '"devexit": my_plan.get("devexit") or []},   # Phase 2'
     assert cut in src, "perturbation anchor missing — this run would FALSE-PASS"
     src = src.replace(cut, '},   # Phase 2', 1)
+if "--perturb-srcs" in sys.argv:
+    cut = '**({"srcs": my_plan["srcs"]} if my_plan.get("srcs") else {}),'
+    assert src.count(cut) == 1, "perturbation anchor missing — this run would FALSE-PASS"
+    src = src.replace(cut, '', 1)
 
 # 1) what does cascade_plan BUILD? read the slot() literal, not a guess.
 m = re.search(r'return plans\.setdefault\(nid, \{(.*?)\}\)', src, re.S)
@@ -60,6 +65,16 @@ _cas = re.search(r'"cascade": \{(.*?)\},\s*#', src, re.S)
 sent = set(re.findall(r'"([a-z_]+)":', _cas.group(1))) if _cas else set()
 check("the node expects nothing the cascade payload does not send",
       not ({"forward", "exit", "devexit"} - sent), sorted(sent))
+
+# 4) PER-PERSON ROWS (ROUTING-PEERS-MESH-PLAN §4.3). An entry's `src` is built by cascade_plan and read by the node; the
+#    sources it names are resolved in the handler, for the syncing node alone, and must leave in the `smart` block as
+#    `srcs` — the node reads them there. A `src` entry whose sources never arrive is a row that covers nobody, silently.
+check("cascade_plan puts `src` on a per-person entry", 'entry["src"] = who_wid(S, who)' in src)
+_smart = re.search(r'"smart": \{"entries": my_plan\.get\("smart"\) or \[\],(.*?)"mode":', src, re.S)
+check("the reply's `smart` block carries `srcs`", bool(_smart) and '"srcs": my_plan["srcs"]' in _smart.group(1),
+      _smart.group(1)[:200] if _smart else "no smart block")
+check("the node reads `srcs` off the `smart` block", '(smart or {}).get("srcs")' in nsrc)
+check("the node reads `src` off an entry", 'e.get("src")' in nsrc and '(e["src"],)' in nsrc)
 
 if PERTURB:
     if FAILS:

@@ -6266,6 +6266,87 @@ def desired_for_node(roster, node_id, snap=None):
     return out
 
 
+def _who_here(roster, node_id, snap):
+    """peer id → (owner, [(target iface, [(device, "a.b.c.d/32")], why)]) for every device on this node a selection can name.
+
+    A wg/awg target is (its interface, its ip); a keyless one is what `keyless_sources` vouches for — the same reader Networks
+    sharing and device access use, so an unvouched build is never a source. `why` is empty for a device the node can tell
+    apart, else `keyless_sources`' reason. Blocked and expired devices are left out, as `desired_for_node` leaves them out."""
+    users, nowv, idx, here = roster.get("users") or {}, int(time.time()), None, {}
+    for pid, p in (roster.get("peers") or {}).items():
+        if not isinstance(p, dict):
+            continue
+        u = users.get(p.get("user_id")) or {}
+        if p.get("disabled") or u.get("disabled") or is_expired(p, nowv) or is_expired(u, nowv):
+            continue
+        ts = []
+        for t in p.get("targets") or []:
+            if not isinstance(t, dict) or t.get("node") != node_id:
+                continue
+            if _is_self_contained_target(t):
+                idx = _keyless_index(snap) if idx is None else idx
+                prs, why = keyless_sources(p, t, idx)
+                ts.append((t.get("iface"), prs, why))
+            elif (t.get("ip") or "").split("/")[0] and t.get("iface"):
+                ts.append((t.get("iface"), [(str(t["iface"]), str(t["ip"]).split("/")[0] + "/32")], ""))
+        if ts:
+            here[pid] = (p.get("user_id"), ts)
+    return here
+
+
+def _who_names(roster, who):
+    """(user ids, peer ids) a selection names — users, the members of its groups, its single devices."""
+    groups = roster.get("groups") or {}
+    uids = set(who.get("users") or [])
+    for g in who.get("groups") or []:
+        uids |= set(((groups.get(g) or {}).get("users") or []) if isinstance(groups.get(g), dict) else ())
+    return uids, set(who.get("peers") or [])
+
+
+def who_plan_for_node(my, roster, node_id, snap):
+    """The syncing node's plan slice with its per-person entries resolved (docs/ROUTING-PEERS-MESH-PLAN.md §2.2, §4.3–4.4).
+
+    Called only when the slice carries `_who`, so a fleet without one pays nothing. Each selection becomes the (device, /32)
+    pairs it is ON THIS NODE, inside the rule's own subnet (`_who_here`).
+
+    A selection that resolves to nobody here WITHHOLDS its entries: the rule reaches nobody, never everyone. And a node that
+    does not report `src` gets no per-person entry at all (D4) — it reads `subnet` and ignores `src`, so it would build the
+    rule for the whole subnet. Withheld categories leave the slice's domain, CIDR and pattern channels with them."""
+    srcs = {}
+    if ((snap or {}).get("smartroute") or {}).get("src"):
+        here = _who_here(roster, node_id, snap)
+        for wid, (S, who) in my["_who"].items():
+            (uids, pids), net, got = _who_names(roster, who), ipaddress.ip_network(S, strict=False), set()
+            for pid, (uid, ts) in here.items():
+                if pid in pids or (uid and uid in uids):
+                    got |= {(d, a) for _ifn, prs, _why in ts for d, a in prs if ipaddress.ip_address(a.split("/")[0]) in net}
+            if got:
+                srcs[wid] = sorted([d, a] for d, a in got)
+    keep = [e for e in (my.get("smart") or []) if not e.get("src") or e["src"] in srcs]
+    cats = {e["category"] for e in keep}
+    return dict(my, smart=keep, srcs=srcs,
+                **{k: {c: v for c, v in (my.get(k) or {}).items() if c in cats} for k in ("domains", "cidrs", "patterns")})
+
+
+def who_report(roster, node_id, snap, iface, whos):
+    """What each selection covers on one interface, for the Rule settings window and the row's chip — answered by the
+    reader the sync uses, so the screen and the node cannot disagree. Per selection: its devices here, each `ok` (in the
+    set), `soon` (keyless, no address yet) or `no` (a build that cannot prove a source — the rule does not apply to it),
+    and how many people it names."""
+    here, users, out = _who_here(roster, node_id, snap), roster.get("users") or {}, []
+    for who in whos:
+        uids, pids = _who_names(roster, who if isinstance(who, dict) else {})
+        dev = {}
+        for pid, (uid, ts) in here.items():
+            if not (pid in pids or (uid and uid in uids)):
+                continue
+            for ifn, prs, why in ts:
+                if ifn == iface:
+                    dev[pid] = "ok" if prs else "no" if why in ("unenforced", "raw_excluded") else "soon"
+        out.append({"devices": dev, "people": len({u for u in uids if u in users})})
+    return out
+
+
 def desired_wdtt_for_node(roster, nodes, node_id, fallback_vk=""):
     """The WDTT PASSWORD set the roster assigns to each wdtt* instance on one node — the analogue of
     desired_for_node, keyed by the panel-owned per-peer password. Divergence from the WG path: a BLOCKED/EXPIRED
@@ -6501,6 +6582,16 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None):
         wn = ov.get("wan_iface")
         if wn and nifs and wn not in nifs:
             issues.append(perr("{v1}: WAN interface {v2} is no longer on the node", v1=ifn, v2=wn))
+    # D4 — A NODE TOO OLD FOR A PER-PERSON RULE IS SENT NONE OF IT (it would build the rule for the whole subnet), so the
+    # rule applies to nobody there. Said only when the node reported its smart status and that status has no `src`: a node
+    # that has not said anything yet is not called old.
+    _sr = snap.get("smartroute")
+    if isinstance(_sr, dict) and not _sr.get("src") and any(
+            rule_on(r) and isinstance(r.get("who"), dict)
+            for k in ("ifaces", "wdtt", "csqtt") for ov in (c.get(k) or {}).values()
+            if isinstance(ov, dict) and ov.get("egress_mode") == "smart" for r in (ov.get("routing") or [])):
+        issues.append(perr("{v1} needs an update to route per person — these rules apply to nobody there until it is.",
+                           v1=c.get("name") or "this node"))
     _broken = _broken_ifaces(c, snap, ivk_pub)
     for ifn, e in (snap.get("interfaces") or {}).items():
         if e.get("down"):                             # failed to come up
@@ -10562,7 +10653,7 @@ def mesh_need(nodes, deps):
                 want(nid, str(ov.get("egress_node") or ""))
             elif mode == "smart":                    # `routing` is kept, inert, outside smart mode
                 for r in (ov.get("routing") or []):
-                    if isinstance(r, dict) and r.get("enabled", True) is not False and r.get("action") == "exit":
+                    if rule_on(r) and r.get("action") == "exit":
                         want(nid, str(r.get("node") or ""))
         for peer, lr in (n.get("links") or {}).items():
             lr = lr if isinstance(lr, dict) else {}
@@ -14040,7 +14131,34 @@ def _mint_device_exit(nodes, nid, ref, snap=None):
     return eid, None
 
 
-def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=None):
+# ── PER-PERSON RULES (docs/ROUTING-PEERS-MESH-PLAN.md §2, §4.2) ─────────────────────────────────────────────────────────
+# A rule may carry `who` — users, groups and single devices, by id — and then applies only to those devices ON ITS OWN
+# INTERFACE. It is STORED `enabled: false` with its real switch in `who.on`, so every older reader skips it: a released
+# panel emits nothing for it (proven against df3bb45), where a plain rule with `who` would have been widened to the whole
+# subnet. Every reader of a routing rule's `enabled` asks `rule_on` instead — a closed list, gated (T11).
+def rule_on(r):
+    w = r.get("who") if isinstance(r, dict) else None
+    if isinstance(w, dict):
+        return w.get("on") is True
+    return isinstance(r, dict) and r.get("enabled", True) is not False
+
+
+def who_wid(subnet, who):
+    """The selection's id on the wire: 12 hex of sha1(subnet + the canonical lists). The lists are sorted, so an unchanged
+    selection keeps its id; 48 bits, because a collision would hand one row another row's people."""
+    canon = json.dumps({k: sorted({str(x) for x in (who.get(k) or [])}) for k in ("users", "groups", "peers")},
+                       sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1((subnet + canon).encode()).hexdigest()[:12]
+
+
+def _routing_roster(routing, deps):
+    """The roster, loaded only when a rule in `routing` names people — a save without one never reads it."""
+    if isinstance(routing, list) and any(isinstance(r, dict) and r.get("who") is not None for r in routing):
+        return roster_load(deps["roster_path"])
+    return None
+
+
+def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=None, roster=None):
     """Validate + normalize a smart-routing rule list. Returns (clean_rules, error, dropped). Each rule:
     {enabled:bool, category:<in SMART_CATEGORIES | a custom_list id | "custom" | "tld">, action:"exit"|"direct"|"block",
     node:<exit nid if exit>}. A "tld" rule additionally carries match:"tld" + tlds:[label…] (route/block a whole
@@ -14177,6 +14295,33 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=Non
             if not xid or (xid not in _have and xid not in _was):
                 return None, f"rule for '{cat}': exit must be one of this node's exits", _dropped_report(dropped)
             out["exit_id"] = xid
+        if r.get("who") is not None:
+            w = r["who"]
+            lists = {k: (w.get(k) if isinstance(w, dict) else None) or [] for k in ("users", "groups", "peers")}
+            if not isinstance(w, dict) or not all(isinstance(v, list) and all(isinstance(x, str) for x in v)
+                                                  for v in lists.values()):
+                return None, "“For whom” must list users, groups or devices", _dropped_report(dropped)
+            if cat == "all":                               # D10: a per-person "everything" is a row targeting 0.0.0.0/0
+                return None, "“Everything else” applies to everyone on the interface", _dropped_report(dropped)
+            # THE ASYMMETRIC DOOR, as `share_clean` keeps it: an id that no longer exists is dropped quietly when it was
+            # already stored (a deleted user, a deleted group), and refused when it is new. Refusing a stored one would
+            # make the interface unsavable — the SPA re-sends every rule on every save — including the save that fixes it.
+            ro = roster or {}
+            known = {"users": ro.get("users") or {}, "groups": ro.get("groups") or {}, "peers": ro.get("peers") or {}}
+            stored = {k: {x for o in (prev or ()) if isinstance(o, dict) and isinstance(o.get("who"), dict)
+                          for x in (o["who"].get(k) or [])} for k in lists}
+            keep = {}
+            for k, ids in lists.items():
+                if any(x not in known[k] and x not in stored[k] for x in ids):
+                    return None, "A chosen user, group or device no longer exists — reload and choose again", _dropped_report(dropped)
+                keep[k] = sorted({x for x in ids if x in known[k]})
+            # Nobody chosen is refused — unless the stored list already holds such a rule (its people were all deleted
+            # since): that one applies to nobody, the row says so, and it must not lock the interface out.
+            if (not any(lists.values()) and not any(isinstance(o, dict) and isinstance(o.get("who"), dict)
+                                                    and not any(o["who"].get(k) for k in lists) for o in (prev or ()))):
+                return None, "Choose at least one person or device, or pick “Everyone on this interface”.", _dropped_report(dropped)
+            out["enabled"] = False                         # ← what every older reader sees: a rule that is off
+            out["who"] = {"on": (w.get("on") is True) if "on" in w else (r.get("enabled", True) is not False), **keep}
         clean.append(out)
     return clean, None, _dropped_report(dropped)
 
@@ -14614,6 +14759,13 @@ def _apply_egress_mode(rec, body, nodes, nid, deps):
     it and refusing the save then would make the interface unsavable — the same asymmetry `_validate_exits`
     keeps, for the same reason."""
     _custom = [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")]
+    # D7 — A TAB OPENED BEFORE THE UPGRADE CANNOT SAVE OVER A PER-PERSON RULE. Its `rowsToRules` rebuilds each rule from a
+    # whitelist that has no `who`, so the guarded rule would come back as a plain disabled one and its people would be gone.
+    # The new SPA says `routing_v: 2` on every egress save; a save that would rewrite a list holding a `who` rule without it
+    # is refused. A list holding none still saves from an old tab, so a fleet that uses none of this notices nothing.
+    if ((body.get("egress_mode") == "smart" or ("routing" in body and "egress_mode" not in body and rec.get("egress_mode") == "smart"))
+            and body.get("routing_v") != 2 and any(isinstance(r, dict) and "who" in r for r in (rec.get("routing") or []))):
+        return "This browser tab is older than the panel — reload it before saving routing.", None
     if "egress_mode" in body:
         mode = (body.get("egress_mode") or "direct").strip()
         if mode not in ("direct", "forward", "smart", "exit"):
@@ -14638,7 +14790,8 @@ def _apply_egress_mode(rec, body, nodes, nid, deps):
         elif mode == "smart":
             rules, err, _drop = _validate_routing(body.get("routing"), nodes, nid, _custom,
                                                   snap=(deps.get("node_snaps") or {}).get(nid) or {},
-                                                  prev=rec.get("routing") or [])
+                                                  prev=rec.get("routing") or [],
+                                                  roster=_routing_roster(body.get("routing"), deps))
             if err:
                 return err, None
             rec["egress_mode"] = "smart"; rec["routing"] = rules
@@ -14684,7 +14837,8 @@ def _apply_egress_mode(rec, body, nodes, nid, deps):
     elif "routing" in body and rec.get("egress_mode") == "smart":   # rule-only edit (mode already smart)
         rules, err, _drop = _validate_routing(body.get("routing"), nodes, nid, _custom,
                                               snap=(deps.get("node_snaps") or {}).get(nid) or {},
-                                              prev=rec.get("routing") or [])
+                                              prev=rec.get("routing") or [],
+                                              roster=_routing_roster(body.get("routing"), deps))
         if err:
             return err, None
         rec["routing"] = rules
@@ -15251,7 +15405,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             # is what inherits the node default below.
             _all_said = False
             for r in (ov.get("routing") or []):
-                if r.get("enabled", True) is False:
+                if not rule_on(r):
                     continue
                 action = r.get("action")
                 if action not in ("exit", "direct", "block", "dev"):
@@ -15326,11 +15480,11 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     _xdev, _xkey, _xks, _xeg, _xgw = _r
                     if _xkey not in targets:
                         targets.append(_xkey)
-                    smart_items.append((nid, None, S, cat, "dev", _xdev, None, None, extra, _xkey, _xks, _xeg, _xgw))
+                    smart_items.append((nid, None, S, cat, "dev", _xdev, None, None, extra, _xkey, _xks, _xeg, _xgw, r.get("who")))
                     _all_said = _all_said or cat == "all"
                     continue
                 if action != "exit":               # direct / block are LOCAL (no mesh exit) — carry them for first-match + kill-switch
-                    smart_items.append((nid, None, S, cat, action, None, None, None, extra, None, None, "", ""))
+                    smart_items.append((nid, None, S, cat, action, None, None, None, extra, None, None, "", "", r.get("who")))
                     _all_said = _all_said or cat == "all"
                     continue
                 P = r.get("node")
@@ -15341,7 +15495,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     continue
                 if P not in targets:
                     targets.append(P)
-                smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra, None, None, "", ""))
+                smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra, None, None, "", "", r.get("who")))
                 _all_said = _all_said or cat == "all"
             # ⚠️ SILENCE ABOUT "EVERYTHING ELSE" INHERITS THE NODE DEFAULT, the same way an un-pinned
             # interface does. Decision 4 says the node default is beaten by any interface that CHOSE for
@@ -15359,7 +15513,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     _ddev, _dkey, _dks, _deg, _dgw = _dr
                     if _dkey not in targets:
                         targets.append(_dkey)
-                    smart_items.append((nid, None, S, "all", "dev", _ddev, None, None, None, _dkey, _dks, _deg, _dgw))
+                    smart_items.append((nid, None, S, "all", "dev", _ddev, None, None, None, _dkey, _dks, _deg, _dgw, None))
 
     for nid, node in nodes.items():
         targets = []
@@ -15468,7 +15622,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
     # 2b) Phase-3 smart entries. exit = MASQUERADE out P's WAN (egress_ip ""); direct/block = LOCAL verdicts carried
     # for the node's first-match chain. ORDER is preserved (rules were collected in panel rule order) so first-match
     # wins — a direct/block exception before a catch-all exit is honoured, and block is a real drop, not a leak.
-    for (nid, P, S, cat, action, dev_n, dev_p, base_p, extra, xkey, xks, xeg, xgw) in smart_items:
+    for (nid, P, S, cat, action, dev_n, dev_p, base_p, extra, xkey, xks, xeg, xgw, who) in smart_items:
         sn = slot(nid)
         if action == "exit":
             T = sn["_targets"].get(P)
@@ -15512,6 +15666,12 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                 sn["devexit"].append(_de)
         else:                                                  # direct / block — no mesh exit, no table
             entry = {"subnet": S, "category": cat, "action": action}
+        if isinstance(who, dict):
+            # A PER-PERSON RULE travels as its selection's id, never expanded here: resolving every selection fleet-wide on
+            # every sync measured +136 % of this plan (§5.2). The syncing node's sources are resolved in the handler, for
+            # that node alone. `_who` is panel-internal, like `_legs`, and exists only when a rule names people.
+            entry["src"] = who_wid(S, who)
+            sn.setdefault("_who", {})[entry["src"]] = (S, who)
         if entry not in sn["smart"]:                           # preserve order, drop exact dups
             sn["smart"].append(entry)
         if extra:                                              # custom rule: domains → dnsmasq/sni fill cat_<id>; cidrs → loaded directly (also for block/direct sets)
@@ -20212,6 +20372,18 @@ def api(method, path, qs, body, deps):
                                                         nodes_load(deps["nodes_path"]),
                                                         show_lans=(deps.get("panel_settings") or {}).get("show_node_lans") is not False)}
 
+    if method == "POST" and path == "/api/routing/who":
+        # What each per-person selection covers on one interface — the Rule settings window's device column and the row's
+        # chip (docs/ROUTING-PEERS-MESH-PLAN.md §7.1–7.2). Read-only and on demand: asked when a sheet holding such a rule
+        # is open, never on the poll path, and answered by the resolver the sync uses.
+        nid, ifn, whos = body.get("node") or "", str(body.get("iface") or ""), body.get("rows")
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not isinstance(whos, list) or len(whos) > 200 or not all(isinstance(w, dict) for w in whos):
+            return 400, {"ok": False, "error": "rows must be a list of selections", "code": "bad_request"}
+        return 200, {"ok": True, "data": {"rows": who_report(roster_load(roster_path), nid,
+                                                             (deps.get("node_snaps") or {}).get(nid) or {}, ifn, whos)}}
+
     if method == "POST" and path == "/api/peers/networks":
         # The same report, read-only — for the peer sheet to show what a peer's networks are doing now. With
         # `routes` it judges a DRAFT and reports what saving it WOULD mean, writing nothing: §4.5 puts the
@@ -21352,7 +21524,8 @@ def api(method, path, qs, body, deps):
             if en in nodes and en != nid:
                 ov["egress_mode"] = "forward"; ov["egress_node"] = en
         elif _cm == "smart":                              # per-destination smart routing (Phase 3)
-            rules, err, _rdrop = _validate_routing(body.get("routing"), nodes, nid, [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")], snap=(deps.get("node_snaps") or {}).get(nid) or {})
+            rules, err, _rdrop = _validate_routing(body.get("routing"), nodes, nid, [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")], snap=(deps.get("node_snaps") or {}).get(nid) or {},
+                                                   roster=_routing_roster(body.get("routing"), deps))
             if err:
                 return 400, {"ok": False, "error": err, "code": "bad_request"}
             ov["egress_mode"] = "smart"; ov["routing"] = rules
@@ -24924,6 +25097,8 @@ class Handler(BaseHTTPRequestHandler):
         # stays silent, which is the right way round: nothing has been planned, so nothing is offered.
         Handler.deps["cas_legs"] = {_n: _p["_legs"] for _n, _p in cas_plans.items() if _p.get("_legs")}
         my_plan = cas_plans.get(nid) or {"forward": [], "smart": [], "exit": [], "devexit": [], "allowed": {}}
+        if my_plan.get("_who"):                          # a rule names people: resolve them for THIS node only (§4.3, D4)
+            my_plan = who_plan_for_node(my_plan, roster, nid, snap)
         _ps = Handler.deps.get("panel_settings") or {}   # Panel settings → mirrors / geo TTL / geo epoch for the node (used in the reply below)
         for _ifn, _mpeers in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],
                                                     my_plan.get("allowed"), Handler.deps.get("node_snaps")).items():
@@ -26190,6 +26365,8 @@ class Handler(BaseHTTPRequestHandler):
                                 # makes the node tear the relay and its divert down.
                                 "relay": relay_plan(nodes, cas_plans, nid, Handler.deps.get("node_snaps") or {}),
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
+                                          # per-person rows: each `src` entry's (device, /32) pairs, only when a rule names people
+                                          **({"srcs": my_plan["srcs"]} if my_plan.get("srcs") else {}),
                                           "mode": node.get("routing_mode") or "kernel",   # kernel | forcedns | sni — the node picks its fill mechanism from this
                                           "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])}),
                                           # per-category caps {ip,host}: provider cats from the catalog index, built-ins from SMART_CAPS.
