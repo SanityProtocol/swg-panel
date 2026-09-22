@@ -27,6 +27,9 @@ Run: python3 tests/routing_who_selftest.py   (0 = pass)
      e  no `routing_v` refusal (an old tab re-saves the rule without its people)
      f  a roster address is trusted unparsed (an adopted "(none)" raises in the sync — the node's whole sync fails)
      g  the report ignores the node's capability (an old node's rows read "covered" while it withholds them all)
+     h  a stored selection of the wrong shape is trusted (cascade_plan raises — every node's sync fails)
+     i  the report trusts a selection's shape (a malformed body is a 500)
+     j  the owner index forgets users (a selection's people resolve to nobody — the differential against the old loop is red)
 """
 import copy, importlib.machinery, importlib.util, json, os, re, sys, tempfile, time
 
@@ -53,9 +56,14 @@ PLANTS = {
     "d": ('''    if ((snap or {}).get("smartroute") or {}).get("src"):
         here = _who_here(roster, node_id, snap)''', '''    if True:
         here = _who_here(roster, node_id, snap)'''),
-    "f": ('''            elif t.get("iface") and valid_addr(str(t.get("ip") or "")):''',
+    "f": ('''            elif t.get("iface") and _who_addr_ok(str(t.get("ip") or "")):''',
           '''            elif (t.get("ip") or "").split("/")[0] and t.get("iface"):'''),
     "g": ('''    old = bool(snap) and not ((snap.get("smartroute") or {}).get("src"))''', '''    old = False'''),
+    "h": ('''    canon = json.dumps({k: sorted(_who_ids(who.get(k))) for k in ("users", "groups", "peers")},   # the ids the resolver reads; a bad shape names nobody''',
+          '''    canon = json.dumps({k: sorted({str(x) for x in (who.get(k) or [])}) for k in ("users", "groups", "peers")},'''),
+    "i": ('''    return {x for x in v if isinstance(x, str)} if isinstance(v, list) else set()''', '''    return set(v or [])'''),
+    "j": ('''            for pid in pids.intersection(here) | {q for u in uids for q in by_uid.get(u, ())}:''',
+          '''            for pid in pids.intersection(here):'''),
     "e": ('''        return "This browser tab is older than the panel — reload it before saving routing.", None''',
           '''        pass'''),
 }
@@ -328,6 +336,82 @@ check("WDTT and csqtt saves share the helper (so they are refused the same way)"
       hsrc.count("_eerr, _edrop = _apply_egress_mode(inst, body, nodes, nid, deps)") == 2)
 check("every door caller hands `_validate_routing` the roster when rules name people",
       hsrc.count("roster=_routing_roster(body.get(\"routing\"), deps)") == 3)
+
+# ── 6. a stored selection of the wrong shape (hand-edited, imported) names nobody — it never raises on the sync path ─────────
+print("\n[a malformed stored selection]")
+for bad in ({"on": True, "users": 5}, {"on": True, "users": [["u1"]], "groups": "g1"}, {"on": True, "peers": {"p1": 1}}):
+    try:
+        pl = P.cascade_plan(fleet([{"enabled": False, "category": "custom", "cidrs": ["203.0.113.0/24"], "action": "direct",
+                                    "who": bad}]), SNAPS, {})
+        my = pl.get("n1") or {}
+        res = P.who_plan_for_node(my, ROSTER, "n1", SNAP1) if my.get("_who") else my
+        ok = not [e for e in (res.get("smart") or []) if e.get("src")]
+        err = ""
+    except Exception as e:
+        ok, err = False, "%s: %s" % (type(e).__name__, e)
+    check("cascade_plan and the sync's resolution survive %s — and the rule reaches nobody" % json.dumps(bad), ok, err)
+try:
+    rep_ = P.who_report(ROSTER, "n1", SNAP1, "wg0", [{"users": 5}, {"groups": [["x"]]}])
+    err = "" if all(r["devices"] == {} and r["people"] == 0 for r in rep_) else rep_
+except Exception as e:
+    err = "%s: %s" % (type(e).__name__, e)
+check("the Rule settings report answers a malformed selection with nobody (no 500)", not err, err)
+
+# ── 7. the owner index resolves exactly what walking every device did (random rosters, against the old loop) ──────────────
+print("\n[the owner index against the old per-selection walk]")
+import ipaddress, random
+def ref_srcs(my, roster, node_id, snap):                        # the resolver as it was before the index — the reference
+    srcs = {}
+    if ((snap or {}).get("smartroute") or {}).get("src"):
+        here = P._who_here(roster, node_id, snap)
+        for wid, (S, who) in my["_who"].items():
+            (uids, pids), net, got = P._who_names(roster, who), ipaddress.ip_network(S, strict=False), set()
+            for pid, (uid, ts) in here.items():
+                if pid in pids or (uid and uid in uids):
+                    got |= {(d, a) for _ifn, prs, _why in ts for d, a in prs if ipaddress.ip_address(a.split("/")[0]) in net}
+            if got:
+                srcs[wid] = sorted([d, a] for d, a in got)
+    return srcs
+def ref_report(roster, node_id, snap, iface, whos):
+    here, out = P._who_here(roster, node_id, snap), []
+    old = bool(snap) and not ((snap.get("smartroute") or {}).get("src"))
+    for who in whos:
+        uids, pids = P._who_names(roster, who if isinstance(who, dict) else {})
+        dev = {}
+        for pid, (uid, ts) in here.items():
+            if pid in pids or (uid and uid in uids):
+                for ifn, prs, why in ts:
+                    if ifn == iface:
+                        dev[pid] = "no" if old else "ok" if prs else "no" if why in ("unenforced", "raw_excluded") else "soon"
+        out.append(dev)
+    return out
+rng, bad = random.Random(7), []
+for case in range(300):
+    U, G, D = rng.randint(1, 12), rng.randint(0, 4), rng.randint(0, 40)
+    users = {"u%d" % i: {"id": "u%d" % i, "name": "u", **({"disabled": True} if rng.random() < .1 else {})} for i in range(U)}
+    groups = {"g%d" % i: {"name": "g", "users": rng.sample(sorted(users), rng.randint(0, U))} for i in range(G)}
+    peers = {}
+    for i in range(D):
+        tg = [{"node": rng.choice(["n1", "n1", "n2"]), "iface": rng.choice(["wg0", "wg0", "awg1"]),
+               "ip": rng.choice(["10.8.0.%d" % rng.randint(2, 250), "10.9.0.%d" % rng.randint(2, 250), "(none)", ""])}
+              for _ in range(rng.randint(1, 2))]
+        peers["p%d" % i] = {"id": "p%d" % i, **({"user_id": rng.choice(sorted(users))} if rng.random() < .85 else {}), "targets": tg,
+                            **({"disabled": True} if rng.random() < .05 else {})}
+    ro = {"users": users, "groups": groups, "peers": peers}
+    whos = [{"users": rng.sample(sorted(users), rng.randint(0, min(3, U))), "groups": rng.sample(sorted(groups), rng.randint(0, G)),
+             "peers": rng.sample(sorted(peers), rng.randint(0, min(3, D))) + (["gone"] if rng.random() < .2 else [])} for _ in range(4)]
+    my = {"smart": [], "_who": {"%012x" % i: (rng.choice(["10.8.0.0/24", "10.8.0.0/16", "10.9.0.0/24"]), w) for i, w in enumerate(whos)}}
+    snap = {"smartroute": {"src": 1}}
+    try:                                                        # a raise is a mismatch, reported — not a crash that hides the rest
+        got, want = P.who_plan_for_node(my, ro, "n1", snap)["srcs"], ref_srcs(my, ro, "n1", snap)
+        rg = [r["devices"] for r in P.who_report(ro, "n1", snap, "wg0", whos)]
+        rw = ref_report(ro, "n1", snap, "wg0", whos)
+    except Exception as e:
+        bad.append((case, "raised %s: %s" % (type(e).__name__, e))); continue
+    if got != want or rg != rw or [list(x) for x in rg] != [list(x) for x in rw]:
+        bad.append((case, got, want) if got != want else (case, rg, rw))
+check("300 random rosters: the sync's sources and the report are exactly the old walk's (same pairs, same devices, same order)",
+      not bad, bad[:1])
 
 print()
 if PLANT:
