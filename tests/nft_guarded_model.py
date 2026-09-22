@@ -414,7 +414,9 @@ class SmartModel:
         def at(*w):
             return tk[i:i + len(w)] == list(w)
         while i < len(tk):
-            if at("iifname", ".", "ip", "saddr") and tk[i + 4].startswith("@"):
+            if at("iifname", ".", "ip", "saddr", "!=") and tk[i + 5].startswith("@"):   # a shadow rule's "not these devices"
+                ops.append(("concat_src", tk[i + 5][1:], True)); i += 6
+            elif at("iifname", ".", "ip", "saddr") and tk[i + 4].startswith("@"):
                 ops.append(("concat_src", tk[i + 4][1:])); i += 5
             elif tk[i] in ("iifname", "oifname") and i + 1 < len(tk):
                 neg = tk[i + 1] == "!="
@@ -595,7 +597,8 @@ class SmartModel:
             out.append("\tchain %s {" % cn)
             if c["hook"]:
                 out.append("\t\ttype filter hook %s priority %s; policy accept;" % c["hook"])
-            out += ["\t\t%s # handle %d" % (r["text"], r["handle"]) for r in c["rules"]]
+            out += ["\t\t%s # handle %d" % (re.sub(r"\bcounter\b(?! name)", "counter packets %d bytes %d" % (r.get("pk", 0), r.get("pk", 0) * 60),
+                                                     r["text"]), r["handle"]) for r in c["rules"]]
             out.append("\t}")
         return "\n".join(out + ["}"]) + "\n"
 
@@ -627,7 +630,7 @@ class SmartModel:
             for o in r["ops"]:
                 k = o[0]
                 if k == "concat_src":
-                    ok = self._in(t, o[1], pkt["s"], pkt["iif"])
+                    ok = self._in(t, o[1], pkt["s"], pkt["iif"]) != (len(o) > 2 and o[2])
                 elif k == "iif":
                     ok = (pkt["iif"] == o[1]) != o[2]
                 elif k == "oif":
@@ -659,6 +662,8 @@ class SmartModel:
                 elif k == "counter":
                     if o[1]:
                         t["counters"][o[1]] = t["counters"].get(o[1], 0) + 1
+                    else:
+                        r["pk"] = r.get("pk", 0) + 1                  # an anonymous counter, listed as `counter packets N bytes M`
                 elif k == "verdict":
                     verdict = o[1]
                 elif k == "jump":
@@ -701,6 +706,12 @@ class SmartKernel:
                 if args[4] not in self.m.tables:
                     return CP(args, 1, "", "Error: No such file or directory")
                 return CP(args, 0, self.m.render(args[4]), "")
+            if args[1:3] == ["list", "chain"]:                   # one chain, as `nft list chain inet <t> <c>` prints it
+                if args[4] not in self.m.tables or args[5] not in self.m.tables[args[4]]["chains"]:
+                    return CP(args, 1, "", "Error: No such file or directory")
+                txt = self.m.render(args[4])
+                m = re.search(r"\tchain " + re.escape(args[5]) + r" \{.*?\n\t\}", txt, re.S)
+                return CP(args, 0, "table inet %s {\n%s\n}\n" % (args[4], m.group(0)), "")
             self.m.script(" ".join(args[1:]))
             return CP(args, 0, "", "")
         except NftError as e:

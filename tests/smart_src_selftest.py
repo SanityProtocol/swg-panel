@@ -16,7 +16,10 @@ actually hands nft, through the swg_smart transaction model (tests/nft_guarded_m
   · the TTL swap — `delete set catl_*` while a row chain still matches it rejects the WHOLE batch (T2);
   · the interim Kernel-SNI gate — no `src` entry reaches `_ensure_smart_xtstring`, whose `-s <subnet>` would widen it;
   · the three positional readers of the want-tuple — driven in all three engine shapes (kernel/Force-DNS,
-    Hybrid SNI with the queue, Kernel SNI), because one of them runs only with the queue on.
+    Hybrid SNI with the queue, Kernel SNI), because one of them runs only with the queue on;
+  · shadow sets — on Force-DNS and Hybrid SNI a host goes only to its MOST SPECIFIC name's set, so a name used by some
+    devices' rules must not take it from a broader name's rules for the others (review B1: Alice's `sh.h2.example` →
+    Direct un-blocked `h2.example`'s Block for everyone else). Each case has its control without shadows.
 
 Hermetic: no nft, no ip, no root. Run: python3 tests/smart_src_selftest.py   (0 = pass)
   --plant a|b|c|d|e|f|g1|g2|g3|h   plant one defect and expect RED on its own check (exit 0 when caught):
@@ -28,6 +31,18 @@ Hermetic: no nft, no ip, no root. Run: python3 tests/smart_src_selftest.py   (0 
      f  the Kernel-SNI filter is removed
      g1/g2/g3  one positional reader of the want-tuple left at four names (expect_pre · the emit loop · `_routed_cats`)
      h  the drift gate forgets that a row emits prerouting rules (an all-Direct per-person chain emptied from outside stays empty)
+     s1 a shadow rule loses its "not these devices" (Alice's own name, placed below the Block, is blocked for her)
+     s2 the base chain emits no shadow rule (Bob walks past the everyone Block again)
+     s3 a row chain emits no shadow rule (a per-person Block loses the host to another selection's name)
+     s4 every pair of categories counts as reaching different devices (everyone-rules on one subnet lose "most specific wins")
+     s5 an entry gets the shadow even where the claimer has a rule for everyone on its subnet (same loss, per subnet)
+     s6 the node reports shadow sets as destinations of their own
+     s7 dnsmasq is told "unchanged" when only the shadows changed (it keeps the old directives)
+     s8 a site name is taken as inside a first-label pattern (`mail.google.com` inside `mail.*`: `x.mail.google.com` is not)
+     s9 a shadow rule leaves out only the claimer's devices, not a more specific container's (nested names land on the wrong rule)
+     s10 the blocked metric ignores a block list's shadow rule (Bob's blocked packets go uncounted)
+     s11 Hybrid SNI ranks a zone above a site (the broader `*.example` rule takes Bob's `h2.example` host)
+     s12 Force-DNS ranks every key alike (same, on dnsmasq's longest-key ladder)
 """
 import hashlib, importlib.machinery, ipaddress, importlib.util, json, os, shutil, sys, tempfile
 
@@ -71,6 +86,29 @@ PLANTS = {
             if len(w) > 4:'''),
     "h": ('''    expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)''',
           '''    expect_pre = pin or any(w[2] != "direct" for w in want)'''),
+    "s1": ('''                xm = [t for x in ex for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))]''',
+           '''                xm = []'''),
+    "s2": ('''            _shadow_rules(i, lambda *m, _S=S: _add("ip", "saddr", _S, *m), "return")''', '''            pass'''),
+    "s3": ('''                _shadow_rules(i, lambda *m, _k=k: bat.add("add", "rule", "inet", SMART_NFT_TABLE, "sr%d" % _k, *m), "accept")''',
+           '''                pass'''),
+    "s4": ('''        return any(None not in cov.get(S, ()) and not (w and w in cov.get(S, ())) for S, ws in aud[c2].items() for w in ws)''',
+           '''        return True'''),
+    "s5": ('''                if None not in cov and not (len(w) > 4 and w[4] in cov):''', '''                if True:'''),
+    "s6": ('''            "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}", k)}, "rules": rules,''',
+           '''            "sets": dict(t["counts"]), "rules": rules,'''),
+    "s7": ('''            dom_unchanged, _SHADOW["dns"] = False, (_shw or {}).get("sig", "")''',
+           '''            _SHADOW["dns"] = (_shw or {}).get("sig", "")'''),
+    "s8": ('''                hit += [(c, rank("zone", lb[-1])) for c in own["zone"].get(lb[-1], ())]''',
+           '''                hit += [(c, rank("zone", lb[-1])) for c in own["zone"].get(lb[-1], ())] + [(c, (2,)) for c in own.get("first", {}).get(lb[0], ())]'''),
+    "s9": ('''                cov = set().union(*(aud.get(c, {}).get(w[0], set()) for c in [c1] + list(more)))''',
+           '''                cov = aud.get(c1, {}).get(w[0], set())'''),
+    "s10": ('''            if ("blku" not in ln and not (_m and _m.group(1) in _bsw)) or "drop" not in ln:''',
+            '''            if "blku" not in ln or "drop" not in ln:'''),
+    "s11": ('''        if kd == "zone":
+            return (3,)''', '''        if kd == "zone":
+            return (1, -99)'''),
+    "s12": ('''            return (-(n.count(".") + 1),)                      # dnsmasq: the longest key (a zone is a one-label key)''',
+            '''            return (0,)'''),
     "g3": ('''        _routed_cats = {w[1] for w in want if w[1] != "all"} if queue else set()''',
            '''        _routed_cats = {c for (_S, c, _a, _T) in want if c != "all"} if queue else set()'''),
 }
@@ -333,6 +371,235 @@ check("xt_string was asked to build (the everyone-rules still go there)", bool(_
 check("…but no entry carrying `src` reached it (its `-s <subnet>` would widen the row to everyone)",
       bool(_seen) and not any(e.get("src") for call in _seen for e in call), [e for c in _seen for e in c if e.get("src")])
 check("the node reports the capability the panel withholds on (`src: 1`)", N.smart_status().get("src") == 1, N.smart_status())
+
+# ── 7. a more specific name never takes a host from rules for other devices (shadow sets, review B1) ─────────────────────
+# What the engines do is simulated exactly as measured: a host lands in the sets of the category whose name matches it MOST
+# specifically — and, because a shadow category repeats that name, in the shadow's sets too (dnsmasq's per-domain merge,
+# swg-sni's `_index`). Every case runs again WITHOUT shadows as its control, which must show the leak.
+print("\n[shadow sets]")
+H, HB, S9 = "192.0.2.81", "192.0.2.99", "10.28.0.0/24"        # H: named by Alice's `sh.h2.example` AND the Block's `h2.example`
+DOMS = {"custom_blk": ["h2.example"], "custom_al": ["sh.h2.example"]}
+CA = {"subnet": S, "category": "all", "action": "exit", "via_iface": "swg_p", "table": 7000}
+BLK = {"subnet": S, "category": "custom_blk", "action": "block"}
+AL = {"subnet": S, "category": "custom_al", "action": "direct", "src": W1}
+ALL_ = dict(AL); ALL_.pop("src")                               # the same rule for everyone
+SRC1 = {W1: [["wg0", CHOSEN + "/32"]]}
+
+
+def claim(K, shw, queue, by_cat):
+    """{category: {winning operand: [ip]}} as the engine decides by specificity: the category's set fills, and so does every
+    shadow that repeats THAT operand (one operand in two categories — dnsmasq's per-domain merge, swg-sni's `_index`).
+    A bare [ip] list means the category's only operand in the test's names."""
+    sets = (K.m.tables.get(T) or {}).get("sets") or {}
+    for cat, won in by_cat.items():
+        won = won if isinstance(won, dict) else {None: won}
+        for op, ips in won.items():
+            shs = [x[0] for lst in ((shw or {}).get("by_target") or {}).values() for x in lst if x[1] == cat
+                   and (op is None or op in (shw.get("domains") or {}).get(x[0], [])
+                        or any(op in (b.get(x[0]) or []) for b in (shw.get("pats") or {}).values()))]
+            for c in [cat] + shs:
+                nm = (N._smart_learnsetname if queue else N._smart_setname)(c)
+                if nm in sets:
+                    K.m._add_elements(sets[nm], ", ".join(ips))
+
+
+def shpass(K, entries, pin, queue, eng, srcs=SRC1, shadow=True, doms=DOMS, ttl=3600, pats=None):
+    shw = N._smart_shadows([dict(e) for e in entries], doms, pats or {}, eng) if shadow else None
+    N._LOOP["n"] += 1
+    res = {"changed": 0, "errors": []}
+    n0 = len(K.scripts)
+    try:
+        N._ensure_smart_nft([dict(e) for e in entries], sorted({e["category"] for e in entries}), res, pin=pin, queue=queue,
+                            reset_mark=(N.SNI_RESET_MARK if pin else 0), learn_ttl=ttl, srcs=srcs, shadows=shw)
+    except Exception as e:
+        res["errors"].append("raised %s: %s" % (type(e).__name__, e))
+    res["scripts"], res["shw"] = K.scripts[n0:], shw
+    return res
+
+
+def setup(entries, pin, queue, eng, shadow=True, srcs=SRC1, by_cat=None, doms=DOMS, pats=None):
+    K = fresh()
+    r = [shpass(K, entries, pin, queue, eng, srcs=srcs, shadow=shadow, doms=doms, pats=pats) for _ in range(3)]
+    claim(K, r[-1]["shw"], queue, by_cat or {"custom_al": [H], "custom_blk": [HB]})
+    return K, r
+
+
+SH_MODES = (("Force-DNS", False, False, "dns"), ("Hybrid SNI", True, True, "sni_user"))
+for label, pin, queue, eng in SH_MODES:
+    # A — Alice's exception ABOVE the everyone Block (the reproduced layout, cells Z4/Z6)
+    K, r = setup([AL, BLK, CA], pin, queue, eng)
+    check("%s: a per-person name inside an everyone name makes a shadow" % label, bool(r[0]["shw"]), r[0]["shw"])
+    check("%s: …and every pass runs without an error or a refusal" % label, not any(x["errors"] for x in r) and not K.refused,
+          ([x["errors"] for x in r], K.refused[:1]))
+    check("%s: …pass 3 changes nothing" % label, r[2]["changed"] == 0 and not r[2]["scripts"], r[2]["scripts"][:1])
+    v = walk(K, "wg0", OTHER, H)
+    check("%s: Bob (not chosen) → Alice's host: the everyone Block still drops it" % label, v["verdict"] == "drop", v)
+    v = walk(K, "wg0", CHOSEN, H)
+    check("%s: Alice → her host: her Direct exception" % label, v["verdict"] == "accept" and v["mark"] == 0 and "sr0" in v["via"], v)
+    v = walk(K, "wg1", CHOSEN, H)
+    check("%s: Alice's ADDRESS from another device: blocked (it is not her)" % label, v["verdict"] == "drop", v)
+    check("%s: the Block's own host drops for both" % label,
+          walk(K, "wg0", OTHER, HB)["verdict"] == walk(K, "wg0", CHOSEN, HB)["verdict"] == "drop")
+    check("%s: an unrelated destination takes the catch-all" % label, walk(K, "wg0", OTHER, "8.8.8.8")["mark"] == 7000)
+    Kc, _rc = setup([AL, BLK, CA], pin, queue, eng, shadow=False)
+    v = walk(Kc, "wg0", OTHER, H)
+    check("%s: CONTROL without shadows — Bob walks past the Block (the leak this closes)" % label,
+          v["verdict"] == "accept" and v["mark"] == 7000, v)
+    # B — the same exception BELOW the Block: most specific still wins for Alice, the Block for everyone else
+    K, r = setup([BLK, AL, CA], pin, queue, eng)
+    check("%s: exception below the Block — Bob is blocked" % label, walk(K, "wg0", OTHER, H)["verdict"] == "drop")
+    v = walk(K, "wg0", CHOSEN, H)
+    check("%s: …and Alice still gets her more specific Direct" % label, v["verdict"] == "accept" and v["mark"] == 0, v)
+    # C — both rules for everyone on ONE subnet: "most specific wins" is the rule and nothing changes
+    K, r = setup([BLK, ALL_, CA], pin, queue, eng)
+    everything = " ".join(" ".join(c) for c in K.calls) + "".join(K.scripts)
+    check("%s: everyone-rules on one subnet make no shadow (no set, no rule)" % label,
+          r[0]["shw"] == {} and "sw_" not in everything, (r[0]["shw"], everything.count("sw_")))
+    v = walk(K, "wg0", OTHER, H)
+    check("%s: …and the more specific everyone-rule still wins (Direct)" % label, v["verdict"] == "accept" and v["mark"] == 0, v)
+    # D — the broader rule is itself per-person: a device in both selections keeps the claimer, the others the Block
+    W2S = {W1: [["wg0", CHOSEN + "/32"]], W2: [["wg0", W2DEV + "/32"], ["wg0", CHOSEN + "/32"]]}
+    K, r = setup([dict(BLK, src=W2), AL, CA], pin, queue, eng, srcs=W2S)
+    check("%s: a per-person Block keeps the host for its own device the claimer does not choose" % label,
+          walk(K, "wg0", W2DEV, H)["verdict"] == "drop", walk(K, "wg0", W2DEV, H))
+    v = walk(K, "wg0", CHOSEN, H)
+    check("%s: …and a device in both selections gets the more specific rule (Direct)" % label,
+          v["verdict"] == "accept" and v["mark"] == 0 and "sr1" in v["via"], v)
+    check("%s: …and a device in neither takes the catch-all" % label, walk(K, "wg0", OTHER, H)["mark"] == 7000)
+    # E — another interface's everyone-rule (the 1.8.7 leak, cell X3) — and the claimer's own interface is left alone
+    K, r = setup([BLK, dict(ALL_, subnet=S9), CA], pin, queue, eng)
+    check("%s: an everyone-rule on another interface no longer takes the host from this one's Block" % label,
+          walk(K, "wg0", OTHER, H)["verdict"] == "drop")
+    v = walk(K, "wg9", "10.28.0.5", H)
+    check("%s: …and that interface still routes it by its own rule (Direct)" % label, v["verdict"] == "accept" and v["mark"] == 0, v)
+    K, r = setup([BLK, ALL_, dict(BLK, subnet=S9), CA], pin, queue, eng)
+    v = walk(K, "wg0", OTHER, H)
+    check("%s: where the claimer has an everyone-rule on the subnet, most specific still wins there" % label,
+          v["verdict"] == "accept" and v["mark"] == 0, v)
+    check("%s: …while the other interface, which has only the Block, blocks" % label,
+          walk(K, "wg9", "10.28.0.5", H)["verdict"] == "drop")
+    # F — the node does not report a shadow set as a destination
+    K, r = setup([AL, BLK, CA], pin, queue, eng)
+    have = set(((K.m.tables.get(T) or {}).get("sets") or {}))
+    N._LOOP["n"] += 1
+    rep = set(N.smart_status().get("sets") or {})
+    check("%s: the table holds the shadow sets, the report leaves them out" % label,
+          any(s.startswith("cat_sw_") for s in have) and not any("_sw_" in s for s in rep), (sorted(have), sorted(rep)))
+    # G — rules gone: the shadow sets go with them, and nothing is refused on the way (smart_status above asked the model a
+    # `list chain` it does not answer — that is the harness, so only this step's own refusals count)
+    n_ref = len(K.refused)
+    for _ in range(3):
+        shpass(K, [dict(ALL_), BLK, CA], pin, queue, eng)
+    check("%s: shadows no longer wanted are reaped" % label,
+          not [s for s in ((K.m.tables.get(T) or {}).get("sets") or {}) if "_sw_" in s] and not K.refused[n_ref:],
+          (sorted((K.m.tables.get(T) or {}).get("sets") or {}), K.refused[n_ref:][:1]))
+
+    # H — TWO broader names contain alice's (review of the fix, finding 1): the claimed host goes where the ENGINE would put
+    # it without her rule — the more specific container — whatever the rule order. Both orders, both outcomes.
+    ZD = dict(DOMS)
+    ZP = {"zone": {"custom_z": ["example"]}}
+    ZEX = {"subnet": S, "category": "custom_z", "action": "exit", "via_iface": "swg_q", "table": 7001}      # everyone *.example → Exit
+    K, r = setup([ZEX, BLK, AL, CA], pin, queue, eng, doms=ZD, pats=ZP)
+    v = walk(K, "wg0", OTHER, H)
+    check("%s: `*.example` Exit above `h2.example` Block — Bob is still blocked (the site beats the zone, as without alice)" % label,
+          v["verdict"] == "drop", v)
+    check("%s: …and alice still gets her Direct" % label, walk(K, "wg0", CHOSEN, H)["mark"] == 0 and walk(K, "wg0", CHOSEN, H)["verdict"] == "accept")
+    ZBK = dict(ZEX, action="block"); ZBK.pop("table"); ZBK.pop("via_iface")
+    HEX = {"subnet": S, "category": "custom_blk", "action": "exit", "via_iface": "swg_q", "table": 7001}   # everyone h2.example → Exit
+    K, r = setup([ZBK, HEX, AL, CA], pin, queue, eng, doms=ZD, pats=ZP)
+    v = walk(K, "wg0", OTHER, H)
+    check("%s: `*.example` Block above `h2.example` Exit — Bob leaves by the Exit (as without alice)" % label,
+          v["verdict"] == "accept" and v["mark"] == 7001, v)
+    # I — nested selections: carol's `x.sh.h2.example` inside alice's `sh.h2.example` inside everyone's `h2.example` Block
+    W3, CAROL, HX = "c0c1c2c3c4c5", "10.8.0.8", "192.0.2.82"
+    CR = {"subnet": S, "category": "custom_cr", "action": "exit", "via_iface": "swg_q", "table": 7001, "src": W3}
+    NDOMS = dict(DOMS, custom_cr=["x.sh.h2.example"])
+    K, r = setup([BLK, AL, CR, CA], pin, queue, eng, srcs={W1: [["wg0", CHOSEN + "/32"]], W3: [["wg0", CAROL + "/32"]]},
+                 doms=NDOMS, by_cat={"custom_cr": [HX], "custom_al": [H], "custom_blk": [HB]})
+    v = walk(K, "wg0", CHOSEN, HX)
+    check("%s: nested — alice → carol's host takes alice's more specific Direct, not the Block" % label,
+          v["verdict"] == "accept" and v["mark"] == 0, v)
+    check("%s: …carol → her host leaves by her exit" % label, walk(K, "wg0", CAROL, HX)["mark"] == 7001)
+    check("%s: …and Bob is blocked" % label, walk(K, "wg0", OTHER, HX)["verdict"] == "drop")
+    # J — the blocked metric counts a block list's shadow drops like the block list's own
+    BKU = dict(BLK, category="blku_x")
+    K, r = setup([AL, BKU, CA], pin, queue, eng, doms={"blku_x": ["h2.example"], "custom_al": ["sh.h2.example"]},
+                 by_cat={"custom_al": [H]})
+    walk(K, "wg0", OTHER, H); walk(K, "wg0", OTHER, H)
+    N._LOOP["n"] += 1
+    ba = N._block_activity().get(S) or {}
+    check("%s: two of Bob's packets dropped by a block list's shadow count as blocked" % label, ba.get("blocked") == 2, ba)
+
+# K — a pattern that only partly overlaps (Hybrid SNI): the shadow is kept, so the hosts the pattern does not match still land
+# on the containing rule for the devices alice does not reach (dropping it would send them all to "Everything else")
+PK = {"first": {"custom_m": ["mail"]}, "zone": {"custom_z": ["com"]}}
+MEX = {"subnet": S, "category": "custom_m", "action": "exit", "via_iface": "swg_q", "table": 7001}
+ZCB = {"subnet": S, "category": "custom_z", "action": "block"}
+K, r = setup([MEX, ZCB, dict(AL, category="custom_g"), CA], True, True, "sni_user", doms={"custom_g": ["google.com"]}, pats=PK,
+             by_cat={"custom_g": ["192.0.2.90"]})
+check("Hybrid SNI: `mail.*` partly overlaps alice's `google.com` — the `*.com` shadow is kept (Bob's www.google.com stays blocked)",
+      walk(K, "wg0", OTHER, "192.0.2.90")["verdict"] == "drop", walk(K, "wg0", OTHER, "192.0.2.90"))
+
+K, r = setup([AL, BLK, CA], True, True, "sni_user")
+rt = shpass(K, [AL, BLK, CA], True, True, "sni_user", ttl=120)
+_shl = [s for s in (K.m.tables.get(T) or {}).get("sets", {}) if s.startswith("catl_sw_")]
+check("Hybrid SNI: a learned-set TTL change lands with shadow sets present, and they take the new TTL",
+      not rt["errors"] and _shl and all(K.m.tables[T]["sets"][s]["timeout"] == 120 for s in _shl), (rt["errors"], _shl))
+check("Kernel SNI and IP-only make no shadow (xt_string learns per subnet, in rule order)",
+      N._smart_shadows([AL, BLK], DOMS, {}, "sni_kernel") == {} and N._smart_shadows([AL, BLK], DOMS, {}, "none") == {})
+check("a name that only PARTLY overlaps a pattern makes no shadow (`mail.google.com` against `mail.*` would hand over "
+      "x.mail.google.com, which `mail.*` does not name)",
+      N._smart_shadows([dict(AL, category="custom_g"), dict(BLK, category="custom_m")], {"custom_g": ["mail.google.com"]},
+                       {"first": {"custom_m": ["mail"]}}, "sni_user") == {})
+_ks = N._smart_shadows([AL, dict(BLK, category="custom_z"), dict(BLK, category="custom_c")], {"custom_al": ["sh.h2.example"]},
+                       {"zone": {"custom_z": ["example"]}, "contains": {"custom_c": ["h2.ex"]}}, "sni_user")
+check("an empty operand contains nothing (swg-sni's index drops it — an empty `contains` would claim every name)",
+      N._smart_shadows([AL, dict(BLK, category="custom_e")], {"custom_al": ["sh.h2.example"]}, {"contains": {"custom_e": [""]}},
+                       "sni_user") == {})
+check("an entry the chain drops (a selection id that is not 12 hex) makes no shadow either",
+      N._smart_shadows([dict(AL, src="../x"), BLK], DOMS, {}, "dns") == {})
+check("Hybrid SNI: a name inside a zone and inside a contains-pattern shadows both",
+      sorted((_ks.get("by_target") or {})) == ["custom_c", "custom_z"], _ks)
+check("Force-DNS takes only the kinds dnsmasq runs (the contains-pattern makes no shadow there)",
+      sorted((N._smart_shadows([AL, dict(BLK, category="custom_z"), dict(BLK, category="custom_c")], {"custom_al": ["sh.h2.example"]},
+                                {"zone": {"custom_z": ["example"]}, "contains": {"custom_c": ["h2.ex"]}}, "dns").get("by_target") or {}))
+      == ["custom_z"])
+
+# ── 8. the engines are handed the shadow categories, and dnsmasq rebuilds when only they change ────────────────────────────
+print("\n[shadow sets reach the engines]")
+_dq, _sq = [], []
+N._ensure_smart_dnsmasq = lambda domains, smart_e, res, unchanged=False, zones=None, nets=(): _dq.append((dict(domains), unchanged))
+N._ensure_sni_router = lambda domains, subnets, res, learn_ttl=3600, patterns=None: _sq.append(dict(domains or {}))
+
+
+def rc(entries, mode):
+    smart = {"entries": [dict(e) for e in entries], "categories": sorted({e["category"] for e in entries}), "mode": mode,
+             "srcs": SRC1, "domains": DOMS}
+    try:
+        N.reconcile_cascade({"interfaces": {}}, {}, smart, "")
+        return ""
+    except Exception as e:
+        return "%s: %s" % (type(e).__name__, e)
+
+
+K = fresh()
+N.run = lambda args, input_text=None, timeout=20: K(args, input_text, timeout) if args and args[0] == "nft" else \
+    __import__("subprocess").CompletedProcess(args, 0, "", "")
+N._DOMTIER_CACHE.pop("v", None)
+errs = [rc([AL, BLK, CA], "forcedns") for _ in range(2)] + [rc([ALL_, BLK, CA], "forcedns")]
+check("Force-DNS: reconcile_cascade runs with a shadow", not any(errs), errs)
+_sw = [k for k in (_dq[0][0] if _dq else {}) if k.startswith("sw_")]
+check("Force-DNS: dnsmasq gets the shadow category, holding Alice's name beside hers",
+      len(_sw) == 1 and _dq[0][0][_sw[0]] == ["sh.h2.example"] and _dq[0][0]["custom_al"] == ["sh.h2.example"], _dq[:1])
+check("Force-DNS: an unchanged pass tells dnsmasq it is unchanged", len(_dq) >= 2 and _dq[1][1] is True, [u for _d, u in _dq])
+check("Force-DNS: the rule turned into one for everyone (same names, same dom_sig) — dnsmasq rebuilds without the shadow",
+      len(_dq) >= 3 and _dq[2][1] is False and not any(k.startswith("sw_") for k in _dq[2][0]), [(sorted(d), u) for d, u in _dq])
+K = fresh()
+N.run = lambda args, input_text=None, timeout=20: K(args, input_text, timeout) if args and args[0] == "nft" else \
+    __import__("subprocess").CompletedProcess(args, 0, "", "")
+e_ = rc([AL, BLK, CA], "sni")
+check("Hybrid SNI: swg-sni's map carries the shadow category beside Alice's",
+      not e_ and _sq and any(k.startswith("sw_") and v == ["sh.h2.example"] for k, v in _sq[-1].items()), (e_, _sq[-1:]))
 
 shutil.rmtree(STATE, ignore_errors=True)
 print()

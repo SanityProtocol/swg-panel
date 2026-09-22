@@ -4278,6 +4278,120 @@ def _smart_src_members(pairs):
     return sorted(out)
 
 
+# SHADOW SETS — A MORE SPECIFIC NAME MUST NOT TAKE A HOST AWAY FROM RULES THAT DO NOT REACH THE SAME DEVICES.
+# Force-DNS (dnsmasq) and Hybrid SNI (swg-sni) put a host's address into the sets of the ONE most specific operand that
+# matches it (measured, see the dnsmasq note in _ensure_smart_dnsmasq and swg-sni's `_match`), and a category's set is
+# node-wide. So a name used only by some devices' rules empties it out of every broader name's set for all the others:
+# Alice's per-person `sh.example.com` → Direct un-blocked `example.com`'s Block for everyone else on her interface, and an
+# everyone-rule on wg9 did the same to wg0's (rig cells Z5/Z13 on P1, X1 on the 1.8.7 node). Where "most specific wins" is
+# the rule for the SAME devices it stays exactly as it is.
+#
+# The fix leaves both engines alone and gives them one more category, which they fill in lockstep with the claimer: a
+# shadow category `sw_<hash>` holding the claimer's operands that sit inside an operand of a broader category — one operand
+# in two categories fills both sets (dnsmasq's per-domain merge, swg-sni's `_index`). The chain matches it on each rule of
+# the broader category, for the devices that category is the right answer for: not those the claimer's rules reach, and not
+# those a MORE specific containing category's rules reach — they get that category's shadow instead (`iifname . ip saddr !=
+# @src_<wid>` for per-person rows; no rule at all where one of those categories has a rule for everyone on the subnet).
+# Containers are ranked by the engine's own ladder, so a claimed host lands where the engine would have put it without the
+# claimer: an `h2.example` Exit beats a `*.example` Block above it, as it does for everyone else. A shadow is made only for an
+# operand whose every host the broader operand also matches, so it never hands a rule a host that rule does not name.
+# What that leaves out, on Hybrid SNI only: a pattern that PARTLY overlaps the claimed name and ranks between it and the
+# container (`mail.*` between `google.com` and `*.com`) — its hosts (`mail.google.com`) take the container's verdict for
+# those devices rather than the pattern's; the pattern's others are not claimed at all. Dropping the shadow instead would
+# send every host of the name to "Everything else", which is wrong for all of them.
+_SHADOW = {"k": None, "v": {}, "dns": ""}   # the last answer and its inputs; the shadow signature dnsmasq last took
+
+
+def _smart_shadows(smart_e, domains, pats, engine, insig=None):
+    """→ {} (nothing claimed across devices — the common case, and then nothing below runs), or {"by_target": {cat: [(shadow,
+    claimer, [more specific containing categories])]}, "domains": {shadow: [name]}, "pats": {kind: {shadow: [operand]}},
+    "sig": str}. `insig` identifies `domains` and `pats` so an unchanged answer is not recomputed every pass."""
+    if engine not in ("dns", "sni_user"):                      # Kernel SNI learns per subnet, in rule order: nothing to shadow
+        return {}
+    kinds = ("zone",) if engine == "dns" else ("first", "zone", "any", "starts", "ends", "contains")   # what each engine runs
+    aud = {}                                                   # category → subnet → {selection id, or None for everyone}
+    for e in smart_e:                                          # the entries _ensure_smart_nft lowers, and only those
+        if e.get("category") and e["category"] != "all" and (not e.get("src") or _SRC_WID_RE.fullmatch(str(e["src"]))):
+            aud.setdefault(e["category"], {}).setdefault(e["subnet"], set()).add(e.get("src") or None)
+    keyed = [c for c in aud if (domains or {}).get(c) or any(c in ((pats or {}).get(k) or {}) for k in kinds)]
+    def gap(c1, c2):                                           # does some rule of c2 reach a device no rule of c1 reaches?
+        cov = aud[c1]
+        return any(None not in cov.get(S, ()) and not (w and w in cov.get(S, ())) for S, ws in aud[c2].items() for w in ws)
+    pairs = {(c1, c2) for c1 in keyed for c2 in keyed if c1 != c2 and gap(c1, c2)}
+    if not pairs:
+        return {}
+    k = (engine, insig, json.dumps(pats or {}, sort_keys=True), json.dumps(sorted(pairs))) if insig is not None else None
+    if k is not None and _SHADOW["k"] == k:
+        return _SHADOW["v"]
+    t2k = ("starts", "ends", "contains")
+    norm = lambda kd, s: str(s).lower() if kd in t2k else str(s).lower().strip(".")   # as swg-sni's _index; empty is dropped
+    def ops(c):                                                # (kind, as written, normalised) — swg-sni's map needs two labels
+        return ([("site", d, norm("site", d)) for d in (domains.get(c) or []) if norm("site", d)
+                 and (engine == "dns" or "." in norm("site", d))]
+                + [(kd, o, norm(kd, o)) for kd in kinds for o in ((pats.get(kd) or {}).get(c) or []) if norm(kd, o)])
+    def rank(kd, n, lb=()):                                    # the engine's ladder, lower wins — used among containers only
+        if engine == "dns":
+            return (-(n.count(".") + 1),)                      # dnsmasq: the longest key (a zone is a one-label key)
+        if kd == "site":
+            return (1, -(n.count(".") + 1))
+        if kd == "zone":
+            return (3,)
+        if kd == "any":
+            return (4, lb.index(n) if n in lb else 0)          # the leftmost label of the host wins
+        return (5, t2k.index(kd), -len(n), n)                  # Tier 2: starts, ends, contains; longest first
+    own = {"site": {}, "zone": {}, "any": {}}                  # kind → operand → {category}, every keyed category
+    t2 = {kd: {} for kd in t2k}
+    for c in keyed:
+        for kd, _raw, n in ops(c):
+            (t2 if kd in t2k else own).setdefault(kd, {}).setdefault(n, set()).add(c)
+    t2 = {kd: list(v.items()) for kd, v in t2.items()}
+    found = {}
+    for c1 in sorted({c1 for c1, _c2 in pairs}):
+        tg = {c2 for a, c2 in pairs if a == c1}
+        for kd, raw, n in ops(c1):
+            hit = []                                           # (category, rank): operands matching EVERY host this one matches
+            if kd == "site":
+                lb = n.split(".")
+                for j in range(1, len(lb) - (0 if engine == "dns" else 1)):   # parents (swg-sni's domain map needs two labels)
+                    hit += [(c, rank("site", ".".join(lb[j:]))) for c in own["site"].get(".".join(lb[j:]), ())]
+                hit += [(c, rank("zone", lb[-1])) for c in own["zone"].get(lb[-1], ())]
+                hit += [(c, rank("any", x, lb)) for x in lb for c in own["any"].get(x, ())]
+                hit += [(c, rank("ends", o)) for o, cs in t2["ends"] if n.endswith(o) for c in cs]
+            elif kd in ("first", "zone"):
+                hit += [(c, rank("any", n)) for c in own["any"].get(n, ())]
+                t = "starts" if kd == "first" else "ends"
+                hit += [(c, rank(t, o)) for o, cs in t2[t] if (n.startswith(o) if t == "starts" else n.endswith(o)) for c in cs]
+            elif kd in ("starts", "ends"):
+                hit += [(c, rank(kd, o)) for o, cs in t2[kd] if o != n and (n.startswith(o) if kd == "starts" else n.endswith(o))
+                        for c in cs]
+            hit += [(c, rank("contains", o)) for o, cs in t2["contains"] if o in n and (o != n or kd != "contains") for c in cs]
+            best = {}                                          # each containing category at its most specific operand
+            for c, r in hit:
+                if c != c1 and (c not in best or r < best[c]):
+                    best[c] = r
+            for c2 in best:
+                if c2 in tg:
+                    more = tuple(sorted(c3 for c3, r in best.items() if r < best[c2]))
+                    found.setdefault((c2, c1, more), {}).setdefault(kd, set()).add(raw)
+    out = {"by_target": {}, "domains": {}, "pats": {}}
+    for (c2, c1, more), byk in sorted(found.items()):
+        sh = "sw_" + hashlib.sha1("\n".join((c2, c1) + more).encode()).hexdigest()[:10]
+        out["by_target"].setdefault(c2, []).append((sh, c1, list(more)))
+        for kd, lst in byk.items():
+            (out["domains"] if kd == "site" else out["pats"].setdefault(kd, {}))[sh] = sorted(lst)
+    out = dict(out, sig=hashlib.sha1(json.dumps(out, sort_keys=True).encode()).hexdigest()[:16]) if found else {}
+    _SHADOW.update(k=k, v=out)
+    return out
+
+
+def _smart_shadowed(domains, pats, shw):
+    """The engines' inputs with the shadow categories added beside the claimers — new dicts; the cached ones are not touched."""
+    if not shw:
+        return domains, pats
+    return ({**(domains or {}), **shw["domains"]},
+            {kd: {**((pats or {}).get(kd) or {}), **shw["pats"].get(kd, {})} for kd in set(pats or {}) | set(shw["pats"])})
+
+
 _LOOP = {"n": 0}                       # reconcile-loop counter — drives per-loop caches (bumped at the top of main's loop)
 _SMART_TABLE = {"n": -1, "rc": 1, "out": "", "counts": {}, "setnames": set(), "bytes": {}}
 
@@ -4353,7 +4467,8 @@ class _NftBatch:
         return True
 
 
-def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_mark=0, queue=True, learn_ttl=3600, srcs=None):
+def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_mark=0, queue=True, learn_ttl=3600, srcs=None,
+                      shadows=None):
     """Phase 3 marking: keep an inet table `swg_smart` with one interval set per category (populated from
     shipped geo CIDR lists — see _smart_geo_refresh) and a prerouting chain that marks
     `ip saddr <S> ip daddr @cat_<c> meta mark set <T>`. Idempotent + drift-gated (flush+rebuild the chain
@@ -4396,6 +4511,13 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         if queue and _smart_learnsetname(c) not in have_sets:   # Hybrid-SNI: self-expiring learned-IP set (single IPs; TTL change handled in the rebuild block)
             run(["nft", "add", "set", "inet", SMART_NFT_TABLE, _smart_learnsetname(c),
                  "{ type ipv4_addr; flags timeout; timeout " + str(learn_ttl) + "s; }"])
+    shcats = sorted({x[0] for lst in ((shadows or {}).get("by_target") or {}).values() for x in lst})   # see _smart_shadows
+    for c in shcats:                                            # the same two sets a category has, filled by the same engines
+        if _smart_setname(c) not in have_sets:
+            run(["nft", "add", "set", "inet", SMART_NFT_TABLE, _smart_setname(c), "{ type ipv4_addr; flags interval; auto-merge; }"])
+        if queue and _smart_learnsetname(c) not in have_sets:
+            run(["nft", "add", "set", "inet", SMART_NFT_TABLE, _smart_learnsetname(c),
+                 "{ type ipv4_addr; flags timeout; timeout " + str(learn_ttl) + "s; }"])
     if "prerouting" not in re.findall(r"chain (\S+) {", body):
         run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "prerouting",
              "{ type filter hook prerouting priority mangle; policy accept; }"])
@@ -4434,8 +4556,24 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             for i in range(0, len(mem), 2000):
                 bat.add("add", "element", "inet", SMART_NFT_TABLE, sn, "{ " + ", ".join(mem[i:i + 2000]) + " }")
             src_stamps[sn] = msig
+    # Which entries also match a shadow set, and for whom: every device on the entry's subnet (or in its row) that no rule of
+    # the claiming category reaches there, nor any rule of a MORE specific containing category (that one's shadow serves them)
+    # — per-person rows are left out by their source sets, and a rule for everyone on the subnet means nobody is left.
+    sh_of = {}
+    if shcats:
+        aud = {}
+        for w in want:
+            aud.setdefault(w[1], {}).setdefault(w[0], set()).add(w[4] if len(w) > 4 else None)
+        for i, w in enumerate(want):
+            for sh, c1, more in shadows["by_target"].get(w[1], ()):
+                cov = set().union(*(aud.get(c, {}).get(w[0], set()) for c in [c1] + list(more)))
+                if None not in cov and not (len(w) > 4 and w[4] in cov):
+                    sh_of.setdefault(i, []).append((sh, sorted(x for x in cov if x)))
+    shw = [[i, sh, ex] for i, lst in sorted(sh_of.items()) for sh, ex in lst]
     v6f = sorted(set(v6_ifaces))                                # smart routing is IPv4-only → drop forwarded v6 on these ifaces (fail-closed, no leak)
     sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]   # s9: reverted the per-source blkd meter (its duplicate name killed the catl_blku drop rule → hybrid blocking broke); s7: +counter on the blku content-block drop; s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
+    if shw:                                                     # only then — a plan with no shadow signs exactly as before
+        sig = hashlib.sha1((sig + "|sh:" + json.dumps(shw)).encode()).hexdigest()[:16]
     _sigf = os.path.join(GEO_DIR, ".smart-sig")
     try:
         stored = open(_sigf).read().strip()
@@ -4478,6 +4616,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                         bat.add("delete", "set", "inet", SMART_NFT_TABLE, ln)      # absent one would abort the whole transaction
                         bat.add("add", "set", "inet", SMART_NFT_TABLE, ln,         # (one created above already has the new TTL)
                                 "{ type ipv4_addr; flags timeout; timeout " + str(learn_ttl) + "s; }")
+                for ln in [_smart_learnsetname(c) for c in shcats if _smart_learnsetname(c) in have_sets]:   # …a shadow's too
+                    bat.add("delete", "set", "inet", SMART_NFT_TABLE, ln)
+                    bat.add("add", "set", "inet", SMART_NFT_TABLE, ln, "{ type ipv4_addr; flags timeout; timeout " + str(learn_ttl) + "s; }")
                 stamps.append((_ttlm, str(learn_ttl)))         # like the sigs: only once the swap has actually landed,
                 #                                                else a rejected batch would mark a TTL change done that never happened
         def _add(*a):
@@ -4502,6 +4643,19 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 bat.add("delete", "chain", "inet", SMART_NFT_TABLE, c)
 
         _row_of = {i: k for k, r in enumerate(rows) for i in range(r["start"], r["end"])}
+
+        def _shadow_rules(i, emit, fin):                       # right after entry i's own rules, with its verdict (see sh_of)
+            _S, c2, a2, T2 = want[i][:4]
+            for sh, ex in sh_of.get(i, ()):
+                xm = [t for x in ex for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))]
+                for snm in [_smart_setname(sh)] + ([_smart_learnsetname(sh)] if queue else []):
+                    if a2 == "exit":
+                        emit(*xm, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T2), *(["ct", "mark", "set", str(T2)] if pin else []), fin)
+                    elif a2 == "direct":
+                        emit(*xm, *_new, "ip", "daddr", "@" + snm, fin)
+                    elif a2 == "block":
+                        emit(*xm, "ip", "daddr", "@" + snm, *(["counter"] if str(c2).startswith("blku") else []), "drop")
+
         for i, w in enumerate(want):
             S, cat, act, T = w[:4]
             if len(w) > 4:                                     # a per-person entry: its row's ONE jump, then its rules inside the row,
@@ -4516,6 +4670,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                         bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "accept")
                     elif act == "block":
                         bat.add(*_row, "ip", "daddr", "@" + snm, "drop")
+                _shadow_rules(i, lambda *m, _k=k: bat.add("add", "rule", "inet", SMART_NFT_TABLE, "sr%d" % _k, *m), "accept")
                 continue
             if cat == "all":                                   # catch-all — no dest set, emitted last for its subnet
                 if act == "exit":
@@ -4535,6 +4690,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                         #                                                                       for BOTH cat_ and catl_ (Hybrid learned) sets
                     else:
                         _add("ip", "saddr", S, "ip", "daddr", "@" + snm, "drop")
+            _shadow_rules(i, lambda *m, _S=S: _add("ip", "saddr", _S, *m), "return")
         if pin and queue:                                       # feed each connection's first packets to swg-sni (userspace SNI); kernel-SNI reads them via xt_string instead → no queue
             for S in subnets:
                 _add("ip", "saddr", S, "tcp", "dport", "443", "ct", "state", "established", "ct", "packets", "lt", "12", "queue", "num", str(SNI_NFQUEUE), "bypass")
@@ -4658,6 +4814,8 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     # abort the whole rebuild.
     wanted_sn = {_smart_setname(c) for c in cats if c != "all"}
     wanted_ln = {_smart_learnsetname(c) for c in cats if c != "all"}
+    wanted_sn |= {_smart_setname(c) for c in shcats}           # a shadow that is no longer wanted goes the same way
+    wanted_ln |= {_smart_learnsetname(c) for c in shcats}
     for sn in have_sets:
         if ((sn.startswith("cat_") and sn not in wanted_sn) or (sn.startswith("catl_") and sn not in wanted_ln)
                 or (sn.startswith("src_") and sn not in want_src)):                              # …and a per-person row's source set
@@ -7198,9 +7356,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                         | {(_wdtt_raw(w) or ("", "", ""))[1] for w in _wdtt_load().values()
                            if _wdtt_raw(w) and _wdtt_subnet(_wdtt_raw(w)[2]) in _smart_subs}   # the RAW TUN of a smart-routed qWDTT instance — v6 must fail closed there too
                         | {ifn for ifn, c in _csqtt_load().items() if _csqtt_subnet((c or {}).get("tun_addr") or "") in _smart_subs})) if _smart_subs else []
-    set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=is_sni, v6_ifaces=smart_ifs,
-                                    reset_mark=(SNI_RESET_MARK if is_sni else 0), queue=(host_engine == "sni_user"),
-                                    learn_ttl=learn_ttl, srcs=(smart or {}).get("srcs"))
+    # (The nft chain is built further down, once the name lists below are known: a shadow set is derived from them.)
     domains = dict((smart or {}).get("domains") or {})         # domain-tier bundles {cat:[domain]} → dnsmasq/sni/kernel-filled
     if mode != "kernel":                                       # CATALOG host cats (no curated bundle) → seed empty so the node domain-fills them from MetaCubeX
         for _c, _caps in _CAT_CAPS.items():
@@ -7251,6 +7407,12 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         for cat, fl in _fetched.items():
             domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))
         _DOMTIER_CACHE["v"] = (dom_sig, domains)
+    # A more specific name must not take a host away from rules for other devices (_smart_shadows): the shadow sets are
+    # built with the chain, and the two engines that decide by specificity are handed the shadow categories beside it.
+    _shw = _smart_shadows(smart_e, domains, _pats, host_engine, insig=dom_sig)
+    set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=is_sni, v6_ifaces=smart_ifs,
+                                    reset_mark=(SNI_RESET_MARK if is_sni else 0), queue=(host_engine == "sni_user"),
+                                    learn_ttl=learn_ttl, srcs=(smart or {}).get("srcs"), shadows=_shw)
     # GEOIP cats fill from cached CIDR lists (TTL-gated). A cat that ALSO has domains shares its set with dnsmasq:
     # it loads ADDITIVELY (geoip floor + dnsmasq precision on top) instead of being handed over wholesale. It used
     # to be skipped and its list deleted, which left services that connect by IP without DNS — Telegram voice/media
@@ -7266,6 +7428,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _SMART_MODE.pop("lowered", None)
     _SMART_MODE.pop("no_lower", None)          # same lifetime as `lowered`: set by whichever engine installs
     if host_engine == "sni_user":                             # userspace swg-sni fills the domain cats from the TLS
+        domains, _pats = _smart_shadowed(domains, _pats, _shw)   # the shadow categories beside their claimers (_smart_shadows)
         _ensure_sni_router(domains, _subs, res, learn_ttl, patterns=_pats)   # handshake (client DNS untouched); enriched lists OK here
         _ensure_smart_xtstring([], {}, 0, res, active=False)  # ensure the kernel engine is torn down
         reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain
@@ -7304,6 +7467,11 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         # expected and reconciling a teardown every five seconds on every kernel-mode node would be a
         # constant cost for nothing. For a Force-DNS node with nothing routed it is one diff-gated redirect
         # reconcile plus a teardown that finds nothing.
+        # The shadow categories beside their claimers (_smart_shadows) — and a changed shadow is a changed config, whatever
+        # dom_sig says: turning a rule for everyone into one for chosen people changes no name, only who they are for.
+        if _SHADOW["dns"] != (_shw or {}).get("sig", ""):
+            dom_unchanged, _SHADOW["dns"] = False, (_shw or {}).get("sig", "")
+        domains = _smart_shadowed(domains, _pats, _shw)[0]
         if host_engine == "dns" or smart_e or domains or _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=dom_unchanged, zones=_zones, nets=nets)
         # Force-DNS runs `zone` and nothing else — a name is a dnsmasq key, and there is no key shape for
@@ -7912,8 +8080,10 @@ def _block_activity():
                 out.setdefault(sub.group(1), {})["mech"] = int(pk.group(1))
     with contextlib.suppress(Exception):                          # blocked: cumulative packets dropped to a content-block set,
         pre = run(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "prerouting"]).stdout or ""   # summed per source subnet
+        _bsw = {x[0] for c2, lst in ((_SHADOW["v"] or {}).get("by_target") or {}).items() if str(c2).startswith("blku") for x in lst}
         for ln in pre.splitlines():                               # rule: ip saddr <sub> ip daddr @cat_blku_… counter packets N … drop
-            if "blku" not in ln or "drop" not in ln:
+            _m = re.search(r"@catl?_(sw_[0-9a-f]{10})\b", ln) if _bsw else None   # …or a block list's shadow (_smart_shadows)
+            if ("blku" not in ln and not (_m and _m.group(1) in _bsw)) or "drop" not in ln:
                 continue
             sub = re.search(r"ip saddr (" + IP + r")", ln)
             pk = re.search(r"counter packets (\d+)", ln)
@@ -8013,7 +8183,8 @@ def smart_status():
                 **({"block": _block_activity()} if _MECH_ON["subs"] else {})}
     rules = len(_SMART_MARK_RE.findall(t["out"]))
     resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\d+)", t["out"]))   # SNI first-hit RSTs
-    return {**base, "active": rules > 0, "sets": dict(t["counts"]), "rules": rules,
+    return {**base, "active": rules > 0,                        # a shadow set repeats its claimer's hosts: not a destination of its own
+            "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}", k)}, "rules": rules,
             "bytes": dict(t["bytes"]), "resets": resets,   # bytes: {cat:{up,dn}} cumulative destination stats
             "block": _block_activity(),                    # {subnet:{torrent,scan}} blocking activity from existing state (reach is in `sets`)
             "blk_domains": _blk_domains_read()}            # {host:count} blocked-domain top-K (SNI mode) → panel buckets into categories
