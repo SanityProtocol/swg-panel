@@ -14,8 +14,11 @@
  *     A 2.0 interface whose node lags on a 2.0 value is not a switch (every 2.0 fleet would grow a "switching" tag).
  * [6] awg31No — the refusal the Edit sheet greys 3.1 with: an interface on the userspace fallback takes the panel's
  *     per-interface answer (null included — offered), every other one the node's.
+ * [7] the 3.1 colour is tunable like every protocol's — ifaceColor("awg3") is its default until Settings → Interfaces saves a
+ *     pick, and applyThemeColors puts the pick on --awg3, the one property every 3.1 badge, the switch and the caption read.
+ *     A 3.1 pick leaves the 2.0 colour alone.
  *
- * Run: node tests/spa_awg3_ui_selftest.mjs     --perturb tip|samekey|gen|tag|catalog|pending|fork3|us   plants one and expects RED.
+ * Run: node tests/spa_awg3_ui_selftest.mjs     --perturb tip|samekey|gen|tag|catalog|pending|fork3|us|colour|var   plants one and expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -37,6 +40,8 @@ const PLANTS = {
   fork3: ["turn-catalog.js", "  return !f || f.awg3 !== false;", "  return true;"],
   us: ["model.js", "  return (us && Object.prototype.hasOwnProperty.call(us, iface)) ? us[iface] : ((nrec || {}).awg31_no || null);",
        "  return (nrec || {}).awg31_no || null;"],
+  colour: ["ui.js", 'const k = t === "awg" ? "awg" : t === "awg3" ? "awg3" : t === "wdtt"', 'const k = t === "awg" ? "awg" : t === "wdtt"'],
+  var: ["ui.js", '  de.style.setProperty("--awg3", awg3);', ""],
 };
 const made = [];
 const load = async name => {
@@ -119,5 +124,20 @@ check("on a 3.1 fallback: offered, whatever the module says", M.awg31No(nrec, "a
 check("on a 3.0 fallback: the fallback's own refusal", M.awg31No(nrec, "awg7") === FB, M.awg31No(nrec, "awg7"));
 check("on the kernel: the node's (the module's)", M.awg31No(nrec, "awg6") === MOD, M.awg31No(nrec, "awg6"));
 check("a node with no per-interface map: the node's, or null", M.awg31No({ awg31_no: MOD }, "awg6") === MOD && M.awg31No({}, "x") === null && M.awg31No(null, "x") === null);
+
+console.log("\n[7] the 3.1 colour: its default until a pick is saved, then the pick — on --awg3");
+const { IFACE_COLOR_DEFAULTS } = await import(pathToFileURL(path.join(ROOT, "js", "theme.js")).href);
+const props = {};
+document.documentElement.style.setProperty = (k, v) => { props[k] = v; };   // applyThemeColors writes --brand, --awg3, … here
+document.getElementById = () => null;
+Store.panelSettings = {};
+check("no pick: the default blue", U.ifaceColor("awg3") === IFACE_COLOR_DEFAULTS.awg3.dark && IFACE_COLOR_DEFAULTS.awg3.dark === "#4481FF", U.ifaceColor("awg3"));
+U.applyThemeColors();
+check("…and --awg3 carries it", props["--awg3"] === "#4481FF", props["--awg3"]);
+Store.panelSettings = { iface_colors: { awg3: { dark: "#FF00AA", light: "#1D3FD6" } } };
+check("a saved pick: the pick", U.ifaceColor("awg3") === "#FF00AA", U.ifaceColor("awg3"));
+U.applyThemeColors();
+check("…on --awg3", props["--awg3"] === "#FF00AA", props["--awg3"]);
+check("…and the 2.0 colour is left alone", U.ifaceColor("awg") === IFACE_COLOR_DEFAULTS.awg.dark, U.ifaceColor("awg"));
 
 done(!!MODE, MODE);

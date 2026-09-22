@@ -1737,7 +1737,7 @@ export function applyForkColors() {
 export function ifaceColor(type) {
   const t = (type || "").toLowerCase();
   const ov = (Store.panelSettings && Store.panelSettings.iface_colors) || {};
-  const k = t === "awg" ? "awg" : t === "wdtt" ? "wdtt" : t === "csqtt" ? "csqtt" : "wg";   // WDTT + csqtt (keyless proxy targets) are operator-tunable too
+  const k = t === "awg" ? "awg" : t === "awg3" ? "awg3" : t === "wdtt" ? "wdtt" : t === "csqtt" ? "csqtt" : "wg";   // WDTT + csqtt (keyless proxy targets) are operator-tunable too
   return pickThemed(ov[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light);
 }
 // perceived brightness (0–1) of a #rrggbb / #rgb colour — used to pick a contrasting ink for text on the brand.
@@ -1752,8 +1752,8 @@ export function themeColor() {
 // faulty classes (they don't read a custom property, so like the turn tags they need an explicit rule).
 let _themeSig = null;
 export function applyThemeColors() {
-  const theme = themeColor(), wg = ifaceColor("wg"), awg = ifaceColor("awg"), wdtt = ifaceColor("wdtt"), csqtt = ifaceColor("csqtt");
-  const sig = [resolvedTheme(), theme, wg, awg, wdtt, csqtt].join("|");
+  const theme = themeColor(), wg = ifaceColor("wg"), awg = ifaceColor("awg"), awg3 = ifaceColor("awg3"), wdtt = ifaceColor("wdtt"), csqtt = ifaceColor("csqtt");
+  const sig = [resolvedTheme(), theme, wg, awg, awg3, wdtt, csqtt].join("|");
   if (sig === _themeSig) return;   // nothing changed since last poll → skip the DOM write
   _themeSig = sig;
   const de = document.documentElement, cm = (c, p, m) => "color-mix(in srgb, " + c + " " + p + "%, " + m + ")";
@@ -1761,6 +1761,7 @@ export function applyThemeColors() {
   de.style.setProperty("--brand", brand);
   de.style.setProperty("--brand-2", cm(brand, 70, "#fff"));   // the lighter brand accent
   de.style.setProperty("--tp-rx", brand);                      // throughput chart "down" series tracks the theme
+  de.style.setProperty("--awg3", awg3);                        // an AmneziaWG 3.1 interface's badges, switch and caption (app.css var(--awg3))
   // text sitting ON the brand colour (primary buttons) must contrast with whatever colour was applied — dark ink on a
   // light brand, light ink on a dark one — so a dark theme colour doesn't make the button label invisible.
   de.style.setProperty("--brand-ink", hexLum(brand) > 0.55 ? "#04232A" : "#EAFBFF");

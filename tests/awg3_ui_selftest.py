@@ -16,10 +16,12 @@ auth; three nodes played by POSTing snapshots; `curl` shimmed so nothing is fetc
   [4] per interface where the answer differs: on a node whose kernel module is 2.0, an interface running on a 3.1 userspace
       fallback is judged by that fallback — /api/state says so (`awg31_no_us`) and the switch of it goes through — while a
       kernel interface on the same node stays refused; a node with nothing on the fallback carries no such key
+  [5] Settings → Interfaces colours: the AmneziaWG 3.1 badge colour (`iface_colors.awg3`) is kept and served like the other
+      protocols' — a key the panel does not know, or a value that is not a colour, is dropped
 
 Run: python3 tests/awg3_ui_selftest.py        (0 = pass)
      --perturb <name>   plants one regression in a copy of the panel and expects RED on exactly its sections:
-                        refusal [1][3][4] · store20 [2] · keep [2] · fragile [3][4] · us [4]
+                        refusal [1][3][4] · store20 [2] · keep [2] · fragile [3][4] · us [4] · colour [5]
 """
 import json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
@@ -36,6 +38,8 @@ PLANTS = {
              '            _ag = idf.get("awg_gen")\n', ["[2]"]),
     "fragile": ('    return isinstance(_awg_datapath(snap).get("gen"), dict)\n',
                 '    return isinstance((((snap if isinstance(snap, dict) else {}).get("datapath") or {}).get("awg") or {}).get("gen"), dict)\n', ["[3]", "[4]"]),   # the poll fails for every node after it
+    "colour": ('            for k in ("wg", "awg", "awg3", "wdtt", "csqtt"):',
+               '            for k in ("wg", "awg", "wdtt", "csqtt"):', ["[5]"]),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else None
 FAILS = []; SECTION = [""]
@@ -160,6 +164,17 @@ try:
     c6, r6 = req("/api/iface/update", {"node": "fb", "iface": "awg6", "awg_gen": "3.1"})
     check("…while awg6 is refused for the module (%d)" % c6, c6 == 400 and "kernel module" in str(r6.get("error_key")), r6)
     check("a node with nothing on the fallback carries no per-interface map", all("awg31_no_us" not in (n or {}) for k, n in by.items() if k != "fb"))
+
+    SECTION[0] = "[5]"; print("[5] the AmneziaWG 3.1 badge colour is a setting like the others")
+    ic = lambda: (json.load(open(PS)) if os.path.exists(PS) else {}).get("iface_colors")
+    req("/api/panel/settings", {"iface_colors": {"awg3": {"dark": "#FF00AA", "light": "#1D3FD6"}, "wg": {"dark": "#3FD89A", "light": "#0E9E63"},
+                                                 "awg4": {"dark": "#000000", "light": "#000000"}, "awg": {"dark": "red", "light": 7}}})
+    check("awg3 is stored beside wg", (ic() or {}).get("awg3") == {"dark": "#FF00AA", "light": "#1D3FD6"} and "wg" in (ic() or {}), ic())
+    check("an unknown key and a value that is not a colour are dropped", "awg4" not in (ic() or {}) and "awg" not in (ic() or {}), ic())
+    st = ((req("/api/state")[1].get("data") or {}).get("panel_settings") or {}).get("iface_colors") or {}
+    check("/api/state serves it to the SPA", st.get("awg3") == {"dark": "#FF00AA", "light": "#1D3FD6"}, st)
+    req("/api/panel/settings", {"iface_colors": {}})
+    check("Reset (an empty map) clears it", ic() == {}, ic())
 finally:
     proc.terminate()
     try:

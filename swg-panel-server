@@ -17462,10 +17462,10 @@ def api(method, path, qs, body, deps):
                     if ex and no_ctrl(ex): fv["_extra"] = ex
                 smerged[fk] = fv
             cur["turn_server_defaults"] = smerged
-        ic = incoming.get("iface_colors")               # per-protocol interface colour overrides {wg,awg: {dark,light}}
+        ic = incoming.get("iface_colors")               # per-protocol interface colour overrides {wg,awg,awg3,…: {dark,light}}
         if isinstance(ic, dict):
             out_ic = {}
-            for k in ("wg", "awg", "wdtt", "csqtt"):
+            for k in ("wg", "awg", "awg3", "wdtt", "csqtt"):   # awg3 = an AmneziaWG 3.1 interface's badges
                 tc = _themed_color(ic.get(k))
                 if tc: out_ic[k] = tc
             cur["iface_colors"] = out_ic

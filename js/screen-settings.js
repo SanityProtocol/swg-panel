@@ -1836,6 +1836,7 @@ export function PanelSettingsScreen() {
   const [ifaceColors, setIfaceColors] = useState(() => ({
     wg: asThemed((ps.iface_colors || {}).wg, IFACE_COLOR_DEFAULTS.wg.dark, IFACE_COLOR_DEFAULTS.wg.light),
     awg: asThemed((ps.iface_colors || {}).awg, IFACE_COLOR_DEFAULTS.awg.dark, IFACE_COLOR_DEFAULTS.awg.light),
+    awg3: asThemed((ps.iface_colors || {}).awg3, IFACE_COLOR_DEFAULTS.awg3.dark, IFACE_COLOR_DEFAULTS.awg3.light),
     wdtt: asThemed((ps.iface_colors || {}).wdtt, IFACE_COLOR_DEFAULTS.wdtt.dark, IFACE_COLOR_DEFAULTS.wdtt.light),
     csqtt: asThemed((ps.iface_colors || {}).csqtt, IFACE_COLOR_DEFAULTS.csqtt.dark, IFACE_COLOR_DEFAULTS.csqtt.light) }));
   const [themeColorS, setThemeColorS] = useState(clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false));         // dark-mode accent (shown = applied)
@@ -1852,7 +1853,7 @@ export function PanelSettingsScreen() {
   // overrides derived from a raw source (state OR the stored panel-settings), normalized identically so a legacy
   // single-colour value in panel-settings compares equal to its normalized {dark,light} form (no phantom "dirty").
   const forkOvFrom = src => { const o = {}; for (const f of turnForkList()) { const t = asThemed((src || {})[f.id], f.color, f.colorL); if (!sameThemed(t, f.color, f.colorL)) o[f.id] = t; } return o; };
-  const ifaceOvFrom = src => { const o = {}; for (const k of ["wg", "awg", "wdtt", "csqtt"]) { const t = asThemed((src || {})[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light); if (!sameThemed(t, IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light)) o[k] = t; } return o; };
+  const ifaceOvFrom = src => { const o = {}; for (const k of ["wg", "awg", "awg3", "wdtt", "csqtt"]) { const t = asThemed((src || {})[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light); if (!sameThemed(t, IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light)) o[k] = t; } return o; };
   const forkColorOverrides = () => forkOvFrom(forkColors);
   const ifaceColorOverrides = () => ifaceOvFrom(ifaceColors);
   const statusCondsOut = () => ({ blocked: statusConds.blocked, faulty: statusConds.faulty });
@@ -2779,13 +2780,15 @@ const sectionLabel = k => ({
         ${section === "access" ? html`<${AccessTLSCard} onChange=${onAccess}/>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">${T("Interface colours")}<span class="grow"></span>
-            ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg }, wdtt: { ...IFACE_COLOR_DEFAULTS.wdtt }, csqtt: { ...IFACE_COLOR_DEFAULTS.csqtt } })}><${Ic} i="refresh"/>${T("Reset")}</button>` : null}</div>
+            ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg }, awg3: { ...IFACE_COLOR_DEFAULTS.awg3 }, wdtt: { ...IFACE_COLOR_DEFAULTS.wdtt }, csqtt: { ...IFACE_COLOR_DEFAULTS.csqtt } })}><${Ic} i="refresh"/>${T("Reset")}</button>` : null}</div>
           <p class="hint" style="margin:0 0 12px">${T("The colour each protocol's tags take everywhere — a value per theme. Hover a swatch to preview it.")}</p>
           <div class="palrow">
-            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wg} title=WireGuard onChange=${nv => setIfaceColors(c => ({ ...c, wg: nv }))}
-              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>wg</span>`}/><span class="pallbl">WireGuard</span></span>
-            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.awg} title=AmneziaWG onChange=${nv => setIfaceColors(c => ({ ...c, awg: nv }))}
-              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/><span class="pallbl">AmneziaWG</span></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wg} title="WG" onChange=${nv => setIfaceColors(c => ({ ...c, wg: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>wg</span>`}/><span class="pallbl">WG</span></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.awg} title="AWG 2.0" onChange=${nv => setIfaceColors(c => ({ ...c, awg: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/><span class="pallbl">AWG 2.0</span></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.awg3} title="AWG 3.1" onChange=${nv => setIfaceColors(c => ({ ...c, awg3: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/><span class="pallbl">AWG 3.1</span></span>
             <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wdtt} title=WDTT onChange=${nv => setIfaceColors(c => ({ ...c, wdtt: nv }))}
               sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>WDTT</span>`}/><span class="pallbl">WDTT</span></span>
             <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.csqtt} title=CSQTT onChange=${nv => setIfaceColors(c => ({ ...c, csqtt: nv }))}
