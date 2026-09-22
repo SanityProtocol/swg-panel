@@ -70,7 +70,7 @@ subscription and no one else sitting in the middle of your traffic.
   understands, or 3.1, which adds header protection and random trailers. Pick it when you create the
   interface and switch either way later: the panel first shows who the switch cuts off until they
   re-import, network gateways first, and refuses while a WINGS-N turn proxy points there. A 3.1 interface
-  wears a teal badge. [Which apps connect ↓](#a-few-things-worth-knowing)
+  wears a blue badge. [Which apps connect ↓](#a-few-things-worth-knowing)
 - **Filter out the junk.** Block ads, trackers, malware, adult content, gambling and more — per server, from
   curated category lists — and watch a live **Protection** panel show what's being caught, per category, plus
   which user is behind the torrents and port-scans it flags.
