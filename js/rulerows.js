@@ -53,9 +53,13 @@ const isLegacy = r => !!(r && (r.match || r.tlds));          // a `tld` rule: sh
 // second exit would be silently gone on the next save — §5.8's collapse, in the shape P5 introduces.
 // ⚠️ …AND WHOM IT IS FOR. Two runs with different selections must never merge, or the second is re-emitted with the
 // first one's people (ROUTING-PEERS-MESH-PLAN T13). Appended only when a rule has one, so every other key is unchanged.
+// ⚠️ …AND WHICH ADDRESS IT LEAVES BY. The same trap once more, in the shape P2 introduces: two runs to the same node with
+// different exit IPs would merge and the second come back with the first one's address. Appended the same way, and after
+// the selection, so a rule carrying neither keys exactly as it did before either existed.
 const rowKey = r => [r.action || "exit",
                      r.action === "exit" ? (r.node || "") : r.action === "dev" ? (r.exit_id || "") : "",
-                     ruleOn(r) ? 1 : 0].join("|") + (r.who ? "|" + JSON.stringify(canonWho(r.who)) : "");
+                     ruleOn(r) ? 1 : 0].join("|") + (r.who ? "|" + JSON.stringify(canonWho(r.who)) : "")
+                     + (r.exit_ip ? "|@" + r.exit_ip : "");
 
 /* PER-PERSON RULES (ROUTING-PEERS-MESH-PLAN §4.2). A rule with `who` applies only to the users, groups and devices it names,
    on its own interface. It is STORED `enabled: false`, so every older reader skips it — a released panel would otherwise
@@ -135,7 +139,12 @@ export function rulesToRows(rules) {
     rows.push({ _gid: newGid(), _key: key, enabled: ruleOn(rule), action: rule.action || "exit",
                 node: rule.action === "exit" ? (rule.node || "") : "",
                 exit_id: rule.action === "dev" ? (rule.exit_id || "") : "", badges: badgesOf(rule),
-                ...(rule.who && typeof rule.who === "object" ? { who: canonWho(rule.who) } : {}) });
+                ...(rule.who && typeof rule.who === "object" ? { who: canonWho(rule.who) } : {}),
+                // The pin, on a forward rule that is for everyone — the only shape the panel accepts it in
+                // (`exit_ip_who`). Read back under the same condition it is written, so a hand-edited rule
+                // carrying both does not come back out of this as a save the door would refuse.
+                ...(rule.action === "exit" && rule.exit_ip && !(rule.who && typeof rule.who === "object")
+                    ? { exit_ip: String(rule.exit_ip) } : {}) });
   }
   return { rows, catchAll };
 }
@@ -154,6 +163,11 @@ export function rowsToRules(rows, catchAll) {
     if (base.action === "dev") base.exit_id = row.exit_id || "";
     // the guarded shape: off to every older reader, the switch and the people in `who`
     if (row.who) { base.who = { on: base.enabled, ...canonWho(row.who) }; base.enabled = false; }
+    // …and the exit IP, which is the other half of a destination: WHICH of the far node's addresses this
+    // leaves by. Emitted only where the panel accepts it — a forward, for everyone — so the window and the
+    // wire cannot disagree, and a row that has just been switched to "chosen people" drops it here rather
+    // than sending a pair the door refuses.
+    if (base.action === "exit" && row.exit_ip && !row.who) base.exit_ip = String(row.exit_ip);
     for (const b of badges) if (b.t === "list") out.push({ ...base, category: b.id });
     const typed = badges.filter(b => b.t === "target");
     // One custom rule for the whole row: identical bundles share an nft set on the node, and `targets` is

@@ -87,11 +87,11 @@ check("`can't run here` and `pointing nowhere` are not folded into one count",
 
 console.log("\n[4] the picker keeps the stored value visible, rather than rendering a blank");
 const js = fs.readFileSync(SRC, "utf8");
-// (a third argument, `adv`, adds "Advanced…" to a rule row's list — ROUTING-PEERS-MESH-PLAN §7.1 — and changes nothing here)
+// (a third argument, `adv`, adds "Advanced…" to a list — a rule row's since §7.1, the catch-all's since P2 — and changes nothing here)
 check("`destOpts` is told which value the control is holding",
       /const destOpts = \(withDefault, held(, adv)?\) =>/.test(js));
 check("…and both controls tell it — the row and the catch-all",
-      /options=\$\{destOpts\(false, destVal\(row\)(, [^)}]+)?\)\}/.test(js) && /options=\$\{destOpts\(true, catchVal\)\}/.test(js));
+      /options=\$\{destOpts\(false, destVal\(row\)(, [^)}]+)?\)\}/.test(js) && /options=\$\{destOpts\(true, catchVal(, [^)}]+)?\)\}/.test(js));
 check("…a gone destination is appended as a REFUSING row, not a selectable one",
       /refuse: _gone\.why/.test(js) && /className: "bad"/.test(js));
 check("…and it is derived from the SAME lists the options are built from",

@@ -6330,6 +6330,16 @@ export const STR = {
   "This browser tab is older than the panel — reload it before saving routing.": "Эта вкладка старее панели — перезагрузите её перед сохранением маршрутизации.",
   "{v1} needs an update to route per person — these rules apply to nobody there until it is.": "{v1} нужно обновить для маршрутизации по людям — до обновления эти правила там ни на кого не действуют.",
   "rows must be a list of selections": "rows должен быть списком выборок",
+  // The exit IP (ROUTING-PEERS-MESH-PLAN §7.1–7.2, §7.4, D6): which of the far node's addresses a rule's traffic leaves it by
+  "As address": "С адреса",
+  "Auto ({v1}'s default)": "Авто (по умолчанию для {v1})",
+  "Every rule that sends this interface through {v1} leaves as this address.": "Все правила, которые отправляют этот интерфейс через {v1}, выходят с этого адреса.",
+  "{v1} hasn't reported its addresses yet — type one it has, or leave this on Auto.": "{v1} ещё не сообщил свои адреса — введите один из его адресов или оставьте «Авто».",
+  "as {v1}": "с {v1}",
+  // …and the panel's two refusals for it
+  "An address can be chosen only for rules that apply to everyone on this interface.": "Адрес выхода можно выбрать только для правил, которые действуют на всех на этом интерфейсе.",
+  "Two rules send this interface through {v1} with different addresses.": "Два правила отправляют этот интерфейс через {v1} с разных адресов.",
+  "the exit address must be an IPv4 address": "адрес выхода должен быть адресом IPv4",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the
