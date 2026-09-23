@@ -328,6 +328,11 @@ Its limits:
   people, groups or single devices. The same window is where a rule that forwards to another server picks
   **which of that server's addresses** the traffic leaves it by — useful when a server has several and a site
   expects one of them.
+  A server's own default can be a rule list too — **Settings → Network → Default exit → Routing (smart cascade)**:
+  one list for its interfaces set to **Auto** and for the traffic other servers send out through it, and each rule
+  can narrow itself to **this node's own clients** or to **traffic cascaded in**. A **Forward to node** rule there
+  sends traffic cascaded in one hop further — to a server the first one can't reach — and that server lets it out
+  and never forwards it again.
 - **Get past tougher blocks (optional).** If plain VPN traffic is blocked on a network, swgPanel can wrap
   it through a **turn-proxy** — set up under a server’s details and in **Settings → Turn proxies**.
 - **Feed other tools (optional).** The panel can share live status with dashboards like **Grafana** or
@@ -460,6 +465,25 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   the rules keep forwarding to the right server and that server picks the address itself — and it starts
   applying again when you upgrade. If a server stops reporting an address something is pinned to, the rule
   says so: traffic would leave with a source that server can't receive replies on.
+- **A server's routing list applies to traffic cascaded in once that server is updated.** Until then it sends
+  all of it out the list's **Everything else** as a plain default — or out its own address when that is Direct or
+  Block — and its card says so. Traffic an interface pins to one of that server's addresses skips the list, as it
+  skips a plain default. An interface whose own **Everything else** is left on **Node default** goes through the
+  server's list after its own rules; on **Hybrid SNI** and **Force-DNS** a more specific site in the server's list
+  wins over the interface's broader one, and the interface's rule says so. Once the list has a rule for this
+  server's own clients, its interfaces set to **Auto** are routed by it the way a smart interface is: their IPv6 is
+  dropped, and on **Hybrid SNI** or **Kernel SNI** they lose HTTP/3 too. A list with only **Everything else** changes
+  nothing for them. Clients cascaded into a **Hybrid SNI**
+  or **Kernel SNI** server lose HTTP/3, as on a smart interface. Their traffic is counted on the dashboard of the
+  server they connected to. Going back to an older version on a server that ran such a list: run
+  `nft delete table inet swg_smart` on it once (and on **Kernel SNI** also `ipset destroy swga`).
+- **An onward hop hides the clients from the last server.** Traffic a server's list forwards one hop further reaches
+  that server as coming from the middle server, so abuse is traced through the middle server's connections. A
+  server behind heavy filtering that cascades everything to a neighbour shows its own links abroad as down under
+  **Full mesh**; switch the fleet to **On demand**, which never creates them.
+- **A default exit now also catches routed traffic.** Traffic another server sends through this one by a routing
+  rule now leaves by this server's default exit, as whole-interface forwarding always did — with the exit's
+  kill-switch on, it now stops when the exit is down instead of leaving by the server's own address.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more
