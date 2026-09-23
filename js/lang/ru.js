@@ -6330,16 +6330,18 @@ export const STR = {
   "This browser tab is older than the panel — reload it before saving routing.": "Эта вкладка старее панели — перезагрузите её перед сохранением маршрутизации.",
   "{v1} needs an update to route per person — these rules apply to nobody there until it is.": "{v1} нужно обновить для маршрутизации по людям — до обновления эти правила там ни на кого не действуют.",
   "rows must be a list of selections": "rows должен быть списком выборок",
-  // The exit IP (ROUTING-PEERS-MESH-PLAN §7.1–7.2, §7.4, D6): which of the far node's addresses a rule's traffic leaves it by
+  // The exit IP (ROUTING-PEERS-MESH-PLAN §7.1–7.2, §7.4, D6): which of the far node's addresses this interface's traffic leaves it by
   "As address": "С адреса",
   "Auto ({v1}'s default)": "Авто (по умолчанию для {v1})",
   "Every rule that sends this interface through {v1} leaves as this address.": "Все правила, которые отправляют этот интерфейс через {v1}, выходят с этого адреса.",
   "{v1} hasn't reported its addresses yet — type one it has, or leave this on Auto.": "{v1} ещё не сообщил свои адреса — введите один из его адресов или оставьте «Авто».",
+  "{v1} isn't reporting this address. Traffic on this rule leaves it with a source it can't receive replies on, so it goes nowhere until the address is back or you choose another.":
+    "{v1} не сообщает этот адрес. Трафик этого правила выйдет с адреса, на который узел не сможет получить ответы, и никуда не дойдёт, пока адрес не вернётся или пока вы не выберете другой.",
   "as {v1}": "с {v1}",
-  // …and the panel's two refusals for it
-  "An address can be chosen only for rules that apply to everyone on this interface.": "Адрес выхода можно выбрать только для правил, которые действуют на всех на этом интерфейсе.",
-  "Two rules send this interface through {v1} with different addresses.": "Два правила отправляют этот интерфейс через {v1} с разных адресов.",
+  // …and the panel's refusals for it
   "the exit address must be an IPv4 address": "адрес выхода должен быть адресом IPv4",
+  "the exit address must name another node in this panel": "адрес выхода должен указывать на другой узел этой панели",
+  "the exit addresses must be given per node": "адреса выхода должны задаваться по узлам",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the

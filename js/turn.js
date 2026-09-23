@@ -2158,7 +2158,7 @@ export function EditWdttSheet({ node, iface }) {
     ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
+      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} onChange=${(rows, catchAll, exitIps) => setEg({ ...eg, rows, catchAll, exitIps })}/>
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)} unvouchedRaw=${(nrec.reach_unvouched_raw || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
@@ -2403,7 +2403,7 @@ export function EditCsqttSheet({ node, iface }) {
     ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
+      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} onChange=${(rows, catchAll, exitIps) => setEg({ ...eg, rows, catchAll, exitIps })}/>
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"

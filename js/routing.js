@@ -2154,7 +2154,7 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
 // and it is the whole story on Kernel-SNI — but it does not decide an overlap between two DIFFERENT targets:
 // swg-sni and dnsmasq both answer that by specificity (measured, plan §10.4x), which is what the label over
 // the list now says and what the `takenBy` lint below points at where the two disagree.
-export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
+export function RoutingRules({ node, iface, rows, catchAll, exitIps, onChange }) {
   const others = (Store.nodes || []).filter(n => n.id !== node);
   const _nrec = (Store.nodes || []).find(n => n.id === node);
   // what "the node default" resolves to here, if the node has one — see `catchVal`
@@ -2164,7 +2164,14 @@ export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
   // we could not look up the engine is a lie about the configuration (§4.2).
   const _mode = _nrec ? (_nrec.routing_mode || "kernel") : "";
   const dispRows = rows || [];
-  const emit = (rs, ca) => onChange(rs, ca === undefined ? catchAll : ca);
+  // ⚠️ THREE VALUES, ALWAYS, and each caller spreads all three. `exitIps` is the interface's {node: address}
+  // map (§4.2): it belongs to the interface rather than to any row, so it travels beside the rows instead of
+  // inside them — which is what makes an address impossible to duplicate, to disagree with itself, or to be
+  // carried along when a rule is re-pointed at another node.
+  const ips = exitIps || {};
+  const emit = (rs, ca, xs) => onChange(rs, ca === undefined ? catchAll : ca, xs === undefined ? ips : xs);
+  // Blank clears the entry: "Auto" is the absence of an address, not an address that is empty.
+  const setExitIp = (nid, addr) => { const nx = { ...ips }; if (addr) nx[nid] = addr; else delete nx[nid]; return nx; };
   const rs = useReorder(dispRows.map(r => r._gid), ids => emit(ids.map(id => dispRows.find(r => r._gid === id)).filter(Boolean)), "y", { container: ".rrlist", card: ".rrrow" });
   const setRow = (gid, patch) => emit(dispRows.map(r => r._gid === gid ? { ...r, ...patch } : r));
   const addRow = () => emit([...dispRows, { _gid: newGid(), enabled: true, badges: [], action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
@@ -2176,13 +2183,10 @@ export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
   // separately from the same `split("|")`, and they had already drifted — the catch-all listed its options
   // in a different order and could not name an exit at all. A destination is one grammar; it gets one
   // reader, and a kind added here reaches both places or neither.
-  // ⚠️ AND IT CLEARS THE EXIT IP, because that address is part of THIS destination and of no other. A row
-  // pinned to one node's address, re-pointed at another node, would otherwise be saved asking the new node
-  // to leave as an address that belongs to the old one — a pin nobody set, and a black hole on the far side.
   const destPatch = v => { const [a, x] = v.split("|");
-    return a === "exit" ? { action: "exit", node: x, exit_id: "", exit_ip: "" }
-      : a === "dev" ? { action: "dev", exit_id: x, node: "", exit_ip: "" }
-      : { action: a, node: "", exit_id: "", exit_ip: "" }; };
+    return a === "exit" ? { action: "exit", node: x, exit_id: "" }
+      : a === "dev" ? { action: "dev", exit_id: x, node: "" }
+      : { action: a, node: "", exit_id: "" }; };
   // THE SAME LIST THE INTERFACE'S OWN EGRESS PICKER USES, from the same builder, minus the smart-cascade
   // entry — a rule IS the smart cascade, so offering it inside one would be a rule that routes to itself.
   // The two are the same decision asked at two scopes ("where does this leave by"), so they read the same
@@ -2240,15 +2244,14 @@ export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
   // PER-PERSON ROWS: what each selection covers here is asked of the panel (the resolver the sync uses), so the chip, the
   // window and the node cannot disagree. Asked only while a row names people — a list with none sends nothing.
   const whoOf = useWhoReport(node, iface, dispRows.filter(r => r.who).map(r => r.who));
-  const openRule = row => row && pushModal(html`<${RuleSettingsSheet} node=${node} iface=${iface} row=${row}
+  const openRule = row => row && pushModal(html`<${RuleSettingsSheet} node=${node} iface=${iface} row=${row} exitIps=${ips}
     dests=${destOpts(false, destVal(row))} dest=${destVal(row)} mode=${_mode}
-    onApply=${(v, who, ip) => setRow(row._gid, { ...destPatch(v), who: who || undefined, exit_ip: ip || "" })}/>`);
+    onApply=${(v, who, xs) => emit(dispRows.map(r => r._gid === row._gid ? { ...r, ...destPatch(v), who: who || undefined } : r), undefined, xs)}/>`);
   // THE CATCH-ALL'S OWN WINDOW (D10, §7.1). `everyone` fixes "For whom", so the only thing it can change besides the
-  // destination is the address — which is the whole reason it opens at all. Applied through `setCatch`, so the rule it
-  // writes is the one that control has always written, plus the pin.
-  const openCatch = () => pushModal(html`<${RuleSettingsSheet} node=${node} iface=${iface} everyone
+  // destination is the address — which is the whole reason it opens at all.
+  const openCatch = () => pushModal(html`<${RuleSettingsSheet} node=${node} iface=${iface} everyone exitIps=${ips}
     row=${catchAll || { action: "direct" }} dests=${destOpts(true, catchVal)} dest=${catchVal} mode=${_mode}
-    onApply=${(v, _who, ip) => setCatch(v, ip)}/>`);
+    onApply=${(v, _who, xs) => setCatch(v, xs)}/>`);
   // A rule this node's engine can't run is a dead end unless the operator can leave it — so every gate that
   // names a mode also offers the switch. Generalised from the old Force-DNS-only affordance: the field's
   // capability table names whichever engine would run the badge, and this reprovisions the node into it.
@@ -2272,19 +2275,15 @@ export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
   const catchVal = !catchAll ? (_dflt ? "__dflt__" : "direct")
     : catchAll.action === "exit" ? "exit|" + (catchAll.node || "")
     : catchAll.action === "dev" ? "dev|" + (catchAll.exit_id || "") : catchAll.action;
-  // `ip` — the address the far node leaves as, when this catch-all forwards to one (P2). Absent from the
-  // dropdown's own calls, which is what makes re-pointing the catch-all drop a pin that named another node.
-  const setCatch = (v, ip) => {
-    if (v === "__dflt__") return emit(dispRows, null);          // silence — the node's default applies
-    // ⚠️ THE EMPTY KEY IS DROPPED, and a row's is not, because this rule is stored VERBATIM while a row goes
-    // through `rowsToRules`. An `exit_ip: ""` written here would differ from the stored rule by a key nobody
-    // set, and the interface would read as edited the moment this window was opened and applied unchanged.
-    const { exit_ip: _none, ...p } = destPatch(v);
+  // `xs` — the interface's address map, when the window that called this changed it (P2).
+  const setCatch = (v, xs) => {
+    if (v === "__dflt__") return emit(dispRows, null, xs);      // silence — the node's default applies
+    const p = destPatch(v);
     // A destination that names nothing (an exit or node id that is gone) falls back to silence too, rather
     // than storing a rule that routes to a blank.
     emit(dispRows, (p.action === "exit" && p.node) || (p.action === "dev" && p.exit_id)
       || p.action === "block" || p.action === "direct"
-      ? { enabled: true, category: "all", ...p, ...(p.action === "exit" && ip ? { exit_ip: ip } : {}) } : null); };
+      ? { enabled: true, category: "all", ...p } : null, xs); };
   const onCatch = v => v === "__adv__" ? openCatch() : setCatch(v);
   // The SAME badge in a later row can never fire, and that holds under specificity too — it is one operand,
   // so both rules resolve to one key and the chain takes the earlier. (This is the one place row order really
@@ -2322,9 +2321,10 @@ export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
         ${/* NO `rrarrow` HERE. The exit options are themselves written "→ nixos", so the row read
               "→  → nixos" — two arrows for one destination. The catch-all below keeps its arrow: there it
               is the only one, and it is what joins "Everything else" to the control. */""}
-        ${(() => { const dest = html`${row.who ? html`<${WhoChip} who=${row.who} rep=${whoOf(row.who)} node=${node}/>` : null}
-              ${row.exit_ip ? html`<${AsChip} ip=${row.exit_ip} node=${row.node}/>` : null}
-              ${row.who || row.exit_ip ? html`<button type="button" class="iconbtn rrgear" title=${T("Rule settings")} aria-label=${T("Rule settings")} onClick=${() => openRule(row)}><${Ic} i="gear"/></button>` : null}<span class="rrdest" title=${row.locked ? T("Stored as written — this rule is kept exactly as it is.") : ""}>
+        ${(() => { const _xip = row.action === "exit" ? ips[row.node] : "";
+          const dest = html`${row.who ? html`<${WhoChip} who=${row.who} rep=${whoOf(row.who)} node=${node}/>` : null}
+              ${_xip ? html`<${AsChip} ip=${_xip} node=${row.node}/>` : null}
+              ${row.who || _xip ? html`<button type="button" class="iconbtn rrgear" title=${T("Rule settings")} aria-label=${T("Rule settings")} onClick=${() => openRule(row)}><${Ic} i="gear"/></button>` : null}<span class="rrdest" title=${row.locked ? T("Stored as written — this rule is kept exactly as it is.") : ""}>
             <${Dropdown} disabled=${!!row.locked} value=${destVal(row)}
               onChange=${v => onDest(row._gid, v)} options=${destOpts(false, destVal(row), !row.locked)}/>
           </span>`;
@@ -2372,7 +2372,7 @@ export function RoutingRules({ node, iface, rows, catchAll, onChange }) {
             the destination moved into the field's foot, matching that by hand meant guessing a width. One
             class, one rule, both places. */""}
       <span class="tf-trail">
-        ${catchAll && catchAll.exit_ip ? html`<${AsChip} ip=${catchAll.exit_ip} node=${catchAll.node}/>
+        ${catchAll && catchAll.action === "exit" && ips[catchAll.node] ? html`<${AsChip} ip=${ips[catchAll.node]} node=${catchAll.node}/>
           <button type="button" class="iconbtn rrgear" title=${T("Rule settings")} aria-label=${T("Rule settings")} onClick=${openCatch}><${Ic} i="gear"/></button>` : null}
         <span class="rrarrow">→</span>
         <span class="rrdest rrcatch"><${Dropdown} value=${catchVal}
@@ -2465,23 +2465,33 @@ function WhoChip({ who, rep, node }) {
    second control on the row, and the window behind the gear is where it is chosen. */
 
 /** The row's second chip: the address the far node leaves as. Quiet, and it states the scope it really has —
- *  the pin is per (interface, node), so it governs every rule of this interface that forwards to that node. */
+ *  the address is per (interface, node), so it shows on EVERY row that forwards there, which is exactly the
+ *  set of rules it governs. Amber when that node is no longer reporting the address: the rule then routes to
+ *  a source the far node cannot receive replies on, which looks like nothing at all from here. */
 function AsChip({ ip, node }) {
-  return html`<span class="whochip" title=${T("Every rule that sends this interface through {v1} leaves as this address.", { v1: Store.nodeName(node) })}>${T("as {v1}", { v1: ip })}</span>`;
+  const rec = (Store.nodes || []).find(n => n.id === node) || {};
+  const gone = !!((rec.ips || []).length && !(rec.ips || []).includes(ip));
+  return html`<span class=${"whochip" + (gone ? " bad" : "")} title=${gone
+    ? T("{v1} isn't reporting this address. Traffic on this rule leaves it with a source it can't receive replies on, so it goes nowhere until the address is back or you choose another.", { v1: Store.nodeName(node) })
+    : T("Every rule that sends this interface through {v1} leaves as this address.", { v1: Store.nodeName(node) })}>${gone
+    ? html`<${Ic} i="warn"/>` : null}${T("as {v1}", { v1: ip })}</span>`;
 }
 
 /* RULE SETTINGS — where a rule leaves by, and for whom. Built from what exists: `ShareListSheet`'s layout (search-to-add with
    `UserPicker`, a filter above 15 rows, the shared pager, per-row ×, the count in the foot), the Networks window's audience
    switch, and its colour-coded device counts. Nothing here is written until the interface is saved. */
-function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyone, onApply }) {
+function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyone, exitIps, onApply }) {
   useStore();
   const [dest, setDest] = useState(dest0);
   const [chosen, setChosen] = useState(!everyone && !!row.who);
   const [sel, setSel] = useState(() => canonWho(row.who || {}));
-  const [ip, setIp] = useState(() => String(row.exit_ip || ""));
+  // A DRAFT OF THE INTERFACE'S WHOLE ADDRESS MAP, not one address. The field below edits the entry for
+  // whichever node "Leaves by" currently names, so picking another node up there shows THAT node's address
+  // without anything having to reset anything: the old node's entry is simply not the one being read.
+  const [ips, setIps] = useState(() => ({ ...(exitIps || {}) }));
   const [q, setQ] = useState(""), [page, setPage] = useState(1);
   const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null), base = useRef(null);
-  // WHICH NODE THIS FORWARDS TO, if it forwards at all — the address list, the sentence and the chip all
+  // WHICH NODE THIS FORWARDS TO, if it forwards at all — the address list, the sentence and the warning all
   // hang off it, and it is read from the control rather than from the row so that choosing another node
   // above re-answers all three at once.
   // ⚠️ THE SAME LIST THE INTERFACE-WIDE PIN OFFERS (`EgressPicker`'s forward branch), from the same record
@@ -2492,7 +2502,15 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   const asNode = (/^exit\|(.+)$/.exec(dest) || ["", ""])[1];
   const asRec = asNode ? (Store.nodes || []).find(n => n.id === asNode) : null;
   const asIps = (asRec || {}).ips || [];
-  const key = JSON.stringify([dest, chosen, chosen ? sel : null, chosen ? "" : ip]);
+  const ip = (asRec && ips[asNode]) || "";
+  const setIp = v => setIps(m => { const nx = { ...m }; if (v) nx[asNode] = v; else delete nx[asNode]; return nx; });
+  // ⚠️ AN ADDRESS THE FAR NODE IS NOT REPORTING IS A SILENT TOTAL OUTAGE, and nothing else on any screen says
+  // so: that node installs `--to-source <it>` whatever we send, iptables accepts a source the box does not
+  // own, and every packet for this rule leaves with an address it cannot receive replies on. Said ONLY when
+  // that node is reporting addresses at all — a node that has told us nothing is unknown, not wrong, which
+  // is the same rule `nicNote` and the device-refusal set already follow.
+  const asStale = !!(ip && asIps.length && !asIps.includes(ip));
+  const key = JSON.stringify([dest, chosen, chosen ? sel : null, ips]);
   if (base.current === null) base.current = key;
   dirtyRef.current = key !== base.current;
   const typedOnly = () => { if (cleanRef.current) cleanRef.current(); };      // the filter and the search change nothing
@@ -2509,9 +2527,7 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   const drop = e => { const k = { g: "groups", u: "users", p: "peers" }[e.k]; setSel(s => ({ ...s, [k]: s[k].filter(x => x !== e.id) })); };
   const empty = chosen && !list.length;
   const c = whoTally(rep);
-  // The pin goes only where the panel takes it: a forward, for everyone (`exit_ip_who`). Switching to chosen
-  // people, or to another kind of destination, drops it here rather than sending a pair the door refuses.
-  const apply = () => { if (empty) return; onApply(dest, chosen ? sel : null, (!chosen && asNode && ip) || "");
+  const apply = () => { if (empty) return; onApply(dest, chosen ? sel : null, ips);
     dirtyRef.current = false; if (cleanRef.current) cleanRef.current(); closeModal(); };
   const count = [sel.groups.length ? plural(sel.groups.length, "group") : "", sel.users.length ? plural(sel.users.length, "user") : "",
                  sel.peers.length ? plural(sel.peers.length, "device") : ""].filter(Boolean).join(", ");
@@ -2521,27 +2537,22 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
       <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
       <button class="btn btn-primary" disabled=${empty} title=${empty ? T("Choose at least one person or device, or pick “Everyone on this interface”.") : ""} onClick=${apply}>${T("Apply")}</button><//>`}>
     <div class="field"><label>${T("Leaves by")}</label>
-      ${/* ⚠️ CHANGING THE DESTINATION HERE DROPS THE ADDRESS, exactly as it does on the row's own dropdown
-            (`destPatch`). Without this the window kept the address while the node under it changed: pick
-            another node above and Apply, and the rule went out asking THAT node to leave as an address
-            belonging to the one before it — a black hole, from two clicks that each looked right. Guarded on
-            a real change, so reopening a pinned rule and re-picking the node it already has keeps its pin. */""}
-      <span class="rrdest rsdest"><${Dropdown} value=${dest} options=${dests}
-        onChange=${v => { if (v !== dest) setIp(""); setDest(v); }}/></span></div>
-    ${/* THE EXIT IP (D6). Only for a "Forward to node" destination: it is that node's SNAT, and there is
-          nothing to pin when the traffic never leaves this one. With chosen people the control gives way to
-          the sentence saying why — the per-person pin was cut in the cost pass (§12, C2), and a disabled
-          dropdown would have left the operator guessing which of the two choices disabled it. */""}
-    ${asNode ? html`<div class="field"><label>${T("As address")}</label>
-      ${chosen ? html`<div class="hint">${T("An address can be chosen only for rules that apply to everyone on this interface.")}</div>`
-       : html`<${Fragment}>
-          ${/* `rrdest rsdest` — the SAME pair the control above it wears, or the width cap does not apply (it
-                needs the block display `rrdest` gives) and the two fields in one window do not line up. */""}
-          <span class="rrdest rsdest"><${NodeIpPick} ips=${asIps} value=${ip} onChange=${setIp}
-            auto=${T("Auto ({v1}'s default)", { v1: Store.nodeName(asNode) })}/></span>
-          <div class="hint">${asIps.length
-            ? T("Every rule that sends this interface through {v1} leaves as this address.", { v1: Store.nodeName(asNode) })
-            : T("{v1} hasn't reported its addresses yet — type one it has, or leave this on Auto.", { v1: Store.nodeName(asNode) })}</div><//>`}
+      <span class="rrdest rsdest"><${Dropdown} value=${dest} onChange=${setDest} options=${dests}/></span></div>
+    ${/* THE EXIT IP (D6). Only for a "Forward to node" destination — it is that node's SNAT, and there is
+          nothing to pin when the traffic never leaves this one — and only for a node that is still in this
+          panel, because an address for a node that is gone is a setting with nothing on the other end.
+          It shows for a per-person rule too, and the sentence under it is why: the address belongs to the
+          INTERFACE's traffic to that node, whoever the rules name. Saying it that way is the whole reason
+          the address is stored per node rather than per rule (§4.2). */""}
+    ${asRec ? html`<div class="field"><label>${T("As address")}</label>
+      ${/* `rrdest rsdest` — the SAME pair the control above it wears, or the width cap does not apply (it
+            needs the block display `rrdest` gives) and the two fields in one window do not line up. */""}
+      <span class="rrdest rsdest"><${NodeIpPick} ips=${asIps} value=${ip} onChange=${setIp}
+        auto=${T("Auto ({v1}'s default)", { v1: Store.nodeName(asNode) })}/></span>
+      <div class="hint">${asIps.length
+        ? T("Every rule that sends this interface through {v1} leaves as this address.", { v1: Store.nodeName(asNode) })
+        : T("{v1} hasn't reported its addresses yet — type one it has, or leave this on Auto.", { v1: Store.nodeName(asNode) })}</div>
+      ${asStale ? html`<div class="hint err">${T("{v1} isn't reporting this address. Traffic on this rule leaves it with a source it can't receive replies on, so it goes nowhere until the address is back or you choose another.", { v1: Store.nodeName(asNode) })}</div>` : null}
     </div>` : null}
     ${/* D10 — "Everything else" is for everyone on the interface, so its window says so rather than
           offering a switch that cannot move. */""}
@@ -2897,7 +2908,10 @@ export const egressInit = m => {
     // The exit an interface leaves by, by ID. Read here or the editor QUIETLY UNDOES THE SELECTION: with no
     // `exit` arm this ternary lands on "auto", so opening an exit interface to change its MTU and pressing
     // Save rewrites it to direct, with the operator having changed nothing they can see.
-    exitId: m.exit_id || "", rows, catchAll };
+    exitId: m.exit_id || "", rows, catchAll,
+    // The interface's {far node: address} map (§4.2). Read and written whole, beside the rows rather than
+    // inside them — see `_apply_exit_ips` on the panel for why that is where it lives.
+    exitIps: { ...(m.routing_exit_ips || {}) } };
 };
 
 // WHY SAVE IS BLOCKED, or null. One call, consulted by all four Save buttons — and it is deliberately ONE
@@ -3424,7 +3438,7 @@ export function ifTrafficBadge(mode, egNode, node, exitId) {
 // `routing_v: 2` tells the panel this tab knows per-person rules: a save WITHOUT it over a stored one is refused (D7), because an
 // older tab's rowsToRules drops `who` and would re-save the rule without its people.
 export const egressBody = eg => eg.mode === "smart"
-  ? { egress_mode: "smart", routing: rowsToRules(eg.rows, eg.catchAll), routing_v: 2 }
+  ? { egress_mode: "smart", routing: rowsToRules(eg.rows, eg.catchAll), routing_exit_ips: eg.exitIps || {}, routing_v: 2 }
   // An exit carries an ID and nothing else — not a NIC and not a node. Sending the others alongside would
   // be harmless today (the server's ladder pops them) and a trap tomorrow, since a stale `wan_iface` riding
   // along is how a mode ends up meaning two things.
