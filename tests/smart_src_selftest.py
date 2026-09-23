@@ -90,8 +90,8 @@ PLANTS = {
           '                for _c in ("catcount", "catany", "forward"):'),
     "d": ('''("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]''',
           '''("|lttl:" + str(learn_ttl) if queue else "") + "|s9|src").encode()).hexdigest()[:16]'''),
-    "e": ('''    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) +''',
-          '''    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + json.dumps(want_src) +'''),
+    "e": ('''    sig = hashlib.sha1((("pin;" if pin else "") + ("q2;" if queue else "") + json.dumps(want) +''',
+          '''    sig = hashlib.sha1((("pin;" if pin else "") + ("q2;" if queue else "") + json.dumps(want) + json.dumps(want_src) +'''),
     "g1": ('''    expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)''',
            '''    expect_pre = pin or any(a != "direct" for (_, _, a, _) in want)'''),
     "g2": ('''            S, cat, act, T = w[:4]
@@ -139,8 +139,8 @@ PLANTS = {
             '''[(sh, cond)'''),
     "pb7": ('''                    ex += [[cnd, snm] for snm in [_smart_setname(c)] + ([_smart_learnsetname(c)] if queue else [])]''',
             '''                    ex += [[cnd, snm] for snm in [_smart_setname(c)]]'''),
-    "pb8": ('''"pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "tcp", "dport", "443",''', '''"pb%d" % i, "ip", "daddr", "@" + snm, "tcp", "dport", "443",'''),
-    "pb9": ('''"pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "tcp", "dport", "443",''', '''"pb%d" % i, *cnd, "tcp", "dport", "443",'''),
+    "pb8": ('''"pb%d" % i, *cnd, "ip", "daddr", "@" + snm, *_sni_queue())''', '''"pb%d" % i, "ip", "daddr", "@" + snm, *_sni_queue())'''),
+    "pb9": ('''"pb%d" % i, *cnd, "ip", "daddr", "@" + snm, *_sni_queue())''', '''"pb%d" % i, *cnd, *_sni_queue())'''),
     "pb10": ('''            if c not in want_pb:
                 bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)''', '''            if False:
                 bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)'''),
@@ -335,15 +335,19 @@ for label, pin, queue in MODES:
     everything = " ".join(" ".join(c) for c in K.calls) + "".join(K.scripts)
     check("%s: no source set, no row chain, no jump" % label,
           "src_" not in everything and " sr0" not in everything and "jump" not in everything, everything[:200])
-    # HEAD's own formula, pinned: a 4-tuple want and the `|s9` suffix
+    # HEAD's own formula, pinned: a 4-tuple want and the `|s9` suffix — and `q2;` where swg-sni reads the queue (its rule hands
+    # it only the ClientHello since 2026-09-23: a Hybrid-SNI node rebuilds ONCE for that, and no other mode moves at all)
     spec = [e for e in PLAIN if e["category"] != "all"]
     allr = [e for e in PLAIN if e["category"] == "all"]
     w4 = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) for e in spec + allr]
     rst = N.SNI_RESET_MARK if pin else 0
-    want_sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(w4) + "|v6:" + "" + "|rst:" + str(rst)
+    want_sig = hashlib.sha1((("pin;" if pin else "") + ("q2;" if queue else "") + json.dumps(w4) + "|v6:" + "" + "|rst:" + str(rst)
                              + ("|lttl:3600" if queue else "") + "|s9").encode()).hexdigest()[:16]
     have = open(os.path.join(N.GEO_DIR, ".smart-sig")).read().strip() if os.path.exists(os.path.join(N.GEO_DIR, ".smart-sig")) else ""
-    check("%s: the smart signature is byte-for-byte HEAD's (no rebuild on upgrade)" % label, have == want_sig, (have, want_sig))
+    _was = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(w4) + "|v6:" + "" + "|rst:" + str(rst)
+                         + ("|lttl:3600" if queue else "") + "|s9").encode()).hexdigest()[:16]
+    check("%s: the smart signature is byte-for-byte the pinned formula (%s)" % (label, "re-signed ONCE for q2 — the queue rule"
+          if queue else "no rebuild on upgrade"), have == want_sig and ((have != _was) if queue else (have == _was)), (have, want_sig, _was))
 
 # ── 4. a selection that resolved to nothing, and one the node cannot read, never widen ─────────────────────────────────────
 print("\n[never wider]")
@@ -806,7 +810,7 @@ for label, pin, queue in MODES:
         spec_ = [e for e in ents if e["category"] != "all"]
         w4 = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) for e in spec_ + [CA]]
         rst = N.SNI_RESET_MARK if pin else 0
-        old = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(w4) + "|v6:" + "" + "|rst:" + str(rst)
+        old = hashlib.sha1((("pin;" if pin else "") + ("q2;" if queue else "") + json.dumps(w4) + "|v6:" + "" + "|rst:" + str(rst)
                             + ("|lttl:3600" if queue else "") + "|s9").encode()).hexdigest()[:16]
         have = open(os.path.join(N.GEO_DIR, ".smart-sig")).read().strip() if os.path.exists(os.path.join(N.GEO_DIR, ".smart-sig")) else ""
         changes = pin and tag == "a Block below an Exit"

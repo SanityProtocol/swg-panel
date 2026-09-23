@@ -20,7 +20,7 @@ Plants (each must turn at least one check red):
   r5 the categories are written one process each again (two rules' sets go live apart)
   r6 a refused joint write does not fall back (one missing set stops every other category learning)
 """
-import importlib.machinery, importlib.util, os, sys, tempfile, threading, time
+import collections, importlib.machinery, importlib.util, os, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SNI = os.environ.get("SWG_SNI") or os.path.join(HERE, "..", "swg-sni")
@@ -83,6 +83,7 @@ def classifier(ttl=120):
     C.table, C.seen, C._pending, C._lock, C._wake = "swg_smart", {}, [], threading.Lock(), threading.Event()
     C.learn_ttl, C.refresh_age, C.reset_mark = ttl, ttl / 2.0, 0x9999
     C._blk_hits, C._last_reload = {}, float("inf")
+    C._partial, C._partial_src, C._plock, C._blk_dirty = collections.OrderedDict(), {}, threading.Lock(), False   # as __init__
     return C
 
 

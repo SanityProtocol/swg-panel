@@ -35,6 +35,7 @@ Run:  swg-sni --queue 0 --map /var/lib/swg-noded/sni-map.json --table swg_smart
 Env:  SWG_SNI_QUEUE, SWG_SNI_MAP, SWG_SNI_TABLE (flags win).
 """
 import argparse
+import collections
 import json
 import os
 import re
@@ -163,10 +164,25 @@ def _dst_and_tcp_payload(pkt):
     return dst, pkt[start:] if start <= len(pkt) else b""
 
 
+def _hello_len(p):
+    """The whole ClientHello record's length (header included) when `p` opens one — a TLS handshake record whose first
+    message is a ClientHello — else 0."""
+    if len(p) >= 6 and p[0] == 0x16 and p[1] == 0x03 and p[5] == 0x01:
+        return 5 + ((p[3] << 8) | p[4])
+    return 0
+
+
+def _flow_seq(pkt):
+    """(flow key, TCP sequence number, client address) of a packet _dst_and_tcp_payload has ALREADY accepted as IPv4/TCP
+    with a whole TCP header — so nothing here is re-validated, only read. The key is its addresses and ports, raw."""
+    ihl = (pkt[0] & 0x0F) * 4
+    return (pkt[12:20], pkt[ihl:ihl + 4]), struct.unpack(">I", pkt[ihl + 4:ihl + 8])[0], pkt[12:16]
+
+
 def parse_sni(p):
     """Extract the SNI host_name from a TLS ClientHello record. Returns a lowercased str or None. Bounds-checked
-    throughout; any short/odd buffer → None (we just don't learn from it). v1 does not reassemble a ClientHello
-    split across TCP segments — those simply aren't learned (the connection still routes by dst IP)."""
+    throughout; any short/odd buffer → None (we just don't learn from it). It reads what it is given — ONE segment, or a
+    ClientHello Classifier._reassemble has put back together from several."""
     try:
         if len(p) < 43 or p[0] != 0x16:               # TLS record, content_type 22 = handshake
             return None
@@ -200,9 +216,10 @@ def parse_sni(p):
 # ── domain → category matching + nft learning ──
 # Learned dst IPs are added to the nft set in BATCHES by a background thread, not one `nft` fork per IP inline in the
 # packet loop. At a cold-start burst that turns hundreds of forks/sec (each stalling the recv loop) into a handful of
-# multi-element `nft` calls off the hot path. Trade-off: the first-hit RST is now sent OPTIMISTICALLY (the IP lands
-# within <= FLUSH_INTERVAL, well under the client's reconnect RTT); if that race is ever lost the reconnect routes
-# direct for exactly one connection, then matches — strictly better than pre-RST, and never a persistent leak.
+# multi-element `nft` calls off the hot path. Trade-off: the first-hit RST is sent OPTIMISTICALLY (the first learn after a
+# quiet spell is written at once, later ones within FLUSH_INTERVAL of the last write — well under the client's reconnect
+# RTT); if that race is ever lost the reconnect routes direct for exactly one connection, then matches — strictly better
+# than pre-RST, and never a persistent leak.
 #
 # Learned IPs land in the per-cat `catl_` set (flags timeout, default = learn_ttl) so they SELF-EXPIRE — no stale
 # entry can misroute a rotated IP, and the set can't grow without bound. We see every new connection's ClientHello
@@ -218,11 +235,19 @@ def parse_sni(p):
 # `.campaign` bxl, Bxlt2). The add makes the element exist, the delete removes it, the second add writes it with a fresh
 # timeout; one `nft -f` commits all three at once, so no packet sees it missing. A first learn goes the same way: after a
 # swg-sni restart `seen` is empty while the set still holds the address with part of its old lifetime.
-FLUSH_INTERVAL = 0.025      # s — max time a learned IP waits before it's in the set
+FLUSH_INTERVAL = 0.025      # s — under load, how far apart the learned-set writes are (the batching); the first is at once
 MAX_BATCH      = 128        # flush early once this many IPs are pending (bounds latency + argv length)
 PRUNE_EVERY    = 30.0       # s — how often the in-memory seen cache is swept of expired entries
 BLK_TOPK       = 500        # blocked-domain attribution: keep at most this many hottest hostnames (bounded memory)
 BLK_WRITE_EVERY = 10.0      # s — how often the blocked-domain top-K is mirrored to disk for swg-noded to harvest
+IDLE_WAKE      = 10.0       # s — the flusher's longest sleep with nothing to write: a backstop, as each chore wakes it
+PARTIAL_MAX    = 1024       # ClientHellos held while their next segment is on its way (see Classifier._reassemble)
+PARTIAL_PER_SRC = 64        # …and from one client address, so one peer cannot fill the table for everyone (not 16: a
+#                             router peer carries a whole LAN behind its one address, an onward hop every arrival it
+#                             forwards behind the relaying node's)
+PARTIAL_TTL    = 5.0        # s — how long one waits for its next segment, renewed by each: it follows at once, a lost
+#                             one's retransmit within an RTO (~0.2–1.5 s), a second loss's within ~3 RTOs (2 s covered one)
+PARTIAL_BYTES  = 8197       # the longest ClientHello held (8 KB + its 5-byte header); Chrome's is ~2 KB
 
 
 # The pattern kinds this build can LOWER, split by the tier that decides HOW they are matched — which is the
@@ -346,13 +371,17 @@ class Classifier:
         self.pat_path = os.path.join(os.path.dirname(map_path) or ".", "sni-patterns.json")
         self.blk_path = os.path.join(os.path.dirname(map_path) or ".", "sni-blk-hits.json")
         self._blk_hits = {}                            # blocked hostname → cumulative hit count (bounded top-K, panel buckets → category)
-        self._blk_last_w = 0.0                         # last time _blk_hits was mirrored to disk
+        self._blk_last_w = 0.0                         # last time _blk_hits was mirrored to disk (monotonic)
+        self._blk_dirty = False                        # …and whether it has moved since
         self.seen = {}                                 # (ip, cat) → last time we (re)added it → sliding refresh + expiry
         self._pending = []                             # [(cat, ip)] buffered for the next batched nft add
         self._lock = threading.Lock()                  # guards _pending + seen (touched by packet loop + flusher)
-        self._wake = threading.Event()                 # set when MAX_BATCH reached → flush now, don't wait the interval
+        self._wake = threading.Event()                 # set on the first learn queued (write it now) and at MAX_BATCH
+        self._partial = collections.OrderedDict()      # flow → [first seq, bytes so far, since, client]: a ClientHello
+        self._partial_src = {}                         # awaiting its next segment, oldest first; client → how many held.
+        self._plock = threading.Lock()                 # guards both: the packet thread's, but the flusher sweeps them too
         self._last_reload = 0.0
-        self._last_prune = 0.0
+        self._last_prune = 0.0                         # monotonic, as is every time the flusher keeps for itself
         self._reload()
         t = threading.Thread(target=self._flush_loop, name="swg-sni-flush", daemon=True)
         t.start()
@@ -496,6 +525,10 @@ class Classifier:
             return
         host = parse_sni(tcp)
         if not host:
+            host = self._reassemble(payload, tcp)
+        elif self._partial:                            # it names the host by itself: whatever was held for its flow is done
+            self._drop_held(payload)                   # with (a retransmit re-cut to carry it all, or a new hello)
+        if not host:
             return
         # ⚠️ _match returns ONE rung's categories, so when two RULES both claim a host the KIND decides and the
         # panel's "first match wins" does not apply. This paragraph used to justify that by saying the other
@@ -534,8 +567,12 @@ class Classifier:
                 self._blk_hits[host] = self._blk_hits.get(host, 0) + 1   # however many categories claim the host —
                 if len(self._blk_hits) > BLK_TOPK:     # it is one blocked connection, not one per category.
                     self._blk_hits.pop(min(self._blk_hits, key=self._blk_hits.get), None)
+                if not self._blk_dirty:                # the first since the last mirror: the flusher may be asleep for
+                    self._blk_dirty = True             # longer than the next mirror is due in (see _flush_loop)
+                    self._wake.set()
         first = False                                      # any category learning this dst for the first time earns the RST
         with self._lock:
+            idle = not self._pending                       # the flusher sleeps while nothing is queued (see _flush_loop)
             for cat in cats:
                 key = (dst, cat)
                 ts = self.seen.get(key)
@@ -545,47 +582,148 @@ class Classifier:
                     continue
                 #  else: still in the set, aging → write it again to refresh its timeout (no RST on account of this one)
                 self.seen[key] = now
-                self._pending.append((cat, dst))           # buffered; the flusher adds it to catl_ within FLUSH_INTERVAL
-            if len(self._pending) >= MAX_BATCH:
-                self._wake.set()
+                self._pending.append((cat, dst))           # buffered; the flusher adds it to catl_ (see _flush_loop)
+            if self._pending and (idle or len(self._pending) >= MAX_BATCH):
+                self._wake.set()                           # the first one after a quiet spell is written now
         if first:
             print(f"swg-sni: {host} → {', '.join(map(str, cats))}  (+{dst})", flush=True)
             return self.reset_mark                          # FIRST sight of this dst: RST this flow so the client reconnects —
             #                                                 the retry's SYN matches catl_ (added by the flusher) and routes.
         return None                                         # refresh only → the dst already routes, don't disturb the flow
 
+    def _reassemble(self, pkt, tcp):
+        """The name in a ClientHello split across TCP segments, once the segment that carries it has arrived — else None.
+
+        parse_sni reads ONE segment. Chrome's ~2 KB ClientHello (a 1 263-byte X25519MLKEM768 key share) always takes two,
+        and its extensions are shuffled, so the SNI was past the first 1 340 bytes in 15 of 27 captured (Chrome 152,
+        2026-09-23) — and msk-main's wg1 delivered such a hello as two packets (no GRO merge), from which this process
+        learned nothing: those connections left by whatever else matched, past a Block included, until a later one
+        happened to show the name early. So a segment that opens a ClientHello longer than itself is held, from its
+        sequence number, and whatever follows is placed BY ITS OFFSET in the stream: the next segment extends it, a
+        retransmit or a re-cut segment that overlaps it adds only what is new, one that leaves a gap (out of order) is
+        ignored and the hello kept. Parsed after every addition; the reset, when due, goes out on the segment that
+        completed the name. The table is kept oldest first — an addition renews its entry's PARTIAL_TTL and moves it to
+        the back — so a timed-out entry leaves from the front in O(1); it holds at most PARTIAL_MAX hellos,
+        PARTIAL_PER_SRC from one client address, PARTIAL_BYTES each.
+
+        NOT READ, AND WHY THAT STAYS: a hello whose segments arrive out of order (its second before its first: the first
+        is held, and what it waits for has already gone by — or, past a gap, a later one), and one whose first segment
+        is under 6 bytes (too short to say it opens a ClientHello). A tunnel delivers a client's back-to-back segments in
+        order as a rule, and no TLS stack sends a hello's first bytes on their own; DPI-evasion tools do both, and more
+        (fake hellos, TLS-record splits) that no reassembly here would undo. Such a connection leaves as if its name were
+        unknown, once; the next one to the same address, in order, is learned."""
+        key, seq, src = _flow_seq(pkt)
+        now = time.monotonic()
+        with self._plock:
+            self._sweep_partial(now)
+            held = self._partial.get(key)
+            if held is not None:
+                off = (seq - held[0]) & 0xFFFFFFFF                   # where this segment starts in the held hello
+                buf = held[1]
+                if off <= len(buf):                                  # it continues, or overlaps, what is held
+                    if off + len(tcp) <= len(buf):
+                        return None                                  # nothing new (a retransmit of what is held)
+                    buf = buf[:off] + tcp
+                    host = parse_sni(buf)
+                    if host or len(buf) >= _hello_len(buf) or len(buf) >= PARTIAL_BYTES:
+                        self._drop_partial(key)                      # named, or complete without a name, or too long
+                        return host
+                    held[1] = buf; held[2] = now                     # the name is further on: wait for it afresh,
+                    self._partial.move_to_end(key)                   # at the back of the table
+                    return None
+                if not _hello_len(tcp):
+                    return None                                      # a gap (reordered) or before the hello: keep it
+                self._drop_partial(key)                              # a NEW hello on the same ports replaces it
+            need = _hello_len(tcp)
+            if len(tcp) < need <= PARTIAL_BYTES:                     # opens a ClientHello longer than this segment
+                if len(self._partial) < PARTIAL_MAX and self._partial_src.get(src, 0) < PARTIAL_PER_SRC:
+                    self._partial[key] = [seq, bytes(tcp), now, src]
+                    self._partial_src[src] = self._partial_src.get(src, 0) + 1
+        return None
+
+    def _drop_held(self, pkt):
+        """Forget the hello held for this packet's flow, if any — it named its host in one segment after all."""
+        with self._plock:
+            self._drop_partial(_flow_seq(pkt)[0])
+
+    def _sweep_partial(self, now):
+        """Drop the held hellos that have waited PARTIAL_TTL for their next segment, oldest first. Under _plock: the
+        packet thread sweeps before each hello it reassembles, the flusher at its prune — so a node whose traffic stops
+        does not keep a full table (up to PARTIAL_MAX × PARTIAL_BYTES) until its next ClientHello."""
+        while self._partial:
+            k0, h0 = next(iter(self._partial.items()))
+            if now - h0[2] < PARTIAL_TTL:
+                break
+            self._drop_partial(k0)
+
+    def _drop_partial(self, key):
+        h = self._partial.pop(key, None)
+        if h is not None:
+            n = self._partial_src.get(h[3], 1) - 1
+            if n > 0:
+                self._partial_src[h[3]] = n
+            else:
+                self._partial_src.pop(h[3], None)
+
     def _write_blk(self, hits):
-        """Atomically mirror the blocked-domain top-K to disk for swg-noded to harvest. Best-effort, never raises."""
+        """Atomically mirror the blocked-domain top-K to disk for swg-noded to harvest. Best-effort, never raises: False
+        when it could not be written."""
         try:
             tmp = self.blk_path + ".tmp"
             with open(tmp, "w") as f:
                 json.dump(hits, f)
             os.replace(tmp, self.blk_path)
+            return True
         except Exception:
-            pass
+            return False
 
     def _flush_loop(self):
         """Background: drain the pending buffer into batched nft writes (one transaction for every category), and sweep the
-        seen cache of expired entries. Adds go to catl_ (the self-expiring learned set) — see _write_learned for how."""
+        seen cache of expired entries. Adds go to catl_ (the self-expiring learned set) — see _write_learned for how.
+
+        IT SLEEPS UNTIL THERE IS SOMETHING TO DO. It used to wake every FLUSH_INTERVAL to look: 40 times a second,
+        ~100 µs each on a 1-vCPU VM — 0.41 % of it with nothing to do (msk-main, 2026-09-23), as much as a quiet node's
+        traffic cost. on_packet now wakes it when it queues a learn into an empty buffer, so that write goes out at once
+        instead of up to FLUSH_INTERVAL later (the reconnect the reset provokes finds the address sooner); under load the
+        writes stay FLUSH_INTERVAL apart, which is the batching; MAX_BATCH still writes at once. With nothing queued it
+        sleeps until its next chore is due: the prune (the seen cache, and the held hellos that timed out), and the
+        blocked-hits mirror once a hit has moved it — on_packet wakes it for the first since a mirror, which then goes out
+        at once, or BLK_WRITE_EVERY after the last, and an unchanged mirror is not rewritten. IDLE_WAKE caps the sleep,
+        as a backstop. Its own times are monotonic, and a chore is due when its time is reached (`>=`), the very time
+        the sleep was aimed at. The event is cleared BEFORE the buffer is read, so a wake is never lost."""
+        last_write = 0.0
         while True:
-            self._wake.wait(FLUSH_INTERVAL)
             self._wake.clear()
-            now = time.time()
             with self._lock:
-                if now - self._last_prune > PRUNE_EVERY:   # drop entries older than the TTL so the cache tracks the live set
-                    self._last_prune = now
+                n = len(self._pending)
+                due = self._last_prune + PRUNE_EVERY
+                if self._blk_dirty:
+                    due = min(due, self._blk_last_w + BLK_WRITE_EVERY)
+            mono = time.monotonic()
+            if n == 0:                                 # nothing to write: sleep until a learn, a hit, or the next chore
+                self._wake.wait(min(IDLE_WAKE, max(0.0, due - mono)))
+            elif n < MAX_BATCH and mono - last_write < FLUSH_INTERVAL:
+                self._wake.wait(FLUSH_INTERVAL - (mono - last_write))
+            now, mono = time.time(), time.monotonic()
+            batch = blk_snap = None
+            sweep = False
+            with self._lock:
+                if mono >= self._last_prune + PRUNE_EVERY:   # drop entries older than the TTL so the cache tracks the live set
+                    self._last_prune = mono; sweep = True
                     self.seen = {k: v for k, v in self.seen.items() if now - v < self.learn_ttl}
-                blk_snap = None
-                if self._blk_hits and now - self._blk_last_w > BLK_WRITE_EVERY:   # mirror the blocked-domain top-K for swg-noded
-                    self._blk_last_w = now; blk_snap = dict(self._blk_hits)
-                if not self._pending:
-                    if blk_snap is not None:
-                        self._write_blk(blk_snap)
-                    continue
-                batch, self._pending = self._pending, []
-            if blk_snap is not None:
-                self._write_blk(blk_snap)
-            self._write_learned(batch)
+                if self._blk_dirty and mono >= self._blk_last_w + BLK_WRITE_EVERY:   # mirror the blocked-domain top-K
+                    self._blk_last_w = mono; self._blk_dirty = False; blk_snap = dict(self._blk_hits)   # for swg-noded
+                if self._pending and (len(self._pending) >= MAX_BATCH or mono - last_write >= FLUSH_INTERVAL):
+                    batch, self._pending = self._pending, []
+            if sweep:
+                with self._plock:
+                    self._sweep_partial(mono)
+            if blk_snap is not None and not self._write_blk(blk_snap):
+                with self._lock:
+                    self._blk_dirty = True             # not written: again when the next mirror is due
+            if batch:
+                self._write_learned(batch)
+                last_write = time.monotonic()
 
     def _write_learned(self, batch):
         """[(cat, ip)] → one `nft -f` transaction for every category (one per category only when that one is refused) that

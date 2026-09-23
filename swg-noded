@@ -1967,6 +1967,43 @@ def _up_mark(table):
     return SWG_RT_UP_BASE + (t - SWG_RT_BASE) if SWG_RT_BASE <= t <= SWG_RT_MAX else 0
 SMART_NFT_TABLE = "swg_smart"   # Phase 3: inet nft table holding the per-category dest sets + marking chain
 SNI_NFQUEUE = 0                 # SNI mode: nft queues each connection's first packets here → swg-sni reads the ClientHello
+
+
+def _sni_queue():
+    """The match + verdict that hands swg-sni a connection's ClientHello — every segment of it, retransmits included — and,
+    as near as the kernel can tell, nothing else. Every rule that queues to swg-sni ends with this.
+
+    It used to be every client packet until the connection had seen 12 in both directions (`ct packets < 12`): the
+    handshake's bare ACK, the client's ACKs of the server's flight, its Finished — 4.5 a connection, up to 6 for Chrome
+    (28 captured connections replayed through the rule, 2026-09-23), each a wake-up of swg-sni, which costs ~70–130 µs
+    cold on a 1-vCPU VM, when only the ClientHello carries the name. Now three conditions, each for a reason:
+      · `meta length > 52` — the packet carries data. The bare ACKs a client sends before the server answers are the
+        handshake's own and its repeats, 52 bytes with timestamps and 40 without; a ClientHello segment is hundreds — or
+        a handful, when a hello runs a few bytes past a segment boundary, and that tail completes the name as surely as
+        any other (`> 64`, in both earlier cuts, dropped a tail under 13 bytes). Still dropped: a tail under 13 bytes
+        from a client without timestamps (Windows), whose headers are 12 bytes shorter — 12 hello lengths in every ~1 380.
+      · `ct reply avgpkt < 81` — the server has not answered yet. EVERY segment of a ClientHello precedes the server's
+        flight (it cannot answer a hello it has not read); until then the reply direction has carried a SYN-ACK and bare
+        ACKs, none longer than 80 bytes (a 20-byte IP header and a TCP header full of options, 60), however many the
+        losses or the server's ACK habits — and its first data packet lifts the average past that: a full handshake's by
+        far, and a resumed one's, one packet of ~150–400 bytes (TLS 1.2 abbreviated, 1.3 PSK), unless more bare ACKs
+        came before it than it outweighs (a 150-byte flight 1–3, by the headers' size, a 300-byte one 5–8), and then the
+        response does. That is what excludes the client's Finished and request, and it is blind to retransmits, which is
+        why it is measured the other way and not counted this way: `ct original packets < 5` (the first cut) handed over
+        a whole ClientHello in 8 of those 28 connections once ONE packet was retransmitted or the hello took three
+        segments. Nor is it `ct reply bytes < 1000` (the second cut): a resumed flight never reaches 1 000 bytes, so the
+        Finished and the request were queued until the response came — 4.5–4.9 a connection with the flight shrunk to a
+        resumed one's, against 1.7 (code review, 2026-09-23). An average can fall again, under a flood of bare ACKs; the
+        backstop below ends it first.
+      · `ct original packets < 16` — a backstop for a server that never answers, sized as _XTS_CONNBYTES is: for a lossy
+        path (conntrack counts every retransmit), and still the handshake. It leaves 13 packets for the hello and its
+        retransmits: 17 KB at the tunnel's usual MSS, 7 KB at the 536-byte minimum — Chrome's is ~2 KB.
+    Replayed, with a retransmitted SYN, a retransmitted first segment, a hello in three segments, both, and the server's
+    flight shrunk to a resumed one's (TLS 1.3 300 B, 1.2 150 B): every segment handed over in 28 of 28 each time, at 1.7
+    a connection as captured and resumed alike (the retransmits themselves added when they happen). Counters include
+    the packet in hand: conntrack counts it before this chain (priority mangle) runs."""
+    return ("tcp", "dport", "443", "ct", "state", "established", "ct", "original", "packets", "lt", "16",
+            "ct", "reply", "avgpkt", "lt", "81", "meta", "length", "gt", "52", "queue", "num", str(SNI_NFQUEUE), "bypass")
 SNI_MAP_PATH = "/var/lib/swg-noded/sni-map.json"   # domain→category map swg-noded writes for swg-sni to consume
 SNI_PATTERNS_PATH = "/var/lib/swg-noded/sni-patterns.json"   # the panel's pattern buckets for swg-sni, {kind:{cat:[operand]}} — its OWN file
 SNI_RESET_MARK = 0x9999         # SNI mode: swg-sni stamps the FIRST ClientHello to a newly-learned dst with this skb mark;
@@ -4708,7 +4745,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 pa_of[i] = ex
     want_pa = {"pa%d" % i for i in pa_of}
     v6f = sorted(set(v6_ifaces))                                # smart routing is IPv4-only → drop forwarded v6 on these ifaces (fail-closed, no leak)
-    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]   # s9: reverted the per-source blkd meter (its duplicate name killed the catl_blku drop rule → hybrid blocking broke); s7: +counter on the blku content-block drop; s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
+    sig = hashlib.sha1((("pin;" if pin else "") + ("q2;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]   # q2: the queue hands swg-sni only the ClientHello (_sni_queue) — so only a node whose engine is swg-sni rebuilds, once (every caller has queue ⇒ pin: queue=(engine == sni_user), pin=is_sni); s9: reverted the per-source blkd meter (its duplicate name killed the catl_blku drop rule → hybrid blocking broke); s7: +counter on the blku content-block drop; s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
     if shw:                                                     # only then — a plan with no shadow signs exactly as before
         sig = hashlib.sha1((sig + "|sh:" + json.dumps(shw)).encode()).hexdigest()[:16]
     if pb_of:                                                   # likewise: only a pin-mode node with a Block below an Exit/Direct rebuilds
@@ -4817,15 +4854,13 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         for i, ex in sorted(pa_of.items()):                    # an arrival Block's exceptions (see pa_of)
             for cnd, snm in ex:
                 if queue:
-                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pa%d" % i, *cnd, "ip", "daddr", "@" + snm, "tcp", "dport", "443",
-                            "ct", "state", "established", "ct", "packets", "lt", "12", "queue", "num", str(SNI_NFQUEUE), "bypass")
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pa%d" % i, *cnd, "ip", "daddr", "@" + snm, *_sni_queue())
                 bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pa%d" % i, *cnd, "ip", "daddr", "@" + snm, "accept")
             bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pa%d" % i, "drop")
         for i, ex in sorted(pb_of.items()):
             for cnd, snm in ex:
                 if queue:                                      # swg-sni still reads the connection's first packets
-                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "tcp", "dport", "443",
-                            "ct", "state", "established", "ct", "packets", "lt", "12", "queue", "num", str(SNI_NFQUEUE), "bypass")
+                    bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pb%d" % i, *cnd, "ip", "daddr", "@" + snm, *_sni_queue())
                 bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "accept")
             bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pb%d" % i, "drop")
 
@@ -4909,10 +4944,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                             _sa("ip", "daddr", "@" + snm, *(["jump", "pa%d" % i] if i in pa_of else ["drop"]))
         if pin and queue:                                       # feed each connection's first packets to swg-sni (userspace SNI); kernel-SNI reads them via xt_string instead → no queue
             for S in subnets:
-                _add("ip", "saddr", S, "tcp", "dport", "443", "ct", "state", "established", "ct", "packets", "lt", "12", "queue", "num", str(SNI_NFQUEUE), "bypass")
+                _add("ip", "saddr", S, *_sni_queue())
             if arr:                                             # …and an arrival's, beside them — the parity §3.6 promises
-                _add("iifname", "@lg", "ip", "saddr", "@ar", "ip", "daddr", "!=", "@cln", "tcp", "dport", "443", "ct", "state",
-                     "established", "ct", "packets", "lt", "12", "queue", "num", str(SNI_NFQUEUE), "bypass")
+                _add("iifname", "@lg", "ip", "saddr", "@ar", "ip", "daddr", "!=", "@cln", *_sni_queue())
         # IPv6 fail-closed: the marking above is IPv4-only, so a dual-stack client's v6 traffic would bypass smart
         # routing and leak out the entry node's WAN. DROP forwarded IPv6 on each smart interface (both directions).
         chains_now = re.findall(r"chain (\S+) {", body)

@@ -446,6 +446,14 @@ class SmartModel:
                 ops.append(("ctdir", tk[i + 2])); i += 3
             elif at("ct", "packets", "lt"):
                 ops.append(("ctpk_lt", int(tk[i + 3]))); i += 4
+            elif at("ct", "original", "packets", "lt"):                 # the client's packets so far (swg-sni's queue gate)
+                ops.append(("ctopk_lt", int(tk[i + 4]))); i += 5
+            elif at("ct", "reply", "bytes", "lt"):                      # what the server has sent so far
+                ops.append(("ctrb_lt", int(tk[i + 4]))); i += 5
+            elif at("ct", "reply", "avgpkt", "lt"):                     # …and in packets how long, on average
+                ops.append(("ctra_lt", int(tk[i + 4]))); i += 5
+            elif at("meta", "length", "gt"):                            # the packet's length (a bare ACK is 40–64 bytes)
+                ops.append(("len_gt", int(tk[i + 3]))); i += 4
             elif at("meta", "mark", "set", "ct", "mark"):
                 ops.append(("mark_from_ct",)); i += 5
             elif at("meta", "mark", "set"):
@@ -612,14 +620,21 @@ class SmartModel:
         return "\n".join(out + ["}"]) + "\n"
 
     # ── packets ──────────────────────────────────────────────────────────────────────────────────────────────────────────
-    def packet(self, table, iif, saddr, daddr, proto="tcp", dport=443, ct="new", ctmark=0, reply=False, ctpackets=1):
-        """→ {verdict, mark, ctmark, via}: one IPv4 packet through `prerouting`. `via` lists the chains it walked."""
+    def packet(self, table, iif, saddr, daddr, proto="tcp", dport=443, ct="new", ctmark=0, reply=False, ctpackets=1,
+               ctorig=None, length=517, replybytes=60, replypkts=1):
+        """→ {verdict, mark, ctmark, via}: one IPv4 packet through `prerouting`. `via` lists the chains it walked.
+        `ctpackets` counts both directions, `ctorig` the client's alone (default: `ctpackets`, an upper bound, so a test
+        written for the old gate keeps its meaning — an early packet is early); `length` defaults to a ClientHello's, and
+        `replybytes` over `replypkts` to a SYN-ACK: the server has not answered yet. `ct reply avgpkt` is their quotient,
+        rounded down, as the kernel's is."""
         t = self.tables.get(table)
         st = {"mark": 0, "ctmark": ctmark, "via": []}
         if t is None:
             return dict(st, verdict="accept")
         pkt = {"iif": iif, "s": _ip(saddr), "d": _ip(daddr), "proto": proto, "dport": dport, "ct": ct,
-               "dir": "reply" if reply else "original", "ctpk": ctpackets}
+               "dir": "reply" if reply else "original", "ctpk": ctpackets,
+               "ctopk": ctpackets if ctorig is None else ctorig, "len": length, "ctrb": replybytes,
+               "ctra": replybytes // replypkts if replypkts else 0}
         base = [n for n, c in t["chains"].items() if c["hook"] and c["hook"][0] == "prerouting"]
         v = self._walk(t, base[0], pkt, st, 0) if base else None
         return dict(st, verdict=v or "accept")
@@ -656,6 +671,14 @@ class SmartModel:
                     ok = pkt["dir"] == o[1]
                 elif k == "ctpk_lt":
                     ok = pkt["ctpk"] < o[1]
+                elif k == "ctopk_lt":
+                    ok = pkt["ctopk"] < o[1]
+                elif k == "len_gt":
+                    ok = pkt["len"] > o[1]
+                elif k == "ctrb_lt":
+                    ok = pkt["ctrb"] < o[1]
+                elif k == "ctra_lt":
+                    ok = pkt["ctra"] < o[1]
                 elif k == "mark_eq":
                     ok = st["mark"] == o[1]
                 elif k == "ctmark_ne":
