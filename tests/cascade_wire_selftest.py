@@ -15,6 +15,7 @@ inside a request handler that cannot be called without a live server.
 Run: python3 tests/cascade_wire_selftest.py (0 = pass)
      --perturb  drops `devexit` from the reply, the way it shipped, and expects RED.
      --perturb-srcs  drops `smart.srcs` from the reply (per-person rows, ROUTING-PEERS-MESH-PLAN §4.3) and expects RED.
+     --perturb-arrivals  drops `smart.arrivals` from the reply (the node's default list for traffic cascaded in, §4.3) — RED.
 """
 import importlib.machinery, importlib.util, os, re, sys
 
@@ -22,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
-PERTURB = "--perturb" in sys.argv or "--perturb-srcs" in sys.argv
+PERTURB = "--perturb" in sys.argv or "--perturb-srcs" in sys.argv or "--perturb-arrivals" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -35,6 +36,10 @@ if "--perturb" in sys.argv:
     cut = '"devexit": my_plan.get("devexit") or []},   # Phase 2'
     assert cut in src, "perturbation anchor missing — this run would FALSE-PASS"
     src = src.replace(cut, '},   # Phase 2', 1)
+if "--perturb-arrivals" in sys.argv:
+    cut = '**({"arrivals": my_plan["arrivals"]} if my_plan.get("arrivals") else {}),'
+    assert src.count(cut) == 1, "perturbation anchor missing — this run would FALSE-PASS"
+    src = src.replace(cut, '', 1)
 if "--perturb-srcs" in sys.argv:
     cut = '**({"srcs": my_plan["srcs"]} if my_plan.get("srcs") else {}),'
     assert src.count(cut) == 1, "perturbation anchor missing — this run would FALSE-PASS"
@@ -75,6 +80,15 @@ check("the reply's `smart` block carries `srcs`", bool(_smart) and '"srcs": my_p
       _smart.group(1)[:200] if _smart else "no smart block")
 check("the node reads `srcs` off the `smart` block", '(smart or {}).get("srcs")' in nsrc)
 check("the node reads `src` off an entry", ('"src" in e' in nsrc or 'e.get("src")' in nsrc) and '(e["src"],)' in nsrc)
+
+# 5) ARRIVALS (ROUTING-PEERS-MESH-PLAN §4.3). `cascade_plan` puts them on the slot only when there are some — so the
+#    slot() literal above cannot see them, and they need their own check. The node reads them off the `smart` block.
+check("cascade_plan builds `arrivals` for a node's slot", 'sp["arrivals"] = {"subnets": subs, "entries": ents}' in src)
+check("the reply's `smart` block carries `arrivals`", bool(_smart) and '"arrivals": my_plan["arrivals"]' in _smart.group(1),
+      _smart.group(1)[:200] if _smart else "no smart block")
+check("the node reads `arrivals` off the `smart` block", '(smart or {}).get("arrivals")' in nsrc)
+check("…and the reply's category list counts the arrivals' categories, or the node makes no set for them",
+      '"categories": sorted(_plan_cats)' in src and '(my_plan.get("arrivals") or {}).get("entries")' in src)
 
 if PERTURB:
     if FAILS:

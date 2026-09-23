@@ -73,4 +73,14 @@ L = lint(plain);
 check("the dead badge and the more specific rule below are reported as before, nothing as `takenFew`",
       n(L[1].dupes) === 1 && n(L[1].takenBy) === 1 && L.every(x => n(x.takenFew) === 0), L);
 
+console.log("\n[5] a node's default list: audiences (P3, D9)");
+L = lint([r("example.org", "exit"), r("shop.example.org", "direct", null, { aud: "local" })]);
+check("a rule for one AUDIENCE below takes the hosts for that audience alone — `takenFew`, never nothing",
+      n(L[0].takenBy) === 0 && n(L[0].takenFew) === 1, L[0]);
+L = lint([r("example.org", "exit", null, { aud: "local" }), r("shop.example.org", "direct", null, { aud: "cascaded" })]);
+check("…and two different audiences are not compared (they reach no traffic in common)",
+      n(L[0].takenBy) === 0 && n(L[0].takenFew) === 0, L[0]);
+L = lint([r("example.org", "exit", null, { aud: "cascaded" }), r("shop.example.org", "direct")]);
+check("…while a rule for both below takes them for everyone the narrowed row is for", n(L[0].takenBy) === 1, L[0]);
+
 done(PERTURB, "every row reaches every device");

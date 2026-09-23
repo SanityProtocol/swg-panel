@@ -247,7 +247,7 @@ def main():
         0x9999, {"errors": [], "changed": 0}, ttl=3600),
         open(os.path.join(d, ".xtstring-sig")).read().strip())[1])(N.GEO_DIR)
     before = sig_of()
-    N._xts_scan = lambda subnet: [x for x in _real_scan(subnet) if x != "--connbytes"]   # a shape change
+    N._xts_scan = lambda subnet, arr=False: [x for x in _real_scan(subnet, arr) if x != "--connbytes"]   # a shape change
     after = sig_of()
     N._xts_scan = _real_scan
     check("changing the RULE SHAPE moves the signature", before != after,

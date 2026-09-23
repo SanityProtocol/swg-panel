@@ -69,15 +69,15 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {
-    "a": ('''    learn = list(dict.fromkeys((e["subnet"], e["category"]) for e in entries))''',
-          '''    learn = [(e["subnet"], e["category"]) for e in entries]'''),
-    "b": ('''            rules.append(["-A", CHAIN, "-s", S, "-m", "mark", "--mark", hex(reset_mark),
+    "a": ('''    learn = list(dict.fromkeys([(e["subnet"], e["category"]) for e in entries]''',
+          '''    learn = (([(e["subnet"], e["category"]) for e in entries]'''),
+    "b": ('''            rules.append(["-A", CHAIN, *(["-s", S] if S is not None else _asrc), "-m", "mark", "--mark", hex(reset_mark),
                           "-j", "CONNMARK", "--save-mark"])''',
           '''            if (S, c) == next(p for p in learn if p[0] == S):
                 rules.append(["-A", CHAIN, "-s", S, "-m", "mark", "--mark", hex(reset_mark), "-j", "CONNMARK", "--save-mark"])'''),
-    "c": [('''            rules.append(["-A", CHAIN, *_xts_scan(S), "--string", d, "-j", "SET", "--add-set", setn, "dst"])''',
+    "c": [('''            rules.append(["-A", CHAIN, *_xts_scan(S, S is None), "--string", d, "-j", "SET", "--add-set", setn, "dst"])''',
            '''            pass'''),
-          ('''            rules.append(["-A", CHAIN, "-s", S, "-m", "mark", "--mark", hex(reset_mark),
+          ('''            rules.append(["-A", CHAIN, *(["-s", S] if S is not None else _asrc), "-m", "mark", "--mark", hex(reset_mark),
                           "-j", "CONNMARK", "--save-mark"])''',
            '''            rules.append(["-A", CHAIN, "-s", S, "-m", "mark", "--mark", hex(reset_mark), "-j", "SET", "--add-set", setn, "dst"])
             rules.append(["-A", CHAIN, "-s", S, "-m", "mark", "--mark", hex(reset_mark),
@@ -98,7 +98,7 @@ PLANTS = {
     "f": ('''    sig = hashlib.sha1((json.dumps(rules) + "|ttl:" + str(ttl)).encode()).hexdigest()[:16]''',
           '''    sig = hashlib.sha1((json.dumps(rules) + json.dumps(sorted((k, sorted(v)) for k, v in want_srcs.items())) + "|ttl:" + str(ttl)).encode()).hexdigest()[:16]'''),
     "g": ('''[e for e in smart_exit if _ks or "src" not in e]''', '''[e for e in smart_exit]'''),
-    "g2": ('''            "src": 2 if _KSNI_SRC["ok"] else 1}''', '''            "src": 2}'''),
+    "g2": ('''            "src": 2 if _KSNI_SRC["ok"] else 1,''', '''            "src": 2,'''),
     "g3": ('''            ok = run(["ipset", "create", "swgs_probe", "hash:net,iface", "family", "inet"]).returncode == 0''',
            '''            ok = run(["ipset", "create", "swgs_probe", "hash:net,iface", "family", "inet"]) is not None'''),
     "h": ('''        rules.append(["-A", CHAIN, "-s", S, "-m", "set", "--match-set", _xts_setname(c), "dst", "-j", "RETURN"])''',

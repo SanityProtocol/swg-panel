@@ -157,7 +157,7 @@ check("nothing reported", "dns_redirect" not in N._SMART_MODE)
 
 print("[7] the node's own nets reach the redirect")
 check("reconcile_cascade hands its `nets` to _ensure_smart_dnsmasq",
-      "_ensure_smart_dnsmasq(domains, smart_e, res, unchanged=dom_unchanged, zones=_zones, nets=nets)" in src)
+      "_ensure_smart_dnsmasq(domains, _dns_e, res, unchanged=dom_unchanged, zones=_zones, nets=nets)" in src)
 check("…which hands the prefixes to the redirect",
       "_smart_dns_redirect(subnets if want else [], res, nets=[p for p, _i in (nets or ())])" in src)
 

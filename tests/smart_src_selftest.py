@@ -86,7 +86,7 @@ PLANTS = {
           '''"meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")
                     elif act == "direct":
                         bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "return")'''),
-    "c": ('                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+|pb\\d+", c))):',
+    "c": ('                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+|pb\\d+|sa|pa\\d+", c))):',
           '                for _c in ("catcount", "catany", "forward"):'),
     "d": ('''("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]''',
           '''("|lttl:" + str(learn_ttl) if queue else "") + "|s9|src").encode()).hexdigest()[:16]'''),
@@ -107,7 +107,7 @@ PLANTS = {
     "s4": ('''        return any(None not in cov.get(S, ()) and not (w and w in cov.get(S, ())) for S, ws in aud[c2].items() for w in ws)''',
            '''        return True'''),
     "s5": ('''                if None not in cov and not (len(w) > 4 and w[4] in cov):''', '''                if True:'''),
-    "s6": ('''            "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}|src_[0-9a-f]{12}", k)}, "rules": rules,''',
+    "s6": ('''            "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}|src_[0-9a-f]{12}|lg|ar|cln", k)}, "rules": rules,''',
            '''            "sets": dict(t["counts"]), "rules": rules,'''),
     "s7": ('''            dom_unchanged, _SHADOW["dns"] = False, (_shw or {}).get("sig", "")''',
            '''            _SHADOW["dns"] = (_shw or {}).get("sig", "")'''),
@@ -125,8 +125,8 @@ PLANTS = {
     "n1": [('''    spec = [e for e in smart_e if e["category"] != "all" and ("src" not in e or _SRC_WID_RE.fullmatch(str(e["src"])))]''',
             '''    spec = [e for e in smart_e if e["category"] != "all" and (not e.get("src") or _SRC_WID_RE.fullmatch(str(e["src"])))]'''),
            ('''e.get("table")) + ((e["src"],) if "src" in e else ())''', '''e.get("table")) + ((e["src"],) if e.get("src") else ())''')],
-    "c2": ('                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+|pb\\d+", c))):',
-           '                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+", c))):'),
+    "c2": ('                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+|pb\\d+|sa|pa\\d+", c))):',
+           '                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+|sa|pa\\d+", c))):'),
     "pb1": ('''                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "accept")''',
             '''                pass'''),
     "pb2": ('''                    ex += [[cnd, snm] for snm in''', '''                    ex += [[[], snm] for snm in'''),

@@ -22,6 +22,7 @@ Structural, from the source — it cannot be satisfied by a comment or a test fi
 
 Run: python3 tests/settings_node_fields_selftest.py (0 = pass)
      --perturb  drops `exits` from diffList, the way the first pass shipped it, and expects RED.
+     --perturb-publish  drops `default_routing` from the /api/state node record and expects RED (exit 0 when caught).
 """
 import os, re, sys
 
@@ -170,6 +171,29 @@ for k in sorted(_FLOOR | _written):
     check("the interface meta publishes %s" % k, ('ifc["%s"]' % k) in psrc, k)
     check("both self-contained kinds publish %s" % k, ('"%s"' % k) in wd and ('"%s"' % k) in cs, k)
 
+# ── the server half for a NODE-level field: /api/state must PUBLISH what nFields reads ─────────────────────
+# ⚠️ THE SAME write-once-then-lost SHAPE, ONE LEVEL UP. `nFields` rebuilds the node draft from the record /api/state
+# serves; a field the node-update handler stores and the node publisher does not send reads as absent, the draft holds
+# its empty form, and the next Settings save of ANYTHING on that node posts it back and clears it. The interface half of
+# this file could never see it: node fields have their own publisher. Derived from what `nFields` actually reads
+# (`n.<field>`), so a new node field is checked the day it is drafted. P3's `default_routing` is the reason this exists.
+_nf_blk = block(src, r"const nFields = n => \(\{")
+_nf_blk = _nf_blk[:_nf_blk.index("exits: (n.exits")] if "exits: (n.exits" in _nf_blk else _nf_blk   # the exit map reads `x.`, not `n.`
+_reads = set(re.findall(r"\bn\.([a-z_]+)", _nf_blk))
+_pub = block(psrc, r'out\.append\((?=\{"id": nid, "name": c\.get\("name", nid\), "color")', "(", ")")
+if "--perturb-publish" in sys.argv:
+    _cut = '"default_routing": c.get("default_routing")'
+    assert _cut in _pub, "perturbation anchor missing — this run would FALSE-PASS"
+    _pub = _pub.replace(_cut, '"_gone": c.get("default_routing")')
+check("the node publisher was read at all", len(_pub) > 2000 and len(_reads) >= 10, (len(_pub), sorted(_reads)))
+_unpub = sorted(k for k in _reads if ('"%s":' % k) not in _pub)
+check("every node field the Settings draft reads is PUBLISHED by /api/state, or the next save clears it",
+      not _unpub, _unpub)
+check("…default_routing and its exit addresses among them (P3)",
+      {"default_routing", "default_routing_exit_ips"} <= _reads, sorted(_reads))
+
+if "--perturb-publish" in sys.argv:
+    sys.exit(0 if any("PUBLISHED" in f for f in FAILS) else 1)
 if PERTURB:
     if FAILS:
         print("\nperturbed: a per-node field missing from diffList was CAUGHT (%d red) — Save would have "

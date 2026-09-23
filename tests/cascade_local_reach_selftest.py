@@ -99,10 +99,10 @@ LOCAL = [("10.28.0.0/24", "wg9"), ("10.30.0.0/24", "wg5"), ("10.8.0.0/24", "wg0"
 LOOKUPS = []
 N._cascade_local_routes = lambda cfg, _proc=None: LOOKUPS.append(1) or list(LOCAL)
 _orig_sig = N._cascade_want_sig
-def _rec_sig(fwd, exit_, smart=None, guard=(), nets=(), net_tables=()):
+def _rec_sig(fwd, exit_, smart=None, guard=(), nets=(), net_tables=(), arr=()):
     if PERTURB:
         nets = [x for x in nets if x not in LOCAL]
-    s = _orig_sig(fwd, exit_, smart, guard, nets=nets, net_tables=net_tables)
+    s = _orig_sig(fwd, exit_, smart, guard, nets=nets, net_tables=net_tables, arr=arr)
     SIGS.append(s)
     return s
 N._cascade_want_sig = _rec_sig

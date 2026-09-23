@@ -381,7 +381,7 @@ class SmartModel:
         return work[name]
 
     def _new_set(self, spec):
-        m = re.fullmatch(r"\{ type (ipv4_addr|ifname \. ipv4_addr);(?: flags ([a-z, ]+);)?(?: auto-merge;)?(?: timeout (\d+)s;)? \}",
+        m = re.fullmatch(r"\{ type (ipv4_addr|ifname \. ipv4_addr|ifname);(?: flags ([a-z, ]+);)?(?: auto-merge;)?(?: timeout (\d+)s;)? \}",
                          spec.strip())
         if not m:
             raise NftError("syntax error in set declaration %r" % spec)
@@ -391,6 +391,12 @@ class SmartModel:
 
     def _add_elements(self, s, text):
         for e in [x.strip() for x in text.split(",") if x.strip()]:
+            if s["type"] == "ifname":                      # the arrivals' mesh legs (ROUTING-PEERS-MESH-PLAN §6.1): a device name, quoted
+                me = re.fullmatch(r'"([A-Za-z0-9_.@:+-]{1,15})"', e)
+                if not me:
+                    raise NftError("syntax error in element %r" % e)
+                s["els"].add((me.group(1), -1, -1))
+                continue
             if s["type"] == "ifname . ipv4_addr":
                 me = re.fullmatch(r'"([A-Za-z0-9_.@:+-]{1,15})" \. (\d+\.\d+\.\d+\.\d+)(/\d+)?', e)
                 if not me:
@@ -418,6 +424,9 @@ class SmartModel:
                 ops.append(("concat_src", tk[i + 5][1:], True)); i += 6
             elif at("iifname", ".", "ip", "saddr") and tk[i + 4].startswith("@"):
                 ops.append(("concat_src", tk[i + 4][1:])); i += 5
+            elif tk[i] == "iifname" and i + 1 < len(tk) and (tk[i + 1].startswith("@") or (tk[i + 1] == "!=" and tk[i + 2].startswith("@"))):
+                neg = tk[i + 1] == "!="                                  # the device in an `ifname` set (`iifname @lg`)
+                ops.append(("iifset", (tk[i + 2] if neg else tk[i + 1])[1:], neg)); i += 3 if neg else 2
             elif tk[i] in ("iifname", "oifname") and i + 1 < len(tk):
                 neg = tk[i + 1] == "!="
                 ops.append(("iif" if tk[i] == "iifname" else "oif", (tk[i + 2] if neg else tk[i + 1]).strip('"'), neg))
@@ -475,7 +484,7 @@ class SmartModel:
         for c in t["chains"].values():
             for r in c["rules"]:
                 for o in r["ops"]:
-                    if o[0] == "concat_src":
+                    if o[0] in ("concat_src", "iifset"):
                         out.add(("sets", o[1]))
                     elif o[0] == "set":
                         out.add(("sets", o[2]))
@@ -587,7 +596,7 @@ class SmartModel:
                 out.append("\t\ttimeout %ds" % s["timeout"])
             if s["els"]:
                 els = sorted(s["els"], key=lambda x: (x[0] or "", x[1]))
-                txt = ", ".join(('"%s" . %s' % (e[0], ipaddress.IPv4Address(e[1]))) if e[0] else
+                txt = ", ".join(('"%s"' % e[0]) if e[1] == -1 else ('"%s" . %s' % (e[0], ipaddress.IPv4Address(e[1]))) if e[0] else
                                 (str(ipaddress.IPv4Address(e[1])) if e[1] == e[2] else
                                  str(next(ipaddress.summarize_address_range(ipaddress.IPv4Address(e[1]), ipaddress.IPv4Address(e[2])))))
                                 for e in els)
@@ -633,6 +642,8 @@ class SmartModel:
                     ok = self._in(t, o[1], pkt["s"], pkt["iif"]) != (len(o) > 2 and o[2])
                 elif k == "iif":
                     ok = (pkt["iif"] == o[1]) != o[2]
+                elif k == "iifset":
+                    ok = any(e[0] == pkt["iif"] for e in t["sets"][o[1]]["els"]) != o[2]
                 elif k == "oif":
                     ok = False                              # prerouting has no output interface
                 elif k == "set":

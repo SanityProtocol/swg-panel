@@ -69,13 +69,14 @@ print("\n[3] ⚠️ …and the flag is set somewhere the idle pass can actually 
 # just switched to Force-DNS with nothing routed. The flag was written in a function the pass skipped, the
 # gate went green on source it could see, and the live node still read `engine_ok: false`. The engine's own
 # name has to be in that guard, or the exemption is unreachable. [[lesson-gate-never-ran]]
-_call = re.search(r"^\s*if ([^\n]*?):\n\s*_ensure_smart_dnsmasq\(domains, smart_e", src, re.M)
+_call = re.search(r"^\s*if ([^\n]*?):\n\s*_ensure_smart_dnsmasq\(domains, (?:smart_e|_dns_e)", src, re.M)
 check("the dnsmasq call site was found", bool(_call), "it moved — this gate is blind")
 if _call:
     check("⚠️ …and a Force-DNS node reaches it even with nothing to route",
           'host_engine == "dns"' in _call.group(1), _call.group(1))
     check("…while IP-only still does not, so an idle kernel node pays nothing for this",
-          "smart_e or domains" in _call.group(1), _call.group(1))
+          # (`_dns_e` is the local entries plus any arrival subnets — empty on an idle node either way)
+          ("smart_e or domains" in _call.group(1) or "_dns_e or domains" in _call.group(1)), _call.group(1))
 
 print("\n[4] ⚠️ …and the capability check is NOT exempted — it is a fact about the box, not about load")
 if ladder:

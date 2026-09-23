@@ -58,8 +58,8 @@ PLANTS = {
         if _pd:'''),
     "c": ('''        if k not in nodes and k not in stored:''',
           '''        if k not in nodes:'''),
-    "d": ('''            _pin = ov.get("routing_exit_ips") or {}''',
-          '''            _pin = {}'''),
+    "d": ('''            _xm = exit_ips_of[(nid, S)] = dict(ov.get("routing_exit_ips") or {})''',
+          '''            _xm = exit_ips_of[(nid, S)] = {}'''),
     "e": ('''    if "routing_exit_ips" not in body:
         return None''',
           '''    if False:
@@ -221,9 +221,10 @@ check("…and it is the pinned address the exit record carries", [e["egress_ip"]
 check("…while P's OWN clients keep their default either way (the exemption is about the ARRIVING subnet)",
       all("10.9.0.0/24" in dx(x) for x in (pd, pp)), [dx(x) for x in (pd, pp)])
 ps = plan([R()], {"n2": X1}, p_default="aabbccdd", p_exits=PX)
-check("a pinned SMART rule's subnet gets no default-exit entry at P either "
-      "(today because no smart arrival does — D5; when P3 gives them one, this is what must keep it off a pinned pair)",
-      "10.8.0.0/24" not in dx(ps), dx(ps))
+pu = plan([R()], p_default="aabbccdd", p_exits=PX)
+check("CONTROL — an UNPINNED smart arrival now leaves P by P's default exit (D5, P3)", "10.8.0.0/24" in dx(pu), dx(pu))
+check("a pinned SMART rule's subnet gets no default-exit entry at P either — the exemption, not the absence of D5, "
+      "is what keeps it off (§3.4)", "10.8.0.0/24" not in dx(ps), dx(ps))
 check("…and its exit record still carries the address", [e["egress_ip"] for e in ex(ps)] == [X1], ex(ps))
 
 # ── 3b. the round trip through the browser ──────────────────────────────────────────────────────────────
