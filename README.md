@@ -484,6 +484,11 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 - **A default exit now also catches routed traffic.** Traffic another server sends through this one by a routing
   rule now leaves by this server's default exit, as whole-interface forwarding always did — with the exit's
   kill-switch on, it now stops when the exit is down instead of leaving by the server's own address.
+- **Two servers can't share a subnet across a cascade.** An interface's traffic is never sent to a server that uses an
+  overlapping subnet itself, or that another server already sends one — the installers' 10.8.0.0/24 and 10.9.0.0/24,
+  or a server added from another panel — because its replies couldn't be told apart. Rules toward that server are
+  skipped for the interface, a forward to it is off (its traffic leaves by this server's own address), and the
+  sending server's card names both sides; give one of them a different subnet.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more

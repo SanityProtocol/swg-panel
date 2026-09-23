@@ -6372,6 +6372,14 @@ export const STR = {
   // …and the panel's sentences for it
   "{node} needs an update to route traffic cascaded in by destination — until then it all leaves by {catch}.":
     "{node} нужно обновить для маршрутизации входящего трафика по направлениям — до обновления он весь выходит через {catch}.",
+  "{v1} ({v2}) isn't sent to {v3}: {v4}, so replies couldn't find their way back. {v5}":
+    "{v1} ({v2}) не отправляется на {v3}: {v4}, и ответы не смогли бы вернуться. {v5}",
+  "{v1} there uses {v2}": "там {v1} использует {v2}",
+  "{v1} on {v2} already sends it {v3}": "{v1} на {v2} уже отправляет туда {v3}",
+  "Rules toward {v1} are skipped for {v2} until one of them gets a different subnet.":
+    "Правила в сторону {v1} для {v2} пропускаются, пока одному из них не дадут другую подсеть.",
+  "Forwarding is off for {v1}, so its traffic leaves by this server's own address until one of them gets a different subnet.":
+    "Пересылка для {v1} выключена, и его трафик выходит с собственного адреса этого сервера, пока одному из них не дадут другую подсеть.",
   "traffic cascaded in": "трафик с других узлов",
   "{v1} and traffic cascaded in": "{v1} и трафик с других узлов",
   "this node's own address": "собственный адрес этого узла",

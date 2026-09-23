@@ -6555,7 +6555,7 @@ def _awg_datapath(snap):
     return awg
 
 
-def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None):
+def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clash=None):
     """Health-check roll-up for one node: settings edited on the server (drift), an egress IP / WAN
     NIC the node no longer has, and turn-proxies that aren't running. Empty list = healthy.
 
@@ -6668,6 +6668,19 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None):
         # (a Block or Direct catch-all has no plain-default form, so an older node lets it out by its own address)
         issues.append(perr("{node} needs an update to route traffic cascaded in by destination — until then it all leaves by {catch}.",
                            node=c.get("name") or "this node", catch=_catch))
+    # A pair the plan left out because the far node could not tell its replies apart (T37, `_clashes` in `cascade_plan`):
+    # said here, on the node whose rules name it, because this is where the operator acts — the far node is unaffected.
+    # It names BOTH subnets (an overlap need not be equality), and says where the traffic goes instead: a rule simply does
+    # not apply, but a whole-interface forward that is off leaves by this node's own address, and that is said outright.
+    for e in clash or ():
+        why = (perr("{v1} on {v2} already sends it {v3}", v1=e.get("their"), v2=e.get("via"), v3=e.get("their_subnet"))
+               if e.get("via") else perr("{v1} there uses {v2}", v1=e.get("their"), v2=e.get("their_subnet")))
+        then = (perr("Forwarding is off for {v1}, so its traffic leaves by this server's own address until one of them gets "
+                     "a different subnet.", v1=e.get("iface")) if e.get("kind") == "forward" else
+                perr("Rules toward {v1} are skipped for {v2} until one of them gets a different subnet.",
+                     v1=e.get("node"), v2=e.get("iface")))
+        issues.append(perr("{v1} ({v2}) isn't sent to {v3}: {v4}, so replies couldn't find their way back. {v5}",
+                           v1=e.get("iface"), v2=e.get("subnet"), v3=e.get("node"), v4=why, v5=then))
     _broken = _broken_ifaces(c, snap, ivk_pub)
     for ifn, e in (snap.get("interfaces") or {}).items():
         if e.get("down"):                             # failed to come up
@@ -10010,6 +10023,23 @@ def reserved_conflict(deps, nodes, node, subnet=None, port=None, name=None):
     return None
 
 
+def _tunnel_networks(node):
+    """A node's WDTT (and RAW) and csqtt subnets, from its record, as [(name, ip_network)] — the subnets it holds that no
+    describe reports. ONE walk for the fleet-unique check at create and the cascade plan's clash guard (T37), so a subnet
+    kind added later is added to both. A RAW subnet is named "<instance> (raw)"."""
+    out = []
+    for ifn, w in ((node or {}).get("wdtt") or {}).items():
+        for nm, a in ((ifn, (w or {}).get("wg_addr")), (ifn + " (raw)", (w or {}).get("raw_addr"))):
+            if a:
+                with contextlib.suppress(ValueError, TypeError):
+                    out.append((nm, ipaddress.ip_network(str(a), strict=False)))
+    for ifn, c in ((node or {}).get("csqtt") or {}).items():
+        if (c or {}).get("tun_addr"):
+            with contextlib.suppress(ValueError, TypeError):
+                out.append((ifn, ipaddress.ip_network(str(c["tun_addr"]), strict=False)))
+    return out
+
+
 def _fleet_user_networks(deps, nodes, skip_node=None, skip_iface=None):
     """Every USER interface subnet in use across the fleet — wg/awg (from each node's reported describe) + WDTT
     (wg_addr) — as (node_id, iface, ip_network), excluding a (skip_node, skip_iface) being created/edited and
@@ -10027,19 +10057,12 @@ def _fleet_user_networks(deps, nodes, skip_node=None, skip_iface=None):
                         continue
                     with contextlib.suppress(Exception):
                         out.append((nid, ifn, ipaddress.ip_network((m or {}).get("subnet") or "", strict=False)))
-        for ifn, w in (node.get("wdtt") or {}).items():
-            if nid == skip_node and ifn == skip_iface:
+        # WDTT (a qWDTT RAW listener owns a SECOND subnet — just as unique-per-fleet) and csqtt TUN subnets; an instance
+        # being created/edited is skipped whole, RAW with it
+        for nm, net in _tunnel_networks(node):
+            if nid == skip_node and nm.split(" (raw)")[0] == skip_iface:
                 continue
-            with contextlib.suppress(Exception):
-                out.append((nid, ifn, ipaddress.ip_network((w or {}).get("wg_addr") or "", strict=False)))
-            if (w or {}).get("raw_addr"):   # a qWDTT RAW listener owns a SECOND subnet — just as unique-per-fleet
-                with contextlib.suppress(Exception):
-                    out.append((nid, ifn + " (raw)", ipaddress.ip_network(w["raw_addr"], strict=False)))
-        for ifn, c in (node.get("csqtt") or {}).items():   # csqtt TUN subnets also participate in overlap checks
-            if nid == skip_node and ifn == skip_iface:
-                continue
-            with contextlib.suppress(Exception):
-                out.append((nid, ifn, ipaddress.ip_network((c or {}).get("tun_addr") or "", strict=False)))
+            out.append((nid, nm, net))
     return out
 
 
@@ -15605,6 +15628,71 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                                       "_fwd_seen": set(), "_smart_seen": set(), "_exit_seen": set(),
                                       "_leg_seen": set(), "_targets": {}})
 
+    # A SUBNET IS NEVER CASCADED WHERE THE FAR NODE CANNOT TELL ITS REPLIES APART (T37). The exit routes replies by
+    # DESTINATION — `to S lookup T`, above its main table — so S must mean ONE place there. Two ways it doesn't:
+    #   · P has an interface on a subnet overlapping S. The side that loses is P's OWN clients on it: every packet to them
+    #     goes back over the mesh, the moment another node's rule or default list names P. Live 2026-09-23: a test list on
+    #     msk-main cascaded its awg2 (10.9.0.0/24) to nixos, whose wdtt1 is 10.9.0.0/24 — nixos sent its wdtt1 clients'
+    #     traffic to msk-main.
+    #   · another node already sends P a subnet overlapping S — two return routes for one destination, and one origin's
+    #     clients lose theirs (T15, which the arrivals pass could only report). The first origin planned keeps it.
+    # Subnets are meant to be unique across the fleet (`subnet_fleet_conflict` refuses an overlap at create), but adopted
+    # interfaces, declarative nodes and servers enrolled from another panel predate or bypass that check, and the
+    # installers' defaults (10.8.0.0/24, 10.9.0.0/24) make a shared subnet the ordinary case — and a default list cascades
+    # EVERY subnet of its node. So such a pair is not planned, as a pair whose mesh link is missing is not: a rule does not
+    # apply to that subnet (its traffic takes the next rule or the node's default), a forward is off (its traffic leaves by
+    # this node's own address), and the entry node's card says which, and why (`_clash`, read at sync like `_reach`).
+    # P's interfaces come from its snapshot, which a restarted panel seeds from the mirrored stats (warm-start), so a
+    # restart opens no window; a node that has never reported has nothing to clash with yet and applies no plan until it
+    # does. Mesh links are not P's subnets: the onward hop (P3b) arrives from a link address inside one of them.
+    _own_nets_of, _clash_memo, _into = {}, {}, {}
+
+    def _own_nets(P):
+        """P's own user subnets as [(name, network)] — every interface it reports but its mesh links (the link devices, and
+        what the stored record or the node itself flags `system` — the test `snap_aggregates` uses), and its WDTT (and
+        RAW) and csqtt subnets (`_tunnel_networks`, the create-time check's own walk)."""
+        if P not in _own_nets_of:
+            n, out = nodes.get(P) or {}, []
+            _mesh = {str((lr or {}).get("iface") or "") for lr in (n.get("links") or {}).values()}
+            for ifn, blk in ((((snaps or {}).get(P) or {}).get("interfaces")) or {}).items():
+                meta = (blk or {}).get("meta") or {}
+                if (ifn in _mesh or str(ifn).startswith("swg_") or meta.get("system")
+                        or ((n.get("ifaces") or {}).get(ifn) or {}).get("system")):
+                    continue
+                with contextlib.suppress(ValueError, TypeError):
+                    out.append((ifn, ipaddress.ip_network(meta.get("subnet") or "", strict=False)))
+            _own_nets_of[P] = out + _tunnel_networks(n)
+        return _own_nets_of[P]
+
+    def _clash_of(nid, S, P):
+        """Why S cannot go to P, as a card record's `their`/`their_subnet`/`via`, or None. Pure: records nothing."""
+        if (S, P) not in _clash_memo:                # P's own subnets do not change within a plan: one scan per pair
+            try:
+                s = ipaddress.ip_network(S, strict=False)
+            except (ValueError, TypeError):
+                s = None
+            hit = s and next(((i, o) for i, o in _own_nets(P) if o.version == s.version and o.overlaps(s)), None)
+            _clash_memo[(S, P)] = (s, {"their": hit[0], "their_subnet": str(hit[1]), "via": ""} if hit else None)
+        s, own = _clash_memo[(S, P)]
+        if own or not s:
+            return own
+        dup = next((e for e in _into.get(P) or () if e[1] != nid and e[0].version == s.version and e[0].overlaps(s)), None)
+        return {"their": dup[2], "their_subnet": str(dup[0]), "via": dup[1]} if dup else None
+
+    def _note_clash(nid, name, S, P, kind, why):
+        slot(nid).setdefault("_clash", {})[(name or S, P)] = {"iface": name or S, "subnet": S, "node": P, "kind": kind, **why}
+
+    def _clashes(nid, name, S, P, kind):
+        """True — and the pair noted for the entry node's card — when S cannot go to P. False registers S as planned into P,
+        so a later origin overlapping it is the one left out: call it only where the pair is then planned."""
+        why = _clash_of(nid, S, P)
+        if why:
+            _note_clash(nid, name, S, P, kind, why)
+            return True
+        with contextlib.suppress(ValueError, TypeError):
+            _into.setdefault(P, []).append((ipaddress.ip_network(S, strict=False), nid, name or S))
+        return False
+
     def add_exit(P, S, dev_p, T, X, W, base_p):        # exit record + exit-side AllowedIPs (shared by forward + smart)
         sp = slot(P)
         if (S, dev_p, T) not in sp["_exit_seen"]:
@@ -15690,7 +15778,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             extra = (doms, cidrs, pats)
         return cat, extra
 
-    def _collect_egress(nid, ov, S, targets, auto_label=""):
+    def _collect_egress(nid, ov, S, targets, auto_label="", name=""):
         # Given a source SUBNET S (an interface's or a WDTT instance's wg subnet) and its egress override `ov`,
         # append forward/smart items for the fleet plan. Datapath is subnet-based, so a WDTT wg_addr subnet is
         # routed identically to a normal interface subnet — the node never learns which kind it came from.
@@ -15742,6 +15830,8 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                 return
             dev_n, dev_p, base_p = _link_devs(nodes, nid, P)
             if not (dev_n and dev_p and base_p):
+                return
+            if _clashes(nid, name or auto_label, S, P, "forward"):
                 return
             if P not in targets:
                 targets.append(P)
@@ -15824,6 +15914,8 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                 dev_n, dev_p, base_p = _link_devs(nodes, nid, P)
                 if not (dev_n and dev_p and base_p):
                     return False
+                if _clashes(nid, name or auto_label, S, P, "rule"):
+                    return False
                 if P not in targets:
                     targets.append(P)
                 smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra, None, None, "", "", r.get("who")))
@@ -15891,7 +15983,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             if (_wov or {}).get("raw_port"):
                 _RS = _wdtt_net((_wov or {}).get("raw_addr") or "")
                 if _RS:
-                    _collect_egress(nid, _wov, _RS, targets)
+                    _collect_egress(nid, _wov, _RS, targets, name=_wn + " (raw)")
         for _cn, _cov in (node.get("csqtt") or {}).items():   # csqtt instances too (subnet from tun_addr) — subnet-based, routed identically
             if not _cov:
                 continue
@@ -16222,6 +16314,8 @@ def cascade_plan(nodes, snaps, custom_lists=None):
     for sn in plans.values():
         for k in ("_fwd_seen", "_smart_seen", "_exit_seen", "_leg_seen", "_targets", "_from", "_auto", "_hop2", "_dx_seen"):
             sn.pop(k, None)
+        if sn.get("_clash"):                               # keyed while planning (one line per interface and far node)
+            sn["_clash"] = sorted(sn["_clash"].values(), key=lambda e: (e["iface"], e["node"]))
     return plans
 
 
@@ -17400,7 +17494,10 @@ def api(method, path, qs, body, deps):
             if _unp:   # peer ids → names: _node_issues is handed one record, not the fleet
                 _unp = dict(_unp, peers=[(nodes.get(p) or {}).get("name") or p for p in _unp.get("peers") or ()])
             _iss = _node_issues(c, snap, _ivk_now, (Handler.deps.get("cas_capped") or {}).get(nid) or (), _unp,
-                                (Handler.deps.get("cas_reach") or {}).get(nid))
+                                (Handler.deps.get("cas_reach") or {}).get(nid),
+                                clash=[dict(e, **{k: (nodes.get(e[k]) or {}).get("name") or e[k]
+                                                  for k in ("node", "via") if e.get(k)})
+                                       for e in (Handler.deps.get("cas_clash") or {}).get(nid) or ()])
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https", "mesh_awg": _mawg, "mesh_awg_set": c.get("mesh_awg") or {},   # actual (live) vs the per-node override the UI edits
                         "mesh_peers": _mesh_peers,
@@ -25667,6 +25764,8 @@ class Handler(BaseHTTPRequestHandler):
         # …and "whom it affects" for every node whose default is a list (§7.3) — the same terms: a fact only the plan holds,
         # kept from the last sync so /api/state never builds one (T16). Empty until the first sync after a restart.
         Handler.deps["cas_reach"] = {_n: _p["_reach"] for _n, _p in cas_plans.items() if _p.get("_reach")}
+        # …and the pairs left unplanned because the far node holds the same subnet — the same terms again.
+        Handler.deps["cas_clash"] = {_n: _p["_clash"] for _n, _p in cas_plans.items() if _p.get("_clash")}
         my_plan = cas_plans.get(nid) or {"forward": [], "smart": [], "exit": [], "devexit": [], "allowed": {}}
         if my_plan.get("_who"):                          # a rule names people: resolve them for THIS node only (§4.3, D4)
             my_plan = who_plan_for_node(my_plan, roster, nid, snap)

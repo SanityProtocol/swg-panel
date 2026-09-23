@@ -15,7 +15,7 @@ panel and an older node fall back to.
                       device); a capable node keeps NO `from S` default beside its marks (D3's trap, T1); an incapable one
                       gets nothing new and falls back to the catch-all as a plain default (D4); D5 gives a SMART arrival a
                       plain default exactly as a forward one gets it; a PINNED (S, P) is exempt from P's default in both
-                      halves (§3.4 — the P2 constraint); a subnet two origins send is left out (T15); arrivals never reach
+                      halves (§3.4 — the P2 constraint); a subnet a second origin sends is not planned for it (T15 → T37); arrivals never reach
                       the relay's legs (T8); and a fleet with none of this plans exactly what it did before (§5.3).
   THE SYNC SLICE    — the syncing node's slice keeps the arrivals' categories in its domain / CIDR channels even where a
                       rule names people (`who_plan_for_node` filters those channels).
@@ -287,9 +287,15 @@ nodes8["n3"] = {"name": "node-q", "routing_mode": "kernel", "ifaces": {"wg0": {"
                 "links": {"n2": {"iface": "swg_p", "peer_address": "10.255.0.3"}}}
 nodes8["n2"]["links"]["n3"] = {"iface": "swg_q", "peer_address": "10.255.0.2"}
 pl8 = P.cascade_plan(nodes8, {"n1": SN, "n2": SP, "n3": {"interfaces": {"wg0": {"meta": {"subnet": "10.28.0.0/24"}}}}})
-check("a subnet two origins both send is left out of the arrivals, not merged into one set (T15)",
-      "10.28.0.0/24" not in (arr(pl8).get("subnets") or []) and "10.8.0.0/24" in (arr(pl8).get("subnets") or []), arr(pl8))
-check("…and reported", (pl8["n2"].get("_reach") or {}).get("dup") == ["10.28.0.0/24"], pl8["n2"].get("_reach"))
+# (T37 made T15's case a planning one: the second origin's pair is not planned at all, so P never holds two return routes for
+# one destination, and P's list routes the subnet for the origin that has it — rather than leaving it out for both.)
+check("a subnet two origins both send: the first keeps it (P's list routes it), the second's pair is not planned (T15 → T37)",
+      "10.28.0.0/24" in (arr(pl8).get("subnets") or []) and "10.8.0.0/24" in (arr(pl8).get("subnets") or [])
+      and not (pl8.get("n3") or {}).get("forward"), (arr(pl8), (pl8.get("n3") or {}).get("forward")))
+check("…the second origin is told on its card, as a forward that is off, naming the first",
+      [(e["iface"], e["kind"], e["via"], e["their"]) for e in (pl8.get("n3") or {}).get("_clash") or []] == [("wg0", "forward", "n1", "wg9")],
+      (pl8.get("n3") or {}).get("_clash"))
+check("…and P sees one origin: no duplicate to report", (pl8["n2"].get("_reach") or {}).get("dup") == [], pl8["n2"].get("_reach"))
 # a list that says nothing selective to this node's own clients is a plain default wearing a list
 _ca = [{"enabled": True, "category": "all", "action": "dev", "exit_id": Y1["id"]}]
 _a = {k: v for k, v in plan(fleet(p_list=_ca), sp=OLD).items()}
