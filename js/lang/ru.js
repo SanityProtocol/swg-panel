@@ -1630,6 +1630,16 @@ export const STR = {
   "Bytes — MB/s, what the node counts": "Байты — МБ/с, как считает нода",
   "How every speed in the panel is written. The same measurement either way — bits are 8× the number, and are what speed tests, ISP plans and router pages quote. Totals are always in bytes.":
     "Как записывается любая скорость в панели. Измерение одно и то же — в битах число в 8 раз больше, и именно биты называют спидтесты, тарифы и страницы роутеров. Итоговые объёмы всегда в байтах.",
+  "Data": "Данные",
+  "Days are counted in": "Сутки считаются по поясу",
+  "This server's zone ({v1})": "Пояс этого сервера ({v1})",
+  "This server's zone": "Пояс этого сервера",
+  "{v1} (this browser's zone)": "{v1} (пояс этого браузера)",
+  "Where each day starts and ends — for traffic totals, the charts and the turn-proxy update hour. Changing it shifts the charts' earlier points by the difference until they scroll out (up to 33 days).":
+    "Где начинаются и кончаются сутки — для итогов трафика, графиков и часа обновления turn-прокси. После смены пояса прежние точки графиков сдвинутся на разницу, пока не уйдут из окна (до 33 дней).",
+  "This server no longer has {v1}, so days are counted in its own zone. Pick another zone and save.":
+    "На этом сервере больше нет пояса {v1}, поэтому сутки считаются по его собственному поясу. Выберите другой пояс и сохраните.",
+  "This server has no time zone called {v1}. Pick one from the list.": "На этом сервере нет часового пояса {v1}. Выберите пояс из списка.",
   "Nodes — what the node downloads / uploads": "Ноды — что нода принимает / отдаёт",
   "Peers — what the client downloads / uploads": "Пиры — что принимает / отдаёт клиент",
   "Which way ↓/↑ are labelled across the panel. Same numbers, swapped arrows.": "Как по всей панели подписаны ↓ и ↑. Числа те же, стрелки меняются местами.",
@@ -4432,6 +4442,8 @@ export const STR = {
   "Authentication — panel credentials": "Вход — учётные данные панели",
   "Turn proxies — forks / colours / VK link": "Turn-прокси — сборки, цвета, ссылка VK",
   "Display — theme / status timing": "Вид — тема и время статусов",
+  "Days are counted in {v1}": "Сутки считаются по поясу {v1}",
+  "Days are counted in this server's zone": "Сутки считаются по поясу этого сервера",
   "System mesh defaults": "Умолчания системной сети",
   "mesh AWG params": "параметры AWG сети",
   "Geo lists will refresh on each node's next sync.": "Гео-списки обновятся при следующей синхронизации нод.",

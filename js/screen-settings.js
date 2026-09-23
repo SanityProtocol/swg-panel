@@ -1690,6 +1690,27 @@ export function ConfigMigrationCard() {
     </div>
   </div></div>`;
 }
+// "Days are counted in" (Display → Data): the zones THIS server has, from GET /api/time-zones — asked for the first
+// time Display opens, then kept for the page's life. The browser's own zone comes back as the server names it: Chrome
+// still reports Asia/Calcutta, which Debian 13 keeps only as an alias of Asia/Kolkata.
+let _tzCat = null;
+const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) { return ""; } };
+const tzPlace = z => { const p = z.replace(/_/g, " ").split("/"); return p[p.length - 1] + (p.length === 3 ? " (" + p[1] + ")" : ""); };
+function tzOptions(cat, now, cur) {
+  const zones = (cat && cat.zones) || [], mine = (cat && cat.browser) || "";
+  const opts = [{ value: "", label: now.server ? T("This server's zone ({v1})", { v1: now.server }) : T("This server's zone") }];
+  if (mine) opts.push({ value: mine, label: T("{v1} (this browser's zone)", { v1: tzPlace(mine) }) });
+  const groups = new Map();
+  for (const z of zones) {
+    if (!z.includes("/")) { opts.push({ value: z, label: z }); continue; }
+    const a = z.split("/")[0];
+    if (!groups.has(a)) groups.set(a, []);
+    groups.get(a).push({ value: z, label: tzPlace(z) });
+  }
+  for (const [group, items] of groups) opts.push({ group, items });
+  if (cur && cur !== mine && !zones.includes(cur)) opts.push({ value: cur, label: tzPlace(cur) });   // stored, but not listed (lost, or the list is not in yet)
+  return opts;
+}
 export function PanelSettingsScreen() {
   // NOTE: deliberately NOT subscribed to the 5s poll (no useStore) — this is an edit form seeded from a
   // snapshot at mount. Re-rendering every poll re-diffs every controlled input (the source of the checkbox
@@ -1800,6 +1821,8 @@ export function PanelSettingsScreen() {
   const [sc, setSc] = useState(_scMode);
   const [tput, setTput] = useState(ps.throughput_perspective === "peers" ? "peers" : "nodes");
   const [tunit, setTunit] = useState(ps.throughput_units === "bits" ? "bits" : "bytes");
+  const [tz, setTz] = useState(ps.time_zone || "");   // Display → Data: the zone days are counted in ("" = this server's own)
+  const [tzCat, setTzCat] = useState(_tzCat);
   const [staleS, setStaleS] = useState(String(Math.round((adv.node_stale_ms || 30000) / 1000)));
   const [graceS, setGraceS] = useState(String(Math.round((adv.peer_grace_ms || 60000) / 1000)));
   const [ttlD, setTtlD] = useState(String(adv.geo_ttl_days || 3));
@@ -2011,6 +2034,13 @@ export function PanelSettingsScreen() {
   useEffect(() => { registerSectionSetter(setSection); return () => registerSectionSetter(null); }, []);   // one-shot section pin + expose setSection so a modal can switch the rail (confirm modal → Access & TLS)
   const [routeTab, setRouteTab] = useState("routing");   // "Routing & Blocking" section: Routing (route→exit) | Blocking (drop) — both gated by the node's mode above
   useEffect(() => { if (routeTab === "blocking" || section === "geo") loadBlockCatalog(); }, [routeTab, section]);   // lazy-load the block catalog for the Blocking tab and the Geo-data Filters-providers list
+  useEffect(() => {   // the zone list (tzOptions): once per page, the first time Display opens
+    if (section !== "display" || _tzCat) return;
+    let live = true;
+    api.get("/api/time-zones?browser=" + encodeURIComponent(browserZone()))
+      .then(r => { if (r && r.ok) { _tzCat = r.data; if (live) setTzCat(r.data); } }).catch(() => {});
+    return () => { live = false; };
+  }, [section]);
   const _bkCountTries = useRef(0);
   useEffect(() => {   // list counts resolve in the background on the panel — refetch a few times until they land (or give up)
     if (routeTab !== "blocking") return;
@@ -2135,6 +2165,7 @@ export function PanelSettingsScreen() {
           languages: { enabled: subLangs, default: subLangDef } },
         throughput_perspective: tput,
         throughput_units: tunit,
+        time_zone: tz,
         top_talkers: Math.max(1, Math.min(50, parseInt(topTalk) || 10)),
         top_destinations: Math.max(1, Math.min(50, parseInt(topDest) || 10)),
         expiry_warn_days: Math.max(0, Math.min(365, parseInt(warnDays) || 3)),
@@ -2231,7 +2262,8 @@ export function PanelSettingsScreen() {
     if (glDirty("defaults")) out.push(T("Interfaces — colours / defaults"));
     if (glDirty("configs")) out.push(T("Client configs → {v1}", { v1: sc === "off" ? T("val|off") : T("val|encrypted") }));
     if (glDirty("subs")) out.push(T("Subscriptions — enable / languages"));
-    if (glDirty("display")) out.push(T("Display — theme / status timing"));
+    if (dispDirty()) out.push(T("Display — theme / status timing"));
+    if (tzDirty()) out.push(tz ? T("Days are counted in {v1}", { v1: tz }) : T("Days are counted in this server's zone"));
     // Two changes share this section, so the line names the one that actually moved rather than reporting
     // "mesh defaults" for a disclosure toggle that is not one.
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
@@ -2373,6 +2405,9 @@ const sectionLabel = k => ({
   const SECF = { routing: ["routing_mode", "ip_learning", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips"], exits: ["exits"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: customTargets(l).trim() })));
+  // Display is two lines in the confirm list: the zone has a consequence of its own (the charts re-time), so it is named.
+  const dispDirty = () => tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || tunit !== (ps.throughput_units === "bits" ? "bits" : "bytes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase();
+  const tzDirty = () => tz !== (ps.time_zone || "");
   const glDirty = sec =>
     sec === "routing" ? (listsJSON(lists) !== listsJSON(ps.custom_lists || []) || Object.keys(blockEdits).length > 0 || blockRemoved.length > 0) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
@@ -2381,7 +2416,7 @@ const sectionLabel = k => ({
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || JSON.stringify(awgTrim(awgDef)) !== JSON.stringify(awgTrim(idf.awg_params || {})) || JSON.stringify(awg3Trim(awg3Def)) !== JSON.stringify(awg3Trim(idf.awg3_params)) || reachDef !== (idf.reach || "user") || awgGenDef !== (idf.awg_gen === "3.1" ? "3.1" : "2.0") || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
     sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
-    sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || tunit !== (ps.throughput_units === "bits" ? "bits" : "bytes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
+    sec === "display" ? (dispDirty() || tzDirty()) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || showLans !== (ps.show_node_lans !== false) || meshMode !== (ps.mesh_mode || "auto")) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
@@ -2957,6 +2992,11 @@ const sectionLabel = k => ({
               { value: "bytes", label: T("Bytes — MB/s, what the node counts") },
               { value: "bits", label: T("Bits — Mbit/s, like a speed test") }]}/>
             <div class="hint">${T("How every speed in the panel is written. The same measurement either way — bits are 8× the number, and are what speed tests, ISP plans and router pages quote. Totals are always in bytes.")}</div></div>
+          <div class="seclabel">${T("Data")}</div>
+          <div class="field"><label>${T("Days are counted in")}</label>
+            <${Dropdown} value=${tz} onChange=${v => setTz(v)} options=${tzOptions(tzCat, ps.time_zone_now || {}, tz)}/>
+            <div class="hint">${T("Where each day starts and ends — for traffic totals, the charts and the turn-proxy update hour. Changing it shifts the charts' earlier points by the difference until they scroll out (up to 33 days).")}</div>
+            ${(ps.time_zone_now || {}).missing ? html`<div class="hint warn"><${Ic} i="warn"/> ${T("This server no longer has {v1}, so days are counted in its own zone. Pick another zone and save.", { v1: ps.time_zone_now.missing })}</div>` : null}</div>
           <div class="seclabel">${T("Status timing")}</div>
           <p class="hint" style="margin:0 0 12px">${T("How long the panel waits before treating things as stale — in seconds.")}</p>
           <div class="row2"><div class="field"><label>${T("Node stale after (s)")}</label><input value=${staleS} onInput=${e => setStaleS(e.target.value)} placeholder="30"/><div class="hint">${T("No sync for this long → the node shows stale.")}</div></div>

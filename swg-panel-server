@@ -14002,6 +14002,102 @@ def custom_cat_id(domains, cidrs=(), patterns=()):
 # Languages the subscription page (swg-sub) ships translations for — the Settings picker offers these.
 SUB_LANGS = {"en": "English", "ru": "Русский"}
 
+# ── THE PANEL'S TIME ZONE — Settings → Display → Data, "Days are counted in" ──────────────────────────────────────
+# A day is the operator's day only if this process runs in the operator's zone. Every time.localtime() in the panel
+# follows TZ: the charts' bucket alignment (_bucket_of), the traffic ledger's calendar, the turn-proxy auto-update
+# hour (_turn_update_due), the dates in expiry messages (fmt_day). Hosts and containers mostly run in UTC, so a zone
+# set here is applied at startup and on save — and "", the default, leaves the zone the process started with exactly
+# as it is: TZ is never touched and tzset() never called.
+# ⚠️ glibc NEVER REPORTS A ZONE IT CANNOT LOAD. TZ=Nowhere/Bogus runs in UTC under the name "Nowhere", and Debian 13
+# ships no Asia/Calcutta (what Chrome reports for India), only a link line in tzdata.zi. So the zone is looked up
+# HERE, where glibc looks ($TZDIR, else /usr/share/zoneinfo), and handed to glibc as that file's absolute path: the
+# zone checked is the zone loaded, by construction.
+# ⚠️ A CHANGE RE-TIMES THE CHARTS' EARLIER HISTORY. A ring stores bucket numbers, not the offset they were written at,
+# and _bucket_epoch() converts them back at the current one: UTC → Moscow draws every older point 3 h early, and a
+# move west also blends its first hours into same-numbered old buckets. It clears as each ring rolls over (≤ 33
+# days) and never touches the ledger, whose files carry their own offset. Accepted by the operator (2026-09-23) over
+# keeping the charts on the server's zone, which would count one panel's days in two zones.
+_TZ_BOOT = os.environ.get("TZ")          # what "" restores — read at import, before anything could change it
+_TZ_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+){0,2}$")
+_TZ_STATE = {"zone": "", "missing": "", "zones": None}   # the set zone in force · a stored one this server lacks · list
+
+
+def _tz_dir():
+    return os.environ.get("TZDIR") or "/usr/share/zoneinfo"
+
+
+def tz_file(name):
+    """The TZif file TZ=<name> loads on this server, or "". `right/` zones count leap seconds — time.localtime()
+    would run ~27 s off the wall clock — and `posix/` repeats the tree, so neither is a zone to count days in."""
+    if not isinstance(name, str) or not _TZ_NAME.match(name) or name.split("/")[0] in ("posix", "right"):
+        return ""
+    path = os.path.join(_tz_dir(), name)
+    try:
+        with open(path, "rb") as f:
+            return path if f.read(4) == b"TZif" else ""
+    except OSError:
+        return ""
+
+
+def tz_apply(name):
+    """Count days in zone `name` from now on ("" = the zone this process started with). False, and nothing changed,
+    when this server has no such zone."""
+    if name:
+        path = tz_file(name)
+        if not path:
+            return False
+        os.environ["TZ"] = path
+    elif _TZ_BOOT is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = _TZ_BOOT
+    time.tzset()
+    _TZ_STATE["zone"], _TZ_STATE["missing"] = name, ""
+    return True
+
+
+def _tz_short(name):
+    """The zone as a label: its place, with the region between them when there are three parts."""
+    p = (name or "").replace("_", " ").split("/")
+    return p[-1] + (" (%s)" % p[1] if len(p) == 3 else "")
+
+
+def tz_view():
+    """What /api/state says about the zone: the set one ("" = the server's own), its offset now, a stored zone this
+    server has lost (then not in force — Settings says so), and what the server's own zone is called."""
+    if "server" not in _TZ_STATE:
+        n = (_TZ_BOOT or "").lstrip(":")
+        if not n:
+            with contextlib.suppress(OSError):
+                n = os.path.normpath(os.path.join("/etc", os.readlink("/etc/localtime")))
+        n = n[len(_tz_dir().rstrip("/")) + 1:] if n.startswith(_tz_dir().rstrip("/") + "/") else n
+        _TZ_STATE["server"] = _tz_short(n) if _TZ_NAME.match(n) else ""
+    lt = time.localtime()
+    return {"zone": _TZ_STATE["zone"], "missing": _TZ_STATE["missing"], "server": _TZ_STATE["server"],
+            "abbr": lt.tm_zone, "offset": lt.tm_gmtoff}
+
+
+def tz_zones(browser=""):
+    """GET /api/time-zones: the zones a Save accepts here — zone.tab's list, what a zone picker usually offers, each
+    checked as a save checks it — and `browser`, the browser's own zone as THIS server names it: Chrome still reports
+    legacy names (Asia/Calcutta, Europe/Kiev) that Debian 13 keeps only as link lines in tzdata.zi. Read once; the
+    settings screen asks for it only when Display opens."""
+    if _TZ_STATE["zones"] is None:
+        names = set()
+        with contextlib.suppress(OSError):
+            with open(os.path.join(_tz_dir(), "zone.tab"), encoding="utf-8") as f:
+                names = {p[2].strip() for p in (ln.split("\t") for ln in f if not ln.startswith("#")) if len(p) > 2}
+        _TZ_STATE["zones"] = ["UTC"] * bool(tz_file("UTC")) + sorted(z for z in names if tz_file(z))
+    alias = browser if isinstance(browser, str) and _TZ_NAME.match(browser) else ""
+    found = alias if tz_file(alias) else ""
+    if alias and not found:
+        with contextlib.suppress(OSError):
+            with open(os.path.join(_tz_dir(), "tzdata.zi"), encoding="utf-8") as f:
+                link = next((p[1] for p in (ln.split() for ln in f if ln.startswith("L "))
+                             if len(p) == 3 and p[2] == alias), "")
+            found = link if tz_file(link) else ""
+    return {"zones": _TZ_STATE["zones"], "browser": found}
+
 # Panel settings (persisted to panel-settings.json; surfaced + edited via the Panel settings screen).
 # store_configs=None means "use the fleet.json default"; geo_epoch is bumped by the Refresh-geo button.
 PANEL_SETTINGS_DEFAULTS = {
@@ -14018,6 +14114,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "top_talkers": 10,        # Overview: rows in the Top talkers list (1–50)
     "top_destinations": 10,   # Overview: rows in the Top destinations list (1–50)
     "expiry_warn_days": 3,    # Display: warn "about to expire" this many days before a subscription/peer expiry (0–365)
+    "time_zone": "",          # Display → Data: the zone days are counted in ("" = this server's own; see tz_apply)
     # Does the panel acknowledge the private networks its nodes sit on at all? ON by default, which is what every
     # fleet already does (D10: a client reaches that network with nothing built).
     # ⚠️ OFF IS NOT A DISPLAY CHOICE — it is a decision about reachability. Turning it off hides the node's Local
@@ -17924,6 +18021,7 @@ def api(method, path, qs, body, deps):
             "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps),
                                "mesh_effective": mesh_mode_effective(deps, nodes),   # the mode in force (auto resolved here, never in the browser)
                                "mesh_auto_max": MESH_AUTO_FULL_MAX,
+                               "time_zone_now": tz_view(),   # the zone days are counted in NOW (a stored one can be lost)
                                "awg31_builtin": AWG31_SET},   # the 3.1 set a blank cell of Settings' 3.1 defaults stands for (their placeholders)
             # ↑ Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "panel_public_url": _panel_public_url(deps),   # the CONFIRMED canonical address (advances only on confirm) → SPA flags a tab sitting on a previous/old panel address
@@ -18056,6 +18154,16 @@ def api(method, path, qs, body, deps):
         if "expiry_warn_days" in incoming:
             try: cur["expiry_warn_days"] = max(0, min(365, int(incoming["expiry_warn_days"])))
             except Exception: cur["expiry_warn_days"] = 3
+        # "Days are counted in" (tz_apply). Judged only when it CHANGES: every Save sends it, and a stored zone this
+        # server has since lost must not fail a save of something else. Applied below, once the settings are in hand.
+        _tz_new = incoming.get("time_zone")
+        _tz_new = _tz_new.strip() if isinstance(_tz_new, str) and _tz_new.strip() != str(cur.get("time_zone") or "") else None
+        if _tz_new:
+            if not tz_file(_tz_new):
+                return 400, {"ok": False, **perr("This server has no time zone called {v1}. Pick one from the list.",
+                                                  v1=_tz_new[:64]), "code": "bad_request"}
+        if _tz_new is not None:
+            cur["time_zone"] = _tz_new
         if "show_node_lans" in incoming:
             cur["show_node_lans"] = incoming["show_node_lans"] is not False    # default is on; only an explicit false turns it off
         if "mesh_mode" in incoming:
@@ -18401,6 +18509,8 @@ def api(method, path, qs, body, deps):
         # failed settings write (suppressed below) would have left every node closed on disk under a switch still reading on.
         _lan_sweep = incoming.get("show_node_lans") is False and (deps.get("panel_settings") or {}).get("show_node_lans") is not False
         deps["panel_settings"] = cur
+        if _tz_new is not None and not tz_apply(_tz_new):
+            _TZ_STATE["missing"] = _tz_new       # gone between the check and now — shown as lost, never silently UTC
         # NB: a public-URL change is NOT adopted as the node dial URL here — the browser always follows a URL save
         # with /api/access/apply, which verifies (confirm) the new URL reaches this panel before adopting it. So
         # _CONFIRMED_URL stays frozen until that confirm; nodes are never told an address a pending change may revert.
@@ -20453,6 +20563,9 @@ def api(method, path, qs, body, deps):
                 if d and (vol(d.get("rx")) or vol(d.get("tx"))):
                     out.append({"node": nid, "dev": dev, "up": vol(d.get("rx")), "down": vol(d.get("tx"))})
         return 200, {"ok": True, "data": {"range": rng, "exits": out}}
+
+    if method == "GET" and path == "/api/time-zones":   # Settings → Display → "Days are counted in" (tz_zones)
+        return 200, {"ok": True, "data": tz_zones((qs.get("browser") or [""])[0])}
 
     if method == "GET" and path == "/api/peer-history":
         # Per-(node,peer) throughput over a range — drives the ranged Top-talkers. Reads each peer-<nid>-<hash>.rrd,
@@ -29156,6 +29269,13 @@ def main():
                     "twofa_path": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "2fa.json"),
                     "sub_dir": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "subs"),
                     "now": lambda: int(time.time())}
+    # The operator's zone, before any thread reads the clock (tz_apply). A stored zone this server has lost — an image
+    # or tzdata change — is reported and left out, never a crash: days fall back to the server's own zone meanwhile.
+    _tz0 = str(Handler.deps["panel_settings"].get("time_zone") or "")
+    if _tz0 and not tz_apply(_tz0):
+        _TZ_STATE["missing"] = _tz0
+        print("swg-panel: time zone %s is not on this server — counting days in the server's own zone until "
+              "another is picked in Settings → Display" % _tz0, flush=True)
     _release_cache_load(Handler.deps)   # seed download-asset caches from disk BEFORE any serve.json write, so a restart never regresses the sub's download bubbles to "page only"
     Handler.deps["turn_ips"] = load_json(_turn_ips_path(Handler.deps), {}) or {}   # unique turn-proxy source-IP history (survives restart)
     write_sub_serve(Handler.deps)   # seed/refresh subs/serve.json so swg-sub has current enable/serve config from boot (even when subscriptions were never touched)
