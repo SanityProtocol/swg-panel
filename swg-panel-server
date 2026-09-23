@@ -1728,11 +1728,15 @@ def perr(key, **vals):
 
         return 400, {"ok": False, **perr("couldn't bind {v1} — {v2}", v1=addr, v2=str(e)),
                      "code": "bind_failed"}
+
+    A value may itself be a perr() — a PHRASE that has to be translated where it lands, not a name ("traffic cascaded
+    in" as the subject of an exit alarm). It travels whole, so the browser translates it with srvText() before putting it
+    in; the English `error` gets its English, and the extractor sees its literal like any other perr().
     """
-    vals = {k: ("" if v is None else str(v)) for k, v in vals.items()}
+    vals = {k: ("" if v is None else v if isinstance(v, dict) and "error_key" in v else str(v)) for k, v in vals.items()}
     msg = key
     for k, v in vals.items():
-        msg = msg.replace("{" + k + "}", v)
+        msg = msg.replace("{" + k + "}", v["error"] if isinstance(v, dict) else v)
     return {"error": msg, "error_key": key, "error_vars": vals}
 
 
@@ -6363,7 +6367,9 @@ def who_plan_for_node(my, roster, node_id, snap):
             if got:
                 srcs[wid] = sorted([d, a] for d, a in got)
     keep = [e for e in (my.get("smart") or []) if not e.get("src") or e["src"] in srcs]
-    cats = {e["category"] for e in keep}
+    # ⚠️ …AND THE ARRIVALS' CATEGORIES (P3): they ride the same domain / CIDR / pattern channels, and filtering those to the
+    # local entries alone would leave an arrival rule with an empty set on a node where some rule also names people.
+    cats = {e["category"] for e in keep} | {e["category"] for e in ((my.get("arrivals") or {}).get("entries") or [])}
     return dict(my, smart=keep, srcs=srcs,
                 **{k: {c: v for c, v in (my.get(k) or {}).items() if c in cats} for k in ("domains", "cidrs", "patterns")})
 
@@ -6549,7 +6555,7 @@ def _awg_datapath(snap):
     return awg
 
 
-def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None):
+def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None):
     """Health-check roll-up for one node: settings edited on the server (drift), an egress IP / WAN
     NIC the node no longer has, and turn-proxies that aren't running. Empty list = healthy.
 
@@ -6636,6 +6642,32 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None):
             if isinstance(ov, dict) and ov.get("egress_mode") == "smart" for r in (ov.get("routing") or [])):
         issues.append(perr("{v1} needs an update to route per person — these rules apply to nobody there until it is.",
                            v1=c.get("name") or "this node"))
+    # …AND FOR ARRIVALS (D4, §4.4): a node whose default is a list, too old to run `smart.arrivals`, gets the list's
+    # catch-all as a plain default — so everything cascaded in leaves by it. Said only once the node has reported its
+    # smart status without `arr`; a node that has said nothing yet is not called old.
+    # …and only when it is TRUE: something is cascaded in (the last sync's plan says so — `reach`; not known yet is not said)
+    # and the list would route it differently from its own plain-default fallback (a rule for that traffic, or a Block or
+    # Forward "Everything else"). A list that is only a device catch-all runs identically on an older node (code review).
+    _dl = c.get("default_routing") if isinstance(c.get("default_routing"), list) else []
+    # What an older node does with every arrival: the list's catch-all as a plain default — out that exit when it is a
+    # device exit, out its own address otherwise. A rule DIFFERS when it sends arrivals somewhere else: a Block, a Forward,
+    # another exit, or Direct where the fallback is an exit (a catch-all Block/Forward differs for the rest too).
+    _fb = str(c.get("default_exit") or "")
+    def _elsewhere(r):
+        a = r.get("action")
+        if r.get("category") == "all":
+            return a in ("block", "exit")
+        return a in ("block", "exit") or (a == "dev" and str(r.get("exit_id") or "") != _fb) or (a == "direct" and bool(_fb))
+    _differs = any(isinstance(r, dict) and rule_on(r) and r.get("aud") != "local" and _elsewhere(r) for r in _dl)
+    if (isinstance(_sr, dict) and not _sr.get("arr") and isinstance(c.get("default_routing"), list)
+            and _differs and (reach or {}).get("arr")):
+        _dxr = next((x for x in (c.get("exits") or []) if isinstance(x, dict)
+                     and str(x.get("id") or "") == str(c.get("default_exit") or "")), None)
+        _catch = ((str(_dxr.get("label") or "").strip() or str(_dxr.get("device") or "")) if _dxr
+                  else perr("this node's own address"))
+        # (a Block or Direct catch-all has no plain-default form, so an older node lets it out by its own address)
+        issues.append(perr("{node} needs an update to route traffic cascaded in by destination — until then it all leaves by {catch}.",
+                           node=c.get("name") or "this node", catch=_catch))
     _broken = _broken_ifaces(c, snap, ivk_pub)
     for ifn, e in (snap.get("interfaces") or {}).items():
         if e.get("down"):                             # failed to come up
@@ -6722,12 +6754,27 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None):
     # saying nothing is not a node saying "broken" (`[[lesson-detection-failure-fail-safe]]` cuts the other
     # way here — the fail-safe is the kill-switch route on the node, not a guess on this screen).
     _dx_by_dev = {}
+    # ⚠️ A MESH LINK IS NOT AN EXIT (T31). An onward hop (P3b) hands this node rule-scoped device exits whose device is one
+    # of its own mesh links, and a link mid-rebuild reads absent for a moment — which is not "an exit stopped working" and
+    # must not raise that alarm. The link has its own health on its own card.
+    _lkd = {str((l or {}).get("iface") or "") for l in (c.get("links") or {}).values()} - {""}
     for _e in (snap.get("devexit") or []):
-        if not isinstance(_e, dict) or _e.get("state") == "up":
+        if not isinstance(_e, dict) or _e.get("state") == "up" or str(_e.get("dev") or "") in _lkd:
             continue
         _g = _dx_by_dev.setdefault((str(_e.get("dev") or ""), str(_e.get("state") or "")), {"ks": False, "subs": []})
         _g["ks"] = _g["ks"] or bool(_e.get("killswitch"))
-        _g["subs"].append(str(_e.get("subnet") or ""))
+        _g["arr"] = _g.get("arr") or bool(_e.get("arr"))   # the node says this entry stands for traffic cascaded in (T31)
+        if not _e.get("arr"):
+            _g["subs"].append(str(_e.get("subnet") or ""))
+    # Only an exit the node's DEFAULT names can carry an arrival, and only a node that reported its own subnets can say
+    # which ones are not its own — one that reported none says nothing, and must not have every subnet called an arrival.
+    _mine = {str(((e or {}).get("meta") or {}).get("subnet") or "") for e in (snap.get("interfaces") or {}).values()
+             if isinstance(e, dict)} - {""}
+    _mine |= ({_wdtt_net((w or {}).get(k) or "") for w in (c.get("wdtt") or {}).values() for k in ("wg_addr", "raw_addr")}
+              | {_wdtt_net((q or {}).get("tun_addr") or "") for q in (c.get("csqtt") or {}).values()}) - {"", None} if _mine else set()
+    _dfl = {str(c.get("default_exit") or "")} | {str((r or {}).get("exit_id") or "") for r in (c.get("default_routing") or [])
+                                                  if isinstance(c.get("default_routing"), list) and isinstance(r, dict)
+                                                  and r.get("action") == "dev"}
     for (_d, _st), _g in sorted(_dx_by_dev.items()):
         _ex = [x for x in (c.get("exits") or []) if isinstance(x, dict) and str(x.get("device") or "") == _d]
         _lbl = ", ".join(dict.fromkeys((str(x.get("label") or "").strip() or _d) for x in _ex)) or _d
@@ -6741,7 +6788,14 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None):
                       for i, o in (c.get(src) or {}).items()
                       if isinstance(o, dict) and o.get("egress_mode") == "exit"
                       and str(o.get("exit_id") or "") in _ids)
-        _v3 = ", ".join(_who) or ", ".join(sorted(x for x in _g["subs"] if x)) or "traffic"
+        # ⚠️ TRAFFIC CASCADED IN IS NAMED AS SUCH, not as a subnet (T31). The node's default (plain or a list) carries
+        # other nodes' clients, whose subnets mean nothing on this card — and at 30 nodes the list of them is the whole
+        # line. A reported subnet that is not one of this node's own is an arrival; it becomes one translated phrase.
+        _arrv = _g.get("arr") or (bool(_mine) and bool(_ids & (_dfl - {""})) and any(x and x not in _mine for x in _g["subs"]))
+        _subs = [x for x in _g["subs"] if x and (x in _mine or not _arrv or not _mine)]
+        _v3 = ", ".join(_who) or ", ".join(sorted(_subs)) or ("" if _arrv else "traffic")
+        if _arrv:
+            _v3 = perr("{v1} and traffic cascaded in", v1=_v3) if _v3 else perr("traffic cascaded in")
         # `dead`: the device is UP but the node judged the tunnel behind it to carry nothing (an imported exit
         # whose far side stopped answering — a WARP outage). Its own sentences, because the advice for a down
         # device ("bring it up") is advice about something that is already fine, and because this one ends by
@@ -10700,6 +10754,13 @@ def mesh_need(nodes, deps):
                 for r in (ov.get("routing") or []):
                     if rule_on(r) and r.get("action") == "exit":
                         want(nid, str(r.get("node") or ""))
+        # …and the node's DEFAULT LIST (D2): its "Forward to node" rules route this node's Auto interfaces and its smart
+        # interfaces' silence there, and (P3b) the traffic cascaded in — all through that pair's link. The list is the
+        # node's default only while it exists, so its presence is the gate, as `egress_mode` is for an interface.
+        if isinstance(n.get("default_routing"), list):
+            for r in n["default_routing"]:
+                if isinstance(r, dict) and rule_on(r) and r.get("action") == "exit":
+                    want(nid, str(r.get("node") or ""))
         for peer, lr in (n.get("links") or {}).items():
             lr = lr if isinstance(lr, dict) else {}
             if ((((lr.get("relay") or {}).get("mode") or "forward") == "relay")
@@ -14220,7 +14281,10 @@ def _ip4(v):
     return v
 
 
-def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=None, roster=None):
+ROUTING_AUDS = ("local", "cascaded")    # D9 — a node default-list rule's audience; absent = All (docs/ROUTING-PEERS-MESH-PLAN.md §4.2)
+
+
+def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=None, roster=None, node_scope=False):
     """Validate + normalize a smart-routing rule list. Returns (clean_rules, error, dropped). Each rule:
     {enabled:bool, category:<in SMART_CATEGORIES | a custom_list id | "custom" | "tld">, action:"exit"|"direct"|"block",
     node:<exit nid if exit>}. A "tld" rule additionally carries match:"tld" + tlds:[label…] (route/block a whole
@@ -14357,6 +14421,22 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=Non
             if not xid or (xid not in _have and xid not in _was):
                 return None, f"rule for '{cat}': exit must be one of this node's exits", _dropped_report(dropped)
             out["exit_id"] = xid
+        # D9 — THE NODE'S DEFAULT LIST NAMES AUDIENCES, NOT PEOPLE. Its rules route this node's own clients and the
+        # traffic other nodes cascade in; the second is known here only by the origin SUBNET (a gateway address if
+        # relayed, a link address after an onward hop), so a person cannot be named for it at all (§10 Q1). `aud`
+        # narrows a rule to one of the two, and ABSENT means both — so a list nobody narrowed stores exactly the
+        # interface grammar. Panel-only: it decides which of the two lowerings a rule joins and never reaches a node.
+        # On an interface's list it means nothing and is not kept.
+        if node_scope:
+            if r.get("who") is not None:
+                return None, "A node's default rules apply to its own clients or to traffic cascaded in, not to chosen people", _dropped_report(dropped)
+            _aud = r.get("aud")
+            if _aud not in (None, ""):
+                if _aud not in ROUTING_AUDS:
+                    return None, "a rule's audience must be local or cascaded", _dropped_report(dropped)
+                if cat == "all":                           # ONE catch-all for both audiences; a narrowed "everything" is a row to 0.0.0.0/0
+                    return None, "“Everything else” applies to both this node's clients and traffic cascaded in", _dropped_report(dropped)
+                out["aud"] = _aud
         if r.get("who") is not None:
             w = r["who"]
             lists = {k: (w.get(k) if isinstance(w, dict) else None) or [] for k in ("users", "groups", "peers")}
@@ -14778,7 +14858,33 @@ def prune_exit_refs(rec):
                     r["action"] = "direct"
                     r.pop("exit_id", None)
                     hit.append(name + "/" + str(r.get("category") or "?"))
+    # …and the node's own default list (D2), for the same reason and with the same answer: a deleted exit leaves a
+    # rule naming nothing, which renders blank. Its catch-all is what `default_exit` is derived from, so the caller
+    # re-derives after this (`derive_default_exit`) and the two can never disagree.
+    for r in (rec.get("default_routing") if isinstance(rec.get("default_routing"), list) else ()):
+        if isinstance(r, dict) and r.get("action") == "dev" and str(r.get("exit_id") or "") not in live:
+            r["action"] = "direct"
+            r.pop("exit_id", None)
+            hit.append("default/" + str(r.get("category") or "?"))
     return hit
+
+
+def derive_default_exit(rec):
+    """`default_exit` FROM THE LIST, whenever the node has one (docs/ROUTING-PEERS-MESH-PLAN.md §4.2, T12). Mutates `rec`.
+
+    The list's catch-all and `default_exit` would otherwise be one fact stored twice, and nothing would say which wins.
+    So while `default_routing` exists, `default_exit` is WRITTEN FROM IT and never taken from a request: the catch-all's
+    exit when it leaves by one of this node's exits, and absent when it is Direct, Block, a node, or silent. That is the
+    value an OLDER panel and an OLDER node fall back to — the catch-all as a plain default — so they fail toward the
+    exit, never toward this node's own address. No list → nothing here; the handler writes `default_exit` as it always has."""
+    if not isinstance(rec.get("default_routing"), list):
+        return
+    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all"), None)
+    xid = str(ca.get("exit_id") or "") if ca and ca.get("action") == "dev" and rule_on(ca) else ""
+    if xid and any(str((x or {}).get("id")) == xid for x in (rec.get("exits") or [])):
+        rec["default_exit"] = xid
+    else:
+        rec.pop("default_exit", None)
 
 
 def prune_default_exit(rec):
@@ -15463,6 +15569,34 @@ def cascade_plan(nodes, snaps, custom_lists=None):
     only an explicit forward/smart toggle produces any entry — inert otherwise."""
     plans = {}
 
+    def _nlist(nid):
+        """The node's default list (D2), or None when its default is not a list — the presence of the list IS the switch."""
+        v = (nodes.get(nid) or {}).get("default_routing")
+        return v if isinstance(v, list) else None
+
+    def _arr_ok(nid):
+        """Does this node run `smart.arrivals`? ASKED of the node (`arr` in its smart status, §4.3), never inferred from a
+        version. A node that has not reported yet is not capable — it gets the catch-all as a plain default, which is what
+        an older node gets and fails toward the exit (§4.4)."""
+        return bool((((snaps or {}).get(nid) or {}).get("smartroute") or {}).get("arr"))
+
+    def _nlist_selective(nid):
+        """Does the node's list say anything to its OWN clients beyond what a plain default says? True when a rule reaches
+        them (All or own clients), or when its "Everything else" is Block or a node — neither has a plain-default form.
+        A list that is only a device-exit catch-all, Direct, or silent is a plain default wearing a list, and an Auto
+        interface then keeps the plain lowering (`from S lookup T`) — so choosing "Routing" before adding any rule changes
+        nothing for this node's own clients: no smart lowering, hence no IPv6 fail-closed drop, no QUIC drop and no SNI
+        queue for them (code-level review of P3)."""
+        nl = _nlist(nid) or []
+        for r in nl:
+            if not isinstance(r, dict) or not rule_on(r) or r.get("aud") == "cascaded":
+                continue
+            if r.get("category") != "all" or r.get("action") == "block":
+                return True
+            if r.get("action") == "exit" and r.get("node") in nodes and r.get("node") != nid and all(_link_devs(nodes, nid, r["node"])):
+                return True                            # a Forward catch-all that can lower (to a node that is gone, it lowers nothing)
+        return False
+
     def slot(nid):
         return plans.setdefault(nid, {"forward": [], "smart": [], "exit": [], "devexit": [], "allowed": {},
                                       "domains": {}, "cidrs": {},
@@ -15478,7 +15612,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             sp["exit"].append({"subnet": S, "via_iface": dev_p, "table": T, "egress_ip": X, "wan_iface": W})
         if sp["allowed"].get(dev_p) != "0.0.0.0/0":    # base /31 ∪ S, unless an entry role already set /0
             cur = set(filter(None, (sp["allowed"].get(dev_p) or (base_p + "/32")).split(",")))
-            cur |= {base_p + "/32", S}
+            cur |= {base_p + "/32", S if "/" in S else S + "/32"}   # a hop-2 record's BARE host (T27) is still one AllowedIP
             # The mesh link /32 (the peer's OWN in-subnet address) MUST come first: swg-agent validates
             # allowed_ips.split("/")[0] against the link subnet, so a plain sorted() that puts a routed user
             # subnet (e.g. 10.17.0.0/24) ahead of the base (10.255.0.1/32) makes the peer add fail "not in subnet"
@@ -15488,8 +15622,75 @@ def cascade_plan(nodes, snaps, custom_lists=None):
 
     # 1) collect forward + smart items; per-node target order (UNION) → stable table ids shared by both modes
     fwd_items, smart_items, devexit_items = [], [], []
+    exit_ips_of = {}                                      # (node, subnet) → {far node: address} — see the smart branch
 
-    def _collect_egress(nid, ov, S, targets):
+    def _rule_cat(nid, r):
+        """One rule's category → `(category id, (domains, cidrs, patterns) or None)`, or None when it names nothing this
+        node can route. ONE reader for every list a rule can live in — an interface's, and the node's default list in
+        both of its lowerings (its own clients, and arrivals, §4.3) — so a rule cannot mean one thing on an interface
+        and another in the node's list. Lifted out of `_collect_egress` unchanged."""
+        _ip_only = ((nodes.get(nid) or {}).get("routing_mode") or "kernel") == "kernel"
+        cat = r.get("category")
+        if not cat:
+            return None
+        extra = None
+        if cat == "custom":                        # inline custom rule → its own synthetic set id + targets
+            doms, cidrs, asns, pats = _clean_targets(
+                r.get("targets") if r.get("targets") is not None
+                else [*(r.get("domains") or []), *(r.get("cidrs") or []), *(r.get("asns") or []),
+                      *(r.get("patterns") or [])], keep_asns=True, keep_patterns=True)
+            cidrs = _asn_expand(asns, cidrs)       # AS<n> resolves HERE, every pass — never a stored snapshot
+            if _ip_only:
+                doms = []                          # no host layer on this node — see _collect_egress
+            # Patterns join the SET ID now, and are lowered in Phase 2. Joining it now costs nothing and
+            # buys the thing that would otherwise hurt: when the buckets land, a rule that already had
+            # patterns keeps the set it has, instead of every one of them changing id on a single sync.
+            #
+            # A rule that resolves to NOTHING — no domains, no CIDRs, no patterns — is skipped: no set,
+            # no mark rule, nothing.
+            #
+            # ⚠️ `pats` USED TO BE ABSENT FROM THIS TEST, and that was correct for exactly one phase.
+            # While no engine could lower a pattern, dropping a patterns-only rule is what made storing
+            # one safe. Phase 2 gave `zone` a datapath on two engines and Phase 3 gave `contains` one on
+            # a third — and this line was not revisited, so `*.ru` alone in a rule was accepted by the
+            # field, shown as a live amber badge with its "millions of sites" warning, stored, and then
+            # dropped here in silence. Nothing routed and nothing said so. That is `tld` (§5.1) again in
+            # a new shape: the landmine was never the id, it was a rule the panel keeps and no datapath
+            # reads. Found by putting a single `*.ru` rule on a real node, which is the first thing an
+            # operator would do and the one thing no rig had done.
+            #
+            # A rule that has patterns is now SHIPPED, and which of them this node can lower stays the
+            # node's business (plan §10.5 item 5 — the capability matrix must not get a second copy
+            # here). An engine that lowers none of them leaves the set empty, which is inert and is also
+            # precisely the state a zone rule is in before dnsmasq has answered its first lookup. It
+            # cannot repeat `tld`'s real failure either: `custom_cat_id` hashes the patterns too, so
+            # every rule still gets a set of its own instead of collapsing into one shared set.
+            if not doms and not cidrs and not pats:
+                return None
+            cat = custom_cat_id(doms, cidrs, pats)
+            extra = (doms, cidrs, pats)
+        elif custom_lists and cat in custom_lists:  # a reusable custom list referenced by id → its targets
+            cl = custom_lists[cat]
+            if cl.get("enabled", True) is False or nid in (cl.get("disabled_nodes") or []):
+                return None                        # list toggled off globally, or disabled on THIS node → don't route it
+            doms, cidrs = list(cl.get("domains") or []), list(cl.get("cidrs") or [])
+            pats = list(cl.get("patterns") or [])
+            cidrs = _asn_expand(cl.get("asns"), cidrs)   # AS<n> resolves HERE, every pass — never a stored snapshot
+            if _ip_only:
+                doms = []                          # no host layer on this node — see _collect_egress
+            # EXACTLY the inline branch above, and deliberately so: a list holds the same six kinds a
+            # rule does, so it must reach the node the same way or the two disagree about one target
+            # set. `pats` survives _ip_only for the reason given there — which of them a node lowers is
+            # the node's business, and the panel must not grow a second copy of the capability matrix.
+            if not doms and not cidrs and not pats:
+                return None
+            # custom_cat_id appends its third segment ONLY when there are patterns, so every existing
+            # pattern-free list keeps the id and the nft set it has — no fleet-wide rebuild on upgrade.
+            cat = custom_cat_id(doms, cidrs, pats)
+            extra = (doms, cidrs, pats)
+        return cat, extra
+
+    def _collect_egress(nid, ov, S, targets, auto_label=""):
         # Given a source SUBNET S (an interface's or a WDTT instance's wg subnet) and its egress override `ov`,
         # append forward/smart items for the fleet plan. Datapath is subnet-based, so a WDTT wg_addr subnet is
         # routed identically to a normal interface subnet — the node never learns which kind it came from.
@@ -15499,7 +15700,6 @@ def cascade_plan(nodes, snaps, custom_lists=None):
         # a host engine. A custom rule left with nothing at all falls through the `not doms and not cidrs` guard
         # below and produces no plan entry, hence no set and no chain rule — self-healing in both directions with
         # no extra code (§5.3).
-        _ip_only = ((nodes.get(nid) or {}).get("routing_mode") or "kernel") == "kernel"
         mode = ov.get("egress_mode")
         # ⚠️ AUTO INHERITS THE NODE DEFAULT; AN EXPLICIT CHOICE DOES NOT. This is the rule
         # `default_egress_ip` has always had, applied to the other axis — and the two axes stay
@@ -15507,12 +15707,35 @@ def cascade_plan(nodes, snaps, custom_lists=None):
         # still inheriting the node's default IP if it named no WHAT, exactly as today.
         # "Auto" is stored as direct-with-nothing-set, which is the SAME test `egressInit` uses to draw the
         # picker — so the browser and the plan cannot disagree about which interfaces are on the default.
-        if ((not mode or mode == "direct")
-                and not str(ov.get("wan_iface") or "").strip()
-                and not str(ov.get("egress_ip") or "").strip()
-                and str((nodes.get(nid) or {}).get("default_exit") or "").strip()):
+        _auto = ((not mode or mode == "direct")
+                 and not str(ov.get("wan_iface") or "").strip()
+                 and not str(ov.get("egress_ip") or "").strip())
+        if _auto and _nlist(nid) is not None and _nlist_selective(nid):
+            # D2 — THE DEFAULT IS A LIST: an Auto interface is lowered as SMART with no rules of its own, so all of it is
+            # silence and falls through to the node's list below (§3.1). Its stored `routing` is inert outside smart mode
+            # and must stay inert here, and so must any address map it kept from being smart once. Decided BEFORE the
+            # plain branch: `default_exit` is derived from the list's catch-all, and applying it here as a plain default
+            # would route the whole interface out that exit beside the list (T12).
+            mode = "smart"
+            ov = dict(ov, routing=[], routing_exit_ips={})
+            if auto_label:
+                slot(nid).setdefault("_auto", []).append(auto_label)
+        elif _auto and str((nodes.get(nid) or {}).get("default_exit") or "").strip():
             mode = "exit"
             ov = dict(ov, exit_id=(nodes.get(nid) or {})["default_exit"])
+            if auto_label and _nlist(nid) is not None:     # a list's catch-all, lowered plain (see _nlist_selective)
+                slot(nid).setdefault("_auto", []).append(auto_label)
+        elif _auto and auto_label and _nlist(nid) is not None:
+            slot(nid).setdefault("_auto", []).append(auto_label)   # a Direct or silent catch-all: routed by the list all the same
+        elif mode == "exit" and _nlist(nid) is not None and _nlist_selective(nid) and not resolve_exit(nodes, snaps, nid, ov.get("exit_id")):
+            # …and an interface pinned to an exit that cannot carry traffic falls back to "the node's default" (below) —
+            # which, when the default is a LIST, is the list: lowered as an Auto interface is. `default_exit` alone is only
+            # the list's catch-all and is absent when that is Block or a node, so falling back to it would leave by this
+            # node's own address where every Auto interface beside it is blocked or forwarded (code review, P3).
+            mode = "smart"
+            ov = dict(ov, routing=[], routing_exit_ips={})
+            if auto_label:                                 # the list routes it, so "whom it affects" counts it
+                slot(nid).setdefault("_auto", []).append(auto_label)
         if mode == "forward":
             P = ov.get("egress_node")
             if not P or P not in nodes:
@@ -15567,71 +15790,17 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             # configures is the (S, P) exit record: one SNAT per arriving subnet at P. Two rules to one node
             # cannot disagree about it, so there is nothing to resolve here and nothing to refuse at the door
             # — a lookup, and the rules' ORDER cannot decide it.
-            _pin = ov.get("routing_exit_ips") or {}
-            for r in (ov.get("routing") or []):
+            def _lower(r):
+                """One rule into `smart_items`; True when it was a catch-all that lowered (the remainder is SAID)."""
                 if not rule_on(r):
-                    continue
+                    return False
                 action = r.get("action")
                 if action not in ("exit", "direct", "block", "dev"):
-                    continue                       # unknown action → ignore
-                cat = r.get("category")
-                if not cat:
-                    continue
-                extra = None
-                if cat == "custom":                        # inline custom rule → its own synthetic set id + targets
-                    doms, cidrs, asns, pats = _clean_targets(
-                        r.get("targets") if r.get("targets") is not None
-                        else [*(r.get("domains") or []), *(r.get("cidrs") or []), *(r.get("asns") or []),
-                              *(r.get("patterns") or [])], keep_asns=True, keep_patterns=True)
-                    cidrs = _asn_expand(asns, cidrs)       # AS<n> resolves HERE, every pass — never a stored snapshot
-                    if _ip_only:
-                        doms = []                          # no host layer on this node — see _collect_egress
-                    # Patterns join the SET ID now, and are lowered in Phase 2. Joining it now costs nothing and
-                    # buys the thing that would otherwise hurt: when the buckets land, a rule that already had
-                    # patterns keeps the set it has, instead of every one of them changing id on a single sync.
-                    #
-                    # A rule that resolves to NOTHING — no domains, no CIDRs, no patterns — is skipped: no set,
-                    # no mark rule, nothing.
-                    #
-                    # ⚠️ `pats` USED TO BE ABSENT FROM THIS TEST, and that was correct for exactly one phase.
-                    # While no engine could lower a pattern, dropping a patterns-only rule is what made storing
-                    # one safe. Phase 2 gave `zone` a datapath on two engines and Phase 3 gave `contains` one on
-                    # a third — and this line was not revisited, so `*.ru` alone in a rule was accepted by the
-                    # field, shown as a live amber badge with its "millions of sites" warning, stored, and then
-                    # dropped here in silence. Nothing routed and nothing said so. That is `tld` (§5.1) again in
-                    # a new shape: the landmine was never the id, it was a rule the panel keeps and no datapath
-                    # reads. Found by putting a single `*.ru` rule on a real node, which is the first thing an
-                    # operator would do and the one thing no rig had done.
-                    #
-                    # A rule that has patterns is now SHIPPED, and which of them this node can lower stays the
-                    # node's business (plan §10.5 item 5 — the capability matrix must not get a second copy
-                    # here). An engine that lowers none of them leaves the set empty, which is inert and is also
-                    # precisely the state a zone rule is in before dnsmasq has answered its first lookup. It
-                    # cannot repeat `tld`'s real failure either: `custom_cat_id` hashes the patterns too, so
-                    # every rule still gets a set of its own instead of collapsing into one shared set.
-                    if not doms and not cidrs and not pats:
-                        continue
-                    cat = custom_cat_id(doms, cidrs, pats)
-                    extra = (doms, cidrs, pats)
-                elif custom_lists and cat in custom_lists:  # a reusable custom list referenced by id → its targets
-                    cl = custom_lists[cat]
-                    if cl.get("enabled", True) is False or nid in (cl.get("disabled_nodes") or []):
-                        continue                           # list toggled off globally, or disabled on THIS node → don't route it
-                    doms, cidrs = list(cl.get("domains") or []), list(cl.get("cidrs") or [])
-                    pats = list(cl.get("patterns") or [])
-                    cidrs = _asn_expand(cl.get("asns"), cidrs)   # AS<n> resolves HERE, every pass — never a stored snapshot
-                    if _ip_only:
-                        doms = []                          # no host layer on this node — see _collect_egress
-                    # EXACTLY the inline branch above, and deliberately so: a list holds the same six kinds a
-                    # rule does, so it must reach the node the same way or the two disagree about one target
-                    # set. `pats` survives _ip_only for the reason given there — which of them a node lowers is
-                    # the node's business, and the panel must not grow a second copy of the capability matrix.
-                    if not doms and not cidrs and not pats:
-                        continue
-                    # custom_cat_id appends its third segment ONLY when there are patterns, so every existing
-                    # pattern-free list keeps the id and the nft set it has — no fleet-wide rebuild on upgrade.
-                    cat = custom_cat_id(doms, cidrs, pats)
-                    extra = (doms, cidrs, pats)
+                    return False                   # unknown action → ignore
+                _rc = _rule_cat(nid, r)
+                if not _rc:
+                    return False
+                cat, extra = _rc
                 if action == "dev":
                     # P5 — ONE CATEGORY OUT A LOCAL DEVICE. Every "is this exit usable, and by which device
                     # and table" question goes through `resolve_exit`, the same single resolver the whole-
@@ -15640,27 +15809,27 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     # five rules and an interface at one exit spends ONE of its hundred tables, not six.
                     _r = resolve_exit(nodes, snaps, nid, r.get("exit_id"))
                     if not _r:
-                        continue
+                        return False
                     _xdev, _xkey, _xks, _xeg, _xgw = _r
                     if _xkey not in targets:
                         targets.append(_xkey)
-                    smart_items.append((nid, None, S, cat, "dev", _xdev, None, None, extra, _xkey, _xks, _xeg, _xgw, r.get("who"), ""))
-                    _all_said = _all_said or cat == "all"
-                    continue
+                    smart_items.append((nid, None, S, cat, "dev", _xdev, None, None, extra, _xkey, _xks, _xeg, _xgw, r.get("who")))
+                    return cat == "all"
                 if action != "exit":               # direct / block are LOCAL (no mesh exit) — carry them for first-match + kill-switch
-                    smart_items.append((nid, None, S, cat, action, None, None, None, extra, None, None, "", "", r.get("who"), ""))
-                    _all_said = _all_said or cat == "all"
-                    continue
+                    smart_items.append((nid, None, S, cat, action, None, None, None, extra, None, None, "", "", r.get("who")))
+                    return cat == "all"
                 P = r.get("node")
                 if not P or P not in nodes:
-                    continue
+                    return False
                 dev_n, dev_p, base_p = _link_devs(nodes, nid, P)
                 if not (dev_n and dev_p and base_p):
-                    continue
+                    return False
                 if P not in targets:
                     targets.append(P)
-                smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra, None, None, "", "", r.get("who"), _ip4(_pin.get(P))))
-                _all_said = _all_said or cat == "all"
+                smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra, None, None, "", "", r.get("who")))
+                return cat == "all"
+            for r in (ov.get("routing") or []):
+                _all_said = _lower(r) or _all_said
             # ⚠️ SILENCE ABOUT "EVERYTHING ELSE" INHERITS THE NODE DEFAULT, the same way an un-pinned
             # interface does. Decision 4 says the node default is beaten by any interface that CHOSE for
             # itself — and a smart interface chose per category, not for the remainder. That remainder used
@@ -15671,13 +15840,34 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             #
             # Lowered as the catch-all they would have written by hand — `category:"all"` out the default
             # exit — so this reuses the P5 path exactly rather than teaching the node a new shape.
-            if not _all_said:
+            #
+            # D11 — AND WHEN THE NODE'S DEFAULT IS A LIST, SILENCE FALLS THROUGH TO IT: this interface's rules first, then
+            # the node's rules for All or for its own clients, then the node's "Everything else" (§3.1, §10 Q3). The list's
+            # rules are lowered for this subnet exactly as its own are — the same `_lower`, so a node rule cannot mean one
+            # thing here and another on the interface — and the address this interface pinned for a far node still wins
+            # over the list's for that node: the (S, far node) exit record is ONE SNAT, and the interface's window
+            # promises that every rule sending it there leaves as that address. An Auto interface arrives here with no
+            # rules of its own, which is what makes it "lowered as smart with the node's list" (§3.1).
+            # ⚠️ ONE ADDRESS PER (S, far node) — A MAP FOR THE SUBNET, DECIDED ONCE, READ WHERE THE EXIT RECORD IS WRITTEN.
+            # The (S, far node) record at the far node is ONE SNAT, so every rule that sends S there leaves by one address:
+            # the interface's own for that node, or — where its silence falls through to the node's list (decided by what
+            # actually lowered: a stored catch-all to an exit that is gone does not count) — the list's for that node. No
+            # plan item carries an address, so no two can disagree and rule order cannot decide it (P2's lesson; two review
+            # passes found holes in a first version that set it per item). The interface screen shows what it adopts.
+            _xm = exit_ips_of[(nid, S)] = dict(ov.get("routing_exit_ips") or {})
+            _nl = _nlist(nid)
+            if not _all_said and _nl is not None:
+                exit_ips_of[(nid, S)] = {**((nodes.get(nid) or {}).get("default_routing_exit_ips") or {}), **_xm}
+                for r in _nl:
+                    if isinstance(r, dict) and r.get("aud") != "cascaded":
+                        _lower(r)
+            elif not _all_said:
                 _dr = resolve_exit(nodes, snaps, nid, (nodes.get(nid) or {}).get("default_exit"))
                 if _dr:
                     _ddev, _dkey, _dks, _deg, _dgw = _dr
                     if _dkey not in targets:
                         targets.append(_dkey)
-                    smart_items.append((nid, None, S, "all", "dev", _ddev, None, None, None, _dkey, _dks, _deg, _dgw, None, ""))
+                    smart_items.append((nid, None, S, "all", "dev", _ddev, None, None, None, _dkey, _dks, _deg, _dgw, None))
 
     for nid, node in nodes.items():
         targets = []
@@ -15687,14 +15877,14 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             S = _iface_subnet_from_snap(snaps, nid, iface)
             if not S:
                 continue
-            _collect_egress(nid, ov, S, targets)
-        for _wov in (node.get("wdtt") or {}).values():   # WDTT instances egress like interfaces (subnet from wg_addr)
+            _collect_egress(nid, ov, S, targets, iface)
+        for _wn, _wov in (node.get("wdtt") or {}).items():   # WDTT instances egress like interfaces (subnet from wg_addr)
             if not _wov:
                 continue
             S = _wdtt_net((_wov or {}).get("wg_addr") or "")
             if not S:
                 continue
-            _collect_egress(nid, _wov, S, targets)
+            _collect_egress(nid, _wov, S, targets, _wn)
             # RAW is a second subnet on the SAME instance, so it inherits that instance's egress mode and
             # routing rules — otherwise turning RAW on would quietly bypass a forward/smart policy (and the
             # Force-DNS + v6 fail-closed rules that ride the smart set with it).
@@ -15702,13 +15892,13 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                 _RS = _wdtt_net((_wov or {}).get("raw_addr") or "")
                 if _RS:
                     _collect_egress(nid, _wov, _RS, targets)
-        for _cov in (node.get("csqtt") or {}).values():   # csqtt instances too (subnet from tun_addr) — subnet-based, routed identically
+        for _cn, _cov in (node.get("csqtt") or {}).items():   # csqtt instances too (subnet from tun_addr) — subnet-based, routed identically
             if not _cov:
                 continue
             S = _wdtt_net((_cov or {}).get("tun_addr") or "")
             if not S:
                 continue
-            _collect_egress(nid, _cov, S, targets)
+            _collect_egress(nid, _cov, S, targets, _cn)
         # A node with a default exit reserves its table WHETHER OR NOT a local interface uses it, because
         # traffic cascaded in from ANOTHER node may need it and that is only known after every node has been
         # walked — by which point this node's table map is frozen. One of a hundred tables, on a node that
@@ -15718,6 +15908,22 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             _dk = "exit:" + _dx
             if _dk not in targets:
                 targets.append(_dk)
+        # …and a node whose default is a LIST reserves every exit the list could send an ARRIVAL out of, for the same
+        # reason: arrivals are known only once every node has been walked (§4.3). Only on a node that runs them — an
+        # older one gets the catch-all as a plain default, whose table the line above already holds — and only for
+        # rules an arrival can meet (All, or "traffic cascaded in"), so a list nobody points outward costs nothing.
+        if _nlist(nid) is not None and _arr_ok(nid):
+            for _r in _nlist(nid):
+                if isinstance(_r, dict) and rule_on(_r) and _r.get("action") == "dev" and _r.get("aud") != "local":
+                    _xr = resolve_exit(nodes, snaps, nid, _r.get("exit_id"))
+                    if _xr and _xr[1] not in targets:
+                        targets.append(_xr[1])
+                # …and every node its "Forward to node" rules send ARRIVALS on to (the onward hop, P3b §3.5): the leg to it
+                # is a table of this node's, exactly as a WARP exit's device is
+                elif (isinstance(_r, dict) and rule_on(_r) and _r.get("action") == "exit" and _r.get("aud") != "local"
+                      and _r.get("node") in nodes and _r.get("node") != nid and all(_link_devs(nodes, nid, _r["node"]))
+                      and _r["node"] not in targets):
+                    targets.append(_r["node"])
         if targets:
             _srt = sorted(targets)
             slot(nid)["_targets"] = {p: SWG_RT_BASE + i for i, p in enumerate(_srt)}
@@ -15733,6 +15939,47 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             _over = _srt[SWG_RT_MAX - SWG_RT_BASE + 1:]
             if _over:
                 slot(nid)["_capped"] = _over
+
+    def _dx_add(sp_, ent):
+        """Append a devexit entry to a slot once — keyed, not scanned: the arrivals pass adds one per (arrival subnet,
+        device) and a busy exit holds hundreds, on the per-sync path (code review, P3)."""
+        k = json.dumps(ent, sort_keys=True)
+        seen = sp_.setdefault("_dx_seen", {json.dumps(e, sort_keys=True) for e in sp_["devexit"]})
+        if k not in seen:
+            seen.add(k)
+            sp_["devexit"].append(ent)
+
+    def arrival_default(P, S, X, W, hop2=False):
+        # DECISION 4's OTHER HALF — the one the plan warned is easy to miss. Traffic cascaded in from
+        # another node leaves by THIS node's default exit, on the same terms as its own interfaces: only
+        # when the forwarding interface named neither a source IP nor a WAN NIC. An operator who pinned
+        # either made an explicit choice about how their traffic leaves the far node, and a default must not
+        # overrule it — the same rule `default_egress_ip` already follows on the exit side.
+        #
+        # ⚠️ ONE HELPER, BOTH KINDS OF ARRIVAL (D5, §3.3). It was written inline in the forward branch only, so a SMART
+        # arrival — an interface's rule sending one category to P — never met P's default at all: it left P's own address
+        # even with the exit's kill-switch on (§1.3 B3/K2), while Settings promised "traffic cascaded in". Same entry, same
+        # exemption (an address the origin pinned at P, §3.4 — for a smart arrival that is the interface's exit IP for P),
+        # and the `from S lookup T` shape every node has run since P4, so an older node runs the fix natively.
+        #
+        # ⚠️ AND NOT AT ALL where P routes arrivals BY DESTINATION (its default is a list and it runs `smart.arrivals`).
+        # There arrivals are MARKS, and a `from S` rule left beside them wins over every one of them — measured, a mark
+        # loses to a lower-priority `from S` rule at the exit (§1.3 D3, T1). An older P with a list keeps this entry: its
+        # `default_exit` is the list's catch-all, so it falls back to exactly that (§4.4).
+        # (A hop-2 record is NOT an arrival there — T29: it is never marked by that node's list — so nothing competes with
+        # its `from` rule, and the node's device default applies to it whatever that node's list says: §3.5, "Q only ever
+        # lets it out: by its WAN, or by Q's default exit when that exit is a device".)
+        if _nlist(P) is not None and _arr_ok(P) and not hop2:
+            return
+        _pd = str((nodes.get(P) or {}).get("default_exit") or "").strip()
+        if _pd and not X and not W:
+            _pr = resolve_exit(nodes, snaps, P, _pd)
+            _pt = slot(P)["_targets"].get("exit:" + _pd) if _pr else None
+            if _pr and _pt is not None and _pt <= SWG_RT_MAX:
+                _pdev, _pkey, _pks, _peg, _pgw = _pr
+                _pe = {"subnet": S, "dev": _pdev, "table": _pt, "killswitch": _pks, "egress_ip": _peg,
+                       "gw": _pgw}
+                _dx_add(slot(P), _pe)
 
     # 2a) Phase-2 forward entries
     for (nid, P, S, dev_n, dev_p, base_p, X, W) in fwd_items:
@@ -15752,21 +15999,8 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             sn["_legs"].append({"subnet": S, "peer": P, "mark": T, "mode": "forward"})
         sn["allowed"][dev_n] = "0.0.0.0/0"
         add_exit(P, S, dev_p, T, X, W, base_p)
-        # DECISION 4's OTHER HALF — the one the plan warned is easy to miss. Traffic cascaded in from
-        # another node leaves by THIS node's default exit, on the same terms as its own interfaces: only
-        # when the forwarding interface named neither a source IP nor a WAN NIC. An operator who pinned
-        # either made an explicit choice about how their traffic leaves the far node, and a default must not
-        # overrule it — the same rule `default_egress_ip` already follows on the exit side.
-        _pd = str((nodes.get(P) or {}).get("default_exit") or "").strip()
-        if _pd and not X and not W:
-            _pr = resolve_exit(nodes, snaps, P, _pd)
-            _pt = slot(P)["_targets"].get("exit:" + _pd) if _pr else None
-            if _pr and _pt is not None and _pt <= SWG_RT_MAX:
-                _pdev, _pkey, _pks, _peg, _pgw = _pr
-                _pe = {"subnet": S, "dev": _pdev, "table": _pt, "killswitch": _pks, "egress_ip": _peg,
-                       "gw": _pgw}
-                if _pe not in slot(P)["devexit"]:
-                    slot(P)["devexit"].append(_pe)
+        slot(P).setdefault("_from", {}).setdefault(S, nid)      # whose subnet this is — the "whom it affects" line (§7.3)
+        arrival_default(P, S, X, W)
 
     # 2a-bis) P2 device exits — a forward whose far end is a LOCAL device.
     # ⚠️ NO add_exit() and NO `allowed` entry, and neither is an oversight: both exist to prepare the PEER
@@ -15780,13 +16014,12 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             continue
         sn = slot(nid)
         ent = {"subnet": S, "dev": dev, "table": T, "killswitch": ks, "egress_ip": eg, "gw": gw}
-        if ent not in sn["devexit"]:
-            sn["devexit"].append(ent)
+        _dx_add(sn, ent)
 
     # 2b) Phase-3 smart entries. exit = MASQUERADE out P's WAN (egress_ip ""); direct/block = LOCAL verdicts carried
     # for the node's first-match chain. ORDER is preserved (rules were collected in panel rule order) so first-match
     # wins — a direct/block exception before a catch-all exit is honoured, and block is a real drop, not a leak.
-    for (nid, P, S, cat, action, dev_n, dev_p, base_p, extra, xkey, xks, xeg, xgw, who, pin) in smart_items:
+    for (nid, P, S, cat, action, dev_n, dev_p, base_p, extra, xkey, xks, xeg, xgw, who) in smart_items:
         sn = slot(nid)
         if action == "exit":
             T = sn["_targets"].get(P)
@@ -15797,7 +16030,10 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             # …carrying the rule's EXIT IP (D6). "" is what it has always been, so a fleet that pins nothing
             # gets byte-identical exit records; a pinned one becomes `swg-fwd-snat:S --to-source X` at P,
             # which every node already runs (1.8.6 included) — §6.4.
+            pin = _ip4((exit_ips_of.get((nid, S)) or {}).get(P))   # the ONE address for (S, P) — read, never carried
             add_exit(P, S, dev_p, T, pin, "", base_p)
+            slot(P).setdefault("_from", {}).setdefault(S, nid)
+            arrival_default(P, S, pin, "")                   # D5 — a smart arrival takes P's default as a forward one does
             # ⚠️ THE ONE PLACE THAT KNOWS "THIS SUBNET ROUTES SOME OF ITS TRAFFIC OVER A PEER NODE'S LEG,
             # AND THE TABLE IS T". `relay_eligibility` reads this rather than re-deriving it, and that is
             # the whole point: a second walk of the same rules would have to re-implement every filter
@@ -15829,8 +16065,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             # the device instead of the one category this rule names.
             _de = {"subnet": S, "dev": dev_n, "table": T, "killswitch": bool(xks), "scope": "rule",
                    "egress_ip": xeg, "gw": xgw}
-            if _de not in sn["devexit"]:
-                sn["devexit"].append(_de)
+            _dx_add(sn, _de)
         else:                                                  # direct / block — no mesh exit, no table
             entry = {"subnet": S, "category": cat, "action": action}
         if isinstance(who, dict):
@@ -15870,8 +16105,122 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     if _k.get("kind") in _PATTERN_KINDS:
                         b.setdefault(_k["kind"], []).append(_k["value"])
 
+    # 3) ARRIVALS — P's default list, lowered ONCE for the traffic other nodes cascade out through P (D2/D3, §3.1–3.4, §4.3).
+    # A second pass because the arrivals are only known now: they are P's exit records, which every other node's entries
+    # above have just written. The panel CLASSIFIES (which subnets are arrivals, what the list says about them) and the node
+    # LOWERS (§4.3 — one reader of "which exit records are arrivals"). Never run for a node without a list, so a fleet
+    # without one pays nothing here (§5.2), and never for one that does not run it (D4 — it gets the catch-all as a plain
+    # default in `arrival_default` instead).
+    for P in sorted(nodes):
+        _nl = _nlist(P)
+        if _nl is None:
+            continue
+        sp = slot(P)                                       # a list node always gets a slot, so "whom it affects" is never missing
+        _via = {}
+        for e in sp["exit"]:
+            if (sp.get("_hop2") or {}).get(e["subnet"]):
+                continue                                   # T29 — a neighbour's link address is never an arrival here
+            _via.setdefault(e["subnet"], set()).add(e["via_iface"])
+        # §3.4 — PINNED ARRIVALS ARE EXEMPT: an origin that named an address (or a NIC) at P made an explicit choice about
+        # how its traffic leaves P, and P's list must not overrule it — the same exemption `arrival_default` keeps, plain or
+        # smart. The exit record carries the pin, so it is read from there and cannot disagree with what P applies.
+        _pinned = {e["subnet"] for e in sp["exit"] if str(e.get("egress_ip") or "") or str(e.get("wan_iface") or "")}
+        # T15 — a subnet two origins both send here (adopted interfaces predate the fleet-unique check) cannot be told apart
+        # by source, so one set would serve both. Left out and reported; the collision of their return routes is older than
+        # this and not fixed here.
+        _dup = sorted(S for S, vs in _via.items() if len(vs) > 1)
+        subs = sorted(S for S in _via if S not in _pinned and S not in _dup)
+        # "Whom it affects" (§7.3): its Auto interfaces, and which node's which subnet cascades out through it. Computed
+        # HERE, at sync, from the plan the panel already holds — never per /api/state, which must not build a plan (T16).
+        sp["_reach"] = {"auto": sorted(set(sp.get("_auto") or ())),
+                        "arr": sorted([(sp.get("_from") or {}).get(S, ""), S] for S in subs), "dup": _dup}
+        if not subs or not _arr_ok(P):
+            continue
+        ents, dx = [], []
+        for r in _nl:
+            if not isinstance(r, dict) or not rule_on(r) or r.get("aud") == "local":
+                continue
+            action = r.get("action")
+            if action not in ("direct", "block", "dev", "exit"):
+                continue
+            _rc = _rule_cat(P, r)
+            if not _rc:
+                continue
+            cat, extra = _rc
+            if action == "dev":
+                _r = resolve_exit(nodes, snaps, P, r.get("exit_id"))
+                if not _r:
+                    continue                               # an unusable exit degrades to the next rule, as it does locally
+                _xdev, _xkey, _xks, _xeg, _xgw = _r
+                T = sp["_targets"].get(_xkey) if sp.get("_targets") else None
+                if T is None or T > SWG_RT_MAX:
+                    continue
+                ent = {"category": cat, "action": "exit", "via_iface": _xdev, "table": T}
+                # ⚠️ ONE RULE-SCOPED DEVEXIT PER (ARRIVAL SUBNET, DEVICE) — the existing `swg-egress:exit:<S>@<dev>` SNAT, its
+                # table guard and its health, which an older node already runs (§4.3, §5.5). Without an SNAT keyed by the
+                # arrival subnet the exit drops the traffic (R1), and an exit only arrivals use would have no table at all
+                # (T7). `scope:"rule"` keeps it from also installing `from S lookup T`, which would send the whole arrival
+                # subnet out the device and be exactly D3's trap.
+                for S in subs:
+                    dx.append({"subnet": S, "dev": _xdev, "table": T, "killswitch": bool(_xks), "scope": "rule",
+                               "egress_ip": _xeg, "gw": _xgw})
+            elif action == "exit":
+                # THE ONWARD HOP (P3b, §3.5, D8) — P treats Q exactly like a WARP exit, the P↔Q mesh link as the tunnel:
+                #   · the arrival entry marks into P's table for Q (`default dev <leg to Q>`), and the node writes the origin
+                #     guard `iifname != <leg to Q>` on it (T28), so an arrival that came FROM Q never goes back to it;
+                #   · one rule-scoped devexit per (arrival subnet, leg) — the existing SNAT MASQUERADEs it to P's own link
+                #     address. Keyed by the ARRIVAL subnet, never by the leg, so P's own clients going to Q keep their
+                #     addresses (cell O3). Every pair is emitted: the node's guard is the one decider (§13 lens 2);
+                #   · the leg's AllowedIPs open to any destination, as an entry node's leg already does;
+                #   · Q gets ONE exit record for P's link address, written BARE (T27 — `/32` would churn Q's band every pass),
+                #     marked hop-2 so it is never an arrival at Q (T29: the chain ends at Q by construction), carrying the
+                #     exit IP this list chose for Q, and Q's device default through the D5 shape (§8 P3b).
+                Q = r.get("node")
+                if not Q or Q not in nodes or Q == P:
+                    continue
+                dev_p, dev_q, lk = _link_devs(nodes, P, Q)
+                T = sp["_targets"].get(Q) if sp.get("_targets") else None
+                if not (dev_p and dev_q and lk) or T is None or T > SWG_RT_MAX:
+                    continue                                   # no link (yet) or over the band: the rule routes nothing, as locally
+                ent = {"category": cat, "action": "exit", "via_iface": dev_p, "table": T}
+                for S in subs:
+                    _de = {"subnet": S, "dev": dev_p, "table": T, "killswitch": False, "scope": "rule", "egress_ip": "", "gw": ""}
+                    dx.append(_de)
+                sp["allowed"][dev_p] = "0.0.0.0/0"
+                _X = _ip4(((nodes.get(P) or {}).get("default_routing_exit_ips") or {}).get(Q))
+                _lka = str(lk).split("/")[0]                   # BARE
+                add_exit(Q, _lka, dev_q, T, _X, "", lk.split("/")[0])
+                slot(Q).setdefault("_hop2", {})[_lka] = True
+                arrival_default(Q, _lka, _X, "", hop2=True)
+            elif cat == "all" and action == "direct":
+                break                                      # the remainder leaves P's plain route: nothing to lower, nothing after
+            else:
+                ent = {"category": cat, "action": action}
+            if ent not in ents:
+                ents.append(ent)
+            if extra:                                      # the same channels the local entries use — the sets are node-wide
+                doms, cidrs, pats = extra
+                if doms:
+                    sp["domains"][cat] = doms
+                if cidrs:
+                    sp["cidrs"][cat] = cidrs
+                if pats:
+                    b = sp["patterns"].setdefault(cat, {})
+                    for _p in pats:
+                        _k = classify_target(_p)
+                        if _k.get("kind") in _PATTERN_KINDS and _k["value"] not in b.get(_k["kind"], ()):
+                            b.setdefault(_k["kind"], []).append(_k["value"])
+            if cat == "all":
+                break                                      # "Everything else" is last by construction; nothing after it runs
+        if ents:
+            for _e in dx:                                  # keyed, once each (_dx_add)
+                _dx_add(sp, _e)
+            # A PUBLIC KEY ONLY WHEN IT CARRIES SOMETHING — so a plan with no arrivals is byte-identical to one built before
+            # this pass existed (§5.3), and the sync reply sends `smart.arrivals` only to a node that has some.
+            sp["arrivals"] = {"subnets": subs, "entries": ents}
+
     for sn in plans.values():
-        for k in ("_fwd_seen", "_smart_seen", "_exit_seen", "_leg_seen", "_targets"):
+        for k in ("_fwd_seen", "_smart_seen", "_exit_seen", "_leg_seen", "_targets", "_from", "_auto", "_hop2", "_dx_seen"):
             sn.pop(k, None)
     return plans
 
@@ -17050,7 +17399,8 @@ def api(method, path, qs, body, deps):
             _unp = (Handler.deps.get("mesh_unplaced") or {}).get(nid)
             if _unp:   # peer ids → names: _node_issues is handed one record, not the fleet
                 _unp = dict(_unp, peers=[(nodes.get(p) or {}).get("name") or p for p in _unp.get("peers") or ()])
-            _iss = _node_issues(c, snap, _ivk_now, (Handler.deps.get("cas_capped") or {}).get(nid) or (), _unp)
+            _iss = _node_issues(c, snap, _ivk_now, (Handler.deps.get("cas_capped") or {}).get(nid) or (), _unp,
+                                (Handler.deps.get("cas_reach") or {}).get(nid))
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https", "mesh_awg": _mawg, "mesh_awg_set": c.get("mesh_awg") or {},   # actual (live) vs the per-node override the UI edits
                         "mesh_peers": _mesh_peers,
@@ -17059,6 +17409,14 @@ def api(method, path, qs, body, deps):
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "default_egress_ip": c.get("default_egress_ip") or "", "panel_ip": c.get("panel_ip") or "",
                         "default_exit": c.get("default_exit") or "",   # decision 4: the node's default way out
+                        # D2 — the default made smart, and the exit IP of its "Forward to node" rules. ⚠️ PUBLISHED, or the
+                        # browser reads nothing, and the next Settings save — of anything on this node — posts that back and
+                        # clears it (the P2 exit-IP defect, `new-record-field-must-be-published`). null = not a list.
+                        "default_routing": c.get("default_routing") if isinstance(c.get("default_routing"), list) else None,
+                        "default_routing_exit_ips": dict(c.get("default_routing_exit_ips") or {}),
+                        # whom the list affects, from the last sync's plan (T16) — None until a sync has planned it
+                        "default_reach": ((deps.get("cas_reach") or {}).get(nid)
+                                          if isinstance(c.get("default_routing"), list) else None),
                         "wan_iface": snap.get("wan_iface") or "",   # the device its default route uses — the picker names it
                         "mesh_egress_ip": c.get("mesh_egress_ip") or "",   # source this node dials its mesh peers from
                         "endpoint_hosts": c.get("endpoint_hosts") or [],   # other names this node answers to (picker pool)
@@ -20907,6 +21265,7 @@ def api(method, path, qs, body, deps):
 
     if method == "POST" and path == "/api/nodes/update":
         nid = body.get("id") or ""
+        _rdrop_n = None
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
         if "name" in body:                      # name is a free-to-change display title (no refs to migrate)
@@ -20938,7 +21297,8 @@ def api(method, path, qs, body, deps):
                     break
             nodes[nid]["endpoint_hosts"] = _hs
         # node IP roles: SNAT source for direct egress / source to dial the panel / source to dial mesh peers
-        if "default_exit" in body:
+        if "default_exit" in body and not isinstance(body["default_routing"] if "default_routing" in body
+                                                      else nodes[nid].get("default_routing"), list):
             # DECISION 4, REWRITTEN. The node's default WAY OUT — the twin of `default_egress_ip`, with
             # exactly its semantics: live, node-wide, and beaten by any interface that made its own choice.
             # NOT a creation seed: an interface inherits by NOT choosing, the way a blank egress IP already
@@ -21009,11 +21369,45 @@ def api(method, path, qs, body, deps):
                 _c["exits"] = _ex
             else:
                 _c.pop("exits", None)
+        # D2 — THE NODE'S DEFAULT, MADE SMART — after `exits`, because a device the list names may be minted here (`dev:<name>`)
+        # and the `exits` a browser sends with every save would otherwise overwrite the record it just made.
+        # (docs/ROUTING-PEERS-MESH-PLAN.md §3.1, §4.2). One rule list routes this node's
+        # Auto interfaces, the silence of its smart interfaces (D11) and the traffic other nodes cascade out through it.
+        # ITS PRESENCE IS THE SWITCH: a list — empty included, "Routing" chosen and no rule added yet — turns it on; `null`
+        # turns it off. Validated as an interface's list is, in the node scope (audiences, no people). `default_exit` is
+        # then DERIVED from its catch-all (below), and whatever `default_exit` this request carries is ignored while the
+        # list exists — an older tab always sends one, and it must not contradict the list it cannot see.
+        if "default_routing" in body:
+            _dr = body.get("default_routing")
+            if _dr is None:
+                nodes[nid].pop("default_routing", None)
+                nodes[nid].pop("default_routing_exit_ips", None)
+            else:
+                _drc = [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")]
+                _rules, _rerr, _rdrop_n = _validate_routing(_dr, nodes, nid, _drc,
+                                                            snap=(deps.get("node_snaps") or {}).get(nid) or {},
+                                                            prev=nodes[nid].get("default_routing") or [], node_scope=True)
+                if _rerr:
+                    return 400, {"ok": False, "error": _rerr, "code": "bad_request"}
+                nodes[nid]["default_routing"] = _rules
+        if "default_routing_exit_ips" in body and isinstance(nodes[nid].get("default_routing"), list):
+            # The exit IP of the list's "Forward to node" rules, per far node — a MAP ON THE NODE, never a field on a rule,
+            # for the reason the interface's own map is one (§4.2): the far node applies ONE SNAT per arriving subnet, so a
+            # per-rule address could say two things for one pair and the datapath carries one.
+            _xm, _xerr = _clean_exit_ips(body.get("default_routing_exit_ips"), nodes, nid,
+                                         nodes[nid].get("default_routing_exit_ips") or {})
+            if _xerr:
+                return 400, {"ok": False, "error": _xerr, "code": "bad_request"}
+            if _xm:
+                nodes[nid]["default_routing_exit_ips"] = _xm
+            else:
+                nodes[nid].pop("default_routing_exit_ips", None)
         # …and nothing else is left pointing at an exit that is gone either — see `prune_exit_refs` and
         # `prune_default_exit`. Unconditional, so a record already in that state heals on the next save of
         # anything rather than waiting for someone to touch the exact field that broke.
         prune_exit_refs(nodes[nid])
         prune_default_exit(nodes[nid])
+        derive_default_exit(nodes[nid])      # the list's catch-all, after both prunes have had their say (T12)
         # …and the same for a forward whose TARGET NODE is gone. Unconditional and fleet-wide for the same
         # reason the two above are unconditional: a record already in that state heals on the next save of
         # anything, instead of waiting for someone to open the exact interface that broke.
@@ -21117,7 +21511,9 @@ def api(method, path, qs, body, deps):
             with contextlib.suppress(Exception):
                 write_sub_serve(deps)
         ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
-        return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}
+        return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name"),
+                                          # §5.4 — what the default list's save could not keep, as an interface's save says it
+                                          **({"dropped": _rdrop_n} if _rdrop_n and _rdrop_n.get("total") else {})}}
 
     if method == "POST" and path == "/api/node/routing-reset":   # per-node: wipe + rebuild + re-pull ALL smart-routing state
         nid = body.get("id") or ""
@@ -25268,6 +25664,9 @@ class Handler(BaseHTTPRequestHandler):
         # build a whole fleet plan to ask for. No sync yet ⇒ empty ⇒ the smart half of the Connection sheet
         # stays silent, which is the right way round: nothing has been planned, so nothing is offered.
         Handler.deps["cas_legs"] = {_n: _p["_legs"] for _n, _p in cas_plans.items() if _p.get("_legs")}
+        # …and "whom it affects" for every node whose default is a list (§7.3) — the same terms: a fact only the plan holds,
+        # kept from the last sync so /api/state never builds one (T16). Empty until the first sync after a restart.
+        Handler.deps["cas_reach"] = {_n: _p["_reach"] for _n, _p in cas_plans.items() if _p.get("_reach")}
         my_plan = cas_plans.get(nid) or {"forward": [], "smart": [], "exit": [], "devexit": [], "allowed": {}}
         if my_plan.get("_who"):                          # a rule names people: resolve them for THIS node only (§4.3, D4)
             my_plan = who_plan_for_node(my_plan, roster, nid, snap)
@@ -26295,8 +26694,13 @@ class Handler(BaseHTTPRequestHandler):
         _blk_entries, _blk_srcs, _blk_mech = _resolve_iface_blocks(node, snap, _ps, _node_mode)
         if _blk_entries:
             my_plan["smart"] = _blk_entries + (my_plan.get("smart") or [])
+        # EVERY CATEGORY THIS NODE ROUTES, its own entries and its arrivals' (P3) — one set for the manifest, the caps, the
+        # `categories` list and the bundled domains below. Read from the local entries alone, an arrival rule naming a
+        # catalog list would reach the node with no list to pull and no set to fill, and route nothing, silently.
+        _plan_cats = ({e["category"] for e in (my_plan.get("smart") or [])}
+                      | {e["category"] for e in ((my_plan.get("arrivals") or {}).get("entries") or [])})
         _list_manifest = {}
-        for _c in {e["category"] for e in (my_plan.get("smart") or [])}:
+        for _c in _plan_cats:
             _isblku = _c.startswith("blku:")                       # per-interface block UNION → its own tier, no provider gate (feeds pre-filtered)
             _isblk = _isblku or _c.startswith("blk:")              # block feed (blk:<provider>:<list>) → block-provider gate + its own tier
             _curated = (not _isblk) and ":" not in _c and _c in SMART_CATEGORIES and _c != "all"   # built-in → panel-resolved + panel-pulled
@@ -26332,7 +26736,7 @@ class Handler(BaseHTTPRequestHandler):
         # the caps of every provider category and stop their host-tier fill. Send None → the key is omitted →
         # the node keeps what it already had (see swg-noded, _CAT_CAPS). A stale catalog is still a catalog and
         # takes the normal path; only a panel that has never managed to fetch one omits.
-        _smart_cats = {e["category"] for e in (my_plan.get("smart") or [])}
+        _smart_cats = _plan_cats
         _cat_caps = {**{c: SMART_CAPS[c] for c in _smart_cats if c in SMART_CAPS},
                      **{c: _cix[c] for c in _smart_cats if c in _cix and c not in SMART_CATEGORIES},
                      **{c: {t: True} for c, t in _blk_srcs.items()}}
@@ -26539,8 +26943,13 @@ class Handler(BaseHTTPRequestHandler):
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
                                           # per-person rows: each `src` entry's (device, /32) pairs, only when a rule names people
                                           **({"srcs": my_plan["srcs"]} if my_plan.get("srcs") else {}),
+                                          # P3 — traffic other nodes cascade out through this one, routed by its default list
+                                          # (§4.3): the arrival subnets and the list lowered once. Only when there are some, and
+                                          # only ever to a node that reported `arr` (cascade_plan asks) — an older node ignores
+                                          # the key, and one that never gets it is byte-identical (§5.3).
+                                          **({"arrivals": my_plan["arrivals"]} if my_plan.get("arrivals") else {}),
                                           "mode": node.get("routing_mode") or "kernel",   # kernel | forcedns | sni — the node picks its fill mechanism from this
-                                          "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])}),
+                                          "categories": sorted(_plan_cats),
                                           # per-category caps {ip,host}: provider cats from the catalog index, built-ins from SMART_CAPS.
                                           # The node reads its <cat>.txt/.doms (pulled from the panel via list_manifest) using these — a
                                           # curated cat's host cap is what gets its pulled .doms loaded into dnsmasq (custom cats ship inline).
@@ -26550,7 +26959,7 @@ class Handler(BaseHTTPRequestHandler):
                                           **({"cat_caps": _cat_caps} if _cat_caps is not None else {}),
                                           # domain tier: active bundles + custom-rule domain lists → node fills these via dnsmasq. ONLY for a
                                           # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
-                                          "domains": ({**{c: DOMAIN_BUNDLES.get(c, []) for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in HOST_CATEGORIES},
+                                          "domains": ({**{c: DOMAIN_BUNDLES.get(c, []) for c in _plan_cats if c in HOST_CATEGORIES},
                                                        **(my_plan.get("domains") or {})} if (node.get("routing_mode") or "kernel") != "kernel" else {}),
                                           # Pattern buckets, pre-classified by the panel: {cat: {zone:[…], …}}.
                                           # Gated exactly like `domains` — an IP-only node has no host layer to
