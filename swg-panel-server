@@ -1900,14 +1900,19 @@ def cfg_hash(pubkey, node, iface=""):
     return hashlib.sha256((pubkey + "|" + node + "|" + iface).encode()).hexdigest() + ".conf"
 
 
-def atomic_write(path, text, mode=0o600):
+def atomic_write(path, text, mode=0o600, keep_prev=False):
+    """tmp + fsync + os.replace: a reader sees the old file or the new one, never a torn one. `text` may be bytes (the
+    traffic ledger's binary files). `keep_prev` moves the replaced file to <path>.prev first — a crash between the two
+    renames leaves .prev, which is what the ledger reads when base.bin is gone."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp." + uuid.uuid4().hex[:8]
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
         os.fchmod(fd, mode)   # force the exact mode regardless of the process umask (0640 must stay group-readable for swg-sub)
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "wb" if isinstance(text, (bytes, bytearray)) else "w") as f:
             f.write(text); f.flush(); os.fsync(f.fileno())
+        if keep_prev and os.path.exists(path):
+            os.replace(path, path + ".prev")
         os.replace(tmp, path)
     except Exception:
         with contextlib.suppress(OSError):
@@ -2181,7 +2186,23 @@ def roster_load(path):
     return r
 
 
+# Has users.json changed since the traffic ledger last built its credential map (TrafficLedger._rebuild)? The same two
+# halves as nodes_mark(): no save by this process (the counter), and the same file (every save is an atomic rename → a
+# new inode; a writer outside the panel changes it too). The ledger's map is O(roster) to build and a sync runs every 5 s
+# per node, so it is rebuilt only when this moves.
+_ROSTER_SAVES = [0]
+
+
+def roster_mark(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (_ROSTER_SAVES[0], st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
 def roster_save(path, roster):
+    _ROSTER_SAVES[0] += 1                            # before the write: a parse racing it is never taken for current
     d = os.path.dirname(path) or "."
     os.makedirs(d, exist_ok=True)
     tmp = path + ".tmp." + uuid.uuid4().hex[:8]
@@ -14015,8 +14036,9 @@ SUB_LANGS = {"en": "English", "ru": "Русский"}
 # ⚠️ A CHANGE RE-TIMES THE CHARTS' EARLIER HISTORY. A ring stores bucket numbers, not the offset they were written at,
 # and _bucket_epoch() converts them back at the current one: UTC → Moscow draws every older point 3 h early, and a
 # move west also blends its first hours into same-numbered old buckets. It clears as each ring rolls over (≤ 33
-# days) and never touches the ledger, whose files carry their own offset. Accepted by the operator (2026-09-23) over
-# keeping the charts on the server's zone, which would count one panel's days in two zones.
+# days). The traffic ledger is not re-timed: the day it is in keeps the frame its file started in, and the next day
+# starts in the new zone (TrafficLedger.ingest). Accepted by the operator (2026-09-23) over keeping the charts on the
+# server's zone, which would count one panel's days in two zones.
 _TZ_BOOT = os.environ.get("TZ")          # what "" restores — read at import, before anything could change it
 _TZ_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+){0,2}$")
 _TZ_STATE = {"zone": "", "missing": "", "zones": None}   # the set zone in force · a stored one this server lacks · list
@@ -17461,6 +17483,1038 @@ def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False, since=None):
     return out
 
 
+# ───────────────── the per-peer traffic ledger (docs/TRAFFIC-HISTORY-PLAN.md, P1) ─────────────────
+# The one record in the panel nothing can rebuild: a per-peer byte accumulator that survives counter resets, and closed
+# local days to answer "how much did this peer use between 1 and 30 April". Derived from the cumulative counters every
+# snapshot already carries — wg/awg `rx_bytes`/`tx_bytes`, WDTT/csqtt `up_bytes`/`down_bytes` — so no node change, and
+# every node version counts from the day the panel updates.
+#
+# THE MODEL (§1–§5). A SLOT is a peer id under ONE owner: it opens the first time the ledger sees the pid, and again
+# whenever the pid's user_id changes (assign, unassign and reassign all happen on the same pid); the old slot closes
+# (`until`) and keeps its owner, so a device handed on never carries its history to the new owner. A RECORD is one
+# deployment's counter, keyed (node, iface, pid) — never by the credential, so a rekey, a password rotation, the PSK
+# re-apply of every unassign or an endpoint change is a counter that RESTARTED on the same record, credited once by the
+# reset branch. A counter is resolved to its pid through (node, iface, credential) from the roster's targets — a
+# password can belong to two peers on two instances, and an all-keyless peer's pubkey is "" — rebuilt only when the
+# roster changes (roster_mark). The same map keeps mesh links out: a link's peer is the far node's own key, which no
+# target names, even in the one sync a retired link is still reported.
+#
+# THE FILES, under <state_dir>/history/ — never stats_dir, which a bare-metal uninstall deletes unconditionally:
+#   index.json           the slot table, {pid, owner, name, since, until, o} per slot, APPEND-ONLY (a slot number is
+#                        never reused, so a day file written last year still means the same peers), save_critical'd
+#                        with its backups. `o` is the OPENING balance: taken once, when a never-seen pid is first
+#                        observed, and never changed. It lives HERE rather than in base.bin (operator, 2026-09-23):
+#                        base.bin is written at bucket closes, so a restart before the first close would have lost
+#                        every imported lifetime for good, and a corrupt base.bin all of them.
+#   base.bin             THE durability unit: every record's last reading and every slot's credited cumulative C,
+#                        replaced atomically together. A crash rolls both back to the same instant; the next reading
+#                        re-credits exactly cur − last, nothing twice. The previous generation stays as base.bin.prev
+#                        and is read when base.bin is not.
+#   day-YYYY-MM.bin      closed local days: one row per day, every slot's C at that day's end. Rows are appended and
+#                        self-describing (date, offset, width) because the slot table grows during a month.
+#   fine-YYYY-MM-DD.bin  that day's buckets at the history resolution: only the slots that moved, sorted, stored by
+#                        column — so one peer's series is a bisect per bucket, not a scan of the fleet.
+#   diag.json            resets, clamps and the spans each node was observed (the gaps), write errors — §2.4.
+# total(A..B) = C(end of B) − C(end of A−1): two positioned reads, however wide the window.
+#
+# ⚠️ WRITE ORDER, one direction only: index.json → the closed day's row → base.bin → the fine append. base.bin never
+# gets ahead of index.json (a slot's C with no slot to name it) nor of the day it closed (it names the next day, so a
+# crash between the two lost the day for good); the fine tier is the graph, not the truth, so a crash can make it miss
+# a bucket and never count one twice. A failed write is counted and retried after a pause (30 s–5 min, never on every
+# sync), never swallowed, and the in-memory ledger carries on — readers see a pending day row too.
+# ⚠️ ABSENT IS NOT ZERO. A down interface's `"peers": []`, a dropped interface key, an await_restore instance's
+# `"passwords": {}`, a busy SQLite or a torn JSON read are NO observation — only entries that are present are read, so
+# none of them can become `cur = 0` or a prune. Keep it that way.
+
+import array as _larr
+import bisect as _lbis
+import datetime as _ldt
+import zlib as _lzlib
+
+LEDGER_MAX_BPS = 1_250_000_000         # 10 Gbit/s per direction: the one over-credit guard (the clamp, §2.3)
+LEDGER_FLOOR_S = 5                     # the clamp's elapsed floor — a stepped-back clock never makes it negative
+LEDGER_CLOCK_SLACK = 60                # the clock gate: ingest is held while the clock is behind the newest reading
+LEDGER_GAP_S = 60                      # a node unobserved this long has a gap in its observed spans
+LEDGER_STEPS = (300, 900, 3600, 86400) # D1: 5 min / 15 min / 1 hour / 1 day — the history resolution
+LEDGER_STEP_DEFAULT = 3600
+LEDGER_SPANS_MAX = 2000                # observed spans kept per node (one per outage); the oldest go first
+LEDGER_FINE_QUEUE = 1000               # closed fine buckets held while their writes fail (≈3.5 days at 5 min)
+LEDGER_SERIES_FINE_DAYS = 8            # a series over more days than this is answered by day, from the day rows
+
+_LB_MAGIC, _LB_VER = b"SWGL", 1
+_LB_HEAD = struct.Struct("<4sHHQQIIIIIII")   # magic ver flags written newest day idx step nslots nnames nrecs crc
+_LB_REC = struct.Struct("<IIIQQI")           # node iface pid (name-table indexes), last_rx, last_tx, ts
+_LD_MAGIC, _LD_VER = b"SWGD", 1
+_LD_FHEAD = struct.Struct("<4sHH")           # magic ver pad
+_LD_ROW = struct.Struct("<IiQII")            # date(YYYYMMDD) utc_offset end_epoch nslots crc — then nslots × (rx u64, tx u64)
+_LF_MAGIC, _LF_VER = b"SWGF", 1
+_LF_FHEAD = struct.Struct("<4sHHIiQ")        # magic ver pad step utc_offset midnight_epoch
+_LF_BKT = struct.Struct("<HHII")             # idx pad n crc — then n × slot u32 (sorted), n × rx u64, n × tx u64
+
+
+def _ld_int(t):
+    return t.tm_year * 10000 + t.tm_mon * 100 + t.tm_mday
+
+
+def _ld_date(d):
+    return _ldt.date(d // 10000, d // 100 % 100, d % 100)
+
+
+def _ld_of(dt):
+    return dt.year * 10000 + dt.month * 100 + dt.day
+
+
+def _ld_next(d):
+    return _ld_of(_ld_date(d) + _ldt.timedelta(days=1))
+
+
+def _ld_prev(d):
+    return _ld_of(_ld_date(d) - _ldt.timedelta(days=1))
+
+
+def _ld_midnight(d):
+    """The epoch of local 00:00 on day d, in the zone the panel counts days in (tz_apply)."""
+    return int(time.mktime((d // 10000, d // 100 % 100, d % 100, 0, 0, 0, 0, 0, -1)))
+
+
+def _ld_day(now):
+    """(local date, UTC offset) for `now`. Buckets count from a day's LOCAL midnight — never _bucket_of(), which runs
+    backwards across a DST fall-back (§3.3) — so a 25-hour day has room for its extra hour."""
+    t = time.localtime(now)
+    return _ld_int(t), t.tm_gmtoff
+
+
+def _lnum(v):
+    """A counter as a non-negative int, or None — a value that cannot be read is no observation, never a zero."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v if v >= 0 else None
+    if isinstance(v, float):
+        return int(v) if v >= 0 and v == v and v != float("inf") else None
+    if isinstance(v, str) and v.isdigit():
+        return int(v)
+    return None
+
+
+def _q_array(b):                 # the files are little-endian; the ledger refuses to start on any other host (_start)
+    a = _larr.array("Q")
+    a.frombytes(b)
+    return a
+
+
+def _i_array(b):
+    a = _larr.array("I")
+    a.frombytes(b)
+    return a
+
+
+class TrafficLedger:
+    """One per panel process (LEDGER). ingest() runs at the end of every sync's history phase, outside _api_lock and in
+    its own guard; everything it does is arithmetic on memory under the ledger's OWN lock — never _hrrd_lock, which
+    gates every ring read in the panel (§5.1). Files are written by one background thread, at bucket closes."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self._cv = threading.Condition()
+        self._kick = False
+        self.on = False
+        self.why_off = "not started"
+        self.dir = ""
+        self.roster_path = ""
+        self.step = LEDGER_STEP_DEFAULT
+        self.slots = []                 # index.json: {pid, owner, name, since, until, o}
+        self.had = set()                # every pid that ever had a slot — "never seen" is the ABSENCE from here (§5.4)
+        self.open = {}                  # pid → its open slot
+        self.C_rx = _larr.array("Q")    # per slot: credited cumulative bytes (base.bin)
+        self.C_tx = _larr.array("Q")
+        self.recs = {}                  # (node, iface, pid) → (last_rx, last_tx, ts, monotonic-or-None)
+        self.newest = 0                 # the newest reading, panel clock — the clock gate's reference
+        self.day, self.idx, self.off = 0, -1, 0
+        self.fmid, self.foff = 0, 0     # the current day's midnight epoch and offset — its fine file's frame (header)
+        self._flush_lock = threading.Lock()   # one flush at a time: the writer thread's, or the one at shutdown
+        self._retry_at = 0.0            # monotonic: after a failed write, nothing retries before this (no storm)
+        self.fine = {}                  # slot → [rx, tx] credited in the current fine bucket
+        self.map, self.deploys, self.owners, self.titles, self.mark = {}, set(), {}, {}, None
+        self.observed = False           # only a ledger that observed something writes (a second process never clobbers)
+        self.d_index = self.d_base = self.prompt = False
+        self.q_fine, self.q_day = [], []
+        self.diag = self._diag_new()
+        self._rowidx = {}               # day-file path → (size, mtime_ns, {date: (offset, nslots)})
+        self._tails = {}                # append-file path → validated end (a torn tail is cut once, before an append)
+        self._diag_w = 0
+
+    @staticmethod
+    def _diag_new():
+        return {"v": 1, "held_for_clock": 0, "write_errors": 0, "last_error": "", "last_error_at": 0, "disk_pauses": 0,
+                "ambiguous": 0, "base_recovered": "", "ifaces": {}, "pids": {}, "spans": {}}
+
+    # ── paths ────────────────────────────────────────────────────────────────────────────────────────────────────
+    def _p(self, name):
+        return os.path.join(self.dir, name)
+
+    def _day_path(self, d):
+        return self._p("day-%04d-%02d.bin" % (d // 10000, d // 100 % 100))
+
+    def _fine_path(self, d):
+        return self._p("fine-%04d-%02d-%02d.bin" % (d // 10000, d // 100 % 100, d % 100))
+
+    # ── start ────────────────────────────────────────────────────────────────────────────────────────────────────
+    def start(self, deps, now=None, writer=True):
+        """Load the ledger and start its writer (`writer=False`: the gates call flush() themselves). Never raises: a
+        ledger that cannot load stays OFF — it neither reads nor writes, so a damaged history is left for a human rather
+        than overwritten — and says why (debug dump)."""
+        try:
+            self._start(deps, int(time.time() if now is None else now), writer)
+        except Exception as e:
+            self.on, self.why_off = False, "could not start: %s" % e
+            print("ledger: OFF — %s" % self.why_off, flush=True)
+
+    def _start(self, deps, now, writer=True):
+        if sys.byteorder != "little" or _larr.array("I").itemsize != 4:
+            self.on, self.why_off = False, "the ledger's files are little-endian with 32-bit slots; this host is not"
+            print("ledger: OFF — %s" % self.why_off, flush=True)
+            return
+        self.roster_path = deps["roster_path"]
+        self.dir = os.path.join(os.path.dirname(self.roster_path) or ".", "history")
+        os.makedirs(self.dir, mode=0o700, exist_ok=True)
+        env = os.environ.get("SWG_LEDGER_STEP")          # rigs only: short buckets, to watch closes in minutes
+        try:
+            st = int(env) if env else int((deps.get("panel_settings") or {}).get("history_resolution") or LEDGER_STEP_DEFAULT)
+        except (TypeError, ValueError):
+            st = LEDGER_STEP_DEFAULT
+        self.step = max(5, min(86400, st)) if env else (st if st in LEDGER_STEPS else LEDGER_STEP_DEFAULT)
+        try:
+            idx = load_critical(self._p("index.json"), None)   # a corrupt primary is recovered from its backups
+        except RuntimeError as e:                               # …and with none, the ledger stays off (never a fresh one)
+            self.on, self.why_off = False, "index.json is unreadable and no backup is good (%s)" % e
+            print("ledger: OFF — %s" % self.why_off, flush=True)
+            return
+        if idx is not None and not (isinstance(idx, dict) and isinstance(idx.get("slots"), list)
+                                    and all(isinstance(s, dict) and s.get("pid") for s in idx["slots"])):
+            self.on, self.why_off = False, "index.json does not hold a slot table"
+            print("ledger: OFF — %s" % self.why_off, flush=True)
+            return
+        self.slots = list((idx or {}).get("slots") or [])
+        for n, s in enumerate(self.slots):
+            self.had.add(s["pid"])
+            if not s.get("until"):
+                self.open[s["pid"]] = n
+        dg = load_json(self._p("diag.json"), None)
+        if isinstance(dg, dict) and dg.get("v") == 1:
+            self.diag.update({k: v for k, v in dg.items() if k in self.diag})
+        base = self._load_base()
+        n = len(self.slots)
+        if base is not None:
+            self.recs, crx, ctx, self.newest, bday, bidx, bstep = base
+            self.C_rx, self.C_tx = crx[:n], ctx[:n]            # slots base.bin knows that index.json does not: dropped (§ write order)
+        else:
+            bday = bidx = bstep = 0
+            row = self._newest_row()                           # a lost base.bin: C from the newest closed day, so a day row is
+            if row is not None:                                # never above today's C (windows across it would go negative)
+                self.C_rx, self.C_tx = row[1][:n], row[2][:n]
+                if os.path.exists(self._p("base.bin")) or os.path.exists(self._p("base.bin.prev")):
+                    self.diag["base_recovered"] = "C from the day row of %d; records re-baselined with zero credit" % row[0]
+        while len(self.C_rx) < n:                              # slots opened after the last base.bin write: C = 0 (their opening is in index.json)
+            self.C_rx.append(0); self.C_tx.append(0)
+        d, off = _ld_day(now)
+        self.off = off
+        if bday and bday < d:                                  # the panel was down across midnight: the day it stopped in closes
+            self._queue_day(bday, self.C_rx[:], self.C_tx[:], _ld_midnight(_ld_next(bday)))   # with its last C. Days with
+        d = max(d, bday)                                       # no reading get NO row: a lookup falls back to the newest row
+        fh = self._fine_head(self._fine_path(d)) if os.path.exists(self._fine_path(d)) else None   # before them — the same
+        mid = fh[2] if fh else _ld_midnight(d)                 # numbers, bounded (a clock years ahead writes one row, not
+        i = 0 if self.step >= 86400 else max(0, now - mid) // self.step    # thousands). The day keeps its file's frame.
+        if d == bday and bstep == self.step:                   # never behind the last bucket written — a bucket id counts in
+            i = max(i, bidx)                                   # its own step, so it is never carried across a step change
+        self.day, self.idx, self.fmid, self.foff = d, i, mid, off
+        self.on, self.why_off = True, ""
+        if writer:
+            threading.Thread(target=self._writer, name="ledger-writer", daemon=True).start()
+        print("ledger: on — %s, %d slot(s), %d record(s), %ds buckets" % (self.dir, n, len(self.recs), self.step), flush=True)
+
+    # ── ingest (the hot path: every sync of every node) ───────────────────────────────────────────────────────────
+    def ingest(self, nid, snap, now=None, mono=None):
+        if not self.on or not isinstance(snap, dict):
+            return
+        now = int(time.time() if now is None else now)
+        mono = time.monotonic() if mono is None else mono
+        mark = roster_mark(self.roster_path)                   # one stat() — the map is rebuilt only when this moves
+        d, off = _ld_day(now)                                  # one localtime() per sync, outside the lock
+        with self.lock:
+            if mark != self.mark:
+                self._rebuild(mark, now)
+            if now < self.newest - LEDGER_CLOCK_SLACK:         # §2.3 CLOCK GATE: nothing is credited, nothing advanced —
+                self.diag["held_for_clock"] += 1               # the counters are cumulative, so the next reading carries it
+                return
+            if d <= self.day:                                  # the day the ledger is in keeps its own frame — the midnight its
+                d, mid, off = self.day, self.fmid, self.off    # fine file was started at — so a zone change mid-day never moves
+            else:                                              # the rest of that day's buckets (P0); a new day starts in the
+                mid = _ld_midnight(d)                          # zone in force (one mktime a day)
+            i = 0 if self.step >= 86400 else max(0, now - mid) // self.step
+            self._advance(d, i, off, now, mid)
+            m = self.map
+            ifs = snap.get("interfaces")
+            if isinstance(ifs, dict):
+                for ifn, blk in ifs.items():
+                    peers = blk.get("peers") if isinstance(blk, dict) else None
+                    if not isinstance(peers, list):
+                        continue
+                    for p in peers:
+                        if not isinstance(p, dict):
+                            continue
+                        pid = m.get((nid, ifn, p.get("public_key")))
+                        if pid:
+                            rx, tx = _lnum(p.get("rx_bytes")), _lnum(p.get("tx_bytes"))
+                            if rx is not None and tx is not None:
+                                self._observe(nid, ifn, pid, rx, tx, now, mono)
+            for kind in ("wdtt", "csqtt"):
+                insts = snap.get(kind)
+                if not isinstance(insts, list):
+                    continue
+                for inst in insts:
+                    ifn = inst.get("iface") if isinstance(inst, dict) else None
+                    pws = inst.get("passwords") if ifn else None
+                    if not isinstance(pws, dict):
+                        continue
+                    for pw, pe in pws.items():
+                        pid = m.get((nid, ifn, pw))
+                        if pid and isinstance(pe, dict):
+                            rx, tx = _lnum(pe.get("up_bytes")), _lnum(pe.get("down_bytes"))   # up = client→server = rx
+                            if rx is not None and tx is not None:
+                                self._observe(nid, ifn, pid, rx, tx, now, mono)
+            self._span(nid, now)
+            self.newest = max(self.newest, now)
+            kick = self.observed and (self.prompt or self.d_index or bool(self.q_fine or self.q_day)) and mono >= self._retry_at
+        if kick:
+            self._wake()
+
+    def _observe(self, nid, ifn, pid, rx, tx, now, mono):
+        """§2.3, per record."""
+        self.observed = True
+        key = (nid, ifn, pid)
+        s = self.open.get(pid)
+        if s is None:
+            if pid not in self.had:                            # D3: a pid never seen — its counter is an OPENING balance,
+                self.open[pid] = self._new_slot(pid, now, rx, tx)   # credited to no bucket (first run, adoption, a take-over,
+                self.recs[key] = (rx, tx, now, mono)                # a node transferred in)
+                self.prompt = True
+                return
+            s = self.open[pid] = self._new_slot(pid, now, 0, 0)   # known, but its slot closed: a new one, no opening
+        rec = self.recs.get(key)
+        if rec is None:                                        # a known pid's NEW record (a new deployment, a node back, a lost
+            self.recs[key] = (rx, tx, now, mono)               # base.bin): a baseline with ZERO credit, never an opening (§5.4)
+            ni = self._dpid(pid).setdefault("not_imported", [0, 0])
+            ni[0] += rx; ni[1] += tx                           # what that baseline left uncounted, so the limit is visible
+            self.prompt = True
+            return
+        lrx, ltx, lts, lmono = rec
+        el = (mono - lmono) if lmono is not None else (now - lts)   # monotonic within this process: a clock step never shrinks it
+        cap = int(LEDGER_MAX_BPS * max(el, LEDGER_FLOOR_S))
+        reset = rx < lrx or tx < ltx                           # EITHER direction dropped: the counter restarted (§1.1)
+        drx, dtx = (rx, tx) if reset else (rx - lrx, tx - ltx)
+        if drx > cap or dtx > cap:
+            drx, dtx = min(drx, cap), min(dtx, cap)
+            self._diface(nid, ifn)["clamps"] += 1
+            self._dpid(pid)["clamps"] = self._dpid(pid).get("clamps", 0) + 1
+        if reset:
+            di = self._diface(nid, ifn)
+            di["resets"] += 1; di["last_reset_at"] = now
+            self._dpid(pid)["resets"] = self._dpid(pid).get("resets", 0) + 1
+        self.recs[key] = (rx, tx, now, mono)
+        if drx or dtx:
+            self.C_rx[s] += drx; self.C_tx[s] += dtx
+            if self.step < 86400:
+                f = self.fine.get(s)
+                if f is None:
+                    self.fine[s] = [drx, dtx]
+                else:
+                    f[0] += drx; f[1] += dtx
+        self.d_base = True
+
+    def _new_slot(self, pid, now, orx, otx):
+        self.slots.append({"pid": pid, "owner": self.owners.get(pid), "name": self.titles.get(pid, ""),
+                           "since": now, "until": None, "o": [orx, otx]})
+        self.had.add(pid)
+        self.C_rx.append(0); self.C_tx.append(0)
+        self.d_index = self.d_base = True
+        return len(self.slots) - 1
+
+    def _close(self, s, now):
+        rec = self.slots[s]
+        rec["until"] = now
+        rec["name"] = self.titles.get(rec["pid"], rec.get("name") or "")
+        self.d_index = True
+
+    def _rebuild(self, mark, now):
+        """The (node, iface, credential) → pid map from the roster's targets, and the slot diff. Runs only when the roster
+        changed. Read with load_json, never roster_load — that one repairs a corrupt primary by writing, and this runs on
+        a sync thread outside _api_lock."""
+        r = load_json(self.roster_path, None)
+        if not isinstance(r, dict) or not isinstance(r.get("peers"), dict):
+            return                                             # unreadable right now: keep the old map, try at the next sync
+        claims, deploys, owners, titles = {}, set(), {}, {}
+        for pid, p in r["peers"].items():
+            if not isinstance(p, dict):
+                continue
+            owners[pid] = p.get("user_id") or None
+            titles[pid] = str(p.get("title") or "")[:64]
+            for t in p.get("targets") or []:
+                if not isinstance(t, dict) or not t.get("node") or not t.get("iface"):
+                    continue
+                cred = (p.get("wdtt_password") if _is_wdtt_target(t)
+                        else p.get("csqtt_password") if _is_csqtt_target(t) else p.get("pubkey"))
+                if not cred:                                   # an all-keyless peer's "" pubkey, a keyless target with no password
+                    continue
+                claims.setdefault((t["node"], t["iface"], cred), set()).add(pid)
+                deploys.add((t["node"], t["iface"], pid))
+        amb = [k for k, v in claims.items() if len(v) > 1]     # two peers claiming ONE counter: crediting either is a guess
+        self.diag["ambiguous"] = len(amb)
+        self.map = {k: next(iter(v)) for k, v in claims.items() if len(v) == 1}
+        self.owners, self.titles, self.deploys = owners, titles, deploys
+        for pid, s in list(self.open.items()):
+            if pid not in owners:                              # left the roster — by any of the five delete paths
+                self._close(s, now); del self.open[pid]
+            elif owners[pid] != self.slots[s].get("owner"):    # a new owner: the old slot keeps everything before now
+                self._close(s, now)
+                self.open[pid] = self._new_slot(pid, now, 0, 0)
+        gone = [k for k in self.recs if k not in deploys]      # a deployment that no longer exists (node removed, target or
+        for k in gone:                                         # interface deleted): its record goes — and a node that comes
+            del self.recs[k]                                   # back gets a zero-credit baseline, never a second opening
+        if gone:
+            self.d_base = self.prompt = True
+        self.mark = mark
+
+    def _advance(self, d, i, off, now, mid):
+        """Move to the bucket `now` falls in. Bucket ids never go backwards (a stepped-back clock keeps crediting the
+        newest one). Passing local midnight takes C AS IT STOOD at the boundary — before this reading's own delta — as
+        the day's row; a day with no reading at all gets none (a lookup reads the newest row before it: the same numbers)."""
+        if (d, i) <= (self.day, self.idx):
+            return
+        self._close_bucket()
+        if d > self.day:
+            if self.day:
+                self._queue_day(self.day, self.C_rx[:], self.C_tx[:], mid if d == _ld_next(self.day) else _ld_midnight(_ld_next(self.day)))
+            self.fmid, self.foff = mid, off
+        self.day, self.idx, self.off = d, i, off
+        self.d_base = True
+
+    def _close_bucket(self):
+        if self.fine:
+            self.q_fine.append((self.day, self.idx, self.step, self.foff, self.fmid, self.fine))
+            self.fine = {}
+            if len(self.q_fine) > LEDGER_FINE_QUEUE:           # a disk that stays full: the graph's oldest buckets go
+                del self.q_fine[0]                             # first (counted) — memory stays bounded; C is untouched
+                self.diag["fine_dropped"] = self.diag.get("fine_dropped", 0) + 1
+
+    def _queue_day(self, d, crx, ctx, end):
+        self.q_day.append((d, self.off, end, crx, ctx))
+
+    def _span(self, nid, now):
+        sp = self.diag["spans"].setdefault(nid, [])
+        if sp and now - sp[-1][1] <= LEDGER_GAP_S:
+            sp[-1][1] = max(sp[-1][1], now)
+        else:
+            sp.append([now, now])
+            if len(sp) > LEDGER_SPANS_MAX:
+                del sp[:len(sp) - LEDGER_SPANS_MAX]
+
+    def _diface(self, nid, ifn):
+        return self.diag["ifaces"].setdefault("%s|%s" % (nid, ifn), {"resets": 0, "last_reset_at": 0, "clamps": 0})
+
+    def _dpid(self, pid):
+        return self.diag["pids"].setdefault(pid, {})
+
+    # ── the writer ───────────────────────────────────────────────────────────────────────────────────────────────
+    def _wake(self):
+        with self._cv:
+            self._kick = True
+            self._cv.notify()
+
+    def _writer(self):
+        while True:
+            with self._cv:
+                while not self._kick:
+                    self._cv.wait()
+                self._kick = False
+            try:
+                self.flush()
+            except Exception as e:                             # never let the thread die — count it, the next close retries
+                self._err("flush", e)
+
+    def ingest_failed(self, e):
+        """A bug in ingest: counted and logged (at most every 5 min), never raised into the sync (V33)."""
+        self.diag["ingest_errors"] = self.diag.get("ingest_errors", 0) + 1
+        self.diag["last_error"], self.diag["last_error_at"] = "ingest: %s" % e, int(time.time())
+        now = time.time()
+        if now - getattr(self, "_ing_said", 0) > 300:
+            self._ing_said = now
+            print("ledger: ingest failed — %s (the sync's rings are written; the next snapshot carries the counters)" % e,
+                  flush=True)
+
+    def _err(self, what, e):
+        self.diag["write_errors"] += 1
+        self.diag["last_error"], self.diag["last_error_at"] = "%s: %s" % (what, e), int(time.time())
+        now = time.time()
+        if now - getattr(self, "_err_said", 0) > 300:          # logged, not a log line every close of a stuck disk
+            self._err_said = now
+            print("ledger: %s failed — %s (kept in memory, retried at the next close)" % (what, e), flush=True)
+
+    def flush(self):
+        """One pass of the write order: index.json → day rows → base.bin → fine appends → diag.json. A closed day's
+        row goes before base.bin, which already names the next day: written after, a crash between the two lost the day
+        for good (a re-close is harmless — the first row stands). Whatever fails goes back to the front of its queue,
+        nothing later in the order is written past it, and nothing retries before the next close (no storm)."""
+        with self._flush_lock:
+            if self._flush():
+                self._retry_at = 0.0
+
+    def shutdown(self):
+        """SIGTERM: the open bucket is closed as it stands and everything is written, so a graceful restart neither
+        moves its last partial bucket into the next one nor lets the next day take the rest of this one. A bucket the
+        restart lands inside is written twice, once each side of it; readers sum them."""
+        if not self.on or not self._flush_lock.acquire(timeout=5):   # a writer stuck on a hung disk: stop anyway
+            return
+        try:
+            self._diag_w = 0                                   # the spans too: they are the gaps every reply carries
+            self._flush(closing=True)
+        finally:
+            self._flush_lock.release()
+
+    def _flush(self, closing=False):
+        with self.lock:
+            if closing:                                        # in the same lock section as the snapshot: a sync landing
+                self._close_bucket()                           # between the two would reach base.bin and never the graph
+                self.d_base = self.d_base or self.observed
+            if not self.observed:                              # a process that observed nothing never writes (a second
+                return True                                    # panel on this state dir must not replace base.bin) — nor fails
+            ix = json.dumps({"v": 1, "slots": self.slots}, separators=(",", ":")) if self.d_index else None
+            snap = ((dict(self.recs), self.C_rx[:], self.C_tx[:], self.newest, self.day, self.idx, self.step, len(self.slots))
+                    if self.d_base else None)
+            qf, self.q_fine = self.q_fine, []
+            qd, self.q_day = self.q_day, []
+            self.d_index = self.d_base = self.prompt = False
+
+        def requeue(ix_back, base_back, qf_rest, qd_rest):
+            with self.lock:
+                self.d_index = self.d_index or ix_back
+                self.d_base = self.d_base or base_back
+                self.q_fine[:0] = qf_rest
+                self.q_day[:0] = qd_rest
+                self._retry_at = time.monotonic() + max(30, min(self.step, 300))   # the pause first, then the prompt:
+                self.prompt = True                             # retried after it even if nothing else happens
+            return False
+
+        if not stats_disk_ok(self.dir):                        # the history shares the disk with users.json: it stops first
+            self.diag["disk_pauses"] += 1
+            return requeue(bool(ix), bool(snap), qf, qd)
+        if ix:
+            try:
+                save_critical(self._p("index.json"), ix + "\n", mode=0o600)
+            except Exception as e:
+                self._err("index.json", e)
+                return requeue(True, bool(snap), qf, qd)
+        for n, dr in enumerate(qd):
+            try:
+                self._append_day(dr)
+            except Exception as e:
+                self._err("day", e)
+                return requeue(False, bool(snap), qf, qd[n:])
+        if snap:
+            try:
+                self._write_base(snap)
+            except Exception as e:
+                self._err("base.bin", e)
+                return requeue(False, True, qf, [])
+        for n, fb in enumerate(qf):
+            try:
+                self._append_fine(fb)
+            except Exception as e:
+                self._err("fine", e)
+                return requeue(False, False, qf[n:], [])
+        if time.time() - self._diag_w >= 60 or qd:
+            with contextlib.suppress(Exception):
+                with self.lock:
+                    js = json.dumps(self.diag, separators=(",", ":"))
+                atomic_write(self._p("diag.json"), js + "\n", mode=0o600)
+                self._diag_w = time.time()
+        return True
+
+    def _write_base(self, snap):
+        recs, crx, ctx, newest, day, idx, step, nslots = snap
+        names, nb = {}, bytearray()
+
+        def nm(s):
+            k = names.get(s)
+            if k is None:
+                b = str(s).encode("utf-8")[:65535]
+                k = names[s] = len(names)
+                nb.extend(struct.pack("<H", len(b))); nb.extend(b)
+            return k
+        rb = bytearray(_LB_REC.size * len(recs))
+        o = 0
+        for (nid, ifn, pid), (rx, tx, ts, _m) in recs.items():
+            _LB_REC.pack_into(rb, o, nm(nid), nm(ifn), nm(pid), rx, tx, ts & 0xFFFFFFFF)
+            o += _LB_REC.size
+        cb = _larr.array("Q", bytes(16 * len(crx)))
+        cb[0::2] = crx; cb[1::2] = ctx
+        body = bytes(nb) + cb.tobytes() + bytes(rb)
+        head = _LB_HEAD.pack(_LB_MAGIC, _LB_VER, 0, int(time.time()), newest, day, max(idx, 0), step,
+                             len(crx), len(names), len(recs), _lzlib.crc32(body))
+        atomic_write(self._p("base.bin"), head + body, keep_prev=True)
+
+    def _load_base(self):
+        """(recs, C_rx, C_tx, newest, day, idx, step) from base.bin, else base.bin.prev, else None."""
+        for fn in ("base.bin", "base.bin.prev"):
+            try:
+                with open(self._p(fn), "rb") as f:
+                    data = f.read()
+                mg, ver, _fl, _w, newest, day, idx, bstep, ns, nn, nr, crc = _LB_HEAD.unpack_from(data, 0)
+                body = memoryview(data)[_LB_HEAD.size:]
+                if mg != _LB_MAGIC or ver != _LB_VER or _lzlib.crc32(body) != crc:
+                    raise ValueError("bad header or checksum")
+                o, names = 0, []
+                for _ in range(nn):
+                    (ln,) = struct.unpack_from("<H", body, o)
+                    names.append(bytes(body[o + 2:o + 2 + ln]).decode("utf-8")); o += 2 + ln
+                cb = _q_array(bytes(body[o:o + 16 * ns])); o += 16 * ns
+                if len(cb) != 2 * ns:
+                    raise ValueError("short C table")
+                recs = {}
+                for nidx, iidx, pidx, rx, tx, ts in _LB_REC.iter_unpack(bytes(body[o:o + _LB_REC.size * nr])):
+                    recs[(names[nidx], names[iidx], names[pidx])] = (rx, tx, ts, None)
+                if len(recs) != nr:
+                    raise ValueError("short record table")
+                if fn != "base.bin":
+                    self.diag["base_recovered"] = "base.bin unreadable — loaded base.bin.prev"
+                return recs, cb[0::2], cb[1::2], newest, day, idx, bstep
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                print("ledger: %s unreadable (%s)" % (fn, e), flush=True)
+                continue
+        return None
+
+    def _valid_end(self, path, magic):
+        """Where the valid part of an append-only file ends. A torn tail (a crash mid-append) is cut, once, so the next
+        append never lands after garbage the reader stops at; a file whose HEADER is not ours is moved aside rather than
+        appended to — the reader would reject everything after it."""
+        end = self._tails.get(path)
+        if end is None:
+            try:
+                sz = os.path.getsize(path)
+            except FileNotFoundError:
+                return 0
+            with open(path, "rb") as f:
+                h = f.read(4)
+            if h != magic:
+                os.replace(path, "%s.corrupt.%d" % (path, int(time.time())))
+                print("ledger: %s had no valid header — moved aside, a new file starts" % path, flush=True)
+                self._tails[path] = 0
+                return 0
+            end = self._scan_end(path)
+            if end < sz:
+                os.truncate(path, end)
+                print("ledger: %s ended in a torn record — cut back to %d bytes" % (path, end), flush=True)
+            self._tails[path] = end
+        return end
+
+    def _scan_end(self, path):
+        """The end of the last complete record: rows (day files) or buckets (fine files), lengths and checksums read."""
+        with open(path, "rb") as f:
+            data = f.read()
+        if data[:4] == _LF_MAGIC:
+            end = _LF_FHEAD.size if len(data) >= _LF_FHEAD.size else 0
+            for _i, _n, e, _c in self._fine_buckets(path, want=False, data=data):
+                end = e
+            return end
+        o = _LD_FHEAD.size if len(data) >= _LD_FHEAD.size else 0
+        while o and o + _LD_ROW.size <= len(data):
+            _d, _off, _end, ns, crc = _LD_ROW.unpack_from(data, o)
+            p1 = o + _LD_ROW.size + 16 * ns
+            if p1 > len(data) or _lzlib.crc32(data[o + _LD_ROW.size:p1]) != crc:
+                break
+            o = p1
+        return o
+
+    def _append(self, path, head, rec):
+        end = self._valid_end(path, head[:4])
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+        try:
+            data = (head if end == 0 else b"") + rec
+            os.lseek(fd, end, os.SEEK_SET)
+            os.write(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        self._tails[path] = end + len(data)
+
+    def _append_fine(self, fb):
+        d, i, step, off, mid, deltas = fb
+        slots = sorted(deltas)
+        cols = (_larr.array("I", slots), _larr.array("Q", (deltas[s][0] for s in slots)),
+                _larr.array("Q", (deltas[s][1] for s in slots)))
+        payload = b"".join(c.tobytes() for c in cols)
+        rec = _LF_BKT.pack(i, 0, len(slots), _lzlib.crc32(payload)) + payload
+        path = self._fine_path(d)
+        head = _LF_FHEAD.pack(_LF_MAGIC, _LF_VER, 0, step, off, mid)
+        hd = self._fine_head(path) if os.path.exists(path) else None
+        if hd and hd[0] != step:                               # the resolution changed mid-day: this day's file keeps its own
+            self.diag["fine_dropped"] = self.diag.get("fine_dropped", 0) + 1   # step; the bucket is the graph, not the truth
+            return
+        self._append(path, head, rec)
+
+    def _append_day(self, dr):
+        d, off, end, crx, ctx = dr
+        if self._row_at_exact(d) is not None:                  # already closed (a restart re-closing a day): first one wins
+            return
+        cb = _larr.array("Q", bytes(16 * len(crx)))
+        cb[0::2] = crx; cb[1::2] = ctx
+        payload = cb.tobytes()
+        rec = _LD_ROW.pack(d, off, end, len(crx), _lzlib.crc32(payload)) + payload
+        self._append(self._day_path(d), _LD_FHEAD.pack(_LD_MAGIC, _LD_VER, 0), rec)
+        self._rowidx.pop(self._day_path(d), None)
+
+    # ── readers ──────────────────────────────────────────────────────────────────────────────────────────────────
+    def _day_rows(self, path):
+        """{date: (offset, nslots)} for one month file — cached until the file changes."""
+        try:
+            st = os.stat(path)
+        except OSError:
+            return {}
+        c = self._rowidx.get(path)
+        if c and c[0] == st.st_size and c[1] == st.st_mtime_ns:
+            return c[2]
+        rows = {}
+        with open(path, "rb") as f:
+            data = f.read()
+        if data[:4] == _LD_MAGIC:
+            o = _LD_FHEAD.size
+            while o + _LD_ROW.size <= len(data):
+                d, _off, _end, ns, crc = _LD_ROW.unpack_from(data, o)
+                p1 = o + _LD_ROW.size + 16 * ns
+                if p1 > len(data):
+                    break
+                if _lzlib.crc32(data[o + _LD_ROW.size:p1]) == crc:   # a damaged row is skipped HERE, once, so a total and a
+                    rows.setdefault(d, (o, ns))                    # series never read two versions of one day; a date
+                o = p1                                             # closed twice: the first row stands
+        self._rowidx[path] = (st.st_size, st.st_mtime_ns, rows)
+        return rows
+
+    def _read_row(self, path, o, ns):
+        with open(path, "rb") as f:
+            f.seek(o)
+            rh = f.read(_LD_ROW.size)
+            payload = f.read(16 * ns)
+        d, _off, _end, n2, crc = _LD_ROW.unpack(rh)
+        if n2 != ns or len(payload) != 16 * ns or _lzlib.crc32(payload) != crc:
+            return None
+        cb = _q_array(payload)
+        return d, cb[0::2], cb[1::2]
+
+    def _read_row_slots(self, path, o, ns, want):
+        """(Σrx, Σtx, end) of the `want` slots of one day row — positioned reads of 16 B each (a slot past the row's width
+        had C = 0), no checksum over the whole table. None when the row header does not match."""
+        with open(path, "rb") as f:
+            f.seek(o)
+            rh = f.read(_LD_ROW.size)
+            if len(rh) < _LD_ROW.size:
+                return None
+            _d, _off, end, n2, _crc = _LD_ROW.unpack(rh)
+            if n2 != ns:
+                return None
+            rx = tx = 0
+            for s in want:
+                if s < ns:
+                    f.seek(o + _LD_ROW.size + 16 * s)
+                    b = f.read(16)
+                    if len(b) == 16:
+                        a, c = struct.unpack("<QQ", b)
+                        rx += a; tx += c
+        return rx, tx, end
+
+    def _row_end(self, d):
+        path = self._day_path(d)
+        r = self._day_rows(path).get(d)                        # the row on disk first — the one _row_at_or_before reads
+        if r is None:
+            return (self._pending_rows().get(d) or (0, 0, 0))[2]
+        with open(path, "rb") as f:
+            f.seek(r[0])
+            rh = f.read(_LD_ROW.size)
+        return _LD_ROW.unpack(rh)[2] if len(rh) == _LD_ROW.size else 0
+
+    def _row_at_exact(self, d):
+        path = self._day_path(d)
+        r = self._day_rows(path).get(d)
+        return None if r is None else self._read_row(path, *r)
+
+    def _pending_rows(self):
+        """Closed days whose row is not on disk yet (a failed or paused write): {date: (C_rx, C_tx, end)}. Readers take them
+        as if written — a day's row held back must not hand its traffic to the next day."""
+        with self.lock:
+            return {dr[0]: (dr[3], dr[4], dr[2]) for dr in self.q_day}
+
+    def _row_at_or_before(self, d):
+        """(date, C_rx, C_tx) of the newest closed day ≤ d, or None — C before the ledger's first closed day is 0."""
+        pend = self._pending_rows()
+        pd = max((x for x in pend if x <= d), default=0)
+        got = self._row_on_disk(d)
+        if pd and (got is None or got[0] < pd):
+            return pd, pend[pd][0], pend[pd][1]
+        return got
+
+    def _row_on_disk(self, d):
+        try:
+            files = sorted((f for f in os.listdir(self.dir) if f.startswith("day-") and f.endswith(".bin")), reverse=True)
+        except OSError:
+            return None
+        for fn in files:
+            path = self._p(fn)
+            rows = self._day_rows(path)
+            for rd in sorted(rows, reverse=True):
+                if rd <= d:
+                    got = self._read_row(path, *rows[rd])
+                    if got is not None:
+                        return got
+        return None
+
+    def _newest_row(self):
+        return self._row_at_or_before(99991231)
+
+    def _fine_buckets(self, path, want=True, data=None):
+        """Yield (idx, n, end_offset, (slots, rx, tx) or None) per valid bucket; stops at the first torn one."""
+        if data is None:
+            with open(path, "rb") as f:
+                data = f.read()
+        if len(data) < _LF_FHEAD.size or data[:4] != _LF_MAGIC:
+            return
+        o = _LF_FHEAD.size
+        while o + _LF_BKT.size <= len(data):
+            i, _pad, n, crc = _LF_BKT.unpack_from(data, o)
+            p0 = o + _LF_BKT.size
+            p1 = p0 + 20 * n
+            if p1 > len(data) or _lzlib.crc32(data[p0:p1]) != crc:
+                return
+            cols = None
+            if want:
+                cols = (_i_array(data[p0:p0 + 4 * n]), _q_array(data[p0 + 4 * n:p0 + 12 * n]), _q_array(data[p0 + 12 * n:p1]))
+            yield i, n, p1, cols
+            o = p1
+
+    def _fine_head(self, path):
+        with open(path, "rb") as f:
+            h = f.read(_LF_FHEAD.size)
+        if len(h) < _LF_FHEAD.size:
+            return None
+        mg, _v, _p, step, off, mid = _LF_FHEAD.unpack(h)
+        return (step, off, mid) if mg == _LF_MAGIC else None
+
+    # ── queries ──────────────────────────────────────────────────────────────────────────────────────────────────
+    def _window(self, qs, now):
+        """(from, to, rangeKey) as local dates from ?range=today|7d|30d|month|all|custom&from=&to= (YYYY-MM-DD)."""
+        g = lambda k: ((qs.get(k) or [""])[0] or "").strip()
+        today = _ld_day(now)[0]
+        rng = g("range") or "month"
+        if rng == "custom" or (g("from") and g("to")):
+            try:
+                f = int(g("from").replace("-", "")); t = int(g("to").replace("-", ""))
+                _ld_date(f); _ld_date(t)
+            except (ValueError, TypeError):
+                raise ValueError(perr("from and to must be dates, YYYY-MM-DD"))
+            if f > t:
+                raise ValueError(perr("from must not be after to"))
+            return f, min(t, today), "custom:%d-%d" % (f, t)
+        if rng == "today":
+            return today, today, rng
+        if rng in ("7d", "30d"):
+            return _ld_of(_ld_date(today) - _ldt.timedelta(days=int(rng[:-1]) - 1)), today, rng
+        if rng == "month":
+            return today // 100 * 100 + 1, today, rng
+        if rng == "all":
+            return 19700101, today, rng
+        raise ValueError(perr("range must be today, 7d, 30d, month, all or custom"))
+
+    def _cum(self, d, live):
+        if d >= live[0]:
+            return live[1], live[2]
+        row = self._row_at_or_before(d)
+        return (row[1], row[2]) if row else (_larr.array("Q"), _larr.array("Q"))
+
+    def _spans(self):
+        """A copy of the observed spans, taken under the lock — a first sync adds a node while a query iterates."""
+        with self.lock:
+            return {k: [list(x) for x in v] for k, v in (self.diag.get("spans") or {}).items()}
+
+    def _gaps(self, since, until, spans, nodes=None):
+        out = {}
+        for nid, sp in spans.items():
+            if nodes is not None and nid not in nodes:
+                continue
+            g, cur = [], since
+            for a, b in sp:
+                if b < since or a > until:
+                    continue
+                if a - cur > LEDGER_GAP_S:
+                    g.append([cur, a])
+                cur = max(cur, b)
+            if until - cur > LEDGER_GAP_S:
+                g.append([cur, until])
+            if g:
+                out[nid] = g
+        return out
+
+    def totals(self, qs, now=None):
+        now = int(time.time() if now is None else now)
+        f, t, rk = self._window(qs, now)
+        by = (qs.get("by") or ["peer"])[0]
+        if by not in ("peer", "user"):
+            raise ValueError(perr("by must be peer or user"))
+        with self.lock:
+            slots = [(s["pid"], s.get("owner"), s.get("o") or [0, 0], s.get("since") or 0, s.get("until")) for s in self.slots]
+            live = (self.day, self.C_rx[:], self.C_tx[:])
+        to_rx, to_tx = self._cum(t, live)
+        fr_rx, fr_tx = self._cum(_ld_prev(f), live) if f > 19700101 else (_larr.array("Q"), _larr.array("Q"))
+        rows = {}
+        for n, (pid, owner, o, since, until) in enumerate(slots):
+            k = pid if by == "peer" else (owner or "")
+            a = to_rx[n] if n < len(to_rx) else 0; b = to_tx[n] if n < len(to_tx) else 0
+            a0 = fr_rx[n] if n < len(fr_rx) else 0; b0 = fr_tx[n] if n < len(fr_tx) else 0
+            r = rows.get(k)
+            if r is None:
+                r = rows[k] = {"id": k, "rx": 0, "tx": 0, "lifetime_rx": 0, "lifetime_tx": 0, "opening_rx": 0,
+                               "opening_tx": 0, "opening_at": 0, "slots": 0, "closed": 0}
+            r["rx"] += max(0, a - a0); r["tx"] += max(0, b - b0)
+            r["lifetime_rx"] += live[1][n] + o[0]; r["lifetime_tx"] += live[2][n] + o[1]
+            if o[0] or o[1]:
+                r["opening_rx"] += o[0]; r["opening_tx"] += o[1]
+                r["opening_at"] = min(r["opening_at"] or since, since)
+            r["slots"] += 1
+            r["closed"] += 1 if until else 0
+        since = _ld_midnight(f)
+        until = min(now, _ld_midnight(_ld_next(t)))
+        return {"rangeKey": rk, "from": f, "to": t, "by": by, "step": 86400, "since": since, "until": until,
+                "utc_offset": time.localtime().tm_gmtoff, "gaps": self._gaps(since, until, self._spans()), "rows": list(rows.values())}
+
+    def series(self, qs, now=None):
+        now = int(time.time() if now is None else now)
+        f, t, rk = self._window(qs, now)
+        by = (qs.get("by") or ["peer"])[0]
+        ident = (qs.get("id") or [""])[0]
+        if by not in ("peer", "user") or not ident:
+            raise ValueError(perr("id is required, by must be peer or user"))
+        with self.lock:
+            want = sorted(n for n, s in enumerate(self.slots)
+                          if (s["pid"] if by == "peer" else (s.get("owner") or "")) == ident)
+            first = min((s.get("since") or 0 for s in self.slots), default=0)
+            live = (self.day, self.C_rx[:], self.C_tx[:])
+            cur = (self.day, self.idx, self.step, self.fmid, {s: list(self.fine[s]) for s in want if s in self.fine})
+            nodes = {k[0] for k in self.recs if (k[2] == ident if by == "peer" else self.owners.get(k[2]) == ident)}
+        if first:                                              # nothing exists before the ledger's first slot: never walk from 1970
+            f = max(f, _ld_day(first)[0])
+        fine_ok = (_ld_date(t) - _ld_date(f)).days < LEDGER_SERIES_FINE_DAYS   # a longer window is read from the day rows:
+        #                                                     one peer's fine points cost a read of each day's whole file
+        sw = lambda arr: sum(arr[s] for s in want if s < len(arr))
+        cums = {}                                              # the want slots' C at each closed day, and the day's end —
+        base_row = self._row_at_or_before(_ld_prev(f)) if f <= t else None   # month files indexed once, and of each row only
+        prev_c = (sw(base_row[1]), sw(base_row[2])) if base_row else (0, 0)  # the wanted slots read (16 B each): the cost is
+        prev_end = self._row_end(base_row[0]) if base_row else 0             # days × peers asked about, not days × fleet
+        m = f // 100
+        while m <= t // 100:
+            path = self._day_path(m * 100 + 1)
+            for rd, (o, ns) in sorted(self._day_rows(path).items()):
+                if f <= rd <= t:
+                    got = self._read_row_slots(path, o, ns, want)
+                    if got:
+                        cums[rd] = got
+            m = m + 1 if m % 100 < 12 else (m // 100 + 1) * 100 + 1
+        for rd, (crx, ctx, end) in self._pending_rows().items():
+            if f <= rd <= t and rd not in cums:
+                cums[rd] = (sw(crx), sw(ctx), end)
+        with self.lock:                                        # closed buckets still waiting for their write: part of the graph
+            qf = [(q[0], q[1], q[2], q[4], {s: q[5][s] for s in want if s in q[5]}) for q in self.q_fine if f <= q[0] <= t]
+        pts = []
+        d = f
+        while d <= t:
+            fp = self._fine_path(d)
+            head = self._fine_head(fp) if fine_ok and os.path.exists(fp) else None
+            drawn = [0, 0]
+            if fine_ok and (head or any(q[0] == d for q in qf) or (d == cur[0] and cur[4] and cur[2] < 86400)):
+                step, mid = (head[0], head[2]) if head else (cur[2], cur[3]) if d == cur[0] else next((q[2], q[3]) for q in qf if q[0] == d)
+                acc = {}
+                if head:
+                    for i, n, _e, (sl, rx, tx) in self._fine_buckets(fp):
+                        for s in want:
+                            j = _lbis.bisect_left(sl, s)
+                            if j < n and sl[j] == s:
+                                a = acc.setdefault(i, [0, 0]); a[0] += rx[j]; a[1] += tx[j]
+                for qd, qi, qs, qm, qv in qf:                  # a bucket's halves (a restart inside it), a pending one and
+                    if qd == d and qs == step:                 # the open one all land on their own idx, summed
+                        a = acc.setdefault(qi, [0, 0]); a[0] += sum(v[0] for v in qv.values()); a[1] += sum(v[1] for v in qv.values())
+                if d == cur[0] and cur[4] and cur[2] == step:
+                    a = acc.setdefault(cur[1], [0, 0]); a[0] += sum(v[0] for v in cur[4].values()); a[1] += sum(v[1] for v in cur[4].values())
+                pts.extend([mid + i * step, step, a[0], a[1]] for i, a in sorted(acc.items()) if a[0] or a[1])
+                drawn = [sum(a[0] for a in acc.values()), sum(a[1] for a in acc.values())]
+            elif d in cums:                                    # no fine file (1-day resolution, or none written): the day's delta,
+                c = cums[d]                                    # drawn from where that day began — its own recorded frame
+                start = prev_end or (c[2] - 86400)
+                if c[0] > prev_c[0] or c[1] > prev_c[1]:
+                    pts.append([start, max(1, c[2] - start), max(0, c[0] - prev_c[0]), max(0, c[1] - prev_c[1])])
+            if d in cums:
+                prev_c, prev_end = (cums[d][0], cums[d][1]), cums[d][2]
+            if d == cur[0] and (not fine_ok or cur[2] >= 86400):   # today by day (a long window, or no fine tier): live C
+                lc = (sw(live[1]) - drawn[0], sw(live[2]) - drawn[1])   # against the last closed day — less what today's fine
+                if lc[0] > prev_c[0] or lc[1] > prev_c[1]:              # points already drew (a resolution changed today)
+                    pts.append([cur[3], 86400, max(0, lc[0] - prev_c[0]), max(0, lc[1] - prev_c[1])])
+            d = _ld_next(d)
+        since = _ld_midnight(f)
+        until = min(now, _ld_midnight(_ld_next(t)))
+        return {"rangeKey": rk, "id": ident, "by": by, "from": f, "to": t, "since": since, "until": until,
+                "utc_offset": time.localtime().tm_gmtoff, "gaps": self._gaps(since, until, self._spans(), nodes), "points": pts}
+
+    def dump(self):
+        """GET /api/traffic-ledger — the debug view: per pid its slots, lifetime (C + opening), resets, clamps."""
+        with self.lock:
+            pids = {}
+            for n, s in enumerate(self.slots):
+                e = pids.setdefault(s["pid"], {"slots": [], "lifetime": [0, 0], "opening": [0, 0], "owner": None})
+                o = s.get("o") or [0, 0]
+                e["slots"].append({"slot": n, "owner": s.get("owner"), "since": s.get("since"), "until": s.get("until"),
+                                   "c": [self.C_rx[n], self.C_tx[n]]})
+                e["lifetime"][0] += self.C_rx[n] + o[0]; e["lifetime"][1] += self.C_tx[n] + o[1]
+                e["opening"][0] += o[0]; e["opening"][1] += o[1]
+                if not s.get("until"):
+                    e["owner"] = s.get("owner")
+            byp = {}
+            for k in self.recs:
+                byp.setdefault(k[2], []).append("%s|%s" % (k[0], k[1]))
+            for pid, e in pids.items():
+                dp = self.diag["pids"].get(pid) or {}
+                e.update({"resets": dp.get("resets", 0), "clamps": dp.get("clamps", 0),
+                          "not_imported": dp.get("not_imported", [0, 0]), "records": sorted(byp.get(pid, []))})
+            return {"on": self.on, "why_off": self.why_off, "dir": self.dir, "step": self.step, "day": self.day,
+                    "idx": self.idx, "newest": self.newest, "observed": self.observed, "slots": len(self.slots),
+                    "open": len(self.open), "records": len(self.recs), "pending": {"fine": len(self.q_fine), "day": len(self.q_day)},
+                    "map": len(self.map), "diag": {k: v for k, v in self.diag.items() if k not in ("pids", "spans")},
+                    "spans": self.diag.get("spans"), "pids": pids}
+
+    def api(self, path, qs):
+        if not self.on:
+            return 503, {"ok": False, "code": "ledger_off", **perr("The traffic ledger is not running: {v1}", v1=self.why_off)}
+        try:
+            if path == "/api/traffic-totals":
+                return 200, {"ok": True, "data": self.totals(qs)}
+            if path == "/api/traffic-series":
+                return 200, {"ok": True, "data": self.series(qs)}
+            return 200, {"ok": True, "data": self.dump()}
+        except ValueError as e:                                # a perr() sentence, so the browser can translate it
+            return 400, {"ok": False, "code": "bad_request", **(e.args[0] if e.args and isinstance(e.args[0], dict) else {"error": str(e)})}
+
+
+LEDGER = TrafficLedger()
+_LEDGER_GZ = ("/api/traffic-totals", "/api/traffic-series")   # replies do_GET sends compressed
+
+
+
 # ───────────────────────── API ─────────────────────────
 
 def api(method, path, qs, body, deps):
@@ -20566,6 +21620,11 @@ def api(method, path, qs, body, deps):
 
     if method == "GET" and path == "/api/time-zones":   # Settings → Display → "Days are counted in" (tz_zones)
         return 200, {"ok": True, "data": tz_zones((qs.get("browser") or [""])[0])}
+
+    # The traffic ledger (TrafficLedger): totals per peer or user over local days, one peer's or user's series, and the
+    # debug dump. Totals and series are sent gzipped (do_GET, _LEDGER_GZ) — a row per peer is ~150 B at any fleet size.
+    if method == "GET" and path in ("/api/traffic-totals", "/api/traffic-series", "/api/traffic-ledger"):
+        return LEDGER.api(path, qs)
 
     if method == "GET" and path == "/api/peer-history":
         # Per-(node,peer) throughput over a range — drives the ranged Top-talkers. Reads each peer-<nid>-<hash>.rrd,
@@ -25742,6 +26801,13 @@ class Handler(BaseHTTPRequestHandler):
                     iM = [0] * HRRD_NM; iM[3] = int(w.get("rx_speed", 0) or 0); iM[4] = int(w.get("tx_speed", 0) or 0)
                     with contextlib.suppress(Exception):
                         hrrd_update(iface_rrd_path(stats_dir, nid, wifn), now_i, iM)
+        # THE TRAFFIC LEDGER — LAST, in its OWN guard (TRAFFIC-HISTORY-PLAN §5): every ring above is already written, so a
+        # ledger bug never costs this sync its history; and outside the stats-disk check — the ledger lives in the state
+        # dir, only touches memory here, and gates its own writes. Skipping a snapshot is lossless: counters are cumulative.
+        try:
+            LEDGER.ingest(nid, snap)
+        except Exception as e:
+            LEDGER.ingest_failed(e)
 
     def _node_sync_apply(self, nid, node, nodes, snap, _serr):
         """The body of a node sync, run under _api_lock by _node_sync (on its fresh re-read). Returns (code, reply)."""
@@ -27657,6 +28723,8 @@ class Handler(BaseHTTPRequestHandler):
                 code, obj = api("GET", path, parse_qs(u.query), {}, self.deps)
             except Exception as e:
                 code, obj = 500, {"ok": False, "error": str(e), "code": "internal"}
+            if code == 200 and path in _LEDGER_GZ:   # a row per peer: compressed exactly the way /api/state is
+                return self._send_state_bytes({"bytes": json.dumps(obj).encode(), "gz": None})
             return self._send(code, obj)
         self.send_error(404)
 
@@ -28104,6 +29172,30 @@ def _ensure_console_listener(deps):
     _CONSOLE["lid"] = lid          # BIND FIRST, FLIP SECOND — this assignment IS the flip (see _door_ok)
     print("operator console on %s://%s:%d — the panel's own address now serves node routes only"
           % ("https" if cert else "http", reach_host, port), flush=True)
+
+
+_SIGTERM_SEEN = []
+
+
+def _sigterm_exit(_sig, _frm):
+    """SIGTERM → write the traffic ledger's open state (TrafficLedger.shutdown), then exit 0. As a docker container's PID
+    1 the panel used to IGNORE SIGTERM (a PID 1 has no default action) and was killed 10 s later — it now stops at once.
+    ⚠️ os._exit, not SystemExit: interpreter finalization with daemon threads still printing (syncs, requests) can abort
+    in the stdout lock — SIGABRT, a core, a failed unit. The listeners and the writer are daemons holding nothing to
+    close, and nothing registers atexit. ⚠️ ONCE: a second SIGTERM during a slow flush re-enters this handler on the
+    same thread, and the ledger's locks are not reentrant — it exits at once instead of deadlocking."""
+    if _SIGTERM_SEEN:
+        os._exit(0)
+    _SIGTERM_SEEN.append(1)
+    # Every roster/node mutation and every sync's apply holds _api_lock: taking it (8 s at most) lets one in flight finish
+    # and keeps the next from starting, so a stop never cuts a multi-file change in half — docker's PID 1 used to get that
+    # by accident (SIGTERM ignored, SIGKILL 10 s later), bare metal never did.
+    _api_lock.acquire(timeout=8)
+    with contextlib.suppress(Exception):
+        LEDGER.shutdown()
+    with contextlib.suppress(Exception):
+        sys.stdout.flush(); sys.stderr.flush()
+    os._exit(0)
 
 
 def _sighup_reload(_sig, _frm):
@@ -29276,6 +30368,12 @@ def main():
         _TZ_STATE["missing"] = _tz0
         print("swg-panel: time zone %s is not on this server — counting days in the server's own zone until "
               "another is picked in Settings → Display" % _tz0, flush=True)
+    # The traffic ledger — after the zone (its days are local days) and before the listener takes the first sync. A
+    # SIGTERM (systemctl stop/restart, update.sh, docker stop) writes its open state first: without it every graceful
+    # restart moved the last partial bucket into the next one — and, near midnight, the day's tail into the next day.
+    LEDGER.start(Handler.deps)
+    with contextlib.suppress(ValueError, OSError, AttributeError):
+        signal.signal(signal.SIGTERM, _sigterm_exit)
     _release_cache_load(Handler.deps)   # seed download-asset caches from disk BEFORE any serve.json write, so a restart never regresses the sub's download bubbles to "page only"
     Handler.deps["turn_ips"] = load_json(_turn_ips_path(Handler.deps), {}) or {}   # unique turn-proxy source-IP history (survives restart)
     write_sub_serve(Handler.deps)   # seed/refresh subs/serve.json so swg-sub has current enable/serve config from boot (even when subscriptions were never touched)

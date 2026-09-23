@@ -1640,6 +1640,12 @@ export const STR = {
   "This server no longer has {v1}, so days are counted in its own zone. Pick another zone and save.":
     "На этом сервере больше нет пояса {v1}, поэтому сутки считаются по его собственному поясу. Выберите другой пояс и сохраните.",
   "This server has no time zone called {v1}. Pick one from the list.": "На этом сервере нет часового пояса {v1}. Выберите пояс из списка.",
+  "The traffic ledger is not running: {v1}": "Учёт трафика не работает: {v1}",
+  "from and to must be dates, YYYY-MM-DD": "from и to должны быть датами в формате ГГГГ-ММ-ДД",
+  "from must not be after to": "from не может быть позже to",
+  "range must be today, 7d, 30d, month, all or custom": "range должен быть today, 7d, 30d, month, all или custom",
+  "by must be peer or user": "by должен быть peer или user",
+  "id is required, by must be peer or user": "нужен id, а by должен быть peer или user",
   "Nodes — what the node downloads / uploads": "Ноды — что нода принимает / отдаёт",
   "Peers — what the client downloads / uploads": "Пиры — что принимает / отдаёт клиент",
   "Which way ↓/↑ are labelled across the panel. Same numbers, swapped arrows.": "Как по всей панели подписаны ↓ и ↑. Числа те же, стрелки меняются местами.",
