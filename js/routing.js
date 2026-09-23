@@ -2805,7 +2805,13 @@ export function EgressPicker({ node, value, onChange, noRules }) {
     ${value.mode === "smart"
       ? (noRules ? null : html`<${RoutingRules} node=${node} rows=${value.rows || []} catchAll=${value.catchAll} onChange=${(rows, catchAll) => onChange({ ...value, rows, catchAll })}/>`)
       : (value.mode !== "auto" && value.mode !== "exit") ? html`<div class="field"><label>${T("Outbound (egress) IP")}</label>
-      <${NodeIpPick} ips=${ipOpts} value=${value.ip || ""} onChange=${ip => onChange({ ...value, ip })} auto=${value.mode === "forward" ? T("Auto (target node default)") : T("val|Auto")}/>
+      ${/* ⚠️ KEYED, for the reason the rule window's copy is (§7.2): this control holds "am I in Custom mode"
+            in its own state, and the list under it is rebuilt when the mode or the target node changes. One
+            instance reused across that change kept the PREVIOUS target's Custom mode — pick a node, type an
+            address it does not report, switch to another node, and the field offered an empty Custom box
+            instead of that node's Auto. Nothing wrong is stored (the value is cleared with the switch); it
+            is the control misstating which state it is in. A key makes it a different control. */""}
+      <${NodeIpPick} key=${value.mode + "|" + (value.node || value.nic || "")} ips=${ipOpts} value=${value.ip || ""} onChange=${ip => onChange({ ...value, ip })} auto=${value.mode === "forward" ? T("Auto (target node default)") : T("val|Auto")}/>
       <div class="hint">${value.mode === "forward" ? T("Source IP on the target node that clients egress from.") : T("Source IP clients egress from.")}</div></div>` : null}
   <//>`;
 }

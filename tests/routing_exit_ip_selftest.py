@@ -56,8 +56,8 @@ PLANTS = {
         if _pd and not X and not W:''',
           '''        _pd = str((nodes.get(P) or {}).get("default_exit") or "").strip()
         if _pd:'''),
-    "c": ('''        if (k not in nodes or k == nid) and k not in stored:''',
-          '''        if k not in nodes or k == nid:'''),
+    "c": ('''        if k not in nodes and k not in stored:''',
+          '''        if k not in nodes:'''),
     "d": ('''            _pin = ov.get("routing_exit_ips") or {}''',
           '''            _pin = {}'''),
     "e": ('''    if "routing_exit_ips" not in body:
@@ -245,12 +245,20 @@ check("…and an interface with none is served an empty map, not a missing key",
 print("\n[the create path is lenient, the edit path is not]")
 _ov = {}
 _cerr = P._apply_exit_ips(_ov, {"routing_exit_ips": {"n9": X1}}, fleet(), "n1", lenient=True)
-check("creating an interface drops an entry for a node that is not there rather than refusing the creation",
-      _cerr is None and "routing_exit_ips" not in _ov, (_cerr, _ov))
+check("creating an interface KEEPS an address for a node that is not there rather than refusing the creation",
+      _cerr is None and _ov.get("routing_exit_ips") == {"n9": X1}, (_cerr, _ov))
+check("…which is also where the edit path leaves such a key, so it is not a second behaviour to remember",
+      P._apply_exit_ips({"routing_exit_ips": {"n9": X1}}, {"routing_exit_ips": {"n9": X1}}, fleet(), "n1") is None)
+check("…and dropping it is what is NOT done — a typed value vanishing on a 200 is the silent loss §5.4 exists for",
+      "routing_exit_ips" in _ov)
 _ov2 = {}
 _cerr2 = P._apply_exit_ips(_ov2, {"routing_exit_ips": {"n9": "nope"}}, fleet(), "n1", lenient=True)
 check("…but a malformed address is still refused there — that is a bad request, not a stale reference",
       isinstance(_cerr2, str) and "IPv4" in _cerr2, _cerr2)
+_ov3 = {}
+_cerr3 = P._apply_exit_ips(_ov3, {"routing_exit_ips": {"n1": X1}}, fleet(), "n1", lenient=True)
+check("…and so is an address keyed to THIS node, in both paths — no rule can ever exit via its own node",
+      isinstance(_cerr3, str) and "another node" in _cerr3, _cerr3)
 
 # ── 4. what the shape removed ───────────────────────────────────────────────────────────────────────────
 print("\n[what the shape removed]")

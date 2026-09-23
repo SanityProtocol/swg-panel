@@ -156,8 +156,17 @@ def _fn(src, name):
 
 _ladder = _fn(psrc, "_apply_egress_mode") + _fn(psrc, "_apply_exit_ips")
 _written = set(re.findall(r'rec\["([a-z_]+)"\]\s*=', _ladder)) | set(re.findall(r'rec\.pop\("([a-z_]+)"', _ladder))
-check("the egress ladder's fields were found (an empty set would pass every check below)", len(_written) >= 5, sorted(_written))
-for k in sorted(_written):
+# ⚠️ THE TYPED LIST IS A FLOOR, AND THE DERIVATION ONLY ADDS TO IT. Replacing the floor WITH the derivation
+# is what the first version of this did, and it silently dropped `egress_ip` — which the ladder does not
+# write (the per-handler code sets it), so deriving from the ladder alone left the one field the SNAT
+# depends on unguarded, and removing it from `wdtt_cfg` kept the gate green. Verified by perturbation both
+# ways. The floor can only grow: a field here is checked whoever writes it, and a NEW ladder field is picked
+# up without anyone remembering to type it.
+_FLOOR = {"egress_mode", "egress_node", "egress_ip", "wan_iface", "routing", "exit_id"}
+check("the egress ladder's fields were found (an empty set would leave only the floor)", len(_written) >= 5, sorted(_written))
+check("…and the derivation still covers the ladder's own half of the floor (a rename would show up here)",
+      _FLOOR - {"egress_ip"} <= _written, sorted((_FLOOR - {"egress_ip"}) - _written))
+for k in sorted(_FLOOR | _written):
     check("the interface meta publishes %s" % k, ('ifc["%s"]' % k) in psrc, k)
     check("both self-contained kinds publish %s" % k, ('"%s"' % k) in wd and ('"%s"' % k) in cs, k)
 

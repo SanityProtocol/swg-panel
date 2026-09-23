@@ -14822,15 +14822,24 @@ def _clean_exit_ips(m, nodes, nid, stored, lenient=False):
         # deleting a node an interface pins an address for — and the browser sends the map back on every
         # save, so refusing a stored one would make that interface unsavable, including by the edit that
         # removes it.
-        if (k not in nodes or k == nid) and k not in stored:
-            # ⚠️ `lenient` IS THE CREATE PATH, which is deliberately more forgiving than the edit (a bad
-            # `egress_node` is ignored there and 400s here). There is nothing stored to tolerate on a create,
-            # so an entry for a node deleted while the sheet was open would fail the whole interface
-            # creation over a setting whose rules the operator has already moved elsewhere. Dropped instead:
-            # an address for a node that is not there routes nothing either way.
-            if lenient:
-                continue
+        if k == nid:
+            # An address keyed to THIS node can never be used: a rule may not exit via its own node
+            # (`_validate_routing` refuses `en == nid`), so this is a malformed request in both paths —
+            # the same class as a value that is not an address, and not a reference that went stale.
             return None, "the exit address must name another node in this panel"
+        if k not in nodes and k not in stored:
+            # ⚠️ `lenient` IS THE CREATE PATH, which is deliberately more forgiving than the edit (a bad
+            # `egress_node` is ignored there and 400s here). There is nothing STORED to tolerate on a create,
+            # so an entry for a node deleted while the sheet was open would otherwise fail the whole
+            # interface creation over a setting whose rules the operator has already moved elsewhere.
+            #
+            # KEPT, not dropped. Dropping it would be a value the operator typed disappearing on a 200 with
+            # nothing in the `dropped` report the same handler returns (§5.4) — a silent loss, which is the
+            # thing that report exists to prevent. Keeping it lands exactly where the EDIT path already
+            # leaves such a key: stored, inert (no rule can name a node that is not there, so no plan entry
+            # ever reads it), and tolerated on every later save.
+            if not lenient:
+                return None, "the exit address must name another node in this panel"
         out[k] = v
     return out, None
 

@@ -108,6 +108,19 @@ check("`destOpts` is told which value the control is holding",
         sites[0] && sites[0][1]);
 }
 
+/* ⚠️ EVERY `NodeIpPick` IN THIS FILE IS KEYED. It holds "am I in Custom mode" in its own state and only
+   leaves it when a listed option is picked, while the list under it is rebuilt from a selection that can
+   change — so one instance reused across that change keeps the previous selection's Custom mode and offers
+   an empty box where the new one's "Auto" belongs. Both uses had it (the rule window's, found in review of
+   the exit-IP work; the egress picker's, found in review of that fix), so the rule is the file's, not one
+   call site's. */
+{
+  const picks = (fs.readFileSync(SRC, "utf8").match(/<\$\{NodeIpPick\}[^/]*?\/>/g) || []);
+  check("every address picker in routing.js is keyed to the selection its list comes from",
+        picks.length >= 2 && picks.every(m => /\skey=\$\{/.test(m)),
+        picks.map(m => m.replace(/\s+/g, " ").slice(0, 90)));
+}
+
 check("…and both controls tell it — the row and the catch-all",
       /options=\$\{destOpts\(false, destVal\(row\)(, [^)}]+)?\)\}/.test(js) && /options=\$\{destOpts\(true, catchVal(, [^)}]+)?\)\}/.test(js));
 check("…a gone destination is appended as a REFUSING row, not a selectable one",

@@ -1,5 +1,10 @@
 /* Self-test: the exit-IP map survives the browser's own round trip, so a save cannot silently clear it.
  *
+ * ⚠️ EVERY CHECK GOES THROUGH `init`, never `egressInit` directly. The first version of this file perturbed
+ * `init` and then called `egressInit` in the section that models the REAL trigger — a WDTT restart re-posting
+ * `egressBody(egressInit(cfg))` — so that block stayed green with the defect planted and was a restatement of
+ * the block above it rather than a gate. Found in review of this file.
+ *
  * THE DEFECT THIS EXISTS FOR, found in code review after it had shipped and been live-qualified: the panel
  * stored `routing_exit_ips` on the interface record and NO record builder published it back. The browser
  * then read `undefined`, `egressInit` produced an empty map, and `egressBody` sent that empty map on the
@@ -34,21 +39,23 @@ check("…as its own key, never inside a rule", !JSON.stringify(body.routing || 
 console.log("\n[a save that has nothing to do with routing must not clear it]");
 // The WDTT/csqtt restart, rename and re-port paths, and the interface sheet's MTU-only save, all post
 // `egressBody(egressInit(<the stored record>))`. Whatever that produces IS the save.
-const resent = egressBody(egressInit({ egress_mode: "smart", routing: [], routing_exit_ips: MAP }));
+const resent = egressBody(init({ egress_mode: "smart", routing: [], routing_exit_ips: MAP }));
 check("restarting or renaming an instance re-sends the addresses it already had",
       JSON.stringify(resent.routing_exit_ips) === JSON.stringify(MAP), resent.routing_exit_ips);
 check("…which is NOT the empty map the server reads as 'clear them'",
       Object.keys(resent.routing_exit_ips || {}).length > 0);
 
 console.log("\n[an interface that has none]");
-const none = egressBody(egressInit({ egress_mode: "smart", routing: [] }));
+const none = egressBody(init({ egress_mode: "smart", routing: [] }));
 check("sends an empty map rather than nothing at all — the operator clearing the last address is a real edit",
       none.routing_exit_ips && Object.keys(none.routing_exit_ips).length === 0, none.routing_exit_ips);
 
 console.log("\n[the draft is a copy, not the stored object]");
 const rec = { egress_mode: "smart", routing: [], routing_exit_ips: { n2: "198.51.100.7" } };
 const draft = init(rec);
-if (draft.exitIps) draft.exitIps.n2 = "203.0.113.1";
+check("the draft HAS a map to edit at all (without one there is nothing to copy and nothing to lose)",
+      !!draft.exitIps, draft.exitIps);
+(draft.exitIps || {}).n2 = "203.0.113.1";
 check("editing the draft cannot reach back into the record the store holds",
       rec.routing_exit_ips.n2 === "198.51.100.7", rec.routing_exit_ips);
 
