@@ -454,11 +454,12 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   older panel and saving an interface there drops the chosen people from its rules for good. Going back to an
   older version on a server that ran these rules — or, on **Hybrid SNI** or **Kernel SNI**, a **Block** rule below an
   Exit or Direct rule — run `nft delete table inet swg_smart` on it once: it rebuilds its routing within a minute.
-- **The address a rule leaves the far server by is one per interface and server.** Every rule that sends one
-  interface through that server shares it, so two rules can't name two different addresses. The server itself
-  needs no update — even an older one applies it. An older panel doesn't: while it runs, the rules keep
-  forwarding to the right server and that server picks the address itself, and saving an interface there
-  drops the chosen address for good.
+- **The address is one per interface and server.** Every rule that sends one interface through that server
+  leaves by it — it's a property of the pair, not of a single rule, which is why it shows on all of them.
+  The far server needs no update: even an older one applies it. An older panel ignores it while it runs —
+  the rules keep forwarding to the right server and that server picks the address itself — and it starts
+  applying again when you upgrade. If a server stops reporting an address something is pinned to, the rule
+  says so: traffic would leave with a source that server can't receive replies on.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more
