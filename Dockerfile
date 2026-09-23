@@ -26,8 +26,12 @@ FROM public.ecr.aws/docker/library/python:3.12-slim
 # AS the cert, with no fullchain.cer beside it — the container then treats a failed issuance as a
 # success and serves no usable TLS. Do not lower this below 3.1.4.
 ARG ACME_VERSION=3.1.4
+# tzdata: Settings → Display → "Days are counted in" loads its zone from /usr/share/zoneinfo (tz_file), and Debian 13
+# dropped tzdata from the minimal set — the python base installs it today, but only as its own choice. Named here, a
+# base-image change cannot leave a Docker panel refusing every zone but UTC. Noninteractive: tzdata's postinst asks for
+# a region when it is newly installed, which would stall a build waiting on input.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssl ca-certificates curl socat tar \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssl ca-certificates curl socat tar tzdata \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
       "https://github.com/acmesh-official/acme.sh/archive/refs/tags/${ACME_VERSION}.tar.gz" -o /tmp/acme.tar.gz \

@@ -17502,10 +17502,14 @@ def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False, since=None):
 # THE FILES, under <state_dir>/history/ — never stats_dir, which a bare-metal uninstall deletes unconditionally:
 #   index.json           the slot table, {pid, owner, name, since, until, o} per slot, APPEND-ONLY (a slot number is
 #                        never reused, so a day file written last year still means the same peers), save_critical'd
-#                        with its backups. `o` is the OPENING balance: taken once, when a never-seen pid is first
-#                        observed, and never changed. It lives HERE rather than in base.bin (operator, 2026-09-23):
+#                        with its backups. `o` is the OPENING balance: taken when a never-seen pid is first observed
+#                        (and, on a new ledger's first start only, added to by `imports`, below), credited to no
+#                        bucket. It lives HERE rather than in base.bin (operator, 2026-09-23):
 #                        base.bin is written at bucket closes, so a restart before the first close would have lost
-#                        every imported lifetime for good, and a corrupt base.bin all of them.
+#                        every imported lifetime for good, and a corrupt base.bin all of them. `imports` — only until
+#                        each is first read — the deployments that existed when this ledger was created: every one of
+#                        them adds its counter to its peer's opening, not just the first a pid happens to be seen on.
+#                        A slot's `name` follows its peer's title while it is open, so a deleted peer keeps its last.
 #   base.bin             THE durability unit: every record's last reading and every slot's credited cumulative C,
 #                        replaced atomically together. A crash rolls both back to the same instant; the next reading
 #                        re-credits exactly cur − last, nothing twice. The previous generation stays as base.bin.prev
@@ -17525,6 +17529,10 @@ def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False, since=None):
 # ⚠️ ABSENT IS NOT ZERO. A down interface's `"peers": []`, a dropped interface key, an await_restore instance's
 # `"passwords": {}`, a busy SQLite or a torn JSON read are NO observation — only entries that are present are read, so
 # none of them can become `cur = 0` or a prune. Keep it that way.
+# ⚠️ ORDER IS NOT GUARANTEED. A node's syncs are sequential, but one it gave up on (20 s) can still be running here when
+# the next, newer one overtakes it; read second, the older snapshot's smaller counters are a "restart" on every peer
+# that moved, and each one's WHOLE counter is credited again. Every sync carries its arrival number (_SYNC_SEQ) and an
+# older one than a node's newest is dropped — lossless, the counters are cumulative.
 
 import array as _larr
 import bisect as _lbis
@@ -17637,6 +17645,9 @@ class TrafficLedger:
         self.fine = {}                  # slot → [rx, tx] credited in the current fine bucket
         self.map, self.deploys, self.owners, self.titles, self.mark = {}, set(), {}, {}, None
         self.observed = False           # only a ledger that observed something writes (a second process never clobbers)
+        self.seqs = {}                  # node → the arrival number of its newest snapshot ingested (ORDER, above)
+        self.imports = set()            # index.json `imports`: deployments older than this ledger, each imported once
+        self.fresh = False              # no index.json at start: the first map decides what `imports` holds
         self.d_index = self.d_base = self.prompt = False
         self.q_fine, self.q_day = [], []
         self.diag = self._diag_new()
@@ -17646,8 +17657,8 @@ class TrafficLedger:
 
     @staticmethod
     def _diag_new():
-        return {"v": 1, "held_for_clock": 0, "write_errors": 0, "last_error": "", "last_error_at": 0, "disk_pauses": 0,
-                "ambiguous": 0, "base_recovered": "", "ifaces": {}, "pids": {}, "spans": {}}
+        return {"v": 1, "held_for_clock": 0, "stale_snapshots": 0, "write_errors": 0, "last_error": "", "last_error_at": 0,
+                "disk_pauses": 0, "ambiguous": 0, "base_recovered": "", "ifaces": {}, "pids": {}, "spans": {}}
 
     # ── paths ────────────────────────────────────────────────────────────────────────────────────────────────────
     def _p(self, name):
@@ -17690,12 +17701,27 @@ class TrafficLedger:
             self.on, self.why_off = False, "index.json is unreadable and no backup is good (%s)" % e
             print("ledger: OFF — %s" % self.why_off, flush=True)
             return
+        if idx is None:                                        # ⚠️ MISSING IS NOT NEW when the history is there: load_critical
+            for b in _state_backups(self._p("index.json")):    # takes a missing primary for a first install and restores only
+                with contextlib.suppress(Exception):           # a corrupt one — but a new slot table over old day rows would
+                    with open(b) as f:                         # renumber every slot, and each earlier window would be read
+                        idx = json.load(f)                     # against the wrong peers. Its newest good backup, else OFF.
+                    print("ledger: index.json is missing — recovered from %s" % b, flush=True)
+                    self.d_index = True
+                    break
+            if idx is None and any(f.startswith(("base.bin", "day-", "fine-")) for f in os.listdir(self.dir)):
+                self.on, self.why_off = False, ("index.json is missing but the history it indexes is not — restore it, or "
+                                                "move %s aside to start a new ledger" % self.dir)
+                print("ledger: OFF — %s" % self.why_off, flush=True)
+                return
         if idx is not None and not (isinstance(idx, dict) and isinstance(idx.get("slots"), list)
                                     and all(isinstance(s, dict) and s.get("pid") for s in idx["slots"])):
             self.on, self.why_off = False, "index.json does not hold a slot table"
             print("ledger: OFF — %s" % self.why_off, flush=True)
             return
         self.slots = list((idx or {}).get("slots") or [])
+        self.fresh = idx is None                               # a new ledger: its first map fills `imports` (_rebuild)
+        self.imports = {tuple(x) for x in ((idx or {}).get("imports") or []) if isinstance(x, list) and len(x) == 3}
         for n, s in enumerate(self.slots):
             self.had.add(s["pid"])
             if not s.get("until"):
@@ -17705,14 +17731,21 @@ class TrafficLedger:
             self.diag.update({k: v for k, v in dg.items() if k in self.diag})
         base = self._load_base()
         n = len(self.slots)
+        row = self._newest_row()
+        wide = max(len(base[1]) if base is not None else 0, len(row[1]) if row is not None else 0)
+        if wide > n:                                           # base.bin and every day row are written AFTER index.json, so a
+            self.on = False                                    # table narrower than they are is OLDER than what it indexes:
+            self.why_off = ("index.json holds %d slots but the history it indexes has %d — it is older than those files; "
+                            "restore the newest index.json" % (n, wide))   # new slots would reuse their numbers, and every
+            print("ledger: OFF — %s" % self.why_off, flush=True)   # earlier day would be counted against the new peers
+            return
         if base is not None:
             self.recs, crx, ctx, self.newest, bday, bidx, bstep = base
-            self.C_rx, self.C_tx = crx[:n], ctx[:n]            # slots base.bin knows that index.json does not: dropped (§ write order)
+            self.C_rx, self.C_tx = crx[:n], ctx[:n]
         else:
             bday = bidx = bstep = 0
-            row = self._newest_row()                           # a lost base.bin: C from the newest closed day, so a day row is
-            if row is not None:                                # never above today's C (windows across it would go negative)
-                self.C_rx, self.C_tx = row[1][:n], row[2][:n]
+            if row is not None:                                # a lost base.bin: C from the newest closed day, so a day row is
+                self.C_rx, self.C_tx = row[1][:n], row[2][:n]  # never above today's C (windows across it would go negative)
                 if os.path.exists(self._p("base.bin")) or os.path.exists(self._p("base.bin.prev")):
                     self.diag["base_recovered"] = "C from the day row of %d; records re-baselined with zero credit" % row[0]
         while len(self.C_rx) < n:                              # slots opened after the last base.bin write: C = 0 (their opening is in index.json)
@@ -17734,7 +17767,7 @@ class TrafficLedger:
         print("ledger: on — %s, %d slot(s), %d record(s), %ds buckets" % (self.dir, n, len(self.recs), self.step), flush=True)
 
     # ── ingest (the hot path: every sync of every node) ───────────────────────────────────────────────────────────
-    def ingest(self, nid, snap, now=None, mono=None):
+    def ingest(self, nid, snap, now=None, mono=None, seq=None):
         if not self.on or not isinstance(snap, dict):
             return
         now = int(time.time() if now is None else now)
@@ -17742,6 +17775,11 @@ class TrafficLedger:
         mark = roster_mark(self.roster_path)                   # one stat() — the map is rebuilt only when this moves
         d, off = _ld_day(now)                                  # one localtime() per sync, outside the lock
         with self.lock:
+            if seq is not None:                                # ORDER (above): a snapshot older than this node's newest one
+                if seq < self.seqs.get(nid, 0):                # is dropped — read now, its smaller counters would be a
+                    self.diag["stale_snapshots"] += 1          # "restart" on every peer that moved
+                    return
+                self.seqs[nid] = seq
             if mark != self.mark:
                 self._rebuild(mark, now)
             if now < self.newest - LEDGER_CLOCK_SLACK:         # §2.3 CLOCK GATE: nothing is credited, nothing advanced —
@@ -17799,13 +17837,20 @@ class TrafficLedger:
                 self.open[pid] = self._new_slot(pid, now, rx, tx)   # credited to no bucket (first run, adoption, a take-over,
                 self.recs[key] = (rx, tx, now, mono)                # a node transferred in)
                 self.prompt = True
+                self.imports.discard(key)
                 return
             s = self.open[pid] = self._new_slot(pid, now, 0, 0)   # known, but its slot closed: a new one, no opening
         rec = self.recs.get(key)
         if rec is None:                                        # a known pid's NEW record (a new deployment, a node back, a lost
             self.recs[key] = (rx, tx, now, mono)               # base.bin): a baseline with ZERO credit, never an opening (§5.4)
-            ni = self._dpid(pid).setdefault("not_imported", [0, 0])
-            ni[0] += rx; ni[1] += tx                           # what that baseline left uncounted, so the limit is visible
+            if key in self.imports:                            # — unless it is a deployment the ledger found when it was
+                self.imports.discard(key)                      # created: nothing has counted its bytes either, so a peer on
+                o = self.slots[s].setdefault("o", [0, 0])      # several servers imports every one of them at its first
+                o[0] += rx; o[1] += tx                         # reading, not just the one it happened to be seen on first
+                self.d_index = True
+            else:
+                ni = self._dpid(pid).setdefault("not_imported", [0, 0])
+                ni[0] += rx; ni[1] += tx                       # what that baseline left uncounted, so the limit is visible
             self.prompt = True
             return
         lrx, ltx, lts, lmono = rec
@@ -17872,6 +17917,17 @@ class TrafficLedger:
         self.diag["ambiguous"] = len(amb)
         self.map = {k: next(iter(v)) for k, v in claims.items() if len(v) == 1}
         self.owners, self.titles, self.deploys = owners, titles, deploys
+        if self.fresh:                                         # the new ledger's first map: every deployment that exists now
+            self.imports, self.fresh = set(deploys), False     # holds history nothing has counted — each is imported once, at
+            self.d_index = True                                # its first reading (_observe)
+        elif self.imports and not self.imports <= deploys:     # one deleted before its first reading leaves the set
+            self.imports &= deploys
+            self.d_index = True
+        for pid, s in self.open.items():                       # an open slot's name follows its peer's title, so a deleted
+            t = titles.get(pid)                                # peer keeps its LAST name — the one the operator knew it by
+            if t is not None and self.slots[s].get("name") != t:
+                self.slots[s]["name"] = t
+                self.d_index = True
         for pid, s in list(self.open.items()):
             if pid not in owners:                              # left the roster — by any of the five delete paths
                 self._close(s, now); del self.open[pid]
@@ -17988,7 +18044,8 @@ class TrafficLedger:
                 self.d_base = self.d_base or self.observed
             if not self.observed:                              # a process that observed nothing never writes (a second
                 return True                                    # panel on this state dir must not replace base.bin) — nor fails
-            ix = json.dumps({"v": 1, "slots": self.slots}, separators=(",", ":")) if self.d_index else None
+            ix = (json.dumps({"v": 1, "slots": self.slots, **({"imports": sorted(self.imports)} if self.imports else {})},
+                             separators=(",", ":")) if self.d_index else None)
             snap = ((dict(self.recs), self.C_rx[:], self.C_tx[:], self.newest, self.day, self.idx, self.step, len(self.slots))
                     if self.d_base else None)
             qf, self.q_fine = self.q_fine, []
@@ -18139,12 +18196,25 @@ class TrafficLedger:
 
     def _append(self, path, head, rec):
         end = self._valid_end(path, head[:4])
+        data = (head if end == 0 else b"") + rec
         fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
         try:
-            data = (head if end == 0 else b"") + rec
             os.lseek(fd, end, os.SEEK_SET)
-            os.write(fd, data)
-            os.fsync(fd)
+            mv = memoryview(data)
+            try:
+                while mv:                                      # ⚠️ os.write may write LESS than asked — a disk filling up
+                    n = os.write(fd, mv)                       # mid-record. Taken as whole, the next record would land past
+                    if n <= 0:                                 # a hole, and every one after it would be unreadable.
+                        raise OSError(errno.EIO, "short write to %s" % path)
+                    mv = mv[n:]
+            except BaseException:
+                self._tails.pop(path, None)                    # a record cut short is re-validated, and cut, before the next
+                raise                                          # append (_valid_end)
+            try:
+                os.fsync(fd)
+            except BaseException:                              # written whole but not known durable: the retry rewrites this
+                self._tails[path] = end                        # record IN PLACE — a re-scan would find it complete and append
+                raise                                          # a second copy (a new file's end was never cached at all)
         finally:
             os.close(fd)
         self._tails[path] = end + len(data)
@@ -18323,7 +18393,7 @@ class TrafficLedger:
                 raise ValueError(perr("from and to must be dates, YYYY-MM-DD"))
             if f > t:
                 raise ValueError(perr("from must not be after to"))
-            return f, min(t, today), "custom:%d-%d" % (f, t)
+            return max(f, 19700101), min(t, today), "custom:%d-%d" % (f, t)   # a series walks day by day: never from year 1
         if rng == "today":
             return today, today, rng
         if rng in ("7d", "30d"):
@@ -18493,7 +18563,8 @@ class TrafficLedger:
                           "not_imported": dp.get("not_imported", [0, 0]), "records": sorted(byp.get(pid, []))})
             return {"on": self.on, "why_off": self.why_off, "dir": self.dir, "step": self.step, "day": self.day,
                     "idx": self.idx, "newest": self.newest, "observed": self.observed, "slots": len(self.slots),
-                    "open": len(self.open), "records": len(self.recs), "pending": {"fine": len(self.q_fine), "day": len(self.q_day)},
+                    "open": len(self.open), "records": len(self.recs), "imports": len(self.imports),
+                    "pending": {"fine": len(self.q_fine), "day": len(self.q_day)},
                     "map": len(self.map), "diag": {k: v for k, v in self.diag.items() if k not in ("pids", "spans")},
                     "spans": self.diag.get("spans"), "pids": pids}
 
@@ -18511,7 +18582,8 @@ class TrafficLedger:
 
 
 LEDGER = TrafficLedger()
-_LEDGER_GZ = ("/api/traffic-totals", "/api/traffic-series")   # replies do_GET sends compressed
+_LEDGER_GZ = ("/api/traffic-totals", "/api/traffic-series", "/api/traffic-ledger")   # replies do_GET sends compressed
+_SYNC_SEQ = itertools.count(1)   # every node sync's arrival number — TrafficLedger.ingest drops a snapshot older than a node's newest
 
 
 
@@ -26456,6 +26528,7 @@ class Handler(BaseHTTPRequestHandler):
         if length is None:
             return
         raw = self.rfile.read(length) or b"{}"
+        seq = next(_SYNC_SEQ)        # its arrival: a node's next sync can overtake this one (the ledger's ORDER note)
         if not self._node_sig_ok(node, raw):
             return
         try:
@@ -26477,7 +26550,7 @@ class Handler(BaseHTTPRequestHandler):
             Handler.deps.setdefault("node_snaps", {})[nid] = snap
             Handler.deps.setdefault("node_seen", {})[nid] = int(time.time())
             try:                                         # telemetry, before the lock — see _node_sync_history
-                self._node_sync_history(nid, node, nodes, snap)
+                self._node_sync_history(nid, node, nodes, snap, seq)
             except Exception as e:                       # non-essential: a bug here must not fail the fleet's syncs
                 print("stats: history for %s not recorded: %s" % (nid, e), flush=True)
         # ⚠️ A SYNC IS A READ-MODIFY-WRITE of nodes.json (29 saves) and users.json (5), so it takes _api_lock like every
@@ -26513,7 +26586,7 @@ class Handler(BaseHTTPRequestHandler):
             _api_lock.release()
         return self._send(code, obj)                     # written to the socket AFTER the lock is released
 
-    def _node_sync_history(self, nid, node, nodes, snap):
+    def _node_sync_history(self, nid, node, nodes, snap, seq=None):
         """A sync's stats mirror, live samples and history rings — run by _node_sync OUTSIDE _api_lock, before it.
         It reads the snapshot and two record fields (`ifaces`, `stats_file`), writes no store, and is ~80% of a sync's
         time (fsync'd files, measured 15 of 19 ms): under the lock it would serialise every node's disk writes, and
@@ -26805,7 +26878,7 @@ class Handler(BaseHTTPRequestHandler):
         # ledger bug never costs this sync its history; and outside the stats-disk check — the ledger lives in the state
         # dir, only touches memory here, and gates its own writes. Skipping a snapshot is lossless: counters are cumulative.
         try:
-            LEDGER.ingest(nid, snap)
+            LEDGER.ingest(nid, snap, seq=seq)
         except Exception as e:
             LEDGER.ingest_failed(e)
 

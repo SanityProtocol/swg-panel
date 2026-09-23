@@ -23,6 +23,11 @@ must turn its own check red. The rules (plan §2.3, §4, §5):
   [8] files            a torn tail is cut before the next append; a bucket at another resolution is dropped and
                        counted, never blocking the day rows behind it
   [9] the hook         a ledger that raises never fails the sync, is counted, and costs it none of its rings (V33)
+  [11] the retrospective  a snapshot older than its node's newest is dropped (never a restart that re-credits the whole
+                       counter); a missing index.json is recovered from its backup and, beside history with none, the
+                       ledger stays off, as it does for an index older than the files it indexes; a record cut short
+                       is cut back, a failed fsync rewrites in place; at a new ledger's first start every deployment
+                       imports once; a deleted peer keeps its last name
 
 Run: python3 tests/traffic_ledger_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
@@ -43,8 +48,7 @@ Run: python3 tests/traffic_ledger_selftest.py   (0 = pass)
      o  an unreadable counter reads as zero
      p  a torn tail is not cut before an append
      q  with both base generations lost, C is not taken from the newest closed day
-     r  index.json is read without its backups
-     s  an unreadable index.json with no good backup starts a fresh, empty ledger
+     s  an unreadable index.json with no good backup starts a fresh, empty ledger (a lone one: nothing else to guard it)
      t  the ingest hook runs without its own guard
      u  base.bin is written before the closed day's row
      v  a zone change mid-day re-counts the rest of the day from the new zone's midnight
@@ -52,6 +56,8 @@ Run: python3 tests/traffic_ledger_selftest.py   (0 = pass)
      x  a graceful shutdown leaves the open bucket unwritten
      y  a long series reads every day's fine file
      (z retired: once the pause moved into requeue(), an empty pass returning None arms nothing — its check stays)
+     (r retired — "index.json read without its backups": a corrupt primary then reads as missing, and the missing-index
+      fallback (plant N) recovers it from the same backups, so the defect loses nothing — its check stays)
      A  a requeued write is not retried unless something else happens
      B  at 1-day resolution a short series leaves today out
      C  readers ignore a closed day whose row is still pending
@@ -61,6 +67,16 @@ Run: python3 tests/traffic_ledger_selftest.py   (0 = pass)
      G  day rows are indexed without their checksums (a damaged row: totals skip it, the series reads it)
      H  the writer is woken on every sync before anything was observed
      I  a day kept in its old frame after a zone change records the new zone's offset
+     J  at a new ledger's first start only the first deployment a pid is seen on imports its counter
+     K  a snapshot older than its node's newest is ingested (its smaller counters read as a restart)
+     L  the sync hook drops the arrival number
+     M  a missing index.json with no backup, beside the history, starts a fresh ledger
+     N  a missing index.json is not recovered from its backups
+     O  an index.json narrower than base.bin / the day rows is accepted
+     P  a short os.write is taken as the whole record
+     Q  a failed fsync forgets the end, so the retry appends a second copy
+     R  an open slot's name does not follow its peer's title
+     S  a custom range may start in year 1
 """
 import calendar, importlib.machinery, importlib.util, json, os, shutil, stat, sys, tempfile, time
 
@@ -78,8 +94,8 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
-    "a": ([("                self.recs[key] = (rx, tx, now, mono)                # a node transferred in)\n                self.prompt = True\n                return\n",
-            "                self.recs[key] = (rx, tx, now, mono)                # a node transferred in)\n                self.prompt = True\n                self.fine[self.open[pid]] = [rx, tx]\n                return\n")],
+    "a": ([("                self.recs[key] = (rx, tx, now, mono)                # a node transferred in)\n                self.prompt = True\n",
+            "                self.recs[key] = (rx, tx, now, mono)                # a node transferred in)\n                self.prompt = True\n                self.fine[self.open[pid]] = [rx, tx]\n")],
           "credited to no bucket"),
     "b": ([("        reset = rx < lrx or tx < ltx ", "        reset = rx < lrx ")], "tx dropping alone"),
     "c": ([("        cap = int(LEDGER_MAX_BPS * max(el, LEDGER_FLOOR_S))", "        cap = int(LEDGER_MAX_BPS * el)")], "floors elapsed"),
@@ -108,13 +124,12 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
     "o": ([("def _lnum(v):\n    \"\"\"A counter as a non-negative int, or None — a value that cannot be read is no observation, never a zero.\"\"\"\n",
             "def _lnum(v):\n    \"\"\"A counter as a non-negative int, or None — a value that cannot be read is no observation, never a zero.\"\"\"\n    if v is None:\n        return 0\n")],
           "no observation"),
-    "q": ([("            row = self._newest_row()  ", "            row = None  ")], "newest closed day"),
-    "r": ([("            idx = load_critical(self._p(\"index.json\"), None)", "            idx = load_json(self._p(\"index.json\"), None)")],
-          "from its backup"),
+    "q": ([("            if row is not None:                                # a lost base.bin",
+            "            if False:                                          # a lost base.bin")], "newest closed day"),
     "s": ([("            self.on, self.why_off = False, \"index.json is unreadable and no backup is good (%s)\" % e\n            print(\"ledger: OFF — %s\" % self.why_off, flush=True)\n            return\n",
-            "            idx = None\n")], "stays off"),
-    "t": ([("        try:\n            LEDGER.ingest(nid, snap)\n        except Exception as e:\n            LEDGER.ingest_failed(e)\n",
-            "        LEDGER.ingest(nid, snap)\n")], "never fails the sync"),
+            "            idx = None\n")], "lone corrupt index.json"),
+    "t": ([("        try:\n            LEDGER.ingest(nid, snap, seq=seq)\n        except Exception as e:\n            LEDGER.ingest_failed(e)\n",
+            "        LEDGER.ingest(nid, snap, seq=seq)\n")], "never fails the sync"),
     "u": ([("        for n, dr in enumerate(qd):\n            try:\n                self._append_day(dr)\n            except Exception as e:\n                self._err(\"day\", e)\n                return requeue(False, bool(snap), qf, qd[n:])\n        if snap:\n            try:\n                self._write_base(snap)\n            except Exception as e:\n                self._err(\"base.bin\", e)\n                return requeue(False, True, qf, [])\n",
             "        if snap:\n            try:\n                self._write_base(snap)\n            except Exception as e:\n                self._err(\"base.bin\", e)\n                return requeue(False, True, qf, [])\n        for n, dr in enumerate(qd):\n            try:\n                self._append_day(dr)\n            except Exception as e:\n                self._err(\"day\", e)\n                return requeue(False, False, qf, qd[n:])\n")],
           "before base.bin"),
@@ -145,6 +160,22 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
           "its own offset"),
     "p": ([("            if end < sz:\n                os.truncate(path, end)\n", "            if False:\n                os.truncate(path, end)\n"),
            ("            end = self._scan_end(path)\n", "            end = sz\n")], "torn tail"),
+    # [11] the retrospective's findings
+    "J": ([("            if key in self.imports:                            # — unless",
+            "            if False:                                          # — unless")], "BOTH counters"),
+    "K": ([("                if seq < self.seqs.get(nid, 0):", "                if False:")], "never read as a restart"),
+    "L": ([("            LEDGER.ingest(nid, snap, seq=seq)\n", "            LEDGER.ingest(nid, snap)\n")], "arrival number"),
+    "M": ([("            if idx is None and any(f.startswith((\"base.bin\", \"day-\", \"fine-\")) for f in os.listdir(self.dir)):",
+            "            if False:")], "never a new table"),
+    "N": ([("            for b in _state_backups(self._p(\"index.json\")):    # takes a missing primary",
+            "            for b in []:    # takes a missing primary")], "recovered from its newest backup"),
+    "O": ([("        if wide > n:                                           # base.bin and every day row",
+            "        if False:                                              # base.bin and every day row")], "older than the history"),
+    "P": ([("                    mv = mv[n:]\n", "                    mv = mv[len(mv):]\n")], "cut short"),
+    "Q": ([("                self._tails[path] = end                        # record IN PLACE",
+            "                self._tails.pop(path, None)                    # record IN PLACE")], "retried in place"),
+    "R": ([("            if t is not None and self.slots[s].get(\"name\") != t:", "            if False:")], "LAST name"),
+    "S": ([("            return max(f, 19700101), min(t, today),", "            return f, min(t, today),")], "before 1970"),
 }
 
 TMP = tempfile.mkdtemp(prefix="ledger-")
@@ -267,9 +298,15 @@ def section_2():
     ing(L, "n2", wg("awg0", ("K4", 9000, 1000)), T0)
     ing(L, "n1", wg("awg0", ("K1", 5000, 0), ("K2", 0, 0), ("K4", 3000, 3000)), T0 + 5)
     s4 = slot_of(L, "p4")
-    check("a known peer's second deployment is a baseline, never a second opening",
-          L.slots[s4]["o"] == [9000, 1000] and C(L, s4) == (0, 0)
-          and L.diag["pids"]["p4"].get("not_imported") == [3000, 3000], (L.slots[s4], C(L, s4), L.diag["pids"].get("p4")))
+    check("at the ledger's first start a peer on two servers opens with BOTH counters — every deployment it found imports once",
+          L.slots[s4]["o"] == [12000, 4000] and C(L, s4) == (0, 0) and not L.imports
+          and not L.diag["pids"].get("p4", {}).get("not_imported"), (L.slots[s4], C(L, s4), L.imports, L.diag["pids"].get("p4")))
+    R["peers"]["p4"]["targets"].append({"node": "n3", "iface": "awg0", "ip": "", "type": "awg"})   # a deployment added later
+    P.roster_save(rp, R)
+    ing(L, "n3", wg("awg0", ("K4", 700, 70)), T0 + 6)
+    check("a known peer's deployment added after the ledger started is a baseline, never a second opening",
+          L.slots[s4]["o"] == [12000, 4000] and C(L, s4) == (0, 0)
+          and L.diag["pids"]["p4"].get("not_imported") == [700, 70], (L.slots[s4], C(L, s4), L.diag["pids"].get("p4")))
     ing(L, "n1", wg("awg0", ("K1", 5000, 0), ("K2", 500, 500), ("K4", 3000, 3000)), T0 + 10)
     old2 = slot_of(L, "p2")
     R["peers"]["p2"]["user_id"] = "u2"                         # /api/peers/update: the owner as metadata only
@@ -305,7 +342,7 @@ def section_2():
     P.roster_save(rp, R)
     ing(L, "n2", wg("awg0", ("K4", 9500, 1100)), T0 + 35)
     check("a node that comes back is a zero-credit baseline — never a second opening",
-          L.slots[s4]["o"] == [9000, 1000] and C(L, s4) == (0, 0) and ("n2", "awg0", "p4") in L.recs, (L.slots[s4], C(L, s4)))
+          L.slots[s4]["o"] == [12000, 4000] and C(L, s4) == (0, 0) and ("n2", "awg0", "p4") in L.recs, (L.slots[s4], C(L, s4)))
 
 
 try:
@@ -448,6 +485,14 @@ def section_5():
     check("an unreadable index.json with no good backup: the ledger stays off, says why, and writes nothing",
           not L4.on and "index.json" in L4.why_off and open(ix).read() == "{not json" and not L4.slots,
           (L4.on, L4.why_off, L4.slots))
+    lone = os.path.join(TMP, "lone")
+    os.makedirs(os.path.join(lone, "history"))
+    P.roster_save(os.path.join(lone, "users.json"), roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")])))
+    with open(os.path.join(lone, "history", "index.json"), "w") as f:
+        f.write("{not json")
+    L5 = reopen(os.path.join(lone, "users.json"), T0)
+    check("a lone corrupt index.json — no backup, no other file beside it — stays off too: the openings in it ARE history",
+          not L5.on and "unreadable" in L5.why_off, (L5.on, L5.why_off))
 
 
 try:
@@ -807,6 +852,151 @@ try:
 except Exception as e:
     import traceback; traceback.print_exc()
     check("section [10] ran to the end", False, "%s: %s" % (type(e).__name__, e))
+
+
+# ── [11] the retrospective's findings ───────────────────────────────────────────────────────────────────────────────
+print("[11] snapshot order, a missing or older index, a record cut short, a deleted peer's name")
+
+
+def section_11():
+    global L, rp
+    L, rp = fresh("order", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")]), peer("p2", "u1", "K2", [("n2", "awg0", "awg")])))
+    L.ingest("n1", wg("awg0", ("K1", 1000, 100)), now=T0, mono=T0, seq=1)
+    L.ingest("n1", wg("awg0", ("K1", 5000, 500)), now=T0 + 25, mono=T0 + 25, seq=3)    # the node's next sync overtook…
+    L.ingest("n1", wg("awg0", ("K1", 3000, 300)), now=T0 + 26, mono=T0 + 26, seq=2)    # …the one it gave up on
+    L.ingest("n2", wg("awg0", ("K2", 70, 7)), now=T0 + 27, mono=T0 + 27, seq=2)        # another node's order is its own
+    L.ingest("n2", wg("awg0", ("K2", 90, 9)), now=T0 + 28, mono=T0 + 28, seq=4)
+    L.ingest("n1", wg("awg0", ("K1", 6000, 600)), now=T0 + 30, mono=T0 + 30, seq=5)
+    s1, s2 = slot_of(L, "p1"), slot_of(L, "p2")
+    check("a snapshot older than its node's newest is dropped — never read as a restart that credits the whole counter again",
+          C(L, s1) == (5000, 500) and C(L, s2) == (20, 2) and L.diag["stale_snapshots"] == 1
+          and not L.diag["pids"].get("p1", {}).get("resets"), (C(L, s1), C(L, s2), L.diag["stale_snapshots"], L.diag["pids"]))
+
+    got = []
+
+    class Rec:
+        on = True
+
+        def ingest(self, nid, snap, now=None, mono=None, seq=None):
+            got.append(seq)
+
+        def ingest_failed(self, e):
+            got.append(("failed", str(e)))
+    stats = os.path.join(TMP, "order-stats")
+    os.makedirs(stats)
+    P.Handler.deps = {"stats_dir": stats, "node_snaps": {}, "live_samples": {}}
+    real, P.LEDGER = P.LEDGER, Rec()
+    try:
+        P.Handler._node_sync_history(None, "n1", {"id": "n1"}, {"n1": {"id": "n1"}}, {"interfaces": {}}, 7)
+    finally:
+        P.LEDGER = real
+    src = open(panel_path, encoding="utf-8").read()
+    check("every sync carries its arrival number to the ledger — taken as its body is read",
+          got == [7] and "seq = next(_SYNC_SEQ)" in src and "self._node_sync_history(nid, node, nodes, snap, seq)" in src, got)
+
+    L, rp = fresh("noindex", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")])))
+    ing(L, "n1", wg("awg0", ("K1", 100, 0)), T0)
+    ing(L, "n1", wg("awg0", ("K1", 200, 0)), T0 + 3600)
+    L.flush()
+    hd = os.path.join(TMP, "noindex", "history")
+    ix = os.path.join(hd, "index.json")
+    os.unlink(ix)
+    L2 = reopen(rp, T0 + 3700)
+    check("a MISSING index.json is recovered from its newest backup — missing is not new when the history is there",
+          L2.on and [x["pid"] for x in L2.slots] == ["p1"], (L2.on, L2.why_off))
+    for b in [f for f in os.listdir(hd) if f.startswith("index.json")]:
+        os.unlink(os.path.join(hd, b))
+    L3 = reopen(rp, T0 + 3800)
+    ing(L3, "n1", wg("awg0", ("K1", 300, 0)), T0 + 3805)
+    L3.flush()
+    check("…and with no backup either, beside the history it indexes, the ledger stays off — never a new table over old rows",
+          not L3.on and "missing" in L3.why_off and not os.path.exists(ix), (L3.on, L3.why_off))
+
+    L, rp = fresh("oldindex", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")]), peer("p2", "u1", "K2", [("n1", "awg0", "awg")])))
+    ing(L, "n1", wg("awg0", ("K1", 100, 0)), T0)
+    L.flush()
+    ix = os.path.join(TMP, "oldindex", "history", "index.json")
+    one = open(ix).read()
+    ing(L, "n1", wg("awg0", ("K1", 100, 0), ("K2", 50, 0)), T0 + 5)
+    L.flush()
+    with open(ix, "w") as f:
+        f.write(one)                                            # an older slot table: 1 slot under a 2-slot base.bin
+    L2 = reopen(rp, T0 + 10)
+    check("an index.json older than the history it indexes stays off — new slots would reuse numbers the old rows hold",
+          not L2.on and "older" in L2.why_off, (L2.on, L2.why_off))
+
+    L, rp = fresh("shortw", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")])))
+    ing(L, "n1", wg("awg0", ("K1", 0, 0)), T0)
+    ing(L, "n1", wg("awg0", ("K1", 100, 0)), T0 + 60)
+    ing(L, "n1", wg("awg0", ("K1", 200, 0)), T0 + 3600)       # closes bucket 10
+    L.flush()
+    ing(L, "n1", wg("awg0", ("K1", 350, 0)), T0 + 7200)       # closes bucket 11
+    real_write, calls = P.os.write, []
+
+    def half(fd, b):
+        calls.append(len(b))
+        if len(calls) == 1:
+            return real_write(fd, bytes(b[:len(b) // 2]))      # the disk fills mid-record…
+        raise OSError(28, "No space left on device")           # …and then refuses
+    P.os.write = half
+    try:
+        L.flush()
+    finally:
+        P.os.write = real_write
+    ing(L, "n1", wg("awg0", ("K1", 500, 0)), T0 + 10800)      # closes bucket 12
+    L.flush()
+    got = [(i, c[1][0]) for i, _n, _e, c in L._fine_buckets(L._fine_path(20260910))]
+    check("a record cut short by a filling disk is cut back before the next append — every bucket after it stays readable",
+          got == [(10, 100), (11, 100), (12, 150)], got)
+
+    L, rp = fresh("badsync", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")])))
+    ing(L, "n1", wg("awg0", ("K1", 0, 0)), T0)
+    ing(L, "n1", wg("awg0", ("K1", 100, 0)), T0 + 60)
+    ing(L, "n1", wg("awg0", ("K1", 200, 0)), T0 + 3600)       # closes bucket 10
+    real_af = L._append_fine
+
+    def af_badsync(fb):
+        real_fsync = P.os.fsync
+
+        def boom(fd):
+            raise OSError(5, "Input/output error")
+        P.os.fsync = boom
+        try:
+            return real_af(fb)
+        finally:
+            P.os.fsync = real_fsync
+    L._append_fine = af_badsync
+    L.flush()                                                   # written whole, then the fsync fails: requeued
+    L._append_fine = real_af
+    L.flush()
+    got = [(i, c[1][0]) for i, _n, _e, c in L._fine_buckets(L._fine_path(20260910))]
+    check("a failed fsync is retried in place — the bucket is on disk once, never twice", got == [(10, 100)], got)
+
+    R = roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")]))
+    L, rp = fresh("names", R)
+    ing(L, "n1", wg("awg0", ("K1", 10, 0)), T0)
+    s = slot_of(L, "p1")
+    R["peers"]["p1"]["title"] = "Alice's phone"
+    P.roster_save(rp, R)
+    ing(L, "n1", wg("awg0", ("K1", 20, 0)), T0 + 5)
+    del R["peers"]["p1"]
+    P.roster_save(rp, R)
+    ing(L, "n1", wg("awg0"), T0 + 10)
+    L.flush()
+    kept = json.load(open(os.path.join(TMP, "names", "history", "index.json")))["slots"][s]
+    check("a deleted peer's slot keeps its LAST name — the one it was known by — not the one it was created with",
+          kept["name"] == "Alice's phone" and kept["until"] == T0 + 10, kept)
+
+    check("a custom range never walks from before 1970 (a series goes day by day)",
+          L._window({"from": ["0001-01-01"], "to": ["2026-09-10"]}, T0)[0] == 19700101, L._window({"from": ["0001-01-01"], "to": ["2026-09-10"]}, T0))
+    check("the debug dump goes out compressed too", "/api/traffic-ledger" in P._LEDGER_GZ, P._LEDGER_GZ)
+
+
+try:
+    section_11()
+except Exception as e:
+    import traceback; traceback.print_exc()
+    check("section [11] ran to the end", False, "%s: %s" % (type(e).__name__, e))
 
 shutil.rmtree(TMP, ignore_errors=True)
 if PLANT:
