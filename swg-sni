@@ -565,7 +565,7 @@ class Classifier:
             pass
 
     def _flush_loop(self):
-        """Background: drain the pending buffer into batched nft writes (one transaction per category), and sweep the
+        """Background: drain the pending buffer into batched nft writes (one transaction for every category), and sweep the
         seen cache of expired entries. Adds go to catl_ (the self-expiring learned set) — see _write_learned for how."""
         while True:
             self._wake.wait(FLUSH_INTERVAL)
@@ -588,17 +588,29 @@ class Classifier:
             self._write_learned(batch)
 
     def _write_learned(self, batch):
-        """[(cat, ip)] → one `nft -f` transaction per category that (re)writes each address with a FRESH timeout: add, delete,
+        """[(cat, ip)] → one `nft -f` transaction for every category (one per category only when that one is refused) that
+        (re)writes each address with a FRESH timeout: add, delete,
         add (see the note above FLUSH_INTERVAL — a plain second add does not refresh). Addresses are unique per category, since
         the delete of one listed twice would fail and take the whole transaction with it."""
         bycat = {}
         for cat, ip in batch:
             if ip not in bycat.setdefault(cat, []):
                 bycat[cat].append(ip)
-        for cat, ips in bycat.items():
+        # EVERY CATEGORY IN ONE TRANSACTION FIRST. One name can sit in two rules' sets for the same source — an interface's
+        # own rule and its node's default list behind it (D11), say — and the chain lets the first match win. Written one
+        # `nft` process per category, the later rule's set could be live while the earlier one's was still being forked,
+        # and the retry the RST provokes left by the WRONG exit, not merely the default one (live, msk-main 2026-09-23:
+        # ~50 ms apart, 2ip.io → the list's WARP instead of wg1's own node). One commit shows every set at once. A refusal
+        # (a set not there yet) takes the whole script with it, so it falls back to one transaction per category and
+        # only that category's addresses are forgotten.
+        def script(cat, ips):
             el = "inet %s %s { %s }" % (self.table, _learnsetname(cat), ", ".join(ips))
-            r = subprocess.run(["nft", "-f", "-"], input="add element %s\ndelete element %s\nadd element %s\n" % (el, el, el),
-                               capture_output=True, text=True)
+            return "add element %s\ndelete element %s\nadd element %s\n" % (el, el, el)
+        scr = "".join(script(cat, ips) for cat, ips in bycat.items())
+        if len(bycat) > 1 and subprocess.run(["nft", "-f", "-"], input=scr, capture_output=True, text=True).returncode == 0:
+            return
+        for cat, ips in bycat.items():
+            r = subprocess.run(["nft", "-f", "-"], input=script(cat, ips), capture_output=True, text=True)
             if r.returncode != 0:                      # set may not exist yet → forget these so they re-learn next time
                 with self._lock:
                     for ip in ips:

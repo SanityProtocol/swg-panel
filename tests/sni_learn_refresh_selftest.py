@@ -6,7 +6,9 @@
 after its first learn however busy it was, while its `seen` cache believed it fresh: for up to refresh_age after that, new
 connections to it matched no set, left by the wrong route, and were neither written again nor reset (`.campaign` rig bxl,
 Bxlt2 — the real-kernel gate for what this file checks the shape of). Each write is now add + delete + add in ONE `nft -f`
-transaction per category.
+transaction — every category's in ONE, so two rules' sets holding the same name go live together (the first rule of the
+chain wins; written one process per category, the later rule's set was live ~50 ms early and the RST's retry left by the WRONG
+exit — live, msk-main 2026-09-23). A refused joint write falls back to one transaction per category.
 
   python3 tests/sni_learn_refresh_selftest.py [--plant NAME]
 
@@ -15,6 +17,8 @@ Plants (each must turn at least one check red):
   r2 a batch holding one address twice lists it twice (its second delete fails and the whole transaction with it)
   r3 a write that nft refuses keeps its `seen` entries (the address is never learned again while they last)
   r4 a sighting past refresh_age is not written again (an address in use expires on schedule)
+  r5 the categories are written one process each again (two rules' sets go live apart)
+  r6 a refused joint write does not fall back (one missing set stops every other category learning)
 """
 import importlib.machinery, importlib.util, os, sys, tempfile, threading, time
 
@@ -24,8 +28,8 @@ PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 FAILS = []
 
 PLANTS = {
-    "r1": ('''input="add element %s\\ndelete element %s\\nadd element %s\\n" % (el, el, el),''',
-           '''input="add element %s\\n" % el,'''),
+    "r1": ('''return "add element %s\\ndelete element %s\\nadd element %s\\n" % (el, el, el)''',
+           '''return "add element %s\\n" % el'''),
     "r2": ('''            if ip not in bycat.setdefault(cat, []):
                 bycat[cat].append(ip)''', '''            bycat.setdefault(cat, []).append(ip)'''),
     "r3": ('''                with self._lock:
@@ -34,6 +38,8 @@ PLANTS = {
                 print("swg-sni: batch add failed''', '''                print("swg-sni: batch add failed'''),
     "r4": ('''                elif now - ts < self.refresh_age:              # fresh → already routing in this category, nothing to do''',
            '''                elif True:                                     # fresh → already routing in this category, nothing to do'''),
+    "r5": ("if len(bycat) > 1 and subprocess.run(", "if False and subprocess.run("),
+    "r6": ("input=scr, capture_output=True, text=True).returncode == 0:", "input=scr, capture_output=True, text=True) or True:"),
 }
 
 
@@ -80,21 +86,34 @@ def classifier(ttl=120):
     return C
 
 
-print("[the write: one transaction per category, add + delete + add]")
+print("[the write: every category in ONE transaction, add + delete + add]")
+C = classifier()
+C.seen = {("192.0.2.81", "c1"): 1.0, ("192.0.2.82", "c1"): 1.0, ("192.0.2.91", "c2"): 1.0}
+CALLS.clear()
+C._write_learned([("c1", "192.0.2.81"), ("c1", "192.0.2.81"), ("c1", "192.0.2.82"), ("c2", "192.0.2.91")])
+check("two categories: ONE nft process, a script on stdin, carrying both sets (they go live together)",
+      len(CALLS) == 1 and CALLS[0][0] == ["nft", "-f", "-"] and "catl_c1 " in CALLS[0][1] and "catl_c2 " in CALLS[0][1], CALLS)
+lines = (CALLS[0][1] if CALLS else "").strip().split("\n")
+el = "inet swg_smart catl_c1 { 192.0.2.81, 192.0.2.82 }"
+check("the script adds, deletes and adds the same elements — the delete is what makes the second add fresh",
+      lines[:3] == ["add element " + el, "delete element " + el, "add element " + el], lines)
+check("an address listed twice in the batch is written once (a second delete would fail the whole transaction)",
+      (CALLS[0][1] if CALLS else "").count("192.0.2.81") == 3, CALLS)
+check("a joint write that lands keeps every `seen` entry", len(C.seen) == 3, C.seen)
+
+print("\n[a refused joint write: one transaction per category, and only the refused one is forgotten]")
 C = classifier()
 C.seen = {("192.0.2.81", "c1"): 1.0, ("192.0.2.82", "c1"): 1.0, ("192.0.2.90", "missing"): 1.0, ("192.0.2.91", "c2"): 1.0}
 CALLS.clear()
-C._write_learned([("c1", "192.0.2.81"), ("c1", "192.0.2.81"), ("c1", "192.0.2.82"), ("missing", "192.0.2.90")])
-by = {a[1].split("catl_")[1].split(" ")[0] if a[1] and "catl_" in a[1] else "?": a for a in CALLS}
-check("one nft process per category, each a script on stdin", len(CALLS) == 2 and all(a[0] == ["nft", "-f", "-"] for a in CALLS), CALLS)
-lines = (by.get("c1") or ([], ""))[1].strip().split("\n")
-el = "inet swg_smart catl_c1 { 192.0.2.81, 192.0.2.82 }"
-check("the script adds, deletes and adds the same elements — the delete is what makes the second add fresh",
-      lines == ["add element " + el, "delete element " + el, "add element " + el], lines)
-check("an address listed twice in the batch is written once (a second delete would fail the whole transaction)",
-      (by.get("c1") or ([], ""))[1].count("192.0.2.81") == 3, (by.get("c1") or ([], ""))[1])
+C._write_learned([("c1", "192.0.2.81"), ("c1", "192.0.2.82"), ("missing", "192.0.2.90")])
+check("the joint write is tried first, then each category on its own (c1 still learns though `missing` has no set)",
+      len(CALLS) == 3 and "catl_missing" in CALLS[0][1] and "catl_c1 " in CALLS[0][1]
+      and any("catl_c1 " in a[1] and "catl_missing" not in a[1] for a in CALLS[1:]), CALLS)
 check("a refused write forgets that category's `seen` entries, so the address is learned again next time",
       ("192.0.2.90", "missing") not in C.seen and ("192.0.2.81", "c1") in C.seen and ("192.0.2.91", "c2") in C.seen, C.seen)
+CALLS.clear()
+C._write_learned([("c1", "192.0.2.81")])
+check("one category: one process, no joint attempt first", len(CALLS) == 1 and "catl_c1 " in CALLS[0][1], CALLS)
 
 print("\n[the decision: a first sight learns and resets, a sighting past refresh_age writes again without a reset]")
 C = classifier(ttl=120)
