@@ -1736,6 +1736,17 @@ def perr(key, **vals):
     return {"error": msg, "error_key": key, "error_vars": vals}
 
 
+def perr_body(e):
+    """A refusal that may be either kind → the fields of its 400.
+
+    `_validate_routing` and the egress ladder below it return a plain sentence for most refusals and a perr()
+    dict for the one that names a value (which node two rules disagree about). Their callers used to spell
+    `"error": err` by hand, which silently drops `error_key`/`error_vars` — the browser then has the English
+    with the name already baked in and nothing to look a translation up by. One reader, so the four callers
+    cannot drift into three spellings of the same response."""
+    return e if isinstance(e, dict) else {"error": e}
+
+
 def verify_password(stored, password):
     # stored = "pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>"
     try:
@@ -14323,6 +14334,37 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=Non
             if en not in nodes or en == nid:
                 return None, f"rule for '{cat}': exit node must be another known node", _dropped_report(dropped)
             out["node"] = en
+            # THE EXIT IP (D6, §4.2/§6.4) — which of the FAR node's addresses this interface's traffic leaves
+            # it by. It needs nothing new anywhere else: the (S, P) exit record's `egress_ip` already becomes
+            # `swg-fwd-snat:<subnet> --to-source X` at P, on every node 1.8.6 included. No wire key, no
+            # capability, no node change.
+            #
+            # ⚠️ NOT GUARDED, and it is the only thing in this list that is not. An older panel that reads
+            # this rule keeps it and loses only the pin — the traffic still goes to the right node, out of
+            # whichever address that node would have picked. Guarding it the way `who` is guarded would drop
+            # the rule instead and send the traffic out of the ENTRY node, which is worse. Guard what would
+            # WIDEN; tolerate what only loses a refinement.
+            _xip = str(r.get("exit_ip") or "").strip()
+            if _xip:
+                if r.get("who") is not None:
+                    # THE PER-PERSON EXIT IP IS CUT (§12, C2) — pinning a source for SOME of an interface's
+                    # devices needed a NAT table of its own on the far node, for the rarest case in the plan.
+                    # So the address is interface-wide or it is nothing. Refused rather than dropped: a pin
+                    # stored beside a selection would apply to everyone the rule's node carries, which is not
+                    # what the operator asked for and not something a row could honestly say.
+                    return None, "An address can be chosen only for rules that apply to everyone on this interface.", _dropped_report(dropped)
+                try:
+                    ipaddress.IPv4Address(_xip)
+                except Exception:
+                    return None, "the exit address must be an IPv4 address", _dropped_report(dropped)
+                # NOT checked against what the far node reported, deliberately — the same asymmetry
+                # `_validate_exits` keeps for an exit's own `egress_ip`, for a stronger reason: the address
+                # belongs to ANOTHER node, and the only thing this panel knows about it is a snapshot that
+                # node may not have sent yet. Refusing an address we cannot currently see would make the pin
+                # unconfigurable exactly while the far node is down. The SHAPE is checked here; the browser
+                # offers what the node reported (§7.2), and whether the kernel can source from it is the far
+                # node's to discover and report.
+                out["exit_ip"] = _xip
         if act == "dev":
             # ⚠️ THE SAME ASYMMETRY `_validate_exits` AND `_apply_egress_mode` ALREADY KEEP, for the reason
             # spelled out at the latter: refuse a NEW reference to an exit that is not there, tolerate one
@@ -14367,6 +14409,21 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=Non
             out["enabled"] = False                         # ← what every older reader sees: a rule that is off
             out["who"] = {"on": (w.get("on") is True) if "on" in w else (r.get("enabled", True) is not False), **keep}
         clean.append(out)
+    # ONE ADDRESS PER (INTERFACE, FAR NODE) — §4.2. The far node applies the pin as one SNAT keyed by the
+    # ARRIVING SUBNET (`swg-fwd-snat:10.8.0.0/24 --to-source X`), so every rule that sends this interface
+    # through that node shares one exit record and one address. Two rules naming different ones is not a
+    # policy the datapath can carry: one of them would decide it for the other's traffic too. Said at the
+    # door, where the operator can see both rules, rather than resolved silently at plan time.
+    #
+    # Rules that are OFF are not in it: they route nothing, and refusing a save because of a switched-off
+    # rule would block the very edit that fixes it. Turning one back on is itself a save, which lands here.
+    _pins = {}
+    for _r in clean:
+        if _r.get("action") != "exit" or not _r.get("exit_ip") or not rule_on(_r):
+            continue
+        if _pins.setdefault(_r["node"], _r["exit_ip"]) != _r["exit_ip"]:
+            return None, perr("Two rules send this interface through {v1} with different addresses.",
+                              v1=(nodes.get(_r["node"]) or {}).get("name") or _r["node"]), _dropped_report(dropped)
     return clean, None, _dropped_report(dropped)
 
 
@@ -14803,12 +14860,18 @@ def _apply_egress_mode(rec, body, nodes, nid, deps):
     it and refusing the save then would make the interface unsavable — the same asymmetry `_validate_exits`
     keeps, for the same reason."""
     _custom = [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")]
-    # D7 — A TAB OPENED BEFORE THE UPGRADE CANNOT SAVE OVER A PER-PERSON RULE. Its `rowsToRules` rebuilds each rule from a
-    # whitelist that has no `who`, so the guarded rule would come back as a plain disabled one and its people would be gone.
-    # The new SPA says `routing_v: 2` on every egress save; a save that would rewrite a list holding a `who` rule without it
-    # is refused. A list holding none still saves from an old tab, so a fleet that uses none of this notices nothing.
+    # D7 — A TAB OPENED BEFORE THE UPGRADE CANNOT SAVE OVER A PER-PERSON RULE OR AN EXIT IP. Its `rowsToRules` rebuilds each
+    # rule from a whitelist that has neither, so the guarded rule would come back as a plain disabled one with its people gone,
+    # and a pinned rule would come back without its address.
+    # The new SPA says `routing_v: 2` on every egress save; a save that would rewrite a list holding either without it
+    # is refused. A list holding neither still saves from an old tab, so a fleet that uses none of this notices nothing.
+    #
+    # ⚠️ ONE PREDICATE, NOT A SECOND REFUSAL (§4.2, fourth review pass). The pin is deliberately UNGUARDED against an older
+    # PANEL — it loses a refinement, not a promise — but an older TAB does not lose it, it OVERWRITES it, which is the case
+    # this check has always been about.
     if ((body.get("egress_mode") == "smart" or ("routing" in body and "egress_mode" not in body and rec.get("egress_mode") == "smart"))
-            and body.get("routing_v") != 2 and any(isinstance(r, dict) and "who" in r for r in (rec.get("routing") or []))):
+            and body.get("routing_v") != 2 and any(isinstance(r, dict) and ("who" in r or "exit_ip" in r)
+                                                   for r in (rec.get("routing") or []))):
         return "This browser tab is older than the panel — reload it before saving routing.", None
     if "egress_mode" in body:
         mode = (body.get("egress_mode") or "direct").strip()
@@ -15448,6 +15511,29 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             # choice with a stored rule (`category:"all"`); leaving it alone stores nothing, and that silence
             # is what inherits the node default below.
             _all_said = False
+            # THE EXIT IP, PER FAR NODE, RESOLVED BEFORE THE RULES ARE WALKED (D6, §4.2). The pin lives on a
+            # rule, but what it configures is the (S, P) EXIT RECORD — one per arriving subnet at P — so it
+            # is interface-wide by construction, exactly as the window says ("every rule that sends this
+            # interface through P leaves as this address").
+            #
+            # ⚠️ AND THAT IS WHY IT CANNOT BE READ RULE BY RULE. `add_exit` keeps the FIRST record it is given
+            # for (S, dev_p, T); a rule to P without a pin, sitting above one with it, would therefore have
+            # silently dropped the address — a pin the operator set, on screen, applied to nothing. Resolved
+            # once here, every rule to P is emitted with the same answer whatever order they are in.
+            #
+            # The door refuses two different addresses for one node (`exit_ip_conflict`), so this is a lookup
+            # rather than a choice; a list hand-edited past the door keeps the first, which is at least the
+            # same answer on every pass.
+            #
+            # A rule naming PEOPLE is skipped, because the door refuses that pair (`exit_ip_who`) and the
+            # plan must not quietly do what the door refuses: a record hand-edited into the store with both
+            # would otherwise pin the address for everyone the interface sends through that node — the exact
+            # widening the refusal exists to prevent.
+            _pin = {}
+            for r in (ov.get("routing") or []):
+                if (rule_on(r) and r.get("action") == "exit" and str(r.get("exit_ip") or "").strip()
+                        and r.get("node") and r.get("who") is None):
+                    _pin.setdefault(str(r["node"]), str(r["exit_ip"]).strip())
             for r in (ov.get("routing") or []):
                 if not rule_on(r):
                     continue
@@ -15524,11 +15610,11 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     _xdev, _xkey, _xks, _xeg, _xgw = _r
                     if _xkey not in targets:
                         targets.append(_xkey)
-                    smart_items.append((nid, None, S, cat, "dev", _xdev, None, None, extra, _xkey, _xks, _xeg, _xgw, r.get("who")))
+                    smart_items.append((nid, None, S, cat, "dev", _xdev, None, None, extra, _xkey, _xks, _xeg, _xgw, r.get("who"), ""))
                     _all_said = _all_said or cat == "all"
                     continue
                 if action != "exit":               # direct / block are LOCAL (no mesh exit) — carry them for first-match + kill-switch
-                    smart_items.append((nid, None, S, cat, action, None, None, None, extra, None, None, "", "", r.get("who")))
+                    smart_items.append((nid, None, S, cat, action, None, None, None, extra, None, None, "", "", r.get("who"), ""))
                     _all_said = _all_said or cat == "all"
                     continue
                 P = r.get("node")
@@ -15539,7 +15625,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     continue
                 if P not in targets:
                     targets.append(P)
-                smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra, None, None, "", "", r.get("who")))
+                smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra, None, None, "", "", r.get("who"), _pin.get(P, "")))
                 _all_said = _all_said or cat == "all"
             # ⚠️ SILENCE ABOUT "EVERYTHING ELSE" INHERITS THE NODE DEFAULT, the same way an un-pinned
             # interface does. Decision 4 says the node default is beaten by any interface that CHOSE for
@@ -15557,7 +15643,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     _ddev, _dkey, _dks, _deg, _dgw = _dr
                     if _dkey not in targets:
                         targets.append(_dkey)
-                    smart_items.append((nid, None, S, "all", "dev", _ddev, None, None, None, _dkey, _dks, _deg, _dgw, None))
+                    smart_items.append((nid, None, S, "all", "dev", _ddev, None, None, None, _dkey, _dks, _deg, _dgw, None, ""))
 
     for nid, node in nodes.items():
         targets = []
@@ -15666,7 +15752,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
     # 2b) Phase-3 smart entries. exit = MASQUERADE out P's WAN (egress_ip ""); direct/block = LOCAL verdicts carried
     # for the node's first-match chain. ORDER is preserved (rules were collected in panel rule order) so first-match
     # wins — a direct/block exception before a catch-all exit is honoured, and block is a real drop, not a leak.
-    for (nid, P, S, cat, action, dev_n, dev_p, base_p, extra, xkey, xks, xeg, xgw, who) in smart_items:
+    for (nid, P, S, cat, action, dev_n, dev_p, base_p, extra, xkey, xks, xeg, xgw, who, pin) in smart_items:
         sn = slot(nid)
         if action == "exit":
             T = sn["_targets"].get(P)
@@ -15674,7 +15760,10 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                 continue
             entry = {"subnet": S, "category": cat, "action": "exit", "via_iface": dev_n, "table": T}
             sn["allowed"][dev_n] = "0.0.0.0/0"
-            add_exit(P, S, dev_p, T, "", "", base_p)
+            # …carrying the rule's EXIT IP (D6). "" is what it has always been, so a fleet that pins nothing
+            # gets byte-identical exit records; a pinned one becomes `swg-fwd-snat:S --to-source X` at P,
+            # which every node already runs (1.8.6 included) — §6.4.
+            add_exit(P, S, dev_p, T, pin, "", base_p)
             # ⚠️ THE ONE PLACE THAT KNOWS "THIS SUBNET ROUTES SOME OF ITS TRAFFIC OVER A PEER NODE'S LEG,
             # AND THE TABLE IS T". `relay_eligibility` reads this rather than re-deriving it, and that is
             # the whole point: a second walk of the same rules would have to re-implement every filter
@@ -21320,7 +21409,7 @@ def api(method, path, qs, body, deps):
                 ov.pop("wan_iface", None)
         _eerr, _edrop = _apply_egress_mode(ov, body, nodes, nid, deps)
         if _eerr:
-            return 400, {"ok": False, "error": _eerr, "code": "bad_request"}
+            return 400, {"ok": False, **perr_body(_eerr), "code": "bad_request"}
         if _edrop:
             _rdrop = _edrop            # §5.4 — the caller puts it in its 200; never swallow it
         if "block" in body:                          # active block-category ids on this interface (content filtering + traffic/abuse); independent of egress_mode
@@ -21571,7 +21660,7 @@ def api(method, path, qs, body, deps):
             rules, err, _rdrop = _validate_routing(body.get("routing"), nodes, nid, [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")], snap=(deps.get("node_snaps") or {}).get(nid) or {},
                                                    roster=_routing_roster(body.get("routing"), deps))
             if err:
-                return 400, {"ok": False, "error": err, "code": "bad_request"}
+                return 400, {"ok": False, **perr_body(err), "code": "bad_request"}
             ov["egress_mode"] = "smart"; ov["routing"] = rules
         elif _cm == "exit":                               # out via a device on this node (P2)
             # ⚠️ A FOURTH COPY OF THE MODE LADDER LIVES HERE, and it is why this branch had to be added by
@@ -22051,7 +22140,7 @@ def api(method, path, qs, body, deps):
             else: inst.pop("wan_iface", None)
         _eerr, _edrop = _apply_egress_mode(inst, body, nodes, nid, deps)
         if _eerr:
-            return 400, {"ok": False, "error": _eerr, "code": "bad_request"}
+            return 400, {"ok": False, **perr_body(_eerr), "code": "bad_request"}
         if _edrop:
             _rdrop = _edrop            # §5.4 — the caller puts it in its 200; never swallow it
         # NOTE: per-peer `passwords` are NOT accepted here — they are derived from the roster's WDTT peers
@@ -22320,7 +22409,7 @@ def api(method, path, qs, body, deps):
             else: inst.pop("wan_iface", None)
         _eerr, _edrop = _apply_egress_mode(inst, body, nodes, nid, deps)
         if _eerr:
-            return 400, {"ok": False, "error": _eerr, "code": "bad_request"}
+            return 400, {"ok": False, **perr_body(_eerr), "code": "bad_request"}
         if _edrop:
             _rdrop = _edrop            # §5.4 — the caller puts it in its 200; never swallow it
         # tun_addr subnets must be unique across the fleet (mesh + routing key on subnet), like interfaces / WDTT.
