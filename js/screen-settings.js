@@ -46,10 +46,10 @@ import {
   catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
   TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitOptionGroups, fleetRuleCats, provLabelOf, providerColor, providerUsage, reportDropped,
   resetRouting, sizeSummary,
-  exitHealthMark,
+  exitHealthMark, RoutingRules, egressSaveBlock,
 } from "./routing.js";
 import { classifyAll } from "./classify.js";   // the one grammar — CustomListSheet accepts what a rule accepts
-import { customCaps, customTargets } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
+import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
 import {
   TURN_FORKS_DEFAULT, TurnCollectedIps, openRosterCheck, openServerClients, openServerDefaults,
   turnForkPlatforms, turnUpdateTarget, turnUpdating,
@@ -2057,6 +2057,11 @@ export function PanelSettingsScreen() {
     mesh_subnet: n.mesh_subnet || "", mesh_port: n.mesh_port ? String(n.mesh_port) : "", mesh_prefix: n.mesh_prefix || "",
     default_egress_ip: n.default_egress_ip || "", panel_ip: n.panel_ip || "", mesh_egress_ip: n.mesh_egress_ip || "",
     default_exit: n.default_exit || "",
+    // D2 — the default made smart, as the node's rule list (null when its default is not a list), NORMALISED through the
+    // same rows round trip the editor writes with, so opening it and changing nothing never reads as an edit. And the exit
+    // IP of its "Forward to node" rules, which lives beside the list on the node, not on a rule (§4.2).
+    default_routing: Array.isArray(n.default_routing) ? normRules(n.default_routing) : null,
+    default_routing_exit_ips: { ...(n.default_routing_exit_ips || {}) },
     endpoint_hosts: [...(n.endpoint_hosts || [])],
     catalog_cats: [...(n.catalog_cats || [])],   // provider-catalog categories opted into on this node (node-lens; separate from the 26 built-ins)
     // ⚠️ REBUILT FROM A KEY LIST ON PURPOSE. /api/state attaches a derived `why_not` to each stored exit, and
@@ -2083,6 +2088,20 @@ export function PanelSettingsScreen() {
   const [gridKeep, setGridKeep] = useState([]);   // provider-list rows kept visible after toggling to 0/N nodes (until × removes them)
   const setNV = (nid, patch) => setNodeEdits(e => ({ ...e, [nid]: { ...nFields((Store.nodes || []).find(n => n.id === nid) || {}), ...(e[nid] || {}), ...patch } }));
   const nv = (nid, f) => (nodeEdits[nid] || {})[f];
+  // ⚠️ AN EXIT WRITE IS PRUNED ON THE SERVER, AND THE DEFAULT LIST WITH IT. Removing an exit rewrites every rule of the
+  // node's list that named it to Direct and re-derives `default_exit` (prune_exit_refs, derive_default_exit) — a draft
+  // still holding the old rule then posts an exit the server no longer has, and the whole section comes back refused
+  // until the operator finds that rule (code review, P3). So the list is re-based with the exits: taken from the server
+  // where it was not being edited, and pruned the same way in the draft where it was.
+  const rebaseDefault = (nid, fresh) => {
+    const live = new Set((fresh.exits || []).map(x => String(x.id)));
+    setNodeEdits(e => { const cur = e[nid] || {}, o = orig[nid] || {};
+      let dr = cur.default_routing;
+      if (Array.isArray(dr)) dr = eq(dr, o.default_routing) ? fresh.default_routing
+        : dr.map(r => r && r.action === "dev" && !live.has(String(r.exit_id || "")) ? (({ exit_id, ...x }) => ({ ...x, action: "direct" }))(r) : r);
+      return { ...e, [nid]: { ...cur, default_routing: dr, default_exit: eq(cur.default_exit, o.default_exit) ? fresh.default_exit : cur.default_exit } }; });
+    setOrig(o => ({ ...o, [nid]: { ...(o[nid] || {}), default_routing: fresh.default_routing, default_exit: fresh.default_exit } }));
+  };
   const [saved, setSaved] = useState(0);   // timestamp; the green "All settings saved" flash shows while now < saved
   // Access & TLS reports its {dirty,busy,msg,run} up here so the shared footer drives its Save + status like every
   // other section. The ref always holds the latest; accessSig re-renders the footer only when a shown bit changes.
@@ -2157,10 +2176,13 @@ export function PanelSettingsScreen() {
         mesh_port: (e.mesh_port || "").trim() === dPort ? "" : (e.mesh_port || "").trim(),
         mesh_prefix: (e.mesh_prefix || "").trim() === dPfx ? "" : (e.mesh_prefix || "").trim(),
         default_egress_ip: e.default_egress_ip || "", panel_ip: e.panel_ip || "", default_exit: e.default_exit || "",
+        default_routing: Array.isArray(e.default_routing) ? e.default_routing : null,
+        default_routing_exit_ips: e.default_routing_exit_ips || {},
         mesh_egress_ip: e.mesh_egress_ip || "",
         endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
         catalog_cats: e.catalog_cats || [], mesh_awg: e.mesh_awg || {}, exits: e.exits || [] });
       if (!nr.ok) nerr = srvText(nr) || (T("Couldn't save {v1}", { v1: n.name }));
+      else reportDropped(nr);   // what the default list's save could not keep (§5.4) — never swallowed
     }
     if (nerr) return setMsg({ ok: false, t: nerr });
     if (Object.keys(blockEdits).length || blockRemoved.length) {   // block-list category edits (availability/defaults/sources/custom) → panel_settings.block_catalog
@@ -2229,6 +2251,9 @@ export function PanelSettingsScreen() {
       if (!eq(e.mesh_prefix, o.mesh_prefix)) fl.push(T("prefix → {v1}", { v1: e.mesh_prefix || T("val|default") }));
       if (!eq(e.default_egress_ip, o.default_egress_ip)) fl.push(T("egress IP → {v1}", { v1: e.default_egress_ip || T("val|auto") }));
       if (!eq(e.default_exit, o.default_exit)) fl.push(T("default exit"));
+      if (!eq(e.default_routing, o.default_routing) && (Array.isArray(e.default_routing) || eq(e.default_exit, o.default_exit)))
+        fl.push(Array.isArray(e.default_routing) ? T("default routing rules") : T("default exit"));   // one line for one change
+      if (!eq(e.default_routing_exit_ips, o.default_routing_exit_ips)) fl.push(T("default routing exit addresses"));
       if (!eq(e.panel_ip, o.panel_ip)) fl.push(T("panel IP → {v1}", { v1: e.panel_ip || T("val|auto") }));
       if (!eq(e.mesh_egress_ip, o.mesh_egress_ip)) fl.push(T("mesh egress IP → {v1}", { v1: e.mesh_egress_ip || T("val|auto") }));
       if (!eq((e.endpoint_hosts || []).filter(Boolean), (o.endpoint_hosts || []).filter(Boolean))) fl.push(T("other names"));
@@ -2245,6 +2270,12 @@ export function PanelSettingsScreen() {
   };
   const needsReprov = () => (Store.nodes || []).some(n => { const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}; return !eq(e.mesh_subnet, o.mesh_subnet) || !eq(e.mesh_prefix, o.mesh_prefix) || !eq(e.mesh_awg, o.mesh_awg); });
   const confirmSave = () => {
+    // a node's default list with something the rules cannot carry yet (a half-typed badge, an empty row) — say which,
+    // rather than save the list without it
+    // only the node ON SCREEN can hold a half-typed badge — another node's view, and its text, went when it was left
+    const _blk = [selNode].filter(Boolean).map(nid => [nid, Array.isArray((nodeEdits[nid] || {}).default_routing) ? nodeListBlock(nid, nodeEdits[nid].default_routing) : null])
+      .find(([, why]) => why);
+    if (_blk) { toast(T("{v1}: {v2}", { v1: ((Store.nodes || []).find(n => n.id === _blk[0]) || {}).name || _blk[0], v2: _blk[1] }), "err"); return; }
     const ch = diffList();
     if (!ch.length) { toast(T("No changes to save."), "ok"); return; }
     const rp = needsReprov();
@@ -2339,7 +2370,7 @@ const sectionLabel = k => ({
     onConfirm: () => removeCatFleet(id) });
   const catSaved = id => fleetNodes.some(n => ((orig[n.id] || {}).catalog_cats || []).includes(id));   // present in the last-SAVED fleet state → removing it is a real change (confirm); a draft-only add this session isn't
   const removeCatRow = id => catSaved(id) ? confirmRemoveCat(id) : removeCatFleet(id);   // × removes a just-added (unsaved) list with no prompt; only saved lists confirm
-  const SECF = { routing: ["routing_mode", "ip_learning", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit"], exits: ["exits"] };
+  const SECF = { routing: ["routing_mode", "ip_learning", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips"], exits: ["exits"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: customTargets(l).trim() })));
   const glDirty = sec =>
@@ -2969,6 +3000,7 @@ const sectionLabel = k => ({
                 const fresh = nFields((Store.nodes || []).find(n => n.id === selNode) || {});
                 setNV(selNode, { exits: fresh.exits });
                 setOrig(o => ({ ...o, [selNode]: { ...(o[selNode] || {}), exits: fresh.exits.map(x => ({ ...x })) } }));
+                rebaseDefault(selNode, fresh);
                 return true;
               }}
               onBlock=${m => setExitWhy(w => (w[selNode] === m ? w : { ...w, [selNode]: m }))}/>
@@ -3010,6 +3042,7 @@ const sectionLabel = k => ({
                 const fresh = nFields((Store.nodes || []).find(n => n.id === selNode) || {});
                 setNV(selNode, { exits: fresh.exits });
                 setOrig(o => ({ ...o, [selNode]: { ...(o[selNode] || {}), exits: fresh.exits.map(x => ({ ...x })) } }));
+                rebaseDefault(selNode, fresh);
                 return true;
               }}
               openManage=${seed => openModal(html`<${ExitManageSheet} node=${nodeRec}
@@ -3022,6 +3055,7 @@ const sectionLabel = k => ({
                   const fresh = nFields((Store.nodes || []).find(n => n.id === selNode) || {});
                   setNV(selNode, { exits: fresh.exits });
                   setOrig(o => ({ ...o, [selNode]: { ...(o[selNode] || {}), exits: nFields((Store.nodes || []).find(n => n.id === selNode) || {}).exits } }));
+                  rebaseDefault(selNode, fresh);
                 }}/>`)}/>
             <div class="seclabel">${T("{v1} — mesh", { v1: nodeRec.name })}</div>
             <${NodeMeshForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>
@@ -3960,8 +3994,61 @@ export function NodeMeshForm({ node, vals, set }) {
 }
 
 // Per-node egress IP roles, edited in Panel settings → Nodes egress (copied from node settings). Controlled by the parent.
+/** A stored rule list, through the editor's own round trip — the form the draft holds and the save sends, so a list opened
+ *  and left alone compares equal to the one on the server. */
+const normRules = rs => { const { rows, catchAll } = rulesToRows(rs || []); return rowsToRules(rows, catchAll); };
+
+/* THE NODE'S DEFAULT LIST (D2, ROUTING-PEERS-MESH-PLAN §7.3) — the interfaces' own `RoutingRules`, in the node scope. Its rows
+   are held HERE, because a row carries an identity (`_gid`) and draft state (`_draft`, a badge being typed) that the rule list
+   in the Settings draft cannot: rebuilding rows from rules on every render would re-mint every row and drop the half-typed
+   badge. The parent re-keys this on a save, so it re-reads what the server kept. */
+function NodeDefaultRules({ node, nodeExits, base, rules, exitIps, mode, onChange }) {
+  // The rows are kept per node (NODE_LIST_ROWS) and reused for as long as they lower to the draft — as they are, or with an
+  // exit prune applied (`adoptRows`) — and the Save button asks them whether a badge is still being typed (nodeListBlock).
+  const live = new Set((nodeExits || []).map(x => String(x.id)));
+  const adopt = (held, rs) => adoptRows(held, rs, live);   // see rulerows.js — the draft's rows, keeping what it can
+  // ⚠️ A REMOUNT DROPS `_draft`. The half-typed text itself lives in the badge field's own state and is gone with the view
+  // (switching nodes discards it, as closing an interface sheet does); a row still flagged for it would block Save over
+  // text nobody can see any more. The block is for text still on the screen.
+  const [st0, setSt] = useState(() => { const c = NODE_LIST_ROWS[node];
+    return adopt(c && { ...c, rows: (c.rows || []).map(r => r && r._draft ? (({ _draft, ...x }) => x)(r) : r) }, rules); });
+  // …and when the draft changes from OUTSIDE these rows (Settings re-basing it after an exit write), follow it here too:
+  // the screen must show what Save will post, and the next edit must not put the old rule back (code review, P3).
+  const st = adopt(st0, rules);
+  if (st !== st0) setSt(st);
+  NODE_LIST_ROWS[node] = { base, rows: st.rows, catchAll: st.catchAll, mode };
+  return html`<${RoutingRules} scope="node" node=${node} rows=${st.rows} catchAll=${st.catchAll} exitIps=${exitIps || {}}
+    onChange=${(rows, catchAll, xs) => { setSt({ rows, catchAll }); NODE_LIST_ROWS[node] = { base, rows, catchAll, mode };
+      onChange(rowsToRules(rows, catchAll), xs); }}/>`;
+}
+/** node id → {base, rows, catchAll, mode}: the default list's rows as last edited (see NodeDefaultRules). */
+const NODE_LIST_ROWS = {};
+/** Why a node's default list cannot be saved yet, or null — what the interface sheets ask `egressSaveBlock`: a badge still
+ *  being typed, an empty row, an invalid target, which the rules the Save posts would silently drop. */
+const nodeListBlock = (nid, rules) => { const c = NODE_LIST_ROWS[nid];
+  return c && JSON.stringify(rowsToRules(c.rows, c.catchAll)) === JSON.stringify(rules || []) ? egressSaveBlock({ mode: "smart", rows: c.rows, catchAll: c.catchAll }, c.mode || "kernel") : null; };
+
+/* "Whom it affects" (§7.3) — from the last sync's plan (T16: never computed per /api/state), so it reads "not planned yet"
+   for one interval after a panel restart rather than a number that is not true. Bounded hovers, as everywhere. */
+function DefaultReach({ node }) {
+  const rc = node.default_reach;
+  if (!rc) return html`<div class="hint">${T("Who this affects is worked out on the next sync.")}</div>`;
+  const auto = rc.auto || [], arr = rc.arr || [];
+  const ifTrig = html`<b>${plural(auto.length, "Auto interface")}</b>`;
+  const arTrig = html`<b>${plural(arr.length, "interface")}</b>`;
+  const hov = (trig, items) => items.length ? html`<${Popover} hoverOnly popCls="netroute-bub" trigger=${trig}>
+      ${items.slice(0, 10).map(x => html`<div class="netbub-row">${x}</div>`)}
+      ${items.length > 10 ? html`<div class="netbub-row sub">${T("…and {v1} more", { v1: items.length - 10 })}</div>` : null}<//>` : trig;
+  // two styled runs in one translated sentence: split on both markers, in whichever order the translation put them
+  const parts = T("Routes {ifaces} here and the traffic {sources} send out through this node.").split(/(\{ifaces\}|\{sources\})/);
+  const fill = { "{ifaces}": hov(ifTrig, auto), "{sources}": hov(arTrig, arr.map(([n, S]) => Store.nodeName(n) + " · " + S)) };
+  return html`<div class="hint">${parts.map(x => fill[x] || x)}
+    ${(rc.dup || []).length ? html` ${T("{v1} arrive from two nodes at once and are left to this node's own route.", { v1: rc.dup.join(", ") })}` : null}</div>`;
+}
+
 export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManage, saveExits }) {
   const ips = node.ips || []; const v = vals || {};
+  const isList = Array.isArray(v.default_routing);   // the default is a rule list (D2) — its presence is the switch
   // "Custom interface…" is a MODE of this field, not a value it can hold — picking it opens the device
   // field below and the field's answer is what gets stored. Local state, because nothing is decided until
   // a device is named and there is nothing to save in the meantime.
@@ -4038,7 +4125,9 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       : [...exitsNow(), { id: newExitId(), ...patch, producer: "adopted",
                           device: d, enabled: true, killswitch: false }];
     setForm(null);
-    await commitExits(next, select ? { default_exit: have ? have.id : next[next.length - 1].id } : null);
+    // choosing a device is choosing a PLAIN default: a list still stored would make the server ignore it (§4.2)
+    await commitExits(next, select ? { default_exit: have ? have.id : next[next.length - 1].id,
+                                       ...(isList ? { default_routing: null } : {}) } : null);
   };
   // ⚠️ THE SOURCE RIDES WITH THE RENAME, so this form is not two acts wearing one button. It is still not a
   // REPOINT: `device` stays read-only for an existing exit, because changing which device an exit is is a
@@ -4092,7 +4181,7 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       ${/* The form belongs to this list, and so does any popup opened FROM the form — portalled to the
             body, so nothing the caller holds `contains` it. "A click in some open list is not a click away
             from this list" is the whole rule, and it needs no marker on either side to say so. */""}
-      <${Dropdown} value=${v.default_exit || ""} closeRef=${ddClose}
+      <${Dropdown} value=${isList ? "__smart__" : (v.default_exit || "")} closeRef=${ddClose}
         keep=${t => !!(t && t.closest && t.closest(".exname, .ddpop"))}
         ${/* While the form is up it sits directly below this control, so the list has to open the other way
               or it covers the fields the operator opened it to edit. */""}
@@ -4102,8 +4191,12 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
         onChange=${x => {
           if (x === "__custom__") return setForm({ kind: "custom", device: "", title: "", egress_ip: "" });
           setForm(null);
-          if (String(x).startsWith("dev:")) return addDevice(String(x).slice(4));
-          set({ default_exit: x });
+          // D2 — choosing the list keeps what the default was as its "Everything else", so nothing about where the
+          // remainder goes changes by choosing it; the operator adds rules above that.
+          if (x === "__smart__") return isList ? null
+            : set({ default_routing: v.default_exit ? [{ enabled: true, category: "all", action: "dev", exit_id: v.default_exit }] : [] });
+          if (String(x).startsWith("dev:")) return addDevice(String(x).slice(4));   // clears the list itself (see addDevice)
+          set({ default_exit: x, ...(isList ? { default_routing: null } : {}) });
         }}
         options=${[
         // NAME THE INTERFACE, not the concept. "This node's own connection" is a phrase; `Default (eth0)`
@@ -4163,7 +4256,12 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
           onRemove: a => { setArmed("");
             commitExits(exitsNow().filter(x => String(x.id) !== String(a.id)),
                         String(v.default_exit || "") === String(a.id) ? { default_exit: "" } : null); },
-        })]}/>
+        }),
+        // LAST: the default made smart — the SAME label and class as the interface picker's own entry. ⚠️ The comment
+        // above said a node's default "cannot be smart cascade (a rule list is the thing that HAS a default, not a default
+        // itself)". Reversed by D2 (ROUTING-PEERS-MESH-PLAN §3.1, §7.3): the default IS a rule list now, and what IT falls
+        // back to is its own "Everything else" — still exactly one default, with rules in it.
+        { value: "__smart__", label: T("Routing (smart cascade)"), className: "egopt-mode" }]}/>
       ${openManage ? html`<button type="button" class="btn btn-icon exdd-gear" title=${T("Manage…")}
         aria-label=${T("Manage…")} onClick=${() => openManage(v.exits)}><${Ic} i="gear"/></button>` : null}
       </div>
@@ -4175,7 +4273,8 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       // but it answers a DIFFERENT question: `dial_src` is which of this node's addresses BUILDS the tunnel,
       // and the field asks what source the packets carry. For an imported exit that IS the inside address —
       // and a pasted profile's is its own (10.9.0.44); only WARP's is a constant.
-      const _x = (node.exits || []).find(e => e.id === (v.default_exit || ""));
+      // with a list, the address below is the one its Direct rules and its silent "Everything else" leave by
+      const _x = isList ? null : (node.exits || []).find(e => e.id === (v.default_exit || ""));
       if (!_x) {
         return html`<div class="field"><label>${T("Default egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— direct internet exit")}</span></label>
           <${NodeIpPick} ips=${ips} value=${v.default_egress_ip || ""} onChange=${ip => set({ default_egress_ip: ip })} auto=${T("Auto (MASQUERADE)")}/></div>`;
@@ -4242,6 +4341,15 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
           ? T("A tunnel something else on this node runs that it hasn't reported — a proxy's TUN, a WireGuard client. It is added to this node's exits and chosen here.")
           : ""}/>` : null}
     </div>
+    ${/* D2 — THE DEFAULT, MADE SMART: one rule list for this node's Auto interfaces, its smart interfaces' silence and the
+          traffic other nodes cascade out through it (§3.1, §7.3). Keyed by what the server holds, so a save re-reads it. */""}
+    ${isList ? html`<div class="field">
+      <${NodeDefaultRules} key=${node.id + ":" + JSON.stringify(node.default_routing || [])} node=${node.id} mode=${v.routing_mode || node.routing_mode}
+        nodeExits=${v.exits || node.exits || []}
+        base=${JSON.stringify(node.default_routing || [])}
+        rules=${v.default_routing} exitIps=${v.default_routing_exit_ips || {}}
+        onChange=${(rules, xs) => set({ default_routing: rules, default_routing_exit_ips: xs || {} })}/>
+      <${DefaultReach} node=${node}/></div>` : null}
     <div class="field"><label>${T("Panel egress connection IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to reach the panel")}</span></label>
       <${NodeIpPick} ips=${ips} value=${v.panel_ip || ""} onChange=${ip => set({ panel_ip: ip })} auto=${T("Auto (default route)")}/></div>
     <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>

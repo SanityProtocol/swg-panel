@@ -6342,6 +6342,44 @@ export const STR = {
   "the exit address must be an IPv4 address": "адрес выхода должен быть адресом IPv4",
   "the exit address must name another node in this panel": "адрес выхода должен указывать на другой узел этой панели",
   "the exit addresses must be given per node": "адреса выхода должны задаваться по узлам",
+  // The node's default made smart (ROUTING-PEERS-MESH-PLAN §7.3, §7.4, D2/D9/D11): one rule list for its own clients and the
+  // traffic other nodes cascade out through it
+  "Node default — then this node's {v1}": "Как у узла — затем {v1} этого узла",
+  "This node's own clients": "Только клиенты этого узла",
+  "Traffic cascaded in from other nodes": "Только трафик с других узлов",
+  "All — this node's clients and traffic cascaded in": "Все — клиенты этого узла и трафик с других узлов",
+  "chip|own clients": "свои клиенты",
+  "chip|cascaded in": "с других узлов",
+  "Traffic that came from {node} skips this rule — it would go back where it came from.":
+    "Трафик, пришедший с {node}, пропускает это правило — иначе он вернулся бы туда, откуда пришёл.",
+  "{node} lets this traffic out through its own exit and never forwards it further.":
+    "{node} выпускает этот трафик через свой выход и дальше его не пересылает.",
+  "Kernel SNI on this node can't match hostnames for traffic cascaded in — only IP addresses and networks apply to it.":
+    "Kernel SNI на этом узле не умеет сопоставлять имена хостов для трафика с других узлов — к нему применяются только IP-адреса и сети.",
+  "Every rule of this node's default that sends traffic through {v1} leaves as this address.":
+    "Все правила по умолчанию этого узла, которые отправляют трафик через {v1}, выходят с этого адреса.",
+  "Routes {ifaces} here and the traffic {sources} send out through this node.":
+    "Направляет {ifaces} этого узла и трафик, который {sources} выпускают через этот узел.",
+  "Who this affects is worked out on the next sync.": "Кого это затрагивает, станет известно после следующей синхронизации.",
+  "{v1} arrive from two nodes at once and are left to this node's own route.":
+    "{v1} приходят сразу с двух узлов и выходят по собственному маршруту этого узла.",
+  "default routing rules": "правила маршрутизации по умолчанию",
+  "a more specific rule in this node's default wins these hosts: {toks}": "в правилах этого узла по умолчанию есть более точное — эти адреса забирает оно: {toks}",
+  "Then this node's default:": "Затем правила этого узла по умолчанию:",
+  "a more specific rule below wins these hosts for the traffic it names: {toks}": "ниже есть более точное правило — для своего трафика эти адреса забирает оно: {toks}",
+  "an exit": "выход",
+  "default routing exit addresses": "адреса выхода для правил по умолчанию",
+  // …and the panel's sentences for it
+  "{node} needs an update to route traffic cascaded in by destination — until then it all leaves by {catch}.":
+    "{node} нужно обновить для маршрутизации входящего трафика по направлениям — до обновления он весь выходит через {catch}.",
+  "traffic cascaded in": "трафик с других узлов",
+  "{v1} and traffic cascaded in": "{v1} и трафик с других узлов",
+  "this node's own address": "собственный адрес этого узла",
+  "A node's default rules apply to its own clients or to traffic cascaded in, not to chosen people":
+    "Правила узла по умолчанию действуют на его клиентов или на трафик с других узлов, а не на выбранных людей",
+  "a rule's audience must be local or cascaded": "аудитория правила должна быть local или cascaded",
+  "“Everything else” applies to both this node's clients and traffic cascaded in":
+    "«Всё остальное» действует и на клиентов этого узла, и на трафик с других узлов",
 };
 
 /* Counted nouns. Russian selects between three forms by the last digit, with a correction for the
@@ -6376,6 +6414,7 @@ export const PLURALS = {
   node: ["нода", "ноды", "нод"],
   user: ["пользователь", "пользователя", "пользователей"],
   interface: ["интерфейс", "интерфейса", "интерфейсов"],
+  "Auto interface": ["интерфейс на «Авто»", "интерфейса на «Авто»", "интерфейсов на «Авто»"],
   server: ["сервер", "сервера", "серверов"],
   update: ["обновление", "обновления", "обновлений"],
   // Prepositional case — this slot sits after «на» ("на 1 ноде"), where the nominative "нода" is wrong.

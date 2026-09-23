@@ -191,7 +191,9 @@ export function srvVars(vars) {
   const out = {};
   for (const k in vars) {
     const v = vars[k];
-    out[k] = (v && typeof v === "object" && "n" in v) ? plural(v.n, v.noun) : v;
+    // …and a PHRASE the panel nested as a sentence of its own (`perr("traffic cascaded in")`) is translated before it goes in
+    out[k] = (v && typeof v === "object" && "error_key" in v) ? srvText(v)
+      : (v && typeof v === "object" && "n" in v) ? plural(v.n, v.noun) : v;
   }
   return out;
 }

@@ -2699,6 +2699,7 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .listsize{cursor:default;font-size:11px;color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
 .listsize:hover{color:var(--ink-2)}
 .rrrow .rrlint{grid-column:1/-1}   /* lint messages drop to their own full-width grid row */
+.rrrow .rrnote{grid-column:1/-1;margin:0}   /* …and so do a node list's notes on a "Forward to node" rule (§7.3) */
 .rrlint{font-size:10px;color:var(--partial);font-family:var(--mono)}
 /* the catch-all footer reuses the row's grid template + the row's content inset (transparent padding+border) so
    its columns start/end identically. The grip/xbtn ghosts are invisible width-matched spacers for cols 1 & 5. */
