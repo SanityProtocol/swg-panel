@@ -2170,8 +2170,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, onChange })
   // carried along when a rule is re-pointed at another node.
   const ips = exitIps || {};
   const emit = (rs, ca, xs) => onChange(rs, ca === undefined ? catchAll : ca, xs === undefined ? ips : xs);
-  // Blank clears the entry: "Auto" is the absence of an address, not an address that is empty.
-  const setExitIp = (nid, addr) => { const nx = { ...ips }; if (addr) nx[nid] = addr; else delete nx[nid]; return nx; };
+
   const rs = useReorder(dispRows.map(r => r._gid), ids => emit(ids.map(id => dispRows.find(r => r._gid === id)).filter(Boolean)), "y", { container: ".rrlist", card: ".rrrow" });
   const setRow = (gid, patch) => emit(dispRows.map(r => r._gid === gid ? { ...r, ...patch } : r));
   const addRow = () => emit([...dispRows, { _gid: newGid(), enabled: true, badges: [], action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
@@ -2547,7 +2546,12 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
     ${asRec ? html`<div class="field"><label>${T("As address")}</label>
       ${/* `rrdest rsdest` — the SAME pair the control above it wears, or the width cap does not apply (it
             needs the block display `rrdest` gives) and the two fields in one window do not line up. */""}
-      <span class="rrdest rsdest"><${NodeIpPick} ips=${asIps} value=${ip} onChange=${setIp}
+      ${/* ⚠️ KEYED BY THE NODE. `NodeIpPick` holds "am I in Custom mode" in its own state and only leaves it
+            when the operator picks a listed option — so reusing one instance across a change of "Leaves by"
+            carried the PREVIOUS node's Custom mode over: pick a node whose address is not in its reported
+            list, switch to one with no address, and the field offered an empty Custom box instead of that
+            node's Auto. A key makes it a different control for a different node, which is what it is. */""}
+      <span class="rrdest rsdest"><${NodeIpPick} key=${asNode} ips=${asIps} value=${ip} onChange=${setIp}
         auto=${T("Auto ({v1}'s default)", { v1: Store.nodeName(asNode) })}/></span>
       <div class="hint">${asIps.length
         ? T("Every rule that sends this interface through {v1} leaves as this address.", { v1: Store.nodeName(asNode) })

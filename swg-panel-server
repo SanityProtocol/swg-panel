@@ -9759,6 +9759,7 @@ def apply_iface_meta(node_cfg, interfaces, ivk_pub="", vault_restore_ok=False):
         # csqtt_cfg) and a gate compares them, because a fourth kind diverging is how this comes back.
         ifc["exit_id"] = ov.get("exit_id") or ""                 # egress via an exit DEVICE on this node (P2), by id
         ifc["routing"] = ov.get("routing") or []                 # smart-routing rule list (P3): [{category,action,node}]
+        ifc["routing_exit_ips"] = dict(ov.get("routing_exit_ips") or {})   # {far node: address} its rules leave that node by (P2 §4.2)
         ifc["reach"] = reach_level(ov.get("reach"))                 # device access: who may open connections to devices here (absent = user, A3)
         ifc["block"] = ov.get("block") or []                     # active block-category ids (content-filter + traffic/abuse); drives the Block-traffic modal section
         ifc["system"] = bool(ov.get("system"))         # panel-managed mesh link interface (a node↔node connection)
@@ -14800,7 +14801,7 @@ def prune_default_exit(rec):
     return False
 
 
-def _clean_exit_ips(m, nodes, nid, stored):
+def _clean_exit_ips(m, nodes, nid, stored, lenient=False):
     """`{<node id>: <IPv4>}` → the map to store, or (None, why). The ordinary `(value, error)` shape every
     other validator in this file answers in — which is also the shape the i18n extractor knows how to read,
     so these sentences reach a Russian screen in Russian (this file's own warning: a message written in a
@@ -14822,12 +14823,19 @@ def _clean_exit_ips(m, nodes, nid, stored):
         # save, so refusing a stored one would make that interface unsavable, including by the edit that
         # removes it.
         if (k not in nodes or k == nid) and k not in stored:
+            # ⚠️ `lenient` IS THE CREATE PATH, which is deliberately more forgiving than the edit (a bad
+            # `egress_node` is ignored there and 400s here). There is nothing stored to tolerate on a create,
+            # so an entry for a node deleted while the sheet was open would fail the whole interface
+            # creation over a setting whose rules the operator has already moved elsewhere. Dropped instead:
+            # an address for a node that is not there routes nothing either way.
+            if lenient:
+                continue
             return None, "the exit address must name another node in this panel"
         out[k] = v
     return out, None
 
 
-def _apply_exit_ips(rec, body, nodes, nid):
+def _apply_exit_ips(rec, body, nodes, nid, lenient=False):
     """THE EXIT IP, PER FAR NODE (D6, §4.2) — `routing_exit_ips: {<node id>: <IPv4>}` on this record.
 
     Which of a far node's addresses this interface's traffic leaves it by. It lives HERE, beside the rule
@@ -14858,7 +14866,8 @@ def _apply_exit_ips(rec, body, nodes, nid):
     (§7.2); the SHAPE is what is checked here."""
     if "routing_exit_ips" not in body:
         return None
-    clean, err = _clean_exit_ips(body.get("routing_exit_ips"), nodes, nid, rec.get("routing_exit_ips") or {})
+    clean, err = _clean_exit_ips(body.get("routing_exit_ips"), nodes, nid,
+                                 rec.get("routing_exit_ips") or {}, lenient=lenient)
     if err:
         return err
     if clean:
@@ -17317,7 +17326,7 @@ def api(method, path, qs, body, deps):
                         # routing / filters. Config fields only — never the owner password / sealed key material.
                         "wdtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("wg_addr", "listen", "fork", "wg_port", "max_passwords",
                                                                    "stopped", "block", "egress_mode", "egress_node",
-                                                                   "egress_ip", "wan_iface", "routing", "title", "params",
+                                                                   "egress_ip", "wan_iface", "routing", "routing_exit_ips", "title", "params",
                                                                    "raw_port", "raw_iface", "raw_addr", "exit_id", "reach") if k in ov}
                                      for ifn, ov in _w.items()},
                         # …and the CIPHERTEXT of a WDTT escrow this panel cannot vouch for, so the browser —
@@ -17335,7 +17344,7 @@ def api(method, path, qs, body, deps):
                         # routing / filters. Config fields only — never the owner password / minted access passwords.
                         "csqtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
                                                                     "block", "egress_mode", "egress_node", "egress_ip",
-                                                                    "wan_iface", "routing", "title", "params", "exit_id", "reach") if k in ov}
+                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach") if k in ov}
                                       for ifn, ov in _c.items()},
                         "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
                         "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
@@ -21680,7 +21689,7 @@ def api(method, path, qs, body, deps):
             ov["egress_mode"] = "smart"; ov["routing"] = rules
             # …and the exit IPs with them: an interface CREATED with a rule already carrying one must keep
             # it, or the first save after creation is where the operator's choice quietly goes missing.
-            _xerr = _apply_exit_ips(ov, body, nodes, nid)
+            _xerr = _apply_exit_ips(ov, body, nodes, nid, lenient=True)
             if _xerr:
                 return 400, {"ok": False, "error": _xerr, "code": "bad_request"}
         elif _cm == "exit":                               # out via a device on this node (P2)

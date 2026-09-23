@@ -20,12 +20,13 @@ about one address, a re-pointed rule cannot carry the previous node's address, a
   WHAT IS GONE — the rule list carries no address, so a client that sends one on a rule has it dropped.
 
 Run: python3 tests/routing_exit_ip_selftest.py   (0 = pass)
-  --plant a|b|c|d|e   plant one defect and expect RED on its own check (exit 0 when caught):
+  --plant a|b|c|d|e|f plant one defect and expect RED on its own check (exit 0 when caught):
      a  `_ip4` trusts the stored value (a hand-edited map becomes `--to-source <junk>` on a real node)
      b  a pinned interface is not exempt from the far node's default exit (the address is overruled, invisibly)
      c  the door refuses a STORED node id (deleting a node makes that interface unsavable, fix included)
      d  the plan ignores the map (the address is configured, shown, and routes nothing)
      e  a save that does not mention the addresses wipes them (every older client silently clears them)
+     f  the interface record served to the browser drops the map (the editor reopens empty and the next save clears it)
 """
 import importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -43,6 +44,8 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {
+    "f": ('''        ifc["routing_exit_ips"] = dict(ov.get("routing_exit_ips") or {})''',
+          '''        pass'''),
     "a": ('''    try:
         ipaddress.IPv4Address(v)
     except Exception:
@@ -223,6 +226,32 @@ check("a pinned SMART rule's subnet gets no default-exit entry at P either "
       "10.8.0.0/24" not in dx(ps), dx(ps))
 check("…and its exit record still carries the address", [e["egress_ip"] for e in ex(ps)] == [X1], ex(ps))
 
+# ── 3b. the round trip through the browser ──────────────────────────────────────────────────────────────
+# ⚠️ THE ONE THAT SHIPPED. A record field the save path writes and NO builder publishes reads to the browser
+# as absent, so `egressInit` opens the editor with an empty map and the very next save — even one that only
+# changes the MTU — sends `{}` and clears it. The feature was write-once-then-lost, and nothing said so.
+# `tests/settings_node_fields_selftest.py` derives the ladder's fields and checks all three builders; this is
+# the same fact from the other end, on the function itself.
+print("\n[the round trip through the browser]")
+_ifs = {"wg0": {"meta": {}}}
+P.apply_iface_meta({"ifaces": {"wg0": {"egress_mode": "smart", "routing": [], "routing_exit_ips": {"n2": X1}}}}, _ifs)
+check("the interface record the browser is served carries the address map",
+      _ifs["wg0"].get("routing_exit_ips") == {"n2": X1}, sorted(_ifs["wg0"]))
+_ifs2 = {"wg0": {"meta": {}}}
+P.apply_iface_meta({"ifaces": {"wg0": {"egress_mode": "smart", "routing": []}}}, _ifs2)
+check("…and an interface with none is served an empty map, not a missing key",
+      _ifs2["wg0"].get("routing_exit_ips") == {}, _ifs2["wg0"].get("routing_exit_ips"))
+
+print("\n[the create path is lenient, the edit path is not]")
+_ov = {}
+_cerr = P._apply_exit_ips(_ov, {"routing_exit_ips": {"n9": X1}}, fleet(), "n1", lenient=True)
+check("creating an interface drops an entry for a node that is not there rather than refusing the creation",
+      _cerr is None and "routing_exit_ips" not in _ov, (_cerr, _ov))
+_ov2 = {}
+_cerr2 = P._apply_exit_ips(_ov2, {"routing_exit_ips": {"n9": "nope"}}, fleet(), "n1", lenient=True)
+check("…but a malformed address is still refused there — that is a bad request, not a stale reference",
+      isinstance(_cerr2, str) and "IPv4" in _cerr2, _cerr2)
+
 # ── 4. what the shape removed ───────────────────────────────────────────────────────────────────────────
 print("\n[what the shape removed]")
 src = open(path, encoding="utf-8").read()
@@ -234,7 +263,8 @@ check("the wire is unchanged: the address travels only as an exit record's `egre
 
 if PLANT:
     want = {"a": "never reaches a node", "b": "exempt from P's default", "c": "STORED key",
-            "d": "reaches the FAR node", "e": "leaves them exactly as they were"}[PLANT]
+            "d": "reaches the FAR node", "e": "leaves them exactly as they were",
+            "f": "browser is served carries"}[PLANT]
     hit = [f for f in FAILS if want in f]
     print("\nPLANT %s: %s" % (PLANT, "CAUGHT — " + " · ".join(hit) if hit else "NOT CAUGHT (the check passed with the defect in)"))
     sys.exit(0 if hit else 1)

@@ -139,9 +139,27 @@ cs = block(psrc, r'"csqtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k =
 check("the interface meta publishes exit_id", bool(meta))
 check("wdtt_cfg publishes exit_id", '"exit_id"' in wd, wd[:120])
 check("csqtt_cfg publishes exit_id", '"exit_id"' in cs, cs[:120])
-# …and they must agree about the whole egress quartet, since one ladder serves all three kinds.
-for k in ("egress_mode", "egress_node", "egress_ip", "wan_iface", "routing", "exit_id"):
-    check("both self-contained kinds publish %s" % k, ('"%s"' % k) in wd and ('"%s"' % k) in cs)
+# …and they must agree about the whole egress set, since one ladder serves all three kinds.
+#
+# ⚠️ DERIVED FROM THE SAVE PATH, NOT TYPED HERE. This used to be a hand-written tuple of six names, and a
+# seventh field (`routing_exit_ips`, the exit IP) was added to the ladder, stored, and published by none of
+# the three builders — the EXACT defect at the top of this file, past the gate written for it, because the
+# gate could only see the names somebody remembered to add. Read the keys the egress ladder actually writes
+# instead: every `rec[...] = ` and `rec.pop(...)` in `_apply_egress_mode` and its helpers is a field the
+# browser must get back, or the next save rebuilds the record without it.
+def _fn(src, name):
+    """One top-level function's body, by name — sliced to the next top-level `def`."""
+    i = src.index("\ndef %s(" % name) + 1
+    j = src.find("\ndef ", i + 1)
+    return src[i:j if j > 0 else len(src)]
+
+
+_ladder = _fn(psrc, "_apply_egress_mode") + _fn(psrc, "_apply_exit_ips")
+_written = set(re.findall(r'rec\["([a-z_]+)"\]\s*=', _ladder)) | set(re.findall(r'rec\.pop\("([a-z_]+)"', _ladder))
+check("the egress ladder's fields were found (an empty set would pass every check below)", len(_written) >= 5, sorted(_written))
+for k in sorted(_written):
+    check("the interface meta publishes %s" % k, ('ifc["%s"]' % k) in psrc, k)
+    check("both self-contained kinds publish %s" % k, ('"%s"' % k) in wd and ('"%s"' % k) in cs, k)
 
 if PERTURB:
     if FAILS:
