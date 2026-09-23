@@ -325,7 +325,9 @@ Its limits:
 - **Route certain sites through a certain country (optional).** For example, send streaming out through a
   server abroad and keep everything else local. Set it per server under **Settings → Routing & Blocking**.
   A rule can also apply to chosen people only: pick **Advanced…** at the end of its destination list and choose
-  people, groups or single devices.
+  people, groups or single devices. The same window is where a rule that forwards to another server picks
+  **which of that server's addresses** the traffic leaves it by — useful when a server has several and a site
+  expects one of them.
 - **Get past tougher blocks (optional).** If plain VPN traffic is blocked on a network, swgPanel can wrap
   it through a **turn-proxy** — set up under a server’s details and in **Settings → Turn proxies**.
 - **Feed other tools (optional).** The panel can share live status with dashboards like **Grafana** or
@@ -452,6 +454,11 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   older panel and saving an interface there drops the chosen people from its rules for good. Going back to an
   older version on a server that ran these rules — or, on **Hybrid SNI** or **Kernel SNI**, a **Block** rule below an
   Exit or Direct rule — run `nft delete table inet swg_smart` on it once: it rebuilds its routing within a minute.
+- **The address a rule leaves the far server by is one per interface and server.** Every rule that sends one
+  interface through that server shares it, so two rules can't name two different addresses. The server itself
+  needs no update — even an older one applies it. An older panel doesn't: while it runs, the rules keep
+  forwarding to the right server and that server picks the address itself, and saving an interface there
+  drops the chosen address for good.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more
