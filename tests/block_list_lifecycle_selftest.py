@@ -91,10 +91,10 @@ def main():
         m.list_ensure("blk:tp:a", "host", force=True); settle(m)
     check("…and not re-attempted on every sync after it failed", calls.count("blk:tp:a") == n0 + 1, calls.count("blk:tp:a") - n0)
     open(os.path.join(feeds, "a.txt"), "w").write("a1.example.com\na2.example.com\na3.example.com\n")
-    m._LIST_REFRESH_FAIL["blk:tp:a|host"] = (time.time() - 3700, 1)   # the back-off has run out
+    m._LIST_FAILED["blk:tp:a|host"] -= m._LIST_FAIL_MAX + 1     # the back-off has run out
     m.list_ensure("blk:tp:a", "host", force=True); settle(m)
     check("after the back-off the refresh lands", m.list_meta("blk:tp:a", "host").get("n") == 3)
-    check("…and clears the failure state", "blk:tp:a|host" not in m._LIST_REFRESH_FAIL and "blk:tp:a|host" not in m._LIST_ERR)
+    check("…and clears the failure state", all("blk:tp:a|host" not in d for d in (m._LIST_FAILED, m._LIST_FAILN, m._LIST_ERR)))
 
     print("4. a partial union knows it is partial and is rebuilt when the member lands")
     ukey = m._blku_key("host", ["blk:tp:a", "blk:tp:b"])
@@ -108,7 +108,14 @@ def main():
     m.list_ensure("blk:tp:b", "host"); settle(m)
     check("b lands", (m.list_meta("blk:tp:b", "host") or {}).get("n") == 2)
     check("the union now reads stale", m.list_meta(ukey, "host").get("mv") != m._blku_member_vers(ukey, "host"))
-    m.list_ensure(ukey, "host", force=True); settle(m)
+    held = 0                                                   # every download slot busy (a one-core panel mid-download)
+    while m._RESOLVE_SEM.acquire(blocking=False):
+        held += 1
+    m.list_ensure(ukey, "host", force=True)
+    built = settle(m, 5)
+    for _ in range(held):
+        m._RESOLVE_SEM.release()
+    check("a union builds while every download slot is taken (it never queues behind downloads)", built and held > 0)
     um = m.list_meta(ukey, "host")
     check("rebuilt union holds both members, deduped", um.get("n") == 4, um)
     check("…and reads current again", um.get("mv") == m._blku_member_vers(ukey, "host"))

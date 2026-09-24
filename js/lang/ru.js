@@ -5241,10 +5241,10 @@ export const STR = {
   "not downloaded": "не скачан",
   // the two-panels banner (store.js trackInstance)
   "Two different panels are answering at this address.": "По этому адресу отвечают две разные панели.",
-  "Each keeps its own servers, settings and lists, and the page shows whichever one answered — so what you see can change between reloads, and changes saved on the one your servers don't sync to never reach them. Stop the panel you don't use.":
-    "У каждой свои серверы, настройки и списки, а страница показывает ту, что ответила, — поэтому картина может меняться от перезагрузки к перезагрузке, а изменения, сохранённые в панели, с которой ваши серверы не синхронизируются, до них не доходят. Остановите панель, которой вы не пользуетесь.",
+  "Each keeps its own servers, settings and lists, and the page shows whichever one answered — so what you see can change between reloads, and changes saved on the one your servers don't sync to never reach them. Keep the one your servers report to; stop the other.":
+    "У каждой свои серверы, настройки и списки, а страница показывает ту, что ответила, — поэтому картина может меняться от перезагрузки к перезагрузке, а изменения, сохранённые в панели, с которой ваши серверы не синхронизируются, до них не доходят. Оставьте ту, с которой синхронизируются ваши серверы, а другую остановите.",
   "{v1} · version {v2} · state {v3} · {v4} · running since {v5}": "{v1} · версия {v2} · данные {v3} · {v4} · работает с {v5}",
-  "nodes: {n}": "нод: {n}",
+  "nodes: {n}, reporting here: {r}": "нод: {n}, синхронизируются сюда: {r}",
   "this page": "эта страница",
   "also answered": "отвечала также",
   "last seen {v1}": "последний ответ {v1}",

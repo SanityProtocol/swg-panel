@@ -306,7 +306,7 @@ export const Store = {
     // behaviour before this existed. Not a number (a proxy's error page, a truncated body) → keep the last good
     // offset: a NaN here would silently poison every window and every "x ago" in the console.
     if (Number.isFinite(d.panel_now) && d.panel_now > 0) clock.skewMs = Date.now() - d.panel_now * 1000;
-    trackInstance(d.instance, d.panel_now, (d.nodes || []).length);
+    trackInstance(d.instance, d.panel_now, d.nodes || []);
     // store_configs is now an enum: "encrypted" (blob at rest) | "off". storeConfigs stays a convenience bool
     // meaning "the panel keeps configs" (now encrypted). configsPlaintext = legacy plaintext files awaiting migration.
     this.storeMode = (d.store_configs === "off" || d.store_configs === false) ? "off" : "encrypted";
@@ -585,7 +585,9 @@ function trackInstance(inst, now, nodes) {
   let list = [];
   try { list = JSON.parse(localStorage.getItem(INST_KEY) || "[]"); } catch (_) {}
   if (!Array.isArray(list)) list = [];
-  const cur = { id: String(inst.id), started: Number(inst.started) || now, last: now, nodes,
+  // `reporting` = servers syncing to THIS panel right now — the one to keep is the one they report to
+  const cur = { id: String(inst.id), started: Number(inst.started) || now, last: now, nodes: nodes.length,
+                reporting: nodes.filter(n => n && n.status === "online").length,
                 version: inst.version || "", method: inst.method || "", state_dir: inst.state_dir || "" };
   list = [cur, ...list.filter(o => o && o.id !== cur.id && now - (Number(o.last) || 0) < 7 * 86400)].slice(0, 8);
   try { localStorage.setItem(INST_KEY, JSON.stringify(list)); } catch (_) {}
@@ -598,14 +600,15 @@ function trackInstance(inst, now, nodes) {
 function showTwinBanner(t) {
   let b = document.getElementById("panel-twin-banner");
   if (!t) { if (b) b.remove(); return; }
-  if (b && b.dataset.pair === t.pair && b.dataset.n === String(t.cur.nodes)) return;
+  const sig = t.pair + "|" + t.cur.nodes + "|" + t.cur.reporting;
+  if (b && b.dataset.sig === sig) return;
   if (!b) { b = document.createElement("div"); b.id = "panel-twin-banner"; b.className = "twin-banner"; document.body.insertBefore(b, document.body.firstChild); }
-  b.dataset.pair = t.pair; b.dataset.n = String(t.cur.nodes);
+  b.dataset.sig = sig;
   const since = ts => new Date(ts * 1000).toLocaleString();
   const who = o => T("{v1} · version {v2} · state {v3} · {v4} · running since {v5}", {
-    v1: o.method || "?", v2: o.version || "?", v3: o.state_dir || "?", v4: T("nodes: {n}", { n: o.nodes }), v5: since(o.started) });
+    v1: o.method || "?", v2: o.version || "?", v3: o.state_dir || "?", v4: T("nodes: {n}, reporting here: {r}", { n: o.nodes, r: o.reporting == null ? "?" : o.reporting }), v5: since(o.started) });
   b.innerHTML = `<b>${esc(T("Two different panels are answering at this address."))}</b> `
-    + esc(T("Each keeps its own servers, settings and lists, and the page shows whichever one answered — so what you see can change between reloads, and changes saved on the one your servers don't sync to never reach them. Stop the panel you don't use."))
+    + esc(T("Each keeps its own servers, settings and lists, and the page shows whichever one answered — so what you see can change between reloads, and changes saved on the one your servers don't sync to never reach them. Keep the one your servers report to; stop the other."))
     + `<div class="twin-rows"><div><span class="twin-tag">${esc(T("this page"))}</span>${esc(who(t.cur))}</div>`
     + `<div><span class="twin-tag">${esc(T("also answered"))}</span>${esc(who(t.twin))} · ${esc(T("last seen {v1}", { v1: since(t.twin.last) }))}</div></div>`
     + `<button type="button" class="twin-x">${esc(T("Dismiss"))}</button>`;

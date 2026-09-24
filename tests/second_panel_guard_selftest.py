@@ -76,6 +76,8 @@ rc, out, calls = run("docker", unit=True, active=True, env={"SWG_OTHER_PANEL": "
 check("bare panel: disabled --now, then continues", rc == 0 and "systemctl disable --now swg-panel-server" in calls, (out, calls))
 rc, out, calls = run("docker", unit=True, active=True, env={"SWG_OTHER_PANEL": "stop", "DRYRUN": "true"})
 check("dry-run stops nothing", rc == 0 and "disable" not in calls, calls)
+rc, out, calls = run("docker", unit=True, active=True, env={"DRYRUN": "true"})
+check("dry-run never asks — it says what it would ask and continues", rc == 0 and "CONTINUED" in out and "would ask" in out, out)
 
 print("4. keep / abort")
 rc, out, calls = run("baremetal", "swg-panel\n", "swg-panel\n", env={"SWG_OTHER_PANEL": "keep"})

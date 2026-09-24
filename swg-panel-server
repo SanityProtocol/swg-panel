@@ -262,6 +262,16 @@ def _invalidate_state_cache():
     _STATE_CACHE["at"] = 0.0   # next /api/state build runs fresh (monotonic now - 0 >> TTL)
 
 
+def _instance_view(deps):
+    """_INSTANCE plus what an operator needs to tell two panels apart. Filled on the first call and kept: the version is
+    the one this PROCESS runs (an update rewrites VERSION on disk under a process that has not restarted yet)."""
+    if "version" not in _INSTANCE:
+        _INSTANCE.update(version=_read_version(),
+                         method="nixos" if PANEL_DECLARATIVE else ("docker" if os.path.exists("/.dockerenv") else "bare-metal"),
+                         state_dir=os.path.dirname(os.path.abspath(deps.get("nodes_path") or "")))
+    return _INSTANCE
+
+
 def _read_version():
     for p in (os.path.join(WEB_DIR, "VERSION"),
               os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")):
@@ -13620,33 +13630,24 @@ def list_meta(cat, tier):
 # whenever there is no meta, so a caller polling a failing list re-armed the fetch on every ask — it was in
 # flight again before the answer was written, so it reported "pending" for ever and hammered upstream for ever.
 # Inside the cooldown the answer is the truth we already have; outside it, one more attempt.
-_LIST_FAILED = {}             # "cat|tier" -> ts of the LAST resolve that ended with no stored list
-_LIST_FAIL_TTL = 60           # how long that verdict stands before anyone is allowed to try again
-_LIST_FAIL_MAX = 1800         # …doubling per consecutive failure up to this — see _list_backoff
-# ⚠️ A FAILING LIST MUST BACK OFF, AND SO MUST A FAILING REFRESH. Two ways this used to fetch upstream every few
-# seconds, for ever: (1) a list that had NEVER resolved skipped the cooldown entirely — the cooldown above was only
-# consulted when a meta existed — so every node sync re-armed its fetch the moment the last one gave up; (2) a
-# scheduled refresh that failed (or was rejected by the collapse-guard) left `at` untouched, so the list stayed
-# "due" and every sync forced another one. On a one-core panel that keeps the single resolve slot busy with a list
-# that cannot land, and a feed host that rate-limits (oisd.nl answers a burst from one address with refusals) then
-# refuses that panel for good — so the list never lands at all. Consecutive failures now double the wait.
-_LIST_FAILN = {}              # "cat|tier" -> consecutive resolves that ended with no stored list
-_LIST_REFRESH_FAIL = {}       # "cat|tier" -> (ts, n) of consecutive scheduled refreshes that did not land a new list
-_LIST_REFRESH_WAIT = 300      # first retry of a failed refresh; doubles per failure up to an hour (last-good is served meanwhile)
+_LIST_FAILED = {}             # "cat|tier" -> ts of the LAST resolve that did not store a new, usable list
+_LIST_FAILN = {}              # "cat|tier" -> how many in a row; cleared by the first one that does
+_LIST_FAIL_TTL = 60           # the first wait before anyone may try again …
+_LIST_FAIL_MAX = 1800         # … doubling per consecutive failure up to this
 _LIST_ERR = {}                # "cat|tier" -> why the last fetch failed, verbatim-ish (shown on the Blocking tab)
-
-def _list_backoff(base, n, cap):
-    return min(cap, base * (2 ** max(0, min(n, 12) - 1)))
+# ⚠️ ONE RECORD, BOTH KINDS OF FAILURE. Two ways a list used to be fetched upstream every few seconds, for ever: a list
+# that had NEVER resolved skipped this cooldown (it was only consulted when a meta existed), so every node sync re-armed
+# its fetch the moment the last one gave up; and a scheduled refresh that failed — or was rejected by the collapse-guard
+# — left `at` untouched, so the list stayed "due" and every sync forced another. On a one-core panel that keeps the
+# single resolve slot busy with a list that cannot land, and a feed host that rate-limits answers the burst by refusing
+# that panel for good. Both are the same fact — "the last attempt did not land a list" — so they share this record and
+# its back-off; list_ensure decides what the fact means for a list with, or without, a usable copy in hand.
 
 def list_failed(cat, tier):
     k = cat + "|" + tier
     ts = _LIST_FAILED.get(k)
-    return bool(ts) and (time.time() - ts) < _list_backoff(_LIST_FAIL_TTL, _LIST_FAILN.get(k, 1), _LIST_FAIL_MAX)
-
-def _refresh_waiting(k):
-    """True while a scheduled refresh of `k` that failed is still inside its back-off."""
-    ts, n = _LIST_REFRESH_FAIL.get(k) or (0, 0)
-    return bool(ts) and (time.time() - ts) < _list_backoff(_LIST_REFRESH_WAIT, n, 3600)
+    wait = min(_LIST_FAIL_MAX, _LIST_FAIL_TTL * 2 ** (min(_LIST_FAILN.get(k, 1), 12) - 1))
+    return bool(ts) and (time.time() - ts) < wait
 
 def _list_note_err(cat, tier, e):
     """Remember why a fetch failed, in words an operator can act on (an HTTP code names the refusal)."""
@@ -13694,10 +13695,11 @@ def list_ensure(cat, tier, force=False):
     # remembered to ask. `force` (the scheduled refresh) still overrides it.
     if m and not force and _meta_n(m):
         return m
-    if not force and not _union and list_failed(cat, tier):
-        return m                                               # tried and got nothing — with or without an old meta, wait it out
-    if force and _meta_n(m) and _refresh_waiting(k):
-        return m                                               # the last refresh failed — keep serving last-good, retry after the back-off
+    waiting = list_failed(cat, tier)
+    if waiting and _meta_n(m):
+        return m                                               # a copy is in hand and the last try to replace it failed: serve it, retry after the back-off
+    if waiting and not force and not _union:
+        return m                                               # nothing in hand and tried recently: wait it out (a scheduled refresh overrides; a union's first build never waits — no fetch)
     with _LIST_LOCK:
         if k in _LIST_INFLIGHT:
             return m
@@ -13705,24 +13707,21 @@ def list_ensure(cat, tier, force=False):
     def _work():
         status = "fetch-failed"
         try:
-            with _RESOLVE_SEM:                                 # bound concurrency → smooths the CPU burst on a many-list add
+            # A UNION DOES NOT QUEUE BEHIND DOWNLOADS. It is a streaming merge of files already on disk — seconds, and
+            # memory bounded by the member count — while the semaphore exists to keep downloads + big normalisations
+            # from piling up. Queued behind them on a one-core panel, a changed filter set waited minutes to build, and
+            # the interface blocked nothing in between (its old union leaves the plan the moment the set changes).
+            with (contextlib.nullcontext() if _union else _RESOLVE_SEM):
                 status = (list_store(cat, tier) or (None, status))[1]   # resolve + collapse-guard + store (keeps last-good on a bad pull)
         finally:
             with _LIST_LOCK:
                 _LIST_INFLIGHT.discard(k)
-                # Judge by what is ON DISK, not by the status word: a "collapsed" pull that kept last-good is a
-                # list the caller can use, and an exception on the way through still leaves nothing.
-                # A stored list of ZERO records is the same non-answer as no list at all — see _meta_n — so it
-                # arms the cooldown too, which is what bounds the re-resolve that emptiness now triggers.
-                if _meta_n(list_meta(cat, tier)):
-                    _LIST_FAILED.pop(k, None); _LIST_FAILN.pop(k, None)
+                # Landed = a NEW list stored, with records. A "collapsed" pull kept last-good, a stored-EMPTY list is no
+                # answer (see _meta_n), an exception left nothing: all three are a failure and back off together.
+                if status == "ok" and _meta_n(list_meta(cat, tier)):
+                    _LIST_FAILED.pop(k, None); _LIST_FAILN.pop(k, None); _LIST_ERR.pop(k, None)
                 else:
                     _LIST_FAILED[k] = time.time(); _LIST_FAILN[k] = _LIST_FAILN.get(k, 0) + 1
-                # …and the status word is what a REFRESH is judged by: anything but a stored new list backs off.
-                if status == "ok":
-                    _LIST_REFRESH_FAIL.pop(k, None); _LIST_ERR.pop(k, None)
-                else:
-                    _LIST_REFRESH_FAIL[k] = (time.time(), (_LIST_REFRESH_FAIL.get(k) or (0, 0))[1] + 1)
     threading.Thread(target=_work, daemon=True).start()
     return m
 
@@ -19732,9 +19731,7 @@ def api(method, path, qs, body, deps):
             # early). That is the conservative direction for this: the defect being fixed is a healthy node reading
             # dead, never the reverse.
             "panel_now": int(time.time()),
-            "instance": dict(_INSTANCE, version=_read_version(),                     # see _INSTANCE
-                             method="docker" if os.path.exists("/.dockerenv") else "bare-metal",
-                             state_dir=os.path.dirname(os.path.abspath(deps.get("nodes_path") or "")) or ""),
+            "instance": _instance_view(deps),                                    # see _INSTANCE
             "store_configs": store_mode,                 # enum "encrypted" | "off"
             # The placeholder a stored profile's PrivateKey line carries in the editor. It comes from HERE
             # rather than being spelled out in the SPA so the two ends can never disagree about the exact
@@ -21221,12 +21218,18 @@ def api(method, path, qs, body, deps):
         for _c in _bcats.values():                              # attach resolved record counts: per-source `n` + a per-category {host,ip} total
             th = ti = 0; known = False
             for _s in _c.get("sources", []):
-                _tier, _n = block_source_size(_s.get("provider"), _s.get("list", ""))
+                if en.get(_s.get("provider"), True):
+                    _tier, _n = block_source_size(_s.get("provider"), _s.get("list", ""))
+                else:                                           # a provider switched off: show what is on disk, download nothing
+                    _tier = (BLOCK_PROVIDERS.get(_s.get("provider")) or {}).get("tier", "host")
+                    _mo = list_meta("blk:%s:%s" % (_s.get("provider"), _s.get("list", "") or ""), _tier)
+                    _n = int(_mo["n"]) if _mo and _mo.get("n") is not None else None
                 _s["n"] = _n
                 if _tier:                                       # why a list has no count yet — still coming, or refused upstream
                     _k = "blk:%s:%s|%s" % (_s.get("provider"), _s.get("list", "") or "", _tier)
-                    if _k in _LIST_ERR:
-                        _s["err"] = _LIST_ERR[_k]               # with a count too: the last refresh failed, last-good is served
+                    _why = _LIST_ERR.get(_k) or _LIST_SUSPECT.get(_k)   # a failed fetch, or a pull the collapse-guard refused
+                    if _why:
+                        _s["err"] = _why                        # with a count too: the last refresh failed, last-good is served
                     if _n is None:
                         with _LIST_LOCK:
                             _s["busy"] = _k in _LIST_INFLIGHT

@@ -1142,6 +1142,8 @@ guard_second_panel(){
   echo "    Installing a second panel beside it makes both answer — the browser shows whichever one replies, and"
   echo "    changes saved on one never reach servers that sync to the other."
   echo "    To MOVE to $( [ "$me" = baremetal ] && echo bare-metal || echo docker ) keeping everything, abort and run bootstrap.sh with that method — it converts."
+  echo "    A server on this box that syncs to the one you stop keeps its peers but gets no changes until it is enrolled here."
+  if [ "${DRYRUN:-false}" = true ]; then echo "    [skip] dry run — would ask: abort / stop the other / keep both"; return 0; fi
   echo "      [a]bort              exit without changing anything (default)"
   echo "      [s]top the other     stop it and keep it from starting again (its data stays on disk; nothing is deleted)"
   echo "      [k]eep both          continue anyway"
@@ -1152,7 +1154,6 @@ guard_second_panel(){
   fi
   case "$ans" in
     s|S|stop)
-      if [ "${DRYRUN:-false}" = true ]; then echo "    [skip] stop + disable $what"; return 0; fi
       if [ "$me" = baremetal ]; then
         docker update --restart=no swg-panel >/dev/null 2>&1 || true; docker stop swg-panel >/dev/null 2>&1 || true
       else

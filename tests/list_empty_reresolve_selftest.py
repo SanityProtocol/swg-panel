@@ -166,10 +166,10 @@ try:
 finally:
     P.list_store = _real
 check("once it expires, it tries again (so it still heals)", len(_n2) == 1, len(_n2))
-# (a failed REFRESH of a list that has records backs off on its own clock, _refresh_waiting — see
-# block_list_lifecycle_selftest.py; the empty-list cooldown tested here never holds a forced refresh back)
+# (a failed REFRESH of a list that HAS records backs off — block_list_lifecycle_selftest.py; the empty-list cooldown
+# tested here never holds a forced refresh back)
 check("a `force`d refresh ignores the empty-list cooldown",
-      "    if not force and not _union and list_failed(cat, tier):" in
+      "    if waiting and not force and not _union:" in
       open(os.path.join(ROOT, "swg-panel-server"), encoding="utf-8").read())
 
 print("\n[6] TWO READERS: /api/list-info must judge by records too, not by 'a meta exists'")
