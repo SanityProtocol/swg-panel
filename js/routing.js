@@ -1008,6 +1008,10 @@ export const blockProvTier = (providers, p) => ((providers || []).find(x => x.id
 export const blockSrcOk = (mode, providers, s) => blockTierOk(mode, blockProvTier(providers, s.provider));   // a single list/source enforces here?
 export const blockCatHasIp = (providers, c) => (c.sources || []).some(s => blockProvTier(providers, s.provider) === "ip");
 export const blockCatDisabled = (mode, providers, c) => blockHostBlind(mode) && !blockCatHasIp(providers, c);   // no enforceable list → dead on this node
+// Does ANY list of this category enforce here — a provider that is switched on, of a kind this mode can match? The
+// panel skips the rest (_resolve_iface_blocks), so a category without one blocks nothing however its chip is set.
+export const blockProvOn = (providers, p) => ((providers || []).find(x => x.id === p) || {}).enabled !== false;
+export const blockCatLive = (mode, providers, c) => (c.sources || []).some(s => s.provider && blockProvOn(providers, s.provider) && blockSrcOk(mode, providers, s));
 // Built on FIRST READ, never at import: modules load before loadLang() resolves, so a T() here would
 // freeze in English whatever the catalog says (see --frozen).
 let _mech_hint = null;
@@ -1039,7 +1043,7 @@ export function blockActiveN(node, value) {
   const mode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";
   return ids.filter(id => { const c = (bc.categories || {})[id];
     return c && c.enabled !== false && (c.kind === "mechanism"
-      || ((c.enabled_nodes || []).includes(node) && !blockCatDisabled(mode, bc.providers, c))); }).length;
+      || ((c.enabled_nodes || []).includes(node) && blockCatLive(mode, bc.providers, c))); }).length;
 }
 
 // Per-interface "Block traffic" (screen ③) — the daily policy surface. Content/IP categories the operator enabled on
@@ -1058,9 +1062,12 @@ export function BlockTraffic({ node, value, onChange }) {
   const availOn = c => (c.enabled_nodes || []).includes(node);
   const content = list.filter(c => (c.kind === "content" || c.kind === "ip") && availOn(c));
   const mech = list.filter(c => c.kind === "mechanism");
-  const chip = c => { const dis = blockCatDisabled(mode, bc.providers, c); return html`<button type="button" key=${c.id} disabled=${dis}
-      class=${"blkchip" + (active(c.id) && !dis ? " on" : "") + (dis ? " inert" : "")}
+  const chip = c => { const dis = blockCatDisabled(mode, bc.providers, c);
+    const dead = !dis && !blockCatLive(mode, bc.providers, c);   // enforceable in this mode, but none of its lists is switched on / present
+    return html`<button type="button" key=${c.id} disabled=${dis}
+      class=${"blkchip" + (active(c.id) && !dis && !dead ? " on" : "") + (dis || dead ? " inert" : "")}
       title=${dis ? T("No IP list in this category — domain lists can't match in {mode}. Use Force-DNS / Hybrid-SNI, or add an IP list.", { mode: (MODE_META[mode] || {}).label || mode })
+                 : dead ? T("None of this category's lists is in use — their providers are switched off, or it has no lists yet. It blocks nothing until one is.")
                  : (c.kind === "ip" ? T("Matched by IP address — works in every mode.") : T("Matched by domain name."))}
       onClick=${() => { if (!dis) toggle(c.id); }}><span class="blkchip-g">⊘</span>${c.label}${!c.predefined ? html`<span class="blkchip-tag">${T("tag|custom")}</span>` : null}</button>`; };
   const mchip = c => html`<button type="button" key=${c.id} class=${"blkchip mech" + (active(c.id) ? " on" : "")}

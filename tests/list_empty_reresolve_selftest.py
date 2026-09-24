@@ -166,11 +166,20 @@ try:
 finally:
     P.list_store = _real
 check("once it expires, it tries again (so it still heals)", len(_n2) == 1, len(_n2))
-# (a failed REFRESH of a list that HAS records backs off — block_list_lifecycle_selftest.py; the empty-list cooldown
-# tested here never holds a forced refresh back)
-check("a `force`d refresh ignores the empty-list cooldown",
-      "    if waiting and not force and not _union:" in
-      open(os.path.join(ROOT, "swg-panel-server"), encoding="utf-8").read())
+# A forced attempt waits out the back-off too: the manifest builder forces every list with no copy yet, on every
+# node sync, so a force that skipped it re-fetched a never-landing list every five seconds (code review 09-24).
+_forced = []
+def _count3(c, t):
+    _forced.append(1); seed(c, t, 0)
+P._LIST_FAILED["mc:hot-empty|host"] = time.time()          # a failure just happened
+_real, P.list_store = P.list_store, _count3
+try:
+    for _ in range(3):
+        P.list_ensure("mc:hot-empty", "host", force=True)
+        time.sleep(0.02)
+finally:
+    P.list_store = _real
+check("a `force`d attempt inside the back-off fetches nothing", len(_forced) == 0, len(_forced))
 
 print("\n[6] TWO READERS: /api/list-info must judge by records too, not by 'a meta exists'")
 src = open(os.path.join(ROOT, "swg-panel-server"), encoding="utf-8").read()

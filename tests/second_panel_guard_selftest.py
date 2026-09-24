@@ -95,5 +95,25 @@ print("6. convert is exempt")
 rc, out, calls = run("baremetal", "swg-panel\n", "swg-panel\n", env={"SWG_CONVERT_DIR": "convert-bare"})
 check("convert → continues, no question, nothing touched", rc == 0 and "CONTINUED" in out and not calls, (out, calls))
 
+print("7. a parked panel stays parked through update.sh")
+def parked(fn_call, docker_inspect="", active=False, enabled=False):
+    d = tempfile.mkdtemp()
+    for name, body in (("docker", 'echo "%s"' % docker_inspect),
+                       ("systemctl", 'case "$1" in is-active) exit %d;; is-enabled) exit %d;; esac' % (0 if active else 3, 0 if enabled else 1))):
+        open(os.path.join(d, name), "w").write("#!/bin/sh\n" + body + "\n"); os.chmod(os.path.join(d, name), 0o755)
+    fns = src[src.index("bare_panel_parked(){"):src.index("guard_second_panel(){")]
+    return subprocess.run(["bash", "-c", fns + "\n" + fn_call], env=dict(os.environ, PATH=d + ":" + os.environ["PATH"])).returncode == 0
+check("a disabled, stopped unit is parked", parked("bare_panel_parked"))
+check("an enabled unit is not (a crash is not a decision)", not parked("bare_panel_parked", enabled=True))
+check("a running unit is not", not parked("bare_panel_parked", active=True))
+check("a stopped container with restart=no is parked", parked("docker_parked swg-panel", "false no"))
+check("a stopped compose container (unless-stopped) is not", not parked("docker_parked swg-panel", "false unless-stopped"))
+check("a running container is not", not parked("docker_parked swg-panel", "true no"))
+up = open(os.path.join(HERE, "..", "update.sh")).read()
+check("update.sh leaves a parked bare panel stopped", "if bare_panel_parked; then" in up and up.index("if bare_panel_parked; then") < up.index("elif run systemctl restart swg-panel-server"))
+check("update.sh does not count a parked container as a live stack", 'docker_parked "$_n" || { _DSTACK=yes; return 0; }' in up)
+rc, out, calls = run("baremetal", "swg-panel\n", "swg-panel\n", env={"SWG_OTHER_PANEL": "stop"})
+check("stopping a docker panel parks its subscription server too", "docker update --restart=no swg-sub" in calls and "docker stop swg-sub" in calls, calls)
+
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAILED: %s" % (len(FAILS), ", ".join(FAILS))))
 sys.exit(1 if FAILS else 0)

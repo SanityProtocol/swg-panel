@@ -77,5 +77,24 @@ check("identical feed sets share one union", per["10.0.0.0/24"] == per["10.0.1.0
 check("a disabled provider's list is left out", all("blk:stevenblack:alternates/porn/hosts" not in l for v in per.values() for l in v.values()))
 check("…its category's other list is not", "blk:hagezi:nsfw" in w0.get("host", []), w0)
 
+print("5. coverage counts exactly what the datapath enforces")
+NODE2 = {"ifaces": dict(NODE["ifaces"], wg9={"system": True, "block": ["malware_ip"]}),
+         "wdtt": {"w1": {"wg_addr": "10.9.0.1/24", "block": ["adult"]}}, "csqtt": {"c1": {"tun_addr": "10.8.0.1/24", "block": ["cl_mix"]}}}
+SNAP2 = {"interfaces": SNAP["interfaces"]}
+bc, bpe = m.block_catalog(PS), m.block_providers_enabled(PS)
+for mode in ("sni", "kernel"):
+    m._BLKU_REG.clear()
+    ents, srcs, _ = m._resolve_iface_blocks(NODE2, SNAP2, PS, mode, "n1")
+    datapath = {sid for e in ents for sid in m._BLKU_REG[e["category"]]}
+    counted = set()
+    for b in m._node_block_lists(NODE2):
+        feeds, _ = m._block_feeds(bc, bpe, "n1", mode, m._validate_block(b, PS))
+        counted |= {sid for pairs in feeds.values() for sid, _t in pairs}
+    check("%s: coverage lists == datapath lists (WDTT + csqtt included, system links not)" % mode, counted == datapath, (counted ^ datapath))
+check("a system (mesh) interface's block[] is not walked", all(b != ["malware_ip"] for b in m._node_block_lists({"ifaces": {"s": {"system": True, "block": ["malware_ip"]}}})))
+src = open(SERVER).read()
+i = src.index('if method == "GET" and path == "/api/block-stats":'); blk = src[i:i + 6000]
+check("/api/block-stats coverage is computed through _block_feeds", "_block_feeds(" in blk and "_node_block_lists(" in blk)
+
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAILED: %s" % (len(FAILS), ", ".join(FAILS))))
 sys.exit(1 if FAILS else 0)

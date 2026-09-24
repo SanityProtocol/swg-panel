@@ -571,9 +571,13 @@ export const Store = {
 // same address is the failure: the fleet, the settings and the saves go to whichever answers, and the one the nodes
 // sync to may not be the one being edited. Judged across page loads, not between polls: the panel keeps connections
 // alive, so a single page often talks to ONE of the two for its whole life and only a reload lands on the other.
-const INST_KEY = "swg.panelInstances", INST_DISMISS = "swg.panelTwinsDismissed";
+// Keyed by the panel's mount path too: browser storage is per ORIGIN, and two separate panels under one domain
+// (`/swg` and `/swg2` behind a proxy) are two fleets, not one panel answering twice.
+const INST_KEY = "swg.panelInstances:" + url(""), INST_DISMISS = "swg.panelTwinsDismissed:" + url("");
 const INST_MARGIN = 120;          // seconds of clock disagreement tolerated between two servers' clocks
-const INST_RECENT = 6 * 3600;     // the other one must have answered this browser within this window to still count
+// The other one must have answered within this window to still count. Short on purpose: once the operator stops the
+// stray, the notice must go away soon, or it reads as "stopping it did not work" (code review 09-24; was 6 h).
+const INST_RECENT = 30 * 60;
 // Pure: the remembered instance whose life overlaps `cur`'s and that answered recently, or null.
 export function panelTwin(list, cur) {
   return (list || []).find(o => o && cur && o.id !== cur.id

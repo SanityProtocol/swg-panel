@@ -13695,11 +13695,13 @@ def list_ensure(cat, tier, force=False):
     # remembered to ask. `force` (the scheduled refresh) still overrides it.
     if m and not force and _meta_n(m):
         return m
-    waiting = list_failed(cat, tier)
-    if waiting and _meta_n(m):
-        return m                                               # a copy is in hand and the last try to replace it failed: serve it, retry after the back-off
-    if waiting and not force and not _union:
-        return m                                               # nothing in hand and tried recently: wait it out (a scheduled refresh overrides; a union's first build never waits — no fetch)
+    # The last attempt did not land a list → wait out the back-off, FORCED OR NOT. `force` is not only the scheduled
+    # refresh: the manifest builder forces every list that has no copy yet (`_due = not meta`), on every node sync —
+    # so a force that skipped the back-off re-fetched a list that never lands every five seconds, per node. A copy in
+    # hand keeps being served meanwhile. The one exemption is a union's FIRST build: a local merge, no fetch, and
+    # nothing to serve until it exists. (An operator's explicit retry clears the record — /api/list-info.)
+    if list_failed(cat, tier) and (not _union or _meta_n(m)):
+        return m
     with _LIST_LOCK:
         if k in _LIST_INFLIGHT:
             return m
@@ -13718,8 +13720,10 @@ def list_ensure(cat, tier, force=False):
                 _LIST_INFLIGHT.discard(k)
                 # Landed = a NEW list stored, with records. A "collapsed" pull kept last-good, a stored-EMPTY list is no
                 # answer (see _meta_n), an exception left nothing: all three are a failure and back off together.
+                if status == "ok":
+                    _LIST_ERR.pop(k, None)                     # the fetch worked — an earlier error no longer says anything
                 if status == "ok" and _meta_n(list_meta(cat, tier)):
-                    _LIST_FAILED.pop(k, None); _LIST_FAILN.pop(k, None); _LIST_ERR.pop(k, None)
+                    _LIST_FAILED.pop(k, None); _LIST_FAILN.pop(k, None)
                 else:
                     _LIST_FAILED[k] = time.time(); _LIST_FAILN[k] = _LIST_FAILN.get(k, 0) + 1
     threading.Thread(target=_work, daemon=True).start()
@@ -15375,16 +15379,11 @@ def _blku_store(cat, tier):
     srcs = _BLKU_REG.get(cat)
     if srcs is None or tier != (cat.split(":", 2)[1] if cat.count(":") >= 2 else ""):
         return list_meta(cat, tier), "fetch-failed"          # not registered this serve / wrong tier → keep last-good
-    paths = []
-    mv = {}                                                   # the member versions this build is made of → meta["mv"]
     for sid in srcs:
-        mm = list_meta(sid, tier)
-        if mm is None:
+        if list_meta(sid, tier) is None:
             list_ensure(sid, tier)                            # member not resolved yet → schedule (non-blocking), skip
-            continue
-        p = _list_path(sid, tier)
-        if os.path.exists(p):
-            paths.append(p); mv[sid] = mm.get("v", "")
+    mv = _blku_member_vers(cat, tier)                         # the members this build is made of → meta["mv"] — the SAME
+    paths = [_list_path(sid, tier) for sid in mv]             # function the manifest compares against, so the two cannot drift
     if not paths:
         return list_meta(cat, tier), "fetch-failed"          # no member ready yet → keep last-good, retry next cycle
     extra = {"mv": mv}
@@ -15417,7 +15416,7 @@ def _blku_member_vers(cat, tier):
         mm = list_meta(sid, tier)
         if mm is not None and os.path.exists(_list_path(sid, tier)):
             out[sid] = mm.get("v", "")
-    return out
+    return out                                                # _blku_store builds from exactly these; the manifest compares against them
 
 def _blku_merge_write(cat, tier, paths, extra=None):
     """Stream a k-way merge of the SORTED member files → the union file, deduping adjacent domains. Holds only one
@@ -15529,6 +15528,52 @@ def _blk_bucket(cache, srcpaths, host):
     return hit or None
 
 
+def _block_feeds(cat, bpe, node_id, mode, blk_ids):
+    """THE rule for what an interface's block[] enforces on one node → ({category id: [(blk:<prov>:<list>, tier)]} of the
+    lists that enforce there, [mechanism ids]). _resolve_iface_blocks lowers it into drop entries; /api/block-stats counts
+    it — so the Overview's coverage can never claim a list the datapath skips. `cat` = block_catalog(), `bpe` =
+    block_providers_enabled(), `mode` = the node's routing_mode."""
+    feeds, mids = {}, []
+    for cid in (blk_ids or []):
+        c = cat.get(cid) or {}
+        if not c.get("enabled", True):
+            continue                                  # a disabled category never enforces
+        if c.get("kind") == "mechanism":
+            mids.append(cid)
+            continue
+        # ⚠️ AVAILABILITY IS PER NODE, AND IT IS THE SWITCH THE OPERATOR SEES. Settings' "Filter on <node>" is
+        # enabled_nodes; the interface editor offers only the categories enabled here, so a category switched off for
+        # this node vanishes from every interface's chips. It used to keep enforcing all the same — a filter nobody
+        # could see or untick. The id stays in block[], so switching it back on restores it as it was.
+        if node_id not in (c.get("enabled_nodes") or []):
+            continue
+        for s in (c.get("sources") or []):
+            prov = (s.get("provider") or "").strip(); lst = (s.get("list") or "").strip()
+            if not prov or not bpe.get(prov, True):
+                continue                              # custom-paste (no provider) or a disabled feed → omit
+            # ⚠️ THE TIER IS THE LIST'S, NOT THE CATEGORY'S. A category may mix domain and IP lists — every custom
+            # category is saved as kind "content", and the picker offers every provider to every category — so taking
+            # the tier from the kind put a FireHOL / Tor list into the DOMAIN union, where it resolves to nothing and
+            # blocks nothing, in every mode. Same rule the UI applies per list (blockSrcOk).
+            tier = (BLOCK_PROVIDERS.get(prov) or {}).get("tier", "host")
+            if tier == "host" and mode in ("kernel", "sni_kernel"):
+                continue                              # domain blocking needs a DNS fill (Force-DNS/Hybrid) — inert on IP-only / Kernel-SNI
+            pair = ("blk:" + prov + ":" + lst, tier)
+            if pair not in feeds.setdefault(cid, []):
+                feeds[cid].append(pair)
+        if not feeds.get(cid):
+            feeds.pop(cid, None)
+    return feeds, mids
+
+
+def _node_block_lists(node):
+    """Every non-empty block[] a node carries — its user interfaces, WDTT and csqtt instances, the same set
+    _resolve_iface_blocks walks (by subnet there)."""
+    out = [ov.get("block") for ov in (node.get("ifaces") or {}).values() if isinstance(ov, dict) and not ov.get("system")]
+    out += [(w or {}).get("block") for k in ("wdtt", "csqtt") for w in (node.get(k) or {}).values()]
+    return [b for b in out if b]
+
+
 def _resolve_iface_blocks(node, snap, panel_settings, mode, node_id):
     """Per-interface content/IP `block[]` → smart DROP entries, INDEPENDENT of egress_mode (a direct/forward
     interface can still filter). To keep the datapath cheap, every feed an interface blocks is UNIONED into ONE set
@@ -15547,32 +15592,12 @@ def _resolve_iface_blocks(node, snap, panel_settings, mode, node_id):
     def _add(subnet, blk_ids):                        # build the union DROP entries for ONE subnet's block[] filters
         if not subnet or not blk_ids:                 # subnet not reported yet / nothing to block → skip (pause, never error)
             return
-        tier_srcs = {"host": [], "ip": []}            # gather this subnet's feeds per tier, then union each into ONE set
-        for cid in blk_ids:
-            c = cat.get(cid) or {}
-            if not c.get("enabled", True):
-                continue                              # a disabled category never enforces
-            if c.get("kind") == "mechanism":          # torrents/smtp/portscan/quic/doh/… → per-subnet flags (node builds L4 rules)
-                mech.setdefault(subnet, set()).add(cid)
-                continue
-            # ⚠️ AVAILABILITY IS PER NODE, AND IT IS THE SWITCH THE OPERATOR SEES. Settings' "Filter on <node>" is
-            # enabled_nodes; the interface editor offers only the categories enabled here, so a category switched off
-            # for this node vanishes from every interface's chips. It used to keep enforcing all the same — a filter
-            # nobody could see or untick. The id stays in block[], so switching it back on restores it as it was.
-            if node_id not in (c.get("enabled_nodes") or []):
-                continue
-            for s in (c.get("sources") or []):
-                prov = (s.get("provider") or "").strip(); lst = (s.get("list") or "").strip()
-                if not prov or not bpe.get(prov, True):
-                    continue                          # custom-paste (no provider) or a disabled feed → omit
-                # ⚠️ THE TIER IS THE LIST'S, NOT THE CATEGORY'S. A category may mix domain and IP lists — every custom
-                # category is saved as kind "content", and the picker offers every provider to every category — so
-                # taking the tier from the kind put a FireHOL / Tor list into the DOMAIN union, where it resolves to
-                # nothing and blocks nothing, in every mode. Same rule the UI applies per list (blockSrcOk).
-                tier = (BLOCK_PROVIDERS.get(prov) or {}).get("tier", "host")
-                if tier == "host" and mode in ("kernel", "sni_kernel"):
-                    continue                          # domain blocking needs a DNS fill (Force-DNS/Hybrid) — inert on IP-only / Kernel-SNI
-                sid = "blk:" + prov + ":" + lst
+        feeds, mids = _block_feeds(cat, bpe, node_id, mode, blk_ids)
+        for mid in mids:                              # torrents/smtp/portscan/quic/doh/… → per-subnet flags (node builds L4 rules)
+            mech.setdefault(subnet, set()).add(mid)
+        tier_srcs = {"host": [], "ip": []}            # this subnet's feeds per tier, then union each into ONE set
+        for pairs in feeds.values():
+            for sid, tier in pairs:
                 if sid not in tier_srcs[tier]:
                     tier_srcs[tier].append(sid)
         for tier in ("host", "ip"):                   # ONE union set → ONE drop rule per non-empty tier
@@ -21225,7 +21250,7 @@ def api(method, path, qs, body, deps):
                     _mo = list_meta("blk:%s:%s" % (_s.get("provider"), _s.get("list", "") or ""), _tier)
                     _n = int(_mo["n"]) if _mo and _mo.get("n") is not None else None
                 _s["n"] = _n
-                if _tier:                                       # why a list has no count yet — still coming, or refused upstream
+                if _tier and en.get(_s.get("provider"), True):  # why a list has no count yet — still coming, or refused upstream (a switched-off provider retries nothing, so says nothing)
                     _k = "blk:%s:%s|%s" % (_s.get("provider"), _s.get("list", "") or "", _tier)
                     _why = _LIST_ERR.get(_k) or _LIST_SUSPECT.get(_k)   # a failed fetch, or a pull the collapse-guard refused
                     if _why:
@@ -22149,43 +22174,41 @@ def api(method, path, qs, body, deps):
         bseries = [bser[t] for t in sorted(bser)]                     # blocked/hr per bucket — the "blocked" tile's sparkline
         mseries = [mser[t] for t in sorted(mser)]                     # mech/hr per bucket — the port-rule tile's sparkline
         # coverage (static, side-effect-free — cached list_meta only): how much the fleet is filtering
-        cat = block_catalog(Handler.deps.get("panel_settings"))
-        enabled = set(); n_ifaces = 0; mech = {}
+        # Counted through _block_feeds — the rule the datapath is built from — so a category switched off for a
+        # server, a list whose provider is off, and a domain list on an IP-only / Kernel-SNI server count as nothing,
+        # exactly as they block nothing; WDTT and csqtt instances count like interfaces.
+        _ps = Handler.deps.get("panel_settings")
+        cat = block_catalog(_ps); _bpe = block_providers_enabled(_ps)
+        enforced = {}; n_ifaces = 0; mech = {}          # enforced: category → {(blk sid, tier)} across the fleet
         for _nid, n in (nodes or {}).items():
             if not isinstance(n, dict):
                 continue
-            for ov in (n.get("ifaces") or {}).values():
-                b = ov.get("block") or []
-                if not b:
+            for b in _node_block_lists(n):
+                feeds, mids = _block_feeds(cat, _bpe, _nid, n.get("routing_mode") or "kernel", _validate_block(b, _ps))
+                if not feeds and not mids:
                     continue
                 n_ifaces += 1
-                for cid in b:
-                    c = cat.get(cid) or {}
-                    if c.get("kind") == "mechanism":
-                        mech[cid] = mech.get(cid, 0) + 1
-                    elif c.get("enabled", True) and _nid in (c.get("enabled_nodes") or []):   # what _resolve_iface_blocks enforces
-                        enabled.add(cid)
+                for mid in mids:
+                    mech[mid] = mech.get(mid, 0) + 1
+                for cid, pairs in feeds.items():
+                    enforced.setdefault(cid, set()).update(pairs)
         dom = ips = 0; seen = set(); catcov = {}
-        for cid in enabled:
+        for cid, pairs in enforced.items():
             c = cat.get(cid) or {}; cd = ci = 0
-            for s in (c.get("sources") or []):
-                prov = (s.get("provider") or "").strip(); lst = (s.get("list") or "").strip()
-                if not prov:
-                    continue
-                tier = (BLOCK_PROVIDERS.get(prov) or {}).get("tier", "host")
-                m = list_meta("blk:%s:%s" % (prov, lst), tier)
+            for sid, tier in sorted(pairs):
+                m = list_meta(sid, tier)
                 n = int(m["n"]) if (m and m.get("n")) else 0
                 if tier == "ip": ci += n
                 else: cd += n
-                if (prov, lst) not in seen:              # fleet TOTAL de-dups a list shared by two categories; per-category size doesn't
-                    seen.add((prov, lst)); ips += n if tier == "ip" else 0; dom += n if tier != "ip" else 0
+                if sid not in seen:                      # fleet TOTAL de-dups a list shared by two categories; per-category size doesn't
+                    seen.add(sid); ips += n if tier == "ip" else 0; dom += n if tier != "ip" else 0
             if cd or ci:
                 catcov[cid] = {"label": c.get("label") or c.get("name") or cid, "domains": cd, "threat_ips": ci}
         # Per-category composition for the Blocked bubble — blocking merges every feed into ONE union set per tier (one
         # drop rule, one counter) for O(1) lookup, so per-category BLOCK COUNTS don't exist. What IS meaningful + free is
         # WHAT each category is filtering (list size); ranked biggest-first, it answers "what's protecting me".
         cats = sorted(catcov.values(), key=lambda x: -(x["domains"] + x["threat_ips"]))
-        cov = {"domains": dom, "threat_ips": ips, "categories": len(enabled), "ifaces": n_ifaces, "mechanisms": mech, "cats": cats}
+        cov = {"domains": dom, "threat_ips": ips, "categories": len(enforced), "ifaces": n_ifaces, "mechanisms": mech, "cats": cats}
         # Per-category BLOCKED COUNTS (SNI mode) — sum each content category's blkc ring over the window. Filename
         # blkc-<nid>-<sanitised cat>.rrd; nid is hex + cat is sanitised → exactly one '-'. Ranged like the other tiles.
         blkcat_tot = {}

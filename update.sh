@@ -186,10 +186,14 @@ docker_stack_live(){
   if ! have docker || ! docker info >/dev/null 2>&1; then _DSTACK=yes; return 0; fi   # cannot tell → unchanged
   # `created` is NOT evidence: an aborted conversion allocates the containers and never starts them, and
   # those leftovers outlive the compose dir they came from. Anything that has actually run counts.
-  if docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null \
-       | grep -E '^(swg-panel|swg-node|swg-sub)\|' | grep -qv '|created$'; then
-    _DSTACK=yes; return 0
-  fi
+  # …nor is a container the installer PARKED (guard_second_panel, lib/common.sh: stopped + restart=no, because a panel
+  # of the other method runs here). Counting it recreated the parked panel on the next update, and two panels answered
+  # again. A master whose panel is parked still counts through its running node — docker_profile then says `node`.
+  local _n
+  for _n in $(docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null \
+               | grep -E '^(swg-panel|swg-node|swg-sub)\|' | grep -v '|created$' | cut -d'|' -f1); do
+    docker_parked "$_n" || { _DSTACK=yes; return 0; }
+  done
   # No containers — and that on its own is NOT proof of a leftover. An operator who ran
   # `docker compose down` has a real install with none, and this branch is exactly what would bring it
   # back (`compose pull` + `up -d --force-recreate`). Skipping them would be a silent no-op update on a
@@ -1384,7 +1388,9 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     fi
     run chmod 755 "$PANEL_DIR/swg-panel-server"; stamp "$PANEL_DIR"
     install_update_unit                              # ensure one-click host self-update is wired
-    if run systemctl restart swg-panel-server; then ok "swg-panel updated + restarted"; note "bare-metal swg-panel: ${pold} → ${NEW_VER}"
+    if bare_panel_parked; then   # stopped + disabled on purpose (guard_second_panel) — updated on disk, left stopped
+      ok "swg-panel updated — left stopped (it is disabled: another panel runs on this box)"; note "bare-metal swg-panel: ${pold} → ${NEW_VER} (parked, not started)"
+    elif run systemctl restart swg-panel-server; then ok "swg-panel updated + restarted"; note "bare-metal swg-panel: ${pold} → ${NEW_VER}"
     else DID_FAIL=yes; warn "couldn't restart swg-panel-server"; note "bare-metal swg-panel: updated but RESTART FAILED"; fi
     # swg-sub (the subscription surface) ships with the panel. Refresh it in place when already installed;
     # ensure_sub_server (below, unconditional) provisions it first-time on a panel that lacks the unit/user.

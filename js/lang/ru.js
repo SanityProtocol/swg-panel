@@ -5239,6 +5239,8 @@ export const STR = {
     "Панель не смогла скачать этот список ({v1}). Она повторяет попытки сама, каждый раз реже.",
   "The panel is downloading this list — the count appears when it's done": "Панель скачивает этот список — число записей появится, когда закончит",
   "not downloaded": "не скачан",
+  "None of this category's lists is in use — their providers are switched off, or it has no lists yet. It blocks nothing until one is.":
+    "Ни один список этой категории не используется — их источники выключены или списков ещё нет. Пока не появится хотя бы один, она ничего не блокирует.",
   // the two-panels banner (store.js trackInstance)
   "Two different panels are answering at this address.": "По этому адресу отвечают две разные панели.",
   "Each keeps its own servers, settings and lists, and the page shows whichever one answered — so what you see can change between reloads, and changes saved on the one your servers don't sync to never reach them. Keep the one your servers report to; stop the other.":

@@ -19,10 +19,13 @@ check("the same instance again → nothing", panelTwin([{ ...A, last: T - 60 }],
 check("a restart is not two panels", panelTwin([{ id: "old", started: T - 5 * 86400, last: T - 30 }], { id: "new", started: T - 20, last: T }) === null);
 check("…nor an update that took a minute", panelTwin([{ id: "old", started: T - 5 * 86400, last: T - 90 }], { id: "new", started: T, last: T + 5 }) === null);
 // the client's case: a stray panel up for 3 days answered an hour ago; the real one (up 10 days) answers now
-const stray = { id: "s", started: T - 3 * 86400, last: T - H };
+const stray = { id: "s", started: T - 3 * 86400, last: T - 600 };
 check("two panels alive at once → the other is named", (panelTwin([stray], A) || {}).id === "s");
-check("…from either side", (panelTwin([{ ...A, last: T - H }], { ...stray, last: T }) || {}).id === "a");
+check("…from either side", (panelTwin([{ ...A, last: T - 600 }], { ...stray, last: T }) || {}).id === "a");
 check("clock disagreement inside the margin is not overlap",
   panelTwin([{ id: "old", started: T - 86400, last: T - 10 }], { id: "new", started: T + 60, last: T + 100 }) === null);
 check("a twin not seen for longer than the window stops alarming", panelTwin([{ ...stray, last: T - 7 * H }], A) === null);
+check("…and the window is short enough that stopping the stray visibly works (≤ 1 h)",
+  panelTwin([{ ...stray, last: T - H - 1 }], A) === null);
+check("the list is kept per mount path, not per origin", /INST_KEY = "swg\.panelInstances:" \+ url\(""\)/.test(src));
 console.log(fails ? `\n${fails} FAILED` : "\nALL PASS"); process.exit(fails ? 1 : 0);

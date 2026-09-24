@@ -1120,9 +1120,14 @@ ensure_swap(){ # PANEL-HOST: a low-RAM box with NO active swap OOM-kills the pan
 # already had both went through it, and running an installer directly skipped it. Called before the panel is (re)started.
 # A convert owns its own switch-over (it stops the old side), so it is exempt. Unattended: SWG_OTHER_PANEL=stop|keep|abort;
 # with neither a terminal nor that, it refuses — the same contract as bootstrap.sh's prompts.
+# PARKED = stopped by guard_second_panel below, and it must STAY stopped: update.sh asks these before it restarts a
+# bare panel or recreates a docker stack. Read from state the guard leaves (a disabled, inactive unit; a stopped
+# container with restart=no — compose never writes restart=no), not a marker file that could outlive the facts.
+bare_panel_parked(){ ! systemctl is-enabled --quiet swg-panel-server 2>/dev/null && ! systemctl is-active --quiet swg-panel-server 2>/dev/null; }
+docker_parked(){ [ "$(docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' "$1" 2>/dev/null)" = "false no" ]; }
 guard_second_panel(){
   [ -n "${SWG_CONVERT_DIR:-}" ] && return 0
-  local me="$1" what="" live=no ans=""
+  local me="$1" what="" live=no ans="" _c
   if [ "$me" = baremetal ]; then
     command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel || return 0
     what="a Docker panel (container swg-panel)"
@@ -1155,7 +1160,9 @@ guard_second_panel(){
   case "$ans" in
     s|S|stop)
       if [ "$me" = baremetal ]; then
-        docker update --restart=no swg-panel >/dev/null 2>&1 || true; docker stop swg-panel >/dev/null 2>&1 || true
+        for _c in swg-sub swg-panel; do   # the panel and the subscription server that belongs to it (a node container is left alone)
+          docker update --restart=no "$_c" >/dev/null 2>&1 || true; docker stop "$_c" >/dev/null 2>&1 || true
+        done
       else
         systemctl disable --now swg-panel-server >/dev/null 2>&1 || true
       fi

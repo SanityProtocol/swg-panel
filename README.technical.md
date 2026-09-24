@@ -177,6 +177,8 @@ sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.
      < <(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)
 ```
 
+**One panel per box.** If a panel of the *other* method is already running here (a Docker panel when you install bare-metal, or the reverse), the installer stops and asks: **abort** (default), **stop the other** (it is disabled / set to `restart=no` and left stopped — nothing is deleted, and `update.sh` leaves it stopped), or **keep both**. Two panels keep separate servers and settings and both answer at the same address, so the browser shows whichever replies. To *move* between methods, use `bootstrap.sh` with the other method — it converts. Unattended runs answer with `SWG_OTHER_PANEL=abort|stop|keep`; with neither a terminal nor that, the installer refuses.
+
 ## Adding a node
 
 Nodes are managed entirely from the UI — the installer no longer asks about them.

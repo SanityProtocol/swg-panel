@@ -71,6 +71,9 @@ def main():
     m._LIST_FAILED[k] -= m._LIST_FAIL_TTL + 1                  # the first cooldown has run out
     m.list_ensure("blk:tp:gone", "host"); settle(m)
     check("after the cooldown it tries again", calls.count("blk:tp:gone") == 2, calls)
+    for _ in range(3):                                         # the node-sync manifest forces a list that has no copy yet
+        m.list_ensure("blk:tp:gone", "host", force=True); settle(m)
+    check("a FORCED ask inside the back-off fetches nothing either", calls.count("blk:tp:gone") == 2, calls)
     m._LIST_FAILED[k] -= m._LIST_FAIL_TTL + 1                  # one base-cooldown later is no longer enough …
     check("a second consecutive failure doubles the cooldown", m.list_failed("blk:tp:gone", "host"))
     e = urllib.error.HTTPError("u", 429, "Too Many Requests", {}, None)
