@@ -7,7 +7,7 @@ through `pre`. A gate then checks what a table DOES: who reaches what, which cou
 Refused, as measured: a name nft reserves (`ct`, `dst`, `fwd`, §10.1 M1); a prefix member in a hash concat set (§13.3); any
 overlapping or duplicate element in a plain interval set (§16 C2 — 1.0.9 accepts a duplicate, 1.0.2 does not, the model takes the
 stricter); a reference to a set, map, chain or counter that is not there; deleting what is not there, or what a rule or map element
-still references (§13.3). With `nft102=True`, also a guard element added over one deleted in the same transaction (§13.3 M).
+still references (§13.3) — a named counter included (measured on 1.0.2–1.1.5, docs/SWG-REACH-COUNTER-PLAN.md §1). With `nft102=True`, also a guard element added over one deleted in the same transaction (§13.3 M).
 """
 import copy, ipaddress, json, re, subprocess
 
@@ -223,7 +223,7 @@ class Model:
             t["chains"][m.group(2)]["rules"].append(self._rule(m.group(3)))
             self._check_refs(t)
             return
-        m = re.fullmatch(r"delete (map|chain|set) inet (%s) (%s)" % (NAME, NAME), line)
+        m = re.fullmatch(r"delete (map|chain|set|counter) inet (%s) (%s)" % (NAME, NAME), line)
         if m:
             t, kind, name = self._table(work, m.group(2)), m.group(1) + "s", m.group(3)
             if name not in t[kind]:

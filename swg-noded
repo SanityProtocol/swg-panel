@@ -3243,6 +3243,12 @@ def _gtable_swap(table, old_guard, guard, counters, gen, old):
     return "\n".join(L) + "\n"
 
 
+def _gtable_drop_counter(table, name):
+    """A named counter no rule names any more, deleted — refused while a rule still names it, or when it is not there (measured,
+    nft 1.0.2–1.1.5)."""
+    return "delete counter inet %s %s\n" % (table, name)
+
+
 def _gtable_intact(table):
     """Is a guarded table still ENFORCING — its skeleton rule in `pre`, guard and all? One chain listed, one rule of output, only on
     the routing pass.
@@ -3256,8 +3262,8 @@ def _gtable_intact(table):
 
 
 def _gen_names(gen):
-    """What a loaded generation declared — kept so the next swap deletes exactly that."""
-    return {"map": gen["map"], "chains": list(gen["chains"]), "sets": list(gen["sets"])}
+    """What a loaded generation declared — kept so the next swap deletes exactly that. Its counters too (swg_share declares none)."""
+    return {"map": gen["map"], "chains": list(gen["chains"]), "sets": list(gen["sets"]), "counters": list(gen.get("counters", ()))}
 
 
 def _gtable_load(swap, declare):
@@ -3736,13 +3742,15 @@ def _reach_generation(plan, g):
     dmap = ("  map dmap_%s { type ipv4_addr : verdict; flags interval; elements = { %s } }"
             % (g, ", ".join("%s : %s" % (ip4(lo) if lo == hi else "%s-%s" % (ip4(lo), ip4(hi)), v if v == "accept" else v + "_" + g)
                             for lo, hi, v in plan["map"])))
-    return {"lines": sets + [dmap] + chains, "map": "dmap_" + g, "chains": names_c, "sets": names_s}
+    return {"lines": sets + [dmap] + chains, "map": "dmap_" + g, "chains": names_c, "sets": names_s,
+            "counters": [_reach_counter(n) for n in plan["ifaces"]]}
 
 
 def _reach_read_counters():
     """{interface: packets} for EVERY interface counter in the table — one fork, O(counters) output (§10.1 M3) — or None when the
-    table is not there. All of them, not only the enforced: an interface that left the plan keeps its counter through swaps, and its
-    count must survive the next declare (§16 B2)."""
+    table is not there. All of them, not only the enforced: an interface that left the plan keeps its counter until the pass that
+    swapped it out has read and deleted it — or, when that fails, until the next declare — and its count must survive either
+    (§16 B2)."""
     r = run(["nft", "-j", "list", "counters", "table", "inet", REACH_NFT_TABLE])
     if r.returncode != 0:
         return None
@@ -3773,7 +3781,8 @@ def _reach_held():
 
 
 def _reach_fold():
-    """Carry the counts read so far into the base, before a DECLARE zeroes the kernel's counters (a swap zeroes nothing, §13.2)."""
+    """Carry the counts read so far into the base, before a DECLARE zeroes the kernel's counters (a swap zeroes nothing, §13.2; a
+    leaving interface's counter is deleted after its swap by `_reach_retire`, which folds it only when that delete loads)."""
     for n, v in _REACH["live"].items():
         _REACH["base"][n] = _REACH["base"].get(n, 0) + v
     _REACH["live"] = {}
@@ -3855,17 +3864,16 @@ def _reach_converge(node_cfg, wire, res):
         _REACH.update(sig=key, skipped=skipped)       # the devices read differently, the table would not: nothing to swap
         _REACH["status"] = _reach_ok_status()
         return
-    counters = [_reach_counter(n) for n in plan["ifaces"]]
     def declare():
         before = _reach_read_counters() if _REACH["installed"] and _REACH["loaded"] else None
         if before is not None:
             _REACH["live"] = before                   # read just before a declare zeroes them
         gen = _reach_generation(plan, "a")
-        return _gtable_declare(REACH_NFT_TABLE, REACH_HOOK_PRI, plan["subnets"], counters, gen), gen
+        return _gtable_declare(REACH_NFT_TABLE, REACH_HOOK_PRI, plan["subnets"], gen["counters"], gen), gen
     attempt = None
     if swap:
         gen = _reach_generation(plan, "b" if _REACH["gen"] == "a" else "a")
-        attempt = (_gtable_swap(REACH_NFT_TABLE, _REACH["plan"]["subnets"], plan["subnets"], counters, gen, _REACH["names"]), gen)
+        attempt = (_gtable_swap(REACH_NFT_TABLE, _REACH["plan"]["subnets"], plan["subnets"], gen["counters"], gen, _REACH["names"]), gen)
     r, gen, swapped = _gtable_load(attempt, declare)
     if r.returncode != 0:
         detail = (r.stderr or "").strip()[:160]
@@ -3886,6 +3894,7 @@ def _reach_converge(node_cfg, wire, res):
         return
     if not swapped:
         _reach_fold()                                 # a declare zeroed the kernel's counters: carry what was read into the base
+    old = _REACH["names"]["counters"] if swapped else ()
     _REACH.update(installed=True, declared=True, sig=key, plan=plan, gen=gen["map"].rsplit("_", 1)[1], names=_gen_names(gen),
                   loaded=list(plan["ifaces"]), skipped=skipped, since=_REACH["since"] or int(time.time()), stale=None)
     res["changed"] += 1
@@ -3893,7 +3902,45 @@ def _reach_converge(node_cfg, wire, res):
         now_counts = _reach_read_counters()           # one read per swap: an interface protected again shows its count at once (§11.8)
         if now_counts is not None:
             _REACH["live"] = now_counts
+        # Counters the last load declared (the list `_gen_names` recorded — a load declares exactly its generation's) and this one
+        # does not: interfaces that left. Never recomputed from interface names, never "every counter not in the plan".
+        keep = set(gen["counters"])
+        gone = [c for c in old if c not in keep]
+        if gone and now_counts is not None:
+            _reach_retire(gone, now_counts, res)
     _REACH["status"] = _reach_ok_status()
+
+
+def _reach_retire(gone, now, res):
+    """Delete the counters of interfaces a swap just took out of the plan, keeping their counts (docs/SWG-REACH-COUNTER-PLAN.md).
+
+    ⚠️ AFTER THE SWAP, NOT IN IT. Once it committed no rule names them, so the post-swap read `now` holds their final values (bar a
+    packet already mid-walk at the commit, microseconds before the read); deleted in the swap, the count would have to be read
+    before it and would miss what came between. One counter per load, so one that nft refuses holds back no other; a count is
+    folded only when nft says its counter is gone. Anything else leaves the counter exactly as before this existed — standing,
+    counted, cleared by the next declare: a counter the read did not return is left alone, and a refused delete, or a fault
+    running it, is said in `errors`. Never retried: nothing names such a counter, so nft has no reason to refuse it (measured),
+    and a retry would be machinery for a failure never seen. A fault is kept HERE: the swap has already loaded and the state
+    says so — the reconciler's handler would report the previous table in force and declare again for nothing.
+
+    The one case that costs a count: a delete that commits and is then killed by `run`'s 20 s timeout — its count is not folded
+    (it could as well not have committed, and a fold then would count it twice when the interface comes back)."""
+    names = {_reach_counter(n): n for n in now}
+    for c in gone:
+        n = names.get(c)
+        if n is None:
+            continue
+        v = now[n]
+        try:
+            r = run(["nft", "-f", "-"], input_text=_gtable_drop_counter(REACH_NFT_TABLE, c))
+        except Exception as e:
+            r = subprocess.CompletedProcess([], 1, "", "%s: %s" % (type(e).__name__, e))
+        if r.returncode == 0:
+            _REACH["base"][n] = _REACH["base"].get(n, 0) + v
+            _REACH["live"].pop(n, None)
+        else:
+            res["errors"].append("device access: the counter of %s, which left, stays until the next reload: %s"
+                                 % (n, (r.stderr or "").strip()[:120]))
 
 
 def dev_reach_verify(res):
@@ -3911,8 +3958,7 @@ def dev_reach_verify(res):
     _reach_fold()
     plan = _REACH["plan"]
     gen = _reach_generation(plan, "a")
-    r = run(["nft", "-f", "-"], input_text=_gtable_declare(REACH_NFT_TABLE, REACH_HOOK_PRI, plan["subnets"],
-                                                           [_reach_counter(n) for n in plan["ifaces"]], gen))
+    r = run(["nft", "-f", "-"], input_text=_gtable_declare(REACH_NFT_TABLE, REACH_HOOK_PRI, plan["subnets"], gen["counters"], gen))
     if r.returncode == 0:
         _REACH.update(declared=True, gen="a", names=_gen_names(gen))
         res["changed"] += 1

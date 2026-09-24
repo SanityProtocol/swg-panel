@@ -706,10 +706,13 @@ check("a drop lands in the same counter in every generation, its count kept", _c
 N.reconcile_dev_reach(CFG, WIRE, res())
 check("…and the next swap alternates back to a", N._REACH["gen"] == "a" and "vmap @dmap_a" in K.loads[-1] and not any(n.endswith("_b") for n in _gen_names(K)))
 drops(7, "wg0", "10.8.0.9", "10.9.0.99")
+_i13 = len(K.loads)
 N.reconcile_dev_reach(CFG, {"ifaces": ["wg0"], "users": [], "zones": []}, res())
-check("subnets no longer protected leave the guard in the swap",
+_sw = K.loads[_i13] if len(K.loads) > _i13 else ""            # this pass's first load: the swap (the counters of the interfaces
+check("subnets no longer protected leave the guard in the swap",  # that left are deleted by a load after it, SWG-REACH-COUNTER-PLAN)
       sorted((x["lo"], x["hi"]) for x in K.m.tables[T]["sets"]["guard"]["els"]) == [_span("10.8.0.0/24")]
-      and "delete element inet swg_reach guard {" in K.loads[-1] and "add element" not in K.loads[-1] and pk("wg0", "10.8.0.9", "10.9.0.99") == "accept")
+      and _sw.startswith("table inet swg_reach {") and "delete element inet swg_reach guard {" in _sw and "add element" not in _sw
+      and pk("wg0", "10.8.0.9", "10.9.0.99") == "accept")
 N.reconcile_dev_reach(CFG, WIRE, res())
 check("an interface protected AGAIN reports its count at once (7), not a routing pass later (§11.8, found live)",
       (N._REACH["status"] or {}).get("blocked", {}).get("awg0") == 7, N._REACH["status"])
