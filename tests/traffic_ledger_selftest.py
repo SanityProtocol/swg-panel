@@ -152,8 +152,7 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
     "E": ([("                if d == cur[0] and cur[4] and cur[2] == step:\n                    a = acc.setdefault(cur[1], [0, 0])",
             "                if d == cur[0] and cur[4] and cur[2] == step:\n                    a = acc.setdefault(cur[1] + 10 ** 6, [0, 0])")],
           "one point per bucket"),
-    "F": ([("            qf = [(q[0], q[1], q[2], q[4], {s: q[5][s] for s in want if s in q[5]}) for q in self.q_fine if f <= q[0] <= t]",
-            "            qf = []")], "waiting for their write"),
+    "F": ([("        qf = [q for q in qf_all if f <= q[0] <= t]  ", "        qf = []  ")], "waiting for their write"),
     "G": ([("            if _lzlib.crc32(data[o + _LD_ROW.size:p1]) == crc:   # a damaged C table", "            if True:   # a damaged C table")], "damaged day row"),
     "H": ([("            kick = self.observed and (self.prompt", "            kick = (self.prompt")], "before anything was observed"),
     "I": ([("                d, mid, off = self.day, self.fmid, self.off    # fine file", "                d, mid = self.day, self.fmid    # fine file")],
@@ -195,7 +194,7 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
              "        if False:                                              # thousands). The day keeps its file's frame"),
             ("        elif d == bday and bstep and not env:", "        elif False:")], "or a restart after it"),
     "e2": ([("            if on is not None and self.slots[s].get(\"on\") != on:", "            if False:")], "owner's LAST name"),
-    "f2": ([("                if since >= (r.get(\"_last\") or 0):", "                if False:")], "pair names it"),
+    "f2": ([("                if since_ >= (r.get(\"_last\") or 0):", "                if False:")], "pair names it"),
     "j2": ([("                if d < cutoff:\n                    with contextlib.suppress(FileNotFoundError):",
              "                if d <= cutoff:\n                    with contextlib.suppress(FileNotFoundError):")], "exactly what"),
     "k2": ([("                sz = e.stat(follow_symlinks=False).st_size\n                led += sz", "                sz = e.stat(follow_symlinks=False).st_size\n                led += sz if not e.name.startswith(\"index\") else 0")],
@@ -230,6 +229,27 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
              "        for f in sorted(x for x in os.listdir(self.dir) if x.startswith(\"day-\"))[:1]:\n            os.unlink(self._p(f))\n        if gone:\n            self._usage = (0.0, None)")],
            "never a day row"),
     "b2": ([("            f = min(max(f, _ld_day(first)[0]), t)", "            f = max(f, _ld_day(first)[0])")], "before the ledger began"),
+    # [14] P3: the rolling window (Top talkers)
+    "a3": ([("                    if i < k:\n                        for j in range(n):", "                    if i <= k:\n                        for j in range(n):")],
+           "a window reaching into the day before"),
+    "b3": ([("            if qstep == step and qi < k:", "            if False:")], "waiting for their write"),
+    "c3": ([("        row = self._row_at_or_before(_ld_prev(d))\n        rx = _larr.array", "        row = self._row_at_or_before(d)\n        rx = _larr.array")],
+           "the day before"),
+    "d3": ([("            if (on_nodes is not None and pid not in on_nodes) or (current", "            if (False) or (current")], "deployed on the asked nodes"),
+    "f3": ([("            current = set(self.open) if top else None", "            current = None")], "deleted peer"),
+    "g3": ([("            if not s0 % 2:\n                try:", "            if True:\n                try:"),
+            ("                if self._fseq == s0:\n                    return out", "                if True:\n                    return out")],
+           "never read as missing"),
+    "m3": ([("                    if self._fseq == s0:                       # read again; with no flush in between it is a real error\n                        raise\n                    continue",
+             "                    raise")], "cut short under it"),
+    "h3": ([("(now - max(0, int(g(\"window\"))) if g(\"window\") else None)", "None")], "the panel's own clock"),
+    "i3": ([("            if first and since < first:  ", "            if False:  ")], "where history does"),
+    "j3": ([("{k[2] for k in self.deploys | set(self.recs) if k[0] in nodes}", "{k[2] for k in self.recs if k[0] in nodes}")], "never reported"),
+    "l3": ([("        return self._consistent(lambda: self._series(qs, now))   # the same gap as totals()",
+             "        with self._flush_lock:\n            return self._series(qs, now)")], "never holds the writer up"),
+    "k3": ([("            if n == 5:  ", "            if False:  "), ("            if n < 4:\n                time.sleep(0.05)\n        raise _LedgerBusy()",
+             "            if n < 4:\n                time.sleep(0.05)\n        return read()")], "a slow disk"),
+    "e3": ([("            return rx, tx, _ld_midnight(d)\n        k = max(0,", "            return rx, tx, int(ts)\n        k = max(0,")], "no detail starts at its midnight"),
 }
 
 TMP = tempfile.mkdtemp(prefix="ledger-")
@@ -1451,6 +1471,128 @@ def section_13b():
     L2.flush()
     check("a process that observed nothing never sweeps (a second panel on the state dir)", sorted(os.listdir(hd)) == before, "")
 
+
+# ── [14] P3: a rolling window over the ledger (the Overview's Top talkers) ────────────────────────────────────────
+print("[14] P3: a rolling window — whole days from the rows, the first day's part from its buckets, nodes, top")
+
+
+def section_14():
+    L, rp = fresh("roll", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")]), peer("p2", "u1", "K2", [("n2", "awg0", "awg")]),
+                                  peer("p3", "u2", "K3", [("n1", "awg0", "awg")]), peer("p4", "u2", "K4", [("n2", "awg0", "awg"), ("n3", "awg0", "awg")])))
+    day0 = calendar.timegm((2026, 9, 10, 0, 0, 0))
+    ing(L, "n1", wg("awg0", ("K1", 0, 0), ("K3", 0, 0)), day0 + 30 * 60)
+    ing(L, "n2", wg("awg0", ("K2", 0, 0), ("K4", 0, 0)), day0 + 30 * 60)   # p4 is on n2 and n3; n3 never reports
+    per = {}                                       # hour index from day0 → (p1 rx, p2 rx); p1 tx = rx // 10; p3 never moves
+    c1 = c2 = 0
+    for h in range(1, 44):                         # a reading at hh:30 credits bucket hh
+        d1, d2 = 1000 * h, 7 * h
+        per[h] = (d1, d2); c1 += d1; c2 += d2
+        t = day0 + h * 3600 + 30 * 60
+        ing(L, "n1", wg("awg0", ("K1", c1, c1 // 10), ("K3", 0, 0)), t)
+        ing(L, "n2", wg("awg0", ("K2", c2, 0)), t)
+        if h == 30:
+            L.flush()                               # hours 31.. stay queued: closed buckets waiting for their write
+    now = day0 + 43 * 3600 + 40 * 60              # 11 Sep 19:40
+    tot = lambda **kw: L.totals({k: [str(v)] for k, v in kw.items()}, now=now)
+    r = tot(since=now - 3600)                       # 18:40 → the bucket holding it, 18:00
+    rows = {x["id"]: (x["rx"], x["tx"]) for x in r["rows"]}
+    want = sum(per[h][0] for h in (42, 43))
+    check("[14] a rolling window starts at the bucket holding `since` — widened, never cut — and says where",
+          r["since"] == day0 + 42 * 3600 and rows.get("p1", (0,))[0] == want, (r["since"] - day0, rows.get("p1"), want))
+    check("[14] …closed buckets still waiting for their write are in it", rows.get("p2", (0,))[0] == sum(per[h][1] for h in (42, 43)),
+          rows.get("p2"))
+    r = tot(since=day0 + 20 * 3600 + 10 * 60)      # 10 Sep 20:10 → 20:00 yesterday, then all of today
+    rows = {x["id"]: x["rx"] for x in r["rows"]}
+    check("[14] a window reaching into the day before: its part from its buckets, the rest from the day before's row",
+          rows.get("p1") == sum(per[h][0] for h in range(20, 44)), (rows.get("p1"), sum(per[h][0] for h in range(20, 44))))
+    ref = {x["id"]: x["rx"] for x in L.totals({"range": ["custom"], "from": ["2026-09-11"], "to": ["2026-09-11"]}, now=now)["rows"]}
+    r = tot(since=day0 + 86400)
+    check("[14] …and from a midnight it equals the day's total", {x["id"]: x["rx"] for x in r["rows"]} == ref, (r["rows"], ref))
+    r = tot(since=now - 86400, nodes="n1")
+    check("[14] nodes=: only the peers deployed on the asked nodes, each whole", sorted(x["id"] for x in r["rows"]) == ["p1", "p3"],
+          [x["id"] for x in r["rows"]])
+    r = tot(since=now - 86400, top=5)
+    check("[14] top=: the biggest first, and a peer that moved nothing is not a talker",
+          [x["id"] for x in r["rows"]] == ["p1", "p2"], [x["id"] for x in r["rows"]])
+    r = tot(window=3600)
+    check("[14] window=: a rolling window up to the panel's own clock (never the browser's), and the reply says what was asked",
+          r.get("asked") == now - 3600 and r["since"] == day0 + 42 * 3600, (r.get("asked"), r["since"] - day0))
+    r = tot(window=40 * 86400)
+    check("[14] a rolling window reaching before the ledger's history starts where history does, and says so",
+          r["since"] == day0 and r["from"] == 20260910, (r["since"] - day0, r["from"]))
+    r = tot(window=3600, nodes="n3")
+    check("[14] nodes=: a peer deployed on a node that never reported is still in scope (the roster's deployments)",
+          [x["id"] for x in r["rows"]] == ["p4"], [x["id"] for x in r["rows"]])
+    rost = P.roster_load(rp); del rost["peers"]["p2"]; P.roster_save(rp, rost)   # p2 deleted: its slot closes, its bytes stay
+    ing(L, "n1", wg("awg0", ("K1", c1, c1 // 10), ("K3", 0, 0)), now - 30)
+    r = tot(since=now - 86400, top=5)
+    check("[14] top=: a deleted peer keeps its bytes but takes no live peer's place",
+          [x["id"] for x in r["rows"]] == ["p1"] and "p2" in {x["id"] for x in tot(since=now - 86400)["rows"]}, [x["id"] for x in r["rows"]])
+    # a flush in flight has taken the closed day out of its queue and not yet written it: a read in that gap must not miss it
+    import threading as _th
+    G, _grp = fresh("gap", roster(peer("g1", "u1", "KG", [("n1", "awg0", "awg")])))
+    ing(G, "n1", wg("awg0", ("KG", 0, 0)), day0 + 3600)
+    ing(G, "n1", wg("awg0", ("KG", 5000, 500)), day0 + 7200)
+    ing(G, "n1", wg("awg0", ("KG", 5100, 510)), day0 + 86400 + 600)   # past midnight: 10 Sep closes, its row queued
+    gate = _th.Event(); real = G._append_day
+    G._append_day = lambda dr: (gate.wait(10), real(dr))[1]
+    fl = _th.Thread(target=G.flush); fl.start()
+    while G._fseq % 2 == 0:
+        time.sleep(0.01)
+    got = {}
+    rd = _th.Thread(target=lambda: got.update(r=G.api("/api/traffic-totals", {"range": ["custom"], "from": ["2026-09-10"],
+                                                                                 "to": ["2026-09-10"], "by": ["peer"]})))
+    rd.start(); time.sleep(0.6); gate.set(); rd.join(); fl.join()
+    st, rsp = got["r"]
+    rows = {x["id"]: x["rx"] for x in ((rsp.get("data") or {}).get("rows") or [])}
+    check("[14] a read while a flush holds a closed day out of its queue waits for it — the day is never read as missing",
+          st == 200 and rows.get("g1") == 5000, (st, rows))
+    gate.clear()
+    ing(G, "n1", wg("awg0", ("KG", 5200, 520)), day0 + 2 * 86400 + 600)
+    fl = _th.Thread(target=G.flush); fl.start()
+    while G._fseq % 2 == 0:
+        time.sleep(0.01)
+    st, rsp = G.api("/api/traffic-totals", {"range": ["custom"], "from": ["2026-09-11"], "to": ["2026-09-11"], "by": ["peer"]})
+    st2, _r2 = G.api("/api/traffic-series", {"id": ["g1"], "by": ["peer"], "range": ["month"]})
+    gate.set(); fl.join()
+    check("[14] …and one the writer keeps in the way (a slow disk) is a 503 (being written), a series too — never a guess",
+          st == 503 and rsp.get("code") == "busy" and st2 == 503, (st, st2))
+    calls = {"n": 0}
+    real_s0 = G._series
+    def torn(qs, now=None):                                        # a flush replaced the file under the first read
+        calls["n"] += 1
+        if calls["n"] == 1:
+            G._fseq += 2
+            raise FileNotFoundError("day-2026-09.bin")
+        return real_s0(qs, now)
+    G._series = torn
+    try:
+        st, rsp = G.api("/api/traffic-series", {"id": ["g1"], "by": ["peer"], "range": ["month"]})
+    except Exception as e:                                         # the request handler answers it with a 500
+        st, rsp = 500, repr(e)
+    G._series = real_s0
+    check("[14] a read a flush cut short under it is read again — never a 500", st == 200 and calls["n"] == 2, (st, calls))
+    real_s = G._series
+    G._series = lambda qs, now=None: (time.sleep(1.5), real_s(qs, now))[1]   # a slow read (8 fine files of a big fleet)
+    rd = _th.Thread(target=lambda: G.series({"id": ["g1"], "by": ["peer"], "range": ["month"]})); rd.start()
+    time.sleep(0.2)
+    ing(G, "n1", wg("awg0", ("KG", 5300, 530)), day0 + 3 * 86400 + 600)
+    t0_ = time.monotonic(); G.flush(); took = time.monotonic() - t0_
+    rd.join(); G._series = real_s
+    check("[14] a slow read never holds the writer up — a restart's last write is never starved by a graph being drawn",
+          took < 0.5, round(took, 2))
+    os.unlink(L._fine_path(20260910))               # a day with no detail (1-day resolution, swept by OFF)
+    r = tot(since=day0 + 20 * 3600 + 10 * 60)
+    rows = {x["id"]: x["rx"] for x in r["rows"]}
+    check("[14] a day with no detail starts at its midnight: the whole day, from the rows",
+          r["since"] == day0 and rows.get("p1") == sum(per[h][0] for h in range(1, 44)), (r["since"] - day0, rows.get("p1")))
+
+
+try:
+    section_14()
+except Exception as e:
+    import traceback; traceback.print_exc()
+    check("section [14] ran to the end", False, "%s: %s" % (type(e).__name__, e))
 
 try:
     section_13b()

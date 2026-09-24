@@ -34,13 +34,23 @@ export function trafficQuery(v) {
   return "range=" + (v.range === "30d" ? "30d" : "month");
 }
 // A custom window from two typed dates, or why not. `to` is capped at the panel's today BEFORE the order is judged — a
-// start after today would otherwise pass, then reach the panel as a start after the end. Pure — the selftest drives it.
-export function customWindow(from, to, today) {
+// start after today would otherwise pass, then reach the panel as a start after the end. `min`: the first day the window
+// may start on (the Overview's charts reach back 33 days — chartsFirstDay). Pure — the selftest drives it.
+export function customWindow(from, to, today, min) {
   const re = /^\d{4}-\d{2}-\d{2}$/;
   if (!re.test(from || "") || !re.test(to || "") || from < "1970-01-01") return { ok: false, why: "incomplete" };
   const t = to > today ? today : to;
   if (from > t) return { ok: false, why: from > today ? "future" : "order" };
+  if (min && from < min) return { ok: false, why: "early" };
   return { ok: true, from, to: t };
+}
+// The first day a custom chart window can start on: the panel's today and the 32 days before it — what the coarsest ring
+// holds (swg-panel-server RANGE_CUSTOM_DAYS). The server refuses an earlier one; this keeps the picker from offering it.
+export const CHART_DAYS = 33;
+export function chartsFirstDay(today) {
+  const d = new Date((today || panelToday()) + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - (CHART_DAYS - 1));
+  return d.toISOString().slice(0, 10);
 }
 // A window that ended before the panel's today never changes: fetched once, kept.
 export function trafficImmutable(v, today) {
@@ -79,6 +89,7 @@ export function foldTotals(rows) {
 
 // ── the totals cache ────────────────────────────────────────────────────────────────────────────────────────────
 const TTL_MS = 60000;
+const BUSY_MS = 3000;     // a 503 `busy` (the ledger's writer is in the way — a slow disk) is asked again after this, not a minute
 const _tot = new Map();   // query → { at, busy, data, off, err }
 let _gen = 0;
 
@@ -93,6 +104,7 @@ function _fetchTotals(q, e) {
     } else {
       e.off = r && r.code === "ledger_off" ? r : null;   // the whole reply: srvText() translates its sentence
       e.err = e.off ? null : (r || { error: "error" });
+      if (r && r.code === "busy") e.at = Date.now() - TTL_MS + BUSY_MS;   // the history is being written: ask again soon
     }
     bus.emit();
   }).catch(err => { e.busy = false; e.at = Date.now(); e.err = String(err && err.message || err); bus.emit(); });
@@ -128,7 +140,7 @@ export function trafficSeries(by, id, v) {
   api.get("/api/traffic-series?by=" + by + "&id=" + encodeURIComponent(id) + "&" + q).then(r => {
     e.busy = false; e.at = Date.now();
     if (r && r.ok && r.data) { e.data = r.data; e.err = null; }
-    else e.err = (r && r.error) || "error";
+    else { e.err = (r && r.error) || "error"; if (r && r.code === "busy") e.at = Date.now() - TTL_MS + BUSY_MS; }
     bus.emit();
   }).catch(err => { e.busy = false; e.at = Date.now(); e.err = String(err && err.message || err); bus.emit(); });
   return e;

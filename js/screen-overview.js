@@ -11,9 +11,9 @@
 import {
   ago, dur, fmtBytes, seen,
 } from "./util.js";
-import { T, Trich, plural, pluralWord, srvVerb, srvDetail } from "./i18n.js";
+import { T, Trich, plural, pluralWord, srvVerb, srvDetail, srvText } from "./i18n.js";
 import {
-  Store, api, bus, useStore,
+  Store, api, bus, useStore, rangeQ,
 } from "./store.js";
 import {
   turnColor, turnFork, turnForkList, forkLabel,
@@ -28,10 +28,12 @@ import {
   rate,
 } from "./ui.js";
 import {
-  MultiRing, OnlineBlocks, RANGE_CAP, RankBars, RingLegend, ThroughputChart, TrendSpark,
+  MultiRing, OnlineBlocks, RANGE_CAP, RANGE_WIN, axisCap, histTime, RankBars, RingLegend, ThroughputChart, TrendSpark,
 } from "./charts.js";
+import { DateWindow } from "./traffic-ui.js";
+import { panelToday, chartsFirstDay, CHART_DAYS } from "./traffic.js";
 import {
-  DASH_RANGES, OnlineUsersTag, SVC_KINDWORD, dashNodes, dashSave, dashState, openLiveTab, rangeLabel, rangeWord, recentActivity,
+  DASH_RANGES, OnlineUsersTag, SVC_KINDWORD, dashKey, dashNodes, dashSave, dashState, isCustomKey, customKeyWindow, openLiveTab, rangeLabel, rangeWord, recentActivity,
   revealOrphans, revealPeer, revealPeersFiltered, revealUser, serviceIssues, svcKey, svcSaveSilence,
   svcSilence, svcSilencedSet,
 } from "./views.js";
@@ -79,7 +81,7 @@ export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presenc
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span>${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c, g3]) => html`<span key=${t + (g3 ? "3" : "")} class=${"iftype " + t + (g3 ? " awg3" : "")} ...${tip3(g3)}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}<span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
         <div><span class="fl">${T("Throughput")}</span>${trafCell}</div>
-        <div><span class="fl">${T("status|Online")}</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${histRange} trigger=${(c, w) => html`<span class="faint">${plural(c, w || "user")}</span>`}/></span></div>
+        <div><span class="fl">${T("status|Online")}</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${rangeWord(histRange)} trigger=${(c, w) => html`<span class="faint">${plural(c, w || "user")}</span>`}/></span></div>
         <div><span class="fl">${T("Sync")}</span><span class="fv">${sync}</span></div>
       </div>
     </div>
@@ -154,6 +156,8 @@ function ofTotal(dn, up) {
 }
 
 export function dashSetRange(r) { if (DASH_RANGES.some(x => x[0] === r)) { dashState.range = r; dashSave(); bus.emit(); } }
+// A custom window (P3): whole days of the panel's, set only by the date popover's Apply.
+export function dashSetCustom(from, to) { Object.assign(dashState, { range: "custom", from, to }); dashSave(); bus.emit(); }
 
 // Merge the SELECTED nodes' 15s health-ring series (server-provided, bucket-aligned) into one fleet
 // series summed per timestamp — powers the live fleet-throughput hero without a client accumulator, and
@@ -264,10 +268,26 @@ export function DashRail() {
       <div class="railpanel railmenu">
         ${DASH_RANGES.map(([k]) => html`<button key=${k} class=${"railmenu-b" + (range === k ? " on" : "")} onClick=${() => dashSetRange(k)} title=${rangeLabel(k)}>
           <span class="railmenu-ic">${k === "live" ? html`<span class="rlive-dot"></span>` : html`<${Ic} i=${RANGE_ICON[k]}/>`}</span><span class="railmenu-t">${rangeLabel(k)}</span></button>`)}
+        <${RailCustom} on=${range === "custom"}/>
       </div>
       ${fleet.length > 1 ? html`<${NodesRailPanel} nav=${false}/>` : null}
     </div>
   </div>`;
+}
+
+// The rail's Custom row: a click opens two date fields (a draft until Apply), whole days of the panel's, reaching back as
+// far as the charts keep (chartsFirstDay). Keyed on the window in force, so an Apply closes it.
+function RailCustom({ on }) {
+  const today = panelToday(), k = dashKey();
+  const trig = html`<span class=${"railmenu-b" + (on ? " on" : "")} role="button" tabindex="0" title=${on ? rangeLabel(k) : T("range|Custom")}>
+    <span class="railmenu-ic"><${Ic} i="daycal"/></span><span class="railmenu-t">${on ? rangeLabel(k) : T("range|Custom")}</span></span>`;
+  const w = isCustomKey(k) ? customKeyWindow(k) : null;   // the window in force as read (dashKey clamps an aged one)
+  const first = chartsFirstDay(today), m1 = today.slice(0, 8) + "01";
+  const from = w ? w.from : (m1 < first ? first : m1), to = w ? (w.to > today ? today : w.to) : today;
+  return html`<${Popover} key=${k} clickOnly cls="railcustom" popCls="railcustom-pop" trigger=${trig}>
+    <div class="railcustom-h">${T("Days in the panel's zone — the charts keep the last {v1} days", { v1: CHART_DAYS })}</div>
+    <${DateWindow} from=${from} to=${to} min=${first} max=${today} onApply=${dashSetCustom}/>
+  <//>`;
 }
 
 // On-demand history for the range-driven visuals. Fetches per-node RRD (/api/node-history) for the
@@ -275,24 +295,78 @@ export function DashRail() {
 // the selection changes. Returns { loading, byNode:{id:{t,rx,tx,cpu,…}}, range }. Live → empty (widgets
 // read the /api/state bundle instead). One fetch burst per range change; results are held until it changes.
 export const RANGE_STEP = { hour: 15, day: 300, week: 1800, month: 7200 };   // seconds/bucket → volume = Σ(mean B/s)·step
+// The seconds per bucket of the history a ranged figure was read from. ⚠️ A custom window's step is the one the server
+// says it used (`axis`), never a per-range map entry: RANGE_STEP["custom"] would be undefined → 1, and six Overview volumes
+// would read 300–7200× too small with no error. No axis yet → 0: an empty figure, never a wrong one.
+export function rangeStep(key, hist) {
+  return isCustomKey(key) ? ((hist && hist.axis && hist.axis.step) || 0) : (RANGE_STEP[key] || 1);
+}
+// Top talkers' subtitle: the window; with a subset of nodes, that each figure is the whole peer's (the ledger counts a
+// peer, not a peer on a node); and where a rolling window really starts when that is not where it was asked to — widened
+// to the ledger's bucket, or later, where its history begins.
+export function talkSub(key, talk) {
+  let s = T("{range} · by volume", { range: rangeWord(key) });
+  if (talk && talk.scoped) s += " · " + T("each peer on all its servers");
+  if (talk && talk.asked && Math.abs(talk.since - talk.asked) > 60) s += " · " + T("since {v1}", { v1: histTime(talk.since, "day") });   // widened to a bucket, or where history begins
+  return s;
+}
+export const PEER_TOPN = 50;
+// Top talkers read the traffic ledger (the meter) — the per-peer rings are a sample, 0.3–29× off. A named range is a
+// rolling window up to the PANEL's now (`window` seconds — never a start from this browser's clock, which may be off by an
+// hour); its reply says what was asked and where the ledger's buckets let it start. A custom window is its days; a subset
+// of nodes lists the peers deployed there, each with its WHOLE figure. Pure — gated.
+export function talkQuery(key, nodes) {
+  return "/api/traffic-totals?by=peer&top=" + PEER_TOPN + (nodes ? "&nodes=" + encodeURIComponent(nodes.join(",")) : "")
+    + "&" + (isCustomKey(key) ? rangeQ(key) : "window=" + RANGE_WIN[key]);
+}
+// The ledger answers 503 `busy` while its writer holds a closed bucket (a slow disk): asked again, three times at most,
+// rather than leaving Top talkers blank until the operator changes the range.
+export function talkFetch(url, tries, wait) {
+  tries = tries == null ? 3 : tries;
+  return api.get(url).then(r => (r && r.code === "busy" && tries > 1)
+    ? new Promise(res => setTimeout(res, wait == null ? 1500 : wait)).then(() => talkFetch(url, tries - 1, wait)) : r);
+}
+// The range every ranged figure shows: the one whose data is LOADED. It lags a click while the fetch runs — the old range's
+// figures (or live, before the first ranged fetch lands) stay under their own title, never an empty page. Pure — gated.
+export const effRangeOf = (dKey, loaded) => dKey === "live" ? "live" : loaded;
+// How often the Protection card re-reads its window: a named range every 15 s (the Blocked counter climbs as you watch);
+// a custom window that runs until the panel's today once a minute; one that ended never — it cannot change. Pure — gated.
+export function blockPollMs(key, today) {
+  if (!isCustomKey(key)) return 15000;
+  return customKeyWindow(key).to < today ? 0 : 60000;
+}   // Top talkers: the biggest peers fetched (the list shows up to 50 users — Settings → Display)
 // One fetch burst per range/selection change, shared by the doughnuts AND the flow map (lifted to Overview so
 // they don't each hit the API). Pulls per-node RRD + per-pair mesh means. Live → empty (widgets use the bundle).
 export function useRangeHistory(range, selIds) {
-  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], exits: [], peers: [], presence: null, range: "live" });
-  const key = range + "|" + selIds.slice().sort().join(",");
+  const empty = { loading: false, byNode: {}, mesh: [], cats: [], turn: [], exits: [], talk: null, presence: null, axis: null, err: null, range: "live" };
+  const [st, setSt] = useState(empty);
+  const key = range + "|" + selIds.slice().sort().join(",");   // `range` is the KEY — a custom window's carries its days
   useEffect(() => {
-    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], exits: [], peers: [], presence: null, range: "live" }); return; }
+    if (range === "live") { setSt(empty); return; }
     let alive = true; setSt(s => ({ ...s, loading: true }));
-    const [obN, obStep] = ONLINE_BLOCKS[range] || ONLINE_BLOCKS.live;   // the bars ask for exactly the blocks they draw
+    const custom = isCustomKey(range);
+    const [obN, obStep] = custom ? [0, 0] : (ONLINE_BLOCKS[range] || ONLINE_BLOCKS.live);   // the bars ask for exactly the blocks they draw (custom: the server picks)
+    const scoped = selIds.length < (Store.fleet || []).length;
+    // Top talkers are their own slice: a ledger answering `busy` (asked again, talkFetch) never holds the charts back.
+    let talk = null, main = false;
+    const setTalk = t => { if (!alive) return; talk = t; if (main) setSt(s => s.range === range ? { ...s, talk } : s); };
+    talkFetch(talkQuery(range, scoped ? selIds : null))
+      .then(r => setTalk(r && r.ok && r.data ? { rows: r.data.rows || [], since: r.data.since, asked: r.data.asked || 0, scoped }
+        : { rows: [], off: !!(r && r.code === "ledger_off"), busy: r && r.code === "busy" ? r : null, scoped }))
+      .catch(() => setTalk({ rows: [], scoped }));
     Promise.all([
-      Promise.all(selIds.map(id => api.nodeHistory(id, range).then(r => [id, (r && r.data) || null]).catch(() => [id, null]))),
+      Promise.all(selIds.map(id => api.nodeHistory(id, range).then(r => [id, r]).catch(() => [id, null]))),
       api.meshHistory(range).then(r => (r && r.data && r.data.pairs) || []).catch(() => []),
       api.categoryHistory(range).then(r => (r && r.data && r.data.cats) || []).catch(() => []),
       api.turnHistory(range).then(r => (r && r.data && r.data.turn) || []).catch(() => []),
       api.exitHistory(range).then(r => (r && r.data && r.data.exits) || []).catch(() => []),
-      api.peerHistory(range).then(r => (r && r.data && r.data.peers) || []).catch(() => []),
       api.presence(range, obN, obStep, selIds).then(r => (r && r.data) || null).catch(() => null),
-    ]).then(([rows, mesh, cats, turn, exits, peers, presence]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, cats, turn, exits, peers, presence, range }); });
+    ]).then(([rows, mesh, cats, turn, exits, presence]) => { if (!alive) return; main = true;
+      const byNode = {}; let axis = null, err = null;
+      rows.forEach(([id, r]) => { byNode[id] = (r && r.ok && r.data) || null;
+        if (r && r.ok && r.data && r.data.axis) axis = r.data.axis; else if (r && r.ok === false && !err) err = r; });
+      // Top talkers not in yet (a busy ledger is asked again): the section stays, marked as loading — no page jump
+      setSt({ loading: false, byNode, mesh, cats, turn, exits, talk: talk || { rows: [], pending: true, scoped }, presence, axis, err, range }); });
     return () => { alive = false; };
   }, [key]);
   return st;
@@ -307,8 +381,8 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const sel = new Set(selIds);
   const fleet = (Store.fleet || []).filter(n => sel.has(n.id));
   const live = range === "live";
-  const ranged = !live && hist.range === range;   // caller passes the EFFECTIVE (loaded) range, so this holds the old data through a fetch instead of flashing live
-  const STEP = RANGE_STEP[range] || 1;
+  const ranged = !live && hist.range === range;   // caller passes the EFFECTIVE (loaded) range KEY, so this holds the old data through a fetch instead of flashing live
+  const STEP = rangeStep(range, hist);
   const isSys = (nid, ifn) => !!(Store.describe[nid] && Store.describe[nid][ifn] && Store.describe[nid][ifn].system);
   const ifType = (nid, ifn) => {
     if (((Store.stats[nid] || {}).wdtt || []).some(w => w && w.iface === ifn)) return "wdtt";   // WDTT owns its iface (snap.wdtt, not describe)
@@ -432,7 +506,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const cntLegTypes = TYPES.filter(([t]) => (typeCnt[t] || { tot: 0 }).tot > 0).map(([t, nm]) => ({ key: t, name: nm, color: ifaceColor(t), right: typeCnt[t].on + " / " + typeCnt[t].tot }));
 
   const rlabel = DASH_RANGES.find(r => r[0] === range);
-  const rname = rlabel ? rlabel[1].toLowerCase() : range;
+  const rname = rlabel ? rlabel[1].toLowerCase() : rangeWord(range);
   const loadingNote = (!live && hist.loading) ? html`<div class="donut-note">${T("loading {v1} history…", { v1: rname })}</div>` : null;
   const volNote = ranged ? html`<div class="donut-note">${T("volume over the {v1}", { v1: rname })}</div>` : null;
   const avgNote = ranged ? html`<div class="donut-note">${T("avg over the {v1}", { v1: rname })}</div>` : null;
@@ -597,8 +671,8 @@ export function exitTraffic(nid, ranged, hist) {
 export function flowGraph(selIds, range, hist) {
   const sel = new Set(selIds);
   const fleet = (Store.fleet || []).filter(n => sel.has(n.id));
-  const ranged = range && range !== "live" && hist && hist.range === range;   // caller passes the EFFECTIVE (loaded) range → holds old data through a fetch (no flash to live)
-  const STEP = RANGE_STEP[range] || 1;
+  const ranged = range && range !== "live" && hist && hist.range === range;   // caller passes the EFFECTIVE (loaded) range KEY → holds old data through a fetch (no flash to live)
+  const STEP = rangeStep(range, hist);
   const acc = {};
   fleet.forEach(n => acc[n.id] = { cl: { rx: 0, tx: 0 }, turn: {}, mesh: {}, offmesh: { rx: 0, tx: 0, n: new Set() }, inet: null });   // offmesh = traffic to fleet nodes NOT selected (n = which ones) · inet = MEASURED internet {out,in} B/s (node counter), null = fall back to the client-derived estimate
   if (ranged) {
@@ -1077,8 +1151,9 @@ export function useBlockStats(range) {
       .then(r => { if (alive) setBs({ loading: false, data: (r && r.data) || null, range }); })
       .catch(() => { if (alive) setBs(s => ({ ...s, loading: false })); });
     load();
-    const t = setInterval(load, 15000);   // live-poll so the Blocked counter climbs without a reload (RRD buckets are ≥15s)
-    return () => { alive = false; clearInterval(t); };
+    const ms = blockPollMs(range, panelToday());   // live-poll so the Blocked counter climbs without a reload (RRD buckets are ≥15s)
+    const t = ms ? setInterval(load, ms) : 0;
+    return () => { alive = false; if (t) clearInterval(t); };
   }, [range]);
   return bs;
 }
@@ -1257,8 +1332,9 @@ export function Overview() {
   // Every widget aggregates over the SELECTED node set (default = whole fleet). A peer is "in scope" if
   // it has at least one target on a selected node; its counts/traffic come only from selected nodes.
   const selIds = dashNodes(), sel = new Set(selIds);
-  const rangeHist = useRangeHistory(dashState.range, selIds);   // one fetch, shared by the doughnuts + flow map
-  const blockStats = useBlockStats(dashState.range);            // Protection card feed (independent, supports live)
+  const dKey = dashKey();                                        // the range, or a custom window's key (its days)
+  const rangeHist = useRangeHistory(dKey, selIds);              // one fetch, shared by the doughnuts + flow map
+  const blockStats = useBlockStats(dKey);                       // Protection card feed (independent, supports live)
   // Fresh install (or every node removed) → there's no fleet to chart. Skip the whole dashboard and invite
   // the operator to add their first entry server. (After the two hooks above, so rules-of-hooks holds.)
   if (fleet.length === 0) return html`<div class="screen"><div class="nonodes">
@@ -1325,9 +1401,9 @@ export function Overview() {
   // EFFECTIVE range = the range whose data is actually loaded/showing. During a fetch it LAGS the just-clicked range
   // (rangeHist keeps the previous range's data), so every ranged figure holds the OLD range until the new one lands —
   // no flash to live, no layout jump. Live is immediate. Only the rail's active highlight reads the raw dashState.range.
-  const effRange = dashState.range === "live" ? "live" : (rangeHist.range || dashState.range);
+  const effRange = effRangeOf(dKey, rangeHist.range);
   const dRanged = effRange !== "live";
-  const dStep = RANGE_STEP[effRange] || 1;
+  const dStep = rangeStep(effRange, rangeHist);
   const nodeVol = id => { const d = rangeHist.byNode[id]; if (!d) return { rx: 0, tx: 0 };
     let rx = 0, tx = 0; const R = d.rx || [], T = d.tx || [], MR = d.mrx || [], MT = d.mtx || [];
     for (let i = 0; i < R.length; i++) { rx += Math.max(0, (R[i] || 0) - (MR[i] || 0)); tx += Math.max(0, (T[i] || 0) - (MT[i] || 0)); }
@@ -1361,27 +1437,27 @@ export function Overview() {
   //    ThroughputChart summed; online-peers resamples pon into the fixed per-range block count. ──
   const fleetHist = fleetHistory(selIds, effRange, rangeHist);
   const tputRange = effRange === "live" ? "hour" : effRange;   // fleet live feed IS the 15s (hour) ring
-  const [obN, obStep] = ONLINE_BLOCKS[effRange] || ONLINE_BLOCKS.live;
+  const _pres = rangeHist.presence;
+  const [obN, obStep] = isCustomKey(effRange) ? [((_pres || {}).blocks || []).length, (_pres || {}).step || 86400]   // custom: the server's own bars
+    : (ONLINE_BLOCKS[effRange] || ONLINE_BLOCKS.live);
   // Each bar = DISTINCT peers seen online in that bar's span, unioned from the presence bitmaps. `pon` (the
   // health ring) is a mean of concurrency and cannot answer this: five peers online 12 min each average to 1.
   // Live keeps the client-side accumulator — a 30s bar of T("online now") needs no server round-trip.
-  const _pres = rangeHist.presence;
   const onlineBlocks = (dRanged && _pres && _pres.blocks) ? _pres.blocks : resampleBlocks(fleetHist.onT, fleetHist.on, obN, obStep);
-  const onlineEndTs = (dRanged && _pres) ? _pres.end : fleetHist.onT[fleetHist.onT.length - 1];
+  // a custom window's bars are laid from its first midnight and each is named by its START (a day bar, by its day)
+  const onlineEndTs = (dRanged && _pres) ? (isCustomKey(effRange) ? _pres.end - _pres.step : _pres.end) : fleetHist.onT[fleetHist.onT.length - 1];
   const hasOnline = onlineBlocks.some(v => v != null);
   // how many rows the ranked lists show — operator-set in Panel settings → Display (1–50, default 10)
   const nTalk = Math.max(1, Math.min(50, (Store.panelSettings || {}).top_talkers || 10));
   const nDest = Math.max(1, Math.min(50, (Store.panelSettings || {}).top_destinations || 10));
   // top talkers — peers ranked by traffic across the selected nodes. Live = current per-peer rx/tx from the
-  // snapshot; a range = per-peer windowed VOLUME from the peer RRD (/api/peer-history), matched back to the peer
-  // by pubkey. Same node-selector + perspective as every other figure.
-  let perPeer;   // per-PEER traffic first (live per-target speeds, or ranged per-peer volume from the RRD)…
+  // snapshot; a range = the peer's volume from the traffic ledger (talkQuery), matched back to the peer
+  // by its id. Same node-selector + perspective as every other figure.
+  let perPeer;   // per-PEER traffic first (live per-target speeds, or the ledger's ranged per-peer volume)…
   if (dRanged) {
-    const pkPeer = {}; sPeers.forEach(p => { if (p.pubkey) pkPeer[p.pubkey] = p; pkPeer[p.id] = p; });   // wg peers keyed by pubkey; keyless (WDTT/csqtt) rows come back keyed by peer id
-    const byPk = {};
-    (rangeHist.peers || []).forEach(e => { if (!sel.has(e.node) || !pkPeer[e.pubkey]) return;
-      const a = byPk[e.pubkey] = byPk[e.pubkey] || { rx: 0, tx: 0 }; a.rx += e.rx || 0; a.tx += e.tx || 0; });
-    perPeer = Object.entries(byPk).map(([pk, v]) => ({ p: pkPeer[pk], rx: v.rx, tx: v.tx })).filter(x => x.p);
+    // the ledger's rows: a peer id each, its whole figure over the window (a deleted peer has no row to land on)
+    const byId = new Map(sPeers.map(p => [p.id, p]));
+    perPeer = ((rangeHist.talk || {}).rows || []).map(r => ({ p: byId.get(r.id), rx: r.rx || 0, tx: r.tx || 0 })).filter(x => x.p);
   } else {
     perPeer = sPeers.map(p => {
       let r = 0, t = 0; p.targets.forEach(tg => { if (!sel.has(tg.node)) return;
@@ -1464,6 +1540,7 @@ export function Overview() {
   return html`<div class="screen">
     <${StoreOffBanner}/>
     <${DashRail}/>
+    ${isCustomKey(dKey) && rangeHist.range === dKey && rangeHist.err ? html`<div class="notice warn">${srvText(rangeHist.err)}</div>` : null}
     <div class="statgrid">
       <a class="stat accent clk" href="#/connections" onClick=${openLiveTab("peers")}><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">${T("Online now")}</div><div class="v">${online}<small> / ${sPeers.length}</small></div><div class="sub">${T("live connections →")}</div></div></a>
       <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">${T("Users")}</div><div class="v">${sUsers.length}</div><div class="sub">${scoped ? T("{v1} here", { v1: plural(sPeers.length, "peer") }) : T("{v1} total", { v1: plural(sPeers.length, "peer") })}</div></div></a>
@@ -1477,7 +1554,7 @@ export function Overview() {
       <div class="trendcard wide">
         <div class="donutcard-h"><h3>${T("Fleet throughput")}</h3></div>
         ${(fleetHist.t || []).length > 1
-          ? html`<${ThroughputChart} rx=${fleetHist.rx} tx=${fleetHist.tx} times=${fleetHist.t} range=${tputRange} cap=${RANGE_CAP[tputRange]} h=${70}/>`
+          ? html`<${ThroughputChart} rx=${fleetHist.rx} tx=${fleetHist.tx} times=${fleetHist.t} range=${tputRange} cap=${isCustomKey(tputRange) ? axisCap(rangeHist.axis) : RANGE_CAP[tputRange]} h=${70}/>`
           : html`<div class="harea-empty">${T("gathering — no history yet")}</div>`}
       </div>
       <div class="trendcard">
@@ -1512,9 +1589,12 @@ export function Overview() {
       <div class="rankcard"><${RankBars} rows=${rankRowsTraffic}/></div>
     <//>` : null}
 
-    ${talkerRows.length ? html`<${Fragment}>
-      ${secTitle(T("Top talkers"), dRanged ? T("{range} · by volume", { range: rangeWord(effRange) }) : T("by live throughput"), undefined, "toptalkers")}
-      <div class="rankcard"><${RankBars} rows=${talkerRows}/></div>
+    ${talkerRows.length || (dRanged && ((rangeHist.talk || {}).off || (rangeHist.talk || {}).busy || (rangeHist.talk || {}).pending)) ? html`<${Fragment}>
+      ${secTitle(T("Top talkers"), dRanged ? talkSub(effRange, rangeHist.talk) : T("by live throughput"), undefined, "toptalkers")}
+      ${talkerRows.length ? html`<div class="rankcard"><${RankBars} rows=${talkerRows}/></div>`
+        : rangeHist.talk.pending ? html`<div class="hint faint">…</div>`
+        : rangeHist.talk.busy ? html`<div class="hint">${srvText(rangeHist.talk.busy)}</div>`
+        : html`<div class="hint">${T("Traffic totals are off — Settings → Display says why.")}</div>`}
     <//>` : null}
 
     ${catRows.length ? html`<${Fragment}>

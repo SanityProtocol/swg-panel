@@ -27,7 +27,7 @@ import {
 import { T, Trich, Tsplit, plural, pluralWord, srvText, srvVars } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
          RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, lossColor, histTime, ChartHover, IfaceThroughput,
-         RANGE_CAP, lossColorMesh } from "./charts.js";
+         RANGE_CAP, axisCap, lossColorMesh } from "./charts.js";
 import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsPop, LossPop, onlineUserRows, onlinePeerRows,
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES, reachSkipText, reachStaleText,
          promotedAt, promotedBy } from "./views.js";
@@ -1323,7 +1323,8 @@ export function NodeHealth({ health, node, compact, history, range, nodeHist }) 
   const liveCpu = (hh && Array.isArray(hh.cpu) && hh.cpu.length > 1) ? hh.cpu : null;
   const cpuHist = useRanged ? nodeHist.cpu : liveCpu;
   const cpuTimes = useRanged ? nodeHist.t : (hh ? hh.t : null);
-  const cpuRange = useRanged ? range : "live", cpuCap = useRanged ? (RANGE_CAP[range] || 0) : 0;
+  // a custom window's axis holds its buckets (the node-history reply's `axis`), the same as the Overview's throughput chart
+  const cpuRange = useRanged ? range : "live", cpuCap = useRanged ? (RANGE_CAP[range] || axisCap(nodeHist.axis) || 0) : 0;
   const showHist = history !== false && !!cpuHist;
   return html`<div class="health">
     <${HealthAlerts} health=${health}/>

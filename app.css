@@ -3858,6 +3858,11 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .trange-dates{display:inline-flex;align-items:center;gap:6px}
 .trange-dates .datein{padding:4px 8px;font-size:12px;border-radius:7px}
 .trange .hint.warn{margin:0}
+/* the Overview rail's Custom row (P3): the popover's trigger fills the row like its sibling buttons; the dates open to its left */
+.railcustom{display:flex}
+.railcustom-pop{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:10px 12px}
+.railcustom-h{font-size:11.5px;color:var(--dim);max-width:30ch}
+.railcustom-pop .hint.warn{margin:0}
 .tcellpop{display:inline-block}
 .tbub .tb-row{margin:3px 0;white-space:normal}
 .tbub .tb-row b{font-family:var(--mono);font-weight:600;color:var(--ink)}

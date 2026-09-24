@@ -37,31 +37,38 @@ const pair = (rx, tx) => { const [d, u] = dlul(rx, tx); return "↓ " + fmtBytes
 
 // ── the window control ──────────────────────────────────────────────────────────────────────────────────────────
 // This month · Last 30 days · Custom — one window for the Peers and Users grids and both views (traffic.js). Custom opens
-// two date fields, capped at the panel's own today; a window applies as soon as both ends make one.
-// ⚠️ THE DATES ARE A DRAFT until Apply — this control's own, never the shared window. Written into it as they were
-// typed, every keystroke of a year (0002, 0020, 0202, 2026) was a fetch cached for good, and a start after the end made
-// every grid ask for a window the panel refuses. customWindow() judges the draft (a gated pure function).
+// two date fields (DateWindow), capped at the panel's own today.
 export function TrafficRange({ onChange }) {
   const [, force] = useState(0);
-  const [draft, setDraft] = useState(null);   // null: showing the window in force
   const v = trafficView, today = panelToday();
-  const set = patch => { Object.assign(trafficView, patch); setDraft(null); force(x => x + 1); bus.emit(); if (onChange) onChange(); };   // every grid and view re-reads it
+  const set = patch => { Object.assign(trafficView, patch); force(x => x + 1); bus.emit(); if (onChange) onChange(); };   // every grid and view re-reads it
   const pick = r => r !== "custom" ? set({ range: r })
     : set({ range: "custom", from: v.from || today.slice(0, 8) + "01", to: v.to && v.to <= today ? v.to : today });
   const tab = (r, label) => html`<button type="button" class=${"rtab" + (v.range === r ? " on" : "")} aria-pressed=${v.range === r} onClick=${() => pick(r)}>${label}</button>`;
-  const dr = draft || { from: v.from, to: v.to };
-  const date = k => html`<input type="date" class="datein" value=${dr[k]} min="1970-01-01" max=${today}
-    aria-label=${k === "from" ? T("From") : T("To")} onInput=${e => setDraft({ ...dr, [k]: e.target.value })}/>`;
-  const w = customWindow(dr.from, dr.to, today);
-  const bad = !w.ok && w.why !== "incomplete";
-  const changed = !!draft && (dr.from !== v.from || dr.to !== v.to);
-  const apply = () => { if (w.ok) set({ from: w.from, to: w.to }); };
   return html`<span class="trange" title=${T("The window the Total column counts — in the panel's days (Settings → Display)")}>
     <span class="rangetabs">${tab("month", T("This month"))}${tab("30d", T("Last 30 days"))}${tab("custom", T("range|Custom"))}</span>
-    ${v.range === "custom" ? html`<span class="trange-dates" onKeyDown=${e => { if (e.key === "Enter") apply(); }}>${date("from")}<span class="faint">–</span>${date("to")}
-      ${changed ? html`<button type="button" class="btn btn-mini" disabled=${!w.ok} onClick=${apply}>${T("Apply")}</button>` : null}</span>` : null}
-    ${bad ? html`<span class="hint warn">${w.why === "future" ? T("The start is after today.") : T("The start is after the end.")}</span>` : null}
+    ${v.range === "custom" ? html`<${DateWindow} key=${v.from + v.to} from=${v.from} to=${v.to} max=${today} onApply=${(from, to) => set({ from, to })}/>` : null}
   </span>`;
+}
+
+// Two date fields for a custom window of the panel's days — the grids' (above) and the Overview's (P3).
+// ⚠️ THE DATES ARE A DRAFT until Apply — never the window in force. Written straight into it as they were typed, every
+// keystroke of a year (0002, 0020, 0202, 2026) was a fetch cached for good, and a start after the end made every grid ask
+// for a window the panel refuses. customWindow() judges the draft (a gated pure function); `min` is the first day the
+// window may start on (none for the grids — the ledger answers any day).
+export function DateWindow({ from, to, min, max, onApply }) {
+  const [draft, setDraft] = useState(null);   // null: showing the window in force
+  const dr = draft || { from, to };
+  const date = k => html`<input type="date" class="datein" value=${dr[k]} min=${min || "1970-01-01"} max=${max}
+    aria-label=${k === "from" ? T("From") : T("To")} onInput=${e => setDraft({ ...dr, [k]: e.target.value })}/>`;
+  const w = customWindow(dr.from, dr.to, max, min);
+  const bad = !w.ok && w.why !== "incomplete";
+  const changed = !!draft && (dr.from !== from || dr.to !== to);
+  const apply = () => { if (w.ok) { setDraft(null); onApply(w.from, w.to); } };
+  return html`<${Fragment}><span class="trange-dates" onKeyDown=${e => { if (e.key === "Enter") apply(); }}>${date("from")}<span class="faint">–</span>${date("to")}
+      ${changed ? html`<button type="button" class="btn btn-mini" disabled=${!w.ok} onClick=${apply}>${T("Apply")}</button>` : null}</span>
+    ${bad ? html`<span class="hint warn">${w.why === "future" ? T("The start is after today.") : w.why === "early"
+      ? T("The charts go back to {v1}.", { v1: trafficRangeLabel({ range: "custom", from: min, to: min }) }) : T("The start is after the end.")}</span>` : null}<//>`;
 }
 
 // ── the ranged Total cell ───────────────────────────────────────────────────────────────────────────────────────

@@ -55,6 +55,13 @@ async function _fetch(u, opts) {
   catch (e) { if (e && e.name === "AbortError") throw new Error(T("the panel didn't respond in time")); throw e; }
   finally { clearTimeout(t); }
 }
+// A range key as a query: a named range, or a custom window's key "custom:YYYYMMDD-YYYYMMDD" (views.js dashKey) → its
+// panel days. The ranged endpoints answer a custom window with the axis they used (`axis`), which the Overview reads.
+const _iso = d => d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6, 8);
+export function rangeQ(k) {
+  const m = /^custom:(\d{8})-(\d{8})$/.exec(k || "");
+  return m ? "range=custom&from=" + _iso(m[1]) + "&to=" + _iso(m[2]) : "range=" + encodeURIComponent(k);
+}
 export const api = {
   async get(p) { const r = await _fetch(url(p)); if (r.status === 401) return _on401(); return r.json(); },
   async post(p, b) { const r = await _fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }); if (r.status === 401 && !/\/api\/login$/.test(p)) return _on401(); return r.json(); },
@@ -64,18 +71,17 @@ export const api = {
   events(limit) { return this.get("/api/events?limit=" + (limit || 15)); },
   eventDelete(eid) { return this.post("/api/events/delete", { eid }); },
   eventsClear() { return this.post("/api/events/clear", {}); },
-  nodeHistory(node, range) { return this.get("/api/node-history?node=" + encodeURIComponent(node) + "&range=" + encodeURIComponent(range)); },
-  meshHistory(range) { return this.get("/api/mesh-history?range=" + encodeURIComponent(range)); },
-  categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
-  turnHistory(range) { return this.get("/api/turn-history?range=" + encodeURIComponent(range)); },
-  exitHistory(range) { return this.get("/api/exit-history?range=" + encodeURIComponent(range)); },
-  peerHistory(range) { return this.get("/api/peer-history?range=" + encodeURIComponent(range)); },
-  blockStats(range) { return this.get("/api/block-stats?range=" + encodeURIComponent(range)); },
+  nodeHistory(node, range) { return this.get("/api/node-history?node=" + encodeURIComponent(node) + "&" + rangeQ(range)); },
+  meshHistory(range) { return this.get("/api/mesh-history?" + rangeQ(range)); },
+  categoryHistory(range) { return this.get("/api/category-history?" + rangeQ(range)); },
+  turnHistory(range) { return this.get("/api/turn-history?" + rangeQ(range)); },
+  exitHistory(range) { return this.get("/api/exit-history?" + rangeQ(range)); },
+  blockStats(range) { return this.get("/api/block-stats?" + rangeQ(range)); },
   // DISTINCT peers/users seen online over a range — set-union of per-bucket presence bitmaps, never a mean
   // and never a traffic proxy (so an idle-but-connected peer counts). One call feeds the bars, the node
   // cards and the doughnuts' "online" figure, so they can no longer disagree.
   presence(range, blocks, step, nodes) {
-    return this.get("/api/presence?range=" + encodeURIComponent(range) + "&blocks=" + blocks + "&step=" + step
+    return this.get("/api/presence?" + rangeQ(range) + "&blocks=" + blocks + "&step=" + step
       + (nodes && nodes.length ? "&nodes=" + encodeURIComponent(nodes.join(",")) : ""));
   },
   ifaceSeries(node, iface, range) { return this.get("/api/iface-series?node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface) + "&range=" + encodeURIComponent(range)); },

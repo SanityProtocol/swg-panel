@@ -16743,7 +16743,6 @@ HRRD_VIEW = 250         # default read = the hour ring's window (also feeds the 
 LIVE_MAX = 200          # in-memory raw samples kept per node for the LIVE view (one per sync; ~16.7min@5s)
 MESH_THROTTLE_S = 60    # per node-PAIR mesh ring: fold at most one sample/min (flow-map ranges are day+; keeps it cheap)
 PEER_MIN_BPS = 1024     # per-peer history: skip idle peers (< 1 KB/s) so only real talkers get a ring
-PEER_TOPN = 50          # /api/peer-history returns only the top-N peers by fleet-total volume (bounds the scan payload)
 
 
 def mesh_rrd_path(stats_dir, a, b):   # canonical per-pair file (a<b); rx slot = a→b, tx slot = b→a
@@ -16798,19 +16797,70 @@ def _rrd_series(path, rng):
     ring, want, win = spec
     d = hrrd_read(path, ring=ring, want=want, since=time.time() - win) if path else None
     return {"t": (d or {}).get("t") or [], "rx": (d or {}).get("rx") or [], "tx": (d or {}).get("tx") or []}
-def peer_rrd_path(stats_dir, nid, pubkey):   # per-(node,peer) throughput ring for ranged top-talkers. Filename uses a short pubkey hash (hex, no '-') so the endpoint splits nid off the last '-'; the endpoint reverses hash→pubkey via the roster
+def peer_rrd_path(stats_dir, nid, pubkey):   # per-(node,peer) throughput ring — a lower bound on who was online, for /api/presence (Top talkers read the traffic ledger since P3). Filename uses a short pubkey hash (hex, no '-') so the reader splits nid off the last '-' and reverses hash→pubkey via the roster
     return os.path.join(stats_dir, "peer-" + nid + "-" + hashlib.sha256((pubkey or "").encode()).hexdigest()[:16] + ".rrd")
 # range → (ring index, buckets to read, WINDOW seconds). The window is the semantic range, not the ring's
 # capacity: ring1 holds 300×300s = 25h, but "day" means 24h. Every ranged read passes `since = now - window`
 # so a lazily-written ring can never contribute buckets from outside the range the operator asked for.
 RANGE_SPEC = {"live": (0, 200, 200 * 15), "hour": (0, 250, 3600), "day": (1, 300, 86400),
               "week": (2, 350, 7 * 86400), "month": (3, 400, 30 * 86400)}
+RANGE_CUSTOM_DAYS = 33   # a custom chart window reaches back this many local days, today included — what the coarsest ring holds
+
+
+def resolve_range(qs, dflt="day", now=None):
+    """(ring, want, since, until, axis) for ?range=<named> or ?range=custom&from=&to= (YYYY-MM-DD, the panel's days).
+
+    Named: exactly RANGE_SPEC — since = now - window, until None, axis None, so a named reply stays byte-identical.
+    Custom: whole local days — since = from's midnight, until = min(now, the midnight after to) — read off the finest ring
+    whose capacity still reaches back to since. `axis` = {rangeKey, step, since, until}: the reply carries it and the SPA
+    reads its step from there (a volume is Σ mean B/s × step), never from a per-range map.
+
+    ⚠️ Never adds to RANGE_SPEC: _rings_dead_after() reads its widest window as the GC age of every ring.
+    Raises ValueError(perr(...)); the caller answers 400."""
+    now = time.time() if now is None else now
+    g = lambda k: ((qs.get(k) or [""])[0] or "").strip()
+    rng = (qs.get("range") or [dflt])[0]                    # read exactly as every endpoint always has (no strip, no
+    if rng != "custom":                                      # default for an empty value) — callers index RANGE_SPEC by it
+        spec = RANGE_SPEC.get(rng)
+        if not spec:
+            raise ValueError({"error": "range must be live|hour|day|week|month|custom"})
+        ring, want, win = spec
+        return ring, want, now - win, None, None
+    try:
+        f = int(g("from").replace("-", "")); t = int(g("to").replace("-", ""))
+        _ld_date(f); _ld_date(t)
+    except (ValueError, TypeError):
+        raise ValueError(perr("from and to must be dates, YYYY-MM-DD"))
+    today = _ld_day(now)[0]
+    t = min(t, today)
+    if f > t:
+        raise ValueError(perr("from must not be after to"))
+    first = _ld_of(_ld_date(today) - _ldt.timedelta(days=RANGE_CUSTOM_DAYS - 1))
+    if f < first:
+        raise ValueError(perr("The charts keep {v1} days: a custom window can start on {v2} at the earliest",
+                              v1=RANGE_CUSTOM_DAYS, v2=_ld_date(first).isoformat()))
+    since, until = _ld_midnight(f), min(int(now), _ld_midnight(_ld_next(t)))
+    ring = next((i for i, (st, n) in enumerate(HRRD_RINGS) if since >= now - (n - 1) * st), len(HRRD_RINGS) - 1)
+    step, nslots = HRRD_RINGS[ring]
+    # Whole local days only: every ring's step divides a day and the rings count from local midnight, so a window always
+    # lies on whole buckets — never the one straddling bucket that neither end would pass (a 0 where traffic was, §8.2).
+    axis = {"rangeKey": "custom:%d-%d" % (f, t), "step": step, "since": int(since), "until": int(until)}
+    return ring, nslots, since, until, axis
+
+
+def range_or_400(qs, dflt="day"):
+    """resolve_range() for an endpoint: (spec, None), or (None, the 400 reply)."""
+    try:
+        return resolve_range(qs, dflt), None
+    except ValueError as e:
+        m = e.args[0] if e.args and isinstance(e.args[0], dict) else {"error": str(e)}
+        return None, (400, {"ok": False, **m, "code": "bad_request"})
 
 # OFFENDER TRACKING — panel-derived, ranged "who" for the Protection bubbles. The node ships the CURRENT set of
 # offending source IPs each sync (presence, self-expiring: torrent_ips, scan_ips); the panel stamps first/last-seen
 # per IP so the bubble can range ("who offended in the past hour/day/week") and sort by recency — with NO datapath
 # per-source counter (ipset element counters don't accumulate; see swg-noded torsig7). Bounded + mirrored to disk.
-OFFENDER_TTL = 30 * 86400 + 3600      # drop an offender once unseen longer than the widest range (month) + slack
+OFFENDER_TTL = RANGE_CUSTOM_DAYS * 86400 + 3600   # drop an offender once unseen longer than the widest window (a custom one, 33 days) + slack
 OFFENDER_MAX = 4000                   # per metric — offenders are few, but cap memory hard regardless
 OFFENDER_METRICS = ("torrent", "scan")   # metrics with genuine per-source presence (blocked drops by dst → no source)
 
@@ -17431,8 +17481,10 @@ def rings_gc(stats_dir):
     return gone, freed
 
 
-def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False, since=None):
-    """Most recent `want` buckets from ring index `ring`, optionally only those at/after `since` (epoch).
+def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False, since=None, until=None):
+    """Most recent `want` buckets from ring index `ring`, optionally only those at/after `since` and before `until` (epoch).
+    ⚠️ Both filters run BEFORE the tail slice: sliced first, a window that ended in the past would keep the newest
+    buckets and then drop them all — an empty chart and a 0 total where traffic was.
 
     **`since` is what makes a ranged read honest.** A ring is circular and its slots are never cleared, so a
     lazily-written ring — peer rings are gated on PEER_MIN_BPS, category rings only get written when that
@@ -17470,6 +17522,10 @@ def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False, since=None):
     rows.sort(key=lambda r: r[0])
     if since is not None:                                    # drop stale buckets left behind by a lazily-written ring
         rows = [r for r in rows if _bucket_epoch(r[0], step) >= since]
+        if not rows:
+            return None
+    if until is not None:                                    # a custom window that ended in the past (resolve_range)
+        rows = [r for r in rows if _bucket_epoch(r[0], step) < until]
         if not rows:
             return None
     rows = rows[-want:]
@@ -17636,6 +17692,10 @@ def _ledger_index_ok(idx):
             and all(isinstance(s, dict) and s.get("pid") for s in idx["slots"]))
 
 
+class _LedgerBusy(Exception):
+    """A rolling-window query could not hold the writer still (TrafficLedger.totals) — answered 503, never a guess."""
+
+
 class TrafficLedger:
     """One per panel process (LEDGER). ingest() runs at the end of every sync's history phase, outside _api_lock and in
     its own guard; everything it does is arithmetic on memory under the ledger's OWN lock — never _hrrd_lock, which
@@ -17666,6 +17726,7 @@ class TrafficLedger:
         self.day, self.idx, self.off = 0, -1, 0
         self.fmid, self.foff = 0, 0     # the current day's midnight epoch and offset — its fine file's frame (header)
         self._flush_lock = threading.Lock()   # one flush at a time: the writer thread's, or the one at shutdown
+        self._fseq = 0                  # flushes begun + ended: odd while one runs (readers: _consistent)
         self._retry_at = 0.0            # monotonic: after a failed write, nothing retries before this (no storm)
         self.fine = {}                  # slot → [rx, tx] credited in the current fine bucket
         self.map, self.deploys, self.owners, self.titles, self.mark = {}, set(), {}, {}, None
@@ -18078,8 +18139,12 @@ class TrafficLedger:
         for good (a re-close is harmless — the first row stands). Whatever fails goes back to the front of its queue,
         nothing later in the order is written past it, and nothing retries before the next close (no storm)."""
         with self._flush_lock:
-            if self._flush():
-                self._retry_at = 0.0
+            self._fseq += 1                                    # odd while a flush runs: readers read again (_consistent)
+            try:
+                if self._flush():
+                    self._retry_at = 0.0
+            finally:
+                self._fseq += 1
 
     def shutdown(self):
         """SIGTERM: the open bucket is closed as it stands and everything is written, so a graceful restart neither
@@ -18087,10 +18152,12 @@ class TrafficLedger:
         restart lands inside is written twice, once each side of it; readers sum them."""
         if not self.on or not self._flush_lock.acquire(timeout=5):   # a writer stuck on a hung disk: stop anyway
             return
+        self._fseq += 1
         try:
             self._diag_w = 0                                   # the spans too: they are the gaps every reply carries
             self._flush(closing=True)
         finally:
+            self._fseq += 1
             self._flush_lock.release()
 
     def _flush(self, closing=False):
@@ -18677,52 +18744,162 @@ class TrafficLedger:
                 out[nid] = g
         return out
 
+    def _c_at(self, ts, live, cur, qall):
+        """C per slot at the start of the fine bucket that holds `ts`, and that start: the row of the day before plus the
+        day's buckets before it. A day with no detail (1-day resolution, swept by OFF, before history) → its midnight.
+        Read under _consistent(), so every closed bucket is either on disk or in q_fine — never between the two. `live`
+        (C), `cur` (the open bucket) and `qall` (the queue) come from ONE lock section of the caller's: bytes credited
+        between two sections would count at the window's start only."""
+        d = min(_ld_day(ts)[0], live[0])
+        row = self._row_at_or_before(_ld_prev(d))
+        rx = _larr.array("Q", row[1] if row else []); tx = _larr.array("Q", row[2] if row else [])
+        qf = [(q[1], q[2], q[3], q[4]) for q in qall if q[0] == d]
+        fp = self._fine_path(d)
+        head = self._fine_head(fp) if os.path.exists(fp) else None
+        if head:
+            step, mid = head[0], head[2]
+        elif d == cur[0] and cur[2] < 86400:
+            step, mid = cur[2], cur[3]
+        elif qf:
+            step, mid = qf[0][1], qf[0][2]
+        else:
+            return rx, tx, _ld_midnight(d)
+        k = max(0, (int(ts) - mid) // step)
+
+        def add(s, a, b):
+            if s >= len(rx):
+                rx.extend([0] * (s + 1 - len(rx))); tx.extend([0] * (s + 1 - len(tx)))
+            rx[s] += a; tx[s] += b
+        if head:
+            try:
+                for i, n, _e, (sl, brx, btx) in self._fine_buckets(fp):
+                    if i < k:
+                        for j in range(n):
+                            add(sl[j], brx[j], btx[j])
+            except FileNotFoundError:                          # swept since its header was read: the day starts at midnight
+                return (_larr.array("Q", row[1] if row else []), _larr.array("Q", row[2] if row else []), _ld_midnight(d))
+        for qi, qstep, _qm, qv in qf:
+            if qstep == step and qi < k:
+                for sl_, v in qv.items():
+                    add(sl_, v[0], v[1])
+        if d == cur[0] and cur[2] == step and cur[1] < k:
+            for sl_, v in cur[4].items():
+                add(sl_, v[0], v[1])
+        return rx, tx, mid + k * step
+
     def totals(self, qs, now=None):
         """Rows per pid (`by=peer`), per owner (`by=user`), or per (pid, owner) (`by=slot`: what a device carried while it
         was one user's — the Users grid, a user's peer list and the user view all read these, so they add up). Every row
-        says since when it has been counted (`since`); `opening_at` only when a counter was imported."""
+        says since when it has been counted (`since`); `opening_at` only when a counter was imported.
+
+        `since=<epoch>` (P3, the Overview's Top talkers): a rolling window up to now instead of local days — whole days
+        from the rows, the first day's part from its fine buckets. It starts at the start of the bucket holding `since`
+        (widened, never cut) and the reply says where. `nodes=a,b`: only peers with a deployment on one of them — the
+        WHOLE peer's figure, the ledger has no per-node split. `top=N`: the N biggest rows that moved anything."""
         now = int(time.time() if now is None else now)
-        f, t, rk = self._window(qs, now)
-        by = (qs.get("by") or ["peer"])[0]
+        g = lambda k: ((qs.get(k) or [""])[0] or "").strip()
+        by = g("by") or "peer"
         if by not in ("peer", "user", "slot"):
             raise ValueError(perr("by must be peer, user or slot"))
+        try:
+            top = max(0, int(g("top") or 0))
+            want_since = int(g("since")) if g("since") else (now - max(0, int(g("window"))) if g("window") else None)
+        except ValueError:
+            raise ValueError(perr("since, window and top must be integers"))
+        nodes = set(n for n in g("nodes").split(",") if n) or None
+        rolling = want_since is not None
+        return self._consistent(lambda: self._totals(qs, now, by, top, want_since, nodes, rolling))
+
+    def _consistent(self, read):
+        """Run a read that must not overlap a flush. ⚠️ A FLUSH IN FLIGHT HAS TAKEN ITS QUEUES AND NOT YET WRITTEN THEM: a
+        closed day or bucket is then neither pending nor on disk, and a read in that gap misses it — a window ending
+        yesterday read 0, and a past window is cached for good. The writer counts its flushes (`_fseq`: odd while one runs);
+        a read that saw the count move is read again. The writer never waits for a reader, and readers never wait for each
+        other; only a flush that stays in the way (a slow disk) is waited for, 2 s, then answered 503 — never a guess."""
+        for n in range(6):
+            if n == 5:                                         # a flush in the way five times running: wait for it to end —
+                if not self._flush_lock.acquire(timeout=2):    # never holding the lock over the read, so neither the writer
+                    raise _LedgerBusy()                        # (nor SIGTERM's last write) nor another reader waits on us
+                self._flush_lock.release()
+            s0 = self._fseq
+            if not s0 % 2:
+                try:
+                    out = read()
+                except (ValueError, _LedgerBusy):              # the caller's own refusal: never retried
+                    raise
+                except Exception:                              # a file replaced or cut short under the read by a flush:
+                    if self._fseq == s0:                       # read again; with no flush in between it is a real error
+                        raise
+                    continue
+                if self._fseq == s0:
+                    return out
+            if n < 4:
+                time.sleep(0.05)
+        raise _LedgerBusy()
+
+    def _totals(self, qs, now, by, top, want_since, nodes, rolling):
         with self.lock:
             slots = [(s["pid"], s.get("owner"), s.get("o") or [0, 0], s.get("since") or 0, s.get("until"),
                       s.get("name") or "", s.get("on") or "") for s in self.slots]
             live = (self.day, self.C_rx[:], self.C_tx[:])
-        to_rx, to_tx = self._cum(t, live)
-        fr_rx, fr_tx = self._cum(_ld_prev(f), live) if f > 19700101 else (_larr.array("Q"), _larr.array("Q"))
+            on_nodes = ({k[2] for k in self.deploys | set(self.recs) if k[0] in nodes}   # the roster's deployments (and, before
+                        if nodes is not None else None)                             # the first sync maps them, the records)
+            current = set(self.open) if top else None        # top=: the biggest CURRENT peers — a deleted one keeps its
+            #                                                  slots, and in a top-N it would take a live peer's place
+            if rolling:                                      # the open bucket (copied: it moves) and the queue (referenced:
+                cur = (self.day, self.idx, self.step, self.fmid, {k: list(v) for k, v in self.fine.items()})   # a closed
+                qall = [(q[0], q[1], q[2], q[4], q[5]) for q in self.q_fine]                                 # bucket never)
+            first = min((s_.get("since") or 0 for s_ in self.slots), default=0)
+        if rolling:
+            fr_rx, fr_tx, since = self._c_at(max(0, min(want_since, now)), live, cur, qall)
+            to_rx, to_tx = live[1], live[2]
+            if first and since < first:                      # nothing was counted before the ledger's first slot: the
+                since = max(since, _ld_midnight(_ld_day(first)[0]))   # window starts where history does, and says so
+            f, t, rk = _ld_day(since)[0], live[0], "since:%d" % since
+            until = now
+        else:
+            f, t, rk = self._window(qs, now)
+            to_rx, to_tx = self._cum(t, live)
+            fr_rx, fr_tx = self._cum(_ld_prev(f), live) if f > 19700101 else (_larr.array("Q"), _larr.array("Q"))
+            since = _ld_midnight(f)
+            until = min(now, _ld_midnight(_ld_next(t)))
         rows = {}
-        for n, (pid, owner, o, since, until, name, on) in enumerate(slots):
+        for n, (pid, owner, o, since_, until_, name, on) in enumerate(slots):
+            if (on_nodes is not None and pid not in on_nodes) or (current is not None and pid not in current):
+                continue
             k = pid if by == "peer" else (owner or "") if by == "user" else (pid, owner or "")
             a = to_rx[n] if n < len(to_rx) else 0; b = to_tx[n] if n < len(to_tx) else 0
             a0 = fr_rx[n] if n < len(fr_rx) else 0; b0 = fr_tx[n] if n < len(fr_tx) else 0
             r = rows.get(k)
             if r is None:
                 r = rows[k] = {"id": k if by != "slot" else pid, "rx": 0, "tx": 0, "lifetime_rx": 0, "lifetime_tx": 0,
-                               "opening_rx": 0, "opening_tx": 0, "opening_at": 0, "since": since, "slots": 0, "closed": 0}
+                               "opening_rx": 0, "opening_tx": 0, "opening_at": 0, "since": since_, "slots": 0, "closed": 0}
                 if by == "slot":
-                    r.update({"owner": owner or "", "name": name, "owner_name": on, "until": until})
+                    r.update({"owner": owner or "", "name": name, "owner_name": on, "until": until_})
             r["rx"] += max(0, a - a0); r["tx"] += max(0, b - b0)
             r["lifetime_rx"] += live[1][n] + o[0]; r["lifetime_tx"] += live[2][n] + o[1]
             if o[0] or o[1]:
                 r["opening_rx"] += o[0]; r["opening_tx"] += o[1]
-                r["opening_at"] = min(r["opening_at"] or since, since)
-            r["since"] = min(r["since"] or since, since)
+                r["opening_at"] = min(r["opening_at"] or since_, since_)
+            r["since"] = min(r["since"] or since_, since_)
             r["slots"] += 1
-            r["closed"] += 1 if until else 0
+            r["closed"] += 1 if until_ else 0
             if by == "slot":                                   # the newest slot of the pair names it, and says whether it is
-                if since >= (r.get("_last") or 0):             # still open — an unassign and a reassign back make two slots
-                    r["_last"], r["name"], r["owner_name"], r["until"] = since, name, on or r["owner_name"], until
+                if since_ >= (r.get("_last") or 0):            # still open — an unassign and a reassign back make two slots
+                    r["_last"], r["name"], r["owner_name"], r["until"] = since_, name, on or r["owner_name"], until_
         for r in rows.values():
             r.pop("_last", None)
-        since = _ld_midnight(f)
-        until = min(now, _ld_midnight(_ld_next(t)))
+        out = list(rows.values())
+        if top:
+            out = sorted((r for r in out if r["rx"] or r["tx"]), key=lambda r: -(r["rx"] + r["tx"]))[:top]
         return {"rangeKey": rk, "from": f, "to": t, "by": by, "step": 86400, "since": since, "until": until,
                 "utc_offset": time.localtime().tm_gmtoff, "gaps": self._gaps(since, until, self._spans()),
-                "rows": list(rows.values())}
+                **({"asked": want_since} if rolling else {}), "rows": out}
 
     def series(self, qs, now=None):
+        return self._consistent(lambda: self._series(qs, now))   # the same gap as totals()
+
+    def _series(self, qs, now=None):
         now = int(time.time() if now is None else now)
         f, t, rk = self._window(qs, now)
         by = (qs.get("by") or ["peer"])[0]
@@ -18736,6 +18913,9 @@ class TrafficLedger:
             nslots = len(self.slots)
             live = (self.day, self.C_rx[:], self.C_tx[:])
             cur = (self.day, self.idx, self.step, self.fmid, {s: list(self.fine[s]) for s in want if s in self.fine})
+            # the queue in the SAME section as the open bucket: a sync closing the bucket between two sections moved it
+            # from one to the other, and the graph drew it twice
+            qf_all = [(q[0], q[1], q[2], q[4], {s: q[5][s] for s in want if s in q[5]}) for q in self.q_fine if f <= q[0] <= t]
             nodes = {k[0] for k in self.recs if (k[2] == ident if by == "peer" else self.owners.get(k[2]) == ident)}
         if first:                                              # nothing exists before the ledger's first slot: never walk from 1970
             f = min(max(f, _ld_day(first)[0]), t)
@@ -18760,8 +18940,7 @@ class TrafficLedger:
         for rd, (crx, ctx, end) in self._pending_rows().items():
             if f <= rd <= t and rd not in cums:
                 cums[rd] = (sw(crx), sw(ctx), end)
-        with self.lock:                                        # closed buckets still waiting for their write: part of the graph
-            qf = [(q[0], q[1], q[2], q[4], {s: q[5][s] for s in want if s in q[5]}) for q in self.q_fine if f <= q[0] <= t]
+        qf = [q for q in qf_all if f <= q[0] <= t]             # closed buckets still waiting for their write: part of the graph
         pts = []
         d = f
         while d <= t:
@@ -18844,6 +19023,8 @@ class TrafficLedger:
             if path == "/api/traffic-series":
                 return 200, {"ok": True, "data": self.series(qs)}
             return 200, {"ok": True, "data": self.dump()}
+        except _LedgerBusy:
+            return 503, {"ok": False, "code": "busy", **perr("The traffic history is being written; try again in a moment")}
         except ValueError as e:                                # a perr() sentence, so the browser can translate it
             return 400, {"ok": False, "code": "bad_request", **(e.args[0] if e.args and isinstance(e.args[0], dict) else {"error": str(e)})}
 
@@ -21468,12 +21649,15 @@ def api(method, path, qs, body, deps):
         rrd = os.path.join(stats_dir, f"health-{node}.rrd") if stats_dir else None
         # each range = one ring's most-recent points: hour=15s(250) day=5min(300) week=30min(350) month=2h(400).
         # live also comes straight off the 15s ring as a fallback (the SPA prefers the raw 5s buffer).
-        spec = RANGE_SPEC.get(rng)
-        if not spec:
-            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want, win = spec
-        data = hrrd_read(rrd, ring=ring, want=want, since=time.time() - win) if rrd else None
-        return 200, {"ok": True, "data": data or {"t": [], "cpu": [], "mem": [], "disk": [], "rx": [], "tx": []}}
+        rr, bad = range_or_400(qs, "live")
+        if bad:
+            return bad
+        ring, want, since, until, axis = rr
+        data = hrrd_read(rrd, ring=ring, want=want, since=since, until=until) if rrd else None
+        data = data or {"t": [], "cpu": [], "mem": [], "disk": [], "rx": [], "tx": []}
+        if axis:                                             # custom only: a named reply stays byte-identical
+            data["axis"] = axis
+        return 200, {"ok": True, "data": data}
 
     # Per-entity throughput SERIES (on-demand; never in /api/state → 5s hot path untouched). {t,rx,tx} from the
     # entity's own RRD ring. Interface = per-(node,iface); turn = per-(node,fork); mesh = per link (this node's view).
@@ -21581,10 +21765,10 @@ def api(method, path, qs, body, deps):
         # Per node-PAIR directed mesh flow over a range — drives the flow-map ranges. Reads each pair's tiny ring
         # (rx slot = a→b, tx slot = b→a) and returns the MEAN rate over the window (the map shows one value/edge).
         rng = (qs.get("range") or ["day"])[0]
-        spec = RANGE_SPEC.get(rng)
-        if not spec:
-            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want, win = spec
+        rr, bad = range_or_400(qs)
+        if bad:
+            return bad
+        ring, want, since, until, axis = rr
         mean = lambda xs: (round(sum(xs) / len(xs)) if xs else 0)
         pairs, seen = [], set()
         for anid, c in nodes.items():
@@ -21595,9 +21779,9 @@ def api(method, path, qs, body, deps):
                 if key in seen:
                     continue
                 seen.add(key)
-                d = hrrd_read(mesh_rrd_path(stats_dir, a, b), ring=ring, want=want, since=time.time() - win) if stats_dir else None
+                d = hrrd_read(mesh_rrd_path(stats_dir, a, b), ring=ring, want=want, since=since, until=until) if stats_dir else None
                 pairs.append({"a": a, "b": b, "ab": mean((d or {}).get("rx") or []), "ba": mean((d or {}).get("tx") or [])})
-        return 200, {"ok": True, "data": {"range": rng, "pairs": pairs}}
+        return 200, {"ok": True, "data": {"range": rng, "pairs": pairs, **({"axis": axis} if axis else {})}}
 
     if method == "GET" and path == "/api/presence":
         # DISTINCT peers/users seen online over a range — drives the Online-peers bars, the node cards' "N users",
@@ -21613,15 +21797,21 @@ def api(method, path, qs, body, deps):
         # (peer rings skip peers under PEER_MIN_BPS, so an idle-but-connected peer is invisible to it), which is
         # exactly why (a) supersedes it going forward rather than replacing it.
         rng = (qs.get("range") or ["day"])[0]
-        spec = RANGE_SPEC.get(rng)
-        if not spec:
-            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want, win = spec
-        try:
-            nblocks = max(1, min(64, int((qs.get("blocks") or ["24"])[0])))
-            bstep = max(HRRD_RINGS[0][0], int((qs.get("step") or [str(win // 24)])[0]))
-        except ValueError:
-            return 400, {"ok": False, "error": "blocks/step must be integers", "code": "bad_request"}
+        rr, bad = range_or_400(qs)
+        if bad:
+            return bad
+        ring, want, since, until, axis = rr
+        if axis:                                            # custom: the bars are the panel's own — hours up to two days,
+            span = axis["until"] - axis["since"]            # quarter-days up to a fortnight, then days (≤ 33 of them)
+            bstep = 3600 if span <= 2 * 86400 else 21600 if span <= 14 * 86400 else 86400
+            nblocks = max(1, min(64, -(-span // bstep)))
+        else:
+            win = RANGE_SPEC[rng][2]
+            try:
+                nblocks = max(1, min(64, int((qs.get("blocks") or ["24"])[0])))
+                bstep = max(HRRD_RINGS[0][0], int((qs.get("step") or [str(win // 24)])[0]))
+            except ValueError:
+                return 400, {"ok": False, "error": "blocks/step must be integers", "code": "bad_request"}
         want_nodes = [n for n in ((qs.get("nodes") or [""])[0].split(",")) if n] or list(nodes.keys())
         want_nodes = [n for n in want_nodes if n in nodes]
 
@@ -21638,23 +21828,28 @@ def api(method, path, qs, body, deps):
                 peers_by_pk[pk] = p
                 h2pk[hashlib.sha256(pk.encode()).hexdigest()[:16]] = pk
 
-        end = time.time()
-        start = end - nblocks * bstep                       # the bars span exactly what they claim to
-        floor = min(start, end - win)
+        if axis:                                            # a custom window: bars laid from its first midnight
+            start = axis["since"]; end = start + nblocks * bstep
+            lo, hi = axis["since"], axis["until"]
+        else:
+            end = time.time()
+            start = end - nblocks * bstep                   # the bars span exactly what they claim to
+            lo, hi = end - win, None
+        floor = min(start, lo)
         seen = {nid: {} for nid in want_nodes}              # nid -> {bucket_epoch: set(pubkey)}
 
         # (a) presence bitmaps
         for nid in want_nodes:
             if not stats_dir:
                 break
-            for ep, bm in pres_scan(pres_path(stats_dir, nid), ring, since=floor):
+            for ep, bm in pres_scan(pres_path(stats_dir, nid), ring, since=floor, until=hi):
                 s = seen[nid].setdefault(ep, set())
                 for bit in _bm_bits(bm):
                     pk = bit2pk.get(bit)
                     if pk:
                         s.add(pk)
 
-        # (b) per-peer traffic rings (the same files /api/peer-history reads, so no new scan cost class)
+        # (b) per-peer traffic rings (written once a minute per talking peer; nothing else reads them since P3)
         try:
             files = os.listdir(stats_dir) if stats_dir else []
         except OSError:
@@ -21670,8 +21865,8 @@ def api(method, path, qs, body, deps):
                 continue
             pk = h2pk.get(h)
             if not pk:
-                continue                                    # orphaned ring → deleted peer
-            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=floor)
+                continue                                    # orphaned ring → deleted peer (rings_gc removes it by age)
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=floor, until=hi)
             if not d:
                 continue
             for t, rx, tx in zip(d["t"], d["rx"], d["tx"]):
@@ -21683,7 +21878,7 @@ def api(method, path, qs, body, deps):
         total = set()
         for nid, buckets in seen.items():
             for ep, pks in buckets.items():
-                if ep >= end - win:                         # range totals use the FULL window …
+                if ep >= lo and (hi is None or ep < hi):    # range totals use the FULL window …
                     per_node[nid] |= pks; total |= pks
                 b = int((ep - start) // bstep)
                 if 0 <= b < nblocks:
@@ -21717,7 +21912,7 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {
             "range": rng, "step": bstep, "start": int(start), "end": int(end),
             "blocks": [sum(1 for _ in live(b)) for b in blocks],
-            "nodes": out_nodes, "total": {"peers": tot["peers"], "users": tot["users"]}}}
+            "nodes": out_nodes, "total": {"peers": tot["peers"], "users": tot["users"]}, **({"axis": axis} if axis else {})}}
 
     if method == "GET" and path == "/api/category-history":
         # Per-(node,category) destination traffic over a range — drives the "Traffic by category" doughnut. Reads
@@ -21725,10 +21920,10 @@ def api(method, path, qs, body, deps):
         # volume (× window secs) and sums across the selected nodes. Category ids are sanitised → no '-', so the
         # filename splits on the LAST '-' even when a node id contains one.
         rng = (qs.get("range") or ["day"])[0]
-        spec = RANGE_SPEC.get(rng)
-        if not spec:
-            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want, win = spec
+        rr, bad = range_or_400(qs)
+        if bad:
+            return bad
+        ring, want, since, until, axis = rr
         step = HRRD_RINGS[ring][0]                              # seconds/bucket → volume = Σ(per-bucket mean B/s)·step
         vol = lambda xs: int(sum(xs or []) * step)
         out = []
@@ -21745,10 +21940,10 @@ def api(method, path, qs, body, deps):
             nid, cat = body.rsplit("-", 1)
             if nid not in nodes:
                 continue
-            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=time.time() - win)
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=since, until=until)
             if d:
                 out.append({"node": nid, "cat": cat, "up": vol(d.get("rx")), "dn": vol(d.get("tx"))})   # total bytes over the window
-        return 200, {"ok": True, "data": {"range": rng, "cats": out}}
+        return 200, {"ok": True, "data": {"range": rng, "cats": out, **({"axis": axis} if axis else {})}}
 
     if method == "GET" and path == "/api/block-stats":
         # Overview "Protection" card. ACTIVITY over a range from the per-node block-<nid>.rrd (rx slot = torrents/hr
@@ -21756,10 +21951,10 @@ def api(method, path, qs, body, deps):
         # over idle buckets rounds to 0). Torrents SUM across nodes; scan/reach SUM the per-node peaks (each node's
         # subnets are its own). COVERAGE is static — enabled block cats + cached list sizes across the fleet.
         rng = (qs.get("range") or ["day"])[0]
-        spec = RANGE_SPEC.get(rng)
-        if not spec:
-            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want, win = spec
+        rr, bad = range_or_400(qs)
+        if bad:
+            return bad
+        ring, want, since, until, axis = rr
         step = HRRD_RINGS[ring][0]
         torrents = scan = reach = blocked = mechd = 0
         tser = {}; bser = {}; mser = {}                               # bucket epoch → Σ torrents/hr, Σ blocked/hr, Σ mech/hr across nodes (sparklines)
@@ -21773,7 +21968,7 @@ def api(method, path, qs, body, deps):
             nid = fn[6:-4]
             if nid not in nodes:
                 continue
-            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=time.time() - win)
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=since, until=until)
             if not d:
                 continue
             torrents += int(sum(d.get("rx") or []) * step / 3600)     # torrents/hr rate → total connections over the window
@@ -21840,7 +22035,7 @@ def api(method, path, qs, body, deps):
             bnid, bsan = rest.split("-", 1)
             if bnid not in nodes:
                 continue
-            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=time.time() - win)
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=since, until=until)
             if not d:
                 continue
             t = int(max((d.get("pon") or [0])))                    # distinct sites → PEAK per node over the window (gauge, never meaned)
@@ -21857,8 +22052,13 @@ def api(method, path, qs, body, deps):
         # (presence only: ipset element counters don't accumulate, and block drops match by DESTINATION), so the bubble
         # answers WHO + WHEN, not how-many — the tile above owns the count. `blocked` has no per-source signal → no bubble.
         who = {}; _now = int(time.time())
-        _win = RANGE_SPEC.get(rng, (0, 0, 3600))[2]           # the SAME window the tiles read over → the bubble and the tile always agree
-        _t0 = _now - _win
+        _t0 = int(since)                                      # the SAME window the tiles read over → the bubble and the tile always agree
+        _t1 = int(until) if until is not None and until < _now else _now + 1
+        # An offender is kept as a span only — first and last seen. A window holds every offender whose span overlaps it:
+        # for a rolling window that is `last >= start`, as it always was; a window that ended in the past takes the same
+        # rule at both ends. (A span is not every day of it: an IP seen 25 days ago and again yesterday is named for the
+        # days between — the record cannot tell; the strict alternative dropped every scanner that never stopped.)
+        _in = lambda first, last: last >= _t0 and first < _t1
         with contextlib.suppress(Exception):
             _r = roster_load(roster_path); _users = _r.get("users") or {}
             ip2peer = {}
@@ -21871,7 +22071,7 @@ def api(method, path, qs, body, deps):
                 grp = {}
                 for _ip, _e in (_off.get(_mtr) or {}).items():
                     first, last = int(_e[0]), int(_e[1])
-                    if last < _t0:                            # last-seen outside the window → not an offender in this range
+                    if not _in(first, last):                  # not seen in the window → not an offender in this range
                         continue
                     p = ip2peer.get(_ip); uid = (p or {}).get("user_id"); pid = (p or {}).get("id")
                     key = ("u:" + uid) if uid else (("p:" + pid) if pid else ("ip:" + _ip))
@@ -21892,10 +22092,10 @@ def api(method, path, qs, body, deps):
                                  "peers": [{"name": q["name"], "ago": _now - q["last"], "dur": max(0, q["last"] - q["first"])} for q in peers]})
                 if rows:
                     who[_mtr] = sorted(rows, key=lambda x: x["last_ago"])           # most-recent offender first
-            scan = sum(1 for _e in (_off.get("scan") or {}).values() if int(_e[1]) >= _t0)   # tile = DISTINCT scanners in the window (from the SAME offender data the bubble uses), not peak-concurrent → tile == bubble
+            scan = sum(1 for _e in (_off.get("scan") or {}).values() if _in(int(_e[0]), int(_e[1])))   # tile = DISTINCT scanners in the window (from the SAME offender data the bubble uses), not peak-concurrent → tile == bubble
         return 200, {"ok": True, "data": {"range": rng, "torrents": torrents, "blocked": blocked, "scan": scan, "reach": reach,
                                           "mech": mechd, "series": series, "bseries": bseries, "mseries": mseries,
-                                          "who": who, "coverage": cov, "blocked_cats": blocked_cats}}
+                                          "who": who, "coverage": cov, "blocked_cats": blocked_cats, **({"axis": axis} if axis else {})}}
 
     if method == "GET" and path == "/api/turn-history":
         # Per-(node,fork) turn-proxy stats over a range — drives the "by turn-proxy" doughnuts. Reads each
@@ -21908,10 +22108,10 @@ def api(method, path, qs, body, deps):
         # `peak` (max over the in-window buckets) is the honest scalar a single ring can give — it is a lower
         # bound on the distinct peers seen, and never zero when the proxy actually carried someone.
         rng = (qs.get("range") or ["day"])[0]
-        spec = RANGE_SPEC.get(rng)
-        if not spec:
-            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want, win = spec
+        rr, bad = range_or_400(qs)
+        if bad:
+            return bad
+        ring, want, since, until, axis = rr
         step = HRRD_RINGS[ring][0]
         vol = lambda xs: int(sum(xs or []) * step)
         peak = lambda xs: (max(xs) if xs else 0)
@@ -21929,11 +22129,11 @@ def api(method, path, qs, body, deps):
             nid, fork = body.rsplit("-", 1)
             if nid not in nodes:
                 continue
-            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=time.time() - win)
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=since, until=until)
             if d:
                 out.append({"node": nid, "fork": fork, "rx": vol(d.get("rx")), "tx": vol(d.get("tx")),
                             "pon": peak(d.get("pon")), "ptot": peak(d.get("ptot"))})
-        return 200, {"ok": True, "data": {"range": rng, "turn": out}}
+        return 200, {"ok": True, "data": {"range": rng, "turn": out, **({"axis": axis} if axis else {})}}
 
     if method == "GET" and path == "/api/exit-history":
         # Per-(node,exit device) internet volume over a range — drives "Traffic by exit" and the ranged flow-map
@@ -21945,10 +22145,10 @@ def api(method, path, qs, body, deps):
         # no rule picks the right one. Building the filenames we know we wrote removes the question instead of
         # answering it, and it drops orphan rings (the exit is gone) for free.
         rng = (qs.get("range") or ["day"])[0]
-        spec = RANGE_SPEC.get(rng)
-        if not spec:
-            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want, win = spec
+        rr, bad = range_or_400(qs)
+        if bad:
+            return bad
+        ring, want, since, until, axis = rr
         step = HRRD_RINGS[ring][0]
         vol = lambda xs: int(sum(xs or []) * step)
         out = []
@@ -21959,10 +22159,10 @@ def api(method, path, qs, body, deps):
             for dev in sorted({str((x or {}).get("device") or "").strip()
                                for x in ((nrec or {}).get("exits") or []) if isinstance(x, dict)} - {""}):
                 d = hrrd_read(exit_rrd_path(stats_dir, nid, dev), ring=ring, want=want,
-                              since=time.time() - win) if stats_dir else None
+                              since=since, until=until) if stats_dir else None
                 if d and (vol(d.get("rx")) or vol(d.get("tx"))):
                     out.append({"node": nid, "dev": dev, "up": vol(d.get("rx")), "down": vol(d.get("tx"))})
-        return 200, {"ok": True, "data": {"range": rng, "exits": out}}
+        return 200, {"ok": True, "data": {"range": rng, "exits": out, **({"axis": axis} if axis else {})}}
 
     if method == "GET" and path == "/api/time-zones":   # Settings → Display → "Days are counted in" (tz_zones)
         return 200, {"ok": True, "data": tz_zones((qs.get("browser") or [""])[0])}
@@ -21976,55 +22176,6 @@ def api(method, path, qs, body, deps):
         # it will grow by, and what turning Infinite history off would delete (the old detail). Answered when the ledger is OFF too: the
         # section says why.
         return 200, {"ok": True, "data": LEDGER.usage()}
-
-    if method == "GET" and path == "/api/peer-history":
-        # Per-(node,peer) throughput over a range — drives the ranged Top-talkers. Reads each peer-<nid>-<hash>.rrd,
-        # reverses the pubkey hash via the roster (orphaned files → deleted peers → unlinked), and returns only the
-        # top-N peers by fleet-total volume so the scan/payload stays bounded. The SPA sums per selected node + ranks.
-        rng = (qs.get("range") or ["day"])[0]
-        spec = RANGE_SPEC.get(rng)
-        if not spec:
-            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want, win = spec
-        step = HRRD_RINGS[ring][0]
-        vol = lambda xs: int(sum(xs or []) * step)
-        h2pk = {}
-        for p in (roster_load(roster_path).get("peers") or {}).values():
-            pk = p.get("pubkey")
-            if pk:
-                h2pk[hashlib.sha256(pk.encode()).hexdigest()[:16]] = pk
-            for _pwf in ("wdtt_password", "csqtt_password"):    # keyless peers: reverse the password hash → the peer id (Top-talkers matches these by id)
-                _pw = p.get(_pwf)
-                if _pw:
-                    h2pk[hashlib.sha256(_pw.encode()).hexdigest()[:16]] = p.get("id") or _pw
-        try:
-            files = os.listdir(stats_dir) if stats_dir else []
-        except OSError:
-            files = []
-        rows = []
-        for fn in files:
-            if not (fn.startswith("peer-") and fn.endswith(".rrd")):
-                continue
-            body = fn[5:-4]
-            if "-" not in body:
-                continue
-            nid2, hsh = body.rsplit("-", 1)
-            if nid2 not in nodes:
-                continue
-            pk = h2pk.get(hsh)
-            if not pk:                                             # orphan (peer deleted) — housekeep + skip
-                with contextlib.suppress(Exception):
-                    os.unlink(os.path.join(stats_dir, fn))
-                continue
-            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=time.time() - win)
-            if d:
-                rows.append({"node": nid2, "pubkey": pk, "rx": vol(d.get("rx")), "tx": vol(d.get("tx"))})
-        tot = {}
-        for r in rows:
-            tot[r["pubkey"]] = tot.get(r["pubkey"], 0) + r["rx"] + r["tx"]
-        keep = set(sorted(tot, key=lambda k: -tot[k])[:PEER_TOPN])   # only the top-N talkers' rows travel to the SPA
-        rows = [r for r in rows if r["pubkey"] in keep]
-        return 200, {"ok": True, "data": {"range": rng, "peers": rows}}
 
     if method == "GET" and path == "/api/next-ip":
         sel = [n for n in (qs.get("nodes") or [""])[0].split(",") if n]
@@ -27115,19 +27266,6 @@ class Handler(BaseHTTPRequestHandler):
                     with contextlib.suppress(Exception):
                         hrrd_update(peer_rrd_path(stats_dir, nid, pk), now_i, pM)
                     plast_w[(nid, pk)] = now_i
-            # keyless self-contained servers (WDTT/csqtt): no wg pubkey, so ring each peer by its PASSWORD hash (the
-            # node reports per-password rx/tx speed). /api/peer-history reverses the password → peer id via the roster,
-            # so ranged Top-talkers can include these peers too.
-            if stats_dir:
-                for _grp in ("wdtt", "csqtt"):
-                    for _inst in (snap.get(_grp) or []):
-                        for _pw, _pe in ((_inst or {}).get("passwords") or {}).items():
-                            _prx = (_pe or {}).get("rx_speed", 0) or 0; _ptx = (_pe or {}).get("tx_speed", 0) or 0
-                            if (_prx + _ptx) >= PEER_MIN_BPS and now_i - plast_w.get((nid, _pw), 0) >= MESH_THROTTLE_S:
-                                pM = [0] * HRRD_NM; pM[3] = int(_prx); pM[4] = int(_ptx)
-                                with contextlib.suppress(Exception):
-                                    hrrd_update(peer_rrd_path(stats_dir, nid, _pw), now_i, pM)
-                                plast_w[(nid, _pw)] = now_i
             # PER-IFACE throughput history (drives the interface-detail graph). CLIENT ifaces only (skip system/mesh).
             # rx/tx = sum of the iface's peers' speeds — the exact value snap_aggregates + the doughnuts use — ringed
             # every sync (few ifaces per node → cheap, as smooth as the node graph). Panel-derived; no node change.

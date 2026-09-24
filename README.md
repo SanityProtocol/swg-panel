@@ -318,7 +318,8 @@ Its limits:
 ## Using it day to day
 
 - **Watch the dashboard.** The **Overview** page shows who’s online, the busiest servers, and where
-  traffic is going — all live.
+  traffic is going — live, or over the last hour, day, week, month, or any days you pick from the last 33
+  (**Custom** on the side rail). Its top talkers are counted exactly, the same way as the **Peers** and **Users** pages.
 - **Add or remove users anytime.** Changes reach your servers within seconds. Remove someone and their
   access stops on the next check-in.
 - **Change the panel’s login** under **Settings → Authentication** — it takes effect immediately. While you’re there, switch on **two-factor authentication** (Google Authenticator) for stronger sign-in security.

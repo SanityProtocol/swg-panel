@@ -24,7 +24,7 @@ import { go } from "./router.js";
 import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
 import { T, plural, pluralWord, fmtNum, srvText, locale } from "./i18n.js";
-import { trafficData, trafficFreezeTag, trafficView } from "./traffic.js";
+import { trafficData, trafficFreezeTag, trafficView, chartsFirstDay } from "./traffic.js";
 import { h } from "preact";
 import { useState } from "preact/hooks";
 import htm from "htm";
@@ -1266,21 +1266,37 @@ export const openLiveTab = mode => e => {
 export const DASH_RANGES = [["live", "Live"], ["hour", "Hour"], ["day", "Day"], ["week", "Week"], ["month", "Month"]];   // i18n-keys: canonical (persisted range key + English label)
 /* The range word, translated. Two forms because the dashboard uses both: capitalised on the rail buttons,
    lowercase inside a section subtitle ("distribution · за сутки"). Literal T() calls, as always. */
-export const rangeLabel = k => ({ live: T("range|Live"), hour: T("range|Hour"), day: T("range|Day"), week: T("range|Week"), month: T("range|Month") }[k] || k);   // i18n-keys
-export const rangeWord = k => (({ live: T("range|live"), hour: T("range|hour"), day: T("range|day"), week: T("range|week"), month: T("range|month") })[k] || T("range|live"));   // i18n-keys
-export const dashState = { nodes: null, range: "live", peers: true, mesh: true, ov: {} };
+export const rangeLabel = k => isCustomKey(k) ? customKeyLabel(k) : ({ live: T("range|Live"), hour: T("range|Hour"), day: T("range|Day"), week: T("range|Week"), month: T("range|Month") }[k] || k);   // i18n-keys
+export const rangeWord = k => isCustomKey(k) ? customKeyLabel(k) : (({ live: T("range|live"), hour: T("range|hour"), day: T("range|day"), week: T("range|week"), month: T("range|month") })[k] || T("range|live"));   // i18n-keys
+// A custom Overview window (P3) travels as a KEY — "custom:YYYYMMDD-YYYYMMDD", the server's own `rangeKey` — never as the
+// bare word "custom": two custom windows are both "custom", so a guard comparing that would render the last window's
+// numbers under the new title. Everything ranged (fetch, stale guard, label, step) reads the key it LOADED.
+export const isCustomKey = k => typeof k === "string" && /^custom:\d{8}-\d{8}$/.test(k);
+const _isoOf = d => d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6, 8);
+export function customKeyWindow(k) { const [f, t] = k.slice(7).split("-"); return { range: "custom", from: _isoOf(f), to: _isoOf(t) }; }
+export const customKeyLabel = k => trafficRangeLabel(customKeyWindow(k));
+export const dashState = { nodes: null, range: "live", from: "", to: "", peers: true, mesh: true, ov: {} };
+// The Overview's range key: a named range, or the custom window's key.
+// A custom window kept from an earlier visit may have aged past what the charts keep (33 days): it is read from the first
+// day they still hold — the rail and every title show the days actually read — instead of a page of refusals.
+export function dashKey() {
+  if (dashState.range !== "custom" || !dashState.from || !dashState.to) return dashState.range === "custom" ? "live" : dashState.range;
+  const first = chartsFirstDay(), from = dashState.from < first ? first : dashState.from, to = dashState.to < from ? from : dashState.to;
+  return "custom:" + from.replace(/-/g, "") + "-" + to.replace(/-/g, "");
+}
 (function () {
   try {
     const raw = JSON.parse(localStorage.getItem("swg-dash") || "{}");
     if (Array.isArray(raw.nodes) && raw.nodes.length) dashState.nodes = new Set(raw.nodes);   // ignore a stale empty selection → default to the whole fleet
     if (DASH_RANGES.some(r => r[0] === raw.range)) dashState.range = raw.range;
+    else if (raw.range === "custom" && /^\d{4}-\d{2}-\d{2}$/.test(raw.from || "") && /^\d{4}-\d{2}-\d{2}$/.test(raw.to || "")) Object.assign(dashState, { range: "custom", from: raw.from, to: raw.to });
     if (typeof raw.peers === "boolean") dashState.peers = raw.peers;
     if (typeof raw.mesh === "boolean") dashState.mesh = raw.mesh;
     if (raw.ov && typeof raw.ov === "object") dashState.ov = raw.ov;
   } catch (_) {}
 })();
 export function dashSave() {
-  try { localStorage.setItem("swg-dash", JSON.stringify({ nodes: dashState.nodes ? [...dashState.nodes] : null, range: dashState.range, peers: dashState.peers, mesh: dashState.mesh, ov: dashState.ov })); } catch (_) {}
+  try { localStorage.setItem("swg-dash", JSON.stringify({ nodes: dashState.nodes ? [...dashState.nodes] : null, range: dashState.range, ...(dashState.range === "custom" ? { from: dashState.from, to: dashState.to } : {}), peers: dashState.peers, mesh: dashState.mesh, ov: dashState.ov })); } catch (_) {}
 }
 
 // ── which nodes the Overview charts include (persisted per browser) ──

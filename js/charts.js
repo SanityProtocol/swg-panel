@@ -13,7 +13,7 @@
 import { resolvedTheme } from "./theme.js";
 import { Store, api } from "./store.js";
 import { Tag, Panel, rate, niceScaleCeil } from "./ui.js";
-import { T } from "./i18n.js";
+import { T, locale } from "./i18n.js";
 import { rangeLabel } from "./views.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
@@ -52,16 +52,22 @@ export function Sparkline({ points, color, w, h }) {
 // Gradient area chart for a history series (0–100). Stretches to its container width;
 // the stroke stays crisp via non-scaling-stroke. Used for the CPU-load history.
 // format a chart point's timestamp for the hover tooltip — time of day, + date for week/month ranges
-export const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-// per-range tooltip time: live = h:m:s, hour/day = h:m, week/month = "June 24, 6PM" (date + 12h hour)
+// Month names come from Intl in the page's language (English reads exactly as before: "June 24"); the formatter is built once
+// per language — a chart's hover asks for one per point.
+const _md = {};
+const monthDay = d => { const k = locale() === "en-GB" ? "en-US" : locale(); try { return (_md[k] || (_md[k] = new Intl.DateTimeFormat(k, { month: "long", day: "numeric" }))).format(d); }
+  catch (_) { return d.toISOString().slice(0, 10); } };
+// per-range tooltip time: live = h:m:s, hour/day = h:m, week/month = "June 24, 6PM" (date + 12h hour); a custom window
+// (its key, views.js isCustomKey) = the date and time, or the date alone for a point at midnight (a day bar)
 export function histTime(ts, range) {
   if (ts == null) return "";
   const d = new Date(ts * 1000), p2 = x => String(x).padStart(2, "0");
   const hm = p2(d.getHours()) + ":" + p2(d.getMinutes());
-  const date = MONTHS[d.getMonth()] + " " + d.getDate();
+  const date = monthDay(d);
   if (range === "month") return date;                                  // date only
   if (range === "day" || range === "week") return date + " " + hm;     // date + time
   if (range === "live") return hm + ":" + p2(d.getSeconds());          // time + seconds
+  if (/^custom:/.test(range || "")) return hm === "00:00" ? date : date + " " + hm;
   return hm;                                                           // hour → time
 }
 // hover overlay shared by the CPU + throughput charts: vertical guide, point dot(s), value tooltip
@@ -402,6 +408,8 @@ export const RANGE_CAP = { live: 200, hour: 250, day: 300, week: 350, month: 400
 // Seconds each range covers — mirrors the panel's RANGE_SPEC windows. Only used to work out how many samples
 // a window can hold at a series' real resolution (densityCap).
 export const RANGE_WIN = { live: 200 * 15, hour: 3600, day: 86400, week: 7 * 86400, month: 30 * 86400 };
+// A custom window's x-axis (P3): as many slots as the buckets of the `axis` a ranged reply carries; 0 without one.
+export const axisCap = a => a && a.step ? Math.max(1, Math.ceil((a.until - a.since) / a.step)) : 0;
 
 /* How many slots this range's x-axis should hold FOR THIS SERIES.
 
