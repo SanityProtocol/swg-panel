@@ -13,7 +13,7 @@
  * handles Esc/Enter/Tab. Without it a child sheet's Escape would close its parent too.
  */
 
-import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rateIn, niceScaleCeilIn, seen } from "./util.js";
+import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rateIn, niceScaleCeilIn, seen, panelNowS } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText, srvVars } from "./i18n.js";
@@ -170,7 +170,7 @@ export function adoptOrphanPatch(o) {
     }
     peers["adopting:" + o.node + "|" + o.iface + "|" + o.pubkey] = {
       user_id: null, title: "", pubkey: o.pubkey, psk: o.preshared_key || "",
-      targets: [target], created_at: Math.floor(Date.now() / 1000),
+      targets: [target], created_at: panelNowS(),   // the grace window this is judged against runs on the PANEL's clock (reconcile.js)
     };
   };
 }

@@ -17,7 +17,7 @@
  * rather than treating an expired session as an empty response.
  */
 
-import { url } from "./util.js";
+import { url, clock, panelNow } from "./util.js";
 import { T, lang } from "./i18n.js";
 import { pickThemed, NODE_COLOR_DEFAULT } from "./theme.js";
 import { reconcile } from "../reconcile.js";
@@ -296,6 +296,16 @@ export const Store = {
     this._server = { roster: d.roster || { version: 1, users: {}, peers: {} }, nodes: d.nodes || [] };
     this.describe = d.describe || {};
     this.stats = d.snapshots || {};
+    // How far ahead of the PANEL this browser's clock reads — every age the SPA measures or prints is read on the
+    // panel's clock through it (util.js `clock`). `panel_now` is stamped while the (memoized, ≤ STATE_CACHE_TTL)
+    // bundle is built, so the reading is that old by the time it arrives: the offset comes out BIGGER by the
+    // bundle's age plus the round trip, panelNow() therefore reads a beat behind the panel's true now, and every
+    // age comes out a beat SMALL. That is the safe direction here — a node is called live for a second or two
+    // past its window, never greyed out early, which is the failure this whole change exists to prevent. Re-measured
+    // every poll, so a corrected panel clock is picked up in one round. A panel too old to send it → 0 → the
+    // behaviour before this existed. Not a number (a proxy's error page, a truncated body) → keep the last good
+    // offset: a NaN here would silently poison every window and every "x ago" in the console.
+    if (Number.isFinite(d.panel_now) && d.panel_now > 0) clock.skewMs = Date.now() - d.panel_now * 1000;
     // store_configs is now an enum: "encrypted" (blob at rest) | "off". storeConfigs stays a convenience bool
     // meaning "the panel keeps configs" (now encrypted). configsPlaintext = legacy plaintext files awaiting migration.
     this.storeMode = (d.store_configs === "off" || d.store_configs === false) ? "off" : "encrypted";
@@ -394,7 +404,10 @@ export const Store = {
     const _adv = (this.panelSettings || {}).advanced || {};   // operator-tunable stale/grace thresholds
     this._probSince = this._probSince || {};   // {pid: firstProblemMs} — persists so Restore/Correct only offers after a real, sustained problem (not a hiccup / mid-create)
     const _sc = (this.panelSettings || {}).status_conditions || {};   // peer-health detection toggles (default on)
-    this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)),
+    // `nodeSeen`: when the PANEL received each node's last sync (its own clock, `node_seen` → nodes_view). Paired with
+    // panelNow() this is one machine's clock at both ends of every window reconcile measures — see reconcile.js.
+    const nodeSeen = {}; for (const n of (this.nodes || [])) if (n && n.last_seen != null) nodeSeen[n.id] = n.last_seen;
+    this.recon = reconcile(this.roster, this.stats, panelNow(), { retiring, systemIfaces, nodeSeen, rotating: new Set(Object.keys(this.rotating)),
       probSince: this._probSince,
       ...(_adv.churn_gap_s ? { churnGapS: _adv.churn_gap_s } : {}), ...(_adv.churn_min ? { churnMin: _adv.churn_min } : {}),
       // Both detectors raise the SAME badge ("restricted") from different evidence, and each stays

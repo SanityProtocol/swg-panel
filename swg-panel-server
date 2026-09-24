@@ -14292,6 +14292,18 @@ def _snap_sanitise(snap):
     functions later."""
     if not isinstance(snap, dict):
         return "snapshot must be an object"
+    # `generated_at` gets the telemetry treatment (cleaned, never refused): the panel stamps a node's arrival
+    # itself (`node_seen`), so this field is only ever a secondary reading — but three readers do int() on it,
+    # and an unparseable one raised there instead of here. `fp_converged` did it on every convergence check and
+    # the warm start does it at boot, so a node sending an ISO string (a plausible future build) could have
+    # stopped a sync mid-flight or kept the panel from starting. Absent is a shape every reader already handles.
+    _g = snap.get("generated_at")
+    if _g is not None and not isinstance(_g, int):
+        _gn = _snap_num(_g)                              # numeric strings count, as they do for every rate…
+        if _gn is None or _gn <= 0:                      # …but _snap_num reads a null-ish value as 0, which is
+            snap.pop("generated_at")                     # right for a rate and wrong for an instant: no reading
+        else:                                            # at all is a shape every reader handles, a 1970 one is not
+            snap["generated_at"] = int(_gn)
     for k in _SNAP_TELEMETRY:
         if k not in snap:
             continue
@@ -14325,6 +14337,29 @@ def _snap_sanitise(snap):
         else:
             return "snapshot field %r must be an object or a list, got %s" % (k, type(v).__name__)
     return None
+
+
+def _warm_seen(mtime, snap, now=None):
+    """The `node_seen` a warm start may claim for a node: when THIS PANEL last heard from it, on its own clock.
+
+    ⚠️ THE OLDEST OF THE THREE READINGS, because this value can outlive the boot. `node_seen` is only ever
+    rewritten by a real sync, so a node that never syncs again keeps whatever is seeded here FOR EVER — and a
+    state dir restored from a backup, or copied without timestamps, hands every mirror file a fresh mtime. The
+    mtime alone would then resurrect long-dead nodes as "reporting" and un-grey every destructive action on
+    them. The snapshot's own `generated_at` is on the node's clock, not ours, but it names the same instant, so
+    the older of the two is the honest floor; `now` caps a file stamped in the future (a clock step, or a copy
+    made by a box whose clock runs ahead). Neither reading usable → `now`, which is what warm start is for:
+    show the last-known state for one pass instead of "awaiting enroll", and let the next sync correct it.
+    """
+    now = int(now if now is not None else time.time())
+    # int() on its own would raise on an unparseable reading, at boot, with no state loaded — _snap_sanitise
+    # cleans the field before either door seeds the cache, and this stays defensive because a crash here costs
+    # the whole panel (found by this helper's own gate).
+    def _t(v):
+        n = _snap_num(v)
+        return int(n) if n is not None and n > 0 else 0
+    seen = [t for t in (_t(mtime), _t((snap or {}).get("generated_at"))) if t > 0]
+    return min(seen + [now])
 
 
 def _mint_device_exit(nodes, nid, ref, snap=None):
@@ -19615,6 +19650,16 @@ def api(method, path, qs, body, deps):
             "nodes": nodes_view(_roster),                # fleet metadata + live counters
             "describe": describe_view(),                 # per-node interface meta for config building
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
+            # THIS PANEL'S CLOCK, so the browser can read every timestamp here on the clock that stamped it. The SPA
+            # keeps the difference (util.js `clock.skewMs`) and measures ages against it — a node's last sync, a peer's
+            # grace, a token's last use. Without it an operator whose PC clock was minutes off a node's saw that node
+            # greyed out and its actions blocked while it was syncing every 5 s (client report, 2026-09-22).
+            # Stamped as this bundle is BUILT, and the bundle is memoized for STATE_CACHE_TTL, so the browser measures
+            # an offset that is too big by the bundle's age plus the round trip — which makes every age it computes
+            # read a beat SMALL (a node stays "reporting" a second or two past its window, and is never greyed out
+            # early). That is the conservative direction for this: the defect being fixed is a healthy node reading
+            # dead, never the reverse.
+            "panel_now": int(time.time()),
             "store_configs": store_mode,                 # enum "encrypted" | "off"
             # The placeholder a stored profile's PrivateKey line carries in the editor. It comes from HERE
             # rather than being spelled out in the SPA so the two ends can never disagree about the exact
@@ -30931,10 +30976,18 @@ def main():
             atomic_write(_vpath, _cur_ver + "\n")
     # warm-start: seed the in-memory snapshot cache from the mirrored stats files so a fresh panel process (a
     # restart, or the switch-over of a docker↔bare convert) shows each node's LAST-KNOWN state immediately, instead
-    # of "awaiting enroll" + dashes until the next sync (~node_interval). Staleness still rides on each snapshot's
-    # generated_at, so a node that was genuinely down reads as stale, not falsely online.
+    # of "awaiting enroll" + dashes until the next sync (~node_interval). Staleness still rides on WHEN THE SYNC
+    # ARRIVED, so a node that was genuinely down reads as stale, not falsely online: the mirror file was written by
+    # this panel as the snapshot came in, so its mtime is that arrival on THIS clock — the same reading `node_seen`
+    # holds while running. It used to seed the snapshot's own `generated_at`, stamped by the node: a node whose clock
+    # was off then read stale (or falsely live) for the first pass after every restart.
+    # What each node's `node_seen` may claim from this: see _warm_seen — the OLDEST reading, never the mtime alone.
     for _nid, _c in Handler.deps["nodes"].items():
-        _snap = load_json(os.path.join(Handler.deps["stats_dir"], _c.get("stats_file", f"stats-{_nid}.json")), None)
+        _sf = os.path.join(Handler.deps["stats_dir"], _c.get("stats_file", f"stats-{_nid}.json"))
+        _snap = load_json(_sf, None)
+        _mt = 0
+        with contextlib.suppress(OSError):
+            _mt = int(os.path.getmtime(_sf))
         # ⚠️ THE SECOND DOOR, and it has to be the same door. The invariant every reader relies on is that
         # anything in `node_snaps` has been through `_snap_sanitise` — and these files were written by an
         # EARLIER RUN, possibly one that stored a shape this build cannot read. Seeding them raw would put
@@ -30943,7 +30996,7 @@ def main():
         # which is what it effectively is until it syncs again.
         if isinstance(_snap, dict) and _snap and _snap_sanitise(_snap) is None:
             Handler.deps["node_snaps"][_nid] = _snap
-            Handler.deps["node_seen"][_nid] = int(_snap.get("generated_at") or 0) or int(time.time())
+            Handler.deps["node_seen"][_nid] = _warm_seen(_mt, _snap)
         # restore the LIVE 5s buffer so the LIVE chart survives a restart/update (mirrors live-<id>.json)
         _lb = load_json(os.path.join(Handler.deps["stats_dir"], f"live-{_nid}.json"), None)
         if isinstance(_lb, list) and _lb:

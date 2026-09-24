@@ -209,6 +209,32 @@ export function turnProxiesFor(node, iface) {
 // trust any live state then, so cross-reference badges grey out (don't claim "active" on a node gone dark).
 export function nodeStale(node) { return Store.recon.nodeStatus[node] !== "live"; }
 
+// ONE verdict for a node, read by the list row and by its own page — they used to compute it differently and could
+// therefore contradict each other: the row took the server's `status` (a fixed 30 s against the panel's receipt
+// time) while the page took recon (the operator's stale window, Settings → Display). Whether the node has EVER
+// synced stays the server's fact — "dangling" is what makes a row say "awaiting enroll" — and whether it is live
+// NOW is recon's, so the tunable window governs both. No recon entry (no snapshot at all) → the server's verdict.
+//
+// ⚠️ NOT FOR A GATE ON WHAT THE SERVER WILL DO. This answers "should the console treat this node as live", which
+// is the operator's window. Where the question is instead "what will the panel decide when it acts" — the Migrate
+// door, whose plan supersedes the old box only when `node_seen` is inside the server's own fixed NODE_OFFLINE —
+// read `n.status`, or a widened window makes the UI promise something the server then does not do.
+export function nodeStatusOf(n) {
+  const st = (n || {}).status || "dangling";
+  const live = Store.recon.nodeStatus[(n || {}).id];
+  return (live && (st === "online" || st === "offline")) ? (live === "live" ? "online" : "offline") : st;
+}
+
+// When the PANEL last heard from a node, on the panel's clock — the one reading every age label about a node is
+// measured from, so a card's "x ago" can never contradict the live tag beside it. Number.isFinite, not a null
+// check: a non-numeric `last_seen` would make `panelNowS() - it` NaN, and seen(NaN) renders "NaNd ago" while the
+// tag itself correctly fell back (caught in review). `generated_at` is the fallback for a panel too old to send
+// `last_seen` — the same order reconcile.js uses for the verdict.
+export function lastHeard(nrec, snap) {
+  const ls = (nrec || {}).last_seen;
+  return Number.isFinite(ls) ? ls : ((snap || {}).generated_at || null);
+}
+
 // Is THIS deployment's client resolving over encrypted DNS (DoT/DoH) right now? The node records the source
 // address of every such attempt in a self-expiring nft set, so a hit means "currently", not "once did".
 //

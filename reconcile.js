@@ -25,6 +25,10 @@
 // deployment status is still computed so you can see whether it is live.
 // Stale nodes never count as "missing" (they're unknown, not absent), so a peer
 // stays "online" while a replica is briefly unreachable.
+//
+// Every time window here (node staleness, the creating/pending grace, the restoring window, expiry) is measured
+// between two readings of the PANEL's clock: `now` is panelNow() and the timestamps come from the panel. Never
+// compare a node-stamped time (a snapshot's `generated_at`) with a browser-stamped one — see nodeStatus below.
 
 import { T } from "./js/i18n.js";
 
@@ -68,9 +72,18 @@ function reconcile(roster, stats, now, cfg) {
   const users = roster.users || {};
   const peerStore = roster.peers || {};
 
+  // ⚠️ ONE CLOCK, AND IT IS THE PANEL'S. `cfg.nodeSeen` is when the PANEL received each node's last sync, by the
+  // panel's own clock (`node_seen`), and `now` is this browser's clock corrected onto that same clock (panelNow,
+  // from `panel_now` in /api/state). Both ends of the subtraction therefore come from one machine's clock.
+  // It used to subtract the snapshot's `generated_at` — stamped by the NODE — from the browser's Date.now(),
+  // so an operator whose PC clock differed from a node's by more than nodeStaleMs saw that node as stale
+  // while it was syncing every 5 s: the node list (server-side, receipt time) said reporting, this said stale,
+  // and `blocked` on the node page greyed out every action, interface creation included (client report,
+  // 2026-09-22). `generated_at` stays as the fallback for a panel too old to send either field.
   const nodeStatus = {};
   for (const node of Object.keys(stats)) {
-    const gen = stats[node] && stats[node].generated_at;
+    const seen = (cfg.nodeSeen || {})[node];   // Number.isFinite, not != null: a non-numeric would go NaN below,
+    const gen = Number.isFinite(seen) ? seen : (stats[node] && stats[node].generated_at);   // and NaN reads "stale" — fall back instead
     nodeStatus[node] = (gen && (now - gen * 1000) <= cfg.nodeStaleMs) ? "live" : "stale";   // i18n-keys: internal states
   }
 

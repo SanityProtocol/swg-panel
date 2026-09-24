@@ -12,6 +12,17 @@
 import { useRef } from "preact/hooks";
 import { T } from "./i18n.js";
 
+// ───────────────────────── the panel's clock ─────────────────────────
+// ⚠️ EVERY TIME THE PANEL SENT IS READ AGAINST THIS, NEVER AGAINST Date.now(). Almost every timestamp the SPA
+// shows or measures (a node's last sync, a peer's created_at, a token's last use) was stamped by the panel or by
+// a node, on ITS clock — and this browser's clock is a different machine's. `skewMs` is how far ahead of the
+// panel this browser reads, measured on every /api/state (`panel_now`); store.js sets it, and it stays 0 for a
+// panel too old to send the field. A 30 s node-staleness window against an unsynced desktop clock is how a node
+// syncing every 5 s read "stale" on its own page while the node list read "reporting" (client report 2026-09-22).
+export const clock = { skewMs: 0 };
+export const panelNow = () => Date.now() - clock.skewMs;         // ms, on the panel's clock
+export const panelNowS = () => Math.floor(panelNow() / 1000);    // epoch seconds, as the panel stamps them
+
 // ───────────────────────── tiny helpers ─────────────────────────
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -99,7 +110,7 @@ export const ipChoices = (nrec, ...first) =>
 
 export function ago(sec) {
   if (sec == null) return "—";
-  const d = Math.max(0, Math.floor(Date.now() / 1000 - sec));
+  const d = Math.max(0, Math.floor(panelNowS() - sec));   // `sec` was stamped by the panel → read it on the panel's clock
   if (d < 60) return T("just now");
   if (d < 3600) return T("{n}m ago", { n: Math.floor(d / 60) });
   if (d < 86400) return T("{n}h ago", { n: Math.floor(d / 3600) });

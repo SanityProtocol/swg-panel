@@ -8,7 +8,7 @@
  */
 
 import { T, Tsplit, plural, srvText } from "./i18n.js";
-import { esc, tkey, V, BASE, seen, configErrors, orderedTargets, isPrimaryTarget, useStableOrder,
+import { esc, tkey, V, BASE, seen, panelNowS, configErrors, orderedTargets, isPrimaryTarget, useStableOrder,
          isSelfContainedKind, ipOf, portOf, ipPickerVal } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { NODE_COLOR_DEFAULT, NODE_CREATE_DEFAULT, toThemed } from "./theme.js";
@@ -434,7 +434,7 @@ export function CreatePeerSheet({ prefill }) {
     const tempId = "tmp_" + (keys ? keys.pub.slice(0, 14) : String(Math.random()).slice(2, 16));
     const optimistic = { id: tempId, pubkey: keys ? keys.pub : "", user_id: userId || null, title: title.trim(), psk: pskV,
       targets: tgts.map(t => ({ node: t.node, iface: t.iface, ip: t.ip, type: t.type })),
-      created_at: Math.floor(Date.now() / 1000), _creating: true };
+      created_at: panelNowS(), _creating: true };   // panel clock: reconcile judges the "creating" grace against it
     closeModal();
     if (prefill.lock && prefill.node && prefill.iface) go("#/node/" + encodeURIComponent(prefill.node) + "/" + encodeURIComponent(prefill.iface));
     else if (userId) revealUser(userId, tempId);
@@ -2419,6 +2419,13 @@ export function NodeEditSheet({ node }) {
         ${/* §3.1: the door for a node that IS reporting — the old box is alive, so this one supersedes it
               and keeps a rollback point. The other door ("Restore or migrate") lives on the details header
               and only appears when the node is silent. T-10's Transfer lands next to this one. */
+          /* ⚠️ THE SERVER'S OWN VERDICT, deliberately — not recon's (see model.js nodeStatusOf). This door is not
+             asking "is this node live enough to act on", it is asking what the PANEL will do when the plan is
+             armed: plan_rebuild sets `supersede = live` from `node_seen` against its fixed NODE_OFFLINE
+             (swg-panel-server, §3.1). Read through the operator's own stale window instead and a wider window
+             opens this door for a node silent past NODE_OFFLINE — the sheet promising a one-click rollback while
+             the server arms the plan with supersede=False, so no rollback point is made and the tag never comes
+             (caught in review). Two clocks would be a bug; two QUESTIONS, each answered by the side that acts. */
           node.status === "online" ? html`<${Fragment}>
           <button class="btn btn-ghost" title=${T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(node)}><${Ic} i="server"/> ${T("Migrate")}</button>
           <button class="btn btn-ghost" title=${T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead")} onClick=${() => (node.transfer ? openNodeTransferWatch(node) : openNodeTransfer(node))}><${Ic} i="link"/> ${T("Transfer")}</button>
@@ -2747,7 +2754,7 @@ export function NodeRollbackSheet({ node }) {
       left: html`<button class="btn btn-ghost" disabled=${!!busy} title=${T("Forget the old box's token — the badge goes away and this panel keeps the new box")} onClick=${() => run(true)}>${busy === "forget" ? T("Working…") : T("It's gone — forget it")}</button>`,
       onCancel: closeModal, disabled: !!busy, onAction: () => run(false),
       action: busy === "back" ? T("Working…") : T("Roll back to it") })}>
-    <div class="notice"><${Ic} i="info"/><span>${oldBoxLive(node.name, at ? T("{ago} ago", { ago: seen(Math.floor(Date.now() / 1000 - at)) }) : T("recently"))}</span></div>
+    <div class="notice"><${Ic} i="info"/><span>${oldBoxLive(node.name, at ? T("{ago} ago", { ago: seen(Math.floor(panelNowS() - at)) }) : T("recently"))}</span></div>
     <div class="notice warn"><${Ic} i="warn"/><span>${T("Rolling back hands this panel back to the old box: its own token starts working again and it picks up on its next sync, peers and all. Whatever you installed on the new box stops syncing instead — nothing on it is touched, and you can migrate again whenever you like.")}</span></div>
     <div class="hint">${T("If the migration went fine and the old server is decommissioned, forget it instead — that only drops the panel's copy of its old token.")}</div>
   <//>`;

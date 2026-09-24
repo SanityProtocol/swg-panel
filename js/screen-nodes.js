@@ -8,11 +8,11 @@
  * above any mount.
  */
 
-import { $, esc, seen, dur, ago, fmtBytes, tkey, ipOf, portOf, listenAddr } from "./util.js";
+import { $, esc, seen, dur, ago, fmtBytes, tkey, ipOf, portOf, listenAddr, panelNowS } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
-import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
+import { kindOf, iTypeOf, targetType, nodeStale, nodeStatusOf, lastHeard, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
          turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3 } from "./model.js";
 import { turnFork, turnLabel, turnColor, turnForkList, forkProduct, forkPickLabel } from "./turn-catalog.js";
 import {
@@ -143,7 +143,7 @@ const _CTR_PROC = new Set(["adopted-container", "adopt-container-failed"]);   //
    act on is a badge nobody reads. */
 function supersededTitle(n) {
   const at = (n.superseded_box || {}).at;
-  const when = at ? T("{ago} ago", { ago: seen(Math.floor(Date.now() / 1000 - at)) }) : T("recently");
+  const when = at ? T("{ago} ago", { ago: seen(Math.floor(panelNowS() - at)) }) : T("recently");
   return T("Migrated {v1}. The old server is still running and still serving its peers — it's locked out of this panel by a rotated token, nothing else. Roll back to it in one click, or tell the panel it's gone.", { v1: when });
 }
 function SupersededTag({ n, onClick }) {
@@ -208,7 +208,7 @@ function ArrivedSheet({ n }) {
 
 function ArrivedTag({ n }) {
   const x = n.transferred_from || {};
-  const when = x.at ? T("{ago} ago", { ago: seen(Math.floor(Date.now() / 1000 - x.at)) }) : T("recently");
+  const when = x.at ? T("{ago} ago", { ago: seen(Math.floor(panelNowS() - x.at)) }) : T("recently");
   const where = x.url || T("another panel");
   const title = x.node_name && x.node_name !== n.name
     ? T("Transferred here from {v1} {v2}, where it was called «{v3}». Anything from before that — its history, its stored baselines — is still on that panel.", { v1: where, v2: when, v3: x.node_name })
@@ -294,7 +294,10 @@ export function NodeDetail({ node: rawName }) {
   if (snap) for (const w of (snap.wdtt || [])) { nrx += w.rx_speed || 0; ntx += w.tx_speed || 0; }   // include WDTT interface throughput in the node-card total
   if (snap) for (const c of (snap.csqtt || [])) { nrx += c.rx_speed || 0; ntx += c.tx_speed || 0; }   // include csqtt interface throughput too
   let syncTxt = T("no snapshot yet");
-  if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); syncTxt = live ? T("{ago} ago", { ago: seen(a) }) : T("stale for {ago}", { ago: seen(a) }); }
+  // WHEN THE PANEL LAST HEARD FROM IT, on the panel's clock — the same reading the "reporting"/"stale" tag beside it
+  // is derived from, so the two can never contradict each other (model.js lastHeard).
+  const _seenAt = lastHeard(nrec, snap);
+  if (_seenAt) { const a = Math.floor(panelNowS() - _seenAt); syncTxt = live ? T("{ago} ago", { ago: seen(a) }) : T("stale for {ago}", { ago: seen(a) }); }
 
   return html`<div class="screen">
     <${NodeRail} active=${name}/>
@@ -1671,7 +1674,7 @@ export function turnUpdBubbleHtml() {
 }
 export function NodeCard({ n, reorder }) {
   const it = reorder ? reorder.item(n.id) : null;
-  const st = n.status || "dangling";
+  const st = nodeStatusOf(n);   // recon decides live/not (one window, one clock) — see model.js; the server still says "never synced"
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
   const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
   const snap = Store.stats[n.id];

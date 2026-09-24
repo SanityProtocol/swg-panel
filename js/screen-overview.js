@@ -9,7 +9,7 @@
  */
 
 import {
-  ago, dur, fmtBytes, seen,
+  ago, dur, fmtBytes, seen, panelNowS,
 } from "./util.js";
 import { T, Trich, plural, pluralWord, srvVerb, srvDetail, srvText } from "./i18n.js";
 import {
@@ -19,7 +19,7 @@ import {
   turnColor, turnFork, turnForkList, forkLabel,
 } from "./turn-catalog.js";
 import {
-  targetType, awgDict3, tip3,
+  targetType, awgDict3, tip3, lastHeard,
 } from "./model.js";
 import {
   Badge, Popover, STATUS_RANK, Sheet, StoreOffBanner, closeModal, dlul, ifaceColor, modalDepth, openModal,
@@ -67,7 +67,10 @@ export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presenc
   const health = nrec.health || null;
   const tr = traffic || { rx: 0, tx: 0 };
   const trafCell = ranged ? xferCell(...dlul(tr.rx, tr.tx)) : rateCell(tr.rx, tr.tx);
-  let sync = T("no data"); if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); sync = live ? T("{v1} ago", { v1: seen(a) }) : T("stale · {v1}", { v1: seen(a) }); }
+  // The panel's own "last heard from it", like the node page's (model.js lastHeard) — one clock at both ends, so
+  // the age can never disagree with the live dot beside it.
+  const seenAt = lastHeard(nrec, snap);
+  let sync = T("no data"); if (seenAt) { const a = Math.floor(panelNowS() - seenAt); sync = live ? T("{v1} ago", { v1: seen(a) }) : T("stale · {v1}", { v1: seen(a) }); }
   const al = healthAlerts(health);
   // client interface-type badges — one per type present, "awg" / "awg ×5" (mesh/system ifaces excluded)
   // An AmneziaWG 3.1 interface is counted on its own badge, in the 3.1 colour (docs/AWG3-PLAN.md D-colour) — one badge per colour.
