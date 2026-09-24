@@ -606,6 +606,7 @@ $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; 
 # ═══════════════ I. PANEL SETUP ═══════════════
 echo; info "BARE-METAL SWG PANEL SETUP"
 ensure_swap   # low-RAM/zero-swap boxes OOM the panel on list-resolve spikes — add swap before anything heavy
+guard_second_panel baremetal   # a Docker panel already live here would answer beside this one — see lib/common.sh
 
 # Idempotent re-install: detect an existing panel UP FRONT and offer its saved answers as the
 # defaults for every step (mirrors the docker installer's .env reuse). To start fresh, uninstall first.

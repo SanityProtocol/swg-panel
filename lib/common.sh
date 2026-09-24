@@ -1111,6 +1111,59 @@ ensure_swap(){ # PANEL-HOST: a low-RAM box with NO active swap OOM-kills the pan
   return 0
 }
 
+# guard_second_panel <baremetal|docker> — the method being installed. TWO PANELS ON ONE BOX. A bare-metal panel and a
+# Docker panel keep separate state (/var/lib/swg-panel vs the compose ./data), so the state-dir lock cannot see one from
+# the other, and both can be live behind the same address: Docker's port forward catches outside traffic while the host
+# process answers another path, or each answers one address family. The browser then shows one fleet on one load and the
+# other on the next, and saves land on whichever answered — reported from a client's master (2026-09-24: the node picker
+# read 1/1, then 2/2). bootstrap.sh's cross-method prompt only fires when THIS method is missing the part, so a box that
+# already had both went through it, and running an installer directly skipped it. Called before the panel is (re)started.
+# A convert owns its own switch-over (it stops the old side), so it is exempt. Unattended: SWG_OTHER_PANEL=stop|keep|abort;
+# with neither a terminal nor that, it refuses — the same contract as bootstrap.sh's prompts.
+guard_second_panel(){
+  [ -n "${SWG_CONVERT_DIR:-}" ] && return 0
+  local me="$1" what="" live=no ans=""
+  if [ "$me" = baremetal ]; then
+    command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel || return 0
+    what="a Docker panel (container swg-panel)"
+    { docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel \
+      || [ "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' swg-panel 2>/dev/null)" = always ]; } && live=yes
+  else
+    [ -f /etc/systemd/system/swg-panel-server.service ] || return 0
+    what="a bare-metal panel (swg-panel-server.service)"
+    { systemctl is-active --quiet swg-panel-server 2>/dev/null || systemctl is-enabled --quiet swg-panel-server 2>/dev/null; } && live=yes
+  fi
+  if [ "$live" != yes ]; then
+    echo "  · $what is also installed here, stopped and not set to start — leaving it alone (the uninstaller removes it)"
+    return 0
+  fi
+  echo
+  echo "  ! $what is already running on this box, with its OWN servers, users and settings."
+  echo "    Installing a second panel beside it makes both answer — the browser shows whichever one replies, and"
+  echo "    changes saved on one never reach servers that sync to the other."
+  echo "    To MOVE to $( [ "$me" = baremetal ] && echo bare-metal || echo docker ) keeping everything, abort and run bootstrap.sh with that method — it converts."
+  echo "      [a]bort              exit without changing anything (default)"
+  echo "      [s]top the other     stop it and keep it from starting again (its data stays on disk; nothing is deleted)"
+  echo "      [k]eep both          continue anyway"
+  ans="${SWG_OTHER_PANEL:-}"
+  if [ -z "$ans" ]; then
+    printf '  Abort, stop the other, or keep both [a/s/k]: ' 2>/dev/null >/dev/tty || printf '  Abort, stop the other, or keep both [a/s/k]: '
+    read -r ans 2>/dev/null </dev/tty || { echo; echo "  ✗ no interactive input — run from a terminal (ssh -t), or set SWG_OTHER_PANEL=stop|keep|abort"; exit 1; }
+  fi
+  case "$ans" in
+    s|S|stop)
+      if [ "${DRYRUN:-false}" = true ]; then echo "    [skip] stop + disable $what"; return 0; fi
+      if [ "$me" = baremetal ]; then
+        docker update --restart=no swg-panel >/dev/null 2>&1 || true; docker stop swg-panel >/dev/null 2>&1 || true
+      else
+        systemctl disable --now swg-panel-server >/dev/null 2>&1 || true
+      fi
+      echo "  ✓ stopped $what — its data is still on disk"; return 0;;
+    k|K|keep) echo "  · keeping both — two panels will answer on this box"; return 0;;
+    *) echo "  ✗ aborted — nothing was changed"; exit 1;;
+  esac
+}
+
 # seed_access_settings <panel-settings.json path> — merge this run's Access & TLS answers into the panel's own
 # settings file. panel-settings.json lives in the STATE dir, which an uninstall KEEPS by default, so a fresh
 # install onto a kept state dir would otherwise show the PREVIOUS install's address/TLS in Settings → Access (or

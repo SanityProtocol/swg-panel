@@ -249,6 +249,8 @@ if [ -z "$METHOD" ] && [ -z "$ROLE" ]; then
   { [ "$DOCK_PANEL" = yes ] || [ "$DOCK_NODE" = yes ]; } && _dock=yes
   if [ "$_bare" = yes ] && [ "$_dock" = yes ]; then
     info "both a bare-metal and a docker install are present — choose which to re-install:"   # mixed → fall through to the prompts
+    [ "$BARE_PANEL" = yes ] && [ "$DOCK_PANEL" = yes ] \
+      && warn "that is TWO panels, each with its own servers and settings — the installer will offer to stop the one you don't pick"
   elif [ "$_bare" = yes ]; then METHOD=baremetal
     if   [ "$BARE_PANEL" = yes ] && [ "$BARE_NODE" = yes ]; then ROLE=master
     elif [ "$BARE_PANEL" = yes ]; then ROLE=host; else ROLE=node; fi
