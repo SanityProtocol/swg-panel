@@ -55,15 +55,16 @@ export function TrafficRange({ onChange }) {
 // ⚠️ THE DATES ARE A DRAFT until Apply — never the window in force. Written straight into it as they were typed, every
 // keystroke of a year (0002, 0020, 0202, 2026) was a fetch cached for good, and a start after the end made every grid ask
 // for a window the panel refuses. customWindow() judges the draft (a gated pure function); `min` is the first day the
-// window may start on (none for the grids — the ledger answers any day).
-export function DateWindow({ from, to, min, max, onApply }) {
+// window may start on (none for the grids — the ledger answers any day). `pending`: the dates shown are a proposal, not the
+// window in force (the Overview's rail before Custom is chosen) — Apply is offered for them as they stand.
+export function DateWindow({ from, to, min, max, onApply, pending }) {
   const [draft, setDraft] = useState(null);   // null: showing the window in force
   const dr = draft || { from, to };
   const date = k => html`<input type="date" class="datein" value=${dr[k]} min=${min || "1970-01-01"} max=${max}
     aria-label=${k === "from" ? T("From") : T("To")} onInput=${e => setDraft({ ...dr, [k]: e.target.value })}/>`;
   const w = customWindow(dr.from, dr.to, max, min);
   const bad = !w.ok && w.why !== "incomplete";
-  const changed = !!draft && (dr.from !== from || dr.to !== to);
+  const changed = !!pending || (!!draft && (dr.from !== from || dr.to !== to));
   const apply = () => { if (w.ok) { setDraft(null); onApply(w.from, w.to); } };
   return html`<${Fragment}><span class="trange-dates" onKeyDown=${e => { if (e.key === "Enter") apply(); }}>${date("from")}<span class="faint">–</span>${date("to")}
       ${changed ? html`<button type="button" class="btn btn-mini" disabled=${!w.ok} onClick=${apply}>${T("Apply")}</button>` : null}</span>

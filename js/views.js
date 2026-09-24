@@ -17,7 +17,7 @@
 
 import { tkey, seen, fmtBytes } from "./util.js";
 import { lossColor, lossColorMesh } from "./charts.js";
-import { Store, api, bus } from "./store.js";
+import { Store, api, bus, isCustomKey, customKeyWindow } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
          isWdttName, isCsqttName, isSelfContainedName } from "./model.js";
 import { go } from "./router.js";
@@ -1271,9 +1271,7 @@ export const rangeWord = k => isCustomKey(k) ? customKeyLabel(k) : (({ live: T("
 // A custom Overview window (P3) travels as a KEY — "custom:YYYYMMDD-YYYYMMDD", the server's own `rangeKey` — never as the
 // bare word "custom": two custom windows are both "custom", so a guard comparing that would render the last window's
 // numbers under the new title. Everything ranged (fetch, stale guard, label, step) reads the key it LOADED.
-export const isCustomKey = k => typeof k === "string" && /^custom:\d{8}-\d{8}$/.test(k);
-const _isoOf = d => d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6, 8);
-export function customKeyWindow(k) { const [f, t] = k.slice(7).split("-"); return { range: "custom", from: _isoOf(f), to: _isoOf(t) }; }
+export { isCustomKey, customKeyWindow };   // the grammar is store.js's (rangeQ reads it too)
 export const customKeyLabel = k => trafficRangeLabel(customKeyWindow(k));
 export const dashState = { nodes: null, range: "live", from: "", to: "", peers: true, mesh: true, ov: {} };
 // The Overview's range key: a named range, or the custom window's key.

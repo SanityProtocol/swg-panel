@@ -25,7 +25,8 @@ Run: python3 tests/chart_range_selftest.py   (0 = pass)
      i  the resolver strips the range the endpoints then index RANGE_SPEC by (a 500)
      j  offenders are dropped before a custom window's reach
      h  a named reply carries the axis too
-  SWG_BASE_REV (default 4c700c7) is the build the named replies are compared with.
+  --write-fixture  rebuild tests/fixtures/chart_range_named.json from SWG_BASE_REV (default 4c700c7, the build before P3) —
+                   only when a named reply changes ON PURPOSE; the gate itself needs no git history.
 """
 import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile, time
 
@@ -33,6 +34,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.path.join(ROOT, "swg-panel-server")
 BASE = os.environ.get("SWG_BASE_REV") or "4c700c7"
+FIXTURE = os.path.join(HERE, "fixtures", "chart_range_named.json")   # what BASE answered (a SHA-256 per reply) — frozen, so no git history is needed
+WRITE = "--write-fixture" in sys.argv
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 FAILS = []
 
@@ -58,7 +61,10 @@ PLANTS = {
             "                if ep >= lo:                                # range totals use the FULL window …")], "seen only after"),
     "g": ([("        _in = lambda first, last: last >= _t0 and first < _t1", "        _in = lambda first, last: last >= _t0")],
           "who"),
-    "i": ([("    rng = (qs.get(\"range\") or [dflt])[0]                    # read exactly", "    rng = g(\"range\") or dflt                    # read exactly")],
+    "k": ([("            bstep = max(bstep, HRRD_RINGS[ring][0])  ", "            bstep = bstep  ")], "no finer than the ring"),
+    "m": ([("    if step % 86400:\n        n = max(1,", "    if False:\n        n = max(1,")], "real hours"),
+    "l": ([("    return n, starts, lambda ep: int((ep + off(ep) - w0) // step)", "    return n, starts, lambda ep: int((ep - since) // step)")], "local midnights"),
+    "i": ([("    rng = (qs.get(\"range\") or [dflt])[0]                    # read exactly", "    rng = (qs.get(\"range\") or [dflt])[0].strip() or dflt                    # read exactly")],
           "malformed range"),
     "j": ([("OFFENDER_TTL = RANGE_CUSTOM_DAYS * 86400 + 3600", "OFFENDER_TTL = 30 * 86400 + 3600")], "kept as long"),
     "h": ([("        if axis:                                             # custom only: a named reply stays byte-identical\n            data[\"axis\"] = axis",
@@ -83,13 +89,14 @@ if PLANT:
         assert src.count(old) == 1, "plant anchor missing — this run would FALSE-PASS: %r" % old[:90]
         src = src.replace(old, new, 1)
 open(os.path.join(TMP, "panel.py"), "w", encoding="utf-8").write(src)
-base_src = subprocess.run(["git", "-C", ROOT, "show", BASE + ":swg-panel-server"], capture_output=True, text=True, check=True).stdout
-open(os.path.join(TMP, "base.py"), "w", encoding="utf-8").write(base_src)
+if WRITE:                                                        # regenerate the baseline from BASE (a deliberate change of a named reply)
+    base_src = subprocess.run(["git", "-C", ROOT, "show", BASE + ":swg-panel-server"], capture_output=True, text=True, check=True).stdout
+    open(os.path.join(TMP, "base.py"), "w", encoding="utf-8").write(base_src)
 
 os.environ["TZ"] = "Europe/Moscow"
 time.tzset()
 P = load("swgpanel_p3", os.path.join(TMP, "panel.py"))
-H = load("swgpanel_base", os.path.join(TMP, "base.py"))
+H = load("swgpanel_base", os.path.join(TMP, "base.py")) if WRITE else None
 
 # ── the fixture: two nodes, 33 days of health rings, three days of the rest ──────────────────────────────────────────
 NOW = P._ld_midnight(20260924) + 14 * 3600 + 37 * 60 + 20      # 24 Sep 14:37:20 Moscow
@@ -129,7 +136,12 @@ def deps():
 
 
 for mod in (P, H):
-    mod.Handler.deps = deps()
+    if mod:
+        mod.Handler.deps = deps()
+
+
+def digest(reply):                                              # a reply's bytes, canonical — the fixture keeps only this
+    return __import__("hashlib").sha256(json.dumps(reply, sort_keys=True).encode()).hexdigest()
 
 
 def call(mod, url):
@@ -142,7 +154,7 @@ def call(mod, url):
 
 
 # ── [1] named ranges answer byte-identically ─────────────────────────────────────────────────────────────────────────
-print("[1] named ranges answer byte-identically to %s" % BASE)
+print("[1] named ranges answer byte-identically to %s (tests/fixtures/chart_range_named.json)" % BASE)
 urls = []
 for r in ("live", "hour", "day", "week", "month"):
     urls += ["/api/node-history?node=n1&range=" + r, "/api/mesh-history?range=" + r, "/api/category-history?range=" + r,
@@ -150,7 +162,16 @@ for r in ("live", "hour", "day", "week", "month"):
 "/api/iface-series?node=n1&iface=awg0&range=" + r,
              "/api/presence?range=" + r + "&blocks=24&step=3600"]
 urls += ["/api/node-history?node=n1", "/api/presence?range=day"]
-diff = [u for u in urls if json.dumps(call(P, u), sort_keys=True) != json.dumps(call(H, u), sort_keys=True)]
+if WRITE:
+    os.makedirs(os.path.dirname(FIXTURE), exist_ok=True)
+    json.dump({"base": BASE, "now": NOW, "range_spec": {k: list(v) for k, v in H.RANGE_SPEC.items()}, "dead_after": H._rings_dead_after(),
+               "replies": {u: digest(call(H, u)) for u in urls}}, open(FIXTURE, "w"), sort_keys=True, indent=1)
+    print("wrote %s from %s (%d replies)" % (FIXTURE, BASE, len(urls)))
+    sys.exit(0)
+FX = json.load(open(FIXTURE))
+check("the frozen baseline is this fixture's (same clock, same replies asked)", FX["now"] == NOW and sorted(FX["replies"]) == sorted(urls),
+      (FX["now"], NOW, len(FX["replies"])))
+diff = [u for u in urls if digest(call(P, u)) != FX["replies"].get(u)]
 check("every named range on every ranged endpoint answers byte-identically (%d replies)" % len(urls), not diff, diff[:3])
 st, rsp = call(P, "/api/node-history?node=n1&range=year")
 check("…and a range that is not one is still a 400 (its sentence now names custom too)", st == 400 and "custom" in rsp.get("error", ""), rsp)
@@ -161,7 +182,7 @@ dead0 = P._rings_dead_after()
 for w in ("2026-09-24", "2026-09-01", "2026-08-23"):
     call(P, "/api/node-history?node=n1&range=custom&from=%s&to=2026-09-24" % w)
 check("RANGE_SPEC is never extended — the rings' GC age is the same after custom windows",
-      P.RANGE_SPEC == H.RANGE_SPEC and P._rings_dead_after() == dead0 == H._rings_dead_after(), sorted(P.RANGE_SPEC))
+      {k: list(v) for k, v in P.RANGE_SPEC.items()} == FX["range_spec"] and P._rings_dead_after() == dead0 == FX["dead_after"], sorted(P.RANGE_SPEC))
 
 # ── [3] the resolver ────────────────────────────────────────────────────────────────────────────────────────────────
 print("[3] the resolver")
@@ -208,6 +229,24 @@ _, rsp = call(P, "/api/presence?range=custom&from=2026-09-01&to=2026-09-20")
 d = rsp["data"]
 check("…days for a long window; a peer seen only after it is not counted", d["step"] == 86400 and len(d["blocks"]) == 20
       and d["total"]["peers"] == 1, (d["step"], len(d["blocks"]), d["total"]))
+
+P.pres_feed(P.pres_path(stats, "n1"), P._ld_midnight(20260830) + 5 * 3600, [bits["K1"]], P.pres_width(3))   # 25 days back
+_, rsp = call(P, "/api/presence?range=custom&from=2026-08-30&to=2026-08-31")
+d = rsp["data"]
+check("a short window far back is barred no finer than the ring it reads — never an empty bar between two full ones",
+      d["step"] >= 7200 and d["axis"]["step"] == 7200 and len(d["blocks"]) == 24 and len(d["t"]) == 24, (d["step"], len(d["blocks"])))
+# day bars across a DST change: +1 h until 2026-10-25 01:00Z, then +0 (a fall-back); the bars stay on local midnights
+T_DST = 1792890000
+off = lambda e: 3600 if e < T_DST else 0
+since_ = 1792623600                                               # 2026-10-22 00:00 at +1
+n_, starts, bar_of = P._local_bars(since_, since_ + 6 * 86400 + 3600, 86400, off)
+walls = [x + off(x) for x in starts]
+nh, hstarts, hbar = P._local_bars(1792882800, 1792882800 + 25 * 3600, 3600, off)      # the fall-back day, by the hour
+check("hourly bars across a fall-back are real hours — the repeated hour is two bars, not one",
+      nh == 25 and hbar(T_DST - 1800) != hbar(T_DST + 1800) and hstarts[1] - hstarts[0] == 3600, (nh, hbar(T_DST - 1800), hbar(T_DST + 1800)))
+check("custom day bars stay on local midnights across a DST change, each named by its start",
+      n_ == 6 and all((w - walls[0]) % 86400 == 0 for w in walls) and bar_of(T_DST + 1800) == bar_of(T_DST - 1800)
+      and bar_of(starts[4]) == 4 and bar_of(starts[4] - 1) == 3, (n_, [w % 86400 for w in walls]))
 
 # ── [7] offenders ───────────────────────────────────────────────────────────────────────────────────────────────────
 print("[7] the Protection bubble's who")

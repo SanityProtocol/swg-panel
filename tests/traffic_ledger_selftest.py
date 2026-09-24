@@ -230,25 +230,26 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
            "never a day row"),
     "b2": ([("            f = min(max(f, _ld_day(first)[0]), t)", "            f = max(f, _ld_day(first)[0])")], "before the ledger began"),
     # [14] P3: the rolling window (Top talkers)
-    "a3": ([("                    if i < k:\n                        for j in range(n):", "                    if i <= k:\n                        for j in range(n):")],
-           "a window reaching into the day before"),
-    "b3": ([("            if qstep == step and qi < k:", "            if False:")], "waiting for their write"),
+    "a3": ([("        inside = (lambda i: i >= k) if tail else (lambda i: i < k)", "        inside = (lambda i: i >= k) if tail else (lambda i: i <= k)")],
+           "summed from the day's end"),
+    "b3": ([("            if qstep == step and inside(qi):", "            if False:")], "waiting for their write"),
     "c3": ([("        row = self._row_at_or_before(_ld_prev(d))\n        rx = _larr.array", "        row = self._row_at_or_before(d)\n        rx = _larr.array")],
            "the day before"),
-    "d3": ([("            if (on_nodes is not None and pid not in on_nodes) or (current", "            if (False) or (current")], "deployed on the asked nodes"),
-    "f3": ([("            current = set(self.open) if top else None", "            current = None")], "deleted peer"),
     "g3": ([("            if not s0 % 2:\n                try:", "            if True:\n                try:"),
             ("                if self._fseq == s0:\n                    return out", "                if True:\n                    return out")],
            "never read as missing"),
-    "m3": ([("                    if self._fseq == s0:                       # read again; with no flush in between it is a real error\n                        raise\n                    continue",
-             "                    raise")], "cut short under it"),
+    "m3": ([("                    if (e.args and isinstance(e.args[0], dict)) or self._fseq == s0:", "                    if True:")],
+           "cut short under it"),
     "h3": ([("(now - max(0, int(g(\"window\"))) if g(\"window\") else None)", "None")], "the panel's own clock"),
     "i3": ([("            if first and since < first:  ", "            if False:  ")], "where history does"),
-    "j3": ([("{k[2] for k in self.deploys | set(self.recs) if k[0] in nodes}", "{k[2] for k in self.recs if k[0] in nodes}")], "never reported"),
     "l3": ([("        return self._consistent(lambda: self._series(qs, now))   # the same gap as totals()",
              "        with self._flush_lock:\n            return self._series(qs, now)")], "never holds the writer up"),
     "k3": ([("            if n == 5:  ", "            if False:  "), ("            if n < 4:\n                time.sleep(0.05)\n        raise _LedgerBusy()",
              "            if n < 4:\n                time.sleep(0.05)\n        return read()")], "a slow disk"),
+    "p3": ([("                    if (e.args and isinstance(e.args[0], dict)) or self._fseq == s0:", "                    if self._fseq == s0:")],
+           "races a flush"),
+    "n3": ([("        sgn = -1 if tail else 1", "        sgn = 1")], "summed from the day's end"),
+    "o3": ([("        inside = (lambda i: i >= k) if tail else (lambda i: i < k)", "        inside = (lambda i: i > k) if tail else (lambda i: i < k)")], "summed from the day's end"),
     "e3": ([("            return rx, tx, _ld_midnight(d)\n        k = max(0,", "            return rx, tx, int(ts)\n        k = max(0,")], "no detail starts at its midnight"),
 }
 
@@ -1501,6 +1502,12 @@ def section_14():
           r["since"] == day0 + 42 * 3600 and rows.get("p1", (0,))[0] == want, (r["since"] - day0, rows.get("p1"), want))
     check("[14] …closed buckets still waiting for their write are in it", rows.get("p2", (0,))[0] == sum(per[h][1] for h in (42, 43)),
           rows.get("p2"))
+    for sn in (now - 3600, now - 5 * 3600, day0 + 20 * 3600 + 10 * 60, day0 + 3 * 3600):   # late and early starts, both days
+        a_ = {x["id"]: (x["rx"], x["tx"]) for x in tot(since=sn)["rows"]}
+        L._tail_ok = False
+        b_ = {x["id"]: (x["rx"], x["tx"]) for x in tot(since=sn)["rows"]}
+        L._tail_ok = True
+        check("[14] a window start summed from the day's end equals it summed from the day before (since −%d s)" % (now - sn), a_ == b_, (a_, b_))
     r = tot(since=day0 + 20 * 3600 + 10 * 60)      # 10 Sep 20:10 → 20:00 yesterday, then all of today
     rows = {x["id"]: x["rx"] for x in r["rows"]}
     check("[14] a window reaching into the day before: its part from its buckets, the rest from the day before's row",
@@ -1508,26 +1515,23 @@ def section_14():
     ref = {x["id"]: x["rx"] for x in L.totals({"range": ["custom"], "from": ["2026-09-11"], "to": ["2026-09-11"]}, now=now)["rows"]}
     r = tot(since=day0 + 86400)
     check("[14] …and from a midnight it equals the day's total", {x["id"]: x["rx"] for x in r["rows"]} == ref, (r["rows"], ref))
-    r = tot(since=now - 86400, nodes="n1")
-    check("[14] nodes=: only the peers deployed on the asked nodes, each whole", sorted(x["id"] for x in r["rows"]) == ["p1", "p3"],
-          [x["id"] for x in r["rows"]])
-    r = tot(since=now - 86400, top=5)
-    check("[14] top=: the biggest first, and a peer that moved nothing is not a talker",
-          [x["id"] for x in r["rows"]] == ["p1", "p2"], [x["id"] for x in r["rows"]])
+    r = tot(since=now - 86400, by="slot"); rp_ = tot(since=now - 86400)
+    byp = {}
+    for x in r["rows"]:
+        byp.setdefault(x["id"], [0, 0]); byp[x["id"]][0] += x["rx"]; byp[x["id"]][1] += x["tx"]
+    check("[14] a rolling window by (peer, owner) — the Overview's Top talkers read these — adds up to it by peer",
+          byp == {x["id"]: [x["rx"], x["tx"]] for x in rp_["rows"]} and r["since"] == rp_["since"], (byp, rp_["rows"]))
     r = tot(window=3600)
     check("[14] window=: a rolling window up to the panel's own clock (never the browser's), and the reply says what was asked",
           r.get("asked") == now - 3600 and r["since"] == day0 + 42 * 3600, (r.get("asked"), r["since"] - day0))
     r = tot(window=40 * 86400)
     check("[14] a rolling window reaching before the ledger's history starts where history does, and says so",
           r["since"] == day0 and r["from"] == 20260910, (r["since"] - day0, r["from"]))
-    r = tot(window=3600, nodes="n3")
-    check("[14] nodes=: a peer deployed on a node that never reported is still in scope (the roster's deployments)",
-          [x["id"] for x in r["rows"]] == ["p4"], [x["id"] for x in r["rows"]])
     rost = P.roster_load(rp); del rost["peers"]["p2"]; P.roster_save(rp, rost)   # p2 deleted: its slot closes, its bytes stay
     ing(L, "n1", wg("awg0", ("K1", c1, c1 // 10), ("K3", 0, 0)), now - 30)
-    r = tot(since=now - 86400, top=5)
-    check("[14] top=: a deleted peer keeps its bytes but takes no live peer's place",
-          [x["id"] for x in r["rows"]] == ["p1"] and "p2" in {x["id"] for x in tot(since=now - 86400)["rows"]}, [x["id"] for x in r["rows"]])
+    r = tot(since=now - 86400, by="slot")
+    check("[14] a deleted peer keeps its bytes in a rolling window (its owner's figure keeps them)",
+          any(x["id"] == "p2" and x["rx"] > 0 and x["until"] for x in r["rows"]), [(x["id"], x["rx"], x["until"]) for x in r["rows"]])
     # a flush in flight has taken the closed day out of its queue and not yet written it: a read in that gap must not miss it
     import threading as _th
     G, _grp = fresh("gap", roster(peer("g1", "u1", "KG", [("n1", "awg0", "awg")])))
@@ -1563,7 +1567,7 @@ def section_14():
         calls["n"] += 1
         if calls["n"] == 1:
             G._fseq += 2
-            raise FileNotFoundError("day-2026-09.bin")
+            raise ValueError("bytes length not a multiple of item size")   # array.frombytes on a file cut short
         return real_s0(qs, now)
     G._series = torn
     try:
@@ -1571,7 +1575,19 @@ def section_14():
     except Exception as e:                                         # the request handler answers it with a 500
         st, rsp = 500, repr(e)
     G._series = real_s0
-    check("[14] a read a flush cut short under it is read again — never a 500", st == 200 and calls["n"] == 2, (st, calls))
+    check("[14] a read a flush cut short under it is read again — never a 500 or a 400", st == 200 and calls["n"] == 2, (st, calls))
+    st, rsp = G.api("/api/traffic-series", {"id": [""], "by": ["peer"], "range": ["month"]})
+    check("[14] …while a refusal of the query itself is still answered at once (400)", st == 400, (st, rsp))
+    real_s1 = G._series
+    def racing(qs, now=None):                                      # a refusal that races a flush: the count moves under it
+        G._fseq += 2
+        return real_s1(qs, now)
+    G._series = racing
+    t0_ = time.monotonic()
+    st, rsp = G.api("/api/traffic-series", {"id": [""], "by": ["peer"], "range": ["month"]})
+    G._series = real_s1
+    check("[14] …even when it races a flush — a refusal is never re-read into a 503", st == 400 and time.monotonic() - t0_ < 0.2,
+          (st, round(time.monotonic() - t0_, 2)))
     real_s = G._series
     G._series = lambda qs, now=None: (time.sleep(1.5), real_s(qs, now))[1]   # a slow read (8 fine files of a big fleet)
     rd = _th.Thread(target=lambda: G.series({"id": ["g1"], "by": ["peer"], "range": ["month"]})); rd.start()

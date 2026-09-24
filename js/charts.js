@@ -338,7 +338,7 @@ export function RingLegend({ items, cols, active, onActive }) {
 // Discrete BLOCK history — one bar per time bucket (right-anchored, newest at the right). Height ∝ value,
 // each bar seated in its own track so a low, fixed block count (24–30) reads as clean blocks. Hovering shows
 // the same ChartHover bubble as the throughput/CPU charts: the bucket's time/date (per `range`) + the value.
-export function OnlineBlocks({ blocks, step, endTs, range, h, color }) {
+export function OnlineBlocks({ blocks, step, endTs, times, range, h, color }) {   // times: each bar's start, when the server laid them (a custom window, on the local clock)
   const [hov, setHov] = useState(null); const wref = useRef(null);
   color = color || "var(--online)"; h = h || 70;
   const n = blocks.length, hi = Math.max(1, ...blocks.filter(v => v != null));
@@ -348,7 +348,7 @@ export function OnlineBlocks({ blocks, step, endTs, range, h, color }) {
     ${blocks.map((v, i) => html`<div class=${"oblk" + (hov === i ? " hot" : "")} key=${i}>
       ${v == null ? null : html`<i style=${"height:" + Math.max(4, v / hi * 100) + "%;background:" + color}></i>`}</div>`)}
     ${hov != null ? html`<${ChartHover} xp=${(hov + 0.5) / n * 100} dots=${[{ yp: 100 - Math.max(4, blocks[hov] / hi * 100), color }]}
-      label=${(endTs != null ? histTime(endTs - (n - 1 - hov) * step, range) + " · " : "") + T("{v1} online", { v1: Math.round(blocks[hov]) })}/>` : null}
+      label=${(times && times[hov] != null ? histTime(times[hov], range) + " · " : endTs != null ? histTime(endTs - (n - 1 - hov) * step, range) + " · " : "") + T("{v1} online", { v1: Math.round(blocks[hov]) })}/>` : null}
   </div>`;
 }
 // A simple single-colour filled-area trend (for count series like online-peers, where MiniArea's

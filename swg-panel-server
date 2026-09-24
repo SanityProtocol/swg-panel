@@ -16818,7 +16818,6 @@ def resolve_range(qs, dflt="day", now=None):
     ⚠️ Never adds to RANGE_SPEC: _rings_dead_after() reads its widest window as the GC age of every ring.
     Raises ValueError(perr(...)); the caller answers 400."""
     now = time.time() if now is None else now
-    g = lambda k: ((qs.get(k) or [""])[0] or "").strip()
     rng = (qs.get("range") or [dflt])[0]                    # read exactly as every endpoint always has (no strip, no
     if rng != "custom":                                      # default for an empty value) — callers index RANGE_SPEC by it
         spec = RANGE_SPEC.get(rng)
@@ -16826,11 +16825,7 @@ def resolve_range(qs, dflt="day", now=None):
             raise ValueError({"error": "range must be live|hour|day|week|month|custom"})
         ring, want, win = spec
         return ring, want, now - win, None, None
-    try:
-        f = int(g("from").replace("-", "")); t = int(g("to").replace("-", ""))
-        _ld_date(f); _ld_date(t)
-    except (ValueError, TypeError):
-        raise ValueError(perr("from and to must be dates, YYYY-MM-DD"))
+    f, t = _ld_from_to(qs)
     today = _ld_day(now)[0]
     t = min(t, today)
     if f > t:
@@ -16846,6 +16841,21 @@ def resolve_range(qs, dflt="day", now=None):
     # lies on whole buckets — never the one straddling bucket that neither end would pass (a 0 where traffic was, §8.2).
     axis = {"rangeKey": "custom:%d-%d" % (f, t), "step": step, "since": int(since), "until": int(until)}
     return ring, nslots, since, until, axis
+
+
+def _local_bars(since, until, step, off=None):
+    """Bars of `step` seconds from `since` (a local midnight): (count, each bar's start epoch, the bar an epoch falls in).
+    DAY bars are laid on the LOCAL clock — laid on the epoch, a day bar after a DST change starts at 23:00 or 01:00 and takes
+    the next day's first hour. Shorter bars are real seconds — on the local clock a fall-back's repeated hour would fold two
+    real hours into one bar. `off(epoch)` is the UTC offset in force (the gate passes its own)."""
+    if step % 86400:
+        n = max(1, min(64, -(-(until - since) // step)))
+        return n, [since + i * step for i in range(n)], lambda ep: int((ep - since) // step)
+    off = off or (lambda e: time.localtime(e).tm_gmtoff or 0)
+    w0 = since + off(since)
+    n = max(1, min(64, -(-((until + off(until)) - w0) // step)))
+    starts = [w - off(w - off(w)) for w in (w0 + i * step for i in range(n))]
+    return n, starts, lambda ep: int((ep + off(ep) - w0) // step)
 
 
 def range_or_400(qs, dflt="day"):
@@ -17649,6 +17659,18 @@ def _ld_midnight(d):
     return int(time.mktime((d // 10000, d // 100 % 100, d % 100, 0, 0, 0, 0, 0, -1)))
 
 
+def _ld_from_to(qs):
+    """(from, to) as YYYYMMDD from ?from=&to= (YYYY-MM-DD) — the one grammar the ledger's windows (TrafficLedger._window)
+    and the charts' custom windows (resolve_range) share; each clamps and orders them its own way."""
+    g = lambda k: ((qs.get(k) or [""])[0] or "").strip()
+    try:
+        f = int(g("from").replace("-", "")); t = int(g("to").replace("-", ""))
+        _ld_date(f); _ld_date(t)
+    except (ValueError, TypeError):
+        raise ValueError(perr("from and to must be dates, YYYY-MM-DD"))
+    return f, t
+
+
 def _ld_day(now):
     """(local date, UTC offset) for `now`. Buckets count from a day's LOCAL midnight — never _bucket_of(), which runs
     backwards across a DST fall-back (§3.3) — so a 25-hour day has room for its extra hour."""
@@ -17727,6 +17749,7 @@ class TrafficLedger:
         self.fmid, self.foff = 0, 0     # the current day's midnight epoch and offset — its fine file's frame (header)
         self._flush_lock = threading.Lock()   # one flush at a time: the writer thread's, or the one at shutdown
         self._fseq = 0                  # flushes begun + ended: odd while one runs (readers: _consistent)
+        self._tail_ok = True            # _c_at may sum a window start from the day's end (the gate turns it off to compare)
         self._retry_at = 0.0            # monotonic: after a failed write, nothing retries before this (no storm)
         self.fine = {}                  # slot → [rx, tx] credited in the current fine bucket
         self.map, self.deploys, self.owners, self.titles, self.mark = {}, set(), {}, {}, None
@@ -18637,7 +18660,8 @@ class TrafficLedger:
         return self._row_at_or_before(99991231)
 
     def _fine_buckets(self, path, want=True, data=None):
-        """Yield (idx, n, end_offset, (slots, rx, tx) or None) per valid bucket; stops at the first torn one."""
+        """Yield (idx, n, end_offset, (slots, rx, tx) or None) per valid bucket; stops at the first torn one. `want`: decode
+        the columns (True), none (False), or only for the buckets whose idx it accepts (a function)."""
         if data is None:
             with open(path, "rb") as f:
                 data = f.read()
@@ -18651,7 +18675,7 @@ class TrafficLedger:
             if p1 > len(data) or _lzlib.crc32(data[p0:p1]) != crc:
                 return
             cols = None
-            if want:
+            if want is True or (callable(want) and want(i)):
                 cols = (_i_array(data[p0:p0 + 4 * n]), _q_array(data[p0 + 4 * n:p0 + 12 * n]), _q_array(data[p0 + 12 * n:p1]))
             yield i, n, p1, cols
             o = p1
@@ -18693,11 +18717,7 @@ class TrafficLedger:
         today = _ld_day(now)[0]
         rng = g("range") or "month"
         if rng == "custom" or (g("from") and g("to")):
-            try:
-                f = int(g("from").replace("-", "")); t = int(g("to").replace("-", ""))
-                _ld_date(f); _ld_date(t)
-            except (ValueError, TypeError):
-                raise ValueError(perr("from and to must be dates, YYYY-MM-DD"))
+            f, t = _ld_from_to(qs)
             if f > t:
                 raise ValueError(perr("from must not be after to"))
             rk = "custom:%d-%d" % (f, t)
@@ -18765,26 +18785,45 @@ class TrafficLedger:
         else:
             return rx, tx, _ld_midnight(d)
         k = max(0, (int(ts) - mid) // step)
+        # ⚠️ SUM THE SHORTER SIDE. The start is the day before's row plus the buckets before k — or, equally, the day's END
+        # less the buckets from k on. Late in a day the tail is the short one: an Hour at 5-minute detail on 10,000 active
+        # peers summed ~280 buckets of the head in 677 ms, against ~12 of the tail.
+        last = cur[1] if d == cur[0] else 86400 // step
+        end = None
+        if self._tail_ok and last - k < k:
+            if d == live[0]:
+                end = (live[1], live[2])
+            else:
+                r_d = self._row_at_or_before(d)
+                end = (r_d[1], r_d[2]) if r_d and r_d[0] == d else None
+        tail = end is not None
+        if tail:
+            rx, tx = list(end[0]), list(end[1])
+        sgn = -1 if tail else 1
+        inside = (lambda i: i >= k) if tail else (lambda i: i < k)
 
         def add(s, a, b):
             if s >= len(rx):
                 rx.extend([0] * (s + 1 - len(rx))); tx.extend([0] * (s + 1 - len(tx)))
-            rx[s] += a; tx[s] += b
+            rx[s] += sgn * a; tx[s] += sgn * b
         if head:
             try:
-                for i, n, _e, (sl, brx, btx) in self._fine_buckets(fp):
-                    if i < k:
+                for i, n, _e, cols in self._fine_buckets(fp, want=inside):
+                    if cols:
+                        sl, brx, btx = cols
                         for j in range(n):
                             add(sl[j], brx[j], btx[j])
             except FileNotFoundError:                          # swept since its header was read: the day starts at midnight
                 return (_larr.array("Q", row[1] if row else []), _larr.array("Q", row[2] if row else []), _ld_midnight(d))
         for qi, qstep, _qm, qv in qf:
-            if qstep == step and qi < k:
+            if qstep == step and inside(qi):
                 for sl_, v in qv.items():
                     add(sl_, v[0], v[1])
-        if d == cur[0] and cur[2] == step and cur[1] < k:
+        if d == cur[0] and cur[2] == step and inside(cur[1]):
             for sl_, v in cur[4].items():
                 add(sl_, v[0], v[1])
+        if tail:                                               # a bucket lost to a full queue is simply not inside the window
+            rx = [max(0, x) for x in rx]; tx = [max(0, x) for x in tx]
         return rx, tx, mid + k * step
 
     def totals(self, qs, now=None):
@@ -18792,23 +18831,21 @@ class TrafficLedger:
         was one user's — the Users grid, a user's peer list and the user view all read these, so they add up). Every row
         says since when it has been counted (`since`); `opening_at` only when a counter was imported.
 
-        `since=<epoch>` (P3, the Overview's Top talkers): a rolling window up to now instead of local days — whole days
-        from the rows, the first day's part from its fine buckets. It starts at the start of the bucket holding `since`
-        (widened, never cut) and the reply says where. `nodes=a,b`: only peers with a deployment on one of them — the
-        WHOLE peer's figure, the ledger has no per-node split. `top=N`: the N biggest rows that moved anything."""
+        `window=<seconds>` or `since=<epoch>` (P3, the Overview's Top talkers): a rolling window up to now instead of local
+        days — whole days from the rows, the first day's part from its fine buckets. It starts at the start of the bucket
+        holding its start (widened, never cut), never before the ledger's history, and the reply says what was asked
+        (`asked`) and where it starts (`since`)."""
         now = int(time.time() if now is None else now)
         g = lambda k: ((qs.get(k) or [""])[0] or "").strip()
         by = g("by") or "peer"
         if by not in ("peer", "user", "slot"):
             raise ValueError(perr("by must be peer, user or slot"))
         try:
-            top = max(0, int(g("top") or 0))
             want_since = int(g("since")) if g("since") else (now - max(0, int(g("window"))) if g("window") else None)
         except ValueError:
-            raise ValueError(perr("since, window and top must be integers"))
-        nodes = set(n for n in g("nodes").split(",") if n) or None
+            raise ValueError(perr("since and window must be integers"))
         rolling = want_since is not None
-        return self._consistent(lambda: self._totals(qs, now, by, top, want_since, nodes, rolling))
+        return self._consistent(lambda: self._totals(qs, now, by, want_since, rolling))
 
     def _consistent(self, read):
         """Run a read that must not overlap a flush. ⚠️ A FLUSH IN FLIGHT HAS TAKEN ITS QUEUES AND NOT YET WRITTEN THEM: a
@@ -18825,10 +18862,14 @@ class TrafficLedger:
             if not s0 % 2:
                 try:
                     out = read()
-                except (ValueError, _LedgerBusy):              # the caller's own refusal: never retried
+                except _LedgerBusy:
                     raise
+                except ValueError as e:                        # a refusal of the query itself (a perr() sentence) cannot be
+                    if (e.args and isinstance(e.args[0], dict)) or self._fseq == s0:   # read away: answered at once, 400
+                        raise
+                    continue                                   # a short array under a flush: read again
                 except Exception:                              # a file replaced or cut short under the read by a flush:
-                    if self._fseq == s0:                       # read again; with no flush in between it is a real error
+                    if self._fseq == s0:                       # read again; with no flush in between it is real
                         raise
                     continue
                 if self._fseq == s0:
@@ -18837,15 +18878,11 @@ class TrafficLedger:
                 time.sleep(0.05)
         raise _LedgerBusy()
 
-    def _totals(self, qs, now, by, top, want_since, nodes, rolling):
+    def _totals(self, qs, now, by, want_since, rolling):
         with self.lock:
             slots = [(s["pid"], s.get("owner"), s.get("o") or [0, 0], s.get("since") or 0, s.get("until"),
                       s.get("name") or "", s.get("on") or "") for s in self.slots]
             live = (self.day, self.C_rx[:], self.C_tx[:])
-            on_nodes = ({k[2] for k in self.deploys | set(self.recs) if k[0] in nodes}   # the roster's deployments (and, before
-                        if nodes is not None else None)                             # the first sync maps them, the records)
-            current = set(self.open) if top else None        # top=: the biggest CURRENT peers — a deleted one keeps its
-            #                                                  slots, and in a top-N it would take a live peer's place
             if rolling:                                      # the open bucket (copied: it moves) and the queue (referenced:
                 cur = (self.day, self.idx, self.step, self.fmid, {k: list(v) for k, v in self.fine.items()})   # a closed
                 qall = [(q[0], q[1], q[2], q[4], q[5]) for q in self.q_fine]                                 # bucket never)
@@ -18865,8 +18902,6 @@ class TrafficLedger:
             until = min(now, _ld_midnight(_ld_next(t)))
         rows = {}
         for n, (pid, owner, o, since_, until_, name, on) in enumerate(slots):
-            if (on_nodes is not None and pid not in on_nodes) or (current is not None and pid not in current):
-                continue
             k = pid if by == "peer" else (owner or "") if by == "user" else (pid, owner or "")
             a = to_rx[n] if n < len(to_rx) else 0; b = to_tx[n] if n < len(to_tx) else 0
             a0 = fr_rx[n] if n < len(fr_rx) else 0; b0 = fr_tx[n] if n < len(fr_tx) else 0
@@ -18889,12 +18924,9 @@ class TrafficLedger:
                     r["_last"], r["name"], r["owner_name"], r["until"] = since_, name, on or r["owner_name"], until_
         for r in rows.values():
             r.pop("_last", None)
-        out = list(rows.values())
-        if top:
-            out = sorted((r for r in out if r["rx"] or r["tx"]), key=lambda r: -(r["rx"] + r["tx"]))[:top]
         return {"rangeKey": rk, "from": f, "to": t, "by": by, "step": 86400, "since": since, "until": until,
                 "utc_offset": time.localtime().tm_gmtoff, "gaps": self._gaps(since, until, self._spans()),
-                **({"asked": want_since} if rolling else {}), "rows": out}
+                **({"asked": want_since} if rolling else {}), "rows": list(rows.values())}
 
     def series(self, qs, now=None):
         return self._consistent(lambda: self._series(qs, now))   # the same gap as totals()
@@ -21802,9 +21834,10 @@ def api(method, path, qs, body, deps):
             return bad
         ring, want, since, until, axis = rr
         if axis:                                            # custom: the bars are the panel's own — hours up to two days,
-            span = axis["until"] - axis["since"]            # quarter-days up to a fortnight, then days (≤ 33 of them)
-            bstep = 3600 if span <= 2 * 86400 else 21600 if span <= 14 * 86400 else 86400
-            nblocks = max(1, min(64, -(-span // bstep)))
+            span = axis["until"] - axis["since"]            # quarter-days up to a fortnight, then days (≤ 33 of them) —
+            bstep = 3600 if span <= 2 * 86400 else 21600 if span <= 14 * 86400 else 86400   # never finer than the ring read:
+            bstep = max(bstep, HRRD_RINGS[ring][0])         # a 2-hour bucket in 1-hour bars left every other bar empty
+            nblocks, bar_t, bar_of = _local_bars(axis["since"], axis["until"], bstep)
         else:
             win = RANGE_SPEC[rng][2]
             try:
@@ -21828,8 +21861,8 @@ def api(method, path, qs, body, deps):
                 peers_by_pk[pk] = p
                 h2pk[hashlib.sha256(pk.encode()).hexdigest()[:16]] = pk
 
-        if axis:                                            # a custom window: bars laid from its first midnight
-            start = axis["since"]; end = start + nblocks * bstep
+        if axis:                                            # a custom window: bars laid on the local clock from its first
+            start = axis["since"]; end = start + nblocks * bstep   # midnight, so a day bar is a day across a DST change
             lo, hi = axis["since"], axis["until"]
         else:
             end = time.time()
@@ -21880,7 +21913,7 @@ def api(method, path, qs, body, deps):
             for ep, pks in buckets.items():
                 if ep >= lo and (hi is None or ep < hi):    # range totals use the FULL window …
                     per_node[nid] |= pks; total |= pks
-                b = int((ep - start) // bstep)
+                b = bar_of(ep) if axis else int((ep - start) // bstep)
                 if 0 <= b < nblocks:
                     blocks[b] |= pks                        # … a bar, only what falls inside that bar
 
@@ -21912,7 +21945,7 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {
             "range": rng, "step": bstep, "start": int(start), "end": int(end),
             "blocks": [sum(1 for _ in live(b)) for b in blocks],
-            "nodes": out_nodes, "total": {"peers": tot["peers"], "users": tot["users"]}, **({"axis": axis} if axis else {})}}
+            "nodes": out_nodes, "total": {"peers": tot["peers"], "users": tot["users"]}, **({"axis": axis, "t": bar_t} if axis else {})}}
 
     if method == "GET" and path == "/api/category-history":
         # Per-(node,category) destination traffic over a range — drives the "Traffic by category" doughnut. Reads

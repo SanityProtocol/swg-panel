@@ -13,7 +13,7 @@ import {
 } from "./util.js";
 import { T, Trich, plural, pluralWord, srvVerb, srvDetail, srvText } from "./i18n.js";
 import {
-  Store, api, bus, useStore, rangeQ,
+  Store, api, bus, useStore,
 } from "./store.js";
 import {
   turnColor, turnFork, turnForkList, forkLabel,
@@ -31,7 +31,7 @@ import {
   MultiRing, OnlineBlocks, RANGE_CAP, RANGE_WIN, axisCap, histTime, RankBars, RingLegend, ThroughputChart, TrendSpark,
 } from "./charts.js";
 import { DateWindow } from "./traffic-ui.js";
-import { panelToday, chartsFirstDay, CHART_DAYS } from "./traffic.js";
+import { panelToday, chartsFirstDay, CHART_DAYS, trafficTotals, talkerGroups } from "./traffic.js";
 import {
   DASH_RANGES, OnlineUsersTag, SVC_KINDWORD, dashKey, dashNodes, dashSave, dashState, isCustomKey, customKeyWindow, openLiveTab, rangeLabel, rangeWord, recentActivity,
   revealOrphans, revealPeer, revealPeersFiltered, revealUser, serviceIssues, svcKey, svcSaveSilence,
@@ -286,7 +286,7 @@ function RailCustom({ on }) {
   const from = w ? w.from : (m1 < first ? first : m1), to = w ? (w.to > today ? today : w.to) : today;
   return html`<${Popover} key=${k} clickOnly cls="railcustom" popCls="railcustom-pop" trigger=${trig}>
     <div class="railcustom-h">${T("Days in the panel's zone — the charts keep the last {v1} days", { v1: CHART_DAYS })}</div>
-    <${DateWindow} from=${from} to=${to} min=${first} max=${today} onApply=${dashSetCustom}/>
+    <${DateWindow} from=${from} to=${to} min=${first} max=${today} onApply=${dashSetCustom} pending=${!on}/>
   <//>`;
 }
 
@@ -301,30 +301,42 @@ export const RANGE_STEP = { hour: 15, day: 300, week: 1800, month: 7200 };   // 
 export function rangeStep(key, hist) {
   return isCustomKey(key) ? ((hist && hist.axis && hist.axis.step) || 0) : (RANGE_STEP[key] || 1);
 }
-// Top talkers' subtitle: the window; with a subset of nodes, that each figure is the whole peer's (the ledger counts a
-// peer, not a peer on a node); and where a rolling window really starts when that is not where it was asked to — widened
-// to the ledger's bucket, or later, where its history begins.
-export function talkSub(key, talk) {
+// Top talkers over a ranged window read the traffic ledger through the grids' cache (traffic.js, `by=slot`) and fold it the
+// Users grid's way, so a person's figure is their Users-grid figure. The window for a range key: a custom one is its days —
+// the very entry the grids hold for those days; a named one is a rolling window of its length up to the panel's now
+// (`window=`) — an entry of its own, since the grids never ask for one, refreshed at most once a minute while shown (the
+// whole slot table: ~91 KB gzip at 10,000 peers). Pure — gated.
+export const talkWindow = key => isCustomKey(key) ? customKeyWindow(key) : { window: RANGE_WIN[key] };
+// Top talkers' subtitle: the window; with a subset of nodes, that each figure is the person's whole one (the ledger counts
+// a device, not a device on a node); and where a rolling window really starts when that matters — later than asked (where
+// history begins), or earlier by more than a tenth of the window (the ledger's bucket: an Hour at 1-hour detail is up to
+// two). Pure — gated.
+export function talkSub(key, d, scoped) {
   let s = T("{range} · by volume", { range: rangeWord(key) });
-  if (talk && talk.scoped) s += " · " + T("each peer on all its servers");
-  if (talk && talk.asked && Math.abs(talk.since - talk.asked) > 60) s += " · " + T("since {v1}", { v1: histTime(talk.since, "day") });   // widened to a bucket, or where history begins
+  if (scoped) s += " · " + T("each on all their servers");
+  const win = RANGE_WIN[key];
+  if (d && d.asked && win && (d.since > d.asked + 60 || d.asked - d.since > win / 10))
+    s += " · " + T("since {v1}", { v1: histTime(d.since, "day") });
   return s;
 }
-export const PEER_TOPN = 50;
-// Top talkers read the traffic ledger (the meter) — the per-peer rings are a sample, 0.3–29× off. A named range is a
-// rolling window up to the PANEL's now (`window` seconds — never a start from this browser's clock, which may be off by an
-// hour); its reply says what was asked and where the ledger's buckets let it start. A custom window is its days; a subset
-// of nodes lists the peers deployed there, each with its WHOLE figure. Pure — gated.
-export function talkQuery(key, nodes) {
-  return "/api/traffic-totals?by=peer&top=" + PEER_TOPN + (nodes ? "&nodes=" + encodeURIComponent(nodes.join(",")) : "")
-    + "&" + (isCustomKey(key) ? rangeQ(key) : "window=" + RANGE_WIN[key]);
-}
-// The ledger answers 503 `busy` while its writer holds a closed bucket (a slow disk): asked again, three times at most,
-// rather than leaving Top talkers blank until the operator changes the range.
-export function talkFetch(url, tries, wait) {
-  tries = tries == null ? 3 : tries;
-  return api.get(url).then(r => (r && r.code === "busy" && tries > 1)
-    ? new Promise(res => setTimeout(res, wait == null ? 1500 : wait)).then(() => talkFetch(url, tries - 1, wait)) : r);
+// The ranked rows for a ranged window: a bar per person (their Users-grid figure) or per device that belongs to nobody;
+// the bubble lists a person's devices over the window, a deleted one or one handed on said so.
+function rangedTalkerRows(d, inScope, n) {
+  if (!d) return [];
+  return talkerGroups(d, inScope).slice(0, n).map((g, i) => {
+    const user = g.uid ? Store.user(g.uid) : null, p0 = g.uid ? null : Store.peer(g.pid);
+    const devs = g.devices.filter(x => x.rx + x.tx > 0).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx));
+    return {
+      label: user ? user.name : ((p0 && p0.title) || T("Unassigned peer")), value: g.rx + g.tx, count: devs.length,
+      sub: xferCell(...dlul(g.rx, g.tx)),
+      bub: devs.length > 1 ? devs.map(x => { const t = ((x.peer || {}).targets || [])[0]; const oct = ((t || {}).ip || "").split(".").pop();
+        const nm = x.name || (oct ? T("Peer .{v1}", { v1: oct }) : T("Peer"));
+        return { kind: t ? targetType(t) : null, gen3: t ? tgt3(t) : false, value: x.rx + x.tx, sub: xferCell(...dlul(x.rx, x.tx)),
+          name: x.gone === "deleted" ? nm + " · " + T("deleted") : x.gone === "handed" ? nm + " · " + T("handed on") : nm }; }) : null,
+      color: dashRankColor(i, "talker"), href: "#/users",
+      onClick: e => { e.preventDefault(); user ? revealUser(user.id) : p0 && revealPeer(p0); },
+    };
+  });
 }
 // The range every ranged figure shows: the one whose data is LOADED. It lags a click while the fetch runs — the old range's
 // figures (or live, before the first ranged fetch lands) stay under their own title, never an empty page. Pure — gated.
@@ -334,11 +346,11 @@ export const effRangeOf = (dKey, loaded) => dKey === "live" ? "live" : loaded;
 export function blockPollMs(key, today) {
   if (!isCustomKey(key)) return 15000;
   return customKeyWindow(key).to < today ? 0 : 60000;
-}   // Top talkers: the biggest peers fetched (the list shows up to 50 users — Settings → Display)
+}
 // One fetch burst per range/selection change, shared by the doughnuts AND the flow map (lifted to Overview so
 // they don't each hit the API). Pulls per-node RRD + per-pair mesh means. Live → empty (widgets use the bundle).
 export function useRangeHistory(range, selIds) {
-  const empty = { loading: false, byNode: {}, mesh: [], cats: [], turn: [], exits: [], talk: null, presence: null, axis: null, err: null, range: "live" };
+  const empty = { loading: false, byNode: {}, mesh: [], cats: [], turn: [], exits: [], presence: null, axis: null, err: null, range: "live" };
   const [st, setSt] = useState(empty);
   const key = range + "|" + selIds.slice().sort().join(",");   // `range` is the KEY — a custom window's carries its days
   useEffect(() => {
@@ -346,14 +358,6 @@ export function useRangeHistory(range, selIds) {
     let alive = true; setSt(s => ({ ...s, loading: true }));
     const custom = isCustomKey(range);
     const [obN, obStep] = custom ? [0, 0] : (ONLINE_BLOCKS[range] || ONLINE_BLOCKS.live);   // the bars ask for exactly the blocks they draw (custom: the server picks)
-    const scoped = selIds.length < (Store.fleet || []).length;
-    // Top talkers are their own slice: a ledger answering `busy` (asked again, talkFetch) never holds the charts back.
-    let talk = null, main = false;
-    const setTalk = t => { if (!alive) return; talk = t; if (main) setSt(s => s.range === range ? { ...s, talk } : s); };
-    talkFetch(talkQuery(range, scoped ? selIds : null))
-      .then(r => setTalk(r && r.ok && r.data ? { rows: r.data.rows || [], since: r.data.since, asked: r.data.asked || 0, scoped }
-        : { rows: [], off: !!(r && r.code === "ledger_off"), busy: r && r.code === "busy" ? r : null, scoped }))
-      .catch(() => setTalk({ rows: [], scoped }));
     Promise.all([
       Promise.all(selIds.map(id => api.nodeHistory(id, range).then(r => [id, r]).catch(() => [id, null]))),
       api.meshHistory(range).then(r => (r && r.data && r.data.pairs) || []).catch(() => []),
@@ -361,12 +365,11 @@ export function useRangeHistory(range, selIds) {
       api.turnHistory(range).then(r => (r && r.data && r.data.turn) || []).catch(() => []),
       api.exitHistory(range).then(r => (r && r.data && r.data.exits) || []).catch(() => []),
       api.presence(range, obN, obStep, selIds).then(r => (r && r.data) || null).catch(() => null),
-    ]).then(([rows, mesh, cats, turn, exits, presence]) => { if (!alive) return; main = true;
+    ]).then(([rows, mesh, cats, turn, exits, presence]) => { if (!alive) return;
       const byNode = {}; let axis = null, err = null;
       rows.forEach(([id, r]) => { byNode[id] = (r && r.ok && r.data) || null;
         if (r && r.ok && r.data && r.data.axis) axis = r.data.axis; else if (r && r.ok === false && !err) err = r; });
-      // Top talkers not in yet (a busy ledger is asked again): the section stays, marked as loading — no page jump
-      setSt({ loading: false, byNode, mesh, cats, turn, exits, talk: talk || { rows: [], pending: true, scoped }, presence, axis, err, range }); });
+      setSt({ loading: false, byNode, mesh, cats, turn, exits, presence, axis, err, range }); });
     return () => { alive = false; };
   }, [key]);
   return st;
@@ -1444,21 +1447,19 @@ export function Overview() {
   // health ring) is a mean of concurrency and cannot answer this: five peers online 12 min each average to 1.
   // Live keeps the client-side accumulator — a 30s bar of T("online now") needs no server round-trip.
   const onlineBlocks = (dRanged && _pres && _pres.blocks) ? _pres.blocks : resampleBlocks(fleetHist.onT, fleetHist.on, obN, obStep);
-  // a custom window's bars are laid from its first midnight and each is named by its START (a day bar, by its day)
-  const onlineEndTs = (dRanged && _pres) ? (isCustomKey(effRange) ? _pres.end - _pres.step : _pres.end) : fleetHist.onT[fleetHist.onT.length - 1];
+  const onlineEndTs = (dRanged && _pres) ? _pres.end : fleetHist.onT[fleetHist.onT.length - 1];
+  const onlineTimes = dRanged && _pres && isCustomKey(effRange) ? _pres.t : null;   // a custom window's bars, each named by its START (a day bar, by its day)
   const hasOnline = onlineBlocks.some(v => v != null);
   // how many rows the ranked lists show — operator-set in Panel settings → Display (1–50, default 10)
   const nTalk = Math.max(1, Math.min(50, (Store.panelSettings || {}).top_talkers || 10));
   const nDest = Math.max(1, Math.min(50, (Store.panelSettings || {}).top_destinations || 10));
-  // top talkers — peers ranked by traffic across the selected nodes. Live = current per-peer rx/tx from the
-  // snapshot; a range = the peer's volume from the traffic ledger (talkQuery), matched back to the peer
-  // by its id. Same node-selector + perspective as every other figure.
-  let perPeer;   // per-PEER traffic first (live per-target speeds, or the ledger's ranged per-peer volume)…
-  if (dRanged) {
-    // the ledger's rows: a peer id each, its whole figure over the window (a deleted peer has no row to land on)
-    const byId = new Map(sPeers.map(p => [p.id, p]));
-    perPeer = ((rangeHist.talk || {}).rows || []).map(r => ({ p: byId.get(r.id), rx: r.rx || 0, tx: r.tx || 0 })).filter(x => x.p);
-  } else {
+  // top talkers — people (and devices that belong to nobody) ranked by traffic. Live = current per-peer rx/tx from the
+  // snapshot, across the selected nodes; a range = the traffic ledger through the grids' own cache (talkerGroups), so a
+  // person's figure is their Users-grid figure. Same node-selector + perspective as every other figure.
+  const talkE = dRanged ? trafficTotals(talkWindow(effRange)) : null;
+  const talkD = talkE && talkE.data;
+  let perPeer = [];   // live: per-PEER speeds first…
+  if (!dRanged) {
     perPeer = sPeers.map(p => {
       let r = 0, t = 0; p.targets.forEach(tg => { if (!sel.has(tg.node)) return;
         const o = tg.observed; if (o) { r += o.rx_speed || 0; t += o.tx_speed || 0; }
@@ -1473,8 +1474,9 @@ export function Overview() {
     const key = x.p.user_id ? "u" + x.p.user_id : "p" + x.p.id;
     const g = talkG[key] || (talkG[key] = { user: x.p.user_id ? Store.user(x.p.user_id) : null, sample: x.p, rx: 0, tx: 0, peers: [] });
     g.rx += x.rx; g.tx += x.tx; g.peers.push(x); });
-  const talkers = Object.values(talkG).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, nTalk);
-  const talkerRows = talkers.map((g, i) => {
+  const talkers = dRanged ? [] : Object.values(talkG).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, nTalk);
+  const talkerRows = dRanged ? rangedTalkerRows(talkD, scoped ? (pid => { const p = Store.peer(pid); return !!p && p.targets.some(t => sel.has(t.node)); }) : null, nTalk)
+    : talkers.map((g, i) => {
     const peers = g.peers.slice().sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx));
     return {
       label: g.user ? g.user.name : (g.sample.title || T("Unassigned peer")), value: g.rx + g.tx, count: peers.length,
@@ -1560,7 +1562,7 @@ export function Overview() {
       <div class="trendcard">
         <div class="donutcard-h"><h3>${T("Online peers")}</h3><span class="grow"></span><span class="trend-now">${dRanged && _pres ? (_pres.total || {}).peers : online}</span></div>
         ${hasOnline
-          ? html`<${OnlineBlocks} blocks=${onlineBlocks} step=${obStep} endTs=${onlineEndTs} range=${effRange} color="var(--online)" h=${70}/>`
+          ? html`<${OnlineBlocks} blocks=${onlineBlocks} step=${obStep} endTs=${onlineEndTs} times=${onlineTimes} range=${effRange} color="var(--online)" h=${70}/>`
           : html`<div class="harea-empty">${T("gathering — fills as it polls")}</div>`}
       </div>
     </div>` : null}
@@ -1589,12 +1591,12 @@ export function Overview() {
       <div class="rankcard"><${RankBars} rows=${rankRowsTraffic}/></div>
     <//>` : null}
 
-    ${talkerRows.length || (dRanged && ((rangeHist.talk || {}).off || (rangeHist.talk || {}).busy || (rangeHist.talk || {}).pending)) ? html`<${Fragment}>
-      ${secTitle(T("Top talkers"), dRanged ? talkSub(effRange, rangeHist.talk) : T("by live throughput"), undefined, "toptalkers")}
+    ${talkerRows.length || (dRanged && (!talkD || talkE.off || talkE.err)) ? html`<${Fragment}>
+      ${secTitle(T("Top talkers"), dRanged ? talkSub(effRange, talkD, scoped) : T("by live throughput"), undefined, "toptalkers")}
       ${talkerRows.length ? html`<div class="rankcard"><${RankBars} rows=${talkerRows}/></div>`
-        : rangeHist.talk.pending ? html`<div class="hint faint">…</div>`
-        : rangeHist.talk.busy ? html`<div class="hint">${srvText(rangeHist.talk.busy)}</div>`
-        : html`<div class="hint">${T("Traffic totals are off — Settings → Display says why.")}</div>`}
+        : talkE.off ? html`<div class="hint">${T("Traffic totals are off — Settings → Display says why.")}</div>`
+        : talkE.err ? html`<div class="hint">${typeof talkE.err === "object" ? srvText(talkE.err) : T("The traffic totals could not be loaded.")}</div>`
+        : html`<div class="hint faint">…</div>`}
     <//>` : null}
 
     ${catRows.length ? html`<${Fragment}>

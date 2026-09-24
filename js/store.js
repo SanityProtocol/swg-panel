@@ -57,10 +57,14 @@ async function _fetch(u, opts) {
 }
 // A range key as a query: a named range, or a custom window's key "custom:YYYYMMDD-YYYYMMDD" (views.js dashKey) → its
 // panel days. The ranged endpoints answer a custom window with the axis they used (`axis`), which the Overview reads.
+// The custom-key grammar lives HERE, the lowest module, once: views.js re-exports it.
+export const isCustomKey = k => typeof k === "string" && /^custom:\d{8}-\d{8}$/.test(k);
 const _iso = d => d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6, 8);
+export function customKeyWindow(k) { const [f, t] = k.slice(7).split("-"); return { range: "custom", from: _iso(f), to: _iso(t) }; }
 export function rangeQ(k) {
-  const m = /^custom:(\d{8})-(\d{8})$/.exec(k || "");
-  return m ? "range=custom&from=" + _iso(m[1]) + "&to=" + _iso(m[2]) : "range=" + encodeURIComponent(k);
+  if (!isCustomKey(k)) return "range=" + encodeURIComponent(k);
+  const w = customKeyWindow(k);
+  return "range=custom&from=" + w.from + "&to=" + w.to;
 }
 export const api = {
   async get(p) { const r = await _fetch(url(p)); if (r.status === 401) return _on401(); return r.json(); },

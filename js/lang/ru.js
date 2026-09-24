@@ -1646,13 +1646,15 @@ export const STR = {
   "from and to must include a day between 1970 and today": "from и to должны захватывать хотя бы один день между 1970 годом и сегодняшним",
   "range must be today, 7d, 30d, month, all or custom": "range должен быть today, 7d, 30d, month, all или custom",
   "by must be peer, user or slot": "by должен быть peer, user или slot",
-  "since, window and top must be integers": "since, window и top должны быть целыми числами",
+  "since and window must be integers": "since и window должны быть целыми числами",
   "The traffic history is being written; try again in a moment": "История трафика сейчас записывается; повторите через мгновение",
   "The charts keep {v1} days: a custom window can start on {v2} at the earliest": "Графики хранят {v1} дня: свой период может начинаться не раньше {v2}",
   // Custom on the Overview (P3): the rail's date window, Top talkers on the traffic ledger.
   "Days in the panel's zone — the charts keep the last {v1} days": "Сутки по поясу панели — графики хранят последние {v1} дня",
   "The charts go back to {v1}.": "Графики начинаются с {v1}",
-  "each peer on all its servers": "каждый пир на всех своих серверах",
+  "each on all their servers": "каждый — на всех своих серверах",
+  "handed on": "передано",
+  "The traffic totals could not be loaded.": "Не удалось загрузить итоги трафика.",
   "since {v1}": "с {v1}",
   // Traffic totals (P2): the window control, the Total cell's bubble, the peer and user views, Settings → Display → Data.
   "This month": "Этот месяц",

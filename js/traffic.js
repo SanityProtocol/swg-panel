@@ -27,9 +27,12 @@ export function panelToday(nowMs) {
   return new Date((nowMs == null ? Date.now() : nowMs) + off * 1000).toISOString().slice(0, 10);
 }
 
-// The query (and the cache key) for a window. A custom window with a date missing reads as This month.
+// The query (and the cache key) for a window. A custom window with a date missing reads as This month. `window` (the
+// Overview's named ranges, P3): a rolling window of that many seconds up to the PANEL's now — its start is the panel's to
+// decide (the ledger's bucket, or where history begins), never this browser's clock.
 export function trafficQuery(v) {
   v = v || trafficView;
+  if (v.window) return "window=" + v.window;
   if (v.range === "custom" && v.from && v.to) return "range=custom&from=" + v.from + "&to=" + v.to;
   return "range=" + (v.range === "30d" ? "30d" : "month");
 }
@@ -61,8 +64,9 @@ export function trafficImmutable(v, today) {
 // Fold `by=slot` rows into the lookups the screens read. Pure — the selftest drives it.
 //   peer: pid → the whole device (every owner)        user: uid → every slot the user held (closed and deleted ones too)
 //   slot: uid|pid → what the device carried while it was that user's    rows: uid → [its rows] (the user view's list)
+//   free: pid → what the device carried while it belonged to nobody (the Overview's unassigned talkers)
 export function foldTotals(rows) {
-  const peer = new Map(), user = new Map(), slot = new Map(), byUser = new Map();
+  const peer = new Map(), user = new Map(), slot = new Map(), byUser = new Map(), free = new Map();
   const add = (m, k, r, extra) => {
     let a = m.get(k);
     if (!a) m.set(k, a = { rx: 0, tx: 0, lifetime_rx: 0, lifetime_tx: 0, opening_rx: 0, opening_tx: 0, opening_at: 0,
@@ -82,9 +86,33 @@ export function foldTotals(rows) {
       add(slot, uid + "|" + r.id, r, { name: r.name || "", until: r.until || null });   // one row per (peer, owner)
       if (!byUser.has(uid)) byUser.set(uid, []);
       byUser.get(uid).push(r);
-    }
+    } else add(free, r.id, r);
   }
-  return { peer, user, slot, rows: byUser };
+  return { peer, user, slot, rows: byUser, free };
+}
+
+// The Overview's Top talkers over a window, from the SAME reply as the Users grid — so a person's figure is exactly their
+// Users-grid figure: every slot they held, a device deleted or handed on included, up to the handover; a deleted user is
+// not listed (the grid has no row for them). A device that belongs to nobody now is its own talker, with what it carried
+// while it belonged to nobody. `inScope(pid)` narrows to the selected nodes: a person is in when one of their current
+// devices is there, with their whole figure. Pure — gated.
+export function talkerGroups(d, inScope) {
+  const out = [];
+  const ok = inScope || (() => true);
+  for (const [uid, a] of d.user) {
+    if (!Store.user(uid)) continue;
+    const devs = [...new Set((d.rows.get(uid) || []).map(r => r.id))];
+    if (inScope && !devs.some(id => { const p = Store.peer(id); return p && p.user_id === uid && ok(id); })) continue;
+    out.push({ uid, rx: a.rx, tx: a.tx, devices: devs.map(id => {
+      const s = d.slot.get(uid + "|" + id) || {}, p = Store.peer(id);
+      return { id, rx: s.rx || 0, tx: s.tx || 0, name: (p && p.title) || s.name || "", gone: !p ? "deleted" : p.user_id !== uid ? "handed" : "", peer: p };
+    }) });
+  }
+  for (const [pid, a] of d.free) {
+    const p = Store.peer(pid);
+    if (p && !p.user_id && ok(pid)) out.push({ uid: null, pid, rx: a.rx, tx: a.tx, devices: [] });
+  }
+  return out.filter(g => g.rx + g.tx > 0).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx));
 }
 
 // ── the totals cache ────────────────────────────────────────────────────────────────────────────────────────────
@@ -99,7 +127,7 @@ function _fetchTotals(q, e) {
     e.busy = false; e.at = Date.now();
     if (r && r.ok && r.data) {
       e.data = { ...foldTotals(r.data.rows), q, gen: ++_gen, from: r.data.from, to: r.data.to,
-        since: r.data.since, until: r.data.until, gaps: r.data.gaps || {} };
+        since: r.data.since, until: r.data.until, asked: r.data.asked || 0, gaps: r.data.gaps || {} };
       e.off = null; e.err = null;
     } else {
       e.off = r && r.code === "ledger_off" ? r : null;   // the whole reply: srvText() translates its sentence
