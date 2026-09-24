@@ -14,6 +14,7 @@
  * deleted included. Folded once per reply into Maps: a sort comparison is a lookup, never a walk (§9.1).
  */
 import { api, bus, Store } from "./store.js";
+import { panelNow } from "./util.js";
 
 // The window, held for the page's life so it survives re-render and navigation — shared by Peers, Users and both views.
 export const trafficView = { range: "month", from: "", to: "" };
@@ -24,7 +25,10 @@ export const TRAFFIC_RANGES = ["month", "30d", "custom"];
 export function panelToday(nowMs) {
   const tz = (Store.panelSettings || {}).time_zone_now || {};
   const off = typeof tz.offset === "number" ? tz.offset : -new Date().getTimezoneOffset() * 60;
-  return new Date((nowMs == null ? Date.now() : nowMs) + off * 1000).toISOString().slice(0, 10);
+  // panelNow(), not Date.now(): the zone was the panel's all along, and so is the instant — a browser a few
+  // minutes out near midnight otherwise asks for a day the panel has not reached (and `blockPollMs` reads a
+  // window running to today as one that has ended).
+  return new Date((nowMs == null ? panelNow() : nowMs) + off * 1000).toISOString().slice(0, 10);
 }
 
 // The query (and the cache key) for a window. A custom window with a date missing reads as This month. `window` (the

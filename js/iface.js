@@ -11,7 +11,7 @@
  */
 
 import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
-import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, ipChoices, portOf, listenAddr, ipPickerVal, V } from "./util.js";
+import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, ipChoices, portOf, listenAddr, ipPickerVal, V, agoAge} from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, toThemed, IFACE_COLOR_DEFAULTS } from "./theme.js";
@@ -295,7 +295,11 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm, c
               <td class="addr">${p.allowed_ips || "—"}</td>
               <td class="mono faint" title=${p.public_key}>${String(p.public_key || "").slice(0, 16)}…</td>
               <td class="addr">${p.endpoint || html`<span class="faint">${T("never connected")}</span>`}</td>
-              <td>${p.last_handshake ? ago(p.last_handshake) : html`<span class="faint">${T("never")}</span>`}</td>
+              ${/* the NODE's own measurement (`handshake_age`, beside the stamp), like every other handshake in the
+                    console — wg's `last_handshake` is on the node's clock, so subtracting it here read hours out on a
+                    node whose clock drifts. `ago()` on the stamp stays for a node too old to send the age. */""}
+              <td>${p.handshake_age != null ? agoAge(p.handshake_age)
+                    : p.last_handshake ? ago(p.last_handshake) : html`<span class="faint">${T("never")}</span>`}</td>
               <td class="num">${(p.rx_bytes || p.tx_bytes) ? html`↓${fmtBytes(p.rx_bytes || 0)} ↑${fmtBytes(p.tx_bytes || 0)}` : html`<span class="faint">—</span>`}</td>
             </tr>`)}</tbody></table>
             ${cand.peers > cand.peer_list.length ? html`<div class="hint" style="padding:8px 14px">${T("Showing {n} of {total} — the rest come across on adopt.", { n: cand.peer_list.length, total: cand.peers })}</div>` : null}`

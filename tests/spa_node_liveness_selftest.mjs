@@ -14,7 +14,10 @@
  *                     measured on the panel's clock — end to end, through Store.poll → reconcile.
  *   [3] one verdict   the list row and the node page cannot disagree: both take live/not from recon, and "never
  *                     synced" stays the server's fact (awaiting enroll).
- *   [4] the ages      an age the SPA prints is measured on the clock that stamped it.
+ *   [4] the ages      an age the SPA prints is measured on the clock that stamped it — the panel's for what the
+ *                     panel stamped, and the NODE's own measurement where it sends one (a peer's handshake).
+ *                     The panel's own day is its day too: a browser minutes out near midnight must not ask the
+ *                     ledger for a day the panel has not reached.
  *   [5] the fallback  a panel too old to send `panel_now`/`last_seen` still judges by `generated_at` — the old
  *                     behaviour, never "stale for ever".
  *   [6] fail safe     a `panel_now` that is not a number (a proxy's error page, a truncated body) leaves the clock
@@ -24,7 +27,7 @@
  *
  * Run: node tests/spa_node_liveness_selftest.mjs                 (0 = pass)
  *      node tests/spa_node_liveness_selftest.mjs --plant <name>  breaks one rule on purpose; exits 0 only if a check went red.
- *      plants: clock finite offset now seen ago row door label guard
+ *      plants: clock finite offset now seen ago row door label guard hs today
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -39,11 +42,15 @@ const PLANTS = {   // name: [file, anchor, replacement]
   offset: ["js/store.js", `    if (Number.isFinite(d.panel_now) && d.panel_now > 0) clock.skewMs = Date.now() - d.panel_now * 1000;`, ""],
   now: ["js/store.js", `reconcile(this.roster, this.stats, panelNow(), { retiring`, `reconcile(this.roster, this.stats, Date.now(), { retiring`],
   seen: ["js/store.js", `systemIfaces, nodeSeen, rotating:`, `systemIfaces, rotating:`],
-  ago: ["js/util.js", `  const d = Math.max(0, Math.floor(panelNowS() - sec));`, `  const d = Math.max(0, Math.floor(Date.now() / 1000 - sec));`],
+  ago: ["js/util.js", 'export const ago = sec => sec == null ? "—" : agoAge(panelNowS() - sec);',
+    'export const ago = sec => sec == null ? "—" : agoAge(Math.floor(Date.now() / 1000) - sec);'],
   row: ["js/screen-nodes.js", `  const st = nodeStatusOf(n);`, `  const st = n.status || "dangling";`],
   door: ["js/sheets-crud.js", `          node.status === "online" ? html`, `          nodeStatusOf(node) === "online" ? html`],
   label: ["js/model.js", `  return Number.isFinite(ls) ? ls : ((snap || {}).generated_at || null);`,
     `  return ls != null ? ls : ((snap || {}).generated_at || null);`],
+  hs: ["js/iface.js", `\${p.handshake_age != null ? agoAge(p.handshake_age)`, `\${p.last_handshake ? ago(p.last_handshake)`],
+  today: ["js/traffic.js", `  return new Date((nowMs == null ? panelNow() : nowMs) + off * 1000).toISOString().slice(0, 10);`,
+    `  return new Date((nowMs == null ? Date.now() : nowMs) + off * 1000).toISOString().slice(0, 10);`],
   guard: ["js/store.js", `    if (Number.isFinite(d.panel_now) && d.panel_now > 0) clock.skewMs = Date.now() - d.panel_now * 1000;`,
     `    if (d.panel_now) clock.skewMs = Date.now() - d.panel_now * 1000;`],
 };
@@ -164,6 +171,27 @@ try {
     const stampedNow = U.panelNowS();                      // …so the panel stamps "now" 5 min behind Date.now()
     check("an age the panel stamped reads as just now, not five minutes old", U.ago(stampedNow) === "just now", U.ago(stampedNow));
     check("…and a real five-minute-old stamp still reads five minutes", /5/.test(U.ago(stampedNow - 300)), U.ago(stampedNow - 300));
+    // The node's OWN measurement, where it sends one: same words, no subtraction across two machines' clocks.
+    check("an age the node measured itself is printed as given", U.agoAge(0) === U.ago(U.panelNowS())
+      && /5/.test(U.agoAge(300)) && U.agoAge(null) === "—", [U.agoAge(0), U.agoAge(300)]);
+    check("(source) a peer's handshake reads the node's own age, the stamp only as a fallback",
+      /p\.handshake_age != null \? agoAge\(p\.handshake_age\)/.test(src("js/iface.js")), "");
+
+    // The panel's day, not this browser's: with the browser 20 minutes past midnight and the panel not there yet,
+    // the ledger must be asked for the panel's day — asked for tomorrow it answers a window it has no day in.
+    const TR = await load("js/traffic.js");
+    const RS2 = await import(pathToFileURL(path.join(ROOT, "js/store.js")).href);
+    RS2.Store.panelSettings = { time_zone_now: { offset: 0 } };
+    const midnight = Date.parse("2026-03-11T00:10:00Z");   // this browser reads 10 min past midnight…
+    const realNow = Date.now;
+    try {
+      Date.now = () => midnight;
+      U.clock.skewMs = 20 * 60 * 1000;                     // …while the panel is still 10 min BEFORE it
+      check("the panel's day is the panel's, even when this browser has turned the date",
+        TR.panelToday() === "2026-03-10", { browser: new Date(midnight).toISOString().slice(0, 10), panelToday: TR.panelToday() });
+      U.clock.skewMs = 0;
+      check("…and with the clocks together it is the same day both read", TR.panelToday() === "2026-03-11", TR.panelToday());
+    } finally { Date.now = realNow; }
     U.clock.skewMs = 0;
   }
 

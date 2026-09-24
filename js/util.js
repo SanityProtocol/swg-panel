@@ -108,14 +108,18 @@ export const ipChoices = (nrec, ...first) =>
                ...((nrec || {}).ips || [])]
               .map(x => (x || "").trim()).filter(Boolean))];
 
-export function ago(sec) {
-  if (sec == null) return "—";
-  const d = Math.max(0, Math.floor(panelNowS() - sec));   // `sec` was stamped by the panel → read it on the panel's clock
+// An AGE in seconds, as words. Prefer this wherever the age itself was measured by whoever owns the clock — a
+// node reports `handshake_age` beside the absolute stamp precisely so a reader never has to subtract across two
+// machines' clocks. `ago()` is the same words for a timestamp THE PANEL stamped.
+export function agoAge(age) {
+  if (age == null) return "—";
+  const d = Math.max(0, Math.floor(age));
   if (d < 60) return T("just now");
   if (d < 3600) return T("{n}m ago", { n: Math.floor(d / 60) });
   if (d < 86400) return T("{n}h ago", { n: Math.floor(d / 3600) });
   return T("{n}d ago", { n: Math.floor(d / 86400) });
 }
+export const ago = sec => sec == null ? "—" : agoAge(panelNowS() - sec);   // `sec` was stamped by the panel → read on its clock
 export function seen(age) {
   if (age == null) return "—";
   if (age < 90) return age + T("unit|s");
