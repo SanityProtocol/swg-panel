@@ -1029,6 +1029,19 @@ export function defaultBlockFor(node) {
     (c.kind === "mechanism" || (c.enabled_nodes || []).includes(node))).map(c => c.id);
 }
 
+// How many of an interface's filters are ACTIVE here — exactly the chips BlockTraffic lights up: a built-in mechanism, or a
+// category enabled on this node that can enforce in its mode. block[] can hold more — a category since switched off for
+// this node keeps its id so switching it back restores it — and those enforce nothing (the panel skips them too), so
+// counting them in "N active" claimed protection that was not there. Before the catalog loads: the plain length.
+export function blockActiveN(node, value) {
+  const bc = Store.blockCatalog; const ids = value || [];
+  if (!bc) return ids.length;
+  const mode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";
+  return ids.filter(id => { const c = (bc.categories || {})[id];
+    return c && c.enabled !== false && (c.kind === "mechanism"
+      || ((c.enabled_nodes || []).includes(node) && !blockCatDisabled(mode, bc.providers, c))); }).length;
+}
+
 // Per-interface "Block traffic" (screen ③) — the daily policy surface. Content/IP categories the operator enabled on
 // THIS node plus the built-in traffic/abuse mechanisms; a chip toggles the category id in the interface's block[], and
 // the node drops matching traffic on its next sync. Domain (content) categories are inert on an IP-only (kernel) node

@@ -15523,7 +15523,7 @@ def _blk_bucket(cache, srcpaths, host):
     return hit or None
 
 
-def _resolve_iface_blocks(node, snap, panel_settings, mode):
+def _resolve_iface_blocks(node, snap, panel_settings, mode, node_id):
     """Per-interface content/IP `block[]` → smart DROP entries, INDEPENDENT of egress_mode (a direct/forward
     interface can still filter). To keep the datapath cheap, every feed an interface blocks is UNIONED into ONE set
     per tier (`blku:<tier>:<hash>`) → ONE `ip saddr <subnet> ip daddr @cat_<union> drop` rule (one O(1) lookup),
@@ -15549,13 +15549,23 @@ def _resolve_iface_blocks(node, snap, panel_settings, mode):
             if c.get("kind") == "mechanism":          # torrents/smtp/portscan/quic/doh/… → per-subnet flags (node builds L4 rules)
                 mech.setdefault(subnet, set()).add(cid)
                 continue
-            tier = "ip" if c.get("kind") == "ip" else "host"
-            if tier == "host" and mode in ("kernel", "sni_kernel"):
-                continue                              # domain blocking needs a DNS fill (Force-DNS/Hybrid) — inert on IP-only / Kernel-SNI
+            # ⚠️ AVAILABILITY IS PER NODE, AND IT IS THE SWITCH THE OPERATOR SEES. Settings' "Filter on <node>" is
+            # enabled_nodes; the interface editor offers only the categories enabled here, so a category switched off
+            # for this node vanishes from every interface's chips. It used to keep enforcing all the same — a filter
+            # nobody could see or untick. The id stays in block[], so switching it back on restores it as it was.
+            if node_id not in (c.get("enabled_nodes") or []):
+                continue
             for s in (c.get("sources") or []):
                 prov = (s.get("provider") or "").strip(); lst = (s.get("list") or "").strip()
                 if not prov or not bpe.get(prov, True):
                     continue                          # custom-paste (no provider) or a disabled feed → omit
+                # ⚠️ THE TIER IS THE LIST'S, NOT THE CATEGORY'S. A category may mix domain and IP lists — every custom
+                # category is saved as kind "content", and the picker offers every provider to every category — so
+                # taking the tier from the kind put a FireHOL / Tor list into the DOMAIN union, where it resolves to
+                # nothing and blocks nothing, in every mode. Same rule the UI applies per list (blockSrcOk).
+                tier = (BLOCK_PROVIDERS.get(prov) or {}).get("tier", "host")
+                if tier == "host" and mode in ("kernel", "sni_kernel"):
+                    continue                          # domain blocking needs a DNS fill (Force-DNS/Hybrid) — inert on IP-only / Kernel-SNI
                 sid = "blk:" + prov + ":" + lst
                 if sid not in tier_srcs[tier]:
                     tier_srcs[tier].append(sid)
@@ -22128,7 +22138,7 @@ def api(method, path, qs, body, deps):
         # coverage (static, side-effect-free — cached list_meta only): how much the fleet is filtering
         cat = block_catalog(Handler.deps.get("panel_settings"))
         enabled = set(); n_ifaces = 0; mech = {}
-        for n in (nodes or {}).values():
+        for _nid, n in (nodes or {}).items():
             if not isinstance(n, dict):
                 continue
             for ov in (n.get("ifaces") or {}).values():
@@ -22140,7 +22150,7 @@ def api(method, path, qs, body, deps):
                     c = cat.get(cid) or {}
                     if c.get("kind") == "mechanism":
                         mech[cid] = mech.get(cid, 0) + 1
-                    elif c.get("enabled", True):
+                    elif c.get("enabled", True) and _nid in (c.get("enabled_nodes") or []):   # what _resolve_iface_blocks enforces
                         enabled.add(cid)
         dom = ips = 0; seen = set(); catcov = {}
         for cid in enabled:
@@ -28599,7 +28609,7 @@ class Handler(BaseHTTPRequestHandler):
         # Content/IP block enforcement: fold each interface's block[] into the smart plan as DROP entries, PREPENDED
         # so a block wins over a routing exit for the same destination. Rides the existing smart @cat-drop +
         # list_manifest path (blk:<prov>:<list> sources use the SAME resolver) → zero node datapath change.
-        _blk_entries, _blk_srcs, _blk_mech = _resolve_iface_blocks(node, snap, _ps, _node_mode)
+        _blk_entries, _blk_srcs, _blk_mech = _resolve_iface_blocks(node, snap, _ps, _node_mode, nid)
         if _blk_entries:
             my_plan["smart"] = _blk_entries + (my_plan.get("smart") or [])
         # EVERY CATEGORY THIS NODE ROUTES, its own entries and its arrivals' (P3) — one set for the manifest, the caps, the
