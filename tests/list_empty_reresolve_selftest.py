@@ -34,7 +34,7 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 _SRC = open(PANEL, encoding="utf-8").read()
-_ANCH = "    if m and not force and (_meta_n(m) or list_failed(cat, tier)):\n        return m"
+_ANCH = "    if m and not force and _meta_n(m):\n        return m"
 assert _SRC.count(_ANCH) == 1, "anchor missing — this run would FALSE-PASS"
 if PERTURB:
     _SRC = _SRC.replace(_ANCH, "    if m and not force:\n        return m")   # the shipped behaviour
@@ -166,8 +166,10 @@ try:
 finally:
     P.list_store = _real
 check("once it expires, it tries again (so it still heals)", len(_n2) == 1, len(_n2))
-check("a `force`d refresh ignores the cooldown entirely",
-      "if m and not force and (_meta_n(m) or list_failed(cat, tier)):" in
+# (a failed REFRESH of a list that has records backs off on its own clock, _refresh_waiting — see
+# block_list_lifecycle_selftest.py; the empty-list cooldown tested here never holds a forced refresh back)
+check("a `force`d refresh ignores the empty-list cooldown",
+      "    if not force and not _union and list_failed(cat, tier):" in
       open(os.path.join(ROOT, "swg-panel-server"), encoding="utf-8").read())
 
 print("\n[6] TWO READERS: /api/list-info must judge by records too, not by 'a meta exists'")

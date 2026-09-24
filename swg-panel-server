@@ -13397,7 +13397,8 @@ def _block_source_resolve(cat, tier):
         return None
     try:
         txt = _list_fetch_text(tmpl.replace("{id}", lid or ""))
-    except Exception:
+    except Exception as e:
+        _list_note_err(cat, tier, e)
         return None
     if ptier == "ip":
         return _norm_ip(txt)
@@ -13464,7 +13465,7 @@ def _hash_count_file(path):
             h.update(line); n += 1
     return h.hexdigest()[:12], n
 
-def _list_commit(cat, tier, ver, n, install, tmp=None):
+def _list_commit(cat, tier, ver, n, install, tmp=None, extra=None):
     """Commit a resolved list. Runs the collapse-guard (a previously-healthy list — ≥20 entries — that suddenly drops
     below half its size is distrusted and last-good is kept), then install()s the body atomically + writes meta +
     updates the cache. install() puts the body in place (os.replace of a prebuilt sorted tmp, or atomic_write of a
@@ -13480,7 +13481,7 @@ def _list_commit(cat, tier, ver, n, install, tmp=None):
         _drop()
         _LIST_SUSPECT[key] = "resolved to %d, was %d — kept the previous list" % (n, prev_n)
         return prev, "collapsed"
-    meta = {"v": ver, "n": n, "at": int(time.time())}
+    meta = {"v": ver, "n": n, "at": int(time.time()), **(extra or {})}
     try:
         os.makedirs(LIST_DIR, exist_ok=True)
         install()
@@ -13492,11 +13493,11 @@ def _list_commit(cat, tier, ver, n, install, tmp=None):
     _LIST_SUSPECT.pop(key, None)
     return meta, "ok"
 
-def _list_commit_items(cat, tier, items):
+def _list_commit_items(cat, tier, items, extra=None):
     """Commit an IN-MEMORY resolved list (ip / curated / v2fly — all small) through the shared commit path."""
     body = "\n".join(items) + ("\n" if items else "")
     ver = hashlib.sha1(body.encode()).hexdigest()[:12]         # content hash = the version a node compares against
-    return _list_commit(cat, tier, ver, len(items), lambda: atomic_write(_list_path(cat, tier), body))
+    return _list_commit(cat, tier, ver, len(items), lambda: atomic_write(_list_path(cat, tier), body), extra=extra)
 
 _HAVE_SORT = None
 def _have_sort():
@@ -13572,7 +13573,8 @@ def _stream_host_store(cat, tier, url, line_fn):
         with contextlib.suppress(Exception):
             os.remove(raw_tmp)
         ver, n = _hash_count_file(srt_tmp)                     # streamed hash + count of the sorted file
-    except Exception:
+    except Exception as e:
+        _list_note_err(cat, tier, e)
         _cleanup()
         return prev, "fetch-failed"                           # network/parse/tool error → keep last-good, retry later
     return _list_commit(cat, tier, ver, n, lambda: os.replace(srt_tmp, _list_path(cat, tier)), tmp=srt_tmp)
@@ -13613,10 +13615,39 @@ def list_meta(cat, tier):
 # Inside the cooldown the answer is the truth we already have; outside it, one more attempt.
 _LIST_FAILED = {}             # "cat|tier" -> ts of the LAST resolve that ended with no stored list
 _LIST_FAIL_TTL = 60           # how long that verdict stands before anyone is allowed to try again
+_LIST_FAIL_MAX = 1800         # …doubling per consecutive failure up to this — see _list_backoff
+# ⚠️ A FAILING LIST MUST BACK OFF, AND SO MUST A FAILING REFRESH. Two ways this used to fetch upstream every few
+# seconds, for ever: (1) a list that had NEVER resolved skipped the cooldown entirely — the cooldown above was only
+# consulted when a meta existed — so every node sync re-armed its fetch the moment the last one gave up; (2) a
+# scheduled refresh that failed (or was rejected by the collapse-guard) left `at` untouched, so the list stayed
+# "due" and every sync forced another one. On a one-core panel that keeps the single resolve slot busy with a list
+# that cannot land, and a feed host that rate-limits (oisd.nl answers a burst from one address with refusals) then
+# refuses that panel for good — so the list never lands at all. Consecutive failures now double the wait.
+_LIST_FAILN = {}              # "cat|tier" -> consecutive resolves that ended with no stored list
+_LIST_REFRESH_FAIL = {}       # "cat|tier" -> (ts, n) of consecutive scheduled refreshes that did not land a new list
+_LIST_REFRESH_WAIT = 300      # first retry of a failed refresh; doubles per failure up to an hour (last-good is served meanwhile)
+_LIST_ERR = {}                # "cat|tier" -> why the last fetch failed, verbatim-ish (shown on the Blocking tab)
+
+def _list_backoff(base, n, cap):
+    return min(cap, base * (2 ** max(0, min(n, 12) - 1)))
 
 def list_failed(cat, tier):
-    ts = _LIST_FAILED.get(cat + "|" + tier)
-    return bool(ts) and (time.time() - ts) < _LIST_FAIL_TTL
+    k = cat + "|" + tier
+    ts = _LIST_FAILED.get(k)
+    return bool(ts) and (time.time() - ts) < _list_backoff(_LIST_FAIL_TTL, _LIST_FAILN.get(k, 1), _LIST_FAIL_MAX)
+
+def _refresh_waiting(k):
+    """True while a scheduled refresh of `k` that failed is still inside its back-off."""
+    ts, n = _LIST_REFRESH_FAIL.get(k) or (0, 0)
+    return bool(ts) and (time.time() - ts) < _list_backoff(_LIST_REFRESH_WAIT, n, 3600)
+
+def _list_note_err(cat, tier, e):
+    """Remember why a fetch failed, in words an operator can act on (an HTTP code names the refusal)."""
+    code = getattr(e, "code", None)
+    msg = (("HTTP %s" % code) if code else (str(getattr(e, "reason", "") or e) or e.__class__.__name__))[:140]
+    if _LIST_ERR.get(cat + "|" + tier) != msg:                 # logged once per new reason — a back-off retry repeats nothing
+        print("list %s (%s): fetch failed: %s" % (cat, tier, msg), flush=True)
+    _LIST_ERR[cat + "|" + tier] = msg
 
 
 def _meta_n(m):
@@ -13645,6 +13676,8 @@ def list_ensure(cat, tier, force=False):
     `force`d (schedule refresh). Never blocks the request — a newly-routed category resolves on its own thread and
     lands within a couple of seconds; until then its meta is None (the node just waits for the next manifest)."""
     m = list_meta(cat, tier)
+    k = cat + "|" + tier
+    _union = cat.startswith("blku:")   # a union is built from files already on disk — its first build must not wait out a fetch's cooldown
     # ⚠️ THE COOLDOWN BELONGS HERE, NOT IN THE CALLER. `_meta_n` makes a stored-EMPTY list "no answer", which
     # is what heals a list a stale parser zeroed — but /api/list-info was the only caller that consulted
     # `list_failed`, and it is not the hot one. The manifest builder calls this for every routed category on
@@ -13652,17 +13685,21 @@ def list_ensure(cat, tier, force=False):
     # fresh upstream fetch every five seconds, for ever. That is precisely the hammering `_LIST_FAILED` was
     # written to stop, and putting the check inside means every caller gets the bound rather than the one that
     # remembered to ask. `force` (the scheduled refresh) still overrides it.
-    if m and not force and (_meta_n(m) or list_failed(cat, tier)):
+    if m and not force and _meta_n(m):
         return m
-    k = cat + "|" + tier
+    if not force and not _union and list_failed(cat, tier):
+        return m                                               # tried and got nothing — with or without an old meta, wait it out
+    if force and _meta_n(m) and _refresh_waiting(k):
+        return m                                               # the last refresh failed — keep serving last-good, retry after the back-off
     with _LIST_LOCK:
         if k in _LIST_INFLIGHT:
             return m
         _LIST_INFLIGHT.add(k)
     def _work():
+        status = "fetch-failed"
         try:
             with _RESOLVE_SEM:                                 # bound concurrency → smooths the CPU burst on a many-list add
-                list_store(cat, tier)                          # resolve + collapse-guard + store (keeps last-good on a bad pull)
+                status = (list_store(cat, tier) or (None, status))[1]   # resolve + collapse-guard + store (keeps last-good on a bad pull)
         finally:
             with _LIST_LOCK:
                 _LIST_INFLIGHT.discard(k)
@@ -13671,9 +13708,14 @@ def list_ensure(cat, tier, force=False):
                 # A stored list of ZERO records is the same non-answer as no list at all — see _meta_n — so it
                 # arms the cooldown too, which is what bounds the re-resolve that emptiness now triggers.
                 if _meta_n(list_meta(cat, tier)):
-                    _LIST_FAILED.pop(k, None)
+                    _LIST_FAILED.pop(k, None); _LIST_FAILN.pop(k, None)
                 else:
-                    _LIST_FAILED[k] = time.time()
+                    _LIST_FAILED[k] = time.time(); _LIST_FAILN[k] = _LIST_FAILN.get(k, 0) + 1
+                # …and the status word is what a REFRESH is judged by: anything but a stored new list backs off.
+                if status == "ok":
+                    _LIST_REFRESH_FAIL.pop(k, None); _LIST_ERR.pop(k, None)
+                else:
+                    _LIST_REFRESH_FAIL[k] = (time.time(), (_LIST_REFRESH_FAIL.get(k) or (0, 0))[1] + 1)
     threading.Thread(target=_work, daemon=True).start()
     return m
 
@@ -15328,15 +15370,18 @@ def _blku_store(cat, tier):
     if srcs is None or tier != (cat.split(":", 2)[1] if cat.count(":") >= 2 else ""):
         return list_meta(cat, tier), "fetch-failed"          # not registered this serve / wrong tier → keep last-good
     paths = []
+    mv = {}                                                   # the member versions this build is made of → meta["mv"]
     for sid in srcs:
-        if list_meta(sid, tier) is None:
+        mm = list_meta(sid, tier)
+        if mm is None:
             list_ensure(sid, tier)                            # member not resolved yet → schedule (non-blocking), skip
             continue
         p = _list_path(sid, tier)
         if os.path.exists(p):
-            paths.append(p)
+            paths.append(p); mv[sid] = mm.get("v", "")
     if not paths:
         return list_meta(cat, tier), "fetch-failed"          # no member ready yet → keep last-good, retry next cycle
+    extra = {"mv": mv}
     if tier == "ip":
         nets = []
         for p in paths:
@@ -15355,10 +15400,20 @@ def _blku_store(cat, tier):
             except Exception:
                 continue
         items = [str(n) for n in ipaddress.collapse_addresses(nets)]
-        return _list_commit_items(cat, tier, items)          # ip union is small (threat feeds) → in-memory collapse, shared commit
-    return _blku_merge_write(cat, tier, paths)
+        return _list_commit_items(cat, tier, items, extra=extra)   # ip union is small (threat feeds) → in-memory collapse, shared commit
+    return _blku_merge_write(cat, tier, paths, extra=extra)
 
-def _blku_merge_write(cat, tier, paths):
+def _blku_member_vers(cat, tier):
+    """{member: version} of a union's members that are resolved right now — compared against the union's own
+    meta["mv"] to tell whether the union on disk is still made of the current lists."""
+    out = {}
+    for sid in (_BLKU_REG.get(cat) or []):
+        mm = list_meta(sid, tier)
+        if mm is not None and os.path.exists(_list_path(sid, tier)):
+            out[sid] = mm.get("v", "")
+    return out
+
+def _blku_merge_write(cat, tier, paths, extra=None):
     """Stream a k-way merge of the SORTED member files → the union file, deduping adjacent domains. Holds only one
     line per open file (bounded), never the whole union in RAM. The content hash is computed incrementally so the
     version is byte-identical to `sorted(set(union))` — nodes never needlessly re-pull. Commits (guard + last-good)
@@ -15393,7 +15448,7 @@ def _blku_merge_write(cat, tier, paths):
         for f in files:
             with contextlib.suppress(Exception):
                 f.close()
-    return _list_commit(cat, tier, h.hexdigest()[:12], n, lambda: os.replace(tmp, _list_path(cat, tier)), tmp=tmp)
+    return _list_commit(cat, tier, h.hexdigest()[:12], n, lambda: os.replace(tmp, _list_path(cat, tier)), tmp=tmp, extra=extra)
 
 
 def _blk_file_has(path, target):
@@ -21148,6 +21203,13 @@ def api(method, path, qs, body, deps):
             for _s in _c.get("sources", []):
                 _tier, _n = block_source_size(_s.get("provider"), _s.get("list", ""))
                 _s["n"] = _n
+                if _tier:                                       # why a list has no count yet — still coming, or refused upstream
+                    _k = "blk:%s:%s|%s" % (_s.get("provider"), _s.get("list", "") or "", _tier)
+                    if _k in _LIST_ERR:
+                        _s["err"] = _LIST_ERR[_k]               # with a count too: the last refresh failed, last-good is served
+                    if _n is None:
+                        with _LIST_LOCK:
+                            _s["busy"] = _k in _LIST_INFLIGHT
                 if _n is not None:
                     known = True
                     if _tier == "ip": ti += _n
@@ -28570,6 +28632,22 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 _mt = list_meta(_c, _tier)
                 _due = (not _mt) or (int(time.time()) - int((_mt or {}).get("at") or 0) > _cadence)
+                if _isblku:
+                    # A UNION IS ONLY AS FRESH AS ITS MEMBERS, AND IT IS THE ONLY THING THAT NAMES THEM. The members
+                    # (`blk:<prov>:<list>`) reach no other refresh path — routed_catalog_cats knows only routing lists —
+                    # so they are kept on the same cadence here. And a union built while a member was still downloading
+                    # is a PARTIAL union: it used to stay partial until its own daily refresh, so a slow feed's list was
+                    # simply not blocked for up to a day. It is rebuilt whenever the members it was made of differ from
+                    # the members as they stand (one landed, one refreshed) — a local merge, no fetch.
+                    for _sid in (_BLKU_REG.get(_c) or []):
+                        _mm = list_meta(_sid, _tier)
+                        list_ensure(_sid, _tier, force=bool(_mm) and int(time.time()) - int(_mm.get("at") or 0) > _cadence)
+                    # A member that LANDED rebuilds at once (the union was missing a whole list); members that merely
+                    # refreshed are batched to one rebuild an hour — each rebuild is a new version every node re-pulls
+                    # and re-loads (dnsmasq / swg-sni), and a union's members come due within minutes of each other.
+                    _cur, _mv = _blku_member_vers(_c, _tier), (_mt or {}).get("mv")
+                    if _mt and _cur != _mv and (set(_cur) - set(_mv or {}) or int(time.time()) - int(_mt.get("at") or 0) > 3600):
+                        _due = True
                 _mt = list_ensure(_c, _tier, force=_due) or _mt    # background (re)resolve; ships current (old) version until the new one lands
                 if _mt:
                     _ent[_tier] = _mt["v"]

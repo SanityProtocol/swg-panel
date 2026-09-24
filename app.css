@@ -2141,6 +2141,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .bk-size{display:flex;align-items:center;justify-content:flex-end}
 .bk-count{font-family:var(--mono);font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
 .bk-lrow .bk-count{flex-shrink:0}
+.bk-count.bk-fail{color:var(--fault)}
+.bk-count.bk-stale{text-decoration:underline dotted var(--fault);text-underline-offset:3px}
 .bkrow:hover{background:color-mix(in srgb,var(--ink) 2.5%,transparent)}
 .bkrow.lg-lock{opacity:.5}
 .bk-cat{min-width:0}

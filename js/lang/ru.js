@@ -5233,6 +5233,12 @@ export const STR = {
   "Filter on {v1}": "Фильтр на {v1}",
   "domains in this list": "доменов в списке",
   "IP ranges in this list": "диапазонов адресов в списке",
+  // budget-ok: tooltips — their own bubble, wrap
+  "the last update failed ({v1}) — the previous copy is still in use": "последнее обновление не удалось ({v1}) — работает предыдущая копия",
+  "The panel couldn't download this list ({v1}). It retries on its own, less often each time.":
+    "Панель не смогла скачать этот список ({v1}). Она повторяет попытки сама, каждый раз реже.",
+  "The panel is downloading this list — the count appears when it's done": "Панель скачивает этот список — число записей появится, когда закончит",
+  "not downloaded": "не скачан",
   "Offer {v1}": "Давать {v1}",
   "{v1} in the install picker": "{v1} в выборе при установке",
   "Colour for {v1}": "Цвет для {v1}",

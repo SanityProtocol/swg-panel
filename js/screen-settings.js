@@ -2077,13 +2077,17 @@ export function PanelSettingsScreen() {
     return () => { live = false; };
   }, [section]);
   const _bkCountTries = useRef(0);
-  useEffect(() => {   // list counts resolve in the background on the panel — refetch a few times until they land (or give up)
+  // List counts resolve in the background on the panel — refetch until every LIST has one. Judged per list, not per
+  // category: a category whose first list landed used to count as done, so a slower list beside it (a big feed on a
+  // one-core panel resolves one list at a time) kept a blank count until the next Save. Backs off 4 s → 30 s and
+  // keeps going while the tab is open; a list the panel could not fetch says so on its row instead of staying blank.
+  useEffect(() => {
     if (routeTab !== "blocking") return;
     const bc = Store.blockCatalog; if (!bc) return;
-    const pending = Object.values(bc.categories || {}).some(c => (c.sources || []).length && !c.size);
+    const on = new Set((bc.providers || []).filter(p => p.enabled !== false).map(p => p.id));
+    const pending = Object.values(bc.categories || {}).some(c => (c.sources || []).some(s => s.n == null && on.has(s.provider)));
     if (!pending) { _bkCountTries.current = 0; return; }
-    if (_bkCountTries.current >= 6) return;
-    const t = setTimeout(() => { _bkCountTries.current++; loadBlockCatalog(true); }, 4000);
+    const t = setTimeout(() => { _bkCountTries.current++; loadBlockCatalog(true); }, Math.min(30000, 4000 * 2 ** Math.floor(_bkCountTries.current / 3)));
     return () => clearTimeout(t);
   }, [routeTab, Store.blockCatalog]);
   const [blockProvEdits, setBlockProvEdits] = useState({});   // staged Filters-providers toggle deltas {prov_id:bool} → panelSettings.block_providers (committed by the shared Save)
@@ -2687,7 +2691,9 @@ const sectionLabel = k => ({
                       </div>
                       <span class="grow"></span>
                       ${!srcAvail(s) ? html`<span class="bk-nabadge">${T("Not available with {v1}", { v1: modeLabel })}</span>` : null}
-                      ${s.n != null ? html`<span class="bk-count" title=${srcHost(s) ? T("domains in this list") : T("IP ranges in this list")}>${fmtN(s.n)}</span>` : null}
+                      ${s.n != null ? html`<span class=${"bk-count" + (s.err ? " bk-stale" : "")} title=${(srcHost(s) ? T("domains in this list") : T("IP ranges in this list")) + (s.err ? " · " + T("the last update failed ({v1}) — the previous copy is still in use", { v1: s.err }) : "")}>${fmtN(s.n)}</span>`
+                        : s.err && !s.busy ? html`<span class="bk-count bk-fail" title=${T("The panel couldn't download this list ({v1}). It retries on its own, less often each time.", { v1: s.err })}>${T("not downloaded")}</span>`
+                        : (bc.providers || []).some(p => p.id === s.provider && p.enabled !== false) ? html`<span class="bk-count bk-wait" title=${T("The panel is downloading this list — the count appears when it's done")}>…</span>` : null}
                       <span class=${"capb " + (srcHost(s) ? "host" : "ip")} title=${srcHost(s) ? T("Domain list — needs Force-DNS or Hybrid-SNI mode") : T("IP list — works in every mode")}>${srcHost(s) ? T("Host") : T("cap|IP")}</span>
                       ${srcUrl(s) ? html`<a class="catrow-info" href=${srcUrl(s)} target="_blank" rel="noopener" title=${T("See what's in this list")} onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>` : null}
                       <button class="bk-lremove" title=${T("Remove this list from the category")} onClick=${e => { e.stopPropagation(); removeSource(c, i); }}><${Ic} i="x"/></button>
