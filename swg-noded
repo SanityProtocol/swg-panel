@@ -4461,11 +4461,23 @@ def _smart_shadows(smart_e, domains, pats, engine, insig=None):
     if k is not None and _SHADOW["k"] == k:
         return _SHADOW["v"]
     t2k = ("starts", "ends", "contains")
-    norm = lambda kd, s: str(s).lower() if kd in t2k else str(s).lower().strip(".")   # as swg-sni's _index; empty is dropped
+    # ⚠️ A BLOCK UNION IS A KEYED CATEGORY TOO — hundreds of thousands of names — so everything below is sized per NAME:
+    # names are yielded one at a time, never listed; a name already in normal form is the SAME str object, not a copy;
+    # the index maps a name to a bitmask of categories, not a set (a set per name was ~200 B × every name of the union:
+    # +182 MB measured for one 400k-name union, on nodes with 1 GB). Same answers, same order-free result.
+    def norm(kd, s):                                           # as swg-sni's _index; empty is dropped
+        s = str(s); l = s.lower(); l = s if l == s else l
+        return l if kd in t2k else l.strip(".")
     def ops(c):                                                # (kind, as written, normalised) — swg-sni's map needs two labels
-        return ([("site", d, norm("site", d)) for d in (domains.get(c) or []) if norm("site", d)
-                 and (engine == "dns" or "." in norm("site", d))]
-                + [(kd, o, norm(kd, o)) for kd in kinds for o in ((pats.get(kd) or {}).get(c) or []) if norm(kd, o)])
+        for d in (domains.get(c) or []):
+            n = norm("site", d)
+            if n and (engine == "dns" or "." in n):
+                yield ("site", d, n)
+        for kd in kinds:
+            for o in ((pats.get(kd) or {}).get(c) or []):
+                n = norm(kd, o)
+                if n:
+                    yield (kd, o, n)
     def rank(kd, n, lb=()):                                    # the engine's ladder, lower wins — used among containers only
         if engine == "dns":
             return (-(n.count(".") + 1),)                      # dnsmasq: the longest key (a zone is a one-label key)
@@ -4476,12 +4488,19 @@ def _smart_shadows(smart_e, domains, pats, engine, insig=None):
         if kd == "any":
             return (4, lb.index(n) if n in lb else 0)          # the leftmost label of the host wins
         return (5, t2k.index(kd), -len(n), n)                  # Tier 2: starts, ends, contains; longest first
-    own = {"site": {}, "zone": {}, "any": {}}                  # kind → operand → {category}, every keyed category
+    own = {"site": {}, "zone": {}, "any": {}}                  # kind → operand → bitmask over `keyed`, every keyed category
     t2 = {kd: {} for kd in t2k}
-    for c in keyed:
+    for i, c in enumerate(keyed):
+        b = 1 << i
         for kd, _raw, n in ops(c):
-            (t2 if kd in t2k else own).setdefault(kd, {}).setdefault(n, set()).add(c)
+            if kd in t2k:
+                t2[kd].setdefault(n, set()).add(c)
+            else:
+                d = own.setdefault(kd, {}); d[n] = d.get(n, 0) | b
     t2 = {kd: list(v.items()) for kd, v in t2.items()}
+    def of(kd, n):                                             # the categories holding operand n of kind kd
+        m = own.get(kd, {}).get(n, 0)
+        return [keyed[i] for i in range(m.bit_length()) if m >> i & 1] if m else ()
     found = {}
     for c1 in sorted({c1 for c1, _c2 in pairs}):
         tg = {c2 for a, c2 in pairs if a == c1}
@@ -4490,12 +4509,12 @@ def _smart_shadows(smart_e, domains, pats, engine, insig=None):
             if kd == "site":
                 lb = n.split(".")
                 for j in range(1, len(lb) - (0 if engine == "dns" else 1)):   # parents (swg-sni's domain map needs two labels)
-                    hit += [(c, rank("site", ".".join(lb[j:]))) for c in own["site"].get(".".join(lb[j:]), ())]
-                hit += [(c, rank("zone", lb[-1])) for c in own["zone"].get(lb[-1], ())]
-                hit += [(c, rank("any", x, lb)) for x in lb for c in own["any"].get(x, ())]
+                    hit += [(c, rank("site", ".".join(lb[j:]))) for c in of("site", ".".join(lb[j:]))]
+                hit += [(c, rank("zone", lb[-1])) for c in of("zone", lb[-1])]
+                hit += [(c, rank("any", x, lb)) for x in lb for c in of("any", x)]
                 hit += [(c, rank("ends", o)) for o, cs in t2["ends"] if n.endswith(o) for c in cs]
             elif kd in ("first", "zone"):
-                hit += [(c, rank("any", n)) for c in own["any"].get(n, ())]
+                hit += [(c, rank("any", n)) for c in of("any", n)]
                 t = "starts" if kd == "first" else "ends"
                 hit += [(c, rank(t, o)) for o, cs in t2[t] if (n.startswith(o) if t == "starts" else n.endswith(o)) for c in cs]
             elif kd in ("starts", "ends"):
