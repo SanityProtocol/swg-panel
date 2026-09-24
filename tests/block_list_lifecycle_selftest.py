@@ -99,39 +99,52 @@ def main():
     check("after the back-off the refresh lands", m.list_meta("blk:tp:a", "host").get("n") == 3)
     check("…and clears the failure state", all("blk:tp:a|host" not in d for d in (m._LIST_FAILED, m._LIST_FAILN, m._LIST_ERR)))
 
-    print("4. a partial union knows it is partial and is rebuilt when the member lands")
-    ukey = m._blku_key("host", ["blk:tp:a", "blk:tp:b"])
-    m._BLKU_REG[ukey] = ["blk:tp:a", "blk:tp:b"]
-    meta, st = m._blku_store(ukey, "host"); settle(m)          # b is not there yet → scheduled, skipped
-    check("partial union builds from what is ready", st == "ok" and meta.get("n") == 3, (st, meta))
-    check("the union records the members it was made of", set(meta.get("mv") or {}) == {"blk:tp:a"}, meta)
-    check("with b still missing the union is current (no churn)", meta.get("mv") == m._blku_member_vers(ukey, "host"))
+    print("4. a union is named after the lists it HOLDS — a list that lands late makes a new union a node pulls at once")
+    # A node applies a CHANGED list only in its update window (04:00) and a NEW one at once, so a late list must rename.
+    PS = {"block_catalog": {"categories": {"cl_t": {"label": "T", "kind": "content", "enabled_nodes": ["n1"],
+          "sources": [{"provider": "tp", "list": "a"}, {"provider": "tp", "list": "b"}]}}}}
+    NODE = {"ifaces": {"wg0": {"block": ["cl_t"]}}}
+    SNAP = {"interfaces": {"wg0": {"meta": {"subnet": "10.0.0.0/24"}}}}
+    def plan():
+        ents, srcs, _ = m._resolve_iface_blocks(NODE, SNAP, PS, "sni", "n1"); settle(m)
+        return [e["category"] for e in ents]
+    k1 = plan()                                                # b has no list yet
+    check("with b still downloading, the union is named after a alone", k1 == [m._blku_key("host", ["blk:tp:a"])], k1)
+    check("…and b is being fetched meanwhile", "blk:tp:b|host" in m._LIST_FAILED or "blk:tp:b|host" in m._LIST_INFLIGHT or m.list_meta("blk:tp:b", "host"))
+    meta, st = m._blku_store(k1[0], "host")
+    check("that union builds from a", st == "ok" and meta.get("n") == 3, (st, meta))
     open(os.path.join(feeds, "b.txt"), "w").write("b1.example.com\na1.example.com\n")
     m._LIST_FAILED.pop("blk:tp:b|host", None); m._LIST_FAILN.pop("blk:tp:b|host", None)
     m.list_ensure("blk:tp:b", "host"); settle(m)
     check("b lands", (m.list_meta("blk:tp:b", "host") or {}).get("n") == 2)
-    check("the union now reads stale", m.list_meta(ukey, "host").get("mv") != m._blku_member_vers(ukey, "host"))
+    k2 = plan()
+    check("b landing RENAMES the union (a node sees a new list and pulls it at once)", k2 and k2 != k1 and k2[0] == m._blku_key("host", ["blk:tp:a", "blk:tp:b"]), (k1, k2))
+    check("the new union has no copy yet — a node cannot hold a stale one under this name", m.list_meta(k2[0], "host") is None)
     held = 0                                                   # every download slot busy (a one-core panel mid-download)
     while m._RESOLVE_SEM.acquire(blocking=False):
         held += 1
-    m.list_ensure(ukey, "host", force=True)
+    m.list_ensure(k2[0], "host", force=True)
     built = settle(m, 5)
     for _ in range(held):
         m._RESOLVE_SEM.release()
     check("a union builds while every download slot is taken (it never queues behind downloads)", built and held > 0)
-    um = m.list_meta(ukey, "host")
-    check("rebuilt union holds both members, deduped", um.get("n") == 4, um)
-    check("…and reads current again", um.get("mv") == m._blku_member_vers(ukey, "host"))
-    body = open(m._list_path(ukey, "host")).read().split()
+    um = m.list_meta(k2[0], "host")
+    check("it holds both lists, deduped", um and um.get("n") == 4, um)
+    check("…and records the versions it was made of", um.get("mv") == m._blku_member_vers(k2[0], "host"))
+    body = open(m._list_path(k2[0], "host")).read().split()
     check("union body is sorted + unique", body == sorted(set(body)), body)
+    open(os.path.join(feeds, "a.txt"), "w").write("a1.example.com\na2.example.com\na3.example.com\na4.example.com\n")
+    m._LIST_FAILED.pop("blk:tp:a|host", None)
+    m.list_ensure("blk:tp:a", "host", force=True); settle(m)
+    check("a routine refresh of a keeps the name (it waits for the node's window, like every list)", plan() == k2)
+    check("…and reads as stale for the hourly rebuild", m.list_meta(k2[0], "host").get("mv") != m._blku_member_vers(k2[0], "host"))
 
     print("5. the manifest builder refreshes union members on the cadence")
     src = open(SERVER).read()
     i = src.find("A UNION IS ONLY AS FRESH AS ITS MEMBERS")
-    blk = src[i:i + 1600]
+    blk = src[i:i + 1800]
     check("members are ensured with force when due", "for _sid in (_BLKU_REG.get(_c)" in blk and "force=bool(_mm)" in blk)
-    check("union goes due when its members moved", "_blku_member_vers(_c, _tier)" in blk)
-    check("a landed member rebuilds at once, refreshes batch hourly", "set(_cur) - set(_mv or {})" in blk and "> 3600" in blk)
+    check("a union whose members refreshed is rebuilt, at most hourly", "_blku_member_vers(_c, _tier)" in blk and "> 3600" in blk)
 
     print("\n%s" % ("ALL PASS" if not FAILS else "%d FAILED: %s" % (len(FAILS), ", ".join(FAILS))))
     sys.exit(1 if FAILS else 0)

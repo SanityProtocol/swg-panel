@@ -20,6 +20,9 @@ try:
 except SystemExit:
     pass
 
+m._blku_ready = lambda sid, tier: {"v": "x"}   # every list downloaded — this test is about WHICH lists, not when they land
+m.list_ensure = lambda *a, **k: None
+
 FAILS = []
 def check(name, cond, detail=""):
     print(("  PASS " if cond else "  FAIL ") + name + (("  — " + str(detail)) if detail and not cond else ""))

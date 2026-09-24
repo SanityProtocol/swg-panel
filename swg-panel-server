@@ -15408,13 +15408,19 @@ def _blku_store(cat, tier):
         return _list_commit_items(cat, tier, items, extra=extra)   # ip union is small (threat feeds) → in-memory collapse, shared commit
     return _blku_merge_write(cat, tier, paths, extra=extra)
 
+def _blku_ready(sid, tier):
+    """A member list is READY when it has a stored copy on disk — the one test behind which lists a union is named after
+    (_resolve_iface_blocks), built from (_blku_store) and compared against (the manifest)."""
+    mm = list_meta(sid, tier)
+    return mm if mm is not None and os.path.exists(_list_path(sid, tier)) else None
+
 def _blku_member_vers(cat, tier):
-    """{member: version} of a union's members that are resolved right now — compared against the union's own
+    """{member: version} of a union's members that are ready right now — compared against the union's own
     meta["mv"] to tell whether the union on disk is still made of the current lists."""
     out = {}
     for sid in (_BLKU_REG.get(cat) or []):
-        mm = list_meta(sid, tier)
-        if mm is not None and os.path.exists(_list_path(sid, tier)):
+        mm = _blku_ready(sid, tier)
+        if mm is not None:
             out[sid] = mm.get("v", "")
     return out                                                # _blku_store builds from exactly these; the manifest compares against them
 
@@ -15601,10 +15607,22 @@ def _resolve_iface_blocks(node, snap, panel_settings, mode, node_id):
                 if sid not in tier_srcs[tier]:
                     tier_srcs[tier].append(sid)
         for tier in ("host", "ip"):                   # ONE union set → ONE drop rule per non-empty tier
-            if not tier_srcs[tier]:
+            # ⚠️ A UNION IS NAMED AFTER THE LISTS IT HOLDS, NOT THE LISTS IT WANTS. A node applies a CHANGED list only in
+            # the operator's update window (swg-noded _in_quiet_window, 04:00 by default) and a NEW one at once. Named
+            # after every wanted list, a union built while one was still downloading kept its name when that list
+            # landed, so the grown union was a mere "change" and the late list reached the datapath up to a day later
+            # — the case of a feed that is slow or failing (measured on swgt 09-24: rebuilt on the panel at 19:52, the
+            # node kept the old copy for its 04:00 window). Named after the ready lists, a list that lands makes a new
+            # union the node pulls on its next sync — the path a filter change already takes; a routine refresh of the
+            # same lists keeps the name and waits for the window, as every list does.
+            ready = [sid for sid in tier_srcs[tier] if _blku_ready(sid, tier) is not None]
+            for sid in tier_srcs[tier]:
+                if sid not in ready:
+                    list_ensure(sid, tier)            # still downloading (or backing off) — it joins the union when it lands
+            if not ready:
                 continue
-            key = _blku_key(tier, tier_srcs[tier])
-            _BLKU_REG[key] = sorted(tier_srcs[tier])
+            key = _blku_key(tier, ready)
+            _BLKU_REG[key] = sorted(ready)
             srcs[key] = tier
             entries.append({"subnet": subnet, "category": key, "action": "block"})
     for ifn, ov in (node.get("ifaces") or {}).items():
@@ -28682,17 +28700,18 @@ class Handler(BaseHTTPRequestHandler):
                     # A UNION IS ONLY AS FRESH AS ITS MEMBERS, AND IT IS THE ONLY THING THAT NAMES THEM. The members
                     # (`blk:<prov>:<list>`) reach no other refresh path — routed_catalog_cats knows only routing lists —
                     # so they are kept on the same cadence here. And a union built while a member was still downloading
-                    # is a PARTIAL union: it used to stay partial until its own daily refresh, so a slow feed's list was
-                    # simply not blocked for up to a day. It is rebuilt whenever the members it was made of differ from
-                    # the members as they stand (one landed, one refreshed) — a local merge, no fetch.
+                    # is a PARTIAL union: it used to stay partial until its own daily refresh. A member that lands now
+                    # renames the union (see _resolve_iface_blocks), so what is left here is the members REFRESHING: the
+                    # union is rebuilt when the versions it was made of differ from the members as they stand — a local
+                    # merge, no fetch.
                     for _sid in (_BLKU_REG.get(_c) or []):
                         _mm = list_meta(_sid, _tier)
                         list_ensure(_sid, _tier, force=bool(_mm) and int(time.time()) - int(_mm.get("at") or 0) > _cadence)
-                    # A member that LANDED rebuilds at once (the union was missing a whole list); members that merely
-                    # refreshed are batched to one rebuild an hour — each rebuild is a new version every node re-pulls
-                    # and re-loads (dnsmasq / swg-sni), and a union's members come due within minutes of each other.
+                    # Refreshes are batched to one rebuild an hour — each rebuild is a new version every node re-pulls
+                    # and re-loads (dnsmasq / swg-sni) in its window, and a union's members come due within minutes of
+                    # each other.
                     _cur, _mv = _blku_member_vers(_c, _tier), (_mt or {}).get("mv")
-                    if _mt and _cur != _mv and (set(_cur) - set(_mv or {}) or int(time.time()) - int(_mt.get("at") or 0) > 3600):
+                    if _mt and _cur != _mv and int(time.time()) - int(_mt.get("at") or 0) > 3600:
                         _due = True
                 _mt = list_ensure(_c, _tier, force=_due) or _mt    # background (re)resolve; ships current (old) version until the new one lands
                 if _mt:
