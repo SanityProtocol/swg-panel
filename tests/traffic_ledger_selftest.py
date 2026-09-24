@@ -169,13 +169,28 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
             "            if False:")], "never a new table"),
     "N": ([("            for b in _state_backups(self._p(\"index.json\")):    # takes a missing primary",
             "            for b in []:    # takes a missing primary")], "recovered from its newest backup"),
-    "O": ([("        if wide > n:                                           # base.bin and every day row",
-            "        if False:                                              # base.bin and every day row")], "older than the history"),
+    "O": ([("        if wide > n:                                           # base.bin, every day row",
+            "        if False:                                              # base.bin, every day row")], "older than the history"),
     "P": ([("                    mv = mv[n:]\n", "                    mv = mv[len(mv):]\n")], "cut short"),
     "Q": ([("                self._tails[path] = end                        # record IN PLACE",
             "                self._tails.pop(path, None)                    # record IN PLACE")], "retried in place"),
     "R": ([("            if t is not None and self.slots[s].get(\"name\") != t:", "            if False:")], "LAST name"),
-    "S": ([("            return max(f, 19700101), min(t, today),", "            return f, min(t, today),")], "before 1970"),
+    "S": ([("            f, t = max(f, 19700101), min(t, today)", "            f, t = f, min(t, today)")], "before 1970"),
+    # [12] the review of the retrospective
+    "T": ([("                    if not _ledger_index_ok(got):              # and a backup", "                    if False:                                  # and a backup")],
+          "holds no slot table"),
+    "U": ([("                   self._fine_width())", "                   0)")], "newest fine buckets"),
+    "V": ([("                if not isinstance(t, dict) or not isinstance(t.get(\"node\"), str) or not isinstance(t.get(\"iface\"), str) \\\n                        or not t[\"node\"] or not t[\"iface\"]:",
+            "                if not isinstance(t, dict) or not t.get(\"node\") or not t.get(\"iface\"):")], "not a string"),
+    "W": ([("            if valid is not None and not valid(data):", "            if False:")], "CORRUPT index.json"),
+    "X": ([("            if sz < len(magic):                                # its first write never finished",
+            "            if False:                                          # its first write never finished")], "first write"),
+    "Y": ([("            self._tails.pop(self._day_path(d), None)           # and a row written whole", "            pass  # and a row written whole")],
+          "never lands on"),
+    "Z": ([("            if f > t:\n                raise ValueError(perr(\"from and to must include", "            if False:\n                raise ValueError(perr(\"from and to must include")],
+          "inverted window"),
+    "a2": ([("        f = min(max(f, _ld_day(first)[0]), t) if first else t", "        f = min(max(f, _ld_day(first)[0]), t) if first else f")], "empty ledger"),
+    "b2": ([("        f = min(max(f, _ld_day(first)[0]), t) if first else t", "        f = max(f, _ld_day(first)[0]) if first else t")], "before the ledger began"),
 }
 
 TMP = tempfile.mkdtemp(prefix="ledger-")
@@ -997,6 +1012,141 @@ try:
 except Exception as e:
     import traceback; traceback.print_exc()
     check("section [11] ran to the end", False, "%s: %s" % (type(e).__name__, e))
+
+
+print("[12] the review of the retrospective: backups, today's buckets, imports, a file's first write, a rewrite, the window")
+
+
+def section_12():
+    global L, rp
+    L, rp = fresh("badbak", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")])))
+    ing(L, "n1", wg("awg0", ("K1", 100, 0)), T0)
+    ing(L, "n1", wg("awg0", ("K1", 200, 0)), T0 + 3600)
+    L.flush()
+    hd = os.path.join(TMP, "badbak", "history")
+    ix = os.path.join(hd, "index.json")
+    good = open(ix).read()
+    for b in [f for f in os.listdir(hd) if f.startswith("index.json")]:
+        os.unlink(os.path.join(hd, b))
+    open(ix + ".bak.100", "w").write(good)                      # an older, good backup…
+    open(ix + ".bak.200", "w").write("null")                    # …under a newer one that parses and holds nothing
+    L2 = reopen(rp, T0 + 3700)
+    check("a missing index.json skips a backup that parses but holds no slot table, and takes the good one under it",
+          L2.on and [x["pid"] for x in L2.slots] == ["p1"], (L2.on, L2.why_off))
+
+    for b in [f for f in os.listdir(hd) if f.startswith("index.json")]:
+        os.unlink(os.path.join(hd, b))
+    open(ix, "w").write("{not json")                            # a CORRUPT primary this time…
+    open(ix + ".bak.100", "w").write(good)
+    open(ix + ".bak.200", "w").write("{}")                      # …under a newest backup that parses and holds nothing
+    L2 = reopen(rp, T0 + 3700)
+    check("a CORRUPT index.json is recovered from its newest GOOD backup — one that parses but holds no slot table is skipped",
+          L2.on and [x["pid"] for x in L2.slots] == ["p1"], (L2.on, L2.why_off))
+
+    L, rp = fresh("finewide", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")]), peer("p2", "u1", "K2", [("n1", "awg0", "awg")])))
+    ing(L, "n1", wg("awg0", ("K1", 100, 0)), T0)
+    L.flush()
+    hd = os.path.join(TMP, "finewide", "history")
+    ix = os.path.join(hd, "index.json")
+    one = open(ix).read()                                      # one slot
+    ing(L, "n1", wg("awg0", ("K1", 100, 0), ("K2", 50, 0)), T0 + 5)
+    ing(L, "n1", wg("awg0", ("K1", 150, 0), ("K2", 90, 0)), T0 + 60)
+    ing(L, "n1", wg("awg0", ("K1", 160, 0), ("K2", 95, 0)), T0 + 3600)   # closes bucket 10: slot 1 is in today's fine file
+    L.flush()
+    open(ix, "w").write(one)
+    for f in os.listdir(hd):
+        if f.startswith("base.bin"):
+            os.unlink(os.path.join(hd, f))                     # no base.bin, no day row yet: only today's buckets name slot 1
+    L2 = reopen(rp, T0 + 3700)
+    check("an index.json older than the newest fine buckets stays off too — and says what to do when no newer one exists",
+          not L2.on and "older" in L2.why_off and "aside" in L2.why_off, (L2.on, L2.why_off))
+    L3 = reopen(rp, T0 + 86400)
+    check("…and after midnight, before the day's row is written, the newest fine buckets are yesterday's: still off",
+          not L3.on and "older" in L3.why_off, (L3.on, L3.why_off))
+
+    R = roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")]), peer("p2", "u1", "K2", [(5, "awg0", "awg")]),
+               peer("p3", "u1", "K3", [("n1", "awg1", "awg")]), peer("p4", "u1", "K4", [(["n1"], "awg0", "awg")]))
+    L, rp = fresh("oddnode", R)
+    err = None
+    try:
+        ing(L, "n1", wg("awg0", ("K1", 100, 0)), T0)           # a list is unhashable: the map build raised in every sync
+        L.flush()                                              # …and an int beside a string stopped the imports sort
+    except Exception as e:
+        err = e
+    ix = os.path.join(TMP, "oddnode", "history", "index.json")
+    check("a roster target whose node is not a string names no counter — the ledger keeps reading and writing",
+          err is None and os.path.exists(ix) and not L.diag.get("ingest_errors") and C(L, slot_of(L, "p1")) == (0, 0)
+          and all(isinstance(v, str) for k in L.imports for v in k), (err, L.diag, L.imports))
+
+    L, rp = fresh("firstw", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")])))
+    ing(L, "n1", wg("awg0", ("K1", 0, 0)), T0)
+    ing(L, "n1", wg("awg0", ("K1", 100, 0)), T0 + 60)
+    ing(L, "n1", wg("awg0", ("K1", 200, 0)), T0 + 3600)       # closes bucket 10
+    fp = L._fine_path(20260910)
+    open(fp, "wb").close()                                     # its first write never finished: an empty file
+    L._tails.pop(fp, None)
+    L.flush()
+    hd = os.path.join(TMP, "firstw", "history")
+    got = [(i, c[1][0]) for i, _n, _e, c in L._fine_buckets(fp)]
+    check("a file whose first write never finished starts again — not moved aside as corrupt at every retry",
+          got == [(10, 100)] and not [f for f in os.listdir(hd) if ".corrupt." in f], (got, os.listdir(hd)))
+
+    L, rp = fresh("dayfsync", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")])))
+    ing(L, "n1", wg("awg0", ("K1", 0, 0)), T0)
+    ing(L, "n1", wg("awg0", ("K1", 100, 0)), T0 + 60)
+    ing(L, "n1", wg("awg0", ("K1", 200, 0)), T0 + 86400)     # 2026-09-11: day 10's row is queued
+    L.flush()
+    ing(L, "n1", wg("awg0", ("K1", 300, 0)), T0 + 2 * 86400)  # 2026-09-12: day 11's row is queued
+    real_ad = L._append_day
+
+    def ad_badsync(dr):
+        real_fsync = P.os.fsync
+
+        def boom(fd):
+            raise OSError(5, "Input/output error")
+        P.os.fsync = boom
+        try:
+            return real_ad(dr)
+        finally:
+            P.os.fsync = real_fsync
+    L._append_day = ad_badsync
+    L.flush()                                                   # day 11's row written whole, its fsync fails: requeued
+    L._append_day = real_ad
+    L.flush()                                                   # the retry finds the row on disk and writes nothing
+    ing(L, "n1", wg("awg0", ("K1", 400, 0)), T0 + 3 * 86400)  # 2026-09-13: day 12's row
+    L.flush()
+    got = sorted(L._day_rows(L._day_path(20260910)))
+    check("a day row whose fsync failed stays on disk — the next day's row never lands on it",
+          got == [20260910, 20260911, 20260912], got)
+
+    err = None
+    try:
+        L._window({"from": ["0001-01-01"], "to": ["1969-12-31"]}, T0)
+    except ValueError as e:
+        err = e
+    err2 = None
+    try:
+        L._window({"from": ["2030-01-01"], "to": ["2030-01-31"]}, T0)
+    except ValueError as e:
+        err2 = e
+    check("a custom range with no day between 1970 and today is refused — never an inverted window", err is not None and err2 is not None,
+          (err, err2))
+
+    r = L.series({"range": ["custom"], "from": ["2026-08-01"], "to": ["2026-08-15"], "id": ["p1"]}, T0 + 3 * 86400)
+    check("a series of a window before the ledger began is empty — never an inverted window",
+          r["from"] <= r["to"] and r["since"] <= r["until"] and r["points"] == [], (r["from"], r["to"], r["points"]))
+
+    L, rp = fresh("empty", roster())
+    r = L.series({"range": ["all"], "id": ["p1"]}, T0)
+    check("an empty ledger's series walks no day before today (not 20,000 days from 1970)",
+          r["from"] == 20260910 and r["points"] == [], (r["from"], r["points"]))
+
+
+try:
+    section_12()
+except Exception as e:
+    import traceback; traceback.print_exc()
+    check("section [12] ran to the end", False, "%s: %s" % (type(e).__name__, e))
 
 shutil.rmtree(TMP, ignore_errors=True)
 if PLANT:

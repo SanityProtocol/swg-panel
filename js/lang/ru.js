@@ -1643,6 +1643,7 @@ export const STR = {
   "The traffic ledger is not running: {v1}": "Учёт трафика не работает: {v1}",
   "from and to must be dates, YYYY-MM-DD": "from и to должны быть датами в формате ГГГГ-ММ-ДД",
   "from must not be after to": "from не может быть позже to",
+  "from and to must include a day between 1970 and today": "from и to должны захватывать хотя бы один день между 1970 годом и сегодняшним",
   "range must be today, 7d, 30d, month, all or custom": "range должен быть today, 7d, 30d, month, all или custom",
   "by must be peer or user": "by должен быть peer или user",
   "id is required, by must be peer or user": "нужен id, а by должен быть peer или user",

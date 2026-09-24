@@ -2021,7 +2021,7 @@ def _state_owner():
     return u, g
 
 
-def load_critical(path, default):
+def load_critical(path, default, valid=None):
     try:
         with open(path) as f:
             return json.load(f)
@@ -2052,6 +2052,8 @@ def load_critical(path, default):
                     data = json.load(f)
             except Exception:
                 continue
+            if valid is not None and not valid(data):                # parses, but is not this file's shape: the next
+                continue                                             # older backup is tried
             if _perm:
                 sys.stderr.write(
                     "swg-panel: %s could not be READ (%s) — the file is intact, this process just has no "
@@ -17617,6 +17619,12 @@ def _i_array(b):
     return a
 
 
+def _ledger_index_ok(idx):
+    """index.json holds a slot table: a dict whose `slots` are dicts with a pid."""
+    return (isinstance(idx, dict) and isinstance(idx.get("slots"), list)
+            and all(isinstance(s, dict) and s.get("pid") for s in idx["slots"]))
+
+
 class TrafficLedger:
     """One per panel process (LEDGER). ingest() runs at the end of every sync's history phase, outside _api_lock and in
     its own guard; everything it does is arithmetic on memory under the ledger's OWN lock — never _hrrd_lock, which
@@ -17696,7 +17704,7 @@ class TrafficLedger:
             st = LEDGER_STEP_DEFAULT
         self.step = max(5, min(86400, st)) if env else (st if st in LEDGER_STEPS else LEDGER_STEP_DEFAULT)
         try:
-            idx = load_critical(self._p("index.json"), None)   # a corrupt primary is recovered from its backups
+            idx = load_critical(self._p("index.json"), None, _ledger_index_ok)   # a corrupt primary: its newest GOOD backup
         except RuntimeError as e:                               # …and with none, the ledger stays off (never a fresh one)
             self.on, self.why_off = False, "index.json is unreadable and no backup is good (%s)" % e
             print("ledger: OFF — %s" % self.why_off, flush=True)
@@ -17705,7 +17713,10 @@ class TrafficLedger:
             for b in _state_backups(self._p("index.json")):    # takes a missing primary for a first install and restores only
                 with contextlib.suppress(Exception):           # a corrupt one — but a new slot table over old day rows would
                     with open(b) as f:                         # renumber every slot, and each earlier window would be read
-                        idx = json.load(f)                     # against the wrong peers. Its newest good backup, else OFF.
+                        got = json.load(f)                     # against the wrong peers. Its newest good backup, else OFF —
+                    if not _ledger_index_ok(got):              # and a backup that parses but holds no slot table is not good:
+                        continue                               # the next older one is tried
+                    idx = got
                     print("ledger: index.json is missing — recovered from %s" % b, flush=True)
                     self.d_index = True
                     break
@@ -17714,8 +17725,7 @@ class TrafficLedger:
                                                 "move %s aside to start a new ledger" % self.dir)
                 print("ledger: OFF — %s" % self.why_off, flush=True)
                 return
-        if idx is not None and not (isinstance(idx, dict) and isinstance(idx.get("slots"), list)
-                                    and all(isinstance(s, dict) and s.get("pid") for s in idx["slots"])):
+        if idx is not None and not _ledger_index_ok(idx):
             self.on, self.why_off = False, "index.json does not hold a slot table"
             print("ledger: OFF — %s" % self.why_off, flush=True)
             return
@@ -17732,11 +17742,13 @@ class TrafficLedger:
         base = self._load_base()
         n = len(self.slots)
         row = self._newest_row()
-        wide = max(len(base[1]) if base is not None else 0, len(row[1]) if row is not None else 0)
-        if wide > n:                                           # base.bin and every day row are written AFTER index.json, so a
-            self.on = False                                    # table narrower than they are is OLDER than what it indexes:
-            self.why_off = ("index.json holds %d slots but the history it indexes has %d — it is older than those files; "
-                            "restore the newest index.json" % (n, wide))   # new slots would reuse their numbers, and every
+        wide = max(len(base[1]) if base is not None else 0, len(row[1]) if row is not None else 0,
+                   self._fine_width())                                     # the newest buckets name slots no row has yet
+        if wide > n:                                           # base.bin, every day row and every fine bucket are written AFTER
+            self.on = False                                    # index.json, so a table narrower than they are is OLDER than what
+            self.why_off = ("index.json holds %d slots but the history it indexes has %d — it is older than those files. "
+                            "Put back a newer index.json if one exists; if none does, move %s aside to start a new ledger"
+                            % (n, wide, self.dir))             # it indexes: new slots would reuse their numbers, and every
             print("ledger: OFF — %s" % self.why_off, flush=True)   # earlier day would be counted against the new peers
             return
         if base is not None:
@@ -17905,7 +17917,8 @@ class TrafficLedger:
             owners[pid] = p.get("user_id") or None
             titles[pid] = str(p.get("title") or "")[:64]
             for t in p.get("targets") or []:
-                if not isinstance(t, dict) or not t.get("node") or not t.get("iface"):
+                if not isinstance(t, dict) or not isinstance(t.get("node"), str) or not isinstance(t.get("iface"), str) \
+                        or not t["node"] or not t["iface"]:           # a hand-edited target (an int or a list) names no counter
                     continue
                 cred = (p.get("wdtt_password") if _is_wdtt_target(t)
                         else p.get("csqtt_password") if _is_csqtt_target(t) else p.get("pubkey"))
@@ -18162,6 +18175,10 @@ class TrafficLedger:
                 sz = os.path.getsize(path)
             except FileNotFoundError:
                 return 0
+            if sz < len(magic):                                # its first write never finished (a full disk): nothing in it
+                os.truncate(path, 0)                           # was ever valid, so it starts again — not a "corrupt" file
+                self._tails[path] = 0                          # moved aside at every retry
+                return 0
             with open(path, "rb") as f:
                 h = f.read(4)
             if h != magic:
@@ -18236,8 +18253,9 @@ class TrafficLedger:
 
     def _append_day(self, dr):
         d, off, end, crx, ctx = dr
-        if self._row_at_exact(d) is not None:                  # already closed (a restart re-closing a day): first one wins
-            return
+        if self._row_at_exact(d) is not None:                  # already closed (a restart re-closing a day): first one wins —
+            self._tails.pop(self._day_path(d), None)           # and a row written whole whose fsync failed is ON disk: its
+            return                                             # tail was rewound for a rewrite, so the next row must not land on it
         cb = _larr.array("Q", bytes(16 * len(crx)))
         cb[0::2] = crx; cb[1::2] = ctx
         payload = cb.tobytes()
@@ -18371,6 +18389,25 @@ class TrafficLedger:
             yield i, n, p1, cols
             o = p1
 
+    def _fine_width(self):
+        """1 + the highest slot the newest fine file's valid buckets name (0 for none). The newest file ON DISK, not
+        today's: a restart after midnight, or a clock behind the ledger's day, would read an empty one. A bucket's
+        slot column is sorted, so only its last id is read."""
+        names = sorted(f for f in os.listdir(self.dir) if f.startswith("fine-") and f.endswith(".bin"))
+        if not names:
+            return 0
+        try:
+            with open(self._p(names[-1]), "rb") as f:
+                data = f.read()
+        except OSError:
+            return 0
+        w = 0
+        for _i, n, e, _c in self._fine_buckets(None, want=False, data=data):
+            if n:
+                p0 = e - 20 * n
+                w = max(w, struct.unpack_from("<I", data, p0 + 4 * (n - 1))[0] + 1)
+        return w
+
     def _fine_head(self, path):
         with open(path, "rb") as f:
             h = f.read(_LF_FHEAD.size)
@@ -18393,7 +18430,11 @@ class TrafficLedger:
                 raise ValueError(perr("from and to must be dates, YYYY-MM-DD"))
             if f > t:
                 raise ValueError(perr("from must not be after to"))
-            return max(f, 19700101), min(t, today), "custom:%d-%d" % (f, t)   # a series walks day by day: never from year 1
+            rk = "custom:%d-%d" % (f, t)
+            f, t = max(f, 19700101), min(t, today)             # a series walks day by day: never from year 1
+            if f > t:
+                raise ValueError(perr("from and to must include a day between 1970 and today"))
+            return f, t, rk
         if rng == "today":
             return today, today, rng
         if rng in ("7d", "30d"):
@@ -18479,8 +18520,7 @@ class TrafficLedger:
             live = (self.day, self.C_rx[:], self.C_tx[:])
             cur = (self.day, self.idx, self.step, self.fmid, {s: list(self.fine[s]) for s in want if s in self.fine})
             nodes = {k[0] for k in self.recs if (k[2] == ident if by == "peer" else self.owners.get(k[2]) == ident)}
-        if first:                                              # nothing exists before the ledger's first slot: never walk from 1970
-            f = max(f, _ld_day(first)[0])
+        f = min(max(f, _ld_day(first)[0]), t) if first else t  # nothing exists before the ledger's first slot: never walk from 1970
         fine_ok = (_ld_date(t) - _ld_date(f)).days < LEDGER_SERIES_FINE_DAYS   # a longer window is read from the day rows:
         #                                                     one peer's fine points cost a read of each day's whole file
         sw = lambda arr: sum(arr[s] for s in want if s < len(arr))
