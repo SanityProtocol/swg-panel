@@ -13,7 +13,7 @@
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
 import {
-  BASE, ago, ipChoices, seen, url,
+  BASE, ago, ipChoices, seen, url, fmtBytes,
 } from "./util.js";
 import {
   LEAVE_MSG, clearUnsavedGuard, setUnsavedGuard,
@@ -57,6 +57,7 @@ import {
 import {
   IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS,
 } from "./iface.js";
+import { statsUsage, trafficInvalidate } from "./traffic.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useCallback } from "preact/hooks";
 import htm from "htm";
@@ -1711,6 +1712,37 @@ function tzOptions(cat, now, cur) {
   if (cur && cur !== mine && !zones.includes(cur)) opts.push({ value: cur, label: tzPlace(cur) });   // stored, but not listed (lost, or the list is not in yet)
   return opts;
 }
+// ── Display → Data: the traffic history (P2) ──────────────────────────────────────────────────────────────────
+const HIST_RES = [300, 900, 3600, 86400];
+const histResLabel = n => ({ 300: T("5 minutes"), 900: T("15 minutes"), 3600: T("1 hour"), 86400: T("1 day") }[n] || T("1 hour"));   // i18n-keys
+// What the history uses, MEASURED by the panel (GET /api/stats-usage: one directory walk, a minute's cache) — its own
+// component, subscribed to the store, so the form around it is not re-rendered by the poll.
+function HistoryUsage() {
+  useStore();
+  const u = statsUsage();
+  const d = u.data;
+  if (!d) return html`<div class="field"><div class="hint">${u.err ? T("Could not read how much disk the traffic history uses.") : T("Measuring the traffic history…")}</div></div>`;
+  if (!d.on) return html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Traffic totals are off, so nothing is being counted: {v1}", { v1: d.why_off || "?" })}</span></div>`;
+  return html`<div class="field"><div class="hint">
+    <div>${T("Traffic history uses {v1} in {v2} ({v3} free on that disk).", { v1: fmtBytes(d.bytes_ledger), v2: d.dir, v3: fmtBytes(d.free_bytes) })}</div>
+    <div>${d.basis === "estimate"
+      ? T("At {v1} resolution and {v2} active peers it will grow by about {v3} a day ({v4} a year) — an estimate until a full day is recorded.", { v1: histResLabel(d.resolution_next), v2: d.active_slots, v3: fmtBytes(d.per_day_bytes), v4: fmtBytes(d.per_year_bytes) })
+      : T("At {v1} resolution and {v2} active peers it grows by about {v3} a day ({v4} a year).", { v1: histResLabel(d.resolution_next), v2: d.active_slots, v3: fmtBytes(d.per_day_bytes), v4: fmtBytes(d.per_year_bytes) })}</div>
+    ${!d.infinite ? html`<div>${T("The detail is kept for the last 33 days; totals for any period are always kept.")}</div>` : null}
+  </div></div>`;
+}
+// Turning it off says what goes, from the read-out already measured (at most a minute old). ⚠️ With no measurement to
+// hand — not loaded, failed, or the ledger off — the confirm must not say that nothing goes.
+function confirmHistOff(ok) {
+  const u = statsUsage().data;
+  const d = u && u.on ? u : null;
+  openConfirm({ title: T("Turn off infinite history?"), danger: true, confirmLabel: T("Turn off"),
+    body: !d ? T("The panel will keep the traffic detail — each day's figures at the history resolution — for the last 33 days only. When you save, older detail is deleted and cannot be recovered. Totals for any period are kept — a day further back still shows, as one figure for the whole day.")
+      : d.sweep_days
+      ? T("The panel will keep the traffic detail — each day's figures at the history resolution — for the last 33 days only. When you save, the detail of {v1} older days — {v2} — is deleted and cannot be recovered. Totals for any period are kept — a day further back still shows, as one figure for the whole day.", { v1: d.sweep_days, v2: fmtBytes(d.sweep_bytes) })
+      : T("The panel will keep the traffic detail — each day's figures at the history resolution — for the last 33 days only. None is older than that yet, so nothing is deleted when you save; from then on, each day's detail is deleted once it is 33 days old. Totals for any period are kept."),
+    onConfirm: ok });
+}
 export function PanelSettingsScreen() {
   // NOTE: deliberately NOT subscribed to the 5s poll (no useStore) — this is an edit form seeded from a
   // snapshot at mount. Re-rendering every poll re-diffs every controlled input (the source of the checkbox
@@ -1821,7 +1853,10 @@ export function PanelSettingsScreen() {
   const [sc, setSc] = useState(_scMode);
   const [tput, setTput] = useState(ps.throughput_perspective === "peers" ? "peers" : "nodes");
   const [tunit, setTunit] = useState(ps.throughput_units === "bits" ? "bits" : "bytes");
-  const [tz, setTz] = useState(ps.time_zone || "");   // Display → Data: the zone days are counted in ("" = this server's own)
+  const [tz, setTz] = useState(ps.time_zone || "");
+  // Display → Data (P2): keep the traffic history for ever (default on, like showLans), and its fine resolution
+  const [infHist, setInfHist] = useState(ps.infinite_history !== false);
+  const [histRes, setHistRes] = useState(String(ps.history_resolution || 3600));   // Display → Data: the zone days are counted in ("" = this server's own)
   const [tzCat, setTzCat] = useState(_tzCat);
   const [staleS, setStaleS] = useState(String(Math.round((adv.node_stale_ms || 30000) / 1000)));
   const [graceS, setGraceS] = useState(String(Math.round((adv.peer_grace_ms || 60000) / 1000)));
@@ -2166,6 +2201,8 @@ export function PanelSettingsScreen() {
         throughput_perspective: tput,
         throughput_units: tunit,
         time_zone: tz,
+        infinite_history: infHist,
+        history_resolution: +histRes || 3600,
         top_talkers: Math.max(1, Math.min(50, parseInt(topTalk) || 10)),
         top_destinations: Math.max(1, Math.min(50, parseInt(topDest) || 10)),
         expiry_warn_days: Math.max(0, Math.min(365, parseInt(warnDays) || 3)),
@@ -2186,6 +2223,7 @@ export function PanelSettingsScreen() {
         vk_link: vkLinkS.trim(),
       });
       if (!r.ok) return setMsg({ ok: false, t: srvText(r) || T("Failed to save.") });
+      if (dataDirty() || tzDirty()) trafficInvalidate();   // re-read what the save changed: a zone moves every day's edges
     }
     // interface-key escrow — applied on Save (not on toggle), like every other field. Enabling needs the vault unlocked.
     if (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit) {
@@ -2264,6 +2302,8 @@ export function PanelSettingsScreen() {
     if (glDirty("subs")) out.push(T("Subscriptions — enable / languages"));
     if (dispDirty()) out.push(T("Display — theme / status timing"));
     if (tzDirty()) out.push(tz ? T("Days are counted in {v1}", { v1: tz }) : T("Days are counted in this server's zone"));
+    if (infHist !== (ps.infinite_history !== false)) out.push(infHist ? T("Infinite history — on") : T("Infinite history — off: detail older than 33 days is deleted"));
+    if (histRes !== String(ps.history_resolution || 3600)) out.push(T("History resolution → {v1}, from the next day", { v1: histResLabel(+histRes) }));
     // Two changes share this section, so the line names the one that actually moved rather than reporting
     // "mesh defaults" for a disclosure toggle that is not one.
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
@@ -2408,6 +2448,8 @@ const sectionLabel = k => ({
   // Display is two lines in the confirm list: the zone has a consequence of its own (the charts re-time), so it is named.
   const dispDirty = () => tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || tunit !== (ps.throughput_units === "bits" ? "bits" : "bytes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase();
   const tzDirty = () => tz !== (ps.time_zone || "");
+  // ⚠️ THE THIRD HALF of the settings idiom: without this in the display arm below, Save never enables for these two.
+  const dataDirty = () => infHist !== (ps.infinite_history !== false) || histRes !== String(ps.history_resolution || 3600);
   const glDirty = sec =>
     sec === "routing" ? (listsJSON(lists) !== listsJSON(ps.custom_lists || []) || Object.keys(blockEdits).length > 0 || blockRemoved.length > 0) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
@@ -2416,7 +2458,7 @@ const sectionLabel = k => ({
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || JSON.stringify(awgTrim(awgDef)) !== JSON.stringify(awgTrim(idf.awg_params || {})) || JSON.stringify(awg3Trim(awg3Def)) !== JSON.stringify(awg3Trim(idf.awg3_params)) || reachDef !== (idf.reach || "user") || awgGenDef !== (idf.awg_gen === "3.1" ? "3.1" : "2.0") || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
     sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
-    sec === "display" ? (dispDirty() || tzDirty()) :
+    sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || showLans !== (ps.show_node_lans !== false) || meshMode !== (ps.mesh_mode || "auto")) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
@@ -2993,6 +3035,13 @@ const sectionLabel = k => ({
               { value: "bits", label: T("Bits — Mbit/s, like a speed test") }]}/>
             <div class="hint">${T("How every speed in the panel is written. The same measurement either way — bits are 8× the number, and are what speed tests, ISP plans and router pages quote. Totals are always in bytes.")}</div></div>
           <div class="seclabel">${T("Data")}</div>
+          <div class="field"><label class="toggle-row"><${Switch} on=${infHist} onChange=${v => v ? setInfHist(true) : confirmHistOff(() => setInfHist(false))}/>
+            <span>${T("Infinite history")}</span></label>
+            <div class="hint">${T("Keep every peer's detailed traffic — at the history resolution below — for ever. Turn this off to keep that detail for the last 33 days only; totals for any period are always kept.")}</div></div>
+          <div class="field"><label>${T("History resolution")}</label>
+            <${Dropdown} value=${histRes} onChange=${v => setHistRes(v)} options=${HIST_RES.map(n => ({ value: String(n), label: histResLabel(n) }))}/>
+            <div class="hint">${T("How much detail the per-peer traffic graphs can show. Finer costs more disk. A change applies from the next day — today keeps the detail it started with.")}</div></div>
+          <${HistoryUsage}/>
           <div class="field"><label>${T("Days are counted in")}</label>
             <${Dropdown} value=${tz} onChange=${v => setTz(v)} options=${tzOptions(tzCat, ps.time_zone_now || {}, tz)}/>
             <div class="hint">${T("Where each day starts and ends — for traffic totals, the charts and the turn-proxy update hour. Changing it shifts the charts' earlier points by the difference until they scroll out (up to 33 days).")}</div>

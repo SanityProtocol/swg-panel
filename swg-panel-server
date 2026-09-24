@@ -14139,6 +14139,8 @@ PANEL_SETTINGS_DEFAULTS = {
     "top_destinations": 10,   # Overview: rows in the Top destinations list (1–50)
     "expiry_warn_days": 3,    # Display: warn "about to expire" this many days before a subscription/peer expiry (0–365)
     "time_zone": "",          # Display → Data: the zone days are counted in ("" = this server's own; see tz_apply)
+    "infinite_history": True,   # Display → Data: keep the ledger's detail (fine files) for ever; off: 33 days. Day rows always stay
+    "history_resolution": 3600, # Display → Data: the ledger's fine bucket, one of LEDGER_STEPS — applied from the next day
     # Does the panel acknowledge the private networks its nodes sit on at all? ON by default, which is what every
     # fleet already does (D10: a client reaches that network with nothing built).
     # ⚠️ OFF IS NOT A DISPLAY CHOICE — it is a decision about reachability. Turning it off hides the node's Local
@@ -17550,6 +17552,10 @@ LEDGER_STEP_DEFAULT = 3600
 LEDGER_SPANS_MAX = 2000                # observed spans kept per node (one per outage); the oldest go first
 LEDGER_FINE_QUEUE = 1000               # closed fine buckets held while their writes fail (≈3.5 days at 5 min)
 LEDGER_SERIES_FINE_DAYS = 8            # a series over more days than this is answered by day, from the day rows
+LEDGER_KEEP_DAYS = 33                  # Infinite history OFF: the fine files kept — the rings' reach (HRRD_RINGS[-1]); day rows stay
+LEDGER_USAGE_TTL = 60                  # GET /api/stats-usage: one directory walk a minute at most
+LEDGER_SWEEP_HOLD_S = 600              # the OFF sweep runs only on a day the clock has held this long (_sweep_ok)
+LEDGER_ROW_GROWTH = 1_000_000          # a day row may be this much wider than the slots known (or the row before) — more is not ours
 
 _LB_MAGIC, _LB_VER = b"SWGL", 1
 _LB_HEAD = struct.Struct("<4sHHQQIIIIIII")   # magic ver flags written newest day idx step nslots nnames nrecs crc
@@ -17619,6 +17625,11 @@ def _i_array(b):
     return a
 
 
+def _ld_detail_cutoff(today):
+    """The first day whose detail (fine file) Infinite history OFF keeps — one rule for the sweep and the read-out."""
+    return _ld_of(_ld_date(today) - _ldt.timedelta(days=LEDGER_KEEP_DAYS))
+
+
 def _ledger_index_ok(idx):
     """index.json holds a slot table: a dict whose `slots` are dicts with a pid."""
     return (isinstance(idx, dict) and isinstance(idx.get("slots"), list)
@@ -17639,7 +17650,13 @@ class TrafficLedger:
         self.dir = ""
         self.roster_path = ""
         self.step = LEDGER_STEP_DEFAULT
-        self.slots = []                 # index.json: {pid, owner, name, since, until, o}
+        self.step_next = LEDGER_STEP_DEFAULT   # the resolution setting: it takes over at the next local midnight (P2)
+        self.infinite = True            # Infinite history (P2): off → fine files older than LEDGER_KEEP_DAYS go (day rows stay)
+        self._sweep_due = False
+        self._sweep_at = 0.0            # monotonic: a failed sweep waits until then
+        self._day_mono = time.monotonic()   # when the ledger's day was entered — the sweep waits for the day to hold
+        self._usage = (0.0, None)       # (monotonic, reply) — GET /api/stats-usage's cache
+        self.slots = []                 # index.json: {pid, owner, name, on, since, until, o}
         self.had = set()                # every pid that ever had a slot — "never seen" is the ABSENCE from here (§5.4)
         self.open = {}                  # pid → its open slot
         self.C_rx = _larr.array("Q")    # per slot: credited cumulative bytes (base.bin)
@@ -17652,6 +17669,7 @@ class TrafficLedger:
         self._retry_at = 0.0            # monotonic: after a failed write, nothing retries before this (no storm)
         self.fine = {}                  # slot → [rx, tx] credited in the current fine bucket
         self.map, self.deploys, self.owners, self.titles, self.mark = {}, set(), {}, {}, None
+        self.onames = {}                # uid → the user's name, from the roster: a slot keeps its owner's LAST name (`on`)
         self.observed = False           # only a ledger that observed something writes (a second process never clobbers)
         self.seqs = {}                  # node → the arrival number of its newest snapshot ingested (ORDER, above)
         self.imports = set()            # index.json `imports`: deployments older than this ledger, each imported once
@@ -17667,6 +17685,7 @@ class TrafficLedger:
     def _diag_new():
         return {"v": 1, "held_for_clock": 0, "stale_snapshots": 0, "write_errors": 0, "last_error": "", "last_error_at": 0,
                 "disk_pauses": 0, "ambiguous": 0, "base_recovered": "", "ifaces": {}, "pids": {}, "spans": {}}
+    # ⚠️ a key missing from _diag_new() is DROPPED when diag.json is loaded — add any new persistent diag key here
 
     # ── paths ────────────────────────────────────────────────────────────────────────────────────────────────────
     def _p(self, name):
@@ -17702,7 +17721,9 @@ class TrafficLedger:
             st = int(env) if env else int((deps.get("panel_settings") or {}).get("history_resolution") or LEDGER_STEP_DEFAULT)
         except (TypeError, ValueError):
             st = LEDGER_STEP_DEFAULT
-        self.step = max(5, min(86400, st)) if env else (st if st in LEDGER_STEPS else LEDGER_STEP_DEFAULT)
+        self.step = self.step_next = max(5, min(86400, st)) if env else (st if st in LEDGER_STEPS else LEDGER_STEP_DEFAULT)
+        self.infinite = (deps.get("panel_settings") or {}).get("infinite_history") is not False
+        self._sweep_due = not self.infinite
         try:
             idx = load_critical(self._p("index.json"), None, _ledger_index_ok)   # a corrupt primary: its newest GOOD backup
         except RuntimeError as e:                               # …and with none, the ledger stays off (never a fresh one)
@@ -17769,7 +17790,11 @@ class TrafficLedger:
         d = max(d, bday)                                       # no reading get NO row: a lookup falls back to the newest row
         fh = self._fine_head(self._fine_path(d)) if os.path.exists(self._fine_path(d)) else None   # before them — the same
         mid = fh[2] if fh else _ld_midnight(d)                 # numbers, bounded (a clock years ahead writes one row, not
-        i = 0 if self.step >= 86400 else max(0, now - mid) // self.step    # thousands). The day keeps its file's frame.
+        if fh:                                                 # thousands). The day keeps its file's frame — AND its step: a
+            self.step = fh[0]                                  # resolution saved today takes over at the next midnight, so a
+        elif d == bday and bstep and not env:                  # restart never cuts the rest of today's buckets off (they
+            self.step = bstep                                  # would be dropped: the day's file keeps its own step)
+        i = 0 if self.step >= 86400 else max(0, now - mid) // self.step
         if d == bday and bstep == self.step:                   # never behind the last bucket written — a bucket id counts in
             i = max(i, bidx)                                   # its own step, so it is never carried across a step change
         self.day, self.idx, self.fmid, self.foff = d, i, mid, off
@@ -17786,6 +17811,7 @@ class TrafficLedger:
         mono = time.monotonic() if mono is None else mono
         mark = roster_mark(self.roster_path)                   # one stat() — the map is rebuilt only when this moves
         d, off = _ld_day(now)                                  # one localtime() per sync, outside the lock
+        today = d                                              # the clock's day (d is reset to the ledger's below)
         with self.lock:
             if seq is not None:                                # ORDER (above): a snapshot older than this node's newest one
                 if seq < self.seqs.get(nid, 0):                # is dropped — read now, its smaller counters would be a
@@ -17799,10 +17825,12 @@ class TrafficLedger:
                 return
             if d <= self.day:                                  # the day the ledger is in keeps its own frame — the midnight its
                 d, mid, off = self.day, self.fmid, self.off    # fine file was started at — so a zone change mid-day never moves
-            else:                                              # the rest of that day's buckets (P0); a new day starts in the
-                mid = _ld_midnight(d)                          # zone in force (one mktime a day)
-            i = 0 if self.step >= 86400 else max(0, now - mid) // self.step
-            self._advance(d, i, off, now, mid)
+                step = self.step                               # the rest of that day's buckets (P0); a new day starts in the
+            else:                                              # zone in force (one mktime a day) — and at the resolution in
+                mid = _ld_midnight(d)                          # force: a change saved today applies from here (P2)
+                step = self.step_next
+            i = 0 if step >= 86400 else max(0, now - mid) // step
+            self._advance(d, i, off, now, mid, step)
             m = self.map
             ifs = snap.get("interfaces")
             if isinstance(ifs, dict):
@@ -17836,6 +17864,10 @@ class TrafficLedger:
             self._span(nid, now)
             self.newest = max(self.newest, now)
             kick = self.observed and (self.prompt or self.d_index or bool(self.q_fine or self.q_day)) and mono >= self._retry_at
+            if (not kick and self._sweep_due and not self.infinite and self.observed and mono >= self._retry_at
+                    and self._sweep_ready(today, mono)):
+                kick = True                                    # an OFF sweep held back (a new day, a restart) runs once the day
+                #                                               has held — at 1-day resolution nothing else would wake the writer
         if kick:
             self._wake()
 
@@ -17890,7 +17922,8 @@ class TrafficLedger:
         self.d_base = True
 
     def _new_slot(self, pid, now, orx, otx):
-        self.slots.append({"pid": pid, "owner": self.owners.get(pid), "name": self.titles.get(pid, ""),
+        owner = self.owners.get(pid)
+        self.slots.append({"pid": pid, "owner": owner, "name": self.titles.get(pid, ""), "on": self.onames.get(owner, ""),
                            "since": now, "until": None, "o": [orx, otx]})
         self.had.add(pid)
         self.C_rx.append(0); self.C_tx.append(0)
@@ -17930,6 +17963,8 @@ class TrafficLedger:
         self.diag["ambiguous"] = len(amb)
         self.map = {k: next(iter(v)) for k, v in claims.items() if len(v) == 1}
         self.owners, self.titles, self.deploys = owners, titles, deploys
+        us = r.get("users") if isinstance(r.get("users"), dict) else {}
+        self.onames = {uid: str(u.get("name") or "")[:64] for uid, u in us.items() if isinstance(u, dict)}
         if self.fresh:                                         # the new ledger's first map: every deployment that exists now
             self.imports, self.fresh = set(deploys), False     # holds history nothing has counted — each is imported once, at
             self.d_index = True                                # its first reading (_observe)
@@ -17937,9 +17972,13 @@ class TrafficLedger:
             self.imports &= deploys
             self.d_index = True
         for pid, s in self.open.items():                       # an open slot's name follows its peer's title, so a deleted
-            t = titles.get(pid)                                # peer keeps its LAST name — the one the operator knew it by
-            if t is not None and self.slots[s].get("name") != t:
-                self.slots[s]["name"] = t
+            t = titles.get(pid)                                # peer keeps its LAST name — the one the operator knew it by —
+            if t is not None and self.slots[s].get("name") != t:   # and its owner's name follows the user's, so a deleted
+                self.slots[s]["name"] = t                      # user's slots still say whose they were
+                self.d_index = True
+            on = self.onames.get(self.slots[s].get("owner"))
+            if on is not None and self.slots[s].get("on") != on:
+                self.slots[s]["on"] = on
                 self.d_index = True
         for pid, s in list(self.open.items()):
             if pid not in owners:                              # left the roster — by any of the five delete paths
@@ -17954,7 +17993,7 @@ class TrafficLedger:
             self.d_base = self.prompt = True
         self.mark = mark
 
-    def _advance(self, d, i, off, now, mid):
+    def _advance(self, d, i, off, now, mid, step=None):
         """Move to the bucket `now` falls in. Bucket ids never go backwards (a stepped-back clock keeps crediting the
         newest one). Passing local midnight takes C AS IT STOOD at the boundary — before this reading's own delta — as
         the day's row; a day with no reading at all gets none (a lookup reads the newest row before it: the same numbers)."""
@@ -17964,7 +18003,11 @@ class TrafficLedger:
         if d > self.day:
             if self.day:
                 self._queue_day(self.day, self.C_rx[:], self.C_tx[:], mid if d == _ld_next(self.day) else _ld_midnight(_ld_next(self.day)))
+                self._sweep_due = self._sweep_due or not self.infinite   # OFF: yesterday's oldest detail leaves the 33 days
             self.fmid, self.foff = mid, off
+            self._day_mono = time.monotonic()
+            if step:
+                self.step = step
         self.day, self.idx, self.off = d, i, off
         self.d_base = True
 
@@ -18051,6 +18094,15 @@ class TrafficLedger:
             self._flush_lock.release()
 
     def _flush(self, closing=False):
+        day = self._sweep_ok() if self._sweep_due and not self.infinite and self.on and self.observed and not closing else 0
+        if day:                                                # FIRST: it only frees space, so a full disk (the case OFF is
+            self._sweep_due = False                            # most needed for) must not hold it back. Only a process that
+            try:                                               # observed (a second panel on this state dir never deletes),
+                self._sweep(day if isinstance(day, int) and day > 19700101 else self.day)   # never on the SIGTERM flush
+            except Exception as e:
+                self._err("sweep", e)
+                self._sweep_due = True
+                self._sweep_at = time.monotonic() + 300        # a disk that keeps refusing: once per 5 min, not every sync
         with self.lock:
             if closing:                                        # in the same lock section as the snapshot: a sync landing
                 self._close_bucket()                           # between the two would reach base.bin and never the graph
@@ -18109,6 +18161,112 @@ class TrafficLedger:
                 atomic_write(self._p("diag.json"), js + "\n", mode=0o600)
                 self._diag_w = time.time()
         return True
+
+    # ── Infinite history (P2) ──────────────────────────────────────────────────────────────────────────────────
+    def configure(self, ps):
+        """A settings save: the resolution takes over at the next local midnight (today's file keeps its step, so none
+        of today's buckets is dropped); Infinite history turned off sweeps the old detail now, then once a day."""
+        try:
+            st = int(ps.get("history_resolution") or LEDGER_STEP_DEFAULT)
+        except (TypeError, ValueError):
+            st = LEDGER_STEP_DEFAULT
+        inf = ps.get("infinite_history") is not False
+        with self.lock:
+            if not os.environ.get("SWG_LEDGER_STEP"):          # rigs: the step is the environment's (the switch is not)
+                self.step_next = st if st in LEDGER_STEPS else LEDGER_STEP_DEFAULT
+            off_now = self.infinite and not inf
+            self.infinite = inf
+            if off_now:
+                self._sweep_due = True
+            self._usage = (0.0, None)
+        if off_now and self.on:
+            self._wake()
+
+    def _old_detail(self, today):
+        """[(day, path, bytes)] — the FINE files of days older than LEDGER_KEEP_DAYS: what the OFF sweep deletes, and what
+        the read-out (and so the confirm) names. ⚠️ NEVER A DAY ROW: they are cumulative and tiny (16 B per slot a day, ~58
+        MB a year at 10,000 peers, against ~3.4 GB for hourly detail); kept, every total for every period stays exact for
+        good and an old day still draws as one bar — nothing to clamp, no gap to report, no file rewritten under a reader.
+        (Deleting them too was built first, 2026-09-24: it needed a floor row, a persisted purge span, clamped windows and
+        re-reading readers, and three review rounds kept finding wrong numbers in it.)"""
+        cutoff = _ld_detail_cutoff(today)
+        out = []
+        for fn in sorted(os.listdir(self.dir)):
+            m = re.match(r"^fine-(\d{4})-(\d{2})-(\d{2})\.bin$", fn)
+            if m:
+                d = int(m.group(1) + m.group(2) + m.group(3))
+                if d < cutoff:
+                    with contextlib.suppress(FileNotFoundError):
+                        out.append((d, self._p(fn), os.path.getsize(self._p(fn))))
+        return out
+
+    def _sweep_ready(self, today, mono):
+        """⚠️ DELETION IS FOR GOOD, so the sweep runs only on a day the clock has HELD: the ledger's day equals the real
+        clock's (`today`), and has for 10 minutes (monotonic). A clock that jumped ahead for one sync moves the ledger's
+        day, and it never goes back — so until real time reaches that day nothing is deleted (late, never wrong)."""
+        return mono >= self._sweep_at and self.day == today and mono - self._day_mono >= LEDGER_SWEEP_HOLD_S
+
+    def _sweep_ok(self):
+        """The day the sweep may delete by, checked NOW and held under the lock (0 = not yet) — _sweep deletes by exactly
+        this day, so a sync that moves the ledger's day between the check and the deletion cannot move the cutoff."""
+        with self.lock:
+            return self.day if self._sweep_ready(_ld_day(time.time())[0], time.monotonic()) else 0
+
+    def _sweep(self, today):
+        """Infinite history OFF (§6): delete the old detail _old_detail names. Lifetimes (C + o) and every day row stay.
+        `today` is the day _sweep_ok checked the clock had held."""
+        gone = self._old_detail(today)
+        for _d, path, _b in gone:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(path)
+            self._tails.pop(path, None)
+        if gone:
+            self._usage = (0.0, None)
+            print("ledger: Infinite history is off — the detail of %d day(s) older than %d days deleted" % (
+                len(gone), LEDGER_KEEP_DAYS), flush=True)
+
+    def usage(self, now=None):
+        """GET /api/stats-usage — MEASURED: one directory walk over the history, cached LEDGER_USAGE_TTL s. The projection
+        is the observed bytes a day of the last closed days' fine files plus a day row, falling back to 20 B × open slots ×
+        buckets a day before there is a closed day. `sweep_*`: what turning Infinite history off deletes."""
+        mono = time.monotonic()
+        c = self._usage
+        if c[1] is not None and mono - c[0] < LEDGER_USAGE_TTL:
+            return c[1]
+        now = int(time.time() if now is None else now)
+        today = _ld_day(now)[0]
+        led, fines = 0, []
+        with contextlib.suppress(OSError):
+            for e in os.scandir(self.dir):
+                if not e.is_file(follow_symlinks=False):
+                    continue
+                sz = e.stat(follow_symlinks=False).st_size
+                led += sz
+                m = re.match(r"^fine-(\d{4})-(\d{2})-(\d{2})\.bin$", e.name)
+                if m:                                          # the projection's recent days
+                    fines.append((int(m.group(1) + m.group(2) + m.group(3)), sz))
+        with self.lock:
+            nslots, nopen, step, step_next = len(self.slots), len(self.open), self.step, self.step_next
+        closed = sorted((d, sz) for d, sz in fines if d < today)[-7:]
+        if step_next >= 86400:                                 # 1-day resolution from tomorrow: no fine files at all
+            per_fine, basis = 0, "observed" if step >= 86400 else "estimate"
+        elif closed and step < 86400:                          # the last closed days' files, scaled to the step in force next
+            per_fine = sum(sz for _d, sz in closed) // len(closed) * step // step_next
+            basis = "observed" if step == step_next else "scaled"
+        else:
+            per_fine, basis = 20 * nopen * (86400 // step_next), "estimate"
+        per_day = per_fine + 16 * nslots + _LD_ROW.size
+        try:
+            free = shutil.disk_usage(self.dir).free
+        except OSError:
+            free = 0
+        cutoff = _ld_detail_cutoff(today)                      # the sweep's own rule (_old_detail), on this same walk
+        old = [sz for d, sz in fines if d < cutoff]
+        out = {"on": self.on, "why_off": self.why_off, "dir": self.dir, "bytes_ledger": led, "free_bytes": free,
+               "active_slots": nopen, "resolution_next": step_next, "per_day_bytes": per_day, "per_year_bytes": per_day * 365,
+               "basis": basis, "infinite": self.infinite, "sweep_bytes": sum(old), "sweep_days": len(old)}
+        self._usage = (mono, out)
+        return out
 
     def _write_base(self, snap):
         recs, crx, ctx, newest, day, idx, step, nslots = snap
@@ -18186,12 +18344,71 @@ class TrafficLedger:
                 print("ledger: %s had no valid header — moved aside, a new file starts" % path, flush=True)
                 self._tails[path] = 0
                 return 0
-            end = self._scan_end(path)
-            if end < sz:
+            verdict = "ok"
+            if magic == _LD_MAGIC:
+                with open(path, "rb") as f:
+                    data = f.read()
+                _rows, end, verdict = self._walk_rows(path, data)
+            else:
+                end = self._scan_end(path)
+            if verdict == "corrupt":                           # ⚠️ day rows are the totals, kept for good: never cut past what
+                keep = "%s.corrupt.%d" % (path, int(time.time()))   # cannot be read — the whole file is kept aside for a
+                os.replace(path, keep)                         # recovery, and its readable rows go on in a new one
+                atomic_write(path, data[:end])
+                self._rowidx.pop(path, None)
+                print("ledger: %s holds a row that cannot be ours at byte %d — kept as %s; its %d readable byte(s) go on"
+                      % (path, end, keep, end), flush=True)
+            elif end < sz:
                 os.truncate(path, end)
                 print("ledger: %s ended in a torn record — cut back to %d bytes" % (path, end), flush=True)
             self._tails[path] = end
         return end
+
+    def _walk_rows(self, path, data):
+        """One month file's rows, walked once — the readers (_day_rows) and the append path (_valid_end) read it the same
+        way. → ({date: (offset, nslots)}, end, verdict): verdict "ok" (walked to the end), "torn" (a plausible row cut off
+        by the end — a crash mid-append, the only thing ever cut) or "corrupt" (a header that cannot be ours).
+        ⚠️ A row header carries no checksum (the CRC covers its C table), so it is judged: its date is in this file's
+        month and its width never shrinks (slots are never removed). Without that a bit flip in `nslots` read as a torn
+        tail — and the cut deleted every later day for good — and a zero-filled tail (d=0, ns=0, crc32(b"")=0) passed as
+        a row. A row whose C table fails its checksum is SKIPPED, never the place a file is cut."""
+        m = re.search(r"day-(\d{4})-(\d{2})\.bin$", path)
+        ym = int(m.group(1) + m.group(2)) if m else None
+        rows, prev = {}, 0
+        o = _LD_FHEAD.size if data[:4] == _LD_MAGIC and len(data) >= _LD_FHEAD.size else 0
+        if not o:
+            return rows, 0, "corrupt" if data else "ok"
+        while o < len(data):
+            if o + _LD_ROW.size > len(data):
+                return rows, o, "torn"
+            d, _off, _end, ns, crc = _LD_ROW.unpack_from(data, o)
+            if (ym is not None and d // 100 != ym) or ns < prev or ns > max(prev, len(self.slots)) + LEDGER_ROW_GROWTH:
+                return rows, o, "corrupt"
+            p1 = o + _LD_ROW.size + 16 * ns
+            if p1 > len(data):                                 # past the end: torn — unless a real row follows (a flipped
+                return rows, o, ("corrupt" if self._row_after(data, o, ym) else "torn")   # width in the middle, not a crash)
+            if _lzlib.crc32(data[o + _LD_ROW.size:p1]) == crc:   # a damaged C table: skipped here, once, so a total and a
+                rows.setdefault(d, (o, ns))                    # series never read two versions of one day; a date closed
+            prev, o = ns, p1                                   # twice: the first row stands
+        return rows, o, "ok"
+
+    @staticmethod
+    def _row_after(data, o, ym):
+        """Is there a whole, checksummed row of this month anywhere after offset o? A crash only ever tears the LAST row,
+        so one found means the row at o is damaged, not torn. Searched by the date bytes (31 candidates), not byte by byte."""
+        if ym is None:
+            return False
+        for day in range(1, 32):
+            pat = struct.pack("<I", ym * 100 + day)
+            i = data.find(pat, o + 1)
+            while i != -1:
+                if i + _LD_ROW.size <= len(data):
+                    _d, _off, _end, ns, crc = _LD_ROW.unpack_from(data, i)
+                    p1 = i + _LD_ROW.size + 16 * ns
+                    if ns and p1 <= len(data) and _lzlib.crc32(data[i + _LD_ROW.size:p1]) == crc:
+                        return True
+                i = data.find(pat, i + 1)
+        return False
 
     def _scan_end(self, path):
         """The end of the last complete record: rows (day files) or buckets (fine files), lengths and checksums read."""
@@ -18202,14 +18419,7 @@ class TrafficLedger:
             for _i, _n, e, _c in self._fine_buckets(path, want=False, data=data):
                 end = e
             return end
-        o = _LD_FHEAD.size if len(data) >= _LD_FHEAD.size else 0
-        while o and o + _LD_ROW.size <= len(data):
-            _d, _off, _end, ns, crc = _LD_ROW.unpack_from(data, o)
-            p1 = o + _LD_ROW.size + 16 * ns
-            if p1 > len(data) or _lzlib.crc32(data[o + _LD_ROW.size:p1]) != crc:
-                break
-            o = p1
-        return o
+        return self._walk_rows(path, data)[1]
 
     def _append(self, path, head, rec):
         end = self._valid_end(path, head[:4])
@@ -18273,19 +18483,9 @@ class TrafficLedger:
         c = self._rowidx.get(path)
         if c and c[0] == st.st_size and c[1] == st.st_mtime_ns:
             return c[2]
-        rows = {}
         with open(path, "rb") as f:
             data = f.read()
-        if data[:4] == _LD_MAGIC:
-            o = _LD_FHEAD.size
-            while o + _LD_ROW.size <= len(data):
-                d, _off, _end, ns, crc = _LD_ROW.unpack_from(data, o)
-                p1 = o + _LD_ROW.size + 16 * ns
-                if p1 > len(data):
-                    break
-                if _lzlib.crc32(data[o + _LD_ROW.size:p1]) == crc:   # a damaged row is skipped HERE, once, so a total and a
-                    rows.setdefault(d, (o, ns))                    # series never read two versions of one day; a date
-                o = p1                                             # closed twice: the first row stands
+        rows = self._walk_rows(path, data)[0]                  # the same walk the append path uses
         self._rowidx[path] = (st.st_size, st.st_mtime_ns, rows)
         return rows
 
@@ -18409,8 +18609,11 @@ class TrafficLedger:
         return w
 
     def _fine_head(self, path):
-        with open(path, "rb") as f:
-            h = f.read(_LF_FHEAD.size)
+        try:
+            with open(path, "rb") as f:
+                h = f.read(_LF_FHEAD.size)
+        except FileNotFoundError:                              # deleted by the OFF sweep since the caller looked
+            return None
         if len(h) < _LF_FHEAD.size:
             return None
         mg, _v, _p, step, off, mid = _LF_FHEAD.unpack(h)
@@ -18475,36 +18678,49 @@ class TrafficLedger:
         return out
 
     def totals(self, qs, now=None):
+        """Rows per pid (`by=peer`), per owner (`by=user`), or per (pid, owner) (`by=slot`: what a device carried while it
+        was one user's — the Users grid, a user's peer list and the user view all read these, so they add up). Every row
+        says since when it has been counted (`since`); `opening_at` only when a counter was imported."""
         now = int(time.time() if now is None else now)
         f, t, rk = self._window(qs, now)
         by = (qs.get("by") or ["peer"])[0]
-        if by not in ("peer", "user"):
-            raise ValueError(perr("by must be peer or user"))
+        if by not in ("peer", "user", "slot"):
+            raise ValueError(perr("by must be peer, user or slot"))
         with self.lock:
-            slots = [(s["pid"], s.get("owner"), s.get("o") or [0, 0], s.get("since") or 0, s.get("until")) for s in self.slots]
+            slots = [(s["pid"], s.get("owner"), s.get("o") or [0, 0], s.get("since") or 0, s.get("until"),
+                      s.get("name") or "", s.get("on") or "") for s in self.slots]
             live = (self.day, self.C_rx[:], self.C_tx[:])
         to_rx, to_tx = self._cum(t, live)
         fr_rx, fr_tx = self._cum(_ld_prev(f), live) if f > 19700101 else (_larr.array("Q"), _larr.array("Q"))
         rows = {}
-        for n, (pid, owner, o, since, until) in enumerate(slots):
-            k = pid if by == "peer" else (owner or "")
+        for n, (pid, owner, o, since, until, name, on) in enumerate(slots):
+            k = pid if by == "peer" else (owner or "") if by == "user" else (pid, owner or "")
             a = to_rx[n] if n < len(to_rx) else 0; b = to_tx[n] if n < len(to_tx) else 0
             a0 = fr_rx[n] if n < len(fr_rx) else 0; b0 = fr_tx[n] if n < len(fr_tx) else 0
             r = rows.get(k)
             if r is None:
-                r = rows[k] = {"id": k, "rx": 0, "tx": 0, "lifetime_rx": 0, "lifetime_tx": 0, "opening_rx": 0,
-                               "opening_tx": 0, "opening_at": 0, "slots": 0, "closed": 0}
+                r = rows[k] = {"id": k if by != "slot" else pid, "rx": 0, "tx": 0, "lifetime_rx": 0, "lifetime_tx": 0,
+                               "opening_rx": 0, "opening_tx": 0, "opening_at": 0, "since": since, "slots": 0, "closed": 0}
+                if by == "slot":
+                    r.update({"owner": owner or "", "name": name, "owner_name": on, "until": until})
             r["rx"] += max(0, a - a0); r["tx"] += max(0, b - b0)
             r["lifetime_rx"] += live[1][n] + o[0]; r["lifetime_tx"] += live[2][n] + o[1]
             if o[0] or o[1]:
                 r["opening_rx"] += o[0]; r["opening_tx"] += o[1]
                 r["opening_at"] = min(r["opening_at"] or since, since)
+            r["since"] = min(r["since"] or since, since)
             r["slots"] += 1
             r["closed"] += 1 if until else 0
+            if by == "slot":                                   # the newest slot of the pair names it, and says whether it is
+                if since >= (r.get("_last") or 0):             # still open — an unassign and a reassign back make two slots
+                    r["_last"], r["name"], r["owner_name"], r["until"] = since, name, on or r["owner_name"], until
+        for r in rows.values():
+            r.pop("_last", None)
         since = _ld_midnight(f)
         until = min(now, _ld_midnight(_ld_next(t)))
         return {"rangeKey": rk, "from": f, "to": t, "by": by, "step": 86400, "since": since, "until": until,
-                "utc_offset": time.localtime().tm_gmtoff, "gaps": self._gaps(since, until, self._spans()), "rows": list(rows.values())}
+                "utc_offset": time.localtime().tm_gmtoff, "gaps": self._gaps(since, until, self._spans()),
+                "rows": list(rows.values())}
 
     def series(self, qs, now=None):
         now = int(time.time() if now is None else now)
@@ -18517,10 +18733,14 @@ class TrafficLedger:
             want = sorted(n for n, s in enumerate(self.slots)
                           if (s["pid"] if by == "peer" else (s.get("owner") or "")) == ident)
             first = min((s.get("since") or 0 for s in self.slots), default=0)
+            nslots = len(self.slots)
             live = (self.day, self.C_rx[:], self.C_tx[:])
             cur = (self.day, self.idx, self.step, self.fmid, {s: list(self.fine[s]) for s in want if s in self.fine})
             nodes = {k[0] for k in self.recs if (k[2] == ident if by == "peer" else self.owners.get(k[2]) == ident)}
-        f = min(max(f, _ld_day(first)[0]), t) if first else t  # nothing exists before the ledger's first slot: never walk from 1970
+        if first:                                              # nothing exists before the ledger's first slot: never walk from 1970
+            f = min(max(f, _ld_day(first)[0]), t)
+        elif not nslots:                                       # an empty ledger walks no day before today
+            f = t
         fine_ok = (_ld_date(t) - _ld_date(f)).days < LEDGER_SERIES_FINE_DAYS   # a longer window is read from the day rows:
         #                                                     one peer's fine points cost a read of each day's whole file
         sw = lambda arr: sum(arr[s] for s in want if s < len(arr))
@@ -18547,12 +18767,19 @@ class TrafficLedger:
         while d <= t:
             fp = self._fine_path(d)
             head = self._fine_head(fp) if fine_ok and os.path.exists(fp) else None
+            fdata = None
+            if head:                                           # read once: gone since its header was read (the OFF sweep) →
+                try:                                           # the day draws from its row below, like any day with no detail
+                    with open(fp, "rb") as fh_:
+                        fdata = fh_.read()
+                except FileNotFoundError:
+                    head = None
             drawn = [0, 0]
             if fine_ok and (head or any(q[0] == d for q in qf) or (d == cur[0] and cur[4] and cur[2] < 86400)):
                 step, mid = (head[0], head[2]) if head else (cur[2], cur[3]) if d == cur[0] else next((q[2], q[3]) for q in qf if q[0] == d)
                 acc = {}
                 if head:
-                    for i, n, _e, (sl, rx, tx) in self._fine_buckets(fp):
+                    for i, n, _e, (sl, rx, tx) in self._fine_buckets(fp, data=fdata):
                         for s in want:
                             j = _lbis.bisect_left(sl, s)
                             if j < n and sl[j] == s:
@@ -19330,6 +19557,12 @@ def api(method, path, qs, body, deps):
                                                   v1=_tz_new[:64]), "code": "bad_request"}
         if _tz_new is not None:
             cur["time_zone"] = _tz_new
+        if "infinite_history" in incoming:
+            cur["infinite_history"] = incoming["infinite_history"] is not False   # default on; only an explicit false
+        if "history_resolution" in incoming:
+            try: _hr = int(incoming["history_resolution"])
+            except Exception: _hr = LEDGER_STEP_DEFAULT
+            cur["history_resolution"] = _hr if _hr in LEDGER_STEPS else LEDGER_STEP_DEFAULT
         if "show_node_lans" in incoming:
             cur["show_node_lans"] = incoming["show_node_lans"] is not False    # default is on; only an explicit false turns it off
         if "mesh_mode" in incoming:
@@ -19677,6 +19910,7 @@ def api(method, path, qs, body, deps):
         deps["panel_settings"] = cur
         if _tz_new is not None and not tz_apply(_tz_new):
             _TZ_STATE["missing"] = _tz_new       # gone between the check and now — shown as lost, never silently UTC
+        LEDGER.configure(cur)                    # the resolution from the next day; Infinite history off → the sweep
         # NB: a public-URL change is NOT adopted as the node dial URL here — the browser always follows a URL save
         # with /api/access/apply, which verifies (confirm) the new URL reaches this panel before adopting it. So
         # _CONFIRMED_URL stays frozen until that confirm; nodes are never told an address a pending change may revert.
@@ -21737,6 +21971,11 @@ def api(method, path, qs, body, deps):
     # debug dump. Totals and series are sent gzipped (do_GET, _LEDGER_GZ) — a row per peer is ~150 B at any fleet size.
     if method == "GET" and path in ("/api/traffic-totals", "/api/traffic-series", "/api/traffic-ledger"):
         return LEDGER.api(path, qs)
+    if method == "GET" and path == "/api/stats-usage":
+        # Settings → Display → Data: what the traffic history uses on disk — measured (one walk, cached a minute) — what
+        # it will grow by, and what turning Infinite history off would delete (the old detail). Answered when the ledger is OFF too: the
+        # section says why.
+        return 200, {"ok": True, "data": LEDGER.usage()}
 
     if method == "GET" and path == "/api/peer-history":
         # Per-(node,peer) throughput over a range — drives the ranged Top-talkers. Reads each peer-<nid>-<hash>.rrd,

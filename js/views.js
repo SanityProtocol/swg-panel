@@ -24,6 +24,7 @@ import { go } from "./router.js";
 import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
 import { T, plural, pluralWord, fmtNum, srvText, locale } from "./i18n.js";
+import { trafficData, trafficFreezeTag, trafficView } from "./traffic.js";
 import { h } from "preact";
 import { useState } from "preact/hooks";
 import htm from "htm";
@@ -164,8 +165,32 @@ export const PEER_SORT = {
   online: ({ t }) => { const a = tgtSeenAge(t); return a != null ? a : Infinity; },
   rate: ({ t }) => { const x = tgtXfer(t); return x ? (x.rx_speed || 0) + (x.tx_speed || 0) : 0; },
   total: ({ t }) => { const x = tgtXfer(t); return x ? (x.rx_bytes || 0) + (x.tx_bytes || 0) : 0; },
+  // The ranged total (traffic.js): the whole device, or — in a user's own list (`o`, its owner) — what it carried while it
+  // was that user's. A Map lookup per comparison, never a walk.
+  rtotal: ({ p, o }) => { const a = peerTraffic(p.id, o); return a ? a.rx + a.tx : 0; },
 };
-export const PEER_DEFDIR = { status: -1, rate: -1, total: -1, online: 1, title: 1, user: 1, server: 1, address: 1, endpoint: 1 };   // first-click direction per column
+export const PEER_DEFDIR = { status: -1, rate: -1, total: -1, rtotal: -1, online: 1, title: 1, user: 1, server: 1, address: 1, endpoint: 1 };   // first-click direction per column
+// ── ranged totals (traffic.js) ──────────────────────────────────────────────────────────────────────────────
+// A peer's total in the window: the whole device, or with `owner` what it carried while it was that user's.
+export function peerTraffic(pid, owner) {
+  const d = trafficData();
+  return d ? (owner ? d.slot.get(owner + "|" + pid) : d.peer.get(pid)) || null : null;
+}
+export function userTraffic(uid) { const d = trafficData(); return d ? d.user.get(uid) || null : null; }
+// ⚠️ stableOrder freezes a known row's slot, so a sort by ranged total that rendered before the totals landed would keep
+// its all-zero order for good. The freeze key carries the window and whether its totals are in — and nothing that moves
+// every minute, or the rows would reshuffle each time "until now" refreshes.
+const rtotalTag = sort => sort === "rtotal" ? "|" + trafficFreezeTag() : "";
+// The column's name is the window's: "This month", "Last 30 days", or the custom dates (month names through Intl).
+export function trafficRangeLabel(v) {
+  v = v || trafficView;
+  if (v.range === "30d") return T("Last 30 days");
+  if (v.range === "custom" && v.from && v.to) {
+    const f = d => { try { return new Intl.DateTimeFormat(locale(), { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(d + "T00:00:00Z")); } catch (_) { return d; } };
+    return v.from === v.to ? f(v.from) : f(v.from) + " – " + f(v.to);
+  }
+  return T("This month");
+}
 // ── order freeze ─────────────────────────────────────────────────────────────────────────────────
 // Keep rows where they are WHILE you look at them: editing a record (rename, status flip) must not make its
 // row jump or leave the page. The sorted order is snapshotted per (list, sort, dir); a known row holds its
@@ -188,7 +213,7 @@ export function sortPeerRows(rows, sort, dir, freeze) {
   const key = PEER_SORT[sort] || PEER_SORT.status;
   const cmp = (a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1)
     || String(a.p.title || a.p.name || "").localeCompare(String(b.p.title || b.p.name || ""));
-  const s = freeze ? stableOrder(freeze + "|" + sort + "|" + dir, rows, r => r.p.id + "|" + tkey(r.t.node, r.t.iface), cmp)
+  const s = freeze ? stableOrder(freeze + "|" + sort + "|" + dir + rtotalTag(sort), rows, r => r.p.id + "|" + tkey(r.t.node, r.t.iface), cmp)
     : rows.slice().sort(cmp);
   return pinRecentlyCreated(s, r => r.p.id);   // a just-created peer stays on TOP regardless of sort/freeze
 }
@@ -283,14 +308,15 @@ export const USER_SORT = {
   last: u => { const s = userStats(u.id); return s.last == null ? Infinity : s.last; },
   rate: u => { const s = userStats(u.id); return s.rx + s.tx; },
   total: u => { const s = userStats(u.id); return s.rxb + s.txb; },
+  rtotal: u => { const a = userTraffic(u.id); return a ? a.rx + a.tx : 0; },   // every slot the user held, in the window
   // by node count first, then the total distinct interfaces across those nodes (encoded: nodes×10000 + ifaces)
   nodes: u => { const nm = {}; let ifs = 0; for (const p of Store.peersOfUser(u.id)) for (const t of p.targets) { const s = nm[t.node] = nm[t.node] || new Set(); if (!s.has(t.iface)) { s.add(t.iface); ifs++; } } return Object.keys(nm).length * 10000 + ifs; },
 };
-export const USER_DEFDIR = { status: -1, peers: -1, online: -1, last: 1, rate: -1, total: -1, name: 1, nodes: -1 };
+export const USER_DEFDIR = { status: -1, peers: -1, online: -1, last: 1, rate: -1, total: -1, rtotal: -1, name: 1, nodes: -1 };
 export function sortUsers(users, sort, dir, freeze) {
   const key = USER_SORT[sort] || USER_SORT.status;
   const cmp = (a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1) || String(a.name).localeCompare(String(b.name));
-  const s = freeze ? stableOrder(freeze + "|" + sort + "|" + dir, users, u => u.id, cmp) : users.slice().sort(cmp);
+  const s = freeze ? stableOrder(freeze + "|" + sort + "|" + dir + rtotalTag(sort), users, u => u.id, cmp) : users.slice().sort(cmp);
   return pinRecentlyCreated(s, u => u.id);   // a just-created user stays on TOP regardless of sort/freeze
 }
 export function sortColToggle(view, sk, dk, col, defdir) { if (view[sk] === col) view[dk] = -view[dk]; else { view[sk] = col; view[dk] = defdir[col] || 1; } }

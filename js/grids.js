@@ -24,12 +24,13 @@ import {
 import {
   peersView, sortPeerRows, peerSortBy, pageScroll, pageSizeOpts, searchMatch, peerMatchesQ, ifaceOptGroups,
   nodeFilterOptions, ifaceFilterOptions, orphCount, OnlinePeersTag, revealUser,
-  dashNodes, dashNodeOn, dashToggleNode,
+  dashNodes, dashNodeOn, dashToggleNode, trafficRangeLabel,
 } from "./views.js";
 import {
   UserCombo, assignPeer, confirmUnassign, confirmDeletePeer, confirmRestoreDeployment,
   confirmCorrectDeployment, openRecreateRekey, peerBlockBtn,
 } from "./peer-actions.js";
+import { PeerTrafficCell } from "./traffic-ui.js";
 import { openPeerConfigs, ReachedByBody } from "./peer-ui.js";
 import { openEditPeer, openPeerView, openPeerNetworks } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
@@ -57,7 +58,10 @@ const gwTag = (p, t) => html`<${Popover} hoverOnly cls="grp-pop" popCls="netrout
   <${ReachedByBody} peer=${p} blocked=${!!(p.selfDisabled || p.userDisabled) || p.status === "expired"} down=${!t.online} onView=${() => openPeerNetworks(p)}/>
 <//>`;
 
-export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live, grouped, sort, dir, onSort }) {
+// `ranged` (the Peers screen and the Users screen's lists): the Total column is the window's (traffic.js), not the live
+// wire counter, which moves into that cell's bubble (O2). `owner`: a user's own list — a device's figure is what it
+// carried while it was theirs, so the list adds up to the user's row.
+export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live, grouped, sort, dir, onSort, ranged, owner }) {
   const arrow = c => sort === c ? (dir < 0 ? "↓ " : "↑ ") : "";
   const th = (c, label, cls) => onSort ? html`<th class=${(cls ? cls + " " : "") + "clk"} onClick=${() => onSort(c)}>${arrow(c)}${label}</th>` : html`<th class=${cls || ""}>${label}</th>`;
   // A GROUPED row stands for the peer's deployments THAT THIS VIEW MATCHES, so its count badge must too:
@@ -68,7 +72,7 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
     <thead><tr>${th("status", live ? "" : T("col|Status"), "h-status")}${loc
       ? html`${hideUser ? null : th("user", T("col|User"), "h-user")}${th("title", T("col|Title"), "h-title")}${live ? th("endpoint", T("col|Endpoint"), "h-ep") : null}${th("address", T("col|Address"), "h-addr")}${th("server", T("col|Node"), "h-node")}`
       : html`${hideUser ? null : th("user", T("col|User"), "h-user")}${th("title", T("col|Title"), "h-title")}${agg ? th("server", node === "*" ? T("col|Node") : T("col|IF"), "h-node") : null}${th("address", T("col|Address"), "h-addr")}${live ? th("endpoint", T("col|Endpoint"), "h-ep") : null}`
-    }${th("online", T("col|Online"), "h-online")}${th("rate", T("col|Rate") + " ↓↑", "h-rate")}${th("total", T("col|Total") + " ↓↑", "h-total")}${live ? null : html`<th class="h-acts"></th>`}</tr></thead>
+    }${th("online", T("col|Online"), "h-online")}${th("rate", T("col|Rate") + " ↓↑", "h-rate")}${ranged && !live ? th("rtotal", trafficRangeLabel() + " ↓↑", "h-total") : th("total", T("col|Total") + " ↓↑", "h-total")}${live ? null : html`<th class="h-acts"></th>`}</tr></thead>
     <tbody>
       ${rows.length ? rows.map(({ p, t }) => {
         const obs = t.observed;
@@ -139,7 +143,11 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
           <td data-label=${T("col|Online")} class="c-online"><span class="when">${seen(tgtSeenAge(t))}</span></td>
           ${(() => { const xf = tgtXfer(t); return html`
           <td data-label=${T("col|Rate")} class="c-rate">${rateCell(xf ? xf.rx_speed : 0, xf ? xf.tx_speed : 0)}</td>
-          <td data-label=${T("col|Total")} class="c-total">${xferCell(...dlul(xf ? xf.rx_bytes : 0, xf ? xf.tx_bytes : 0))}</td>`; })()}
+          <td data-label=${T("col|Total")} class="c-total">${ranged && !live
+            ? html`<${PeerTrafficCell} pid=${p.id} owner=${owner} wire=${xf} iface=${t.iface}
+                ungrouped=${!grouped && !loc && p.targets.length > 1}
+                filtered=${(grouped || loc) && matchedOf(p).length < p.targets.length}/>`
+            : xferCell(...dlul(xf ? xf.rx_bytes : 0, xf ? xf.tx_bytes : 0))}</td>`; })()}
           ${live ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
             ${(() => { const gh = ghostIface(t.node, t.iface); return (gh && gh.ripe)
               ? html`<button class="iconbtn ghost" title=${T("Recreate & rekey — {iface} is gone with no recoverable key; recreate it fresh and reissue every client's config", { iface: t.iface })} onClick=${() => openRecreateRekey(t.node, t.iface)}><${Ic} i="refresh"/></button>`
@@ -164,14 +172,14 @@ export function UsersHeader({ sort, dir, onSort, live }) {
   const th = (c, label, cls) => html`<span class=${"clk" + (cls ? " " + cls : "")} onClick=${() => onSort(c)}>${arrow(c)}${label}</span>`;
   return html`<div class="uhead">
     <span></span>${th("status", T("col|Status"))}${th("name", T("col|User"))}
-    <span class=${"u-right" + (live ? " live" : "")}>${th("peers", T("col|Peers"), "uh-pc")}${th("nodes", T("col|Nodes"), "uh-srv")}${th("last", T("col|Online"))}${th("rate", T("col|Rate") + " ↓↑", "uh-r")}${th("total", T("col|Total") + " ↓↑", "uh-r")}${live ? null : html`<span></span>`}</span>
+    <span class=${"u-right" + (live ? " live" : "")}>${th("peers", T("col|Peers"), "uh-pc")}${th("nodes", T("col|Nodes"), "uh-srv")}${th("last", T("col|Online"))}${th("rate", T("col|Rate") + " ↓↑", "uh-r")}${live ? th("total", T("col|Total") + " ↓↑", "uh-r") : th("rtotal", trafficRangeLabel() + " ↓↑", "uh-r")}${live ? null : html`<span></span>`}</span>
   </div>`;
 }
 
 // A self-contained peers panel (toolbar + shared PeerGrid + pager) over a GIVEN peer set. Reused for the
 // unassigned grid and each user's expanded grid, so they look/behave exactly like the Peers screen. The
 // server / interface dropdown options are derived from the set itself (only servers/ifaces that have rows).
-export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, collapse, live, onlineOnly, freezeKey }) {
+export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, collapse, live, onlineOnly, freezeKey, owner }) {
   const [, force] = useState(0);
   const bump = () => force(x => x + 1);
   const nodeSet = new Set(), ifByNode = {};
@@ -203,7 +211,7 @@ export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideTool
       if (!ts.length) continue;
       if (!searchMatch((p.title || "") + " " + (p.name || "") + " " + p.targets.map(t => (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).join(" "), q)) continue;
       const rep = ts.slice().sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0))[0];   // prefer an online deployment
-      rows.push({ p, t: rep });
+      rows.push({ p, t: rep, o: owner });   // `o`: PEER_SORT.rtotal reads what the device carried while it was the owner's
       shownByPeer[p.id] = new Set([tkey(rep.node, rep.iface)]);   // only the rep is "shown" → the rest become +N
     }
   } else {
@@ -211,7 +219,7 @@ export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideTool
       if (node !== "*" && t.node !== node) continue;
       if (!ifaceMatch(t.iface, iface, t)) continue;
       if (onlineOnly && !t.online) continue;
-      rows.push({ p, t });
+      rows.push({ p, t, o: owner });
     }
     if (q) rows = rows.filter(({ p, t }) => searchMatch((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface, q));
     for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
@@ -237,7 +245,7 @@ export function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideTool
         options=${[{ value: "*", label: T("All interfaces") }, ...ifaceOptGroups(ifaceOpts)]}/>` : null}
       ${onNew ? html`<span class="grow"></span><button class="btn btn-primary btn-mini" onClick=${onNew}><${Ic} i="plus"/> ${newLabel || T("New peer")}</button>` : null}
     </div>`}
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live} sort=${view.sort} dir=${view.dir} onSort=${c => { peerSortBy(view, c); view.page = 1; bump(); }}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live} ranged=${!live} owner=${owner} sort=${view.sort} dir=${view.dir} onSort=${c => { peerSortBy(view, c); view.page = 1; bump(); }}/>
     ${rows.length > pageSize ? html`<div class="pager">
       <label class="pager-size">${T("Rows per page")}
         <${Dropdown} className="selwrap" ariaLabel=${T("Rows per page")} value=${pageSize} options=${pageSizeOpts()}

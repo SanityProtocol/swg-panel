@@ -3852,6 +3852,41 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
   letter-spacing:.06em;padding:4px 9px;border-radius:6px;transition:all .14s}
 .rtab:hover{color:var(--ink-2)}
 .rtab.on{background:var(--brand);color:var(--brand-ink);font-weight:600}
+/* Traffic totals (P2): the window control the Peers / Users grids and both views share, the Total cell's bubble, the
+   volume chart. The custom dates sit beside the tabs, compact enough for a toolbar row. */
+.trange{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.trange-dates{display:inline-flex;align-items:center;gap:6px}
+.trange-dates .datein{padding:4px 8px;font-size:12px;border-radius:7px}
+.trange .hint.warn{margin:0}
+.tcellpop{display:inline-block}
+.tbub .tb-row{margin:3px 0;white-space:normal}
+.tbub .tb-row b{font-family:var(--mono);font-weight:600;color:var(--ink)}
+.tbub .tb-row.sub{color:var(--dim)}
+.tblock{margin-top:18px}
+.tblock-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 2px 8px}
+.tblock-sum{margin:0 2px 8px}
+.tblock .hint{margin-top:6px}
+/* a column per bucket: ↓ at the base, ↑ stacked on it, a 2px gap between them; empty columns are the quiet track */
+.vbars{position:relative;display:flex;align-items:stretch;gap:2px;width:100%}
+.vbar{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;background:var(--track);border-radius:2px;overflow:hidden}
+.vbar.hot{background:var(--row-hover)}
+.vbar i{display:block;width:100%;flex:none}
+.vbar i.d{background:var(--tp-rx);border-radius:0 0 2px 2px}
+.vbar i.u{background:var(--tp-tx);border-radius:2px 2px 0 0}
+.vbars-none{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;pointer-events:none}
+/* the user view's device list: a name (with "deleted" / "now X's" when it is no longer theirs) and its figure */
+.uv-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.uv-row{display:flex;align-items:center;gap:12px;padding:9px 14px;border-top:1px solid var(--line)}
+.uv-row:first-child{border-top:0}
+.uv-row.clk{cursor:pointer}
+.u-total.clk{cursor:pointer;border-radius:6px}
+/* the user view's door inside an expanded row — the Total column that opens it is hidden on a narrow screen */
+.urow-traffic{display:flex;justify-content:flex-end;margin:0 0 8px}
+.u-total.clk:hover .xfer{text-decoration:underline;text-underline-offset:3px}
+.u-total.clk:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.uv-row.clk:hover{background:var(--row-hover)}
+.uv-nm{flex:1;min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tg.tg-gone{border-color:var(--line);color:var(--dim)}
 /* "paused" pill: node isn't reporting right now, but the last-collected data stays charted */
 .rt-paused{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:9.5px;text-transform:uppercase;
   letter-spacing:.07em;color:var(--pending);background:color-mix(in srgb,var(--pending) 14%,transparent);

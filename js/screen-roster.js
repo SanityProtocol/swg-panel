@@ -33,8 +33,9 @@ import {
   openUserConfigs, openUserEdit, openGroup, openCreateGroup, confirmDeleteGroup, UserCounts,
 } from "./peer-ui.js";
 import {
-  openAddPeers, openCreatePeer, openCreateUser,
+  openAddPeers, openCreatePeer, openCreateUser, openUserView,
 } from "./sheets-crud.js";
+import { TrafficRange, UserTrafficCell } from "./traffic-ui.js";
 import {
   EmbeddedPeers, PeerGrid, UsersHeader,
 } from "./grids.js";
@@ -153,6 +154,7 @@ export function PeersScreen() {
         options=${peerStatusFilters()}/>
       ${restorableCount ? html`<button class="btn btn-restore" title=${T("Recreate every missing interface shown here with its original identity")} onClick=${() => confirmRestoreAll(rows)}><${Ic} i="refresh"/> ${T("Restore all dangling")}${restorableCount > 1 ? " · " + restorableCount : ""}</button>` : null}
       ${correctableCount ? html`<button class="btn btn-correct" title=${T("Assign each broken peer shown here the next free in-subnet address")} onClick=${() => confirmCorrectAll(rows)}><${Ic} i="check"/> ${T("Fix all broken")}${correctableCount > 1 ? " · " + correctableCount : ""}</button>` : null}
+      <${TrafficRange}/>
       <button class="btn btn-primary" onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> ${T("New peer")}</button>
     </div>
 
@@ -160,7 +162,7 @@ export function PeersScreen() {
       ${node !== "*" ? html`<${Tag} kind="iface" label=${Store.nodeName(node) || "—"} color=${Store.nodeColor(node)}/>` : null}
       ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface} gen3=${itype === "awg" && awgGen(node, iface) === "3.1"}/>` : null}
     </span><span class="count">${rows.length}</span></div>
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} grouped=${grouped} ranged=${true} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
     <${RowsPager} total=${rows.length} page=${page} pageSize=${pageSize} onPage=${setPage}
       onSize=${v => { peersView.pageSize = v; peersView.page = 1; force(x => x + 1); }}/>
 
@@ -383,7 +385,11 @@ export function UserRow({ user, live, onlineOnly, q }) {
         </span>` : html`<span class="faint">—</span>`}</span>
         <span class="u-last">${st.last == null ? html`<span class="u-never">${T("Never")}</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
         <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
-        <span class="u-total">${xferCell(db, ub)}</span>
+        ${live ? html`<span class="u-total">${xferCell(db, ub)}</span>`
+          // the user's figure opens the user's view — their graph and every device they had (O12)
+          : html`<span class="u-total clk" role="button" tabindex="0" title=${T("Open this user's traffic — graph and devices")}
+              onClick=${e => { e.stopPropagation(); openUserView(user.id); }} onDblClick=${e => e.stopPropagation()}
+              onKeyDown=${e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); openUserView(user.id); } }}><${UserTrafficCell} uid=${user.id}/></span>`}
         ${live ? null : html`<span class="u-acts" onClick=${e => e.stopPropagation()}>
           <button class="iconbtn qr" title=${T("Show QR / configs")} onClick=${() => openUserConfigs(user)}><${Ic} i="qr"/></button>
           <button class="iconbtn" title=${T("Edit user")} onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
@@ -392,7 +398,9 @@ export function UserRow({ user, live, onlineOnly, q }) {
       </span>
     </div>
     ${expanded ? html`<div class="urow-body">
-      ${shownPeers.length ? html`<${EmbeddedPeers} peers=${shownPeers} view=${view} hideUser=${true} hideToolbar=${true} collapse=${true} live=${live} onlineOnly=${onlineOnly} freezeKey=${"uembed|" + user.id}/>`
+      ${live ? null : html`<div class="urow-traffic"><button type="button" class="btn btn-ghost btn-mini" onClick=${() => openUserView(user.id)}>
+        <${Ic} i="bars"/> ${T("Traffic — graph and devices")}</button></div>`}
+      ${shownPeers.length ? html`<${EmbeddedPeers} peers=${shownPeers} view=${view} hideUser=${true} hideToolbar=${true} collapse=${true} live=${live} onlineOnly=${onlineOnly} owner=${user.id} freezeKey=${"uembed|" + user.id}/>`
         : html`<div class="ug-empty">${user.peerCount ? T("No peers match.") : noPeersYet(() => openAddPeers(user.id, user.name))}</div>`}
     </div>` : null}
     <${RowError} k=${"user:" + user.id}/>
@@ -492,6 +500,7 @@ export function UsersScreen() {
       <${Dropdown} className="selwrap" ariaLabel=${T("All interfaces")} value=${usersView.iface}
         onChange=${v => { usersView.iface = v; usersView.page = 1; force(x => x + 1); }}
         options=${ifaceFilterOptions(ifaceOpts, "")}/>
+      <${TrafficRange}/>
       <button class="btn btn-ghost" onClick=${() => openCreatePeer({})}><span class="plus"><${Ic} i="plus"/></span> ${T("New peer")}</button>
       <button class="btn btn-primary" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> ${T("New user")}</button>
     </div>

@@ -31,7 +31,9 @@ import {
 } from "./peer-actions.js";
 import { searchMatch, usersView, revealUser, privateUnenforced, namedFew, privateOffOpens } from "./views.js";
 import { turnEnabled, WDTT_COLOR, shownTitle } from "./turn.js";
-import { openPeerConfigs, ReachedByBody } from "./peer-ui.js";
+import { openPeerConfigs, ReachedByBody, openUserEdit } from "./peer-ui.js";
+import { TrafficBlock, goneDevices } from "./traffic-ui.js";
+import { trafficTotals } from "./traffic.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -681,6 +683,50 @@ export function PeerViewSheet({ pid, node, iface }) {
         </div></div>`;
     })}</div>
     ${editLocked ? html`<div class="notice warn" style="margin-top:14px"><${Ic} i="warn"/><span>${T("Editing is off while a deployment sits on a missing or misconfigured interface. A peer edit (keys, AmneziaWG params, DNS, address) applies to every deployment, so it would leave this peer inconsistent. To edit it, either Restore / Fix the interface above, or open Targets and remove that interface from this peer.")}</span></div>` : null}
+    <${TrafficBlock} by="peer" id=${pid}/>
+  <//>`;
+}
+
+// Read-only user view (O12): the user-level twin of the peer view — the user's graph over the shared window, and every
+// device they held in it with what it carried while it was theirs. A device deleted or handed on stays in the list (and
+// in the sum), so the list adds up to the Users grid's figure. Paged at 15, for a user with two devices or two hundred.
+export function openUserView(uid, child) { (child ? pushModal : openModal)(html`<${UserViewSheet} uid=${uid}/>`); }
+export function UserViewSheet({ uid }) {
+  useStore();
+  const [page, setPage] = useState(1);
+  const u = Store.user(uid);
+  const e = trafficTotals();
+  const d = e && e.data;
+  const rows = ((d && d.rows.get(uid)) || []).slice().sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx) || String(a.name).localeCompare(String(b.name)));
+  // devices the user holds now but that carried nothing in the window still belong on the list
+  const inRows = new Set(rows.map(r => r.id));
+  const quiet = u ? Store.peersOfUser(uid).filter(p => !inRows.has(p.id)).map(p => ({ id: p.id, name: p.title || "", rx: 0, tx: 0, quiet: true })) : [];
+  const all = rows.concat(quiet);
+  const pages = Math.max(1, Math.ceil(all.length / LIST_PAGE));
+  const pg = Math.min(page, pages);
+  const gone = d ? goneDevices(uid, d) : 0;
+  const status = r => {
+    const p = Store.peer(r.id);
+    if (!p) return html`<span class="tg tg-gone">${T("deleted")}</span>`;
+    if (p.user_id !== uid) { const o = p.user_id ? Store.user(p.user_id) : null;
+      return html`<span class="tg tg-gone" title=${T("Its traffic from before the handover is still this user's")}>${o ? T("now {v1}'s", { v1: o.name }) : T("unassigned")}</span>`; }
+    return null;
+  };
+  const title = u ? u.name : (rows[0] && rows[0].owner_name) || T("Deleted user");
+  return html`<${Sheet} title=${title} width=${700}
+    foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
+      ${u ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); openUserEdit(u); }}><${Ic} i="pencil"/> ${T("Edit user")}</button>` : null}<//>`}>
+    <${TrafficBlock} by="user" id=${uid}/>
+    <div class="lbl" style="margin:18px 2px 6px">${T("Devices · {n}", { n: all.length })}${gone ? html` <span class="faint">${T("({n} no longer theirs)", { n: gone })}</span>` : null}</div>
+    ${!all.length ? html`<div class="empty"><b>${T("No devices yet")}</b>${T("Add a peer for this user and its traffic appears here.")}</div>`
+      : html`<div class="uv-list">${pageSlice(all, pg).map(r => {
+        const p = Store.peer(r.id);
+        const open = p ? () => openPeerView(r.id, null, null, true) : null;
+        return html`<div class=${"uv-row" + (open ? " clk" : "")} key=${r.id} onClick=${open}>
+          <span class="uv-nm">${(p && p.title) || r.name || html`<span class="faint">${T("Untitled")}</span>`}${status(r)}</span>
+          <span class="u-total">${xferCell(...dlul(r.rx || 0, r.tx || 0))}</span>
+        </div>`; })}</div>
+        <${ListPager} page=${pg} setPage=${setPage} total=${all.length}/>`}
   <//>`;
 }
 

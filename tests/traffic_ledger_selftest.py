@@ -113,10 +113,10 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
           "own peer"),
     "k": ([("                self._err(\"index.json\", e)\n                return requeue(True, bool(snap), qf, qd)",
             "                self._err(\"index.json\", e)")], "past a failed index"),
-    "l": ([("            self._advance(d, i, off, now, mid)\n            m = self.map\n",
+    "l": ([("            self._advance(d, i, off, now, mid, step)\n            m = self.map\n",
             "            m = self.map\n"),
            ("            self._span(nid, now)\n            self.newest = max(self.newest, now)\n",
-            "            self._advance(d, i, off, now, mid)\n            self._span(nid, now)\n            self.newest = max(self.newest, now)\n")],
+            "            self._advance(d, i, off, now, mid, step)\n            self._span(nid, now)\n            self.newest = max(self.newest, now)\n")],
           "as it stood at midnight"),
     "m": ([("        if (d, i) <= (self.day, self.idx):\n            return\n        self._close_bucket()", "        if (d, i) == (self.day, self.idx):\n            return\n        self._close_bucket()")],
           "never go backwards"),
@@ -154,13 +154,12 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
           "one point per bucket"),
     "F": ([("            qf = [(q[0], q[1], q[2], q[4], {s: q[5][s] for s in want if s in q[5]}) for q in self.q_fine if f <= q[0] <= t]",
             "            qf = []")], "waiting for their write"),
-    "G": ([("                if _lzlib.crc32(data[o + _LD_ROW.size:p1]) == crc:", "                if True:")], "damaged day row"),
+    "G": ([("            if _lzlib.crc32(data[o + _LD_ROW.size:p1]) == crc:   # a damaged C table", "            if True:   # a damaged C table")], "damaged day row"),
     "H": ([("            kick = self.observed and (self.prompt", "            kick = (self.prompt")], "before anything was observed"),
     "I": ([("                d, mid, off = self.day, self.fmid, self.off    # fine file", "                d, mid = self.day, self.fmid    # fine file")],
           "its own offset"),
-    "p": ([("            if end < sz:\n                os.truncate(path, end)\n", "            if False:\n                os.truncate(path, end)\n"),
-           ("            end = self._scan_end(path)\n", "            end = sz\n")], "torn tail"),
-    # [11] the retrospective's findings
+    "p": ([("            elif end < sz:\n                os.truncate(path, end)\n", "            elif False:\n                os.truncate(path, end)\n"),
+           ("                end = self._scan_end(path)\n", "                end = sz\n")], "torn tail"),
     "J": ([("            if key in self.imports:                            # — unless",
             "            if False:                                          # — unless")], "BOTH counters"),
     "K": ([("                if seq < self.seqs.get(nid, 0):", "                if False:")], "never read as a restart"),
@@ -189,8 +188,48 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
           "never lands on"),
     "Z": ([("            if f > t:\n                raise ValueError(perr(\"from and to must include", "            if False:\n                raise ValueError(perr(\"from and to must include")],
           "inverted window"),
-    "a2": ([("        f = min(max(f, _ld_day(first)[0]), t) if first else t", "        f = min(max(f, _ld_day(first)[0]), t) if first else f")], "empty ledger"),
-    "b2": ([("        f = min(max(f, _ld_day(first)[0]), t) if first else t", "        f = max(f, _ld_day(first)[0]) if first else t")], "before the ledger began"),
+    "a2": ([("        elif not nslots:                                       # an empty ledger walks no day before today\n            f = t",
+             "        elif not nslots:                                       # an empty ledger walks no day before today\n            f = f")], "empty ledger"),
+    "c2": ([("                step = self.step_next\n", "                step = self.step\n")], "next day"),
+    "d2": ([("        if fh:                                                 # thousands). The day keeps its file's frame",
+             "        if False:                                              # thousands). The day keeps its file's frame"),
+            ("        elif d == bday and bstep and not env:", "        elif False:")], "or a restart after it"),
+    "e2": ([("            if on is not None and self.slots[s].get(\"on\") != on:", "            if False:")], "owner's LAST name"),
+    "f2": ([("                if since >= (r.get(\"_last\") or 0):", "                if False:")], "pair names it"),
+    "j2": ([("                if d < cutoff:\n                    with contextlib.suppress(FileNotFoundError):",
+             "                if d <= cutoff:\n                    with contextlib.suppress(FileNotFoundError):")], "exactly what"),
+    "k2": ([("                sz = e.stat(follow_symlinks=False).st_size\n                led += sz", "                sz = e.stat(follow_symlinks=False).st_size\n                led += sz if not e.name.startswith(\"index\") else 0")],
+           "equals du"),
+    "o2": ([("        day = self._sweep_ok() if self._sweep_due and not self.infinite and self.on and self.observed and not closing else 0",
+             "        day = 0")], "full disk"),
+    "p2": ([("        return mono >= self._sweep_at and self.day == today and mono - self._day_mono >= LEDGER_SWEEP_HOLD_S",
+             "        return mono >= self._sweep_at and mono - self._day_mono >= LEDGER_SWEEP_HOLD_S")], "jumped ahead"),
+    "u2": ([("        return mono >= self._sweep_at and self.day == today and mono - self._day_mono >= LEDGER_SWEEP_HOLD_S",
+             "        return mono >= self._sweep_at and self.day == today")], "held for ten minutes"),
+    "q2": ([(" and self.on and self.observed and not closing else 0", " and self.on and not closing else 0")], "observed nothing"),
+    "w3": ([("        except FileNotFoundError:                              # deleted by the OFF sweep since the caller looked\n            return None",
+             "        except ZeroDivisionError:                              # deleted by the OFF sweep since the caller looked\n            return None")],
+           "under a series read"),
+    "w2": ([("                except FileNotFoundError:\n                    head = None", "                except ZeroDivisionError:\n                    head = None")],
+           "between its header"),
+    "y2": ([("            if (not kick and self._sweep_due and not self.infinite and self.observed and mono >= self._retry_at\n                    and self._sweep_ready(today, mono)):",
+             "            if False:")], "held back"),
+    "y3": ([(" and self.observed and mono >= self._retry_at\n                    and self._sweep_ready(today, mono)):",
+             "\n                    and self._sweep_ready(today, mono)):")], "wakes nothing"),
+    "z2": ([("            if _lzlib.crc32(data[o + _LD_ROW.size:p1]) == crc:   # a damaged C table",
+             "            if _lzlib.crc32(data[o + _LD_ROW.size:p1]) != crc:\n                return rows, o, \"torn\"\n            if True:   # a damaged C table")],
+           "damaged day row"),
+    "z3": ([("            if (ym is not None and d // 100 != ym) or ns < prev or ns > max(prev, len(self.slots)) + LEDGER_ROW_GROWTH:",
+             "            if False:")], "cannot be ours"),
+    "z4": ([("            if verdict == \"corrupt\":", "            if False:")], "cannot be ours"),
+    "z6": ([("        if ym is None:\n            return False\n        for day in range(1, 32):", "        return True\n        for day in range(1, 32):")],
+           "real torn tail"),
+    "z5": ([("                return rows, o, (\"corrupt\" if self._row_after(data, o, ym) else \"torn\")",
+             "                return rows, o, \"torn\"")], "cannot be ours (nsflip)"),
+    "x2": ([("        if gone:\n            self._usage = (0.0, None)",
+             "        for f in sorted(x for x in os.listdir(self.dir) if x.startswith(\"day-\"))[:1]:\n            os.unlink(self._p(f))\n        if gone:\n            self._usage = (0.0, None)")],
+           "never a day row"),
+    "b2": ([("            f = min(max(f, _ld_day(first)[0]), t)", "            f = max(f, _ld_day(first)[0])")], "before the ledger began"),
 }
 
 TMP = tempfile.mkdtemp(prefix="ledger-")
@@ -1147,6 +1186,283 @@ try:
 except Exception as e:
     import traceback; traceback.print_exc()
     check("section [12] ran to the end", False, "%s: %s" % (type(e).__name__, e))
+
+
+print("[13] P2's server half: the resolution from the next day, owner names, rows per (peer, owner), the OFF sweep, usage")
+
+
+def section_13():
+    global L, rp
+    # the resolution: saved mid-day, today keeps its step; the next day takes the new one; a restart today keeps today's
+    L, rp = fresh("resol", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")])))
+    ing(L, "n1", wg("awg0", ("K1", 0, 0)), T0)
+    ing(L, "n1", wg("awg0", ("K1", 100, 0)), T0 + 60)
+    L.configure({"history_resolution": 900, "infinite_history": True})
+    ing(L, "n1", wg("awg0", ("K1", 200, 0)), T0 + 3600)        # closes 10:00–11:00 at 1 h
+    ing(L, "n1", wg("awg0", ("K1", 300, 0)), T0 + 7200)
+    L.flush()
+    L2 = P.TrafficLedger()                                      # a restart with the new resolution already saved
+    L2.start({"roster_path": rp, "panel_settings": {"history_resolution": 900}}, now=T0 + 7300, writer=False)
+    check("a resolution saved mid-day, or a restart after it, keeps today's step — nothing of today's graph is dropped",
+          L.step == 3600 and L2.step == 3600 and not L.diag.get("fine_dropped") and L2.step_next == 900, (L.step, L2.step, L.diag.get("fine_dropped")))
+    ing(L, "n1", wg("awg0", ("K1", 400, 0)), T0 + 86400)       # 2026-09-11, 10:00
+    ing(L, "n1", wg("awg0", ("K1", 500, 0)), T0 + 86400 + 1000)
+    L.flush()
+    hd = L._fine_head(L._fine_path(20260911)) if os.path.exists(L._fine_path(20260911)) else None
+    check("…the next day starts at the new one", L.step == 900 and hd and hd[0] == 900 and L.idx == 41, (L.step, hd, L.idx))
+
+    # owner names and rows per (peer, owner)
+    R = roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")]), peer("p2", "u2", "K2", [("n1", "awg0", "awg")]))
+    R["users"] = {"u1": {"id": "u1", "name": "Anna"}, "u2": {"id": "u2", "name": "Boris"}}
+    L, rp = fresh("owners", R)
+    ing(L, "n1", wg("awg0", ("K1", 0, 0), ("K2", 0, 0)), T0)
+    ing(L, "n1", wg("awg0", ("K1", 1000, 100), ("K2", 50, 5)), T0 + 60)
+    R["users"]["u1"]["name"] = "Anna K"
+    R["peers"]["p1"]["user_id"] = "u2"                           # p1 handed to Boris
+    P.roster_save(rp, R)
+    ing(L, "n1", wg("awg0", ("K1", 1500, 150), ("K2", 60, 6)), T0 + 120)
+    ing(L, "n1", wg("awg0", ("K1", 1700, 170), ("K2", 60, 6)), T0 + 180)
+    del R["users"]["u1"]
+    P.roster_save(rp, R)
+    ing(L, "n1", wg("awg0", ("K1", 1700, 170), ("K2", 60, 6)), T0 + 240)
+    s0 = [x for x in L.slots if x["pid"] == "p1"][0]
+    check("a slot keeps its owner's LAST name — renamed, then the user deleted", s0.get("on") == "Anna K", s0)
+    q = {"range": ["today"]}
+    by_slot = L.totals({**q, "by": ["slot"]}, T0 + 240)["rows"]
+    by_user = {r["id"]: (r["rx"], r["tx"]) for r in L.totals({**q, "by": ["user"]}, T0 + 240)["rows"]}
+    by_peer = {r["id"]: (r["rx"], r["tx"]) for r in L.totals({**q, "by": ["peer"]}, T0 + 240)["rows"]}
+    sl = {(r["id"], r["owner"]): r for r in by_slot}
+    agg_u, agg_p = {}, {}
+    for r in by_slot:
+        u = agg_u.setdefault(r["owner"], [0, 0]); u[0] += r["rx"]; u[1] += r["tx"]
+        pp = agg_p.setdefault(r["id"], [0, 0]); pp[0] += r["rx"]; pp[1] += r["tx"]
+    check("rows per (peer, owner) add up to the per-user and the per-peer rows — the grids and the user view agree",
+          {k: tuple(v) for k, v in agg_u.items()} == by_user and {k: tuple(v) for k, v in agg_p.items()} == by_peer
+          and sl[("p1", "u1")]["rx"] == 1000 and sl[("p1", "u2")]["rx"] == 700 and sl[("p1", "u1")]["until"] == T0 + 120
+          and sl[("p1", "u1")]["owner_name"] == "Anna K" and sl[("p1", "u2")]["until"] is None, (by_slot, by_user, by_peer))
+    check("every row says since when it is counted", all(r.get("since") for r in by_slot)
+          and sl[("p1", "u2")]["since"] == T0 + 120, [(r["id"], r["owner"], r["since"]) for r in by_slot])
+
+    # the newest slot of a (peer, owner) pair names it: unassign and back
+    R2 = roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")]))
+    L, rp = fresh("reowned", R2)
+    ing(L, "n1", wg("awg0", ("K1", 10, 0)), T0)
+    R2["peers"]["p1"]["user_id"] = None; R2["peers"]["p1"]["title"] = "phone"
+    P.roster_save(rp, R2)
+    ing(L, "n1", wg("awg0", ("K1", 20, 0)), T0 + 60)
+    R2["peers"]["p1"]["user_id"] = "u1"; R2["peers"]["p1"]["title"] = "Anna's phone"
+    P.roster_save(rp, R2)
+    ing(L, "n1", wg("awg0", ("K1", 30, 0)), T0 + 120)
+    r = [x for x in L.totals({"range": ["today"], "by": ["slot"]}, T0 + 130)["rows"] if x["owner"] == "u1"][0]
+    check("the newest slot of a pair names it, and says it is open", r["name"] == "Anna's phone" and r["until"] is None
+          and r["slots"] == 2, r)
+
+    # the OFF sweep: 75 days of history (10 Sep – 23 Nov), then off on 24 Nov: the cutoff is 22 Oct — the DETAIL of every
+    # day before it goes; no day row is touched, so every total for every window stays exactly what it was
+    L, rp = fresh("sweep", roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")])))
+    L._sweep_ok = lambda: True                                  # a synthetic calendar: the clock-held gate has its own checks
+    t = T0
+    ing(L, "n1", wg("awg0", ("K1", 0, 0)), t)
+    v = 0
+    for day in range(75):
+        for h in (0, 3600):
+            v += 100
+            ing(L, "n1", wg("awg0", ("K1", v, 0)), t + day * 86400 + h)
+        L.flush()
+    now = t + 75 * 86400                                        # 2026-11-24
+    ing(L, "n1", wg("awg0", ("K1", v + 100, 0)), now)
+    L.flush()
+    hd = os.path.join(TMP, "sweep", "history")
+    life0 = life(L, "p1")
+    L._usage = (0.0, None)
+    u0 = L.usage(now=now)
+    wins = [("2026-09-10", "2026-09-10"), ("2026-09-12", "2026-09-20"), ("2026-09-20", "2026-10-10"), ("2026-10-21", "2026-10-23"),
+            ("2026-09-01", "2026-11-24"), ("2026-11-01", "2026-11-24")]
+    tot = lambda f_, t_: {r["id"]: (r["rx"], r["tx"]) for r in L.totals({"from": [f_], "to": [t_]}, now)["rows"]}.get("p1")
+    tot0 = {w: tot(*w) for w in wins}
+    ser0 = L.series({"from": ["2026-09-12"], "to": ["2026-09-18"], "id": ["p1"]}, now)["points"]
+    before = {f: os.path.getsize(os.path.join(hd, f)) for f in os.listdir(hd)}
+    days0 = {f: open(os.path.join(hd, f), "rb").read() for f in before if f.startswith("day-")}
+    L.configure({"infinite_history": False, "history_resolution": 3600})
+    L.flush()
+    after = set(os.listdir(hd))
+    removed = {f: b for f, b in before.items() if f not in after}
+    cutoff = P._ld_of(P._ld_date(20261124) - P._ldt.timedelta(days=P.LEDGER_KEEP_DAYS))
+    check("the OFF sweep deletes exactly what the read-out named — the fine files of the days before the cutoff, bytes and days",
+          cutoff == 20261022 and removed and sum(removed.values()) == u0["sweep_bytes"] and u0["sweep_days"] == len(removed)
+          and all(f.startswith("fine-") and int(f[5:15].replace("-", "")) < cutoff for f in removed)
+          and not any(f.startswith("fine-") and int(f[5:15].replace("-", "")) < cutoff for f in after),
+          (sorted(removed)[:3], len(removed), u0["sweep_bytes"], u0["sweep_days"]))
+    check("…and never a day row: every day file is byte-for-byte what it was",
+          all(os.path.exists(os.path.join(hd, f)) and open(os.path.join(hd, f), "rb").read() == b for f, b in days0.items()),
+          sorted(days0))
+    check("every total for every window is exactly what it was — a week months back included",
+          {w: tot(*w) for w in wins} == tot0, ({w: tot(*w) for w in wins}, tot0))
+    check("the lifetime survives the sweep", life(L, "p1") == life0, (life(L, "p1"), life0))
+    ser1 = L.series({"from": ["2026-09-12"], "to": ["2026-09-18"], "id": ["p1"]}, now)["points"]
+    check("an old week's graph still draws — a bar a day from the day rows, the same bytes as its hours drew",
+          ser1 and all(pt[1] >= 86000 for pt in ser1) and sum(pt[2] for pt in ser1) == sum(pt[2] for pt in ser0),
+          (ser1[:2], sum(pt[2] for pt in ser1), sum(pt[2] for pt in ser0)))
+    L._usage = (0.0, None)
+    u1 = L.usage(now=now)
+    du = sum(os.path.getsize(os.path.join(hd, f)) for f in os.listdir(hd))
+    check("the size read-out equals du of the history directory", u1["bytes_ledger"] == du, (u1["bytes_ledger"], du))
+
+
+def section_13b():
+    def history(tag, days):
+        L, rp = fresh(tag, roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")])))
+        v = 0
+        ing(L, "n1", wg("awg0", ("K1", 0, 0)), T0)
+        for day in range(days):
+            v += 100
+            ing(L, "n1", wg("awg0", ("K1", v, 0)), T0 + day * 86400)
+            ing(L, "n1", wg("awg0", ("K1", v + 50, 0)), T0 + day * 86400 + 3600)
+            v += 50
+            L.flush()
+        return L, rp, os.path.join(TMP, tag, "history"), v
+
+    # a full disk does not hold the sweep back — it is the case the switch is most needed for
+    L, rp, hd, v = history("fulldisk", 75)
+    L._sweep_ok = lambda: True
+    L.configure({"infinite_history": False})
+    real_ok = P.stats_disk_ok
+    P.stats_disk_ok = lambda d: False
+    try:
+        L.flush()
+    finally:
+        P.stats_disk_ok = real_ok
+    left = [f for f in os.listdir(hd) if f.startswith("fine-2026-09")]
+    check("a full disk does not hold the OFF sweep back — it is the case the switch is most needed for", not left, left)
+
+    # a fine file deleted while a series reads it: the day draws from its row, nothing raises
+    fp = L._fine_path(20260915)
+    real_exists = P.os.path.exists
+    P.os.path.exists = lambda x: True if x == fp else real_exists(x)
+    err = None
+    try:
+        sr = L.series({"from": ["2026-09-14"], "to": ["2026-09-16"], "id": ["p1"]}, T0 + 75 * 86400)
+    except Exception as e:
+        err, sr = e, None
+    finally:
+        P.os.path.exists = real_exists
+    check("a fine file the sweep deleted under a series read is no error — that day draws from its row",
+          err is None and sr and len(sr["points"]) == 3, (err, sr and sr["points"]))
+    real_head = L._fine_head
+    L._fine_head = lambda x: (3600, 0, P._ld_midnight(20260915)) if x == fp else real_head(x)   # the header read, then the file went
+    P.os.path.exists = lambda x: True if x == fp else real_exists(x)
+    err = None
+    try:
+        sr = L.series({"from": ["2026-09-14"], "to": ["2026-09-16"], "id": ["p1"]}, T0 + 75 * 86400)
+    except Exception as e:
+        err, sr = e, None
+    finally:
+        L._fine_head = real_head
+        P.os.path.exists = real_exists
+    tt = {r["id"]: r["rx"] for r in L.totals({"from": ["2026-09-14"], "to": ["2026-09-16"]}, T0 + 75 * 86400)["rows"]}.get("p1")
+    check("…and one deleted between its header and its buckets draws that day from its row — the graph still equals the total",
+          err is None and sr and sum(pt[2] for pt in sr["points"]) == tt and len(sr["points"]) == 3, (err, sr and sr["points"], tt))
+
+    # a sweep held back (a new day, a restart) is kicked once the day has held — at 1-day resolution nothing else wakes it
+    L._sweep_due, L.infinite, L._kick = True, False, False
+    L._sweep_ready = lambda d, m: True
+    L.q_fine, L.q_day, L.prompt, L.d_index = [], [], False, False
+    ing(L, "n1", wg("awg0", ("K1", v, 0)), T0 + 74 * 86400 + 3600 + 10)   # inside the same bucket: nothing else to write
+    check("a sweep held back is kicked once the day has held — nothing else would wake the writer", L._kick, L._kick)
+    L._kick, L.observed = False, False
+    ing(L, "n1", wg("awg0"), T0 + 74 * 86400 + 3600 + 12)          # nothing read: this process has observed nothing
+    k1 = L._kick
+    L.observed, L._retry_at = True, T0 + 74 * 86400 + 3600 + 14 + 300    # the ingest's monotonic clock here is the test's
+    ing(L, "n1", wg("awg0", ("K1", v, 0)), T0 + 74 * 86400 + 3600 + 14)   # …or a failed write's pause is running
+    k2 = L._kick
+    L._retry_at = 0.0
+    check("…and wakes nothing in a process that observed nothing, or during a failed write's pause", not k1 and not k2, (k1, k2))
+
+    # a damaged day row is skipped — never the place a month file is cut (day rows are the totals)
+    dp = L._day_path(20260915)
+    L.flush()
+    rows = L._day_rows(dp)
+    o, ns = rows[20260915]
+    raw = bytearray(open(dp, "rb").read())
+    raw[o + P._LD_ROW.size + 3] ^= 0xFF                         # a bit flip inside day 15's row
+    open(dp, "wb").write(bytes(raw))
+    L._tails.pop(dp, None); L._rowidx.pop(dp, None)
+    end = L._valid_end(dp, P._LD_MAGIC)
+    later = sorted(d for d in L._day_rows(dp) if d > 20260915)
+    L._append_day((20260931 if False else 20260930, 0, 0, P._larr.array("Q"), P._larr.array("Q")))   # a re-close: skipped
+    L._rowidx.pop(dp, None)
+    check("a damaged day row is skipped, never the place the month is cut — every later day's row stays",
+          end == len(raw) and later and later[0] == 20260916 and later[-1] == 20260930
+          and 20260915 not in L._day_rows(dp), (end, len(raw), later[:2], later[-1:]))
+
+    # a flipped width (the row header carries no checksum) and a zero-filled tail: not ours — kept aside, never cut
+    for tag, mutate in (("nsflip", lambda b, o: b.__setitem__(slice(o + 16, o + 20), (70000).to_bytes(4, "little"))),
+                        ("zerotail", None)):
+        L2, rp2, hd2, v2 = history(tag, 40)
+        dp2 = L2._day_path(20260915)
+        raw2 = bytearray(open(dp2, "rb").read())
+        rows2 = L2._day_rows(dp2)
+        if mutate:
+            mutate(raw2, rows2[20260920][0])                    # day 20's nslots → far past the file's end
+        else:
+            raw2 += bytes(P._LD_ROW.size + 16)                  # a crash left zeros where a row would be
+        open(dp2, "wb").write(bytes(raw2))
+        L2._tails.pop(dp2, None); L2._rowidx.pop(dp2, None)
+        L2._valid_end(dp2, P._LD_MAGIC)
+        kept = [f for f in os.listdir(hd2) if f.startswith("day-2026-09.bin.corrupt.")]
+        got = sorted(L2._day_rows(dp2))
+        want = [d for d in sorted(rows2) if d < 20260920] if mutate else sorted(rows2)
+        check("a row that cannot be ours (%s) is never cut past: the file is kept aside, its readable rows go on, no row 0" % tag,
+              kept and got == want and 0 not in got and len(open(os.path.join(hd2, kept[0]), "rb").read()) == len(raw2),
+              (kept, got[-2:], want[-2:]))
+    L2, rp2, hd2, v2 = history("torntail", 40)                      # …while a real torn tail (a crash mid-append) is still cut
+    dp2 = L2._day_path(20260915)
+    raw2 = open(dp2, "rb").read()
+    rows2 = L2._day_rows(dp2)
+    open(dp2, "wb").write(raw2[:len(raw2) - 5])                   # the last row's payload cut short
+    L2._tails.pop(dp2, None); L2._rowidx.pop(dp2, None)
+    end2 = L2._valid_end(dp2, P._LD_MAGIC)
+    check("…and a real torn tail is still cut back, nothing kept aside",
+          end2 == rows2[max(rows2)][0] and not [f for f in os.listdir(hd2) if ".corrupt." in f]
+          and sorted(L2._day_rows(dp2)) == sorted(rows2)[:-1], (end2, rows2[max(rows2)][0]))
+
+    # a clock that jumped 60 days ahead for one sync: nothing is deleted until real time reaches the ledger's day
+    L, rp, hd, v = history("jump", 40)
+    before = sorted(os.listdir(hd))
+    L.configure({"infinite_history": False})
+    ing(L, "n1", wg("awg0", ("K1", v + 10, 0)), T0 + 100 * 86400)   # the clock jumps 60 days ahead for one sync
+    L._day_mono = time.monotonic() - P.LEDGER_SWEEP_HOLD_S - 1        # …and that day has "held": only the real clock objects
+    L.flush()
+    kept = [f for f in before if f.startswith("fine-")]
+    check("a clock that jumped ahead never deletes: the sweep waits for a day the real clock has held",
+          all(f in os.listdir(hd) for f in kept) and L._sweep_due, (len(kept), L._sweep_due))
+    real_today = P._ld_day(time.time())[0]
+    L.day, L._day_mono, L._sweep_at = real_today, time.monotonic(), 0.0
+    held_short = L._sweep_ok()
+    L._day_mono = time.monotonic() - P.LEDGER_SWEEP_HOLD_S - 1
+    check("…the day must equal the real clock's AND have held for ten minutes", not held_short and L._sweep_ok(), held_short)
+
+    # a second panel process on the same state dir never deletes (it observed nothing)
+    L, rp, hd, v = history("second", 75)
+    L2 = reopen(rp, T0 + 75 * 86400)
+    L2._sweep_ok = lambda: True
+    L2.configure({"infinite_history": False})
+    before = sorted(os.listdir(hd))
+    L2.flush()
+    check("a process that observed nothing never sweeps (a second panel on the state dir)", sorted(os.listdir(hd)) == before, "")
+
+
+try:
+    section_13b()
+except Exception as e:
+    import traceback; traceback.print_exc()
+    check("section [13b] ran to the end", False, "%s: %s" % (type(e).__name__, e))
+
+try:
+    section_13()
+except Exception as e:
+    import traceback; traceback.print_exc()
+    check("section [13] ran to the end", False, "%s: %s" % (type(e).__name__, e))
 
 shutil.rmtree(TMP, ignore_errors=True)
 if PLANT:

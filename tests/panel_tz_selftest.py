@@ -68,7 +68,7 @@ PLANTS = {   # name: (file, anchor, replacement, the check it must redden)
     "j": ("panel", '            found = link if tz_file(link) else ""\n', '            found = ""\n', "legacy name"),
     "k": ("panel", '    time.tzset()\n    _TZ_STATE["zone"], _TZ_STATE["missing"] = name, ""\n',
           '    _TZ_STATE["zone"], _TZ_STATE["missing"] = name, ""\n', "follows the zone"),
-    "l": ("spa", 'sec === "display" ? (dispDirty() || tzDirty()) :', 'sec === "display" ? (dispDirty()) :', "glDirty"),
+    "l": ("spa", 'sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :', 'sec === "display" ? (dispDirty() || dataDirty()) :', "glDirty"),
     "m": ("spa", "        time_zone: tz,\n", "", "payload"),
     "n": ("spa", 'useState(ps.time_zone || "")', 'useState("")', "state starts"),
     "o": ("spa", '    if (tzDirty()) out.push(', '    if (false) out.push(', "diffList"),
@@ -272,7 +272,7 @@ finally:
 print("[5] the SPA names the zone in every half of the settings idiom")
 check("the zone's state starts from the stored setting", 'const [tz, setTz] = useState(ps.time_zone || "");' in spa_src)
 check("the Save payload carries it", "\n        time_zone: tz,\n" in spa_src)
-check("the Display arm of glDirty sees it", 'sec === "display" ? (dispDirty() || tzDirty()) :' in spa_src
+check("the Display arm of glDirty sees it", 'sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :' in spa_src
       and 'const tzDirty = () => tz !== (ps.time_zone || "");' in spa_src)
 check("a zone-only change reaches diffList — else Save writes nothing", "    if (tzDirty()) out.push(" in spa_src)
 check("the field is on screen, fed by the server's list", "options=${tzOptions(tzCat, ps.time_zone_now || {}, tz)}" in spa_src
