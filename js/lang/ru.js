@@ -5239,6 +5239,15 @@ export const STR = {
     "Панель не смогла скачать этот список ({v1}). Она повторяет попытки сама, каждый раз реже.",
   "The panel is downloading this list — the count appears when it's done": "Панель скачивает этот список — число записей появится, когда закончит",
   "not downloaded": "не скачан",
+  // the two-panels banner (store.js trackInstance)
+  "Two different panels are answering at this address.": "По этому адресу отвечают две разные панели.",
+  "Each keeps its own servers, settings and lists, and the page shows whichever one answered — so what you see can change between reloads, and changes saved on the one your servers don't sync to never reach them. Stop the panel you don't use.":
+    "У каждой свои серверы, настройки и списки, а страница показывает ту, что ответила, — поэтому картина может меняться от перезагрузки к перезагрузке, а изменения, сохранённые в панели, с которой ваши серверы не синхронизируются, до них не доходят. Остановите панель, которой вы не пользуетесь.",
+  "{v1} · version {v2} · state {v3} · {v4} · running since {v5}": "{v1} · версия {v2} · данные {v3} · {v4} · работает с {v5}",
+  "nodes: {n}": "нод: {n}",
+  "this page": "эта страница",
+  "also answered": "отвечала также",
+  "last seen {v1}": "последний ответ {v1}",
   "Offer {v1}": "Давать {v1}",
   "{v1} in the install picker": "{v1} в выборе при установке",
   "Colour for {v1}": "Цвет для {v1}",

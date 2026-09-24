@@ -82,6 +82,13 @@ PANEL_DECLARATIVE = (os.environ.get("SWG_DECLARATIVE") or "").strip().lower() in
 WEB_DIR    = os.path.abspath(os.environ.get("SWG_PANEL_WEB", os.path.dirname(os.path.abspath(__file__))))
 BIND_HOST  = os.environ.get("SWG_PANEL_HOST", "127.0.0.1")
 BIND_PORT  = int(os.environ.get("SWG_PANEL_PORT", "8088"))
+# WHICH PANEL IS ANSWERING. A random id per process start, sent with every /api/state. Two panels with their OWN state
+# dirs can end up behind one address — a bare-metal install beside a Docker one, a leftover from a reinstall, a proxy
+# with two backends — and the state-dir lock cannot see that. The browser then shows one panel's fleet on one load
+# and the other's on the next (client report, 2026-09-24: the node picker read 1/1, then 2/2; list counts came and
+# went; edits made on the wrong one never reached the nodes). The SPA remembers each id's lifetime and says so the
+# moment two of them were alive at once. A restart is a new id whose life begins after the old one's ended — no alarm.
+_INSTANCE = {"id": uuid.uuid4().hex[:12], "started": int(time.time())}
 # Self-contained mode: serve TLS + Basic-Auth directly, no reverse proxy needed.
 TLS_CERT   = os.environ.get("SWG_PANEL_TLS_CERT", "")   # fullchain.pem; blank => plain HTTP
 TLS_KEY    = os.environ.get("SWG_PANEL_TLS_KEY", "")
@@ -19725,6 +19732,9 @@ def api(method, path, qs, body, deps):
             # early). That is the conservative direction for this: the defect being fixed is a healthy node reading
             # dead, never the reverse.
             "panel_now": int(time.time()),
+            "instance": dict(_INSTANCE, version=_read_version(),                     # see _INSTANCE
+                             method="docker" if os.path.exists("/.dockerenv") else "bare-metal",
+                             state_dir=os.path.dirname(os.path.abspath(deps.get("nodes_path") or "")) or ""),
             "store_configs": store_mode,                 # enum "encrypted" | "off"
             # The placeholder a stored profile's PrivateKey line carries in the editor. It comes from HERE
             # rather than being spelled out in the SPA so the two ends can never disagree about the exact

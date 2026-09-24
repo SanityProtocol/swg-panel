@@ -17,7 +17,7 @@
  * rather than treating an expired session as an empty response.
  */
 
-import { url, clock, panelNow } from "./util.js";
+import { url, clock, panelNow, esc } from "./util.js";
 import { T, lang } from "./i18n.js";
 import { pickThemed, NODE_COLOR_DEFAULT } from "./theme.js";
 import { reconcile } from "../reconcile.js";
@@ -306,6 +306,7 @@ export const Store = {
     // behaviour before this existed. Not a number (a proxy's error page, a truncated body) → keep the last good
     // offset: a NaN here would silently poison every window and every "x ago" in the console.
     if (Number.isFinite(d.panel_now) && d.panel_now > 0) clock.skewMs = Date.now() - d.panel_now * 1000;
+    trackInstance(d.instance, d.panel_now, (d.nodes || []).length);
     // store_configs is now an enum: "encrypted" (blob at rest) | "off". storeConfigs stays a convenience bool
     // meaning "the panel keeps configs" (now encrypted). configsPlaintext = legacy plaintext files awaiting migration.
     this.storeMode = (d.store_configs === "off" || d.store_configs === false) ? "off" : "encrypted";
@@ -561,3 +562,52 @@ export const Store = {
   },
   unassignedPeers() { return this.recon.peers.filter(p => p.unassigned); },
 };
+
+
+// ── TWO PANELS BEHIND ONE ADDRESS (see _INSTANCE in swg-panel-server) ─────────────────────────────────────────────
+// Every /api/state names the panel process that built it. This browser remembers each one it has been served by and
+// how long it saw it alive — on the servers' own clocks, never this PC's. A restart or an update is a new process
+// whose life starts after the old one's last answer: nothing to say. Two processes alive AT THE SAME TIME behind the
+// same address is the failure: the fleet, the settings and the saves go to whichever answers, and the one the nodes
+// sync to may not be the one being edited. Judged across page loads, not between polls: the panel keeps connections
+// alive, so a single page often talks to ONE of the two for its whole life and only a reload lands on the other.
+const INST_KEY = "swg.panelInstances", INST_DISMISS = "swg.panelTwinsDismissed";
+const INST_MARGIN = 120;          // seconds of clock disagreement tolerated between two servers' clocks
+const INST_RECENT = 6 * 3600;     // the other one must have answered this browser within this window to still count
+// Pure: the remembered instance whose life overlaps `cur`'s and that answered recently, or null.
+export function panelTwin(list, cur) {
+  return (list || []).find(o => o && cur && o.id !== cur.id
+    && cur.started + INST_MARGIN < o.last && o.started + INST_MARGIN < cur.last
+    && cur.last - o.last < INST_RECENT) || null;
+}
+function trackInstance(inst, now, nodes) {
+  if (!inst || !inst.id || !Number.isFinite(now)) return;   // a panel too old to say → nothing to compare
+  let list = [];
+  try { list = JSON.parse(localStorage.getItem(INST_KEY) || "[]"); } catch (_) {}
+  if (!Array.isArray(list)) list = [];
+  const cur = { id: String(inst.id), started: Number(inst.started) || now, last: now, nodes,
+                version: inst.version || "", method: inst.method || "", state_dir: inst.state_dir || "" };
+  list = [cur, ...list.filter(o => o && o.id !== cur.id && now - (Number(o.last) || 0) < 7 * 86400)].slice(0, 8);
+  try { localStorage.setItem(INST_KEY, JSON.stringify(list)); } catch (_) {}
+  const twin = panelTwin(list.slice(1), cur);
+  let dismissed = "";
+  try { dismissed = localStorage.getItem(INST_DISMISS) || ""; } catch (_) {}
+  const pair = twin ? [cur.id, twin.id].sort().join("|") : "";
+  showTwinBanner(twin && pair !== dismissed ? { cur, twin, pair } : null);
+}
+function showTwinBanner(t) {
+  let b = document.getElementById("panel-twin-banner");
+  if (!t) { if (b) b.remove(); return; }
+  if (b && b.dataset.pair === t.pair && b.dataset.n === String(t.cur.nodes)) return;
+  if (!b) { b = document.createElement("div"); b.id = "panel-twin-banner"; b.className = "twin-banner"; document.body.insertBefore(b, document.body.firstChild); }
+  b.dataset.pair = t.pair; b.dataset.n = String(t.cur.nodes);
+  const since = ts => new Date(ts * 1000).toLocaleString();
+  const who = o => T("{v1} · version {v2} · state {v3} · {v4} · running since {v5}", {
+    v1: o.method || "?", v2: o.version || "?", v3: o.state_dir || "?", v4: T("nodes: {n}", { n: o.nodes }), v5: since(o.started) });
+  b.innerHTML = `<b>${esc(T("Two different panels are answering at this address."))}</b> `
+    + esc(T("Each keeps its own servers, settings and lists, and the page shows whichever one answered — so what you see can change between reloads, and changes saved on the one your servers don't sync to never reach them. Stop the panel you don't use."))
+    + `<div class="twin-rows"><div><span class="twin-tag">${esc(T("this page"))}</span>${esc(who(t.cur))}</div>`
+    + `<div><span class="twin-tag">${esc(T("also answered"))}</span>${esc(who(t.twin))} · ${esc(T("last seen {v1}", { v1: since(t.twin.last) }))}</div></div>`
+    + `<button type="button" class="twin-x">${esc(T("Dismiss"))}</button>`;
+  b.querySelector(".twin-x").onclick = () => { try { localStorage.setItem(INST_DISMISS, t.pair); } catch (_) {} b.remove(); };
+}
