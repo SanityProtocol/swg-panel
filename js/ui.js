@@ -340,14 +340,13 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
     // own Escape (document, capture) — otherwise the key meant for the bubble closed the whole sheet behind it.
     // ⚠️ …BUT ONLY WHILE THE BUBBLE IS THE TOP LAYER. Running first, it also took the Escape meant for a Sheet or a
     // confirm opened on top of it (from inside the bubble, or by code) and for an open dropdown, which then needed a
-    // second press. So it stands aside when the modal stack has grown since it was pinned, or a dropdown outside it
-    // is open — that layer's own handler gets the key.
+    // second press. So it stands aside when the modal stack has grown since it was pinned, or a dropdown is open —
+    // that layer's own handler gets the key (the same test the Sheet makes).
     const depthAtPin = modalDepth();
     const onEsc = e => {
       if (e.key !== "Escape") return;
       if (modalDepth() !== depthAtPin) return;
-      const dd = document.querySelector(".ddpop");
-      if (dd && !(popRef.current && popRef.current.contains(dd))) return;
+      if (document.querySelector(".ddpop")) return;     // a dropdown is open (it portals to <body>) — its Escape first
       e.stopPropagation(); e.preventDefault(); setPinned(false); setOpen(false);
     };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);

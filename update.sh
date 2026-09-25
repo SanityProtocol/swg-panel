@@ -1063,10 +1063,12 @@ if os.path.realpath(val("Le_RealFullChainPath") or "/nonexistent") != ours:
 raw = val("Le_ReloadCmd")
 m = re.match(r"^__ACME_BASE64__START_(.*)__ACME_BASE64__END_$", raw)
 cmd = base64.b64decode(m.group(1)).decode() if m else raw
-old = "systemctl restart swg-panel-server"
-if old not in cmd or "swg-panel-server.service 2>/dev/null || true" in cmd:
+# the exact command earlier installers and convert.sh wrote — `.service` spelled or not — and nothing that merely
+# starts with it (a plain substring replace turned `…swg-panel-server.service` into `… || true.service`)
+pat = re.compile(r"systemctl restart swg-panel-server(?:\.service)?(?=\s*(?:;|&&|\|\||$))")
+if not pat.search(cmd):
     sys.exit(0)
-new = cmd.replace(old, "systemctl kill -s HUP swg-panel-server.service 2>/dev/null || true")
+new = pat.sub("systemctl kill -s HUP swg-panel-server.service 2>/dev/null || true", cmd)
 enc = "__ACME_BASE64__START_%s__ACME_BASE64__END_" % base64.b64encode(new.encode()).decode()
 lines = [("Le_ReloadCmd='%s'" % enc) if l.startswith("Le_ReloadCmd=") else l for l in lines]
 tmp = path + ".swgtmp"

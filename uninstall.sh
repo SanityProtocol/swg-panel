@@ -180,6 +180,7 @@ rm_panel(){
   # residue suppresses the very correction that would fix it. ([[acme-store-split-and-arms]])
   rmrf $SD/swg-panel-server.service $SD/swg-panel-server.service.d $SD/swg-sub.service $SD/swg-sub.service.d \
        $SD/swg-netctl.service $SD/swg-netctl.service.d $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl \
+       /var/lib/swg-netctl \
        $SD/swg-netctl-docker.service $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer \
        $SD/swg-update.service $SD/swg-update.path $SD/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update.new /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
   # ⚠️ A DANGLING ENABLEMENT SYMLINK OUTLIVES ITS UNIT FILE, and `systemctl disable` CANNOT clear it: it

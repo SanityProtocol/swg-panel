@@ -37,6 +37,7 @@ stdlib-only Python 3, single file — same as the other swg programs.
 """
 
 import contextlib
+import errno
 import grp
 import hashlib
 import ipaddress
@@ -68,7 +69,12 @@ STATUS_DIR = os.path.join(STATE_DIR, "netctl", "status")
 # A request is moved HERE the moment it is taken (see process_queue) — out of QUEUE_DIR, which swg-netctl.path watches
 # with DirectoryNotEmpty and no start limit: a claim left inside it by a helper killed mid-request would restart the
 # helper in a tight loop until it was cleared.
-TAKING_DIR = os.path.join(STATE_DIR, "netctl", "taking")
+# ⚠️ ROOT'S OWN DIRECTORY, never one under STATE_DIR/netctl: that is the PANEL user's (it writes the queue), so the
+# panel could plant `taking` as a symlink — to /etc, say — before root created it, and root's sweep of old claims
+# would then unlink real files through it, and its rename would drop requests there. /var/lib is root's: nothing
+# the panel controls sits on this path. Same filesystem as the queue in any normal layout, so the claim is still
+# one atomic rename; a layout where it is not falls back to running the request in place (see process_queue).
+TAKING_DIR = os.environ.get("SWG_NETCTL_TAKING") or "/var/lib/swg-netctl/taking"
 DRYRUN = os.environ.get("SWG_NETCTL_DRYRUN") == "1"
 
 # The ONLY things the helper is allowed to touch, keyed by the service names callers may pass.
@@ -907,6 +913,17 @@ def do_drop_cert(service, domain):
         targets = {os.path.realpath(p) for p in (_acme_conf_value(d, domain, k) for k in
                    ("Le_RealFullChainPath", "Le_RealCertPath", "Le_RealKeyPath")) if p} if d else set()
         if _service_host(other) == domain.lower() or (targets & mine):
+            # …and if it still installs into THIS service's paths, point it at the other's: left as it was, its next
+            # renewal would write the OLD name's certificate over the one this service now serves for its new name.
+            here = {os.path.realpath(SERVICES[service][k]) for k in ("cert", "key")}
+            if d and (targets & here) and not DRYRUN:
+                rc, out = run(acme_argv(find_acme(), "--install-cert", "-d", domain, "--ecc",
+                                        "--key-file", SERVICES[other]["key"], "--fullchain-file", SERVICES[other]["cert"],
+                                        "--reloadcmd", reload_cmd_for(other)))
+                if rc:
+                    raise Reject("kept %s for %s, but could not move its install target off %s (rc %d): %s"
+                                 % (domain, other, service, rc, out.strip()[-200:]))
+                return "left %s renewing for %s — its install target moved to %s's certificate" % (domain, other, other)
             return "left %s renewing — %s still uses it" % (domain, other)
     acme = find_acme()
     rc, out = run(acme_argv(acme, "--remove", "-d", domain, "--ecc"))
@@ -1003,6 +1020,12 @@ def do_sync_acme(service):
     # self-signed one there yields to the CA certificate like any older one.
     if service == "panel" and cur_self and new_end is not None:
         res["state"], res["reason"] = "held", "the panel serves a self-signed certificate that nodes may have pinned"
+        # Held HERE — but when the entry itself installs into the panel's path, acme.sh's own renewal will copy the CA
+        # certificate over it anyway (the installer's --install-cert stores that target even when it then fails).
+        # Nothing here can stop that short of editing the entry, so say WHEN, and let the operator switch first.
+        if {os.path.realpath(svc["cert"]), os.path.realpath(svc["key"])} & {os.path.realpath(p) for p in (
+                _acme_conf_value(d, host, k) for k in ("Le_RealFullChainPath", "Le_RealCertPath", "Le_RealKeyPath")) if p}:
+            res["swap_at"] = _acme_conf_value(d, host, "Le_NextRenewTimeStr") or "its next renewal"
         return json.dumps(res)
     # Newer by expiry — the one comparison that holds whoever renewed it (a self-signed swg-sub placeholder always
     # yields, whatever its 10-year date says).
@@ -1226,16 +1249,43 @@ def _safe_rid(name):
     return re.sub(r"[^A-Za-z0-9_.-]", "_", rid) or "req"
 
 
+def _taking_dir():
+    """TAKING_DIR, created if missing and PROVEN root's own real directory (never a symlink or another user's), or
+    "" when it cannot be — then requests run in place, as before claims existed. Belt and braces: its parent is
+    root's, so nobody else can plant anything there to begin with."""
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(TAKING_DIR), mode=0o700, exist_ok=True)
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(TAKING_DIR, 0o700)
+        st = os.lstat(TAKING_DIR)
+        if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and not (st.st_mode & 0o022):
+            return TAKING_DIR
+    log("claims disabled: %s is not root's own directory — running requests in place" % TAKING_DIR)
+    return ""
+
+
 def process_queue():
     if not os.path.isdir(QUEUE_DIR):
         return
     puid = _panel_uid()
-    os.makedirs(TAKING_DIR, mode=0o700, exist_ok=True)
-    with contextlib.suppress(OSError):               # a claim a crashed helper left behind: never run twice, just cleared
-        for name in os.listdir(TAKING_DIR):
-            with contextlib.suppress(OSError):
-                if time.time() - os.lstat(os.path.join(TAKING_DIR, name)).st_mtime > 3600:
-                    os.unlink(os.path.join(TAKING_DIR, name))
+    taking = _taking_dir()
+    if taking:
+        with contextlib.suppress(OSError):           # a claim a crashed helper left behind: never run twice, just cleared
+            for name in os.listdir(taking):
+                with contextlib.suppress(OSError):
+                    if time.time() - os.lstat(os.path.join(taking, name)).st_mtime > 3600:
+                        os.unlink(os.path.join(taking, name))
+    # Anything in the WATCHED queue dir that is not a request keeps DirectoryNotEmpty true, and swg-netctl.path then
+    # restarts this helper in a tight loop: a `.json.tmp` the panel was killed while writing (a write takes
+    # milliseconds, so one a minute old is abandoned), or a `.json.taking` claim from a build that kept claims here.
+    # unlink() never follows a symlink, so clearing the panel's own directory is safe.
+    for name in os.listdir(QUEUE_DIR):
+        if name.endswith(".json"):
+            continue
+        with contextlib.suppress(OSError):
+            fp = os.path.join(QUEUE_DIR, name)
+            if name.endswith(".json.taking") or time.time() - os.lstat(fp).st_mtime > 60:
+                os.unlink(fp)
     for name in sorted(os.listdir(QUEUE_DIR)):
         if not name.endswith(".json"):
             continue
@@ -1247,11 +1297,14 @@ def process_queue():
         # its TXT record) look untaken, and the panel withdrew — and reported — a renewal that was still running.
         # The rename is also the claim: a waiter that withdraws a request (unlinks it) and this helper cannot both win.
         # It moves the request OUT of the watched queue dir (see TAKING_DIR) — same filesystem, so still one rename.
-        path = os.path.join(TAKING_DIR, name)
-        try:
-            os.rename(pending, path)
-        except OSError:
-            continue                                 # withdrawn by its waiter a moment ago — nothing to run
+        path = os.path.join(taking, name) if taking else pending
+        if taking:
+            try:
+                os.rename(pending, path)
+            except OSError as e:
+                if e.errno != errno.EXDEV:
+                    continue                         # withdrawn by its waiter a moment ago — nothing to run
+                path = pending                       # another filesystem: run it in place, as before claims existed
         try:
             st = os.lstat(path)
             if not stat.S_ISREG(st.st_mode):

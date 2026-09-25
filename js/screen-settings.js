@@ -1464,7 +1464,9 @@ export function AccessTLSCard({ onChange }) {
       // HELD: acme.sh has a CA certificate for this address, but the panel serves a self-signed one — which nodes
       // pin — so the follow will not swap it on its own. Said once, with the deliberate way to switch.
       const held = ts.renewer_held ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><div style="min-width:0">
-        ${Trich("*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one.* It is not swapped automatically: nodes that pinned the self-signed certificate would stop syncing. Switch it here with *Save*, then re-run the node installer on the nodes that pinned it.")}
+        ${ts.held_swap_at
+          ? Trich("*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one — and acme.sh will install its next renewal over it ({v1}).* Nodes that pinned the self-signed certificate stop syncing at that moment. Switch now with *Save*, then re-run the node installer on the nodes that pinned it.", { v1: ts.held_swap_at })
+          : Trich("*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one.* It is not swapped automatically: nodes that pinned the self-signed certificate would stop syncing. Switch it here with *Save*, then re-run the node installer on the nodes that pinned it.")}
       </div></div>` : null;
       // Not a fault — the panel follows it — but the one fact that explains why its renewals live somewhere else.
       const other = ts.renewer === "other" ? html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><div style="min-width:0">

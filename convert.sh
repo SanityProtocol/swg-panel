@@ -633,7 +633,9 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   # carry the acme renewal state back to the host (/root/.acme.sh) + repoint its reload cmd at the systemd unit
   if [ -d "$ETC/acme" ]; then
     mkdir -p /root/.acme.sh; cp -a "$ETC/acme/." /root/.acme.sh/ 2>/dev/null || true
-    find /root/.acme.sh -name '*.conf' -exec sed -i "s#^Le_ReloadCmd=.*#Le_ReloadCmd='systemctl restart swg-panel-server'#" {} + 2>/dev/null || true
+    # a SIGHUP, not a restart: the panel reloads its certificate live, and a restart drops open requests and a
+    # Renew-now job waiting on this very renewal (see install-host.sh; update.sh heals the old form)
+    find /root/.acme.sh -name '*.conf' -exec sed -i "s#^Le_ReloadCmd=.*#Le_ReloadCmd='systemctl kill -s HUP swg-panel-server.service 2>/dev/null || true'#" {} + 2>/dev/null || true
     sed -i "s#^LOG_FILE=.*#LOG_FILE='/root/.acme.sh/acme.sh.log'#" /root/.acme.sh/account.conf 2>/dev/null || true   # same trap, other direction
   fi
   # write the bare install.conf so install-host.sh's prompts DEFAULT to the preserved settings (Enter accepts)

@@ -177,6 +177,15 @@ def _status_cert():
 
 
 def _refresh_tls_status(quiet=False):
+    # ⚠️ The WHOLE rebuild under the lock, not just the swap: up to four threads refresh (the 6-hourly loop, the follow
+    # worker, Renew now's worker, startup), and a slow one that built from the OLD certificate could otherwise swap
+    # its dict in after a newer one — the old expiry back on screen until the next refresh, up to 6 h away. The build
+    # is file reads and one decode: nothing that waits on another thread.
+    with _TLS_LOCK:
+        _refresh_tls_status_locked(quiet)
+
+
+def _refresh_tls_status_locked(quiet):
     cert = _status_cert()
     if not cert:
         with _TLS_LOCK:
@@ -289,7 +298,8 @@ def _acme_follow_status():
         return {"renewer": "missing"}
     # HELD: acme.sh holds a CA certificate for this name but the panel serves a self-signed one, which the follow
     # never replaces on its own (nodes may have pinned it — see swg-netctl do_sync_acme). Settings says so.
-    held = {"renewer_held": True} if r.get("state") == "held" else {}
+    held = ({"renewer_held": True, **({"held_swap_at": str(r["swap_at"])[:40]} if r.get("swap_at") else {})}
+            if r.get("state") == "held" else {})
     if r.get("owner") == "other":
         return {"renewer": "other", "renewer_path": str(r.get("install_path") or "")[:300], **held}
     if r.get("owner") in ("ours", "none"):
@@ -464,26 +474,30 @@ def _renew_start(deps):
     return 202, {"ok": True, "state": "running"}
 
 
-_FOLLOW_RUN = threading.Lock()            # one follow at a time: the 6-hourly loop, or one a SIGHUP asked for
-_FOLLOW_SOON = threading.Event()          # a follow is already scheduled — another request joins it
+_FOLLOW_RUN = threading.Lock()            # one follow at a time: the 6-hourly loop, or one a certificate change asked for
+_FOLLOW_KICK = threading.Event()          # set by _acme_follow_soon; the ONE standing worker below answers it
 
 
 def _acme_follow_soon():
-    """Run a follow shortly, off the caller's thread (a signal handler must not block). Requests that arrive while
-    one is pending join it; the follow it runs sees every change made before it starts."""
-    if _FOLLOW_SOON.is_set():
-        return
-    _FOLLOW_SOON.set()
+    """Ask for a follow shortly. Only sets an Event: called from the SIGHUP handler, which runs on the main thread and
+    must not start a thread — Thread.start() takes threading's internal lock, which main() may be holding at that very
+    moment while it starts its own threads, and the handler would deadlock the panel at startup."""
+    _FOLLOW_KICK.set()
 
-    def _run():
+
+def _follow_kick_loop():
+    """The standing follow worker. Every kick that arrives before a follow starts is answered by that one follow: the
+    flag is cleared only once _FOLLOW_RUN is held, so kicks that queue behind a slow follow join the next one instead of
+    each running their own."""
+    while True:
+        _FOLLOW_KICK.wait()
         time.sleep(2)                     # let the change that sent the SIGHUP settle (both files written)
-        _FOLLOW_SOON.clear()
         with _FOLLOW_RUN:
+            _FOLLOW_KICK.clear()
             with contextlib.suppress(Exception):
                 _acme_follow()
         with contextlib.suppress(Exception):
-            _refresh_tls_status()
-    threading.Thread(target=_run, name="acme-follow-soon", daemon=True).start()
+            _refresh_tls_status(quiet=True)   # the warnings are the 6-hourly loop's to log, once
 
 
 def _tls_watch_loop():
@@ -30225,9 +30239,9 @@ def _sighup_reload(_sig, _frm):
     action of terminating the process. Safe before any listener is bound (reload_tls is then a no-op)."""
     LISTENERS.reload_tls()
     print("reloaded TLS certificate (SIGHUP)", flush=True)
-    with contextlib.suppress(Exception):
-        _refresh_tls_status()
-    _acme_follow_soon()          # a new certificate can change who renews it — never wait 6 h to say so
+    # a new certificate can change who renews it — never wait 6 h to say so. The follow worker also refreshes the
+    # status (quietly), so the handler does neither itself: it only sets an Event (see _acme_follow_soon).
+    _acme_follow_soon()
 
 
 def _apply_status(state, message="", **extra):
@@ -31519,6 +31533,7 @@ def main():
                 with contextlib.suppress(OSError):
                     os.unlink(_fp)
     threading.Thread(target=_tls_watch_loop, daemon=True).start()   # watch cert expiry; warn before a stalled renewal goes dark
+    threading.Thread(target=_follow_kick_loop, name="acme-follow", daemon=True).start()   # answers _acme_follow_soon (a SIGHUP's)
     threading.Thread(target=_remote_version_loop, daemon=True).start()   # poll the repo for newer releases
     threading.Thread(target=_turn_update_loop, daemon=True).start()       # scheduled turn-proxy auto-update (opt-in)
     threading.Thread(target=_turn_warm_assets_loop, args=(Handler.deps,), daemon=True).start()   # resolve latest per-OS client download assets → serve.json

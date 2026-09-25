@@ -3972,6 +3972,8 @@ export const STR = {
   "acme.sh said:": "acme.sh ответил:",
   "Details:": "Подробности:",
   "Nothing was renewed.": "Ничего не обновлено.",
+  "*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one — and acme.sh will install its next renewal over it ({v1}).* Nodes that pinned the self-signed certificate stop syncing at that moment. Switch now with *Save*, then re-run the node installer on the nodes that pinned it.":
+    "*У acme.sh есть сертификат публичного CA для этого адреса, но панель всё ещё отдаёт самоподписанный — и acme.sh установит поверх него своё следующее обновление ({v1}).* Ноды, закрепившие самоподписанный сертификат, в этот момент перестанут синхронизироваться. Замените его сейчас кнопкой *Сохранить*, затем перезапустите установщик ноды на нодах, которые его закрепили.",
   "*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one.* It is not swapped automatically: nodes that pinned the self-signed certificate would stop syncing. Switch it here with *Save*, then re-run the node installer on the nodes that pinned it.":
     "*У acme.sh есть сертификат публичного CA для этого адреса, но панель всё ещё отдаёт самоподписанный.* Автоматически он не заменяется: ноды, закрепившие самоподписанный сертификат, перестали бы синхронизироваться. Замените его здесь кнопкой *Сохранить*, затем перезапустите установщик ноды на нодах, которые его закрепили.",
   "a certificate renewal is running — try again when it has finished (a minute or two)":
