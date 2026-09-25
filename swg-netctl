@@ -65,6 +65,10 @@ UNIT_DIR = os.environ.get("SWG_UNIT_DIR", "/etc/systemd/system")
 CONF = os.path.join(ETC_DIR, "install.conf")
 QUEUE_DIR = os.path.join(STATE_DIR, "netctl", "queue")
 STATUS_DIR = os.path.join(STATE_DIR, "netctl", "status")
+# A request is moved HERE the moment it is taken (see process_queue) — out of QUEUE_DIR, which swg-netctl.path watches
+# with DirectoryNotEmpty and no start limit: a claim left inside it by a helper killed mid-request would restart the
+# helper in a tight loop until it was cleared.
+TAKING_DIR = os.path.join(STATE_DIR, "netctl", "taking")
 DRYRUN = os.environ.get("SWG_NETCTL_DRYRUN") == "1"
 
 # The ONLY things the helper is allowed to touch, keyed by the service names callers may pass.
@@ -1223,11 +1227,12 @@ def process_queue():
     if not os.path.isdir(QUEUE_DIR):
         return
     puid = _panel_uid()
-    for name in os.listdir(QUEUE_DIR):               # a claim a crashed helper left behind: never run twice, just cleared
-        if name.endswith(".json.taking"):
+    os.makedirs(TAKING_DIR, mode=0o700, exist_ok=True)
+    with contextlib.suppress(OSError):               # a claim a crashed helper left behind: never run twice, just cleared
+        for name in os.listdir(TAKING_DIR):
             with contextlib.suppress(OSError):
-                if time.time() - os.lstat(os.path.join(QUEUE_DIR, name)).st_mtime > 3600:
-                    os.unlink(os.path.join(QUEUE_DIR, name))
+                if time.time() - os.lstat(os.path.join(TAKING_DIR, name)).st_mtime > 3600:
+                    os.unlink(os.path.join(TAKING_DIR, name))
     for name in sorted(os.listdir(QUEUE_DIR)):
         if not name.endswith(".json"):
             continue
@@ -1238,7 +1243,8 @@ def process_queue():
         # knows it has. Deleting it only after dispatch() returned made a long request (a DNS-01 renewal waiting on
         # its TXT record) look untaken, and the panel withdrew — and reported — a renewal that was still running.
         # The rename is also the claim: a waiter that withdraws a request (unlinks it) and this helper cannot both win.
-        path = pending + ".taking"
+        # It moves the request OUT of the watched queue dir (see TAKING_DIR) — same filesystem, so still one rename.
+        path = os.path.join(TAKING_DIR, name)
         try:
             os.rename(pending, path)
         except OSError:
