@@ -3971,15 +3971,16 @@ export const STR = {
     "У acme.sh нет сертификата для этого адреса, обновлять нечего.",
   "acme.sh said:": "acme.sh ответил:",
   "Details:": "Подробности:",
+  "Nothing was renewed.": "Ничего не обновлено.",
+  "a certificate renewal is running — try again when it has finished (a minute or two)":
+    "идёт обновление сертификата — повторите, когда оно закончится (минута-другая)",
   "acme.sh renewed the certificate, but the panel did not install it.": "acme.sh обновил сертификат, но панель его не установила.",
-  "A certificate renewal is running.": "Идёт обновление сертификата.",
   "a renewal is already running": "обновление уже идёт",
   "an address change is waiting to be confirmed — confirm or cancel it first, then renew":
     "смена адреса ждёт подтверждения — сначала подтвердите или отмените её, затем обновляйте",
   "This panel runs in a container, which renews its certificate itself every 12 hours — restart the container to renew now.":
     "Панель работает в контейнере, который сам обновляет сертификат каждые 12 часов — чтобы обновить сейчас, перезапустите контейнер.",
-  "a certificate renewal is running — the address change can start once it has finished":
-    "идёт обновление сертификата — смену адреса можно начать, когда оно закончится",
+
   "*This certificate should already have been renewed.* It has *{v1}* hour(s) left.":
     "*Этот сертификат уже должен был обновиться.* До его истечения осталось *{v1}* ч.",
   "*Another program on this server renews this certificate* — acme.sh installs each renewal to `{v1}`. The panel takes the renewed certificate from acme.sh within 6 hours, so both keep working.":

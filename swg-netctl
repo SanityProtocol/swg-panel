@@ -38,6 +38,7 @@ stdlib-only Python 3, single file — same as the other swg programs.
 
 import contextlib
 import grp
+import hashlib
 import ipaddress
 import json
 import os
@@ -296,27 +297,65 @@ def _acme_foreign_target(domain):
     return path if owner == "other" else ""
 
 
+_FRONT_MARK = os.path.join(STATE_DIR, "netctl", "front-cert.sha256")
+
+
+def _front():
+    """The installer's proxy in front of the panel ("nginx" | "caddy"), or "" when the panel serves its own TLS."""
+    f = load_conf().get("SERVE_MODE", "")
+    return f if f in ("nginx", "caddy") else ""
+
+
+def _front_sync(force=False):
+    """Reload the installer's nginx/caddy when the panel's managed certificate is not the one they last loaded.
+    They read the file only on (re)load, so a renewal written to disk by anyone — acme's cron through a stored
+    reload command that knows nothing of them, sync-acme, the operator — is served only after this. The
+    fingerprint of what they last loaded is kept, so an unchanged file never reloads them."""
+    front = _front()
+    if not front:
+        return
+    try:
+        cur = _sha256_path(SERVICES["panel"]["cert"])
+    except OSError:
+        return
+    last = ""
+    with contextlib.suppress(OSError):
+        with open(_FRONT_MARK) as f:
+            last = f.read().strip()
+    if cur == last and not force:
+        return
+    rc, _out = run(["systemctl", "reload", front])
+    if rc == 0 and not DRYRUN:
+        with contextlib.suppress(OSError):
+            os.makedirs(os.path.dirname(_FRONT_MARK), exist_ok=True)
+            with open(_FRONT_MARK + ".tmp", "w") as f:
+                f.write(cur + "\n")
+            os.replace(_FRONT_MARK + ".tmp", _FRONT_MARK)
+
+
+def _sha256_path(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _reload_front(service):
     """Make `service` serve the certificate just placed at its path: SIGHUP its own unit (both the panel and
-    swg-sub reload on it), and for the panel behind the installer's nginx/caddy — which serve that same file —
-    reload the proxy too. Best effort, like every reload here."""
+    swg-sub reload on it), and for the panel behind the installer's nginx/caddy, reload them too."""
     with contextlib.suppress(Exception):
         run(["systemctl", "kill", "-s", "HUP", SERVICES[service]["unit"]])
-    front = load_conf().get("SERVE_MODE", "")
-    if service == "panel" and front in ("nginx", "caddy"):
+    if service == "panel":
         with contextlib.suppress(Exception):
-            run(["systemctl", "reload", front])
+            _front_sync(force=True)
 
 
 def reload_cmd_for(service):
-    # both the panel and swg-sub reload their cert on SIGHUP with zero downtime. Behind the installer's nginx/caddy
-    # — which serve the panel's managed file themselves — acme's renewal must reload them too, or they keep the
-    # old certificate in memory while the file on disk is new (_reload_front does the same for sync-acme).
-    cmd = "systemctl kill -s HUP %s" % SERVICES[service]["unit"]
-    front = load_conf().get("SERVE_MODE", "")
-    if service == "panel" and front in ("nginx", "caddy"):
-        cmd += "; systemctl reload %s" % front
-    return cmd
+    # both the panel and swg-sub reload their cert on SIGHUP with zero downtime. nginx/caddy in front of the panel are
+    # reloaded by sync-acme when the file they serve CHANGES (_front_sync) — never baked into acme.sh's stored command,
+    # which goes stale the moment the serve mode is flipped and misses entries issued before.
+    return "systemctl kill -s HUP %s" % SERVICES[service]["unit"]
 
 
 # ── verbs ─────────────────────────────────────────────────────────────────────────
@@ -915,7 +954,10 @@ def do_sync_acme(service):
     Returns a JSON object (the panel reads it): state ∈ adopted | current | refused | no-entry | skipped,
     owner ∈ ours | other | none — who acme.sh installs this entry for — and install_path."""
     svc = SERVICES[v_service(service)]
-    res = {"service": service, "state": "skipped", "owner": "", "install_path": ""}
+    # `front`: the installer's proxy that serves the panel's file ("" = the panel serves it) — the panel reports that
+    # file's health only when one does. `transient`: a skip that says nothing about who renews the certificate, so
+    # the panel keeps its last report instead of replacing it.
+    res = {"service": service, "state": "skipped", "owner": "", "install_path": "", "front": _front()}
     mode = _load_access_tls()["mode"]
     host = _service_host(service)
     if mode not in _ACME_FOLLOW_MODES:
@@ -923,7 +965,7 @@ def do_sync_acme(service):
     elif not host or len(host) > 253 or not _HOST_RE.match(host):
         res["reason"] = "no usable %s address configured" % service
     elif os.path.exists(svc["cert"] + ".applyback"):
-        res["reason"] = "an address change is in flight"     # its apply/confirm/revert owns the served cert
+        res["reason"], res["transient"] = "an address change is in flight", True   # its apply/confirm/revert owns the served cert
     if res.get("reason"):
         return json.dumps(res)
     d = _acme_ecc_dir(host)
@@ -939,6 +981,9 @@ def do_sync_acme(service):
     # issuance's fallback) always yields to the CA certificate this mode asks for, whatever its 10-year date says.
     if new_end is None or (cur_end is not None and not cur_self and new_end <= cur_end):
         res["state"] = "current"
+        if service == "panel":
+            with contextlib.suppress(Exception):
+                _front_sync()                                   # a renewal someone else wrote: nginx/caddy load it too
         return json.dumps(res)
     try:
         do_adopt_cert(service, src_cert, src_key, "noreload")   # pair, name and expiry checks; atomic copy
@@ -959,8 +1004,8 @@ def do_sync_acme(service):
 # whoever owns the entry (sync-acme installs the result either way) and for letsencrypt-ip, which issue-cert
 # cannot do — renewing an existing entry needs nothing but the entry.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-# A standalone HTTP-01 renewal is 10-60 s; well past that it is hung, and the queue behind it is stuck. Kept under the
-# panel's own wait for the answer (300 s) so the panel always hears how it ended.
+# A standalone HTTP-01 renewal is 10-60 s; well past that it is hung, and the queue behind it is stuck. Kept well under
+# the panel's own wait for the answer (see _RENEW_ANSWER_S there) so the panel always hears how it ended.
 _RENEW_TIMEOUT_S = 240
 
 
@@ -968,7 +1013,7 @@ def do_renew_acme(service):
     """Renew `service`'s acme.sh entry now, then install the result. Returns JSON: state ∈ renewed | not-due |
     failed | no-entry | skipped, message (acme.sh's own words on failure), owner/install_path, and sync."""
     SERVICES[v_service(service)]
-    res = {"service": service, "state": "skipped", "message": ""}
+    res = {"service": service, "state": "skipped", "message": "", "source": "helper"}   # source: whose words `message` is
     creds = _load_access_tls()
     mode = creds["mode"]
     host = _service_host(service)
@@ -1007,7 +1052,7 @@ def do_renew_acme(service):
         red = [_ANSI_RE.sub("", l).strip() for l in raw if "\x1b[31m" in l or "\x1b[1;31m" in l]
         lines = [_ANSI_RE.sub("", l).strip() for l in raw]
         why = red or [l for l in lines if re.search(r"error|fail|refus|invalid|timeout|unauthori[sz]ed|not found|in use|already used", l, re.I)]
-        res["state"], res["message"] = "failed", "\n".join((why or [l for l in lines if l])[-6:])[-900:]
+        res["state"], res["message"], res["source"] = "failed", "\n".join((why or [l for l in lines if l])[-6:])[-900:], "acme"
     with contextlib.suppress(Exception):
         res["sync"] = json.loads(do_sync_acme(service))            # install what acme.sh now holds, whoever owns it
     # …and for swg-sub when it serves the same name (the common case — one hostname, two ports): otherwise the
