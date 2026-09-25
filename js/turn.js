@@ -1881,18 +1881,27 @@ function turnDnsErr(v) {
 // The value as the server compares it: split, de-duplicated, joined — so retyping the same address twice is no change.
 const _dnsNorm = v => [...new Set(_dnsParts(Array.isArray(v) ? v.join(",") : v))].join(",");
 const turnDnsDefault = fork => ((turnForkList().find(x => x.id === fork) || {}).client_dns || "").split(",").join(", ");
-function useTurnDns(cfg, fork) {
-  // A stored value EQUAL to the fork's default reads as empty: that is what clearing stores (wdttplus and csqtt keep
-  // their last value when no flag comes, so the panel sends the default explicitly), and it is what clients get.
+// What clients get when the panel sets no DNS: the value the server had before the panel first set one (`dns_orig`,
+// kept by the panel), else what a server that remembers its own reports holding now (`dns_server`: csqtt, wdttplus),
+// else the fork's catalog default. `own` = it came from the server, not from the catalog.
+function turnDnsBaseline(cfg, fork, rep) {
+  if ((cfg.dns_orig || []).length) return { v: cfg.dns_orig.join(", "), own: true };
+  if (!(cfg.dns || []).length && rep && rep.dns_server) return { v: String(rep.dns_server).split(",").join(", "), own: true };
+  return { v: turnDnsDefault(fork), own: false };
+}
+function useTurnDns(cfg, fork, rep) {
+  // A stored value EQUAL to the baseline reads as empty: that is what clearing stores (wdttplus and csqtt keep their
+  // last value when no flag comes, so the panel sends it explicitly), and it is what clients get.
+  const base = turnDnsBaseline(cfg, fork, rep);
   const stored = (cfg.dns || []).join(", ");
-  const cur = _dnsNorm(stored) === _dnsNorm(turnDnsDefault(fork)) ? "" : stored;
+  const cur = _dnsNorm(stored) === _dnsNorm(base.v) ? "" : stored;
   const [val, set] = useState(cur);
   const dirty = _dnsNorm(val) !== _dnsNorm(cur);
-  return { val, set, dirty, cur: stored, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: [...new Set(_dnsParts(val))] } : {} };
+  return { val, set, dirty, cur: stored, base, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: [...new Set(_dnsParts(val))] } : {} };
 }
 function TurnDnsField({ node, fork, rep, dns, params }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
-  const dflt = turnDnsDefault(fork);
+  const dflt = dns.base.v;
   // A node too old to know the field doesn't echo `dns` in its report; a fork build that can't take it says so.
   const oldNode = !!rep && ("active" in rep) && !("dns" in rep);   // a real report (every one carries `active`) without dns
   const unsupported = !!(rep && rep.dns_unsupported);
@@ -1909,6 +1918,7 @@ function TurnDnsField({ node, fork, rep, dns, params }) {
     // Only a hint, not a verdict: the redirect covers the subnets whose routing matches by domain, which the node
     // does not report per interface — so this says when it applies instead of claiming that it does.
     : nrec.routing_mode === "forcedns" ? T("This node runs Force-DNS: if this server's routing matches by domain, the node's own resolver answers its clients' plain DNS instead.")
+    : (dflt && dns.base.own) ? T("Given to every client when it connects. Empty = not set by the panel; this server gives {v1}. Saving restarts the server.", { v1: dflt })
     : dflt ? T("Given to every client when it connects. Empty = not set by the panel; this fork's default is {v1}. Saving restarts the server.", { v1: dflt })
     : T("Given to every client when it connects. Saving restarts the server.");
   return html`<div class="field"><label>${T("Client DNS")}</label>
@@ -1930,7 +1940,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   const forkLabel = (turnForkList().find(x => x.id === fork) || {}).label || fork;
   const [title, setTitle] = useState(shownTitle("w|" + node + "|" + iface, (cfg.title || "").trim()));   // optional cosmetic label; honour a just-saved optimistic title
   const [params, setParams] = useState((cfg.params || "").trim());   // extra ExecStart flags (advanced)
-  const dns = useTurnDns(cfg, fork);
+  const dns = useTurnDns(cfg, fork, w);
   const [srvOpen, setSrvOpen] = useState(false);
   const awaiting = !!w.await_restore;
   const restoring = (nrec.wdtt_restoring || []).includes(iface);
@@ -2319,7 +2329,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const cfg = (nrec.csqtt_cfg || {})[iface] || {};
   const [title, setTitle] = useState(shownTitle("c|" + node + "|" + iface, (cfg.title || "").trim()));
   const [params, setParams] = useState((cfg.params || "").trim());
-  const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt");
+  const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);
   const [srvOpen, setSrvOpen] = useState(false);
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   const notup = c.active !== "active";

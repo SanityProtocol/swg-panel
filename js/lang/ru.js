@@ -5134,6 +5134,7 @@ export const STR = {
   "This node runs Force-DNS: if this server's routing matches by domain, the node's own resolver answers its clients' plain DNS instead.": "На этой ноде Force-DNS: если маршрутизация этого сервера сопоставляет по доменам, обычные DNS-запросы его клиентов вместо этого обслуживает резолвер самой ноды.",
   "Extra flags set their own DNS, and that one wins over this field.": "В дополнительных флагах задан свой DNS — он важнее этого поля.",
   "Given to every client when it connects. Empty = not set by the panel; this fork's default is {v1}. Saving restarts the server.": "Передаётся каждому клиенту при подключении. Пусто = панель не задаёт; по умолчанию у этого форка {v1}. Сохранение перезапускает сервер.",
+  "Given to every client when it connects. Empty = not set by the panel; this server gives {v1}. Saving restarts the server.": "Передаётся каждому клиенту при подключении. Пусто = панель не задаёт; сейчас этот сервер выдаёт {v1}. Сохранение перезапускает сервер.",
   "Given to every client when it connects. Saving restarts the server.": "Передаётся каждому клиенту при подключении. Сохранение перезапускает сервер.",
   "val|none": "нет",
   "tag|advanced": "подробно",

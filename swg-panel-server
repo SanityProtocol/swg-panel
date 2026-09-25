@@ -3088,20 +3088,20 @@ def is_keyless_kind(kind):
     return kind in ("wdtt", "csqtt")
 
 
-def turn_client_dns(raw, fork, had):
+def turn_client_dns(raw, fork, had, orig=None):
     """A WDTT / csqtt instance's client DNS from a save body → (value to store, or None = leave it unset; error).
 
     The server hands it to each client (WG `DNS =`, RAWCONF, TUNCONF); it never resolves with it. 1–2 IPv4 and
     nothing else: Android's VPN API takes addresses only, and csqtt / wdttplus refuse a third
-    (docs/DNS-SETTINGS-PLAN.md §3.2). CLEARING a value that was set stores the fork's own default rather than
-    nothing — wdttplus and csqtt keep their last saved value when no flag comes, so an empty field would leave
-    the old address live on the server while the form said "default"."""
+    (docs/DNS-SETTINGS-PLAN.md §3.2). CLEARING a value that was set stores what the server gave before the panel
+    first set one (`orig`), else the fork's default — never nothing: wdttplus and csqtt keep their last saved value
+    when no flag comes, so an empty field would leave the panel's old address live while the form said "default"."""
     parts = raw if isinstance(raw, list) else re.split(r"[\s,]+", str(raw or ""))   # the SPA's and adopt's split
     parts = [str(p).strip() for p in parts if str(p).strip()]
     if not parts:
         if not had:
             return None, None
-        dflt = (TURN_SERVERS.get(fork) or {}).get("client_dns") or ""
+        dflt = ",".join(orig) if isinstance(orig, list) and orig else ((TURN_SERVERS.get(fork) or {}).get("client_dns") or "")
         return ([p for p in dflt.split(",") if p] or None), None
     parts = list(dict.fromkeys(parts))              # a repeat is one resolver, not two
     if len(parts) > 2:
@@ -3112,12 +3112,19 @@ def turn_client_dns(raw, fork, had):
     return parts, None
 
 
-def apply_turn_client_dns(inst, body, fork):
+def apply_turn_client_dns(inst, body, fork, rep=None):
     """The one `dns` step both /api/wdtt/set and /api/csqtt/set take: only when the body names it. Returns an error
-    payload for a 400, or None."""
+    payload for a 400, or None. `rep` = the node's report of this instance. The FIRST time the panel sets a DNS on
+    a server that remembers its own (`dns_server`: csqtt, wdttplus), that value is kept as `dns_orig`, because
+    setting ours overwrites it in the server's store — and clearing then restores it rather than the catalog
+    default, so clearing never changes what clients get."""
     if "dns" not in body:
         return None
-    val, err = turn_client_dns(body.get("dns"), fork, bool(inst.get("dns")))
+    if not inst.get("dns") and "dns_orig" not in inst:
+        own, _e = turn_client_dns((rep or {}).get("dns_server"), fork, False)
+        if own:
+            inst["dns_orig"] = own
+    val, err = turn_client_dns(body.get("dns"), fork, bool(inst.get("dns")), inst.get("dns_orig"))
     if err:
         return err if isinstance(err, dict) else {"error": err}
     if val:
@@ -20011,7 +20018,7 @@ def api(method, path, qs, body, deps):
                         "wdtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("wg_addr", "listen", "fork", "wg_port", "max_passwords",
                                                                    "stopped", "block", "egress_mode", "egress_node",
                                                                    "egress_ip", "wan_iface", "routing", "routing_exit_ips", "title", "params",
-                                                                   "raw_port", "raw_iface", "raw_addr", "exit_id", "reach", "dns") if k in ov}
+                                                                   "raw_port", "raw_iface", "raw_addr", "exit_id", "reach", "dns", "dns_orig") if k in ov}
                                      for ifn, ov in _w.items()},
                         # …and the CIPHERTEXT of a WDTT escrow this panel cannot vouch for, so the browser —
                         # the only holder of the vault private key — can settle what the panel never can.
@@ -20028,7 +20035,7 @@ def api(method, path, qs, body, deps):
                         # routing / filters. Config fields only — never the owner password / minted access passwords.
                         "csqtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
                                                                     "block", "egress_mode", "egress_node", "egress_ip",
-                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach", "dns") if k in ov}
+                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach", "dns", "dns_orig") if k in ov}
                                       for ifn, ov in _c.items()},
                         "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
                         "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
@@ -24835,7 +24842,9 @@ def api(method, path, qs, body, deps):
         if "max_passwords" in body:
             try: inst["max_passwords"] = int(body.get("max_passwords") or 0) or 200
             except (TypeError, ValueError): return 400, {"ok": False, "error": "max_passwords must be an integer", "code": "bad_request"}
-        _de = apply_turn_client_dns(inst, body, inst.get("fork") or "amurcanov")
+        _de = apply_turn_client_dns(inst, body, inst.get("fork") or "amurcanov",
+                                    next((e for e in (((deps.get("node_snaps") or {}).get(nid) or {}).get("wdtt") or [])
+                                          if isinstance(e, dict) and e.get("iface") == iface), None))
         if _de:
             return 400, {"ok": False, **_de, "code": "bad_request"}
         # WDTT binds TWO ports (DTLS listen + internal WG) — neither may collide with any other interface / proxy /
@@ -25167,7 +25176,9 @@ def api(method, path, qs, body, deps):
         if "max_passwords" in body:
             try: inst["max_passwords"] = int(body.get("max_passwords") or 0) or 500
             except (TypeError, ValueError): return 400, {"ok": False, "error": "max_passwords must be an integer", "code": "bad_request"}
-        _de = apply_turn_client_dns(inst, body, inst.get("fork") or "csqtt")
+        _de = apply_turn_client_dns(inst, body, inst.get("fork") or "csqtt",
+                                    next((e for e in (((deps.get("node_snaps") or {}).get(nid) or {}).get("csqtt") or [])
+                                          if isinstance(e, dict) and e.get("iface") == iface), None))
         if _de:
             return 400, {"ok": False, **_de, "code": "bad_request"}
         # the DTLS listen port must not collide with any other interface / proxy / WDTT / csqtt / mesh on the node
