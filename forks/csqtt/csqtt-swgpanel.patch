@@ -1,5 +1,5 @@
 diff --git a/rust-server/dataplane.rs b/rust-server/dataplane.rs
-index d9c5b15badd75f46f8a391ee143531041d25389c..2d4ed0bf429407a38475b0111e20d4d83a0a094c 100644
+index d9c5b15..2d4ed0b 100644
 --- a/rust-server/dataplane.rs
 +++ b/rust-server/dataplane.rs
 @@ -2,7 +2,6 @@
@@ -46,7 +46,7 @@ index d9c5b15badd75f46f8a391ee143531041d25389c..2d4ed0bf429407a38475b0111e20d4d8
                  }
              }
 diff --git a/rust-server/main.rs b/rust-server/main.rs
-index 0ae0f0211557df7de4ee366bf71ee9a6fc78900f..05b141419ef79ea3a003ed7ef106f5a3fdc63dbf 100644
+index 0ae0f02..05b1414 100644
 --- a/rust-server/main.rs
 +++ b/rust-server/main.rs
 @@ -38,6 +38,7 @@ mod proxy_route;
@@ -417,7 +417,7 @@ index 0ae0f0211557df7de4ee366bf71ee9a6fc78900f..05b141419ef79ea3a003ed7ef106f5a3
      port: Option<u16>,
      status_path: Option<std::path::PathBuf>,
 diff --git a/rust-server/model.rs b/rust-server/model.rs
-index ab18990b129926d081db0e9a659a0fac7fb796f2..9dd8bed8249275d3b4cfd917ddf0cf452119d754 100644
+index ab18990..9dd8bed 100644
 --- a/rust-server/model.rs
 +++ b/rust-server/model.rs
 @@ -17,6 +17,7 @@ use std::{
@@ -483,7 +483,7 @@ index ab18990b129926d081db0e9a659a0fac7fb796f2..9dd8bed8249275d3b4cfd917ddf0cf45
  
  pub fn generate_key_pair() -> (String, String) {
 diff --git a/rust-server/net_setup.rs b/rust-server/net_setup.rs
-index 7e148e8653181ca48f231e2987e943fe5c441e13..fda3d90ecb5b9ba2b10be5bd6477d3e19c89c637 100644
+index 7e148e8..fda3d90 100644
 --- a/rust-server/net_setup.rs
 +++ b/rust-server/net_setup.rs
 @@ -1,5 +1,10 @@
@@ -498,7 +498,7 @@ index 7e148e8653181ca48f231e2987e943fe5c441e13..fda3d90ecb5b9ba2b10be5bd6477d3e1
 +#[allow(dead_code)]
  pub const TUN_ADDR: &str = "10.66.67.1";
 diff --git a/rust-server/packet.rs b/rust-server/packet.rs
-index 5b8653e79a550d21ed6ff2f75efdb3b6c107fa5e..d7029a312d030e74a8e4b89b9733d2a70628c0f9 100644
+index 5b8653e..d7029a3 100644
 --- a/rust-server/packet.rs
 +++ b/rust-server/packet.rs
 @@ -216,6 +216,16 @@ pub fn extract_dst_ipv4(packet: &[u8]) -> Option<[u8; 4]> {
@@ -519,10 +519,19 @@ index 5b8653e79a550d21ed6ff2f75efdb3b6c107fa5e..d7029a312d030e74a8e4b89b9733d2a7
      address: SocketAddr,
      storage: &mut libc::sockaddr_storage,
 diff --git a/rust-server/protocol.rs b/rust-server/protocol.rs
-index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7c8f76fa5 100644
+index 625699b..91bc17c 100644
 --- a/rust-server/protocol.rs
 +++ b/rust-server/protocol.rs
-@@ -1444,6 +1444,9 @@ impl HotSession {
+@@ -939,6 +939,8 @@ enum CredentialAccess {
+     Main,
+     Bound,
+     Unbound,
++    // swg-panel: a bound password presented from ANOTHER device, under --desired — it moves to that device.
++    Rebind,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -1444,6 +1446,9 @@ impl HotSession {
  
  struct IngressPacket {
      slot: usize,
@@ -532,7 +541,7 @@ index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7
      packet: PacketBuffer,
  }
  
-@@ -1642,6 +1645,9 @@ pub(crate) enum ProtocolCommand {
+@@ -1642,6 +1647,9 @@ pub(crate) enum ProtocolCommand {
      },
      InjectTun {
          session_id: u64,
@@ -542,7 +551,7 @@ index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7
          payload: Vec<u8>,
      },
      UpdateEpoch {
-@@ -2666,7 +2672,9 @@ impl ProtocolEngine {
+@@ -2666,7 +2674,9 @@ impl ProtocolEngine {
              let _ = self.control_tx.try_send(event);
              return;
          }
@@ -553,7 +562,7 @@ index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7
              if let Some((header, payload)) = flow_frame::FrameHeader::decode(plain) {
                  let mut packet = PacketBuffer::new();
                  if !packet.copy_from(payload) {
-@@ -2674,12 +2682,16 @@ impl ProtocolEngine {
+@@ -2674,12 +2684,16 @@ impl ProtocolEngine {
                  }
                  self.ingress_reassembler.push(
                      header,
@@ -572,7 +581,7 @@ index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7
              }
              return;
          }
-@@ -2698,11 +2710,28 @@ impl ProtocolEngine {
+@@ -2698,11 +2712,28 @@ impl ProtocolEngine {
  
      fn flush_ingress_ready(&mut self, sink: &mut impl PacketOutput) {
          while let Some(ingress) = self.ingress_ready.pop_front() {
@@ -603,7 +612,7 @@ index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7
          let write_started = self
              .crypto_profiler
              .all
-@@ -3134,10 +3163,12 @@ impl DataplaneLogic for ProtocolEngine {
+@@ -3134,10 +3165,12 @@ impl DataplaneLogic for ProtocolEngine {
                  .collect(),
              ProtocolCommand::InjectTun {
                  session_id,
@@ -616,7 +625,7 @@ index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7
                      payload: payload.clone(),
                  })
                  .collect(),
-@@ -3304,9 +3335,12 @@ impl DataplaneLogic for ProtocolEngine {
+@@ -3304,9 +3337,12 @@ impl DataplaneLogic for ProtocolEngine {
              }
              ProtocolCommand::InjectTun {
                  session_id,
@@ -630,7 +639,7 @@ index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7
                      && sink.write_tun_priority(
                          &payload,
                          crate::striped_scheduler::packet_class(&payload),
-@@ -4235,11 +4269,14 @@ async fn process_ingress_before_tunnel_event(
+@@ -4235,11 +4271,14 @@ async fn process_ingress_before_tunnel_event(
                  &format!("{address}: tunnel setup failed: {error}"),
              );
              drop_exact_session(&app, &session);
@@ -646,7 +655,123 @@ index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7
                      payload,
                  },
              );
-@@ -4316,6 +4353,13 @@ fn getconf_credential_access(
+@@ -4292,6 +4331,102 @@ async fn process_control_payload(
+     Ok(())
+ }
+ 
++// swg-panel: move `password` from the device it is bound to onto `device_id` (CredentialAccess::Rebind). The device
++// row — address and keys — goes with it, so the user keeps their address and the node keeps crediting the same peer.
++// A row another password or the main device still names is left where it is; the new device then gets a row of its
++// own on this GETCONF. Returns the device the password left. The store keeps stock csqtt's shape (a password bound
++// to a real device ID), so an older build run on it simply finds the password on its latest device.
++fn rebind_password_device(db: &mut Database, password: &str, device_id: &str) -> Option<String> {
++    let RebindPlan::Move { old, row_moves } = rebind_plan(db, password, device_id) else {
++        return None;
++    };
++    if row_moves && let Some(mut row) = db.devices.remove(&old) {
++        row.device_id = device_id.to_owned();
++        db.devices.insert(device_id.to_owned(), row);
++    }
++    db.passwords.get_mut(password)?.device_id = device_id.to_owned();
++    Some(old)
++}
++
++// swg-panel: the sessions `password` still has on `device_id`, the device it has just moved off (see
++// rebind_password_device). Only this password's: a row it shared with another credential (a store from before
++// 2.1.9-2) stays with that credential, and so do its sessions.
++fn sessions_of_password_on_device(
++    app: &Arc<App>,
++    password: &str,
++    device_id: &str,
++    current_session_id: u64,
++) -> Vec<(u64, SocketAddr)> {
++    app.sessions
++        .iter()
++        .filter_map(|entry| {
++            let session = entry.value();
++            (session.id != current_session_id
++                && session.password == password
++                && session_epoch_identity(session).device_id == device_id)
++                .then_some((session.id, session.address))
++        })
++        .collect()
++}
++
++// swg-panel: the removal purge_stale_device_sessions does, for a list chosen elsewhere.
++fn drop_sessions(app: &Arc<App>, sessions: Vec<(u64, SocketAddr)>, device_id: &str) {
++    for (session_id, address) in sessions {
++        let _ = command(app, ProtocolCommand::DropSession { session_id });
++        if let Some((_, removed)) = app
++            .sessions
++            .remove_if(&session_id, |_, current| current.id == session_id)
++        {
++            removed.cancel_token.cancel();
++            log_event(
++                app,
++                "INFO",
++                "SESSION",
++                &format!("Purged session of a moved password on device {device_id} at {address}"),
++            );
++        }
++    }
++}
++
++// swg-panel: whether `password` can move to `device_id` (Rebind), decided in one place for the access check and the
++// move itself. The target must be a device nobody holds. A row the password leaves behind (the main device's, or
++// one another password shares) means the new device needs a fresh address; with none free the move is Blocked and
++// the GETCONF answered NOCONF before anything is set up for that device, the password staying where it is.
++#[derive(Debug, PartialEq, Eq)]
++enum RebindPlan {
++    Move { old: String, row_moves: bool },
++    Blocked,
++    No,
++}
++
++fn rebind_plan(db: &Database, password: &str, device_id: &str) -> RebindPlan {
++    let Some(entry) = db.passwords.get(password) else {
++        return RebindPlan::No;
++    };
++    let old = &entry.device_id;
++    if old.is_empty() || old == device_id || !device_is_unclaimed(db, device_id) {
++        return RebindPlan::No;
++    }
++    let shared = *old == db.main_device_id
++        || db
++            .passwords
++            .iter()
++            .any(|(other, other_entry)| other != password && other_entry.device_id == *old);
++    let row_moves = !shared && db.devices.contains_key(old);
++    if !row_moves && get_next_ip(db).is_none() {
++        return RebindPlan::Blocked;
++    }
++    RebindPlan::Move { old: old.clone(), row_moves }
++}
++
++// swg-panel: a device ID no credential holds — no row, not the main device, no password bound to it (a binding can
++// outlive its row, e.g. when no address was free). Only such a device may take a password (Rebind).
++fn device_is_unclaimed(db: &Database, device_id: &str) -> bool {
++    !db.devices.contains_key(device_id)
++        && db.main_device_id != device_id
++        && !db.passwords.values().any(|entry| entry.device_id == device_id)
++}
++
+ fn getconf_credential_access(
+     db: &Database,
+     password: &str,
+@@ -4313,9 +4448,28 @@ fn getconf_credential_access(
+         return Err("DENIED:deactivated");
+     }
+     if !entry.device_id.is_empty() && entry.device_id != device_id {
++        // swg-panel: under --desired one config may move between a user's devices (stock refuses every device but
++        // the first). The password moves to the new device with its address — only onto a device nobody holds, the
++        // same rule as an unbound claim below, so it can never take another credential's device (rebind_plan).
++        if crate::swgpanel::password_follows_device() {
++            match rebind_plan(db, password, device_id) {
++                RebindPlan::Move { .. } => return Ok(CredentialAccess::Rebind),
++                RebindPlan::Blocked => return Err("NOCONF"),
++                RebindPlan::No => {}
++            }
++        }
          return Err("DENIED:device_mismatch");
      }
      if entry.device_id.is_empty() {
@@ -654,18 +779,210 @@ index 625699bdbccbd31bd234d6c3896e1e569d7d240f..7fe23c39abdf94c4877aa2514685b0b7
 +        // existing device row belongs to another credential (or the main device), so binding to it would
 +        // let a second valid password adopt the first client's device and inherit its assigned address.
 +        // A legitimate first connect always presents a fresh, unused device id and creates a new row.
-+        if db.devices.contains_key(device_id) {
++        // swg-panel 2.1.9-3: "registered" includes a device held by a binding alone (no row: bound when no address was
++        // free) and the main device — the same device_is_unclaimed test a Rebind passes.
++        if !device_is_unclaimed(db, device_id) {
 +            return Err("DENIED:device_mismatch");
 +        }
          Ok(CredentialAccess::Unbound)
      } else {
          Ok(CredentialAccess::Bound)
+@@ -4763,6 +4917,24 @@ async fn handle_getconf(
+                         entry.device_id = device_id.to_owned();
+                         changed = true;
+                     }
++                    if access == CredentialAccess::Rebind
++                        && let Some(old) = rebind_password_device(&mut db, password, device_id)
++                    {
++                        log_event(
++                            app,
++                            "INFO",
++                            "SESSION",
++                            &format!("Password moved from device {old} to device {device_id}"),
++                        );
++                        // The previous device's sessions carry its own device ID, so the epoch purge above (keyed
++                        // by the NEW ID) never reaches them; left alone they would keep their slots in the address's
++                        // downlink rotation until they time out. They are dropped HERE, under the write lock that
++                        // moved the password, as purge_stale_device_sessions is above: a GETCONF that moves it back
++                        // takes this lock after us, so it can neither be dropped by this move nor race it.
++                        let moved_off = sessions_of_password_on_device(app, password, &old, session.id);
++                        drop_sessions(app, moved_off, &old);
++                        changed = true;
++                    }
+                     if access == CredentialAccess::Main && db.main_device_id.is_empty() {
+                         db.main_device_id = device_id.to_owned();
+                         changed = true;
+@@ -5224,7 +5396,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn a_device_can_bind_multiple_passwords_but_each_password_stays_device_locked() {
++    fn a_registered_device_is_never_claimed_by_another_password_and_each_password_stays_device_locked() {
+         let mut db = Database::default();
+         db.devices.insert(
+             "device-a".to_owned(),
+@@ -5243,9 +5415,11 @@ mod tests {
+         db.passwords
+             .insert("password-b".to_owned(), PasswordEntry::default());
+ 
++        // swg-panel 2.1.9-2: an unbound password may not claim a device another password registered (the "device
++        // borrow" fix) — upstream asserted Unbound here.
+         assert_eq!(
+             getconf_credential_access(&db, "password-b", "device-a"),
+-            Ok(CredentialAccess::Unbound)
++            Err("DENIED:device_mismatch")
+         );
+         assert_eq!(
+             getconf_credential_access(&db, "password-a", "device-b"),
+@@ -5269,6 +5443,142 @@ mod tests {
+         assert!(device_control_authorized(&db, "password-b", "device-a"));
+     }
+ 
++    fn rebind_fixture() -> Database {
++        let mut db = Database {
++            main_password: "owner".to_owned(),
++            main_device_id: "owner-phone".to_owned(),
++            ..Database::default()
++        };
++        for (id, ip) in [("owner-phone", "10.66.67.2"), ("phone-a", "10.66.67.3"), ("shared", "10.66.67.4")] {
++            db.devices.insert(
++                id.to_owned(),
++                ClientDevice {
++                    device_id: id.to_owned(),
++                    ip: ip.to_owned(),
++                    ..ClientDevice::default()
++                },
++            );
++        }
++        for (pw, dev) in [("pw-a", "phone-a"), ("pw-b", "shared"), ("pw-c", "shared"), ("pw-d", "owner-phone")] {
++            db.passwords.insert(
++                pw.to_owned(),
++                PasswordEntry {
++                    device_id: dev.to_owned(),
++                    ..PasswordEntry::default()
++                },
++            );
++        }
++        db
++    }
++
++    #[test]
++    fn a_bound_password_follows_its_user_to_an_unregistered_device_only_under_desired() {
++        let db = rebind_fixture();
++        // stock (no --desired): the one-device lock stands
++        assert_eq!(
++            getconf_credential_access(&db, "pw-a", "phone-b"),
++            Err("DENIED:device_mismatch")
++        );
++        let _panel_mode = crate::swgpanel::FollowsDeviceForTest::on();
++        assert_eq!(
++            getconf_credential_access(&db, "pw-a", "phone-b"),
++            Ok(CredentialAccess::Rebind)
++        );
++        assert_eq!(getconf_credential_access(&db, "pw-a", "phone-a"), Ok(CredentialAccess::Bound));
++        // never onto a device another credential registered, nor the main device
++        assert_eq!(
++            getconf_credential_access(&db, "pw-a", "shared"),
++            Err("DENIED:device_mismatch")
++        );
++        assert_eq!(
++            getconf_credential_access(&db, "pw-a", "owner-phone"),
++            Err("DENIED:device_mismatch")
++        );
++        // the main password keeps stock's lock
++        assert_eq!(
++            getconf_credential_access(&db, "owner", "phone-b"),
++            Err("DENIED:device_mismatch")
++        );
++    }
++
++    #[test]
++    fn a_rebind_moves_the_address_with_the_password_and_never_takes_a_shared_row() {
++        let mut db = rebind_fixture();
++        assert_eq!(rebind_password_device(&mut db, "pw-a", "phone-b"), Some("phone-a".to_owned()));
++        assert_eq!(db.passwords["pw-a"].device_id, "phone-b");
++        assert_eq!(db.devices["phone-b"].ip, "10.66.67.3");
++        assert_eq!(db.devices["phone-b"].device_id, "phone-b");
++        assert!(!db.devices.contains_key("phone-a"));
++        // and back
++        assert_eq!(rebind_password_device(&mut db, "pw-a", "phone-a"), Some("phone-b".to_owned()));
++        assert_eq!(db.devices["phone-a"].ip, "10.66.67.3");
++
++        // a row another password still names stays; the password is rebound without it
++        assert_eq!(rebind_password_device(&mut db, "pw-b", "phone-x"), Some("shared".to_owned()));
++        assert_eq!(db.passwords["pw-b"].device_id, "phone-x");
++        assert_eq!(db.devices["shared"].ip, "10.66.67.4");
++        assert!(!db.devices.contains_key("phone-x"));
++        // the main device's row is never taken either
++        assert_eq!(rebind_password_device(&mut db, "pw-d", "phone-y"), Some("owner-phone".to_owned()));
++        assert_eq!(db.devices["owner-phone"].ip, "10.66.67.2");
++        assert!(!db.devices.contains_key("phone-y"));
++        // never onto a registered device
++        assert_eq!(rebind_password_device(&mut db, "pw-c", "phone-a"), None);
++        assert_eq!(db.passwords["pw-c"].device_id, "shared");
++    }
++
++    #[test]
++    fn a_device_held_only_by_a_binding_is_never_taken_and_a_full_pool_moves_nothing() {
++        let _panel_mode = crate::swgpanel::FollowsDeviceForTest::on();
++        let mut db = rebind_fixture();
++        // the main device and a password's device can be held by a binding alone, with no row
++        db.devices.remove("owner-phone");
++        db.passwords.get_mut("pw-c").unwrap().device_id = "rowless".to_owned();
++        assert_eq!(
++            getconf_credential_access(&db, "pw-a", "owner-phone"),
++            Err("DENIED:device_mismatch")
++        );
++        assert_eq!(
++            getconf_credential_access(&db, "pw-a", "rowless"),
++            Err("DENIED:device_mismatch")
++        );
++        assert_eq!(rebind_password_device(&mut db, "pw-a", "rowless"), None);
++        // nor can an unbound password claim either of them (the 2.1.9-2 guard, extended to bindings)
++        db.passwords.insert("pw-e".to_owned(), PasswordEntry::default());
++        assert_eq!(
++            getconf_credential_access(&db, "pw-e", "rowless"),
++            Err("DENIED:device_mismatch")
++        );
++        assert_eq!(
++            getconf_credential_access(&db, "pw-e", "owner-phone"),
++            Err("DENIED:device_mismatch")
++        );
++        assert_eq!(getconf_credential_access(&db, "pw-e", "phone-new"), Ok(CredentialAccess::Unbound));
++
++        // pw-b's row is shared no more (pw-c left it) but pw-d is bound to the main device, whose row is gone:
++        // pw-d needs a fresh address to move, and with the pool full it stays where it is
++        let prefix = crate::swgpanel::subnet_prefix();
++        for last in 2..=254u8 {
++            let id = format!("filler-{last}");
++            db.devices.insert(
++                id.clone(),
++                ClientDevice {
++                    device_id: id,
++                    ip: format!("{}.{}.{}.{last}", prefix[0], prefix[1], prefix[2]),
++                    ..ClientDevice::default()
++                },
++            );
++        }
++        assert_eq!(rebind_plan(&db, "pw-d", "phone-z"), RebindPlan::Blocked);
++        // answered NOCONF by the access check, before anything is set up for the new device
++        assert_eq!(getconf_credential_access(&db, "pw-d", "phone-z"), Err("NOCONF"));
++        assert_eq!(rebind_password_device(&mut db, "pw-d", "phone-z"), None);
++        assert_eq!(db.passwords["pw-d"].device_id, "owner-phone");
++        // a password whose own row moves needs no free address
++        assert_eq!(rebind_password_device(&mut db, "pw-a", "phone-z"), Some("phone-a".to_owned()));
++        assert_eq!(db.devices["phone-z"].ip, "10.66.67.3");
++    }
++
+     fn fixture_engine_with_worker(
+         password: &str,
+         shard_index: usize,
 diff --git a/rust-server/swgpanel.rs b/rust-server/swgpanel.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..ac023e7321112b3db75bd0fe6254e6b6e62635dc
+index 0000000..9c16fb6
 --- /dev/null
 +++ b/rust-server/swgpanel.rs
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,162 @@
 +// SPDX-FileCopyrightText: 2026 SanityProtocol
 +// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 +//
@@ -745,6 +1062,43 @@ index 0000000000000000000000000000000000000000..ac023e7321112b3db75bd0fe6254e6b6
 +    get().desired_path.as_ref()
 +}
 +
++// A generated password follows its user to another device (see getconf_credential_access). Only under --desired —
++// the panel owns the password set there, and a config is portable like a WireGuard one; without it, stock csqtt's
++// one-device lock stands. Tests switch it per thread: the config is a process-wide OnceLock that the first reader
++// fixes, and tests run in parallel.
++pub fn password_follows_device() -> bool {
++    #[cfg(test)]
++    if TEST_FOLLOWS_DEVICE.with(std::cell::Cell::get) {
++        return true;
++    }
++    desired_path().is_some()
++}
++
++#[cfg(test)]
++thread_local! {
++    static TEST_FOLLOWS_DEVICE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++// Panel mode for the calling test's thread, switched off again when the guard drops — so no later test that the
++// runner happens to put on the same thread inherits it.
++#[cfg(test)]
++pub(crate) struct FollowsDeviceForTest;
++
++#[cfg(test)]
++impl FollowsDeviceForTest {
++    pub(crate) fn on() -> Self {
++        TEST_FOLLOWS_DEVICE.with(|follows| follows.set(true));
++        Self
++    }
++}
++
++#[cfg(test)]
++impl Drop for FollowsDeviceForTest {
++    fn drop(&mut self) {
++        TEST_FOLLOWS_DEVICE.with(|follows| follows.set(false));
++    }
++}
++
 +// Build a config from the optional flags. Only /24 is accepted: the datapath route table indexes a session
 +// by the packet's last octet, so a differently-sized mask would need a different table shape.
 +pub fn build(
@@ -792,7 +1146,7 @@ index 0000000000000000000000000000000000000000..ac023e7321112b3db75bd0fe6254e6b6
 +    Ok(cfg)
 +}
 diff --git a/rust-server/tun_device.rs b/rust-server/tun_device.rs
-index 4752da79d1fe14c857b0ad98ccf85cad66727d24..537315182e370d1c9fd8b8211b4fc406e5122a25 100644
+index 4752da7..5373151 100644
 --- a/rust-server/tun_device.rs
 +++ b/rust-server/tun_device.rs
 @@ -6,6 +6,7 @@ use std::net::Ipv4Addr;
@@ -815,7 +1169,7 @@ index 4752da79d1fe14c857b0ad98ccf85cad66727d24..537315182e370d1c9fd8b8211b4fc406
  
  pub fn parse_ipv4(value: &str) -> Option<[u8; 4]> {
 diff --git a/rust-server/web_panel.rs b/rust-server/web_panel.rs
-index 455b71c0ac9d0728169beff258447b659dfc6652..8ba8570a6c224017d13eb7a50d576be23fa5536e 100644
+index 455b71c..8ba8570 100644
 --- a/rust-server/web_panel.rs
 +++ b/rust-server/web_panel.rs
 @@ -3,7 +3,7 @@
