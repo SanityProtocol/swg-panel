@@ -44,6 +44,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -12251,7 +12252,22 @@ def _drops_base():
                 _IFDROP_BASE = json.load(f) or {}
         except (OSError, ValueError):
             _IFDROP_BASE = {}
+        if not isinstance(_IFDROP_BASE, dict):          # valid JSON, wrong shape (a list): no baselines, and the next reset rewrites it
+            _IFDROP_BASE = {}
     return _IFDROP_BASE
+
+
+def _drops_baseline(ifn):
+    """This interface's reset baseline, validated — or {} when there is none or it cannot be trusted (a hand-edited or torn
+    drops-base.json). `kinds` is None unless it is four integers: a baseline written before per-kind baselines, or one whose
+    kinds are damaged, is then re-baselined once by _iface_drops_one."""
+    b = _drops_base().get(ifn)
+    num = lambda v: isinstance(v, int) and not isinstance(v, bool)
+    if not (isinstance(b, dict) and num(b.get("bad", 0)) and num(b.get("pkts", 0))
+            and (b.get("at") is None or num(b["at"]))):
+        return {}
+    k = b.get("kinds")
+    return dict(b, kinds=list(k) if isinstance(k, list) and len(k) == 4 and all(num(x) for x in k) else None)
 
 
 def _drops_base_save():
@@ -12288,18 +12304,19 @@ _IFDROP = {}                    # iface -> {"prev": (pkts, rxd, rxe, txd, txe), 
 # to the daemon filling — real local load — and those daemons hold packets for an absent peer themselves, uncounted.
 # Anything the node cannot identify counts all four, as before: an unknown datapath shows more, never less.
 _FAULT_ALL = ("rx_drop", "rx_err", "tx_drop", "tx_err")     # the order of the per-kind columns in a hist row, from index 2
-_IFDROP_ERR = set()             # interfaces whose drop figure failed once — logged once, see iface_drops
+_IFDROP_ERR = {}                # iface -> the error its drop figure last failed with, see iface_drops
 
 
 def _if_datapath(ifn):
-    """'wg' for a kernel wireguard/amneziawg device, 'tun' for a TUN, None for anything else. Two sysfs reads, once per device."""
+    """'wg' for a kernel wireguard/amneziawg device, 'tun' for a TUN, 'other' for anything else — or None when the device could
+    not be read, which the caller tries again next pass. Two sysfs reads, once per device."""
     try:
         with open("/sys/class/net/%s/uevent" % ifn) as f:
             if re.search(r"^DEVTYPE=(wireguard|amneziawg)$", f.read(), re.M):
                 return "wg"
     except OSError:
-        pass
-    return "tun" if os.path.exists("/sys/class/net/%s/tun_flags" % ifn) else None
+        return None
+    return "tun" if os.path.exists("/sys/class/net/%s/tun_flags" % ifn) else "other"
 
 
 def _if_stat(ifn, key):
@@ -12323,17 +12340,16 @@ def _iface_drops_one(ifn, links, now):
     fi = [2 + _FAULT_ALL.index(k) for k in fk]                # columns of a hist row that count
     # A reset re-zeroes BOTH halves: the rolling window (so nobody reads the five minutes that led up to
     # their fix) and the lifetime baseline. Acted on once per nonce.
-    _base = _drops_base()
-    _prev = _base.get(ifn) if isinstance(_base.get(ifn), dict) else {}     # a hand-edited or torn file: treat as no baseline
+    _bb = _drops_baseline(ifn)
     _want = _DROPS_RESET.get(ifn)
-    if _want and _prev.get("nonce") != _want:
-        _base[ifn] = {"nonce": _want, "bad": sum(kinds), "pkts": pkts, "at": int(now), "kinds": list(kinds)}
+    if _want and _bb.get("nonce") != _want:
+        _bb = _drops_base()[ifn] = {"nonce": _want, "bad": sum(kinds), "pkts": pkts, "at": int(now), "kinds": list(kinds)}
         _drops_base_save()
         st["prev"] = None; st["hist"] = []
-    elif fk != _FAULT_ALL and _prev and "kinds" not in _prev:
+    elif fk != _FAULT_ALL and _bb and _bb["kinds"] is None:
         # A reset from before per-kind baselines kept only the total, which on an interface that leaves kinds out would
         # put them back into "since reset". Re-baseline it here, once, and say so honestly: `at` becomes now.
-        _base[ifn] = dict(_prev, bad=sum(kinds), pkts=pkts, at=int(now), kinds=list(kinds))
+        _bb = _drops_base()[ifn] = dict(_bb, bad=sum(kinds), pkts=pkts, at=int(now), kinds=list(kinds))
         _drops_base_save()
     if st["prev"] is not None:
         d = tuple(cur[i] - st["prev"][i] for i in range(5))
@@ -12351,8 +12367,6 @@ def _iface_drops_one(ifn, links, now):
     if not (tp + sum(part)):
         return None
     tb = sum(part[i - 2] for i in fi)
-    _bb = _drops_base().get(ifn)
-    _bb = _bb if isinstance(_bb, dict) else {}
     _fb = lambda r: sum(r[i] for i in fi)
     bad_at = [r[0] for r in h if _fb(r)]
     _rate = [_fb(r) * 100.0 / (r[1] + _fb(r)) for r in h if (r[1] + _fb(r)) >= IFACE_PEAK_MIN]
@@ -12361,8 +12375,7 @@ def _iface_drops_one(ifn, links, now):
     # Since the reset, counted the same way. A baseline with only the total is left only where every kind counts (see
     # the re-baseline above), and there the total is the same subtraction.
     _bk = _bb.get("kinds")
-    life_bad = sum(kinds[i - 2] for i in fi) - (sum(_bk[i - 2] for i in fi) if isinstance(_bk, list) and len(_bk) == 4
-                                                else _bb.get("bad", 0))
+    life_bad = sum(kinds[i - 2] for i in fi) - (sum(_bk[i - 2] for i in fi) if _bk else _bb.get("bad", 0))
     return {
         # ⚠️ tp + tb CAN BE 0: the guard above counts every kind, tb only the counted ones — an idle client interface whose
         # only movement was a send to an address no client owns reaches here with nothing to divide by.
@@ -12405,18 +12418,21 @@ def iface_drops(ifaces, links=()):
     for ifn in ifaces:
         # ⚠️ A DISPLAY FIGURE MUST NEVER STOP A SYNC. This runs inside build_snapshot: an exception here used to abort the
         # whole pass, so the node stopped reporting AND stopped pulling its peers. One interface that cannot be read is
-        # left out of the report; the error is said once per interface, not every 5 seconds.
+        # left out of the report; an error is said when it first appears or changes, not every 5 seconds.
         try:
             rec = _iface_drops_one(ifn, links, now)
         except Exception as e:
-            if ifn not in _IFDROP_ERR:
-                _IFDROP_ERR.add(ifn)
+            if _IFDROP_ERR.get(ifn) != repr(e):
+                _IFDROP_ERR[ifn] = repr(e)
                 print("iface_drops: %s skipped: %r" % (ifn, e), file=sys.stderr, flush=True)
+                traceback.print_exc()
             continue
+        _IFDROP_ERR.pop(ifn, None)                      # recovered: the next failure is news again
         if rec is not None:
             out[ifn] = rec
     for gone in [k for k in _IFDROP if k not in ifaces]:
         _IFDROP.pop(gone, None)
+        _IFDROP_ERR.pop(gone, None)
     return out
 
 

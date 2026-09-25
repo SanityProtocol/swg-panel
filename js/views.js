@@ -1045,8 +1045,9 @@ const DROP_KINDS = [
 // the browser on purpose: `pct` stays a number, so a panel older than this still renders what a newer node sends.
 const DROP_PCT_MIN = 200;
 export const dropsEnough = d => (d.window_pkts || 0) + (d.window_bad || 0) >= DROP_PCT_MIN;
+// Below the floor the COUNT shows even when it is 0: "0%" over a window that moved no packets looks like a clean measurement.
 export function DropsFigure({ d }) {
-  return d.window_bad > 0 && !dropsEnough(d)
+  return !dropsEnough(d)
     ? html`<span class="dp-num">${fmtCount(d.window_bad)} ${T("dropped")}</span>`
     : html`<span class="dp-num" style=${"color:" + lossColor(d.pct)}>${d.pct}%</span>`;
 }
@@ -1211,7 +1212,7 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
           instead of on the left among the labels. */""}
     <div class="dp-head">
       <span class="dp-sub">${T("{v1} of {v2} packets", { v1: fmtCount(d.window_bad), v2: fmtCount(d.window_pkts) })}</span>
-      ${dropsEnough(d) || !(d.window_bad > 0) ? html`<b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>` : null}
+      ${dropsEnough(d) ? html`<b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>` : null}
     </div>
     ${pair("out", T("Sending"))}
     ${pair("in", T("Receiving"))}
