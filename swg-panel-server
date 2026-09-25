@@ -3096,7 +3096,7 @@ def turn_client_dns(raw, fork, had):
     (docs/DNS-SETTINGS-PLAN.md §3.2). CLEARING a value that was set stores the fork's own default rather than
     nothing — wdttplus and csqtt keep their last saved value when no flag comes, so an empty field would leave
     the old address live on the server while the form said "default"."""
-    parts = raw if isinstance(raw, list) else str(raw or "").replace(" ", ",").split(",")
+    parts = raw if isinstance(raw, list) else re.split(r"[\s,]+", str(raw or ""))   # the SPA's and adopt's split
     parts = [str(p).strip() for p in parts if str(p).strip()]
     if not parts:
         if not had:
@@ -3110,6 +3110,21 @@ def turn_client_dns(raw, fork, had):
         if not turn_dns_usable(p):
             return None, perr("Client DNS must be IPv4 addresses — {v1} is not one a phone can use.", v1=p)
     return parts, None
+
+
+def apply_turn_client_dns(inst, body, fork):
+    """The one `dns` step both /api/wdtt/set and /api/csqtt/set take: only when the body names it. Returns an error
+    payload for a 400, or None."""
+    if "dns" not in body:
+        return None
+    val, err = turn_client_dns(body.get("dns"), fork, bool(inst.get("dns")))
+    if err:
+        return err if isinstance(err, dict) else {"error": err}
+    if val:
+        inst["dns"] = val
+    else:
+        inst.pop("dns", None)
+    return None
 
 
 def turn_dns_usable(p):
@@ -24820,12 +24835,9 @@ def api(method, path, qs, body, deps):
         if "max_passwords" in body:
             try: inst["max_passwords"] = int(body.get("max_passwords") or 0) or 200
             except (TypeError, ValueError): return 400, {"ok": False, "error": "max_passwords must be an integer", "code": "bad_request"}
-        if "dns" in body:
-            _dv, _de = turn_client_dns(body.get("dns"), inst.get("fork") or "amurcanov", bool(inst.get("dns")))
-            if _de:
-                return 400, {"ok": False, **(_de if isinstance(_de, dict) else {"error": _de}), "code": "bad_request"}
-            if _dv: inst["dns"] = _dv
-            else:   inst.pop("dns", None)
+        _de = apply_turn_client_dns(inst, body, inst.get("fork") or "amurcanov")
+        if _de:
+            return 400, {"ok": False, **_de, "code": "bad_request"}
         # WDTT binds TWO ports (DTLS listen + internal WG) — neither may collide with any other interface / proxy /
         # WDTT / mesh link on the node, and the two must differ from each other.
         _cur = (nodes[nid].get("wdtt") or {}).get(iface) or {}
@@ -25155,12 +25167,9 @@ def api(method, path, qs, body, deps):
         if "max_passwords" in body:
             try: inst["max_passwords"] = int(body.get("max_passwords") or 0) or 500
             except (TypeError, ValueError): return 400, {"ok": False, "error": "max_passwords must be an integer", "code": "bad_request"}
-        if "dns" in body:
-            _dv, _de = turn_client_dns(body.get("dns"), inst.get("fork") or "csqtt", bool(inst.get("dns")))
-            if _de:
-                return 400, {"ok": False, **(_de if isinstance(_de, dict) else {"error": _de}), "code": "bad_request"}
-            if _dv: inst["dns"] = _dv
-            else:   inst.pop("dns", None)
+        _de = apply_turn_client_dns(inst, body, inst.get("fork") or "csqtt")
+        if _de:
+            return 400, {"ok": False, **_de, "code": "bad_request"}
         # the DTLS listen port must not collide with any other interface / proxy / WDTT / csqtt / mesh on the node
         _cur = (nodes[nid].get("csqtt") or {}).get(iface) or {}
         _own = []

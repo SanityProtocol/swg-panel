@@ -1880,17 +1880,21 @@ function turnDnsErr(v) {
 }
 // The value as the server compares it: split, de-duplicated, joined — so retyping the same address twice is no change.
 const _dnsNorm = v => [...new Set(_dnsParts(Array.isArray(v) ? v.join(",") : v))].join(",");
-function useTurnDns(cfg) {
-  const cur = (cfg.dns || []).join(", ");
+const turnDnsDefault = fork => ((turnForkList().find(x => x.id === fork) || {}).client_dns || "").split(",").join(", ");
+function useTurnDns(cfg, fork) {
+  // A stored value EQUAL to the fork's default reads as empty: that is what clearing stores (wdttplus and csqtt keep
+  // their last value when no flag comes, so the panel sends the default explicitly), and it is what clients get.
+  const stored = (cfg.dns || []).join(", ");
+  const cur = _dnsNorm(stored) === _dnsNorm(turnDnsDefault(fork)) ? "" : stored;
   const [val, set] = useState(cur);
   const dirty = _dnsNorm(val) !== _dnsNorm(cur);
-  return { val, set, dirty, cur, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: [...new Set(_dnsParts(val))] } : {} };
+  return { val, set, dirty, cur: stored, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: [...new Set(_dnsParts(val))] } : {} };
 }
 function TurnDnsField({ node, fork, rep, dns, params }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
-  const dflt = ((turnForkList().find(x => x.id === fork) || {}).client_dns || "").split(",").join(", ");
+  const dflt = turnDnsDefault(fork);
   // A node too old to know the field doesn't echo `dns` in its report; a fork build that can't take it says so.
-  const oldNode = !!rep && ("params" in rep) && !("dns" in rep);
+  const oldNode = !!rep && ("active" in rep) && !("dns" in rep);   // a real report (every one carries `active`) without dns
   const unsupported = !!(rep && rep.dns_unsupported);
   // The operator's own `-dns` / `--dns` in Extra flags comes LAST on the command line (csqtt: an argument beats
   // CSQTT_DNS), so it wins — say so rather than show a field that does nothing.
@@ -1926,7 +1930,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   const forkLabel = (turnForkList().find(x => x.id === fork) || {}).label || fork;
   const [title, setTitle] = useState(shownTitle("w|" + node + "|" + iface, (cfg.title || "").trim()));   // optional cosmetic label; honour a just-saved optimistic title
   const [params, setParams] = useState((cfg.params || "").trim());   // extra ExecStart flags (advanced)
-  const dns = useTurnDns(cfg);
+  const dns = useTurnDns(cfg, fork);
   const [srvOpen, setSrvOpen] = useState(false);
   const awaiting = !!w.await_restore;
   const restoring = (nrec.wdtt_restoring || []).includes(iface);
@@ -2315,7 +2319,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const cfg = (nrec.csqtt_cfg || {})[iface] || {};
   const [title, setTitle] = useState(shownTitle("c|" + node + "|" + iface, (cfg.title || "").trim()));
   const [params, setParams] = useState((cfg.params || "").trim());
-  const dns = useTurnDns(cfg);
+  const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt");
   const [srvOpen, setSrvOpen] = useState(false);
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   const notup = c.active !== "active";

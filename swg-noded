@@ -15724,35 +15724,43 @@ def _turn_dns_usable(p):
     return (a.version == 4 and str(a) == p and not a.is_unspecified and not a.is_loopback
             and not a.is_link_local and not a.is_multicast and not a.is_reserved and not p.startswith("0."))
 
-_WDTT_TAKES_DNS = {}                               # (fork, installed version) -> the binary lists -dns in its -h
+_WDTT_TAKES_DNS = {}                               # (fork, installed version) -> True / False, once the binary ANSWERED
+_WDTT_DNS_RETRY = {}                               # (fork, installed version) -> earliest next probe after an inconclusive one
+_WDTT_DNS_BACKOFF = 300
 
 def _wdtt_takes_dns(fork):
-    """Does the INSTALLED build of this fork take `-dns`? Asked of the binary itself (`-h`, once per fork+version),
-    not assumed per fork: ildarmaga has no such flag, a rollback target may predate it, and Go's flag package EXITS
-    on an unknown flag — so a wrong guess turns a working server into a crash loop. No binary to ask (not fetched
-    yet) → False and not cached: the flag is left out, which is the fork's default, and the next pass asks again."""
+    """Does the INSTALLED build of this fork take `-dns`? True / False once its `-h` answered, None while unknown.
+
+    Asked of the binary, not assumed per fork: ildarmaga has no such flag, a rollback target may predate it, and
+    Go's flag package EXITS on an unknown flag — a wrong yes turns a working server into a crash loop. Only a real
+    usage listing is an answer (exit 0/2 and at least one flag parsed). run() turns a timeout or an exec failure
+    into non-empty text ("timeout", the errno), so that is NOT an answer: it is never cached, and the binary is
+    asked again after a backoff rather than on every 5 s pass. Callers treat None as "leave things as they are"."""
+    fork = _wdtt_fork({"fork": fork})               # the sanitised id: it names a path we exec
     key = (fork, _wdtt_installed_ver(fork))
     if key in _WDTT_TAKES_DNS:
         return _WDTT_TAKES_DNS[key]
+    if time.time() < _WDTT_DNS_RETRY.get(key, 0):
+        return None
     binp = _wdtt_bin_shared(fork)
     if not os.path.exists(binp):
-        return False
-    h = ""
-    with contextlib.suppress(Exception):
-        r = run([binp, "-h"], timeout=6)      # Go flag prints usage + exits 2; static binary, direct exec both models
-        h = (r.stderr or "") + (r.stdout or "")
-    if not h.strip():
-        return False                          # the probe itself failed — ask again next pass rather than cache a guess
-    _WDTT_TAKES_DNS[key] = any(f["name"] == "dns" for f in _turn_help_flags(h))
+        return None                                 # not fetched yet — nothing to ask, nothing to cache
+    r = run([binp, "-h"], timeout=6)                # Go flag prints usage + exits 2; static binary, direct exec both models
+    flags = _turn_help_flags((r.stderr or "") + (r.stdout or "")) if r.returncode in (0, 2) else []
+    if not flags:
+        _WDTT_DNS_RETRY[key] = time.time() + _WDTT_DNS_BACKOFF
+        return None
+    _WDTT_TAKES_DNS[key] = any(f["name"] == "dns" for f in flags)
     return _WDTT_TAKES_DNS[key]
 
-def _wdtt_params_eff(inst):
+def _wdtt_params_eff(inst, fork=None):
     """The SWG_PARAMS / argv tail as the server gets it: `-dns` FIRST, then the operator's own params. Go's flag
     package keeps the last value, so a `-dns` the operator typed into params still wins. Riding this value, not a
-    new ExecStart var, keeps the unit byte-identical — a new var would read as drift and restart every instance."""
+    new ExecStart var, keeps the unit byte-identical — a new var would read as drift and restart every instance.
+    `fork` = whose binary answers for `-dns` (default: the record's own); only a definite yes adds it."""
     params = (inst.get("params") or "").strip()
     dns = _turn_dns(inst)
-    if not dns or not _wdtt_takes_dns(_wdtt_fork(inst)):
+    if not dns or _wdtt_takes_dns(fork or _wdtt_fork(inst)) is not True:
         return params
     return ("-dns " + dns + " " + params).strip()
 
@@ -15767,11 +15775,17 @@ def _env_line(path, key):
     except OSError:
         return None
 
-def _wdtt_env_drifted(iface, inst):
-    """True when the SWG_PARAMS the server was started with is not what this record renders. Two ways that happens
-    with nothing in `_wdtt_params_changed` seeing it: a `dns` a node too old to render it stored (the value is equal
-    before and after the update), and a binary swap to a build that now takes `-dns`. Narrow on purpose — only the
-    one line, so an instance whose env differs in some unrelated, harmless way is not restarted on upgrade."""
+def _wdtt_env_drifted(iface, inst, prev):
+    """True when the SWG_PARAMS the server was started with is not what this record renders. The case nothing in
+    `_wdtt_params_changed` sees: a `dns` a node too old to render it had stored — the value is equal before and
+    after the update. Narrow on purpose — only the one line, so an instance whose env differs in some unrelated,
+    harmless way is not restarted on upgrade. Never on a fork mismatch (a fork change is not a reconfigure: see
+    _wdtt_unit_drifted), and never while the binary's answer on `-dns` is unknown — "not known" must not restart a
+    live server into a command line without its DNS and then back again."""
+    if not prev or _wdtt_fork(prev) != _wdtt_fork(inst):
+        return False
+    if _turn_dns(inst) and _wdtt_takes_dns(_wdtt_fork(inst)) is None:
+        return False
     have = _env_line(_wdtt_dir(iface) + "/wdtt.env", "SWG_PARAMS")
     return have is not None and have != _wdtt_params_eff(inst)
 
@@ -16140,7 +16154,17 @@ def _wdtt_update_binary(inst, ver, ifaces):
                 if e: err = i + ": " + e
         return err
     host_sh("chmod 755 " + shlex.quote(binshared))
+    # Re-render each wdtt.env for the NEW build before restarting onto it: SWG_PARAMS carries `-dns` only for a build
+    # that takes it, so a rollback to one that doesn't would otherwise restart with the flag and crash-loop (Go exits
+    # on an unknown flag) — and an upgrade to one that does would need a second restart to pick the DNS up.
+    insts = _wdtt_load()
     for i in (ifaces or [inst["iface"]]):
+        it = dict(insts.get(i) or {}); it["iface"] = i
+        # only from a complete record (the node-owned owner password included) — a partial one would write a
+        # blank password into the file the server is about to start from
+        if it.get("wg_addr") and it.get("listen") and it.get("password") and os.path.exists(_wdtt_dir(i) + "/wdtt.env"):
+            with contextlib.suppress(Exception):
+                with open(_wdtt_dir(i) + "/wdtt.env", "w") as f: f.write(_wdtt_env_text(it))
         host_sh("systemctl restart " + shlex.quote(_wdtt_svc(i)) + " >/dev/null 2>&1")
     return _wdtt_verify(_wdtt_svc(inst["iface"]))
 
@@ -16522,7 +16546,8 @@ def _wdtt_params_changed(prev, inst):
                 != str(inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or "")))
             # extra ExecStart flags + client DNS, as the server GETS them: a dns the build can't take renders the
             # same tail before and after, so it must not restart a live server for nothing
-            or _wdtt_params_eff(prev) != _wdtt_params_eff(inst)
+            # (both sides against the INSTALLED fork's binary — a fork change alone is not a reconfigure)
+            or _wdtt_params_eff(prev, _wdtt_fork(prev or inst)) != _wdtt_params_eff(inst, _wdtt_fork(prev or inst))
             or _wdtt_raw(prev) != _wdtt_raw(inst))   # RAW listener turned on/off or moved → same treatment
 
 def _wdtt_unit_drifted(iface, inst, prev):
@@ -17029,7 +17054,7 @@ def reconcile_wdtt(want, remove=None):
                     else:
                         res["changed"] += 1
                 elif (_drifted or _wdtt_params_changed(prev, inst)   # listen/wg-addr/wg-port/max changed → rewrite unit + restart (identity kept)
-                      or (not inst.get("stopped") and _wdtt_env_drifted(iface, inst))):   # a stopped one takes it at its next start
+                      or (not inst.get("stopped") and _wdtt_env_drifted(iface, inst, prev))):   # a stopped one takes it at its next start
                     # subnet MOVED → drop stale device-IP bindings first. Requires a previous subnet to have moved
                     # FROM: with no prior record (the first sync after an adopt, or a lost node record) every param
                     # reads as "changed", and resetting there threw away the device bindings — client IPs and the
@@ -17307,7 +17332,7 @@ def wdtt_snapshot():
                     # mirror needs it for the same T-18 reason. Its presence also tells the panel this node takes it;
                     # dns_unsupported = the installed build has no -dns (ildarmaga, an old rollback target), so the
                     # panel says so instead of showing a value that never reaches a client.
-                    "dns": _turn_dns(inst), "dns_unsupported": not _wdtt_takes_dns(inst.get("fork", "amurcanov")),
+                    "dns": _turn_dns(inst), "dns_unsupported": _wdtt_takes_dns(_wdtt_fork(inst)) is False,
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a foreign server at take-over, for the panel to adopt into the roster.
                     # Reported until it has them (reconcile_wdtt drops the record once they appear in `desired`),
