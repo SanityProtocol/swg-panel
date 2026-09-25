@@ -21,7 +21,8 @@ GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate 
   July commit `2dd5d37f`.
 - swg-panel build label: **`1.4.3-2`** — pin `fae121ef` plus this patch, which adds the RAW keyless-gap
   fixes below. Published as `wdtt-qwdtt-1.4.3-2` (2026-09-17), amd64 + arm64, and rig-proven on the published amd64
-  bytes.
+  bytes. The patch here is now **`1.4.3-3`**: `1.4.3-2` plus the two fixes under "One config on several devices"
+  below. It is rig-proven on a local build and **not yet published**, so the node still installs `1.4.3-2`.
 - Static (`CGO_ENABLED=0`). Upstream `go.mod` says Go 1.25; the published build used Go 1.27.1.
 - Layout differs from amurcanov's: the server lives under **`server/`** (`SRC_SUBDIR`), not under
   `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.
@@ -112,6 +113,65 @@ control, defect red / fix green):
   a disconnect closed looped forever. Measured on the rig: one revoked RAW session (4 workers) held the server at
   **~5 cores** (4994 ticks/10 s, still there 30 s later); with `io.EOF`/`net.ErrClosed` treated as terminal, **0–1
   ticks**. Upstream's own admin/bot deletes reach the same close; the WG (DTLS) path never spun.
+
+### One config on several devices (build `1.4.3-3`, 2026-09-24)
+
+Under `-fixed-config` a generated password is one device, `pw:<password>`, whatever device ID the client sends. The
+config worker's `GETCONF` and both RAW paths already honoured that. Two places did not:
+
+- ⚠️ **WG `AUTH:` workers were refused on every device.**
+  - In `-mode vpn`, only one worker fetches the config. Every other worker opens with `AUTH:<device>|<password>`.
+  - The `AUTH:` branch (`connections.go`) still required the device ID to be *bound* to the password. Under
+    `-fixed-config` nothing ever binds, so each of those workers got `DENIED:device_mismatch` and was closed.
+  - The client never reads that reply (`go_client` `SendAuth`) and keeps redialling. The tunnel ran on its config
+    worker alone.
+  - The branch now carries the exemption the RAW data path already had: `bound := isMainPass || (fixedConfig &&
+    isGenPass)`. `authorizeDeviceOwnerLocked` still runs.
+  - Those workers are no longer refused, so they all reach the branch's `saveDB()`, which writes the whole store
+    under `dbMutex`. For a fixed-config generated password the AUTH normally has nothing to save, so it skips the
+    write. The exception is when `authorizeDeviceOwnerLocked` may stamp an owner, which only happens on a row keyed
+    by the client's own ID that has no owner yet (from before `-fixed-config`). That is decided before the call and
+    saved at once.
+- ⚠️ **In RAW mode, a second device inherited the first one's dead workers.**
+  - One password is one RAW address, and `pickDownlinkConn` round-robins that address's downlink across every
+    registered worker.
+  - A device that vanished without `DISCONNECT_RAW` left its workers registered until each idled out (`idleTimeout`,
+    90 s). The next device on the same config lost the share of downlink that was still striped onto them.
+  - Each downlink worker now records the device ID its client sent.
+  - When a device **starts a session** (its `GETCONF_RAW` worker registers), `register` takes the workers of every
+    *other* device on that address out of the rotation, under the router lock, and closes their connections. Those
+    devices are now *displaced*. Each closed worker's own `unregister` finds nothing to remove and stops it as before.
+  - A displaced device's `AUTH` worker is refused. It can't rejoin the rotation, where it would split the new
+    session's downlink, and it can't evict, which would bounce the address between two phones left on. It takes the
+    address back only by starting a session of its own.
+  - Any other `AUTH` worker joins as before: the same device reconnecting, or a new device whose `AUTH` workers
+    arrive ahead of its own `GETCONF_RAW`. The rig client always sent `GETCONF_RAW` first, about 100 ms ahead, but
+    across two TURN paths the order isn't guaranteed.
+  - It all resets when the address's last worker leaves. So a displaced device whose rival really vanished gets the
+    address back within `idleTimeout`, even through `AUTH` alone.
+  - A client that sends an empty device ID counts as one more ID, not as an exemption.
+  - A takeover also restarts the rotation's chunk timer.
+  - Test: `TestRawAddressFollowsTheLatestSession` (`swgpanel_raw_test.go`).
+  - ⚠️ The displaced device's app keeps showing "connected" but carries nothing until the user reconnects it. The
+    server's close reaches the client as silence on the direct path, and the rig's evicted client never redialled.
+  - The same device reconnecting keeps its workers, as before. Using both devices at once means each replaces the
+    other, like one WireGuard key on two phones.
+
+Rig (`.campaign/rigs/two-device-qwdtt.sh`: two device namespaces ↔ local pion TURN ↔ server with the node's argv and
+a RAW listener, real unpatched qWDTT client, 4 workers). The control is `1.4.3-2`.
+
+| test | `1.4.3-2` | `1.4.3-3` |
+|---|---|---|
+| W1 WG, one device: workers up (client stats) | **1/4** (the other 3 redial: `попытка 15` after 10 min) | 4/4, 0 worker errors |
+| W2 WG, A vanishes, device B, same password | same address, 50/50 | same address, 50/50 |
+| W3 WG, A back while B is live | A 50/50, B 0/10 | A 50/50, B 0/10 |
+| R2 RAW, A vanishes, device B: replies in the first 10 s | **26/50** | 50/50 (server: `новое устройство, закрыто 4 воркер(ов) прежнего`) |
+| R3 RAW, A back while B is live | **A 18/50, B still 4/10** | A 50/50, B 0/10 |
+| S RAW, both devices kept on for 60 s | — | no storm: 0 re-evictions, 6 ticks / 60 s; the device that connected last keeps working (A 25/25), the other stays replaced (B 0/25) |
+| server CPU after each switch | ≤ 1 tick / 5 s | ≤ 1 tick / 5 s |
+
+WG two-device use already worked on `1.4.3-2`: the WireGuard peer simply roams to the newer device. The host firewall
+and links were unchanged by either run.
 
 ### `desired.json` schema (panel writes; the server reads)
 

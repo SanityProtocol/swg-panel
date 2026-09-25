@@ -1,5 +1,5 @@
 diff --git a/connections.go b/connections.go
-index 393a64c..25bca26 100644
+index 393a64c..bc4b9d9 100644
 --- a/connections.go
 +++ b/connections.go
 @@ -1,6 +1,7 @@
@@ -58,6 +58,44 @@ index 393a64c..25bca26 100644
  				} else {
  					dev = nil
  				}
+@@ -257,17 +264,34 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
+ 		isMainPass := password != "" && password == db.MainPassword
+ 		entry, isGenPass := db.Passwords[password]
+ 		valid := isMainPass || (isGenPass && !isPasswordExpired(entry) && !entry.IsDeactivated)
+-		bound := isMainPass
+-		if valid && isGenPass {
++		// swg-panel: under -fixed-config a generated password is one config for any device, and its entry is left
++		// unbound on purpose — so the upstream binding test can never pass here. The client sends AUTH on every
++		// worker except the one that fetched the config and never reads the reply (go_client SendAuth), so each of
++		// those workers was closed without a sign: the tunnel ran on its config worker alone. Same exemption as the
++		// RAW data path (raw.go) and the GETCONF branch above. authorizeDeviceOwnerLocked still runs.
++		bound := isMainPass || (fixedConfig && isGenPass)
++		if valid && isGenPass && !fixedConfig {
+ 			bound = passwordEntryHasDevice(entry, deviceID)
+ 		}
++		// A row keyed by this client's own ID with no owner yet is the only thing authorizeDeviceOwnerLocked can stamp.
++		mayStamp := false
++		if dev := db.Devices[deviceID]; dev != nil && dev.OwnerID == "" {
++			mayStamp = true
++		}
+ 		ownerAllowed := valid && authorizeDeviceOwnerLocked(deviceID, password, isMainPass, entry)
+ 		if !valid || !bound || !ownerAllowed {
+ 			dbMutex.Unlock()
+ 			clientConn.Write([]byte("DENIED:device_mismatch"))
+ 			return
+ 		}
+-		saveDB()
++		// swg-panel: a fixed-config generated password's AUTH normally has nothing to save — its device is keyed
++		// "pw:<password>", not by this client's device ID. It saves when authorizeDeviceOwnerLocked may have stamped
++		// an owner (mayStamp: a row keyed by the client's own ID, from before -fixed-config). Every worker of every
++		// connect and redial now reaches this point (it used to be refused above), and each write is the whole store
++		// under dbMutex.
++		if !(fixedConfig && isGenPass) || mayStamp {
++			saveDB()
++		}
+ 		dbMutex.Unlock()
+ 
+ 		connDeviceID = deviceID
 diff --git a/core.go b/core.go
 index b745846..f4ab175 100644
 --- a/core.go
@@ -344,10 +382,102 @@ index 8d4024d..bef48ca 100644
  	out, _ := runCmd("bash", "-c", "sysctl net.ipv4.tcp_congestion_control")
  	if strings.Contains(out, "bbr") {
 diff --git a/raw.go b/raw.go
-index d9e0554..ecb3426 100644
+index d9e0554..d5dd5fa 100644
 --- a/raw.go
 +++ b/raw.go
-@@ -354,6 +354,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -68,14 +68,16 @@ const downlinkWorkerBuf = 256
+ type downlinkWorker struct {
+ 	conn     net.Conn
+ 	deviceID string
++	client   string // swg-panel: the device ID the client itself sent (deviceID is the -fixed-config key)
+ 	sendCh   chan []byte
+ 	done     chan struct{}
+ }
+ 
+-func newDownlinkWorker(conn net.Conn, deviceID string) *downlinkWorker {
++func newDownlinkWorker(conn net.Conn, deviceID, client string) *downlinkWorker {
+ 	w := &downlinkWorker{
+ 		conn:     conn,
+ 		deviceID: deviceID,
++		client:   client,
+ 		sendCh:   make(chan []byte, downlinkWorkerBuf),
+ 		done:     make(chan struct{}),
+ 	}
+@@ -115,6 +117,7 @@ func (w *downlinkWorker) stop() {
+ 
+ type rawClientSessions struct {
+ 	workers      []*downlinkWorker
++	displaced    map[string]bool // swg-panel: devices (client IDs) whose session another device's took over (-fixed-config)
+ 	rrIndex      int
+ 	rrCount      int
+ 	chunkStartTs int64 // unix millis начала текущего chunk'а — для downlinkMaxDwellMS
+@@ -264,16 +267,63 @@ func (r *rawRouter) pickDownlinkConn(dst string, pktSize int) *downlinkWorker {
+ 	return w
+ }
+ 
+-func (r *rawRouter) register(ip string, conn net.Conn, deviceID string) *downlinkWorker {
+-	w := newDownlinkWorker(conn, deviceID)
++func (r *rawRouter) register(ip string, conn net.Conn, deviceID, client string, takeover bool) *downlinkWorker {
++	var replaced []net.Conn
+ 	r.mu.Lock()
+ 	cs := r.sessions[ip]
+ 	if cs == nil {
+ 		cs = &rawClientSessions{}
+ 		r.sessions[ip] = cs
+ 	}
++	// swg-panel: under -fixed-config one password is one address for ANY device, so a second phone using the same
++	// config lands on the first one's address. Only the device whose session holds it carries its downlink:
++	//   - A device STARTING a session (takeover: its GETCONF_RAW worker) takes the address. Every other device's
++	//     workers leave the rotation here, under the lock, and their connections are closed; each one's read loop
++	//     then ends and its unregister finds nothing to remove and stops the worker as always. Otherwise the
++	//     round-robin in pickDownlinkConn would keep striping downlink onto a device that is gone until each of its
++	//     workers idles out (idleTimeout, 90 s). Those devices are now displaced.
++	//   - A displaced device's AUTH worker is refused (nil): it neither rejoins the rotation, which would split the
++	//     new session's downlink with it, nor evicts, which would bounce the address between two phones left on for
++	//     as long as both stay on. It takes the address back only by starting a session of its own.
++	//   - Any other AUTH worker joins as before — the same device reconnecting, or a new device whose AUTH workers
++	//     arrive ahead of its own GETCONF_RAW worker (that one then takes over).
++	// It all ends with the address's last worker (unregister drops the entry), so a displaced device whose rival
++	// really vanished gets the address back within idleTimeout, even through AUTH alone. A client that sends an empty
++	// device ID is one more ID here, not an exemption.
++	if fixedConfig {
++		if takeover {
++			kept := cs.workers[:0]
++			for _, existing := range cs.workers {
++				if existing.client != client {
++					replaced = append(replaced, existing.conn)
++					if cs.displaced == nil {
++						cs.displaced = make(map[string]bool)
++					}
++					cs.displaced[existing.client] = true
++					continue
++				}
++				kept = append(kept, existing)
++			}
++			if len(replaced) > 0 {
++				clear(cs.workers[len(kept):])
++				cs.workers = kept
++				cs.rrIndex, cs.rrCount, cs.chunkStartTs = 0, 0, 0
++			}
++			delete(cs.displaced, client)
++		} else if cs.displaced[client] {
++			r.mu.Unlock()
++			return nil
++		}
++	}
++	w := newDownlinkWorker(conn, deviceID, client)
+ 	cs.workers = append(cs.workers, w)
+ 	r.mu.Unlock()
++	for _, c := range replaced {
++		_ = c.Close()
++	}
++	if len(replaced) > 0 {
++		log.Printf("[RAW] %s: новое устройство, закрыто %d воркер(ов) прежнего", ip, len(replaced))
++	}
+ 	return w
+ }
+ 
+@@ -354,6 +404,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  	}
  
  	var assignedIP string
@@ -355,7 +485,7 @@ index d9e0554..ecb3426 100644
  
  	if isGetConf {
  		// Только этот воркер проверяет пароль и (при необходимости) создаёт
-@@ -374,7 +375,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -374,7 +425,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
  		}
@@ -364,7 +494,7 @@ index d9e0554..ecb3426 100644
  			dbMutex.Unlock()
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
-@@ -392,11 +393,16 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -392,11 +443,16 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			saveDB()
  		}
  
@@ -384,7 +514,7 @@ index d9e0554..ecb3426 100644
  			saveDB()
  		} else {
  			changed := false
-@@ -431,8 +437,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -431,8 +487,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  		isMainPass := password != "" && password == db.MainPassword
  		entry, isGenPass := db.Passwords[password]
  		valid := isMainPass || (isGenPass && !isPasswordExpired(entry) && !entry.IsDeactivated)
@@ -401,7 +531,7 @@ index d9e0554..ecb3426 100644
  			bound = entry.DeviceID == deviceID
  			if !bound {
  				for _, id := range entry.DeviceIDs {
-@@ -448,7 +460,11 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -448,7 +510,11 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
  		}
@@ -414,12 +544,18 @@ index d9e0554..ecb3426 100644
  		if exists && dev.OwnerID == "" {
  			setDeviceOwner(dev, password)
  		}
-@@ -469,19 +485,19 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -469,19 +535,25 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  	untrackCredential := trackCredentialConnection(password, deviceID, clientConn)
  	defer untrackCredential()
  
 -	dlWorker := router.register(assignedIP, clientConn, deviceID)
-+	dlWorker := router.register(assignedIP, clientConn, dkey)
++	dlWorker := router.register(assignedIP, clientConn, dkey, deviceID, isGetConf)
++	if dlWorker == nil {
++		// swg-panel: this device was displaced from the address by another device's session (see register). The
++		// client gets no reply on an AUTH worker either way, and closing the connection is how every refused raw
++		// worker ends.
++		return
++	}
  	defer router.unregister(assignedIP, dlWorker)
  	log.Printf("[RAW] Сессия %s зарегистрирована (ip=%s, getConf=%v)", deviceID, assignedIP, isGetConf)
  	defer log.Printf("[RAW] Сессия %s (ip=%s) завершена", deviceID, assignedIP)
@@ -439,7 +575,7 @@ index d9e0554..ecb3426 100644
  		}
  		activeDevicesMu.Unlock()
  	}()
-@@ -536,7 +552,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -536,7 +608,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			continue
  		}
  		atomic.AddInt64(&totalBytesFromClient, int64(nn))
@@ -887,4 +1023,95 @@ index 0000000..7034055
 +		wgIfaceName, wgServerCIDR, desiredFile, noNat, fixedConfig, api)
 +	log.Printf("   raw: %s | subnet: %s", rawIfaceName, rawServerCIDR)
 +	_ = fmt.Sprintf
++}
+diff --git a/swgpanel_raw_test.go b/swgpanel_raw_test.go
+new file mode 100644
+index 0000000..661b1e3
+--- /dev/null
++++ b/swgpanel_raw_test.go
+@@ -0,0 +1,85 @@
++package main
++
++import (
++	"net"
++	"testing"
++)
++
++// swg-panel: under -fixed-config two devices share one RAW address. A device starting a session takes it over; a
++// device it displaced cannot rejoin through AUTH redials; a new device's early AUTH still joins; it all resets when the
++// address empties. See rawRouter.register.
++func TestRawAddressFollowsTheLatestSession(t *testing.T) {
++	old := fixedConfig
++	fixedConfig = true
++	defer func() { fixedConfig = old }()
++
++	r := &rawRouter{sessions: make(map[string]*rawClientSessions)}
++	const ip, key = "10.70.0.2", "pw:x"
++	conn := func() net.Conn {
++		a, b := net.Pipe()
++		t.Cleanup(func() { _ = b.Close() })
++		return a
++	}
++	clients := func() map[string]int {
++		out := map[string]int{}
++		if cs := r.sessions[ip]; cs != nil {
++			for _, w := range cs.workers {
++				out[w.client]++
++			}
++		}
++		return out
++	}
++	var live []*downlinkWorker
++	reg := func(client string, takeover bool) *downlinkWorker {
++		w := r.register(ip, conn(), key, client, takeover)
++		if w != nil {
++			live = append(live, w)
++		}
++		return w
++	}
++
++	reg("A", true)
++	reg("A", false)
++	if got := clients(); got["A"] != 2 {
++		t.Fatalf("device A's session: %v", got)
++	}
++	reg("B", true) // B starts a session: A is displaced
++	if got := clients(); got["A"] != 0 || got["B"] != 1 {
++		t.Fatalf("after B took over: %v", got)
++	}
++	if reg("A", false) != nil {
++		t.Fatal("a displaced device's AUTH worker must be refused")
++	}
++	if reg("C", false) == nil {
++		t.Fatal("a new device's AUTH arriving before its GETCONF_RAW must be accepted")
++	}
++	if reg("B", false) == nil {
++		t.Fatal("the session holder's own AUTH must be accepted")
++	}
++	reg("A", true) // A starts a session of its own: takes the address back
++	if got := clients(); got["A"] != 1 || got["B"] != 0 || got["C"] != 0 {
++		t.Fatalf("after A took back over: %v", got)
++	}
++	if reg("B", false) != nil {
++		t.Fatal("B is displaced now")
++	}
++	reg("", true) // an empty device ID is an ID like any other: it takes over too
++	if got := clients(); got[""] != 1 || got["A"] != 0 {
++		t.Fatalf("after the empty-ID device took over: %v", got)
++	}
++	if reg("A", false) != nil {
++		t.Fatal("A is displaced by the empty-ID device")
++	}
++	for _, w := range live {
++		r.unregister(ip, w)
++	}
++	if _, ok := r.sessions[ip]; ok {
++		t.Fatal("the address must be forgotten when its last worker leaves")
++	}
++	if reg("B", false) == nil {
++		t.Fatal("once the address emptied, nobody is displaced any more")
++	}
++	for _, w := range live[len(live)-1:] {
++		r.unregister(ip, w)
++	}
 +}
