@@ -74,7 +74,7 @@ build with the refusal switched off.
 | `WDTT_UPDATE1`, `WDTT_HTTPS_POST1`, `WDTT_UPDATE_APK1` | the node resolves and fetches (20 DNS queries from the node in 15 s) | `ERR отключено на этом сервере (-no-panel)`, 0 DNS, 0 HTTPS |
 | `WDTT_DEPLOY1` `list` (owner password in the payload) | **OK**: the admin listing is returned | `ERR отключено на этом сервере (-no-panel)` |
 
-## Validation: one config on several devices (rig, 2026-09-24)
+## Validation: one config on several devices (rig on the published 18-2 asset, 2026-09-25)
 
 `.campaign/rigs/two-device-wdttplus.sh`: two device namespaces ↔ local pion TURN ↔ server with the node's argv, real
 unpatched qWDTT client in WG mode. The control is 18.
@@ -83,5 +83,12 @@ unpatched qWDTT client in WG mode. The control is 18.
 |---|---|---|
 | P1 device A, then (A vanished) device B, then A again, same password | same address, 30/30 each | same address, 30/30 each |
 | P2 the server's own store, with the password and its row moved to `phone-old` at .7: device A / device B | **refused on both** (`пароль привязан к другому устройству`) | both connect at .7 (the old row, keys kept), 30/30; binding moved to `pw:<password>` |
+| keyless T1–T5, T7: reach, spoof, revoke cut + reconnect refused, stable address, unrelated change, owner device kept | pass | pass: 3/3 reach, spoof 0, revoke 0/3 + refused, same address, owner 3/3 |
+
+⚠️ **The address is kept only while the old row still exists.** That covers a store adopted from a stock server, or
+one written without `-desired`. A node that has already run 18 with `-desired` is different: 18's own reconcile reaped
+every row keyed by a client's device ID on its first pass, because such a key names no password. The binding was left
+pointing at a row that no longer exists. 18-2 clears that binding, the user is no longer refused, and the next connect
+gets a fresh address. Nothing can bring back a row that is already gone.
 
 The host firewall and links were unchanged by either run.
