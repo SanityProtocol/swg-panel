@@ -1024,13 +1024,16 @@ WDTT_BUILDS = {                               # fork id -> [(author_version, our
     # "1.2.4-3" is build 3: build 2's reap also deleted the node-owned owner password's device on every reconcile.
     # "1.5.0-3" is ildarmaga labelled by the source it really is — ef697994, the v1.5.0 tree, the newest ildarmaga has
     # published; the "1.5.40" builds were made from that same tree (forks/wdtt/ildarmaga/README.md).
+    # "18-2" / qwdtt "1.4.3-3" (and csqtt "2.1.9-3" below): one config used on several devices — a stale device binding
+    # no longer refuses every device (wdttplus), WG AUTH workers are no longer refused and a new device's RAW session
+    # takes the address (qwdtt). The previous build of each stays as its rollback target.
     "amurcanov": [("1.2.4-3",  "wdtt-amurcanov-1.2.4-3"),  ("1.2.4-2",  "wdtt-amurcanov-1.2.4-2")],
     "ildarmaga": [("1.5.0-3",  "wdtt-ildarmaga-1.5.0-3"),  ("1.5.40-2", "wdtt-ildarmaga-1.5.40-2"), ("1.5.40",   "wdtt-ildarmaga-1.5.40")],
-    "wdttplus":  [("18",       "wdtt-wdttplus-18"),        ("15",       "wdtt-wdttplus-15")],
+    "wdttplus":  [("18-2",     "wdtt-wdttplus-18-2"),      ("18",       "wdtt-wdttplus-18"),        ("15",       "wdtt-wdttplus-15")],
     "xxcipherx": [("2.0.0.72", "wdtt-xxcipherx-2.0.0.72"), ("2.0.0.70", "wdtt-xxcipherx-2.0.0.70")],
     # qWDTT: built from SpaceNeuroX @854a72fe ("Release 1.4.1"), now a published release like the rest — a node
     # on a fresh install has no panel mirror to pull from, so mirror-only meant the fork simply did not work there.
-    "qwdtt":     [("1.4.3-2",  "wdtt-qwdtt-1.4.3-2"),      ("1.4.3",    "wdtt-qwdtt-1.4.3"),        ("1.4.1",    "wdtt-qwdtt-1.4.1")],
+    "qwdtt":     [("1.4.3-3",  "wdtt-qwdtt-1.4.3-3"),      ("1.4.3-2",  "wdtt-qwdtt-1.4.3-2"),      ("1.4.3",    "wdtt-qwdtt-1.4.3"),        ("1.4.1",    "wdtt-qwdtt-1.4.1")],
 }
 _WDTT_OWNER_FORK = {                          # catalog owner -> fork id (for owner-keyed callers like _turn_asset_url)
     "amurcanov/proxy-turn-vk-android": "amurcanov",
@@ -1059,7 +1062,7 @@ def _wdtt_current_version(fork):
 #   ready to ship: forks/csqtt/ is pinned to de7afc23 (v2.1.5) and the binaries are built + version-checked.
 # The 2.1.5 work elsewhere STAYS and is deliberately not reverted: swg-noded reads either store shape
 # (passwords.json <=2.0.1, SQLite csqtt.db from 2.1.5), so a node adopting a hand-placed 2.1.5 already works.
-CSQTT_BUILDS = [("2.1.9-2", "csqtt-2.1.9-2"), ("2.1.9", "csqtt-2.1.9"), ("2.0.1", "csqtt-2.0.1")]
+CSQTT_BUILDS = [("2.1.9-3", "csqtt-2.1.9-3"), ("2.1.9-2", "csqtt-2.1.9-2"), ("2.1.9", "csqtt-2.1.9"), ("2.0.1", "csqtt-2.0.1")]
 def _csqtt_current_version():
     return CSQTT_BUILDS[0][0] if CSQTT_BUILDS else ""
 CSQTT_MIRROR_OWNER = "amurcanov/csqtt"        # the mirror KEY the node asks under — NOT where the binary lives
@@ -5131,13 +5134,16 @@ NET_SHARE_MAX = 500        # grantees (users + groups) on one provider — bound
 KEYLESS_SHARE_BUILDS = {
     "amurcanov": {"wg": ("1.2.4-3", "1.2.4-2")},  # rig 2026-09-14: its source as control — reach, spoof dropped, revocation cut, stable address;
                                                   # 1.2.4-3 on the published bytes (7c73acd9, 2026-09-17), owner device kept too
-    "qwdtt":     {"wg": ("1.4.3-2", "1.4.3"),     # §16.1 K0 + .campaign/rigs/networks-p1-netns.sh --p5k; 1.4.3-2 WG rig on the published bytes (fe01bc1b)
-                  "raw": ("1.4.3-2",)},           # RAW rig + T6 hijack probe on the published bytes, 1.4.3 as the control that fails T6
-    "wdttplus":  {"wg": ("18", "15")},            # rig: 15 as the 2026-09-14 control; 18 on the PUBLISHED asset (4b766a2d, 2026-09-16) — reach, spoof 0 at the
-                                                  # server, revocation cut + reconnect refused, stable address, owner device kept (kernel backend)
+    "qwdtt":     {"wg": ("1.4.3-3", "1.4.3-2", "1.4.3"),  # §16.1 K0 + .campaign/rigs/networks-p1-netns.sh --p5k; 1.4.3-2 WG rig on the published bytes
+                                                            # (fe01bc1b); 1.4.3-3 WG + RAW rigs on the published bytes (6913a4e8, 2026-09-25)
+                  "raw": ("1.4.3-3", "1.4.3-2")},  # RAW rig + T6 hijack probe on the published bytes, 1.4.3 as the control that fails T6
+    "wdttplus":  {"wg": ("18-2", "18", "15")},    # rig: 15 as the 2026-09-14 control; 18 on the PUBLISHED asset (4b766a2d, 2026-09-16) — reach, spoof 0 at the
+                                                  # server, revocation cut + reconnect refused, stable address, owner device kept (kernel backend);
+                                                  # 18-2 the same on its published asset (dffd34f7, 2026-09-25)
     "xxcipherx": {"wg": ("2.0.0.72",)},           # rig on the published asset (714dbd94 — the same bytes the 2026-09-14 rig proved); 2.0.0.70 fails T5
     "ildarmaga": {"wg": ("1.5.0-3",)},            # WG rig on the published bytes (75a51c6f); RAW is never listed (see above)
-    "csqtt":     {"raw": ("2.1.9-2",)},           # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused; 2.1.9 fails both
+    "csqtt":     {"raw": ("2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused; 2.1.9 fails both;
+                                                  # 2.1.9-3 the same on its published bytes (eb86d752, 2026-09-25) — a moved password keeps its address
 }
 
 

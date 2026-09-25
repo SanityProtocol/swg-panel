@@ -10,7 +10,7 @@ tunnel are off under our flags.
 | | |
 |---|---|
 | upstream commit | `b3935b947acd81d95107869c8f33507f3f5c1309` (tag `v18`) |
-| our build label | **18** published; the patch here is **18-2** (18 + the stale-binding fix below), rig-proven on a local build and **not yet published** |
+| our build label | **18-2**: 18 plus the stale-binding fix below. Published as `wdtt-wdttplus-18-2` (2026-09-25; amd64 `dffd34f7…`, arm64 `b51ceb51…`) and rig-proven on the published amd64 bytes. `wdtt-wdttplus-18` stays as its rollback target. |
 | note | upstream's `wdttServerVersion` const at this tag still reads `"17"`, so `--version` prints `17` |
 
 Tags move; the commit is the pin. The previous pin was v15 `3038b8dd`. The patch was regenerated against v18 with

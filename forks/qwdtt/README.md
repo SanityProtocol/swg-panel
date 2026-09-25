@@ -19,10 +19,11 @@ GOARCH=arm64 ./build.sh      # cross-build (amd64/arm64 only — same arch gate 
 - Pinned upstream: **`fae121ef`** (`v1.4.3`, 2026-08-31).
   ⚠️ **Pin a commit, never a tag** — `v1.3.8`/`v1.3.9`/`v1.4.0`/`v1.4.0-beta` all still point at the
   July commit `2dd5d37f`.
-- swg-panel build label: **`1.4.3-2`** — pin `fae121ef` plus this patch, which adds the RAW keyless-gap
-  fixes below. Published as `wdtt-qwdtt-1.4.3-2` (2026-09-17), amd64 + arm64, and rig-proven on the published amd64
-  bytes. The patch here is now **`1.4.3-3`**: `1.4.3-2` plus the two fixes under "One config on several devices"
-  below. It is rig-proven on a local build and **not yet published**, so the node still installs `1.4.3-2`.
+- swg-panel build label: **`1.4.3-3`**. That is pin `fae121ef` plus this patch, which carries the RAW keyless-gap
+  fixes (build 2) and the two fixes under "One config on several devices" (build 3), both below.
+  - Published as `wdtt-qwdtt-1.4.3-3` (2026-09-25), amd64 + arm64: amd64 `6913a4e8…`, arm64 `5d4f2751…`.
+  - Rig-proven on the published amd64 bytes. The arm64 build comes from the same recipe but was not run.
+  - `wdtt-qwdtt-1.4.3-2` (2026-09-17) stays as its rollback target.
 - Static (`CGO_ENABLED=0`). Upstream `go.mod` says Go 1.25; the published build used Go 1.27.1.
 - Layout differs from amurcanov's: the server lives under **`server/`** (`SRC_SUBDIR`), not under
   `app/src/main/assets/linux-server`. The amurcanov patch does not apply here.

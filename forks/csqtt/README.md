@@ -6,10 +6,12 @@ swg-panel the same way the `wdtt/` forks are, plus a reproducible build.
 
 - **`csqtt-swgpanel.patch`** — pinned to upstream `446293aa` (**v2.1.9**, 2026-09-02). Applies with
   `git apply` from the repo root of a fresh csqtt clone. Verified apply-clean + build-clean on amd64.
-  Our build label is **2.1.9-2** (source 2.1.9 + this patch, including the 2026-09-14 keyless source-integrity
-  fixes below), published as `csqtt-2.1.9-2` (2026-09-17), amd64 + arm64, and rig-proven on the published amd64 bytes.
-  The patch here is now **2.1.9-3**: 2.1.9-2 plus one config on several devices (below). It is rig-proven on a local
-  build and **not yet published**, so the node still installs 2.1.9-2.
+  Our build label is **2.1.9-3**: source 2.1.9 plus this patch, which carries the 2026-09-14 keyless
+  source-integrity fixes (build 2) and one config on several devices (build 3), both below.
+  - Published as `csqtt-2.1.9-3` (2026-09-25), amd64 + arm64: amd64 `eb86d752…`, arm64 `0ebf0ac4…`.
+  - Built with cargo-zigbuild, Rust 1.97.1 and zig 0.15.2.
+  - Rig-proven on the published amd64 bytes. The arm64 build comes from the same recipe but was not run.
+  - `csqtt-2.1.9-2` (2026-09-17) stays as its rollback target.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
   Needs rustup 1.97.1 + zig + cargo-zigbuild.
 
@@ -38,7 +40,7 @@ which identity sent it. Stock csqtt did not enforce this. This patch adds:
   **+4 → +0** at the server TUN; a second password presenting the first's device id was handed its address → now
   refused. Reach, revocation cut and a stable address hold on both. The `InjectTun` path and shards > 1 are not rigged.
 
-## One config on several devices (build 2.1.9-3, 2026-09-24, not yet published)
+## One config on several devices (build 2.1.9-3, published 2026-09-25)
 
 Stock csqtt binds a password to the first device ID that connects and refuses every other device with
 `DENIED:device_mismatch`. The client shows this as `пароль привязан к другому устройству`. So a user who moved their
