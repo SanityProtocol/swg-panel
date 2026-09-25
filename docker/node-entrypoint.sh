@@ -51,6 +51,15 @@ fi
 if [ -f /var/lib/swg-noded/panel-verify ]; then
   _pv="$(head -n1 /var/lib/swg-noded/panel-verify 2>/dev/null | tr -d '[:space:]')"
   [ -n "$_pv" ] && TLS_VERIFY="$_pv"
+  # A LEARNED CA posture — verify=yes and NO learned pin beside it — replaces a configured pin. swg-noded writes
+  # exactly that when a pin stops matching a certificate the panel now has from a public CA (an expired Let's
+  # Encrypt certificate pinned as if self-signed, then renewed), and on a transfer to a CA-verified panel.
+  # Without this the configured pin came back on every start and the node went dark until it healed again.
+  # Still strict: CA verification fails closed on anything a public CA does not vouch for.
+  if [ "$_pv" = yes ] && [ ! -f /var/lib/swg-noded/panel-fp ] && [ -n "${TLS_FINGERPRINT:-}" ]; then
+    log "panel TLS: using the LEARNED CA verification, NOT the configured pin $(printf %.16s "$TLS_FINGERPRINT")… (it stopped matching the panel's certificate)"
+    TLS_FINGERPRINT=""
+  fi
 fi
 if [ -f /var/lib/swg-noded/panel-fp ]; then
   _pf="$(head -n1 /var/lib/swg-noded/panel-fp 2>/dev/null | tr -d '[:space:]')"

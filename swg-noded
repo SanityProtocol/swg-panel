@@ -14079,6 +14079,46 @@ def apply_panel_hints(panel, node_cfg, reply):
     return None
 
 
+# ⚠️ A PIN THAT STOPPED MATCHING A CERTIFICATE THE PANEL NOW HAS FROM A PUBLIC CA. A pin is trust-on-first-use
+# for a SELF-SIGNED panel; the installers set one whenever strict verification failed while an unverified fetch
+# worked — and an EXPIRED Let's Encrypt certificate fails strict verification the same way. So a node installed
+# (or re-installed to "restore sync") while the panel's certificate was expired pinned that expired certificate,
+# and the moment the panel was renewed the pin stopped matching: every sync failed closed, the node went stale,
+# and the panel showed its mesh links down until the node was re-installed. Seen live 2026-09-25.
+# Heal it: when the pin mismatches, and the panel NOW passes full CA verification for its own address AND
+# answers `whoami` with our token, move to CA verification and drop the pin. That is exactly the posture the
+# installer gives every node of a real-CA panel, so it trusts nothing a normally-installed node does not; a
+# certificate that is not publicly trusted keeps failing closed. Throttled — it is two requests.
+_PIN_HEAL = {"at": 0.0}
+_PIN_HEAL_EVERY_S = 300
+
+
+def _heal_stale_pin(panel, node_cfg, err):
+    """On a fingerprint mismatch, adopt CA verification if the panel now passes it. Returns the (unchanged) sync
+    URL when the posture was healed — the caller's next pass uses it — else None. Never throws."""
+    try:
+        if err != "tls fingerprint mismatch" or not (panel.get("fingerprint") or "").strip():
+            return None
+        now = time.time()
+        if now - _PIN_HEAL["at"] < _PIN_HEAL_EVERY_S:
+            return None
+        _PIN_HEAL["at"] = now
+        base = (panel.get("url") or "").rstrip("/")
+        if not base.startswith("https://") or not _verify_panel(base, panel.get("token") or "", {"verify": True}):
+            return None
+        old = (panel.get("fingerprint") or "")[:16]
+        panel["verify"] = True
+        panel.pop("fingerprint", None)
+        _persist_config(node_cfg)
+        _persist_panel_auth(panel)                     # docker / NixOS: the entrypoint rebuilds config from these
+        print("panel TLS: the pinned certificate (%s…) is gone and the panel now presents one a public CA vouches "
+              "for — verifying it as a CA certificate from now on, pin dropped" % old, flush=True)
+        return base + "/api/node/sync"
+    except Exception as e:
+        print("_heal_stale_pin:", e, flush=True)
+    return None
+
+
 _LOCAL_HEAL = {"at": 0.0}
 def _heal_local_panel(panel, node_cfg):
     """A CO-LOCATED node (loopback panel URL, e.g. a bare-metal master's local node) can't learn a new panel port
@@ -19023,7 +19063,9 @@ def main():
                 print("sync error:", reply.get("error"), flush=True)
                 # blessed address unreachable → settle onto a pending-swap candidate if it answers, else (loopback)
                 # rediscover the panel locally. Either one re-points us so a domain/port swap never strands the node.
-                _nu = _failover_candidate(panel, node_cfg) or _heal_local_panel(panel, node_cfg)
+                # A pin that no longer matches is tried first: the address is fine, only the trust anchor is stale.
+                _nu = (_heal_stale_pin(panel, node_cfg, reply.get("error"))
+                       or _failover_candidate(panel, node_cfg) or _heal_local_panel(panel, node_cfg))
                 if _nu:
                     url = _nu
             elif _panel_busy(status, reply):
