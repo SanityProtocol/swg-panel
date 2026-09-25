@@ -1642,6 +1642,24 @@ prune_stale_acme_installs(){
     esac
   done
 }
+# acme.sh's install target for $1 when it is ANOTHER program's (outside our two cert dirs); empty otherwise.
+# ⚠️ acme.sh keeps ONE install target per name, and a second tool sharing the store owns it as surely as we do —
+# 3x-ui's certificate menu issues for the same name and re-points it at /root/cert/…. `--install-cert` here would
+# take it back: that tool's renewals would then land in OUR path and its certificate would silently expire, the
+# same outage it caused us. So we copy the certificate instead, and the panel's sync-acme (swg-netctl) brings every
+# later renewal across from the entry, whoever owns it. Twin of swg-netctl's _acme_foreign_target().
+acme_foreign_target(){
+  $DRYRUN && return 0
+  local conf="$ACME_HOME/${1}_ecc/${1}.conf" t
+  [ -f "$conf" ] || return 0
+  t="$(sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"
+  case "$t" in ""|"$TLS_DIR"/*|/etc/swg-sub/tls/*) return 0;; esac
+  printf '%s' "$t"; }
+# Copy acme.sh's current certificate for $1 into $TLS_DIR without touching the entry. 0 on success.
+acme_copy_foreign(){
+  local d="$ACME_HOME/${1}_ecc"
+  cp "$d/fullchain.cer" "$CERT_FULLCHAIN.adopting" && cp "$d/${1}.key" "$CERT_KEY.adopting" \
+    && mv -f "$CERT_FULLCHAIN.adopting" "$CERT_FULLCHAIN" && mv -f "$CERT_KEY.adopting" "$CERT_KEY"; }
 mk_selfsigned(){ CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; mkdir -p "$PREFIX$TLS_DIR"
   if $DRYRUN; then echo "    [skip] openssl self-signed -> $TLS_DIR (CN=$PANEL_DOMAIN)"; : > "$PREFIX$CERT_FULLCHAIN"; : > "$PREFIX$CERT_KEY"
   else run openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$CERT_KEY" -out "$CERT_FULLCHAIN" -subj "/CN=${PANEL_DOMAIN}" -addext "subjectAltName=$(san_for "$PANEL_DOMAIN")"; fi
@@ -1742,7 +1760,15 @@ obtain_cert_internal(){
       # right here — after the panel unit exists but before swg-netctl is compiled and the TLS paths
       # are written — leaving a box that looks installed, serves plain HTTP, and 525s behind a proxy.
       # Whatever went wrong with the CA, a self-signed cert is a working panel the operator can fix.
-      if ! acme --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
+      local _foreign; _foreign="$(acme_foreign_target "$PANEL_DOMAIN")"
+      if [ -n "$_foreign" ]; then
+        # the panel serves this TLS itself, so its sync-acme keeps the copy current — leave the target alone
+        warn "acme.sh installs $(b "$PANEL_DOMAIN")'s certificate for another program ($(b "$_foreign")) — leaving that as it is; the panel takes each renewal from acme.sh itself"
+        if ! acme_copy_foreign "$PANEL_DOMAIN"; then
+          warn "could not copy acme.sh's certificate for $PANEL_DOMAIN — falling back to a self-signed cert."
+          mk_selfsigned; return
+        fi
+      elif ! acme --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
           --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl restart swg-panel-server"; then
         warn "acme.sh could not install the certificate for $PANEL_DOMAIN — falling back to a self-signed cert."
         mk_selfsigned; return
@@ -1802,6 +1828,11 @@ setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to 
       fi
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
       prune_stale_acme_installs
+      # ⚠️ NOT guarded like the internal-serve block: behind nginx/caddy the panel does not serve (or watch) this
+      # certificate, so sync-acme cannot keep a copy current, and --install-cert is our copy's only renewer.
+      # Keep it, but never silently: the other program's copy stops being renewed from here on.
+      local _foreign; _foreign="$(acme_foreign_target "$PANEL_DOMAIN")"
+      [ -n "$_foreign" ] && warn "acme.sh installed $(b "$PANEL_DOMAIN")'s certificate for another program ($(b "$_foreign")). Behind $SERVE_MODE the panel needs that install target itself, so it is being moved here — that program's copy will $(b 'stop being renewed'). Point it at $TLS_DIR/fullchain.pem and $TLS_DIR/key.pem instead."
       # same rule as the internal-serve block above: a failed install must not abort the installer.
       # Here the proxy is the TLS terminator, so degrade exactly as issuance failure does — plain HTTP.
       if ! acme --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" --reloadcmd "$reload"; then

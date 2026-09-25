@@ -249,6 +249,24 @@ def _acme_clear_unusable(domain):
     return True
 
 
+def _acme_foreign_target(domain):
+    """The path acme.sh installs `domain`'s entry to, when that is ANOTHER program's (not one of our two cert
+    paths). "" when the entry is ours, has no install target, or does not exist.
+
+    ⚠️ acme.sh keeps ONE install target per name, and a second tool sharing the store (3x-ui's certificate
+    menu, met in the field) owns it as surely as we do. `--install-cert` would take it from them — their
+    renewals then land in OUR path and their certificate silently expires, exactly what they did to us — and
+    `--remove` would delete their renewal state outright. Neither is ours to do: we copy the certificate
+    instead, and sync-acme keeps our copy current from the entry whoever owns it."""
+    d = _acme_ecc_dir(domain)
+    if d is None:
+        return ""
+    t = _acme_conf_value(d, domain, "Le_RealFullChainPath")
+    if not t or os.path.realpath(t) in {os.path.realpath(s["cert"]) for s in SERVICES.values()}:
+        return ""
+    return t
+
+
 def reload_cmd_for(service):
     # both the panel and swg-sub reload their cert on SIGHUP with zero downtime.
     return "systemctl kill -s HUP %s" % SERVICES[service]["unit"]
@@ -495,6 +513,18 @@ def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
         # …and again on the way out, so the NEXT attempt meets the real error rather than this one's residue.
         _acme_clear_unusable(domains[0])
         raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, ",".join(domains), out.strip()[-400:]))
+    foreign = _acme_foreign_target(domains[0])
+    if foreign and not DRYRUN:
+        # Another program's entry: copy its current certificate, leave its install target and reload command
+        # alone. sync-acme brings every later renewal across. The reload acme's --reloadcmd would have done is ours.
+        d = _acme_ecc_dir(domains[0])
+        _copy_pair(svc, os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % domains[0]), domains[0])
+        log("acme.sh installs %s for another program (%s) — copied its certificate, left its install target alone"
+            % (domains[0], foreign))
+        if reloadcmd:
+            with contextlib.suppress(Exception):
+                run(["systemctl", "kill", "-s", "HUP", svc["unit"]])
+        return
     inst = acme_argv(acme, "--install-cert", "-d", domains[0], "--ecc",   # install/renew keyed by the primary -d
                      "--key-file", svc["key"], "--fullchain-file", svc["cert"])
     if reloadcmd:                       # renewals reload the running service; a live-apply must NOT (the old
@@ -711,24 +741,46 @@ def _service_host(service):
     return host.strip().lower()
 
 
+def _check_pair(c, k, host):
+    """THE pair test: the same call the service itself makes when it binds. A pass means the listener comes up;
+    it rejects a non-PEM, a key that does not match the leaf, and a passphrase-protected key (which would
+    otherwise hang a service that has no terminal to ask on) — and a certificate that does not name `host`."""
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(c, k, password=lambda: b"")
+    except Exception as e:
+        raise Reject("%s and %s are not a usable certificate + private key pair: %s"
+                     % (c, k, str(e).strip()[-200:] or e.__class__.__name__))
+    if host and not _cert_covers_host(c, host):
+        raise Reject("that certificate does not cover %s — it names %s"
+                     % (host, ", ".join(sorted(_cert_names(c))) or "no host at all"))
+
+
+def _place_pair(svc, c, k):
+    """Put a checked pair at `svc`'s paths atomically, with the service's permissions (no reload)."""
+    os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
+    for src, dst in ((c, svc["cert"]), (k, svc["key"])):
+        if os.path.realpath(src) == os.path.realpath(dst):
+            continue                      # already the file we serve (the operator pointed at it) — nothing to copy
+        tmp = dst + ".adopting"           # write beside the target and rename: never a half-written cert on disk
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+    _fix_cert_perms(svc)
+
+
+def _copy_pair(svc, c, k, host):
+    """Check and place. `host` is passed, not read from settings: an address change issues for the NEW name
+    before that name is saved."""
+    _check_pair(c, k, host)
+    _place_pair(svc, c, k)
+
+
 def do_adopt_cert(service, cert_src, key_src, reload="reload"):
     svc = SERVICES[v_service(service)]
     if reload not in ("reload", "noreload"):
         raise Reject("bad reload flag %r" % (reload,))
     c = _v_srcpath(cert_src, "certificate")
     k = _v_srcpath(key_src, "private key")
-    # THE pair test: the same call the service itself will make when it binds. A pass here means the
-    # listener comes up; it rejects a non-PEM, a key that does not match the leaf, and a passphrase-
-    # protected key (which would otherwise hang a service that has no terminal to ask on).
-    try:
-        ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(c, k, password=lambda: b"")
-    except Exception as e:
-        raise Reject("%s and %s are not a usable certificate + private key pair: %s"
-                     % (cert_src, key_src, str(e).strip()[-200:] or e.__class__.__name__))
-    host = _service_host(service)
-    if host and not _cert_covers_host(c, host):
-        raise Reject("that certificate does not cover %s — it names %s"
-                     % (host, ", ".join(sorted(_cert_names(c))) or "no host at all"))
+    _check_pair(c, k, _service_host(service))   # the host is read HERE, from settings — never from the request
     # ⚠️ The raise sits OUTSIDE the suppress: Reject is an Exception, so raised inside it was swallowed and an
     # expired certificate was installed without a word.
     left = None
@@ -738,14 +790,7 @@ def do_adopt_cert(service, cert_src, key_src, reload="reload"):
         raise Reject("that certificate expired %d day(s) ago" % -left)
     if DRYRUN:
         log("would install %s + %s as the %s certificate" % (cert_src, key_src, service)); return "dry-run"
-    os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
-    for src, dst in ((c, svc["cert"]), (k, svc["key"])):
-        if os.path.realpath(src) == os.path.realpath(dst):
-            continue                      # already the file we serve (the operator pointed at it) — nothing to copy
-        tmp = dst + ".adopting"           # write beside the target and rename: never a half-written cert on disk
-        shutil.copyfile(src, tmp)
-        os.replace(tmp, dst)
-    _fix_cert_perms(svc)
+    _place_pair(svc, c, k)
     if reload == "reload":
         with contextlib.suppress(Exception):
             run(["systemctl", "kill", "-s", "HUP", svc["unit"]])
@@ -755,6 +800,11 @@ def do_adopt_cert(service, cert_src, key_src, reload="reload"):
 def do_drop_cert(service, domain):
     v_service(service)
     v_domain(domain)
+    foreign = _acme_foreign_target(domain)
+    if foreign:
+        # Not ours to stop: acme.sh renews this name for another program, and --remove plus the rmtree below
+        # would delete its renewal state — its certificate would expire with nothing to say why.
+        return "left %s renewing — acme.sh installs it for another program (%s)" % (domain, foreign)
     acme = find_acme()
     rc, out = run(acme_argv(acme, "--remove", "-d", domain, "--ecc"))
     if rc:
@@ -767,7 +817,9 @@ def do_drop_cert(service, domain):
     # apply, burning Let's Encrypt's 5-per-week duplicate limit. We have just declared we do not want
     # this certificate, so drop its directory — the same thing install-host.sh's
     # prune_stale_acme_installs already does for a superseded entry.
-    for _d in ("%s_ecc" % domain, domain):
+    # Only the `_ecc` entry: we always issue ec-256, so an RSA `<domain>` directory beside it was never ours —
+    # on a shared box it is another tool's (see _acme_ecc_dir), and deleting it took their renewal state too.
+    for _d in ("%s_ecc" % domain,):
         _p = os.path.join(ACME_HOME, _d)
         # only ever a domain directory directly under the store we own, and only one acme just removed
         if os.path.dirname(os.path.realpath(_p)) == os.path.realpath(ACME_HOME) and os.path.isdir(_p):
