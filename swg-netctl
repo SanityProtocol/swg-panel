@@ -309,8 +309,14 @@ def _reload_front(service):
 
 
 def reload_cmd_for(service):
-    # both the panel and swg-sub reload their cert on SIGHUP with zero downtime.
-    return "systemctl kill -s HUP %s" % SERVICES[service]["unit"]
+    # both the panel and swg-sub reload their cert on SIGHUP with zero downtime. Behind the installer's nginx/caddy
+    # — which serve the panel's managed file themselves — acme's renewal must reload them too, or they keep the
+    # old certificate in memory while the file on disk is new (_reload_front does the same for sync-acme).
+    cmd = "systemctl kill -s HUP %s" % SERVICES[service]["unit"]
+    front = load_conf().get("SERVE_MODE", "")
+    if service == "panel" and front in ("nginx", "caddy"):
+        cmd += "; systemctl reload %s" % front
+    return cmd
 
 
 # ── verbs ─────────────────────────────────────────────────────────────────────────
@@ -978,6 +984,9 @@ def do_renew_acme(service):
         return json.dumps(res)
     res["owner"], res["install_path"] = _acme_owner(d, host)
     env = dict(os.environ)
+    # acme.sh colours its errors (_err → __red) only when stdout is a terminal — never through our pipe — unless
+    # asked to. The red lines are how the reason is picked out of its output below, so ask.
+    env["ACME_FORCE_COLOR"] = "1"
     if mode == "cloudflare" and creds["cf_token"]:                 # DNS-01 renews through the API it issued with
         env["CF_Token"] = creds["cf_token"]
         if creds["cf_account"]:

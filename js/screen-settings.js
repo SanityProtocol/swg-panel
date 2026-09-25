@@ -1406,6 +1406,7 @@ export function AccessTLSCard({ onChange }) {
     ${showCooldownNotice ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><div style="min-width:0">
       <b>${T("Operation cooldown.")}</b> ${cooldown.reason === "verifying" ? T("An address change is still waiting to be confirmed.")
         : cooldown.reason === "console" ? T("A private-access change is still waiting to be confirmed — finish or cancel it in the tab that started it.")
+        : cooldown.reason === "renewing" ? T("A certificate renewal is running.")
         : Trich("The previous change is still settling (*{v1}s* left).", { v1: cooldown.secs })} ${Trich("Address changes run *one at a time* — Save is locked until it finishes. If a change is in flight, you can still cancel it from the tab that started it.")}
     </div></div>` : null}
     ${staleWarn ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><div style="min-width:0">
@@ -1466,7 +1467,9 @@ export function AccessTLSCard({ onChange }) {
         if (job.result === "renewed") done = html`<div class="notice ok" style="margin:0 0 12px"><${Ic} i="check"/><div style="min-width:0">${Trich("*Renewed.* The panel now serves a certificate valid until {v1}.", { v1: until })}</div></div>`;
         else if (job.result === "not-due") done = html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><div style="min-width:0">${Trich("*Not renewed — acme.sh says it is not due yet* (next renewal: {v1}). The certificate is valid until {v2}.", { v1: job.message || "?", v2: until })}</div></div>`;
         else done = html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><div style="min-width:0">
-          <b>${T("The renewal failed.")}</b> ${job.result === "no-entry" ? T("acme.sh holds no certificate for this address, so there is nothing to renew.") : T("acme.sh said:")}
+          <b>${job.result === "not-installed" ? T("acme.sh renewed the certificate, but the panel did not install it.") : T("The renewal failed.")}</b>
+          ${job.result === "no-entry" ? T("acme.sh holds no certificate for this address, so there is nothing to renew.")
+            : job.message ? (job.source === "acme" ? T("acme.sh said:") : T("Details:")) : null}
           ${job.message && job.result !== "no-entry" ? html`<pre style="white-space:pre-wrap;margin:6px 0 0;font-size:11.5px">${job.message}</pre>` : null}
         </div></div>`;
       }

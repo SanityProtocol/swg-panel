@@ -1652,6 +1652,7 @@ prune_stale_acme_installs(){
 # --key-file and no --fullchain-file owns the entry just the same), and "ours" is one of our four files, compared
 # by resolved path (realpath -m), as swg-netctl does — a symlinked /etc/swg-panel or a non-canonical spelling in
 # acme's conf reads the same on both sides.
+_acme_rp(){ realpath -m -- "$1" 2>/dev/null || printf '%s' "$1"; }   # the SAME resolution on both sides of the compare
 acme_foreign_target(){
   $DRYRUN && return 0
   local conf="$ACME_HOME/${1}_ecc/${1}.conf" k t r
@@ -1659,9 +1660,9 @@ acme_foreign_target(){
   for k in Le_RealFullChainPath Le_RealCertPath Le_RealKeyPath; do
     t="$(sed -n "s/^$k='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"
     [ -n "$t" ] || continue
-    r="$(realpath -m -- "$t" 2>/dev/null || printf '%s' "$t")"
-    case "$r" in "$(realpath -m -- "$TLS_DIR/fullchain.pem")"|"$(realpath -m -- "$TLS_DIR/key.pem")"|\
-                 "$(realpath -m -- /etc/swg-sub/tls/fullchain.pem)"|"$(realpath -m -- /etc/swg-sub/tls/key.pem)") continue;; esac
+    r="$(_acme_rp "$t")"
+    case "$r" in "$(_acme_rp "$TLS_DIR/fullchain.pem")"|"$(_acme_rp "$TLS_DIR/key.pem")"|\
+                 "$(_acme_rp /etc/swg-sub/tls/fullchain.pem)"|"$(_acme_rp /etc/swg-sub/tls/key.pem)") continue;; esac
     printf '%s' "$t"; return 0
   done; }
 # Copy acme.sh's current certificate for $1 into $TLS_DIR without touching the entry. 0 on success.

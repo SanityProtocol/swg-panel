@@ -152,11 +152,23 @@ def _renew_status():
                     "renew_last": (parts[2] if len(parts) > 2 else "")[:200]}
     return {}
 
+def _status_cert():
+    """The certificate whose health Settings shows: the one this panel serves — or, behind the installer's
+    nginx/caddy, the managed file THEY serve, but only once the acme follow has confirmed acme.sh manages it
+    (a leftover file on a panel behind the operator's own proxy is nobody's certificate, and warns nobody)."""
+    if TLS_CERT:
+        return TLS_CERT
+    if _ACME_FOLLOW.get("owner") in ("ours", "other") and os.path.exists(MANAGED_CERT):
+        return MANAGED_CERT
+    return ""
+
+
 def _refresh_tls_status(quiet=False):
-    if not TLS_CERT:
+    cert = _status_cert()
+    if not cert:
         return
     try:
-        info = ssl._ssl._test_decode_cert(TLS_CERT)   # stdlib decode of a cert FILE (no connection)
+        info = ssl._ssl._test_decode_cert(cert)   # stdlib decode of a cert FILE (no connection)
         exp = ssl.cert_time_to_seconds(info["notAfter"])
         selfsigned = dict(x[0] for x in info.get("issuer", ())) == dict(x[0] for x in info.get("subject", ()))
         days = int((exp - time.time()) // 86400)
@@ -241,7 +253,8 @@ def _acme_follow_status():
         _m = ((((Handler.deps or {}).get("panel_settings") or {}).get("access") or {}).get("tls") or {}).get("mode") or ""
         if _m and _m not in _ACME_FOLLOW_MODES:
             return {}
-    if r.get("host") and TLS_CERT and not _cert_covers(TLS_CERT, r["host"]):
+    _c = TLS_CERT or (MANAGED_CERT if os.path.exists(MANAGED_CERT) else "")
+    if r.get("host") and _c and not _cert_covers(_c, r["host"]):
         return {}
     if r.get("state") == "no-entry":
         return {"renewer": "missing"}
@@ -318,17 +331,38 @@ def _acme_follow():
 
 # The operator's "Renew now" (Settings → Panel access → Certificate). Runs in the background — a standalone HTTP-01
 # renewal takes 10-60 s and must never hold _api_lock — and the SPA follows it through /api/state (tls.renew_job).
-_RENEW_JOB = {"state": "idle", "message": "", "at": 0, "result": ""}
+#
+# ⚠️ THE JOB OUTLIVES THIS PROCESS. The installer's acme entry reloads the panel with `systemctl restart`, so a
+# successful renewal can restart us while the worker is still waiting for its answer. The job and the request id
+# are therefore kept in the state dir: after a restart the answer is picked up where it was left, and the operator
+# sees how it ended instead of a button that simply reset.
+_RENEW_JOB = {"state": "idle", "message": "", "at": 0, "result": "", "source": ""}
 _RENEW_LOCK = threading.Lock()
+_RENEW_WAIT_S = 900             # queue wait + acme's 240 s cap + install + proxy reload — generous on purpose
 
 
-def _renew_worker(deps):
-    # ⚠️ The job ENDS whatever happens in here: a raise that skipped the update left it "running" for good, and the
-    # button disabled until the panel restarted.
-    state, message = "failed", "the renewal stopped unexpectedly — see the panel log"
+def _renew_path(deps):
+    return os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "renew-job.json")
+
+
+def _renew_save(deps, **fields):
+    with _RENEW_LOCK:
+        _RENEW_JOB.update(fields)
+        snap = dict(_RENEW_JOB)
+    with contextlib.suppress(Exception):
+        tmp = _renew_path(deps) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(snap, f)
+        os.replace(tmp, _renew_path(deps))
+    _invalidate_state_cache()
+
+
+def _renew_finish(deps, rid, wait_s):
+    """Wait for request `rid`'s answer and record how the renewal ended. The job ENDS whatever happens in here:
+    a raise that skipped the update left it "running" for good, and the button disabled."""
+    state, message, source = "failed", "the renewal stopped unexpectedly — see the panel log", "panel"
     try:
-        rid = _netctl_enqueue(deps, "renew-acme", ["panel"])
-        ok, msg = _netctl_wait(deps, rid, 300) if rid else (False, "the root helper is not available on this panel")
+        ok, msg = _netctl_wait(deps, rid, wait_s) if rid else (False, "the root helper is not available on this panel")
         try:
             r = json.loads(msg) if ok else {}
         except ValueError:
@@ -336,19 +370,46 @@ def _renew_worker(deps):
         if not isinstance(r, dict):
             r = {}
         state = r.get("state") or "failed"
-        message = str(r.get("message") or ("" if ok else msg) or "")[:900]
-        if isinstance(r.get("sync"), dict) and r["sync"].get("state"):
+        message, source = (str(r.get("message") or ""), "acme") if r else (str(msg or ""), "panel")
+        sync = r.get("sync") if isinstance(r.get("sync"), dict) else {}
+        if sync.get("owner"):                        # only a report that SAYS who renews it may replace the last one
             _ACME_FOLLOW.clear()
-            _ACME_FOLLOW.update(r["sync"])            # who renews it, as the renewal just saw it
+            _ACME_FOLLOW.update(sync)
+        if state == "renewed" and sync.get("state") not in ("adopted", "current"):
+            # acme.sh renewed, but the panel did not take it (an address change in its grace, a name mismatch…):
+            # never report "Renewed — valid until <the old date>"
+            state, message, source = "not-installed", str(sync.get("reason") or sync.get("state") or ""), "panel"
         _refresh_tls_status()                        # the certificate it installed, read now rather than in 6 h
     except Exception as e:
         print("access: Renew now failed: %s" % e, flush=True)
     finally:
-        with _RENEW_LOCK:
-            _RENEW_JOB.update({"state": "done", "result": state, "at": int(time.time()), "message": message})
-        _invalidate_state_cache()
-    print("access: Renew now → %s%s" % (state, (" — " + message.splitlines()[-1]) if message and state == "failed"
+        _renew_save(deps, state="done", result=state, at=int(time.time()), message=message[:900], source=source,
+                    rid="")
+    print("access: Renew now → %s%s" % (state, (" — " + message.splitlines()[-1]) if message and state != "renewed"
                                          else ""), flush=True)
+
+
+def _renew_worker(deps):
+    rid = _netctl_enqueue(deps, "renew-acme", ["panel"])
+    _renew_save(deps, rid=rid or "")                 # a restart during the wait resumes on this id
+    _renew_finish(deps, rid, _RENEW_WAIT_S)
+
+
+def _renew_resume(deps):
+    """At start: bring back the last job, and finish one a restart interrupted (see ⚠️ above)."""
+    try:
+        with open(_renew_path(deps)) as f:
+            j = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(j, dict) or j.get("state") not in ("running", "done"):
+        return
+    with _RENEW_LOCK:
+        _RENEW_JOB.update({k: j.get(k, _RENEW_JOB.get(k)) for k in ("state", "message", "at", "result", "source", "rid")})
+    if j.get("state") == "running":
+        left = max(30, _RENEW_WAIT_S - (int(time.time()) - int(j.get("at") or 0)))
+        threading.Thread(target=_renew_finish, args=(deps, j.get("rid") or "", left), name="renew-cert",
+                         daemon=True).start()
 
 
 def _renew_start(deps):
@@ -356,16 +417,20 @@ def _renew_start(deps):
     if PANEL_DECLARATIVE:
         return _declarative_access_refusal(deps)
     if IN_DOCKER:
-        return 409, {"ok": False, "code": "docker", "error": "This panel runs in a container, which renews its "
-                     "certificate itself every 12 hours — restart the container to renew now."}
+        return 409, {"ok": False, "code": "docker", **perr("This panel runs in a container, which renews its "
+                     "certificate itself every 12 hours — restart the container to renew now.")}
     if _access_cooldown()[1] in ("verifying", "console"):
         # an address change is waiting to be confirmed: its apply/confirm/revert owns the served certificate
-        return 409, {"ok": False, "code": "busy", "error": "an address change is waiting to be confirmed — "
-                     "confirm or cancel it first, then renew"}
+        return 409, {"ok": False, "code": "busy", **perr("an address change is waiting to be confirmed — confirm or "
+                                                          "cancel it first, then renew")}
     with _RENEW_LOCK:
         if _RENEW_JOB["state"] == "running":
-            return 409, {"ok": False, "code": "busy", "error": "a renewal is already running"}
-        _RENEW_JOB.update({"state": "running", "message": "", "result": "", "at": int(time.time())})
+            return 409, {"ok": False, "code": "busy", **perr("a renewal is already running")}
+        stale = _RENEW_JOB.get("rid") or ""
+    if stale:                                        # the answer to a request that ran out of wait: nobody reads it
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(os.path.dirname(_renew_path(deps)), "netctl", "status", stale + ".json"))
+    _renew_save(deps, state="running", message="", result="", source="", at=int(time.time()), rid="")
     threading.Thread(target=_renew_worker, args=(deps,), name="renew-cert", daemon=True).start()
     return 202, {"ok": True, "state": "running"}
 
@@ -20010,7 +20075,7 @@ def api(method, path, qs, body, deps):
                     # every other panel, so an ordinary /api/state carries exactly what it carried before.
                     **({"declarative": True, "nix_access": _nix_access_snippet(deps),
                         "update_cmd": UPDATE_CMD, "update_auto": bool(UPDATE_TRIGGER)} if PANEL_DECLARATIVE else {})},   # for UI hints (e.g. enable store_configs)
-            "tls": {**TLS_STATUS, **({"renew_job": dict(_RENEW_JOB)} if _RENEW_JOB["state"] != "idle" else {})},   # cert expiry watch — surface a stalled renewal before it goes dark; + the Renew-now job
+            "tls": {**TLS_STATUS, **({"renew_job": {k: v for k, v in _RENEW_JOB.items() if k != "rid"}} if _RENEW_JOB["state"] != "idle" else {})},   # cert expiry watch — surface a stalled renewal before it goes dark; + the Renew-now job
             **({"state_future": dict(STATE_FUTURE)} if STATE_FUTURE else {}),   # state written by a NEWER build — see ROSTER_VERSION
             "panel_services": panel_service_health(),                # THIS host's own swg units (active/enabled/present) → SPA "needs attention" (bare-metal only)
             # Non-empty when this process could not persist its session-signing secret: sessions then last
@@ -20570,6 +20635,8 @@ def api(method, path, qs, body, deps):
                             if _cd_reason == "verifying" else
                             perr("a console address change is still waiting to be confirmed — finish or cancel that first")
                             if _cd_reason == "console" else
+                            perr("a certificate renewal is running — the address change can start once it has finished")
+                            if _cd_reason == "renewing" else
                             perr("the previous change is still settling ({v1}s) — you can only cancel until it finishes", v1=_cd_secs))}
         mode = (acc.get("tls") or {}).get("mode") or ""
         # a cert is needed only when we currently HAVE TLS and either the domain changed (current cert doesn't
@@ -29895,6 +29962,10 @@ def _access_cooldown():
     left = int(_MIGRATION_LOCK.get("until", 0)) - int(time.time())
     if left > 0:
         return left, "migrating"
+    # A running Renew now holds the root helper's one queue for up to minutes; an address change queued behind it
+    # has its backup-cert time out and can then snapshot the wrong certificate. So it waits, like any other change.
+    if _RENEW_JOB.get("state") == "running":
+        return max(1, _RENEW_WAIT_S - (int(time.time()) - int(_RENEW_JOB.get("at") or 0))), "renewing"
     return 0, ""
 
 
@@ -31385,6 +31456,8 @@ def main():
     # The SIGHUP → cert-reload handler is installed early (above). The watch runs on EVERY panel: it reports expiry
     # only for a certificate this panel serves (no TLS_CERT → nothing to report), but the acme follow also keeps the
     # certificate an nginx/caddy in front serves current.
+    with contextlib.suppress(Exception):
+        _renew_resume(Handler.deps)                                  # a Renew now a restart interrupted — see _RENEW_JOB
     threading.Thread(target=_tls_watch_loop, daemon=True).start()   # watch cert expiry; warn before a stalled renewal goes dark
     threading.Thread(target=_remote_version_loop, daemon=True).start()   # poll the repo for newer releases
     threading.Thread(target=_turn_update_loop, daemon=True).start()       # scheduled turn-proxy auto-update (opt-in)
