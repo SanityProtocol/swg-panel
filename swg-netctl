@@ -20,6 +20,8 @@ caller can't escape (callers pass only "panel"/"sub", never a unit name or file 
     issue-cert  <panel|sub> <domain>      acme.sh issue+install to that service's cert path (+ SIGHUP reload hook)
     drop-cert   <panel|sub> <domain>      stop auto-renewing one domain (after a confirmed domain switch)
     adopt-cert  <panel|sub> <cert> <key>  install an operator-supplied cert pair (TLS mode `skip`)
+    sync-acme   <panel|sub>               install acme.sh's renewed cert for that service's name when it is
+                                          newer than the served one — whoever the entry installs for
     restart     <panel|sub>               restart one service unit
 
 Security model:
@@ -656,14 +658,28 @@ def _v_srcpath(p, what):
     return rp
 
 
+def _ip_norm(s):
+    """`s` as a canonical IP string, or None when it is not an IP address. The stdlib prints an IPv6 SAN
+    uncompressed and upper-case ("2001:DB8:0:0:0:0:0:1"), so only a canonical form compares equal."""
+    with contextlib.suppress(ValueError):
+        return str(ipaddress.ip_address(str(s).strip().strip("[]")))
+    return None
+
+
 def _cert_names(path):
-    """Every name the certificate answers to — DNS SANs plus the subject CN."""
+    """Every name the certificate answers to — DNS SANs, IP SANs (canonical form) plus the subject CN.
+
+    ⚠️ IP SANs count. A Let's Encrypt IP certificate (letsencrypt-ip) has NO DNS name and an empty subject:
+    its one name is an `IP Address` SAN. Reading DNS alone called every IP certificate "for no host at all",
+    so no IP panel could adopt one."""
     names = set()
     with contextlib.suppress(Exception):
         info = ssl._ssl._test_decode_cert(path)
         for typ, val in info.get("subjectAltName", ()):
             if typ == "DNS":
                 names.add(str(val).lower())
+            elif typ == "IP Address" and _ip_norm(val):
+                names.add(_ip_norm(val))
         for rdn in info.get("subject", ()):
             for k, v in rdn:
                 if k == "commonName":
@@ -672,7 +688,7 @@ def _cert_names(path):
 
 
 def _cert_covers_host(path, host):
-    d = (host or "").lower()
+    d = _ip_norm(host) or (host or "").lower()
     for n in _cert_names(path):
         if n == d or (n.startswith("*.") and d.split(".", 1)[-1:] == [n[2:]]):
             return True
@@ -713,10 +729,13 @@ def do_adopt_cert(service, cert_src, key_src, reload="reload"):
     if host and not _cert_covers_host(c, host):
         raise Reject("that certificate does not cover %s — it names %s"
                      % (host, ", ".join(sorted(_cert_names(c))) or "no host at all"))
+    # ⚠️ The raise sits OUTSIDE the suppress: Reject is an Exception, so raised inside it was swallowed and an
+    # expired certificate was installed without a word.
+    left = None
     with contextlib.suppress(Exception):
         left = int((ssl.cert_time_to_seconds(ssl._ssl._test_decode_cert(c)["notAfter"]) - time.time()) // 86400)
-        if left < 0:
-            raise Reject("that certificate expired %d day(s) ago" % -left)
+    if left is not None and left < 0:
+        raise Reject("that certificate expired %d day(s) ago" % -left)
     if DRYRUN:
         log("would install %s + %s as the %s certificate" % (cert_src, key_src, service)); return "dry-run"
     os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
@@ -754,6 +773,83 @@ def do_drop_cert(service, domain):
         if os.path.dirname(os.path.realpath(_p)) == os.path.realpath(ACME_HOME) and os.path.isdir(_p):
             shutil.rmtree(_p, ignore_errors=True)
     return "stopped auto-renewing %s" % (domain,)
+
+
+# ── follow acme.sh's entry for our name, whoever owns its install target ──────────────
+# ⚠️ AN ACME ENTRY HAS ONE INSTALL TARGET, AND ANYTHING ELSE SHARING THE STORE CAN TAKE IT. acme.sh keys its
+# store by name (`<name>_ecc`) and remembers ONE --install-cert destination and reload command per entry.
+# 3x-ui's certificate menu (x-ui.sh: `--issue` for the same name, then `--installcert --force`) re-points our
+# entry at /root/cert/…, and from then on acme's cron renews on schedule and delivers every renewal THERE.
+# The panel went on serving the last certificate that reached it until it expired — a 6-day IP certificate,
+# so under a week — while the renewal itself was perfectly healthy (seen live, 2026-09-25). We do it to
+# ourselves as well: when swg-sub shares the panel's name, `issue-cert sub <name>` re-installs the panel's
+# entry into the sub's path, and the panel's copy stops being renewed.
+#
+# So stop depending on the install target: read the renewed certificate straight out of the entry and put it
+# in place here. READ-ONLY toward acme's store — the other tool keeps its target and reload command, so
+# following it never breaks it. Whatever lands is checked by do_adopt_cert exactly like an operator's file.
+_ACME_FOLLOW_MODES = ("letsencrypt", "letsencrypt-ip", "cloudflare")
+
+
+def _acme_conf_value(d, name, key):
+    """One `KEY='value'` line of an entry's `<name>.conf`, or "" when absent."""
+    with contextlib.suppress(OSError):
+        with open(os.path.join(d, "%s.conf" % name)) as f:
+            for line in f:
+                if line.startswith(key + "="):
+                    return line.split("=", 1)[1].strip().strip("'\"")
+    return ""
+
+
+def _cert_end_and_selfsigned(path):
+    """(notAfter as epoch seconds, self-signed?) of a certificate file, or (None, False) when unreadable."""
+    try:
+        info = ssl._ssl._test_decode_cert(path)
+        return ssl.cert_time_to_seconds(info["notAfter"]), info.get("issuer") == info.get("subject")
+    except Exception:
+        return None, False
+
+
+def do_sync_acme(service):
+    """Install acme.sh's current certificate for `service`'s name when it is newer than the one served.
+
+    Returns a JSON object (the panel reads it): state ∈ adopted | current | refused | no-entry | skipped,
+    owner ∈ ours | other | none — who acme.sh installs this entry for — and install_path."""
+    svc = SERVICES[v_service(service)]
+    res = {"service": service, "state": "skipped", "owner": "", "install_path": ""}
+    mode = _load_access_tls()["mode"]
+    host = _service_host(service)
+    if mode not in _ACME_FOLLOW_MODES:
+        res["reason"] = "TLS mode %r is not issued by acme.sh" % (mode,)
+    elif not host or len(host) > 253 or not _HOST_RE.match(host):
+        res["reason"] = "no usable %s address configured" % service
+    elif os.path.exists(svc["cert"] + ".applyback"):
+        res["reason"] = "an address change is in flight"     # its apply/confirm/revert owns the served cert
+    if res.get("reason"):
+        return json.dumps(res)
+    d = _acme_ecc_dir(host)
+    if d is None or not _acme_entry_usable(d, host):
+        res["state"] = "no-entry"
+        return json.dumps(res)
+    target = _acme_conf_value(d, host, "Le_RealFullChainPath")
+    ours = {os.path.realpath(s["cert"]) for s in SERVICES.values()}   # the panel's OR swg-sub's — both are us
+    res["install_path"] = target
+    res["owner"] = "none" if not target else ("ours" if os.path.realpath(target) in ours else "other")
+    src_cert, src_key = os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % host)
+    new_end, _ = _cert_end_and_selfsigned(src_cert)
+    cur_end, cur_self = _cert_end_and_selfsigned(svc["cert"]) if os.path.exists(svc["cert"]) else (None, False)
+    # Newer by expiry — the one comparison that holds whoever renewed it. A self-signed placeholder (a failed
+    # issuance's fallback) always yields to the CA certificate this mode asks for, whatever its 10-year date says.
+    if new_end is None or (cur_end is not None and not cur_self and new_end <= cur_end):
+        res["state"] = "current"
+        return json.dumps(res)
+    try:
+        do_adopt_cert(service, src_cert, src_key, "reload")   # pair, name and expiry checks; atomic copy; SIGHUP
+    except Reject as e:
+        res["state"], res["reason"] = "refused", str(e)[:300]
+        return json.dumps(res)
+    res["state"] = "adopted"
+    return json.dumps(res)
 
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9.:_-]+$")
@@ -834,6 +930,7 @@ VERBS = {
     "issue-cert": (do_issue_cert, (2, 3)),      # optional 3rd arg: reload | noreload (live-apply uses noreload)
     "drop-cert": (do_drop_cert, 2),
     "adopt-cert": (do_adopt_cert, (3, 4)),
+    "sync-acme": (do_sync_acme, 1),              # install acme.sh's renewed cert, whoever owns the entry's target
     "backup-cert": (do_backup_cert, 1),
     "restore-cert": (do_restore_cert, 1),
     "clear-backup": (do_clear_backup, 1),

@@ -162,6 +162,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 **TLS:**
 - **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
 - **letsencrypt-ip** — real cert for a **public IP**, no domain needed. Short-lived (**~6 days**); `acme.sh` renews it daily, so a renewal outage of about a week expires it. Offered only when the panel URL is a public IP.
+- **Sharing acme.sh with another panel** (e.g. 3x-ui on the same box): acme.sh keeps one install target per address or domain, and the other panel's certificate menu takes it over. The panel does not depend on it — every 6 hours it takes the current certificate straight from acme.sh's entry when it is newer than the one it serves, and says under **Settings → Panel access → Certificate** that another program renews it. Bare metal only; a Docker panel has its own acme.sh.
 - **cloudflare** — real cert via DNS-01; **never uses port 80**. The token needs `Zone:DNS:Edit` + `Zone:Read`.
 - **cf15** — Cloudflare **Origin** certificate, **15 years**, issued via the CF API (needs an **API token** with `Zone` → `SSL and Certificates` → `Edit`; the legacy Origin CA Key is deprecated). ⚠️ Only trusted **behind Cloudflare's proxy** (orange cloud) — a direct hit to the origin shows an untrusted cert. No renewal needed for 15 years.
 - **selfsigned** — instant; browsers warn once. Good for getting going or behind a tunnel.

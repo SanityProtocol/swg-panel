@@ -1420,13 +1420,19 @@ export function AccessTLSCard({ onChange }) {
       // to someone reading the server log, while this screen showed a healthy certificate the whole time.
       const ts = Store.tls || {};
       const d = Number(ts.days_left);
-      if (ts.renew_ok === false) return html`<div class="notice warn" style="margin:0 0 12px" title=${ts.renew_last || ""}><${Ic} i="warn"/><div style="min-width:0">
-        ${Trich("*Automatic renewal is failing.* The certificate is still valid for *{v1}* more day(s), but nothing is renewing it — check that this host is reachable by the validation method above.", { v1: isFinite(d) ? d : "?" })}
-      </div></div>`;
-      if (!ts.self_signed && isFinite(d) && d <= 21) return html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><div style="min-width:0">
-        ${Trich("*This certificate expires in {v1} day(s).*", { v1: d })}
-      </div></div>`;
-      return null;
+      const warn = (body, title) => html`<div class="notice warn" style="margin:0 0 12px" title=${title || ""}><${Ic} i="warn"/><div style="min-width:0">${body}</div></div>`;
+      let w = null;
+      if (ts.renew_ok === false) w = warn(Trich("*Automatic renewal is failing.* The certificate is still valid for *{v1}* more day(s), but nothing is renewing it — check that this host is reachable by the validation method above.", { v1: isFinite(d) ? d : "?" }), ts.renew_last);
+      else if (ts.renewer === "missing" && !ts.self_signed) w = warn(Trich("*Nothing on this server renews this certificate.* acme.sh holds no certificate for this address, so it will expire in *{v1}* day(s) unless it is issued again.", { v1: isFinite(d) ? d : "?" }));
+      // A ~6-day certificate always has fewer than 21 days left — judged by days it warned from the day it was
+      // issued, so a real failure looked like every other day. The server marks it overdue past 2/3 of its life.
+      else if (ts.short_lived) { if (ts.renew_overdue) w = warn(Trich("*This certificate should already have been renewed.* It has *{v1}* hour(s) left.", { v1: Math.max(0, Number(ts.hours_left) || 0) })); }
+      else if (!ts.self_signed && isFinite(d) && d <= 21) w = warn(Trich("*This certificate expires in {v1} day(s).*", { v1: d }));
+      // Not a fault — the panel follows it — but the one fact that explains why its renewals live somewhere else.
+      const other = ts.renewer === "other" ? html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><div style="min-width:0">
+        ${Trich("*Another program on this server renews this certificate* — acme.sh installs each renewal to `{v1}`. The panel takes the renewed certificate from acme.sh within 6 hours, so both keep working.", { v1: ts.renewer_path || "?" })}
+      </div></div>` : null;
+      return (w || other) ? html`${w}${other}` : null;
     })()}
     <div class="field"><label>${T("Type")}</label><${Dropdown} value=${mode} onChange=${setModeLinked} options=${TLS_MODE_OPTS()}/></div>
     ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>${T("Account email")}</label><input type="text" placeholder=${T("admin@example.com")} value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}

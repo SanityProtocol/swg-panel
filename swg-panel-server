@@ -160,10 +160,24 @@ def _refresh_tls_status():
         exp = ssl.cert_time_to_seconds(info["notAfter"])
         selfsigned = dict(x[0] for x in info.get("issuer", ())) == dict(x[0] for x in info.get("subject", ()))
         days = int((exp - time.time()) // 86400)
+        # ⚠️ "N days left" MEANS NOTHING ON A SHORT-LIVED CERTIFICATE. A letsencrypt-ip certificate lives ~6.7
+        # days, so a fixed ≤14/≤21-day threshold fired from the day it was issued: the panel logged "expires in
+        # 3 → 2 → 1 → 0 → -1 day(s)" for five days straight and it read as the normal state, because it was.
+        # Judge a short one by how much of its life is left instead: past 2/3 of it, the renewal is overdue.
+        life = exp - ssl.cert_time_to_seconds(info["notBefore"])
+        short = (not selfsigned) and 0 < life <= _SHORT_LIVED_S
+        overdue = short and (exp - time.time()) < life / 3
         TLS_STATUS.clear()
         TLS_STATUS.update({"expires_at": int(exp), "days_left": days, "self_signed": bool(selfsigned)})
+        if short:
+            TLS_STATUS.update({"short_lived": True, "renew_overdue": bool(overdue),
+                               "hours_left": int((exp - time.time()) // 3600)})
         TLS_STATUS.update(_renew_status())
-        if not selfsigned and days <= 14:
+        TLS_STATUS.update(_acme_follow_status())
+        if overdue:
+            print("WARNING: TLS certificate has %d hour(s) left of its %d-day life — it should have been renewed "
+                  "by now; check ACME/renewal" % (int((exp - time.time()) // 3600), round(life / 86400)), flush=True)
+        elif not selfsigned and not short and days <= 14:
             print(f"WARNING: TLS certificate expires in {days} day(s) — check ACME/renewal", flush=True)
         _since = TLS_STATUS.get("renew_failing_since")
         if _since and time.time() - _since > 86400:
@@ -199,10 +213,79 @@ def _adopt_resync():
               % (svc, msg if ok else "FAILED, keeping the one already serving: " + str(msg)), flush=True)
 
 
+# A certificate this short-lived is judged by the share of its life left, not by days (see _refresh_tls_status).
+# Let's Encrypt's IP / `shortlived` certificates are ~160 h; nothing a CA issues for 90 days comes near 10.
+_SHORT_LIVED_S = 10 * 86400
+# What swg-netctl's `sync-acme panel` last reported — who acme.sh installs our entry for. Read into TLS_STATUS.
+_ACME_FOLLOW = {}
+
+
+def _acme_follow_status():
+    """TLS_STATUS fields from the last sync-acme: renewer = ours | other | missing (+ renewer_path for other).
+    Empty when it never ran or the mode is not acme's — nothing is claimed that was not observed."""
+    r = _ACME_FOLLOW
+    if r.get("state") == "no-entry":
+        return {"renewer": "missing"}
+    if r.get("owner") == "other":
+        return {"renewer": "other", "renewer_path": str(r.get("install_path") or "")[:300]}
+    if r.get("owner") in ("ours", "none"):
+        return {"renewer": "ours"}
+    return {}
+
+
+def _acme_follow():
+    """Serve acme.sh's CURRENT certificate for our name, whoever its entry installs for.
+
+    acme.sh gives each name ONE install target, and another tool sharing the store — 3x-ui's certificate
+    menu is the one met in the field — takes it: acme keeps renewing and delivers every renewal to THAT
+    tool, while ours sits and expires. swg-netctl reads the renewed certificate from the entry itself and
+    installs it only when it is newer than the one we serve (read-only toward acme's store, so the other tool
+    keeps working). On a box where nothing else touches the entry it compares two dates and does nothing.
+    Bare metal only: a container keeps its own acme store, which nothing on the host can re-point, and a
+    declarative host's certificate belongs to its configuration."""
+    deps = getattr(Handler, "deps", None)
+    if not deps or IN_DOCKER or PANEL_DECLARATIVE:
+        return
+    mode = ((((deps.get("panel_settings") or {}).get("access") or {}).get("tls") or {}).get("mode") or "").strip()
+    if mode and mode not in ("letsencrypt", "letsencrypt-ip", "cloudflare"):
+        _ACME_FOLLOW.clear()
+        return                                       # not issued by acme.sh ("" = never saved: install.conf decides)
+    for svc, managed in (("panel", TLS_CERT), ("sub", SUB_CERT_PATH)):
+        if not managed:
+            continue
+        if svc == "sub" and (not os.path.isdir(os.path.dirname(managed)) or _sub_tls_mode(mode) == "reverse-proxy"):
+            continue
+        rid = _netctl_enqueue(deps, "sync-acme", [svc])
+        if not rid:
+            return                                   # no root helper here (a dev rig) — nothing to ask
+        ok, msg = _netctl_wait(deps, rid, 120)
+        try:
+            r = json.loads(msg) if ok else {}
+        except ValueError:
+            r = {}                                   # an older helper that does not know the verb
+        if not isinstance(r, dict):
+            r = {}
+        if svc == "panel":
+            _ACME_FOLLOW.clear()
+            _ACME_FOLLOW.update(r)
+        st = r.get("state")
+        if st == "adopted":
+            print("access: %s certificate taken from acme.sh's renewal%s" % (
+                svc, " — acme.sh installs this entry for another program (%s)" % r.get("install_path")
+                if r.get("owner") == "other" else ""), flush=True)
+        elif st == "refused":
+            print("access: %s certificate from acme.sh NOT installed, keeping the one serving — %s"
+                  % (svc, r.get("reason")), flush=True)
+        elif not ok:
+            print("access: %s acme.sh follow check failed — %s" % (svc, msg), flush=True)
+
+
 def _tls_watch_loop():
     while True:
         with contextlib.suppress(Exception):
             _adopt_resync()          # before the status read, so days_left reflects a cert we just took on
+        with contextlib.suppress(Exception):
+            _acme_follow()           # likewise: a renewal delivered to another tool's path is taken on first
         _refresh_tls_status()
         time.sleep(21600)   # every 6h
 AUTH_FILE  = os.environ.get("SWG_PANEL_AUTH", "")        # file "user:pbkdf2_sha256$...."; blank => no auth
@@ -29940,6 +30023,17 @@ def _apply_status(state, message="", **extra):
         _MIGRATION_LOCK["until"] = max(int(_MIGRATION_LOCK.get("until", 0)), _gu)
 
 
+def _ip_canon(s):
+    """`s` as a canonical IP string, or None when it is not one. The stdlib prints an IPv6 SAN uncompressed
+    and upper-case ("2001:DB8:0:0:0:0:0:1"), so only a canonical form compares equal to the URL's host."""
+    if not isinstance(s, str):
+        return None
+    try:
+        return str(ipaddress.ip_address(s.strip().strip("[]")))
+    except ValueError:
+        return None
+
+
 def _cert_covers(cert_path, domain):
     """Does the cert at cert_path already cover `domain` (exact SAN/CN or a matching wildcard)? A domain
     change that the current cert doesn't cover is what triggers re-issuance before the new listener binds."""
@@ -29951,13 +30045,19 @@ def _cert_covers(cert_path, domain):
         for typ, val in info.get("subjectAltName", ()):
             if typ == "DNS":
                 names.add(val.lower())
+            elif typ == "IP Address" and _ip_canon(val):
+                # ⚠️ A letsencrypt-ip certificate names its address ONLY here — no DNS SAN, empty subject.
+                # Reading DNS alone made every IP panel's own certificate "not cover" it, so each Access save
+                # on an IP panel asked the root helper for a re-issue it cannot do (letsencrypt-ip is not
+                # issuable at runtime) and failed.
+                names.add(_ip_canon(val))
         for rdn in info.get("subject", ()):
             for k, v in rdn:
                 if k == "commonName":
                     names.add(str(v).lower())
     except Exception:
         return False
-    d = domain.lower()
+    d = _ip_canon(domain) or domain.lower()
     for n in names:
         if n == d or (n.startswith("*.") and d.split(".", 1)[-1:] == [n[2:]]):
             return True

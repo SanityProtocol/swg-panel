@@ -3952,6 +3952,12 @@ export const STR = {
     "*Автоматическое обновление не проходит.* Сертификат ещё действует *{v1}* дн., но обновлять его некому — проверьте, что этот хост доступен для выбранного выше способа проверки.",
   "*This certificate expires in {v1} day(s).*":
     "*Этот сертификат истекает через {v1} дн.*",
+  "*Nothing on this server renews this certificate.* acme.sh holds no certificate for this address, so it will expire in *{v1}* day(s) unless it is issued again.":
+    "*Этот сертификат на сервере никто не обновляет.* У acme.sh нет сертификата для этого адреса, поэтому он истечёт через *{v1}* дн., если его не выпустить заново.",
+  "*This certificate should already have been renewed.* It has *{v1}* hour(s) left.":
+    "*Этот сертификат уже должен был обновиться.* До его истечения осталось *{v1}* ч.",
+  "*Another program on this server renews this certificate* — acme.sh installs each renewal to `{v1}`. The panel takes the renewed certificate from acme.sh within 6 hours, so both keep working.":
+    "*Этот сертификат обновляет другая программа на сервере* — acme.sh кладёт каждое обновление в `{v1}`. Панель забирает обновлённый сертификат из acme.sh в течение 6 часов, так что работают обе.",
   "How TLS is terminated — this decides which ports are valid below. One choice issues both certificates (the panel's and swg-sub's, always separate keys).":
     "Где завершается TLS — от этого зависит, какие порты ниже допустимы. Один выбор выпускает оба сертификата (панели и swg-sub, ключи всегда разные).",
   "This box's own node reaches the panel on {v1} — a dedicated plain-HTTP loopback port, served at the root. It's set at install and a public address, port, path, or certificate change never moves it, so the co-located node never loses the panel.":
