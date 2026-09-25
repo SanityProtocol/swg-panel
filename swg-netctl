@@ -994,16 +994,19 @@ def do_sync_acme(service):
     src_cert, src_key = os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % host)
     new_end, _ = _cert_end_and_selfsigned(src_cert)
     cur_end, cur_self = _cert_end_and_selfsigned(svc["cert"]) if os.path.exists(svc["cert"]) else (None, False)
-    # ⚠️ A SELF-SIGNED CERTIFICATE IS NEVER REPLACED FROM HERE. The node installers PIN a self-signed panel certificate
-    # (trust on first use), and a pinned node refuses anything else — so installing acme.sh's CA certificate over a
-    # self-signed one (an installer whose --install-cert failed fell back to it while the entry stayed usable) would
-    # silently cut every such node off, and the panel cannot tell which nodes pinned. It is reported as HELD
-    # instead; the operator switches deliberately (Panel access → Save) and re-runs the node installer where pinned.
-    if cur_self and new_end is not None:
+    # ⚠️ THE PANEL'S SELF-SIGNED CERTIFICATE IS NEVER REPLACED FROM HERE. The node installers PIN a self-signed panel
+    # certificate (trust on first use), and a pinned node refuses anything else — so installing acme.sh's CA
+    # certificate over it (an installer whose --install-cert failed fell back to self-signed while the entry stayed
+    # usable) would silently cut every such node off, and the panel cannot tell which nodes pinned. It is reported
+    # as HELD instead; the operator switches deliberately (Panel access → Save) and re-runs the node installer where
+    # pinned. The PANEL's only: nothing pins swg-sub's certificate — subscription clients never do — so a
+    # self-signed one there yields to the CA certificate like any older one.
+    if service == "panel" and cur_self and new_end is not None:
         res["state"], res["reason"] = "held", "the panel serves a self-signed certificate that nodes may have pinned"
         return json.dumps(res)
-    # Newer by expiry — the one comparison that holds whoever renewed it.
-    if new_end is None or (cur_end is not None and new_end <= cur_end):
+    # Newer by expiry — the one comparison that holds whoever renewed it (a self-signed swg-sub placeholder always
+    # yields, whatever its 10-year date says).
+    if new_end is None or (cur_end is not None and not cur_self and new_end <= cur_end):
         res["state"] = "current"
         if service == "panel":
             with contextlib.suppress(Exception):
