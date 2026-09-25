@@ -2212,6 +2212,7 @@ export function PanelSettingsScreen() {
   // changes; the single Save commits the global settings AND one nodeUpdate per changed node.
   const eq = (a, b) => { const c = v => v == null ? "" : Array.isArray(v) ? JSON.stringify([...v].sort()) : typeof v === "object" ? JSON.stringify(Object.keys(v).sort().reduce((o, k) => (o[k] = v[k], o), {})) : String(v); return c(a) === c(b); };
   const nFields = n => ({ routing_mode: n.routing_mode || "kernel", ip_learning: n.ip_learning !== false, endpoint_host: n.endpoint_host || "",
+    dns_upstream: (n.dns_upstream || []).join(", "),   // Force-DNS resolver's upstream, as typed ("" = the default)
     mesh_subnet: n.mesh_subnet || "", mesh_port: n.mesh_port ? String(n.mesh_port) : "", mesh_prefix: n.mesh_prefix || "",
     default_egress_ip: n.default_egress_ip || "", panel_ip: n.panel_ip || "", mesh_egress_ip: n.mesh_egress_ip || "",
     default_exit: n.default_exit || "",
@@ -2334,6 +2335,7 @@ export function PanelSettingsScreen() {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {};
       if (!Object.keys(nFields(n)).some(k => !eq(e[k], o[k]))) continue;
       const nr = await api.nodeUpdate({ id: n.id, routing_mode: e.routing_mode, ip_learning: e.ip_learning !== false, endpoint_host: (e.endpoint_host || "").trim(),
+        dns_upstream: String(e.dns_upstream || "").split(/[\s,]+/).filter(Boolean),
         mesh_subnet: (e.mesh_subnet || "").trim() === dSub ? "" : (e.mesh_subnet || "").trim(),
         mesh_port: (e.mesh_port || "").trim() === dPort ? "" : (e.mesh_port || "").trim(),
         mesh_prefix: (e.mesh_prefix || "").trim() === dPfx ? "" : (e.mesh_prefix || "").trim(),
@@ -2409,6 +2411,7 @@ export function PanelSettingsScreen() {
       // UI, next to a mode card that has been calling it "Kernel SNI" the whole time.
       if (!eq(e.routing_mode, o.routing_mode))
         fl.push(T("mode → {v1}", { v1: (MODE_META[e.routing_mode || "kernel"] || {}).label || e.routing_mode }));
+      if (!eq(e.dns_upstream, o.dns_upstream)) fl.push(T("upstream DNS → {v1}", { v1: e.dns_upstream || T("val|default") }));
       if (!eq(e.ip_learning !== false, o.ip_learning !== false)) fl.push(T("IP learning → {v1}", { v1: e.ip_learning !== false ? T("val|on") : T("val|off") }));
       if (!eq(e.endpoint_host, o.endpoint_host)) fl.push(T("ingress address → {v1}", { v1: e.endpoint_host || T("val|auto") }));
       if (!eq(e.mesh_subnet, o.mesh_subnet)) fl.push(T("mesh subnet → {v1}", { v1: e.mesh_subnet || T("val|default") }));
@@ -2535,7 +2538,7 @@ const sectionLabel = k => ({
     onConfirm: () => removeCatFleet(id) });
   const catSaved = id => fleetNodes.some(n => ((orig[n.id] || {}).catalog_cats || []).includes(id));   // present in the last-SAVED fleet state → removing it is a real change (confirm); a draft-only add this session isn't
   const removeCatRow = id => catSaved(id) ? confirmRemoveCat(id) : removeCatFleet(id);   // × removes a just-added (unsaved) list with no prompt; only saved lists confirm
-  const SECF = { routing: ["routing_mode", "ip_learning", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips"], exits: ["exits"] };
+  const SECF = { routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips"], exits: ["exits"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: customTargets(l).trim() })));
   // Display is two lines in the confirm list: the zone has a consequence of its own (the charts re-time), so it is named.
@@ -2640,6 +2643,21 @@ const sectionLabel = k => ({
               <span class="rds-k">${T("Overlaps")}</span><span class="rds-v">${mm.overlaps}</span>
             </div>` : null}
             <div class="rmode-desc">${mm.exp}</div>
+            ${/* Force-DNS only: where this node's resolver sends the lookups it answers for its clients. Until now a
+                  hardcoded 1.1.1.1 + 8.8.8.8 (docs/DNS-SETTINGS-PLAN.md §4). Plain addresses — no DoH/DoT engine is added. */""}
+            ${nodeMode === "forcedns" ? html`<div class="field" style="margin:14px 0 0">
+              <label>${T("Upstream DNS")}</label>
+              <input value=${nv(selNode, "dns_upstream") || ""} onInput=${e => setNV(selNode, { dns_upstream: e.target.value })} placeholder="1.1.1.1, 8.8.8.8" autocomplete="off"/>
+              <div class="hint">${T("Where this node's resolver sends the lookups it answers for Force-DNS clients. Empty = 1.1.1.1, 8.8.8.8. Up to four addresses, each optionally with #port (a local resolver like 127.0.0.1#5335 works). If none of them answers, clients on this node can't resolve names.")}</div>
+              ${(() => { /* what the node's resolver RUNS with (it reports it while it runs), against what is saved — an older node
+                            ignores the setting and keeps the default, so a saved value is not yet an applied one */
+                const run = ((Store.stats[selNode] || {}).smartroute || {}).dns_upstream;
+                if (!Array.isArray(run) || savedMode !== "forcedns") return null;
+                const saved = ((nodeRec || {}).dns_upstream || []).length ? nodeRec.dns_upstream : ["1.1.1.1", "8.8.8.8"];
+                return run.join(",") === saved.join(",")
+                  ? html`<div class="hint">${T("In effect on this node: {v1}", { v1: run.join(", ") })}</div>`
+                  : html`<div class="hint warnish">${T("Not on the node yet — it still asks {v1}. It applies on the next sync; a node too old to know this setting keeps the default until it updates.", { v1: run.join(", ") })}</div>`; })()}
+            </div>` : null}
           </div>`; })()}
 
           <div class="rltabs">

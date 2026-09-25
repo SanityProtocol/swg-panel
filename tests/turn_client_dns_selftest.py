@@ -17,6 +17,8 @@
  11  the -h probe: yes / no / unknown — cached only when the binary ANSWERED; a timeout or an exec error is unknown,
      backed off, and never read as "no"
  13  the snapshot reports the DNS IN EFFECT (read from the env file), and a binary swap writes safely
+ 15  P3 — the Force-DNS upstream: parser (node + panel agree), default when unset/unusable, never empty; the
+     signature moves with it; an untouched node gets exactly the reply it got before
  14  a server that remembers its own DNS (csqtt DB, wdttplus passwords.json) reports it; the panel keeps it as
      dns_orig at the first set, and clearing restores it — clearing never changes what clients get
  12  env drift: a dns stored by an old node is applied after the update; nothing else moves — not a fork mismatch,
@@ -26,6 +28,7 @@ Run: python3 tests/turn_client_dns_selftest.py         (0 = pass)
      --perturb-order   puts `-dns` AFTER params            → RED 2
      --perturb-probe   the probe says yes to every build   → RED 11
      --perturb-unknown a failed probe is cached as "no"    → RED 11
+     --perturb-upsig   the upstream is not in the signature → RED 15
      --perturb-change  drops dns from _wdtt_params_changed → RED 5
      --perturb-clear   clearing stores nothing             → RED 7
 """
@@ -42,6 +45,8 @@ N_PLANTS = {
     "--perturb-probe": ('    _WDTT_TAKES_DNS[key] = any(f["name"] == "dns" for f in flags)\n',
                         '    _WDTT_TAKES_DNS[key] = True\n'),
     "--perturb-change": ('            or _wdtt_params_eff(prev, _wdtt_fork(prev or inst)) != _wdtt_params_eff(inst, _wdtt_fork(prev or inst))\n', ''),
+    "--perturb-upsig": ('            tuple(upstream))   # an upstream change rewrites the conf NOW, not on the 12th-pass forced rebuild\n',
+                        '            ())\n'),
     "--perturb-unknown": ('    if not flags:\n        _WDTT_DNS_RETRY[key] = time.time() + _WDTT_DNS_BACKOFF\n        return None\n',
                           '    if not flags:\n        _WDTT_TAKES_DNS[key] = False\n        return False\n'),
 }
@@ -304,6 +309,42 @@ P.apply_turn_client_dns(inst, {"dns": ["9.9.9.9"]}, "qwdtt", {"dns": ""})
 P.apply_turn_client_dns(inst, {"dns": []}, "qwdtt", {})
 check("a flag-only fork (no dns_server) clears to the catalog default", inst == {"dns": ["8.8.8.8"]}, inst)
 check("a body without dns touches nothing", P.apply_turn_client_dns(inst, {"title": "x"}, "qwdtt", {}) is None and inst == {"dns": ["8.8.8.8"]})
+
+# ── 15 ────────────────────────────────────────────────────────────────────────────────────────────────────
+print("15 Force-DNS upstream (P3)")
+D = N.SMART_DNS_UPSTREAM_DEFAULT
+check("default is what dnsmasq always had", D == ("1.1.1.1", "8.8.8.8"))
+check("absent → default", N._dns_upstream(None) == D and N._dns_upstream([]) == D)
+check("nothing usable → default, never empty", N._dns_upstream(["0.0.0.0", "224.0.0.1", "127.0.0.1#5354", "x"]) == D)
+check("v4, v6, #port", N._dns_upstream(["9.9.9.9", "2620:fe::fe", "127.0.0.1#5335"]) == ("9.9.9.9", "2620:fe::fe", "127.0.0.1#5335"))
+check("a local resolver on loopback (not our port) is allowed", N._dns_upstream(["127.0.0.1#5335"]) == ("127.0.0.1#5335",))
+check("capped at four", len(N._dns_upstream(["1.1.1.%d" % i for i in range(1, 8)])) == 4)
+VEC_UP = ["9.9.9.9", "2620:fe::fe", "127.0.0.1#5335", "192.168.1.10", "127.0.0.1#5354", "0.0.0.0", "224.0.0.1",
+          "1.1.1.1#0", "1.1.1.1#70000", "dns.google", "https://1.1.1.1/dns-query", "::1#53"]
+for v in VEC_UP:
+    pl, pe = P.node_dns_upstream([v])
+    nd = N._dns_upstream([v])
+    check("panel/node agree on %r (panel %s, node %s)" % (v, "ok" if not pe else "refuses", "keeps" if nd != D else "default"),
+          (not pe and pl and tuple(pl) == nd) or (pe and nd == D))
+check("panel: empty clears to the default", P.node_dns_upstream("") == ([], None) and P.node_dns_upstream([]) == ([], None))
+check("panel: five refused", bool(P.node_dns_upstream(["1.1.1.%d" % i for i in range(1, 6)])[1]))
+e, d, f = [{"subnet": "10.8.0.0/24"}], {"c": ["x.com"]}, {}
+check("signature moves with the upstream", N._dom_signature(e, d, {}, f, ("9.9.9.9",)) != N._dom_signature(e, d, {}, f))
+check("signature: the default equals leaving it out", N._dom_signature(e, d, {}, f, D) == N._dom_signature(e, d, {}, f))
+check("dnsmasq renders server= from the upstream",
+      'conf += ["server=" + u for u in (upstream or SMART_DNS_UPSTREAM_DEFAULT)]' in src and "server=1.1.1.1" not in src)
+check("reconcile threads it through", "_dns_up = _dns_upstream((smart or {}).get(\"dns_upstream\"))" in src
+      and "dom_sig = _dom_signature(_dns_e, domains, _zones, _fetched, _dns_up)" in src and "upstream=_dns_up)" in src)
+check("panel pushes it only when set (untouched node: same reply)",
+      '**({"dns_upstream": node["dns_upstream"]} if node.get("dns_upstream") else {}),' in psrc)
+check("panel publishes it", '"dns_upstream": c.get("dns_upstream") or [],' in psrc)
+check("node reports the upstream IN EFFECT while dnsmasq runs (not what was saved)",
+      '_SMART_MODE["dns_upstream"] = list(upstream or SMART_DNS_UPSTREAM_DEFAULT)' in src
+      and 'base["dns_upstream"] = _SMART_MODE["dns_upstream"]' in src)
+ssrc = open(os.path.join(ROOT, "js", "screen-settings.js"), encoding="utf-8").read()
+check("SPA: draft field, save body, section dirty-tracking",
+      'dns_upstream: (n.dns_upstream || []).join(", ")' in ssrc and 'dns_upstream: String(e.dns_upstream || "").split(' in ssrc
+      and 'routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"]' in ssrc)
 
 print()
 if FAILS:

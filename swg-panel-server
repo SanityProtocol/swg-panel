@@ -3091,6 +3091,38 @@ def is_keyless_kind(kind):
     return kind in ("wdtt", "csqtt")
 
 
+SMART_DNS_PORT = 5354          # the node's Force-DNS dnsmasq listens on 127.0.0.1 here (swg-noded SMART_DNS_PORT)
+
+
+def node_dns_upstream(raw):
+    """A node's Force-DNS upstream from a save body → (list to store, [] = the default; error).
+
+    What the node's dnsmasq asks when it answers Force-DNS clients (docs/DNS-SETTINGS-PLAN.md §4) — until now a
+    hardcoded 1.1.1.1 + 8.8.8.8. Up to four entries, each an IPv4/IPv6 address with an optional `#port` (dnsmasq's
+    syntax). Refused: unspecified, multicast, and the node's own dnsmasq listener (loopback on SMART_DNS_PORT — it
+    would ask itself). Loopback on another port and the node's own addresses stay allowed: a local unbound on
+    127.0.0.1#5335, or a resolver on the node's LAN address, is the usual reason to set this at all.
+    Twin: swg-noded `_dns_upstream`, which also falls back to the default rather than ever render no upstream."""
+    parts = raw if isinstance(raw, list) else re.split(r"[\s,]+", str(raw or ""))
+    parts = list(dict.fromkeys(str(p).strip() for p in parts if str(p).strip()))
+    if len(parts) > 4:
+        return None, "Upstream DNS takes at most four addresses."
+    out = []
+    for item in parts:
+        host, sep, port = item.partition("#")
+        try:
+            a = ipaddress.ip_address(host.strip("[]"))
+            pn = int(port) if sep else 53
+        except ValueError:
+            return None, perr("Upstream DNS: {v1} is not an IP address (optionally with #port).", v1=item)
+        if not 1 <= pn <= 65535 or a.is_unspecified or a.is_multicast:
+            return None, perr("Upstream DNS: {v1} can't answer DNS queries.", v1=item)
+        if a.is_loopback and pn == SMART_DNS_PORT:
+            return None, perr("Upstream DNS: {v1} is the node's own Force-DNS resolver — it would ask itself.", v1=item)
+        out.append(str(a) + ("#%d" % pn if sep else ""))
+    return out, None
+
+
 def turn_client_dns(raw, fork, had, orig=None):
     """A WDTT / csqtt instance's client DNS from a save body → (value to store, or None = leave it unset; error).
 
@@ -19752,6 +19784,7 @@ def api(method, path, qs, body, deps):
                         "endpoint_hosts": c.get("endpoint_hosts") or [],   # other names this node answers to (picker pool)
 
                         "routing_mode": c.get("routing_mode") or "kernel",   # smart-routing match mode for this node (kernel|forcedns|sni)
+                        "dns_upstream": c.get("dns_upstream") or [],   # Force-DNS resolver's upstream ([] = the default)
                         # TCP-terminating relay: the node-wide CPU cap, and which forwarded interfaces the
                         # relay could carry (with the reason where it could not) — the Connection sheet's
                         # per-link eligibility comes from here, not from a rule re-implemented in the SPA.
@@ -23691,6 +23724,12 @@ def api(method, path, qs, body, deps):
             if rm not in ("kernel", "forcedns", "sni", "sni_kernel"):
                 return 400, {"ok": False, "error": "routing_mode must be kernel|forcedns|sni|sni_kernel", "code": "bad_request"}
             nodes[nid]["routing_mode"] = rm
+        if "dns_upstream" in body:              # the Force-DNS resolver's upstream ([] / "" = the default 1.1.1.1, 8.8.8.8)
+            _up, _ue = node_dns_upstream(body.get("dns_upstream"))
+            if _ue:
+                return 400, {"ok": False, **(_ue if isinstance(_ue, dict) else {"error": _ue}), "code": "bad_request"}
+            if _up: nodes[nid]["dns_upstream"] = _up
+            else:   nodes[nid].pop("dns_upstream", None)
         if "ip_learning" in body:               # keep learned SNI IPs (True) vs stay fresh / no remembered IPs (False)
             nodes[nid]["ip_learning"] = bool(body.get("ip_learning"))
         if "exits" in body:                     # the node's exit DEVICES (decision 10: a list from day one)
@@ -29352,6 +29391,9 @@ class Handler(BaseHTTPRequestHandler):
                                           # the key, and one that never gets it is byte-identical (§5.3).
                                           **({"arrivals": my_plan["arrivals"]} if my_plan.get("arrivals") else {}),
                                           "mode": node.get("routing_mode") or "kernel",   # kernel | forcedns | sni — the node picks its fill mechanism from this
+                                          # Force-DNS resolver's upstream — only when the operator set one, so a node left on the
+                                          # default gets the reply it always got (an older node ignores the key: default upstream)
+                                          **({"dns_upstream": node["dns_upstream"]} if node.get("dns_upstream") else {}),
                                           "categories": sorted(_plan_cats),
                                           # per-category caps {ip,host}: provider cats from the catalog index, built-ins from SMART_CAPS.
                                           # The node reads its <cat>.txt/.doms (pulled from the panel via list_manifest) using these — a

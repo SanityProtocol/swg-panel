@@ -5917,17 +5917,41 @@ def _report_unrunnable(pats, runnable):
         _SMART_MODE.pop("no_lower", None)
 
 
-def _dom_signature(smart_e, domains, zones, fetched):
+SMART_DNS_UPSTREAM_DEFAULT = ("1.1.1.1", "8.8.8.8")   # dnsmasq's upstream when the panel names none — the value it always had
+
+def _dns_upstream(raw):
+    """The Force-DNS resolver's upstream as dnsmasq `server=` values, from the panel's `dns_upstream` (docs/DNS-SETTINGS-PLAN.md
+    §4). Each is an IPv4/IPv6 address with an optional `#port`. Refused: unspecified, multicast, and our own listener
+    (loopback on SMART_DNS_PORT — dnsmasq would ask itself). Loopback on another port IS allowed: a local unbound on
+    127.0.0.1#5335 is the usual reason to set this. Nothing usable → the default, never an empty upstream (an empty
+    `server=` list would leave dnsmasq with no resolver at all, and every Force-DNS client with no DNS)."""
+    import ipaddress
+    out = []
+    for item in (raw if isinstance(raw, list) else [])[:4]:
+        item = str(item or "").strip()
+        host, _, port = item.partition("#")
+        try:
+            a = ipaddress.ip_address(host)
+            pn = int(port) if port else 53
+        except ValueError:
+            continue
+        if not 1 <= pn <= 65535 or a.is_unspecified or a.is_multicast or (a.is_loopback and pn == SMART_DNS_PORT):
+            continue
+        out.append(str(a) + ("#%d" % pn if port else ""))
+    return tuple(dict.fromkeys(out)) or SMART_DNS_UPSTREAM_DEFAULT
+
+def _dom_signature(smart_e, domains, zones, fetched, upstream=SMART_DNS_UPSTREAM_DEFAULT):
     """The domain tier's drift signature. Unchanged inputs skip BOTH the enrich union and the (equally
     expensive) dnsmasq config rebuild, so anything that can change what the config says has to be in here —
     `zones` above all, because a zone-only edit changes no domain and would otherwise never land on the node.
     Extracted so that is a thing a test can assert rather than a line someone has to notice."""
     return (tuple(sorted({e["subnet"] for e in smart_e})), json.dumps(domains, sort_keys=True),
             json.dumps(zones or {}, sort_keys=True),
-            tuple(sorted((c, _DOM_CACHE.get(c, (None,))[0]) for c in (fetched or {}))))
+            tuple(sorted((c, _DOM_CACHE.get(c, (None,))[0]) for c in (fetched or {}))),
+            tuple(upstream))   # an upstream change rewrites the conf NOW, not on the 12th-pass forced rebuild
 
 
-def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, nets=()):
+def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, nets=(), upstream=SMART_DNS_UPSTREAM_DEFAULT):
     """(Re)configure + run the domain-tier dnsmasq and redirect smart-subnet DNS to it. domains = {cat:[domain]}
     for the active domain categories; smart_e gives the source subnets. Nothing wanted → full teardown.
     unchanged=True (inputs identical to last cycle) → skip the expensive body rebuild, but still re-assert the DNS
@@ -5947,6 +5971,12 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, ne
     # route_localnet fine, and the panel drawing "DNS resolver — down — host routing degraded" in red. That
     # is the first thing an operator sees after picking the mode and before assigning any category.
     _SMART_MODE["dns_idle"] = not want
+    # the upstream the conf below is built with — reported so the panel can show what is IN EFFECT, not what was saved
+    # (an older node ignores `dns_upstream` and keeps the default). In the signature, so the conf always matches it.
+    if want:
+        _SMART_MODE["dns_upstream"] = list(upstream or SMART_DNS_UPSTREAM_DEFAULT)
+    else:
+        _SMART_MODE.pop("dns_upstream", None)
     _smart_dns_redirect(subnets if want else [], res, nets=[p for p, _i in (nets or ())])   # cheap, diff-gated — always reconciled
     if not want:                                               # nothing to fill → tear down + reap any stray instance
         _DNSMASQ_BUILD["n"] = 0
@@ -5969,7 +5999,7 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, ne
             # commonly hours. dnsmasq keeps the TRUE ttl in its own cache and only clamps what it hands
             # downstream, so this costs re-queries that we answer locally, not upstream traffic.
             "max-ttl=" + str(SMART_DNS_MAX_TTL)]
-    conf += ["server=1.1.1.1", "server=8.8.8.8"]
+    conf += ["server=" + u for u in (upstream or SMART_DNS_UPSTREAM_DEFAULT)]   # operator's choice, else the default (§4)
     # PER-DOMAIN, not per-category. dnsmasq applies only the FIRST nftset directive that lists a given domain, so a
     # domain shared by several categories (e.g. google.com in BOTH a custom list and the built-in Google set) would
     # land in only one set — silently corrupting the other set's routing + stats, and hostage to config order. Instead
@@ -7706,6 +7736,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                         | {ifn for ifn, c in _csqtt_load().items() if _csqtt_subnet((c or {}).get("tun_addr") or "") in _smart_subs})) if _smart_subs else []
     # (The nft chain is built further down, once the name lists below are known: a shadow set is derived from them.)
     domains = dict((smart or {}).get("domains") or {})         # domain-tier bundles {cat:[domain]} → dnsmasq/sni/kernel-filled
+    _dns_up = _dns_upstream((smart or {}).get("dns_upstream"))   # Force-DNS resolver's upstream (absent → the default)
     if mode != "kernel":                                       # CATALOG host cats (no curated bundle) → seed empty so the node domain-fills them from MetaCubeX
         for _c, _caps in _CAT_CAPS.items():
             if _caps.get("host") and _c not in domains and _c in smart_cats:
@@ -7749,7 +7780,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # An arrival subnet is one more source the domain tier serves (Force-DNS redirects the DNS that crosses this node, §3.6),
     # so it signs like a local one — and only when there are arrivals, so a node with none signs exactly as before.
     _dns_e = smart_e + [{"subnet": S} for S in arr_subs]
-    dom_sig = _dom_signature(_dns_e, domains, _zones, _fetched)
+    dom_sig = _dom_signature(_dns_e, domains, _zones, _fetched, _dns_up)
     _dt = _DOMTIER_CACHE.get("v")
     dom_unchanged = bool(_dt and _dt[0] == dom_sig)
     if dom_unchanged:
@@ -7844,7 +7875,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             dom_unchanged, _SHADOW["dns"] = False, (_shw or {}).get("sig", "")
         domains = _smart_shadowed(domains, _pats, _shw)[0]
         if host_engine == "dns" or _dns_e or domains or _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
-            _ensure_smart_dnsmasq(domains, _dns_e, res, unchanged=dom_unchanged, zones=_zones, nets=nets)   # arrivals' DNS too (§3.6)
+            _ensure_smart_dnsmasq(domains, _dns_e, res, unchanged=dom_unchanged, zones=_zones, nets=nets, upstream=_dns_up)   # arrivals' DNS too (§3.6)
         # Force-DNS runs `zone` and nothing else — a name is a dnsmasq key, and there is no key shape for
         # "contains these letters". Only worth saying while Force-DNS is the ENGINE: this branch also serves
         # IP-only, where no host layer is expected, patterns deliberately survive upstream, and the panel
@@ -8706,6 +8737,8 @@ def smart_status():
         base["no_lower"] = _SMART_MODE["no_lower"]
     if _SMART_MODE.get("dns_redirect"):                        # NETWORKS §17 F4: carried networks whose DNS skips Force DNS
         base["dns_redirect"] = _SMART_MODE["dns_redirect"]
+    if _SMART_MODE.get("dns_upstream"):                        # Force-DNS resolver's upstream in effect (DNS P3)
+        base["dns_upstream"] = _SMART_MODE["dns_upstream"]
     if t["rc"] != 0:
         # No CONTENT table — but the FREE abuse tier (swg_mech: smtp / torrent ports / port-scan) is a separate
         # datapath that does not need one, and turning ONLY those on is an ordinary configuration. `block` used to

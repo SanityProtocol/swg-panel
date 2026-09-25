@@ -820,7 +820,7 @@ for label, pin, queue in MODES:
 # ── 8. the engines are handed the shadow categories, and dnsmasq rebuilds when only they change ────────────────────────────
 print("\n[shadow sets reach the engines]")
 _dq, _sq = [], []
-N._ensure_smart_dnsmasq = lambda domains, smart_e, res, unchanged=False, zones=None, nets=(): _dq.append((dict(domains), unchanged))
+N._ensure_smart_dnsmasq = lambda domains, smart_e, res, unchanged=False, zones=None, nets=(), **_kw: _dq.append((dict(domains), unchanged))
 N._ensure_sni_router = lambda domains, subnets, res, learn_ttl=3600, map_key=None, patterns=None: _sq.append(dict(domains or {}))
 
 
