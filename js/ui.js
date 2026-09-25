@@ -279,6 +279,7 @@ function useNoNativeTitle(ref, active) {
   }, [active]);
 }
 
+// `children` may be a function: it is handed `close`, for a bubble that carries its own close control.
 export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly, autoOpen, clickOnly }) {   // flipFit: now every bubble's behaviour (callers may still pass it)
   const [open, setOpen] = useState(false), [pinned, setPinned] = useState(!!autoOpen), [pos, setPos] = useState(null);
   const ref = useRef(null), popRef = useRef(null), closeT = useRef(null);
@@ -335,9 +336,12 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
       document.addEventListener("click", eat, true);
       setTimeout(() => document.removeEventListener("click", eat, true), 350);
     };
+    // ESCAPE CLOSES A PINNED BUBBLE, and only the bubble. On `window` in the capture phase so it runs before a Sheet's
+    // own Escape (document, capture) — otherwise the key meant for the bubble closed the whole sheet behind it.
+    const onEsc = e => { if (e.key !== "Escape") return; e.stopPropagation(); e.preventDefault(); setPinned(false); setOpen(false); };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    if (pinned) document.addEventListener("pointerdown", onDoc, true);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); };
+    if (pinned) { document.addEventListener("pointerdown", onDoc, true); window.addEventListener("keydown", onEsc, true); }
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); window.removeEventListener("keydown", onEsc, true); };
   }, [show, pinned]);
   useEffect(() => () => clearTimeout(closeT.current), []);
   useNoNativeTitle(ref, show);
@@ -345,7 +349,8 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
     onClick=${hoverOnly ? null : (e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
     onMouseEnter=${clickOnly ? null : () => { cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
     ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "") + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;transform:" + (alignRight ? "translateX(-100%)" : "") + (pos.flip ? " translateY(-100%)" : "") + (pos.maxH ? ";max-height:" + pos.maxH + "px;overflow:auto" : "")}
-      onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${children}</div><//>` : null}
+      onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${typeof children === "function"
+        ? children(() => { setPinned(false); setOpen(false); }) : children}</div><//>` : null}
   </span>`;
 }
 

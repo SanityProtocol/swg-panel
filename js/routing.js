@@ -1095,8 +1095,11 @@ export function BlockListPicker({ providers, provLists, current, nodeMode, onAdd
   const naFor = p => blockSrcOk(nodeMode, providers, { provider: p }) ? null : naLabel;
   return html`<${Popover} alignRight flipFit clickOnly cls="bk-addwrap" popCls="bk-pickpop" autoOpen=${autoOpen}
       trigger=${html`<button class="btn btn-mini"><${Ic} i="plus"/> ${T("Add list")}</button>`}>
-    <div class="bk-pick" onClick=${e => e.stopPropagation()}>
-      <input class="bk-picksearch" ref=${el => { if (el && !el._foc) { el._foc = 1; requestAnimationFrame(() => el.focus()); } }} placeholder=${T("Search lists…")} value=${q} onInput=${e => setQ(e.target.value)}/>
+    ${close => html`<div class="bk-pick" onClick=${e => e.stopPropagation()}>
+      <div class="bk-pickhead">
+        <input class="bk-picksearch" ref=${el => { if (el && !el._foc) { el._foc = 1; requestAnimationFrame(() => el.focus()); } }} placeholder=${T("Search lists…")} value=${q} onInput=${e => setQ(e.target.value)}/>
+        <button type="button" class="pop-x" aria-label=${T("Close")} title=${T("Close")} onClick=${close}><${Ic} i="x"/></button>
+      </div>
       <div class="bk-picklist">
         ${(providers || []).filter(p => p.enabled !== false).map(p => {
           const items = (provLists[p.id] || []).filter(it => !has(p.id, it.id) && (!ql || (it.label + " " + (it.desc || "") + " " + p.label).toLowerCase().includes(ql)));
@@ -1108,7 +1111,7 @@ export function BlockListPicker({ providers, provLists, current, nodeMode, onAdd
         ${(providers || []).every(p => p.enabled === false || !(provLists[p.id] || []).some(it => !has(p.id, it.id) && (!ql || (it.label + " " + p.label).toLowerCase().includes(ql))))
           ? html`<div class="bk-pickempty">${ql ? T("No lists match.") : T("Every available list is already added.")}</div>` : null}
       </div>
-    </div>
+    </div>`}
   <//>`;
 }
 
@@ -1486,6 +1489,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   // two flags are already the most that can be checked by reading.
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
+  const onKeyRef = useRef(null);   // the latest `onKey`, for the dropdown's window-level Escape (its effect runs only on `open`)
   const [pos, setPos] = useState(null);
   // −1 IS "NOTHING HIGHLIGHTED", and it has to exist. `act` indexes `rows`, and 0 was doing double duty as
   // both "the first row is selected" and "no selection" — so after every commit, and on every keystroke, the
@@ -1709,9 +1713,14 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
     const onMove = () => place();
     const onDoc = e => { const t = e.target;
       if (!((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)))) setOpen(false); };
+    // Escape in the FIELD reaches `onKey` itself. Anywhere else — a row just clicked, the pager — it is handed to the same
+    // `onKey` from here (so a badge edit is abandoned exactly as it is from the field), on `window` in the capture phase,
+    // before a Sheet's Escape can close the sheet instead.
+    const onEsc = e => { if (e.key !== "Escape" || document.activeElement === inRef.current) return;
+      e.stopPropagation(); e.preventDefault(); onKeyRef.current(e); };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    document.addEventListener("mousedown", onDoc, true);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); };
+    document.addEventListener("mousedown", onDoc, true); window.addEventListener("keydown", onEsc, true);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); window.removeEventListener("keydown", onEsc, true); };
   }, [open]);
 
   // What the dropdown offers, as ONE flat list — because the keyboard walks it as one list and "the top row"
@@ -1943,6 +1952,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
       e.preventDefault(); commitTyped(); return; }
     if (e.key === "Backspace" && !q && badges.length) { e.preventDefault(); edit(badges.length - 1); }
   };
+  onKeyRef.current = onKey;
   const onPaste = e => {
     const txt = (e.clipboardData || {}).getData ? e.clipboardData.getData("text") : "";
     if (!txt || !/[\s,]/.test(txt.trim())) return;                    // a single token: let it type normally
@@ -2110,7 +2120,9 @@ ${/* The reading and its consequence live in the dropdown's "use what you typed"
           chrome reporting that it has nothing to report. The reading it would have shown is not lost: the
           foot already prints it whenever the dropdown is closed. */""}
     ${open && pos && (!listEditor || rows.length) ? html`<${Portal}><div ref=${popRef} class=${"catpick-pop wide tfpop" + (pos.flip ? " flip" : "")}
-        style=${"left:" + pos.left + "px;top:" + pos.top + "px;width:" + pos.width + "px;--catpick-maxh:" + (pos.maxh - 90) + "px"}>
+        style=${"left:" + pos.left + "px;top:" + pos.top + "px;width:" + pos.width + "px;--catpick-maxh:" + (pos.maxh - 119) + "px"}>
+      ${/* 119 = the 90 the list always left for the pager and padding, plus the 29px ✕ strip above it */""}
+      <div class="tfpop-head"><button type="button" class="pop-x" aria-label=${T("Close")} title=${T("Close")} onClick=${() => setOpen(false)}><${Ic} i="x"/></button></div>
       <div class="catpick-list">
 ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch this node to…" control that
        used to live inside this row was dead to a real mouse — and it is rendered ONLY when `readGate.ok` is
