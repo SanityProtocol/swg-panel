@@ -1428,7 +1428,8 @@ export function AccessTLSCard({ onChange }) {
       // issued, so a real failure looked like every other day. Overdue = past 2/3 of its life, on the panel's clock.
       else if (ts.short_lived) {
         const left = Number(ts.expires_at) * 1000 - panelNow();
-        if (left < Number(ts.lifetime_s) * 1000 / 3) w = warn(Trich("*This certificate should already have been renewed.* It has *{v1}* hour(s) left.", { v1: Math.max(0, Math.floor(left / 3600000)) }));
+        if (left <= 0) w = warn(Trich("*This certificate expired {v1} hour(s) ago* and nothing has renewed it.", { v1: Math.floor(-left / 3600000) }));
+        else if (left < Number(ts.lifetime_s) * 1000 / 3) w = warn(Trich("*This certificate should already have been renewed.* It has *{v1}* hour(s) left.", { v1: Math.floor(left / 3600000) }));
       }
       else if (!ts.self_signed && isFinite(d) && d <= 21) w = warn(Trich("*This certificate expires in {v1} day(s).*", { v1: d }));
       // Not a fault — the panel follows it — but the one fact that explains why its renewals live somewhere else.

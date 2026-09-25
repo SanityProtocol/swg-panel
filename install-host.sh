@@ -1648,13 +1648,18 @@ prune_stale_acme_installs(){
 # take it back: that tool's renewals would then land in OUR path and its certificate would silently expire, the
 # same outage it caused us. So we copy the certificate instead, and the panel's sync-acme (swg-netctl) brings every
 # later renewal across from the entry, whoever owns it. Twin of swg-netctl's _acme_foreign_target().
+# The same rule as swg-netctl's _acme_owner: all three install targets (a tool that installed with --cert-file/
+# --key-file and no --fullchain-file owns the entry just the same), and "ours" is an exact match to one of our
+# four files — never a directory prefix, so the two helpers can never disagree about an entry.
 acme_foreign_target(){
   $DRYRUN && return 0
-  local conf="$ACME_HOME/${1}_ecc/${1}.conf" t
+  local conf="$ACME_HOME/${1}_ecc/${1}.conf" k t
   [ -f "$conf" ] || return 0
-  t="$(sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"
-  case "$t" in ""|"$TLS_DIR"/*|/etc/swg-sub/tls/*) return 0;; esac
-  printf '%s' "$t"; }
+  for k in Le_RealFullChainPath Le_RealCertPath Le_RealKeyPath; do
+    t="$(sed -n "s/^$k='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"
+    case "$t" in ""|"$TLS_DIR/fullchain.pem"|"$TLS_DIR/key.pem"|/etc/swg-sub/tls/fullchain.pem|/etc/swg-sub/tls/key.pem) continue;; esac
+    printf '%s' "$t"; return 0
+  done; }
 # Copy acme.sh's current certificate for $1 into $TLS_DIR without touching the entry. 0 on success.
 acme_copy_foreign(){
   local d="$ACME_HOME/${1}_ecc"

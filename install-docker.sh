@@ -93,7 +93,6 @@ c(){ printf '\033[%sm' "$1"; }
 # redefined identically when common.sh loads. See common.sh for the model.
 _SWG_NL=""; _pnl(){ echo; _SWG_NL=1; }; _nlguard(){ _SWG_NL=""; }
 info(){ _nlguard; echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # ▸ light-blue, bold (universal action flag)
-# print the sha256 hex of the panel's TLS cert (unverified fetch), or nothing — matches the node's `fingerprint`
 # 0 when the panel's certificate fails verification ONLY because it is outside its validity window — expired
 # (or not yet valid) — which is a real CA certificate the panel has failed to renew, NOT a self-signed one.
 # ⚠️ curl calls both "60", and the auto-detect below read every 60 as "self-signed" and PINNED the expired
@@ -112,6 +111,7 @@ except ssl.SSLCertVerificationError as e:
 sys.exit(1)
 PY
 }
+# print the sha256 hex of the panel's TLS cert (unverified fetch), or nothing — matches the node's `fingerprint`
 _docker_panel_fp(){ python3 - "$1" <<'PY' 2>/dev/null || true
 import ssl,socket,hashlib,sys,urllib.parse
 r=sys.argv[1]; u=urllib.parse.urlparse(r if '://' in r else 'https://'+r)

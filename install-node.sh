@@ -751,8 +751,6 @@ case "$PANEL_URL" in https://*) ;; http://*) _url_is_loopback "$PANEL_URL" || wa
 # if the operator re-pointed the node at a different panel, the lc terminal should reach the NEW one
 [ "$EXISTING" = yes ] && [ -n "${LC_TOKEN:-}" ] && [ -n "$PANEL_URL" ] && LC_URL="$PANEL_URL"
 
-# print the sha256 hex of the panel's TLS cert (unverified fetch), or nothing on failure. Matches the node's
-# `fingerprint` format: hashlib.sha256(DER).hexdigest(), lowercase, no colons.
 # 0 when the panel's certificate fails verification ONLY because it is outside its validity window — expired
 # (or not yet valid) — which is a real CA certificate the panel has failed to renew, NOT a self-signed one.
 # ⚠️ curl calls both "60", and the auto-detect below read every 60 as "self-signed" and PINNED the expired
@@ -771,6 +769,8 @@ except ssl.SSLCertVerificationError as e:
 sys.exit(1)
 PY
 }
+# print the sha256 hex of the panel's TLS cert (unverified fetch), or nothing on failure. Matches the node's
+# `fingerprint` format: hashlib.sha256(DER).hexdigest(), lowercase, no colons.
 _panel_fp(){ python3 - "$1" <<'PY' 2>/dev/null || true
 import ssl,socket,hashlib,sys,urllib.parse
 r=sys.argv[1]; u=urllib.parse.urlparse(r if '://' in r else 'https://'+r)

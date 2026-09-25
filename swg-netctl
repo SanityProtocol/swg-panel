@@ -249,9 +249,25 @@ def _acme_clear_unusable(domain):
     return True
 
 
+def _acme_owner(d, name):
+    """(owner, path) — who acme.sh installs entry `d` for: ours | other | none, and the path that says so.
+
+    ONE rule, used by everything that asks (issue-cert, drop-cert, sync-acme). All three install targets are
+    read: a tool that installed with --cert-file/--key-file and no --fullchain-file owns the entry just the same.
+    "Ours" is an exact match to one of our four files (the panel's and swg-sub's cert and key) — never a
+    directory prefix, so install-host.sh's twin (acme_foreign_target) answers the same."""
+    ours = {os.path.realpath(p) for s in SERVICES.values() for p in (s["cert"], s["key"])}
+    paths = [p for p in (_acme_conf_value(d, name, k)
+                         for k in ("Le_RealFullChainPath", "Le_RealCertPath", "Le_RealKeyPath")) if p]
+    if not paths:
+        return "none", ""
+    foreign = [p for p in paths if os.path.realpath(p) not in ours]
+    return ("other", foreign[0]) if foreign else ("ours", paths[0])
+
+
 def _acme_foreign_target(domain):
-    """The path acme.sh installs `domain`'s entry to, when that is ANOTHER program's (not one of our two cert
-    paths). "" when the entry is ours, has no install target, or does not exist.
+    """The path acme.sh installs `domain`'s entry to, when that is ANOTHER program's. "" when the entry is ours,
+    has no install target, or does not exist.
 
     ⚠️ acme.sh keeps ONE install target per name, and a second tool sharing the store (3x-ui's certificate
     menu, met in the field) owns it as surely as we do. `--install-cert` would take it from them — their
@@ -261,10 +277,21 @@ def _acme_foreign_target(domain):
     d = _acme_ecc_dir(domain)
     if d is None:
         return ""
-    t = _acme_conf_value(d, domain, "Le_RealFullChainPath")
-    if not t or os.path.realpath(t) in {os.path.realpath(s["cert"]) for s in SERVICES.values()}:
-        return ""
-    return t
+    owner, path = _acme_owner(d, domain)
+    return path if owner == "other" else ""
+
+
+def _panel_serves_tls():
+    """Does the panel terminate its OWN TLS (SWG_PANEL_TLS_CERT set on its unit)? Only then does it run the
+    6-hourly check that calls sync-acme — for its certificate AND swg-sub's. Behind nginx/caddy it does not,
+    so a copy taken from another program's entry there would never be refreshed. Unknown → False (the safe
+    answer: keep --install-cert, which renews our copy)."""
+    try:
+        out = subprocess.run(["systemctl", "show", "-p", "Environment", SERVICES["panel"]["unit"]],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10).stdout
+    except Exception:
+        return False
+    return any(w.startswith("SWG_PANEL_TLS_CERT=") and len(w) > len("SWG_PANEL_TLS_CERT=") for w in out.split())
 
 
 def reload_cmd_for(service):
@@ -514,6 +541,12 @@ def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
         _acme_clear_unusable(domains[0])
         raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, ",".join(domains), out.strip()[-400:]))
     foreign = _acme_foreign_target(domains[0])
+    if foreign and not DRYRUN and not _panel_serves_tls():
+        # Behind a reverse proxy nothing follows the entry for us, so --install-cert stays our copy's only renewer
+        # (install-host.sh's proxy branch makes the same call). Say plainly what it costs the other program.
+        log("acme.sh installs %s for another program (%s) — taking the install target anyway: behind a reverse "
+            "proxy nothing else renews our copy, so that program's copy stops being renewed" % (domains[0], foreign))
+        foreign = ""
     if foreign and not DRYRUN:
         # Another program's entry: copy its current certificate, leave its install target and reload command
         # alone. sync-acme brings every later renewal across. The reload acme's --reloadcmd would have done is ours.
@@ -883,10 +916,8 @@ def do_sync_acme(service):
     if d is None or not _acme_entry_usable(d, host):
         res["state"] = "no-entry"
         return json.dumps(res)
-    target = _acme_conf_value(d, host, "Le_RealFullChainPath")
-    ours = {os.path.realpath(s["cert"]) for s in SERVICES.values()}   # the panel's OR swg-sub's — both are us
-    res["install_path"] = target
-    res["owner"] = "none" if not target else ("ours" if os.path.realpath(target) in ours else "other")
+    res["owner"], res["install_path"] = _acme_owner(d, host)   # the panel's OR swg-sub's paths — both are us
+    res["host"] = host
     src_cert, src_key = os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % host)
     new_end, _ = _cert_end_and_selfsigned(src_cert)
     cur_end, cur_self = _cert_end_and_selfsigned(svc["cert"]) if os.path.exists(svc["cert"]) else (None, False)

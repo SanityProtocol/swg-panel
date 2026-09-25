@@ -14085,17 +14085,45 @@ def apply_panel_hints(panel, node_cfg, reply):
 # (or re-installed to "restore sync") while the panel's certificate was expired pinned that expired certificate,
 # and the moment the panel was renewed the pin stopped matching: every sync failed closed, the node went stale,
 # and the panel showed its mesh links down until the node was re-installed. Seen live 2026-09-25.
-# Heal it: when the pin mismatches, and the panel NOW passes full CA verification for its own address AND
-# answers `whoami` with our token, move to CA verification and drop the pin. That is exactly the posture the
-# installer gives every node of a real-CA panel, so it trusts nothing a normally-installed node does not; a
-# certificate that is not publicly trusted keeps failing closed. Throttled — it is two requests.
+# Heal it — but "the panel now presents a CA certificate" is NOT enough on its own: an on-path attacker with any
+# publicly trusted certificate for the panel's name would turn a pinned node into a CA-trusting one and collect
+# its token on the way. So the panel must first PROVE the certificate is the one it serves (_cert_proof), with no
+# token sent: an HMAC keyed by sha256(token) — a secret both sides hold and neither ever transmits — over our
+# nonce and the certificate's SHA-256. Only then do we move to CA verification and drop the pin.
 _PIN_HEAL = {"at": 0.0}
 _PIN_HEAL_EVERY_S = 300
 
 
+def _cert_proof(base, token):
+    """True iff the panel at `base` passes full CA verification AND proves, bound to our token, that the certificate
+    we see is the one it serves. Sends NO token. Any error → False (the pin stays; fail closed)."""
+    try:
+        key = hashlib.sha256(token.encode()).hexdigest().encode()          # = the panel's token_sha
+        ident = hmac.new(key, b"swg-cert-proof-id", hashlib.sha256).hexdigest()
+        nonce = secrets.token_hex(16)
+        u = urllib.parse.urlparse(base)
+        if u.scheme != "https":
+            return False
+        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=10, context=ssl.create_default_context())
+        try:
+            conn.connect()
+            seen = hashlib.sha256(conn.sock.getpeercert(True) or b"").hexdigest()
+            conn.request("GET", (u.path or "").rstrip("/") + "/api/node/cert-proof?" +
+                         urllib.parse.urlencode({"id": ident, "nonce": nonce}))
+            resp = conn.getresponse()
+            data = ((json.loads(resp.read().decode() or "{}") or {}).get("data") or {}) if resp.status == 200 else {}
+        finally:
+            conn.close()
+        want = hmac.new(key, ("swg-cert-proof|%s|%s" % (nonce, seen)).encode(), hashlib.sha256).hexdigest()
+        return data.get("cert_sha256") == seen and hmac.compare_digest(str(data.get("mac") or ""), want)
+    except Exception:
+        return False
+
+
 def _heal_stale_pin(panel, node_cfg, err):
-    """On a fingerprint mismatch, adopt CA verification if the panel now passes it. Returns the (unchanged) sync
-    URL when the posture was healed — the caller's next pass uses it — else None. Never throws."""
+    """On a fingerprint mismatch, adopt CA verification if the panel now passes it AND proves the certificate is its
+    own (_cert_proof). Returns the (unchanged) sync URL when the posture was healed — the caller's next pass uses
+    it — else None. Never throws."""
     try:
         if err != "tls fingerprint mismatch" or not (panel.get("fingerprint") or "").strip():
             return None
@@ -14104,7 +14132,7 @@ def _heal_stale_pin(panel, node_cfg, err):
             return None
         _PIN_HEAL["at"] = now
         base = (panel.get("url") or "").rstrip("/")
-        if not base.startswith("https://") or not _verify_panel(base, panel.get("token") or "", {"verify": True}):
+        if not base.startswith("https://") or not _cert_proof(base, panel.get("token") or ""):
             return None
         old = (panel.get("fingerprint") or "").replace(":", "").lower().strip()
         panel["verify"] = True
