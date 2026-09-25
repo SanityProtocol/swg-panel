@@ -301,8 +301,16 @@ _orig_connect = sqlite3.connect
 sqlite3.connect = lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked"))
 os.utime(dbp, (_time.time() + 20, _time.time() + 20))
 check("a failed read keeps the last answer and caches nothing", N._turn_own_dns(wd_) == "8.8.8.8" and N._OWN_DNS.get(dbp) == _c)
+check("…and is backed off, not re-read every pass", N._OWN_DNS_RETRY.get(dbp, 0) > _time.time() + 30)
+wd2_ = os.path.join(TMP, "own-fail"); os.makedirs(wd2_, exist_ok=True); open(os.path.join(wd2_, "csqtt.db"), "w").write("x")
+check("a store never read successfully → UNKNOWN, not None (None = 'stores no DNS')", N._turn_own_dns(wd2_) is N.OWN_DNS_UNKNOWN)
 sqlite3.connect = _orig_connect
 con.close()
+wd3_ = os.path.join(TMP, "own-nometa"); os.makedirs(wd3_, exist_ok=True)
+_c3 = sqlite3.connect(os.path.join(wd3_, "csqtt.db")); _c3.execute("CREATE TABLE passwords (p TEXT)"); _c3.commit(); _c3.close()
+check("a DB with no meta table holds no DNS: None, and cached", N._turn_own_dns(wd3_) is None and os.path.join(wd3_, "csqtt.db") in N._OWN_DNS)
+check("reports leave dns_server out while it is unknown",
+      src.count('**({"dns_server": _own} if _own is not OWN_DNS_UNKNOWN else {}),') == 2)
 wd2 = os.path.join(TMP, "own-w"); os.makedirs(wd2, exist_ok=True)
 with open(os.path.join(wd2, "passwords.json"), "w") as fh: json.dump({"dns": "1.1.1.1,1.0.0.1", "passwords": {}}, fh)
 check("wdttplus: reads passwords.json dns", N._turn_own_dns(wd2) == "1.1.1.1,1.0.0.1")
@@ -311,8 +319,8 @@ with open(os.path.join(wd3, "passwords.json"), "w") as fh: json.dump({"passwords
 check("a store without dns (amurcanov) → None", N._turn_own_dns(wd3) is None)
 check("no store → None", N._turn_own_dns(os.path.join(TMP, "nothing")) is None)
 check("reports carry dns_server (wdttplus + csqtt)",
-      '**({"dns_server": _turn_own_dns(_wdtt_dir(iface))} if _wdtt_fork(inst) == "wdttplus" else {}),' in src
-      and '"dns_server": _turn_own_dns(_csqtt_dir(iface)),' in src)
+      '_own = _turn_own_dns(_wdtt_dir(iface)) if _wdtt_fork(inst) == "wdttplus" else OWN_DNS_UNKNOWN' in src
+      and '_own = _turn_own_dns(_csqtt_dir(iface))' in src)
 inst = {}
 check("first set keeps the server's own as dns_orig",
       P.apply_turn_client_dns(inst, {"dns": ["9.9.9.9"]}, "csqtt", {"dns_server": "1.1.1.1"}) is None
@@ -352,12 +360,18 @@ check("dnsmasq renders server= from the upstream",
       'conf += ["server=" + u for u in (upstream or SMART_DNS_UPSTREAM_DEFAULT)]' in src and "server=1.1.1.1" not in src)
 check("reconcile threads it through", "_dns_up = _dns_upstream((smart or {}).get(\"dns_upstream\"))" in src
       and "dom_sig = _dom_signature(_dns_e, domains, _zones, _fetched, _dns_up)" in src and "upstream=_dns_up)" in src)
-check("panel pushes it only when set (untouched node: same reply)",
-      '**({"dns_upstream": node["dns_upstream"]} if node.get("dns_upstream") else {}),' in psrc)
+check("panel pushes it only when set AND the node is in Force-DNS (untouched node: same reply)",
+      'if node.get("dns_upstream") and (node.get("routing_mode") or "kernel") == "forcedns" else {}),' in psrc)
+check("panel de-duplicates after normalising (one resolver, two spellings)",
+      P.node_dns_upstream(["2620:fe::fe", "2620:fe:0:0:0:0:0:fe"]) == (["2620:fe::fe"], None))
 check("panel publishes it", '"dns_upstream": c.get("dns_upstream") or [],' in psrc)
-check("node reports the upstream IN EFFECT while dnsmasq runs (not what was saved)",
-      '_SMART_MODE["dns_upstream"] = list(upstream or SMART_DNS_UPSTREAM_DEFAULT)' in src
+_es = src[src.index("def _ensure_smart_dnsmasq"):src.index("# ── Force-DNS guard (DoH/DoT block)")]
+check("node reports the upstream IN EFFECT: recorded only after the conf is written and dnsmasq runs",
+      _es.count('_SMART_MODE["dns_upstream"] = list(upstream or SMART_DNS_UPSTREAM_DEFAULT)') == 1
+      and _es.index('_SMART_MODE["dns_upstream"] = list(') > _es.index('r = run([DNSMASQ_BIN, "--conf-file=" + DNSMASQ_CONF])')
       and 'base["dns_upstream"] = _SMART_MODE["dns_upstream"]' in src)
+check("SPA: an older node running dnsmasq without reporting it is read as the old default",
+      'sr.engine === "dns" && sr.dnsmasq === true) ? ["1.1.1.1", "8.8.8.8"]' in open(os.path.join(ROOT, "js", "screen-settings.js"), encoding="utf-8").read())
 ssrc = open(os.path.join(ROOT, "js", "screen-settings.js"), encoding="utf-8").read()
 check("SPA: draft field, save body, section dirty-tracking",
       'dns_upstream: (n.dns_upstream || []).join(", ")' in ssrc and 'dns_upstream: String(e.dns_upstream || "").split(' in ssrc

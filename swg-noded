@@ -5925,7 +5925,6 @@ def _dns_upstream(raw):
     (loopback on SMART_DNS_PORT — dnsmasq would ask itself). Loopback on another port IS allowed: a local unbound on
     127.0.0.1#5335 is the usual reason to set this. Nothing usable → the default, never an empty upstream (an empty
     `server=` list would leave dnsmasq with no resolver at all, and every Force-DNS client with no DNS)."""
-    import ipaddress
     out = []
     for item in (raw if isinstance(raw, list) else [])[:4]:
         item = str(item or "").strip()
@@ -5971,12 +5970,8 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, ne
     # route_localnet fine, and the panel drawing "DNS resolver — down — host routing degraded" in red. That
     # is the first thing an operator sees after picking the mode and before assigning any category.
     _SMART_MODE["dns_idle"] = not want
-    # the upstream the conf below is built with — reported so the panel can show what is IN EFFECT, not what was saved
-    # (an older node ignores `dns_upstream` and keeps the default). In the signature, so the conf always matches it.
-    if want:
-        _SMART_MODE["dns_upstream"] = list(upstream or SMART_DNS_UPSTREAM_DEFAULT)
-    else:
-        _SMART_MODE.pop("dns_upstream", None)
+    if not want:
+        _SMART_MODE.pop("dns_upstream", None)                  # no resolver running → no upstream in effect
     _smart_dns_redirect(subnets if want else [], res, nets=[p for p, _i in (nets or ())])   # cheap, diff-gated — always reconciled
     if not want:                                               # nothing to fill → tear down + reap any stray instance
         _DNSMASQ_BUILD["n"] = 0
@@ -6082,6 +6077,13 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, ne
             res["errors"].append("smart dnsmasq start: " + (getattr(r, "stderr", "") or "").strip()[:120])
         else:
             res["changed"] += 1
+    # The upstream IN EFFECT, for the panel: set only here — the conf carrying it is on disk and dnsmasq runs — so a
+    # failed write or start never reports a value the resolver is not using. (The `unchanged` early return keeps the
+    # last value, which is right: `upstream` is in the signature, so unchanged means the same upstream.)
+    if _dnsmasq_running():
+        _SMART_MODE["dns_upstream"] = list(upstream or SMART_DNS_UPSTREAM_DEFAULT)
+    else:
+        _SMART_MODE.pop("dns_upstream", None)
 
 
 # ── Force-DNS guard (DoH/DoT block): in forcedns mode the node's dnsmasq IS the smart-routing oracle (it fills
@@ -15764,7 +15766,8 @@ _WDTT_DNS_BACKOFF = 300
 def _wdtt_takes_dns(fork, force=False):
     """Does the INSTALLED build of this fork take `-dns`? True / False once its `-h` answered, None while unknown.
 
-    Asked of the binary, not assumed per fork: ildarmaga has no such flag, a rollback target may predate it, and
+    Asked of the binary, not assumed per fork: ildarmaga had no such flag before 1.5.0-4, a rollback target may predate
+    it, and
     Go's flag package EXITS on an unknown flag — a wrong yes turns a working server into a crash loop. Only a real
     usage listing is an answer (at least one Go flag line parsed, whatever the exit code). run() turns a timeout or
     an exec failure into non-empty text ("timeout", the errno), which parses to nothing, so that is NOT an answer:
@@ -15820,14 +15823,21 @@ def _wdtt_applied_dns(iface, inst):
     parts = have.split()
     return parts[1] if len(parts) >= 2 and parts[0] == "-dns" else ""
 
-_OWN_DNS = {}                                       # path -> (mtime, value): a store is re-read only when it changed
+_OWN_DNS = {}                                       # path -> (stamp, value) once the store ANSWERED
+_OWN_DNS_RETRY = {}                                 # path -> earliest re-read after a read that failed
+OWN_DNS_UNKNOWN = object()                          # "could not read it" — distinct from None, "stores no DNS"
 
 def _turn_own_dns(cfgdir):
-    """The client DNS a server REMEMBERS on its own, or None for one that does not. csqtt (its sqlite `meta` row;
-    ≤2.0.1 kept a passwords.json) and wdttplus (passwords.json `dns`) start from their last saved value whenever no
-    flag / CSQTT_DNS comes, so for them the catalog's default says nothing about what clients get — an adopted server,
-    or one whose DNS was set before the panel managed it, hands out whatever it stored (measured on swgt 2026-09-25:
-    csqtt2 served 1.1.1.1 while its fork's default is Yandex). The flag-only forks store nothing: None."""
+    """The client DNS a server REMEMBERS on its own: a value, None for one that stores none, or OWN_DNS_UNKNOWN while
+    its store cannot be read. csqtt (its sqlite `meta` row; ≤2.0.1 kept a passwords.json) and wdttplus (passwords.json
+    `dns`) start from their last saved value whenever no flag / CSQTT_DNS comes, so for them the catalog's default
+    says nothing about what clients get — an adopted server, or one whose DNS was set before the panel managed it,
+    hands out whatever it stored (measured on swgt 2026-09-25: csqtt2 served 1.1.1.1 while its fork's default is
+    Yandex). The flag-only forks store nothing: None.
+    UNKNOWN is not None on purpose: the panel captures `dns_orig` from this, and "stores nothing" would make it
+    capture the catalog default instead of the value the server really holds. A failed read is not cached as an
+    answer; it is retried after a minute (not every 5 s pass), and the last answer is kept meanwhile."""
+    import sqlite3
     for path in (cfgdir + "/csqtt.db", cfgdir + "/passwords.json"):
         try:
             mt = os.stat(path).st_mtime
@@ -15841,12 +15851,18 @@ def _turn_own_dns(cfgdir):
         hit = _OWN_DNS.get(path)
         if hit and hit[0] == mt:
             return hit[1]
+        if time.time() < _OWN_DNS_RETRY.get(path, 0):
+            return hit[1] if hit else OWN_DNS_UNKNOWN
         try:
             if path.endswith(".db"):
-                import sqlite3
                 con = sqlite3.connect("file:" + path + "?mode=ro", uri=True, timeout=1)
                 try:
-                    row = con.execute("SELECT value FROM meta WHERE key = 'dns'").fetchone()
+                    try:
+                        row = con.execute("SELECT value FROM meta WHERE key = 'dns'").fetchone()
+                    except sqlite3.OperationalError as e:
+                        if "no such table" not in str(e):
+                            raise
+                        row = None                  # a store with no meta table (older schema) holds no DNS: an answer
                 finally:
                     con.close()
                 val = _turn_dns({"dns": row[0]}) if row else None
@@ -15854,9 +15870,11 @@ def _turn_own_dns(cfgdir):
                 with open(path) as f:
                     d = json.load(f)
                 val = _turn_dns({"dns": d.get("dns")}) if isinstance(d, dict) and d.get("dns") else None
-        except Exception:
-            return hit[1] if hit else None    # a read that failed (busy, mid-write) is not an answer: keep the last one, cache nothing
+        except (sqlite3.Error, OSError, ValueError):   # busy / mid-write / truncated JSON: not an answer
+            _OWN_DNS_RETRY[path] = time.time() + 60
+            return hit[1] if hit else OWN_DNS_UNKNOWN
         _OWN_DNS[path] = (mt, val)
+        _OWN_DNS_RETRY.pop(path, None)
         return val
     return None
 
@@ -17414,6 +17432,8 @@ def wdtt_snapshot():
         if _rawon:
             _rrxb, _rtxb, _rrxs, _rtxs = _wdtt_iface_traffic(_rawinfo[1])
             _rxb += _rrxb; _txb += _rtxb; _rxs += _rrxs; _txs += _rtxs
+        # what a wdttplus server itself remembers (_turn_own_dns); the flag-only forks store nothing to report
+        _own = _turn_own_dns(_wdtt_dir(iface)) if _wdtt_fork(inst) == "wdttplus" else OWN_DNS_UNKNOWN
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
                     "wg_addr": inst.get("wg_addr", ""), "wg_port": inst.get("wg_port", ""),
                     "server_pub": srvpub, "stopped": bool(inst.get("stopped")), "fork": inst.get("fork", "amurcanov"),
@@ -17429,11 +17449,11 @@ def wdtt_snapshot():
                     "params": inst.get("params") or "",
                     # Client DNS ("" = not set, the fork's own default) — _wdtt_params_changed compares it too, so a
                     # mirror needs it for the same T-18 reason. Its presence also tells the panel this node takes it;
-                    # dns_unsupported = the installed build has no -dns (ildarmaga, an old rollback target), so the
+                    # dns_unsupported = the installed build has no -dns (ildarmaga before 1.5.0-4, an old rollback target), so the
                     # panel says so instead of showing a value that never reaches a client.
                     "dns": _wdtt_applied_dns(iface, inst), "dns_unsupported": _wdtt_takes_dns(_wdtt_fork(inst)) is False,
                     # what the server itself remembers (wdttplus) — the truth when the panel sets none; see _turn_own_dns
-                    **({"dns_server": _turn_own_dns(_wdtt_dir(iface))} if _wdtt_fork(inst) == "wdttplus" else {}),
+                    **({"dns_server": _own} if _own is not OWN_DNS_UNKNOWN else {}),
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a foreign server at take-over, for the panel to adopt into the roster.
                     # Reported until it has them (reconcile_wdtt drops the record once they appear in `desired`),
@@ -18654,6 +18674,7 @@ def csqtt_snapshot():
                         "is_deactivated": bool(e.get("is_deactivated")), "expires_at": e.get("expires_at", 0),
                         "ip": _dev.get("ip", ""), "online": online, "rx_speed": _rs, "tx_speed": _ts}
         _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # TUN aggregate throughput (same reader as a wg iface)
+        _own = _turn_own_dns(_csqtt_dir(iface))   # what csqtt itself remembers (its DB)
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
                     "tun_addr": inst.get("tun_addr", ""), "web_port": inst.get("web_port", ""),
                     "stopped": bool(inst.get("stopped")), "kind": "csqtt",
@@ -18671,7 +18692,8 @@ def csqtt_snapshot():
                     "max_passwords": inst.get("max_passwords") or "",
                     "params": inst.get("params") or "",
                     "dns": _csqtt_applied_dns(iface, inst),   # client DNS in effect, as in the WDTT report
-                    "dns_server": _turn_own_dns(_csqtt_dir(iface)),   # what csqtt itself remembers (its DB)
+                    # what csqtt itself remembers (its DB) — left out while unreadable, so "unknown" never reads as "none"
+                    **({"dns_server": _own} if _own is not OWN_DNS_UNKNOWN else {}),
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a taken-over server, offered UP so the panel can recreate each as a
                     # roster peer. Present only while the hand-off is open; the panel clears it by importing.

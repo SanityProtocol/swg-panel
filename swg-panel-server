@@ -3104,7 +3104,7 @@ def node_dns_upstream(raw):
     127.0.0.1#5335, or a resolver on the node's LAN address, is the usual reason to set this at all.
     Twin: swg-noded `_dns_upstream`, which also falls back to the default rather than ever render no upstream."""
     parts = raw if isinstance(raw, list) else re.split(r"[\s,]+", str(raw or ""))
-    parts = list(dict.fromkeys(str(p).strip() for p in parts if str(p).strip()))
+    parts = [str(p).strip() for p in parts if str(p).strip()]
     if len(parts) > 4:
         return None, "Upstream DNS takes at most four addresses."
     out = []
@@ -3120,7 +3120,9 @@ def node_dns_upstream(raw):
         if a.is_loopback and pn == SMART_DNS_PORT:
             return None, perr("Upstream DNS: {v1} is the node's own Force-DNS resolver — it would ask itself.", v1=item)
         out.append(str(a) + ("#%d" % pn if sep else ""))
-    return out, None
+    # de-duplicated AFTER normalising, as the node does: "2620:fe::fe" and "2620:fe:0:0:0:0:0:fe" are one resolver,
+    # and a stored list that differs from the node's would read as "not on the node yet" for ever
+    return list(dict.fromkeys(out)), None
 
 
 def turn_client_dns(raw, fork, had, orig=None):
@@ -29393,7 +29395,10 @@ class Handler(BaseHTTPRequestHandler):
                                           "mode": node.get("routing_mode") or "kernel",   # kernel | forcedns | sni — the node picks its fill mechanism from this
                                           # Force-DNS resolver's upstream — only when the operator set one, so a node left on the
                                           # default gets the reply it always got (an older node ignores the key: default upstream)
-                                          **({"dns_upstream": node["dns_upstream"]} if node.get("dns_upstream") else {}),
+                                          # and only to a node IN Force-DNS: the field is shown and editable only there, so a value
+                                          # kept after switching away must not keep steering a resolver nobody can see the setting of
+                                          **({"dns_upstream": node["dns_upstream"]}
+                                             if node.get("dns_upstream") and (node.get("routing_mode") or "kernel") == "forcedns" else {}),
                                           "categories": sorted(_plan_cats),
                                           # per-category caps {ip,host}: provider cats from the catalog index, built-ins from SMART_CAPS.
                                           # The node reads its <cat>.txt/.doms (pulled from the panel via list_manifest) using these — a

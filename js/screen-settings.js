@@ -2651,8 +2651,12 @@ const sectionLabel = k => ({
               <div class="hint">${T("Where this node's resolver sends the lookups it answers for Force-DNS clients. Empty = 1.1.1.1, 8.8.8.8. Up to four addresses, each optionally with #port (a local resolver like 127.0.0.1#5335 works). If none of them answers, clients on this node can't resolve names.")}</div>
               ${(() => { /* what the node's resolver RUNS with (it reports it while it runs), against what is saved — an older node
                             ignores the setting and keeps the default, so a saved value is not yet an applied one */
-                const run = ((Store.stats[selNode] || {}).smartroute || {}).dns_upstream;
-                if (!Array.isArray(run) || savedMode !== "forcedns") return null;
+                const sr = (Store.stats[selNode] || {}).smartroute || {};
+                // A node too old to know the setting never reports it — but its resolver IS running (engine dns, dnsmasq
+                // alive) on the upstream that node always had, so that is what is in effect there.
+                const run = Array.isArray(sr.dns_upstream) ? sr.dns_upstream
+                  : (sr.engine === "dns" && sr.dnsmasq === true) ? ["1.1.1.1", "8.8.8.8"] : null;
+                if (!run || savedMode !== "forcedns") return null;
                 const saved = ((nodeRec || {}).dns_upstream || []).length ? nodeRec.dns_upstream : ["1.1.1.1", "8.8.8.8"];
                 return run.join(",") === saved.join(",")
                   ? html`<div class="hint">${T("In effect on this node: {v1}", { v1: run.join(", ") })}</div>`
