@@ -286,6 +286,23 @@ check("csqtt: reads meta.dns", N._turn_own_dns(cd) == "1.1.1.1", N._turn_own_dns
 con = sqlite3.connect(os.path.join(cd, "csqtt.db")); con.execute("UPDATE meta SET value='9.9.9.9' WHERE key='dns'"); con.commit(); con.close()
 os.utime(os.path.join(cd, "csqtt.db"), (_time.time() + 5, _time.time() + 5))
 check("csqtt: re-read when the store changed", N._turn_own_dns(cd) == "9.9.9.9", N._turn_own_dns(cd))
+# WAL: a change that only moved the -wal file must still be seen (csqtt's DB runs in WAL mode)
+wd_ = os.path.join(TMP, "own-wal"); os.makedirs(wd_, exist_ok=True); dbp = os.path.join(wd_, "csqtt.db")
+con = sqlite3.connect(dbp); con.execute("PRAGMA journal_mode=WAL"); con.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+con.execute("INSERT INTO meta VALUES ('dns', '1.1.1.1')"); con.commit(); con.execute("PRAGMA wal_checkpoint(TRUNCATE)"); con.close()
+check("wal db: first read", N._turn_own_dns(wd_) == "1.1.1.1", N._turn_own_dns(wd_))
+_mt0 = os.stat(dbp).st_mtime
+con = sqlite3.connect(dbp); con.execute("PRAGMA wal_autocheckpoint=0")
+con.execute("UPDATE meta SET value='8.8.8.8' WHERE key='dns'"); con.commit()      # held open: the write stays in -wal
+os.utime(dbp, (_mt0, _mt0))                                                        # the main file's stamp: unchanged
+check("csqtt: a change only in the -wal is seen", N._turn_own_dns(wd_) == "8.8.8.8", N._turn_own_dns(wd_))
+_c = N._OWN_DNS.get(dbp)
+_orig_connect = sqlite3.connect
+sqlite3.connect = lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked"))
+os.utime(dbp, (_time.time() + 20, _time.time() + 20))
+check("a failed read keeps the last answer and caches nothing", N._turn_own_dns(wd_) == "8.8.8.8" and N._OWN_DNS.get(dbp) == _c)
+sqlite3.connect = _orig_connect
+con.close()
 wd2 = os.path.join(TMP, "own-w"); os.makedirs(wd2, exist_ok=True)
 with open(os.path.join(wd2, "passwords.json"), "w") as fh: json.dump({"dns": "1.1.1.1,1.0.0.1", "passwords": {}}, fh)
 check("wdttplus: reads passwords.json dns", N._turn_own_dns(wd2) == "1.1.1.1,1.0.0.1")

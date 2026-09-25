@@ -15833,11 +15833,15 @@ def _turn_own_dns(cfgdir):
             mt = os.stat(path).st_mtime
         except OSError:
             continue
+        # csqtt's DB runs in WAL mode: its startup write of `dns` can sit in -wal with the main file's mtime unchanged,
+        # so the WAL's stamp is part of "did it change" — or a restart with a new DNS keeps reporting the old one.
+        with contextlib.suppress(OSError):
+            st = os.stat(path + "-wal")
+            mt = (mt, st.st_mtime, st.st_size)
         hit = _OWN_DNS.get(path)
         if hit and hit[0] == mt:
             return hit[1]
-        val = None
-        with contextlib.suppress(Exception):
+        try:
             if path.endswith(".db"):
                 import sqlite3
                 con = sqlite3.connect("file:" + path + "?mode=ro", uri=True, timeout=1)
@@ -15850,6 +15854,8 @@ def _turn_own_dns(cfgdir):
                 with open(path) as f:
                     d = json.load(f)
                 val = _turn_dns({"dns": d.get("dns")}) if isinstance(d, dict) and d.get("dns") else None
+        except Exception:
+            return hit[1] if hit else None    # a read that failed (busy, mid-write) is not an answer: keep the last one, cache nothing
         _OWN_DNS[path] = (mt, val)
         return val
     return None
