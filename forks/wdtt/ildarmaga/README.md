@@ -9,15 +9,34 @@ Upstream: https://github.com/ildarmaga/wdtt — a Go workspace (`.` + `./panel` 
 server (`:2096`), SQLite panel, and Xray routing are NOT built or used — the swg-panel is the control
 plane.
 
-## Build label: `1.5.0-3` — and an honest word on the source
+## Build label: `1.5.0-4` — and an honest word on the source
 
 ⚠️ **ildarmaga publishes no source past `ef69799`.** Its tags `1.5.40`, `1.5.55` and `1.5.61` all point
 at that single docs commit, and the shipped `1.5.x` binaries were built from commits that were never
 pushed (the `1.5.61` binary's `vcs.revision` is not on GitHub). So the newest *buildable* source is the
 `v1.5.0` tree at `ef69799`. We build **that**, plus our patch, and label the result **`1.5.0-3`** rather
 than borrow a `1.5.40`/`1.5.61` number we cannot reproduce. What an earlier note called "1.5.40-2" was in
-truth source `1.5.0` + our patch; `1.5.0-3` is the same source with the K5 revocation/source fixes below.
-Published as `wdtt-ildarmaga-1.5.0-3` (2026-09-17), amd64 + arm64, and rig-proven on the published amd64 bytes.
+truth source `1.5.0` + our patch; `1.5.0-3` is the same source with the K5 revocation/source fixes below, and
+`1.5.0-4` adds the `-dns` flag (below).
+`wdtt-ildarmaga-1.5.0-3` was published 2026-09-17, amd64 + arm64, and rig-proven on the published amd64 bytes.
+`1.5.0-4` is built (Go 1.27.1, amd64 `28aba26f…`, arm64 `4813aaf9…`, reproducible) and not yet published.
+
+## `-dns` (`1.5.0-4`)
+
+Upstream reads the client DNS only from `panel.db`'s inbound row, which swg-panel never writes, so every
+client got `1.1.1.1` with no way to change it. `-dns a[,b]` (1–2 IPv4) sets it, with the same flag name as
+the other WDTT forks. swg-noded passes it only to a build whose `-h` lists it (`docs/DNS-SETTINGS-PLAN.md`).
+
+- The override is re-applied **inside `applyInboundRuntimeSettings`**, not only at startup: every SIGHUP (one
+  per password change) runs `reloadDBFromDisk → loadInboundSettings → applyInboundRuntimeSettings`, which
+  resets `clientDNS` to the DB value or the default. Unit test `TestDNSOverrideSurvivesReload`; proven on the
+  built bytes in a netns with a `panel.db` row saying `8.8.8.8`: the reload logged
+  `DNS клиентов: 9.9.9.9,149.112.112.112`.
+- Under the panel that reload never applies anything: our `panel.db` lacks `wg_keepalive_sec`, so the load
+  errors. The startup line `[CFG] DNS клиентов (-dns): …` is therefore the one that shows the DNS in effect.
+- An invalid value is logged as ignored and the server keeps running on the DB value or default; it does not exit.
+- `go test` in `server/`: `TestGetNextRawIPUnique` and `TestRawSubnetCIDR` fail, exactly as they do on
+  `1.5.0-3`'s source. They are upstream tests that assume the stock RAW subnet, which this patch makes a flag.
 
 ## Build
 

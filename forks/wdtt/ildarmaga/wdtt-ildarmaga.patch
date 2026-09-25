@@ -21,7 +21,7 @@ index e3fc46d..6de4721 100644
  		go func() {
  			if err := panel.Run(); err != nil {
 diff --git a/server/config.go b/server/config.go
-index ab78a82..5dfab36 100644
+index ab78a82..63677e0 100644
 --- a/server/config.go
 +++ b/server/config.go
 @@ -4,6 +4,8 @@ import (
@@ -50,7 +50,7 @@ index ab78a82..5dfab36 100644
  var (
  	serverFlagsOnce sync.Once
  	flagListen      *string
-@@ -49,7 +61,69 @@ func initServerFlags() {
+@@ -49,7 +61,80 @@ func initServerFlags() {
  		flagHandshake = flag.Duration("handshake-timeout", 30*time.Second, "таймаут DTLS handshake")
  		flagAdminAddr = flag.String("admin-addr", "127.0.0.1:2861", "HTTP admin (localhost): /health, POST /admin/reload")
  		flagMaxDTLSDev = flag.Int("max-dtls-per-device", 0, "макс. параллельных GETCONF на device_id (0 = без лимита)")
@@ -67,6 +67,10 @@ index ab78a82..5dfab36 100644
 +		flagListenRaw := flag.String("listen-raw", "", "RAW-IP listener address host:port (empty = upstream default, DTLS port + 3)")
 +		flagRawIface := flag.String("raw-iface", rawIfaceName, "RAW TUN interface name (multi-instance per node)")
 +		flagRawAddr := flag.String("raw-addr", rawServerCIDR, "RAW TUN address CIDR, e.g. 10.70.1.1/24")
++		// Client DNS, per instance. Upstream reads it ONLY from panel.db's inbound row, which swg-panel never writes
++		// (the panel is gated off), so every client got 1.1.1.1 with no way to change it. Same flag name as the
++		// other WDTT forks: swg-noded passes -dns only to a build whose -h lists it.
++		flagDNS := flag.String("dns", "", "client DNS, one or two IPv4 addresses, comma-separated (overrides panel.db; empty = panel.db or 1.1.1.1)")
  		flag.Parse()
 +		desiredPath = strings.TrimSpace(*flagDesired)
 +		if cd := strings.TrimSpace(*flagConfigDir); cd != "" {
@@ -112,6 +116,13 @@ index ab78a82..5dfab36 100644
 +			}
 +		})
 +		rawIdentityGiven = sawIface && sawAddr
++		if v, err := normalizeFlagDNS(*flagDNS); err != nil {
++			log.Printf("[CFG] -dns %q ignored: %v", *flagDNS, err) // keep serving on panel.db / the default rather than exit
++		} else if v != "" {
++			dnsOverride = v
++			clientDNS = v
++			log.Printf("[CFG] DNS клиентов (-dns): %s — overrides panel.db", v) // the only DNS line a panel-managed server logs
++		}
 +		noNat = *flagNoNat
 +		fixedConfig = *flagFixed
 +		if *flagMaxUsers > 0 {
@@ -120,6 +131,30 @@ index ab78a82..5dfab36 100644
  	})
  }
  
+@@ -111,3 +196,23 @@ func (c ServerConfig) applyGlobals() {
+ 	maxDTLSPerDevice = int32(c.MaxDTLSPerDevice)
+ 	adminListenAddr = c.AdminAddr
+ }
++
++// normalizeFlagDNS validates -dns: one or two IPv4 addresses, comma-separated. "" = not given.
++func normalizeFlagDNS(v string) (string, error) {
++	var out []string
++	for _, part := range strings.Split(v, ",") {
++		part = strings.TrimSpace(part)
++		if part == "" {
++			continue
++		}
++		ip := net.ParseIP(part)
++		if ip == nil || ip.To4() == nil || ip.To4().String() != part {
++			return "", fmt.Errorf("%q is not an IPv4 address", part)
++		}
++		out = append(out, part)
++	}
++	if len(out) > 2 {
++		return "", fmt.Errorf("at most two addresses")
++	}
++	return strings.Join(out, ","), nil
++}
 diff --git a/server/desired_ingest.go b/server/desired_ingest.go
 new file mode 100644
 index 0000000..163905a
@@ -375,6 +410,55 @@ index 0000000..163905a
 +		log.Printf("[DESIRED] password set reloaded from %s", desiredPath)
 +	}
 +}
+diff --git a/server/dns_flag_test.go b/server/dns_flag_test.go
+new file mode 100644
+index 0000000..cf9f077
+--- /dev/null
++++ b/server/dns_flag_test.go
+@@ -0,0 +1,43 @@
++package server
++
++import "testing"
++
++// swg-panel: -dns must survive every reload. applyInboundRuntimeSettings runs on each SIGHUP (reloadDBFromDisk →
++// loadInboundSettings) and resets clientDNS to panel.db's value or the default — without the override re-applied
++// there, the flag would last only until the first password change.
++func TestDNSOverrideSurvivesReload(t *testing.T) {
++	saved, savedOverride := clientDNS, dnsOverride
++	defer func() { clientDNS, dnsOverride = saved, savedOverride }()
++
++	dnsOverride = ""
++	applyInboundRuntimeSettings(inboundRuntimeSettings{DNS: "8.8.8.8"})
++	if clientDNS != "8.8.8.8" {
++		t.Fatalf("no -dns: want panel.db's 8.8.8.8, got %q", clientDNS)
++	}
++	applyInboundRuntimeSettings(inboundRuntimeSettings{})
++	if clientDNS != defaultClientDNS {
++		t.Fatalf("no -dns, empty panel.db: want the default, got %q", clientDNS)
++	}
++
++	dnsOverride = "9.9.9.9,149.112.112.112"
++	for _, db := range []string{"8.8.8.8", ""} {
++		applyInboundRuntimeSettings(inboundRuntimeSettings{DNS: db})
++		if clientDNS != dnsOverride {
++			t.Fatalf("-dns set, panel.db %q: want the flag %q, got %q", db, dnsOverride, clientDNS)
++		}
++	}
++}
++
++func TestNormalizeFlagDNS(t *testing.T) {
++	ok := map[string]string{"": "", "9.9.9.9": "9.9.9.9", " 1.1.1.1 , 1.0.0.1 ": "1.1.1.1,1.0.0.1"}
++	for in, want := range ok {
++		if got, err := normalizeFlagDNS(in); err != nil || got != want {
++			t.Errorf("normalizeFlagDNS(%q) = %q, %v; want %q", in, got, err, want)
++		}
++	}
++	for _, bad := range []string{"dns.google", "2606:4700::1111", "1.1.1.1,1.0.0.1,8.8.8.8", "01.1.1.1", "300.1.1.1"} {
++		if _, err := normalizeFlagDNS(bad); err == nil {
++			t.Errorf("normalizeFlagDNS(%q): want an error", bad)
++		}
++	}
++}
 diff --git a/server/fixedconfig_test.go b/server/fixedconfig_test.go
 new file mode 100644
 index 0000000..272cd25
@@ -429,6 +513,22 @@ index 0000000..272cd25
 +		t.Fatalf("stock mode must key by deviceID")
 +	}
 +}
+diff --git a/server/panel_db.go b/server/panel_db.go
+index 6344f0f..08e73d8 100644
+--- a/server/panel_db.go
++++ b/server/panel_db.go
+@@ -503,6 +503,11 @@ func applyInboundRuntimeSettings(raw inboundRuntimeSettings) {
+ 	if dns := strings.TrimSpace(raw.DNS); dns != "" {
+ 		clientDNS = dns
+ 	}
++	// -dns wins over panel.db, here and not only at startup: every SIGHUP (the node sends one per password change)
++	// runs reloadDBFromDisk → loadInboundSettings → this function, which would otherwise put the DB value back.
++	if dnsOverride != "" {
++		clientDNS = dnsOverride
++	}
+ 	if raw.MaxUsers >= 1 && raw.MaxUsers <= maxUsersSubnetLimit {
+ 		maxGeneratedPasswords = raw.MaxUsers
+ 	}
 diff --git a/server/rawpool_test.go b/server/rawpool_test.go
 new file mode 100644
 index 0000000..1065043
@@ -582,7 +682,7 @@ index 0000000..5faa4fb
 +	}
 +}
 diff --git a/server/server.go b/server/server.go
-index 5f7877b..97a54b9 100644
+index 5f7877b..81697b4 100644
 --- a/server/server.go
 +++ b/server/server.go
 @@ -50,18 +50,40 @@ func rawDirectListenAddr(dtlsAddr string, rawPort int) (string, error) {
@@ -637,7 +737,15 @@ index 5f7877b..97a54b9 100644
  	defaultStatsIntervalSec = 2
  )
  
-@@ -230,10 +252,28 @@ func isTrafficExceeded(entry *PasswordEntry) bool {
+@@ -72,6 +94,7 @@ var (
+ 
+ var (
+ 	clientDNS             = defaultClientDNS
++	dnsOverride           string // -dns; re-applied over panel.db on every reload (applyInboundRuntimeSettings)
+ 	maxGeneratedPasswords = defaultMaxUsers
+ 	dtlsHandshakeTimeout  = 30 * time.Second
+ 	wgMTU                 = defaultWgMTU
+@@ -230,10 +253,28 @@ func isTrafficExceeded(entry *PasswordEntry) bool {
  	return entry.UpBytes+entry.DownBytes >= entry.TotalBytes
  }
  
@@ -666,7 +774,7 @@ index 5f7877b..97a54b9 100644
  	var fallback string
  	for pass, entry := range db.Passwords {
  		if entry == nil || !entryHasDevice(entry, deviceID) {
-@@ -255,6 +295,11 @@ func bindOrphanDeviceToMainLocked(deviceID string) string {
+@@ -255,6 +296,11 @@ func bindOrphanDeviceToMainLocked(deviceID string) string {
  	if deviceID == "" || db.MainPassword == "" {
  		return ""
  	}
@@ -678,7 +786,7 @@ index 5f7877b..97a54b9 100644
  	if _, ok := db.Devices[deviceID]; !ok {
  		return ""
  	}
-@@ -485,7 +530,7 @@ func getNextIP() string {
+@@ -485,7 +531,7 @@ func getNextIP() string {
  		used[dev.IP] = true
  	}
  	for i := 2; i <= 250; i++ {
@@ -687,7 +795,7 @@ index 5f7877b..97a54b9 100644
  		if !used[ip] {
  			return ip
  		}
-@@ -507,11 +552,24 @@ func RunManaged() {
+@@ -507,11 +553,24 @@ func RunManaged() {
  	log.Println("══════════════════════════════════════════")
  
  	cfg := baseServerConfigFromFlags()
@@ -712,7 +820,7 @@ index 5f7877b..97a54b9 100644
  	for {
  		ctx, cancel := context.WithCancel(context.Background())
  		restartCh := make(chan struct{}, 1)
-@@ -550,6 +608,7 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
+@@ -550,6 +609,7 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
  	cfg.applyGlobals()
  
  	initDB(cfg.MainPass, cfg.AdminID, cfg.BotToken)
@@ -720,7 +828,7 @@ index 5f7877b..97a54b9 100644
  	log.Printf("[CFG] Admin HTTP: %s (hot-reload /health, restart /admin/restart)", adminListenAddr)
  
  	if disabled {
-@@ -631,7 +690,25 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
+@@ -631,7 +691,25 @@ func runServerOnce(ctx context.Context, cfg ServerConfig) {
  
  	rawAcceptDone := make(chan struct{})
  	close(rawAcceptDone) // default: no direct listener
