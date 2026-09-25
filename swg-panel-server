@@ -3314,6 +3314,11 @@ def count_plaintext_configs(config_dir):
 # the UI must not imply the panel checked.
 VK_POOL_MAX = 64                    # entries; a pool larger than this is an import mistake, not a fleet
 VK_LINK_MAXLEN = 512
+# How many pool links a NEW user is handed. Every call link is its own pool of TURN streams in the clients that
+# take a list, so one link was a fraction of the throughput a user could have had. Operator-set
+# (panel_settings["vk_pool_per_user"]); 0 = hand out none. The upper bound is only a typo guard — each client
+# still takes what it can (csqtt 6, WDTT 4, single-link cores the first), and the order is primary-first.
+VK_POOL_PER_USER_DEFAULT, VK_POOL_PER_USER_MAX = 3, 16
 
 
 def _vk_pool_list(ps):
@@ -3361,6 +3366,29 @@ def _vk_pool_pick(ps, exclude_urls=(), counts=None):
         return secrets.choice(avail)
     fewest = min(counts.get(e["url"], 0) for e in avail)
     return secrets.choice([e for e in avail if counts.get(e["url"], 0) == fewest])
+
+
+def _vk_pool_per_user(ps):
+    """How many pool links a new user starts with — the operator's setting, else the default."""
+    try:
+        n = int((ps or {}).get("vk_pool_per_user", VK_POOL_PER_USER_DEFAULT))
+    except (TypeError, ValueError):
+        n = VK_POOL_PER_USER_DEFAULT
+    return max(0, min(VK_POOL_PER_USER_MAX, n))
+
+
+def _vk_pool_pick_many(ps, n, counts):
+    """Up to `n` DISTINCT live entries, each the least-loaded at the moment it is picked. `counts` is updated as
+    it goes, so the second pick sees the first and a user is spread across the pool instead of stacked on the
+    one link that happened to be emptiest. Fewer than `n` when the pool runs out."""
+    out = []
+    while len(out) < n:
+        e = _vk_pool_pick(ps, exclude_urls=[x["url"] for x in out], counts=counts)
+        if not e:
+            break
+        out.append(e)
+        counts[e["url"]] = counts.get(e["url"], 0) + 1
+    return out
 
 
 def _vk_user_sync(u, ps, counts=None):
@@ -14604,6 +14632,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "throughput_units": "bytes",
     "top_talkers": 10,        # Overview: rows in the Top talkers list (1–50)
     "top_destinations": 10,   # Overview: rows in the Top destinations list (1–50)
+    "vk_pool_per_user": VK_POOL_PER_USER_DEFAULT,   # Turn → VK pool: links a NEW user is handed (0–16; POST /api/vk-pool/per-user)
     "expiry_warn_days": 3,    # Display: warn "about to expire" this many days before a subscription/peer expiry (0–365)
     "time_zone": "",          # Display → Data: the zone days are counted in ("" = this server's own; see tz_apply)
     "infinite_history": True,   # Display → Data: keep the ledger's detail (fine files) for ever; off: 33 days. Day rows always stay
@@ -22828,13 +22857,14 @@ def api(method, path, qs, body, deps):
             uid = gen_id()
         u = user_set(roster, uid, {"name": name, "tag": (body.get("tag") or "").strip(),
                                    "note": body.get("note", "")}, now())
-        # A new user starts with one link from the pool when there is one, so an operator who has filled the
-        # pool never has to remember this step. Personal links are added on top, in Manage.
-        pick = _vk_pool_pick(deps.get("panel_settings") or {}, counts=_vk_pool_counts(roster))
-        if pick:
-            u["vk_links"] = [pick["url"]]
-            u["vk_link"] = pick["url"]
-            u["vk_pool"] = {pick["id"]: pick["url"]}
+        # A new user starts with `vk_pool_per_user` links from the pool (default 3) when there are any, so an
+        # operator who has filled the pool never has to remember this step. Personal links are added on top, in Manage.
+        ps = deps.get("panel_settings") or {}
+        picks = _vk_pool_pick_many(ps, _vk_pool_per_user(ps), _vk_pool_counts(roster))
+        if picks:
+            u["vk_links"] = [e["url"] for e in picks]
+            u["vk_link"] = picks[0]["url"]
+            u["vk_pool"] = {e["id"]: e["url"] for e in picks}
         roster_save(roster_path, roster)
         ev_append(roster_path, "user", uid, "Created user", name)
         return 200, {"ok": True, "data": u}
@@ -23985,6 +24015,22 @@ def api(method, path, qs, body, deps):
             roster_save(roster_path, roster)
             ev_append(roster_path, "settings", "", "VK pool changed — reassigned %d user(s)" % moved, "")
         return 200, {"ok": True, "data": {"pool": pool, "rev": ps["vk_pool_rev"], "reassigned": moved}}
+
+    if method == "POST" and path == "/api/vk-pool/per-user":
+        # How many pool links a NEW user gets. Its own endpoint for the same reason the pool has one: it saves on
+        # its own, outside the Turn section's Save. It changes nobody who already exists — "Add from pool" does that.
+        n = body.get("n")
+        # A whole number only — int() would quietly turn true into 1 and 2.9 into 2 and report success.
+        if isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= VK_POOL_PER_USER_MAX:
+            return 400, {"ok": False, **perr("Between 0 and {v1}.", v1=str(VK_POOL_PER_USER_MAX)), "code": "bad_request"}
+        ps = deps.get("panel_settings") or {}
+        was = _vk_pool_per_user(ps)
+        ps["vk_pool_per_user"] = n
+        deps["panel_settings"] = ps
+        save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+        if n != was:
+            ev_append(roster_path, "settings", "", "VK links per new user: %d → %d" % (was, n), "")
+        return 200, {"ok": True, "data": {"vk_pool_per_user": n}}
 
     if method == "POST" and path == "/api/user/vk-pool-add":
         # "Add from pool" on one user: another random live link they do not already hold.

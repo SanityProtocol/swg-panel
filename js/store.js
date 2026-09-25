@@ -130,6 +130,7 @@ export const api = {
   connectionUpdate(b) { return this.post("/api/connection/update", b); },
   panelSettings(b) { return this.post("/api/panel/settings", b); },
   vkPool(pool, rev) { return this.post("/api/vk-pool", { pool, rev }); },     // save the whole shared VK pool (cascades to holders server-side; rev guards a stale overwrite)
+  vkPoolPerUser(n) { return this.post("/api/vk-pool/per-user", { n }); },   // how many pool links a NEW user gets
   userVkPoolAdd(id) { return this.post("/api/user/vk-pool-add", { id }); },  // give this user one more link from the pool
   subVault() { return this.get("/api/sub/vault"); },
   subVaultSet(b) { return this.post("/api/sub/vault", b); },

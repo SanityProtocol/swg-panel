@@ -713,7 +713,7 @@ def read_data(state, token):
             # PER-USER VK link only — subscriptions NEVER fall back to the panel-wide vk_link (that one is for
             # the admin's own testing + unassigned peers). Empty here → the sub page shows a "create one" warning.
             "turn_enabled": bool(subs.get("turn_enabled")), "vk_link": (user.get("vk_link") or ""),
-            "vk_links": (user.get("vk_links") if isinstance(user.get("vk_links"), list) else ([user.get("vk_link")] if user.get("vk_link") else [])),   # all of the user's VK links (primary first); forks that support it embed all, freeturn lists them
+            "vk_links": (user.get("vk_links") if isinstance(user.get("vk_links"), list) else ([user.get("vk_link")] if user.get("vk_link") else [])),   # all of the user's VK links (primary first); every client that takes a list embeds all
 
             "theme_color": subs.get("theme_color") or "", "theme_color_light": subs.get("theme_color_light") or "",
             "turn_fork_colors": subs.get("turn_fork_colors") or {}, "iface_colors": subs.get("iface_colors") or {},

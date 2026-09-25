@@ -312,10 +312,43 @@ function VkPoolSheet() {
     <${VkSortHead} sort=${sort} desc=${desc} setSort=${setSort} setDesc=${setDesc} withDate=${true}
       left=${html`<${VkPoolTotals} P=${P} big=${true}/>`}/>
     ${P.pool.length ? html`<${VkPoolRows} P=${P} rows=${rows.slice(pg * VK_PAGE_SHEET, (pg + 1) * VK_PAGE_SHEET)} withDate=${true}/>`
-      : html`<div class="vkpool-empty">${T("The pool is empty — add a link and new users will get one automatically.")}</div>`}
+      : html`<div class="vkpool-empty">${(vkPerUser() ? T("The pool is empty — add links and new users will get them automatically.") : T("The pool is empty."))}</div>`}
     ${addOpen ? html`<${VkPasteBox} onAdd=${P.addMany} onClose=${() => setAddOpen(false)}/>` : null}
     <div class="vkpool-bar"><span></span><${VkPager} page=${pg} setPage=${setPage} pages=${pages}/><span></span></div>
   <//>`;
+}
+
+const vkPerUser = () => { const n = parseInt((Store.panelSettings || {}).vk_pool_per_user, 10);
+  return isNaN(n) ? 3 : Math.max(0, Math.min(16, n)); };   // mirrors the server's _vk_pool_per_user
+
+// How many pool links a NEW user is handed (server default 3). Saves on its own the moment it is committed —
+// Enter or leaving the field — like every pool row; it never touches users who already exist.
+function VkPerUser() {
+  useStore();
+  // The server always sends the effective value (PANEL_SETTINGS_DEFAULTS); shown clamped the way it applies it.
+  const saved = String(vkPerUser());
+  const [v, setV] = useState(null);                // null = showing the saved value
+  const commit = async () => {
+    if (v === null) return;
+    if (v === "" || v === saved) { setV(null); return; }
+    let r = null;
+    try { r = await api.vkPoolPerUser(+v); } catch (_) { r = null; }   // network error / proxy error page → api.post throws
+    if (!r || !r.ok) { toast(srvText(r) || T("Couldn't save"), "err"); setV(null); return; }
+    // Take the saved value now: a failed follow-up poll must not put the old number back beside a success toast.
+    Store.panelSettings = { ...(Store.panelSettings || {}), vk_pool_per_user: +v };
+    bus.emit();                                    // the pool's hints read it too, and they only re-render on the bus
+    setV(null);
+    toast(T("New users will get {v1}.", { v1: plural(+v, "VK link") }), "ok");
+    Store.poll().catch(() => {});
+  };
+  return html`<div class="field" style="max-width:340px;margin:0 0 10px">
+    <label>${T("Links per new user")}</label>
+    <input type="text" inputmode="numeric" value=${v === null ? saved : v} onDblClick=${e => e.target.select()}
+      onInput=${e => { let x = e.target.value.replace(/[^0-9]/g, ""); if (+x > 16) x = "16"; setV(x); }}
+      onBlur=${commit} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } if (e.key === "Escape") setV(null); }}
+      placeholder="3"/>
+    <div class="hint">${T("Taken from the pool, least-used first, when a user is created (0 = none). Existing users keep what they have.")}</div>
+  </div>`;
 }
 
 function VkPoolEditor() {
@@ -330,13 +363,15 @@ function VkPoolEditor() {
   const [addOpen, setAddOpen] = useState(false);
   return html`<${Fragment}>
     <div class="seclabel" style="margin-top:18px">${T("Shared VK call link pool")}</div>
-    <p class="hint" style="margin:0 0 10px">${Trich("Links handed out to users *at random* — a new user gets one automatically, and you can give anyone more from the pool in their *Manage* view.")}</p>
+    <p class="hint" style="margin:0 0 10px">${vkPerUser() ? Trich("Links handed out to users *at random* — a new user gets them automatically, and you can give anyone more from the pool in their *Manage* view.")
+      : Trich("Links handed out to users *at random* — from the pool in their *Manage* view. New users get none automatically while the setting below is 0.")}</p>
+    <${VkPerUser}/>
     ${P.pool.length > 1
       ? html`<${VkSortHead} sort=${sort} desc=${desc} setSort=${setSort} setDesc=${setDesc}
               left=${html`<${VkPoolTotals} P=${P}/>`}/>`
       : html`<div class="vkpool-head"><${VkPoolTotals} P=${P}/></div>`}
     ${P.pool.length ? html`<${VkPoolRows} P=${P} rows=${rows.slice(pg * VK_PAGE_INLINE, (pg + 1) * VK_PAGE_INLINE)}/>`
-      : html`<div class="vkpool-empty">${T("The pool is empty — add a link and new users will get one automatically.")}</div>`}
+      : html`<div class="vkpool-empty">${(vkPerUser() ? T("The pool is empty — add links and new users will get them automatically.") : T("The pool is empty."))}</div>`}
     ${P.pool.length && !liveLeft ? html`<div class="hint vk-warn">${T("No live links left — users on a dead link will keep it until you add a working one.")}</div>` : null}
     ${addOpen ? html`<${VkPasteBox} onAdd=${P.addMany} onClose=${() => setAddOpen(false)}/>` : null}
     <div class="vkpool-bar">

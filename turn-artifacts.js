@@ -266,9 +266,12 @@
     // `vk` carries the VK call link. We used to write `link` + `links`, mirroring the CLI's -link/-links —
     // the app's share parser reads NEITHER, so the call link never arrived and the call dropped (issue #5).
     // `vk` is what the client actually reads; confirmed on a real samosvalishe relay before changing this.
-    // One URL: the call link is per-client, so the primary is the one that belongs in this client's link.
+    // ALL of the user's links, comma-joined. The core copies `vk` into -links (internal/config/raw.go applyURI) and
+    // splits it on commas (normalizeVKLinks), and every link gets its own pool of -n streams — so one link was a
+    // third of the throughput for a user holding three. The Android app keeps `vk` as its one callLink string and
+    // hands it to the core as relay.links=[callLink], which the core joins and splits the same way.
     var vks = (vkLinks || []).map(function (s) { return (s || "").trim(); }).filter(Boolean);
-    if (vks.length) o.vk = vks[0];
+    if (vks.length) o.vk = vks.join(",");
     // Client (app) knobs — omitted when default/blank so the link stays minimal (empty/default keys are dropped, per uri.md).
     var n = csNum(cs, "n", 0); if (n > 0) o.n = n;                   // parallel TURN streams (-n); omit → app default (10)
     var spc = csNum(cs, "spc", 0); if (spc > 0) o.spc = spc;        // streams per cached credential (-streams-per-cred); omit → default (10)
@@ -350,7 +353,14 @@
     var flags = core.flags;
     String((cs || {}).rawFlags || "").split(/[\r\n]+/).map(function (s) { return s.trim(); }).filter(Boolean)   // admin-added raw args (the app's Raw-mode flags box)
       .forEach(function (f, i) { flags.push({ id: "flag-raw-" + i, label: "Custom", argument: f, enabled: true, deletable: true }); });
-    var config = { serverAddress: listen, vkLink: (vkList && vkList[0]) || "", linkArgument: core.linkArgument,
+    // The app passes vkLink to the core as ONE argv token after linkArgument (ProxyService), no shell. The MYSOREZ
+    // core's -vk and the free-turn core's -links both take a comma list (one stream pool per call); -vk-link (cacggghp,
+    // Moroka8) and free-turn's deprecated -link take exactly one (they split it on "join/"), so those get the primary.
+    // Keyed on the flag actually sent, not the fork: the admin can override linkArgument.
+    var la = String(core.linkArgument || "").replace(/^-+/, "");   // Go's flag package takes -links and --links alike
+    var multi = (la === "links" || la === "vk");
+    var vkArg = multi ? (vkList || []).join(",") : ((vkList && vkList[0]) || "");
+    var config = { serverAddress: listen, vkLink: vkArg, linkArgument: core.linkArgument,
       localPort: "127.0.0.1:9000", isRawMode: false, rawCommand: "", customFlags: flags };
     var threads = csNum(cs, "threads", 0); if (threads > 0) config.threads = threads;   // -n; omitted → the app's own default (8)
     return { id: "swg-" + (addr || listen).replace(/[^0-9A-Za-z]+/g, "-"), name: "SWG " + (addr || listen), isDefault: false, config: config };
@@ -476,8 +486,9 @@
     cs = cs || {};                                        // client (app) settings for THIS client (admin-chosen; defaults applied per reader)
     var listen = tp.listen || "";
     // The user's VK call links — an ordered list (primary first). vkLink is the legacy single (= primary). Each fork
-    // uses what its app supports: WINGS embeds all (Turn.links[]), anton48 all (multiline vkLink), kiper292/sidecar
-    // the primary; freeturn shows them all for the user to paste in-app.
+    // uses what its app supports: WINGS embeds all (Turn.links[]), anton48 all (multiline vkLink), freeturn all
+    // (comma-joined `vk`), VKTGZ + CLI all where the core takes a list (free-turn, MYSOREZ); kiper292, cacggghp and
+    // Moroka8 cores take exactly one link, so they get the primary.
     var vkList = (Array.isArray(vkLinks) && vkLinks.length ? vkLinks : (vkLink ? [vkLink] : [])).map(function (s) { return (s || "").trim(); }).filter(Boolean);
     var vkRaw = vkList[0] || "";                          // the PRIMARY VK call link — empty when unset
     var vkText = vkRaw || "<PASTE VK CALL LINK>";          // placeholder ONLY in plain-text configs (a visible fill-in line the user edits)
@@ -597,7 +608,9 @@
         else if (a === "samosvalishe") obf = " -obf-profile " + obfProfileOf(cs, tp) + " -obf-key " + tp.wrap_key;
         else if (a === "MYSOREZ") obf = " -password " + tp.wrap_key + " -vk-anon-path vkcalls -captcha-mode auto -vk-auth anonymous";
       }
-      return "./client -listen 127.0.0.1:9000 -peer " + listen + link + vkText + obf + (rawExtra ? " " + rawExtra : "");
+      // free-turn's -links and MYSOREZ's -vk take every call comma-joined (a stream pool each); Moroka8's -vk-link takes one.
+      var vkArg = (a === "samosvalishe" || a === "MYSOREZ") && vkList.length ? vkList.join(",") : vkText;
+      return "./client -listen 127.0.0.1:9000 -peer " + listen + link + vkArg + obf + (rawExtra ? " " + rawExtra : "");
     }
     var authors = authorForks.map(function (a) { return { fork: a, cmd: authorCmd(a), native: (a === fork) }; });
     return { fork: fork, app: fork, label: clientLabel(fork, "sidecar"), ext: "conf", qr: true, vkMissing: vkMissing, enc: enc,
