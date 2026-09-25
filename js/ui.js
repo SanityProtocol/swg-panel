@@ -338,7 +338,18 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
     };
     // ESCAPE CLOSES A PINNED BUBBLE, and only the bubble. On `window` in the capture phase so it runs before a Sheet's
     // own Escape (document, capture) — otherwise the key meant for the bubble closed the whole sheet behind it.
-    const onEsc = e => { if (e.key !== "Escape") return; e.stopPropagation(); e.preventDefault(); setPinned(false); setOpen(false); };
+    // ⚠️ …BUT ONLY WHILE THE BUBBLE IS THE TOP LAYER. Running first, it also took the Escape meant for a Sheet or a
+    // confirm opened on top of it (from inside the bubble, or by code) and for an open dropdown, which then needed a
+    // second press. So it stands aside when the modal stack has grown since it was pinned, or a dropdown outside it
+    // is open — that layer's own handler gets the key.
+    const depthAtPin = modalDepth();
+    const onEsc = e => {
+      if (e.key !== "Escape") return;
+      if (modalDepth() !== depthAtPin) return;
+      const dd = document.querySelector(".ddpop");
+      if (dd && !(popRef.current && popRef.current.contains(dd))) return;
+      e.stopPropagation(); e.preventDefault(); setPinned(false); setOpen(false);
+    };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
     if (pinned) { document.addEventListener("pointerdown", onDoc, true); window.addEventListener("keydown", onEsc, true); }
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); window.removeEventListener("keydown", onEsc, true); };

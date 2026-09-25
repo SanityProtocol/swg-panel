@@ -1461,6 +1461,11 @@ export function AccessTLSCard({ onChange }) {
         if (left < Number(ts.lifetime_s) * 1000 / 3) w = warn(Trich("*This certificate should already have been renewed.* It has *{v1}* hour(s) left.", { v1: Math.floor(left / 3600000) }));
       }
       else if (!ts.self_signed && isFinite(d) && d <= 21) w = warn(Trich("*This certificate expires in {v1} day(s).*", { v1: d }));
+      // HELD: acme.sh has a CA certificate for this address, but the panel serves a self-signed one — which nodes
+      // pin — so the follow will not swap it on its own. Said once, with the deliberate way to switch.
+      const held = ts.renewer_held ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><div style="min-width:0">
+        ${Trich("*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one.* It is not swapped automatically: nodes that pinned the self-signed certificate would stop syncing. Switch it here with *Save*, then re-run the node installer on the nodes that pinned it.")}
+      </div></div>` : null;
       // Not a fault — the panel follows it — but the one fact that explains why its renewals live somewhere else.
       const other = ts.renewer === "other" ? html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><div style="min-width:0">
         ${Trich("*Another program on this server renews this certificate* — acme.sh installs each renewal to `{v1}`. The panel takes the renewed certificate from acme.sh within 6 hours, so both keep working.", { v1: ts.renewer_path || "?" })}
@@ -1483,7 +1488,7 @@ export function AccessTLSCard({ onChange }) {
           ${job.message && job.result !== "no-entry" ? html`<pre style="white-space:pre-wrap;margin:6px 0 0;font-size:11.5px">${job.message}</pre>` : null}
         </div></div>`;
       }
-      return (w || other || done) ? html`${done}${w}${other}` : null;
+      return (w || other || done || held) ? html`${done}${w}${held}${other}` : null;
     })()}
     <div class="field"><label>${T("Type")}</label><${Dropdown} value=${mode} onChange=${setModeLinked} options=${TLS_MODE_OPTS()}/></div>
     ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>${T("Account email")}</label><input type="text" placeholder=${T("admin@example.com")} value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}

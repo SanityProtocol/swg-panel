@@ -93,24 +93,6 @@ c(){ printf '\033[%sm' "$1"; }
 # redefined identically when common.sh loads. See common.sh for the model.
 _SWG_NL=""; _pnl(){ echo; _SWG_NL=1; }; _nlguard(){ _SWG_NL=""; }
 info(){ _nlguard; echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # ▸ light-blue, bold (universal action flag)
-# 0 when the panel's certificate fails verification ONLY because it is outside its validity window — expired
-# (or not yet valid) — which is a real CA certificate the panel has failed to renew, NOT a self-signed one.
-# ⚠️ curl calls both "60", and the auto-detect below read every 60 as "self-signed" and PINNED the expired
-# certificate. The node then synced — until the panel's certificate was renewed, when the pin stopped matching
-# and the node went dark (mesh down) until it was re-installed. Seen live 2026-09-25 on a letsencrypt-ip panel.
-_docker_panel_cert_expired(){ python3 - "$1" <<'PY' 2>/dev/null
-import ssl,socket,sys,urllib.parse
-r=sys.argv[1]; u=urllib.parse.urlparse(r if '://' in r else 'https://'+r)
-host=u.hostname; port=u.port or 443
-try:
-    with socket.create_connection((host,port),timeout=6) as s:
-        with ssl.create_default_context().wrap_socket(s,server_hostname=host):
-            pass
-except ssl.SSLCertVerificationError as e:
-    sys.exit(0 if getattr(e,"verify_code",0) in (9,10) else 1)   # 9 not yet valid, 10 expired
-sys.exit(1)
-PY
-}
 # print the sha256 hex of the panel's TLS cert (unverified fetch), or nothing — matches the node's `fingerprint`
 _docker_panel_fp(){ python3 - "$1" <<'PY' 2>/dev/null || true
 import ssl,socket,hashlib,sys,urllib.parse
@@ -675,8 +657,8 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
       # only a genuine cert-verification failure (60/51) with -k then working means self-signed; a transient
       # error keeps the secure default (verify) rather than silently downgrading a real-CA panel.
       if { [ "$_rc" = 60 ] || [ "$_rc" = 51 ]; } && curl -sSk --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; then
-        if _docker_panel_cert_expired "$PANEL_URL"; then
-          # an EXPIRED real certificate: keep CA verification (see _docker_panel_cert_expired) — never pin it
+        if panel_cert_expired "$PANEL_URL"; then   # lib/common.sh
+          # an EXPIRED real certificate: keep CA verification (see panel_cert_expired) — never pin it
           warn "The panel's TLS certificate has EXPIRED (or is not valid yet) — it is not self-signed, so this node keeps verifying it. It syncs as soon as the panel's certificate is renewed; renew it on the panel host."
         else
           _tls_def=n

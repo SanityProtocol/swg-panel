@@ -891,6 +891,19 @@ def do_drop_cert(service, domain):
         # Not ours to stop: acme.sh renews this name for another program, and --remove plus the rmtree below
         # would delete its renewal state — its certificate would expire with nothing to say why.
         return "left %s renewing — acme.sh installs it for another program (%s)" % (domain, foreign)
+    # …nor while OUR OTHER service still needs it. The panel and swg-sub commonly share one name, and one entry: when the
+    # panel moves to a new name, dropping the old one deleted the entry that renews swg-sub's certificate (whose
+    # install target it may well be — `issue-cert sub` re-points it). Kept while the other serves that name, or
+    # while the entry installs into the other's paths.
+    d = _acme_ecc_dir(domain)
+    for other in SERVICES:
+        if other == service:
+            continue
+        mine = {os.path.realpath(SERVICES[other][k]) for k in ("cert", "key")}
+        targets = {os.path.realpath(p) for p in (_acme_conf_value(d, domain, k) for k in
+                   ("Le_RealFullChainPath", "Le_RealCertPath", "Le_RealKeyPath")) if p} if d else set()
+        if _service_host(other) == domain.lower() or (targets & mine):
+            return "left %s renewing — %s still uses it" % (domain, other)
     acme = find_acme()
     rc, out = run(acme_argv(acme, "--remove", "-d", domain, "--ecc"))
     if rc:
@@ -968,18 +981,25 @@ def do_sync_acme(service):
         res["reason"], res["transient"] = "an address change is in flight", True   # its apply/confirm/revert owns the served cert
     if res.get("reason"):
         return json.dumps(res)
-    d = _acme_ecc_dir(host)
+    res["host"] = host                                         # on EVERY report from here, no-entry included: the
+    d = _acme_ecc_dir(host)                                    # panel drops a report about a name it no longer serves
     if d is None or not _acme_entry_usable(d, host):
         res["state"] = "no-entry"
         return json.dumps(res)
     res["owner"], res["install_path"] = _acme_owner(d, host)   # the panel's OR swg-sub's paths — both are us
-    res["host"] = host
     src_cert, src_key = os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % host)
     new_end, _ = _cert_end_and_selfsigned(src_cert)
     cur_end, cur_self = _cert_end_and_selfsigned(svc["cert"]) if os.path.exists(svc["cert"]) else (None, False)
-    # Newer by expiry — the one comparison that holds whoever renewed it. A self-signed placeholder (a failed
-    # issuance's fallback) always yields to the CA certificate this mode asks for, whatever its 10-year date says.
-    if new_end is None or (cur_end is not None and not cur_self and new_end <= cur_end):
+    # ⚠️ A SELF-SIGNED CERTIFICATE IS NEVER REPLACED FROM HERE. The node installers PIN a self-signed panel certificate
+    # (trust on first use), and a pinned node refuses anything else — so installing acme.sh's CA certificate over a
+    # self-signed one (an installer whose --install-cert failed fell back to it while the entry stayed usable) would
+    # silently cut every such node off, and the panel cannot tell which nodes pinned. It is reported as HELD
+    # instead; the operator switches deliberately (Panel access → Save) and re-runs the node installer where pinned.
+    if cur_self and new_end is not None:
+        res["state"], res["reason"] = "held", "the panel serves a self-signed certificate that nodes may have pinned"
+        return json.dumps(res)
+    # Newer by expiry — the one comparison that holds whoever renewed it.
+    if new_end is None or (cur_end is not None and new_end <= cur_end):
         res["state"] = "current"
         if service == "panel":
             with contextlib.suppress(Exception):
@@ -1203,11 +1223,26 @@ def process_queue():
     if not os.path.isdir(QUEUE_DIR):
         return
     puid = _panel_uid()
+    for name in os.listdir(QUEUE_DIR):               # a claim a crashed helper left behind: never run twice, just cleared
+        if name.endswith(".json.taking"):
+            with contextlib.suppress(OSError):
+                if time.time() - os.lstat(os.path.join(QUEUE_DIR, name)).st_mtime > 3600:
+                    os.unlink(os.path.join(QUEUE_DIR, name))
     for name in sorted(os.listdir(QUEUE_DIR)):
         if not name.endswith(".json"):
             continue
-        path = os.path.join(QUEUE_DIR, name)
+        pending = os.path.join(QUEUE_DIR, name)
         rid = _safe_rid(name)
+        # ⚠️ TAKEN IS A STATE THE PANEL CAN SEE. The request is renamed out of the pending set BEFORE it runs, so a
+        # waiter that sees `<rid>.json` still there knows the helper has not started it — and one that sees it gone
+        # knows it has. Deleting it only after dispatch() returned made a long request (a DNS-01 renewal waiting on
+        # its TXT record) look untaken, and the panel withdrew — and reported — a renewal that was still running.
+        # The rename is also the claim: a waiter that withdraws a request (unlinks it) and this helper cannot both win.
+        path = pending + ".taking"
+        try:
+            os.rename(pending, path)
+        except OSError:
+            continue                                 # withdrawn by its waiter a moment ago — nothing to run
         try:
             st = os.lstat(path)
             if not stat.S_ISREG(st.st_mode):

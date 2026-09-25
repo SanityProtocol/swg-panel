@@ -1974,3 +1974,23 @@ manage_ifaces_resolve(){
     Leave MANAGE_IFACES blank to report every interface this box has and adopt them from the panel."
   fi
 }
+
+# Shared by install-node.sh and install-docker.sh (one probe, not two copies to drift apart).
+# 0 when the panel's certificate fails verification ONLY because it is outside its validity window — expired
+# (or not yet valid) — which is a real CA certificate the panel has failed to renew, NOT a self-signed one.
+# ⚠️ curl calls both "60", and the installers' TLS auto-detect read every 60 as "self-signed" and PINNED the expired
+# certificate. The node then synced — until the panel's certificate was renewed, when the pin stopped matching
+# and the node went dark (mesh down) until it was re-installed. Seen live 2026-09-25 on a letsencrypt-ip panel.
+panel_cert_expired(){ python3 - "$1" <<'PY' 2>/dev/null
+import ssl,socket,sys,urllib.parse
+r=sys.argv[1]; u=urllib.parse.urlparse(r if '://' in r else 'https://'+r)
+host=u.hostname; port=u.port or 443
+try:
+    with socket.create_connection((host,port),timeout=6) as s:
+        with ssl.create_default_context().wrap_socket(s,server_hostname=host):
+            pass
+except ssl.SSLCertVerificationError as e:
+    sys.exit(0 if getattr(e,"verify_code",0) in (9,10) else 1)   # 9 not yet valid, 10 expired
+sys.exit(1)
+PY
+}

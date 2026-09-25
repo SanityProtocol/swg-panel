@@ -1037,6 +1037,48 @@ ensure_cert_perms(){   # HEAL (fix-if-wrong) ownership of the files the panel mu
   return 0; }
 
 ACME_HOME_CANON="${ACME_HOME_CANON:-/root/.acme.sh}"   # the ONE acme store — see ensure_acme_home below
+# HEAL: the reload command earlier installers stored in the panel's acme entry restarted the panel on every renewal
+# (`systemctl restart swg-panel-server`). A SIGHUP reloads the certificate live — no dropped requests, and a Renew now
+# pressed in Settings keeps the job that is waiting for that renewal. Narrow on purpose: only the panel's OWN entry,
+# only while it installs into the panel's managed path, and only when it still carries exactly that restart — an
+# entry another program re-pointed, or a command an operator changed, is left as it is. Idempotent.
+heal_acme_reloadcmd(){
+  local conf="${ETC_DIR:-/etc/swg-panel}/install.conf" dom f
+  dom="$(sed -n 's/^PANEL_DOMAIN=//p' "$conf" 2>/dev/null | head -1 | tr -d "'\"")"
+  [ -n "$dom" ] || return 0
+  f="$ACME_HOME_CANON/${dom}_ecc/${dom}.conf"
+  [ -f "$f" ] || return 0
+  if $DRYRUN; then echo "    [skip] acme reload command for $dom: systemctl restart → SIGHUP (if it still restarts the panel)"; return 0; fi
+  local out; out="$(python3 - "$f" "${TLS_DIR:-/etc/swg-panel/tls}/fullchain.pem" <<'PY' 2>/dev/null
+import base64, os, re, sys
+path, ours = sys.argv[1], os.path.realpath(sys.argv[2])
+lines = open(path).read().split("\n")
+def val(k):
+    for l in lines:
+        if l.startswith(k + "="):
+            return l.split("=", 1)[1].strip().strip("'\"")
+    return ""
+if os.path.realpath(val("Le_RealFullChainPath") or "/nonexistent") != ours:
+    sys.exit(0)                                   # not installing into the panel's path: not ours to change
+raw = val("Le_ReloadCmd")
+m = re.match(r"^__ACME_BASE64__START_(.*)__ACME_BASE64__END_$", raw)
+cmd = base64.b64decode(m.group(1)).decode() if m else raw
+old = "systemctl restart swg-panel-server"
+if old not in cmd or "swg-panel-server.service 2>/dev/null || true" in cmd:
+    sys.exit(0)
+new = cmd.replace(old, "systemctl kill -s HUP swg-panel-server.service 2>/dev/null || true")
+enc = "__ACME_BASE64__START_%s__ACME_BASE64__END_" % base64.b64encode(new.encode()).decode()
+lines = [("Le_ReloadCmd='%s'" % enc) if l.startswith("Le_ReloadCmd=") else l for l in lines]
+tmp = path + ".swgtmp"
+open(tmp, "w").write("\n".join(lines))
+os.chmod(tmp, os.stat(path).st_mode & 0o777)
+os.replace(tmp, path)
+print("healed")
+PY
+)" || true
+  [ "$out" = healed ] && { DID_UPDATE=yes; ok "acme renewals now reload the panel's certificate live (SIGHUP) instead of restarting it"
+                           note "acme reload command: restart → SIGHUP"; }
+  return 0; }
 ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-metal panel whose TLS needs it.
   # The cert and its renewal STATE live in /root/.acme.sh, but the PROGRAM is separate — and a docker→bare-metal
   # convert brings the state across without it, because in docker acme.sh lives inside the image. The result is a
@@ -1435,6 +1477,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   ensure_sub_server      # swg-sub subscription surface (user + binary + tls dir + unit)
   ensure_acme_client     # HEAL: the ACME client itself, when TLS_MODE needs it (a convert leaves the state, not the program)
   ensure_acme_home       # HEAL: pin the helper's acme store + rescue certs stranded in /.acme.sh (no renewer)
+  heal_acme_reloadcmd    # HEAL: the panel's acme entry reloads it with SIGHUP, not `systemctl restart`
                          # (ensure_cert_perms runs ABOVE, before the restart it protects — see the note there)
   ensure_update_unit     # one-click self-update wiring (wrappers + service/timer + trigger drop-in)
   ensure_access_seed     # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from install.conf

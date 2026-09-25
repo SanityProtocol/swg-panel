@@ -1766,6 +1766,11 @@ obtain_cert_internal(){
       fi
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
       prune_stale_acme_installs
+      # The reload is a SIGHUP, not a restart: the panel reloads its certificate live (zero downtime), and a restart
+      # also cut every open request and, for a Renew now pressed in Settings, the job that was waiting for this very
+      # renewal. `|| true`: at install time the unit may not be running yet, and a failing reload command is an
+      # acme.sh "Reload error" — which would send this installer to its self-signed fallback. update.sh rewrites the
+      # old `systemctl restart` in entries earlier installers stored (heal_acme_reloadcmd).
       # ⚠️ NOT allowed to abort the run. Under `set -e` a failing --install-cert killed the installer
       # right here — after the panel unit exists but before swg-netctl is compiled and the TLS paths
       # are written — leaving a box that looks installed, serves plain HTTP, and 525s behind a proxy.
@@ -1779,7 +1784,7 @@ obtain_cert_internal(){
           mk_selfsigned; return
         fi
       elif ! acme --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
-          --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl restart swg-panel-server"; then
+          --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl kill -s HUP swg-panel-server.service 2>/dev/null || true"; then
         warn "acme.sh could not install the certificate for $PANEL_DOMAIN — falling back to a self-signed cert."
         mk_selfsigned; return
       fi

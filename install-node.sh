@@ -751,24 +751,6 @@ case "$PANEL_URL" in https://*) ;; http://*) _url_is_loopback "$PANEL_URL" || wa
 # if the operator re-pointed the node at a different panel, the lc terminal should reach the NEW one
 [ "$EXISTING" = yes ] && [ -n "${LC_TOKEN:-}" ] && [ -n "$PANEL_URL" ] && LC_URL="$PANEL_URL"
 
-# 0 when the panel's certificate fails verification ONLY because it is outside its validity window — expired
-# (or not yet valid) — which is a real CA certificate the panel has failed to renew, NOT a self-signed one.
-# ⚠️ curl calls both "60", and the auto-detect below read every 60 as "self-signed" and PINNED the expired
-# certificate. The node then synced — until the panel's certificate was renewed, when the pin stopped matching
-# and the node went dark (mesh down) until it was re-installed. Seen live 2026-09-25 on a letsencrypt-ip panel.
-_panel_cert_expired(){ python3 - "$1" <<'PY' 2>/dev/null
-import ssl,socket,sys,urllib.parse
-r=sys.argv[1]; u=urllib.parse.urlparse(r if '://' in r else 'https://'+r)
-host=u.hostname; port=u.port or 443
-try:
-    with socket.create_connection((host,port),timeout=6) as s:
-        with ssl.create_default_context().wrap_socket(s,server_hostname=host):
-            pass
-except ssl.SSLCertVerificationError as e:
-    sys.exit(0 if getattr(e,"verify_code",0) in (9,10) else 1)   # 9 not yet valid, 10 expired
-sys.exit(1)
-PY
-}
 # print the sha256 hex of the panel's TLS cert (unverified fetch), or nothing on failure. Matches the node's
 # `fingerprint` format: hashlib.sha256(DER).hexdigest(), lowercase, no colons.
 _panel_fp(){ python3 - "$1" <<'PY' 2>/dev/null || true
@@ -794,8 +776,8 @@ if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
     # panel is self-signed. A transient error (timeout/refused/other) keeps the SECURE default (CA verify), so
     # a network hiccup never silently downgrades a real-CA panel.
     if { [ "$_rc" = 60 ] || [ "$_rc" = 51 ]; } && curl -sSk --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; then
-      if _panel_cert_expired "$PANEL_URL"; then
-        # an EXPIRED real certificate: keep CA verification (see _panel_cert_expired) — never pin it
+      if panel_cert_expired "$PANEL_URL"; then   # lib/common.sh
+        # an EXPIRED real certificate: keep CA verification (see panel_cert_expired) — never pin it
         warn "The panel's TLS certificate has EXPIRED (or is not valid yet) — it is not self-signed, so this node keeps verifying it. It syncs as soon as the panel's certificate is renewed; renew it on the panel host."
       else
         _tls_def=n
