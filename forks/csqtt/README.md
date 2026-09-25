@@ -6,12 +6,13 @@ swg-panel the same way the `wdtt/` forks are, plus a reproducible build.
 
 - **`csqtt-swgpanel.patch`** — pinned to upstream `446293aa` (**v2.1.9**, 2026-09-02). Applies with
   `git apply` from the repo root of a fresh csqtt clone. Verified apply-clean + build-clean on amd64.
-  Our build label is **2.1.9-3**: source 2.1.9 plus this patch, which carries the 2026-09-14 keyless
-  source-integrity fixes (build 2) and one config on several devices (build 3), both below.
-  - Published as `csqtt-2.1.9-3` (2026-09-25), amd64 + arm64: amd64 `eb86d752…`, arm64 `0ebf0ac4…`.
+  Our build label is **2.1.9-4**: source 2.1.9 plus this patch, which carries the 2026-09-14 keyless
+  source-integrity fixes (build 2), one config on several devices (build 3) and the simultaneous-start and
+  main-password fixes (build 4), all below.
+  - Published as `csqtt-2.1.9-4` (2026-09-25), amd64 + arm64: amd64 `e7f76fd2…`, arm64 `4365aee4…`.
   - Built with cargo-zigbuild, Rust 1.97.1 and zig 0.15.2.
   - Rig-proven on the published amd64 bytes. The arm64 build comes from the same recipe but was not run.
-  - `csqtt-2.1.9-2` (2026-09-17) stays as its rollback target.
+  - `csqtt-2.1.9-3` and `csqtt-2.1.9-2` stay as rollback targets.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
   Needs rustup 1.97.1 + zig + cargo-zigbuild.
 
@@ -114,7 +115,7 @@ workers). The control is 2.1.9-2.
 keyless-csqtt T1–T6 (source check, revoke, borrow) pass unchanged. The host firewall and links were unchanged by every
 run.
 
-## Two devices starting at once, and the main password's first bind (build 2.1.9-4, 2026-09-25)
+## Two devices starting at once, and the main password's first bind (build 2.1.9-4, published 2026-09-25)
 
 - **Two devices starting one config at the same instant used to ping-pong the password.**
   - Their workers' `GETCONF`s interleave. Each one from the device that didn't hold the password moved it back and
