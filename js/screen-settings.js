@@ -1967,8 +1967,32 @@ export function PanelSettingsScreen() {
       next[f.id] = (lt && dep.length && dep.some(v => v !== lt)) ? { status: "update", latest: lt } : { status: "uptodate" };
     }
     setTurnCheck(next);
-    setTimeout(() => setTurnCheck(c => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v.status === "update" ? v : {}]))), 5000);   // T("up to date") clears after 5s; "update" persists
+    setTimeout(() => setTurnCheck(c => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v.status === "update" || v.status === "updating" ? v : {}]))), 5000);   // T("up to date") clears after 5s; "update" (and an update clicked meanwhile) persists
   };
+  // A staged update lands on the node's NEXT sync, and this screen does not follow the poll — so the row kept
+  // its old version and never said it was done until a reload. While a fork is updating, follow the poll here:
+  // redraw on each one (the version label moves), flip to "updated" once every deployed copy reports the target
+  // and none is still installing, or give up quietly at the deadline.
+  const turnFollow = Object.values(turnCheck).some(v => v && v.status === "updating" && v.until);
+  useEffect(() => {
+    if (!turnFollow) return;
+    return bus.sub(() => setTurnCheck(c => {
+      const n = { ...c };   // always a new object: the redraw itself is the point
+      for (const [fid, v] of Object.entries(c)) {
+        if (!v || v.status !== "updating" || !v.until) continue;
+        const st = forkNodeStates(fid).filter(s => canTurnAct(s.node));   // a node the update skipped keeps its version — don't wait on it
+        if (st.length && st.every(s => s.version === v.latest && !s.installing)) n[fid] = { status: "updated" };   // i18n-keys
+        else if (Date.now() > v.until) n[fid] = {};
+      }
+      return n;
+    }));
+  }, [turnFollow]);
+  const turnDone = Object.keys(turnCheck).filter(k => (turnCheck[k] || {}).status === "updated").join();
+  useEffect(() => {
+    if (!turnDone) return;
+    const t = setTimeout(() => setTurnCheck(c => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v && v.status === "updated" ? {} : v]))), 5000);
+    return () => clearTimeout(t);
+  }, [turnDone]);
   // update every deployed instance of a fork to `latest` — reinstall (re-download binary) on each (node,service)
   // A node whose turn management is off does not IGNORE a request the panel stages — it fails it, and
   // that lands as a red error tag on a node whose operator asked for nothing, with a pending that never
@@ -1989,8 +2013,8 @@ export function PanelSettingsScreen() {
       turnUpdateTarget[fid] = { ver: latest, until: Date.now() + 120000 };
       const seen = new Set();
       for (const t of ct) { if (seen.has(t.node)) continue; seen.add(t.node); await api.csqttVersion({ node: t.node, iface: t.iface, ver: "" }); }
+      setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest, until: Date.now() + 120000 } }));   // i18n-keys
       await Store.poll();
-      setTurnCheck(c => ({ ...c, [fid]: {} }));
       toast(T("Update requested on {v1} — each node applies it on its next sync.", { v1: plural(seen.size, "node") }), "ok");
       skipNote(cskip);
       return;
@@ -2002,9 +2026,10 @@ export function PanelSettingsScreen() {
       const wskip = new Set(all.filter(t => !canTurnAct(t.node)).map(t => t.node)).size;
       if (!wt.length) { skipNote(wskip); return; }
       setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest } }));   // i18n-keys
+      turnUpdateTarget[fid] = { ver: latest, until: Date.now() + 120000 };
       for (const t of wt) await api.wdttVersion({ node: t.node, iface: t.iface, ver: "" });
+      setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest, until: Date.now() + 120000 } }));   // i18n-keys
       await Store.poll();
-      setTurnCheck(c => ({ ...c, [fid]: {} }));
       toast(T("Update requested on {v1} — each node applies it on its next sync.", { v1: plural(wt.length, "WDTT server") }), "ok");
       skipNote(wskip);
       return;
@@ -2018,8 +2043,8 @@ export function PanelSettingsScreen() {
     setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest } }));   // i18n-keys
     turnUpdateTarget[fid] = { ver: latest, until: Date.now() + 120000 };   // persists past the turnCheck reset so the bubble can show per-node updating→updated
     for (const t of targets) { turnUpdating[t.node + "|" + t.service] = Date.now() + 120000; await api.turnReinstall({ node: t.node, service: t.service, owner }); }
+    setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest, until: Date.now() + 120000 } }));   // i18n-keys
     await Store.poll();
-    setTurnCheck(c => ({ ...c, [fid]: {} }));
     toast(T("Update requested on {v1} — each node applies it on its next sync.", { v1: plural(targets.length, "proxy") }), "ok");
     skipNote(skipped);
   };
@@ -2761,6 +2786,7 @@ const sectionLabel = k => ({
             ${(() => { const cs = turnCheck[f.id]; if (!cs || !cs.status) return null;   // update status — right-aligned, just before the repo URL (like Geo data)
               if (cs.status === "checking") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> checking…</span>`;
               if (cs.status === "updating") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;   // i18n-keys
+              if (cs.status === "updated") return html`<span class="tf-chk ok"><${Ic} i="check"/> ${T("updated")}</span>`;
               if (cs.status === "update") return html`<button class="tf-chk upd tf-updbtn" title=${T("Update every deployed {v1} proxy to {v2}", { v1: f.label, v2: cs.latest })} onClick=${() => updateFork(f.id, cs.latest)}><${Ic} i="download"/> update to ${cs.latest}</button>`;
               return html`<span class="tf-chk ok"><${Ic} i="check"/> ${T("up to date")}</span>`; })()}
             <span class="tf-plats">${turnForkPlatforms(f).map(p => html`<span key=${p.os} class="tf-platwrap turnwrap" title="">
