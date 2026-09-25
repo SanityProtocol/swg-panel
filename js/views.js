@@ -1236,7 +1236,7 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
     ${/* the ratio alone made the reader do the division — give them the rate too, at the row's own size */""}
     ${has("life_bad") ? html`<div class="dp-row"><span class="dp-l">${
       d.life_since ? T("Since reset") : T("Since boot")}</span><span class="dp-v">${
-      T("{v1} of {v2}", { v1: fmtCount(d.life_bad), v2: fmtCount(d.life_pkts) })}${d.life_pkts
+      T("{v1} of {v2}", { v1: fmtCount(d.life_bad), v2: fmtCount(d.life_pkts) })}${d.life_pkts + d.life_bad >= DROP_PCT_MIN
         ? html`<span class="dp-life" style=${"color:" + lossColor(100 * d.life_bad / d.life_pkts)}>${
             (100 * d.life_bad / d.life_pkts).toFixed(4)}%</span>` : null}</span></div>` : null}
     ${hint ? html`<div class="dp-hint">${hint}</div>` : null}

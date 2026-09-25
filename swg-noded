@@ -12258,16 +12258,15 @@ def _drops_base():
 
 
 def _drops_baseline(ifn):
-    """This interface's reset baseline, validated — or {} when there is none or it cannot be trusted (a hand-edited or torn
-    drops-base.json). `kinds` is None unless it is four integers: a baseline written before per-kind baselines, or one whose
-    kinds are damaged, is then re-baselined once by _iface_drops_one."""
+    """This interface's reset baseline, or {}. `kinds` is None unless it is four integers — a baseline written before per-kind
+    baselines, which _iface_drops_one re-baselines once. Deliberately NO field-by-field validation: the file is the node's own,
+    written atomically (tmp + replace), and anything stranger only costs this interface its figure — iface_drops catches it
+    and the sync carries on."""
     b = _drops_base().get(ifn)
-    num = lambda v: isinstance(v, int) and not isinstance(v, bool)
-    if not (isinstance(b, dict) and num(b.get("bad", 0)) and num(b.get("pkts", 0))
-            and (b.get("at") is None or num(b["at"]))):
+    if not isinstance(b, dict):
         return {}
     k = b.get("kinds")
-    return dict(b, kinds=list(k) if isinstance(k, list) and len(k) == 4 and all(num(x) for x in k) else None)
+    return dict(b, kinds=k if isinstance(k, list) and len(k) == 4 and all(isinstance(x, int) for x in k) else None)
 
 
 def _drops_base_save():
@@ -12304,19 +12303,22 @@ _IFDROP = {}                    # iface -> {"prev": (pkts, rxd, rxe, txd, txe), 
 # to the daemon filling — real local load — and those daemons hold packets for an absent peer themselves, uncounted.
 # Anything the node cannot identify counts all four, as before: an unknown datapath shows more, never less.
 _FAULT_ALL = ("rx_drop", "rx_err", "tx_drop", "tx_err")     # the order of the per-kind columns in a hist row, from index 2
-_IFDROP_ERR = {}                # iface -> the error its drop figure last failed with, see iface_drops
+_IFDROP_ERR = {}                # iface -> the error its drop figure last logged, see iface_drops
 
 
 def _if_datapath(ifn):
-    """'wg' for a kernel wireguard/amneziawg device, 'tun' for a TUN, 'other' for anything else — or None when the device could
-    not be read, which the caller tries again next pass. Two sysfs reads, once per device."""
+    """'wg' for a kernel wireguard/amneziawg device, 'tun' for a TUN, 'other' for anything else — or None when uevent could not
+    be read and the device is not a TUN either, which the caller tries again next pass. At most two sysfs reads."""
     try:
         with open("/sys/class/net/%s/uevent" % ifn) as f:
-            if re.search(r"^DEVTYPE=(wireguard|amneziawg)$", f.read(), re.M):
-                return "wg"
+            wg = bool(re.search(r"^DEVTYPE=(wireguard|amneziawg)$", f.read(), re.M))
     except OSError:
-        return None
-    return "tun" if os.path.exists("/sys/class/net/%s/tun_flags" % ifn) else "other"
+        wg = None
+    if wg:
+        return "wg"
+    if os.path.exists("/sys/class/net/%s/tun_flags" % ifn):
+        return "tun"
+    return None if wg is None else "other"
 
 
 def _if_stat(ifn, key):
@@ -12418,20 +12420,20 @@ def iface_drops(ifaces, links=()):
     for ifn in ifaces:
         # ⚠️ A DISPLAY FIGURE MUST NEVER STOP A SYNC. This runs inside build_snapshot: an exception here used to abort the
         # whole pass, so the node stopped reporting AND stopped pulling its peers. One interface that cannot be read is
-        # left out of the report; an error is said when it first appears or changes, not every 5 seconds.
+        # left out of the report; an error is said when it first appears or changes — not every 5 seconds, and not again
+        # each time one that comes and goes comes back.
         try:
             rec = _iface_drops_one(ifn, links, now)
         except Exception as e:
             if _IFDROP_ERR.get(ifn) != repr(e):
                 _IFDROP_ERR[ifn] = repr(e)
-                print("iface_drops: %s skipped: %r" % (ifn, e), file=sys.stderr, flush=True)
-                traceback.print_exc()
+                print("iface_drops: %s skipped: %r\n%s" % (ifn, e, traceback.format_exc()), file=sys.stderr, flush=True)
             continue
-        _IFDROP_ERR.pop(ifn, None)                      # recovered: the next failure is news again
         if rec is not None:
             out[ifn] = rec
     for gone in [k for k in _IFDROP if k not in ifaces]:
         _IFDROP.pop(gone, None)
+    for gone in [k for k in _IFDROP_ERR if k not in ifaces]:
         _IFDROP_ERR.pop(gone, None)
     return out
 
