@@ -494,8 +494,8 @@ _meta = P.apply_iface_meta({"ifaces": {"wgN": {"reach": "none"}}}, {"wgN": {}, "
 check("the interface meta publishes the level, 'user' when absent", _meta["wgN"]["reach"] == "none" and _meta["wg0"]["reach"] == "user", _meta)
 _psrc = open(PANEL, encoding="utf-8").read()
 check("wdtt_cfg and csqtt_cfg publish reach",
-      re.search(r'"wdtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \([^)]*"reach"\)', _psrc) is not None
-      and re.search(r'"csqtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \([^)]*"reach"\)', _psrc) is not None)
+      re.search(r'"wdtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \([^)]*"reach"[^)]*\)', _psrc) is not None
+      and re.search(r'"csqtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \([^)]*"reach"[^)]*\)', _psrc) is not None)
 _nodes = {"n1": {"wdtt": {"wdtt1": {"iface": "wdtt1", "reach": "none", "fork": "qwdtt"}}, "csqtt": {"csqtt1": {"iface": "csqtt1", "reach": "none"}}}}
 check("⚠️ the node's WDTT and csqtt replies never carry the level (§10.8 Round 9)",
       "reach" not in P._wdtt_reply(R, _nodes, "n1")["wdtt1"] and "reach" not in P._csqtt_reply(R, _nodes, "n1")["csqtt1"])

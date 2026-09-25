@@ -19,7 +19,11 @@ than borrow a `1.5.40`/`1.5.61` number we cannot reproduce. What an earlier note
 truth source `1.5.0` + our patch; `1.5.0-3` is the same source with the K5 revocation/source fixes below, and
 `1.5.0-4` adds the `-dns` flag (below).
 `wdtt-ildarmaga-1.5.0-3` was published 2026-09-17, amd64 + arm64, and rig-proven on the published amd64 bytes.
-`1.5.0-4` is built (Go 1.27.1, amd64 `28aba26f…`, arm64 `4813aaf9…`, reproducible) and not yet published.
+`wdtt-ildarmaga-1.5.0-4` was published 2026-09-25 (Go 1.27.1, reproducible; amd64 `28aba26f…`, arm64 `4813aaf9…`).
+It was rig-proven on the published amd64 bytes with `.campaign/rigs/keyless-ildarmaga-wg-q.sh` and 1.5.0-3 as the control:
+T1–T7 pass on both, and the `-dns` value reaches a real client's config at start and after a SIGHUP. The original
+rig's client (`kildrv`) was never saved, so this rig drives the server with the unpatched qWDTT client, which speaks
+the same wire. The properties are the server's either way.
 
 ## `-dns` (`1.5.0-4`)
 

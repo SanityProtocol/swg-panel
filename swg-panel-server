@@ -1338,7 +1338,10 @@ WDTT_BUILDS = {                               # fork id -> [(author_version, our
     # csqtt devices starting one config at once no longer bounce the password. ⚠️ Rolling qwdtt back to 1.4.3-3 or
     # earlier brings the crash back.
     "amurcanov": [("1.2.4-3",  "wdtt-amurcanov-1.2.4-3"),  ("1.2.4-2",  "wdtt-amurcanov-1.2.4-2")],
-    "ildarmaga": [("1.5.0-3",  "wdtt-ildarmaga-1.5.0-3"),  ("1.5.40-2", "wdtt-ildarmaga-1.5.40-2"), ("1.5.40",   "wdtt-ildarmaga-1.5.40")],
+    # ildarmaga "1.5.0-4": a -dns flag — upstream reads the client DNS only from its own panel.db, which the panel never
+    # writes, so every client got 1.1.1.1. swg-noded passes -dns only to a build whose -h lists it, so rolling back to
+    # 1.5.0-3 just drops the flag (docs/DNS-SETTINGS-PLAN.md §3.5).
+    "ildarmaga": [("1.5.0-4",  "wdtt-ildarmaga-1.5.0-4"),  ("1.5.0-3",  "wdtt-ildarmaga-1.5.0-3"),  ("1.5.40-2", "wdtt-ildarmaga-1.5.40-2"), ("1.5.40",   "wdtt-ildarmaga-1.5.40")],
     "wdttplus":  [("18-2",     "wdtt-wdttplus-18-2"),      ("18",       "wdtt-wdttplus-18"),        ("15",       "wdtt-wdttplus-15")],
     "xxcipherx": [("2.0.0.72", "wdtt-xxcipherx-2.0.0.72"), ("2.0.0.70", "wdtt-xxcipherx-2.0.0.70")],
     # qWDTT: built from SpaceNeuroX @854a72fe ("Release 1.4.1"), now a published release like the rest — a node
@@ -5509,7 +5512,10 @@ KEYLESS_SHARE_BUILDS = {
                                                   # server, revocation cut + reconnect refused, stable address, owner device kept (kernel backend);
                                                   # 18-2 the same on its published asset (dffd34f7, 2026-09-25)
     "xxcipherx": {"wg": ("2.0.0.72",)},           # rig on the published asset (714dbd94 — the same bytes the 2026-09-14 rig proved); 2.0.0.70 fails T5
-    "ildarmaga": {"wg": ("1.5.0-3",)},            # WG rig on the published bytes (75a51c6f); RAW is never listed (see above)
+    "ildarmaga": {"wg": ("1.5.0-4", "1.5.0-3")},  # WG rig on the published bytes (75a51c6f); RAW is never listed (see above).
+                                                  # 1.5.0-4 (28aba26f, 2026-09-25): .campaign/rigs/keyless-ildarmaga-wg-q.sh — the
+                                                  # unpatched qWDTT client (same wire), 1.5.0-3 as the control: T1–T7 pass on both,
+                                                  # and the -dns value reaches the client's config at start and after a SIGHUP
     "csqtt":     {"raw": ("2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
                                                   # 2.1.9 fails both; 2.1.9-3 (eb86d752) and 2.1.9-4 (e7f76fd2) the same on their published bytes,
                                                   # 2026-09-25 — a moved password keeps its address
