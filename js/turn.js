@@ -25,7 +25,7 @@ import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLoopi
          suggestPort, portHolder, portErrMsg, nextWdttName, cidrNet, subnetsOverlap, subnetFleetConflict,
          subnetServerAddr, suggestSubnet, ghostIface } from "./model.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
-import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, reportDropped, rulesSummary } from "./routing.js";
+import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle, reportDropped, rulesSummary } from "./routing.js";
 import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop, dropRate, ReachField } from "./views.js";
 import { IfaceThroughput, RangedHistory, lossColor } from "./charts.js";
 import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, subFeatureOn,
@@ -1899,6 +1899,7 @@ function useTurnDns(cfg, fork, rep) {
   const dirty = _dnsNorm(val) !== _dnsNorm(cur);
   return { val, set, dirty, cur: stored, base, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: [...new Set(_dnsParts(val))] } : {} };
 }
+const advSum = eg => "DNS" + (natPinApplies(eg) ? " · NAT" : "");   // i18n-keys: acronyms, as the wg/awg Edit sheet's Advanced summary spells them
 function TurnDnsField({ node, fork, rep, dns, params }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const dflt = dns.base.v;
@@ -1940,7 +1941,6 @@ export function WdttManageSheet({ node, w: w0 }) {
   const forkLabel = (turnForkList().find(x => x.id === fork) || {}).label || fork;
   const [title, setTitle] = useState(shownTitle("w|" + node + "|" + iface, (cfg.title || "").trim()));   // optional cosmetic label; honour a just-saved optimistic title
   const [params, setParams] = useState((cfg.params || "").trim());   // extra ExecStart flags (advanced)
-  const dns = useTurnDns(cfg, fork, w);
   const [srvOpen, setSrvOpen] = useState(false);
   const awaiting = !!w.await_restore;
   const restoring = (nrec.wdtt_restoring || []).includes(iface);
@@ -1991,7 +1991,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
   const rawWant = !!(rawOn && rawCapable);
   const rawDirty = rawWant !== !!rawCur;
-  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty || wgDirty || dns.dirty;
+  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty || wgDirty;
   // live DTLS-port check: must differ from this instance's own internal WG port, and not collide with any other
   // port on the node (its own DTLS/WG ports don't count). Blocks Save so a clash never becomes a node "FAILED TO APPLY".
   const wperr = (port.trim() && Number(port) === Number(wgPort)) ? T("The DTLS port and the internal WG port must differ.")
@@ -2005,7 +2005,7 @@ export function WdttManageSheet({ node, w: w0 }) {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, ...dns.body, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
+    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed"));
         reportDropped(r);   // §5.4
         const mv = ((r.data || {}).raw_moved || "");
@@ -2015,7 +2015,6 @@ export function WdttManageSheet({ node, w: w0 }) {
   };
   const save = () => {
     if (port.trim() && !/^\d+$/.test(port.trim())) return setMsg({ k: "err", t: T("Listen port must be a number.") });
-    if (dns.err) return setMsg({ k: "err", t: dns.err });   // before the endpoint confirm, which saves straight through
     if (endpointDirty) {   // endpoint / DTLS port is baked into every user's link → confirm the re-issue
       pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
@@ -2028,7 +2027,7 @@ export function WdttManageSheet({ node, w: w0 }) {
         body=${Trich("*{holder}* offers RAW-IP on this address today. The app dials one fixed port for every server, so an address can only run one raw listener — turning it on here turns it off on *{holder}*. Its users keep their links and fall back to WireGuard mode. Servers on this node's other IPs are untouched.", { holder: rawHolder })} onConfirm=${doSave}/>`);
       return;
     }
-    if (paramsDirty || rawDirty || wgDirty || dns.dirty) { doSave(); return; }   // extra ExecStart flags / RAW listener → the node rewrites the unit + restarts
+    if (paramsDirty || rawDirty || wgDirty) { doSave(); return; }   // extra ExecStart flags / RAW listener → the node rewrites the unit + restarts
     // title-only → a cosmetic panel-side label (no node restart, like a turn-proxy title): store + close immediately
     closeModal();
     pushOptTitle("w|" + node + "|" + iface, title.trim());   // reflect on the card instantly
@@ -2060,7 +2059,6 @@ export function WdttManageSheet({ node, w: w0 }) {
       </div>
       ${hostOnNode === "bad" ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This doesn't resolve to an address on this node. The server *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.")}</span></div>` : null}
       <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · 127.0.0.1:${wgPort}</span> <span class="faint ro-note" title=${T("— self-contained (its own userspace-WireGuard)")}>${T("— self-contained (its own userspace-WireGuard)")}</span><button class="btn btn-mini" disabled=${blocked || awaiting} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
-      <${TurnDnsField} node=${node} fork=${fork} rep=${w} dns=${dns} params=${params}/>
       ${/* RAW-IP lives INSIDE Server parameters — it is an advanced server capability, not a first-class control.
             When it's on the accordion says so in its header, because the setting is otherwise invisible until opened. */ null}
       <${Disclosure} title=${T("Server parameters")}
@@ -2170,6 +2168,9 @@ export function EditWdttSheet({ node, iface }) {
   const [reach, setReach] = useState(cfg.reach || "user");   // device access (§10.6) — absent is "user"
   const [disc, setDisc] = useState({ routing: true, filters: false });   // Routing opens by default (only shown in Smart mode)
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
+  // Client DNS lives here, with the interface — as a wg/awg interface's DNS does — not with the turn proxies, none of which
+  // has one. Checked against the saved Extra flags: a `-dns` there wins (TurnDnsField says so).
+  const dns = useTurnDns(cfg, fork, w);
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = () => {
     // Optimistic, like the interface edit sheet: flip the card to an "applying" badge + close the modal(s) NOW;
@@ -2178,12 +2179,13 @@ export function EditWdttSheet({ node, iface }) {
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() };
     Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...egressBody(eg) })
+    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...dns.body, ...egressBody(eg) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4; busy → applied via trackIfaceOps
       .catch(e => fail((e && e.message) || T("save failed")));
   };
   const save = () => {
     const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
+    if (dns.err) return setMsg({ k: "err", t: dns.err });   // before the port confirm, which saves straight through
     if (wgPort.trim() && !/^\d+$/.test(wgPort.trim())) return setMsg({ k: "err", t: T("Internal WG port must be a number.") });
     // the internal WG port is baked into each wdtt:// link → a change re-issues it
     if (!!oldListen && (wgPort.trim() || "56001") !== String(cfg.wg_port || "56001")) {
@@ -2218,10 +2220,10 @@ export function EditWdttSheet({ node, iface }) {
       <div class="field"><label>${T("Internal WG port")}</label><input class=${wgperr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder="56001"/>${wgperr ? html`<div class="hint err">${wgperr}</div>` : html`<div class="hint">${T("Loopback userspace-WG port (server-internal)")}</div>`}</div>
     </div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
-    ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
+    ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} onChange=${(rows, catchAll, exitIps) => setEg({ ...eg, rows, catchAll, exitIps })}/>
+      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} directIp=${eg.ip || ""} onChange=${(rows, catchAll, exitIps, ip) => setEg({ ...eg, rows, catchAll, exitIps, ip })}/>
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)} unvouchedRaw=${(nrec.reach_unvouched_raw || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
@@ -2233,12 +2235,12 @@ export function EditWdttSheet({ node, iface }) {
           them — the node runs the same `_egress_des` ladder for a WDTT/csqtt subnet as for an interface.
           Moving the pin under Advanced without giving them one would have deleted the control for this
           whole kind. One section, one control, same framing as the interface sheets. */""}
-    ${/* The whole section, not just its body: here Advanced holds ONLY the pin, so in a mode that does not
-          store one there is nothing to open. */""}
-    ${natPinApplies(eg) ? html`<${Disclosure} title=${T("Advanced settings")} summary=${eg.nic || T("val|Off")}
+    ${/* Advanced: the server's client DNS (always), and the NAT pin where the mode stores one. */""}
+    <${Disclosure} title=${T("Advanced settings")} summary=${advSum(eg)}
       open=${disc.advanced} onToggle=${() => tog("advanced")}>
-      <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
-    <//>` : null}
+      <${TurnDnsField} node=${node} fork=${fork} rep=${w} dns=${dns} params=${cfg.params || ""}/>
+      ${natPinApplies(eg) ? html`<${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>` : null}
+    <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -2329,7 +2331,6 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const cfg = (nrec.csqtt_cfg || {})[iface] || {};
   const [title, setTitle] = useState(shownTitle("c|" + node + "|" + iface, (cfg.title || "").trim()));
   const [params, setParams] = useState((cfg.params || "").trim());
-  const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);
   const [srvOpen, setSrvOpen] = useState(false);
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   const notup = c.active !== "active";
@@ -2353,25 +2354,24 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const endpointDirty = !!oldListen && newListen !== oldListen;
   const titleDirty = title.trim() !== (cfg.title || "").trim();
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
-  const anyDirty = endpointDirty || titleDirty || paramsDirty || dns.dirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
+  const anyDirty = endpointDirty || titleDirty || paramsDirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
   const wperr = portErrMsg(node, port, [lport]);
   const doSave = () => {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), ...dns.body, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
+    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
   const save = () => {
     if (port.trim() && !/^\d+$/.test(port.trim())) return setMsg({ k: "err", t: T("Listen port must be a number.") });
-    if (dns.err) return setMsg({ k: "err", t: dns.err });   // before the endpoint confirm, which saves straight through
     if (endpointDirty) {
       pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
       return;
     }
-    if (paramsDirty || dns.dirty) { doSave(); return; }
+    if (paramsDirty) { doSave(); return; }
     closeModal(); pushOptTitle("c|" + node + "|" + iface, title.trim());
     api.csqttSet({ node, iface, listen: oldListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
       .then(r => { if (r && r.ok) { Store.poll(); reportDropped(r); toast(T("Title saved."), "ok"); } else toast(srvText(r) || T("Save failed."), "err"); });   // §5.4: a title-only save re-posts the routing block, so it can drop too
@@ -2395,7 +2395,6 @@ export function CsqttManageSheet({ node, c: c0 }) {
     </div>
     ${hostOnNode === "bad" ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This doesn't resolve to an address on this node. The server *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.")}</span></div>` : null}
     <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
-    <${TurnDnsField} node=${node} fork=${c.fork || cfg.fork || "csqtt"} rep=${c} dns=${dns} params=${params}/>
     <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
       <p class="hint" style="margin:0 0 12px">${T("Extra command-line flags for this csqtt server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.")}</p>
       <${TurnServerFields} schema=${[]} vals=${{}} setV=${() => {}} extra=${params} setExtra=${setParams} template=${false} wdtt=${true} noHint=${true}/>
@@ -2438,16 +2437,18 @@ export function EditCsqttSheet({ node, iface }) {
   const [blk, setBlk] = useState(() => [...(cfg.block || [])]);
   const [disc, setDisc] = useState({ routing: true, filters: false });
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
+  const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);   // Client DNS — see EditWdttSheet
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = () => {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...egressBody(eg) })
+    api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...dns.body, ...egressBody(eg) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
-  const save = () => { const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee }); doSave(); };
+  const save = () => { const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
+    if (dns.err) return setMsg({ k: "err", t: dns.err }); doSave(); };
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   const notup = c.active !== "active";
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px"
@@ -2466,10 +2467,10 @@ export function EditCsqttSheet({ node, iface }) {
       <div class="ro-field" style="display:flex;align-items:center;gap:10px"><span class="mono">${cfg.title || "csqtt"}</span><span class="grow"></span><span class="mono">${oldListen || "—"}</span></div>
       <div class="hint">${T("Endpoint & listen port are edited from the csqtt-proxy modal.")}</div></div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
-    ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
+    ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} onChange=${(rows, catchAll, exitIps) => setEg({ ...eg, rows, catchAll, exitIps })}/>
+      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} directIp=${eg.ip || ""} onChange=${(rows, catchAll, exitIps, ip) => setEg({ ...eg, rows, catchAll, exitIps, ip })}/>
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
@@ -2481,12 +2482,12 @@ export function EditCsqttSheet({ node, iface }) {
           them — the node runs the same `_egress_des` ladder for a WDTT/csqtt subnet as for an interface.
           Moving the pin under Advanced without giving them one would have deleted the control for this
           whole kind. One section, one control, same framing as the interface sheets. */""}
-    ${/* The whole section, not just its body: here Advanced holds ONLY the pin, so in a mode that does not
-          store one there is nothing to open. */""}
-    ${natPinApplies(eg) ? html`<${Disclosure} title=${T("Advanced settings")} summary=${eg.nic || T("val|Off")}
+    ${/* Advanced: the server's client DNS (always), and the NAT pin where the mode stores one. */""}
+    <${Disclosure} title=${T("Advanced settings")} summary=${advSum(eg)}
       open=${disc.advanced} onToggle=${() => tog("advanced")}>
-      <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
-    <//>` : null}
+      <${TurnDnsField} node=${node} fork=${c.fork || cfg.fork || "csqtt"} rep=${c} dns=${dns} params=${cfg.params || ""}/>
+      ${natPinApplies(eg) ? html`<${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>` : null}
+    <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }

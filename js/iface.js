@@ -24,7 +24,7 @@ import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkOpts, forkLabel
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm, LIST_PAGE, pageSlice, ListPager, awgSwitchTag } from "./ui.js";
 import { RangedHistory, IfaceThroughput, lossColorMesh } from "./charts.js";
 import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCached, subFeatureOn } from "./crypto.js";
-import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules,
+import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle,
          SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog, reportDropped, rulesSummary, targetLabel } from "./routing.js";
 import { rulesToRows } from "./rulerows.js";
 import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, DropsFigure, LossPop, meshHealth, ReachField } from "./views.js";
@@ -973,7 +973,10 @@ export function Awg3Grid({ value, onKey, hpk, rt, hpkTip, rtTip, hint, placehold
       ...${placeholders ? { placeholder: placeholders[k] || "" } : {}} onInput=${e => onKey(k, e.target.value)}/></label>`)}</div>`)}
   </div>`;
 }
-// The one sentence that says which apps carry 3.1 (docs/AWG3-PLAN.md §3) — under the switch and in the switch window alike.
+// Is an S1–S4 in this AWG dict one the panel re-draws on a switch to 3.1 — set and under 12, or not a number (awg3_full)?
+// One test for the switch window and the Edit sheet's 3.1 cells, so the two never say different things about the same values.
+const awgLowS = d => ["S1", "S2", "S3", "S4"].some(k => { const v = String((d || {})[k] ?? "").trim(); return v !== "" && (!/^\d+$/.test(v) || +v < 12); });
+// The one sentence that says which apps carry 3.1 (docs/AWG3-PLAN.md §3) — in the switch window, where the switch is confirmed.
 const awg3Apps = () => T("Only apps that carry AmneziaWG 3.1 can connect: Amnezia VPN 5.0.1.5 or newer, AmneziaWG from the App Store or from GitHub (not the Google Play build), WG Tunnel 5.6 or newer. WINGS V, Keenetic and MikroTik cannot.");
 // The AmneziaWG version switch — the create form, the Edit sheet, and Settings' preset for new interfaces (`label`, `hint`).
 // `no3` / `no2` are the panel's own reason a switch that way would be refused here (its sentence, never the rule re-derived),
@@ -982,7 +985,7 @@ const awg3Apps = () => T("Only apps that carry AmneziaWG 3.1 can connect: Amnezi
 export function AwgGenField({ value, onChange, no3, no2, label, hint, was }) {
   label = label || T("AmneziaWG version");
   const why = value === "3.1" ? no2 : no3;
-  const say = why || hint || ((was == null || value !== was) ? (value === "3.1" ? awg3Apps() : T("Every AmneziaWG app can connect.")) : "");
+  const say = why || hint || ((was == null || value !== was) ? (value === "3.1" ? "" : T("Every AmneziaWG app can connect.")) : "");
   return html`<div class="field awggen"><label>${label}</label>
     <div class="dpsw awgsw" role="radiogroup" aria-label=${label}>${[["2.0", no2], ["3.1", no3]].map(([g, no]) => html`<button type="button" role="radio" key=${g}
       aria-checked=${value === g} class=${(value === g ? "on" : "") + (g === "3.1" ? " sw-awg3" : "")} disabled=${value !== g && !!no}
@@ -1028,8 +1031,7 @@ function AwgSwitchSheet({ node, iface, to, commit, sent }) {
   const cant = svc => (turnForkList().find(f => f.id === turnFork(svc)) || {}).awg3 === false;
   const blk = to !== "3.1" ? [] : (srvBlk || fwd.filter(tp => cant(tp.service)).map(tp => ({ service: tp.service, title: tp.title || "", fork: turnFork(tp.service) })));
   const others = fwd.filter(tp => !blk.some(b => b.service === tp.service)).length;
-  const lowS = to === "3.1" && ["S1", "S2", "S3", "S4"].some(k => { const v = String({ ...(meta.awg_params || {}), ...(sent || {}) }[k] ?? "").trim();
-    return v !== "" && (!/^\d+$/.test(v) || +v < 12); });   // the panel re-draws S1–S4 when one it would keep is under 12 (awg3_full)
+  const lowS = to === "3.1" && awgLowS({ ...(meta.awg_params || {}), ...(sent || {}) });
   const typeOk = !gws.length || typed.trim() === iface;
   const go = async () => {
     if (busy || blk.length || !typeOk) return;
@@ -1359,10 +1361,10 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         <div class="field"><label>${T("Internal WG port")}</label><input class=${wgperr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder="56001"/>${wgperr ? html`<div class="hint err">${wgperr}</div>` : html`<div class="hint">${T("Loopback userspace-WG port (server-internal)")}</div>`}</div>
       </div>` : null}
       <${Fragment}><${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
-      ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
+      ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
         summary=${rulesSummary(node, eg.rows, eg.catchAll)}
         open=${disc.routing} onToggle=${() => tog("routing")}>
-        <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} onChange=${(rows, catchAll, exitIps) => setEg({ ...eg, rows, catchAll, exitIps })}/>
+        <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} directIp=${eg.ip || ""} onChange=${(rows, catchAll, exitIps, ip) => setEg({ ...eg, rows, catchAll, exitIps, ip })}/>
       <//>` : null}
       <${ReachField} value=${reach} onChange=${setReach} create=${true}
         unvouched=${/* the build a create installs, as the catalog vouches for it (§11.2 F4) */ isWdtt ? !(_wdttForks.find(f => f.id === fork) || {}).reach_vouched
@@ -1641,7 +1643,8 @@ export function ConnectionEditSheet({ node, iface }) {
             ? html`<div class="hint dp-verdict warn"><${Ic} i="warn"/> ${Trich("This leg is losing *{v1}%* right now — that is the case for Relay.", { v1: String(_ls) })}</div>`
             : html`<div class="hint dp-verdict ok"><${Ic} i="check"/> ${Trich("This leg is clean right now — *Forward* is the cheaper choice.")}</div>`;
         })()}
-        ${smartLegs.length ? html`<div class="hint" style="margin-top:9px">${
+        ${relayOn && smartLegs.length ? html`<div class="hint" style="margin-top:9px">${
+          // Said only under Relay: under Forward nothing is relayed, and the note read as if something were.
           // ⚠️ UNDER A CASCADE "accelerated" READS AS "THIS INTERFACE" AND UNDER SMART IT DOES NOT. Only the
           // destinations these interfaces route over THIS link are relayed; everything else they send is
           // untouched. And the relay terminates TCP, so half a rule's traffic staying on the forwarding
@@ -1714,8 +1717,19 @@ export function EditIfaceSheet({ node, iface }) {
   // opens the switch window; the reason the panel would refuse either way greys that side (an older node can do neither).
   const genWas = awgGen(node, iface) || "2.0";
   const genSw = isAwg && !meta.system && (meta.tool || "awg") === "awg";
-  const [gen, setGen] = useState(genWas);
+  const [gen, setGen0] = useState(genWas);
   const genChanged = genSw && gen !== genWas;
+  // Flipped to 3.1 before a Save: the 3.1 cells appear at once, holding what the switch would give them (Settings' 3.1
+  // defaults over Amnezia's), so they are set in the same Save — never saved, reopened and saved again. A cell the operator
+  // already typed is kept. Header protection and trailers stay the panel's: the key is born on the node's switch.
+  const setGen = g => { setGen0(g);
+    // Flipped back before a Save: the 3.1 cells the flip filled go with it (a 2.0 save never sends them), so the sheet is as
+    // it was and does not ask about unsaved changes that were never the operator's.
+    if (g !== "3.1" && genWas !== "3.1") return setAwg(a => Object.fromEntries(Object.entries(a).filter(([k]) => !AWG3_KEYS.includes(k))));
+    if (g !== "3.1" || genWas === "3.1") return;
+    setDisc(d => ({ ...d, advanced: true }));   // where the 3.1 cells are — opened, so the flip shows them
+    const ps = Store.panelSettings || {}, d = { ...(ps.awg31_builtin || {}), ...((ps.interface_defaults || {}).awg3_params || {}) };
+    setAwg(a => AWG3_EDIT_COLS.flat().reduce((o, k) => (String(o[k] ?? "").trim() || d[k] == null ? o : { ...o, [k]: String(d[k]) }), a)); };
   const no3 = awg31No(nrec, iface) ? srvText(awg31No(nrec, iface)) : "";
   const no2 = (((Store.stats[node] || {}).datapath || {}).awg || {}).gen ? "" : no3;
   const ist = (((Store.stats[node] || {}).interfaces || {})[iface] || {});
@@ -1725,7 +1739,8 @@ export function EditIfaceSheet({ node, iface }) {
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async (switched) => {
     const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, reach, ...egressBody(eg) };
-    if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
+    if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim();
+      if (v && (gen === "3.1" || !AWG3_KEYS.includes(k))) o[k] = v; return o; }, {});
     // A generation switch is sent from its window, which stays open until the panel answers: a refusal is returned to it.
     const r0 = switched ? await api.ifaceUpdate({ ...body, awg_gen: gen }) : null;
     if (r0 && !r0.ok) return r0;
@@ -1851,10 +1866,10 @@ export function EditIfaceSheet({ node, iface }) {
     </div>
     ${genSw ? html`<${AwgGenField} value=${gen} onChange=${setGen} no3=${no3} no2=${no2} was=${genWas}/>` : null}
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
-    ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
+    ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} onChange=${(rows, catchAll, exitIps) => setEg({ ...eg, rows, catchAll, exitIps })}/>
+      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} directIp=${eg.ip || ""} onChange=${(rows, catchAll, exitIps, ip) => setEg({ ...eg, rows, catchAll, exitIps, ip })}/>
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
@@ -1873,13 +1888,16 @@ export function EditIfaceSheet({ node, iface }) {
       ${isAwg ? html`<div class="field"><label>${T("AmneziaWG parameters")}</label>
         <div class="hint" style="margin:0 0 8px">${T("Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.")}</div>
         <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div>
-        ${/* The 3.1 set as a fifth group — only while the interface IS 3.1 and stays so. HeaderProtectionKey and RandomTrailers
+        ${/* The 3.1 set as a fifth group — while the sheet says 3.1, the moment the switch is flipped too (setGen fills it), so
+              one Save switches with the values wanted. HeaderProtectionKey and RandomTrailers
               change only through the switch (an editable key was a one-keystroke way to cut every client with no window), so
               they read set / on and ride along unchanged; the panel checks the rest (S ≥ 12, timings that do not cross). */
-          genWas === "3.1" && gen === "3.1" ? html`<${Awg3Grid} value=${awg} onKey=${setAwgK}
-            hpk=${awg.HeaderProtectionKey ? T("val|set") : "—"} rt=${awg.RandomTrailers ? T("val|on") : "—"}
+          gen === "3.1" ? html`<${Awg3Grid} value=${awg} onKey=${setAwgK}
+            hpk=${awg.HeaderProtectionKey ? T("val|set") : genChanged ? T("val|new on switch") : "—"} rt=${awg.RandomTrailers || genChanged ? T("val|on") : "—"}
             hpkTip=${T("Changes only through the version switch — every device has to re-import after it.")}
-            rtTip=${T("Changes only through the version switch — every device has to re-import after it.")}/>` : null}</div>` : null}
+            rtTip=${T("Changes only through the version switch — every device has to re-import after it.")}
+            hint=${genChanged && awgLowS(awg)
+              ? T("One of S1–S4 is below 12, which header protection refuses — the switch draws new ones.") : null}/>` : null}</div>` : null}
       <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
     <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}

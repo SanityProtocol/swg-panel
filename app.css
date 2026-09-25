@@ -1980,10 +1980,21 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .whochip.bad{color:var(--partial);background:color-mix(in srgb,var(--partial) 12%,transparent);border-color:color-mix(in srgb,var(--partial) 45%,var(--line));cursor:default}
 .whochip.warn svg,.whochip.bad svg{color:var(--partial)}
 .tf-trail .rrgear{width:26px;height:26px;flex:none}
-/* "Advanced…" opens a window; it is not one more destination, so it sits under a line, in the list's quieter weight */
-.ddopt.ddopt-adv{margin-top:3px;border-top:1px solid var(--line);border-radius:0 0 6px 6px;font-weight:500;color:var(--dim)}
+/* lit when the rule says more than its destination (people, an audience, an address) — which rules do, at a glance */
+.rrgear.on{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 45%,var(--line))}
 .rsdest{max-width:360px}
-.tf-trail:has(.whochip){flex-wrap:wrap;justify-content:flex-end;row-gap:6px}   /* only a row that carries the chip: the chips wrap above the destination rather than push it out of the row */
+/* Rule settings: "Leaves by" and "As address" share a line; the address notes run under both */
+.rs-where{margin-bottom:9px}
+.rs-where:has(+ .rs-where-note){margin-bottom:0}   /* the note sits close under the fields it explains */
+.rs-where .field{margin-bottom:6px}
+.rs-where .rsdest{max-width:none}
+.rs-where-note{margin:0 0 14px}
+/* A row's chips, settings button and destination are ONE line that moves as a unit: beside the entry count while it fits,
+   under it (still one line, right-aligned) when it does not — the foot wraps, never the trail. Split, the chips sat on a
+   line of their own above a lone dropdown. The destination gives up to ~100px first, so a row with three chips still fits. */
+.tf-trail .whochip{flex:none;white-space:nowrap}
+.tf-trail:has(.whochip) .rrdest{flex:0 1 272px;min-width:170px}
+@media (max-width:640px){.tf-trail:has(.whochip){flex-wrap:wrap;justify-content:flex-end;row-gap:6px}}   /* a phone has no room for one line: there the chips wrap above the destination */
 /* Phase 3 smart-routing rule editor. Row + catch-all footer share ONE grid template (grip · dropdown · arrow ·
    dropdown · xbtn), so the "everything else" dropdown + arrow line up exactly under the per-rule ones. The side
    columns are `auto` (icon-width) and identical in both, so the two 1fr dropdown columns come out equal. A flex
@@ -2204,6 +2215,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .disc.open{border-color:var(--line-bright);border-bottom-left-radius:0;border-bottom-right-radius:0}
 .disc.open .disc-car{transform:rotate(90deg)}
 .disc-t{font-size:13px;font-weight:600;color:var(--ink)}
+.disc-t .disc-wins{font-size:11.5px;font-weight:400;color:var(--faint)}   /* how rules win here, after "Routing rules" (rulesTitle) */
 .disc-sum{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--faint)}
 .disc-sum b{font-weight:700}
 .disc-sum.on b{color:var(--online)}      /* active filters — green */
@@ -2283,6 +2295,10 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rds-k{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap}
 .rds-v{font-size:12px;color:var(--dim);line-height:1.5}
 .rmode-banner .rmode-desc{margin-top:8px}
+/* Force-DNS upstream: the whole banner's width, like the description above it — its hint read as a narrow column under a
+   short field. The field itself keeps the width an address list needs. */
+.rmode-banner .rd-upstream{grid-column:1 / -1;margin:14px 0 0}
+.rmode-banner .rd-upstream input{max-width:470px}
 /* ROW 1 ONLY. It used to span the lines as well, which cost them half the card — measured 456px against a
    Russian benefit line needing 663px, so every mode wrapped in Russian while English fit by luck. With the
    lists line gone the button row is SHORTER than the title+summary beside it, so spanning one row wastes
@@ -3480,6 +3496,9 @@ a.tg:hover{filter:brightness(1.25)}
 .netshare-l{display:block;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:7px}   /* the .field>label register — this label is not the field's direct child */
 .netshare-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 8px}
 .dpsw.netsw-share button{min-width:0;padding:6px 15px}
+/* the node list's audience: three short names in three equal parts, one line at any width */
+.dpsw.netsw-share.netsw-aud{display:grid;grid-template-columns:repeat(3,1fr);width:100%;max-width:480px}
+.dpsw.netsw-share.netsw-aud button{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
 .netshare-add{flex:1 1 200px;min-width:180px}
 .netshare-add .usercombo{width:100%}
 /* "Shared with N users" — the way into the People window, in the pill row's register */
@@ -3918,7 +3937,6 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 }
 .railcustom{display:flex}
 .railcustom-pop{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:10px 12px}
-.railcustom-h{font-size:11.5px;color:var(--dim);max-width:30ch}
 .railcustom-pop .hint.warn{margin:0}
 /* the grids' Custom period: a title, the two dates on one line, Apply as the one clear action beneath them */
 .deppop.trail-pop{gap:8px;padding:9px 11px 10px}   /* the heading every other bubble uses (.netroute-h); more room than a text bubble — it holds fields */

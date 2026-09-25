@@ -46,7 +46,7 @@ import {
   catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
   TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitOptionGroups, fleetRuleCats, provLabelOf, providerColor, providerUsage, reportDropped,
   resetRouting, sizeSummary,
-  exitHealthMark, RoutingRules, egressSaveBlock,
+  exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
 } from "./routing.js";
 import { classifyAll } from "./classify.js";   // the one grammar — CustomListSheet accepts what a rule accepts
 import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
@@ -2680,7 +2680,7 @@ const sectionLabel = k => ({
             <div class="rmode-desc">${mm.exp}</div>
             ${/* Force-DNS only: where this node's resolver sends the lookups it answers for its clients. Until now a
                   hardcoded 1.1.1.1 + 8.8.8.8 (docs/DNS-SETTINGS-PLAN.md §4). Plain addresses — no DoH/DoT engine is added. */""}
-            ${nodeMode === "forcedns" ? html`<div class="field" style="margin:14px 0 0">
+            ${nodeMode === "forcedns" ? html`<div class="field rd-upstream">
               <label>${T("Upstream DNS")}</label>
               <input value=${nv(selNode, "dns_upstream") || ""} onInput=${e => setNV(selNode, { dns_upstream: e.target.value })} placeholder="1.1.1.1, 8.8.8.8" autocomplete="off"/>
               <div class="hint">${T("Where this node's resolver sends the lookups it answers for Force-DNS clients. Empty = 1.1.1.1, 8.8.8.8. Up to four addresses, each optionally with #port (a local resolver like 127.0.0.1#5335 works). If none of them answers, clients on this node can't resolve names.")}</div>
@@ -4270,11 +4270,11 @@ const NODE_LIST_ROWS = {};
 const nodeListBlock = (nid, rules) => { const c = NODE_LIST_ROWS[nid];
   return c && JSON.stringify(rowsToRules(c.rows, c.catchAll)) === JSON.stringify(rules || []) ? egressSaveBlock({ mode: "smart", rows: c.rows, catchAll: c.catchAll }, c.mode || "kernel") : null; };
 
-/* "Whom it affects" (§7.3) — from the last sync's plan (T16: never computed per /api/state), so it reads "not planned yet"
+/* "Whom it affects" (§7.3) — from the last sync's plan (T16: never computed per /api/state), so it shows nothing
    for one interval after a panel restart rather than a number that is not true. Bounded hovers, as everywhere. */
 function DefaultReach({ node }) {
   const rc = node.default_reach;
-  if (!rc) return html`<div class="hint">${T("Who this affects is worked out on the next sync.")}</div>`;
+  if (!rc) return null;   // not planned yet (one interval after a panel restart): say nothing rather than a placeholder line
   const auto = rc.auto || [], arr = rc.arr || [];
   const ifTrig = html`<b>${plural(auto.length, "Auto interface")}</b>`;
   const arTrig = html`<b>${plural(arr.length, "interface")}</b>`;
@@ -4291,6 +4291,9 @@ function DefaultReach({ node }) {
 export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManage, saveExits }) {
   const ips = node.ips || []; const v = vals || {};
   const isList = Array.isArray(v.default_routing);   // the default is a rule list (D2) — its presence is the switch
+  // The list's rules start folded: the section opens on its few settings, and the rules are there on a click. Opened by the
+  // choice that makes the default a list, so choosing it shows where the rules go.
+  const [rulesOpen, setRulesOpen] = useState(false);
   // "Custom interface…" is a MODE of this field, not a value it can hold — picking it opens the device
   // field below and the field's answer is what gets stored. Local state, because nothing is decided until
   // a device is named and there is nothing to save in the meantime.
@@ -4436,7 +4439,7 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
           // D2 — choosing the list keeps what the default was as its "Everything else", so nothing about where the
           // remainder goes changes by choosing it; the operator adds rules above that.
           if (x === "__smart__") return isList ? null
-            : set({ default_routing: v.default_exit ? [{ enabled: true, category: "all", action: "dev", exit_id: v.default_exit }] : [] });
+            : (setRulesOpen(true), set({ default_routing: v.default_exit ? [{ enabled: true, category: "all", action: "dev", exit_id: v.default_exit }] : [] }));
           if (String(x).startsWith("dev:")) return addDevice(String(x).slice(4));   // clears the list itself (see addDevice)
           set({ default_exit: x, ...(isList ? { default_routing: null } : {}) });
         }}
@@ -4445,6 +4448,11 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
         // is the thing, and it matches the "Auto (MASQUERADE)" idiom the field below already uses. Falls
         // back to the bare word only while the node has not reported which device its default route uses.
         { value: "", label: node.wan_iface ? T("Default ({v1})", { v1: node.wan_iface }) : T("val|Default") },
+        // SECOND, beside Default: the default made smart — the SAME label and class as the interface picker's own entry. It
+        // is a way of deciding, not one more exit, so it sits with Default rather than after every device (operator, 09-26).
+        // ⚠️ The comment here once said a node's default "cannot be smart cascade". Reversed by D2 (ROUTING-PEERS-MESH-PLAN
+        // §3.1, §7.3): the default IS a rule list now, and what IT falls back to is its own "Everything else".
+        { value: "__smart__", label: T("Routing (smart cascade)"), className: "egopt-mode" },
         // ⚠️ THE DRAFT, NOT THE STORED RECORD. Built from `node.exits` the switch flipped the draft and the
         // row went on rendering the server's answer — it toggled, Save lit up, and nothing on screen moved.
         // A control has to show what it just did.
@@ -4498,12 +4506,7 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
           onRemove: a => { setArmed("");
             commitExits(exitsNow().filter(x => String(x.id) !== String(a.id)),
                         String(v.default_exit || "") === String(a.id) ? { default_exit: "" } : null); },
-        }),
-        // LAST: the default made smart — the SAME label and class as the interface picker's own entry. ⚠️ The comment
-        // above said a node's default "cannot be smart cascade (a rule list is the thing that HAS a default, not a default
-        // itself)". Reversed by D2 (ROUTING-PEERS-MESH-PLAN §3.1, §7.3): the default IS a rule list now, and what IT falls
-        // back to is its own "Everything else" — still exactly one default, with rules in it.
-        { value: "__smart__", label: T("Routing (smart cascade)"), className: "egopt-mode" }]}/>
+        })]}/>
       ${openManage ? html`<button type="button" class="btn btn-icon exdd-gear" title=${T("Manage…")}
         aria-label=${T("Manage…")} onClick=${() => openManage(v.exits)}><${Ic} i="gear"/></button>` : null}
       </div>
@@ -4586,12 +4589,20 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
     ${/* D2 — THE DEFAULT, MADE SMART: one rule list for this node's Auto interfaces, its smart interfaces' silence and the
           traffic other nodes cascade out through it (§3.1, §7.3). Keyed by what the server holds, so a save re-reads it. */""}
     ${isList ? html`<div class="field">
+      <${Disclosure} title=${rulesTitle(node.id)} open=${rulesOpen} onToggle=${() => {
+          // Folding unmounts the rows, and the half-typed badge text goes with them — so its flag goes too, or Save would stay
+          // blocked by text nobody can see (nodeListBlock). The same thing a remount already does (NodeDefaultRules).
+          const c = NODE_LIST_ROWS[node.id];
+          if (rulesOpen && c) NODE_LIST_ROWS[node.id] = { ...c, rows: (c.rows || []).map(r => r && r._draft ? (({ _draft, ...x }) => x)(r) : r) };
+          setRulesOpen(o => !o); }}
+        sumCls="route" summary=${(() => { const { rows, catchAll } = rulesToRows(v.default_routing || []);   // the interface sections' own summary:
+          return rulesSummary(node.id, rows, catchAll); })()}>
       <${NodeDefaultRules} key=${node.id + ":" + JSON.stringify(node.default_routing || [])} node=${node.id} mode=${v.routing_mode || node.routing_mode}
         nodeExits=${v.exits || node.exits || []}
         base=${JSON.stringify(node.default_routing || [])}
         rules=${v.default_routing} exitIps=${v.default_routing_exit_ips || {}}
         onChange=${(rules, xs) => set({ default_routing: rules, default_routing_exit_ips: xs || {} })}/>
-      <${DefaultReach} node=${node}/></div>` : null}
+      <${DefaultReach} node=${node}/><//></div>` : null}
     <div class="field"><label>${T("Panel egress connection IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to reach the panel")}</span></label>
       <${NodeIpPick} ips=${ips} value=${v.panel_ip || ""} onChange=${ip => set({ panel_ip: ip })} auto=${T("Auto (default route)")}/></div>
     <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>

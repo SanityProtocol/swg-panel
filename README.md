@@ -336,10 +336,10 @@ Its limits:
   much disk it uses, and can keep the hour-by-hour detail for the last 33 days only; totals for any period are always kept.
 - **Route certain sites through a certain country (optional).** For example, send streaming out through a
   server abroad and keep everything else local. Set it per server under **Settings → Routing & Blocking**.
-  A rule can also apply to chosen people only: pick **Advanced…** at the end of its destination list and choose
+  A rule can also apply to chosen people only: open its settings (the sliders button before its destination) and choose
   people, groups or single devices. The same window is where a rule that forwards to another server picks
   **which of that server's addresses** the traffic leaves it by — useful when a server has several and a site
-  expects one of them.
+  expects one of them. For a **Direct** rule it picks this server's own address — one for the whole interface.
   A server's own default can be a rule list too — **Settings → Network → Default exit → Routing (smart cascade)**:
   one list for its interfaces set to **Auto** and for the traffic other servers send out through it, and each rule
   can narrow itself to **this node's own clients** or to **traffic cascaded in**. A **Forward to node** rule there

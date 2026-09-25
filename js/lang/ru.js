@@ -1676,7 +1676,6 @@ export const STR = {
   "The traffic history is being written; try again in a moment": "История трафика сейчас записывается; повторите через мгновение",
   "The charts keep {v1} days: a custom window can start on {v2} at the earliest": "Графики хранят {v1} дня: свой период может начинаться не раньше {v2}",
   // Custom on the Overview (P3): the rail's date window, Top talkers on the traffic ledger.
-  "Days in the panel's zone — the charts keep the last {v1} days": "Сутки по поясу панели — графики хранят последние {v1} дня",
   "The charts go back to {v1}.": "Графики начинаются с {v1}",
   "each on all their servers": "каждый — на всех своих серверах",
   "handed on": "передано",
@@ -1882,8 +1881,6 @@ export const STR = {
     "Порты восстановлены из его хранилища паролей — клиенты уже звонят именно на них. *Подсеть* на диск не пишется, поэтому задайте её ниже.",
   // budget-ok: disclosure summary, own line
   // the collapsed routing summary. TWO sentences, one per engine arbitration — see rulesSummary().
-  "*{v1}* {v2} · most specific wins": "*{v1}* {v2} · выигрывает самое точное",
-  "*{v1}* {v2} · first match wins": "*{v1}* {v2} · первое совпадение",
   "Delete interface": "Удалить интерфейс",
   "Reassigning to {v1} rotates the peer's keys. The current user loses access immediately and permanently — assigning them back later would still be a brand-new credential.":
     "Переназначение на {v1} перевыпускает ключи пира. Текущий пользователь теряет доступ немедленно и безвозвратно — даже если вернуть пира ему позже, это будут совершенно новые учётные данные.",
@@ -6449,6 +6446,7 @@ export const STR = {
   // ── AmneziaWG 3.1 (docs/AWG3-PLAN.md §7.7): the version switch, its window, the 3.1 badges' tooltip, the Settings preset ──
   "AmneziaWG 3.1": "AmneziaWG 3.1",
   "val|set": "задан",
+  "val|new on switch": "новый при переключении",
   "Only apps that carry AmneziaWG 3.1 can connect: Amnezia VPN 5.0.1.5 or newer, AmneziaWG from the App Store or from GitHub (not the Google Play build), WG Tunnel 5.6 or newer. WINGS V, Keenetic and MikroTik cannot.": "Подключатся только приложения с поддержкой AmneziaWG 3.1: Amnezia VPN 5.0.1.5 и новее, AmneziaWG из App Store или с GitHub (не сборка из Google Play), WG Tunnel 5.6 и новее. WINGS V, Keenetic и MikroTik — нет.",
   "AmneziaWG version": "Версия AmneziaWG",
   "Every AmneziaWG app can connect.": "Подходит любое приложение AmneziaWG.",
@@ -6505,14 +6503,12 @@ export const STR = {
   "Changes only through the version switch — every device has to re-import after it.": "Меняется только переключением версии — после него каждому устройству нужно заново импортировать конфиг.",
   "Given to an interface when it is created on 3.1 or switched to it; one already on 3.1 keeps its own. A blank cell is Amnezia's default.": "Их получает интерфейс, который создают на 3.1 или переводят на 3.1; интерфейс, уже работающий на 3.1, сохраняет свои. Пустая ячейка — значение Amnezia по умолчанию.",
   // Per-person rules (ROUTING-PEERS-MESH-PLAN §7.1–7.2, §7.4): a rule for chosen people, groups and devices
-  "Advanced…": "Дополнительно…",
   "Rule settings": "Настройки правила",
   "Leaves by": "Выход через",
   "For whom": "Для кого",
   "Everyone on this interface": "Все на этом интерфейсе",
   "Chosen people and devices": "Выбранные люди и устройства",
   "Add a person, group or device…": "Добавить человека, группу или устройство…",
-  "{people} · {devices}": "{people} · {devices}",
   "Devices here": "Устройства здесь",
   "col|User, group or device": "Пользователь, группа или устройство",
   "Can't be told apart on this build — the rule doesn't apply to it.": "На этой сборке это устройство не отличить от других — правило к нему не применяется.",
@@ -6522,6 +6518,7 @@ export const STR = {
   "Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.":
     "Kernel SNI на этом узле не умеет сопоставлять имена хостов для выбранных людей — здесь действуют только IP-адреса и сети этого правила. Переключите узел на Hybrid SNI, чтобы они работали.",
   "{devices} not covered": "не охвачено: {devices}",
+  "{devices} · {v1} not covered": "{devices} · не охвачено: {v1}",
   "{devices} in the rule": "в правиле: {devices}",
   "{v1} chosen": "Выбрано: {v1}",
   "Remove {name}": "Убрать {name}",
@@ -6537,6 +6534,7 @@ export const STR = {
   "As address": "С адреса",
   "Auto ({v1}'s default)": "Авто (по умолчанию для {v1})",
   "Every rule that sends this interface through {v1} leaves as this address.": "Все правила, которые отправляют этот интерфейс через {v1}, выходят с этого адреса.",
+  "Everything this interface sends straight out of {v1} leaves as this address.": "Всё, что этот интерфейс отправляет напрямую с {v1}, выходит с этого адреса.",
   "{v1} hasn't reported its addresses yet — type one it has, or leave this on Auto.": "{v1} ещё не сообщил свои адреса — введите один из его адресов или оставьте «Авто».",
   "{v1} isn't reporting this address. Traffic on this rule leaves it with a source it can't receive replies on, so it goes nowhere until the address is back or you choose another.":
     "{v1} не сообщает этот адрес. Трафик этого правила выйдет с адреса, на который узел не сможет получить ответы, и никуда не дойдёт, пока адрес не вернётся или пока вы не выберете другой.",
@@ -6553,17 +6551,17 @@ export const STR = {
   "All — this node's clients and traffic cascaded in": "Все — клиенты этого узла и трафик с других узлов",
   "chip|own clients": "свои клиенты",
   "chip|cascaded in": "с других узлов",
+  "aud|Everyone": "Все",
+  "aud|Own clients": "Свои клиенты",
+  "aud|Cascaded in": "С других узлов",
   "Traffic that came from {node} skips this rule — it would go back where it came from.":
     "Трафик, пришедший с {node}, пропускает это правило — иначе он вернулся бы туда, откуда пришёл.",
-  "{node} lets this traffic out through its own exit and never forwards it further.":
-    "{node} выпускает этот трафик через свой выход и дальше его не пересылает.",
   "Kernel SNI on this node can't match hostnames for traffic cascaded in — only IP addresses and networks apply to it.":
     "Kernel SNI на этом узле не умеет сопоставлять имена хостов для трафика с других узлов — к нему применяются только IP-адреса и сети.",
   "Every rule of this node's default that sends traffic through {v1} leaves as this address.":
     "Все правила по умолчанию этого узла, которые отправляют трафик через {v1}, выходят с этого адреса.",
   "Routes {ifaces} here and the traffic {sources} send out through this node.":
     "Направляет {ifaces} этого узла и трафик, который {sources} выпускают через этот узел.",
-  "Who this affects is worked out on the next sync.": "Кого это затрагивает, станет известно после следующей синхронизации.",
   "{v1} arrive from two nodes at once and are left to this node's own route.":
     "{v1} приходят сразу с двух узлов и выходят по собственному маршруту этого узла.",
   "default routing rules": "правила маршрутизации по умолчанию",

@@ -30,8 +30,8 @@ import {
 import {
   MultiRing, OnlineBlocks, RANGE_CAP, RANGE_WIN, axisCap, histTime, RankBars, RingLegend, ThroughputChart, TrendSpark,
 } from "./charts.js";
-import { DateWindow } from "./traffic-ui.js";
-import { panelToday, chartsFirstDay, CHART_DAYS, trafficTotals, talkerGroups } from "./traffic.js";
+import { RailCustom } from "./traffic-ui.js";
+import { panelToday, chartsFirstDay, trafficTotals, talkerGroups } from "./traffic.js";
 import {
   DASH_RANGES, OnlineUsersTag, SVC_KINDWORD, dashKey, dashNodes, dashSave, dashState, isCustomKey, customKeyWindow, openLiveTab, rangeLabel, rangeWord, recentActivity,
   revealOrphans, revealPeer, revealPeersFiltered, revealUser, serviceIssues, svcKey, svcSaveSilence,
@@ -271,26 +271,21 @@ export function DashRail() {
       <div class="railpanel railmenu">
         ${DASH_RANGES.map(([k]) => html`<button key=${k} class=${"railmenu-b" + (range === k ? " on" : "")} onClick=${() => dashSetRange(k)} title=${rangeLabel(k)}>
           <span class="railmenu-ic">${k === "live" ? html`<span class="rlive-dot"></span>` : html`<${Ic} i=${RANGE_ICON[k]}/>`}</span><span class="railmenu-t">${rangeLabel(k)}</span></button>`)}
-        <${RailCustom} on=${range === "custom"}/>
+        <${OverviewCustom} on=${range === "custom"}/>
       </div>
       ${fleet.length > 1 ? html`<${NodesRailPanel} nav=${false}/>` : null}
     </div>
   </div>`;
 }
 
-// The rail's Custom row: a click opens two date fields (a draft until Apply), whole days of the panel's, reaching back as
-// far as the charts keep (chartsFirstDay). Keyed on the window in force, so an Apply closes it.
-function RailCustom({ on }) {
+// The rail's Custom row (RailCustom — the grids' own bubble): two date fields (a draft until Apply), whole days of the
+// panel's, reaching back as far as the charts keep (chartsFirstDay). Keyed on the window in force, so an Apply closes it.
+function OverviewCustom({ on }) {
   const today = panelToday(), k = dashKey();
-  const trig = html`<span class=${"railmenu-b" + (on ? " on" : "")} role="button" tabindex="0" title=${on ? rangeLabel(k) : T("range|Custom")}>
-    <span class="railmenu-ic"><${Ic} i="daycal"/></span><span class="railmenu-t">${on ? rangeLabel(k) : T("range|Custom")}</span></span>`;
   const w = isCustomKey(k) ? customKeyWindow(k) : null;   // the window in force as read (dashKey clamps an aged one)
   const first = chartsFirstDay(today), m1 = today.slice(0, 8) + "01";
   const from = w ? w.from : (m1 < first ? first : m1), to = w ? (w.to > today ? today : w.to) : today;
-  return html`<${Popover} key=${k} clickOnly cls="railcustom" popCls="railcustom-pop" trigger=${trig}>
-    <div class="railcustom-h">${T("Days in the panel's zone — the charts keep the last {v1} days", { v1: CHART_DAYS })}</div>
-    <${DateWindow} from=${from} to=${to} min=${first} max=${today} onApply=${dashSetCustom} pending=${!on}/>
-  <//>`;
+  return html`<${RailCustom} key=${k} on=${on} label=${rangeLabel(k)} from=${from} to=${to} min=${first} max=${today} onApply=${dashSetCustom}/>`;
 }
 
 // On-demand history for the range-driven visuals. Fetches per-node RRD (/api/node-history) for the

@@ -65,20 +65,29 @@ export function TrafficRail() {
   useStore();
   const v = trafficView, today = panelToday();
   const on = v.range === "custom";
-  const trig = html`<span class=${"railmenu-b" + (on ? " on" : "")} role="button" tabindex="0" title=${on ? trafficRangeLabel() : T("range|Custom")}>
-    <span class="railmenu-ic"><${Ic} i="cal"/></span><span class="railmenu-t">${on ? trafficRangeLabel() : T("range|Custom")}</span></span>`;
   const draft = on ? v : customStart(today);
   return html`<${Portal}><div class="dashrail trafficrail"><div class="dashrail-stack">
     <div class="railpanel railmenu" role="group" aria-label=${T("Traffic window")}>
       ${RANGE_ROWS.map(([r, ic]) => html`<button type="button" key=${r} class=${"railmenu-b" + (v.range === r ? " on" : "")} aria-pressed=${v.range === r}
           title=${trafficRangeLabel({ range: r })} onClick=${() => setRange({ range: r })}>
         <span class="railmenu-ic"><${Ic} i=${ic}/></span><span class="railmenu-t">${rangeName(r)}</span></button>`)}
-      <${Popover} key=${v.range + v.from + v.to} clickOnly cls="railcustom" popCls="railcustom-pop trail-pop" trigger=${trig}>
-        <span class="netroute-h">${T("range|Custom")}</span>
-        <${DateWindow} from=${draft.from} to=${draft.to} max=${today} pending=${!on} onApply=${(from, to) => setRange({ range: "custom", from, to })}/>
-      <//>
+      <${RailCustom} key=${v.range + v.from + v.to} on=${on} label=${on ? trafficRangeLabel() : ""} from=${draft.from} to=${draft.to} max=${today}
+        onApply=${(from, to) => setRange({ range: "custom", from, to })}/>
     </div>
   </div></div><//>`;
+}
+
+// A rail's Custom row and its bubble — ONE look for the Overview's rail and the grids' (TrafficRail): the heading every
+// bubble uses, the two dates, Apply beneath. `label`: the window in force, shown on the row once Custom is on. The caller
+// keys it on the window in force, so an Apply closes it. `min`: the first day it may start on (the Overview's charts).
+export function RailCustom({ on, label, from, to, min, max, onApply }) {
+  const name = on && label ? label : T("range|Custom");
+  const trig = html`<span class=${"railmenu-b" + (on ? " on" : "")} role="button" tabindex="0" title=${name}>
+    <span class="railmenu-ic"><${Ic} i="cal"/></span><span class="railmenu-t">${name}</span></span>`;
+  return html`<${Popover} clickOnly cls="railcustom" popCls="railcustom-pop trail-pop" trigger=${trig}>
+    <span class="netroute-h">${T("range|Custom")}</span>
+    <${DateWindow} from=${from} to=${to} min=${min} max=${max} pending=${!on} onApply=${onApply}/>
+  <//>`;
 }
 
 // Two date fields for a custom window of the panel's days — the grids' (above) and the Overview's (P3).
