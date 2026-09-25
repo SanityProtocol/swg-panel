@@ -1649,15 +1649,19 @@ prune_stale_acme_installs(){
 # same outage it caused us. So we copy the certificate instead, and the panel's sync-acme (swg-netctl) brings every
 # later renewal across from the entry, whoever owns it. Twin of swg-netctl's _acme_foreign_target().
 # The same rule as swg-netctl's _acme_owner: all three install targets (a tool that installed with --cert-file/
-# --key-file and no --fullchain-file owns the entry just the same), and "ours" is an exact match to one of our
-# four files — never a directory prefix, so the two helpers can never disagree about an entry.
+# --key-file and no --fullchain-file owns the entry just the same), and "ours" is one of our four files, compared
+# by resolved path (realpath -m), as swg-netctl does — a symlinked /etc/swg-panel or a non-canonical spelling in
+# acme's conf reads the same on both sides.
 acme_foreign_target(){
   $DRYRUN && return 0
-  local conf="$ACME_HOME/${1}_ecc/${1}.conf" k t
+  local conf="$ACME_HOME/${1}_ecc/${1}.conf" k t r
   [ -f "$conf" ] || return 0
   for k in Le_RealFullChainPath Le_RealCertPath Le_RealKeyPath; do
     t="$(sed -n "s/^$k='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"
-    case "$t" in ""|"$TLS_DIR/fullchain.pem"|"$TLS_DIR/key.pem"|/etc/swg-sub/tls/fullchain.pem|/etc/swg-sub/tls/key.pem) continue;; esac
+    [ -n "$t" ] || continue
+    r="$(realpath -m -- "$t" 2>/dev/null || printf '%s' "$t")"
+    case "$r" in "$(realpath -m -- "$TLS_DIR/fullchain.pem")"|"$(realpath -m -- "$TLS_DIR/key.pem")"|\
+                 "$(realpath -m -- /etc/swg-sub/tls/fullchain.pem)"|"$(realpath -m -- /etc/swg-sub/tls/key.pem)") continue;; esac
     printf '%s' "$t"; return 0
   done; }
 # Copy acme.sh's current certificate for $1 into $TLS_DIR without touching the entry. 0 on success.
@@ -1833,14 +1837,18 @@ setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to 
       fi
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
       prune_stale_acme_installs
-      # ⚠️ NOT guarded like the internal-serve block: behind nginx/caddy the panel does not serve (or watch) this
-      # certificate, so sync-acme cannot keep a copy current, and --install-cert is our copy's only renewer.
-      # Keep it, but never silently: the other program's copy stops being renewed from here on.
+      # Another program's entry: copy, never take its install target — the same rule as the internal-serve block.
+      # The panel's 6-hourly sync-acme runs behind a proxy too, and reloads nginx/caddy when it brings a renewal across.
       local _foreign; _foreign="$(acme_foreign_target "$PANEL_DOMAIN")"
-      [ -n "$_foreign" ] && warn "acme.sh installed $(b "$PANEL_DOMAIN")'s certificate for another program ($(b "$_foreign")). Behind $SERVE_MODE the panel needs that install target itself, so it is being moved here — that program's copy will $(b 'stop being renewed'). Point it at $TLS_DIR/fullchain.pem and $TLS_DIR/key.pem instead."
+      if [ -n "$_foreign" ]; then
+        warn "acme.sh installs $(b "$PANEL_DOMAIN")'s certificate for another program ($(b "$_foreign")) — leaving that as it is; the panel takes each renewal from acme.sh itself"
+        if ! acme_copy_foreign "$PANEL_DOMAIN"; then
+          warn "could not copy acme.sh's certificate for $PANEL_DOMAIN — proxy will serve plain HTTP."
+          CERT_FULLCHAIN=""; CERT_KEY=""; return 0
+        fi
       # same rule as the internal-serve block above: a failed install must not abort the installer.
       # Here the proxy is the TLS terminator, so degrade exactly as issuance failure does — plain HTTP.
-      if ! acme --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" --reloadcmd "$reload"; then
+      elif ! acme --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" --reloadcmd "$reload"; then
         warn "acme.sh could not install the certificate for $PANEL_DOMAIN — proxy will serve plain HTTP."
         CERT_FULLCHAIN=""; CERT_KEY=""; return 0
       fi

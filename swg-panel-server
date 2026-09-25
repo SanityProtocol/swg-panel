@@ -177,9 +177,8 @@ def _refresh_tls_status(quiet=False):
         TLS_STATUS.update(_acme_follow_status())
         if quiet:
             pass
-        elif overdue and exp <= time.time():
-            print("WARNING: TLS certificate EXPIRED %d hour(s) ago — nothing renewed it; check ACME/renewal"
-                  % int((time.time() - exp) // 3600), flush=True)
+        elif exp <= time.time():
+            print("WARNING: TLS certificate has EXPIRED — nothing renewed it; check ACME/renewal", flush=True)
         elif overdue:
             print("WARNING: TLS certificate has %d hour(s) left of its %d-day life — it should have been renewed "
                   "by now; check ACME/renewal" % (int((exp - time.time()) // 3600), round(life / 86400)), flush=True)
@@ -270,21 +269,32 @@ def _acme_follow():
     if mode and mode not in _ACME_FOLLOW_MODES:
         _ACME_FOLLOW.clear()
         return                                       # not issued by acme.sh ("" = never saved: install.conf decides)
-    qdir = os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "netctl", "queue")
-    if any(os.path.exists(os.path.join(qdir, rid + ".json")) for rid in _ACME_FOLLOW_RIDS):
+    ndir = os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "netctl")
+    if any(os.path.exists(os.path.join(ndir, "queue", rid + ".json")) for rid in _ACME_FOLLOW_RIDS):
         print("access: acme.sh follow check skipped — the root helper has not taken the last one yet", flush=True)
         return
+    for rid in _ACME_FOLLOW_RIDS:                    # a request that timed out is answered late: nobody reads that
+        with contextlib.suppress(OSError):           # answer, so it is removed here instead of piling up
+            os.unlink(os.path.join(ndir, "status", rid + ".json"))
     del _ACME_FOLLOW_RIDS[:]
-    for svc, managed in (("panel", TLS_CERT), ("sub", SUB_CERT_PATH)):
-        if not managed:
+    # The panel's certificate is followed whoever terminates TLS with it — this panel, or the installer's nginx/caddy
+    # serving the same managed file (swg-netctl reloads them) — so the managed path, not TLS_CERT, decides.
+    for svc, managed in (("panel", MANAGED_CERT), ("sub", SUB_CERT_PATH)):
+        if not managed or not os.path.exists(managed):
             continue
-        if svc == "sub" and (not os.path.isdir(os.path.dirname(managed)) or _sub_tls_mode(mode) == "reverse-proxy"):
+        if svc == "sub" and _sub_tls_mode(mode) == "reverse-proxy":
             continue
         rid = _netctl_enqueue(deps, "sync-acme", [svc])
         if not rid:
             return                                   # no root helper here (a dev rig) — nothing to ask
         _ACME_FOLLOW_RIDS.append(rid)
         ok, msg = _netctl_wait(deps, rid, 120)
+        if not ok and msg == "timed out waiting for the root helper":
+            # a stalled helper: keep the last report (it is still the best we know) and stop this pass — queueing
+            # the next service would only wait another 120 s for the same helper
+            print("access: acme.sh follow check timed out — the root helper is not answering", flush=True)
+            return
+        _ACME_FOLLOW_RIDS.remove(rid)                # answered (and its status file consumed by _netctl_wait)
         try:
             r = json.loads(msg) if ok else {}
         except ValueError:
@@ -4852,7 +4862,7 @@ def _twofa_locked():
 # at startup and refuses to boot if the two have drifted. A node route added to the dispatch and not
 # to this list would 404 for the whole fleet — silently, and only for operators who turned the console
 # split on, which is precisely the bug class this file has been burned by before.
-NODE_DOOR_GET = frozenset({"/api/node/whoami", "/api/node/list", "/api/node/turn-binary", "/api/node/cert-proof", "/healthz"})
+NODE_DOOR_GET = frozenset({"/api/node/whoami", "/api/node/list", "/api/node/turn-binary", "/healthz"})
 NODE_DOOR_POST = frozenset({"/api/node/sync", "/api/node/goodbye", "/api/node/proc-status",
                             "/api/node/rename", "/api/node/transfer", "/api/node/c"})
 # Entries that are legitimately in the lists above but are NOT `/api/node/*` literals in the dispatch:
@@ -29201,15 +29211,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, {"ok": False, "error": "unknown node"})
         return self._send(200, {"ok": True, "data": {"id": nid, "state": state}})
 
-    def _node_cert_proof(self, u):
-        q = parse_qs(u.query)
-        cert = ((getattr(self.server, "_swg", None) or {}).get("cert")) or MANAGED_CERT   # the certificate THIS listener serves
-        r = _cert_proof_reply(nodes_load(Handler.deps["nodes_path"]), (q.get("id") or [""])[0],
-                              (q.get("nonce") or [""])[0], cert)
-        if r is None:
-            return self._send(404, {"ok": False, "error": "not found"})
-        return self._send(200, {"ok": True, "data": r})
-
     def _node_whoami(self):
         # Identify a node by its bearer token — for the installer's leftover-token salvage, so it can show
         # the operator the node's name / method / last-online instead of an opaque token. Read-only.
@@ -29546,8 +29547,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)    # 404, not 401: a closed door should not confirm what is behind it
         if static_rel(path) is not None:   # SPA assets are public so the login page can load
             return self._static(path)
-        if path == "/api/node/cert-proof":  # NO token by design — see _cert_proof_reply; a pinned node's heal asks first
-            return self._node_cert_proof(u)
         if path == "/api/node/whoami":     # node-token auth (not a session) — lets a re-installer identify a leftover token
             return self._node_whoami()
         if path == "/api/node/list":       # node-token auth — serve a resolved provider list (raw text) for a routed cat/tier
@@ -30059,47 +30058,6 @@ def _apply_status(state, message="", **extra):
     _gu = int(extra.get("grace_until") or 0)   # a committed change with a live grace → arm the one-at-a-time cooldown
     if _gu > 0:
         _MIGRATION_LOCK["until"] = max(int(_MIGRATION_LOCK.get("until", 0)), _gu)
-
-
-# ── the certificate proof a pinned node asks for before it trusts a CA certificate instead ────────────────
-# swg-noded heals a pin that stopped matching (an expired Let's Encrypt certificate its installer took for
-# self-signed, then renewed) by moving to CA verification. "The panel now has a CA certificate" is not enough
-# on its own: an on-path attacker who holds ANY publicly trusted certificate for the panel's name would turn a
-# pinned node into a CA-trusting one — and collect its token on the way. So the node first asks the panel to
-# prove which certificate it serves, bound to a secret that never crosses the wire: sha256(token), which the
-# panel stores as token_sha and the node already uses only as its request-signing key. The request carries no
-# token; the node is found by an HMAC of that secret, and the answer is an HMAC over the node's nonce and the
-# SHA-256 of the certificate this panel serves. A relay with its own certificate gets a proof for a different
-# one; a forged answer needs the secret.
-_CERT_PROOF_ID = b"swg-cert-proof-id"
-_CERT_PROOF_RE = re.compile(r"^[0-9a-f]{64}$")
-_CERT_PROOF_NONCE_RE = re.compile(r"^[0-9a-f]{32,128}$")
-
-
-def _cert_proof_reply(nodes, ident, nonce, cert_path):
-    """{"cert_sha256", "mac"} for the node `ident` names, or None (unknown node, bad input, unreadable cert)."""
-    if not (isinstance(ident, str) and _CERT_PROOF_RE.match(ident) and isinstance(nonce, str)
-            and _CERT_PROOF_NONCE_RE.match(nonce)):
-        return None
-    key = None
-    for _nid, n in (nodes or {}).items():
-        ts = (n or {}).get("token_sha") if isinstance(n, dict) else None
-        if isinstance(ts, str) and ts and hmac.compare_digest(
-                hmac.new(ts.encode(), _CERT_PROOF_ID, hashlib.sha256).hexdigest(), ident):
-            key = ts.encode()
-            break
-    if key is None:
-        return None
-    try:
-        with open(cert_path) as f:
-            pem = f.read()
-        _end = pem.index(ssl.PEM_FOOTER) + len(ssl.PEM_FOOTER)
-        der = ssl.PEM_cert_to_DER_cert(pem[pem.index(ssl.PEM_HEADER):_end])   # the leaf: the chain file's FIRST block
-    except Exception:
-        return None
-    fp = hashlib.sha256(der).hexdigest()
-    return {"cert_sha256": fp,
-            "mac": hmac.new(key, ("swg-cert-proof|%s|%s" % (nonce, fp)).encode(), hashlib.sha256).hexdigest()}
 
 
 def _ip_canon(s):
@@ -31368,9 +31326,10 @@ def main():
     # The primary listener goes into the live registry (so Access & TLS can add a second one on a new
     # address and drop this one only after the browser confirms). _TLSServer with ssl_ctx=None is plain HTTP.
     scheme = "https" if (TLS_CERT and TLS_KEY) else "http"
-    if TLS_CERT and TLS_KEY:
-        # the SIGHUP → cert-reload handler is installed early (above); just watch expiry here.
-        threading.Thread(target=_tls_watch_loop, daemon=True).start()   # watch cert expiry; warn before a stalled renewal goes dark
+    # The SIGHUP → cert-reload handler is installed early (above). The watch runs on EVERY panel: it reports expiry
+    # only for a certificate this panel serves (no TLS_CERT → nothing to report), but the acme follow also keeps the
+    # certificate an nginx/caddy in front serves current.
+    threading.Thread(target=_tls_watch_loop, daemon=True).start()   # watch cert expiry; warn before a stalled renewal goes dark
     threading.Thread(target=_remote_version_loop, daemon=True).start()   # poll the repo for newer releases
     threading.Thread(target=_turn_update_loop, daemon=True).start()       # scheduled turn-proxy auto-update (opt-in)
     threading.Thread(target=_turn_warm_assets_loop, args=(Handler.deps,), daemon=True).start()   # resolve latest per-OS client download assets → serve.json

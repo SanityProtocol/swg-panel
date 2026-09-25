@@ -281,17 +281,16 @@ def _acme_foreign_target(domain):
     return path if owner == "other" else ""
 
 
-def _panel_serves_tls():
-    """Does the panel terminate its OWN TLS (SWG_PANEL_TLS_CERT set on its unit)? Only then does it run the
-    6-hourly check that calls sync-acme — for its certificate AND swg-sub's. Behind nginx/caddy it does not,
-    so a copy taken from another program's entry there would never be refreshed. Unknown → False (the safe
-    answer: keep --install-cert, which renews our copy)."""
-    try:
-        out = subprocess.run(["systemctl", "show", "-p", "Environment", SERVICES["panel"]["unit"]],
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10).stdout
-    except Exception:
-        return False
-    return any(w.startswith("SWG_PANEL_TLS_CERT=") and len(w) > len("SWG_PANEL_TLS_CERT=") for w in out.split())
+def _reload_front(service):
+    """Make `service` serve the certificate just placed at its path: SIGHUP its own unit (both the panel and
+    swg-sub reload on it), and for the panel behind the installer's nginx/caddy — which serve that same file —
+    reload the proxy too. Best effort, like every reload here."""
+    with contextlib.suppress(Exception):
+        run(["systemctl", "kill", "-s", "HUP", SERVICES[service]["unit"]])
+    front = load_conf().get("SERVE_MODE", "")
+    if service == "panel" and front in ("nginx", "caddy"):
+        with contextlib.suppress(Exception):
+            run(["systemctl", "reload", front])
 
 
 def reload_cmd_for(service):
@@ -541,22 +540,16 @@ def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
         _acme_clear_unusable(domains[0])
         raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, ",".join(domains), out.strip()[-400:]))
     foreign = _acme_foreign_target(domains[0])
-    if foreign and not DRYRUN and not _panel_serves_tls():
-        # Behind a reverse proxy nothing follows the entry for us, so --install-cert stays our copy's only renewer
-        # (install-host.sh's proxy branch makes the same call). Say plainly what it costs the other program.
-        log("acme.sh installs %s for another program (%s) — taking the install target anyway: behind a reverse "
-            "proxy nothing else renews our copy, so that program's copy stops being renewed" % (domains[0], foreign))
-        foreign = ""
     if foreign and not DRYRUN:
         # Another program's entry: copy its current certificate, leave its install target and reload command
-        # alone. sync-acme brings every later renewal across. The reload acme's --reloadcmd would have done is ours.
+        # alone. The panel's 6-hourly sync-acme — which runs on every bare-metal panel, behind a proxy too — brings
+        # every later renewal across. The reload acme's --reloadcmd would have done is ours.
         d = _acme_ecc_dir(domains[0])
         _copy_pair(svc, os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % domains[0]), domains[0])
         log("acme.sh installs %s for another program (%s) — copied its certificate, left its install target alone"
             % (domains[0], foreign))
         if reloadcmd:
-            with contextlib.suppress(Exception):
-                run(["systemctl", "kill", "-s", "HUP", svc["unit"]])
+            _reload_front(service)
         return
     inst = acme_argv(acme, "--install-cert", "-d", domains[0], "--ecc",   # install/renew keyed by the primary -d
                      "--key-file", svc["key"], "--fullchain-file", svc["cert"])
@@ -927,10 +920,11 @@ def do_sync_acme(service):
         res["state"] = "current"
         return json.dumps(res)
     try:
-        do_adopt_cert(service, src_cert, src_key, "reload")   # pair, name and expiry checks; atomic copy; SIGHUP
+        do_adopt_cert(service, src_cert, src_key, "noreload")   # pair, name and expiry checks; atomic copy
     except Reject as e:
         res["state"], res["reason"] = "refused", str(e)[:300]
         return json.dumps(res)
+    _reload_front(service)                                      # the service — and nginx/caddy when they serve it
     res["state"] = "adopted"
     return json.dumps(res)
 

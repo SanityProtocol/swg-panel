@@ -3954,8 +3954,8 @@ export const STR = {
     "*Этот сертификат истекает через {v1} дн.*",
   "*Nothing on this server renews this certificate.* acme.sh holds no certificate for this address, so it will expire in *{v1}* day(s) unless it is issued again.":
     "*Этот сертификат на сервере никто не обновляет.* У acme.sh нет сертификата для этого адреса, поэтому он истечёт через *{v1}* дн., если его не выпустить заново.",
-  "*This certificate expired {v1} hour(s) ago* and nothing has renewed it.":
-    "*Этот сертификат истёк {v1} ч. назад*, и его никто не обновил.",
+  "*This certificate has expired.* Browsers refuse the panel and nodes that verify it stop syncing until it is renewed.":
+    "*Срок действия этого сертификата истёк.* Браузеры не открывают панель, а ноды, которые его проверяют, не синхронизируются, пока его не обновят.",
   "*This certificate should already have been renewed.* It has *{v1}* hour(s) left.":
     "*Этот сертификат уже должен был обновиться.* До его истечения осталось *{v1}* ч.",
   "*Another program on this server renews this certificate* — acme.sh installs each renewal to `{v1}`. The panel takes the renewed certificate from acme.sh within 6 hours, so both keep working.":

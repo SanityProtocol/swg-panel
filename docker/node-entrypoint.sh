@@ -52,18 +52,6 @@ if [ -f /var/lib/swg-noded/panel-verify ]; then
   _pv="$(head -n1 /var/lib/swg-noded/panel-verify 2>/dev/null | tr -d '[:space:]')"
   [ -n "$_pv" ] && TLS_VERIFY="$_pv"
 fi
-# A configured pin swg-noded RETIRED: it stopped matching and the panel now presents a certificate a public CA
-# vouches for (an expired Let's Encrypt certificate pinned as if self-signed, then renewed), so the node moved
-# to CA verification and recorded exactly which pin it dropped. Without this that same pin came back from the
-# environment on every start and the node went dark until it healed again. Only THAT pin: a re-install that
-# configures a different one (a new, self-signed panel) keeps it. Still strict — CA verification fails closed.
-if [ -f /var/lib/swg-noded/panel-fp-retired ] && [ ! -f /var/lib/swg-noded/panel-fp ] && [ -n "${TLS_FINGERPRINT:-}" ]; then
-  _pr="$(head -n1 /var/lib/swg-noded/panel-fp-retired 2>/dev/null | tr -d '[:space:]')"
-  if [ -n "$_pr" ] && [ "$_pr" = "$(printf %s "$TLS_FINGERPRINT" | tr -d ':' | tr '[:upper:]' '[:lower:]')" ]; then
-    log "panel TLS: the configured pin $(printf %.16s "$TLS_FINGERPRINT")… was retired (the panel now has a CA certificate) — verifying it against the system CAs"
-    TLS_FINGERPRINT=""; TLS_VERIFY=yes
-  fi
-fi
 if [ -f /var/lib/swg-noded/panel-fp ]; then
   _pf="$(head -n1 /var/lib/swg-noded/panel-fp 2>/dev/null | tr -d '[:space:]')"
   # `[ -n ]`, like panel-verify above. An empty or truncated panel-fp used to blank TLS_FINGERPRINT, and a

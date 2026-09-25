@@ -1422,14 +1422,17 @@ export function AccessTLSCard({ onChange }) {
       const d = Number(ts.days_left);
       const warn = (body, title) => html`<div class="notice warn" style="margin:0 0 12px" title=${title || ""}><${Ic} i="warn"/><div style="min-width:0">${body}</div></div>`;
       let w = null;
-      if (ts.renew_ok === false) w = warn(Trich("*Automatic renewal is failing.* The certificate is still valid for *{v1}* more day(s), but nothing is renewing it — check that this host is reachable by the validation method above.", { v1: isFinite(d) ? d : "?" }), ts.renew_last);
+      // Expired comes first and has one wording for every certificate: the day count goes negative ("valid for -3
+      // more day(s)") and an hour count reads "0 hour(s) ago" in the first hour, so neither is shown past expiry.
+      const expired = Number(ts.expires_at) > 0 && Number(ts.expires_at) * 1000 <= panelNow();
+      if (expired) w = warn(Trich("*This certificate has expired.* Browsers refuse the panel and nodes that verify it stop syncing until it is renewed."), ts.renew_last);
+      else if (ts.renew_ok === false) w = warn(Trich("*Automatic renewal is failing.* The certificate is still valid for *{v1}* more day(s), but nothing is renewing it — check that this host is reachable by the validation method above.", { v1: isFinite(d) ? d : "?" }), ts.renew_last);
       else if (ts.renewer === "missing" && !ts.self_signed) w = warn(Trich("*Nothing on this server renews this certificate.* acme.sh holds no certificate for this address, so it will expire in *{v1}* day(s) unless it is issued again.", { v1: isFinite(d) ? d : "?" }));
       // A ~6-day certificate always has fewer than 21 days left — judged by days it warned from the day it was
       // issued, so a real failure looked like every other day. Overdue = past 2/3 of its life, on the panel's clock.
       else if (ts.short_lived) {
         const left = Number(ts.expires_at) * 1000 - panelNow();
-        if (left <= 0) w = warn(Trich("*This certificate expired {v1} hour(s) ago* and nothing has renewed it.", { v1: Math.floor(-left / 3600000) }));
-        else if (left < Number(ts.lifetime_s) * 1000 / 3) w = warn(Trich("*This certificate should already have been renewed.* It has *{v1}* hour(s) left.", { v1: Math.floor(left / 3600000) }));
+        if (left < Number(ts.lifetime_s) * 1000 / 3) w = warn(Trich("*This certificate should already have been renewed.* It has *{v1}* hour(s) left.", { v1: Math.floor(left / 3600000) }));
       }
       else if (!ts.self_signed && isFinite(d) && d <= 21) w = warn(Trich("*This certificate expires in {v1} day(s).*", { v1: d }));
       // Not a fault — the panel follows it — but the one fact that explains why its renewals live somewhere else.
