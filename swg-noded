@@ -15728,25 +15728,27 @@ _WDTT_TAKES_DNS = {}                               # (fork, installed version) -
 _WDTT_DNS_RETRY = {}                               # (fork, installed version) -> earliest next probe after an inconclusive one
 _WDTT_DNS_BACKOFF = 300
 
-def _wdtt_takes_dns(fork):
+def _wdtt_takes_dns(fork, force=False):
     """Does the INSTALLED build of this fork take `-dns`? True / False once its `-h` answered, None while unknown.
 
     Asked of the binary, not assumed per fork: ildarmaga has no such flag, a rollback target may predate it, and
     Go's flag package EXITS on an unknown flag — a wrong yes turns a working server into a crash loop. Only a real
-    usage listing is an answer (exit 0/2 and at least one flag parsed). run() turns a timeout or an exec failure
-    into non-empty text ("timeout", the errno), so that is NOT an answer: it is never cached, and the binary is
-    asked again after a backoff rather than on every 5 s pass. Callers treat None as "leave things as they are"."""
+    usage listing is an answer (at least one Go flag line parsed, whatever the exit code). run() turns a timeout or
+    an exec failure into non-empty text ("timeout", the errno), which parses to nothing, so that is NOT an answer:
+    it is never cached, and the binary is asked again after a backoff rather than on every 5 s pass (`force` skips
+    the backoff — for the moment a new build lands). None renders no `-dns`, and the snapshot reports the DNS
+    actually in effect, so the panel shows such a window as "not on the server yet" instead of as live."""
     fork = _wdtt_fork({"fork": fork})               # the sanitised id: it names a path we exec
     key = (fork, _wdtt_installed_ver(fork))
     if key in _WDTT_TAKES_DNS:
         return _WDTT_TAKES_DNS[key]
-    if time.time() < _WDTT_DNS_RETRY.get(key, 0):
+    if not force and time.time() < _WDTT_DNS_RETRY.get(key, 0):
         return None
     binp = _wdtt_bin_shared(fork)
     if not os.path.exists(binp):
         return None                                 # not fetched yet — nothing to ask, nothing to cache
     r = run([binp, "-h"], timeout=6)                # Go flag prints usage + exits 2; static binary, direct exec both models
-    flags = _turn_help_flags((r.stderr or "") + (r.stdout or "")) if r.returncode in (0, 2) else []
+    flags = _turn_help_flags((r.stderr or "") + (r.stdout or ""))
     if not flags:
         _WDTT_DNS_RETRY[key] = time.time() + _WDTT_DNS_BACKOFF
         return None
@@ -15774,6 +15776,16 @@ def _env_line(path, key):
         return ""
     except OSError:
         return None
+
+def _wdtt_applied_dns(iface, inst):
+    """The client DNS this server was actually started with — the `-dns` _wdtt_params_eff put at the front of
+    SWG_PARAMS — for the snapshot. Reporting the RECORD would show a value as live while the build can't take it,
+    while the probe is unknown, or before an update applied it. No env file yet → the record (nothing started)."""
+    have = _env_line(_wdtt_dir(iface) + "/wdtt.env", "SWG_PARAMS")
+    if have is None:
+        return _turn_dns(inst)
+    parts = have.split()
+    return parts[1] if len(parts) >= 2 and parts[0] == "-dns" else ""
 
 def _wdtt_env_drifted(iface, inst, prev):
     """True when the SWG_PARAMS the server was started with is not what this record renders. The case nothing in
@@ -16144,28 +16156,41 @@ def _wdtt_update_binary(inst, ver, ifaces):
         return _e or ("WDTT binary missing after a reportedly successful fetch — check free space on "
                       + os.path.dirname(binshared))
     _wdtt_write_ver(fork, ver)
-    if NODE_KIND == "docker":                                  # container: restart each of the fork's supervised procs so they exec the new binary
+    # Re-render each wdtt.env for the NEW build before restarting onto it: SWG_PARAMS carries `-dns` only for a build
+    # that takes it, so a rollback to one that doesn't would otherwise restart with the flag and crash-loop (Go exits
+    # on an unknown flag). Ask the new binary now (force: it has only just landed). If it gives no answer, the file
+    # is left exactly as it was — the pre-DNS behaviour — rather than rewritten on a guess.
+    if NODE_KIND == "docker":
         with contextlib.suppress(Exception): os.chmod(binshared, 0o755)
-        insts = _wdtt_load(); err = ""
+    else:
+        host_sh("chmod 755 " + shlex.quote(binshared))       # before the probe: it has to exec the new binary
+    insts = _wdtt_load()
+    if _wdtt_takes_dns(fork, force=True) is not None:
+        for i in (ifaces or [inst["iface"]]):
+            it = dict(insts.get(i) or {}); it["iface"] = i
+            envp = _wdtt_dir(i) + "/wdtt.env"
+            # only from a complete record (the node-owned owner password included) — a partial one would write a
+            # blank password into the file the server is about to start from
+            if not (it.get("wg_addr") and it.get("listen") and it.get("password") and os.path.exists(envp)):
+                continue
+            with contextlib.suppress(Exception):
+                text = _wdtt_env_text(it)                     # render FIRST: opening for write empties the file
+                with open(envp + ".tmp", "w") as f: f.write(text)
+                os.replace(envp + ".tmp", envp)
+    if NODE_KIND == "docker":                                  # container: restart each of the fork's supervised procs so they exec the new binary
+        err = ""
         for i in (ifaces or [inst["iface"]]):
             it = dict(insts.get(i) or {}); it["iface"] = i
             if it.get("password") and not it.get("stopped"):
                 e = _wdtt_docker_start(it)
                 if e: err = i + ": " + e
         return err
-    host_sh("chmod 755 " + shlex.quote(binshared))
-    # Re-render each wdtt.env for the NEW build before restarting onto it: SWG_PARAMS carries `-dns` only for a build
-    # that takes it, so a rollback to one that doesn't would otherwise restart with the flag and crash-loop (Go exits
-    # on an unknown flag) — and an upgrade to one that does would need a second restart to pick the DNS up.
-    insts = _wdtt_load()
     for i in (ifaces or [inst["iface"]]):
-        it = dict(insts.get(i) or {}); it["iface"] = i
-        # only from a complete record (the node-owned owner password included) — a partial one would write a
-        # blank password into the file the server is about to start from
-        if it.get("wg_addr") and it.get("listen") and it.get("password") and os.path.exists(_wdtt_dir(i) + "/wdtt.env"):
-            with contextlib.suppress(Exception):
-                with open(_wdtt_dir(i) + "/wdtt.env", "w") as f: f.write(_wdtt_env_text(it))
+        if (insts.get(i) or {}).get("stopped"):
+            continue                                          # deliberately down: the new binary is used at its next start
         host_sh("systemctl restart " + shlex.quote(_wdtt_svc(i)) + " >/dev/null 2>&1")
+    if (insts.get(inst["iface"]) or {}).get("stopped"):
+        return ""                                             # nothing was started, so nothing to verify
     return _wdtt_verify(_wdtt_svc(inst["iface"]))
 
 def _wdtt_verify(svc):
@@ -17248,6 +17273,7 @@ def wdtt_snapshot():
             out.append({"iface": iface, "service": svc, "active": "inactive", "listen": inst.get("listen", ""),
                         "wg_addr": inst.get("wg_addr", ""), "wg_port": inst.get("wg_port", ""),
                         "server_pub": "", "stopped": bool(inst.get("stopped")), "await_restore": True, "fork": inst.get("fork", "amurcanov"),
+                        "dns": _wdtt_applied_dns(iface, inst),   # a current node always says (the sheet reads its absence as "old node")
                         "passwords": {}, "devices": {}})
             continue
         if NODE_KIND == "docker":
@@ -17332,7 +17358,7 @@ def wdtt_snapshot():
                     # mirror needs it for the same T-18 reason. Its presence also tells the panel this node takes it;
                     # dns_unsupported = the installed build has no -dns (ildarmaga, an old rollback target), so the
                     # panel says so instead of showing a value that never reaches a client.
-                    "dns": _turn_dns(inst), "dns_unsupported": _wdtt_takes_dns(_wdtt_fork(inst)) is False,
+                    "dns": _wdtt_applied_dns(iface, inst), "dns_unsupported": _wdtt_takes_dns(_wdtt_fork(inst)) is False,
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a foreign server at take-over, for the panel to adopt into the roster.
                     # Reported until it has them (reconcile_wdtt drops the record once they appear in `desired`),
@@ -17444,6 +17470,12 @@ def _csqtt_dns_env(inst):
     CSQTT_DNS just ignores it. Unset → no line at all (the file as before)."""
     dns = _turn_dns(inst)
     return ("CSQTT_DNS=%s\n" % dns) if dns else ""
+
+def _csqtt_applied_dns(iface, inst):
+    """Twin of _wdtt_applied_dns: CSQTT_DNS as csqtt.env holds it. Every published csqtt build (2.0.1 → 2.1.9-4)
+    reads that variable, so the file is what the server runs with."""
+    have = _env_line(_csqtt_dir(iface) + "/csqtt.env", "CSQTT_DNS")
+    return _turn_dns(inst) if have is None else have
 
 def _csqtt_env_drifted(iface, inst):
     """Twin of _wdtt_env_drifted: CSQTT_DNS in csqtt.env is not what the record renders (a dns stored by a node too
@@ -18563,7 +18595,7 @@ def csqtt_snapshot():
                     # reported. See the WDTT report for why a mirror without them restarts a live server.
                     "max_passwords": inst.get("max_passwords") or "",
                     "params": inst.get("params") or "",
-                    "dns": _turn_dns(inst),   # client DNS, as in the WDTT report
+                    "dns": _csqtt_applied_dns(iface, inst),   # client DNS in effect, as in the WDTT report
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a taken-over server, offered UP so the panel can recreate each as a
                     # roster peer. Present only while the hand-off is open; the panel clears it by importing.
